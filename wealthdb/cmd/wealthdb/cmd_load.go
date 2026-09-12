@@ -243,6 +243,7 @@ func buildSourceSpec(
 				Category:        ov.Category,
 				TaxWrapper:      ov.TaxWrapper,
 				ManagementStyle: ov.ManagementStyle,
+				Exclude:         ov.Exclude,
 			}
 		}
 	}
@@ -251,6 +252,7 @@ func buildSourceSpec(
 		for portfolioID, ov := range cfgOvr {
 			spec.PortfolioOverrides[portfolioID] = loader.PortfolioOverride{
 				TaxWrapper: ov.TaxWrapper,
+				Exclude:    ov.Exclude,
 			}
 		}
 	}

@@ -346,6 +346,49 @@ func TestLoadParsesAccountOverrides(t *testing.T) {
 	}
 }
 
+// TestExcludeIsAnOverrideOnItsOwn: `exclude` alone is a complete
+// account_overrides entry — it says the account should not exist, which
+// is an instruction and not the absence of one. The empty-entry guard
+// has to know that, or the one field that needs no companion is the one
+// it rejects.
+func TestExcludeIsAnOverrideOnItsOwn(t *testing.T) {
+	path := writeConfig(t, `{
+        "gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": [{"id": "viac-test", "kind": "viac", "path": "/tmp/v.db"}],
+        "account_overrides": {
+            "viac-test": {"0.000.000.000.X": {"exclude": true}}
+        }
+    }`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.AccountOverrides["viac-test"]["0.000.000.000.X"].Exclude {
+		t.Error("exclude did not survive the round trip")
+	}
+}
+
+// TestExcludeCannotBeCombinedWithAColumnOverride: the row a column
+// would be stamped on is the row the exclusion removes, so the two
+// instructions contradict each other. Refused rather than silently
+// resolved — either half could be the one the author meant.
+func TestExcludeCannotBeCombinedWithAColumnOverride(t *testing.T) {
+	path := writeConfig(t, `{
+        "gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": [{"id": "viac-test", "kind": "viac", "path": "/tmp/v.db"}],
+        "account_overrides": {
+            "viac-test": {"0.000.000.000.X": {"exclude": true, "nickname": "Example name"}}
+        }
+    }`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("exclude + nickname accepted, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "exclude cannot be combined") {
+		t.Errorf("error = %v, want it to name the contradiction", err)
+	}
+}
+
 func TestValidateRejectsOrphanOverride(t *testing.T) {
 	c := &Config{
 		GoldDB: "/x", DefaultCurrency: "USD",

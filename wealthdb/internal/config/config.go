@@ -34,11 +34,12 @@ type Config struct {
 	EquityTransfers string `json:"equity_transfers,omitempty"`
 	// AccountOverrides replace the per-account
 	// `nickname` and `account_category` columns adapters would
-	// otherwise emit. Keyed by silver_source_id (outer) and then
-	// account_external_id (inner). Either field of the value may
-	// be empty/omitted; an empty value is treated as "no override
-	// for that column". The loader applies overrides AFTER the
-	// adapter has stamped its own values, so config wins on
+	// otherwise emit, and can drop an account outright
+	// (AccountOverride.Exclude). Keyed by silver_source_id (outer)
+	// and then account_external_id (inner). Either field of the
+	// value may be empty/omitted; an empty value is treated as "no
+	// override for that column". The loader applies overrides AFTER
+	// the adapter has stamped its own values, so config wins on
 	// overlap. See docs/DESIGN.md §13.9.
 	AccountOverrides map[string]map[string]AccountOverride `json:"account_overrides,omitempty"`
 	// PortfolioOverrides is the portfolio-grain counterpart of
@@ -47,8 +48,9 @@ type Config struct {
 	// account whose `portfolio_external_id` matches — useful when
 	// a whole CT portfolio sits inside an IRA / trust / Stiftung
 	// wrapper and stamping the tax_wrapper on every wallet
-	// individually would be churn. Per-account overrides still win
-	// over portfolio overrides on the same column.
+	// individually would be churn, or when a whole portfolio should
+	// not be in gold at all (PortfolioOverride.Exclude). Per-account
+	// overrides still win over portfolio overrides on the same column.
 	PortfolioOverrides map[string]map[string]PortfolioOverride `json:"portfolio_overrides,omitempty"`
 	// InstrumentOverrides pins the `asset_class` of individual
 	// instruments, for holdings the adapters' structured signals
@@ -305,6 +307,21 @@ type AccountOverride struct {
 	Category        string `json:"category,omitempty"`
 	TaxWrapper      string `json:"tax_wrapper,omitempty"`
 	ManagementStyle string `json:"management_style,omitempty"`
+	// Exclude drops the account from gold entirely — the dimension
+	// row and every fact keyed to it, swept once the load's streams
+	// have drained. It is for an account a collector enumerates
+	// but the relationship does not hold: a provider whose UI lists
+	// its whole product menu per login reports the products the
+	// holder never opened alongside the ones they did, and the
+	// scraper cannot tell them apart. Such an account reaches gold
+	// as a real account that happens to be empty, which is exactly
+	// how a real account the provider under-reports also looks.
+	//
+	// The distinction is the holder's to make, never the loader's,
+	// so nothing here infers it from emptiness. Excluding an account
+	// that does hold something removes that money from every total,
+	// which is why the load prints what each exclusion dropped.
+	Exclude bool `json:"exclude,omitempty"`
 }
 
 // PortfolioOverride is one per-portfolio override entry. Applies
@@ -320,6 +337,18 @@ type AccountOverride struct {
 // can be added here if a use case emerges.
 type PortfolioOverride struct {
 	TaxWrapper string `json:"tax_wrapper,omitempty"`
+	// Exclude drops the portfolio and every account inside it — the
+	// portfolio's own dimension row, each account's, and every fact
+	// keyed to those accounts. It is the portfolio-grain form of
+	// AccountOverride.Exclude: a provider login can carry a whole
+	// relationship the holder does not own, and naming its accounts
+	// one by one is a roster to maintain that the provider can
+	// silently add to.
+	//
+	// Returns-only exclusion is a different instrument: returns_exclude
+	// keeps the money in net worth and removes it from the coarse-grain
+	// return math, where this removes it from gold entirely.
+	Exclude bool `json:"exclude,omitempty"`
 }
 
 // InstrumentOverride is one per-instrument override entry, validated

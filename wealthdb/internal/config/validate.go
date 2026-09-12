@@ -131,10 +131,16 @@ func (c *Config) Validate() error {
 			if portfolioID == "" {
 				return fmt.Errorf("config: portfolio_overrides[%q]: empty portfolio_external_id key", sourceID)
 			}
-			if ov.TaxWrapper == "" {
-				return fmt.Errorf("config: portfolio_overrides[%q][%q]: tax_wrapper must be set", sourceID, portfolioID)
+			if ov.TaxWrapper == "" && !ov.Exclude {
+				return fmt.Errorf("config: portfolio_overrides[%q][%q]: tax_wrapper or exclude must be set", sourceID, portfolioID)
 			}
-			if !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
+			// Same contradiction the account grain refuses: the rows a
+			// wrapper would be stamped on are the rows the exclusion
+			// removes.
+			if ov.Exclude && ov.TaxWrapper != "" {
+				return fmt.Errorf("config: portfolio_overrides[%q][%q]: exclude cannot be combined with tax_wrapper — the portfolio is dropped, so there is no row to stamp", sourceID, portfolioID)
+			}
+			if ov.TaxWrapper != "" && !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
 				return fmt.Errorf("config: portfolio_overrides[%q][%q]: invalid tax_wrapper %q", sourceID, portfolioID, ov.TaxWrapper)
 			}
 		}
@@ -154,8 +160,17 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("config: account_overrides[%q]: empty account_external_id key", sourceID)
 			}
 			if ov.Nickname == "" && ov.Category == "" &&
-				ov.TaxWrapper == "" && ov.ManagementStyle == "" {
-				return fmt.Errorf("config: account_overrides[%q][%q]: at least one of nickname, category, tax_wrapper, or management_style must be set", sourceID, acctID)
+				ov.TaxWrapper == "" && ov.ManagementStyle == "" && !ov.Exclude {
+				return fmt.Errorf("config: account_overrides[%q][%q]: at least one of nickname, category, tax_wrapper, management_style, or exclude must be set", sourceID, acctID)
+			}
+			// Excluding an account and stamping a column on it are
+			// contradictory instructions: the row the column would go
+			// on is the row the exclusion removes. Refused rather than
+			// silently resolved, because either half could be the one
+			// that was meant.
+			if ov.Exclude && (ov.Nickname != "" || ov.Category != "" ||
+				ov.TaxWrapper != "" || ov.ManagementStyle != "") {
+				return fmt.Errorf("config: account_overrides[%q][%q]: exclude cannot be combined with a column override — the account is dropped, so there is no row to stamp", sourceID, acctID)
 			}
 			if ov.TaxWrapper != "" && !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
 				return fmt.Errorf("config: account_overrides[%q][%q]: invalid tax_wrapper %q", sourceID, acctID, ov.TaxWrapper)

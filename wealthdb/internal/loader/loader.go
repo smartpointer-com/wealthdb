@@ -10,6 +10,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -67,6 +70,10 @@ type AccountOverride struct {
 	Category        string
 	TaxWrapper      string
 	ManagementStyle string
+	// Exclude drops the account and every fact keyed to it. See the
+	// config package's AccountOverride for what it is for and why
+	// nothing infers it.
+	Exclude bool
 }
 
 // PortfolioOverride is the loader's view of one config-file
@@ -74,6 +81,9 @@ type AccountOverride struct {
 // wired through today; empty = no override.
 type PortfolioOverride struct {
 	TaxWrapper string
+	// Exclude drops the portfolio and every account inside it. See
+	// the config package's PortfolioOverride for what it is for.
+	Exclude bool
 }
 
 // InstrumentOverride is the loader's view of one config-file
@@ -204,6 +214,14 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 			return nil, fmt.Errorf("Load(%s): apply transactions: %w", spec.ID, err)
 		}
 		res.TransactionsLoaded = nTx
+
+		// Excluded accounts and portfolios are swept once both streams
+		// have drained — see deleteExcluded for why that is the only
+		// point at which the sweep can see what it has to remove.
+		if err := deleteExcluded(ctx, tx, spec.ID,
+			configExclusions(spec.Overrides, spec.PortfolioOverrides)); err != nil {
+			return nil, fmt.Errorf("Load(%s): %w", spec.ID, err)
+		}
 
 		// Inject the optional equity-transfer ledger as canonical transfer
 		// transactions, replacing this source's prior ledger rows. The
@@ -445,6 +463,133 @@ func stampTransactionBatch(b *canonical.TransactionBatch, sourceID string) {
 	for i := range b.Transactions {
 		b.Transactions[i].SilverSourceID = sourceID
 	}
+}
+
+// exclusions is what the config removes from gold for one source:
+// accounts named outright (config.AccountOverride.Exclude) and whole
+// portfolios (config.PortfolioOverride.Exclude), whose member accounts
+// the data names rather than the config.
+type exclusions struct {
+	accounts   []string
+	portfolios []string
+}
+
+func (e exclusions) empty() bool { return len(e.accounts) == 0 && len(e.portfolios) == 0 }
+
+// configExclusions collects both grains, sorted so the SQL the sweep
+// builds is stable across runs (Go map order is not).
+func configExclusions(accounts map[string]AccountOverride, portfolios map[string]PortfolioOverride) exclusions {
+	var e exclusions
+	for id, ov := range accounts {
+		if ov.Exclude {
+			e.accounts = append(e.accounts, id)
+		}
+	}
+	for id, ov := range portfolios {
+		if ov.Exclude {
+			e.portfolios = append(e.portfolios, id)
+		}
+	}
+	sort.Strings(e.accounts)
+	sort.Strings(e.portfolios)
+	return e
+}
+
+// deleteExcluded removes an excluded account or portfolio from gold —
+// the dimension rows and every fact keyed to them — and logs what went.
+//
+// It sweeps gold after the streams have drained rather than filtering
+// them, and both grains do, because neither is decidable earlier. A
+// portfolio's membership lives in the account dimension: a position, a
+// cash balance and a transaction each name an account and never a
+// portfolio, and an adapter may emit its facts before the dimension
+// rows that would place them. An account is decidable per row, but a
+// filter reaches only the rows this load happens to write — an account
+// already in gold when the exclusion is added would sit there
+// untouched, since gold's dimensions are upserted and never expire.
+// Sweeping covers both, and covers the grains identically.
+//
+// The dimension and its facts must go together: a fact whose account
+// gold has no record of is an orphan, outside every account-scoped
+// filter and attached to no portfolio — the state this mechanism exists
+// to remove, not to create. So order is load-bearing: a portfolio's
+// facts are found THROUGH the accounts table and the accounts must
+// still be there when they are deleted, and the portfolio row goes
+// last.
+func deleteExcluded(ctx context.Context, tx *sql.Tx, sourceID string, e exclusions) error {
+	if e.empty() {
+		return nil
+	}
+	// Two predicates over the same column: accounts named by the
+	// config, and accounts the data places inside an excluded
+	// portfolio. Either may be empty, so each is contributed only when
+	// it has ids behind it — an `IN ()` is a syntax error, and an
+	// always-false stand-in would read as a deliberate no-op.
+	var terms []string
+	args := []any{sourceID}
+	if len(e.accounts) > 0 {
+		terms = append(terms, "account_external_id IN ("+placeholders(len(e.accounts))+")")
+		args = append(args, ids(e.accounts)...)
+	}
+	if len(e.portfolios) > 0 {
+		terms = append(terms, `account_external_id IN (
+                   SELECT account_external_id FROM accounts
+                    WHERE silver_source_id = ?
+                      AND portfolio_external_id IN (`+placeholders(len(e.portfolios))+`))`)
+		args = append(args, sourceID)
+		args = append(args, ids(e.portfolios)...)
+	}
+	factWhere := "silver_source_id = ? AND (" + strings.Join(terms, " OR ") + ")"
+
+	total := 0
+	exec := func(q string, a ...any) error {
+		res, err := tx.ExecContext(ctx, q, a...)
+		if err != nil {
+			return err
+		}
+		// A driver that cannot count leaves the log short rather than
+		// failing a load over a number nothing reads back.
+		if n, err := res.RowsAffected(); err == nil {
+			total += int(n)
+		}
+		return nil
+	}
+
+	for _, table := range []string{"positions", "cash_balances", "transactions"} {
+		if err := exec("DELETE FROM "+table+" WHERE "+factWhere, args...); err != nil {
+			return fmt.Errorf("delete excluded from %s: %w", table, err)
+		}
+	}
+	if err := exec("DELETE FROM accounts WHERE "+factWhere, args...); err != nil {
+		return fmt.Errorf("delete excluded accounts: %w", err)
+	}
+	if len(e.portfolios) > 0 {
+		pfArgs := append([]any{sourceID}, ids(e.portfolios)...)
+		if err := exec(`DELETE FROM portfolios
+             WHERE silver_source_id = ? AND portfolio_external_id IN (`+
+			placeholders(len(e.portfolios))+`)`, pfArgs...); err != nil {
+			return fmt.Errorf("delete excluded portfolios: %w", err)
+		}
+	}
+	if total > 0 {
+		log.Printf("%s loader: dropped %d row(s) on %d excluded account(s) and %d excluded portfolio(s) (account_overrides / portfolio_overrides)",
+			sourceID, total, len(e.accounts), len(e.portfolios))
+	}
+	return nil
+}
+
+// placeholders is `?, ?, …` for an IN list of n ids.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+}
+
+// ids widens a string slice to the `any` slice ExecContext takes.
+func ids(in []string) []any {
+	out := make([]any, len(in))
+	for i, v := range in {
+		out[i] = v
+	}
+	return out
 }
 
 // applyPortfolioOverrides patches each AccountChange whose

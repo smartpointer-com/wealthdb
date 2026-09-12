@@ -500,3 +500,104 @@ func TestListSourceIDs(t *testing.T) {
 		t.Errorf("ListSourceIDs = %v, want [schwab-test]", got)
 	}
 }
+
+// TestLoadSweepsBothExclusionGrains is the WIRING test: it drives a real
+// Load and asserts gold afterwards. Every other exclusion test calls the
+// sweep directly, so without this one the feature could be unwired from
+// Load entirely and the suite would stay green.
+//
+// It also pins the half a stream filter cannot reach. `PRIOR` and its
+// portfolio are already in gold before the load — the state after a
+// config change — and gold's dimensions are upserted, never expired, so
+// only a sweep removes them.
+func TestLoadSweepsBothExclusionGrains(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.gold.Exec(`
+        INSERT INTO portfolios(silver_source_id, portfolio_external_id, first_seen_at, last_seen_at)
+            VALUES ('schwab-test', 'PF_DROP', 1000, 2000);
+        INSERT INTO accounts(silver_source_id, account_external_id, account_kind,
+                             portfolio_external_id, first_seen_at, last_seen_at)
+            VALUES ('schwab-test', 'PRIOR', 'brokerage', 'PF_DROP', 1000, 2000);
+        INSERT INTO transactions(silver_source_id, transaction_external_id, occurred_at,
+                                 account_external_id, kind, currency)
+            VALUES ('schwab-test', 'PRIOR_T', 1000, 'PRIOR', 'buy', 'USD');
+    `); err != nil {
+		t.Fatalf("seed prior gold state: %v", err)
+	}
+
+	h.silverExec(t, `
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (1000, 'KEEP', '{"hashValue":"KEEP"}'),
+            (1000, 'DROP', '{"hashValue":"DROP"}');
+        INSERT INTO account_balances(snapshot_at, account_external_id, balance_kind, payload) VALUES
+            (1000, 'KEEP', 'current', '{"cashBalance":500.00}'),
+            (1000, 'DROP', 'current', '{"cashBalance":11.00}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, payload) VALUES
+            ('A1', 900, 'KEEP', 'TRADE', '{"netAmount":-1505.00}'),
+            ('A2', 900, 'DROP', 'TRADE', '{"netAmount":-150.00}');
+    `)
+
+	if _, err := h.loader.Load(context.Background(), loader.SourceSpec{
+		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
+		Overrides:          map[string]loader.AccountOverride{"DROP": {Exclude: true}},
+		PortfolioOverrides: map[string]loader.PortfolioOverride{"PF_DROP": {Exclude: true}},
+	}); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// The account this load wrote, and the account that was already
+	// there, are both gone — with their facts and the portfolio.
+	if got := h.goldScalar(t, `SELECT account_external_id FROM accounts`); got != "KEEP" {
+		t.Errorf("accounts kept %q, want KEEP alone", got)
+	}
+	if n := h.goldCount(t, "portfolios"); n != 0 {
+		t.Errorf("portfolios = %d, want the excluded one swept", n)
+	}
+	if got := h.goldScalar(t, `SELECT transaction_external_id FROM transactions`); got != "A1" {
+		t.Errorf("transactions kept %q, want the kept account's alone", got)
+	}
+	if n := h.goldCount(t, "cash_balances"); n != 1 {
+		t.Errorf("cash_balances = %d, want the kept account's alone", n)
+	}
+}
+
+// TestExcludingNothingChangesNothing is the control: the filter is
+// reached on every load of every source, so it has to be inert when no
+// account is excluded.
+func TestExcludingNothingChangesNothing(t *testing.T) {
+	h := newHarness(t)
+
+	h.silverExec(t, `
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (1000, 'ACC1', '{"hashValue":"ACC1"}');
+        INSERT INTO account_balances(snapshot_at, account_external_id, balance_kind, payload) VALUES
+            (1000, 'ACC1', 'current', '{"cashBalance":500.00}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, payload) VALUES
+            ('A1', 900, 'ACC1', 'TRADE', '{"netAmount":-1505.00}');
+    `)
+
+	if _, err := h.loader.Load(context.Background(), loader.SourceSpec{
+		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
+		Overrides: map[string]loader.AccountOverride{
+			// Present but not excluding, and an exclusion for an
+			// account this source does not have.
+			"ACC1":   {Nickname: "Main brokerage"},
+			"ABSENT": {Exclude: true},
+		},
+	}); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if n := h.goldCount(t, "accounts"); n != 1 {
+		t.Errorf("accounts = %d, want 1", n)
+	}
+	if n := h.goldCount(t, "transactions"); n != 1 {
+		t.Errorf("transactions = %d, want 1", n)
+	}
+	if got := h.goldScalar(t, `SELECT COALESCE(nickname,'') FROM accounts`); got != "Main brokerage" {
+		t.Errorf("nickname = %q — a non-excluding entry must still override", got)
+	}
+}

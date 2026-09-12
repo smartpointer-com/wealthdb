@@ -713,8 +713,8 @@ Example config file:
 | `silver_sources[].relationships[].web_id` | string | Optional. Web silver's `banking_relationship_id` (opaque SPA token, or `account_number_prefix` fallback). |
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
-| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings. See §13.9; all four inner fields are optional but at least one must be set per entry. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
-| `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts only `tax_wrapper` (required — unlike `account_overrides`, which also takes nickname / category / management_style); a per-account `tax_wrapper` override still wins over a portfolio one. See §13.9. |
+| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.9). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
+| `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.9. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
@@ -3017,6 +3017,54 @@ own values, so the override takes precedence on overlap. This
 is the path for sharpening accounts the adapter can't classify
 on its own (e.g. a Schwab IRA whose wrapper isn't reachable
 from any silver-side field).
+
+The same block can drop an account outright: `"exclude": true`
+removes the dimension row **and every fact keyed to it** — positions,
+cash balances and transactions alike. The two must go together,
+because a fact whose account gold has no record of is an orphan: it
+sits outside every account-scoped filter and belongs to no portfolio.
+`portfolio_overrides` takes the same flag at its own grain, dropping
+the portfolio's dimension row and every account inside it with their
+facts.
+
+This is for an account or a relationship a collector enumerates but
+the holder does not hold. A provider whose UI lists its whole product
+menu per login reports the products the holder never opened beside the
+ones they did, and the scraper cannot tell them apart; such an account
+reaches gold as a real account that happens to be empty, which is
+exactly how a real account the provider under-reports also looks. The
+distinction is the holder's to make and nothing infers it from
+emptiness: a provider can report nothing for an account that is not
+empty, so an emptiness rule would drop real holdings on exactly the
+sources that report them worst. Excluding an account that does hold
+something removes that money from every total, so each load prints
+what its exclusions dropped. `exclude` may not be combined with a
+column override on the same entry: the row the column would be stamped
+on is the row the exclusion removes, and config-load refuses the
+contradiction rather than picking a winner.
+
+Both grains are enforced the same way, as a sweep over gold once the
+streams have drained (`deleteExcluded`), rather than as a filter over
+the incoming rows. Neither grain is decidable earlier. A portfolio's
+membership lives in the account dimension — a position, a cash balance
+and a transaction each name an account and never a portfolio, and an
+adapter may emit its facts before the dimension rows that would place
+them. An account is decidable per row, but a filter reaches only the
+rows a load happens to write, and gold's dimensions are upserted and
+never expire: an account already in gold when the exclusion is added
+would sit there untouched. The sweep finds a portfolio's facts
+*through* the accounts table, so it deletes facts first, then the
+accounts, then the portfolio row — the other order would strand
+everything behind the accounts it deleted.
+
+Like every other override in this block, an exclusion reaches the rows
+a load actually touches: a load with no new silver changes nothing, and
+`wealthdb reload <source>` is what re-applies config against history.
+
+`returns_exclude` (§5.5) is the neighbouring instrument and a different
+one: it keeps the money in net worth and removes it from the
+coarse-grain return math, where `exclude` here removes it from gold
+entirely.
 
 The instrument dimension has the same escape hatch:
 `instrument_overrides`, keyed by `(silver_source_id,
