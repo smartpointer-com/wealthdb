@@ -253,13 +253,21 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 // lot is one cap-table security line inside a company position's payload — a
 // tax lot (a share certificate or option grant) of the aggregated holding.
 type lot struct {
-	SecurityType  string   `json:"security_type"`
-	SecurityID    int64    `json:"security_id"`
-	Label         string   `json:"label,omitempty"`
-	Quantity      *float64 `json:"quantity,omitempty"`
-	Cost          *float64 `json:"cost,omitempty"`
-	MarketValue   *float64 `json:"market_value,omitempty"`
-	IssueDate     string   `json:"issue_date,omitempty"`
+	SecurityType string   `json:"security_type"`
+	SecurityID   int64    `json:"security_id"`
+	Label        string   `json:"label,omitempty"`
+	Quantity     *float64 `json:"quantity,omitempty"`
+	Cost         *float64 `json:"cost,omitempty"`
+	MarketValue  *float64 `json:"market_value,omitempty"`
+	IssueDate    string   `json:"issue_date,omitempty"`
+	// AcquiredOn is the date the holder ACQUIRED the lot, which is not
+	// the date the certificate carries. A certificate is re-issued
+	// whenever the holding is restructured — a transfer, a stock
+	// split, a conversion — and the new one is dated to the re-issue
+	// while the shares behind it are the same shares. Carta states
+	// the acquisition date separately, and it can precede the
+	// platform's own coverage.
+	AcquiredOn    string   `json:"acquired_on,omitempty"`
 	ExercisePrice *float64 `json:"exercise_price,omitempty"`
 }
 
@@ -275,7 +283,8 @@ func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string,
 	const q = `
 SELECT entity_external_id, security_type, security_external_id,
        COALESCE(currency, 'USD'), quantity, cost, market_value,
-       COALESCE(label, ''), COALESCE(issue_date, ''), exercise_price
+       COALESCE(label, ''), COALESCE(issue_date, ''), exercise_price,
+       COALESCE(json_extract(payload, '$.original_acquisition_date'), '')
   FROM securities s
  WHERE position_status = 'held'
    AND snapshot_at = (SELECT MAX(snapshot_at) FROM securities s2
@@ -296,18 +305,20 @@ SELECT entity_external_id, security_type, security_external_id,
 		hasShareQty, hasMV, hasCost bool
 		hasEquity                   bool // any non-convertible lot (share/option/…)
 		hasStockLike                bool // any real share-settled lot (share/rsu/rsa/piu/equity_grant)
+		acquiredUnix                int64
+		hasAcquired                 bool
 		lots                        []lot
 	}
 	aggs := make(map[int64]*agg)
 	var order []int64
 	for rows.Next() {
 		var (
-			entityID, secID            int64
-			secType, ccy, label, isDt  string
-			quantity, cost, mv, strike sql.NullFloat64
+			entityID, secID                   int64
+			secType, ccy, label, isDt, acqStr string
+			quantity, cost, mv, strike        sql.NullFloat64
 		)
 		if err := rows.Scan(&entityID, &secType, &secID, &ccy,
-			&quantity, &cost, &mv, &label, &isDt, &strike); err != nil {
+			&quantity, &cost, &mv, &label, &isDt, &strike, &acqStr); err != nil {
 			return err
 		}
 		a := aggs[entityID]
@@ -334,7 +345,15 @@ SELECT entity_external_id, security_type, security_external_id,
 			a.cost += cost.Float64
 			a.hasCost = true
 		}
-		l := lot{SecurityType: secType, SecurityID: secID, Label: label, IssueDate: isDt}
+		l := lot{SecurityType: secType, SecurityID: secID, Label: label,
+			IssueDate: isDt, AcquiredOn: acqStr}
+		// The holding's acquisition date is the EARLIEST its held lots
+		// carry. A position here aggregates a company's whole cap-table
+		// line, so any later lot's date would say the oldest shares were
+		// acquired more recently than they were.
+		if acq, ok := flowDateUnix(acqStr); ok && (!a.hasAcquired || acq < a.acquiredUnix) {
+			a.acquiredUnix, a.hasAcquired = acq, true
+		}
 		if quantity.Valid {
 			v := quantity.Float64
 			l.Quantity = &v
@@ -388,6 +407,10 @@ SELECT entity_external_id, security_type, security_external_id,
 		if a.hasCost {
 			d := canonical.Decimal(decimal.NewFromFloat(a.cost))
 			change.BookValue = &d
+		}
+		if a.hasAcquired {
+			change.AcquisitionDate = silver.DatePtrFromNullUnix(
+				sql.NullInt64{Int64: a.acquiredUnix, Valid: true})
 		}
 		batch.Positions = append(batch.Positions, change)
 		active[eid] = a.ccy

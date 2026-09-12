@@ -115,8 +115,19 @@ see §6):
   valuation override when present, else the Carta-derived basis — see the
   collector `DESIGN.md` §5.1); options 0.
 - `book_value` = Σ every held lot's `cost` (the cost basis).
+- `acquisition_date` = the EARLIEST acquisition date the held lots carry.
+  Carta states it per lot as `original_acquisition_date`, which is not the
+  certificate's issue date: a certificate is re-issued whenever the holding
+  is restructured — a transfer, a split, a conversion — and the new one
+  is dated to the re-issue while the shares behind it are the same shares,
+  so the acquisition date can precede the platform's own coverage. A
+  position aggregates a company's whole cap-table line, so any later lot's
+  date would claim the oldest shares were acquired more recently than they
+  were. Lots that state none (a convertible, say) contribute nothing, and a
+  position whose lots all state none carries no date.
 - The per-lot detail (label, `security_type`, quantity, cost, market_value,
-  issue date, strike) rides in the position payload under `lots`.
+  issue date, acquisition date, strike) rides in the position payload under
+  `lots`.
 
 **Fund LP** (one position per held `fund_metrics` row → (`private_equity`,
 `fund`)):

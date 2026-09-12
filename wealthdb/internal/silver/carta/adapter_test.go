@@ -610,3 +610,65 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 		t.Errorf("marker account = %q, want the custody account", marker.Accounts[0].AccountExternalID)
 	}
 }
+
+// TestAPositionIsDatedToTheEarliestLotTheHolderAcquired: a certificate
+// is re-issued whenever the holding is restructured — a transfer, a
+// split, a conversion — and the new one is dated to the re-issue while
+// the shares behind it are the same shares. Carta states the
+// acquisition date separately (`original_acquisition_date`), and it can
+// precede the platform's own coverage; read from the certificate
+// instead, the holding would look younger than it is.
+//
+// A position here aggregates a company's whole cap-table line, so the
+// date it carries is the EARLIEST its held lots do. Every value below
+// is invented.
+func TestAPositionIsDatedToTheEarliestLotTheHolderAcquired(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
+    VALUES (1700000000, 3, 'run', 'IND1', '{}');
+INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload)
+    VALUES (1700000000, 100, 'IND1', 0, 'Fake Equity No1', '{}');
+INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
+    quantity, cost, market_value, position_status, currency, issue_date, payload) VALUES
+    (1700000000, 100, 'share', 1, 1000, 10, 5000, 'held', '$', '01/02/2098',
+     '{"original_acquisition_date": "03/04/2097"}'),
+    (1700000000, 100, 'share', 2,  500,  5, 2500, 'held', '$', '01/02/2098',
+     '{"original_acquisition_date": "05/06/2098"}'),
+    (1700000000, 100, 'share', 3,  100,  1,  500, 'held', '$', '01/02/2098', '{}');
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var pos []canonical.PositionChange
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos = append(pos, b.Positions...)
+		if !more {
+			break
+		}
+	}
+	if len(pos) != 1 {
+		t.Fatalf("positions = %d, want the one aggregated cap-table line", len(pos))
+	}
+	got := pos[0].AcquisitionDate
+	if got == nil {
+		t.Fatal("position carries no acquisition date")
+	}
+	want := time.Date(2097, 3, 4, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("acquisition date = %s, want the earliest lot's %s (not the certificate's issue date)",
+			got.Format("2006-01-02"), want.Format("2006-01-02"))
+	}
+}
