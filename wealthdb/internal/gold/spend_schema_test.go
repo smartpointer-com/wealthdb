@@ -9,17 +9,21 @@ import (
 )
 
 // TestSpendCategoriesMatchGoTable is the generator-style pin between
-// the seeded spend_categories dimension (migrations 0040, 0045-0047)
-// and canonical.SpendCategories. The Go table is the source those
-// seeds were generated from; if either side is edited alone — a
-// taxonomy refresh that skips the migration, or a hand-edit of the SQL
-// — this fails rather than letting gold and the enrichment pass
-// disagree about what a valid category is.
+// the seeded spend_categories dimension (migrations 0040, 0045-0047,
+// 0056, 0065, 0069) and canonical.SpendCategories. The Go table is the
+// source those seeds were generated from; if either side is edited
+// alone — a taxonomy refresh that skips the migration, or a hand-edit
+// of the SQL — this fails rather than letting gold and the enrichment
+// pass disagree about what a valid category is.
+//
+// The family column is compared with the rest: it is what the two
+// vocabularies are told apart by, and a row seeded into the wrong one
+// would be admitted by the wrong rules, pins and conversation.
 func TestSpendCategoriesMatchGoTable(t *testing.T) {
 	db, ctx := openMigrated(t)
 
 	rows, err := db.QueryContext(ctx,
-		`SELECT spend_primary, spend_detailed, description FROM spend_categories`)
+		`SELECT spend_primary, spend_detailed, description, family FROM spend_categories`)
 	if err != nil {
 		t.Fatalf("read spend_categories: %v", err)
 	}
@@ -28,9 +32,14 @@ func TestSpendCategoriesMatchGoTable(t *testing.T) {
 	seeded := map[string]canonical.SpendCategory{}
 	for rows.Next() {
 		var c canonical.SpendCategory
-		if err := rows.Scan(&c.Primary, &c.Detailed, &c.Description); err != nil {
+		var family sql.NullString
+		if err := rows.Scan(&c.Primary, &c.Detailed, &c.Description, &family); err != nil {
 			t.Fatalf("scan spend_categories: %v", err)
 		}
+		if !family.Valid {
+			t.Errorf("%s has no family; it belongs to neither vocabulary", c.Detailed)
+		}
+		c.Family = canonical.Family(family.String)
 		seeded[c.Detailed] = c
 	}
 	if err := rows.Err(); err != nil {
@@ -944,9 +953,16 @@ func TestMigration0058DDLIsRerunnable(t *testing.T) {
 }
 
 // TestSpendCategoryCatchAllMatchesGoTable pins the seeded catch-all flag
-// to canonical.CatchAllSpendDetailed. The rule is expressed twice — once
-// in Go for the enrichment pass, once in SQL for the seed — and this is
-// what stops the two drifting.
+// to the Go predicates. The rule is expressed twice — once in Go for the
+// enrichment pass, once in SQL for the seed — and this is what stops the
+// two drifting.
+//
+// The seed reads a value's own spelling and knows nothing of families,
+// while Go asks the question inside one vocabulary: a row is a catch-all
+// if it is its own family's. That is the same rule read from two places,
+// and the OR below is where they meet — no value is a catch-all in one
+// family and an ordinary value in the other, because no value is in both
+// unless it is a delta, and a delta is never one.
 func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	rows, err := db.QueryContext(ctx,
@@ -970,15 +986,127 @@ func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
 		if flag.Bool {
 			flagged++
 		}
-		if want := canonical.CatchAllSpendDetailed(det); flag.Bool != want {
+		want := canonical.CatchAllSpendDetailed(det) || canonical.CatchAllIncomeDetailed(det)
+		if flag.Bool != want {
 			t.Errorf("%s catch_all = %v, want %v", det, flag.Bool, want)
 		}
 	}
 	if seen != len(canonical.SpendCategories) {
-		t.Errorf("flagged %d rows, want %d", seen, len(canonical.SpendCategories))
+		t.Errorf("checked %d rows, want %d", seen, len(canonical.SpendCategories))
 	}
 	if flagged == 0 {
 		t.Error("no value is a catch-all; the seed is not doing anything")
+	}
+}
+
+// TestMigration0069DDLIsRerunnable holds the income seed to the replay
+// bar and, in doing so, pins the three things that migration decides.
+//
+// The family of every row: a value seeded before 0069 is spending's, a
+// value seeded by it is income's, and the three deltas both families
+// read are 'both'. The catch-all flag, which nothing set by hand — the
+// twenty rows 0069 adds would carry none at all, 0060's UPDATE having
+// run once at version 60, and the re-issued rule is what gives them
+// one and marks income's single catch-all. And that a replay neither
+// duplicates a row nor changes a family.
+//
+// What it does NOT pin is the NULL guard on the blanket family stamp:
+// this migration re-asserts its own rows a few statements later, so
+// removing the guard leaves every assertion here green. The guard is
+// for rows it does not re-assert, and
+// TestMigration0069LeavesALaterFamilyStampAlone is what holds it.
+func TestMigration0069DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	rerunMigrationDDL(t, db, ctx, "0069_income_taxonomy.sql")
+
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM spend_categories`).Scan(&n); err != nil {
+		t.Fatalf("count spend_categories: %v", err)
+	}
+	if n != len(canonical.SpendCategories) {
+		t.Errorf("spend_categories = %d rows after re-run, want %d", n, len(canonical.SpendCategories))
+	}
+
+	for _, tc := range []struct{ detailed, family, label string }{
+		{"FOOD_AND_DRINK_GROCERIES", "spending", "Groceries"},
+		{canonical.SpendDetailedCardSpend, "spending", "Uncategorized card spend"},
+		{"INCOME_WAGES", "income", "Wages"},
+		{canonical.IncomeDetailedCapitalReturn, "income", "Capital return"},
+		{canonical.SpendDetailedInternalTransfer, "both", "Internal transfer"},
+		{canonical.SpendDetailedGift, "both", "Gift"},
+		{canonical.SpendDetailedOther, "both", "Other"},
+	} {
+		var family, label string
+		if err := db.QueryRowContext(ctx,
+			`SELECT family, label FROM spend_categories WHERE spend_detailed = ?`,
+			tc.detailed).Scan(&family, &label); err != nil {
+			t.Errorf("read %s after re-run: %v", tc.detailed, err)
+			continue
+		}
+		if family != tc.family {
+			t.Errorf("%s family = %q after a re-run, want %q", tc.detailed, family, tc.family)
+		}
+		if label != tc.label {
+			t.Errorf("%s label = %q after a re-run, want %q", tc.detailed, label, tc.label)
+		}
+	}
+
+	var catchAlls []string
+	rows, err := db.QueryContext(ctx,
+		`SELECT spend_detailed FROM spend_categories WHERE family = 'income' AND catch_all ORDER BY 1`)
+	if err != nil {
+		t.Fatalf("read income catch-alls: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var det string
+		if err := rows.Scan(&det); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		catchAlls = append(catchAlls, det)
+	}
+	if len(catchAlls) != 1 || catchAlls[0] != "INCOME_OTHER_INCOME" {
+		t.Errorf("income catch-alls = %v, want [INCOME_OTHER_INCOME]", catchAlls)
+	}
+}
+
+// TestMigration0069LeavesALaterFamilyStampAlone pins the one thing in
+// 0069 nothing else can reach: the `WHERE family IS NULL` guard on the
+// blanket 'spending' stamp.
+//
+// The guard is idle for the rows 0069 seeds itself — the INSERTs below
+// it re-assert their family in the same script — so every other
+// assertion about this migration stays green without it. What it
+// protects is a row a LATER migration seeds into a family of its own,
+// which 0069 knows nothing about and cannot restore. A replay against a
+// database holding one is exactly what the rerun tests do, and an
+// unguarded stamp would demote it to spending silently.
+//
+// The stand-in row is synthetic and local to this database: the point is
+// the stamp, not the value.
+func TestMigration0069LeavesALaterFamilyStampAlone(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	const later = "INCOME_EXAMPLE_LATER_VALUE"
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO spend_categories
+    (spend_primary, spend_detailed, description, label, primary_label, catch_all, family)
+VALUES ('INCOME', ?, 'A value a later migration seeds', 'Example later value', 'Income', FALSE, 'income')`,
+		later); err != nil {
+		t.Fatalf("seed a later value: %v", err)
+	}
+
+	rerunMigrationDDL(t, db, ctx, "0069_income_taxonomy.sql")
+
+	var family string
+	if err := db.QueryRowContext(ctx,
+		`SELECT family FROM spend_categories WHERE spend_detailed = ?`, later).Scan(&family); err != nil {
+		t.Fatalf("read %s after re-run: %v", later, err)
+	}
+	if family != "income" {
+		t.Errorf("%s family = %q after a 0069 replay, want %q: the blanket stamp must skip a row that already has one",
+			later, family, "income")
 	}
 }
 
