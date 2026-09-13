@@ -535,7 +535,6 @@ func seedSpendingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
                                   account_external_id, kind, currency, net_amount) VALUES
             ('test-src', 'T-PURCHASE',   1000, 'CARD1', 'purchase',   'USD',  -50),
             ('test-src', 'T-REFUND',     1000, 'CARD1', 'refund',     'USD',   20),
-            ('test-src', 'T-REWARD',     1000, 'CARD1', 'reward',     'USD',    3),
             ('test-src', 'T-FEE',        1000, 'CARD1', 'fee',        'USD',   -5),
             ('test-src', 'T-TAX',        1000, 'CASH1', 'tax',        'USD',   -7),
             ('test-src', 'T-WITHDRAWAL', 1000, 'CASH1', 'withdrawal', 'USD', -200),
@@ -543,7 +542,9 @@ func seedSpendingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             -- credited interest is income.
             ('test-src', 'T-INT-NEG',    1000, 'CARD1', 'interest',   'USD',  -10),
             ('test-src', 'T-INT-POS',    1000, 'CASH1', 'interest',   'USD',    5),
-            -- income side, and the unsigned catch-all kind.
+            -- income side, and the unsigned catch-all kind. The reward
+            -- kind joined them in migration 0070.
+            ('test-src', 'T-REWARD',     1000, 'CARD1', 'reward',     'USD',    3),
             ('test-src', 'T-DEPOSIT',    1000, 'CASH1', 'deposit',    'USD',  100),
             ('test-src', 'T-OTHER',      1000, 'CASH1', 'other',      'USD',  -30),
             -- account scope.
@@ -635,7 +636,6 @@ func TestSpendingLinesBasePopulation(t *testing.T) {
 	want := map[string]string{
 		"T-PURCHASE":    "purchase is spend",
 		"T-REFUND":      "a refund offsets spend and belongs to the same population",
-		"T-REWARD":      "a rewards credit offsets card spend",
 		"T-FEE":         "fee is spend",
 		"T-TAX":         "tax is spend",
 		"T-WITHDRAWAL":  "withdrawal is spend",
@@ -649,6 +649,7 @@ func TestSpendingLinesBasePopulation(t *testing.T) {
 		"T-BRK":         "a brokerage account spends too — one product can be a brokerage and a chequing account at once (migration 0064)",
 	}
 	excluded := map[string]string{
+		"T-REWARD":     "a rewards credit is income, never netted against the spending that earned it (migration 0070)",
 		"T-INT-POS":    "positive interest is income",
 		"T-DEPOSIT":    "deposit is income",
 		"T-OTHER":      "the `other` kind carries no reliable sign",
@@ -767,6 +768,7 @@ func TestSpendPopulationLayering(t *testing.T) {
 
 	// The kind and scope rules the population shares with the base.
 	for id, why := range map[string]string{
+		"T-REWARD":  "a rewards credit is income (migration 0070)",
 		"T-DEPOSIT": "deposit is income",
 		"T-INT-POS": "credited interest is income",
 		"T-OTHER":   "the `other` kind carries no reliable sign",
