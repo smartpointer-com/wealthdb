@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
@@ -107,14 +108,14 @@ load semantics.`)
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "load: warning: could not stamp FX priorities: %s\n", err.Error())
 	}
-	if err := runSpendingPass(ctx, db, cfg, stdout); err != nil {
+	if err := runEnrichmentPass(ctx, db, cfg, stdout); err != nil {
 		fmt.Fprintf(stderr, "load: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}
 	return firstErr
 }
 
-// runSpendingPass re-asserts every deterministic spend verdict in gold
+// runEnrichmentPass re-asserts every deterministic verdict in gold
 // — the pins ledger included, re-read from config on every call — and
 // reports what it did.
 //
@@ -130,7 +131,7 @@ load semantics.`)
 // rather than a warning. A missing FX rank degrades a conversion; a
 // missing enrichment pass leaves own-account moves counted as
 // spending, which is not a degraded answer but a wrong one.
-func runSpendingPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout io.Writer) error {
+func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout io.Writer) error {
 	include, exclude := cfg.SpendAccountScope()
 	m := cfg.SpendMatching()
 	pins, err := spending.ParsePinLedger(cfg.SpendPins())
@@ -138,6 +139,12 @@ func runSpendingPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout
 		return err
 	}
 	overrides, err := gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides())
+	if err != nil {
+		return err
+	}
+	incomeInclude, incomeExclude := cfg.IncomeAccountScope()
+	incomePins, err := spending.ParsePinLedgerAs(cfg.IncomePins(), "income",
+		"income_detailed", canonical.ValidIncomeDetailed)
 	if err != nil {
 		return err
 	}
@@ -149,40 +156,55 @@ func runSpendingPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout
 		Rules:             spendRules(cfg),
 		TransferOverrides: overrides,
 		Pins:              pins,
+		Income: spending.IncomeOptions{
+			Include: incomeInclude,
+			Exclude: incomeExclude,
+			Rules:   compiledRules(cfg.IncomeRules()),
+			Pins:    incomePins,
+		},
 	})
 	if err != nil {
-		return fmt.Errorf("spending enrichment: %w", err)
+		return fmt.Errorf("enrichment: %w", err)
 	}
-	fmt.Fprintf(stdout, "spending: %d row(s) enriched — %d matcher, %d rule, %d provider, %d pinned, %d unplaced\n",
-		res.Enriched, res.MatcherRows, res.RuleRows, res.ProviderRows, res.PinRows, res.SignatureOnlyRows)
+	printFamilySummary(stdout, "spending", "merchant", res.FamilyResult)
+	printFamilySummary(stdout, "income", "payer", res.Income)
 	if res.UnmatchedTransferOverrides > 0 {
 		fmt.Fprintf(stdout, "spending: %d transfer override(s) matched no leg — "+
 			"not loaded yet, or the ledger row describes none\n",
 			res.UnmatchedTransferOverrides)
 	}
+	return nil
+}
+
+// printFamilySummary is the per-family block `load` prints. One shape
+// for both, so a reader who has learned to read one has learned the
+// other, and the counters that are zero on a quiet run stay silent.
+func printFamilySummary(stdout io.Writer, family, counterparty string, res spending.FamilyResult) {
+	fmt.Fprintf(stdout, "%s: %d row(s) enriched — %d matcher, %d rule, %d provider, %d pinned, %d unplaced\n",
+		family, res.Enriched, res.MatcherRows, res.RuleRows, res.ProviderRows,
+		res.PinRows, res.SignatureOnlyRows)
 	if res.UnmatchedPins > 0 {
-		fmt.Fprintf(stdout, "spending: %d pin(s) matched no transaction — not loaded yet, or the ledger row describes none\n",
-			res.UnmatchedPins)
+		fmt.Fprintf(stdout, "%s: %d pin(s) matched no transaction — not loaded yet, or the ledger row describes none\n",
+			family, res.UnmatchedPins)
 	}
 	if res.UnresolvedScopeAccounts > 0 {
-		fmt.Fprintf(stdout, "spending: %d account scope id(s) matched no account — "+
-			"`spending.accounts` keys on the account id, and such an entry scopes nothing\n",
-			res.UnresolvedScopeAccounts)
+		fmt.Fprintf(stdout, "%s: %d account scope id(s) matched no account — "+
+			"`%s.accounts` keys on the account id, and such an entry scopes nothing\n",
+			family, res.UnresolvedScopeAccounts, family)
 	}
 	if res.UnmappedProviderCategories > 0 {
-		fmt.Fprintf(stdout, "spending: %d row(s) carried a provider category this build does not map\n",
-			res.UnmappedProviderCategories)
+		fmt.Fprintf(stdout, "%s: %d row(s) carried a provider category this build does not map\n",
+			family, res.UnmappedProviderCategories)
 	}
-	if res.RekeyedMerchants > 0 {
-		fmt.Fprintf(stdout, "spending: %d merchant verdict(s) carried forward to signature version %d\n",
-			res.RekeyedMerchants, spending.SignatureVersion)
+	if res.RekeyedVerdicts > 0 {
+		fmt.Fprintf(stdout, "%s: %d %s verdict(s) carried forward to signature version %d\n",
+			family, res.RekeyedVerdicts, counterparty, spending.SignatureVersion)
 	}
-	if res.SplitMerchants > 0 {
-		fmt.Fprintf(stdout, "spending: %d merchant verdict(s) left behind by the signature version %d re-key — "+
-			"their rows split across several new signatures, so those merchants are re-asked on the next 'categorize'\n",
-			res.SplitMerchants, spending.SignatureVersion)
+	if res.SplitVerdicts > 0 {
+		fmt.Fprintf(stdout, "%s: %d %s verdict(s) left behind by the signature version %d re-key — "+
+			"their rows split across several new signatures, so those %ss are re-asked on the next 'categorize'\n",
+			family, res.SplitVerdicts, counterparty, spending.SignatureVersion, counterparty)
 	}
-	return nil
 }
 
 // spendRules translates the config's compiled `spending.rules` to the
@@ -190,7 +212,12 @@ func runSpendingPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout
 // account overrides: config carries the JSON shape and the validation,
 // spending stays config-free.
 func spendRules(cfg *config.Config) []spending.Rule {
-	compiled := cfg.SpendRules()
+	return compiledRules(cfg.SpendRules())
+}
+
+// compiledRules is spendRules over an already-chosen list, so the two
+// families translate through one function rather than two copies.
+func compiledRules(compiled []config.CompiledSpendRule) []spending.Rule {
 	if len(compiled) == 0 {
 		return nil
 	}

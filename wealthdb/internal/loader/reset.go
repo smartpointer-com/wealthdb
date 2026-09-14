@@ -30,17 +30,21 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	// in the source; clear it alongside so the next load+resolve
 	// cycle starts from a clean slate.
 	//
-	// spend_txn_enrichment goes the same way: it is derived from the
-	// transactions being deleted and is recomputed by the next
-	// enrichment pass. Two spending tables deliberately survive a
-	// reset. spend_merchant_categories is global knowledge keyed by
-	// merchant signature rather than by source — the same merchant
-	// reappears under every card, and its verdicts were paid for.
-	// spend_account_scope is configuration stamped into gold (the
+	// The two enrichment overlays go the same way: both are derived
+	// from the transactions being deleted and are recomputed by the
+	// next enrichment pass, which writes them in one transaction.
+	//
+	// Four tables deliberately survive a reset, two per family. The
+	// verdict stores — spend_merchant_categories and
+	// income_payer_categories — are global knowledge keyed by
+	// signature rather than by source, since the same counterparty
+	// reappears under every account and those verdicts were paid for.
+	// The account scopes are configuration stamped into gold (the
 	// fx_priority precedent), not source data.
 	for _, stmt := range []string{
 		`DELETE FROM symbol_resolutions   WHERE silver_source_id = ?`,
-		`DELETE FROM spend_txn_enrichment WHERE silver_source_id = ?`,
+		`DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?`,
+		`DELETE FROM income_txn_enrichment WHERE silver_source_id = ?`,
 		`DELETE FROM transactions         WHERE silver_source_id = ?`,
 		`DELETE FROM fx_rates             WHERE silver_source_id = ?`,
 		`DELETE FROM cash_balances        WHERE silver_source_id = ?`,

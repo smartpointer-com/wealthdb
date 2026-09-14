@@ -127,6 +127,13 @@ type Config struct {
 	// counts and the matcher runs on its defaults. See
 	// internal/spending.
 	Spending *SpendingConfig `json:"spending,omitempty"`
+	// Income is the inflow side of the same question: which accounts
+	// count as receiving, which narratives name a known payer, and
+	// which model is asked about the rest. Its shapes mirror
+	// `spending`'s; what it deliberately does NOT have is matcher
+	// knobs or a transfer-override ledger, because there is one
+	// matcher and both families read its verdicts.
+	Income *IncomeConfig `json:"income,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
 	// user-authored override list. Both fields inside are optional;
@@ -720,6 +727,15 @@ func ValidSpendContext(s string) bool {
 	return false
 }
 
+// ValidIncomeContext is ValidSpendContext for the income family. It
+// admits `payer` — the income spelling of the first level, and what
+// docs/INCOME.md uses — and `merchant` as well, so that a
+// `spending.categorization` block inherited whole by income validates
+// without being rewritten in the income's words.
+func ValidIncomeContext(s string) bool {
+	return s == SpendContextPayer || ValidSpendContext(s)
+}
+
 // SpendCategorization returns the categorization block, which may be
 // nil — its accessors handle that.
 func (c *Config) SpendCategorization() *SpendingCategorization {
@@ -735,6 +751,13 @@ func (c *Config) SpendCategorization() *SpendingCategorization {
 func (s *SpendingCategorization) ContextLevel() string {
 	if s == nil || s.Context == "" {
 		return DefaultSpendContext
+	}
+	if s.Context == SpendContextPayer {
+		// The income spelling of the first level. The level decides how
+		// much of a TRANSACTION leaves the machine, which is one
+		// question with one answer per level, so the two names resolve
+		// to one constant rather than to two code paths.
+		return SpendContextMerchant
 	}
 	return s.Context
 }
@@ -975,4 +998,117 @@ func parseYYYYMMDD(s string) (int64, error) {
 		return 0, fmt.Errorf("invalid YYYY-MM-DD %q: %w", s, err)
 	}
 	return t.UTC().Unix(), nil
+}
+
+// IncomeConfig is the `income` block of wealthdb.cfg — the inflow
+// family's half of what `spending` configures.
+//
+// Four fields where spending has six. The two that are missing are
+// missing on purpose: `internal_transfer_matching` and
+// `transfer_overrides` govern the ONE matcher both families read, and
+// a second set of knobs would let the same wire be internal on one
+// side and external on the other (docs/INCOME.md, decision 8).
+type IncomeConfig struct {
+	// Accounts is the income scope's only exception mechanism, in
+	// `spending.accounts`' shape and with its own contents. The two
+	// questions have different exceptions: an account excluded from
+	// spending because its outflows double-count giving is not thereby
+	// an account whose inflows are not income.
+	Accounts *SpendingAccounts `json:"accounts,omitempty"`
+	// Rules are the deployment's own entries in the income rule tier:
+	// an employer's name to INCOME_WAGES, a pension fund to
+	// INCOME_RETIREMENT_PENSION, a benefits agency to
+	// INCOME_GOVERNMENT_BENEFITS, a relative to `gift`, the holder's
+	// own untracked bank to `internal_transfer`, a private debt fund's
+	// distribution to INCOME_INTEREST_EARNED. The value field is named
+	// `type` rather than `category`, because that is what the income
+	// surface calls it everywhere else. Any valid income value,
+	// vendored, extension or delta: a rule is local input the model
+	// never sees.
+	Rules []IncomeRule `json:"rules,omitempty"`
+	// Pins is an optional path to the income pins ledger — the
+	// spending ledger's format with `income_detailed` where
+	// `spend_detailed` was.
+	Pins string `json:"pins,omitempty"`
+	// Categorization configures the income model tier. Absent ⇒ it
+	// INHERITS `spending.categorization` whole: one household, one
+	// local model, and no reason to configure the same endpoint twice.
+	// Resolved in one place, IncomeCategorization().
+	Categorization *SpendingCategorization `json:"categorization,omitempty"`
+
+	// rules is Rules compiled, filled by Validate.
+	rules []CompiledSpendRule
+}
+
+// IncomeRule is one entry of `income.rules`. Identical to SpendingRule
+// but for the value field's name: the income surface says `type` where
+// the spending one says `category`, and a config is read far more
+// often than it is written.
+type IncomeRule struct {
+	Match string             `json:"match"`
+	Type  string             `json:"type"`
+	Scope *SpendingRuleScope `json:"scope,omitempty"`
+}
+
+// The income context levels. `payer` is the income spelling of the
+// first level and is what the documentation uses; `merchant` is
+// accepted as well, so that a `spending.categorization` block INHERITED
+// whole by income validates without being rewritten. Internally the
+// three levels are the existing constants, because the level decides
+// how much of a TRANSACTION leaves the machine and that question has
+// one answer per level whichever family is asking.
+const SpendContextPayer = "payer"
+
+// IncomeAccountScope returns the include and exclude maps the income
+// half of the pass stamps into gold.
+func (c *Config) IncomeAccountScope() (include, exclude map[string][]string) {
+	if c.Income == nil || c.Income.Accounts == nil {
+		return nil, nil
+	}
+	return c.Income.Accounts.Include, c.Income.Accounts.Exclude
+}
+
+// IncomeRules returns the compiled `income.rules`. Only call after
+// Validate has compiled them (Load does).
+func (c *Config) IncomeRules() []CompiledSpendRule {
+	if c.Income == nil {
+		return nil
+	}
+	return c.Income.rules
+}
+
+// IncomePins returns the expanded `income.pins` path, or "" when the
+// ledger is not configured.
+func (c *Config) IncomePins() string {
+	if c.Income == nil {
+		return ""
+	}
+	return c.Income.Pins
+}
+
+// IncomeCategorization returns the block the income model tier runs
+// on, resolving the inheritance in the one place that should know
+// about it: `income.categorization` when set, `spending.categorization`
+// otherwise, and nil when neither is.
+//
+// Inheritance is whole-block rather than per-field. A half-inherited
+// endpoint — this deployment's model with that deployment's context
+// level — is a configuration nobody wrote down, and the failure would
+// be a quiet widening of what leaves the machine.
+func (c *Config) IncomeCategorization() *SpendingCategorization {
+	if c.Income != nil && c.Income.Categorization != nil {
+		return c.Income.Categorization
+	}
+	return c.SpendCategorization()
+}
+
+// IncomeCategorizationKey names the config key an error about the
+// income model tier should point at: the income block's own when it
+// has one, and the block it inherited otherwise, so a reader is sent
+// to the line they have to edit rather than to one that does not exist.
+func (c *Config) IncomeCategorizationKey() string {
+	if c.Income != nil && c.Income.Categorization != nil {
+		return "income.categorization"
+	}
+	return "spending.categorization"
 }

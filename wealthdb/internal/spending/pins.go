@@ -58,7 +58,11 @@ type Pin struct {
 // name, so they may be given in any order, and a column outside this
 // list is accepted and ignored — `note`, a free-text annotation kept
 // for the ledger's own readability, is the one the format documents.
-var requiredPinCols = []string{"silver_source_id", "account", "occurred_at", "amount", "currency", "spend_detailed"}
+// The value column is the family's: `spend_detailed` in the spending
+// ledger, `income_detailed` in the income one. Everything else about
+// the format is shared, because a pin identifies a transaction the same
+// way whichever question is being answered about it.
+var requiredPinCols = []string{"silver_source_id", "account", "occurred_at", "amount", "currency"}
 
 // pinAmountEps is how far a pin's amount may sit from the stored
 // net_amount and still describe it: a cent, the same absolute floor
@@ -70,6 +74,15 @@ const pinAmountEps = 0.01
 // missing file is not an error — the ledger is optional and absence
 // means "no pins".
 func ParsePinLedger(path string) ([]Pin, error) {
+	return ParsePinLedgerAs(path, "spending", "spend_detailed", canonical.ValidSpendDetailed)
+}
+
+// ParsePinLedgerAs is ParsePinLedger for a named family: the same
+// format and the same transaction key, read for a different value
+// column and validated against a different vocabulary. A spending
+// value in the income ledger is refused at config load, which is the
+// only place a person's typo can still be cheap to fix.
+func ParsePinLedgerAs(path, family, valueCol string, valid func(string) bool) ([]Pin, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -78,13 +91,13 @@ func ParsePinLedger(path string) ([]Pin, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("spending.pins: open %q: %w", path, err)
+		return nil, fmt.Errorf("%s.pins: open %q: %w", family, path, err)
 	}
 	defer f.Close()
-	return parsePinLedger(f)
+	return parsePinLedger(f, family, valueCol, valid)
 }
 
-func parsePinLedger(r io.Reader) ([]Pin, error) {
+func parsePinLedger(r io.Reader, family, valueCol string, valid func(string) bool) ([]Pin, error) {
 	cr := csv.NewReader(r)
 	cr.TrimLeadingSpace = true
 	cr.FieldsPerRecord = -1 // tolerate trailing/blank columns; we index by header
@@ -94,15 +107,15 @@ func parsePinLedger(r io.Reader) ([]Pin, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("spending.pins: read header: %w", err)
+		return nil, fmt.Errorf("%s.pins: read header: %w", family, err)
 	}
 	col := map[string]int{}
 	for i, h := range header {
 		col[strings.ToLower(strings.TrimSpace(h))] = i
 	}
-	for _, c := range requiredPinCols {
+	for _, c := range append(append([]string(nil), requiredPinCols...), valueCol) {
 		if _, ok := col[c]; !ok {
-			return nil, fmt.Errorf("spending.pins: missing required column %q", c)
+			return nil, fmt.Errorf("%s.pins: missing required column %q", family, c)
 		}
 	}
 	get := func(rec []string, name string) string {
@@ -131,19 +144,20 @@ func parsePinLedger(r io.Reader) ([]Pin, error) {
 		}
 		line++
 		if err != nil {
-			return nil, fmt.Errorf("spending.pins: line %d: %w", line, err)
+			return nil, fmt.Errorf("%s.pins: line %d: %w", family, line, err)
 		}
 		if isBlankRecord(rec) {
 			continue
 		}
-		p, err := pinFromRecord(rec, get)
+		p, err := pinFromRecord(rec, get, valueCol, valid)
 		if err != nil {
-			return nil, fmt.Errorf("spending.pins: line %d: %w", line, err)
+			return nil, fmt.Errorf("%s.pins: line %d: %w", family, line, err)
 		}
 		key := p.identity()
 		if prev, dup := seen[key]; dup {
 			if prev.detailed != p.Detailed {
-				return nil, fmt.Errorf("spending.pins: line %d pins the same transaction(s) as line %d to %q, not %q",
+				return nil, fmt.Errorf("%s.pins: line %d pins the same transaction(s) as line %d to %q, not %q",
+					family,
 					line, prev.line, p.Detailed, prev.detailed)
 			}
 			continue
@@ -154,12 +168,12 @@ func parsePinLedger(r io.Reader) ([]Pin, error) {
 	return out, nil
 }
 
-func pinFromRecord(rec []string, get func([]string, string) string) (Pin, error) {
+func pinFromRecord(rec []string, get func([]string, string) string, valueCol string, valid func(string) bool) (Pin, error) {
 	p := Pin{
 		Source:   get(rec, "silver_source_id"),
 		Account:  get(rec, "account"),
 		Currency: strings.ToUpper(get(rec, "currency")),
-		Detailed: get(rec, "spend_detailed"),
+		Detailed: get(rec, valueCol),
 	}
 	if p.Source == "" || p.Account == "" {
 		return p, fmt.Errorf("silver_source_id and account are required")
@@ -181,8 +195,8 @@ func pinFromRecord(rec []string, get func([]string, string) string) (Pin, error)
 	}
 	// Exact spelling: the vendored values are uppercase, the deltas
 	// lowercase, and the casing is what says where a value came from.
-	if !canonical.ValidSpendDetailed(p.Detailed) {
-		return p, fmt.Errorf("spend_detailed %q is not a value of the taxonomy (vendored values are uppercase, the deltas lowercase)", p.Detailed)
+	if !valid(p.Detailed) {
+		return p, fmt.Errorf("%s %q is not a value of this family's taxonomy (vendored values are uppercase, the deltas lowercase)", valueCol, p.Detailed)
 	}
 	return p, nil
 }

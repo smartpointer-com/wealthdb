@@ -18,7 +18,7 @@ bank,Everyday Cash,2026-03-04,"-2,500.00",usd,investment,roll leg
 
 bank,CASH1,2026-03-05,-1200,USD,GENERAL_SERVICES_CONSULTING_AND_LEGAL,
 `
-	got, err := parsePinLedger(strings.NewReader(csv))
+	got, err := parsePinLedger(strings.NewReader(csv), "spending", "spend_detailed", canonical.ValidSpendDetailed)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -40,7 +40,7 @@ bank,CASH1,2026-03-05,-1200,USD,GENERAL_SERVICES_CONSULTING_AND_LEGAL,
 	reordered := `note,spend_detailed,currency,amount,occurred_at,account,silver_source_id
 x,cash_withdrawal,chf,-300,2026-01-02,A,bank
 `
-	got, err = parsePinLedger(strings.NewReader(reordered))
+	got, err = parsePinLedger(strings.NewReader(reordered), "spending", "spend_detailed", canonical.ValidSpendDetailed)
 	if err != nil {
 		t.Fatalf("parse reordered: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestParsePinLedgerErrors(t *testing.T) {
 		"contradictory duplicate": header + "bank,A,2026-01-01,-1,USD,investment\nbank,A,2026-01-01,-1.00,USD,other\n",
 	}
 	for name, csv := range cases {
-		_, err := parsePinLedger(strings.NewReader(csv))
+		_, err := parsePinLedger(strings.NewReader(csv), "spending", "spend_detailed", canonical.ValidSpendDetailed)
 		if err == nil {
 			t.Errorf("%s: expected an error", name)
 			continue
@@ -78,7 +78,7 @@ func TestParsePinLedgerErrors(t *testing.T) {
 			t.Errorf("%s: error %q does not name the line", name, err)
 		}
 	}
-	if _, err := parsePinLedger(strings.NewReader(cases["contradictory duplicate"])); err == nil ||
+	if _, err := parsePinLedger(strings.NewReader(cases["contradictory duplicate"]), "spending", "spend_detailed", canonical.ValidSpendDetailed); err == nil ||
 		!strings.Contains(err.Error(), "line 3 pins the same transaction(s) as line 2") {
 		t.Errorf("a contradiction must name both lines, got %v", err)
 	}
@@ -92,7 +92,7 @@ func TestParsePinLedgerCollapsesAgreeingDuplicates(t *testing.T) {
 bank,A,2026-01-01,-2500,USD,investment
 bank,A,2026-01-01,-2500.00,usd,investment
 `
-	got, err := parsePinLedger(strings.NewReader(csv))
+	got, err := parsePinLedger(strings.NewReader(csv), "spending", "spend_detailed", canonical.ValidSpendDetailed)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestParsePinLedgerMissingFile(t *testing.T) {
 	if got, err := ParsePinLedger(""); err != nil || got != nil {
 		t.Errorf("empty path should be (nil, nil); got (%v, %v)", got, err)
 	}
-	if got, err := parsePinLedger(strings.NewReader("")); err != nil || got != nil {
+	if got, err := parsePinLedger(strings.NewReader(""), "spending", "spend_detailed", canonical.ValidSpendDetailed); err != nil || got != nil {
 		t.Errorf("empty file should be (nil, nil); got (%v, %v)", got, err)
 	}
 }

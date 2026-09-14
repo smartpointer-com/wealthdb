@@ -129,6 +129,8 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 		fmt.Fprintf(stdout, "    uncategorised:           %d spending lines\n", st.UncategorizedSpendCount)
 		fmt.Fprintf(stdout, "    excluded_unmapped:       %d transactions (catch-all kind on in-scope accounts)\n",
 			st.ExcludedUnmappedCount)
+		fmt.Fprintln(stdout, "  income:")
+		fmt.Fprintf(stdout, "    uncategorised:           %d income lines\n", st.UncategorizedIncomeCount)
 		if len(st.PerKindActivity) > 0 {
 			fmt.Fprintln(stdout, "  per account kind (latest snapshot / latest transaction):")
 			for _, a := range st.PerKindActivity {
@@ -201,6 +203,9 @@ func printOneLineStatus(ctx context.Context, db *sql.DB, src *config.SilverSourc
 	if verbose && (st.UncategorizedSpendCount > 0 || st.ExcludedUnmappedCount > 0) {
 		driftHint += fmt.Sprintf("  spend: %d uncategorised, %d excluded_unmapped",
 			st.UncategorizedSpendCount, st.ExcludedUnmappedCount)
+	}
+	if verbose && st.UncategorizedIncomeCount > 0 {
+		driftHint += fmt.Sprintf("  income: %d uncategorised", st.UncategorizedIncomeCount)
 	}
 
 	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, watermark=%s%s%s\n",

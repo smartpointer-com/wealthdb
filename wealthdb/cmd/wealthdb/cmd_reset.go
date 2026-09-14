@@ -103,19 +103,20 @@ scratch for that source.`)
 		}
 		fmt.Fprintf(stdout, "reset: %s: cleared\n", id)
 	}
-	// Reset purges spend_txn_enrichment for the named source only, but
-	// a matcher verdict is written onto both legs of a cross-source
-	// pair. After a partial reset the surviving leg still reads
-	// internal_transfer and stays out of every spending report, so the
-	// caveat is printed where it can be acted on.
+	// Reset purges the two enrichment overlays for the named source
+	// only, but a matcher verdict is written onto both legs of a
+	// cross-source pair — and the two legs can be in different
+	// families. After a partial reset the surviving leg still reads
+	// internal_transfer and stays out of every spending and income
+	// report, so the caveat is printed where it can be acted on.
 	//
 	// Three states make it untrue rather than useful, and each is
 	// silent instead: after -a there is no surviving leg; after a
 	// failed purge nothing was cleared to go stale; and an id gold
 	// never registered had no rows to pair against in the first place.
 	if !*all && firstErr == nil && slices.Contains(registered, ids[0]) {
-		fmt.Fprintf(stdout, "reset: spend verdicts on other sources that paired against %s are now stale — "+
-			"run 'wealthdb load -a' to re-assert them\n", ids[0])
+		fmt.Fprintf(stdout, "reset: spend and income verdicts on other sources that paired against %s "+
+			"are now stale — run 'wealthdb load -a' to re-assert them\n", ids[0])
 	}
 	return firstErr
 }

@@ -163,29 +163,35 @@ func reloadFreshAndSwap(
 		if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 			fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
 		}
-		// Carry the global merchant store over from the outgoing file.
+		// Carry the global verdict stores over from the outgoing file.
 		// A hard error: those verdicts were paid for and have no config
-		// backup to re-stamp them from.
-		present, carried, err := carryMerchantCategories(ctx, db, cfg.GoldDB)
-		if err != nil {
-			_ = db.Close()
-			return err
+		// backup to re-stamp them from. Both families have one, and a
+		// store that is not carried is lost with no backup — which is
+		// why the list is walked rather than the merchant store named.
+		var present bool
+		var carried int
+		for _, store := range paidStores {
+			present, carried, err = carryVerdictStore(ctx, db, cfg.GoldDB, store)
+			if err != nil {
+				_ = db.Close()
+				return err
+			}
+			switch {
+			case carried > 0:
+				fmt.Fprintf(stdout, "reload: carried %d %s verdict(s) across the rebuild\n", carried, store.noun)
+			case present:
+				fmt.Fprintf(stdout, "reload: outgoing gold's %s store is empty; nothing to carry\n", store.noun)
+			default:
+				fmt.Fprintf(stdout, "reload: outgoing gold has no %s store; nothing to carry\n", store.noun)
+			}
 		}
-		switch {
-		case carried > 0:
-			fmt.Fprintf(stdout, "reload: carried %d merchant verdict(s) across the rebuild\n", carried)
-		case present:
-			fmt.Fprintln(stdout, "reload: outgoing gold's merchant store is empty; nothing to carry")
-		default:
-			fmt.Fprintln(stdout, "reload: outgoing gold has no merchant store; nothing to carry")
-		}
-		// Re-assert the deterministic spend verdicts, AFTER the merchant
-		// store has been carried across: the signature-version re-key
+		// Re-assert the deterministic verdicts of both families, AFTER the
+		// stores have been carried across: the signature-version re-key
 		// reads that store, and a pass that ran before the carry would
 		// see it empty and carry nothing forward. Before the CHECKPOINT,
 		// so the swapped-in file is enriched rather than needing a
 		// follow-up load to become correct.
-		if err := runSpendingPass(ctx, db, cfg, stdout); err != nil {
+		if err := runEnrichmentPass(ctx, db, cfg, stdout); err != nil {
 			fmt.Fprintf(stderr, "reload: %s\n", err.Error())
 			firstErr = errors.Join(firstErr, err)
 		}
@@ -249,16 +255,30 @@ func reloadFreshAndSwap(
 // ATTACH is per-connection, so the sequence runs on one pinned conn.
 // A live file written before migration 0041 has no such table, which
 // carries nothing rather than erroring.
-func carryMerchantCategories(ctx context.Context, db *sql.DB, livePath string) (bool, int, error) {
+// paidStore names one paid-for store and what its rows are about.
+type paidStore struct {
+	table string
+	noun  string
+}
+
+// paidStores is every store `reload -a` must carry. Adding a family
+// means adding a row here; a store left out is lost on the next
+// rebuild, silently and with nothing to restore it from.
+var paidStores = []paidStore{
+	{"spend_merchant_categories", "merchant"},
+	{"income_payer_categories", "payer"},
+}
+
+func carryVerdictStore(ctx context.Context, db *sql.DB, livePath string, store paidStore) (bool, int, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return false, 0, fmt.Errorf("pin connection for merchant-store carry-across: %w", err)
+		return false, 0, fmt.Errorf("pin connection for the %s-store carry-across: %w", store.noun, err)
 	}
 	defer conn.Close()
 
 	if _, err := conn.ExecContext(ctx,
 		"ATTACH "+sqlLiteral(livePath)+" AS live_gold (READ_ONLY)"); err != nil {
-		return false, 0, fmt.Errorf("attach live gold for merchant-store carry-across: %w", err)
+		return false, 0, fmt.Errorf("attach live gold for the %s-store carry-across: %w", store.noun, err)
 	}
 	defer func() { _, _ = conn.ExecContext(ctx, "DETACH live_gold") }()
 
@@ -266,8 +286,8 @@ func carryMerchantCategories(ctx context.Context, db *sql.DB, livePath string) (
 	if err := conn.QueryRowContext(ctx, `
         SELECT count(*) FROM duckdb_tables()
          WHERE database_name = 'live_gold'
-           AND table_name = 'spend_merchant_categories'`).Scan(&tables); err != nil {
-		return false, 0, fmt.Errorf("probe live gold for the merchant store: %w", err)
+           AND table_name = ?`, store.table).Scan(&tables); err != nil {
+		return false, 0, fmt.Errorf("probe live gold for the %s store: %w", store.noun, err)
 	}
 	if tables == 0 {
 		return false, 0, nil
@@ -278,30 +298,30 @@ func carryMerchantCategories(ctx context.Context, db *sql.DB, livePath string) (
 	// routine rebuild is not blocked over rows that do not exist.
 	var live int
 	if err := conn.QueryRowContext(ctx,
-		`SELECT count(*) FROM live_gold.spend_merchant_categories`).Scan(&live); err != nil {
-		return true, 0, fmt.Errorf("count the outgoing merchant store: %w", err)
+		"SELECT count(*) FROM live_gold."+store.table).Scan(&live); err != nil {
+		return true, 0, fmt.Errorf("count the outgoing %s store: %w", store.noun, err)
 	}
 	if live == 0 {
 		return true, 0, nil
 	}
 
-	if err := checkMerchantColumnsSatisfiable(ctx, conn); err != nil {
+	if err := checkStoreColumnsSatisfiable(ctx, conn, store); err != nil {
 		return true, 0, err
 	}
-	columns, err := carriedMerchantColumns(ctx, conn)
+	columns, err := carriedStoreColumns(ctx, conn, store)
 	if err != nil {
 		return true, 0, err
 	}
 
 	res, err := conn.ExecContext(ctx,
-		"INSERT INTO spend_merchant_categories ("+columns+") "+
-			"SELECT "+columns+" FROM live_gold.spend_merchant_categories")
+		"INSERT INTO "+store.table+" ("+columns+") "+
+			"SELECT "+columns+" FROM live_gold."+store.table)
 	if err != nil {
-		return true, 0, fmt.Errorf("carry the merchant store across the rebuild: %w", err)
+		return true, 0, fmt.Errorf("carry the %s store across the rebuild: %w", store.noun, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return true, 0, fmt.Errorf("count the carried merchant store: %w", err)
+		return true, 0, fmt.Errorf("count the carried %s store: %w", store.noun, err)
 	}
 	return true, int(n), nil
 }
@@ -315,22 +335,22 @@ func carryMerchantCategories(ctx context.Context, db *sql.DB, livePath string) (
 // here instead, together with the command that fixes it: a read-write
 // open migrates the live file, and 'reload -a' never opens it that
 // way.
-func checkMerchantColumnsSatisfiable(ctx context.Context, conn *sql.Conn) error {
+func checkStoreColumnsSatisfiable(ctx context.Context, conn *sql.Conn, store paidStore) error {
 	rows, err := conn.QueryContext(ctx, `
         SELECT f.column_name
           FROM duckdb_columns() f
          WHERE f.database_name  = current_database()
-           AND f.table_name     = 'spend_merchant_categories'
+           AND f.table_name     = ?
            AND NOT f.is_nullable
            AND f.column_default IS NULL
            AND f.column_name NOT IN (
                  SELECT l.column_name
                    FROM duckdb_columns() l
                   WHERE l.database_name = 'live_gold'
-                    AND l.table_name    = 'spend_merchant_categories')
-         ORDER BY f.column_index`)
+                    AND l.table_name    = ?)
+         ORDER BY f.column_index`, store.table, store.table)
 	if err != nil {
-		return fmt.Errorf("compare the merchant store's required columns: %w", err)
+		return fmt.Errorf("compare the %s store's required columns: %w", store.noun, err)
 	}
 	defer rows.Close()
 
@@ -358,19 +378,19 @@ func checkMerchantColumnsSatisfiable(ctx context.Context, conn *sql.Conn) error 
 // freshly built one (current_database(), which resolves to the rebuild
 // temp file even with live_gold attached) intersected with the
 // outgoing one, in the new table's own column order.
-func carriedMerchantColumns(ctx context.Context, conn *sql.Conn) (string, error) {
+func carriedStoreColumns(ctx context.Context, conn *sql.Conn, store paidStore) (string, error) {
 	rows, err := conn.QueryContext(ctx, `
         SELECT f.column_name
           FROM duckdb_columns() f
           JOIN duckdb_columns() l
             ON l.database_name = 'live_gold'
-           AND l.table_name    = 'spend_merchant_categories'
+           AND l.table_name    = ?
            AND l.column_name   = f.column_name
          WHERE f.database_name = current_database()
-           AND f.table_name    = 'spend_merchant_categories'
-         ORDER BY f.column_index`)
+           AND f.table_name    = ?
+         ORDER BY f.column_index`, store.table, store.table)
 	if err != nil {
-		return "", fmt.Errorf("read the merchant store's columns: %w", err)
+		return "", fmt.Errorf("read the %s store's columns: %w", store.noun, err)
 	}
 	defer rows.Close()
 
@@ -454,7 +474,7 @@ func reloadInPlace(
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
 	}
-	if err := runSpendingPass(ctx, db, cfg, stdout); err != nil {
+	if err := runEnrichmentPass(ctx, db, cfg, stdout); err != nil {
 		fmt.Fprintf(stderr, "reload: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}

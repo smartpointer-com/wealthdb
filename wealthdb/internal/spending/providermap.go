@@ -81,6 +81,21 @@ type providerVocabulary struct {
 	// category, so a value outside the table is drift worth counting.
 	// False for a booking-type vocabulary, where a miss is a rail.
 	categorical bool
+	// income is the same translation for the INCOME family, and it is
+	// a second map rather than a second lookup into the first because
+	// a provider's value can mean different things by direction. UBS
+	// books both halves of an account's interest settlement under one
+	// booking type: charged, it is a finance cost, and credited, it is
+	// interest earned. One map would have to pick.
+	//
+	// Only the bank vocabularies carry one. A card issuer files what a
+	// MERCHANT sells, and a merchant category says nothing about money
+	// arriving; the rows a card books inbound are refunds, which are
+	// spending's to net.
+	income map[string]string
+	// incomeUntranslatable is `untranslatable` for the income side:
+	// values reviewed and left to the model tier rather than missing.
+	incomeUntranslatable map[string]bool
 }
 
 // chaseCardCategories translates the Chase card vocabulary.
@@ -421,6 +436,51 @@ var ubsCardMoneyMovement = map[string]bool{
 // `shopping_other` and `utility` resolve to their primary's catch-all
 // and so decline, leaving the merchant name to the model. What the
 // vocabulary declines outright is in raiffeisenUncategorized below.
+// ubsIncomeBookingTypes is the inflow half of the UBS booking-type
+// vocabulary: the types that NAME what arrived.
+//
+// Left out deliberately, and they are most of the volume: the bank's
+// generic credit types — a plain credit, an e-banking credit, a SEPA
+// credit, an instant-payment credit, a mobile-payment credit. Each
+// says a rail and nothing else, which is exactly the row the model
+// tier reads a payer out of. Translating them would claim the whole
+// deposit population for a value that means "money arrived".
+//
+// Also left out: the call-deposit and fixed-term repayment types. Those
+// name the holder's own money coming back from a product that may
+// itself be a tracked account, in which case the MATCHER owns the row
+// and has seen both legs; where it is not tracked, the row is
+// `capital_return`, and a rule can say so with knowledge this tier does
+// not have.
+var ubsIncomeBookingTypes = map[string]string{
+	// Employment.
+	"SALARY PAYMENT": "INCOME_WAGES",
+	// Investment income. The `dividend` and `capital_gain` KINDS floor
+	// to the same values, so these agree with the floor rather than
+	// overruling it — but the bank did say it, and the provider tier
+	// records what the bank said.
+	"DIVIDEND":           "INCOME_DIVIDENDS",
+	"COMP. DIV. PAYMENT": "INCOME_DIVIDENDS",
+	"CAPITAL GAIN":       "INCOME_DISTRIBUTIONS",
+	// Interest credited. The same booking type the spending map reads
+	// as a finance charge: one type, two directions, which is why the
+	// two maps are separate.
+	"INTEREST CALCULATION BALANCE":        "INCOME_INTEREST_EARNED",
+	"CALL DEPOSIT INTEREST PAYMENT":       "INCOME_INTEREST_EARNED",
+	"FIXED TERM DEPOSIT INTEREST PAYMENT": "INCOME_INTEREST_EARNED",
+	// Capital the holder put in, coming back out: not income.
+	"REPAYMENT OF PAID-IN CAPITAL": canonical.IncomeDetailedCapitalReturn,
+	"RETURN OF CAPITAL":            canonical.IncomeDetailedCapitalReturn,
+}
+
+// raiffeisenIncomeCategories is the inflow half of a CATEGORICAL
+// vocabulary, so a value outside it counts as drift. The vocabulary's
+// own inbound bucket is a catch-all and is translated as one: recorded,
+// and left for the tier that can read a payer.
+var raiffeisenIncomeCategories = map[string]string{
+	"income_other": "INCOME_OTHER_INCOME",
+}
+
 var raiffeisenCategories = map[string]string{
 	"supermarket":                   "FOOD_AND_DRINK_GROCERIES",
 	"tv_phone_internet":             "RENT_AND_UTILITIES_INTERNET_AND_CABLE",
@@ -469,11 +529,16 @@ var providerVocabularies = map[string]providerVocabulary{
 	"chase": {translations: chaseCardCategories, categorical: true},
 	"amex": {translations: amexCardCategories, untranslatable: amexUncategorized,
 		categorical: true},
-	"ubs": {translations: ubsBookingTypes, categorical: false},
+	"ubs": {translations: ubsBookingTypes, income: ubsIncomeBookingTypes, categorical: false},
 	"ubs/card": {translations: ubsCardCategories,
 		untranslatable: ubsCardMoneyMovement, categorical: true},
 	"raiffeisen_at": {translations: raiffeisenCategories,
-		untranslatable: raiffeisenUncategorized, categorical: true},
+		income:         raiffeisenIncomeCategories,
+		untranslatable: raiffeisenUncategorized,
+		// The inbound side reviewed the same uncategorised bucket: a
+		// value the bank could not place is not drift on either side.
+		incomeUntranslatable: raiffeisenUncategorized,
+		categorical:          true},
 }
 
 // foldedProviderVocabularies is providerVocabularies re-keyed on the
@@ -484,19 +549,35 @@ var foldedProviderVocabularies = foldProviderVocabularies(providerVocabularies)
 func foldProviderVocabularies(in map[string]providerVocabulary) map[string]providerVocabulary {
 	out := make(map[string]providerVocabulary, len(in))
 	for kind, v := range in {
-		folded := make(map[string]string, len(v.translations))
-		for value, detailed := range v.translations {
-			folded[providerCategoryKey(value)] = detailed
+		out[kind] = providerVocabulary{
+			translations:         foldTranslations(v.translations),
+			untranslatable:       foldSkips(v.untranslatable),
+			income:               foldTranslations(v.income),
+			incomeUntranslatable: foldSkips(v.incomeUntranslatable),
+			categorical:          v.categorical,
 		}
-		var skip map[string]bool
-		if len(v.untranslatable) > 0 {
-			skip = make(map[string]bool, len(v.untranslatable))
-			for value := range v.untranslatable {
-				skip[providerCategoryKey(value)] = true
-			}
-		}
-		out[kind] = providerVocabulary{translations: folded,
-			untranslatable: skip, categorical: v.categorical}
+	}
+	return out
+}
+
+func foldTranslations(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for value, detailed := range in {
+		out[providerCategoryKey(value)] = detailed
+	}
+	return out
+}
+
+func foldSkips(in map[string]bool) map[string]bool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for value := range in {
+		out[providerCategoryKey(value)] = true
 	}
 	return out
 }
@@ -544,6 +625,40 @@ func ProviderCategory(silverKind, accountKind, providerCategory string) (detaile
 	}
 	detailed, ok = v.translations[key]
 	return detailed, ok, !ok && v.categorical
+}
+
+// ProviderIncomeCategory is ProviderCategory over the income half of
+// the same vocabulary. Same drift accounting, same reviewed-value
+// escape, and the same silence where a source publishes no vocabulary
+// for the family: a card issuer has no income map, so an inbound card
+// row translates to nothing here and is not counted as drift.
+func ProviderIncomeCategory(silverKind, accountKind, providerCategory string) (detailed string, ok, drift bool) {
+	v, mapped := vocabularyFor(silverKind, accountKind)
+	if !mapped || v.income == nil {
+		return "", false, false
+	}
+	key := providerCategoryKey(providerCategory)
+	if key == "" {
+		return "", false, false
+	}
+	if v.incomeUntranslatable[key] {
+		return "", false, false
+	}
+	detailed, ok = v.income[key]
+	return detailed, ok, !ok && v.categorical
+}
+
+// ProviderIncomeCategoryClaims is ProviderCategoryClaims for the income
+// vocabulary, declining a categorical vocabulary's catch-all for the
+// same reason: a bank that could place a receipt no better than "other
+// income" has not named the payer, and the tier that reads a payer is
+// still to come.
+func ProviderIncomeCategoryClaims(silverKind, accountKind, detailed string) bool {
+	v, mapped := vocabularyFor(silverKind, accountKind)
+	if !mapped {
+		return false
+	}
+	return !(v.categorical && canonical.CatchAllIncomeDetailed(detailed))
 }
 
 // ProviderCategoryClaims reports whether a translated value should CLAIM

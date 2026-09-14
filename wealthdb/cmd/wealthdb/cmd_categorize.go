@@ -279,7 +279,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	if *dryRun {
 		fmt.Fprintln(stdout, "categorize: dry-run — gold opened read-only, so the deterministic pass did NOT run.")
 		fmt.Fprintln(stdout, "categorize: the candidate set below is AS OF THE LAST LOAD; a real run re-asserts it first.")
-	} else if err := runSpendingPass(ctx, db, cfg, stdout); err != nil {
+	} else if err := runEnrichmentPass(ctx, db, cfg, stdout); err != nil {
 		return err
 	}
 

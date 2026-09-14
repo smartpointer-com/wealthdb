@@ -283,71 +283,42 @@ func (c *Config) Validate() error {
 	// keyed so it could hold only one of them. Reject it here rather
 	// than let a primary-key violation surface mid-load.
 	if sp := c.Spending; sp != nil {
-		if a := sp.Accounts; a != nil {
-			if err := validateIDListNested("spending.accounts", "include", a.Include, seenIDs); err != nil {
-				return err
-			}
-			if err := validateIDListNested("spending.accounts", "exclude", a.Exclude, seenIDs); err != nil {
-				return err
-			}
-			for sourceID, ids := range a.Include {
-				excluded := make(map[string]bool, len(a.Exclude[sourceID]))
-				for _, id := range a.Exclude[sourceID] {
-					excluded[id] = true
-				}
-				for _, id := range ids {
-					if excluded[id] {
-						return fmt.Errorf("config: spending.accounts[%q]: %q is listed in both include and exclude", sourceID, id)
-					}
-				}
-			}
-			// A duplicate WITHIN one list is the same class of problem
-			// as the overlap above: syncAccountScope inserts one row
-			// per listed id into a table keyed (source, account), so a
-			// repeat raises a primary-key violation mid-load, after
-			// every source has already been written. The shared
-			// id-list check cannot make it — returns_exclude and
-			// returns_hide fold their lists into sets, where a repeat
-			// is harmless.
-			for _, grain := range []struct {
-				name string
-				m    map[string][]string
-			}{{"include", a.Include}, {"exclude", a.Exclude}} {
-				for sourceID, ids := range grain.m {
-					seen := make(map[string]bool, len(ids))
-					for _, id := range ids {
-						if seen[id] {
-							return fmt.Errorf("config: spending.accounts.%s[%q]: %q is listed twice",
-								grain.name, sourceID, id)
-						}
-						seen[id] = true
-					}
-				}
-			}
+		if err := validateAccountScope("spending.accounts", sp.Accounts, seenIDs); err != nil {
+			return err
 		}
 		if m := sp.InternalTransferMatching; m != nil {
 			if err := validateMatchKnobs("spending.internal_transfer_matching", m.WindowDays, m.TolerancePct); err != nil {
 				return err
 			}
 		}
-		rules, err := compileSpendRules(sp.Rules)
+		rules, err := compileRuleList("spending.rules", "category", "spend_detailed", "docs/SPENDING.md §2",
+			spendingRuleList(sp.Rules), canonical.ValidSpendDetailed)
 		if err != nil {
 			return err
 		}
 		sp.rules = rules
-		// The context level decides how much of a transaction leaves the
-		// machine, so a typo must not fall back to a default — silently
-		// resolving "descriptors" to `merchant` would under-deliver, and
-		// resolving an unknown name to anything wider would over-share.
-		// The sample cap is bounded whether or not the level reads it.
-		if cz := sp.Categorization; cz != nil {
-			if !ValidSpendContext(cz.Context) {
-				return fmt.Errorf("config: spending.categorization.context %q is not one of %q, %q, %q",
-					cz.Context, SpendContextMerchant, SpendContextDescriptor, SpendContextTransaction)
-			}
-			if cz.DescriptorSamples != nil && (*cz.DescriptorSamples < 0 || *cz.DescriptorSamples > 20) {
-				return fmt.Errorf("config: spending.categorization.descriptor_samples %d out of range [0, 20]", *cz.DescriptorSamples)
-			}
+		if err := validateCategorization("spending.categorization", sp.Categorization, ValidSpendContext); err != nil {
+			return err
+		}
+	}
+
+	// income: the inflow family's half, validated by the same checks
+	// against its own vocabulary. The blocks spending has and this one
+	// does not — the matcher knobs and the transfer-override ledger —
+	// are absent by decision, not by omission, and a config naming them
+	// under `income` fails at unmarshal as an unknown field.
+	if in := c.Income; in != nil {
+		if err := validateAccountScope("income.accounts", in.Accounts, seenIDs); err != nil {
+			return err
+		}
+		rules, err := compileRuleList("income.rules", "type", "income_detailed", "docs/INCOME.md §2",
+			incomeRuleList(in.Rules), canonical.ValidIncomeDetailed)
+		if err != nil {
+			return err
+		}
+		in.rules = rules
+		if err := validateCategorization("income.categorization", in.Categorization, ValidIncomeContext); err != nil {
+			return err
 		}
 	}
 
@@ -358,6 +329,78 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: web.port %d is out of range (1-65535)", c.Web.Port)
 	}
 
+	return nil
+}
+
+// validateAccountScope is one family's `accounts` block: every source
+// declared, no id in both lists, no id twice in one list.
+//
+// The duplicate check inside one list is the same class of problem as
+// the overlap: syncAccountScope inserts one row per listed id into a
+// table keyed (source, account), so a repeat raises a primary-key
+// violation mid-load, after every source has already been written. The
+// shared id-list check cannot make it — returns_exclude and
+// returns_hide fold their lists into sets, where a repeat is harmless.
+func validateAccountScope(key string, a *SpendingAccounts, seenIDs map[string]bool) error {
+	if a == nil {
+		return nil
+	}
+	{
+		{
+			if err := validateIDListNested(key, "include", a.Include, seenIDs); err != nil {
+				return err
+			}
+			if err := validateIDListNested(key, "exclude", a.Exclude, seenIDs); err != nil {
+				return err
+			}
+			for sourceID, ids := range a.Include {
+				excluded := make(map[string]bool, len(a.Exclude[sourceID]))
+				for _, id := range a.Exclude[sourceID] {
+					excluded[id] = true
+				}
+				for _, id := range ids {
+					if excluded[id] {
+						return fmt.Errorf("config: %s[%q]: %q is listed in both include and exclude", key, sourceID, id)
+					}
+				}
+			}
+			for _, grain := range []struct {
+				name string
+				m    map[string][]string
+			}{{"include", a.Include}, {"exclude", a.Exclude}} {
+				for sourceID, ids := range grain.m {
+					seen := make(map[string]bool, len(ids))
+					for _, id := range ids {
+						if seen[id] {
+							return fmt.Errorf("config: %s.%s[%q]: %q is listed twice",
+								key, grain.name, sourceID, id)
+						}
+						seen[id] = true
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// validateCategorization checks one family's model-tier block.
+//
+// The context level decides how much of a transaction leaves the
+// machine, so a typo must not fall back to a default — silently
+// resolving "descriptors" to the narrowest level would under-deliver,
+// and resolving an unknown name to anything wider would over-share.
+// The sample cap is bounded whether or not the level reads it.
+func validateCategorization(key string, cz *SpendingCategorization, validContext func(string) bool) error {
+	if cz == nil {
+		return nil
+	}
+	if !validContext(cz.Context) {
+		return fmt.Errorf("config: %s.context %q is not one of the levels this family names", key, cz.Context)
+	}
+	if cz.DescriptorSamples != nil && (*cz.DescriptorSamples < 0 || *cz.DescriptorSamples > 20) {
+		return fmt.Errorf("config: %s.descriptor_samples %d out of range [0, 20]", key, *cz.DescriptorSamples)
+	}
 	return nil
 }
 
@@ -395,28 +438,53 @@ func validateInceptionNested(grain string, m map[string]map[string]string, seenI
 // can place a recurring counterparty. The vendored-only restriction
 // belongs to the model tier, which guards what the model may say; a
 // rule is the holder's own local input, and the model never sees it.
-func compileSpendRules(rules []SpendingRule) ([]CompiledSpendRule, error) {
+// ruleEntry is one config rule of either family, flattened so the
+// compiler below sees one shape. The two differ only in what the value
+// field is called in the file.
+type ruleEntry struct {
+	match string
+	value string
+	scope *SpendingRuleScope
+}
+
+func spendingRuleList(rules []SpendingRule) []ruleEntry {
+	out := make([]ruleEntry, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, ruleEntry{r.Match, r.Category, r.Scope})
+	}
+	return out
+}
+
+func incomeRuleList(rules []IncomeRule) []ruleEntry {
+	out := make([]ruleEntry, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, ruleEntry{r.Match, r.Type, r.Scope})
+	}
+	return out
+}
+
+func compileRuleList(key, valueField, valueNoun, doc string, rules []ruleEntry, valid func(string) bool) ([]CompiledSpendRule, error) {
 	if len(rules) == 0 {
 		return nil, nil
 	}
 	out := make([]CompiledSpendRule, 0, len(rules))
 	for i, r := range rules {
-		re, err := regexp.Compile("(?i)" + r.Match)
+		re, err := regexp.Compile("(?i)" + r.match)
 		if err != nil {
-			return nil, fmt.Errorf("config: spending.rules[%d].match %q: %w", i, r.Match, err)
+			return nil, fmt.Errorf("config: %s[%d].match %q: %w", key, i, r.match, err)
 		}
 		if re.MatchString("") {
-			return nil, fmt.Errorf("config: spending.rules[%d].match %q matches the empty string and would mark every row", i, r.Match)
+			return nil, fmt.Errorf("config: %s[%d].match %q matches the empty string and would mark every row", key, i, r.match)
 		}
-		if !canonical.ValidSpendDetailed(r.Category) {
-			return nil, fmt.Errorf("config: spending.rules[%d].category %q is not a spend_detailed value: case-sensitive, in the taxonomy's own spelling (a vendored detailed value or one of the deltas, docs/SPENDING.md §2)",
-				i, r.Category)
+		if !valid(r.value) {
+			return nil, fmt.Errorf("config: %s[%d].%s %q is not a %s value: case-sensitive, in the taxonomy's own spelling (a vendored detailed value, an extension, or one of the deltas, %s)",
+				key, i, valueField, r.value, valueNoun, doc)
 		}
-		scope, err := compileSpendScope(r.Scope)
+		scope, err := compileSpendScope(r.scope)
 		if err != nil {
-			return nil, fmt.Errorf("config: spending.rules[%d].scope: %w", i, err)
+			return nil, fmt.Errorf("config: %s[%d].scope: %w", key, i, err)
 		}
-		out = append(out, CompiledSpendRule{Match: re, Category: r.Category, Scope: scope})
+		out = append(out, CompiledSpendRule{Match: re, Category: r.value, Scope: scope})
 	}
 	return out, nil
 }

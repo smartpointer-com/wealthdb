@@ -1283,8 +1283,8 @@ func TestPassRekeysMerchantVerdicts(t *testing.T) {
 	}
 
 	res := runPass(t, db, ctx, Options{})
-	if res.RekeyedMerchants != 1 {
-		t.Errorf("RekeyedMerchants = %d, want 1", res.RekeyedMerchants)
+	if res.RekeyedVerdicts != 1 {
+		t.Errorf("RekeyedMerchants = %d, want 1", res.RekeyedVerdicts)
 	}
 
 	newSig := Normalize("Corner Market", "")
@@ -1361,8 +1361,8 @@ func TestPassRekeyLeavesAnExistingNewKeyVerdictAlone(t *testing.T) {
 	}
 
 	res := runPass(t, db, ctx, Options{})
-	if res.RekeyedMerchants != 0 {
-		t.Errorf("RekeyedMerchants = %d, want 0: the new key already holds a verdict", res.RekeyedMerchants)
+	if res.RekeyedVerdicts != 0 {
+		t.Errorf("RekeyedMerchants = %d, want 0: the new key already holds a verdict", res.RekeyedVerdicts)
 	}
 	var model, detailed string
 	if err := db.QueryRowContext(ctx, `
@@ -1421,11 +1421,11 @@ func TestPassRekeyLeavesASplitVerdictBehind(t *testing.T) {
 	}
 
 	res := runPass(t, db, ctx, Options{})
-	if res.RekeyedMerchants != 1 {
-		t.Errorf("RekeyedMerchants = %d, want 1 (the one-to-one move beside the split)", res.RekeyedMerchants)
+	if res.RekeyedVerdicts != 1 {
+		t.Errorf("RekeyedMerchants = %d, want 1 (the one-to-one move beside the split)", res.RekeyedVerdicts)
 	}
-	if res.SplitMerchants != 1 {
-		t.Errorf("SplitMerchants = %d, want 1", res.SplitMerchants)
+	if res.SplitVerdicts != 1 {
+		t.Errorf("SplitMerchants = %d, want 1", res.SplitVerdicts)
 	}
 
 	for _, creditor := range []string{"Northwind Telecom", "Harbour Insurance"} {
@@ -1505,11 +1505,11 @@ func TestPassRekeyLeavesTheEbillMarkersBehind(t *testing.T) {
 	}
 
 	res := runPass(t, db, ctx, Options{})
-	if res.RekeyedMerchants != 1 {
-		t.Errorf("RekeyedMerchants = %d, want 1 (the one-to-one move beside the splits)", res.RekeyedMerchants)
+	if res.RekeyedVerdicts != 1 {
+		t.Errorf("RekeyedMerchants = %d, want 1 (the one-to-one move beside the splits)", res.RekeyedVerdicts)
 	}
-	if res.SplitMerchants != 3 {
-		t.Errorf("SplitMerchants = %d, want 3 (one per spelling of the marker)", res.SplitMerchants)
+	if res.SplitVerdicts != 3 {
+		t.Errorf("SplitMerchants = %d, want 3 (one per spelling of the marker)", res.SplitVerdicts)
 	}
 
 	for _, tc := range []struct{ id, creditor string }{
@@ -1571,8 +1571,8 @@ func TestPassRekeyTreatsAPartialMoveAsASplit(t *testing.T) {
 	}
 
 	res := runPass(t, db, ctx, Options{})
-	if res.RekeyedMerchants != 0 || res.SplitMerchants != 1 {
-		t.Errorf("(Rekeyed, Split) = (%d, %d), want (0, 1)", res.RekeyedMerchants, res.SplitMerchants)
+	if res.RekeyedVerdicts != 0 || res.SplitVerdicts != 1 {
+		t.Errorf("(Rekeyed, Split) = (%d, %d), want (0, 1)", res.RekeyedVerdicts, res.SplitVerdicts)
 	}
 	if got := storedVerdictCount(t, db, ctx, Normalize("Blue Harbour Cafe", "")); got != 0 {
 		t.Errorf("the row that left took the verdict with it")
@@ -1662,9 +1662,9 @@ func TestPassRekeyCollapsesSeveralOldKeysOntoOne(t *testing.T) {
 	}
 
 	res := runPass(t, db, ctx, Options{})
-	if res.RekeyedMerchants != 1 || res.SplitMerchants != 0 {
+	if res.RekeyedVerdicts != 1 || res.SplitVerdicts != 0 {
 		t.Errorf("(Rekeyed, Split) = (%d, %d), want (1, 0): a collapse carries once and splits nothing",
-			res.RekeyedMerchants, res.SplitMerchants)
+			res.RekeyedVerdicts, res.SplitVerdicts)
 	}
 
 	newSig := Normalize("Corner Market", "")
@@ -1717,9 +1717,9 @@ func TestPassRekeyCollapsesSeveralOldKeysOntoOne(t *testing.T) {
 
 	// Safe to run every pass: the collapse is not carried a second time.
 	again := runPass(t, db, ctx, Options{})
-	if again.RekeyedMerchants != 0 || again.SplitMerchants != 0 {
+	if again.RekeyedVerdicts != 0 || again.SplitVerdicts != 0 {
 		t.Errorf("second pass (Rekeyed, Split) = (%d, %d), want (0, 0)",
-			again.RekeyedMerchants, again.SplitMerchants)
+			again.RekeyedVerdicts, again.SplitVerdicts)
 	}
 }
 

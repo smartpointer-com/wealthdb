@@ -88,7 +88,7 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 	if err != nil {
 		return nil, nil, err
 	}
-	population, err := loadPopulation(ctx, db)
+	population, err := loadPopulation(ctx, db, spendingFamily)
 	if err != nil {
 		return nil, nil, err
 	}

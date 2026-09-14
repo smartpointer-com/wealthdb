@@ -53,6 +53,13 @@ type SourceStatus struct {
 	// backlog, and the number that says how much of a spending report
 	// is still "uncategorised" rather than wrong.
 	UncategorizedSpendCount int
+	// UncategorizedIncomeCount is income lines this source contributes
+	// that no tier and no kind floor could place — the income model
+	// tier's backlog, and the same canary the spending count is. It is
+	// read from income_lines_base, so it counts what a report SHOWS as
+	// `(uncategorized)` rather than what the overlay left blank: a
+	// dividend the floor placed at query time was never backlog.
+	UncategorizedIncomeCount int
 	// ExcludedUnmappedCount is transactions on this source's IN-SCOPE
 	// spending accounts carrying either CATCH-ALL kind — `other` or
 	// `journal` — and which therefore never reach the spending base at
@@ -197,18 +204,27 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 	return s, nil
 }
 
-// spendDrift fills the two spending counters. Both read the layered
-// spend macros rather than restating their predicates, so a change to
-// what counts as a spending account or a spending kind moves the
-// status numbers with it.
+// spendDrift fills the enrichment counters, one per family plus the
+// catch-all kinds. Each reads the layered macros rather than restating
+// their predicates, so a change to what counts as a scoped account or
+// a family's kind moves the status numbers with it.
 //
-// The second counter watches the two CATCH-ALL kinds — `other` and
+// The last counter watches the two CATCH-ALL kinds — `other` and
 // `journal` — on in-scope accounts. Those are where an adapter files a
 // row it could not classify, so money landing there is money that
-// silently left the spending base. The deliberate exclusions (buy,
-// sell, fx, dividend, card_payment, positive interest) are not
+// silently left the base. The deliberate exclusions (buy, sell, fx,
+// card_payment, and each family's half of the signed kinds) are not
 // counted: they occur in bulk on every deposit and card account, and a
 // number that is permanently large says nothing.
+//
+// That counter is NOT duplicated per family, and the reason is worth
+// stating because it is a compromise rather than an identity: it joins
+// `spend_scoped_accounts()`, and the two scopes are separate tables.
+// Where they agree — which is the default, both being include-
+// everything — one number answers for both families. Where a
+// deployment excludes an account from one scope and not the other, it
+// answers for spending's, and an account only income scopes in
+// contributes nothing to it.
 func spendDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
 	if err := db.QueryRowContext(ctx, `
         SELECT COUNT(*) FROM spending_lines_base(?, ?)
@@ -216,6 +232,13 @@ func spendDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
 		int64(0), MaxEpoch, s.SilverSourceID,
 	).Scan(&s.UncategorizedSpendCount); err != nil {
 		return fmt.Errorf("StatusForSource(%s) uncategorised spend: %w", s.SilverSourceID, err)
+	}
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM income_lines_base(?, ?)
+         WHERE silver_source_id = ? AND income_detailed IS NULL`,
+		int64(0), MaxEpoch, s.SilverSourceID,
+	).Scan(&s.UncategorizedIncomeCount); err != nil {
+		return fmt.Errorf("StatusForSource(%s) uncategorised income: %w", s.SilverSourceID, err)
 	}
 	if err := db.QueryRowContext(ctx, `
         SELECT COUNT(*)

@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 )
 
@@ -87,16 +87,56 @@ type Options struct {
 	// after every other tier. Nil pins nothing.
 	Pins []Pin
 
+	// Income is the income family's own config: its account scope, its
+	// rules and its pins. The matcher knobs and the transfer-override
+	// ledger are deliberately absent — there is one matcher, and both
+	// families read its verdicts (docs/INCOME.md, decision 8).
+	Income IncomeOptions
+
 	// Now overrides the assignment timestamp. Zero means time.Now();
 	// tests set it so a pass's output is byte-comparable across runs.
 	Now int64
+}
+
+// IncomeOptions is the income family's half of Options. Same shapes as
+// the spending fields above and the same meanings, read against the
+// income vocabulary: a rule or a pin here places an income_detailed
+// value, and the account scope is income's own.
+type IncomeOptions struct {
+	Include map[string][]string
+	Exclude map[string][]string
+	Rules   []Rule
+	Pins    []Pin
 }
 
 // Result reports what the pass did. The counts are the pass's own
 // observability: a build that stops reaching rows it used to reach
 // shows up here before it shows up in a chart.
 type Result struct {
-	// ScopeRows is the number of spend_account_scope overrides stamped.
+	// The spending family's counters, embedded so that every caller
+	// and test that read them before the income family existed reads
+	// them unchanged.
+	FamilyResult
+
+	// Income is the same counters for the income family.
+	Income FamilyResult
+
+	// UnmatchedTransferOverrides is the number of transfer-override
+	// rules that named no leg in the matcher pool. It sits here rather
+	// than on a family because there is one matcher and one ledger:
+	// a match decision is about a PAIR, and a pair has a leg on each
+	// side. Reported, never an error, and with the same force as
+	// UnmatchedPins: an override is something a person wrote down
+	// about a row they believe exists, so one that quietly does
+	// nothing is worse than one that says so.
+	UnmatchedTransferOverrides int
+}
+
+// FamilyResult is what the pass did for one family. The counts are the
+// pass's own observability: a build that stops reaching rows it used
+// to reach shows up here before it shows up in a chart.
+type FamilyResult struct {
+	// ScopeRows is the number of account-scope overrides stamped.
 	ScopeRows int
 	// Population is the number of rows in the enrichment population.
 	Population int
@@ -116,15 +156,8 @@ type Result struct {
 	// transaction in gold. Reported, never an error: the row may
 	// simply not have loaded yet.
 	UnmatchedPins int
-	// UnmatchedTransferOverrides is the number of transfer-override
-	// rules that named no leg in the matcher pool. Reported for the
-	// same reason as UnmatchedPins, and with the same force: an
-	// override is something a person wrote down about a row they
-	// believe exists, so one that quietly does nothing is worse than
-	// one that says so.
-	UnmatchedTransferOverrides int
 	// UnresolvedScopeAccounts is the number of configured
-	// `spending.accounts` entries naming an account gold does not
+	// `<family>.accounts` entries naming an account gold does not
 	// hold. Such an entry fences nothing — the scope table joins to
 	// `accounts` on the id — so it is counted rather than silently
 	// stamped and forgotten. Reported, never an error: the key is an
@@ -137,15 +170,16 @@ type Result struct {
 	// bank's booking types are not categorical, and a rail the map
 	// does not translate is not counted (see ProviderCategory).
 	UnmappedProviderCategories int
-	// RekeyedMerchants counts merchant verdicts carried forward onto a
-	// new signature by a SignatureVersion bump.
-	RekeyedMerchants int
-	// SplitMerchants counts older-version merchant verdicts a
-	// SignatureVersion bump left behind: the old signature's rows now
-	// land on several new signatures, so the verdict was about a shape
-	// several merchants shared rather than about any one of them, and
-	// it is carried onto none. Those merchants are back in the backlog.
-	SplitMerchants int
+	// RekeyedVerdicts counts stored verdicts — merchants on the
+	// spending side, payers on the income side — carried forward onto
+	// a new signature by a SignatureVersion bump.
+	RekeyedVerdicts int
+	// SplitVerdicts counts older-version verdicts a SignatureVersion
+	// bump left behind: the old signature's rows now land on several
+	// new signatures, so the verdict was about a shape several
+	// counterparties shared rather than about any one of them, and it
+	// is carried onto none. Those are back in the backlog.
+	SplitVerdicts int
 }
 
 // RunDeterministicPass recomputes every deterministic spend verdict in
@@ -181,22 +215,16 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	}()
 
 	res := &Result{}
-	res.ScopeRows, res.UnresolvedScopeAccounts, err =
-		syncAccountScope(ctx, tx, opts.Include, opts.Exclude)
-	if err != nil {
-		return nil, err
-	}
 
 	kinds, err := loadSilverKinds(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	population, err := loadPopulation(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	res.Population = len(population)
 
+	// The matcher runs ONCE, before either family is enriched, and both
+	// read its verdicts. A movement is own-account or it is not, and two
+	// matchers with two bandings would call the same wire internal on
+	// one side and external on the other.
 	legs, poolNarratives, err := loadMatcherPool(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -208,33 +236,19 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	res.UnmatchedTransferOverrides = len(unresolvedOverrides)
 	matched := matchInternalTransfers(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides)
 
-	pinned, unmatched, err := resolvePins(ctx, tx, opts.Pins)
-	if err != nil {
-		return nil, err
-	}
-	res.UnmatchedPins = unmatched
-
-	oldSignatures, err := loadExistingSignatures(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	merchants, err := loadMerchantStore(ctx, tx)
-	if err != nil {
+	if err := enrichFamily(ctx, tx, spendingFamily, familyInput{
+		include: opts.Include, exclude: opts.Exclude,
+		rules: opts.Rules, pins: opts.Pins,
+		kinds: kinds, matched: matched, pool: poolNarratives, now: now,
+	}, &res.FamilyResult); err != nil {
 		return nil, err
 	}
 
-	if err := deleteEnrichmentRows(ctx, tx); err != nil {
-		return nil, err
-	}
-
-	rows := assignCategories(population, poolNarratives, matched, kinds, opts.Rules, pinned, res)
-	if err := insertEnrichment(ctx, tx, rows, now); err != nil {
-		return nil, err
-	}
-	res.Enriched = len(rows)
-
-	res.RekeyedMerchants, res.SplitMerchants, err = rekeyMerchants(ctx, tx, rows, oldSignatures, merchants, now)
-	if err != nil {
+	if err := enrichFamily(ctx, tx, incomeFamily, familyInput{
+		include: opts.Income.Include, exclude: opts.Income.Exclude,
+		rules: opts.Income.Rules, pins: opts.Income.Pins,
+		kinds: kinds, matched: matched, pool: poolNarratives, now: now,
+	}, &res.Income); err != nil {
 		return nil, err
 	}
 
@@ -243,6 +257,60 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	}
 	committed = true
 	return res, nil
+}
+
+// enrichFamily runs one family's phases inside the pass's transaction.
+//
+// The order is load-bearing and is the reason this is one function
+// rather than a sequence at the call site. The account scope is
+// stamped FIRST because the population macro reads it, so a scope edit
+// takes effect in the same pass that applies it. The old signatures
+// are captured BEFORE the delete, because the signature-version re-key
+// needs to know where a verdict used to hang. Pins are resolved
+// against the whole of `transactions`, because a pin describes a row
+// by what a statement shows and owes nothing to any population.
+func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, out *FamilyResult) error {
+	var err error
+	out.ScopeRows, out.UnresolvedScopeAccounts, err =
+		syncAccountScope(ctx, tx, fam, in.include, in.exclude)
+	if err != nil {
+		return err
+	}
+
+	population, err := loadPopulation(ctx, tx, fam)
+	if err != nil {
+		return err
+	}
+	out.Population = len(population)
+
+	pinned, unmatched, err := resolvePins(ctx, tx, in.pins)
+	if err != nil {
+		return err
+	}
+	out.UnmatchedPins = unmatched
+
+	oldSignatures, err := loadExistingSignatures(ctx, tx, fam)
+	if err != nil {
+		return err
+	}
+	verdicts, err := loadVerdictStore(ctx, tx, fam)
+	if err != nil {
+		return err
+	}
+
+	if err := deleteEnrichmentRows(ctx, tx, fam); err != nil {
+		return err
+	}
+
+	rows := assignCategories(fam, population, in.pool, in.matched, in.kinds, in.rules, pinned, out)
+	if err := insertEnrichment(ctx, tx, fam, rows, in.now); err != nil {
+		return err
+	}
+	out.Enriched = len(rows)
+
+	out.RekeyedVerdicts, out.SplitVerdicts, err =
+		rekeyStore(ctx, tx, fam, rows, oldSignatures, verdicts, in.now)
+	return err
 }
 
 // ---- phase 1: the account scope ------------------------------------------
@@ -265,19 +333,19 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 // for the caller to report, because a scope knob that silently does
 // nothing is the wrong failure mode for the surface that decides which
 // accounts the model tier may ever see.
-func syncAccountScope(ctx context.Context, tx *sql.Tx, include, exclude map[string][]string) (stamped, unresolved int, err error) {
+func syncAccountScope(ctx context.Context, tx *sql.Tx, fam family, include, exclude map[string][]string) (stamped, unresolved int, err error) {
 	known, err := loadAccountIDs(ctx, tx)
 	if err != nil {
 		return 0, 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM spend_account_scope`); err != nil {
-		return 0, 0, fmt.Errorf("spending: clear account scope: %w", err)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+fam.scopeTable); err != nil {
+		return 0, 0, fmt.Errorf("%s: clear account scope: %w", fam.name, err)
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO spend_account_scope (silver_source_id, account_external_id, mode)
+        INSERT INTO `+fam.scopeTable+` (silver_source_id, account_external_id, mode)
         VALUES (?, ?, ?)`)
 	if err != nil {
-		return 0, 0, fmt.Errorf("spending: prepare account scope: %w", err)
+		return 0, 0, fmt.Errorf("%s: prepare account scope: %w", fam.name, err)
 	}
 	defer stmt.Close()
 
@@ -353,7 +421,11 @@ type candidate struct {
 	occurredAt int64
 }
 
-func loadPopulation(ctx context.Context, tx querier) ([]candidate, error) {
+// loadPopulation reads one family's candidates. The two populations
+// project the same columns by construction — the income one adds
+// `instrument_external_id`, which the pass has no use for and does not
+// select — so one query shape serves both.
+func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,
                COALESCE(account_kind, ''),
@@ -361,10 +433,10 @@ func loadPopulation(ctx context.Context, tx querier) ([]candidate, error) {
                COALESCE(provider_category, ''),
                COALESCE(account_external_id, ''),
                COALESCE(portfolio_external_id, ''), occurred_at
-          FROM spend_enrichment_population(?, ?)
+          FROM `+fam.populationMacro+`(?, ?)
          ORDER BY silver_source_id, transaction_external_id`, int64(0), gold.MaxEpoch)
 	if err != nil {
-		return nil, fmt.Errorf("spending: read enrichment population: %w", err)
+		return nil, fmt.Errorf("%s: read enrichment population: %w", fam.name, err)
 	}
 	defer rows.Close()
 	var out []candidate
@@ -373,7 +445,7 @@ func loadPopulation(ctx context.Context, tx querier) ([]candidate, error) {
 		if err := rows.Scan(&r.key.source, &r.key.txID, &r.accountKind,
 			&r.counterparty, &r.description, &r.providerCategory,
 			&r.account, &r.portfolio, &r.occurredAt); err != nil {
-			return nil, fmt.Errorf("spending: scan enrichment population: %w", err)
+			return nil, fmt.Errorf("%s: scan enrichment population: %w", fam.name, err)
 		}
 		out = append(out, r)
 	}
@@ -463,13 +535,13 @@ type signatureAt struct {
 	version   int
 }
 
-func loadExistingSignatures(ctx context.Context, tx *sql.Tx) (map[txKey]signatureAt, error) {
+func loadExistingSignatures(ctx context.Context, tx *sql.Tx, fam family) (map[txKey]signatureAt, error) {
 	rows, err := tx.QueryContext(ctx, `
-        SELECT silver_source_id, transaction_external_id, merchant_signature, signature_version
-          FROM spend_txn_enrichment
-         WHERE merchant_signature IS NOT NULL AND merchant_signature <> ''`)
+        SELECT silver_source_id, transaction_external_id, `+fam.signatureCol+`, signature_version
+          FROM `+fam.overlayTable+`
+         WHERE `+fam.signatureCol+` IS NOT NULL AND `+fam.signatureCol+` <> ''`)
 	if err != nil {
-		return nil, fmt.Errorf("spending: read existing signatures: %w", err)
+		return nil, fmt.Errorf("%s: read existing signatures: %w", fam.name, err)
 	}
 	defer rows.Close()
 	out := map[txKey]signatureAt{}
@@ -479,38 +551,40 @@ func loadExistingSignatures(ctx context.Context, tx *sql.Tx) (map[txKey]signatur
 			s signatureAt
 		)
 		if err := rows.Scan(&k.source, &k.txID, &s.signature, &s.version); err != nil {
-			return nil, fmt.Errorf("spending: scan existing signatures: %w", err)
+			return nil, fmt.Errorf("%s: scan existing signatures: %w", fam.name, err)
 		}
 		out[k] = s
 	}
 	return out, rows.Err()
 }
 
-// merchantVerdict is one row of the global merchant store, read for
-// the signature-version re-key.
-type merchantVerdict struct {
+// storedVerdict is one row of a family's global verdict store — a
+// merchant's on the spending side, a payer's on the income side — read
+// for the signature-version re-key.
+type storedVerdict struct {
 	name      string
 	detailed  string
 	version   int
 	modelName string
 }
 
-func loadMerchantStore(ctx context.Context, tx *sql.Tx) (map[string]merchantVerdict, error) {
+func loadVerdictStore(ctx context.Context, tx *sql.Tx, fam family) (map[string]storedVerdict, error) {
 	rows, err := tx.QueryContext(ctx, `
-        SELECT merchant_signature, merchant_name, spend_detailed, signature_version, model_name
-          FROM spend_merchant_categories`)
+        SELECT `+fam.storeSignatureCol+`, `+fam.storeNameCol+`, `+fam.storeDetailedCol+`,
+               signature_version, model_name
+          FROM `+fam.storeTable)
 	if err != nil {
-		return nil, fmt.Errorf("spending: read merchant store: %w", err)
+		return nil, fmt.Errorf("%s: read verdict store: %w", fam.name, err)
 	}
 	defer rows.Close()
-	out := map[string]merchantVerdict{}
+	out := map[string]storedVerdict{}
 	for rows.Next() {
 		var (
 			sig string
-			v   merchantVerdict
+			v   storedVerdict
 		)
 		if err := rows.Scan(&sig, &v.name, &v.detailed, &v.version, &v.modelName); err != nil {
-			return nil, fmt.Errorf("spending: scan merchant store: %w", err)
+			return nil, fmt.Errorf("%s: scan verdict store: %w", fam.name, err)
 		}
 		out[sig] = v
 	}
@@ -537,9 +611,9 @@ func loadMerchantStore(ctx context.Context, tx *sql.Tx) (map[string]merchantVerd
 // so that removing an entry removes its effect (the
 // spend_account_scope precedent). A preserved manual row would outlive
 // the pin that made it.
-func deleteEnrichmentRows(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM spend_txn_enrichment`); err != nil {
-		return fmt.Errorf("spending: clear enrichment rows: %w", err)
+func deleteEnrichmentRows(ctx context.Context, tx *sql.Tx, fam family) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+fam.overlayTable); err != nil {
+		return fmt.Errorf("%s: clear enrichment rows: %w", fam.name, err)
 	}
 	return nil
 }
@@ -605,13 +679,14 @@ type enrichmentRow struct {
 // matcher paired them or a pin named them; nothing else has any
 // business categorising a deposit.
 func assignCategories(
+	fam family,
 	population []candidate,
 	pool map[txKey]candidate,
 	matched map[txKey]bool,
 	kinds map[string]string,
 	rules []Rule,
 	pinned map[txKey]pinnedRow,
-	res *Result,
+	counts *FamilyResult,
 ) []enrichmentRow {
 	out := make([]enrichmentRow, 0, len(population)+len(matched)+len(pinned))
 	seen := make(map[txKey]bool, len(population)+len(matched)+len(pinned))
@@ -628,7 +703,7 @@ func assignCategories(
 			provenance: ProvenanceSignatureOnly,
 		}
 		if inPopulation {
-			if detailed, ok, drift := ProviderCategory(kinds[r.key.source], r.accountKind, r.providerCategory); ok {
+			if detailed, ok, drift := fam.providerCategory(kinds[r.key.source], r.accountKind, r.providerCategory); ok {
 				// Recorded either way: this is the issuer's own view of the
 				// row, and it is kept whether or not it decides anything.
 				row.providerDetailed = detailed
@@ -642,15 +717,17 @@ func assignCategories(
 				// is fenced out of model candidacy anyway.
 				// ProviderCategoryClaims holds that distinction, beside
 				// the vocabularies it turns on.
-				if ProviderCategoryClaims(kinds[r.key.source], r.accountKind, detailed) {
+				if fam.providerClaims(kinds[r.key.source], r.accountKind, detailed) {
 					row.detailed, row.provenance = detailed, ProvenanceProvider
 				}
 			} else if drift {
-				res.UnmappedProviderCategories++
+				counts.UnmappedProviderCategories++
 			}
-			if detailed, label, ok := RuleCategory(row.signature, r.counterparty, r.description, r.providerCategory); ok {
+			if detailed, label, ok := fam.builtinRule(row.signature, r.counterparty, r.description, r.providerCategory); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
-				row.merchantLabel = label
+				if fam.labelCol != "" {
+					row.merchantLabel = label
+				}
 			} else if detailed, ok := ConfigRuleCategory(rules, RuleRow{
 				Counterparty: r.counterparty, Description: r.description,
 				ProviderCategory: r.providerCategory,
@@ -667,7 +744,7 @@ func assignCategories(
 		// the holder pinned as something else, it would name an issuer
 		// on a line that is no longer a card bill at all.
 		if matched[r.key] {
-			row.detailed = canonical.SpendDetailedInternalTransfer
+			row.detailed = internalTransfer
 			row.provenance = ProvenanceMatcher
 			row.merchantLabel = ""
 		}
@@ -680,15 +757,15 @@ func assignCategories(
 
 		switch row.provenance {
 		case ProvenanceManual:
-			res.PinRows++
+			counts.PinRows++
 		case ProvenanceMatcher:
-			res.MatcherRows++
+			counts.MatcherRows++
 		case ProvenanceRule:
-			res.RuleRows++
+			counts.RuleRows++
 		case ProvenanceProvider:
-			res.ProviderRows++
+			counts.ProviderRows++
 		default:
-			res.SignatureOnlyRows++
+			counts.SignatureOnlyRows++
 		}
 	}
 
@@ -696,12 +773,17 @@ func assignCategories(
 		emit(r, true)
 	}
 	// Matched legs outside the population — a card payment, the deposit
-	// side of a funding wire — are marked too. Both halves of a pair
-	// carry the verdict, so a later report that widens the population
-	// cannot start counting one of them as real money movement.
-	for _, key := range sortedTxKeys(matched) {
-		if r, ok := pool[key]; ok {
-			emit(r, false)
+	// side of a funding wire — are marked too, where the family asks
+	// for it. Both halves of a pair carry the verdict, so a later
+	// report that widens the population cannot start counting one of
+	// them as real money movement. Income asks for none of this: its
+	// half of a pair is already in its population, and the other half
+	// is spending's row to write.
+	if fam.emitOutsidePopulation {
+		for _, key := range sortedTxKeys(matched) {
+			if r, ok := pool[key]; ok {
+				emit(r, false)
+			}
 		}
 	}
 	// Pinned rows outside both: a pin describes a row by what a
@@ -722,19 +804,29 @@ func assignCategories(
 // An error names a row range rather than a transaction: assignCategories
 // emits each key once and the table is emptied first, so a primary-key
 // collision is not among the ways this can fail.
-func insertEnrichment(ctx context.Context, tx *sql.Tx, rows []enrichmentRow, now int64) error {
-	const head = `INSERT INTO spend_txn_enrichment (
-            silver_source_id, transaction_external_id, merchant_signature,
-            signature_version, spend_detailed, provenance, merchant_label,
-            provider_spend_detailed, assigned_at
-        ) VALUES `
-	return gold.InsertChunked(ctx, tx, "spending: write enrichment", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(rows),
+func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrichmentRow, now int64) error {
+	cols := []string{
+		"silver_source_id", "transaction_external_id", fam.signatureCol,
+		"signature_version", fam.detailedCol, "provenance",
+	}
+	if fam.labelCol != "" {
+		cols = append(cols, fam.labelCol)
+	}
+	cols = append(cols, fam.providerCol, "assigned_at")
+
+	head := "INSERT INTO " + fam.overlayTable + " (" + strings.Join(cols, ", ") + ") VALUES "
+	placeholders := "(" + strings.Repeat("?, ", len(cols)-1) + "?)"
+
+	return gold.InsertChunked(ctx, tx, fam.name+": write enrichment", head,
+		placeholders, len(rows),
 		func(i int, args []any) []any {
 			r := &rows[i]
-			return append(args, r.key.source, r.key.txID, nullableString(r.signature),
-				SignatureVersion, nullableString(r.detailed), r.provenance,
-				nullableString(r.merchantLabel), nullableString(r.providerDetailed), now)
+			args = append(args, r.key.source, r.key.txID, nullableString(r.signature),
+				SignatureVersion, nullableString(r.detailed), r.provenance)
+			if fam.labelCol != "" {
+				args = append(args, nullableString(r.merchantLabel))
+			}
+			return append(args, nullableString(r.providerDetailed), now)
 		})
 }
 
@@ -783,12 +875,13 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, rows []enrichmentRow, now
 // Ordering is deterministic (the rows arrive sorted), so when two old
 // signatures collapse onto one new signature the first wins and the
 // result does not depend on map iteration.
-func rekeyMerchants(
+func rekeyStore(
 	ctx context.Context,
 	tx *sql.Tx,
+	fam family,
 	rows []enrichmentRow,
 	old map[txKey]signatureAt,
-	merchants map[string]merchantVerdict,
+	verdicts map[string]storedVerdict,
 	now int64,
 ) (carried, split int, err error) {
 	// Where each old signature's rows landed under the current rules.
@@ -808,14 +901,14 @@ func rekeyMerchants(
 		if len(dests) < 2 {
 			continue
 		}
-		if verdict, ok := merchants[sig]; ok && verdict.version < SignatureVersion {
+		if verdict, ok := verdicts[sig]; ok && verdict.version < SignatureVersion {
 			split++
 		}
 	}
 
 	type carry struct {
 		signature string
-		verdict   merchantVerdict
+		verdict   storedVerdict
 	}
 	var (
 		plan    []carry
@@ -829,10 +922,10 @@ func rekeyMerchants(
 		if len(landed[prev.signature]) > 1 {
 			continue // a split: the old key was an artefact, see above
 		}
-		if _, exists := merchants[r.signature]; exists || claimed[r.signature] {
+		if _, exists := verdicts[r.signature]; exists || claimed[r.signature] {
 			continue
 		}
-		verdict, ok := merchants[prev.signature]
+		verdict, ok := verdicts[prev.signature]
 		if !ok || verdict.version >= SignatureVersion {
 			continue
 		}
@@ -844,18 +937,18 @@ func rekeyMerchants(
 	}
 
 	stmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO spend_merchant_categories (
-            merchant_signature, merchant_name, spend_detailed,
+        INSERT INTO `+fam.storeTable+` (
+            `+fam.storeSignatureCol+`, `+fam.storeNameCol+`, `+fam.storeDetailedCol+`,
             signature_version, assigned_at, model_name
         ) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, 0, fmt.Errorf("spending: prepare merchant re-key: %w", err)
+		return 0, 0, fmt.Errorf("%s: prepare verdict re-key: %w", fam.name, err)
 	}
 	defer stmt.Close()
 	for _, p := range plan {
 		if _, err := stmt.ExecContext(ctx, p.signature, p.verdict.name, p.verdict.detailed,
 			SignatureVersion, now, p.verdict.modelName); err != nil {
-			return 0, 0, fmt.Errorf("spending: re-key merchant verdict onto %q: %w", p.signature, err)
+			return 0, 0, fmt.Errorf("%s: re-key verdict onto %q: %w", fam.name, p.signature, err)
 		}
 	}
 	return len(plan), split, nil

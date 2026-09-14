@@ -380,11 +380,44 @@ var builtinRules = []spendRule{
 // Reading it to decline a row is the opposite move: it lets the tier
 // below, which owns that filing, have the row.
 func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
-	r, fields, ok := matchRule(signature, counterparty, description, providerCategory)
+	r, fields, ok := matchRuleIn(builtinRules, signature, counterparty, description, providerCategory)
 	if !ok {
 		return "", "", false
 	}
 	return r.detailed, r.label(fields), true
+}
+
+// IncomeRuleCategory is the income family's built-in rule tier, and it
+// has one rule.
+//
+// The asymmetry is the design rather than an omission. A built-in rule
+// encodes something STRUCTURAL about the product's own account graph
+// that no provider and no model can know — that the mortgage being
+// paid is itself tracked, that cash out of a machine is
+// unattributable. On the inflow side almost every such fact is the
+// matcher's already: a pension contribution arriving at a tracked
+// pension account, a funding wire's receiving leg and a card bill's
+// card-side leg are all own-account moves with two legs in gold, and
+// the matcher has SEEN both. What is left is cash paid in over a
+// counter or at a machine, which has no counter-leg anywhere and whose
+// origin is unobservable — the exact mirror of the cash-withdrawal
+// rule, and the one income row a narrative can place that nothing else
+// can.
+//
+// An unpaired inbound wire is deliberately NOT here. On the outflow
+// side an unpaired card bill gets `card_spend` because deleting it
+// would delete real consumption; an unpaired inbound wire needs no
+// such rescue, because it stays in the base either way — visible and
+// unplaced, which is the honest answer and the model tier's backlog.
+//
+// It never labels: the label column is the card rule's alone and the
+// income overlay has none.
+func IncomeRuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
+	r, _, ok := matchRuleIn(builtinIncomeRules, signature, counterparty, description, providerCategory)
+	if !ok {
+		return "", "", false
+	}
+	return r.detailed, "", true
 }
 
 // matchRule is RuleCategory's core, returning the RULE that fired
@@ -398,6 +431,14 @@ func RuleCategory(signature, counterparty, description, providerCategory string)
 // Provenance in gold stays the tier rather than the rule, which is why
 // this does not widen the exported signature.
 func matchRule(signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
+	return matchRuleIn(builtinRules, signature, counterparty, description, providerCategory)
+}
+
+// matchRuleIn is matchRule over a named rule table, so the two
+// families share the narrative-field machinery — the memo split, the
+// refusal pass, the token/phrase/shape matching — and differ only by
+// which rules they consult.
+func matchRuleIn(rules []spendRule, signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
 	description, _ = canonical.SplitDescriptionMemo(description)
 	fields := make([]narrativeField, 0, 3)
 	for _, s := range []string{signature, counterparty, description} {
@@ -409,7 +450,7 @@ func matchRule(signature, counterparty, description, providerCategory string) (s
 	if f, ok := newNarrativeField(providerCategory); ok {
 		refusalFields = append(append([]narrativeField{}, fields...), f)
 	}
-	for _, r := range builtinRules {
+	for _, r := range rules {
 		if r.refusedBy != nil && r.refusedBy.matchesAny(refusalFields) {
 			continue
 		}
@@ -641,3 +682,35 @@ func (r spendRule) matches(f narrativeField) bool {
 	}
 	return false
 }
+
+// cashDepositRule is the cash-withdrawal rule read in the other
+// direction: money paid IN over a counter or at a machine, whose
+// origin is as unobservable as a withdrawal's destination.
+//
+// The patterns are the generic phrasing a bank prints for the act,
+// in the languages the withdrawal rule already covers — English,
+// German and Italian — and name the ACT rather than any counterparty.
+// Two German compounds are tokens because the language writes the
+// whole act as one word; everything else is a phrase, because a bare
+// "DEPOSIT" or "EINZAHLUNG" is every inbound row a bank books and
+// would claim the whole population.
+//
+// The machine tokens the withdrawal rule matches on (ATM, BANCOMAT,
+// GELDAUTOMAT) are NOT reused bare. On a withdrawal the machine names
+// the act, because the only thing a machine gives out is cash; on the
+// inflow side a bank prints the same tokens on a card refund reversed
+// at a terminal and on a rejected transfer returned through one, so
+// the phrase has to say deposit as well.
+var cashDepositRule = spendRule{
+	detailed: canonical.IncomeDetailedCashDeposit,
+	tokens:   []string{"BAREINZAHLUNG", "BARGELDEINZAHLUNG"},
+	phrases: []string{
+		"CASH DEPOSIT", "CASH PAID IN", "COUNTER DEPOSIT",
+		"ATM DEPOSIT", "DEPOSIT AT ATM", "CASH IN AT",
+		"EINZAHLUNG BAR", "VERSAMENTO CONTANTI",
+	},
+}
+
+// builtinIncomeRules is the income family's rule table. One rule; see
+// IncomeRuleCategory for why that is the whole of it.
+var builtinIncomeRules = []spendRule{cashDepositRule}
