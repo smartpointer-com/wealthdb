@@ -39,7 +39,7 @@ than the one it reads, so no Go-side predicate restates any of it:
 |---|---|
 | `spend_scoped_accounts()` | which accounts count at all: EVERY account by default since migration 0068 — whether an account can pay a fee is not a property of its kind — and a `spend_account_scope` row is the only thing that takes one out |
 | `spend_enrichment_population(f, t)` | what the enrichment pass may write a verdict for |
-| `spend_matcher_pool(f, t)` | what the internal-transfer matcher sees — deliberately BROADER on two axes: the transfer-eligible KINDS, which include the income side the spending base excludes, on EVERY account rather than the scoped ones (migration 0044) |
+| `spend_matcher_pool(f, t)` | what the internal-transfer matcher sees — deliberately BROADER on two axes: the transfer-eligible KINDS, which include the income side the spending base excludes, on EVERY account rather than the scoped ones (migration 0044). ONE pool for both families: income reads its verdicts and pairs nothing ([INCOME.md](INCOME.md) §1) |
 | `spending_lines_base(f, t)` | what a report charts: the population with its category resolved and its own-account moves and capital deployed removed — a bill on a card not itemised (`card_spend`) and a cash gift (`gift`) stay in |
 
 The layering is not decoration. The enrichment pass is the thing that
@@ -92,15 +92,19 @@ It is vendored rather than fetched, so a taxonomy revision arrives as
 a reviewable diff instead of silently re-labelling history. Gold's
 `spend_categories` dimension is seeded from this table — migration
 0040 seeded the vendored rows and the first three deltas,
-0045 / 0046 / 0047 one delta each, 0056 the first EXTENSION — and a
+0045 / 0046 / 0047 one delta each, 0056 and 0065 the EXTENSIONS, 0069
+the whole income side and the `family` column — and a
 generator-style test pins the migrated dimension to the table so they
 cannot drift. A new value
 is a row here plus a new migration; an applied migration is never
 edited.
 
-Only the spend side is kept: **12 primaries and 80 detailed values.**
-The four dropped primaries describe flows rather than spending —
-`INCOME`, `TRANSFER_IN`, `TRANSFER_OUT` and `LOAN_PAYMENTS`.
+The spend side is **12 primaries and 80 detailed values.** Three of
+Plaid's sixteen primaries are dropped — `TRANSFER_IN`, `TRANSFER_OUT`
+and `LOAN_PAYMENTS`. The fourth, `INCOME`, is vendored whole for the
+other family (migration 0069): one table, one dimension, and a `family`
+column telling the two vocabularies apart. See
+[INCOME.md](INCOME.md) §2.
 
 `LOAN_PAYMENTS` is the load-bearing drop. A mortgage payment leaving a
 cash account is classified `internal_transfer` by a built-in rule,
@@ -109,21 +113,24 @@ because the mortgage is itself a tracked account
 the product already holds, which makes it an own-account move by the
 product's own definition rather than spend.
 
-### The six deltas
+### The six spending deltas
 
-Six values are the product's own rather than Plaid's. They are
-primary-level (primary == detailed, so each groups as its own bucket)
-and keep the repo's lowercase enum idiom, which also marks them at a
-glance as not-from-Plaid:
+Six values the SPENDING side reads are the product's own rather than
+Plaid's — eleven rows across both families, of which these six are
+spending's and three are shared. They are primary-level (primary ==
+detailed, so each groups as its own bucket) and keep the repo's
+lowercase enum idiom, which also marks them at a glance as
+not-from-Plaid. The three marked *both* mean the same thing read from
+either direction and are ONE row in the dimension:
 
 | value | meaning |
 |---|---|
-| `internal_transfer` | movement between two accounts the product already tracks — card payments, funding wires, mortgage payments |
+| `internal_transfer` | *(both)* movement between two accounts the product already tracks, either leg — card payments, funding wires, mortgage payments, a pension contribution arriving |
 | `cash_withdrawal` | cash taken out at an ATM or a counter; what it was then spent on is unobservable |
 | `card_spend` | a credit-card bill paid to an issuer whose card is not itemised in wealthdb — generic card spend, in the base until the card is collected |
-| `gift` | a cash gift or family support — spending, with no merchant behind it; not a gift item bought in a shop, and not a donation to a non-profit |
+| `gift` | *(both)* a cash gift or family support, given or received — with no merchant, employer or issuer behind it; not a gift item bought in a shop, and not a donation to a non-profit |
 | `investment` | capital deployed from a cash account — a securities subscription, a deposit into a wallet — to a destination the product does not track; not consumed, and not an own-account move |
-| `other` | spend that no rule, matcher or model could place |
+| `other` | *(both)* money moved that no rule, matcher or model could place — a payment on the outflow side, a receipt on the inflow side |
 
 `cash_withdrawal` is its own primary rather than a guess, so a report
 can show how much of a period's spending is simply unattributable
@@ -1658,10 +1665,19 @@ tidies the store — by then the rows have moved on.
 
 ## 9. Decisions of record
 
-- **Family name `spending`; outflows only.** Income and cash-flow
-  analysis are a future `cashflow` feature.
-- **Plaid PFC, vendored verbatim**, spend side only, plus six
-  deltas. A revision arrives as a diff.
+- **Family name `spending`; outflows only.** Income is
+  [INCOME.md](INCOME.md); buys and sells remain the future `cashflow`
+  feature.
+- **Plaid PFC, vendored verbatim**, plus extensions and deltas. A
+  revision arrives as a diff. The dimension carries both families, told
+  apart by a `family` column (migration 0069); the two vocabularies are
+  fenced from each other by predicate, so a spending rule cannot place
+  an income value.
+- **A rewards credit is income, not an offset against card spend**
+  (migration 0070). The `reward` kind left the spending population: a
+  statement credit, an account-opening bonus and a referral bonus all
+  arrive under it, and only the first has any relationship to spending
+  at all. Nothing in gold changed — no adapter emits the kind yet.
 - **Capital deployed is not spending** (`investment`, §2). It is an
   own-account move when the destination is tracked and an
   `investment` when it is not; either way it leaves the base.

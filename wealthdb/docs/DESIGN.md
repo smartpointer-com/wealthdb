@@ -461,7 +461,14 @@ The reader hosts can ship the same image as the writer host with
 no configuration difference — `--read-only` is auto-detected from
 the mount mode. The writer host runs without the flag.
 
-### 4.11 `wealthdb categorize` / `wealthdb categorizations`
+### 4.11 `wealthdb categorize [spending|income]` / `wealthdb categorizations [spending|income]`
+
+Both take an optional family positional. Nothing named runs BOTH, in
+order — spending, then income — as two plans and two summaries against
+one model; a name runs that one alone. `--forget SIG` with no family
+removes the signature from both verdict stores, one counterparty being
+able to sit in each with a different verdict. See docs/INCOME.md §7.
+
 
 `categorize` is the spending feature's model tier. The deterministic
 tiers run on every `load`; what they leave behind is a set of merchant
@@ -598,7 +605,33 @@ invalid `--period` / `--level` / `-x`, unknown column), `3` when the
 gold DB does not exist. `spending` is `(RO)` and never needs write
 access.
 
-### 4.13 Future subcommands (sketch only)
+### 4.13 `wealthdb income <view>`
+
+The read surface over the income population (docs/INCOME.md, and §10.11
+for the macros underneath) — §4.12 read in the other direction. Same
+positional grain, same flags, same window default; three differences,
+each a decision recorded in docs/INCOME.md §10.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `<view>` | required | `summary` \| `types` \| `transactions`. No `payers` view: payers rank on the dashboard only, as merchants do. |
+| `[FROM [TO]]` | trailing twelve months | As §4.12. A positional year is the idiom for the calendar-year report: `wealthdb income types 2025 --period annual`. |
+| `--period` | `monthly` | As §4.12. |
+| `--level` | **`detailed`** | The one default that differs from spending's. The income taxonomy has ONE vendored primary, so the primary level folds every vendored type and extension into `INCOME` beside the deltas. |
+| `-C/--columns` | `default` | `withheld` is available on `summary` and off by default: tax deducted at source, shown beside the income it was taken from and never subtracted from `net_income`. |
+| `-f`, `-x`, `-p` | as §4.12 | `-p` masks `payer`, `payer_signature`, `counterparty` and `description` whole; types, provenance and `share` stay legible. |
+
+`income` and `reversals` are positive magnitudes and `net_income` is
+the difference, mirroring `spend` / `refunds` / `net_spend`; the
+`transactions` view keeps canonical signs.
+
+`wealthdb transactions` carries `payer`, `income_primary` and
+`income_detailed` behind `-C`, beside the spending trio. A row can hold
+both — a deposit the matcher paired is `internal_transfer` in each
+overlay — and that view is the one surface showing a transaction from
+both sides at once.
+
+### 4.14 Future subcommands (sketch only)
 
 These are reserved namespaces; their final shape will be designed
 when implemented. The schema must not preclude them.
@@ -721,6 +754,11 @@ Example config file:
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `returns_transfer_matching` | object | Optional, off by default. Enables the cross-source transfer matcher: an external leg whose counterparty leg exists in ANOTHER source (opposite sign, same native currency, equal amount within `tolerance_pct`, within `window_days`) nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. Fields: `enabled` (bool), `window_days` (0–30, default 5), `tolerance_pct` (0–5, default 0.5). See §5.8. |
+| `income` | object | Optional. Groups the income feature's per-deployment knobs — `accounts`, `rules[]`, `pins`, `categorization` — in `spending`'s shapes. Two blocks spending has are deliberately absent: there is one internal-transfer matcher and one transfer-override ledger, and both families read them (docs/INCOME.md §1). Absent ⇒ every account counts, no rules and no pins apply, and the model tier inherits `spending.categorization`. |
+| `income.accounts` | object | Optional. The income account scope, in `spending.accounts`' shape and stamped into gold's `income_account_scope`. Its own table on purpose: an account excluded from spending because its outflows double-count something is not thereby an account whose inflows are not income. |
+| `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. |
+| `income.pins` | string | Optional. Path to the income pins ledger: the spending ledger's format with an `income_detailed` column. See §13.12. |
+| `income.categorization` | object | Optional. As `spending.categorization`. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
 | `spending.accounts` | object | Optional. Account-scope overrides, keyed by `silver_source_id` in the `returns_exclude` shape, with `include` / `exclude` lists of account ids. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. Which way round the overrides bite is the scope rule — see docs/SPENDING.md §1. |
 | `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. |
@@ -2500,6 +2538,39 @@ across sources. The name comes first so a chart truncating a long label
 clips the annotation rather than the identity. The bare name and the id
 stay projected beside it.
 
+### 10.11 Income reports
+
+The spending macros of §10.10 read in the other direction, over the
+income population. `income_scoped_accounts()`,
+`income_enrichment_population(f, t)` and `income_lines_base(f, t)`
+(migration `0070`), the FX pair `income_lines_outccy` /
+`income_lines_multi` and the three reports `report_income_summary`,
+`report_income_types` and `report_income_transactions` (`0071`).
+
+Three things differ from the spending set, and only three:
+
+- **The resolution adds a step.** `income_txn_categories()` resolves the
+  payer as the INSTRUMENT where a line carries one — a dividend, a
+  coupon, a staking reward arrive with an instrument and no narrative —
+  before falling through to the store's name and then the signature.
+  A delta line carries no payer at all.
+- **One floor arm places a delta.** `distribution` floors to
+  `capital_return`, so such a row leaves the base with no verdict
+  written anywhere (docs/INCOME.md §1).
+- **The summary carries `withheld`**, a memo with no spending twin: the
+  window's `tax` rows on the same accounts, bucketed and converted like
+  the lines, LEFT JOINed by bucket and never subtracted.
+
+`report_transactions` was re-issued in `0071` to carry `payer_name`,
+`income_primary` and `income_detailed` after the spending trio. It is
+read by a POSITIONAL scan (`gold.TransactionRow`), so that macro, the
+row struct and the scan list move together in one change.
+
+`web_income` (`0072`) is `web_spending`'s shape over the income lines:
+one row per (line, reporting currency), epoch-ms timestamps, the shared
+account-label macro, and `(uncategorized)` on the type columns — but
+NOT on the payer, which a delta line has none of by construction.
+
 ## 11. Repository layout
 
 ```
@@ -3140,7 +3211,7 @@ that source's returns policy admits exactly the two ledger kinds so
 the claim's arrival is funded rather than read as performance. The
 runbook is in `collectors/manual/DESIGN.md` §6.
 
-### 13.11 Spending pins ledger
+### 13.11 Spending and income pins ledgers
 
 Some rows on a cash account cannot be classified from anything gold
 holds. An FX roll settling as a bare withdrawal carries no descriptor
@@ -3153,7 +3224,11 @@ identifies it is *which* row it is.
 The optional `spending.pins` CSV ledger (config §5) records those
 corrections one transaction at a time. Columns: `silver_source_id,
 account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed,
-note`. `account` accepts either the gold `account_external_id` or an
+note`. **`income.pins` is the same ledger for the income family**, with
+`income_detailed` in place of `spend_detailed` and validated against the
+income vocabulary — a pin identifies a transaction the same way
+whichever question is being answered about it, so only the value column
+and its taxonomy differ. `account` accepts either the gold `account_external_id` or an
 account nickname, resolved by the same `gold.NewAccountResolver` the
 equity-transfer ledger uses. `amount` is the amount as gold stores it
 — canonical sign, so a debit is negative — and matches within a cent,

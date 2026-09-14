@@ -57,8 +57,8 @@ import "strings"
 // beside it.
 //
 // The policy each delta encodes — what is and is not spending, what is
-// and is not income, which tier places it — is the spending and income
-// docs'; it is not restated here.
+// and is not income, which tier places it — is docs/SPENDING.md §2 and
+// docs/INCOME.md §2; it is not restated here.
 
 // Family says which vocabulary a row belongs to. The two families ask
 // different questions of the same counterparty — what was bought, and
@@ -338,7 +338,7 @@ var deltaCategories = []SpendCategory{
 // is deducted before the money arrives. A report that cannot tell them
 // apart cannot answer "what was paid in tax that was never seen" — and
 // it is the spending side that carries it, because income is booked
-// gross, as the source recorded it arriving.
+// gross, as the source recorded it arriving (docs/INCOME.md §5).
 //
 // Both are ordinary judgements about what a row IS, so the model tier
 // may emit them — and usefully can, since the signature on a

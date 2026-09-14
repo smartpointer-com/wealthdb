@@ -77,12 +77,13 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb returns <view>` | Time-weighted (TWR) & money-weighted (MWR/XIRR) returns by `accounts`, `portfolios`, `sources`, `global` over a window. `--method`, `--period {monthly\|quarterly\|annual\|total}`, `--annualize`, `--netting`, `--inception`; historic FX, after fees & taxes. Account-grain is exact; coarse grains are best-effort — read the `quality` column. |
 | `wealthdb transactions` | Print transactions over a date range, oldest first (`-r` reverses to newest first). |
 | `wealthdb spending <view>` | What the tracked accounts spent, over a window defaulting to the trailing twelve months: `summary`, `categories`, `transactions`. `--period {daily\|weekly\|monthly\|quarterly\|annual\|total}`, `--level {primary\|detailed}`, plus `-f`/`-C`/`-x`/`-p`; historic FX, own-account moves excluded. |
+| `wealthdb income <view>` | What the tracked accounts received, over the same default window: `summary`, `types`, `transactions`. `--period` as above, `--level {primary\|detailed}` defaulting to `detailed`, plus `-f`/`-C`/`-x`/`-p`; gross as booked, with `-C +withheld` showing tax deducted at source beside it. |
 | `wealthdb status [<id>] [-v]` | Report gold state vs each silver source. |
 | `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
 | `wealthdb resolve-symbols` | Back-fill missing instrument tickers via a local LLM (configured under `symbol_resolution.model`); applies any `symbol_resolution.overrides` first. `--overrides-only` skips the LLM round-trip. |
 | `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
-| `wealthdb categorize` | Categorise the merchants the deterministic spending tiers left unplaced, via the LLM in `spending.categorization.model`. `-n` plans without writing; `--all` re-asks every signature. |
-| `wealthdb categorizations` | Dump the `spend_merchant_categories` lookup table for inspection; `--forget SIG` retires a wrong merchant verdict so the next run re-asks it. |
+| `wealthdb categorize [spending\|income]` | Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in `<family>.categorization.model`. A positional selects one family; neither runs both. `-n` plans without writing; `--all` re-asks every signature. |
+| `wealthdb categorizations [spending|income]` | Dump the model-derived verdict stores for inspection, with a `family` column; `--forget SIG` retires a wrong verdict so the next run re-asks it, from both stores unless a family is named. |
 | `wealthdb version` | Print the wealthdb version. |
 | `wealthdb help [<subcommand>]` | Help. |
 

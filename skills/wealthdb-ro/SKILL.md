@@ -1,6 +1,6 @@
 ---
 name: wealthdb-ro
-description: Query the user's consolidated cross-institution investment portfolio — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (time-weighted TWR & money-weighted MWR/XIRR), and categorised spending across the tracked accounts — through the read-only `wealthdb` CLI. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in/out, how an account / portfolio / the whole portfolio has performed over a period, or what was spent and on what.
+description: Query the user's consolidated cross-institution investment portfolio — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (time-weighted TWR & money-weighted MWR/XIRR), and categorised spending and income across the tracked accounts — through the read-only `wealthdb` CLI. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in/out, how an account / portfolio / the whole portfolio has performed over a period, what was spent and on what, or what was received and from whom.
 ---
 
 # wealthdb — portfolio queries (read-only)
@@ -14,7 +14,7 @@ ledger. You only ever *read* from it. In a configured deployment, just run
 the command; no setup, no paths, no flags required to connect.
 
 ## Hard rules (do not break)
-- Allowed, all read-only: `wealthdb holdings <view>` (`<view>` is `global`, `sources`, `portfolios`, `accounts`, or `positions`), `wealthdb returns <view>` (`<view>` is `accounts`, `portfolios`, `sources`, or `global`), `wealthdb spending <view>` (`<view>` is `summary`, `categories`, or `transactions`), and `wealthdb transactions` — the data queries — plus `wealthdb status`, `snapshots`, `help` (harmless diagnostics — run freely).
+- Allowed, all read-only: `wealthdb holdings <view>` (`<view>` is `global`, `sources`, `portfolios`, `accounts`, or `positions`), `wealthdb returns <view>` (`<view>` is `accounts`, `portfolios`, `sources`, or `global`), `wealthdb spending <view>` (`<view>` is `summary`, `categories`, or `transactions`), `wealthdb income <view>` (`<view>` is `summary`, `types`, or `transactions`), and `wealthdb transactions` — the data queries — plus `wealthdb status`, `snapshots`, `help` (harmless diagnostics — run freely).
 - NEVER run anything that writes or mutates: `load`, `reload`, `reset`, `init`, `config`, and `wealthdb-collect` are forbidden. If you think you need to write, you are wrong — stop and just query.
 - Add `-f json` whenever you will parse the output in code.
 - Every monetary amount is a decimal **string** (e.g. `"12345.67"`). Convert to a number before doing arithmetic.
@@ -30,6 +30,7 @@ the command; no setup, no paths, no flags required to connect.
 | Trades, dividends, interest, fees, cash in/out over time | `transactions` |
 | **How an account / portfolio / everything performed** over a period (return %) | `returns <view>` |
 | **What was spent** — on what, where, how much per month | `spending <view>` |
+| **What was received** — wages, interest, dividends, rent, gifts | `income <view>` |
 
 - The `holdings` views (`global`, `sources`, `portfolios`, `accounts`, `positions`) are **point-in-time**: a snapshot as of one date.
 - `transactions` is a **date range** of events.
@@ -52,11 +53,11 @@ the command; no setup, no paths, no flags required to connect.
 ## Flags (the query commands)
 - `-f json|csv|table` — output format. Default is `table` (for humans). Use `json` to parse.
 - `-x CCY` — currency for value columns. Default is the configured base currency. E.g. `-x CHF`, `-x EUR`.
-- `-d` (as-of date) applies to **holdings** views; `transactions`, `returns` and `spending` take a positional date range/window instead, not `-d`. `-p` (privacy/redact) is accepted by every query command, but it redacts **per column**, not wholesale: identifier-shaped account / transaction ids are partly masked (last 2-4 characters kept), but the mask only fires on a value that is alphanumeric and contains a digit — an `account` column showing a nickname rather than a number, or an id written with dashes or spaces, prints in full; amounts, quantities and prices are masked in a format-dependent way (rendered `*****.**` / `***` in table output, an empty cell in CSV, and dropped from the object entirely in `-f json` — a redacted JSON listing has no `value_<CCY>` key at all); category and asset-class labels stay legible so a redacted listing is still readable; and the free-text columns are masked (`merchant`, `counterparty`, `description` and `merchant_signature` print `***` in every format). Elsewhere, treat a narrative column as unredacted unless it actually prints `***`.
+- `-d` (as-of date) applies to **holdings** views; `transactions`, `returns` and `spending` take a positional date range/window instead, not `-d`. `-p` (privacy/redact) is accepted by every query command, but it redacts **per column**, not wholesale: identifier-shaped account / transaction ids are partly masked (last 2-4 characters kept), but the mask only fires on a value that is alphanumeric and contains a digit — an `account` column showing a nickname rather than a number, or an id written with dashes or spaces, prints in full; amounts, quantities and prices are masked in a format-dependent way (rendered `*****.**` / `***` in table output, an empty cell in CSV, and dropped from the object entirely in `-f json` — a redacted JSON listing has no `value_<CCY>` key at all); category and asset-class labels stay legible so a redacted listing is still readable; and the free-text columns are masked (`merchant`, `payer`, `counterparty`, `description`, `merchant_signature` and `payer_signature` print `***` in every format). Elsewhere, treat a narrative column as unredacted unless it actually prints `***`.
 - `-C COLS` — choose columns: comma-separated names, `all`, or a delta like `-C +name,-quantity`. (Not on `holdings global`, which is a single fixed row.)
 - `holdings positions` only: `--with-cash` — add one cash-balance row per account+currency.
 - `returns` only: `--method`, `--period`, `--annualize`, `--netting`, `--inception` (see the Returns section).
-- `spending` only: `--period`, `--level` (see the Spending section).
+- `spending` and `income`: `--period`, `--level` (see those sections; `--level` defaults differ).
 
 ## Columns you can rely on (each view is `wealthdb holdings <view>`)
 - **global** (always exactly one row): `min_snapshot_date, max_snapshot_date, cash_balance_<CCY>, positions_value_<CCY>, total_value_<CCY>`. The two dates are the earliest/latest of the per-account snapshot dates, so you can see how stale any part of the total is.
@@ -65,6 +66,7 @@ the command; no setup, no paths, no flags required to connect.
 - **sources**: one row per institution — `silver_source, snapshot_date, tax_wrapper, management_style, base_currency, positions_value, cash_balance, total_value, total_value_<CCY>` (base columns blank when the source mixes currencies / tax wrappers)
 - **portfolios**: like accounts but the label column is `portfolio` (plus one sentinel row per source for accounts the bank didn't group)
 - **transactions**: `silver_source, date, account, kind, symbol, description, currency, gross_amount, net_amount, value_<CCY>`
+- **income summary**: `period, txn_count, income_<CCY>, reversals_<CCY>, net_income_<CCY>` (`withheld_<CCY>` via `-C`)
 - **spending summary**: `period, txn_count, spend_<CCY>, refunds_<CCY>, net_spend_<CCY>`
 - **spending categories**: the same plus `category` and `share_%`
 - **spending transactions**: `silver_source, date, account, merchant, category, currency, net_amount, value_<CCY>` (add `category_primary`, `spend_detailed`, `provenance`, `counterparty`, `description` with `-C`). `category` is the display label; `spend_detailed` is the taxonomy value behind it, which is what a filter or a comparison should use.
@@ -204,6 +206,52 @@ wealthdb spending summary 2026 -f json
 wealthdb spending categories 2025 --period total -f json
 # The individual lines behind a surprising month, in CHF
 wealthdb spending transactions 2026-03 -x CHF -f json
+```
+
+## Income — what was received (`wealthdb income <view>`)
+
+The mirror of Spending, with the same window default (trailing twelve
+months), the same `--period`, and the same `-f`/`-C`/`-x`/`-p`. Views:
+`summary` (a period bucket), `types` (a bucket × income type, with its
+share), `transactions` (the lines).
+
+`income` and `reversals` are both POSITIVE and `net_income = income −
+reversals` — a reversal is a receipt clawed back, netted inside its own
+type. Types reconcile with the summary, as categories do on the
+spending side.
+
+Five things a reader has to know before quoting a number:
+
+- **Gross as booked.** Income is what the source recorded arriving. Tax
+  withheld at source is on the SPENDING side as `Withholding tax`, so
+  `income − spending` subtracts it exactly once. `-C +withheld` shows it
+  beside the income it was taken from; it is a memo and is never
+  subtracted from `net_income`.
+- **A `distribution` is capital until proven income.** A private fund
+  returns contributed capital first, so its distributions are
+  `capital_return` and are OUT of the base unless a rule or a pin
+  promoted one. A public fund's realised-gain payout (`capital_gain`)
+  stays in, as `Distributions`.
+- **The payer of a dividend is the instrument.** On a line carrying one
+  — a dividend, a coupon, a staking reward — the `payer` column is the
+  company, issuer or protocol. On a deposit it is the payer store's name
+  or the raw signature fold, and on a delta line (an own-account move, a
+  gift) it is BLANK, there being nobody to name.
+- **`(uncategorized)` is the backlog**, as on the spending side:
+  deposits no tier could place. Almost everything else is placed by its
+  transaction kind, so a large uncategorised share means bank deposits
+  specifically. Say so when it is material.
+- `--level` defaults to **`detailed`** here, not `primary`: the income
+  taxonomy has one vendored primary, so the primary level folds every
+  earned and yielded type into `Income`.
+
+```sh
+# What came in last year, by type, one bucket
+wealthdb income types 2025 --period annual -f json
+# Monthly income for 2026 so far, with the withholding memo
+wealthdb income summary 2026 -C +withheld -f json
+# The lines behind a surprising month
+wealthdb income transactions 2026-03 -f json
 ```
 
 ## Diagnostics (read-only, safe — use when data looks missing or stale)
