@@ -23,9 +23,9 @@ import (
 // deliberately differs from the returns window (since-inception).
 func TestParseSpendingWindowDefault(t *testing.T) {
 	now := time.Date(2026, time.June, 15, 9, 30, 0, 0, time.UTC)
-	from, to, err := parseSpendingWindow(nil, now)
+	from, to, err := parseTrailingYearWindow(nil, now)
 	if err != nil {
-		t.Fatalf("parseSpendingWindow: %v", err)
+		t.Fatalf("parseTrailingYearWindow: %v", err)
 	}
 	wantFrom := time.Date(2025, time.June, 15, 0, 0, 0, 0, time.UTC).Unix()
 	wantTo := time.Date(2026, time.June, 15, 23, 59, 59, 0, time.UTC).Unix()
@@ -43,16 +43,16 @@ func TestParseSpendingWindowDefault(t *testing.T) {
 func TestParseSpendingWindowPositional(t *testing.T) {
 	now := time.Date(2026, time.June, 15, 9, 30, 0, 0, time.UTC)
 	for _, args := range [][]string{{"2025"}, {"2025-03"}, {"2025-01-01", "2025-06-30"}, {"2025-01-01", "-"}} {
-		gotFrom, gotTo, err := parseSpendingWindow(args, now)
+		gotFrom, gotTo, err := parseTrailingYearWindow(args, now)
 		if err != nil {
-			t.Fatalf("parseSpendingWindow(%v): %v", args, err)
+			t.Fatalf("parseTrailingYearWindow(%v): %v", args, err)
 		}
 		wantFrom, wantTo, err := parseDateRange(args, now)
 		if err != nil {
 			t.Fatalf("parseDateRange(%v): %v", args, err)
 		}
 		if gotFrom != wantFrom || gotTo != wantTo {
-			t.Errorf("parseSpendingWindow(%v) = (%d, %d), want (%d, %d)",
+			t.Errorf("parseTrailingYearWindow(%v) = (%d, %d), want (%d, %d)",
 				args, gotFrom, gotTo, wantFrom, wantTo)
 		}
 	}
@@ -63,7 +63,7 @@ func TestParseSpendingWindowPositional(t *testing.T) {
 // its value being read as a date.
 func TestSpendingFlagReordering(t *testing.T) {
 	args := []string{"2026-05", "--period", "total", "--level", "detailed", "-f", "csv", "-x", "CHF"}
-	got := reorderFlagsFirst(args, spendingValueFlags)
+	got := reorderFlagsFirst(args, reportValueFlags)
 	want := []string{"--period", "total", "--level", "detailed", "-f", "csv", "-x", "CHF", "2026-05"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("reorderFlagsFirst = %v, want %v", got, want)
@@ -82,14 +82,14 @@ func TestSpendingPeriodLabels(t *testing.T) {
 		{"annual", "2026"},
 	}
 	for _, c := range cases {
-		if got := spendPeriodLabel(&apr, c.period); got != c.want {
-			t.Errorf("spendPeriodLabel(%s) = %q, want %q", c.period, got, c.want)
+		if got := periodLabel(&apr, c.period); got != c.want {
+			t.Errorf("periodLabel(%s) = %q, want %q", c.period, got, c.want)
 		}
 	}
-	if got := spendPeriodLabel(nil, "total"); got != "total" {
+	if got := periodLabel(nil, "total"); got != "total" {
 		t.Errorf("total bucket label = %q, want %q", got, "total")
 	}
-	if got := spendPeriodStart(nil); got != "" {
+	if got := periodStart(nil); got != "" {
 		t.Errorf("total bucket period_start = %q, want empty", got)
 	}
 }
@@ -443,7 +443,7 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 		if !strings.Contains(so, "390.00") || !strings.Contains(so, "370.00") {
 			t.Errorf("total bucket sums wrong:\n%s", so)
 		}
-		for _, p := range spendingPeriodNames {
+		for _, p := range reportPeriodNames {
 			if _, se, code := spending("summary", "--period", p); code != 0 {
 				t.Errorf("--period %s exit=%d stderr=%s", p, code, se)
 			}

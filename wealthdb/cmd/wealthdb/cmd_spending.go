@@ -26,27 +26,28 @@ var spendingViews = map[string]bool{
 	"summary": true, "categories": true, "transactions": true,
 }
 
-// spendingValueFlags are the flag tokens that consume the next arg, so
+// reportValueFlags are the flag tokens that consume the next arg, so
 // the positional [FROM [TO]] window may appear before or after flags
-// (the returns / transactions convention).
-var spendingValueFlags = map[string]bool{
+// (the returns / transactions convention). Shared by every report
+// family: the flag idiom is the CLI's, not one command's.
+var reportValueFlags = map[string]bool{
 	"-f": true, "--format": true, "-C": true, "--columns": true,
 	"-x": true, "--currency": true, "--period": true, "--level": true,
 }
 
-// spendingPeriods maps the CLI's bucket vocabulary onto the
-// date_trunc parts report_spending_* buckets by. The names are the
-// returns family's, extended down to daily / weekly: a spending
+// reportPeriods maps the CLI's bucket vocabulary onto the date_trunc
+// parts the report macros bucket by. The names are the returns
+// family's, extended down to daily / weekly: a spending or income
 // report is read at a finer grain than a return, where a quarter is
 // the coarsest interesting bucket.
-var spendingPeriods = map[string]string{
+var reportPeriods = map[string]string{
 	"daily": "day", "weekly": "week", "monthly": "month",
 	"quarterly": "quarter", "annual": "year", "total": "total",
 }
 
-// spendingPeriodNames is spendingPeriods' key set in display order,
+// reportPeriodNames is reportPeriods' key set in display order,
 // for usage text and error messages.
-var spendingPeriodNames = []string{"daily", "weekly", "monthly", "quarterly", "annual", "total"}
+var reportPeriodNames = []string{"daily", "weekly", "monthly", "quarterly", "annual", "total"}
 
 // cmdSpending routes `wealthdb spending <view> ...` to the shared
 // runner, mirroring the returns dispatcher.
@@ -72,7 +73,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 	fs := flag.NewFlagSet("wealthdb spending "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	period := fs.String("period", "monthly", strings.Join(spendingPeriodNames, " | "))
+	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	level := fs.String("level", "primary", "primary | detailed — the category vocabulary (categories view)")
 	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
 	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
@@ -84,7 +85,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 	fs.BoolVar(privacy, "privacy", false, "redact account IDs, counterparties, and monetary amounts (categories stay visible)")
 
 	fs.Usage = func() { fmt.Fprintln(stderr, spendingUsage()) }
-	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), spendingValueFlags)
+	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), reportValueFlags)
 	if err := fs.Parse(reordered); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -92,10 +93,10 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "spending: bad flags")
 	}
 
-	part, ok := spendingPeriods[*period]
+	part, ok := reportPeriods[*period]
 	if !ok {
 		return errs.Newf(2, "spending: invalid --period %q (want %s)",
-			*period, strings.Join(spendingPeriodNames, " | "))
+			*period, strings.Join(reportPeriodNames, " | "))
 	}
 	if !oneOf(*level, "primary", "detailed") {
 		return errs.Newf(2, "spending: invalid --level %q (want primary | detailed)", *level)
@@ -105,7 +106,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "spending: %s", err.Error())
 	}
 
-	fromEpoch, toEpoch, err := parseSpendingWindow(fs.Args(), time.Now())
+	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
 		return errs.Newf(2, "spending: %s", err.Error())
@@ -163,14 +164,14 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 	}
 }
 
-// parseSpendingWindow defaults a bare invocation to the trailing
+// parseTrailingYearWindow defaults a bare invocation to the trailing
 // twelve months — the same day one year ago through today — otherwise
 // reuses the transactions-style positional range. It does NOT default
-// to since-inception the way the returns window does: a spending
-// report answers "what is being spent lately", and a window reaching
-// back past the day a source's card ledger begins covers a cash-only
-// population, so a total over it would read as a different product.
-func parseSpendingWindow(args []string, now time.Time) (int64, int64, error) {
+// to since-inception the way the returns window does: these reports
+// answer "what is happening lately", and a window reaching back past
+// the day a source's ledger begins covers a different population, so a
+// total over it would read as a different product.
+func parseTrailingYearWindow(args []string, now time.Time) (int64, int64, error) {
 	if len(args) == 0 {
 		nowUTC := now.UTC()
 		from := anchorToDay(nowUTC.AddDate(-1, 0, 0), false).Unix()
@@ -179,12 +180,12 @@ func parseSpendingWindow(args []string, now time.Time) (int64, int64, error) {
 	return parseDateRange(args, now)
 }
 
-// spendPeriodLabel renders a bucket the way the returns family's
+// periodLabel renders a bucket the way the returns family's
 // `period` column does: the calendar label of the bucket the epoch
 // second opens, and "total" for the single NULL bucket --period total
 // emits. Daily and weekly buckets label as their opening date (DuckDB
 // truncates a week to its Monday).
-func spendPeriodLabel(periodStart *int64, period string) string {
+func periodLabel(periodStart *int64, period string) string {
 	if periodStart == nil {
 		return "total"
 	}
@@ -201,9 +202,9 @@ func spendPeriodLabel(periodStart *int64, period string) string {
 	}
 }
 
-// spendPeriodStart renders the bucket's opening date, empty for the
+// periodStart renders the bucket's opening date, empty for the
 // `total` bucket, which has no start beyond the window's own.
-func spendPeriodStart(periodStart *int64) string {
+func periodStart(periodStart *int64) string {
 	if periodStart == nil {
 		return ""
 	}
@@ -218,9 +219,9 @@ func spendPeriodStart(periodStart *int64) string {
 func buildSpendSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.SpendSummaryRow] {
 	return []columnSpec[gold.SpendSummaryRow]{
 		{Name: "period", Align: output.AlignLeft,
-			Extract: func(r gold.SpendSummaryRow) string { return spendPeriodLabel(r.PeriodStart, period) }},
+			Extract: func(r gold.SpendSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
-			Extract: func(r gold.SpendSummaryRow) string { return spendPeriodStart(r.PeriodStart) }},
+			Extract: func(r gold.SpendSummaryRow) string { return periodStart(r.PeriodStart) }},
 		{Name: "txn_count", Align: output.AlignRight,
 			Extract: func(r gold.SpendSummaryRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
 		{Name: "spend", Header: "spend_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
@@ -243,9 +244,9 @@ func resolveSpendSummaryColumns(flagValue, outCcy, period string) ([]columnSpec[
 func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.SpendCategoryRow] {
 	return []columnSpec[gold.SpendCategoryRow]{
 		{Name: "period", Align: output.AlignLeft,
-			Extract: func(r gold.SpendCategoryRow) string { return spendPeriodLabel(r.PeriodStart, period) }},
+			Extract: func(r gold.SpendCategoryRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
-			Extract: func(r gold.SpendCategoryRow) string { return spendPeriodStart(r.PeriodStart) }},
+			Extract: func(r gold.SpendCategoryRow) string { return periodStart(r.PeriodStart) }},
 		// The category is taxonomy — a vocabulary value, not an
 		// identifier — and stays legible under -p, like asset_class
 		// and the other taxonomy labels. Two spellings of the same
@@ -421,7 +422,7 @@ Window (positional, optional; default: the trailing twelve months):
   FROM TO                       explicit range; '-' is open-ended
 
 Flags:
-  --period P        ` + strings.Join(spendingPeriodNames, " | ") + `
+  --period P        ` + strings.Join(reportPeriodNames, " | ") + `
                     (default monthly; total is one bucket for the whole window;
                     the transactions view has no buckets and ignores it)
   --level L         primary (default) | detailed — the category vocabulary
