@@ -36,7 +36,7 @@ func testCandidateSet() map[string]bool {
 func TestParseAndValidateCategorizationsHappyPath(t *testing.T) {
 	body := `BLUE HARBOUR CAFE,Blue Harbour Cafe,FOOD_AND_DRINK_COFFEE
 NORTHWIND HARDWARE,Northwind Hardware,HOME_IMPROVEMENT_HARDWARE`
-	valid, invalid := parseAndValidateCategorizations(body, testCandidateSet())
+	valid, invalid := parseAndValidateCategorizations(spendingCategorizeFamily, body, testCandidateSet())
 	if len(invalid) != 0 {
 		t.Fatalf("want 0 invalid, got %d (%v)", len(invalid), invalid)
 	}
@@ -68,7 +68,7 @@ func TestParseAndValidateCategorizationsRejectsDeltas(t *testing.T) {
 	for _, d := range deltas {
 		for _, spelling := range []string{d, strings.ToUpper(d), " " + d + " "} {
 			body := fmt.Sprintf("BLUE HARBOUR CAFE,Blue Harbour Cafe,%s", spelling)
-			valid, invalid := parseAndValidateCategorizations(body, testCandidateSet())
+			valid, invalid := parseAndValidateCategorizations(spendingCategorizeFamily, body, testCandidateSet())
 			if len(valid) != 0 {
 				t.Fatalf("%q: a delta must never be stored, got %+v", spelling, valid)
 			}
@@ -124,7 +124,7 @@ func TestParseAndValidateCategorizationsGauntlet(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			valid, invalid := parseAndValidateCategorizations(c.body, testCandidateSet())
+			valid, invalid := parseAndValidateCategorizations(spendingCategorizeFamily, c.body, testCandidateSet())
 			if len(valid) != 0 {
 				t.Fatalf("want 0 valid, got %+v", valid)
 			}
@@ -146,7 +146,7 @@ func TestParseAndValidateCategorizationsTolerances(t *testing.T) {
 	body := "```csv\nBLUE HARBOUR CAFE,Blue Harbour Cafe,food_and_drink_coffee\n" +
 		"this is not csv at all\n" +
 		"NORTHWIND HARDWARE,Northwind Hardware,home_improvement_hardware\n```"
-	valid, invalid := parseAndValidateCategorizations(body, testCandidateSet())
+	valid, invalid := parseAndValidateCategorizations(spendingCategorizeFamily, body, testCandidateSet())
 	if len(valid) != 2 {
 		t.Fatalf("want 2 valid, got %d (%v)", len(valid), invalid)
 	}
@@ -160,12 +160,12 @@ func TestParseAndValidateCategorizationsTolerances(t *testing.T) {
 
 func TestIsDeltaSpendCategory(t *testing.T) {
 	for _, s := range []string{"internal_transfer", "CASH_WITHDRAWAL", " other ", "investment", "Investment"} {
-		if !isDeltaSpendCategory(s) {
+		if !spendingCategorizeFamily.isDelta(s) {
 			t.Errorf("%q should be recognised as a delta", s)
 		}
 	}
 	for _, s := range []string{"", "FOOD_AND_DRINK_COFFEE", "food_and_drink_coffee", "NOT_A_CATEGORY"} {
-		if isDeltaSpendCategory(s) {
+		if spendingCategorizeFamily.isDelta(s) {
 			t.Errorf("%q should NOT be recognised as a delta", s)
 		}
 	}
@@ -215,7 +215,7 @@ func TestCategorizeWithLLMRetriesWithFeedback(t *testing.T) {
 	}}
 
 	var out, errOut bytes.Buffer
-	valid, attempts, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call,
+	valid, attempts, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call, spendingCategorizeFamily,
 		splitBatches(twoCandidates(), 10), nil, config.SpendContextMerchant, 3, 30, false, nil, &out, &errOut)
 	if err != nil {
 		t.Fatalf("categorizeWithLLM: %v", err)
@@ -257,7 +257,7 @@ func TestCategorizeWithLLMStopsAtMaxAttempts(t *testing.T) {
 			"NORTHWIND HARDWARE,Northwind Hardware,NOT_A_CATEGORY",
 	}}
 	var out, errOut bytes.Buffer
-	valid, attempts, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call,
+	valid, attempts, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call, spendingCategorizeFamily,
 		splitBatches(twoCandidates(), 10), nil, config.SpendContextMerchant, 2, 30, false, nil, &out, &errOut)
 	if err != nil {
 		t.Fatalf("categorizeWithLLM: %v", err)
@@ -276,7 +276,7 @@ func TestCategorizeWithLLMStopsAtMaxAttempts(t *testing.T) {
 func TestCategorizeWithLLMPropagatesCallErrors(t *testing.T) {
 	llm := &scriptedLLM{err: errors.New("connection refused")}
 	var out, errOut bytes.Buffer
-	if _, _, _, err := categorizeWithLLM(context.Background(), llm.call,
+	if _, _, _, err := categorizeWithLLM(context.Background(), llm.call, spendingCategorizeFamily,
 		splitBatches(twoCandidates(), 10), nil, config.SpendContextMerchant, 3, 30, false, nil, &out, &errOut); err == nil {
 		t.Fatal("a failing endpoint must surface as an error, not an empty run")
 	}
@@ -349,7 +349,7 @@ func TestCategorizeWithLLMBatchesInOrder(t *testing.T) {
 	var sunk []batchOutcome
 	sink := func(o batchOutcome) error { sunk = append(sunk, o); return nil }
 	var out, errOut bytes.Buffer
-	valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), answerEverything(&prompts),
+	valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), answerEverything(&prompts), spendingCategorizeFamily,
 		batches, nil, config.SpendContextMerchant, 3, 3, false, sink, &out, &errOut)
 	if err != nil {
 		t.Fatalf("categorizeWithLLM: %v", err)
@@ -415,7 +415,7 @@ func TestCategorizeWithLLMRetriesOnlyTheFailingBatch(t *testing.T) {
 	var sunk []batchOutcome
 	sink := func(o batchOutcome) error { sunk = append(sunk, o); return nil }
 	var out, errOut bytes.Buffer
-	valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call,
+	valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call, spendingCategorizeFamily,
 		splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 3, 30, false, sink, &out, &errOut)
 	if err != nil {
 		t.Fatalf("categorizeWithLLM: %v", err)
@@ -462,7 +462,7 @@ func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
 			return nil
 		}
 		var out, errOut bytes.Buffer
-		valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call,
+		valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call, spendingCategorizeFamily,
 			splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 2, 30, false, sink, &out, &errOut)
 		if err != nil {
 			t.Fatalf("running out of attempts is not an error: %v", err)
@@ -490,7 +490,7 @@ func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
 		var sunk []batchOutcome
 		sink := func(o batchOutcome) error { sunk = append(sunk, o); return nil }
 		var out, errOut bytes.Buffer
-		_, calls, _, err := categorizeWithLLM(context.Background(), call,
+		_, calls, _, err := categorizeWithLLM(context.Background(), call, spendingCategorizeFamily,
 			splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 3, 30, false, sink, &out, &errOut)
 		if err == nil || !strings.Contains(err.Error(), "batch 2/2") {
 			t.Fatalf("err = %v, want the failing batch named", err)
@@ -510,7 +510,7 @@ func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
 func TestCategorizeShowPromptPrintsTheFirstBatchInFull(t *testing.T) {
 	var prompts []string
 	var out, errOut bytes.Buffer
-	if _, _, _, err := categorizeWithLLM(context.Background(), answerEverything(&prompts),
+	if _, _, _, err := categorizeWithLLM(context.Background(), answerEverything(&prompts), spendingCategorizeFamily,
 		splitBatches(fiveCandidates(), 3), nil, config.SpendContextMerchant, 3, 30, true, nil, &out, &errOut); err != nil {
 		t.Fatalf("categorizeWithLLM: %v", err)
 	}
@@ -533,10 +533,10 @@ func TestCategorizeShowPromptPrintsTheFirstBatchInFull(t *testing.T) {
 func TestPrintCategorizeBatchPlan(t *testing.T) {
 	batches := splitBatches(fiveCandidates(), 2)
 	anchors := []merchantAnchor{{Signature: "NORTHWIND HARDWARE", Name: "Northwind Hardware", Detailed: "HOME_IMPROVEMENT_HARDWARE"}}
-	first := buildCategorizeUserPrompt(batches[0], anchors, config.SpendContextMerchant, nil)
+	first := buildCategorizeUserPrompt(spendingCategorizeFamily, batches[0], anchors, config.SpendContextMerchant, nil)
 
 	var out bytes.Buffer
-	printCategorizeBatchPlan(&out, batches, 2, anchors, config.SpendContextMerchant, 3, true)
+	printCategorizeBatchPlan(&out, spendingCategorizeFamily, batches, 2, anchors, config.SpendContextMerchant, 3, true)
 	for _, want := range []string{
 		"categorize: plan",
 		"merchants:      5 in 3 batch(es) of up to 2 (--batch)",
@@ -551,7 +551,7 @@ func TestPrintCategorizeBatchPlan(t *testing.T) {
 		}
 	}
 	out.Reset()
-	printCategorizeBatchPlan(&out, batches, 2, anchors, config.SpendContextMerchant, 3, false)
+	printCategorizeBatchPlan(&out, spendingCategorizeFamily, batches, 2, anchors, config.SpendContextMerchant, 3, false)
 	if strings.Contains(out.String(), "dry run:") {
 		t.Error("a real run's plan must not carry the dry-run line")
 	}
@@ -567,7 +567,7 @@ func TestPrintCategorizeBatchPlan(t *testing.T) {
 // no-deltas contract: the gauntlet rejects them, and the prompt has to
 // have said so, or every run pays for a wasted round-trip.
 func TestCategorizePromptForbidsTheDeltas(t *testing.T) {
-	p := buildCategorizeUserPrompt(twoCandidates(), nil, config.SpendContextMerchant, nil)
+	p := buildCategorizeUserPrompt(spendingCategorizeFamily, twoCandidates(), nil, config.SpendContextMerchant, nil)
 	for _, d := range canonical.DeltaSpendCategories() {
 		if !strings.Contains(p, d.Detailed) {
 			t.Errorf("the prompt must name %q as forbidden", d.Detailed)
@@ -676,7 +676,7 @@ func seedBacklogGold(t *testing.T) (*sql.DB, context.Context) {
 func TestCollectMerchantCandidatesBacklogOnly(t *testing.T) {
 	db, ctx := seedBacklogGold(t)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, backlogUnplaced)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestCollectMerchantCandidatesBacklogOnly(t *testing.T) {
 func TestCollectMerchantCandidatesAll(t *testing.T) {
 	db, ctx := seedBacklogGold(t)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, backlogAll)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogAll)
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -730,7 +730,7 @@ func TestCollectMerchantCandidatesFenceHoldsAtEveryContext(t *testing.T) {
 		config.SpendContextDescriptor,
 		config.SpendContextTransaction,
 	} {
-		cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, backlogAll)
+		cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogAll)
 		if err != nil {
 			t.Fatalf("%s: collectMerchantCandidates: %v", level, err)
 		}
@@ -777,7 +777,7 @@ func TestCollectMerchantCandidatesSkipsUninformativeAtEveryContext(t *testing.T)
 			config.SpendContextTransaction,
 		} {
 			name := fmt.Sprintf("%s/all=%v", level, all)
-			cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, backlogOf(all, false))
+			cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogOf(all, false))
 			if err != nil {
 				t.Fatalf("%s: collectMerchantCandidates: %v", name, err)
 			}
@@ -825,7 +825,7 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 	seedSpendTxn(t, db, ctx, "T2", "CARD1", "purchase", 10, -60, "Orchard Lane Market", "")
 	runEnrichment(t, db, ctx)
 
-	merchant, _, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, backlogUnplaced)
+	merchant, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("merchant level: %v", err)
 	}
@@ -834,15 +834,15 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 			t.Errorf("the merchant level must carry no narratives, got %+v", c.Samples)
 		}
 	}
-	if p := buildCategorizeUserPrompt(merchant, nil, config.SpendContextMerchant, nil); strings.Contains(p, "Blue Harbour Cafe") {
+	if p := buildCategorizeUserPrompt(spendingCategorizeFamily, merchant, nil, config.SpendContextMerchant, nil); strings.Contains(p, "Blue Harbour Cafe") {
 		t.Error("the merchant level must not send the raw narrative")
 	}
 
-	descriptor, _, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, backlogUnplaced)
+	descriptor, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextDescriptor, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("descriptor level: %v", err)
 	}
-	p := buildCategorizeUserPrompt(descriptor, nil, config.SpendContextDescriptor, nil)
+	p := buildCategorizeUserPrompt(spendingCategorizeFamily, descriptor, nil, config.SpendContextDescriptor, nil)
 	if !strings.Contains(p, "Blue Harbour Cafe") {
 		t.Error("the descriptor level must send the raw narrative")
 	}
@@ -850,11 +850,11 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 		t.Error("the descriptor level must not send dates or amounts")
 	}
 
-	transaction, _, err := collectMerchantCandidates(ctx, db, config.SpendContextTransaction, 3, backlogUnplaced)
+	transaction, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextTransaction, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("transaction level: %v", err)
 	}
-	p = buildCategorizeUserPrompt(transaction, nil, config.SpendContextTransaction, nil)
+	p = buildCategorizeUserPrompt(spendingCategorizeFamily, transaction, nil, config.SpendContextTransaction, nil)
 	if !strings.Contains(p, "-12.50") || !strings.Contains(p, "card") {
 		t.Errorf("the transaction level must send amount and account kind:\n%s", p)
 	}
@@ -875,7 +875,7 @@ func TestCollectMerchantCandidatesFencesTheRawNarrative(t *testing.T) {
 	seedSpendTxn(t, db, ctx, "T1", "CARD1", "purchase", 10, -40, long, "")
 	runEnrichment(t, db, ctx)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, backlogUnplaced)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextDescriptor, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -889,7 +889,7 @@ func TestCollectMerchantCandidatesFencesTheRawNarrative(t *testing.T) {
 	if len(cands[0].Samples) != 1 || cands[0].Samples[0].Descriptor != "" {
 		t.Errorf("the raw narrative must be fenced away, got %q", cands[0].Samples[0].Descriptor)
 	}
-	if p := buildCategorizeUserPrompt(cands, nil, config.SpendContextDescriptor, nil); strings.Contains(p, "Wire") {
+	if p := buildCategorizeUserPrompt(spendingCategorizeFamily, cands, nil, config.SpendContextDescriptor, nil); strings.Contains(p, "Wire") {
 		t.Errorf("a fenced narrative must never reach the prompt:\n%s", p)
 	}
 }
@@ -908,7 +908,7 @@ func TestCollectMerchantAnchorsExcludesDeltasAndCandidates(t *testing.T) {
 		t.Fatalf("seed merchant store: %v", err)
 	}
 
-	anchors, err := collectMerchantAnchors(ctx, db, 10, map[string]bool{"BLUE HARBOUR CAFE": true})
+	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, map[string]bool{"BLUE HARBOUR CAFE": true})
 	if err != nil {
 		t.Fatalf("collectMerchantAnchors: %v", err)
 	}
@@ -917,7 +917,7 @@ func TestCollectMerchantAnchorsExcludesDeltasAndCandidates(t *testing.T) {
 			"(the delta row and the current candidate are both excluded)", anchors)
 	}
 
-	none, err := collectMerchantAnchors(ctx, db, 0, nil)
+	none, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 0, nil)
 	if err != nil || len(none) != 0 {
 		t.Errorf("--max-anchors 0 must ask for nothing, got %+v (%v)", none, err)
 	}
@@ -939,7 +939,7 @@ func TestCollectMerchantAnchorsFencesTransferShaped(t *testing.T) {
 		t.Fatalf("seed merchant store: %v", err)
 	}
 
-	anchors, err := collectMerchantAnchors(ctx, db, 10, nil)
+	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, nil)
 	if err != nil {
 		t.Fatalf("collectMerchantAnchors: %v", err)
 	}
@@ -952,7 +952,7 @@ func TestCollectMerchantAnchorsFencesTransferShaped(t *testing.T) {
 		t.Fatalf("anchors = %+v, want only the merchant one", anchors)
 	}
 
-	prompt := buildCategorizeUserPrompt([]merchantCandidate{
+	prompt := buildCategorizeUserPrompt(spendingCategorizeFamily, []merchantCandidate{
 		{Signature: "NORTHWIND HARDWARE", Txns: 1, PerSource: map[string]int{"bank": 1}},
 	}, anchors, config.SpendContextMerchant, nil)
 	if strings.Contains(prompt, "ZELLE") {
@@ -1579,7 +1579,7 @@ func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 			config.SpendContextTransaction,
 		} {
 			name := fmt.Sprintf("%s/all=%v", level, all)
-			cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, backlogOf(all, false))
+			cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogOf(all, false))
 			if err != nil {
 				t.Fatalf("%s: collectMerchantCandidates: %v", name, err)
 			}
@@ -1599,7 +1599,7 @@ func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 			if csv := formatCandidateSignatureCSV(cands); strings.Contains(csv, "EXAMPLE") {
 				t.Errorf("%s: the payee reached the candidate CSV:\n%s", name, csv)
 			}
-			if p := buildCategorizeUserPrompt(cands, nil, level, nil); strings.Contains(p, "EXAMPLE") {
+			if p := buildCategorizeUserPrompt(spendingCategorizeFamily, cands, nil, level, nil); strings.Contains(p, "EXAMPLE") {
 				t.Errorf("%s: the payee reached the prompt", name)
 			}
 		}
@@ -1616,7 +1616,7 @@ func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 		key); err != nil {
 		t.Fatalf("seed merchant store: %v", err)
 	}
-	anchors, err := collectMerchantAnchors(ctx, db, 10, nil)
+	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, nil)
 	if err != nil {
 		t.Fatalf("collectMerchantAnchors: %v", err)
 	}
@@ -1692,7 +1692,7 @@ func TestRefineBacklogAsksOnlyWhereTheModelGaveUp(t *testing.T) {
 		}
 	}
 
-	cands, _, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 0, backlogRefine)
+	cands, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 0, backlogRefine)
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}

@@ -28,7 +28,7 @@ func TestCollectMerchantCandidatesDropsTheMemo(t *testing.T) {
 	}
 	runEnrichment(t, db, ctx)
 
-	cands, _, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, backlogUnplaced)
+	cands, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextDescriptor, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestCollectMerchantCandidatesDropsTheMemo(t *testing.T) {
 	if len(cands[0].Samples) != 1 || cands[0].Samples[0].Descriptor != narrative {
 		t.Errorf("descriptor = %v, want the narrative without its memo", cands[0].Samples)
 	}
-	if p := buildCategorizeUserPrompt(cands, nil, config.SpendContextDescriptor, nil); strings.Contains(p, "birthday") {
+	if p := buildCategorizeUserPrompt(spendingCategorizeFamily, cands, nil, config.SpendContextDescriptor, nil); strings.Contains(p, "birthday") {
 		t.Errorf("a memo must never reach the prompt:\n%s", p)
 	}
 }
@@ -84,7 +84,7 @@ func TestCollectMerchantCandidatesRefusesBareFiling(t *testing.T) {
 	runEnrichment(t, db, ctx)
 
 	for _, all := range []bool{false, true} {
-		cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, backlogOf(all, false))
+		cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogOf(all, false))
 		if err != nil {
 			t.Fatalf("collectMerchantCandidates(all=%v): %v", all, err)
 		}

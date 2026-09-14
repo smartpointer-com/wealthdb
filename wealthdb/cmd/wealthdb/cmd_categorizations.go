@@ -60,7 +60,7 @@ func cmdCategorizations(ctx context.Context, g globalFlags, subargs []string, _ 
 	categoryFilter := fs.String("d", "", "filter to a specific spend_detailed value")
 	fs.StringVar(categoryFilter, "detailed", "", "filter to a specific spend_detailed value")
 	var forget signatureList
-	fs.Var(&forget, "forget", "remove the verdict stored at this merchant signature (repeatable)")
+	fs.Var(&forget, "forget", "remove the verdict stored at this signature (repeatable)")
 	dryRun := fs.Bool("n", false, "with --forget: print what would be removed, write nothing")
 	fs.BoolVar(dryRun, "dry-run", false, "with --forget: print what would be removed, write nothing")
 	privacy := fs.Bool("p", false, "redact the merchant signatures in the dump")
@@ -134,11 +134,17 @@ verdict.`)
 		if dumpFlag != "" {
 			return errs.Newf(2, "categorizations: %s applies to the dump, not to --forget", dumpFlag)
 		}
+		forgetFamilies, ok := resolveCategorizeFamilies(strings.Join(fs.Args(), " "))
+		if !ok {
+			fs.Usage()
+			return errs.Newf(2, "categorizations: unknown family %q (want spending | income, or neither for both)",
+				strings.Join(fs.Args(), " "))
+		}
 		cfg, err := config.Load(g.ConfigPath)
 		if err != nil {
 			return err
 		}
-		return forgetCategorizations(ctx, g, cfg, forget, *dryRun, stdout)
+		return forgetCategorizations(ctx, g, cfg, forgetFamilies, forget, *dryRun, stdout)
 	}
 	if *dryRun {
 		return errs.Newf(2, "categorizations: --dry-run applies to --forget only")
@@ -147,6 +153,13 @@ verdict.`)
 	fmtChoice, err := output.Parse(*format)
 	if err != nil {
 		return errs.Newf(2, "categorizations: %s", err.Error())
+	}
+
+	families, ok := resolveCategorizeFamilies(strings.Join(fs.Args(), " "))
+	if !ok {
+		fs.Usage()
+		return errs.Newf(2, "categorizations: unknown family %q (want spending | income, or neither for both)",
+			strings.Join(fs.Args(), " "))
 	}
 
 	cfg, err := config.Load(g.ConfigPath)
@@ -160,33 +173,40 @@ verdict.`)
 	}
 	defer db.Close()
 
-	q := `SELECT merchant_signature, merchant_name, spend_detailed,
-                 signature_version, assigned_at, model_name
-            FROM spend_merchant_categories`
-	args := []any{}
-	if *categoryFilter != "" {
-		q += ` WHERE spend_detailed = ?`
-		args = append(args, *categoryFilter)
-	}
-	q += ` ORDER BY merchant_signature`
-
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return fmt.Errorf("categorizations: %w", err)
-	}
-	defer rows.Close()
-
+	// One dump over both stores, each row saying which family it came
+	// from. A signature can be in BOTH — one counterparty can be a
+	// merchant and a payer — and the family column is what tells the
+	// two rows apart.
 	var dump []categorizationRow
-	for rows.Next() {
-		var r categorizationRow
-		if err := rows.Scan(&r.Signature, &r.Name, &r.Detailed,
-			&r.Version, &r.AssignedAt, &r.ModelName); err != nil {
-			return fmt.Errorf("categorizations scan: %w", err)
+	for _, fam := range families {
+		q := `SELECT ` + fam.signatureColumn + `, ` + fam.storeNameColumn + `, ` + fam.valueColumn + `,
+                 signature_version, assigned_at, model_name
+            FROM ` + fam.storeTable
+		args := []any{}
+		if *categoryFilter != "" {
+			q += ` WHERE ` + fam.valueColumn + ` = ?`
+			args = append(args, *categoryFilter)
 		}
-		dump = append(dump, r)
-	}
-	if err := rows.Err(); err != nil {
-		return err
+		q += ` ORDER BY ` + fam.signatureColumn
+
+		rows, err := db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return fmt.Errorf("categorizations: %w", err)
+		}
+		for rows.Next() {
+			r := categorizationRow{Family: fam.name}
+			if err := rows.Scan(&r.Signature, &r.Name, &r.Detailed,
+				&r.Version, &r.AssignedAt, &r.ModelName); err != nil {
+				rows.Close()
+				return fmt.Errorf("categorizations scan: %w", err)
+			}
+			dump = append(dump, r)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
 	}
 	return writeFormatted(stdout, fmtChoice,
 		rowsToTable(dump, categorizationColumns(), *privacy, fmtChoice))
@@ -195,6 +215,10 @@ verdict.`)
 // categorizationRow is one merchant-store verdict as the dump renders
 // it.
 type categorizationRow struct {
+	// Family is which store the row came from: `spending` or
+	// `income`. One counterparty can be in both, with two different
+	// verdicts, and this is what says which is which.
+	Family     string
 	Signature  string
 	Name       string
 	Detailed   string
@@ -217,6 +241,8 @@ type categorizationRow struct {
 // and the model.
 func categorizationColumns() []columnSpec[categorizationRow] {
 	return []columnSpec[categorizationRow]{
+		{Name: "family", Align: output.AlignLeft,
+			Extract: func(r categorizationRow) string { return r.Family }},
 		{Name: "merchant_signature", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r categorizationRow) string { return r.Signature }},
 		{Name: "merchant_name", Align: output.AlignLeft, Privacy: PrivacyFreeText,
@@ -246,7 +272,7 @@ type rowQuerier interface {
 // lock. A miss is reported on stdout beside the removals and is not an
 // error: a run may be clearing a key an earlier --forget already
 // emptied, or one the last re-key moved on from.
-func forgetCategorizations(ctx context.Context, g globalFlags, cfg *config.Config, signatures []string, dryRun bool, stdout io.Writer) error {
+func forgetCategorizations(ctx context.Context, g globalFlags, cfg *config.Config, families []categorizeFamily, signatures []string, dryRun bool, stdout io.Writer) error {
 	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
@@ -293,29 +319,39 @@ func forgetCategorizations(ctx context.Context, g globalFlags, cfg *config.Confi
 		q = tx
 	}
 
+	// A signature names a COUNTERPARTY, and one counterparty can be in
+	// both stores with two different verdicts. With no family named,
+	// forgetting removes it from both and says so per store; with one
+	// named, only from that store.
 	removed, missing := 0, 0
 	for _, sig := range signatures {
-		var name, detailed string
-		err := q.QueryRowContext(ctx, `
-            SELECT merchant_name, spend_detailed FROM spend_merchant_categories
-             WHERE merchant_signature = ?`, sig).Scan(&name, &detailed)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
+		found := false
+		for _, fam := range families {
+			var name, detailed string
+			err := q.QueryRowContext(ctx, `
+            SELECT `+fam.storeNameColumn+`, `+fam.valueColumn+` FROM `+fam.storeTable+`
+             WHERE `+fam.signatureColumn+` = ?`, sig).Scan(&name, &detailed)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				continue
+			case err != nil:
+				return fmt.Errorf("categorizations: look up %q in the %s store: %w", sig, fam.name, err)
+			}
+			found = true
+			verb := "forgot"
+			if dryRun {
+				verb = "would forget"
+			} else if _, err := tx.ExecContext(ctx,
+				`DELETE FROM `+fam.storeTable+` WHERE `+fam.signatureColumn+` = ?`, sig); err != nil {
+				return fmt.Errorf("categorizations: forget %q from the %s store: %w", sig, fam.name, err)
+			}
+			removed++
+			fmt.Fprintf(stdout, "categorizations: %s %q — %s [%s] (%s)\n", verb, sig, name, detailed, fam.name)
+		}
+		if !found {
 			missing++
 			fmt.Fprintf(stdout, "categorizations: no verdict stored at %q\n", sig)
-			continue
-		case err != nil:
-			return fmt.Errorf("categorizations: look up %q: %w", sig, err)
 		}
-		verb := "forgot"
-		if dryRun {
-			verb = "would forget"
-		} else if _, err := tx.ExecContext(ctx,
-			`DELETE FROM spend_merchant_categories WHERE merchant_signature = ?`, sig); err != nil {
-			return fmt.Errorf("categorizations: forget %q: %w", sig, err)
-		}
-		removed++
-		fmt.Fprintf(stdout, "categorizations: %s %q — %s [%s]\n", verb, sig, name, detailed)
 	}
 
 	if dryRun {

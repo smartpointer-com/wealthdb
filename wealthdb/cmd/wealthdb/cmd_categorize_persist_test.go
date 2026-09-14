@@ -57,7 +57,7 @@ func readVerdict(t *testing.T, db *sql.DB, ctx context.Context, sig string) stor
 func TestPersistCategorizationsUpsertsBySignature(t *testing.T) {
 	db, ctx := openMerchantStore(t)
 
-	total, err := persistCategorizations(ctx, db, []categorization{
+	total, err := persistCategorizations(ctx, db, spendingCategorizeFamily, []categorization{
 		{"BLUE HARBOUR CAFE", "Blue Harbour Cafe", "FOOD_AND_DRINK_COFFEE"},
 		{"NORTHWIND HARDWARE", "Northwind Hardware", "HOME_IMPROVEMENT_HARDWARE"},
 	}, 1_700_000_000, "first-model")
@@ -70,7 +70,7 @@ func TestPersistCategorizationsUpsertsBySignature(t *testing.T) {
 	}
 
 	// Same signature, a different verdict from a different model.
-	total, err = persistCategorizations(ctx, db, []categorization{
+	total, err = persistCategorizations(ctx, db, spendingCategorizeFamily, []categorization{
 		{"BLUE HARBOUR CAFE", "Blue Harbour Coffee", "FOOD_AND_DRINK_RESTAURANT"},
 	}, 1_700_009_999, "second-model")
 	if err != nil || total != 2 {
@@ -103,7 +103,7 @@ func TestPersistCategorizationsWritesNothingWhenGoldRefuses(t *testing.T) {
 	if err := gold.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate gold: %v", err)
 	}
-	if _, err := persistCategorizations(ctx, db, []categorization{
+	if _, err := persistCategorizations(ctx, db, spendingCategorizeFamily, []categorization{
 		{"BLUE HARBOUR CAFE", "Blue Harbour Cafe", "FOOD_AND_DRINK_COFFEE"},
 	}, 1_700_000_000, "first-model"); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -117,7 +117,7 @@ func TestPersistCategorizationsWritesNothingWhenGoldRefuses(t *testing.T) {
 		t.Fatalf("reopen read-only: %v", err)
 	}
 	defer ro.Close()
-	if _, err := persistCategorizations(ctx, ro, []categorization{
+	if _, err := persistCategorizations(ctx, ro, spendingCategorizeFamily, []categorization{
 		{"NORTHWIND HARDWARE", "Northwind Hardware", "HOME_IMPROVEMENT_HARDWARE"},
 	}, 1_700_009_999, "second-model"); err == nil {
 		t.Fatal("a write gold refused must report, not report success")

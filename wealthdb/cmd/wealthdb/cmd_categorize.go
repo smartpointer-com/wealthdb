@@ -186,7 +186,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		"merchant signatures per model call; the default keeps a local model's answer well inside the 5-minute call timeout")
 	showPrompt := fs.Bool("show-prompt", false, "print the first batch's prompt to stderr in full; later batches only its size (debugging)")
 	all := fs.Bool("all", false, "re-ask every signature candidacy admits, including ones already in the merchant store")
-	refine := fs.Bool("refine", false, "re-ask only the merchants the model itself could place no better than a catch-all")
+	refine := fs.Bool("refine", false, "re-ask only the counterparties the model itself could place no better than a catch-all")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, categorizeUsage())
 	}
@@ -196,9 +196,11 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		}
 		return errs.Newf(2, "categorize: bad flags")
 	}
-	if fs.NArg() != 0 {
+	families, ok := resolveCategorizeFamilies(strings.Join(fs.Args(), " "))
+	if !ok {
 		fs.Usage()
-		return errs.Newf(2, "categorize: unexpected positional argument %q", fs.Arg(0))
+		return errs.Newf(2, "categorize: unknown family %q (want spending | income, or neither for both)",
+			strings.Join(fs.Args(), " "))
 	}
 	if *batch < 1 {
 		fs.Usage()
@@ -214,16 +216,21 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	if err != nil {
 		return err
 	}
-	cz := cfg.SpendCategorization()
-	const modelKey = "spending.categorization.model"
-	modelCfg := cz.CategorizationModel()
-	if modelCfg == nil {
-		return errs.Newf(2, "categorize: %s is not set; add a `%s` block to %s", modelKey, modelKey, g.ConfigPath)
+	// Every family's model block is validated BEFORE the gold lock is
+	// taken: a run that would fail on the second family's config must
+	// not first spend a model pass on the first.
+	for _, fam := range families {
+		cz := fam.categorization(cfg)
+		modelKey := fam.categorizationKey(cfg) + ".model"
+		modelCfg := cz.CategorizationModel()
+		if modelCfg == nil {
+			return errs.Newf(2, "categorize: %s is not set; add a `%s` block to %s",
+				modelKey, modelKey, g.ConfigPath)
+		}
+		if err := validateModelConfig(modelKey, modelCfg); err != nil {
+			return errs.Newf(2, "categorize: %s", err.Error())
+		}
 	}
-	if err := validateModelConfig(modelKey, modelCfg); err != nil {
-		return errs.Newf(2, "categorize: %s", err.Error())
-	}
-	level := cz.ContextLevel()
 
 	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
 	if err != nil {
@@ -276,6 +283,9 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	// world than a real run would see. A source loaded since the last
 	// pass, or a config scope edit, changes the candidate set; the
 	// plan below is as of the last load either way.
+	//
+	// It runs ONCE for both families, because it writes both overlays
+	// in one transaction.
 	if *dryRun {
 		fmt.Fprintln(stdout, "categorize: dry-run — gold opened read-only, so the deterministic pass did NOT run.")
 		fmt.Fprintln(stdout, "categorize: the candidate set below is AS OF THE LAST LOAD; a real run re-asserts it first.")
@@ -283,44 +293,107 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return err
 	}
 
-	candidates, skipped, err := collectMerchantCandidates(ctx, db, level, cz.Samples(), backlogOf(*all, *refine))
+	// Each family is planned and run in turn, and the gold handle is
+	// re-opened between them: the model pass releases it (see
+	// runCategorizeFamily), and the next family's candidate scan needs
+	// one again.
+	opts := categorizeRunOptions{
+		dryRun: *dryRun, maxAttempts: *maxAttempts, maxAnchors: *maxAnchors,
+		batch: *batch, showPrompt: *showPrompt, which: backlogOf(*all, *refine),
+	}
+	for i, fam := range families {
+		if i > 0 {
+			// Only where the previous family CLOSED the handle: a
+			// family with nothing to ask about returns without
+			// reaching the model pass, and DuckDB refuses a second
+			// connection to the same file under a different mode.
+			if !dbOpen {
+				var err error
+				if db, err = gold.Open(cfg.GoldDB, openMode); err != nil {
+					return errs.Wrap(errs.ExitOpenFailed, err)
+				}
+				dbOpen = true
+			}
+			fmt.Fprintln(stdout)
+		}
+		closed, err := runCategorizeFamily(ctx, db, cfg, fam, opts, stdout, stderr)
+		dbOpen = !closed
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// categorizeRunOptions is one invocation's flags, the same for every
+// family it runs.
+type categorizeRunOptions struct {
+	dryRun      bool
+	maxAttempts int
+	maxAnchors  int
+	batch       int
+	showPrompt  bool
+	which       backlog
+}
+
+// runCategorizeFamily plans and runs one family's model pass.
+//
+// It reports whether it CLOSED the gold handle, which it does before
+// the model round-trips begin: DuckDB is one read-write handle or many
+// read-only ones, so holding it across a run of N batches at up to five
+// minutes each would lock every reader out of gold for the whole run.
+// The caller re-opens for the next family. The write mutex the command
+// took still excludes other writers throughout.
+func runCategorizeFamily(
+	ctx context.Context,
+	db *sql.DB,
+	cfg *config.Config,
+	fam categorizeFamily,
+	opts categorizeRunOptions,
+	stdout, stderr io.Writer,
+) (closed bool, err error) {
+	cz := fam.categorization(cfg)
+	modelCfg := cz.CategorizationModel()
+	level := cz.ContextLevel()
+
+	candidates, skipped, err := collectMerchantCandidates(ctx, db, fam, level, cz.Samples(), opts.which)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	canaries, err := collectSpendCanaries(ctx, db, cfg)
-	if err != nil {
-		return err
+	// The canaries are the spending family's data-quality check and
+	// are printed once, with it.
+	var canaries *spendCanaries
+	if fam.name == "spending" {
+		if canaries, err = collectSpendCanaries(ctx, db, cfg); err != nil {
+			return false, err
+		}
 	}
 
 	if len(candidates) == 0 {
-		fmt.Fprintf(stdout, "categorize: nothing to categorise (%d signature(s) fenced as transfer-shaped, %d uninformative)\n",
-			skipped.Fenced, skipped.Uninformative)
+		fmt.Fprintf(stdout, "categorize: %s: nothing to categorise (%d signature(s) fenced as transfer-shaped, %d uninformative)\n",
+			fam.name, skipped.Fenced, skipped.Uninformative)
 		printSpendCanaries(stdout, canaries)
-		return nil
+		return false, nil
 	}
 
-	anchors, err := collectMerchantAnchors(ctx, db, *maxAnchors, candidateSignatures(candidates))
+	anchors, err := collectMerchantAnchors(ctx, db, fam, opts.maxAnchors, candidateSignatures(candidates))
 	if err != nil {
-		return err
+		return false, err
 	}
-	fmt.Fprintf(stdout, "categorize: %d merchant(s) over %d transaction(s), %d anchor(s), context %q, model %s\n",
-		len(candidates), totalCandidateTxns(candidates), len(anchors), level, modelCfg.Name)
+	fmt.Fprintf(stdout, "categorize: %s: %d %s(s) over %d transaction(s), %d anchor(s), context %q, model %s\n",
+		fam.name, len(candidates), fam.counterparty, totalCandidateTxns(candidates),
+		len(anchors), level, modelCfg.Name)
 	printNeverSent(stdout, skipped)
 
-	batches := splitBatches(candidates, *batch)
-	printCategorizeBatchPlan(stdout, batches, *batch, anchors, level, *maxAttempts, *dryRun)
+	batches := splitBatches(candidates, opts.batch)
+	printCategorizeBatchPlan(stdout, fam, batches, opts.batch, anchors, level, opts.maxAttempts, opts.dryRun)
 
-	// Everything the pass and the candidate collection needed is read;
-	// release the handle before the model round-trips. DuckDB is one
-	// read-write handle OR many read-only ones, so holding it across a
-	// run of N batches at up to five minutes each would lock every
-	// reader out of gold for the whole run. The write mutex above
-	// still excludes other writers.
 	if err := db.Close(); err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("categorize: close gold before the model pass: %w", err))
+		return true, errs.Wrap(errs.ExitOpenFailed,
+			fmt.Errorf("categorize: close gold before the model pass: %w", err))
 	}
-	dbOpen = false
+	closed = true
 
 	store := &verdictStore{warn: stderr, write: func(rows []categorization) (int, error) {
 		wdb, err := gold.ReopenReadWrite(cfg.GoldDB)
@@ -328,23 +401,23 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 			return 0, err
 		}
 		defer wdb.Close()
-		return persistCategorizations(ctx, wdb, rows, time.Now().Unix(), modelCfg.Name)
+		return persistCategorizations(ctx, wdb, fam, rows, time.Now().Unix(), modelCfg.Name)
 	}}
 	sink := store.accept
-	if *dryRun {
+	if opts.dryRun {
 		sink = func(batchOutcome) error { return nil }
 	}
-	valid, calls, totalInvalid, runErr := categorizeWithLLM(ctx, modelCaller(modelCfg), batches, anchors,
-		level, *maxAttempts, *maxAnchors, *showPrompt, sink, stdout, stderr)
+	valid, calls, totalInvalid, runErr := categorizeWithLLM(ctx, modelCaller(modelCfg), fam, batches, anchors,
+		level, opts.maxAttempts, opts.maxAnchors, opts.showPrompt, sink, stdout, stderr)
+	// The retry flush runs whether or not the family's own run
+	// stopped, and BEFORE the next family is started: a run of two
+	// families must not leave the first one's last batch unflushed
+	// while the second spends another model pass.
 	flushErr := retryFlush(ctx, store.flush)
 	if runErr != nil {
-		if *dryRun {
-			fmt.Fprintln(stdout, "categorize: stopped; nothing stored (dry run)")
+		if opts.dryRun {
+			fmt.Fprintf(stdout, "categorize: stopped; nothing stored (dry run)\n")
 		} else {
-			// A run that both stopped and failed its last flush has
-			// lost verdicts the model was paid for. That is a second,
-			// independent failure and is reported as one — the stopped
-			// line below only counts what did reach gold.
 			if flushErr != nil {
 				fmt.Fprintf(stderr, "categorize: %d verdict(s) could not be stored: %v\n",
 					len(store.pending), flushErr)
@@ -352,10 +425,10 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 			fmt.Fprintf(stdout, "categorize: stopped; %d verdict(s) from %d completed batch(es) are already stored — re-run to continue with the rest\n",
 				store.stored, store.completed)
 		}
-		return runErr
+		return closed, runErr
 	}
 	if flushErr != nil {
-		return fmt.Errorf("categorize: %d verdict(s) could not be stored; re-run to ask for them again: %w",
+		return closed, fmt.Errorf("categorize: %d verdict(s) could not be stored; re-run to ask for them again: %w",
 			len(store.pending), flushErr)
 	}
 	sort.Slice(valid, func(i, j int) bool { return valid[i].Signature < valid[j].Signature })
@@ -363,20 +436,20 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	leftovers := uncategorisedCandidates(candidates, valid)
 	printCategorizeSummary(stdout, candidates, valid, leftovers, len(batches), calls, totalInvalid, canaries)
 
-	if *dryRun {
-		fmt.Fprintln(stdout, "--- dry-run plan (no rows written; candidates as of the last load) ---")
+	if opts.dryRun {
+		fmt.Fprintf(stdout, "--- %s dry-run plan (no rows written; candidates as of the last load) ---\n", fam.name)
 		for _, v := range valid {
 			fmt.Fprintf(stdout, "  %s → %s [%s]\n", v.Signature, v.MerchantName, v.Detailed)
 		}
-		return nil
+		return closed, nil
 	}
 	if store.stored == 0 {
-		fmt.Fprintln(stdout, "categorize: no valid verdicts to persist")
-		return nil
+		fmt.Fprintf(stdout, "categorize: no valid verdicts to persist\n")
+		return closed, nil
 	}
-	fmt.Fprintf(stdout, "categorize: %d verdict(s) upserted over %d batch(es); total spend_merchant_categories rows now %d\n",
-		store.stored, len(batches), store.total)
-	return nil
+	fmt.Fprintf(stdout, "categorize: %d verdict(s) upserted over %d batch(es); total %s rows now %d\n",
+		store.stored, len(batches), fam.storeTable, store.total)
+	return closed, nil
 }
 
 // backlog names which signatures a run asks about.
@@ -437,9 +510,14 @@ func backlogOf(all, refine bool) backlog {
 // name, and a round-trip spent on it ends in the gauntlet every time.
 // Both counts are returned so the run report can show each gate doing
 // something rather than silently doing nothing.
-func collectMerchantCandidates(ctx context.Context, db *sql.DB, level string, samples int, which backlog) ([]merchantCandidate, skippedSignatures, error) {
+func collectMerchantCandidates(ctx context.Context, db *sql.DB, fam categorizeFamily, level string, samples int, which backlog) ([]merchantCandidate, skippedSignatures, error) {
+	// The backlog is the RESOLVED value being NULL, which on the income
+	// side is the difference between a few hundred payers and several
+	// thousand pointless questions: a dividend the kind floor placed at
+	// query time has a signature and no stored verdict, and asking a
+	// model about it would be work with a known answer.
 	backlogFilter := `
-   AND c.spend_detailed IS NULL`
+   AND c.` + fam.valueColumn + ` IS NULL`
 	switch which {
 	case backlogAll:
 		backlogFilter = ""
@@ -447,21 +525,21 @@ func collectMerchantCandidates(ctx context.Context, db *sql.DB, level string, sa
 		backlogFilter = `
    AND c.provenance = 'model'
    AND EXISTS (SELECT 1 FROM spend_categories sc
-                WHERE sc.spend_detailed = c.spend_detailed AND sc.catch_all)`
+                WHERE sc.spend_detailed = c.` + fam.valueColumn + ` AND sc.catch_all)`
 	}
 	q := `
-SELECT c.merchant_signature,
+SELECT c.` + fam.signatureColumn + `,
        p.silver_source_id, p.account_kind, p.occurred_at, p.currency,
        COALESCE(CAST(p.net_amount AS DOUBLE), 0),
        COALESCE(p.counterparty, ''), COALESCE(p.description, ''),
        COALESCE(p.provider_category, '')
-  FROM spend_txn_categories() c
-  JOIN spend_enrichment_population(?, ?) p
+  FROM ` + fam.resolutionMacro + ` c
+  JOIN ` + fam.populationMacro + `(?, ?) p
     ON p.silver_source_id        = c.silver_source_id
    AND p.transaction_external_id = c.transaction_external_id
- WHERE c.merchant_signature IS NOT NULL
-   AND c.merchant_signature <> ''` + backlogFilter + `
- ORDER BY c.merchant_signature, p.occurred_at, p.transaction_external_id`
+ WHERE c.` + fam.signatureColumn + ` IS NOT NULL
+   AND c.` + fam.signatureColumn + ` <> ''` + backlogFilter + `
+ ORDER BY c.` + fam.signatureColumn + `, p.occurred_at, p.transaction_external_id`
 
 	// The row fence, read once over the whole population rather than
 	// per row here. Two reasons it cannot be a test on the row in
@@ -471,7 +549,7 @@ SELECT c.merchant_signature,
 	// one the query never reaches; and even over the same rows, a key
 	// admitted from a clean row before its fenced sibling arrives
 	// would already be in the candidate set.
-	rowFenced, err := rowFencedSignatures(ctx, db)
+	rowFenced, err := rowFencedSignatures(ctx, db, fam)
 	if err != nil {
 		return nil, skippedSignatures{}, err
 	}
@@ -602,16 +680,16 @@ func printNeverSent(w io.Writer, skipped skippedSignatures) {
 // the neighbour scan read, so a single pass covers both rather than
 // each site re-testing its own rows and missing the rails written on
 // the rows it does not see.
-func rowFencedSignatures(ctx context.Context, db *sql.DB) (map[string]bool, error) {
+func rowFencedSignatures(ctx context.Context, db *sql.DB, fam categorizeFamily) (map[string]bool, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT e.merchant_signature,
+SELECT c.`+fam.signatureColumn+`,
        COALESCE(p.provider_category, ''), COALESCE(p.description, '')
-  FROM spend_enrichment_population(?, ?) p
-  JOIN spend_txn_enrichment e
-    ON e.silver_source_id        = p.silver_source_id
-   AND e.transaction_external_id = p.transaction_external_id
- WHERE e.merchant_signature IS NOT NULL
-   AND e.merchant_signature <> ''`, int64(0), gold.MaxEpoch)
+  FROM `+fam.populationMacro+`(?, ?) p
+  JOIN `+fam.resolutionMacro+` c
+    ON c.silver_source_id        = p.silver_source_id
+   AND c.transaction_external_id = p.transaction_external_id
+ WHERE c.`+fam.signatureColumn+` IS NOT NULL
+   AND c.`+fam.signatureColumn+` <> ''`, int64(0), gold.MaxEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("categorize: read the row fence: %w", err)
 	}
@@ -724,18 +802,18 @@ SELECT p.silver_source_id, p.occurred_at, e.merchant_signature
 // offers, and the row fence over the population
 // (rowFencedSignatures), which catches the key whose rail is written
 // in the rows rather than in the reduction.
-func collectMerchantAnchors(ctx context.Context, db *sql.DB, maxAnchors int, exclude map[string]bool) ([]merchantAnchor, error) {
+func collectMerchantAnchors(ctx context.Context, db *sql.DB, fam categorizeFamily, maxAnchors int, exclude map[string]bool) ([]merchantAnchor, error) {
 	if maxAnchors <= 0 {
 		return nil, nil
 	}
-	rowFenced, err := rowFencedSignatures(ctx, db)
+	rowFenced, err := rowFencedSignatures(ctx, db, fam)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, `
-SELECT merchant_signature, merchant_name, spend_detailed
-  FROM spend_merchant_categories
- ORDER BY assigned_at DESC, merchant_signature`)
+SELECT `+fam.signatureColumn+`, `+fam.storeNameColumn+`, `+fam.valueColumn+`
+  FROM `+fam.storeTable+`
+ ORDER BY assigned_at DESC, `+fam.signatureColumn)
 	if err != nil {
 		return nil, fmt.Errorf("categorize: read anchors: %w", err)
 	}
@@ -746,7 +824,7 @@ SELECT merchant_signature, merchant_name, spend_detailed
 		if err := rows.Scan(&a.Signature, &a.Name, &a.Detailed); err != nil {
 			return nil, fmt.Errorf("categorize: scan anchor: %w", err)
 		}
-		if exclude[a.Signature] || !canonical.ModelSpendDetailed(a.Detailed) {
+		if exclude[a.Signature] || !fam.emittable(a.Detailed) {
 			continue
 		}
 		if rowFenced[a.Signature] || spending.TransferShaped(a.Signature) {
@@ -845,7 +923,7 @@ func estimateTokens(s string) int { return (len(s) + 3) / 4 }
 // exactly as a real run does — that is the precedent's shape, and
 // the only way to see verdicts without writing them — so there the
 // plan is the one cost signal that arrives before any call.
-func printCategorizeBatchPlan(w io.Writer, batches [][]merchantCandidate, size int, anchors []merchantAnchor, level string, maxAttempts int, dryRun bool) {
+func printCategorizeBatchPlan(w io.Writer, fam categorizeFamily, batches [][]merchantCandidate, size int, anchors []merchantAnchor, level string, maxAttempts int, dryRun bool) {
 	if len(batches) == 0 {
 		return
 	}
@@ -856,9 +934,9 @@ func printCategorizeBatchPlan(w io.Writer, batches [][]merchantCandidate, size i
 	for _, b := range batches {
 		n += len(b)
 	}
-	first := buildCategorizeUserPrompt(batches[0], anchors, level, nil)
+	first := buildCategorizeUserPrompt(fam, batches[0], anchors, level, nil)
 	fmt.Fprintln(w, "categorize: plan")
-	fmt.Fprintf(w, "  merchants:      %d in %d batch(es) of up to %d (--batch)\n", n, len(batches), size)
+	fmt.Fprintf(w, "  %-15s %d in %d batch(es) of up to %d (--batch)\n", fam.counterparty+"s:", n, len(batches), size)
 	fmt.Fprintf(w, "  batch sizes:    %s\n", formatBatchSizes(batches))
 	fmt.Fprintf(w, "  anchors:        %d in the first batch; each later batch sees the newest verdicts accepted so far, capped by --max-anchors\n", len(anchors))
 	fmt.Fprintf(w, "  first prompt:   %d chars, ≈%d tokens (chars/4); later batches are the same shape\n", len(first), estimateTokens(first))
@@ -922,6 +1000,7 @@ func refreshAnchors(anchors []merchantAnchor, accepted []categorization, maxAnch
 func categorizeWithLLM(
 	ctx context.Context,
 	call llmCall,
+	fam categorizeFamily,
 	batches [][]merchantCandidate,
 	anchors []merchantAnchor,
 	level string,
@@ -932,7 +1011,7 @@ func categorizeWithLLM(
 ) (validUnion []categorization, calls int, totalInvalid int, err error) {
 	for i, batch := range batches {
 		o := batchOutcome{Index: i + 1, Count: len(batches), Size: len(batch)}
-		o.Accepted, o.Attempts, o.Rejected, err = categorizeBatch(ctx, call, batch, anchors, level,
+		o.Accepted, o.Attempts, o.Rejected, err = categorizeBatch(ctx, call, fam, batch, anchors, level,
 			o.Index, o.Count, maxAttempts, showPrompt, stdout, stderr)
 		calls += o.Attempts
 		totalInvalid += o.Rejected
@@ -963,6 +1042,7 @@ func categorizeWithLLM(
 func categorizeBatch(
 	ctx context.Context,
 	call llmCall,
+	fam categorizeFamily,
 	batch []merchantCandidate,
 	anchors []merchantAnchor,
 	level string,
@@ -977,9 +1057,9 @@ func categorizeBatch(
 	seen := map[string]bool{}
 	var lastInvalid []invalidRow
 
-	systemPrompt := buildCategorizeSystemPrompt()
+	systemPrompt := buildCategorizeSystemPrompt(fam)
 	for attempts = 1; attempts <= maxAttempts; attempts++ {
-		userPrompt := buildCategorizeUserPrompt(batch, anchors, level, lastInvalid)
+		userPrompt := buildCategorizeUserPrompt(fam, batch, anchors, level, lastInvalid)
 		if showPrompt {
 			// The first batch's prompt in full; every later one is the
 			// same shape with different rows, and fifty copies would
@@ -998,7 +1078,7 @@ func categorizeBatch(
 		}
 		body := stripThinkingBlocks(raw)
 
-		fresh, invalid := parseAndValidateCategorizations(body, candSet)
+		fresh, invalid := parseAndValidateCategorizations(fam, body, candSet)
 		rejected += len(invalid)
 		for _, v := range fresh {
 			if seen[v.Signature] {
@@ -1039,7 +1119,7 @@ func categorizeBatch(
 // "the last column" disambiguates a padded row; here two of the three
 // fields are free text and a padded row cannot be read at all without
 // guessing which cell is the name and which the category.
-func parseAndValidateCategorizations(body string, candSet map[string]bool) ([]categorization, []invalidRow) {
+func parseAndValidateCategorizations(fam categorizeFamily, body string, candSet map[string]bool) ([]categorization, []invalidRow) {
 	body = stripCodeFences(body)
 	r := csv.NewReader(strings.NewReader(body))
 	r.FieldsPerRecord = -1 // tolerate ragged rows; we validate explicitly
@@ -1058,7 +1138,7 @@ func parseAndValidateCategorizations(body string, candSet map[string]bool) ([]ca
 		}
 		if len(row) != 3 {
 			invalid = append(invalid, invalidRow{Raw: row,
-				Reason: fmt.Sprintf("expected exactly 3 columns (merchant_signature,merchant_name,spend_detailed), got %d", len(row))})
+				Reason: fmt.Sprintf("expected exactly 3 columns (%s), got %d", fam.outputContract(), len(row))})
 			continue
 		}
 		signature := strings.TrimSpace(row[0])
@@ -1067,27 +1147,27 @@ func parseAndValidateCategorizations(body string, candSet map[string]bool) ([]ca
 
 		if !candSet[signature] {
 			invalid = append(invalid, invalidRow{Raw: row,
-				Reason: fmt.Sprintf("merchant_signature %q was not in the candidate set", signature)})
+				Reason: fmt.Sprintf("signature %q was not in the candidate set", signature)})
 			continue
 		}
 		if name == "" {
-			invalid = append(invalid, invalidRow{Raw: row, Reason: "merchant_name is empty"})
+			invalid = append(invalid, invalidRow{Raw: row, Reason: fam.counterparty + "_name is empty"})
 			continue
 		}
 		if name == signature {
 			invalid = append(invalid, invalidRow{Raw: row,
-				Reason: fmt.Sprintf("merchant_name %q is the signature verbatim (model echoed input)", name)})
+				Reason: fmt.Sprintf("%s_name %q is the signature verbatim (model echoed input)", fam.counterparty, name)})
 			continue
 		}
-		if isDeltaSpendCategory(category) {
+		if fam.isDelta(category) {
 			invalid = append(invalid, invalidRow{Raw: row,
-				Reason: fmt.Sprintf("spend_detailed %q is assigned by the matcher and the rule tier, never by a model", category)})
+				Reason: fmt.Sprintf("%s %q is assigned by the matcher and the rule tier, never by a model", fam.valueColumn, category)})
 			continue
 		}
 		detailed := strings.ToUpper(category)
-		if !canonical.ModelSpendDetailed(detailed) {
+		if !fam.emittable(detailed) {
 			invalid = append(invalid, invalidRow{Raw: row,
-				Reason: fmt.Sprintf("spend_detailed %q is not a value of the taxonomy", category)})
+				Reason: fmt.Sprintf("%s %q is not a value of the taxonomy", fam.valueColumn, category)})
 			continue
 		}
 		valid = append(valid, categorization{Signature: signature, MerchantName: name, Detailed: detailed})
@@ -1101,15 +1181,11 @@ func parseAndValidateCategorizations(body string, candSet map[string]bool) ([]ca
 // added to canonical is refused here without this file changing.
 // Case is folded first — a model shouting INTERNAL_TRANSFER must get
 // the specific rejection, not the generic one.
-func isDeltaSpendCategory(s string) bool {
-	folded := strings.ToLower(strings.TrimSpace(s))
-	return canonical.ValidSpendDetailed(folded) && !canonical.ModelSpendDetailed(folded)
-}
 
 // ---- prompt assembly ---------------------------------------------------------
 
-func buildCategorizeSystemPrompt() string {
-	return `You are a personal-finance data assistant. You are given merchant signatures — short upper-cased fragments of card and bank statement narratives — and you name the merchant and pick its spending category from a fixed taxonomy. You output CSV only — no prose, no markdown, no explanations.`
+func buildCategorizeSystemPrompt(fam categorizeFamily) string {
+	return fam.systemPrompt()
 }
 
 // buildCategorizeUserPrompt assembles the per-attempt user message.
@@ -1118,16 +1194,13 @@ func buildCategorizeSystemPrompt() string {
 // answers), then the candidates at whatever depth the context level
 // allows, then the output contract, then any feedback from the last
 // attempt.
-func buildCategorizeUserPrompt(candidates []merchantCandidate, anchors []merchantAnchor, level string, feedback []invalidRow) string {
+func buildCategorizeUserPrompt(fam categorizeFamily, candidates []merchantCandidate, anchors []merchantAnchor, level string, feedback []invalidRow) string {
 	var b strings.Builder
-	b.WriteString(`Merchant signatures below come from card and bank statements. For each one, emit the merchant's real-world name and the single best category from the taxonomy.
-
-Taxonomy — spend_detailed values you may emit, with the primary bucket each belongs to and what it covers:
-`)
-	for _, c := range canonical.ModelSpendCategories() {
+	b.WriteString(fam.promptPreamble())
+	for _, c := range fam.modelCategories() {
 		fmt.Fprintf(&b, "  %s\t(%s)\t%s\n", c.Detailed, c.Primary, c.Description)
 	}
-	deltas := canonical.DeltaSpendCategories()
+	deltas := fam.deltaCategories()
 	names := make([]string, 0, len(deltas))
 	for _, d := range deltas {
 		names = append(names, d.Detailed)
@@ -1323,7 +1396,7 @@ func (s *verdictStore) flush() error {
 // keyed by signature alone, so a re-run with a better model simply
 // overwrites; signature_version stamps the normalisation that produced
 // the key, which is what lets a later bump carry the verdict forward.
-func persistCategorizations(ctx context.Context, db *sql.DB, rows []categorization, assignedAt int64, modelName string) (int, error) {
+func persistCategorizations(ctx context.Context, db *sql.DB, fam categorizeFamily, rows []categorization, assignedAt int64, modelName string) (int, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("categorize: begin tx: %w", err)
@@ -1335,15 +1408,15 @@ func persistCategorizations(ctx context.Context, db *sql.DB, rows []categorizati
 		}
 	}()
 	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO spend_merchant_categories
-    (merchant_signature, merchant_name, spend_detailed, signature_version, assigned_at, model_name)
+INSERT INTO `+fam.storeTable+`
+    (`+fam.signatureColumn+`, `+fam.storeNameColumn+`, `+fam.valueColumn+`, signature_version, assigned_at, model_name)
 VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (merchant_signature) DO UPDATE SET
-    merchant_name     = EXCLUDED.merchant_name,
-    spend_detailed    = EXCLUDED.spend_detailed,
-    signature_version = EXCLUDED.signature_version,
-    assigned_at       = EXCLUDED.assigned_at,
-    model_name        = EXCLUDED.model_name`)
+ON CONFLICT (`+fam.signatureColumn+`) DO UPDATE SET
+    `+fam.storeNameColumn+` = EXCLUDED.`+fam.storeNameColumn+`,
+    `+fam.valueColumn+`     = EXCLUDED.`+fam.valueColumn+`,
+    signature_version       = EXCLUDED.signature_version,
+    assigned_at             = EXCLUDED.assigned_at,
+    model_name              = EXCLUDED.model_name`)
 	if err != nil {
 		return 0, fmt.Errorf("categorize: prepare upsert: %w", err)
 	}
@@ -1360,8 +1433,8 @@ ON CONFLICT (merchant_signature) DO UPDATE SET
 	committed = true
 
 	var total int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM spend_merchant_categories`).Scan(&total); err != nil {
-		return 0, fmt.Errorf("categorize: count merchant store: %w", err)
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+fam.storeTable).Scan(&total); err != nil {
+		return 0, fmt.Errorf("categorize: count the %s store: %w", fam.counterparty, err)
 	}
 	return total, nil
 }
@@ -1369,7 +1442,7 @@ ON CONFLICT (merchant_signature) DO UPDATE SET
 // ---- usage --------------------------------------------------------------------
 
 func categorizeUsage() string {
-	return `usage: wealthdb categorize [-n | --dry-run] [--batch N] [--max-attempts N] [--max-anchors N] [--show-prompt] [--all | --refine]
+	return `usage: wealthdb categorize [spending | income] [-n | --dry-run] [--batch N] [--max-attempts N] [--max-anchors N] [--show-prompt] [--all | --refine]
 
 Categorise the merchants the deterministic spending tiers could not
 place, using the LLM configured in wealthdb.cfg's
