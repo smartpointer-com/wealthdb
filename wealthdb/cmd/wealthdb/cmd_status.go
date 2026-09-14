@@ -119,26 +119,7 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 	fmt.Fprintf(stdout, "  tx range:        %s\n", formatRange(st.OldestTransactionAt, st.LatestTransactionAt))
 
 	if verbose {
-		fmt.Fprintln(stdout, "  taxonomy drift (what no adapter could map):")
-		fmt.Fprintf(stdout, "    asset_class='other':     %d positions\n", st.OtherAssetClassCount)
-		fmt.Fprintf(stdout, "    kind='other':            %d transactions\n", st.OtherTxKindCount)
-		fmt.Fprintf(stdout, "    kind guessed by sign:    %d transactions (raw value in payload.source_kind)\n",
-			st.GuessedTxKindCount)
-		fmt.Fprintf(stdout, "    vehicle missing (NULL):  %d positions\n", st.MissingVehicleCount)
-		fmt.Fprintln(stdout, "  spending:")
-		fmt.Fprintf(stdout, "    uncategorised:           %d spending lines\n", st.UncategorizedSpendCount)
-		fmt.Fprintf(stdout, "    excluded_unmapped:       %d transactions (catch-all kind on in-scope accounts)\n",
-			st.ExcludedUnmappedCount)
-		fmt.Fprintln(stdout, "  income:")
-		fmt.Fprintf(stdout, "    uncategorised:           %d income lines\n", st.UncategorizedIncomeCount)
-		if len(st.PerKindActivity) > 0 {
-			fmt.Fprintln(stdout, "  per account kind (latest snapshot / latest transaction):")
-			for _, a := range st.PerKindActivity {
-				fmt.Fprintf(stdout, "    %-12s %3d acct  snap=%s  tx=%s\n",
-					a.AccountKind, a.Accounts,
-					formatOptionalDate(a.LatestSnapshotAt), formatOptionalDate(a.LatestTransactionAt))
-			}
-		}
+		printStatusVerbose(stdout, st)
 	}
 
 	if silverErr != nil {
@@ -286,6 +267,40 @@ func formatDateTime(epoch int64) string {
 // contract (canonical.Status — every adapter reports its newest
 // dump/snapshot time), so the datetime form is always meaningful;
 // non-positive values (sentinel / never loaded) stay bare.
+// printStatusVerbose is `status -v`'s extra block: the taxonomy drift
+// counters and one section per enrichment family.
+//
+// Its own function so the SEQUENCE is testable. Both families' backlogs
+// are reported here and the income section is one Fprintln and one
+// Fprintf; deleting them leaves every other test in the suite green,
+// which is the same gap the load summary had.
+func printStatusVerbose(stdout io.Writer, st *gold.SourceStatus) {
+	fmt.Fprintln(stdout, "  taxonomy drift (what no adapter could map):")
+	fmt.Fprintf(stdout, "    asset_class='other':     %d positions\n", st.OtherAssetClassCount)
+	fmt.Fprintf(stdout, "    kind='other':            %d transactions\n", st.OtherTxKindCount)
+	fmt.Fprintf(stdout, "    kind guessed by sign:    %d transactions (raw value in payload.source_kind)\n",
+		st.GuessedTxKindCount)
+	fmt.Fprintf(stdout, "    vehicle missing (NULL):  %d positions\n", st.MissingVehicleCount)
+	fmt.Fprintln(stdout, "  spending:")
+	fmt.Fprintf(stdout, "    uncategorised:           %d spending lines\n", st.UncategorizedSpendCount)
+	// The catch-all-kind counter is NOT duplicated per family, and not
+	// because the two count the same rows: it joins spend_scoped_accounts(),
+	// and where the two scopes agree — the default — one number answers
+	// for both.
+	fmt.Fprintf(stdout, "    excluded_unmapped:       %d transactions (catch-all kind on in-scope accounts)\n",
+		st.ExcludedUnmappedCount)
+	fmt.Fprintln(stdout, "  income:")
+	fmt.Fprintf(stdout, "    uncategorised:           %d income lines\n", st.UncategorizedIncomeCount)
+	if len(st.PerKindActivity) > 0 {
+		fmt.Fprintln(stdout, "  per account kind (latest snapshot / latest transaction):")
+		for _, a := range st.PerKindActivity {
+			fmt.Fprintf(stdout, "    %-12s %3d acct  snap=%s  tx=%s\n",
+				a.AccountKind, a.Accounts,
+				formatOptionalDate(a.LatestSnapshotAt), formatOptionalDate(a.LatestTransactionAt))
+		}
+	}
+}
+
 func formatWatermark(w int64) string {
 	if w <= 0 {
 		return fmt.Sprintf("%d", w)

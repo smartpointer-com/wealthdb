@@ -25,12 +25,15 @@ line with no store row falls back to).
 ## 1. Scope: outflows only
 
 Spending covers money leaving the tracked accounts. Income, interest
-credited and dividends are a future **cashflow** feature and are
-deliberately absent here — including from the taxonomy, which drops
-Plaid's four flow primaries rather than carry values nothing may
-assign. Investment FEES are not in that list: they are money leaving,
-they arrived with the brokerage accounts (§2), and they have a value of
-their own.
+credited and dividends are the other direction and are deliberately
+absent here: they are [INCOME.md](INCOME.md)'s, read by the same engine
+from the same enrichment pass. Buys and sells remain the future
+**cashflow** feature and belong to neither. The taxonomy carries only
+what this side may assign — it drops `TRANSFER_IN`, `TRANSFER_OUT` and
+`LOAN_PAYMENTS` as primaries, and Plaid's fourth flow primary, `INCOME`,
+is vendored for the other family (migration 0069). Investment FEES are
+not in that list: they are money leaving, they arrived with the
+brokerage accounts (§2), and they have a value of their own.
 
 The population is layered in SQL (migration 0041), each layer narrower
 than the one it reads, so no Go-side predicate restates any of it:
@@ -400,7 +403,25 @@ The ledger is config, and the pass treats it as it treats
 tier. So a pin removed from the ledger is gone on the next pass, a
 fresh-file `reload -a` needs no carry-across, and a pin whose row has
 not loaded yet is *counted* as unmatched — on the pass result and on
-the `spending:` summary line — rather than treated as an error.
+its family's `load` summary line — rather than treated as an error.
+
+Income has its own ledger, `income.pins`, with `income_detailed` where
+`spend_detailed` was. Everything above holds for it word for word; only
+the vocabulary differs, and each ledger is validated against its own
+(INCOME.md §3).
+
+**A pin outside its family's population is written and never seen.**
+The ledger keys on a TRANSACTION, and the overlay is keyed by
+transaction alone — so a pin naming a row the family's population does
+not admit (a `sell` pinned on the income side, a positive `interest`
+pinned on the spending side) reaches the overlay, counts as matched,
+and then reaches no base, no report and no dashboard, because every
+read path joins the population first. Nothing is wrong and nothing is
+orphaned; the verdict is simply invisible to the family that wrote it.
+`wealthdb transactions` reads the resolution macro directly and is the
+one surface that shows it, which is also how to tell this case from a
+pin that matched nothing at all — the latter is counted as unmatched
+and says so.
 
 ### The full re-assert
 
@@ -1201,7 +1222,21 @@ version 6 keys it.
 
 ## 5. What leaves the machine
 
-Two **independent** gates, and neither can be relaxed by the other.
+Two **independent** gates, and neither can be relaxed by the other: the
+FENCE decides which signatures are candidates at all, and the CONTEXT
+LEVEL decides how much of a candidate is described. Everything here
+applies to both families — a payer signature leaves the machine by the
+same door a merchant's does (INCOME.md §6).
+
+The fence has four arms, and the last two are refusals about waste
+rather than privacy:
+
+| arm | refuses |
+|---|---|
+| `TransferShaped` / `RowTransferShaped` | rails, IBAN-shaped runs, masked contact numbers — in the signature, the provider's filing or the narrative |
+| `PersonShaped` | a signature that IS a bare person's name, on a non-card account, unless `fence_person_names` is off |
+| `Uninformative` | a signature with no word in it — nothing to name |
+| `FilingOnly` | a signature that is nothing but the provider's own booking type — how the row was booked, not whom it paid |
 
 ### The fence gates candidacy
 
@@ -1258,9 +1293,72 @@ attaches, and the anchor block. Reading it row by row at each site
 would fence less — a key admitted from a clean row while the rail sits
 on a row that site never sees.
 
-ATM narratives are deliberately **not** fenced: they name a bank and a
-place, never a person, and the rule tier categorises them without any
-model involvement.
+### The person-shape arm
+
+Everything above reads a marker BESIDE the name — a rail token, an
+IBAN, a starred mobile number. A narrative that carries none of them
+and is a bare person's name slips through all of it: `TransferShaped`
+sees no rail, `Uninformative` sees a word, `FilingOnly` sees something
+other than the bank's tag. That shape is where inbound bank rows live,
+because a credit transfer's narrative IS the sender.
+
+`spending.PersonShaped` is the arm that closes it, and it is the one
+fence that reads the name itself. A signature is person-shaped when it
+has **two or more tokens**, **every one of them letters only**, **no
+organisation marker** and **no rail token**. The markers are what a
+business puts in its name that a person never does — legal forms (`AG`,
+`GMBH`, `LLC`, `SARL`), institutional words (`BANK`, `PAYROLL`,
+`PENSION`, `FINANZAMT`), trade words (`STORE`, `CAFE`, `MARKET`) — kept
+as a whole-token list a maintainer extends.
+
+It applies to rows on **non-card accounts only**. Most card merchants
+are two or three plain words with no marker, and a name-shaped arm over
+them would refuse half the model tier to fence a shape that does not
+arrive on a card statement. Like the RAIL arm it is read over the whole
+population and answers per SIGNATURE, so a key carried by both a card
+row and a bank row is refused on the bank row it also has. (The word
+and filing arms are key-only, and need no row: they read what the
+signature is, not where it was booked.)
+
+It is **on by default** and `spending.categorization.fence_person_names:
+false` turns it off. The default is on because the product is published
+and most deployments point `categorize` at a remote endpoint; turning it
+off is for a model endpoint on this machine, where nothing leaves and a
+person-shaped payer is just another payer worth naming. `income`
+inherits the setting with the rest of the block. The run report counts
+what it fenced, and says so by name when it is off.
+
+**The cost is real and it runs one way.** Nothing about a two-word
+all-letter signature distinguishes `JANE EXAMPLE` from `MORGAN
+STANLEY`, `SWISS POST` or `GENERAL ELECTRIC` — so on a non-card account
+the arm refuses all of them. That is not a corner case: a great many
+organisation names carry no legal form, no institutional word and no
+trade word, and a bank account is where a household's direct debits,
+standing orders and inbound wires live. The arm is on by default
+because the product is published and a person's name reaching a
+third-party endpoint is the one failure that cannot be undone; the
+price is that a deployment which keeps the default places those payers
+by rule or by pin instead of by model, and one whose endpoint is on
+this machine turns the arm off and gets them named.
+
+A person whose name happens to contain a marker is NOT fenced, which is
+why this is an arm on top of the rail fence rather than instead of it —
+and why the marker table errs towards listing fewer tokens rather than
+more.
+
+One residue: a verdict already bought at a person-shaped signature stays
+applied locally — the enrichment lookup is by signature and is
+version-independent — and stops being offered as an anchor while the row
+is in the population. An ORPHANED verdict, whose rows have left gold,
+carries no account kind to exempt a card by, so the anchor filter cannot
+read this arm on it; `categorizations --forget` is what removes one.
+
+ATM narratives are deliberately not fenced **by the rail arm**: they
+name a bank and a place, never a person, and the rule tier categorises
+them (`cash_withdrawal`) without any model involvement — so fencing them
+would achieve nothing and would hide a rule-tier regression. The person
+arm does not exempt them, and does not need to: a placed row is not in
+the backlog, so it is never a candidate for the fence to reach.
 
 ### The context level decides depth
 
@@ -1272,6 +1370,9 @@ the machine:
 | `merchant` *(default)* | merchant signatures and a transaction count — folded, truncated, reference-number-free strings. No amounts, no dates, no accounts. |
 | `descriptor` | plus the raw statement narratives the signatures were folded from, which carry the spelling, the branch, the city. Capped by `descriptor_samples`. |
 | `transaction` | plus date, amount, currency, account kind, and the signatures of what was bought within a day of it on the same source. |
+
+The fence gates candidacy at every level, so the person-shape arm is not
+a context level and cannot be relaxed by widening one.
 
 **The default is the most private level, by decision.** Every level
 above it improves accuracy on ambiguous merchants and widens what a
@@ -1647,7 +1748,7 @@ The model is sometimes wrong at merchant scope, and the store has no
 tier above it: a per-transaction pin outranks a verdict for one row,
 not for the merchant. `wealthdb categorizations --forget SIGNATURE`
 (repeatable) is the undo. It deletes the rows whose signature matches
-exactly — the `merchant_signature` column of the dump, quoted — in one
+exactly — the `signature` column of the dump, quoted — in one
 transaction, prints each removal with its name and category, reports a
 signature it did not find without failing, and needs write access;
 `--dry-run` prints what would go and writes nothing. Nothing else

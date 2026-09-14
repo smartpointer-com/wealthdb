@@ -410,9 +410,28 @@ func RuleCategory(signature, counterparty, description, providerCategory string)
 // such rescue, because it stays in the base either way — visible and
 // unplaced, which is the honest answer and the model tier's backlog.
 //
+// It is gated on the transaction KIND, and takes the kind as an
+// argument rather than reading it from a descriptor so the gate cannot
+// be bypassed by calling the rule directly. `deposit` is the one kind
+// the narrative tiers exist for; every other admitted kind is answered
+// by the floor, which outranks a narrative here (migration 0073). An
+// ungated phrase match reaches them anyway, because the rule tier is
+// ABOVE the floor and stays there — a config rule promoting a
+// `distribution` depends on that — so an `interest` row narrated
+// "INTEREST ON CASH DEPOSIT" would be filed as cash paid in, and
+// interest earned would read as a counter deposit.
+//
+// Config rules are NOT gated. A rule is the holder's own instrument
+// and its whole purpose is to say something the data does not; the
+// built-ins are the engine's guesses from prose, and a guess that
+// contradicts a kind the data states is the wrong kind of guess.
+//
 // It never labels: the label column is the card rule's alone and the
 // income overlay has none.
-func IncomeRuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
+func IncomeRuleCategory(kind, signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
+	if kind != string(canonical.TxKindDeposit) {
+		return "", "", false
+	}
 	r, _, ok := matchRuleIn(builtinIncomeRules, signature, counterparty, description, providerCategory)
 	if !ok {
 		return "", "", false

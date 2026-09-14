@@ -57,46 +57,55 @@ func cmdCategorizations(ctx context.Context, g globalFlags, subargs []string, _ 
 	fs.SetOutput(stderr)
 	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
 	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
-	categoryFilter := fs.String("d", "", "filter to a specific spend_detailed value")
-	fs.StringVar(categoryFilter, "detailed", "", "filter to a specific spend_detailed value")
+	categoryFilter := fs.String("d", "", "filter to one taxonomy value (spend_detailed or income_detailed)")
+	fs.StringVar(categoryFilter, "detailed", "", "filter to one taxonomy value (spend_detailed or income_detailed)")
 	var forget signatureList
 	fs.Var(&forget, "forget", "remove the verdict stored at this signature (repeatable)")
 	dryRun := fs.Bool("n", false, "with --forget: print what would be removed, write nothing")
 	fs.BoolVar(dryRun, "dry-run", false, "with --forget: print what would be removed, write nothing")
-	privacy := fs.Bool("p", false, "redact the merchant signatures in the dump")
-	fs.BoolVar(privacy, "privacy", false, "redact the merchant signatures in the dump")
+	privacy := fs.Bool("p", false, "redact the signature and name columns in the dump")
+	fs.BoolVar(privacy, "privacy", false, "redact the signature and name columns in the dump")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, `usage: wealthdb categorizations [-d DETAILED] [-f FORMAT] [-p]
-       wealthdb categorizations --forget SIGNATURE [--forget SIGNATURE ...] [-n | --dry-run]
+		fmt.Fprintln(stderr, `usage: wealthdb categorizations [spending | income] [-d DETAILED] [-f FORMAT] [-p]
+       wealthdb categorizations [spending | income] --forget SIGNATURE [--forget SIGNATURE ...] [-n | --dry-run]
 
-Dump every row in the spend_merchant_categories table — the merchant
-verdicts 'wealthdb categorize' bought from the configured model, which
-the spending report macros apply to every transaction carrying the
-matching merchant signature.
+Dump every row in the verdict stores — spend_merchant_categories and
+income_payer_categories, the merchant and payer verdicts 'wealthdb
+categorize' bought from the configured model, which each family's
+report macros apply to every transaction carrying the matching
+signature. The positional selects one family; with none, BOTH are
+dumped, told apart by a 'family' column.
 
-The table is GLOBAL: it is keyed by merchant signature alone, with no
+The stores are GLOBAL: each is keyed by signature alone, with no
 silver source, because a merchant is the same merchant whichever card
-met it. That is why there is no -s flag here and one on 'resolutions'.
+met it and a payer the same payer whichever account it paid. That is
+why there is no -s flag here and one on 'resolutions'.
 
 --forget removes the verdict stored at a signature, given exactly as
-the dump's merchant_signature column shows it (quote it: a signature
-is upper-cased tokens separated by spaces). It is how a wrong
-merchant-scope verdict is undone: the next 'wealthdb categorize' run
-re-asks a forgotten merchant, because the backlog is whatever the
+the dump's signature column shows it (quote it: a signature is
+upper-cased tokens separated by spaces). With no family it removes
+from BOTH stores — one counterparty can sit in each with a different
+verdict — and a family narrows it to that store. It is how a wrong
+counterparty-scope verdict is undone: the next 'wealthdb categorize'
+run re-asks a forgotten signature, because the backlog is whatever the
 store does not cover. A signature with no verdict is reported and is
 not an error. It needs write access to the gold database; --dry-run
 prints what would be removed and writes nothing.
 
 Flags:
-  -d, --detailed VALUE    filter the dump to one spend_detailed category
+  -d, --detailed VALUE    filter the dump to one taxonomy value —
+                          spend_detailed or income_detailed; a value of
+                          one family simply matches nothing in the other
   -f, --format FORMAT     table | csv | csv_plain | json (default: table)
-  -p, --privacy           redact merchant_signature and merchant_name — the raw
+  -p, --privacy           redact the signature and name columns — the raw
                           narrative's fold and the name taken off it, both free text
                           (the cell masks whole). The category, version, date and
                           model stay legible. --forget needs the verbatim signature,
                           so run the dump without -p to read one
       --forget SIGNATURE  remove the verdict at this signature (repeatable)
   -n, --dry-run           with --forget: print what would be removed, write nothing
+
+The flags may appear before or after the family positional.
 
 signature_version records which revision of the signature
 normalisation produced the key. When that version is bumped the
@@ -108,15 +117,19 @@ clean way to keep it from carrying anywhere; forgetting it after
 merely tidies the store. model_name is the model that emitted the
 verdict.`)
 	}
-	if err := fs.Parse(subargs); err != nil {
+	if err := fs.Parse(reorderFlagsFirst(subargs, categorizeValueFlags)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return errs.Newf(2, "categorizations: bad flags")
 	}
-	if fs.NArg() != 0 {
+	// The optional family positional. More than one is a typo rather
+	// than a selection, and an unknown one is rejected by the resolver
+	// below — the old blanket "no positionals" guard predates the
+	// selector and would have made it unreachable.
+	if fs.NArg() > 1 {
 		fs.Usage()
-		return errs.Newf(2, "categorizations: unexpected positional argument %q", fs.Arg(0))
+		return errs.Newf(2, "categorizations: unexpected positional argument %q", fs.Arg(1))
 	}
 
 	if len(forget) > 0 {
@@ -134,7 +147,7 @@ verdict.`)
 		if dumpFlag != "" {
 			return errs.Newf(2, "categorizations: %s applies to the dump, not to --forget", dumpFlag)
 		}
-		forgetFamilies, ok := resolveCategorizeFamilies(strings.Join(fs.Args(), " "))
+		forgetFamilies, ok := resolveCategorizeFamilies(fs.Arg(0))
 		if !ok {
 			fs.Usage()
 			return errs.Newf(2, "categorizations: unknown family %q (want spending | income, or neither for both)",
@@ -155,7 +168,7 @@ verdict.`)
 		return errs.Newf(2, "categorizations: %s", err.Error())
 	}
 
-	families, ok := resolveCategorizeFamilies(strings.Join(fs.Args(), " "))
+	families, ok := resolveCategorizeFamilies(fs.Arg(0))
 	if !ok {
 		fs.Usage()
 		return errs.Newf(2, "categorizations: unknown family %q (want spending | income, or neither for both)",
@@ -212,8 +225,7 @@ verdict.`)
 		rowsToTable(dump, categorizationColumns(), *privacy, fmtChoice))
 }
 
-// categorizationRow is one merchant-store verdict as the dump renders
-// it.
+// categorizationRow is one verdict-store row as the dump renders it.
 type categorizationRow struct {
 	// Family is which store the row came from: `spending` or
 	// `income`. One counterparty can be in both, with two different
@@ -227,27 +239,31 @@ type categorizationRow struct {
 	ModelName  string
 }
 
-// categorizationColumns is the dump's column registry, so the store
-// redacts under -p by the same classes the spending view uses.
+// categorizationColumns is the dump's column registry, so the stores
+// redact under -p by the same classes the report views use.
 //
-// merchant_signature is a fold of the raw statement narrative and
-// carries whatever that narrative carried — a creditor's postal
-// address is deliberately kept in it — so it takes the free-text
-// class, which masks the cell whole. merchant_name goes with it: the
-// fence gates what may reach this store, but the store is append-only
-// across signature revisions and across widenings of the fence itself,
-// so a name bought while the fence was narrower is still here. What
-// stays legible is vocabulary — the category, the version, the date
-// and the model.
+// The three leading columns are named for neither family. One dump now
+// carries both stores, and a header saying `merchant_signature` over a
+// payer's row would be wrong on half the output; `family` is what says
+// which vocabulary a row's value belongs to.
+//
+// `signature` is a fold of the raw statement narrative and carries
+// whatever that narrative carried — a creditor's postal address is
+// deliberately kept in it — so it takes the free-text class, which
+// masks the cell whole. `name` goes with it: the fence gates what may
+// reach these stores, but they are append-only across signature
+// revisions and across widenings of the fence itself, so a name bought
+// while the fence was narrower is still here. What stays legible is
+// vocabulary — the category, the version, the date and the model.
 func categorizationColumns() []columnSpec[categorizationRow] {
 	return []columnSpec[categorizationRow]{
 		{Name: "family", Align: output.AlignLeft,
 			Extract: func(r categorizationRow) string { return r.Family }},
-		{Name: "merchant_signature", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+		{Name: "signature", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r categorizationRow) string { return r.Signature }},
-		{Name: "merchant_name", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+		{Name: "name", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r categorizationRow) string { return r.Name }},
-		{Name: "spend_detailed", Align: output.AlignLeft,
+		{Name: "detailed", Align: output.AlignLeft,
 			Extract: func(r categorizationRow) string { return r.Detailed }},
 		{Name: "signature_version", Align: output.AlignRight,
 			Extract: func(r categorizationRow) string { return fmt.Sprintf("%d", r.Version) }},
@@ -362,7 +378,7 @@ func forgetCategorizations(ctx context.Context, g globalFlags, cfg *config.Confi
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("categorizations: commit: %w", err)
 	}
-	fmt.Fprintf(stdout, "categorizations: %d verdict(s) removed, %d not found; the next 'categorize' run re-asks the removed merchants\n",
+	fmt.Fprintf(stdout, "categorizations: %d verdict(s) removed, %d not found; the next 'categorize' run re-asks the removed signatures\n",
 		removed, missing)
 	return nil
 }

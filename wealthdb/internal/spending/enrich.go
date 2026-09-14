@@ -140,10 +140,14 @@ type FamilyResult struct {
 	ScopeRows int
 	// Population is the number of rows in the enrichment population.
 	Population int
-	// Enriched is the number of enrichment rows written: the
-	// population, plus the matched legs and pinned rows that sit
-	// outside it (a card payment is an own-account move but never a
-	// spending line).
+	// Enriched is the number of enrichment rows written.
+	//
+	// For SPENDING that is the population plus the matched legs and
+	// pinned rows that sit outside it — a card payment is an
+	// own-account move but never a spending line. For INCOME it is the
+	// population plus pinned rows only: the matcher runs once, on the
+	// spending side, and the income pass reads its verdicts rather than
+	// re-emitting its legs (family.emitOutsidePopulation).
 	Enriched int
 	// Per-tier counts of the rows written, by the provenance each
 	// landed with.
@@ -283,7 +287,7 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 	}
 	out.Population = len(population)
 
-	pinned, unmatched, err := resolvePins(ctx, tx, in.pins)
+	pinned, unmatched, err := resolvePins(ctx, tx, fam.name, in.pins)
 	if err != nil {
 		return err
 	}
@@ -334,7 +338,7 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 // nothing is the wrong failure mode for the surface that decides which
 // accounts the model tier may ever see.
 func syncAccountScope(ctx context.Context, tx *sql.Tx, fam family, include, exclude map[string][]string) (stamped, unresolved int, err error) {
-	known, err := loadAccountIDs(ctx, tx)
+	known, err := loadAccountIDs(ctx, tx, fam.name)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -358,7 +362,7 @@ func syncAccountScope(ctx context.Context, tx *sql.Tx, fam family, include, excl
 			sort.Strings(ids)
 			for _, id := range ids {
 				if _, err := stmt.ExecContext(ctx, source, id, mode.name); err != nil {
-					return 0, 0, fmt.Errorf("spending: stamp account scope %s/%s: %w", source, id, err)
+					return 0, 0, fmt.Errorf("%s: stamp account scope %s/%s: %w", fam.name, source, id, err)
 				}
 				stamped++
 				if _, ok := known[source][id]; !ok {
@@ -372,18 +376,23 @@ func syncAccountScope(ctx context.Context, tx *sql.Tx, fam family, include, excl
 
 // loadAccountIDs reads the account ids gold holds, per source — the
 // set a configured scope entry has to hit to fence anything.
-func loadAccountIDs(ctx context.Context, tx querier) (map[string]map[string]struct{}, error) {
+//
+// It reads the `accounts` table whole and is family-blind, but it is
+// called once per family, so its errors carry the family name: a
+// failure on an income run reported as `spending:` sends a reader to
+// the wrong block of the config.
+func loadAccountIDs(ctx context.Context, tx querier, fam string) (map[string]map[string]struct{}, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT DISTINCT silver_source_id, account_external_id FROM accounts`)
 	if err != nil {
-		return nil, fmt.Errorf("spending: read account ids: %w", err)
+		return nil, fmt.Errorf("%s: read account ids: %w", fam, err)
 	}
 	defer rows.Close()
 	out := map[string]map[string]struct{}{}
 	for rows.Next() {
 		var source, id string
 		if err := rows.Scan(&source, &id); err != nil {
-			return nil, fmt.Errorf("spending: scan account ids: %w", err)
+			return nil, fmt.Errorf("%s: scan account ids: %w", fam, err)
 		}
 		if out[source] == nil {
 			out[source] = map[string]struct{}{}
@@ -391,7 +400,7 @@ func loadAccountIDs(ctx context.Context, tx querier) (map[string]map[string]stru
 		out[source][id] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("spending: iterate account ids: %w", err)
+		return nil, fmt.Errorf("%s: iterate account ids: %w", fam, err)
 	}
 	return out, nil
 }
@@ -406,6 +415,10 @@ func loadAccountIDs(ctx context.Context, tx querier) (map[string]map[string]stru
 type candidate struct {
 	key         txKey
 	accountKind string
+	// kind is the transaction kind, which the income family's built-in
+	// rule is gated on: a narrative may only speak for the one admitted
+	// kind the floor does not answer.
+	kind string
 	// The provider's vocabulary is per PRODUCT, not per source: a bank
 	// files an account's rows by booking type and a card's by merchant
 	// category, and only the account kind tells the provider tier which
@@ -428,7 +441,7 @@ type candidate struct {
 func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,
-               COALESCE(account_kind, ''),
+               COALESCE(account_kind, ''), kind,
                COALESCE(counterparty, ''), COALESCE(description, ''),
                COALESCE(provider_category, ''),
                COALESCE(account_external_id, ''),
@@ -442,7 +455,7 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 	var out []candidate
 	for rows.Next() {
 		var r candidate
-		if err := rows.Scan(&r.key.source, &r.key.txID, &r.accountKind,
+		if err := rows.Scan(&r.key.source, &r.key.txID, &r.accountKind, &r.kind,
 			&r.counterparty, &r.description, &r.providerCategory,
 			&r.account, &r.portfolio, &r.occurredAt); err != nil {
 			return nil, fmt.Errorf("%s: scan enrichment population: %w", fam.name, err)
@@ -675,9 +688,11 @@ type enrichmentRow struct {
 //     about one transaction, written for exactly the row where every
 //     tier below has nothing to go on — or got it wrong.
 //
-// Rows outside the spending population get a verdict only when the
+// Rows outside a family's population get a verdict only when the
 // matcher paired them or a pin named them; nothing else has any
-// business categorising a deposit.
+// business categorising a row the family does not chart. On the income
+// side only the pin route exists, the matcher's legs being the spending
+// pass's to emit.
 func assignCategories(
 	fam family,
 	population []candidate,
@@ -723,7 +738,7 @@ func assignCategories(
 			} else if drift {
 				counts.UnmappedProviderCategories++
 			}
-			if detailed, label, ok := fam.builtinRule(row.signature, r.counterparty, r.description, r.providerCategory); ok {
+			if detailed, label, ok := fam.builtinRule(r.kind, row.signature, r.counterparty, r.description, r.providerCategory); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
 				if fam.labelCol != "" {
 					row.merchantLabel = label
@@ -794,8 +809,9 @@ func assignCategories(
 	return out
 }
 
-// insertEnrichment writes the overlay: the whole population plus the
-// matched legs and pinned rows outside it, through gold.InsertChunked
+// insertEnrichment writes the overlay: the whole population, plus the
+// pinned rows outside it and — on the family that emits them — the
+// matched legs, through gold.InsertChunked
 // — the same multi-row VALUES batching gold's writer gives the fact
 // tables. This is the pass's one bulk write and it runs after every
 // load, so the shape matters: DuckDB's per-statement cost dwarfs its
@@ -832,15 +848,19 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 
 // ---- phase 4: the signature-version re-key ---------------------------------
 
-// rekeyMerchants carries paid-for merchant verdicts across a
-// normalisation change.
+// rekeyStore carries paid-for verdicts across a normalisation change,
+// for whichever family's store it is given.
 //
-// The merchant store is keyed by signature alone, and a model verdict
-// in it cost real money. When Normalize starts producing a different
-// string for the same merchant — a SignatureVersion bump — every one
-// of those verdicts would otherwise be orphaned behind a key nothing
-// will ever compute again, and the model tier would buy the same
-// answers a second time.
+// A verdict store is keyed by signature alone, and a model verdict in
+// it cost real money. When Normalize starts producing a different
+// string for the same counterparty — a SignatureVersion bump — every
+// one of those verdicts would otherwise be orphaned behind a key
+// nothing will ever compute again, and the model tier would buy the
+// same answers a second time.
+//
+// Everything below is written in the merchant's words because that is
+// the case it was designed against; it holds word for word for a payer,
+// the signature being one key whichever direction the money moved.
 //
 // A verdict is carried forward when all five hold: the row's signature
 // actually moved, EVERY row that carried the old signature now carries

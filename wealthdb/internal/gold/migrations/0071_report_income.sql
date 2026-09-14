@@ -108,9 +108,12 @@ CREATE OR REPLACE MACRO income_withheld_outccy(p_from, p_to, p_ccy, p_period) AS
 -- same n_converted guard the spending summary uses, so a missing FX
 -- rate reads as "not known" instead of "nothing received".
 --
--- `withheld` is LEFT JOINed by bucket, so a window with income and no
--- withholding shows the income and an empty memo rather than dropping
--- the row.
+-- `withheld` is FULL JOINed by bucket, so neither side can drop a
+-- bucket the other has: a window with income and no withholding shows
+-- the income and an empty memo, and a bucket whose only booking was a
+-- tax row keeps its row rather than vanishing. (Comment corrected
+-- after the fact; the body below has always been the FULL JOIN, and
+-- the join predicate 35 lines down says so.)
 CREATE OR REPLACE MACRO report_income_summary(p_from, p_to, p_ccy, p_period) AS TABLE (
     WITH agg AS (
         SELECT spend_period_bucket(p_period, occurred_at) AS period_start,
@@ -125,20 +128,28 @@ CREATE OR REPLACE MACRO report_income_summary(p_from, p_to, p_ccy, p_period) AS 
                CAST(CASE WHEN n_converted = 0 THEN NULL ELSE income_raw    END AS DECIMAL(28,4)) AS income_val,
                CAST(CASE WHEN n_converted = 0 THEN NULL ELSE reversals_raw END AS DECIMAL(28,4)) AS reversals_val
           FROM agg)
-    SELECT v.period_start, v.txn_count,
+    -- A FULL join, not a LEFT one. The two sides are independent
+    -- populations: a bucket can hold income and no withholding (the
+    -- common case) and, on a quarter whose only booking was tax
+    -- deducted at source, withholding and no income. A left join would
+    -- drop that second bucket entirely and take the memo with it —
+    -- the one row a reader went looking for.
+    --
+    -- IS NOT DISTINCT FROM, not `=`: `--period total` collapses the
+    -- window into ONE bucket whose period_start is NULL on both sides,
+    -- and NULL = NULL matches nothing. An equality join here would
+    -- leave the memo empty on exactly the report most likely to be read
+    -- for a tax year.
+    SELECT COALESCE(v.period_start, w.period_start) AS period_start,
+           COALESCE(v.txn_count, 0) AS txn_count,
            CAST(v.income_val    AS VARCHAR) AS income,
            CAST(v.reversals_val AS VARCHAR) AS reversals,
            CAST(v.income_val - v.reversals_val AS VARCHAR) AS net_income,
            CAST(w.withheld AS VARCHAR) AS withheld
       FROM vals v
-      -- IS NOT DISTINCT FROM, not `=`: `--period total` collapses the
-      -- window into ONE bucket whose period_start is NULL on both
-      -- sides, and NULL = NULL matches nothing. An equality join here
-      -- would leave the memo empty on exactly the report most likely
-      -- to be read for a tax year.
-      LEFT JOIN income_withheld_outccy(p_from, p_to, p_ccy, p_period) w
+      FULL JOIN income_withheld_outccy(p_from, p_to, p_ccy, p_period) w
              ON w.period_start IS NOT DISTINCT FROM v.period_start
-     ORDER BY v.period_start
+     ORDER BY 1
 );
 
 -- report_income_types: a (bucket, type) pair with its share of the

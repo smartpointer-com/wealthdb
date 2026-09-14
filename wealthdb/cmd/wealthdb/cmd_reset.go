@@ -29,11 +29,15 @@ registered silver source with -a). The silver SQLite file itself
 is untouched. A follow-up 'wealthdb load <id>' starts from an
 empty watermark.
 
-A single-source reset clears only that source's spend enrichment.
+A single-source reset clears only that source's rows in BOTH
+enrichment overlays, spending and income; the two verdict stores
+and the two account scopes survive, being paid-for knowledge and
+configuration rather than source data.
+
 The matcher writes its internal_transfer verdict onto BOTH legs of
 a cross-source pair, so the surviving leg on another source keeps a
-verdict whose partner is gone and stays out of every spending
-report until the next load re-asserts the pass.
+verdict whose partner is gone and stays out of every spending and
+income report until the next load re-asserts the pass.
 
 Use case: a silver was rebuilt from bronze (re-parse, new
 migration, data correction) and you want gold to re-sync from

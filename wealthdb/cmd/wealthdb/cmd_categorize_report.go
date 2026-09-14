@@ -14,7 +14,7 @@ import (
 
 // The run report.
 //
-// A categorisation run's own numbers — merchants asked, rows rejected,
+// A categorisation run's own numbers — counterparties asked, rows rejected,
 // verdicts stored — say whether the model behaved. They say nothing
 // about whether the SPENDING PICTURE is right, and that is the
 // question actually being asked. So the report also prints four
@@ -258,6 +258,7 @@ func findCrossCurrencyShapes(unmatched []spending.Leg, windowDays int) []crossCu
 // block, as resolve-symbols does.
 func printCategorizeSummary(
 	w io.Writer,
+	fam categorizeFamily,
 	candidates []merchantCandidate,
 	valid []categorization,
 	leftovers []merchantCandidate,
@@ -278,18 +279,22 @@ func printCategorizeSummary(
 	}
 
 	fmt.Fprintln(w, "categorize: summary")
-	fmt.Fprintf(w, "  merchants asked:    %d (%d transaction(s))\n", len(candidates), totalCandidateTxns(candidates))
+	// The label column is twenty wide, so the family's own noun lines
+	// up with the fixed labels under it rather than shifting the whole
+	// block by the length of one word.
+	fmt.Fprintf(w, "  %-20s%d (%d transaction(s))\n", fam.plural()+" asked:",
+		len(candidates), totalCandidateTxns(candidates))
 	fmt.Fprintf(w, "  LLM attempts:       %d over %d batch(es)\n", attempts, batches)
 	fmt.Fprintf(w, "  rejected rows:      %d (failed validation across all attempts)\n", totalInvalid)
-	fmt.Fprintf(w, "  categorised:        %d merchant(s), covering %d transaction(s)\n", len(valid), coveredTxns)
-	fmt.Fprintf(w, "  left uncategorised: %d merchant(s)\n", len(leftovers))
+	fmt.Fprintf(w, "  categorised:        %d %s(s), covering %d transaction(s)\n", len(valid), fam.counterparty, coveredTxns)
+	fmt.Fprintf(w, "  left uncategorised: %d %s(s)\n", len(leftovers), fam.counterparty)
 	if len(byCategory) > 0 {
 		fmt.Fprintf(w, "  distinct categories used: %d\n", len(byCategory))
 	}
 
 	if len(leftovers) > 0 {
 		sample := stratifiedSample(leftovers, canaryListLimit, merchantCandidate.DominantSource)
-		fmt.Fprintf(w, "  sample of uncategorised merchants (%d of %d, mixed across sources):\n", len(sample), len(leftovers))
+		fmt.Fprintf(w, "  sample of uncategorised %s (%d of %d, mixed across sources):\n", fam.plural(), len(sample), len(leftovers))
 		for _, c := range sample {
 			fmt.Fprintf(w, "    %s [%s, %d txn(s)]\n", c.Signature, c.DominantSource(), c.Txns)
 		}

@@ -134,6 +134,76 @@ func TestIncomeCategorizationInherits(t *testing.T) {
 	}
 }
 
+// TestPersonNameFenceDefaultsOnAndIsInherited pins the one setting that
+// decides whether a person's name may leave the machine.
+//
+// Three states, and the middle one is the whole reason the field is a
+// pointer: absent must mean ON, and an explicit `false` must survive
+// both the parse and a round-trip through the config writer, which a
+// plain bool with omitempty would drop.
+func TestPersonNameFenceDefaultsOnAndIsInherited(t *testing.T) {
+	const model = `"model": {"name": "m", "baseUrl": "http://localhost:1/v1", "api": "openai"}`
+
+	// Absent: on. A missing configuration must never be the thing that
+	// sends a name to a third party.
+	c, err := writeIncomeCfg(t, `"spending": {"categorization": {`+model+`}}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.SpendCategorization().PersonNameFence() {
+		t.Error("an absent fence_person_names resolved to off")
+	}
+	// ...and a nil block answers the same way, since the accessor is
+	// what every caller reads.
+	if !(*SpendingCategorization)(nil).PersonNameFence() {
+		t.Error("a nil categorization block resolved to off")
+	}
+
+	// Explicit false: off, and it round-trips rather than being read
+	// as absent.
+	c, err = writeIncomeCfg(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.SpendCategorization().PersonNameFence() {
+		t.Error("an explicit fence_person_names=false was read as absent")
+	}
+
+	// Explicit true: on.
+	c, err = writeIncomeCfg(t, `"spending": {"categorization": {`+model+`, "fence_person_names": true}}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.SpendCategorization().PersonNameFence() {
+		t.Error("an explicit fence_person_names=true was read as off")
+	}
+
+	// Income inherits it with the rest of the block. One household, one
+	// answer to what may leave the machine — which is the point of
+	// inheriting whole rather than per field.
+	c, err = writeIncomeCfg(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}},
+        "income": {"pins": "/tmp/p.csv"}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.IncomeCategorization().PersonNameFence() {
+		t.Error("income did not inherit fence_person_names=false")
+	}
+
+	// ...and an income block of its own is taken whole, so it falls
+	// back to the DEFAULT rather than to spending's value. That is the
+	// same rule ContextLevel is held to above, and it errs safe here:
+	// a half-inherited block cannot quietly turn the fence off.
+	c, err = writeIncomeCfg(t, `"spending": {"categorization": {`+model+`, "fence_person_names": false}},
+        "income": {"categorization": {`+model+`}}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.IncomeCategorization().PersonNameFence() {
+		t.Error("an income block of its own inherited spending's fence_person_names per field")
+	}
+}
+
 // TestIncomeContextAcceptsBothSpellings is the reason ValidIncomeContext
 // exists: a spending block inherited whole must validate under the
 // income family's checker without being rewritten in income's words.

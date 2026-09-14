@@ -99,7 +99,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 	// Reload is RW (combines reset + load). Gate here; the fresh-swap
 	// and in-place paths each open the DB themselves. The write mutex
 	// is held for the whole command, including the fresh-file rebuild:
-	// nothing keeps the live file open between the merchant-store
+	// nothing keeps the live file open between the verdict-store
 	// carry-across and the swap, so a verdict written in that window
 	// would land in the inode the rename unlinks.
 	lock, err := gateGoldForWrite(g, cfg, "reload",
@@ -167,7 +167,7 @@ func reloadFreshAndSwap(
 		// A hard error: those verdicts were paid for and have no config
 		// backup to re-stamp them from. Both families have one, and a
 		// store that is not carried is lost with no backup — which is
-		// why the list is walked rather than the merchant store named.
+		// why the list is walked rather than one store named.
 		var present bool
 		var carried int
 		for _, store := range paidStores {
@@ -223,17 +223,35 @@ func reloadFreshAndSwap(
 	return nil
 }
 
-// carryMerchantCategories copies the global merchant store out of the
+// paidStore names one paid-for verdict store: the table, the word its
+// rows are about, and its key column — which the carry-across checks
+// for by name, since a store whose key did not survive into the
+// rebuilt schema cannot be carried at all.
+type paidStore struct {
+	table     string
+	noun      string
+	signature string
+}
+
+// paidStores is every store `reload -a` must carry. Adding a family
+// means adding a row here; a store left out is lost on the next
+// rebuild, silently and with nothing to restore it from.
+var paidStores = []paidStore{
+	{"spend_merchant_categories", "merchant", "merchant_signature"},
+	{"income_payer_categories", "payer", "payer_signature"},
+}
+
+// carryVerdictStore copies one global verdict store out of the
 // outgoing gold file into the freshly built one, and reports whether
 // the outgoing file had the table at all and how many rows it carried.
 //
 // 'reload -a' builds an empty temp file and swaps it over the live
-// path, and the merchant store is the one thing in gold that a rebuild
-// cannot regenerate: FX priorities and the account/instrument
+// path, and the verdict stores are the one thing in gold that a
+// rebuild cannot regenerate: FX priorities and the account/instrument
 // overrides are re-stamped from config, every fact table is re-derived
-// from silver, but an LLM verdict on a merchant signature exists only
-// in that table and was paid for. Without this carry-across, routine
-// compaction-by-reload would silently wipe it.
+// from silver, but an LLM verdict on a merchant or payer signature
+// exists only in its store and was paid for. Without this
+// carry-across, routine compaction-by-reload would silently wipe it.
 //
 // The copied column list is derived — the intersection of the two
 // files' columns, read from duckdb_columns() — rather than named in
@@ -245,30 +263,17 @@ func reloadFreshAndSwap(
 // The intersection alone does not make the live-behind direction
 // SAFE, only silent: a column the rebuilt schema requires and the
 // outgoing file does not have yet is dropped from the SELECT and then
-// fails the target table's NOT NULL on INSERT. Every column of this
-// table is NOT NULL, so that is the normal shape of the next additive
+// fails the target table's NOT NULL on INSERT. Every column of these
+// tables is NOT NULL, so that is the normal shape of the next additive
 // migration met by a live file no load has touched since. Such
 // columns are therefore named in an error before the INSERT runs,
 // rather than surfacing as a constraint violation with nothing
 // actionable in it.
 //
 // ATTACH is per-connection, so the sequence runs on one pinned conn.
-// A live file written before migration 0041 has no such table, which
+// A live file predating the store's own migration — 0041 for the
+// merchant store, 0070 for the payer store — has no such table, which
 // carries nothing rather than erroring.
-// paidStore names one paid-for store and what its rows are about.
-type paidStore struct {
-	table string
-	noun  string
-}
-
-// paidStores is every store `reload -a` must carry. Adding a family
-// means adding a row here; a store left out is lost on the next
-// rebuild, silently and with nothing to restore it from.
-var paidStores = []paidStore{
-	{"spend_merchant_categories", "merchant"},
-	{"income_payer_categories", "payer"},
-}
-
 func carryVerdictStore(ctx context.Context, db *sql.DB, livePath string, store paidStore) (bool, int, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -326,8 +331,8 @@ func carryVerdictStore(ctx context.Context, db *sql.DB, livePath string, store p
 	return true, int(n), nil
 }
 
-// checkMerchantColumnsSatisfiable refuses the carry-across when the
-// rebuilt merchant store requires a column the outgoing one cannot
+// checkStoreColumnsSatisfiable refuses the carry-across when the
+// rebuilt store requires a column the outgoing one cannot
 // supply: NOT NULL, no default, and absent from the outgoing table.
 // The intersection drops such a column from both sides of the INSERT,
 // which leaves the target table to reject the row — a constraint
@@ -358,7 +363,7 @@ func checkStoreColumnsSatisfiable(ctx context.Context, conn *sql.Conn, store pai
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("scan the merchant store's required columns: %w", err)
+			return fmt.Errorf("scan the %s store's required columns: %w", store.noun, err)
 		}
 		missing = append(missing, name)
 	}
@@ -368,16 +373,17 @@ func checkStoreColumnsSatisfiable(ctx context.Context, conn *sql.Conn, store pai
 	if len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("the outgoing gold's merchant store has no %s column(s), which the rebuilt schema "+
+	return fmt.Errorf("the outgoing gold's %s store (%s) has no %s column(s), which the rebuilt schema "+
 		"requires (NOT NULL, no default); run 'wealthdb load <silver_source_id>' first — it opens the live "+
-		"file read-write and migrates it — then re-run 'reload -a'", strings.Join(missing, ", "))
+		"file read-write and migrates it — then re-run 'reload -a'",
+		store.noun, store.table, strings.Join(missing, ", "))
 }
 
-// carriedMerchantColumns returns the quoted, comma-joined column list
-// the two spend_merchant_categories tables have in common — the
-// freshly built one (current_database(), which resolves to the rebuild
-// temp file even with live_gold attached) intersected with the
-// outgoing one, in the new table's own column order.
+// carriedStoreColumns returns the quoted, comma-joined column list the
+// two copies of ONE verdict store have in common — the freshly built
+// one (current_database(), which resolves to the rebuild temp file even
+// with live_gold attached) intersected with the outgoing one, in the
+// new table's own column order.
 func carriedStoreColumns(ctx context.Context, conn *sql.Conn, store paidStore) (string, error) {
 	rows, err := conn.QueryContext(ctx, `
         SELECT f.column_name
@@ -399,9 +405,9 @@ func carriedStoreColumns(ctx context.Context, conn *sql.Conn, store paidStore) (
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return "", fmt.Errorf("scan the merchant store's columns: %w", err)
+			return "", fmt.Errorf("scan the %s store's columns: %w", store.noun, err)
 		}
-		if name == "merchant_signature" {
+		if name == store.signature {
 			keyed = true
 		}
 		quoted = append(quoted, `"`+strings.ReplaceAll(name, `"`, `""`)+`"`)
@@ -410,15 +416,16 @@ func carriedStoreColumns(ctx context.Context, conn *sql.Conn, store paidStore) (
 		return "", err
 	}
 	if !keyed {
-		return "", fmt.Errorf("the outgoing merchant store shares no key column with the rebuilt one; refusing to carry it")
+		return "", fmt.Errorf("the outgoing %s store shares no key column with the rebuilt one; refusing to carry it",
+			store.noun)
 	}
 	return strings.Join(quoted, ", "), nil
 }
 
 // reloadInPlace is the original reset-then-load-on-the-live-DB path,
 // used for single-source reloads and for 'reload -a --in-place'. The
-// merchant store needs no carry-across here: the live file is never
-// replaced, and Reset leaves the store alone.
+// verdict stores need no carry-across here: the live file is never
+// replaced, and Reset leaves both of them alone.
 func reloadInPlace(
 	ctx context.Context,
 	cfg *config.Config,

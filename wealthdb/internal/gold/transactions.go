@@ -87,9 +87,10 @@ const (
 // desc per `order`), then (silver_source_id,
 // transaction_external_id) as a stable tiebreaker. The query and FX
 // are the report_transactions table macro (migration 0021, re-issued
-// with account_kind in 0039 and with the merchant / spend-category
-// columns in 0042); the macro emits ascending, so the descending case
-// re-sorts here.
+// with account_kind in 0039, with the merchant / spend-category
+// columns in 0042, and with the payer / income-category columns in
+// 0071); the macro emits ascending, so the descending case re-sorts
+// here.
 //
 // `SELECT *` with a positional Scan: any column added to the macro
 // must be added to TransactionRow and to the scan list below in the

@@ -289,7 +289,6 @@ def report_models():
                 "       i.income_label         AS income_detailed,\n"
                 "       i.income_primary AS income_primary_id,\n"
                 "       i.income_detailed AS income_detailed_id,\n"
-                "       i.income_label AS income_label,\n"
                 "       i.provider_income_label AS provider_category, c.currency")
         legs = ["CASE c.currency"] + [
             f" WHEN '{c.upper()}' THEN i.value_{c}" for c in ("chf", "eur")] + [
@@ -514,15 +513,23 @@ INVESTMENT_INCOME_TYPES = ["INCOME_DIVIDENDS", "INCOME_INTEREST_EARNED",
 WO_INCOME_TYPE_LIST = ", ".join(f"'{t}'" for t in INVESTMENT_INCOME_TYPES)
 COST_KINDS = ["fee", "tax"]
 
-# Account kinds fenced out of the investment flow charts. A credit card
-# books `interest` (a finance charge) and `fee` (an annual fee) of its own
-# — the same transaction kinds the charts select on — so without this
-# fence a card would report spending costs as investment income and
-# portfolio costs. Card flows are spending; they belong to the spending
-# surface, not to the income / fees charts. Fenced on the account_kind
-# column the transaction report macros carry (migration 0039), which is
-# NULL for a transaction whose account is absent from `accounts`; NULL
-# must be KEPT, so the fence is written as "not card, or unknown".
+# Account kinds fenced out of the FEES & TAXES flow charts. A credit card
+# books `fee` (an annual fee) and `interest` (a finance charge) of its
+# own — the same transaction kinds those charts select on — so without
+# this fence a card would report spending costs as portfolio costs. Card
+# flows are spending; they belong to the spending surface.
+#
+# The income charts no longer need it and no longer use it: they read
+# `web_income` (migration 0072), whose base admits a card's finance
+# charge nowhere at all — a negative `interest` is spending's by
+# migration 0041, and a card fee is not an income kind. The fence
+# shrank to the one question it still answers when the income tile was
+# re-pointed at the income base.
+#
+# Fenced on the account_kind column the transaction report macros carry
+# (migration 0039), which is NULL for a transaction whose account is
+# absent from `accounts`; NULL must be KEPT, so the fence is written as
+# "not card, or unknown".
 FLOW_CHART_EXCLUDED_ACCOUNT_KINDS = ["card"]
 
 # The label gold's spending views carry for a line whose category the
@@ -570,7 +577,15 @@ RETIRED_CARD_NAMES = ["net_worth_usd_current", "net_worth_chf_current",
                       "Value by tax wrapper (% of peak)",
                       "Value by management style (% of peak)",
                       "Top 100 positions (% of peak)",
-                      "Source freshness (% of peak)"]
+                      "Source freshness (% of peak)",
+                      # "Income by month (USD)" -> "Investment income by
+                      # month (USD)": the Wealth Overview's tile is named
+                      # for the four types it charts, which also keeps its
+                      # privacy twin from colliding with the Income
+                      # dashboard's. The twin name is NOT retired — it is
+                      # the Income dashboard's own, and always was the
+                      # name the collision resolved to.
+                      "Income by month (USD)"]
 
 # Dashboard names retired by renames ("Net Worth" undersold the income /
 # cost flow tiles); archived on provision so a re-run cleans them up.
@@ -588,7 +603,17 @@ PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
                         # A share of rows, not of money — and it already
                         # runs over the _pct model, so its drill-through
                         # is leak-free too.
-                        "Uncategorized share", "Uncategorized income share"}
+                        #
+                        # The income twin of the same tile is NOT here.
+                        # That card is native, so it carries its own
+                        # field-filter template tags, and one of them is
+                        # an `account` filter — which Metabase renders as
+                        # a dropdown of account labels wherever the card
+                        # is opened on its own. A percentage is safe to
+                        # reuse; a widget listing the accounts is not, so
+                        # the twin builds its own from
+                        # PRIVACY_INCOME_FILTERS.
+                        "Uncategorized share"}
 
 # Denominator-neutral by design: each card's body text names its own
 # denominator (latest total, chosen day's total, peak month, or the
@@ -964,7 +989,7 @@ def question_defs(db_id, mid):
     # aggregates, so a per-currency column collapses its duplicate rows
     # (ccy_spend), and the other is the transaction list, which is
     # itself the records a drill-through would reach.
-    sp_tags, sp_where, sp_val, spend_native = _family_native_kit(
+    sp_where, sp_val, spend_native = _family_native_kit(
         db_id, "web_spending", SPEND_FILTERS, SPEND_PICKERS, True, native_note)
 
     sp_month = ("CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
@@ -974,7 +999,7 @@ def question_defs(db_id, mid):
     # `neg` is the whole of the sign difference: gold stores an outflow
     # negative and a receipt positive, and both families report a
     # positive magnitude.
-    in_tags, in_where, in_val, income_native = _family_native_kit(
+    in_where, in_val, income_native = _family_native_kit(
         db_id, "web_income", INCOME_FILTERS, INCOME_PICKERS, False, income_native_note)
 
     # The Wealth Overview's own income tile reads the same view but
@@ -989,7 +1014,7 @@ def question_defs(db_id, mid):
     wo_income_tags = view_tags("web_income", {
         "time_range": INCOME_FILTERS["time_range"],
         "source": INCOME_FILTERS["source"]})
-    register_native_targets("Income by month (USD)", wo_income_tags,
+    register_native_targets("Investment income by month (USD)", wo_income_tags,
                             [(TIME_PARAM_ID, "time_range"),
                              (SOURCE_PARAM_ID, "source")])
 
@@ -1029,7 +1054,16 @@ def question_defs(db_id, mid):
         # MBQL because web_income carries a row per reporting currency
         # and this card is fixed to USD; it takes the Wealth Overview's
         # own two pickers as template tags.
-        "Income by month (USD)": ("bar",
+        #
+        # "Investment income", not "Income", and the word is load-bearing
+        # twice over. It says what the card charts — the four
+        # INVESTMENT_INCOME_TYPES, not the whole base — and it keeps the
+        # name distinct from the Income dashboard's own "Income by
+        # month". privacy_name() strips " (USD)" and appends
+        # " (privacy)", so the two would otherwise collide on one twin
+        # name and whichever was defined last would silently replace the
+        # other.
+        "Investment income by month (USD)": ("bar",
             "Investment income — dividends, interest earned, staking and "
             "fund distributions — per month in USD, stacked by type. Reads "
             "the same income base as the Income dashboard, so the two "
@@ -1352,8 +1386,12 @@ def question_defs(db_id, mid):
             f"SELECT {in_val} AS net_income\n"
             "  FROM web_income" + in_where,
             {}),
-        # The data-quality canary, and a percentage, so the privacy twin
-        # reuses it as-is (PRIVACY_EXEMPT_CARDS).
+        # The data-quality canary. A percentage, so the FIGURE needs no
+        # twin — but this is a native card, and a native card carries its
+        # own field-filter tags wherever it is opened, one of which is an
+        # `account` filter. So the twin builds its own over
+        # PRIVACY_INCOME_FILTERS (income_privacy_defs) and this one is
+        # NOT in PRIVACY_EXEMPT_CARDS.
         # The one income tile that does NOT read {{currency}}: it is a
         # share of ROWS, scale-free, and the same in every currency. It
         # therefore gets tags without the currency variable rather than
@@ -1362,8 +1400,11 @@ def question_defs(db_id, mid):
             "Share of the window's income lines no tier and no kind floor "
             f"could place — the ones labelled '{UNCATEGORIZED}'. The backlog "
             "`wealthdb categorize income` works through. Most income is "
-            "placed by its transaction kind, so this counts deposits."
-            + income_native_note,
+            "placed by its transaction kind, so this counts deposits. "
+            "It is a share of rows, so it is the same in every currency "
+            "and declares no currency variable; opened standalone it "
+            "covers the whole history, where the dashboard's time filter "
+            "defaults to the trailing twelve months.",
             _native(db_id,
                 "SELECT count(*) FILTER (WHERE income_label = "
                 f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS uncategorized_share\n"
@@ -1574,7 +1615,6 @@ CATEGORY_PARAM_ID = "aa5df109"
 # own: the mode is 'range' like Wealth Overview — a time window plus a
 # source picker — and these three pickers are additions to it.
 SPENDING_DASHBOARDS = {"Spending", "Spending" + PRIVACY_SUFFIX}
-
 # The same for the Income dashboards.
 INCOME_DASHBOARDS = {"Income", "Income" + PRIVACY_SUFFIX}
 
@@ -1591,10 +1631,6 @@ POSITION_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (privac
 # kind that reads correctly opened standalone, where no picker reaches it.
 SPEND_ALL_CURRENCY_CARDS = {"Top 50 merchants"}
 
-# The income tiles are native throughout, so none of them reads every
-# currency as its own column; the set is empty and named rather than
-# absent, so a later MBQL income tile has somewhere to go.
-INCOME_ALL_CURRENCY_CARDS = set()
 
 
 def base_dashboards():
@@ -1628,7 +1664,7 @@ def base_dashboards():
             ("Net worth — monthly trend (USD)", 0, 18, 6, 3, "as_of_day"),
             ("Net worth over time (USD)", 3, 0, 24, 6, "as_of_day"),
             ("Cash vs positions over time (USD)", 9, 0, 24, 6, "as_of_day"),
-            ("Income by month (USD)", 15, 0, 12, 6, "occurred_at"),
+            ("Investment income by month (USD)", 15, 0, 12, 6, "occurred_at"),
             ("Fees & taxes by month (USD)", 15, 12, 12, 6, "occurred_at"),
         ]),
         "Allocation": (
@@ -1828,10 +1864,11 @@ def _ccy_case(col, neg=False):
 
 
 def _family_native_kit(db_id, view, filters, pickers, neg, note):
-    """One family's native-card kit: the template tags for its serving
-    view, the WHERE clause those tags imply, the summed value expression
-    in the picked currency, and a builder that registers a card's
-    pickers as it defines it.
+    """One family's native-card kit: the WHERE clause its serving
+    view's template tags imply, the summed value expression in the
+    picked currency, and a builder that registers a card's pickers as it
+    defines it. The tags stay inside — every card that needs them goes
+    through the builder.
 
     Shared because the two families differ in exactly four things — the
     view, the filter specs, the picker list and the SIGN — and a second
@@ -1847,7 +1884,7 @@ def _family_native_kit(db_id, view, filters, pickers, neg, note):
         register_native_targets(name, tags, pickers)
         return (display, desc + note, _native(db_id, sql, tags), viz)
 
-    return tags, where, val, native
+    return where, val, native
 
 
 def _spend_where(tags, indent="   "):
@@ -2036,7 +2073,7 @@ def privacy_card_defs(db_id, model_ids):
         "time_range": INCOME_FILTERS["time_range"],
         "source": INCOME_FILTERS["source"]})
     wo_where = _spend_where(wo_tags)
-    out["Income by month (privacy)"] = ("question", "bar",
+    out["Investment income by month (privacy)"] = ("question", "bar",
         "Investment income — dividends, interest earned, staking and fund "
         "distributions — per month, stacked by type, as % of the biggest "
         "income month within the selected window and sources: the tallest "
@@ -2062,7 +2099,7 @@ def privacy_card_defs(db_id, model_ids):
         "within the selected window and sources — the tallest bar reads "
         "100." + PRIVACY_DESC,
         _native(db_id, flow_sql(COST_KINDS, sign="-"), tx_tags), flow_viz)
-    register_native_targets("Income by month (privacy)", wo_tags,
+    register_native_targets("Investment income by month (privacy)", wo_tags,
                             [(TIME_PARAM_ID, "time_range"),
                              (SOURCE_PARAM_ID, "source")])
     register_native_targets("Fees & taxes by month (privacy)", tx_tags,
@@ -2311,6 +2348,35 @@ def income_privacy_defs(db_id, model_ids):
         f"  SELECT {val} AS v FROM web_income" + where + ")\n"
         "SELECT v / nullif(v, 0) * 100 AS income_pct FROM m",
         {})
+    # The data-quality canary, rebuilt rather than reused. The base
+    # card is a share of ROWS, so its FIGURE is already safe for the
+    # twin — but it is a native card, and a native card carries its own
+    # field-filter template tags wherever it is opened. One of the base
+    # card's is an `account` filter, which renders as a dropdown of
+    # account labels: the widget this twin exists not to show. So it is
+    # built here over PRIVACY_INCOME_FILTERS like every other card on
+    # this dashboard, and left out of PRIVACY_EXEMPT_CARDS.
+    #
+    # It is the one card here that does not read {{currency}} — a share
+    # of rows is the same in every currency — so it takes plain
+    # view_tags rather than the spend_tags the rest share.
+    share_tags = view_tags("web_income", PRIVACY_INCOME_FILTERS)
+    out["Uncategorized income share (privacy)"] = ("question", "scalar",
+        "Share of the window's income lines no tier and no kind floor "
+        f"could place — the ones labelled '{UNCATEGORIZED}'. The backlog "
+        "`wealthdb categorize income` works through. Most income is "
+        "placed by its transaction kind, so this counts deposits. "
+        "It is a share of rows, so it is the same in every currency and "
+        "declares no currency variable; opened standalone it covers the "
+        "whole history, where the dashboard's time filter defaults to "
+        "the trailing twelve months." + PRIVACY_DESC,
+        _native(db_id,
+            "SELECT count(*) FILTER (WHERE income_label = "
+            f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS uncategorized_share\n"
+            "  FROM web_income" + _spend_where(share_tags), share_tags),
+        _percent_viz("uncategorized_share"))
+    register_native_targets("Uncategorized income share (privacy)", share_tags,
+                            [t for t in INCOME_PICKERS if t[1] != "currency"])
     income_card("Largest receipts (privacy)", "table",
         "The fifty largest single income lines of the window, each as a "
         "share (%) of the window's net income, with the type but no payer "
@@ -2707,8 +2773,18 @@ def dashboard_parameters(model_ids, mode, name=""):
         # Bound to the DETAILED label: the income taxonomy has one
         # vendored primary, so a primary-level picker would offer four
         # values and hide every distinction worth filtering by.
+        #
+        # `income_detailed` is the MODEL'S ALIAS for that label
+        # (report_income projects `i.income_label AS income_detailed`),
+        # not the view column of the same name. A picker's dropdown is
+        # the values its value_field takes on the model, so naming a
+        # column the model does not project leaves the dropdown empty —
+        # and the tiles then match a filter nobody could set. The
+        # matching field filter is bound to the VIEW's income_label
+        # (INCOME_FILTERS), so picker and predicate offer the same
+        # vocabulary, which is the contract the spending pair states.
         pickers.append(card_picker(INCOME_TYPE_PARAM_ID, "Type", "type",
-                                   "report_income", "income_label"))
+                                   "report_income", "income_detailed"))
         return pickers
     if name not in SPENDING_DASHBOARDS:
         return [time_range, source]

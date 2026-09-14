@@ -175,6 +175,55 @@ func TestIncomeCashDepositRule(t *testing.T) {
 	}
 }
 
+// TestIncomeBuiltinRuleIsGatedOnDeposit pins the gate, which is the
+// thing that keeps the rule from reaching past the one kind it can
+// speak for.
+//
+// The rule tier is ABOVE the kind floor and stays there — a config rule
+// promoting a `distribution` depends on it — so a phrase match on a
+// kind the floor already answers does not merely add a verdict, it
+// REPLACES a right one. `interest` is where the collision is real: a
+// call or money-market account books credited interest and a bank
+// narrates it "INTEREST ON CASH DEPOSIT", which the rule's phrase
+// matches exactly. Ungated, interest earned would read as cash paid in
+// over a counter.
+func TestIncomeBuiltinRuleIsGatedOnDeposit(t *testing.T) {
+	db, ctx := openGold(t)
+	seedTxns(t, db, ctx,
+		// The phrase, on the kind the rule exists for.
+		txn{"bank", "T-REAL", "CASH1", "deposit", day(10), 500, "CASH DEPOSIT BRANCH", "", ""},
+		// The same phrase, on a kind the floor answers. The narrative
+		// is a bank's ordinary wording for a credit-interest line.
+		txn{"bank", "T-INT", "CASH1", "interest", day(11), 12, "INTEREST ON CASH DEPOSIT", "", ""},
+		// ...and on two more floored kinds, so the gate is not read as
+		// a special case about interest.
+		txn{"bank", "T-DIV", "CASH1", "dividend", day(12), 40, "CASH DEPOSIT DIVIDEND", "", ""},
+		txn{"bank", "T-RWD", "CASH1", "reward", day(13), 5, "BAREINZAHLUNG BONUS", "", ""},
+	)
+	runPass(t, db, ctx, Options{})
+
+	if detailed, provenance, _ := incomeVerdictOf(t, db, ctx, "bank", "T-REAL"); detailed !=
+		canonical.IncomeDetailedCashDeposit || provenance != ProvenanceRule {
+		t.Errorf("T-REAL = (%q, %q), want the rule to fire on a deposit", detailed, provenance)
+	}
+	for _, id := range []string{"T-INT", "T-DIV", "T-RWD"} {
+		detailed, provenance, _ := incomeVerdictOf(t, db, ctx, "bank", id)
+		if detailed != "" {
+			t.Errorf("%s = (%q, %q): the built-in rule reached a kind the floor answers, "+
+				"and the rule tier outranks the floor", id, detailed, provenance)
+		}
+	}
+
+	// The gate is the function's own, not the caller's, so a direct
+	// call cannot get past it either.
+	if _, _, ok := IncomeRuleCategory("interest", "CASH DEPOSIT BRANCH", "", "", ""); ok {
+		t.Error("IncomeRuleCategory fired on an interest row")
+	}
+	if _, _, ok := IncomeRuleCategory("deposit", "CASH DEPOSIT BRANCH", "", "", ""); !ok {
+		t.Error("IncomeRuleCategory did not fire on a deposit row")
+	}
+}
+
 // TestIncomeProviderTier pins the second bank vocabulary the income
 // side reads, and the two ways it declines.
 func TestIncomeProviderTier(t *testing.T) {

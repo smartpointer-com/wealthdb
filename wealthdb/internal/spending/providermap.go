@@ -436,6 +436,7 @@ var ubsCardMoneyMovement = map[string]bool{
 // `shopping_other` and `utility` resolve to their primary's catch-all
 // and so decline, leaving the merchant name to the model. What the
 // vocabulary declines outright is in raiffeisenUncategorized below.
+
 // ubsIncomeBookingTypes is the inflow half of the UBS booking-type
 // vocabulary: the types that NAME what arrived.
 //
@@ -479,6 +480,51 @@ var ubsIncomeBookingTypes = map[string]string{
 // and left for the tier that can read a payer.
 var raiffeisenIncomeCategories = map[string]string{
 	"income_other": "INCOME_OTHER_INCOME",
+}
+
+// raiffeisenIncomeUncategorized is the income side's reviewed-and-left
+// set. It is `raiffeisenUncategorized` LESS `income_other`, plus every
+// value the categorical vocabulary spends on the outflow side.
+//
+// Two things it has to be, and they pull in opposite directions.
+//
+// `income_other` is left OUT, which is why this is not simply the other
+// map. On the OUTFLOW side that token names a direction rather than a
+// spend category and belongs to no spend value at all, so it is skipped
+// before the lookup runs; read from the inflow side it is the
+// vocabulary's own catch-all, which is a translation this family has a
+// word for. It is translated in raiffeisenIncomeCategories above and
+// declined by ProviderIncomeCategoryClaims — sharing one map between
+// the two sides made that translation unreachable.
+//
+// Everything else the vocabulary publishes is IN, and that is the
+// second requirement. The vocabulary is categorical, so a value outside
+// the reviewed set counts as drift — "the issuer's vocabulary has
+// moved", a signal the run report prints for someone to act on. But
+// this map translates ONE value by design, and the bank can file an
+// admitted inflow under its ordinary spend tokens: a `deposit` filed
+// `real_estate_other`, or a refund or a reversal under `supermarket`
+// or `bank_fee`. Reviewed on the spending
+// side and unlisted here, each would report as drift on every load —
+// a permanent false alarm that makes the real signal unreadable.
+//
+// So the two sets are derived from one another rather than written
+// twice: a token added to the spending review is reviewed here too, and
+// only a token NEITHER side has seen is drift.
+var raiffeisenIncomeUncategorized = raiffeisenIncomeReviewed()
+
+func raiffeisenIncomeReviewed() map[string]bool {
+	out := map[string]bool{}
+	for k := range raiffeisenUncategorized {
+		if k == "income_other" {
+			continue // translated on this side; see above
+		}
+		out[k] = true
+	}
+	for k := range raiffeisenCategories {
+		out[k] = true
+	}
+	return out
 }
 
 var raiffeisenCategories = map[string]string{
@@ -533,11 +579,9 @@ var providerVocabularies = map[string]providerVocabulary{
 	"ubs/card": {translations: ubsCardCategories,
 		untranslatable: ubsCardMoneyMovement, categorical: true},
 	"raiffeisen_at": {translations: raiffeisenCategories,
-		income:         raiffeisenIncomeCategories,
-		untranslatable: raiffeisenUncategorized,
-		// The inbound side reviewed the same uncategorised bucket: a
-		// value the bank could not place is not drift on either side.
-		incomeUntranslatable: raiffeisenUncategorized,
+		income:               raiffeisenIncomeCategories,
+		untranslatable:       raiffeisenUncategorized,
+		incomeUntranslatable: raiffeisenIncomeUncategorized,
 		categorical:          true},
 }
 

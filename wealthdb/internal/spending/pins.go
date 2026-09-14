@@ -237,7 +237,10 @@ type pinnedRow struct {
 // counts the same way — a source not loaded yet has no accounts at
 // all — while an AMBIGUOUS nickname is an error, because that is a
 // configuration fault whatever the load state.
-func resolvePins(ctx context.Context, tx *sql.Tx, pins []Pin) (map[txKey]pinnedRow, int, error) {
+// The family NAME prefixes every error, because both families call it
+// with their own ledger: an ambiguous nickname reported as `spending:`
+// sends a reader to the wrong file.
+func resolvePins(ctx context.Context, tx *sql.Tx, fam string, pins []Pin) (map[txKey]pinnedRow, int, error) {
 	if len(pins) == 0 {
 		return nil, 0, nil
 	}
@@ -249,7 +252,7 @@ func resolvePins(ctx context.Context, tx *sql.Tx, pins []Pin) (map[txKey]pinnedR
            AND ABS(CAST(net_amount AS DOUBLE) - ?) <= ?
          ORDER BY transaction_external_id`)
 	if err != nil {
-		return nil, 0, fmt.Errorf("spending: prepare pin lookup: %w", err)
+		return nil, 0, fmt.Errorf("%s: prepare pin lookup: %w", fam, err)
 	}
 	defer stmt.Close()
 
@@ -260,7 +263,7 @@ func resolvePins(ctx context.Context, tx *sql.Tx, pins []Pin) (map[txKey]pinnedR
 		resolve, ok := resolvers[p.Source]
 		if !ok {
 			if resolve, err = gold.NewAccountResolver(ctx, tx, p.Source); err != nil {
-				return nil, 0, fmt.Errorf("spending: resolve pin accounts for %s: %w", p.Source, err)
+				return nil, 0, fmt.Errorf("%s: resolve pin accounts for %s: %w", fam, p.Source, err)
 			}
 			resolvers[p.Source] = resolve
 		}
@@ -270,9 +273,9 @@ func resolvePins(ctx context.Context, tx *sql.Tx, pins []Pin) (map[txKey]pinnedR
 			continue
 		}
 		if err != nil {
-			return nil, 0, fmt.Errorf("spending: pin: %w", err)
+			return nil, 0, fmt.Errorf("%s: pin: %w", fam, err)
 		}
-		matches, err := pinMatches(ctx, stmt, p, account)
+		matches, err := pinMatches(ctx, stmt, fam, p, account)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -289,18 +292,18 @@ func resolvePins(ctx context.Context, tx *sql.Tx, pins []Pin) (map[txKey]pinnedR
 // pinMatches reads every transaction one pin describes, fully, before
 // the next pin is looked up: the statement runs on the pass's
 // transaction, which holds one connection.
-func pinMatches(ctx context.Context, stmt *sql.Stmt, p Pin, account string) ([]candidate, error) {
+func pinMatches(ctx context.Context, stmt *sql.Stmt, fam string, p Pin, account string) ([]candidate, error) {
 	rows, err := stmt.QueryContext(ctx, p.Source, account, p.Currency,
 		p.Day, p.Day+gold.SecondsPerDay, p.Amount, pinAmountEps)
 	if err != nil {
-		return nil, fmt.Errorf("spending: look up pin %s/%s: %w", p.Source, p.Account, err)
+		return nil, fmt.Errorf("%s: look up pin %s/%s: %w", fam, p.Source, p.Account, err)
 	}
 	defer rows.Close()
 	var out []candidate
 	for rows.Next() {
 		row := candidate{key: txKey{source: p.Source}}
 		if err := rows.Scan(&row.key.txID, &row.counterparty, &row.description); err != nil {
-			return nil, fmt.Errorf("spending: scan pin match: %w", err)
+			return nil, fmt.Errorf("%s: scan pin match: %w", fam, err)
 		}
 		out = append(out, row)
 	}

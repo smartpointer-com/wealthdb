@@ -60,8 +60,9 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             -- by a pin to the exception it names.
             ('inc-src', 'T-DISTRIB',   1000, 'BRK1',  'INST-NAMED',  'distribution', 'USD',  500),
             ('inc-src', 'T-DIST-PIN',  1000, 'BRK1',  'INST-NAMED',  'distribution', 'USD',  600),
-            -- interest and deposit are the two kinds that enter
-            -- positive only: their negative twins are different animals.
+            -- interest is the ONE kind with a sign guard: one
+            -- canonical kind carries interest credited and interest
+            -- charged, and the sign is all that tells them apart.
             ('inc-src', 'T-INT-POS',   1000, 'CASH1', NULL,          'interest',     'USD',    5),
             ('inc-src', 'T-INT-NEG',   1000, 'CASH1', NULL,          'interest',     'USD',  -10),
             ('inc-src', 'T-DEPOSIT',   1000, 'CASH1', NULL,          'deposit',      'USD',  100),
@@ -95,6 +96,10 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             -- An instrument that names nothing, on a row whose source
             -- did give a narrative: the payer falls through to it.
             ('inc-src', 'T-DIV-NONAME',1000, 'BRK1',  'INST-BLANK',  'dividend',     'USD',    8),
+            -- A deposit carrying the SAME signature as the capital_gain
+            -- row above. This is the shape the ordering turns on: one
+            -- payer, two kinds, and a single store verdict behind both.
+            ('inc-src', 'T-DEP-SHARED',1000, 'CASH1', NULL,          'deposit',      'USD',  150),
             -- A deposit carrying no amount at all. net_amount is
             -- nullable, and the sign guard is what decides it.
             ('inc-src', 'T-DEP-NOAMT', 1000, 'CASH1', NULL,          'deposit',      'USD',  NULL),
@@ -130,6 +135,7 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             -- the only thing any tier has to go on.
             ('inc-src', 'T-DEPOSIT',   'sig-unknown', 1, NULL,                     'signature-only', 100),
             ('inc-src', 'T-GAIN-STORE','sig-gains',   1, NULL,                     'signature-only', 100),
+            ('inc-src', 'T-DEP-SHARED','sig-gains',   1, NULL,                     'signature-only', 100),
             -- Interest CHARGED, which the population never admits but a
             -- pin can put in the overlay: the floor's sign guard is what
             -- stops it reading as interest earned.
@@ -166,7 +172,10 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             ('sig-payroll', 'Blue Harbour Payroll',       'INCOME_WAGES',        1, 100, 'test-model'),
             ('sig-admin',   'Example Fund Administrator', 'INCOME_DIVIDENDS',    1, 100, 'test-model'),
             -- Disagrees with the capital_gain floor, which says
-            -- INCOME_DISTRIBUTIONS: the store is read first.
+            -- INCOME_DISTRIBUTIONS. Two rows carry this signature: the
+            -- capital_gain, where the floor overrules the store, and a
+            -- deposit, where there is no floor and the store is the
+            -- only answer. One verdict, two outcomes (migration 0073).
             ('sig-gains',   'Example Gain Payer',         'INCOME_DIVIDENDS',    1, 100, 'test-model'),
             -- Disagrees with the overlay verdict pinned on T-DIST-PIN,
             -- which is read before either.
@@ -177,8 +186,8 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 }
 
 // TestIncomeLinesBasePopulation pins the population definition: which
-// transaction kinds are income, that the reversal-bearing kinds carry
-// both signs while `interest` and `deposit` enter positive only, that
+// transaction kinds are income, that seven of the eight carry both
+// signs while `interest` alone enters positive only, that
 // income_account_scope fences an account out, and that a row leaves the
 // base when what it resolves to is not income after all.
 func TestIncomeLinesBasePopulation(t *testing.T) {
@@ -190,7 +199,7 @@ func TestIncomeLinesBasePopulation(t *testing.T) {
 		"T-DIVIDEND":   "a dividend is income",
 		"T-DIV-NEG":    "a dividend clawed back is a reversal, and nets inside its own type",
 		"T-DIV-SYMBOL": "a dividend is a dividend whatever the instrument is called",
-		"T-DIV-STORE":  "a dividend whose signature also has a store verdict",
+		"T-DIV-STORE":  "a dividend whose signature also has a store verdict agreeing with the floor",
 		"T-COUPON":     "a bond coupon is interest earned",
 		"T-STAKING":    "a staking reward is income",
 		"T-CAPGAIN":    "a fund's payout of realised gains returns no basis",
@@ -202,9 +211,10 @@ func TestIncomeLinesBasePopulation(t *testing.T) {
 		"T-SIGONLY":    "a deposit nothing placed, carrying only its signature",
 		"T-GIFT":       "a gift received is income to the household, with no payer behind it",
 		"T-UNSEEN":     "a row the pass has not reached yet is shown, uncategorised, not dropped",
-		"T-GAIN-STORE": "a realised-gain payout the payer store placed",
+		"T-GAIN-STORE": "a realised-gain payout, placed by its kind over the store verdict on its payer",
+		"T-DEP-SHARED": "a deposit sharing that payer's signature, placed by the store because no floor claims a deposit",
 		"T-DEP-NEG":    "a negative deposit is a reversal by construction, and nets inside the type of the booking it corrects",
-		"T-DEP-ZERO":   "a deposit is an ordinary income kind now: no amount guard, as on the other six",
+		"T-DEP-ZERO":   "a deposit is an ordinary income kind now: no amount guard, as on the other unguarded kinds",
 		"T-DEP-NOAMT":  "likewise a booking with no amount — it counts as a row and contributes nothing to a sum",
 		"T-ESTATE":     "an estate's distribution is a receipt in its own right",
 		"T-COUNTER":    "cash paid in over a counter is a receipt whose origin is unobservable",
@@ -362,9 +372,13 @@ func readIncomeResolution(t *testing.T, db *sql.DB, ctx context.Context, id stri
 // its own source gives, so the floor reads that verdict rather than
 // re-deriving it from prose.
 //
-// The floor sits UNDER the payer store, as the spending floor sits
-// under the merchant store, and one of its arms places a DELTA — the
-// only floor in either family that does.
+// The floor sits OVER the payer store on this side (migration 0073),
+// which is where the two families part company: spending's floor sits
+// UNDER its merchant store, because there the model names a merchant
+// and a name is finer than a kind. Here the model is asked what kind of
+// income a receipt is, and the kind answers that itself. One of the
+// floor's arms also places a DELTA — the only floor in either family
+// that does.
 func TestIncomeKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
@@ -389,23 +403,35 @@ func TestIncomeKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 		// unplaced deposit is shown as uncategorised, never guessed at.
 		"T-DEPOSIT": {"", "signature-only"},
 		"T-SIGONLY": {"", "signature-only"},
-		// The store read BEFORE the floor, on a row where the two
-		// disagree: the floor would say INCOME_DISTRIBUTIONS for a
-		// capital_gain, and a verdict that named the payer is finer
-		// than anything a kind can say.
-		"T-GAIN-STORE": {"INCOME_DIVIDENDS", "model"},
-		// ...and the overlay read before the store, on a row where
-		// THOSE disagree: the pin says interest earned, the store says
-		// other income. Together the two rows pin the whole order,
-		// overlay > store > floor, which a COALESCE can otherwise be
-		// permuted in without any assertion noticing.
-		// The store's verdict, which the floor never reaches: on
-		// T-WIRE it is the only answer there is, and on T-DIV-STORE it
-		// agrees with the floor about the value, so the provenance is
-		// what says which of the two placed the row.
-		"T-WIRE":      {"INCOME_WAGES", "model"},
-		"T-DEP-NEG":   {"INCOME_WAGES", "model"},
-		"T-DIV-STORE": {"INCOME_DIVIDENDS", "model"},
+		// The floor read OVER the store (migration 0073), on rows
+		// where the two disagree. The model is asked what kind of
+		// income a receipt is, and on a kind that answers that
+		// question itself the model can only be wrong: a capital_gain
+		// is a distribution whatever a verdict bought on its payer's
+		// signature says.
+		"T-GAIN-STORE": {"INCOME_DISTRIBUTIONS", "kind"},
+		// ...and the same store verdict on a DEPOSIT, the one kind
+		// with no floor, where it is the only answer there is. The two
+		// rows share a signature on purpose: one verdict, read where
+		// the data makes no claim and overruled where it does. Flip
+		// the COALESCE back and this pair fails both ways at once.
+		"T-DEP-SHARED": {"INCOME_DIVIDENDS", "model"},
+		// The overlay read before the floor, on a row where THOSE
+		// disagree: the pin says interest earned, the floor says
+		// capital_return. With the pair above this pins the whole
+		// order, overlay > floor > store, which a COALESCE can
+		// otherwise be permuted in without any assertion noticing.
+		// (T-DIST-PIN is asserted above.)
+		//
+		// The store where nothing else reaches: T-WIRE and T-DEP-NEG
+		// are deposits, so the floor is absent and the verdict stands.
+		"T-WIRE":    {"INCOME_WAGES", "model"},
+		"T-DEP-NEG": {"INCOME_WAGES", "model"},
+		// A floor-kind row whose signature also has a store verdict
+		// AGREEING with the floor: the value is the same either way,
+		// so the provenance is the only thing that says which placed
+		// it. It reads `kind` now.
+		"T-DIV-STORE": {"INCOME_DIVIDENDS", "kind"},
 	} {
 		r := readIncomeResolution(t, db, ctx, id)
 		got := [2]string{r.detailed.String, r.provenance}
@@ -693,6 +719,48 @@ func TestIncomeScopeIsItsOwn(t *testing.T) {
 	}
 }
 
+// TestMigration0073DDLIsRerunnable holds the floor-over-store re-issue
+// to the replay bar, and pins the re-issue itself.
+//
+// A re-issue replaces a whole macro body, so the risk here is not the
+// change but everything carried forward with it: the payer's four
+// steps, the delta arm, the floor's seven kinds and the four provider
+// columns all live in the body 0073 restates. The projection check and
+// the resolution table below are what would catch a clause dropped in
+// the copy.
+func TestMigration0073DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedIncomeFixture(t, db, ctx)
+
+	rerunMigrationDDL(t, db, ctx, "0073_income_floor_over_store.sql")
+
+	assertMacroProjects(t, db, ctx, "income_txn_categories()",
+		"silver_source_id", "transaction_external_id", "payer_signature",
+		"payer_name", "income_detailed", "income_primary", "income_label",
+		"income_primary_label", "provenance", "provider_income_detailed",
+		"provider_income_primary", "provider_income_label",
+		"provider_income_primary_label")
+
+	// The whole lattice, after the re-run: overlay, then floor, then
+	// store, and the payer steps untouched by the re-order.
+	for id, want := range map[string][3]string{
+		"T-DIST-PIN":   {"INCOME_INTEREST_EARNED", "manual", "Example Dividend Corp"},
+		"T-WIRE":       {"INCOME_WAGES", "model", "Blue Harbour Payroll"},
+		"T-GAIN-STORE": {"INCOME_DISTRIBUTIONS", "kind", "Example Dividend Corp"},
+		"T-DEP-SHARED": {"INCOME_DIVIDENDS", "model", "Example Gain Payer"},
+		"T-DIVIDEND":   {"INCOME_DIVIDENDS", "kind", "Example Dividend Corp"},
+		"T-DIV-SYMBOL": {"INCOME_DIVIDENDS", "kind", "EXSY"},
+		"T-SIGONLY":    {"", "signature-only", "SAMPLE TAX OFFICE"},
+		"T-XFER":       {"internal_transfer", "matcher", ""},
+	} {
+		r := readIncomeResolution(t, db, ctx, id)
+		got := [3]string{r.detailed.String, r.provenance, r.payer.String}
+		if got != want {
+			t.Errorf("%s after the re-run = %v, want %v", id, got, want)
+		}
+	}
+}
+
 // TestMigration0070DDLIsRerunnable holds the income overlay to the
 // replay bar: the CREATEs are IF NOT EXISTS, the macros are OR REPLACE,
 // and a re-run leaves every macro answering. It also pins the `reward`
@@ -808,5 +876,16 @@ func assertMacroProjects(t *testing.T, db *sql.DB, ctx context.Context, macro st
 	}
 	if len(cols) != len(want) {
 		t.Errorf("%s projects %d columns (%v), want exactly %d", macro, len(cols), cols, len(want))
+		return
+	}
+	// ORDER, not just membership. Every reader of these macros scans
+	// `SELECT *` positionally, so two columns of the same type swapped
+	// is not a compile error and not a query error — it is a silent
+	// column shift, which is the failure this guard exists for.
+	for i, c := range want {
+		if cols[i] != c {
+			t.Errorf("%s column %d is %q, want %q: a positional scan reads them in order",
+				macro, i, cols[i], c)
+		}
 	}
 }

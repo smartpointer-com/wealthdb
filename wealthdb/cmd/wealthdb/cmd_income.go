@@ -174,7 +174,7 @@ func buildIncomeSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.I
 		// A memo, off by default. It is tax the household never saw,
 		// shown beside the income it was withheld from — and it is
 		// never subtracted from net_income, which is what "gross as
-		// booked" means (docs/INCOME.md §3).
+		// booked" means (docs/INCOME.md §5).
 		{Name: "withheld", Header: "withheld_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.IncomeSummaryRow) string { return formatCents(r.Withheld) }},
 	}
@@ -211,7 +211,7 @@ func buildIncomeTypeColumnRegistry(outCcy, period string) []columnSpec[gold.Inco
 			Extract: func(r gold.IncomeTypeRow) string { return formatCents(r.NetIncome) }},
 		// A share is a proportion, not an amount: it survives -p, which
 		// is what makes the privacy twin of this report readable.
-		{Name: "share", Align: output.AlignRight,
+		{Name: "share", Header: "share_%", Align: output.AlignRight,
 			Extract: func(r gold.IncomeTypeRow) string { return formatPct(r.Share) }},
 	}
 }
@@ -288,6 +288,13 @@ func buildIncomeTransactionColumnRegistry(outCcy string) []columnSpec[gold.Incom
 			Extract: func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.Counterparty) }},
 		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.Description) }},
+		// The source's own id for the line. INCOME.md §8 sends a reader
+		// to `wealthdb transactions` to see both families on one row,
+		// and without this there is no key to join the two listings on.
+		// Spending's transactions view and `wealthdb transactions` both
+		// offer it.
+		{Name: "tx_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+			Extract: func(r gold.IncomeTransactionRow) string { return r.TransactionExternalID }},
 	}
 }
 
@@ -326,7 +333,8 @@ Flags
                 folds every earned and yielded type into INCOME beside
                 the deltas.
   -f FORMAT     table | csv | csv_plain | json
-  -C COLS       comma-separated column names, or 'default' / 'all'
+  -C COLS       comma-separated names, 'default', 'all', or a
+                +ADD,-REMOVE delta on the default set
   -x CCY        output currency (default: config.default_currency)
   -p            redact account ids, payers and amounts; types, shares
                 and provenance stay legible
@@ -334,7 +342,14 @@ Flags
 Notes
   Income is GROSS as booked. Tax withheld at source is the spending
   side's, and -C +withheld shows it beside the income it was taken
-  from without ever subtracting it.
+  from without ever subtracting it. The memo is every NEGATIVE tax-kind
+  row of the window on these accounts, negated to read positive — what a
+  brokerage books withholding as, and what UBS also books a transaction
+  tax as.
+
+  A summary bucket can show txn_count 0 and blank money columns: that
+  is a period in which tax was withheld and no income arrived. -C
+  +withheld shows what put it there.
 
   income and reversals are positive magnitudes; net_income is the
   difference. A negative row of an income kind — a dividend clawed
@@ -342,5 +357,18 @@ Notes
 
   A receipt no tier could place reads (uncategorized) rather than being
   guessed at; 'wealthdb categorize income' is what works that backlog
-  down.`
+  down.
+
+Available columns (per view):
+  summary       ` + joinColumnNames(buildIncomeSummaryColumnRegistry("CCY", "monthly")) + `
+  types         ` + joinColumnNames(buildIncomeTypeColumnRegistry("CCY", "monthly")) + `
+  transactions  ` + joinColumnNames(buildIncomeTransactionColumnRegistry("CCY")) + `
+
+  (The money columns render as income_<CCY> / net_income_<CCY> /
+   value_<CCY>, reflecting your -x/--currency choice.)
+
+Default column sets:
+  summary       ` + strings.Join(defaultIncomeSummaryColumns, ", ") + `
+  types         ` + strings.Join(defaultIncomeTypeColumns, ", ") + `
+  transactions  ` + strings.Join(defaultIncomeTransactionColumns, ", ")
 }

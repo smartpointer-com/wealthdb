@@ -92,9 +92,10 @@ reports (+ all-time `report_transactions`), the daily `_history` reports
 (migration 0022) for time-series charts, the two taxonomy models over the
 `web_*` breakdown views (migration 0032), cast-only shims over the materialized
 `report_returns` table (§8), the spending models over `web_spending`
-(migration 0043) — and `_pct` privacy variants of the models the privacy
+(migration 0043), the income models over `web_income` (migration 0072) —
+and `_pct` privacy variants of the models the privacy
 surface reads. On top of the models, provisioning creates pre-defined
-metrics, questions and five dashboards — **Wealth
+metrics, questions and six dashboards — **Wealth
 Overview** and **Allocation** carry dashboard-level filters (a time range
 resp. a required as-of day, plus a source picker), **Returns** carries a
 required currency picker (returns are stored one row set per currency),
@@ -142,13 +143,24 @@ distinction a reader opens the dashboard for. The **Income** twin
 redacts the way the Spending twin does: shares of the window's own net
 income or of its biggest month, the payer list ranked unnamed, the
 account breakdown ranked, and no card projecting a payer or an account
-in its final SELECT. One tile is shared rather than twinned — the
-uncategorised share is a proportion of ROWS, so it is privacy-exempt,
-and it declares no currency variable because a share of rows is the same
-in every currency.
+in any projection it renders. The uncategorised share is a proportion of
+ROWS, so its FIGURE needs no twin — but it is built twice anyway, once
+per dashboard. A native card carries its own field-filter template tags
+wherever it is opened, and the base card's include an `account` filter,
+which Metabase renders as a dropdown of account labels; the twin's copy
+is built over `PRIVACY_INCOME_FILTERS` like every other card there.
+Neither declares a currency variable, a share of rows being the same in
+every currency.
 
-The **Wealth Overview**'s "Income by month" card reads the same income
-base (migration 0072), so it and the Income dashboard agree to the cent.
+The **Wealth Overview**'s "Investment income by month (USD)" card reads
+the same income base (migration 0072), so it and the Income dashboard
+agree to the cent. The first word is load-bearing twice: it says what
+the card charts — the four investment types, not the whole base — and it
+keeps the name distinct from the Income dashboard's own "Income by
+month". Privacy twin names are derived by stripping a `(USD)` marker and
+appending `(privacy)`, so two cards whose names differ only by that
+marker would collapse onto one twin, and whichever was defined last
+would silently replace the other.
 It selects the four investment income *types* rather than five
 transaction kinds, and its old credit-card fence is gone with the
 question it answered: a card's finance charge is an outflow and is not

@@ -279,9 +279,9 @@ func (c *Config) Validate() error {
 	// spending: the account-scope overrides get the same treatment as
 	// returns_exclude — declared source, non-empty ids — plus the one
 	// check that shape cannot express: an account listed on both sides
-	// has no defensible answer, and gold's spend_account_scope is
-	// keyed so it could hold only one of them. Reject it here rather
-	// than let a primary-key violation surface mid-load.
+	// has no defensible answer, and each family's scope table is keyed
+	// so it could hold only one of them. Reject it here rather than let
+	// a primary-key violation surface mid-load.
 	if sp := c.Spending; sp != nil {
 		if err := validateAccountScope("spending.accounts", sp.Accounts, seenIDs); err != nil {
 			return err
@@ -297,7 +297,7 @@ func (c *Config) Validate() error {
 			return err
 		}
 		sp.rules = rules
-		if err := validateCategorization("spending.categorization", sp.Categorization, ValidSpendContext); err != nil {
+		if err := validateCategorization("spending.categorization", SpendContextLevels, sp.Categorization, ValidSpendContext); err != nil {
 			return err
 		}
 	}
@@ -317,7 +317,7 @@ func (c *Config) Validate() error {
 			return err
 		}
 		in.rules = rules
-		if err := validateCategorization("income.categorization", in.Categorization, ValidIncomeContext); err != nil {
+		if err := validateCategorization("income.categorization", IncomeContextLevels, in.Categorization, ValidIncomeContext); err != nil {
 			return err
 		}
 	}
@@ -345,58 +345,56 @@ func validateAccountScope(key string, a *SpendingAccounts, seenIDs map[string]bo
 	if a == nil {
 		return nil
 	}
-	{
-		{
-			if err := validateIDListNested(key, "include", a.Include, seenIDs); err != nil {
-				return err
+	if err := validateIDListNested(key, "include", a.Include, seenIDs); err != nil {
+		return err
+	}
+	if err := validateIDListNested(key, "exclude", a.Exclude, seenIDs); err != nil {
+		return err
+	}
+	for sourceID, ids := range a.Include {
+		excluded := make(map[string]bool, len(a.Exclude[sourceID]))
+		for _, id := range a.Exclude[sourceID] {
+			excluded[id] = true
+		}
+		for _, id := range ids {
+			if excluded[id] {
+				return fmt.Errorf("config: %s[%q]: %q is listed in both include and exclude", key, sourceID, id)
 			}
-			if err := validateIDListNested(key, "exclude", a.Exclude, seenIDs); err != nil {
-				return err
-			}
-			for sourceID, ids := range a.Include {
-				excluded := make(map[string]bool, len(a.Exclude[sourceID]))
-				for _, id := range a.Exclude[sourceID] {
-					excluded[id] = true
+		}
+	}
+	for _, grain := range []struct {
+		name string
+		m    map[string][]string
+	}{{"include", a.Include}, {"exclude", a.Exclude}} {
+		for sourceID, ids := range grain.m {
+			seen := make(map[string]bool, len(ids))
+			for _, id := range ids {
+				if seen[id] {
+					return fmt.Errorf("config: %s.%s[%q]: %q is listed twice",
+						key, grain.name, sourceID, id)
 				}
-				for _, id := range ids {
-					if excluded[id] {
-						return fmt.Errorf("config: %s[%q]: %q is listed in both include and exclude", key, sourceID, id)
-					}
-				}
-			}
-			for _, grain := range []struct {
-				name string
-				m    map[string][]string
-			}{{"include", a.Include}, {"exclude", a.Exclude}} {
-				for sourceID, ids := range grain.m {
-					seen := make(map[string]bool, len(ids))
-					for _, id := range ids {
-						if seen[id] {
-							return fmt.Errorf("config: %s.%s[%q]: %q is listed twice",
-								key, grain.name, sourceID, id)
-						}
-						seen[id] = true
-					}
-				}
+				seen[id] = true
 			}
 		}
 	}
 	return nil
 }
 
-// validateCategorization checks one family's model-tier block.
+// validateCategorization checks one family's model-tier block. `levels`
+// is the human-readable list the error names, since a rejected context
+// is nearly always a spelling a reader can fix from the list alone.
 //
 // The context level decides how much of a transaction leaves the
 // machine, so a typo must not fall back to a default — silently
 // resolving "descriptors" to the narrowest level would under-deliver,
 // and resolving an unknown name to anything wider would over-share.
 // The sample cap is bounded whether or not the level reads it.
-func validateCategorization(key string, cz *SpendingCategorization, validContext func(string) bool) error {
+func validateCategorization(key, levels string, cz *SpendingCategorization, validContext func(string) bool) error {
 	if cz == nil {
 		return nil
 	}
 	if !validContext(cz.Context) {
-		return fmt.Errorf("config: %s.context %q is not one of the levels this family names", key, cz.Context)
+		return fmt.Errorf("config: %s.context %q is not a context level (want %s)", key, cz.Context, levels)
 	}
 	if cz.DescriptorSamples != nil && (*cz.DescriptorSamples < 0 || *cz.DescriptorSamples > 20) {
 		return fmt.Errorf("config: %s.descriptor_samples %d out of range [0, 20]", key, *cz.DescriptorSamples)
@@ -424,20 +422,6 @@ func validateInceptionNested(grain string, m map[string]map[string]string, seenI
 	return nil
 }
 
-// compileSpendRules compiles spending.rules, naming the offending entry
-// by index and text on failure. The pattern is compiled
-// case-insensitively; one that matches the empty string — "", ".*",
-// "^" — is refused, since it would fire on every row and re-label the
-// whole spending population. The category may be any value the
-// taxonomy knows (canonical.ValidSpendDetailed), vendored or delta, in
-// its own case-sensitive spelling. A consumption category is allowed
-// on purpose: the transfer fence keeps person- and IBAN-shaped
-// narratives away from the model, and a household that pays a lawyer,
-// a contractor or a tax office by wire has every such row fenced —
-// a rule is the only instrument short of a per-transaction pin that
-// can place a recurring counterparty. The vendored-only restriction
-// belongs to the model tier, which guards what the model may say; a
-// rule is the holder's own local input, and the model never sees it.
 // ruleEntry is one config rule of either family, flattened so the
 // compiler below sees one shape. The two differ only in what the value
 // field is called in the file.
@@ -463,6 +447,27 @@ func incomeRuleList(rules []IncomeRule) []ruleEntry {
 	return out
 }
 
+// compileRuleList compiles one family's `rules[]`, naming the offending
+// entry by index and text on failure. `key` is the config path the
+// errors point at, `valueField` and `valueNoun` the names that family
+// gives its value column, and `doc` the section a reader is sent to.
+//
+// The pattern is compiled case-insensitively; one that matches the
+// empty string — "", ".*", "^" — is refused, since it would fire on
+// every row and re-label the whole population. The value may be
+// anything `valid` admits — the family's own vocabulary, vendored or
+// delta, in its case-sensitive spelling — and the predicate is
+// family-fenced, so a spending rule naming an income value fails here
+// rather than writing a value the family's reports cannot show.
+//
+// A consumption category is allowed on purpose: the transfer fence
+// keeps person- and IBAN-shaped narratives away from the model, and a
+// household that pays a lawyer, a contractor or a tax office by wire
+// has every such row fenced — a rule is the only instrument short of a
+// per-transaction pin that can place a recurring counterparty. The
+// model-emittable restriction belongs to the model tier, which guards
+// what the model may say; a rule is the holder's own local input, and
+// the model never sees it.
 func compileRuleList(key, valueField, valueNoun, doc string, rules []ruleEntry, valid func(string) bool) ([]CompiledSpendRule, error) {
 	if len(rules) == 0 {
 		return nil, nil
@@ -525,7 +530,8 @@ func compileSpendScope(sc *SpendingRuleScope) (CompiledSpendScope, error) {
 // validateMatchKnobs bounds one transfer matcher's knobs. Both matchers
 // (returns_transfer_matching, spending.internal_transfer_matching) run on
 // the same core and are checked whether or not their block is enabled or
-// even reachable, so a mis-typed value fails at load rather than lying in
+// even reachable — there is no income twin, because there is one
+// internal-transfer matcher and income reads its verdicts — so a mis-typed value fails at load rather than lying in
 // wait: the window cap keeps it from pairing unrelated month-apart flows,
 // the tolerance cap from pairing unrelated amounts.
 func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) error {
@@ -539,8 +545,8 @@ func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) er
 }
 
 // validateIDListNested checks one grain map of an id-list block — the
-// returns_exclude / returns_hide grains, and spending.accounts' include /
-// exclude sides: every source id must be declared, every listed id
+// returns_exclude / returns_hide grains, and the include / exclude sides
+// of spending.accounts and income.accounts: every source id must be declared, every listed id
 // non-empty.
 func validateIDListNested(block, grain string, m map[string][]string, seenIDs map[string]bool) error {
 	for sourceID, ids := range m {

@@ -978,3 +978,47 @@ func TestLoadSpendingPins(t *testing.T) {
 		t.Errorf("absent spending block pins = %q, want empty", c3.SpendPins())
 	}
 }
+
+// TestLoadIncomePins is TestLoadSpendingPins for the other family, and
+// it exists because the expansion was not shared: every path field is
+// expanded by its own named branch in Load, so a new one is a branch
+// somebody has to remember to add.
+//
+// The failure it guards is silent in the worst way. An unexpanded
+// `~/…` reaches os.Open verbatim, the open fails with not-exist, and a
+// missing pins file is a NO-OP by design — so a whole ledger of
+// per-transaction pins would simply never apply, with nothing said on
+// any run.
+func TestLoadIncomePins(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
+
+	path := writeConfig(t, base+`"income":{"pins":"income_pins.csv"}}`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := filepath.Join(filepath.Dir(path), "income_pins.csv"); c.IncomePins() != want {
+		t.Errorf("income.pins = %q, want %q (resolved against the config directory)", c.IncomePins(), want)
+	}
+
+	// $HOME too, which is the spelling a ledger outside the repo takes.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	c, err = Load(writeConfig(t, base+`"income":{"pins":"~/income_pins.csv"}}`))
+	if err != nil {
+		t.Fatalf("Load with ~: %v", err)
+	}
+	if want := filepath.Join(home, "income_pins.csv"); c.IncomePins() != want {
+		t.Errorf("income.pins = %q, want %q (~ expanded)", c.IncomePins(), want)
+	}
+
+	for _, body := range []string{base + `"income":{}}`, base[:len(base)-1] + `}`} {
+		c, err := Load(writeConfig(t, body))
+		if err != nil {
+			t.Fatalf("Load %s: %v", body, err)
+		}
+		if c.IncomePins() != "" {
+			t.Errorf("absent income pins = %q, want empty", c.IncomePins())
+		}
+	}
+}

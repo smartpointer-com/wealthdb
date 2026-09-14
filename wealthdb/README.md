@@ -82,8 +82,8 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
 | `wealthdb resolve-symbols` | Back-fill missing instrument tickers via a local LLM (configured under `symbol_resolution.model`); applies any `symbol_resolution.overrides` first. `--overrides-only` skips the LLM round-trip. |
 | `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
-| `wealthdb categorize [spending\|income]` | Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in `<family>.categorization.model`. A positional selects one family; neither runs both. `-n` plans without writing; `--all` re-asks every signature. |
-| `wealthdb categorizations [spending|income]` | Dump the model-derived verdict stores for inspection, with a `family` column; `--forget SIG` retires a wrong verdict so the next run re-asks it, from both stores unless a family is named. |
+| `wealthdb categorize [spending\|income]` | Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in `<family>.categorization.model`. A positional selects one family; with none, both run in order. `-n` plans without writing; `--all` re-asks every signature. |
+| `wealthdb categorizations [spending\|income]` | Dump the model-derived verdict stores for inspection, with a `family` column; `--forget SIG` retires a wrong verdict so the next run re-asks it, from both stores unless a family is named. |
 | `wealthdb version` | Print the wealthdb version. |
 | `wealthdb help [<subcommand>]` | Help. |
 

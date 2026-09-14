@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// seededSeconds is every instant seedIncomeReportFixture puts a line
+// at. Listed rather than ranged over, so a line seeded at a NEW instant
+// is a deliberate edit here and not a silent widening of the check.
+var seededSeconds = map[int64]bool{1000: true, 9000: true, 2700000: true, 5300000: true}
+
 // TestWebIncomeViewShape pins what the Income dashboards read: UTC
 // epoch-milliseconds, the resolved account label, the uncategorised
 // fallback on the type columns — and its deliberate absence on the
@@ -34,11 +39,11 @@ func TestWebIncomeViewShape(t *testing.T) {
 			t.Fatalf("scan: %v", err)
 		}
 		n++
-		// epoch_ms over a UTC clock: the seeded rows sit at second
-		// 1000, and a view handing back a local-time timestamp would
-		// shift every dashboard by the host's offset.
-		if got := occurredAt.UTC().Unix(); got != 1000 && got != 9000 {
-			t.Errorf("occurred_at = %v (unix %d), want one of the seconds the fixture seeded", occurredAt, got)
+		// epoch_ms over a UTC clock: a view handing back a local-time
+		// timestamp would shift every dashboard by the host's offset.
+		if !seededSeconds[occurredAt.UTC().Unix()] {
+			t.Errorf("occurred_at = %v (unix %d), want one of the seconds the fixture seeded",
+				occurredAt, occurredAt.UTC().Unix())
 		}
 		if displayName == "" || accountLabel == "" {
 			t.Errorf("an account resolved to an empty name or label")

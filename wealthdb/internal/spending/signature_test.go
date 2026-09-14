@@ -834,10 +834,70 @@ func TestMT940PaymentNarrativeCandidacy(t *testing.T) {
 	}
 }
 
+// TestPersonShaped pins the one fence that reads a NAME rather than
+// something beside it.
+//
+// Every case here is synthetic. The boundary the predicate must not
+// cross is the last group: an organisation whose name is two or three
+// plain words is still an organisation when a marker says so, and the
+// markers are the only thing standing between this fence and every
+// two-word merchant on a card statement.
+func TestPersonShaped(t *testing.T) {
+	person := []string{
+		"JANE EXAMPLE",
+		"J EXAMPLE",               // an initial is a name token
+		"EXAMPLE JANE MARIE",      // three given names
+		"VAN DER EXAMPLE",         // a multi-part surname
+		"MARIE EXAMPLE DE SAMPLE", // four tokens, still a person
+	}
+	for _, s := range person {
+		if !PersonShaped(s) {
+			t.Errorf("PersonShaped(%q) = false, want true (a bare name is PII by itself)", s)
+		}
+	}
+
+	notPerson := []string{
+		"MIGROS",                 // one token is a brand, never a person
+		"EXAMPLE",                //
+		"",                       //
+		"BLUE HARBOUR PAYROLL",   // an institutional word
+		"EXAMPLE PENSIONSKASSE",  //
+		"SAMPLE TAX OFFICE",      //
+		"ACME CORP",              // a legal form
+		"EXAMPLE AG",             //
+		"EXAMPLE HOLDING SA",     //
+		"CORNER MARKET",          // a trade word
+		"BLUE HARBOUR CAFE",      //
+		"STORE 4711",             // a digit anywhere clears it
+		"EXAMPLE 12 SAMPLE",      //
+		"JANE EXAMPLE IBAN CH00", // a rail token: transfer-shaped, not person-shaped
+		"WIRE JANE EXAMPLE",      //
+	}
+	for _, s := range notPerson {
+		if PersonShaped(s) {
+			t.Errorf("PersonShaped(%q) = true, want false", s)
+		}
+	}
+
+	// The arm is additive: everything the rail fence already refuses
+	// stays refused, and nothing it admits on a card is refused here
+	// without an account kind to say so. This is the invariant that
+	// keeps the two fences from being confused for one.
+	for _, s := range []string{"JANE EXAMPLE", "CORNER MARKET"} {
+		if TransferShaped(s) {
+			t.Errorf("fixture is wrong: %q is transfer-shaped, so the person arm proves nothing about it", s)
+		}
+		if Uninformative(s) {
+			t.Errorf("fixture is wrong: %q has no word in it", s)
+		}
+	}
+}
+
 // TestUninformative pins the wordless-signature refusal at candidacy.
 // Every value is synthetic; only the SHAPES are real — they are what
 // an MT940 :86: narrative reduces to when the bank wrote nothing but
 // its own tag.
+//
 // The last two open cases are the boundary the predicate must not
 // cross: it knows nothing about which words are merchants, so a
 // three-letter abbreviation and an all-letter code both pass, and the

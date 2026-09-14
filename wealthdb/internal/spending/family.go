@@ -17,10 +17,15 @@ import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 //
 // The rule for what belongs here: a field, if the two families differ
 // by a NAME (a table, a column, a macro); a hook, if they differ by
-// BEHAVIOUR. A hook left nil is a tier that family does not have —
+// BEHAVIOUR. An empty labelCol is a column that family does not have —
 // spending's card rule writes an issuer label and income has no
-// analogue, so income leaves the label column empty rather than
-// carrying a column it would never fill.
+// analogue, so income leaves it out of the insert rather than carrying
+// a column it would never fill.
+//
+// The validity predicates are deliberately NOT here. They gate the
+// pins ledger and the config rules, and both are read at CONFIG load,
+// where the family is already known from the key that was written; a
+// copy on the descriptor would be a second place for them to disagree.
 type family struct {
 	// name prefixes every error this family's phases raise, and names
 	// the block `wealthdb load` prints for it.
@@ -54,16 +59,17 @@ type family struct {
 	storeNameCol      string
 	storeDetailedCol  string
 
-	// valid reports whether a value may be stored for this family. It
-	// gates the pins ledger, which is the one input a person writes by
-	// hand.
-	valid func(string) bool
-
 	// builtinRule is the engine's own rule tier: structural facts
 	// about the product's account graph that no provider can know. It
 	// returns the value it places and, where the family has one, a
 	// label describing the counterparty of the verdict it placed.
-	builtinRule func(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool)
+	//
+	// It takes the transaction KIND because one family's rules are
+	// gated on it: income's single built-in reads a narrative, and on
+	// this side a narrative may only speak for the one kind the floor
+	// does not (rules.go, IncomeRuleCategory). Spending's are ungated —
+	// an outflow's kind says how money left, never what it bought.
+	builtinRule func(kind, signature, counterparty, description, providerCategory string) (detailed, label string, ok bool)
 
 	// providerCategory translates the source's own filing of a row,
 	// and providerClaims says whether that translation is a verdict or
@@ -105,8 +111,7 @@ var spendingFamily = family{
 	storeSignatureCol: "merchant_signature",
 	storeNameCol:      "merchant_name",
 	storeDetailedCol:  "spend_detailed",
-	valid:             canonical.ValidSpendDetailed,
-	builtinRule:       RuleCategory,
+	builtinRule:       spendingBuiltinRule,
 	providerCategory:  ProviderCategory,
 	providerClaims:    ProviderCategoryClaims,
 
@@ -147,10 +152,18 @@ var incomeFamily = family{
 	storeSignatureCol: "payer_signature",
 	storeNameCol:      "payer_name",
 	storeDetailedCol:  "income_detailed",
-	valid:             canonical.ValidIncomeDetailed,
 	builtinRule:       IncomeRuleCategory,
 	providerCategory:  ProviderIncomeCategory,
 	providerClaims:    ProviderIncomeCategoryClaims,
 
 	emitOutsidePopulation: false,
+}
+
+// spendingBuiltinRule adapts RuleCategory to the kind-taking hook. The
+// outflow rules read narratives and account graphs, never the kind: a
+// card bill is a card bill whether the adapter kinded it `card_payment`
+// or `withdrawal`, and gating them would make the rule tier depend on
+// how well each source kinds its rows.
+func spendingBuiltinRule(_, signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
+	return RuleCategory(signature, counterparty, description, providerCategory)
 }

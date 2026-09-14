@@ -249,6 +249,53 @@ func TestIncomeWindowDefaultsToTrailingYear(t *testing.T) {
 	}
 }
 
+// TestIncomeFlagReordering pins that a flag may follow the positional
+// window on `wealthdb income` without its value being read as a date.
+//
+// The usage's own worked example is exactly that shape —
+// `wealthdb income types 2025 --period annual` — so without the
+// reordering the documented invocation fails.
+//
+// It drives the COMMAND, not the helper. runIncomeView is where the
+// reordering is either applied or forgotten; a test of
+// reorderFlagsFirst alone passes with the call site deleted, which is
+// the defect it was written to catch.
+func TestIncomeFlagReordering(t *testing.T) {
+	cfg := setupIncomeGold(t)
+
+	// The flag AFTER the window, which is what needs the reordering,
+	// and the same invocation with the flag first, which never did.
+	after, se, code := run(t, "-c", cfg, "income", "types", "2026-05-01", "2026-06-30",
+		"--period", "total", "-f", "csv_plain")
+	if code != 0 {
+		t.Fatalf("a flag after the window exited %d: %s", code, se)
+	}
+	before, se, code := run(t, "-c", cfg, "income", "types", "--period", "total",
+		"-f", "csv_plain", "2026-05-01", "2026-06-30")
+	if code != 0 {
+		t.Fatalf("a flag before the window exited %d: %s", code, se)
+	}
+	if after != before {
+		t.Errorf("flag order changed the report:\nafter:\n%s\nbefore:\n%s", after, before)
+	}
+	// ...and the value really was consumed as a flag value rather than
+	// read as a second date: `total` collapses the window to one bucket.
+	if n := strings.Count(strings.TrimSpace(after), "\n"); n < 1 {
+		t.Fatalf("the report has no rows to judge:\n%s", after)
+	}
+
+	// Every flag the income parser declares that takes a value must be
+	// in the shared table. One missing from it silently eats the
+	// positional, and the table is shared with spending — so a flag
+	// added to one command's parser has to be added here or it breaks
+	// the other's positional.
+	for _, f := range []string{"--period", "--level", "-f", "--format", "-C", "--columns", "-x", "--currency"} {
+		if !reportValueFlags[f] {
+			t.Errorf("%s consumes a value but is not in reportValueFlags", f)
+		}
+	}
+}
+
 // TestIncomeColumnHeaders pins the default column sets and the money
 // headers' currency suffix.
 func TestIncomeColumnHeaders(t *testing.T) {
@@ -273,7 +320,11 @@ func TestIncomeColumnHeaders(t *testing.T) {
 	for _, c := range types {
 		got = append(got, c.header())
 	}
-	want = []string{"period", "type", "txn_count", "income_USD", "reversals_USD", "net_income_USD", "share"}
+	// share_%, spelled exactly as the spending view spells it. The two
+	// commands share their column machinery, so a header that differed
+	// would give one `-f csv` key on one and another on the other for
+	// the same quantity.
+	want = []string{"period", "type", "txn_count", "income_USD", "reversals_USD", "net_income_USD", "share_%"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("type headers = %v, want %v", got, want)
 	}
@@ -316,6 +367,27 @@ func TestIncomeTransactionPrivacyClasses(t *testing.T) {
 		"provenance":           PrivacyNone,
 		"kind":                 PrivacyNone,
 		"provider_income_type": PrivacyNone,
+		// The source's own id for the line: an identifier, so it takes
+		// the identifier class even though it names nobody.
+		"tx_id": PrivacyAccountID,
+		// The rest, stated rather than skipped, so that a column added
+		// to the registry has to be classified here before the suite
+		// goes green. `tx_id` arrived without a line in this map and
+		// nothing noticed.
+		// The holder's own label for an account, from
+		// `account_overrides`, and legible under -p on all three
+		// transaction surfaces. Stated here rather than assumed: if it
+		// is ever reclassified it must be reclassified on spending and
+		// `wealthdb transactions` in the same change.
+		"account_nickname":        PrivacyNone,
+		"silver_source":           PrivacyNone,
+		"date":                    PrivacyNone,
+		"datetime":                PrivacyNone,
+		"account_kind":            PrivacyNone,
+		"account_category":        PrivacyNone,
+		"income_primary_id":       PrivacyNone,
+		"provider_income_type_id": PrivacyNone,
+		"currency":                PrivacyNone,
 	}
 	seen := map[string]bool{}
 	for _, c := range all {
@@ -329,6 +401,16 @@ func TestIncomeTransactionPrivacyClasses(t *testing.T) {
 	for name := range want {
 		if !seen[name] {
 			t.Errorf("column %q is not in the registry", name)
+		}
+	}
+	// ...and EVERY column of the registry is classified here. The map
+	// above only checks the columns it names, so a column added to the
+	// registry and forgotten here would carry whatever class its author
+	// happened to give it, unread — which is how `tx_id` arrived
+	// unclassified.
+	for _, c := range all {
+		if _, ok := want[c.Name]; !ok {
+			t.Errorf("column %q is in the registry but has no expected privacy class here", c.Name)
 		}
 	}
 }

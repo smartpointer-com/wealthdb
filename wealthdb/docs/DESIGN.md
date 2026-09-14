@@ -118,12 +118,13 @@ wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, ac
 wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
 wealthdb transactions [flags]         (RO)    Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
+wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a          (RO)    List snapshots gold has loaded (one silver, or all).
 wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM.
 wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
-wealthdb categorize                   (RW)    Categorise unplaced spending merchants via the configured LLM.
-wealthdb categorizations              (RO)    Dump the spend_merchant_categories table (model-derived merchant verdicts); --forget SIG removes one (RW).
+wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants and payers via the configured LLM.
+wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict stores; --forget SIG removes one (RW).
 wealthdb version                      (RO)    Print the wealthdb version.
 wealthdb help [<subcommand>]
 ```
@@ -470,13 +471,14 @@ removes the signature from both verdict stores, one counterparty being
 able to sit in each with a different verdict. See docs/INCOME.md §7.
 
 
-`categorize` is the spending feature's model tier. The deterministic
-tiers run on every `load`; what they leave behind is a set of merchant
-signatures whose category follows from nothing but the merchant's
-name, and this is what asks a model about them. Work is priced PER
-MERCHANT SIGNATURE and the verdicts land in the global
-`spend_merchant_categories` table, so a merchant met by several cards
-is asked about once and answered once.
+`categorize` is the model tier of both families. The deterministic
+tiers run on every `load`; what they leave behind is a set of
+counterparty signatures whose category follows from nothing but the
+counterparty's name, and this is what asks a model about them. Work is
+priced PER SIGNATURE and the verdicts land in a global store —
+`spend_merchant_categories` for spending, `income_payer_categories` for
+income — so a merchant met by several cards, or a payer paying into
+several accounts, is asked about once and answered once.
 
 A normal run re-asserts every deterministic verdict first — the same
 pass `load` runs — and then asks about what is left. `--dry-run` opens
@@ -501,26 +503,33 @@ the only way to see verdicts without writing them), so the plan is its
 cost signal.
 
 Two independent gates decide what leaves the machine, and neither can
-be relaxed by the other: `spending.categorization.context` decides how
-much of a candidate is described, and the transfer fence decides which
-signatures are candidates at all. See docs/SPENDING.md §5.
+be relaxed by the other: the family's `categorization.context` decides
+how much of a candidate is described, and the fence — rails, IBANs,
+masked contacts, wordless and filing-only keys, and by default
+person-shaped keys on non-card accounts — decides which signatures are
+candidates at all. See docs/SPENDING.md §5, and
+docs/INCOME.md §7 for the one difference — an `income.categorization`
+block inherits `spending.categorization` WHOLE when absent, so a
+household that configured one tier gets one tier, and a stricter income
+context is a deliberate act.
 
-Every run ends with the categorisation rate per source, the
-provider-map misses (a card issuer's categorical vocabulary moving, bar
-the residual bucket its map marks untranslatable; a bank's untranslated
-booking types are rails, not misses — SPENDING.md §3), the matched internal-transfer pairs (both legs —
-the audit surface for what the matcher removed from spending), the
-largest unmatched legs including the cross-currency shapes the matcher
-structurally cannot pair, and a stratified sample of what is still
-uncategorised.
+Every run ends, per family, with the categorisation rate per source,
+the provider-map misses (a card issuer's categorical vocabulary moving,
+bar the residual bucket its map marks untranslatable; a bank's
+untranslated booking types are rails, not misses — SPENDING.md §3), the
+matched internal-transfer pairs (both legs — the audit surface for what
+the matcher removed from the base), the largest unmatched legs including
+the cross-currency shapes the matcher structurally cannot pair, and a
+stratified sample of what is still uncategorised.
 
-`categorizations` dumps `spend_merchant_categories` — the
-`resolutions` counterpart for the spending overlay. It takes no source
-filter: the table is keyed by merchant signature alone, with no silver
-source, because a merchant is the same merchant whichever card met it.
+`categorizations` dumps the family's store — the `resolutions`
+counterpart for the enrichment overlays. It takes no source filter:
+each table is keyed by signature alone, with no silver source, because
+a merchant is the same merchant whichever card met it and a payer the
+same payer whichever account it paid.
 
 `categorizations --forget SIGNATURE` (repeatable) is the store's one
-undo: the model is sometimes wrong at merchant scope, and nothing else
+undo: the model is sometimes wrong at counterparty scope, and nothing else
 can remove a stored verdict short of editing gold by hand. It deletes
 the rows with exactly those signatures in one transaction, prints each
 removal (signature, name, category) and each signature it did not
@@ -533,7 +542,7 @@ because the backlog excludes stored signatures. It also interacts with
 the signature-version re-key (docs/SPENDING.md §4): the enrichment
 pass carries a verdict onto a new key only when every row that carried
 the old key moved to the same new one, and leaves a verdict whose rows
-split behind, reported on the `spending:` summary; forgetting an
+split behind, reported on that family's summary; forgetting an
 artefact's key *before* a bump is the clean way to stop it carrying
 anywhere.
 
@@ -757,8 +766,8 @@ Example config file:
 | `income` | object | Optional. Groups the income feature's per-deployment knobs — `accounts`, `rules[]`, `pins`, `categorization` — in `spending`'s shapes. Two blocks spending has are deliberately absent: there is one internal-transfer matcher and one transfer-override ledger, and both families read them (docs/INCOME.md §1). Absent ⇒ every account counts, no rules and no pins apply, and the model tier inherits `spending.categorization`. |
 | `income.accounts` | object | Optional. The income account scope, in `spending.accounts`' shape and stamped into gold's `income_account_scope`. Its own table on purpose: an account excluded from spending because its outflows double-count something is not thereby an account whose inflows are not income. |
 | `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. |
-| `income.pins` | string | Optional. Path to the income pins ledger: the spending ledger's format with an `income_detailed` column. See §13.12. |
-| `income.categorization` | object | Optional. As `spending.categorization`. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
+| `income.pins` | string | Optional. Path to the income pins ledger: the spending ledger's format with an `income_detailed` column. See §13.11. |
+| `income.categorization` | object | Optional. As `spending.categorization`, `fence_person_names` included. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model, one answer to what may leave the machine. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down, and a half-inherited fence would be one that quietly turned itself off. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
 | `spending.accounts` | object | Optional. Account-scope overrides, keyed by `silver_source_id` in the `returns_exclude` shape, with `include` / `exclude` lists of account ids. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. Which way round the overrides bite is the scope rule — see docs/SPENDING.md §1. |
 | `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. |
@@ -766,8 +775,9 @@ Example config file:
 | `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, note`; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.11. |
 | `spending.categorization` | object | Optional. Configures `wealthdb categorize`: the model endpoint (`model`), how much of a transaction reaches it (`context`), and the per-merchant narrative cap (`descriptor_samples`). Absent ⇒ the subcommand refuses; the deterministic tiers are unaffected and keep running on load. |
 | `spending.categorization.model` | object | Optional. LLM endpoint asked for a category per merchant signature. Same shape and same API support as `symbol_resolution.model` (`baseUrl`, `api`, `apiKey`, `name`). |
-| `spending.categorization.context` | string | Optional. `"merchant"` (default) sends merchant signatures only; `"descriptor"` adds the raw statement narratives; `"transaction"` adds date, amount, account kind and nearby-transaction signatures. The default is the most private level by decision, not by accident. Independent of the transfer fence, which gates candidacy at every level. |
+| `spending.categorization.context` | string | Optional. `"merchant"` (default) sends merchant signatures only; `"descriptor"` adds the raw statement narratives; `"transaction"` adds date, amount, account kind and nearby-transaction signatures. The default is the most private level by decision, not by accident. Independent of the fence, which gates candidacy at every level. |
 | `spending.categorization.descriptor_samples` | integer | Optional, 0–20, default 3. Caps the raw narratives sent per merchant at the two context levels that send any. Range-checked even at the `merchant` level, where nothing reads it. |
+| `spending.categorization.fence_person_names` | boolean | Optional, **default `true`**. Keeps a signature that is a bare person's name — two or more all-letter tokens with no organisation marker — off a non-card account out of the model tier, at every context level. Turn it off only when the model endpoint is on this machine: a person's name is the one signature shape that is PII by itself, and every other arm of the fence reads a marker beside the name rather than the name. Card rows are exempt by construction (most card merchants are two plain words). `income.categorization` inherits it with the rest of the block. See docs/SPENDING.md §5. |
 | `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` wasn't passed. |
 | `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
 | `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
@@ -1364,6 +1374,12 @@ is documented where it is used:
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
   `spend_merchant_categories` and `spend_account_scope` (migration
   `0041`; keys and lifecycle in docs/SPENDING.md §8, macros in §10.10).
+- The income overlay: `income_txn_enrichment`,
+  `income_payer_categories` and `income_account_scope` (migration
+  `0070`; the same three shapes with `payer_*` for `merchant_*`, macros
+  in §10.11, docs/INCOME.md). The taxonomy is not a fourth table —
+  `spend_categories` gained a `family` column in migration `0069` and
+  carries both vocabularies.
 
 ```sql
 -- ============================================================
@@ -1949,22 +1965,26 @@ itself is untouched. The watermark is removed with the
 `silver_sources` row, so a follow-up `wealthdb load <id>` starts
 fresh (treating `high_watermark` as -1).
 
-`symbol_resolutions` and `spend_txn_enrichment` go with the rest because
-both are per-source derived data — resolved tickers keyed to the
-source's instruments, enrichment derived from the transactions being
-deleted — and the next resolve or enrichment pass regenerates them. Two
-spending tables deliberately survive: `spend_merchant_categories` is
-global knowledge keyed by merchant signature, with no source column and
-verdicts that were paid for, and `spend_account_scope` is configuration
+`symbol_resolutions` and the two enrichment tables — `spend_txn_enrichment`
+and `income_txn_enrichment` — go with the rest because all are per-source
+derived data — resolved tickers keyed to the source's instruments,
+enrichment derived from the transactions being deleted — and the next
+resolve or enrichment pass regenerates them. Four tables deliberately
+survive, two per family: the verdict stores `spend_merchant_categories`
+and `income_payer_categories` are global knowledge keyed by signature,
+with no source column and verdicts that were paid for, and the scope
+stamps `spend_account_scope` and `income_account_scope` are configuration
 stamped into gold and re-stamped whole by every enrichment pass — the
 `fx_priority` precedent rather than source data. Lifecycle table:
 docs/SPENDING.md §8. The invariant is pinned by
-`TestResetClearsEnrichmentKeepsMerchantStore`.
+`TestResetClearsEnrichmentKeepsMerchantStore` and
+`TestResetClearsBothOverlays`.
 
 `wealthdb reset -a` runs the same per silver source. A full rebuild is
 `wealthdb reload -a`: every source-derived table is rebuilt into a fresh
-compact file, which is swapped over the live path with the merchant
-store carried across (`carryMerchantCategories`). Two tables do not
+compact file, which is swapped over the live path with both verdict
+stores carried across (`carryVerdictStore`, once per entry in
+`paidStores`). Two tables do not
 survive that swap — `symbol_resolutions`, which
 `wealthdb resolve-symbols` writes and no load does, and
 `report_returns`, which `web-materialize` writes (§10.9) — so the
@@ -2545,10 +2565,24 @@ income population. `income_scoped_accounts()`,
 `income_enrichment_population(f, t)` and `income_lines_base(f, t)`
 (migration `0070`), the FX pair `income_lines_outccy` /
 `income_lines_multi` and the three reports `report_income_summary`,
-`report_income_types` and `report_income_transactions` (`0071`).
+`report_income_types` and `report_income_transactions` (`0071`), with
+`0073` re-issuing the resolution and `0074` the types report's
+multi-currency form.
 
-Three things differ from the spending set, and only three:
+One asymmetry is left standing: spending publishes a `_multi` sibling
+for all three of its reports, income for two. There is no
+`report_income_summary_multi`, because nothing reads either summary
+`_multi` and an unread macro is a shape to keep true for nothing
+(docs/INCOME.md §11).
 
+Four things differ from the spending set, and only four:
+
+- **The kind floor is read OVER the verdict store**, where spending's is
+  read under its merchant store (`0073`). Spending asks the model who
+  was paid, and a name is finer than a kind; income asks what KIND of
+  income a receipt is, and the data answers that itself on every
+  admitted kind but `deposit`. `categorize income` is restricted to that
+  one kind for the same reason (docs/INCOME.md §3, decision 13).
 - **The resolution adds a step.** `income_txn_categories()` resolves the
   payer as the INSTRUMENT where a line carries one — a dividend, a
   coupon, a staking reward arrive with an instrument and no narrative —
@@ -2559,7 +2593,10 @@ Three things differ from the spending set, and only three:
   written anywhere (docs/INCOME.md §1).
 - **The summary carries `withheld`**, a memo with no spending twin: the
   window's `tax` rows on the same accounts, bucketed and converted like
-  the lines, LEFT JOINed by bucket and never subtracted.
+  the lines, FULL JOINed by bucket and never subtracted. Full, so that
+  neither side drops a bucket the other has: a bucket whose only
+  booking was a tax row keeps its row, with `txn_count 0` and an empty
+  income column (docs/INCOME.md §5).
 
 `report_transactions` was re-issued in `0071` to carry `payer_name`,
 `income_primary` and `income_detailed` after the spending trio. It is

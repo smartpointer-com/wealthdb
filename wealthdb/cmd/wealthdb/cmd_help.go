@@ -75,7 +75,7 @@ var commandHelps = []commandHelp{
 		long: "What the tracked accounts received: summary, types, transactions ('wealthdb income <view> -h')."},
 
 	{name: "categorize", args: "[spending|income]", short: "categorise the counterparties no deterministic tier placed",
-		long: "Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in config.<family>.categorization.model; a positional selects one family, and neither runs both."},
+		long: "Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in config.<family>.categorization.model; a positional selects one family, and no positional runs both."},
 	{name: "categorizations", args: "[spending|income]", short: "list the stored merchant and payer verdicts, or forget one",
 		long: "Dump the model-derived verdict stores, with a family column; --forget SIG removes a signature from both stores unless a family is named."},
 	{name: "resolve-symbols", short: "back-fill missing instrument ticker symbols",

@@ -153,7 +153,7 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdo
 		Exclude:           exclude,
 		MatchWindowDays:   m.Window(),
 		MatchTolerancePct: m.Tolerance(),
-		Rules:             spendRules(cfg),
+		Rules:             compiledRules(cfg.SpendRules()),
 		TransferOverrides: overrides,
 		Pins:              pins,
 		Income: spending.IncomeOptions{
@@ -166,14 +166,31 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdo
 	if err != nil {
 		return fmt.Errorf("enrichment: %w", err)
 	}
+	printPassSummary(stdout, res)
+	return nil
+}
+
+// printPassSummary writes everything `load` says about the enrichment
+// pass: one block per family, spending first, with the override
+// ledger's line under spending's.
+//
+// It is its own function so the SEQUENCE is testable. The pass writes
+// two overlays in one transaction and this is how a reader learns
+// either happened; with the two calls inline, dropping the second left
+// the whole suite green.
+//
+// The override ledger's line sits under spending because there is ONE
+// matcher and one ledger, and both families read its verdicts — printed
+// after income's block it read as a remark about the family it is not
+// about.
+func printPassSummary(stdout io.Writer, res *spending.Result) {
 	printFamilySummary(stdout, "spending", "merchant", res.FamilyResult)
-	printFamilySummary(stdout, "income", "payer", res.Income)
 	if res.UnmatchedTransferOverrides > 0 {
 		fmt.Fprintf(stdout, "spending: %d transfer override(s) matched no leg — "+
 			"not loaded yet, or the ledger row describes none\n",
 			res.UnmatchedTransferOverrides)
 	}
-	return nil
+	printFamilySummary(stdout, "income", "payer", res.Income)
 }
 
 // printFamilySummary is the per-family block `load` prints. One shape
@@ -207,16 +224,14 @@ func printFamilySummary(stdout io.Writer, family, counterparty string, res spend
 	}
 }
 
-// spendRules translates the config's compiled `spending.rules` to the
+// compiledRules translates a family's compiled config rules to the
 // enrichment pass's type, the way buildSourceSpec translates the
 // account overrides: config carries the JSON shape and the validation,
 // spending stays config-free.
-func spendRules(cfg *config.Config) []spending.Rule {
-	return compiledRules(cfg.SpendRules())
-}
-
-// compiledRules is spendRules over an already-chosen list, so the two
-// families translate through one function rather than two copies.
+//
+// It takes an already-chosen list rather than the whole config, so one
+// function serves both families and neither call site reads as the
+// special case.
 func compiledRules(compiled []config.CompiledSpendRule) []spending.Rule {
 	if len(compiled) == 0 {
 		return nil

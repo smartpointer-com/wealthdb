@@ -1,23 +1,40 @@
-// Package spending turns gold transactions on spending accounts into
-// categorised spend.
+// Package spending turns gold transactions into categorised spend and
+// categorised income.
 //
-// Five tiers assign a category (docs/SPENDING.md §3). Four are
-// deterministic and free, and this package builds all four; they run
-// after every load, and in precedence order they are:
+// Two families, one engine. The name is the older of the two and is
+// kept: renaming a package that a dozen files import buys nothing a
+// doc comment cannot say. What runs is one enrichment pass over each
+// family's population (enrich.go), driven by a family descriptor
+// (family.go) that carries the names — which macro, which store, which
+// taxonomy column — where the two differ, with a hook only where the
+// BEHAVIOUR differs.
+//
+// Five tiers assign a category (docs/SPENDING.md §3, docs/INCOME.md
+// §3). Four are deterministic and free, and this package builds all
+// four; they run after every load, and in precedence order they are:
 //
 //   - the PIN ledger (pins.go), the holder's own word about one
 //     transaction;
 //   - the MATCHER (matcher.go), which pairs an own-account move's two
-//     legs and rules both out of spending altogether;
+//     legs and rules both out of spending and out of income
+//     altogether. It runs ONCE, on the spending side, and income reads
+//     its verdicts — one own-account move, one pairing;
 //   - the RULE tier (rules.go) — the built-ins, then the config's
-//     `spending.rules` — which places a row from its own narrative;
+//     `spending.rules` or `income.rules` — which places a row from its
+//     own narrative;
 //   - the PROVIDER tier (providermap.go), which places a row from the
 //     provider's own filing of it.
 //
 // The fifth is the model tier. It lives in cmd/wealthdb (`wealthdb
-// categorize`) and prices a verdict per merchant SIGNATURE — never per
-// transaction — so the same merchant is paid for once however many
-// cards met it.
+// categorize`) and prices a verdict per counterparty SIGNATURE — never
+// per transaction — so the same merchant is paid for once however many
+// cards met it, and the same payer once however many accounts it paid.
+//
+// Below all five sits a floor income has and spending does not: a
+// transaction KIND that names its own type (a dividend is
+// INCOME_DIVIDENDS) needs no tier at all. It is applied in SQL at query
+// time rather than written into the overlay, so a taxonomy revision
+// re-reads rather than re-migrates (docs/INCOME.md §3).
 //
 // Everything here is a pure function of gold's contents, so the pass
 // can be re-asserted from scratch after every load without asking
@@ -1000,6 +1017,132 @@ func RowTransferShaped(signature, providerCategory, description string) bool {
 // but a two-letter booking tag — and three is where the abbreviations
 // that ARE names begin.
 const wordMinLetters = 3
+
+// organisationMarkers fence a signature as a BUSINESS when they appear
+// as a whole token. They are the reason PersonShaped can be as blunt as
+// it is: a person's name is two or three words and nothing else, so the
+// way to spot one is to look for what a business puts in its name that
+// a person never does.
+//
+// Whole-token matching, and single tokens only, for the reason
+// transferFenceTokens gives and one more: the short legal forms here
+// are substrings of ordinary words — AG is inside MANAGEMENT, PAGE and
+// VILLAGE, SA is inside SALARY — so a substring test would fence
+// almost everything. They are consulted as a set, never joined into a
+// phrase.
+//
+// Three groups, and each earns its place differently. LEGAL FORMS (INC,
+// GMBH, SARL, …) are the strongest signal there is: no natural person
+// carries one. INSTITUTIONAL WORDS (BANK, PENSION, TREASURY, IRS,
+// FINANZAMT, …) name what an organisation does, and the income side is
+// full of them — an employer, a pension fund, a tax office and an
+// insurer are exactly the payers a household most wants named. TRADE
+// WORDS (STORE, MARKET, CAFE, …) are the card side's, where a
+// two-word merchant name is the norm.
+//
+// The cost of being wrong runs one way only. A business whose name
+// carries no marker — two plain words, like a partnership named after
+// its founders — is fenced with the people on a bank account, and stays
+// placeable by a config rule or a pin, which is the remedy every fenced
+// row has. A person whose name happens to contain a marker is NOT
+// fenced, which is why this table is a fence on top of the rail fence
+// rather than instead of it. Extend it by adding a token; a marker that
+// is also a common surname (say HOLDING) is a judgement call and the
+// list errs towards fencing less, because under-fencing here is
+// recoverable by turning the option off and over-fencing quietly
+// removes real merchants from the model tier.
+var organisationMarkers = map[string]bool{
+	// Legal forms.
+	"INC": true, "LLC": true, "LTD": true, "LIMITED": true, "PLC": true,
+	"CORP": true, "CORPORATION": true, "CO": true, "COMPANY": true,
+	"AG": true, "SA": true, "SARL": true, "SAS": true, "GMBH": true,
+	"KG": true, "BV": true, "NV": true, "OY": true, "AB": true,
+	"AS": true, "SE": true, "SPA": true, "SRL": true,
+	// What an organisation does.
+	"BANK": true, "PAYROLL": true, "SALARY": true, "LOHN": true,
+	"GEHALT": true, "TREASURY": true, "PENSION": true,
+	"PENSIONSKASSE": true, "KASSE": true, "AMT": true, "OFFICE": true,
+	"FUND": true, "FUNDS": true, "TRUST": true, "INSURANCE": true,
+	"VERSICHERUNG": true, "UNIVERSITY": true, "UNIVERSITAET": true,
+	"SCHOOL": true, "CITY": true, "STADT": true, "KANTON": true,
+	"CANTON": true, "COUNTY": true, "STATE": true, "FEDERAL": true,
+	"IRS": true, "HMRC": true, "FINANZAMT": true, "STEUERAMT": true,
+	"AHV": true, "SVA": true, "KRANKENKASSE": true, "MUTUAL": true,
+	"PARTNERS": true, "GROUP": true, "HOLDING": true, "HOLDINGS": true,
+	"SERVICES": true, "SYSTEMS": true, "TECHNOLOGIES": true,
+	"LABS": true,
+	// Trades, which are the card side's two-word names.
+	"STUDIO": true, "STORE": true, "MARKET": true, "SHOP": true,
+	"CAFE": true, "RESTAURANT": true, "HOTEL": true,
+}
+
+// PersonShaped reports whether a signature looks like a natural
+// person's name and nothing else.
+//
+// It is the one shape that is PII BY ITSELF. Every other fence reads a
+// marker beside the name — a rail token, an IBAN, a starred mobile
+// number — and a narrative that carries none of them but is a bare
+// name slips through all of them: TransferShaped sees no rail,
+// Uninformative sees a word, FilingOnly sees something other than the
+// bank's tag. Inbound bank rows are where that shape arrives, because a
+// credit transfer's narrative IS the sender.
+//
+// The test is deliberately crude, and every clause is a way of not
+// firing:
+//
+//   - TWO OR MORE tokens, so a single word is never a person. One word
+//     is how a brand is written and how a bank abbreviates.
+//   - EVERY token all letters, so a reference number, a date, a branch
+//     code or a house number clears it. A person's name written on its
+//     own carries no digit.
+//   - NO organisation marker (organisationMarkers).
+//   - NO rail token, so `WIRE JANE` is transfer-shaped rather than
+//     person-shaped and is refused by the fence that names it.
+//
+// It says nothing about whether a row IS a person, and it is not a
+// classifier: it decides what may be shown to a model. A business named
+// like a person fires it and stays placeable by a rule or a pin.
+//
+// It is NOT applied on its own. The caller decides where it bites —
+// candidacy applies it to rows on non-card accounts only, because most
+// card merchants are two or three plain words and a name-shaped arm
+// over them would gut the model tier — and a deployment can turn it off
+// (`spending.categorization.fence_person_names`) when the model runs on
+// this machine.
+//
+// The argument may be a raw narrative or a Normalize'd signature; the
+// same folding is applied internally either way.
+func PersonShaped(s string) bool {
+	tokens := tokenize(s)
+	if len(tokens) < 2 {
+		return false
+	}
+	for _, tok := range tokens {
+		if !isAllLetters(tok) {
+			return false
+		}
+		if organisationMarkers[tok] || transferFenceTokens[tok] {
+			return false
+		}
+	}
+	return true
+}
+
+// isAllLetters reports whether a tokenize'd token is letters only, of
+// any length. It is isWord without the wordMinLetters floor: an initial
+// is a letter of a person's name, and `J EXAMPLE` is exactly the shape
+// PersonShaped exists to catch.
+func isAllLetters(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for i := 0; i < len(tok); i++ {
+		if tok[i] < 'A' || tok[i] > 'Z' {
+			return false
+		}
+	}
+	return true
+}
 
 // Uninformative reports whether a signature carries nothing a model
 // could name: after normalisation it holds no all-letter token of at

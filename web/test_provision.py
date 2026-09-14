@@ -782,22 +782,154 @@ check("the Income share ring shows no total",
       _pdefs["Income by type (privacy)"][4])
 
 # The twin redacts by dropping, not disguising.
-_twin = [n for n in CARDS if n.startswith(("Income ", "Net income", "Top 50 payers",
-                                           "Largest receipts"))
-         and n.endswith("(privacy)")]
-_twin_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _twin}
+#
+# Every NATIVE twin card, not just the income ones: a twin's SQL is
+# where a column is dropped, and the check is the same question on both
+# dashboards. MBQL twins are excluded because they have no SQL to read —
+# they are redacted by running over a `_pct` model instead.
+_twin_sql = {n: sql_of(CARDS[n][2]) for n in CARDS if n.endswith(p.PRIVACY_SUFFIX)}
+_twin_sql = {n: q for n, q in _twin_sql.items() if q}
 # Redaction is about the OUTPUT: a name may be a GROUP BY key inside a
-# CTE — that is how the ranking keeps its shape — but the final SELECT
-# must never project one.
-def _final_select(q):
-    """The last SELECT of a query, which is what the card renders."""
-    return q[q.rindex("SELECT"):] if "SELECT" in q else q
+# CTE — that is how the ranking keeps its shape — but no projection the
+# card renders may carry one.
+#
+# Four things this reader has to get right, each of which was a hole
+# once:
+#   - COMMENTS are stripped first, so `-- SELECT payer_name` neither
+#     hides a projection nor invents one.
+#   - SUBQUERIES are stripped, so a scan cannot land inside
+#     `(SELECT total FROM t)` and read the projection as empty.
+#   - EVERY top-level SELECT arm is read, not just the last: a UNION's
+#     other arm renders too.
+#   - `*` is REFUSED outright. `SELECT * FROM m` over a CTE grouped by
+#     payer_name projects the name while naming no column, so no
+#     column-name test can see it.
 
-check("no Income twin card projects a payer or an account name",
-      all("payer_name" not in _final_select(q) and "account_label" not in _final_select(q)
-          and "display_name" not in _final_select(q) for q in _twin_sql.values()),
-      [n for n, q in _twin_sql.items()
-       if "payer_name" in _final_select(q) or "account_label" in _final_select(q)])
+
+def _strip_sql_comments(q):
+    """`q` with `--` line comments and `/* */` blocks removed."""
+    q = re.sub(r"/\*.*?\*/", " ", q, flags=re.S)
+    return "\n".join(line.split("--")[0] for line in q.splitlines())
+
+
+def _strip_parens(q):
+    """`q` with every parenthesised group removed, so a scan for a
+    top-level SELECT cannot land inside a subquery."""
+    out, depth = [], 0
+    for ch in q:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
+def _strip_subqueries(q):
+    """`q` with only the parenthesised groups that CONTAIN a SELECT
+    removed.
+
+    _strip_parens is too blunt for reading a projection: it also deletes
+    `upper(payer_name)` down to `upper`, and a column-name test over
+    that sees nothing. A redacting twin that wrapped a name in any
+    function would have passed. Ordinary calls are therefore kept and
+    only real subqueries dropped."""
+    out, buf, depth = [], [], 0
+    for ch in q:
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            buf.append(ch)
+            depth -= 1
+            if depth == 0:
+                group = "".join(buf)
+                # A subquery is dropped; any other call is kept whole.
+                out.append(" " if re.search(r"\bSELECT\b", group, re.I) else group)
+                buf = []
+        elif depth > 0:
+            buf.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out) + "".join(buf)
+
+
+def _projections(q):
+    """Every top-level SELECT's projection list — the text between each
+    SELECT and the FROM/ORDER/GROUP that ends it.
+
+    Subqueries are dropped first so a scan cannot land inside one, and
+    ordinary function calls are kept so a name wrapped in one is still
+    visible. A query with no top-level SELECT left yields nothing, which
+    is a shape no card here has and which the vacuity guard below
+    catches."""
+    flat = _strip_subqueries(_strip_sql_comments(q))
+    out = []
+    for m in re.finditer(r"\bSELECT\b", flat, re.I):
+        tail = flat[m.end():]
+        end = re.search(r"\b(FROM|ORDER\s+BY|GROUP\s+BY|LIMIT|UNION)\b", tail, re.I)
+        out.append(tail[:end.start()] if end else tail)
+    return out
+
+
+_REDACTED = ("payer_name", "account_label", "display_name", "account_external_id",
+             "merchant_name", "merchant_signature", "payer_signature", "counterparty")
+
+
+def _star_projection(proj):
+    """True when a projection item is a bare `*` or `alias.*`.
+
+    Read per ITEM, because `*` is also multiplication and every
+    percentage card here divides by a total and multiplies by 100. A
+    leading DISTINCT / ALL is stripped first: `SELECT DISTINCT *` over a
+    CTE grouped by a name projects the name while naming no column,
+    which is the whole reason `*` is refused."""
+    for item in proj.split(","):
+        bare = re.sub(r"^\s*(DISTINCT|ALL)\b", "", item, flags=re.I).strip()
+        if bare == "*" or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\s*\.\s*\*", bare):
+            return True
+    return False
+
+
+_leaks = {}
+for _n, _q in _twin_sql.items():
+    _projs = _projections(_q)
+    _bad = [c for c in _REDACTED
+            if any(re.search(rf"\b{c}\b", pr) for pr in _projs)]
+    if any(_star_projection(pr) for pr in _projs):
+        _bad.append("* (projects whatever the source carries)")
+    if _bad:
+        _leaks[_n] = _bad
+check("no privacy twin card projects an identifying column", not _leaks, _leaks)
+
+# The reader must actually be reading something. A projection extractor
+# that silently returned [] would pass the check above on every card.
+check("the redaction reader found a projection in every twin card",
+      all(_projections(q) for q in _twin_sql.values()),
+      [n for n, q in _twin_sql.items() if not _projections(q)])
+check("...and it reads more than one arm where there is more than one",
+      len(_projections("SELECT a FROM t UNION ALL SELECT b FROM u")) == 2,
+      _projections("SELECT a FROM t UNION ALL SELECT b FROM u"))
+check("...and it does not read a commented-out one",
+      _projections("-- SELECT payer_name\nSELECT rank FROM m") == [" rank "],
+      _projections("-- SELECT payer_name\nSELECT rank FROM m"))
+# A name wrapped in a function call is still a name. Dropping every
+# parenthesised group — the earlier reading — deleted the argument along
+# with the parens and saw an empty projection.
+check("...and it sees a column wrapped in a function call",
+      any("payer_name" in pr for pr in _projections("SELECT upper(payer_name) AS p FROM m")),
+      _projections("SELECT upper(payer_name) AS p FROM m"))
+check("...and a scalar subquery is still dropped",
+      not any("payer_name" in pr
+              for pr in _projections("SELECT (SELECT max(payer_name) FROM m) AS x FROM m")),
+      _projections("SELECT (SELECT max(payer_name) FROM m) AS x FROM m"))
+for _star in ("SELECT * FROM m", "SELECT DISTINCT * FROM m", "SELECT m.* FROM m"):
+    check(f"...and {_star!r} counts as a star projection",
+          any(_star_projection(pr) for pr in _projections(_star)), _projections(_star))
+check("...and arithmetic is not mistaken for one",
+      not any(_star_projection(pr) for pr in _projections("SELECT v / t * 100 AS pct FROM m")),
+      _projections("SELECT v / t * 100 AS pct FROM m"))
 check("the Income twin has a card for every base tile",
       all(p.privacy_name(n) in CARDS for n in INCOME_CARD_NAMES
           if n not in p.PRIVACY_EXEMPT_CARDS),
@@ -818,13 +950,97 @@ check("the Income twin carries no account picker",
 # The type picker binds to the DETAILED label: the income taxonomy has
 # one vendored primary, and a primary-level dropdown would offer four
 # values.
-_type_picker = [q for q in p.dashboard_parameters(MID, "range", "Income")
-                if q["slug"] == "type"][0]
+#
+# A picker's dropdown is the values its value_field takes ON THE MODEL,
+# so the binding has to name a column the model's SELECT actually
+# projects. A substring test over the parameter dict would pass on any
+# plausible-looking name — including one the model does not have, which
+# leaves the dropdown silently empty — so the model's aliases are parsed
+# and the binding checked against them.
+
+
+def _model_columns(model):
+    """Every column name model `model`'s native SELECT exposes: the
+    trailing identifier of each projected expression, which for an
+    aliased one is the alias."""
+    head = _strip_parens(MODELS[model][0])
+    head = head[head.index("SELECT") + len("SELECT"):]
+    for kw in ("\n  FROM", "\nFROM", " FROM "):
+        if kw in head:
+            head = head[:head.index(kw)]
+            break
+    cols = []
+    for part in head.split(","):
+        toks = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", part)
+        if toks:
+            cols.append(toks[-1])
+    return cols
+
+
+for _model, _slug, _dash_name in (("report_income", "type", "Income"),
+                                  ("report_spending", "category", "Spending")):
+    _picker = [q for q in p.dashboard_parameters(MID, "range", _dash_name)
+               if q["slug"] == _slug][0]
+    _field = _picker["values_source_config"]["value_field"][1]
+    check(f"the {_dash_name} {_slug} picker binds to a column {_model} projects",
+          _field in _model_columns(_model),
+          (_field, _model_columns(_model)))
+
 check("the Income type picker binds to the detailed label",
-      "income_label" in str(_type_picker), _type_picker)
+      [q for q in p.dashboard_parameters(MID, "range", "Income")
+       if q["slug"] == "type"][0]["values_source_config"]["value_field"][1]
+      == "income_detailed")
+
+# No two base cards may share a privacy twin name. privacy_name() strips
+# a " (USD)" marker, so two cards whose names differ only by it collapse
+# onto one twin — and whichever definition is merged last silently
+# replaces the other, leaving a dashboard rendering the wrong chart.
+_twinned = [n for n in CARDS
+            if not n.endswith(p.PRIVACY_SUFFIX) and n not in p.PRIVACY_EXEMPT_CARDS
+            and p.privacy_name(n) in CARDS]
+_collisions = {}
+for _n in _twinned:
+    _collisions.setdefault(p.privacy_name(_n), []).append(_n)
+check("no two base cards map onto one privacy twin name",
+      all(len(v) == 1 for v in _collisions.values()),
+      {k: v for k, v in _collisions.items() if len(v) > 1})
+
+# No twin card may carry an account field filter. A native card's
+# template tags render as widgets wherever it is opened, so a tag is a
+# dropdown of its column's values — and the account labels are what the
+# twin exists not to show. The picker mapping being filtered out at the
+# dashboard is not enough: the card carries the tag either way.
+# The population is the privacy dashboards' OWN TILE LISTS, not every
+# card whose name ends in " (privacy)". The two differ by exactly the
+# shape that produced the bug: a PRIVACY-EXEMPT card keeps its base name
+# and is placed on the twin unchanged (dashboard_defs maps a tile
+# through privacy_name only when the name is not exempt), so a
+# suffix-selected population would not contain it. That is how a native
+# exempt card carrying an `account` field filter reached the Income
+# twin in the first place.
+_privacy_tiles = {}
+for _dname, (_desc, _mode, _sib, _tiles) in p.dashboard_defs().items():
+    if not _dname.endswith(p.PRIVACY_SUFFIX):
+        continue
+    for _c, *_ in _tiles:
+        _privacy_tiles.setdefault(_c, set()).add(_dname)
+check("every privacy tile names a card that exists",
+      all(c in CARDS for c in _privacy_tiles),
+      [c for c in _privacy_tiles if c not in CARDS])
+_with_account = sorted(
+    f"{c} (on {', '.join(sorted(_privacy_tiles[c]))})"
+    for c in _privacy_tiles if c in CARDS
+    and "account" in ((CARDS[c][2].get("native") or {}).get("template-tags") or {}))
+check("no card on a privacy dashboard declares an account template tag",
+      not _with_account, _with_account)
+# ...and the population really does include the exempt cards, or the
+# check above is back to reading only the suffixed ones.
+check("the privacy tile population includes the exempt cards",
+      any(c in p.PRIVACY_EXEMPT_CARDS for c in _privacy_tiles),
+      sorted(_privacy_tiles))
 
 # The Wealth Overview's income card now reads the income base.
-_wo = sql_of(CARDS["Income by month (USD)"][2]) or ""
+_wo = sql_of(CARDS["Investment income by month (USD)"][2]) or ""
 check("the Wealth Overview income card reads web_income",
       "web_income" in _wo, _wo[:120])
 check("...and names the four investment income types",

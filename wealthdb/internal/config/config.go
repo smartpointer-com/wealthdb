@@ -683,7 +683,24 @@ type SpendingCategorization struct {
 	// a mis-typed value that only fails once the context is widened
 	// fails at the least convenient moment.
 	DescriptorSamples *int `json:"descriptor_samples,omitempty"`
+	// FencePersonNames keeps a signature that is a bare person's name
+	// off a non-card account out of the model tier. Nil ⇒ the default,
+	// which is ON: the product is published and most deployments will
+	// point `categorize` at a remote endpoint, where a person's name is
+	// the one signature shape that is PII by itself.
+	//
+	// Turning it off is for a model endpoint on this machine, where
+	// nothing leaves and a person-shaped payer is just another payer
+	// worth naming. It is a pointer so that an explicit `false`
+	// survives a round-trip through the config writer, which a plain
+	// bool with omitempty would drop.
+	FencePersonNames *bool `json:"fence_person_names,omitempty"`
 }
+
+// DefaultFencePersonNames is what an absent `fence_person_names`
+// resolves to. On, by decision: a deployment that wants a person-shaped
+// signature sent to a model says so, and nothing sends one silently.
+const DefaultFencePersonNames = true
 
 // The context levels, in increasing order of what leaves the machine.
 //
@@ -716,6 +733,14 @@ const DefaultSpendContext = SpendContextMerchant
 // `descriptor_samples` is omitted. Three is enough to show a merchant's
 // spelling variants without turning one prompt into a transaction log.
 const DefaultSpendDescriptorSamples = 3
+
+// SpendContextLevels and IncomeContextLevels spell each family's
+// accepted levels for an error message. They sit beside the predicates
+// so a level added to one is added to the other in the same edit.
+const (
+	SpendContextLevels  = "merchant | descriptor | transaction"
+	IncomeContextLevels = "payer (or merchant) | descriptor | transaction"
+)
 
 // ValidSpendContext reports whether s names a context level. The empty
 // string is accepted: an omitted field means the default.
@@ -769,6 +794,17 @@ func (s *SpendingCategorization) Samples() int {
 		return DefaultSpendDescriptorSamples
 	}
 	return *s.DescriptorSamples
+}
+
+// PersonNameFence reports whether the person-shape arm of the fence is
+// on. An absent block, or an absent field, means on — a missing
+// configuration must never be the thing that sends a person's name to a
+// third party.
+func (s *SpendingCategorization) PersonNameFence() bool {
+	if s == nil || s.FencePersonNames == nil {
+		return DefaultFencePersonNames
+	}
+	return *s.FencePersonNames
 }
 
 // CategorizationModel returns the configured model endpoint, or nil
@@ -921,6 +957,17 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("config: spending.transfer_overrides: %w", err)
 		}
 		c.Spending.TransferOverrides = expanded
+	}
+	// The income family's one path. A ledger left unexpanded is not a
+	// load error: `~/ledgers/income.csv` reaches os.Open verbatim, the
+	// open fails with not-exist, and a missing pins file is a no-op by
+	// design — so every pin in it would silently never apply.
+	if c.Income != nil && c.Income.Pins != "" {
+		expanded, err := expandPath(c.Income.Pins, configDir)
+		if err != nil {
+			return nil, fmt.Errorf("config: income.pins: %w", err)
+		}
+		c.Income.Pins = expanded
 	}
 	for i := range c.SilverSources {
 		if c.SilverSources[i].Path != "" {

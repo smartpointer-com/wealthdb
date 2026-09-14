@@ -676,7 +676,7 @@ func seedBacklogGold(t *testing.T) (*sql.DB, context.Context) {
 func TestCollectMerchantCandidatesBacklogOnly(t *testing.T) {
 	db, ctx := seedBacklogGold(t)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogUnplaced)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogUnplaced, true, "spending.categorization")
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestCollectMerchantCandidatesBacklogOnly(t *testing.T) {
 func TestCollectMerchantCandidatesAll(t *testing.T) {
 	db, ctx := seedBacklogGold(t)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogAll)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogAll, true, "spending.categorization")
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -730,7 +730,7 @@ func TestCollectMerchantCandidatesFenceHoldsAtEveryContext(t *testing.T) {
 		config.SpendContextDescriptor,
 		config.SpendContextTransaction,
 	} {
-		cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogAll)
+		cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogAll, true, "spending.categorization")
 		if err != nil {
 			t.Fatalf("%s: collectMerchantCandidates: %v", level, err)
 		}
@@ -777,7 +777,7 @@ func TestCollectMerchantCandidatesSkipsUninformativeAtEveryContext(t *testing.T)
 			config.SpendContextTransaction,
 		} {
 			name := fmt.Sprintf("%s/all=%v", level, all)
-			cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogOf(all, false))
+			cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogOf(all, false), true, "spending.categorization")
 			if err != nil {
 				t.Fatalf("%s: collectMerchantCandidates: %v", name, err)
 			}
@@ -825,7 +825,7 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 	seedSpendTxn(t, db, ctx, "T2", "CARD1", "purchase", 10, -60, "Orchard Lane Market", "")
 	runEnrichment(t, db, ctx)
 
-	merchant, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogUnplaced)
+	merchant, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogUnplaced, true, "spending.categorization")
 	if err != nil {
 		t.Fatalf("merchant level: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 		t.Error("the merchant level must not send the raw narrative")
 	}
 
-	descriptor, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextDescriptor, 3, backlogUnplaced)
+	descriptor, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextDescriptor, 3, backlogUnplaced, true, "spending.categorization")
 	if err != nil {
 		t.Fatalf("descriptor level: %v", err)
 	}
@@ -850,7 +850,7 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 		t.Error("the descriptor level must not send dates or amounts")
 	}
 
-	transaction, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextTransaction, 3, backlogUnplaced)
+	transaction, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextTransaction, 3, backlogUnplaced, true, "spending.categorization")
 	if err != nil {
 		t.Fatalf("transaction level: %v", err)
 	}
@@ -875,7 +875,7 @@ func TestCollectMerchantCandidatesFencesTheRawNarrative(t *testing.T) {
 	seedSpendTxn(t, db, ctx, "T1", "CARD1", "purchase", 10, -40, long, "")
 	runEnrichment(t, db, ctx)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextDescriptor, 3, backlogUnplaced)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextDescriptor, 3, backlogUnplaced, true, "spending.categorization")
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -908,7 +908,7 @@ func TestCollectMerchantAnchorsExcludesDeltasAndCandidates(t *testing.T) {
 		t.Fatalf("seed merchant store: %v", err)
 	}
 
-	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, map[string]bool{"BLUE HARBOUR CAFE": true})
+	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, map[string]bool{"BLUE HARBOUR CAFE": true}, true)
 	if err != nil {
 		t.Fatalf("collectMerchantAnchors: %v", err)
 	}
@@ -917,7 +917,7 @@ func TestCollectMerchantAnchorsExcludesDeltasAndCandidates(t *testing.T) {
 			"(the delta row and the current candidate are both excluded)", anchors)
 	}
 
-	none, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 0, nil)
+	none, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 0, nil, true)
 	if err != nil || len(none) != 0 {
 		t.Errorf("--max-anchors 0 must ask for nothing, got %+v (%v)", none, err)
 	}
@@ -939,7 +939,7 @@ func TestCollectMerchantAnchorsFencesTransferShaped(t *testing.T) {
 		t.Fatalf("seed merchant store: %v", err)
 	}
 
-	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, nil)
+	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, nil, true)
 	if err != nil {
 		t.Fatalf("collectMerchantAnchors: %v", err)
 	}
@@ -1017,7 +1017,7 @@ func TestPrintCategorizeSummaryCounters(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	printCategorizeSummary(&out, candidates, valid, leftovers, 1, 2, 3, canaries)
+	printCategorizeSummary(&out, spendingCategorizeFamily, candidates, valid, leftovers, 1, 2, 3, canaries)
 	got := out.String()
 
 	for _, want := range []string{
@@ -1336,7 +1336,11 @@ func TestCategorizationsDump(t *testing.T) {
 		t.Fatalf("categorizations: exit %d, stderr=%s", code, se)
 	}
 	for _, want := range []string{
-		"merchant_signature", "BLUE HARBOUR CAFE", "Blue Harbour Cafe",
+		// The headers are named for NEITHER family: one dump carries
+		// both stores, and `family` is what says which vocabulary a
+		// row's `detailed` belongs to.
+		"family", "signature", "name", "detailed",
+		"BLUE HARBOUR CAFE", "Blue Harbour Cafe",
 		"FOOD_AND_DRINK_COFFEE", "test-model", "2023-11-14",
 	} {
 		if !strings.Contains(so, want) {
@@ -1544,6 +1548,99 @@ func TestCategorizeDryRunPrintsThePlanBeforeAnyCall(t *testing.T) {
 // prompt, so the fixture is written as one: a person-shaped payee
 // beside an ordinary merchant on the same day and source, which is
 // also what makes the neighbour list non-trivial.
+// TestPersonShapeFenceIsCardExemptAndOptional pins the two things that
+// keep the person-shape arm from being either useless or ruinous.
+//
+// The SAME signature is seeded twice — once on a card, once on a bank
+// account — so the account kind is the only variable. On the card it
+// must stay a candidate: most card merchants are two plain words, and
+// an arm that fenced them would refuse half the spending model tier to
+// catch a shape that does not arrive on a card statement. On the bank
+// account it must be refused, because there a narrative like this IS
+// the sender.
+//
+// And it must be possible to turn off: a deployment whose model runs on
+// this machine has nothing to withhold from it, and the user asked for
+// the arm to be a default rather than a law.
+func TestPersonShapeFenceIsCardExemptAndOptional(t *testing.T) {
+	// Two words, no digit, no legal form, no trade word. A person; and
+	// on a card statement, indistinguishable from a small shop.
+	const key = "EXAMPLE SAMPLE"
+	db, ctx := openCategorizeGold(t)
+	seedSpendTxn(t, db, ctx, "T-CARD", "CARD1", "purchase", 10, -12.50, "Example Sample", "")
+	runEnrichment(t, db, ctx)
+
+	if spending.TransferShaped(key) || spending.Uninformative(key) {
+		t.Fatal("fixture is wrong: another gate already refuses this key, so the test would pass vacuously")
+	}
+	if !spending.PersonShaped(key) {
+		t.Fatal("fixture is wrong: the key is not person-shaped, so the arm is not under test")
+	}
+
+	onCard, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily,
+		config.SpendContextMerchant, 3, backlogUnplaced, true, "spending.categorization")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if !slices.Contains(signaturesOf(onCard), key) {
+		t.Errorf("a two-word merchant on a CARD was fenced as person-shaped: %v", signaturesOf(onCard))
+	}
+	if skipped.PersonShaped != 0 {
+		t.Errorf("person-shaped count = %d on a card-only fixture, want 0", skipped.PersonShaped)
+	}
+
+	// The same signature now also on a bank account. A key is refused
+	// when ANY row under it is refused, so the card row no longer
+	// carries it in — which is the existing fence's rule, applied to
+	// the new arm.
+	seedSpendTxn(t, db, ctx, "T-BANK", "CASH1", "withdrawal", 11, -40, "Example Sample", "")
+	runEnrichment(t, db, ctx)
+
+	onBoth, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily,
+		config.SpendContextMerchant, 3, backlogUnplaced, true, "spending.categorization")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if slices.Contains(signaturesOf(onBoth), key) {
+		t.Errorf("a bare name on a bank account became a candidate: %v", signaturesOf(onBoth))
+	}
+	if skipped.PersonShaped != 1 {
+		t.Errorf("person-shaped count = %d, want 1 (the refusal is counted, not silent)", skipped.PersonShaped)
+	}
+	if skipped.PersonFenceOffKey != "" {
+		t.Error("the report says the arm is off while it is fencing")
+	}
+
+	// ...and off, it is a candidate again, with the report saying which
+	// policy produced the list.
+	off, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily,
+		config.SpendContextMerchant, 3, backlogUnplaced, false, "spending.categorization")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if !slices.Contains(signaturesOf(off), key) {
+		t.Errorf("fence_person_names=false still fenced the name: %v", signaturesOf(off))
+	}
+	if skipped.PersonShaped != 0 || skipped.PersonFenceOffKey != "spending.categorization" {
+		t.Errorf("with the arm off: count = %d, key = %q; want 0, spending.categorization",
+			skipped.PersonShaped, skipped.PersonFenceOffKey)
+	}
+	// The report names the key that governed THIS run — which for an
+	// income run inheriting spending's block is spending's, and for one
+	// with a block of its own is income's. A hardcoded key would send a
+	// reader to a setting that is not the one in force.
+	var report strings.Builder
+	printNeverSent(&report, skippedSignatures{PersonFenceOffKey: "income.categorization"})
+	if !strings.Contains(report.String(), "income.categorization.fence_person_names") {
+		t.Errorf("the run report does not name the setting that produced it:\n%s", report.String())
+	}
+	report.Reset()
+	printNeverSent(&report, skipped)
+	if !strings.Contains(report.String(), "spending.categorization.fence_person_names") {
+		t.Errorf("the run report does not name the setting that produced it:\n%s", report.String())
+	}
+}
+
 func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 	const (
 		payee     = "EXAMPLE, PERSON"
@@ -1579,7 +1676,7 @@ func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 			config.SpendContextTransaction,
 		} {
 			name := fmt.Sprintf("%s/all=%v", level, all)
-			cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogOf(all, false))
+			cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, level, 3, backlogOf(all, false), true, "spending.categorization")
 			if err != nil {
 				t.Fatalf("%s: collectMerchantCandidates: %v", name, err)
 			}
@@ -1616,7 +1713,7 @@ func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 		key); err != nil {
 		t.Fatalf("seed merchant store: %v", err)
 	}
-	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, nil)
+	anchors, err := collectMerchantAnchors(ctx, db, spendingCategorizeFamily, 10, nil, true)
 	if err != nil {
 		t.Fatalf("collectMerchantAnchors: %v", err)
 	}
@@ -1692,7 +1789,7 @@ func TestRefineBacklogAsksOnlyWhereTheModelGaveUp(t *testing.T) {
 		}
 	}
 
-	cands, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 0, backlogRefine)
+	cands, _, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 0, backlogRefine, true, "spending.categorization")
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}

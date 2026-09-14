@@ -25,31 +25,44 @@ func init() {
 	register("categorize", cmdCategorize)
 }
 
-// The spending model tier.
+// The model tier, for both families.
 //
 // Everything the deterministic pass could decide it has already
 // decided by the time this runs — the matcher has paired the
 // own-account moves, the built-in rules have placed the card payments
 // and the ATM withdrawals, the provider map has translated whatever
-// the issuer published. What is left is the long tail of merchants
-// whose category follows from nothing but their NAME, and a model is
-// the only thing that knows what a name like "Blue Harbour Hardware"
-// sells.
+// the source published, and on the income side the kind floor has
+// answered every admitted kind but one. What is left is the long tail
+// of counterparties whose category follows from nothing but their
+// NAME, and a model is the only thing that knows what a name like
+// "Blue Harbour Hardware" sells or who a name like "Blue Harbour
+// Payroll" is.
 //
-// A verdict is bought PER MERCHANT SIGNATURE and stored globally, so a
-// merchant met on several accounts, at several sources, is paid for
-// once and answered once. That is the whole reason the enrichment pass
-// records a signature even for rows it cannot categorise: the signature
-// is the unit of work here.
+// The two families ask DIFFERENT QUESTIONS, and it is worth stating
+// because the rest of this file is one loop over both. Spending asks
+// who was paid and what they sell; the nature of the row is the data's.
+// Income asks what KIND of income a receipt is, which is a claim about
+// the transaction — so the data answers it wherever it can, the floor
+// outranks the store (migration 0073), and candidacy is restricted to
+// `deposit`, the one admitted kind with no floor.
+//
+// A verdict is bought PER SIGNATURE and stored globally, so a merchant
+// met on several accounts, at several sources, is paid for once and
+// answered once, and so is a payer paying into several accounts. That
+// is the whole reason the enrichment pass records a signature even for
+// rows it cannot categorise: the signature is the unit of work here.
 //
 // WHAT NEVER LEAVES THE MACHINE is decided in two independent places,
 // and neither can be turned off by the other. The context level
-// (spending.categorization.context) decides how much of a candidate
-// is described; the transfer fence decides whether a signature is a
-// candidate AT ALL, at every level. A wire, a P2P payment, a standing
-// order — anything whose narrative carries a person rather than a
-// merchant — is fenced out of candidacy and is therefore never
-// described at any level.
+// (<family>.categorization.context) decides how much of a candidate is
+// described; the fence decides whether a signature is a candidate AT
+// ALL, at every level. A wire, a P2P payment, a standing order —
+// anything whose narrative carries a person rather than a merchant —
+// is fenced out of candidacy and is therefore never described at any
+// level. So, by default, is a signature that IS a bare person's name on
+// a non-card account (spending.PersonShaped), which no rail token,
+// IBAN or masked number would have caught and which is the shape an
+// inbound credit transfer arrives in.
 //
 // The fence is read over the ROW (spending.RowTransferShaped): the
 // signature, the provider's own filing of it and the narrative half of
@@ -144,7 +157,15 @@ func (c merchantCandidate) DominantSource() string {
 // a row stayed uncategorised.
 type skippedSignatures struct {
 	Fenced        int // transfer-shaped: a person or an account where a merchant would be
+	PersonShaped  int // a bare person's name on a non-card account, when the option is on
 	Uninformative int // nothing to name: no word at all, or nothing but the provider's own filing
+	// PersonFenceOffKey is the config key that turned the person-shape
+	// arm off, or empty when it is on. The run report prints it so a
+	// reader can see which policy produced the list rather than infer
+	// it from a zero — and prints the key the running family actually
+	// resolved, which for an income run that inherited is spending's
+	// and for one with a block of its own is income's.
+	PersonFenceOffKey string
 }
 
 // merchantAnchor is one verdict already in the store, shown to the
@@ -160,19 +181,23 @@ type merchantAnchor struct {
 	Detailed  string
 }
 
-// categorization is one validated verdict, ready to upsert into
-// spend_merchant_categories.
+// categorization is one validated verdict, ready to upsert into the
+// running family's verdict store. MerchantName holds the counterparty's
+// name whichever family that is — a merchant's or a payer's — and keeps
+// the older spelling because every field of this struct is written and
+// read in one file and a rename would buy nothing.
 type categorization struct {
 	Signature    string
 	MerchantName string
 	Detailed     string
 }
 
-// cmdCategorize asks the configured model for a merchant name and a
-// spend category for every merchant signature the deterministic tiers
-// could not place, and stores the verdicts in the global merchant
-// store. The read path picks them up through
-// spending_lines_base's COALESCE(transaction scope, merchant scope).
+// cmdCategorize asks the configured model for a counterparty's name
+// and its category, for every signature the deterministic tiers left
+// unplaced, and stores the verdicts in that family's global store. An
+// optional positional selects one family; with none, both run in order.
+// The read path picks the verdicts up through each family's resolution
+// macro.
 func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb categorize", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -183,14 +208,14 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	maxAnchors := fs.Int("max-anchors", defaultCategorizeMaxAnchors,
 		"max anchor examples to include in the prompt")
 	batch := fs.Int("batch", defaultCategorizeBatch,
-		"merchant signatures per model call; the default keeps a local model's answer well inside the 5-minute call timeout")
+		"signatures per model call; the default keeps a local model's answer well inside the 5-minute call timeout")
 	showPrompt := fs.Bool("show-prompt", false, "print the first batch's prompt to stderr in full; later batches only its size (debugging)")
-	all := fs.Bool("all", false, "re-ask every signature candidacy admits, including ones already in the merchant store")
+	all := fs.Bool("all", false, "re-ask every signature candidacy admits, including ones already in the verdict store")
 	refine := fs.Bool("refine", false, "re-ask only the counterparties the model itself could place no better than a catch-all")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, categorizeUsage())
 	}
-	if err := fs.Parse(subargs); err != nil {
+	if err := fs.Parse(reorderFlagsFirst(subargs, categorizeValueFlags)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
@@ -293,24 +318,59 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return err
 	}
 
-	// Each family is planned and run in turn, and the gold handle is
-	// re-opened between them: the model pass releases it (see
-	// runCategorizeFamily), and the next family's candidate scan needs
-	// one again.
 	opts := categorizeRunOptions{
 		dryRun: *dryRun, maxAttempts: *maxAttempts, maxAnchors: *maxAnchors,
 		batch: *batch, showPrompt: *showPrompt, which: backlogOf(*all, *refine),
 	}
+	db, dbOpen, err = runCategorizeFamilies(ctx, db, dbOpen, cfg, families, opts, openMode, stdout, stderr)
+	return err
+}
+
+// runCategorizeFamilies plans and runs each family in turn, re-opening
+// the gold handle between them.
+//
+// It is its own function so a test can drive the whole loop — two
+// families, the close-and-reopen between them, the per-family flush —
+// with a scripted endpoint. cmdCategorize above is flags, gates and the
+// deterministic pass; this is the part with the sequencing in it, and
+// the sequencing is what the milestone plan asked to be pinned.
+//
+// Returns the handle and whether it is still open, so the caller's
+// deferred close stays correct on every path.
+func runCategorizeFamilies(
+	ctx context.Context,
+	db *sql.DB,
+	dbOpen bool,
+	cfg *config.Config,
+	families []categorizeFamily,
+	opts categorizeRunOptions,
+	openMode gold.Mode,
+	stdout, stderr io.Writer,
+) (*sql.DB, bool, error) {
 	for i, fam := range families {
 		if i > 0 {
 			// Only where the previous family CLOSED the handle: a
 			// family with nothing to ask about returns without
 			// reaching the model pass, and DuckDB refuses a second
 			// connection to the same file under a different mode.
+			//
+			// Retried for retryFlush's reason, and it is the same
+			// race: the handle was released for the whole of the
+			// first family's model pass precisely so readers could
+			// use gold, and a reader still holding it at the instant
+			// that family ends makes a bare open fail. Failing there
+			// would abandon the second family after the first has
+			// already been paid for.
 			if !dbOpen {
-				var err error
-				if db, err = gold.Open(cfg.GoldDB, openMode); err != nil {
-					return errs.Wrap(errs.ExitOpenFailed, err)
+				if err := retryFlush(ctx, func() error {
+					opened, err := gold.Open(cfg.GoldDB, openMode)
+					if err != nil {
+						return err
+					}
+					db = opened
+					return nil
+				}); err != nil {
+					return db, false, errs.Wrap(errs.ExitOpenFailed, err)
 				}
 				dbOpen = true
 			}
@@ -319,10 +379,10 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		closed, err := runCategorizeFamily(ctx, db, cfg, fam, opts, stdout, stderr)
 		dbOpen = !closed
 		if err != nil {
-			return err
+			return db, dbOpen, err
 		}
 	}
-	return nil
+	return db, dbOpen, nil
 }
 
 // categorizeRunOptions is one invocation's flags, the same for every
@@ -333,7 +393,13 @@ type categorizeRunOptions struct {
 	maxAnchors  int
 	batch       int
 	showPrompt  bool
-	which       backlog
+	// call overrides the model endpoint. Nil in production, where the
+	// configured endpoint is used; a test sets it so the loop above can
+	// be driven end to end without a model on the other end. It is the
+	// same seam llm.go's llmCall already is, lifted one level so the
+	// caller of the loop can supply it.
+	call  llmCall
+	which backlog
 }
 
 // runCategorizeFamily plans and runs one family's model pass.
@@ -355,8 +421,15 @@ func runCategorizeFamily(
 	cz := fam.categorization(cfg)
 	modelCfg := cz.CategorizationModel()
 	level := cz.ContextLevel()
+	// Read once and passed to both scans, so the candidate list and the
+	// anchor block can never be fenced under different policies within
+	// one run. Income inherits the setting with the rest of the block,
+	// which is the point of inheriting whole: one household, one answer
+	// to what may leave the machine.
+	fencePersons := cz.PersonNameFence()
 
-	candidates, skipped, err := collectMerchantCandidates(ctx, db, fam, level, cz.Samples(), opts.which)
+	candidates, skipped, err := collectMerchantCandidates(ctx, db, fam, level, cz.Samples(),
+		opts.which, fencePersons, fam.categorizationKey(cfg))
 	if err != nil {
 		return false, err
 	}
@@ -371,13 +444,21 @@ func runCategorizeFamily(
 	}
 
 	if len(candidates) == 0 {
-		fmt.Fprintf(stdout, "categorize: %s: nothing to categorise (%d signature(s) fenced as transfer-shaped, %d uninformative)\n",
-			fam.name, skipped.Fenced, skipped.Uninformative)
+		// The counts inline as well as through printNeverSent below: on
+		// a run with nothing to ask about, "why" is the whole of the
+		// message, and printNeverSent stays silent on a gate that
+		// refused nothing.
+		fmt.Fprintf(stdout, "categorize: %s: nothing to categorise (%d fenced, %d person-shaped, %d uninformative)\n",
+			fam.name, skipped.Fenced, skipped.PersonShaped, skipped.Uninformative)
+		if skipped.PersonFenceOffKey != "" {
+			fmt.Fprintf(stdout, "categorize: person-shape fence off (%s.fence_person_names)\n",
+				skipped.PersonFenceOffKey)
+		}
 		printSpendCanaries(stdout, canaries)
 		return false, nil
 	}
 
-	anchors, err := collectMerchantAnchors(ctx, db, fam, opts.maxAnchors, candidateSignatures(candidates))
+	anchors, err := collectMerchantAnchors(ctx, db, fam, opts.maxAnchors, candidateSignatures(candidates), fencePersons)
 	if err != nil {
 		return false, err
 	}
@@ -407,7 +488,11 @@ func runCategorizeFamily(
 	if opts.dryRun {
 		sink = func(batchOutcome) error { return nil }
 	}
-	valid, calls, totalInvalid, runErr := categorizeWithLLM(ctx, modelCaller(modelCfg), fam, batches, anchors,
+	call := opts.call
+	if call == nil {
+		call = modelCaller(modelCfg)
+	}
+	valid, calls, totalInvalid, runErr := categorizeWithLLM(ctx, call, fam, batches, anchors,
 		level, opts.maxAttempts, opts.maxAnchors, opts.showPrompt, sink, stdout, stderr)
 	// The retry flush runs whether or not the family's own run
 	// stopped, and BEFORE the next family is started: a run of two
@@ -434,7 +519,7 @@ func runCategorizeFamily(
 	sort.Slice(valid, func(i, j int) bool { return valid[i].Signature < valid[j].Signature })
 
 	leftovers := uncategorisedCandidates(candidates, valid)
-	printCategorizeSummary(stdout, candidates, valid, leftovers, len(batches), calls, totalInvalid, canaries)
+	printCategorizeSummary(stdout, fam, candidates, valid, leftovers, len(batches), calls, totalInvalid, canaries)
 
 	if opts.dryRun {
 		fmt.Fprintf(stdout, "--- %s dry-run plan (no rows written; candidates as of the last load) ---\n", fam.name)
@@ -494,9 +579,12 @@ func backlogOf(all, refine bool) backlog {
 // answers is paid for, and a signature every one of whose rows a rule
 // or the provider map placed has nothing left to ask about.
 //
-// --all: every signature in the spending population, store row or not,
-// deterministic verdict or not. That is what re-asks a merchant after
-// a taxonomy revision or a model change.
+// --all: every signature the family's candidacy admits, store row or
+// not, deterministic verdict or not. That is what re-asks a
+// counterparty after a taxonomy revision or a model change. It lifts
+// the backlog filter and nothing else — the kind gate
+// (fam.candidateKinds) and the fence still apply, so on the income
+// side it re-asks deposits and never reaches a floor-placed row.
 //
 // EITHER WAY the transfer fence runs, and a fenced signature is
 // excluded from candidacy — not merely described less. The fence is
@@ -510,7 +598,7 @@ func backlogOf(all, refine bool) backlog {
 // name, and a round-trip spent on it ends in the gauntlet every time.
 // Both counts are returned so the run report can show each gate doing
 // something rather than silently doing nothing.
-func collectMerchantCandidates(ctx context.Context, db *sql.DB, fam categorizeFamily, level string, samples int, which backlog) ([]merchantCandidate, skippedSignatures, error) {
+func collectMerchantCandidates(ctx context.Context, db *sql.DB, fam categorizeFamily, level string, samples int, which backlog, fencePersonNames bool, czKey string) ([]merchantCandidate, skippedSignatures, error) {
 	// The backlog is the RESOLVED value being NULL, which on the income
 	// side is the difference between a few hundred payers and several
 	// thousand pointless questions: a dividend the kind floor placed at
@@ -527,6 +615,11 @@ func collectMerchantCandidates(ctx context.Context, db *sql.DB, fam categorizeFa
    AND EXISTS (SELECT 1 FROM spend_categories sc
                 WHERE sc.spend_detailed = c.` + fam.valueColumn + ` AND sc.catch_all)`
 	}
+	// The kind gate, which --all does NOT lift. The backlog filter is
+	// about what is still unanswered; this is about what may be asked
+	// at all, so the two are ANDed rather than alternated: on the
+	// income side `--all` means every DEPOSIT signature including the
+	// answered ones, never every signature in the population.
 	q := `
 SELECT c.` + fam.signatureColumn + `,
        p.silver_source_id, p.account_kind, p.occurred_at, p.currency,
@@ -538,7 +631,7 @@ SELECT c.` + fam.signatureColumn + `,
     ON p.silver_source_id        = c.silver_source_id
    AND p.transaction_external_id = c.transaction_external_id
  WHERE c.` + fam.signatureColumn + ` IS NOT NULL
-   AND c.` + fam.signatureColumn + ` <> ''` + backlogFilter + `
+   AND c.` + fam.signatureColumn + ` <> ''` + fam.candidateKindFilter() + backlogFilter + `
  ORDER BY c.` + fam.signatureColumn + `, p.occurred_at, p.transaction_external_id`
 
 	// The row fence, read once over the whole population rather than
@@ -549,19 +642,20 @@ SELECT c.` + fam.signatureColumn + `,
 	// one the query never reaches; and even over the same rows, a key
 	// admitted from a clean row before its fenced sibling arrives
 	// would already be in the candidate set.
-	rowFenced, err := rowFencedSignatures(ctx, db, fam)
+	refused, err := rowFencedSignatures(ctx, db, fam, fencePersonNames)
 	if err != nil {
 		return nil, skippedSignatures{}, err
 	}
 
 	rows, err := db.QueryContext(ctx, q, int64(0), gold.MaxEpoch)
 	if err != nil {
-		return nil, skippedSignatures{}, fmt.Errorf("categorize: read merchant candidates: %w", err)
+		return nil, skippedSignatures{}, fmt.Errorf("categorize: read %s candidates: %w", fam.counterparty, err)
 	}
 	defer rows.Close()
 
 	bySig := map[string]*merchantCandidate{}
 	fencedSigs := map[string]bool{}
+	personSigs := map[string]bool{}
 	uninformativeSigs := map[string]bool{}
 	wantSamples := level != config.SpendContextMerchant && samples > 0
 
@@ -573,15 +667,25 @@ SELECT c.` + fam.signatureColumn + `,
 		)
 		if err := rows.Scan(&sig, &source, &kind, &occurredAt, &ccy, &amount,
 			&counterparty, &description, &providerCategory); err != nil {
-			return nil, skippedSignatures{}, fmt.Errorf("categorize: scan merchant candidate: %w", err)
+			return nil, skippedSignatures{}, fmt.Errorf("categorize: scan %s candidate: %w", fam.counterparty, err)
 		}
 		// The fence gates candidacy, identically at every context
 		// level. A person-bearing narrative is not a merchant, and the
 		// reading is over the whole row (rowFencedSignatures): a rail
 		// the reduction dropped is still written in the provider's
 		// filing and in the raw narrative.
-		if rowFenced[sig] {
+		if refused.Transfer[sig] {
 			fencedSigs[sig] = true
+			continue
+		}
+		// The person-shape arm, which fires on a bare name that no
+		// rail, IBAN or masked number accompanies — the one signature
+		// shape that is PII by itself. It is read over the whole
+		// population too (refused.Person), and for the same reason:
+		// the account kind that exempts a card row belongs to the row,
+		// and a key is what leaves the machine.
+		if refused.Person[sig] {
+			personSigs[sig] = true
 			continue
 		}
 		// So does the word gate, at the same place and every level.
@@ -643,11 +747,20 @@ SELECT c.` + fam.signatureColumn + `,
 	sort.Slice(out, func(i, j int) bool { return out[i].Signature < out[j].Signature })
 
 	if level == config.SpendContextTransaction {
-		if err := attachNeighbours(ctx, db, out, rowFenced); err != nil {
+		if err := attachNeighbours(ctx, db, fam, out, refused); err != nil {
 			return nil, skippedSignatures{}, err
 		}
 	}
-	return out, skippedSignatures{Fenced: len(fencedSigs), Uninformative: len(uninformativeSigs)}, nil
+	off := ""
+	if !fencePersonNames {
+		off = czKey
+	}
+	return out, skippedSignatures{
+		Fenced:            len(fencedSigs),
+		PersonShaped:      len(personSigs),
+		Uninformative:     len(uninformativeSigs),
+		PersonFenceOffKey: off,
+	}, nil
 }
 
 // printNeverSent reports what candidacy refused, one line per gate
@@ -657,15 +770,45 @@ func printNeverSent(w io.Writer, skipped skippedSignatures) {
 	if skipped.Fenced > 0 {
 		fmt.Fprintf(w, "categorize: %d signature(s) fenced as transfer-shaped and never sent\n", skipped.Fenced)
 	}
+	if skipped.PersonShaped > 0 {
+		fmt.Fprintf(w, "categorize: %d signature(s) fenced as person-shaped and never sent\n", skipped.PersonShaped)
+	}
+	// A policy line rather than a count. With the arm off there is
+	// nothing to count, and a reader of the report would otherwise
+	// have to know the config to tell "nothing looked like a person"
+	// from "nobody was looking".
+	if skipped.PersonFenceOffKey != "" {
+		fmt.Fprintf(w, "categorize: person-shape fence off (%s.fence_person_names)\n",
+			skipped.PersonFenceOffKey)
+	}
 	if skipped.Uninformative > 0 {
 		fmt.Fprintf(w, "categorize: %d signature(s) uninformative and never sent\n", skipped.Uninformative)
 	}
 }
 
-// rowFencedSignatures reads the transfer fence over the WHOLE spending
-// population — every row, its provider filing and its narrative — and
-// returns every signature at least one row fences
-// (spending.RowTransferShaped).
+// fencedSignatures is what the row fence refused, split by arm so the
+// run report can name each. Both are sets of SIGNATURES, and a
+// signature in either never leaves the machine.
+type fencedSignatures struct {
+	// Transfer is the rail, IBAN and masked-contact arm
+	// (spending.RowTransferShaped), always read.
+	Transfer map[string]bool
+	// Person is the bare-name arm (spending.PersonShaped), read only
+	// when spending.categorization.fence_person_names is on, and only
+	// over rows on non-card accounts. Empty when the option is off.
+	Person map[string]bool
+}
+
+// Refuses reports whether a signature is fenced by either arm. The
+// three sites a signature leaves the machine ask this question and
+// nothing finer; only the counters care which arm fired.
+func (f fencedSignatures) Refuses(sig string) bool {
+	return f.Transfer[sig] || f.Person[sig]
+}
+
+// rowFencedSignatures reads the fence over the WHOLE of a family's
+// population — every row, its provider filing, its narrative and its
+// account kind — and returns every signature at least one row refuses.
 //
 // It is a signature-level answer to a row-level question, and
 // deliberately so. The reduction is many-to-one: several narratives
@@ -676,13 +819,29 @@ func printNeverSent(w io.Writer, skipped skippedSignatures) {
 // places a signature leaves the machine: the candidate list, the
 // neighbour lists and the anchor block.
 //
+// The PERSON arm is the same construction over a different question,
+// and it is read here rather than at the candidate scan for the same
+// reason: it is exempt on CARD rows, the account kind belongs to the
+// row, and a key carried by both a card row and a bank row must be
+// refused on the bank row it also has. Reading it at the candidate
+// scan would consult only the backlog's rows and miss the bank row
+// sitting under a key some other row already placed.
+//
+// Why card rows are exempt: most card merchants are two or three plain
+// words with no legal form and no trade word — a name-shaped arm over
+// them would refuse half the spending model tier to fence a shape that
+// does not arrive there. An inbound credit transfer's narrative IS the
+// sender, which is why the arm exists and why it is the bank rows it
+// reads.
+//
 // The population read here is exactly the one the candidate scan and
-// the neighbour scan read, so a single pass covers both rather than
-// each site re-testing its own rows and missing the rails written on
-// the rows it does not see.
-func rowFencedSignatures(ctx context.Context, db *sql.DB, fam categorizeFamily) (map[string]bool, error) {
+// the neighbour scan read, so a single pass covers all of them rather
+// than each site re-testing its own rows and missing what is written
+// on the rows it does not see.
+func rowFencedSignatures(ctx context.Context, db *sql.DB, fam categorizeFamily, fencePersonNames bool) (fencedSignatures, error) {
+	out := fencedSignatures{Transfer: map[string]bool{}, Person: map[string]bool{}}
 	rows, err := db.QueryContext(ctx, `
-SELECT c.`+fam.signatureColumn+`,
+SELECT c.`+fam.signatureColumn+`, p.account_kind,
        COALESCE(p.provider_category, ''), COALESCE(p.description, '')
   FROM `+fam.populationMacro+`(?, ?) p
   JOIN `+fam.resolutionMacro+` c
@@ -691,30 +850,33 @@ SELECT c.`+fam.signatureColumn+`,
  WHERE c.`+fam.signatureColumn+` IS NOT NULL
    AND c.`+fam.signatureColumn+` <> ''`, int64(0), gold.MaxEpoch)
 	if err != nil {
-		return nil, fmt.Errorf("categorize: read the row fence: %w", err)
+		return fencedSignatures{}, fmt.Errorf("categorize: read the row fence: %w", err)
 	}
 	defer rows.Close()
-	fenced := map[string]bool{}
 	for rows.Next() {
-		var sig, providerCategory, description string
-		if err := rows.Scan(&sig, &providerCategory, &description); err != nil {
-			return nil, fmt.Errorf("categorize: scan the row fence: %w", err)
+		var sig, accountKind, providerCategory, description string
+		if err := rows.Scan(&sig, &accountKind, &providerCategory, &description); err != nil {
+			return fencedSignatures{}, fmt.Errorf("categorize: scan the row fence: %w", err)
 		}
-		if fenced[sig] {
-			continue
+		if !out.Transfer[sig] && spending.RowTransferShaped(sig, providerCategory, description) {
+			out.Transfer[sig] = true
 		}
-		if spending.RowTransferShaped(sig, providerCategory, description) {
-			fenced[sig] = true
+		if fencePersonNames && !out.Person[sig] &&
+			accountKind != string(canonical.AccountKindCard) && spending.PersonShaped(sig) {
+			out.Person[sig] = true
 		}
 	}
-	return fenced, rows.Err()
+	return out, rows.Err()
 }
 
 // attachNeighbours fills in the nearby-transaction context the
 // `transaction` level sends: for each sample, the signatures of what
-// else was bought on the same source within a day. It is what lets a
-// model place an otherwise opaque merchant from its company — a name
+// else the same source booked within a day. It is what lets a model
+// place an otherwise opaque counterparty from its company — a name
 // that means nothing between an airline and a hotel means something.
+//
+// Per family: a run asks about one vocabulary and must send only that
+// family's neighbours.
 //
 // Neighbours are fenced like everything else — on the row, through the
 // set rowFencedSignatures read over this same population, so a rail
@@ -722,19 +884,34 @@ SELECT c.`+fam.signatureColumn+`,
 // fences it here too, and the key-only reading needs no second call:
 // the set already refuses everything it would. A neighbour equal to
 // the sample's own signature is dropped as uninformative.
-func attachNeighbours(ctx context.Context, db *sql.DB, cands []merchantCandidate, rowFenced map[string]bool) error {
+func attachNeighbours(ctx context.Context, db *sql.DB, fam categorizeFamily, cands []merchantCandidate, refused fencedSignatures) error {
 	type dayedSig struct {
 		day int64
 		sig string
 	}
+	// This family's own population and its own signatures. Reading the
+	// spending side here during an income run would be a privacy
+	// defect rather than a cosmetic one: the fence set handed in is
+	// built over the INCOME population, so a spending signature drawn
+	// from a different population would be checked against a set that
+	// never saw its row and could leave the machine unfenced.
+	//
+	// The family's KIND gate applies here too, and for the same reason
+	// it applies to the candidate list: a neighbour is a signature that
+	// LEAVES THE MACHINE, and a kind the family never asks about has no
+	// business leaving it as context for one it does. Without this, a
+	// deposit's neighbour list at the `transaction` level would carry
+	// the signatures of every dividend booked within a day of it —
+	// which on the income side is the holdings list, and is exactly
+	// what the candidate gate exists to keep out of a prompt.
 	rows, err := db.QueryContext(ctx, `
-SELECT p.silver_source_id, p.occurred_at, e.merchant_signature
-  FROM spend_enrichment_population(?, ?) p
-  JOIN spend_txn_enrichment e
-    ON e.silver_source_id        = p.silver_source_id
-   AND e.transaction_external_id = p.transaction_external_id
- WHERE e.merchant_signature IS NOT NULL
-   AND e.merchant_signature <> ''
+SELECT p.silver_source_id, p.occurred_at, c.`+fam.signatureColumn+`
+  FROM `+fam.populationMacro+`(?, ?) p
+  JOIN `+fam.resolutionMacro+` c
+    ON c.silver_source_id        = p.silver_source_id
+   AND c.transaction_external_id = p.transaction_external_id
+ WHERE c.`+fam.signatureColumn+` IS NOT NULL
+   AND c.`+fam.signatureColumn+` <> ''`+fam.candidateKindFilter()+`
  ORDER BY p.silver_source_id, p.occurred_at`, int64(0), gold.MaxEpoch)
 	if err != nil {
 		return fmt.Errorf("categorize: read neighbour context: %w", err)
@@ -748,7 +925,7 @@ SELECT p.silver_source_id, p.occurred_at, e.merchant_signature
 		if err := rows.Scan(&source, &occurredAt, &sig); err != nil {
 			return fmt.Errorf("categorize: scan neighbour context: %w", err)
 		}
-		if rowFenced[sig] {
+		if refused.Refuses(sig) {
 			continue
 		}
 		bySource[source] = append(bySource[source], dayedSig{gold.EpochDay(occurredAt), sig})
@@ -802,11 +979,20 @@ SELECT p.silver_source_id, p.occurred_at, e.merchant_signature
 // offers, and the row fence over the population
 // (rowFencedSignatures), which catches the key whose rail is written
 // in the rows rather than in the reduction.
-func collectMerchantAnchors(ctx context.Context, db *sql.DB, fam categorizeFamily, maxAnchors int, exclude map[string]bool) ([]merchantAnchor, error) {
+//
+// The PERSON arm is read only in the second of those, and deliberately
+// so. It is exempt on card rows, and a key with no row left carries no
+// account kind — so applying it to the key alone would refuse every
+// two-word card merchant in the store and empty the anchor block of
+// exactly the vocabulary it exists to reinforce. The residue is an
+// orphaned verdict on a person-shaped key, bought before the arm
+// existed or before it was turned on; `categorizations --forget` is
+// what removes one.
+func collectMerchantAnchors(ctx context.Context, db *sql.DB, fam categorizeFamily, maxAnchors int, exclude map[string]bool, fencePersonNames bool) ([]merchantAnchor, error) {
 	if maxAnchors <= 0 {
 		return nil, nil
 	}
-	rowFenced, err := rowFencedSignatures(ctx, db, fam)
+	refused, err := rowFencedSignatures(ctx, db, fam, fencePersonNames)
 	if err != nil {
 		return nil, err
 	}
@@ -827,7 +1013,7 @@ SELECT `+fam.signatureColumn+`, `+fam.storeNameColumn+`, `+fam.valueColumn+`
 		if exclude[a.Signature] || !fam.emittable(a.Detailed) {
 			continue
 		}
-		if rowFenced[a.Signature] || spending.TransferShaped(a.Signature) {
+		if refused.Refuses(a.Signature) || spending.TransferShaped(a.Signature) {
 			continue
 		}
 		out = append(out, a)
@@ -1018,8 +1204,8 @@ func categorizeWithLLM(
 		if err != nil {
 			return validUnion, calls, totalInvalid, fmt.Errorf("batch %d/%d: %w", o.Index, o.Count, err)
 		}
-		fmt.Fprintf(stdout, "categorize: batch %d/%d: %d merchant(s), %d accepted, %d rejected, %d attempt(s)\n",
-			o.Index, o.Count, o.Size, len(o.Accepted), o.Rejected, o.Attempts)
+		fmt.Fprintf(stdout, "categorize: batch %d/%d: %d %s(s), %d accepted, %d rejected, %d attempt(s)\n",
+			o.Index, o.Count, o.Size, fam.counterparty, len(o.Accepted), o.Rejected, o.Attempts)
 		validUnion = append(validUnion, o.Accepted...)
 		if sink != nil {
 			if err := sink(o); err != nil {
@@ -1057,7 +1243,7 @@ func categorizeBatch(
 	seen := map[string]bool{}
 	var lastInvalid []invalidRow
 
-	systemPrompt := buildCategorizeSystemPrompt(fam)
+	systemPrompt := fam.systemPrompt()
 	for attempts = 1; attempts <= maxAttempts; attempts++ {
 		userPrompt := buildCategorizeUserPrompt(fam, batch, anchors, level, lastInvalid)
 		if showPrompt {
@@ -1175,18 +1361,7 @@ func parseAndValidateCategorizations(fam categorizeFamily, body string, candSet 
 	return valid, invalid
 }
 
-// isDeltaSpendCategory reports whether s names one of the delta
-// values. It is derived rather than restated: a value the taxonomy
-// recognises but the vendored subset does not IS a delta, so a delta
-// added to canonical is refused here without this file changing.
-// Case is folded first — a model shouting INTERNAL_TRANSFER must get
-// the specific rejection, not the generic one.
-
 // ---- prompt assembly ---------------------------------------------------------
-
-func buildCategorizeSystemPrompt(fam categorizeFamily) string {
-	return fam.systemPrompt()
-}
 
 // buildCategorizeUserPrompt assembles the per-attempt user message.
 // The taxonomy comes first (it is the closed vocabulary the answer
@@ -1210,41 +1385,47 @@ Emit nothing outside that list. In particular NEVER emit %s: those are assigned 
 
 `, strings.Join(names, ", "))
 	if len(anchors) > 0 {
-		b.WriteString("Reference examples — merchants from this same dataset, already categorised. The INPUT row is the shape you are given; the OUTPUT row is the shape you must reply in.\n\nINPUT rows:\n")
+		fmt.Fprintf(&b, "Reference examples — %ss from this same dataset, already categorised. The INPUT row is the shape you are given; the OUTPUT row is the shape you must reply in.\n\nINPUT rows:\n", fam.counterparty)
 		b.WriteString(formatAnchorSignatureCSV(anchors))
 		b.WriteString("\nCORRECT OUTPUT rows (3 columns, this is the format your response must use):\n")
 		b.WriteString(formatAnchorVerdictCSV(anchors))
 		b.WriteString("\n")
 	}
-	b.WriteString("Merchants to categorise — merchant_signature,transaction_count:\n")
+	fmt.Fprintf(&b, "%s to categorise — %s_signature,transaction_count:\n",
+		strings.ToUpper(fam.plural()[:1])+fam.plural()[1:], fam.counterparty)
 	b.WriteString(formatCandidateSignatureCSV(candidates))
 
 	if level == config.SpendContextDescriptor || level == config.SpendContextTransaction {
 		if s := formatCandidateDescriptorCSV(candidates); s != "" {
-			b.WriteString("\nRaw statement narratives these signatures were folded from — merchant_signature,narrative:\n")
+			fmt.Fprintf(&b, "\nRaw statement narratives these signatures were folded from — %s_signature,narrative:\n", fam.counterparty)
 			b.WriteString(s)
 		}
 	}
 	if level == config.SpendContextTransaction {
 		if s := formatCandidateTransactionCSV(candidates); s != "" {
-			b.WriteString("\nExample transactions — merchant_signature,date,amount,currency,account_kind,nearby_signatures:\n")
+			fmt.Fprintf(&b, "\nExample transactions — %s_signature,date,amount,currency,account_kind,nearby_signatures:\n", fam.counterparty)
 			b.WriteString(s)
 		}
 	}
 
-	b.WriteString(`
+	// The output contract, in this family's nouns. fam.outputContract()
+	// is the SAME string the gauntlet quotes when it rejects a row, so
+	// the instruction and the complaint cannot disagree — an income
+	// batch that asked for payer columns and then named merchant ones
+	// three lines later told the model three different things at once.
+	fmt.Fprintf(&b, `
 Output format:
-- CSV with columns: merchant_signature,merchant_name,spend_detailed
-- No header row. Exactly three columns per row. One row per merchant you can confidently name.
+- CSV with columns: %[1]s
+- No header row. Exactly three columns per row. One row per %[2]s you can confidently name.
 - Double-quote any field containing a comma; backslash-escape inner quotes.
-- merchant_signature must appear verbatim in the list above.
-- merchant_name is the merchant's real-world name in normal casing ("Corner Market", not "CORNER MARKET"). Never repeat the signature unchanged.
-- spend_detailed must be one of the taxonomy values listed above.
+- %[2]s_signature must appear verbatim in the list above.
+- %[2]s_name is the %[2]s's real-world name in normal casing (%[3]q, not %[4]q). Never repeat the signature unchanged.
+- %[5]s must be one of the taxonomy values listed above.
 
 Skip any signature you cannot confidently place. A skipped row costs nothing; a guessed one is invisible in a report and wrong forever.
 
 Do not include explanatory prose. Output CSV only.
-`)
+`, fam.outputContract(), fam.counterparty, fam.nameExample, strings.ToUpper(fam.nameExample), fam.valueColumn)
 	if len(feedback) > 0 {
 		b.WriteString("\nYour previous response contained the following rows that I rejected:\n")
 		for _, iv := range feedback {
@@ -1444,15 +1625,19 @@ ON CONFLICT (`+fam.signatureColumn+`) DO UPDATE SET
 func categorizeUsage() string {
 	return `usage: wealthdb categorize [spending | income] [-n | --dry-run] [--batch N] [--max-attempts N] [--max-anchors N] [--show-prompt] [--all | --refine]
 
-Categorise the merchants the deterministic spending tiers could not
+Categorise the merchants and payers the deterministic tiers could not
 place, using the LLM configured in wealthdb.cfg's
-"spending.categorization.model" block.
+"<family>.categorization.model" block. The positional selects one
+family; with none, BOTH run in order — spending, then income — as two
+plans and two summaries against one model. An absent
+"income.categorization" inherits "spending.categorization" whole.
 
-Work is priced PER MERCHANT SIGNATURE, not per transaction, and the
-verdicts land in the global spend_merchant_categories table — a
-merchant met by several cards is asked about once and answered once.
-The read path picks the verdicts up through the spending report
-macros; the base transactions table is not touched.
+Work is priced PER SIGNATURE, not per transaction, and the verdicts
+land in a global store — spend_merchant_categories for spending,
+income_payer_categories for income — so a merchant met by several
+cards, or a payer paying into several accounts, is asked about once
+and answered once. The read path picks the verdicts up through that
+family's report macros; the base transactions table is not touched.
 
 A normal run re-asserts every deterministic verdict first (the same
 pass 'load' runs), then asks about what is left. A --dry-run opens
@@ -1467,34 +1652,51 @@ failure, and a re-run asks only about what is still unanswered. The
 batch plan (count, sizes, anchors, first-prompt size) prints before
 the first call, on a dry run too.
 
-Signatures whose narrative looks like money moving between accounts or
-between people — wires, P2P rails, standing orders, anything carrying
-an IBAN — are fenced out of candidacy and are never sent, at any
-context level. Neither is a signature with no word in it — a bare
-bank booking code, a two-digit number — nor one that is nothing but
-the bank's own booking type; neither carries anything to name. Both
-counts print with the plan.
+Four gates keep a signature out of candidacy, at every context level,
+and each prints its count with the plan:
 
-The run report ends by listing every signature still uncategorised,
-one per line. A signature is a fold of the raw statement narrative
-and can carry a payee's name or an address, and this listing has no
--p to mask it: treat the report as narrative data, not as a summary
-safe to paste.
+  - money moving between accounts or between people — wires, P2P
+    rails, standing orders, anything carrying an IBAN or a masked
+    contact number;
+  - a signature that IS a bare person's name, on a non-card account,
+    unless spending.categorization.fence_person_names is false. It
+    cannot tell a person from a two-word company, so it refuses both,
+    and the run report says when it is off;
+  - a signature with no word in it — a bare bank booking code, a
+    two-digit number;
+  - a signature that is nothing but the bank's own booking type, which
+    names how the row was booked and not whom it paid.
+
+On the income side, candidacy is further restricted to deposit rows:
+every other admitted kind is answered by its own transaction kind, and
+a model asked about one could only be wrong.
+
+The run report ends, per family, by listing every signature still
+uncategorised, one per line. A signature is a fold of the raw statement
+narrative and can carry a counterparty's name or an address — on an
+inbound wire it usually IS a person — and this listing has no -p to
+mask it: treat the report as narrative data, not as a summary safe to
+paste.
 
 Flags:
   -n, --dry-run         print the categorisation plan, don't write
       --max-attempts N  retry the LLM up to N times when responses
                         contain invalid rows (default 3)
       --max-anchors N   cap the in-context anchor examples (default 30)
-      --batch N         merchant signatures per model call (default 40:
-                        what a local model answers well inside the
-                        5-minute call timeout; must be at least 1)
+      --batch N         signatures per model call (default 40: what a
+                        local model answers well inside the 5-minute
+                        call timeout; must be at least 1)
       --show-prompt     print the first batch's prompt to stderr in full;
                         later batches print only its size (debugging)
       --all             re-ask every signature candidacy admits, including
-                        the ones already answered in the merchant store
-      --refine          re-ask only the merchants the model itself could
-                        place no better than a catch-all. The narrow
+                        the ones already answered in the verdict store. It
+                        lifts the backlog filter only: the fence still
+                        fences, and on income candidacy is still deposits
+                        alone, so it never reaches a kind-placed row
+      --refine          re-ask only the counterparties the model itself
+                        could place no better than a catch-all. The narrow
                         re-ask: a catch-all a RULE or a PIN placed is a
-                        considered decision and is never disturbed`
+                        considered decision and is never disturbed
+
+The flags may appear before or after the family positional.`
 }

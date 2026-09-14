@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+)
 
 func TestFormatWatermark(t *testing.T) {
 	cases := []struct {
@@ -15,5 +20,49 @@ func TestFormatWatermark(t *testing.T) {
 		if got := formatWatermark(tc.in); got != tc.want {
 			t.Errorf("formatWatermark(%d) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestStatusVerbosePrintsBothFamilies pins `status -v`'s per-family
+// block, which PLAN M3 named and the build never wrote a test for.
+//
+// Both enrichment families report a backlog here, and the income
+// section is two lines; deleting them leaves the rest of the suite
+// green, which is exactly the shape the load summary's missing test
+// had.
+func TestStatusVerbosePrintsBothFamilies(t *testing.T) {
+	var out strings.Builder
+	printStatusVerbose(&out, &gold.SourceStatus{
+		OtherAssetClassCount:     1,
+		OtherTxKindCount:         2,
+		GuessedTxKindCount:       3,
+		MissingVehicleCount:      4,
+		UncategorizedSpendCount:  5,
+		ExcludedUnmappedCount:    6,
+		UncategorizedIncomeCount: 7,
+	})
+	got := out.String()
+
+	for _, want := range []string{
+		"  spending:",
+		"    uncategorised:           5 spending lines",
+		"  income:",
+		"    uncategorised:           7 income lines",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("status -v is missing %q:\n%s", want, got)
+		}
+	}
+	// Spending first, then income — the order the pass runs them in and
+	// the order `load` reports them in.
+	if strings.Index(got, "  spending:") > strings.Index(got, "  income:") {
+		t.Errorf("income is reported before spending:\n%s", got)
+	}
+	// The catch-all-kind counter is spending's alone, deliberately: it
+	// joins spend_scoped_accounts(), so a second copy under income
+	// would double-count the same rows wherever the two scopes agree.
+	if strings.Count(got, "excluded_unmapped") != 1 {
+		t.Errorf("excluded_unmapped appears %d times, want 1:\n%s",
+			strings.Count(got, "excluded_unmapped"), got)
 	}
 }
