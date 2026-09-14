@@ -262,6 +262,43 @@ def report_models():
                 "       (VALUES ('USD'), ('CHF'), ('EUR')) AS c(currency)"
                 + (f",\n       {NW_LATEST}" if pct else ""))
 
+    def income():
+        """The income model over gold's web_income view.
+
+        The spending model's shape with the income vocabulary, and the
+        same reasoning behind every choice: the type columns carry the
+        DISPLAY LABEL, with the vendored values beside them as `*_id`;
+        `display_name` carries the account LABEL; and the wide value
+        trio is unpivoted to one row per (line, reporting currency),
+        which is the only shape an MBQL card can switch currency in.
+
+        There is no `pct=True` variant. Every income tile is native
+        (they all read the serving view directly), so the privacy twin
+        has no MBQL card that would need a redacted model to drill
+        through to — unlike the spending twin, whose privacy-exempt
+        scalar runs over one. This model exists for the two dashboard
+        PICKERS, which need a card-backed value list.
+
+        `value` keeps the canonical sign: a receipt positive, a reversal
+        negative. The cards sum it as it stands, which is the one place
+        the two families differ — spending negates."""
+        cols = ("i.occurred_at, i.silver_source_id, i.account_external_id,\n"
+                "       i.account_label AS display_name, i.account_kind,\n"
+                "       i.payer_name,\n"
+                "       i.income_primary_label AS income_primary,\n"
+                "       i.income_label         AS income_detailed,\n"
+                "       i.income_primary AS income_primary_id,\n"
+                "       i.income_detailed AS income_detailed_id,\n"
+                "       i.income_label AS income_label,\n"
+                "       i.provider_income_label AS provider_category, c.currency")
+        legs = ["CASE c.currency"] + [
+            f" WHEN '{c.upper()}' THEN i.value_{c}" for c in ("chf", "eur")] + [
+            " ELSE i.value_usd", " END"]
+        return (f"SELECT {cols},\n"
+                f"       {''.join(legs)} AS value\n"
+                "  FROM web_income i,\n"
+                "       (VALUES ('USD'), ('CHF'), ('EUR')) AS c(currency)")
+
     V3 = [f"{p}_{c}" for p in ("positions_value", "cash_balance", "total_value")
           for c in ("usd", "chf", "eur")]
     V1 = ["value_usd", "value_chf", "value_eur"]
@@ -431,8 +468,19 @@ def report_models():
             "levels, '(uncategorized)' when unknown) and account — with its "
             "net amount in USD, CHF and EUR carried as "
             "one row per currency (pick one with a `currency` filter). "
-            "Spend is negative, refunds and rewards positive. Mirrors "
+            "Spend is negative and a refund positive. Mirrors "
             "`wealthdb spending transactions`."),
+        "report_income": (
+            income(),
+            "Every income line over all time — payer (the payer store's "
+            "name where it holds one, the instrument on a dividend or a "
+            "staking reward, otherwise the line's own normalized "
+            "counterparty; blank on an own-account move or a gift, which "
+            "have none), resolved type (both levels, '(uncategorized)' "
+            "when unknown) and account — with its net amount in USD, CHF "
+            "and EUR carried as one row per currency (pick one with a "
+            "`currency` filter). A receipt is positive and a reversal "
+            "negative. Mirrors `wealthdb income transactions`."),
         "report_spending_pct": (
             spending(pct=True),
             "Privacy variant of report_spending: values as % of the latest "
@@ -448,10 +496,22 @@ def report_models():
 # on every start, so a user who wants to customize one should duplicate it
 # into another collection first.
 
-# Transaction kinds counted as investment income vs. carrying costs by the
-# monthly charts (net-amount sign convention: income is a credit > 0, fees
-# and withheld taxes are debits < 0).
-INCOME_KINDS = ["coupon", "distribution", "dividend", "interest", "staking"]
+# The investment income TYPES the Wealth Overview's income chart shows.
+#
+# It used to select transaction KINDS, and fenced card accounts out
+# because a card books `interest` and `fee` of its own. Both went with
+# migration 0072: the chart now reads web_income, whose base has
+# already excluded own-account moves and returned capital, and whose
+# rows carry a resolved income TYPE rather than a raw kind. A card's
+# finance charge is not in that base at all — it is an outflow — so the
+# fence it needed is gone with the question it answered.
+#
+# Four types rather than five kinds: a private fund's `distribution`
+# floors to `capital_return` and is not income (docs/INCOME.md), so it
+# is absent by construction rather than by omission here.
+INVESTMENT_INCOME_TYPES = ["INCOME_DIVIDENDS", "INCOME_INTEREST_EARNED",
+                           "INCOME_STAKING", "INCOME_DISTRIBUTIONS"]
+WO_INCOME_TYPE_LIST = ", ".join(f"'{t}'" for t in INVESTMENT_INCOME_TYPES)
 COST_KINDS = ["fee", "tax"]
 
 # Account kinds fenced out of the investment flow charts. A credit card
@@ -528,7 +588,7 @@ PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
                         # A share of rows, not of money — and it already
                         # runs over the _pct model, so its drill-through
                         # is leak-free too.
-                        "Uncategorized share"}
+                        "Uncategorized share", "Uncategorized income share"}
 
 # Denominator-neutral by design: each card's body text names its own
 # denominator (latest total, chosen day's total, peak month, or the
@@ -632,6 +692,12 @@ FILTER_FIELD_COLUMNS = {
     # cards matching them against vendored values — every tile empty.
     "web_spending": ("occurred_at", "silver_source_id", "account_label",
                      "spend_primary_label"),
+    # The income view. `income_label`, not `income_primary_label`: the
+    # income taxonomy has ONE vendored primary, so a primary-level
+    # dropdown would offer four values and hide every distinction a
+    # reader opens the dashboard to filter by.
+    "web_income": ("occurred_at", "silver_source_id", "account_label",
+                   "income_label"),
     "web_card_balances_history": ("as_of_day", "silver_source_id",
                                   "account_label"),
 }
@@ -849,7 +915,7 @@ def question_defs(db_id, mid):
                 ["=", _f("granularity", "type/Text"), granularity]]
 
     # Spending cards: `value` carries gold's canonical sign (spend
-    # negative, refunds and rewards positive), so every card charts
+    # negative, refunds positive), so every card charts
     # `net_spend` — the negation — and a month's outflow reads as a
     # positive bar. The long-format model means a card that runs without
     # a currency filter sums USD + CHF + EUR, hence the standalone note.
@@ -876,6 +942,8 @@ def question_defs(db_id, mid):
     # variable instead, so it has a working default of its own.
     native_note = (" Built for the Spending dashboard; opened standalone it "
                    "runs in USD, the currency variable's default.")
+    income_native_note = (" Built for the Income dashboard; opened standalone "
+                          "it runs in USD, the currency variable's default.")
     bal_tags = spend_tags("web_card_balances_history", CARD_BALANCE_FILTERS)
     register_native_targets("Card balances over time", bal_tags,
                             CARD_BALANCE_PICKERS)
@@ -896,16 +964,34 @@ def question_defs(db_id, mid):
     # aggregates, so a per-currency column collapses its duplicate rows
     # (ccy_spend), and the other is the transaction list, which is
     # itself the records a drill-through would reach.
-    sp_tags = spend_tags("web_spending", SPEND_FILTERS)
-    sp_where = _spend_where(sp_tags)
-    sp_val = f"sum({_ccy_case('value', neg=True)})::DOUBLE"
-
-    def spend_native(name, display, desc, sql, viz):
-        register_native_targets(name, sp_tags, SPEND_PICKERS)
-        return (display, desc + native_note, _native(db_id, sql, sp_tags), viz)
+    sp_tags, sp_where, sp_val, spend_native = _family_native_kit(
+        db_id, "web_spending", SPEND_FILTERS, SPEND_PICKERS, True, native_note)
 
     sp_month = ("CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
                 " AS month")
+
+    # The income tiles are the same kit over the other serving view.
+    # `neg` is the whole of the sign difference: gold stores an outflow
+    # negative and a receipt positive, and both families report a
+    # positive magnitude.
+    in_tags, in_where, in_val, income_native = _family_native_kit(
+        db_id, "web_income", INCOME_FILTERS, INCOME_PICKERS, False, income_native_note)
+
+    # The Wealth Overview's own income tile reads the same view but
+    # carries only that dashboard's two pickers, so it gets its own
+    # tags rather than the Income dashboard's five.
+    # The uncategorised-share tile's tags: every filter but the
+    # currency variable, which a share of rows has no use for.
+    in_share_tags = view_tags("web_income", INCOME_FILTERS)
+    register_native_targets("Uncategorized income share", in_share_tags,
+                            [t for t in INCOME_PICKERS if t[1] != "currency"])
+
+    wo_income_tags = view_tags("web_income", {
+        "time_range": INCOME_FILTERS["time_range"],
+        "source": INCOME_FILTERS["source"]})
+    register_native_targets("Income by month (USD)", wo_income_tags,
+                            [(TIME_PARAM_ID, "time_range"),
+                             (SOURCE_PARAM_ID, "source")])
 
     month = _f("occurred_at", "type/DateTime", "month")
     days_stale = ["datetime-diff", _f("snapshot_at", "type/DateTime"),
@@ -938,16 +1024,27 @@ def question_defs(db_id, mid):
                                    ["sum", _dec("positions_value_usd")]],
                    "breakout": [_f("as_of_day", "type/DateTime", "day")]}),
             {"stackable.stack_type": "stacked"}),
+        # Re-pointed at the income base (migration 0072), so this tile
+        # and the Income dashboard agree to the cent. Native rather than
+        # MBQL because web_income carries a row per reporting currency
+        # and this card is fixed to USD; it takes the Wealth Overview's
+        # own two pickers as template tags.
         "Income by month (USD)": ("bar",
-            "Investment income (dividends, interest, distributions, "
-            "coupons, staking) per month in USD, stacked by kind. Credit-"
-            "card accounts are excluded — a card's interest is a finance "
-            "charge on spending, not investment income.",
-            _mbql(db_id, mid["report_transactions"],
-                  {"filter": flow_kinds(INCOME_KINDS),
-                   "aggregation": [["sum", _dec("value_usd")]],
-                   "breakout": [month, _f("kind", "type/Text")]}),
-            {"stackable.stack_type": "stacked"}),
+            "Investment income — dividends, interest earned, staking and "
+            "fund distributions — per month in USD, stacked by type. Reads "
+            "the same income base as the Income dashboard, so the two "
+            "agree; own-account moves and returned capital are already out "
+            "of it.",
+            _native(db_id,
+                "SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP) AS month,\n"
+                "       income_label AS type,\n"
+                "       sum(value_usd)::DOUBLE AS value_usd\n"
+                "  FROM web_income" + _spend_where(wo_income_tags) + "\n"
+                "   AND income_detailed IN (" + WO_INCOME_TYPE_LIST + ")\n"
+                " GROUP BY 1, 2\n ORDER BY 1", wo_income_tags),
+            {"graph.dimensions": ["month", "type"],
+             "graph.metrics": ["value_usd"],
+             "stackable.stack_type": "stacked"}),
         "Fees & taxes by month (USD)": ("bar",
             "Fees and withheld taxes per month in USD, stacked by kind; "
             "debits are negated so costs read as positive bars. Credit-"
@@ -1051,15 +1148,13 @@ def question_defs(db_id, mid):
         "Spend — monthly trend": spend_native("Spend — monthly trend",
             "smartscalar",
             "Net spend in the window's latest month, with the change vs the "
-            "month before. Net spend is purchases minus refunds and "
-            "rewards.",
+            "month before. Net spend is purchases minus refunds.",
             f"SELECT {sp_month},\n       {sp_val} AS net_spend\n"
             "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 1",
             {}),
         "Net spend": spend_native("Net spend", "scalar",
             "Total net spend over the selected window: purchases minus "
-            "refunds and rewards, across the selected accounts and "
-            "categories.",
+            "refunds, across the selected accounts and categories.",
             f"SELECT {sp_val} AS net_spend\n"
             "  FROM web_spending" + sp_where,
             {}),
@@ -1233,6 +1328,93 @@ def question_defs(db_id, mid):
             f"       {_ccy_case('value', neg=True)} AS net_spend\n"
             "  FROM web_spending" + sp_where + "\n ORDER BY net_spend DESC\n LIMIT 50",
             {}),
+        # ---- Income -------------------------------------------------
+        # Every income tile is native over web_income, for the reason
+        # the spending ones are: the serving view carries a row per
+        # (line, reporting currency), and a required {{currency}}
+        # variable picks the column rather than filtering rows. Two
+        # tiles the Spending dashboard has are deliberately absent —
+        # there is no second ring, the income taxonomy having one
+        # vendored primary and so no subcategory level worth one, and no
+        # balance-history chart, nothing on the income side being a
+        # liability.
+        "Income — monthly trend": income_native("Income — monthly trend",
+            "smartscalar",
+            "Net income in the window's latest month, with the change vs the "
+            "month before. Net income is receipts minus reversals.",
+            f"SELECT {sp_month},\n       {in_val} AS net_income\n"
+            "  FROM web_income" + in_where + "\n GROUP BY 1\n ORDER BY 1",
+            {}),
+        "Net income": income_native("Net income", "scalar",
+            "Total net income over the selected window: receipts minus "
+            "reversals, across the selected accounts and types. Gross as "
+            "booked — tax withheld at source is on the Spending side.",
+            f"SELECT {in_val} AS net_income\n"
+            "  FROM web_income" + in_where,
+            {}),
+        # The data-quality canary, and a percentage, so the privacy twin
+        # reuses it as-is (PRIVACY_EXEMPT_CARDS).
+        # The one income tile that does NOT read {{currency}}: it is a
+        # share of ROWS, scale-free, and the same in every currency. It
+        # therefore gets tags without the currency variable rather than
+        # declaring a required one it never interpolates.
+        "Uncategorized income share": ("scalar",
+            "Share of the window's income lines no tier and no kind floor "
+            f"could place — the ones labelled '{UNCATEGORIZED}'. The backlog "
+            "`wealthdb categorize income` works through. Most income is "
+            "placed by its transaction kind, so this counts deposits."
+            + income_native_note,
+            _native(db_id,
+                "SELECT count(*) FILTER (WHERE income_label = "
+                f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS uncategorized_share\n"
+                "  FROM web_income" + _spend_where(in_share_tags), in_share_tags),
+            _percent_viz("uncategorized_share")),
+        "Income by month": income_native("Income by month", "area",
+            "Net income per month, stacked by type — the shape of the "
+            "window. A type can dip negative in a month whose reversals "
+            "beat its receipts.",
+            f"SELECT {sp_month},\n       income_label AS type,\n"
+            f"       {in_val} AS net_income\n"
+            "  FROM web_income" + in_where + "\n GROUP BY 1, 2\n ORDER BY 1",
+            {"graph.dimensions": ["month", "type"],
+             "graph.metrics": ["net_income"],
+             "stackable.stack_type": "stacked"}),
+        # Every slice drawn: the income vocabulary is small enough to
+        # name in full, unlike the spending one, so nothing is folded
+        # into an "other" wedge a reader cannot open.
+        "Income by type": income_native("Income by type", "pie",
+            "Net income by type over the window. Every type is drawn — the "
+            "income vocabulary is short enough to name in full.",
+            f"SELECT income_label AS type,\n       {in_val} AS net_income\n"
+            "  FROM web_income" + in_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
+            _donut(threshold=0, total=True)),
+        # The only payer ranking there is: the CLI carries none, as it
+        # carries no merchant ranking. Payers with no name — the delta
+        # lines — are excluded rather than grouped into a blank slice.
+        "Top 50 payers": income_native("Top 50 payers", "table",
+            "The fifty payers the most income came from over the window. "
+            "Lines with no payer to name — own-account moves, gifts, cash "
+            "paid in — are left out rather than grouped under a blank.",
+            f"SELECT payer_name,\n       {in_val} AS net_income\n"
+            "  FROM web_income" + in_where +
+            "\n   AND payer_name IS NOT NULL\n GROUP BY 1\n ORDER BY 2 DESC\n LIMIT 50",
+            {}),
+        "Income by account": income_native("Income by account", "row",
+            "Net income by account over the window — which account the money "
+            "arrived in. Each bar is labelled with the account's name, its "
+            "source and its kind, since a name on its own says neither.",
+            f"SELECT account_label AS account,\n       {in_val} AS net_income\n"
+            "  FROM web_income" + in_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
+            {}),
+        "Largest receipts": income_native("Largest receipts", "table",
+            "The fifty largest single income lines of the window, with payer "
+            "(blank only where the line has none to show), account and type. "
+            "A reversal sorts to the bottom (its net income is negative).",
+            "SELECT occurred_at,\n       account_label AS account,\n"
+            "       payer_name,\n       income_label AS type,\n"
+            f"       {_ccy_case('value')} AS net_income\n"
+            "  FROM web_income" + in_where + "\n ORDER BY net_income DESC\n LIMIT 50",
+            {}),
         # The returns cards run over the materialized report_returns table.
         # The three scalars and the by-source table are MBQL (grain 'global' /
         # 'sources', granularity 'total'); the Returns dashboard's Currency and
@@ -1393,6 +1575,9 @@ CATEGORY_PARAM_ID = "aa5df109"
 # source picker — and these three pickers are additions to it.
 SPENDING_DASHBOARDS = {"Spending", "Spending" + PRIVACY_SUFFIX}
 
+# The same for the Income dashboards.
+INCOME_DASHBOARDS = {"Income", "Income" + PRIVACY_SUFFIX}
+
 # The asset-class and vehicle filters (the two taxonomy dimensions) are
 # linked only to these tiles: the Top-positions widgets, which list
 # individual holdings. The breakdown widgets each already group by one of
@@ -1405,6 +1590,11 @@ POSITION_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (privac
 # two columns the picker does not select. Such a card is also the only
 # kind that reads correctly opened standalone, where no picker reaches it.
 SPEND_ALL_CURRENCY_CARDS = {"Top 50 merchants"}
+
+# The income tiles are native throughout, so none of them reads every
+# currency as its own column; the set is empty and named rather than
+# absent, so a later MBQL income tile has somewhere to go.
+INCOME_ALL_CURRENCY_CARDS = set()
 
 
 def base_dashboards():
@@ -1502,6 +1692,27 @@ def base_dashboards():
             ("Card balances over time", 28, 0, 24, 6, "as_of_day"),
             ("Largest transactions", 34, 0, 24, 8, "occurred_at"),
         ]),
+        "Income": (
+            "What the tracked accounts received: wages, interest, "
+            "dividends, staking rewards, rent, gifts — typed and "
+            "attributed to a payer. Gross as booked; tax withheld at "
+            "source is on the Spending dashboard. " + note,
+            "range", [
+            # The same reading order as Spending: three headline
+            # figures, then the shape of the window, then the breakdown,
+            # then who it came from and where it landed, then the lines.
+            # There is no second ring (one vendored primary, so no
+            # subcategory level) and no balance history (nothing on this
+            # side is a liability).
+            ("Income — monthly trend", 0, 0, 8, 3, "occurred_at"),
+            ("Net income", 0, 8, 8, 3, "occurred_at"),
+            ("Uncategorized income share", 0, 16, 8, 3, "occurred_at"),
+            ("Income by month", 3, 0, 24, 9, "occurred_at"),
+            ("Income by type", 12, 0, 12, 8, "occurred_at"),
+            ("Top 50 payers", 12, 12, 12, 8, "occurred_at"),
+            ("Income by account", 20, 0, 24, 8, "occurred_at"),
+            ("Largest receipts", 28, 0, 24, 8, "occurred_at"),
+        ]),
         "Data Freshness": (
             "Age of each source's latest snapshot — which feeds need a "
             "collector run. Unfiltered by design: it must show every "
@@ -1564,6 +1775,33 @@ PRIVACY_SPEND_FILTERS = {k: v for k, v in SPEND_FILTERS.items()
                          if k != "account"}
 PRIVACY_CARD_BALANCE_FILTERS = {k: v for k, v in CARD_BALANCE_FILTERS.items()
                                 if k != "account"}
+# The income dashboards' own picker ids. Distinct from the spending
+# ones because a Metabase parameter id is per-dashboard-parameter, and
+# the two dashboards carry different filter sets over different views.
+INCOME_CURRENCY_PARAM_ID = "aa5df10a"
+INCOME_ACCOUNT_PARAM_ID = "aa5df10b"
+INCOME_TYPE_PARAM_ID = "aa5df10c"
+
+# The Income filters. `type` binds to income_label rather than to the
+# primary label its spending twin uses: the income taxonomy has ONE
+# vendored primary, so a primary-level picker would offer "Income",
+# "Gift", "Inheritance" and "Cash deposit" and hide every distinction
+# a reader opens the dashboard for.
+INCOME_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
+                  "source": ("silver_source_id", "string/="),
+                  "account": ("account_label", "string/="),
+                  "type": ("income_label", "string/=")}
+# The twin's, without the account filter, for the reason the spending
+# twin drops its own: a field filter renders as a dropdown of its
+# column's values, and account labels are the one thing the twin exists
+# not to show.
+PRIVACY_INCOME_FILTERS = {k: v for k, v in INCOME_FILTERS.items()
+                          if k != "account"}
+INCOME_PICKERS = [(INCOME_CURRENCY_PARAM_ID, "currency"),
+                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
+                  (INCOME_ACCOUNT_PARAM_ID, "account"),
+                  (INCOME_TYPE_PARAM_ID, "type")]
+
 SPEND_PICKERS = [(SPEND_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
                  (ACCOUNT_PARAM_ID, "account"), (CATEGORY_PARAM_ID, "category")]
@@ -1587,6 +1825,29 @@ def _ccy_case(col, neg=False):
     s = "-" if neg else ""
     return (f"CASE {{{{currency}}}} WHEN 'CHF' THEN {s}{col}_chf"
             f" WHEN 'EUR' THEN {s}{col}_eur ELSE {s}{col}_usd END")
+
+
+def _family_native_kit(db_id, view, filters, pickers, neg, note):
+    """One family's native-card kit: the template tags for its serving
+    view, the WHERE clause those tags imply, the summed value expression
+    in the picked currency, and a builder that registers a card's
+    pickers as it defines it.
+
+    Shared because the two families differ in exactly four things — the
+    view, the filter specs, the picker list and the SIGN — and a second
+    copy of this would be four constants and a drift risk. `neg` flips
+    the sum so an outflow, which gold stores negative, reads as a
+    positive magnitude; income is already positive and passes False.
+    """
+    tags = spend_tags(view, filters)
+    where = _spend_where(tags)
+    val = f"sum({_ccy_case('value', neg=neg)})::DOUBLE"
+
+    def native(name, display, desc, sql, viz):
+        register_native_targets(name, tags, pickers)
+        return (display, desc + note, _native(db_id, sql, tags), viz)
+
+    return tags, where, val, native
 
 
 def _spend_where(tags, indent="   "):
@@ -1769,23 +2030,44 @@ def privacy_card_defs(db_id, model_ids):
     flow_viz = {"graph.dimensions": ["month", "kind"],
                 "graph.metrics": ["value_pct"],
                 "stackable.stack_type": "stacked"}
+    # The twin of the re-pointed Wealth Overview tile, over the same
+    # income base and the same four types.
+    wo_tags = view_tags("web_income", {
+        "time_range": INCOME_FILTERS["time_range"],
+        "source": INCOME_FILTERS["source"]})
+    wo_where = _spend_where(wo_tags)
     out["Income by month (privacy)"] = ("question", "bar",
-        "Investment income (dividends, interest, distributions, coupons, "
-        "staking) per month, stacked by kind, as % of the biggest income "
-        "month within the selected window and sources — the tallest bar "
-        "reads 100. A kind can dip negative (e.g. margin interest); a "
-        "window with no positive income shows blank." + PRIVACY_DESC,
-        _native(db_id, flow_sql(INCOME_KINDS), tx_tags), flow_viz)
+        "Investment income — dividends, interest earned, staking and fund "
+        "distributions — per month, stacked by type, as % of the biggest "
+        "income month within the selected window and sources: the tallest "
+        "bar reads 100. A type can dip negative in a month whose reversals "
+        "beat its receipts; a window with no positive income shows blank."
+        + PRIVACY_DESC,
+        _native(db_id,
+            "WITH m AS (\n"
+            "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP) AS month,\n"
+            "         income_label AS kind,\n"
+            "         sum(value_usd)::DOUBLE AS v\n"
+            "    FROM web_income" + wo_where + "\n"
+            "     AND income_detailed IN (" + WO_INCOME_TYPE_LIST + ")\n"
+            "   GROUP BY 1, 2),\n"
+            "p AS (SELECT max(t) AS peak FROM"
+            " (SELECT sum(v) FILTER (WHERE v > 0) AS t FROM m GROUP BY month))\n"
+            "SELECT month, kind,\n"
+            "       v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100 AS value_pct\n"
+            "  FROM m\n ORDER BY 1", wo_tags), flow_viz)
     out["Fees & taxes by month (privacy)"] = ("question", "bar",
         "Fees and withheld taxes per month (negated so costs read as "
         "positive bars), stacked by kind, as % of the costliest month "
         "within the selected window and sources — the tallest bar reads "
         "100." + PRIVACY_DESC,
         _native(db_id, flow_sql(COST_KINDS, sign="-"), tx_tags), flow_viz)
-    for name in ("Income by month (privacy)", "Fees & taxes by month (privacy)"):
-        register_native_targets(name, tx_tags,
-                                [(TIME_PARAM_ID, "time_range"),
-                                 (SOURCE_PARAM_ID, "source")])
+    register_native_targets("Income by month (privacy)", wo_tags,
+                            [(TIME_PARAM_ID, "time_range"),
+                             (SOURCE_PARAM_ID, "source")])
+    register_native_targets("Fees & taxes by month (privacy)", tx_tags,
+                            [(TIME_PARAM_ID, "time_range"),
+                             (SOURCE_PARAM_ID, "source")])
 
     # -- The Allocation breakdowns: each bucket as % of the summed total
     # over the same filtered rows, so the buckets total 100 across the
@@ -1923,6 +2205,125 @@ def privacy_card_defs(db_id, model_ids):
         _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized"))
 
     out.update(spending_privacy_defs(db_id, model_ids))
+    out.update(income_privacy_defs(db_id, model_ids))
+    return out
+
+
+def income_privacy_defs(db_id, model_ids):
+    """The Income twin's cards: the same tiles, every figure a share,
+    and no card rendering a payer or an account.
+
+    The denominators mirror the spending twin's, and for the same
+    reason: the breakdowns and the lists divide by the window's own net
+    income (they sum to 100), the trend and the monthly bands by the
+    window's peak month (the peak reads 100). A window with no positive
+    month, or a total of zero, blanks rather than rendering inf or a
+    sign-flipped share.
+
+    REDACTION on top of normalization, as everywhere else in the twin:
+    the fix for a leaking column is to drop it. No card here projects
+    `payer_name`, `display_name` or `account_external_id` — the payer
+    list keeps its shape by RANKING instead, so `payer_name` is a GROUP
+    BY key and never a projection. Nor does any card filter on an
+    account, a field filter being a dropdown of its column's values
+    (PRIVACY_INCOME_FILTERS)."""
+    tags = spend_tags("web_income", PRIVACY_INCOME_FILTERS)
+    where = _spend_where(tags)
+    val = f"sum({_ccy_case('value')})::DOUBLE"
+    out = {}
+
+    def income_card(name, display, desc, sql, viz):
+        out[name] = ("question", display, desc + PRIVACY_DESC,
+                     _native(db_id, sql, tags), viz)
+        register_native_targets(name, tags, INCOME_PICKERS)
+
+    peak_cte = ("p AS (SELECT max(t) AS peak FROM"
+                " (SELECT sum(v) FILTER (WHERE v > 0) AS t FROM m GROUP BY month))\n")
+    peak_div = "v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100"
+    total_cte = ("t AS (SELECT nullif(sum(v), 0) AS total FROM m)\n")
+
+    def month_cte(extra=""):
+        return ("WITH m AS (\n"
+                "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
+                f" AS month,\n         {extra}{val} AS v\n"
+                "    FROM web_income" + where + "\n")
+
+    income_card("Income — monthly trend (privacy)", "smartscalar",
+        "Net income per month as % of the window's biggest income month — "
+        "the latest month with the change vs the one before it. A window "
+        "with no positive month shows blank.",
+        month_cte() + "   GROUP BY 1),\n" + peak_cte +
+        f"SELECT month, {peak_div} AS income_pct\n  FROM m\n ORDER BY 1", {})
+    income_card("Income by month (privacy)", "area",
+        "Net income per month, stacked by type, as % of the window's "
+        "biggest income month — the peak reads 100. A type can dip "
+        "negative in a month whose reversals beat its receipts.",
+        month_cte("income_label AS type,\n         ")
+        + "   GROUP BY 1, 2),\n" + peak_cte +
+        f"SELECT month, type, {peak_div} AS income_pct\n  FROM m\n ORDER BY 1",
+        {"graph.dimensions": ["month", "type"],
+         "graph.metrics": ["income_pct"],
+         "stackable.stack_type": "stacked"}),
+    # The share ring carries no figure in its hole: a total of shares is
+    # 100 by construction and says nothing, and the hole is where the
+    # base ring puts the money this one exists not to show.
+    income_card("Income by type (privacy)", "pie",
+        "Share (%) of the window's net income by type. Every type is "
+        "drawn.",
+        "WITH m AS (\n"
+        f"  SELECT income_label AS type,\n         {val} AS v\n"
+        "    FROM web_income" + where + "\n   GROUP BY 1),\n" + total_cte +
+        "SELECT type, v / (SELECT total FROM t) * 100 AS income_pct\n"
+        "  FROM m\n ORDER BY 2 DESC",
+        _donut(threshold=0, total=False))
+    # Ranked, unnamed: the shape of "how concentrated is this
+    # household's income" without naming anyone it comes from.
+    income_card("Top 50 payers (privacy)", "table",
+        "The fifty payers the most income came from, ranked and unnamed, "
+        "each as a share (%) of the window's net income.",
+        "WITH m AS (\n"
+        f"  SELECT payer_name, {val} AS v\n"
+        "    FROM web_income" + where +
+        "\n     AND payer_name IS NOT NULL\n   GROUP BY 1),\n" + total_cte +
+        "SELECT row_number() OVER (ORDER BY v DESC) AS rank,\n"
+        "       v / (SELECT total FROM t) * 100 AS income_pct\n"
+        "  FROM m\n ORDER BY 1\n LIMIT 50",
+        {})
+    income_card("Income by account (privacy)", "row",
+        "Share (%) of the window's net income by account, ranked and "
+        "unnamed.",
+        "WITH m AS (\n"
+        f"  SELECT account_label, {val} AS v\n"
+        "    FROM web_income" + where + "\n   GROUP BY 1),\n" + total_cte +
+        "SELECT row_number() OVER (ORDER BY v DESC) AS rank,\n"
+        "       v / (SELECT total FROM t) * 100 AS income_pct\n"
+        "  FROM m\n ORDER BY 2 DESC",
+        {})
+    # The anchor every other percentage here is relative to. Native
+    # like the rest of this twin — there is no income _pct model,
+    # because no income tile is MBQL and none needs a drill-through
+    # target.
+    income_card("Net income (privacy)", "scalar",
+        "Always 100 by construction — the window's net income as a share "
+        "of itself, the anchor every other percentage on this dashboard "
+        "is relative to.",
+        "WITH m AS (\n"
+        f"  SELECT {val} AS v FROM web_income" + where + ")\n"
+        "SELECT v / nullif(v, 0) * 100 AS income_pct FROM m",
+        {})
+    income_card("Largest receipts (privacy)", "table",
+        "The fifty largest single income lines of the window, each as a "
+        "share (%) of the window's net income, with the type but no payer "
+        "and no account.",
+        "WITH m AS (\n"
+        "  SELECT occurred_at, income_label AS type,\n"
+        f"         {_ccy_case('value')} AS v\n"
+        "    FROM web_income" + where + "),\n"
+        "t AS (SELECT nullif(sum(v), 0) AS total FROM m)\n"
+        "SELECT occurred_at, type,\n"
+        "       v / (SELECT total FROM t) * 100 AS income_pct\n"
+        "  FROM m\n ORDER BY v DESC\n LIMIT 50",
+        {})
     return out
 
 
@@ -2186,6 +2587,10 @@ def dashboard_defs():
     own_pdesc = {"Spending": (
         "Privacy view: values are shares (%) of the window's own net "
         "spend, or of its biggest month; merchant and account labels are "
+        "redacted and absolute amounts never show. "),
+        "Income": (
+        "Privacy view: values are shares (%) of the window's own net "
+        "income, or of its biggest month; payer and account labels are "
         "redacted and absolute amounts never show. ")}
     out = {}
     for name, (desc, mode, tiles) in base_dashboards().items():
@@ -2283,6 +2688,28 @@ def dashboard_parameters(model_ids, mode, name=""):
     time_range = {"id": TIME_PARAM_ID, "name": "Time range",
                   "slug": "time_range", "type": "date/all-options",
                   "sectionId": "date", "default": "past12months~"}
+    if name in INCOME_DASHBOARDS:
+        # The income pickers, in the shape the spending ones take and
+        # for the same reasons — a required currency with a USD default
+        # over a serving view that carries a row per reporting currency,
+        # and no account picker on the twin, a picker being unable to
+        # redact what its own dropdown offers.
+        income_currency = {"id": INCOME_CURRENCY_PARAM_ID, "name": "Currency",
+                           "slug": "currency", "type": "string/=",
+                           "sectionId": "string", "isMultiSelect": False,
+                           "default": ["USD"], "required": True,
+                           "values_source_type": "static-list",
+                           "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
+        pickers = [income_currency, time_range, source]
+        if not name.endswith(PRIVACY_SUFFIX):
+            pickers.append(card_picker(INCOME_ACCOUNT_PARAM_ID, "Account",
+                                       "account", "report_income", "display_name"))
+        # Bound to the DETAILED label: the income taxonomy has one
+        # vendored primary, so a primary-level picker would offer four
+        # values and hide every distinction worth filtering by.
+        pickers.append(card_picker(INCOME_TYPE_PARAM_ID, "Type", "type",
+                                   "report_income", "income_label"))
+        return pickers
     if name not in SPENDING_DASHBOARDS:
         return [time_range, source]
     # Required + USD default: report_spending carries one row per

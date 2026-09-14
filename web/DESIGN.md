@@ -100,7 +100,8 @@ resp. a required as-of day, plus a source picker), **Returns** carries a
 required currency picker (returns are stored one row set per currency),
 **Spending** carries the time range and source picker plus a required
 currency picker, an account picker and a category multi-select,
-**Data Freshness** is deliberately unfiltered — all of them
+**Income** carries the same five with a *type* picker in place of the
+category one, **Data Freshness** is deliberately unfiltered — all of them
 MBQL/definition-only, no data baked in.
 Each dashboard also gets a **privacy twin** (linked from the dashboard's top
 row): same layout and filters, but every card shows shares (%) instead of
@@ -124,7 +125,38 @@ trend and the monthly bands), and no card renders a merchant or account
 label — the merchant list ranks unnamed rows, the account breakdown regroups
 onto source × account kind, and `report_spending_pct` drops the merchant
 column so a scalar's drill-through cannot surface a counterparty either.
-On both views the merchant list ranks merchants only: a line whose resolved
+The **Income** dashboard is Spending read in the other direction, over
+the `web_income` serving view (migration 0072): the same five pickers,
+the same reading order — three headline figures, the shape of the
+window, the breakdown, who it came from and where it landed, then the
+lines — and the same native-over-the-view construction, for the same
+reason (the view carries a row per reporting currency, and a required
+`{{currency}}` variable picks the column rather than filtering rows).
+Two tiles have no counterpart, by design: there is no second ring, the
+income taxonomy having one vendored primary and so no subcategory level
+worth one, and no balance-history chart, nothing on this side being a
+liability. Its *type* picker binds to the DETAILED label rather than the
+primary one for the same reason the second ring is absent — a
+primary-level dropdown would offer four values and hide every
+distinction a reader opens the dashboard for. The **Income** twin
+redacts the way the Spending twin does: shares of the window's own net
+income or of its biggest month, the payer list ranked unnamed, the
+account breakdown ranked, and no card projecting a payer or an account
+in its final SELECT. One tile is shared rather than twinned — the
+uncategorised share is a proportion of ROWS, so it is privacy-exempt,
+and it declares no currency variable because a share of rows is the same
+in every currency.
+
+The **Wealth Overview**'s "Income by month" card reads the same income
+base (migration 0072), so it and the Income dashboard agree to the cent.
+It selects the four investment income *types* rather than five
+transaction kinds, and its old credit-card fence is gone with the
+question it answered: a card's finance charge is an outflow and is not
+in the income base at all. A private fund's distribution is absent for
+the same structural reason — it floors to `capital_return`, which the
+base excludes.
+
+On both spending views the merchant list ranks merchants only: a line whose resolved
 category is a delta — a gift, a bill on a card not itemised, cash out of an
 ATM — is not a merchant transaction, and neither is a line nothing has
 resolved, so both are left out of the ranking. The predicate is the delta

@@ -729,6 +729,110 @@ check("Wealth Overview is untouched by the spending pickers",
           {p.TIME_PARAM_ID, p.SOURCE_PARAM_ID}
           for dc in overview["dashcards"] if dc["card_id"] is not None))
 
+
+# ---- Income dashboards ----------------------------------------------
+section("Income dashboards")
+
+INCOME_CARD_NAMES = ["Income — monthly trend", "Net income",
+                     "Uncategorized income share", "Income by month",
+                     "Income by type", "Top 50 payers", "Income by account",
+                     "Largest receipts"]
+
+check("every Income tile is defined",
+      all(n in CARDS for n in INCOME_CARD_NAMES),
+      [n for n in INCOME_CARD_NAMES if n not in CARDS])
+
+# Every income tile reads the serving view and takes the currency
+# variable: a tile that summed all three reporting currencies would be
+# silently and plausibly wrong.
+_income_sql = {n: (sql_of(CARDS[n][2]) or "") for n in INCOME_CARD_NAMES if n in CARDS}
+_qdefs = p.question_defs(1, MID)
+_pdefs = p.privacy_card_defs(1, MID)
+check("every Income tile is native over web_income",
+      all("web_income" in q for q in _income_sql.values()),
+      [n for n, q in _income_sql.items() if "web_income" not in q])
+# Every MONEY tile reads the currency variable; the uncategorised
+# share is a share of rows and is the same in every currency, so it
+# declares no such variable rather than a required one it ignores.
+check("every Income money tile reads the currency variable",
+      all("{{currency}}" in q for n, q in _income_sql.items()
+          if n != "Uncategorized income share"),
+      [n for n, q in _income_sql.items()
+       if n != "Uncategorized income share" and "{{currency}}" not in q])
+check("the uncategorised-share tile declares no currency variable",
+      "{{currency}}" not in _income_sql["Uncategorized income share"])
+# ...and none of them negates: gold stores a receipt positive, and the
+# negation is the spending family's alone.
+check("no Income tile negates the value",
+      not any("-value_usd" in q or "-value_chf" in q for q in _income_sql.values()),
+      [n for n, q in _income_sql.items() if "-value_usd" in q])
+
+# The payer ranking excludes the lines that have no payer rather than
+# grouping them under a blank.
+check("Top 50 payers excludes lines with no payer",
+      "payer_name IS NOT NULL" in _income_sql.get("Top 50 payers", ""))
+
+# The rings: the money one keeps its total in the hole, the share one
+# has none to keep.
+check("the Income ring shows its total",
+      _qdefs["Income by type"][3].get("pie.show_total") is True,
+      _qdefs["Income by type"][3])
+check("the Income share ring shows no total",
+      _pdefs["Income by type (privacy)"][4].get("pie.show_total") is False,
+      _pdefs["Income by type (privacy)"][4])
+
+# The twin redacts by dropping, not disguising.
+_twin = [n for n in CARDS if n.startswith(("Income ", "Net income", "Top 50 payers",
+                                           "Largest receipts"))
+         and n.endswith("(privacy)")]
+_twin_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _twin}
+# Redaction is about the OUTPUT: a name may be a GROUP BY key inside a
+# CTE — that is how the ranking keeps its shape — but the final SELECT
+# must never project one.
+def _final_select(q):
+    """The last SELECT of a query, which is what the card renders."""
+    return q[q.rindex("SELECT"):] if "SELECT" in q else q
+
+check("no Income twin card projects a payer or an account name",
+      all("payer_name" not in _final_select(q) and "account_label" not in _final_select(q)
+          and "display_name" not in _final_select(q) for q in _twin_sql.values()),
+      [n for n, q in _twin_sql.items()
+       if "payer_name" in _final_select(q) or "account_label" in _final_select(q)])
+check("the Income twin has a card for every base tile",
+      all(p.privacy_name(n) in CARDS for n in INCOME_CARD_NAMES
+          if n not in p.PRIVACY_EXEMPT_CARDS),
+      [n for n in INCOME_CARD_NAMES
+       if n not in p.PRIVACY_EXEMPT_CARDS and p.privacy_name(n) not in CARDS])
+
+# The dashboards and their pickers.
+_dash = p.dashboard_defs()
+check("the Income dashboard and its twin are laid out",
+      "Income" in _dash and "Income (privacy)" in _dash)
+_income_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income")]
+check("the Income dashboard carries five pickers",
+      _income_pickers == ["currency", "time_range", "source", "account", "type"],
+      _income_pickers)
+_twin_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income (privacy)")]
+check("the Income twin carries no account picker",
+      "account" not in _twin_pickers, _twin_pickers)
+# The type picker binds to the DETAILED label: the income taxonomy has
+# one vendored primary, and a primary-level dropdown would offer four
+# values.
+_type_picker = [q for q in p.dashboard_parameters(MID, "range", "Income")
+                if q["slug"] == "type"][0]
+check("the Income type picker binds to the detailed label",
+      "income_label" in str(_type_picker), _type_picker)
+
+# The Wealth Overview's income card now reads the income base.
+_wo = sql_of(CARDS["Income by month (USD)"][2]) or ""
+check("the Wealth Overview income card reads web_income",
+      "web_income" in _wo, _wo[:120])
+check("...and names the four investment income types",
+      all(t in _wo for t in p.INVESTMENT_INCOME_TYPES),
+      [t for t in p.INVESTMENT_INCOME_TYPES if t not in _wo])
+check("...and no longer fences card accounts",
+      "account_kind" not in _wo, _wo[:200])
+
 if FAILS:
     print(f"provision tests: {FAILS} failed")
 else:
