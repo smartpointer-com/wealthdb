@@ -205,6 +205,21 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.SpendPrimary) }},
 		{Name: "spend_detailed", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.SpendDetailed) }},
+		// The INCOME overlay's verdict on the same row (migration
+		// 0071), and a row can carry both: a deposit the matcher
+		// paired is `internal_transfer` on each side, and this is the
+		// one surface that shows a transaction from both at once.
+		// `payer` takes the free-text class for the reason `merchant`
+		// does — on a dividend it is the instrument, but on a deposit
+		// it is the store's name for the signature or the fold of the
+		// narrative itself, and a column takes the class of the worst
+		// thing it can hold.
+		{Name: "payer", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.PayerName) }},
+		{Name: "income_primary", Align: output.AlignLeft,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.IncomePrimary) }},
+		{Name: "income_detailed", Align: output.AlignLeft,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.IncomeDetailed) }},
 		{Name: "asset_class", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.AssetClass) }},
 		{Name: "currency", Align: output.AlignLeft,

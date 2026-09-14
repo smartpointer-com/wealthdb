@@ -71,6 +71,8 @@ var commandHelps = []commandHelp{
 		long: "Print transactions over a date range (-r reverses to newest-first)."},
 	{name: "spending", args: "<view>", short: "spending reports: summary, categories, transactions",
 		long: "What the tracked accounts spent: summary, categories, transactions ('wealthdb spending <view> -h')."},
+	{name: "income", args: "<view>", short: "income reports: summary, types, transactions",
+		long: "What the tracked accounts received: summary, types, transactions ('wealthdb income <view> -h')."},
 
 	{name: "categorize", args: "[flags]", short: "categorise the merchants no deterministic tier placed",
 		long: "Categorise the merchants the deterministic spending tiers left unplaced, via the LLM in config.spending.categorization.model."},

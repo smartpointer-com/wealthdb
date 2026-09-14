@@ -49,6 +49,22 @@ type TransactionRow struct {
 	MerchantName  *string
 	SpendPrimary  *string
 	SpendDetailed *string
+	// PayerName, IncomePrimary and IncomeDetailed are the same three
+	// from the INCOME overlay (migration 0071's
+	// income_txn_categories): who paid, and what kind of income the
+	// tiers and the kind floor settled on. Nil for every row the income
+	// pass does not reach — a purchase, a sale, anything outside the
+	// income account scope.
+	//
+	// A row can carry both trios, and routinely does: a deposit the
+	// matcher paired is `internal_transfer` in each overlay, and this
+	// is the one surface that shows a transaction from both sides at
+	// once. PayerName is the instrument on a dividend, the store's name
+	// or the row's own signature on a deposit, and nil on a delta row,
+	// which has no payer to name.
+	PayerName      *string
+	IncomePrimary  *string
+	IncomeDetailed *string
 	// ValueOutCcy is NetAmount converted to the requested output
 	// currency at occurred_at by the report_transactions macro (flat
 	// nearest-rate FX in SQL). Nil when no FX path resolves.
@@ -100,6 +116,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			grossStr, netStr, qtyStr, priceStr     sql.NullString
 			description, valueOut                  sql.NullString
 			merchant, spendPrimary, spendDetailed  sql.NullString
+			payer, incomePrimary, incomeDetailed   sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
@@ -108,7 +125,8 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			&instr, &symbol, &name, &assetClass,
 			&r.Kind, &r.Currency,
 			&grossStr, &netStr, &qtyStr, &priceStr,
-			&description, &merchant, &spendPrimary, &spendDetailed, &valueOut,
+			&description, &merchant, &spendPrimary, &spendDetailed,
+			&payer, &incomePrimary, &incomeDetailed, &valueOut,
 		); err != nil {
 			return nil, fmt.Errorf("TransactionsBetween scan: %w", err)
 		}
@@ -116,6 +134,9 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 		r.MerchantName = nullStringToPtr(merchant)
 		r.SpendPrimary = nullStringToPtr(spendPrimary)
 		r.SpendDetailed = nullStringToPtr(spendDetailed)
+		r.PayerName = nullStringToPtr(payer)
+		r.IncomePrimary = nullStringToPtr(incomePrimary)
+		r.IncomeDetailed = nullStringToPtr(incomeDetailed)
 		r.AccountKind = nullStringToPtr(acctKind)
 		r.DisplayName = nullStringToPtr(displayName)
 		r.RelationshipID = nullStringToPtr(relID)

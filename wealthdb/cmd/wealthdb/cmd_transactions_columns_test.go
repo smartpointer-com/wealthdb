@@ -126,3 +126,44 @@ func TestTransactionNamePrivacyFollowsFallback(t *testing.T) {
 		t.Errorf("privacy off, row 1 = %q, want the narrative in both cells", off.Rows[1])
 	}
 }
+
+// TestTransactionsCarriesTheIncomeTrio pins migration 0071's addition
+// to `wealthdb transactions`: the income columns are in the registry,
+// off by default, and carry the privacy classes their contents need.
+func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
+	all, err := resolveTransactionColumns("all", "USD")
+	if err != nil {
+		t.Fatalf("columns: %v", err)
+	}
+	want := map[string]PrivacyClass{
+		"payer":           PrivacyFreeText,
+		"income_primary":  PrivacyNone,
+		"income_detailed": PrivacyNone,
+	}
+	seen := map[string]bool{}
+	for _, c := range all {
+		if class, ok := want[c.Name]; ok {
+			seen[c.Name] = true
+			if c.Privacy != class {
+				t.Errorf("%s: privacy = %v, want %v", c.Name, c.Privacy, class)
+			}
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("column %q is missing from the registry", name)
+		}
+	}
+
+	// Defaults are unchanged: the trio is available through -C and is
+	// not forced on every reader.
+	def, err := resolveTransactionColumns("default", "USD")
+	if err != nil {
+		t.Fatalf("default columns: %v", err)
+	}
+	for _, c := range def {
+		if _, isIncome := want[c.Name]; isIncome {
+			t.Errorf("%q is on by default; the income trio is opt-in", c.Name)
+		}
+	}
+}
