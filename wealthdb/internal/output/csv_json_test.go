@@ -55,7 +55,7 @@ func TestWriteJSON(t *testing.T) {
 	if err := WriteJSON(&buf, sampleTable()); err != nil {
 		t.Fatal(err)
 	}
-	var parsed []map[string]string
+	var parsed []map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
 		t.Fatalf("output isn't valid JSON: %v\n%s", err, buf.String())
 	}
@@ -69,8 +69,19 @@ func TestWriteJSON(t *testing.T) {
 	if parsed[1]["symbol"] != "XS1234,567890" {
 		t.Errorf("comma cell lost: %+v", parsed[1])
 	}
-	// Empty cell remains an empty string, not null.
-	if parsed[2]["symbol"] != "" {
-		t.Errorf("empty cell = %q, want empty string", parsed[2]["symbol"])
+	// An empty cell is ABSENT, not an empty string and not null: the
+	// object simply does not carry a key it has no value for. Absence
+	// is unambiguous where null is not, and it keeps the format to the
+	// two states it already had.
+	if v, ok := parsed[2]["symbol"]; ok {
+		t.Errorf("empty cell is present as %#v; it should be omitted", v)
+	}
+	// The cells that DO have values are untouched by that — including
+	// "0", which is a value and not an absence. Only "" is omitted.
+	if parsed[2]["silver"] != "swissquote" {
+		t.Errorf("a populated cell was dropped with the empty one: %+v", parsed[2])
+	}
+	if parsed[2]["qty"] != "0" {
+		t.Errorf(`qty = %#v, want the string "0" kept`, parsed[2]["qty"])
 	}
 }

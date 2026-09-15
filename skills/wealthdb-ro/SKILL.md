@@ -16,7 +16,13 @@ the command; no setup, no paths, no flags required to connect.
 ## Hard rules (do not break)
 - Allowed, all read-only: `wealthdb holdings <view>` (`<view>` is `global`, `sources`, `portfolios`, `accounts`, or `positions`), `wealthdb returns <view>` (`<view>` is `accounts`, `portfolios`, `sources`, or `global`), `wealthdb spending <view>` (`<view>` is `summary`, `categories`, or `transactions`), `wealthdb income <view>` (`<view>` is `summary`, `types`, or `transactions`), and `wealthdb transactions` — the data queries — plus `wealthdb status`, `snapshots`, `help` (harmless diagnostics — run freely).
 - NEVER run anything that writes or mutates: `load`, `reload`, `reset`, `init`, `config`, and `wealthdb-collect` are forbidden. If you think you need to write, you are wrong — stop and just query.
-- Add `-f json` whenever you will parse the output in code.
+- Add `-f json` whenever you will parse the output in code. Every value is a
+  **string** — never a number, because money is a decimal string end to end and
+  a JSON number would round it. A column the row has no value for is **omitted
+  from the object** rather than sent as `""`, so `select(.merchant)` in `jq`
+  means what it looks like (an absent key reads back as `null`, and `""` would
+  be truthy). Use `.key` / `has("key")` rather than comparing to `""`, and read
+  a key with `.key // default` when you need a fallback.
 - Every monetary amount is a decimal **string** (e.g. `"12345.67"`). Convert to a number before doing arithmetic.
 
 ## Pick the right command
