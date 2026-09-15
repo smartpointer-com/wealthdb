@@ -5,15 +5,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-// accountKey is the single account holding every manual position. The manual
-// source is one logical holder, so it is a constant.
-const accountKey = "manual"
+// defaultAccountKey is the account a position falls into when the book
+// declares none — the one account every manual position was in before
+// accounts.csv existed. The id is kept stable so a deployment that never adds
+// accounts sees no change in gold.
+const defaultAccountKey = "manual"
 
 // Snapshots reconstructs the per-date portfolio from the silver's positions +
 // valuations. The silver stores a position once (with acquired_at / closed_at)
@@ -74,12 +77,19 @@ ORDER BY t`
 
 // buildBatch materialises the full portfolio as of event date t: every
 // position live at t, marked at its latest valuation on/before t, with the
-// valuation dated at acquired_at as its cost basis. Emits one position +
-// one instrument per live position, plus the single manual account.
+// valuation dated at acquired_at as its cost basis. Emits one position + one
+// instrument per live position, plus one account per account those positions
+// are held in.
+//
+// Only accounts holding something at t are emitted. Gold reads a snapshot as
+// the complete state of the source at that date, so an account with nothing
+// live in it has nothing to say — and emitting it would assert a container
+// that held no value on a date it may not have existed.
 func (c *Connection) buildBatch(ctx context.Context, t int64) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	const q = `
-SELECT p.id, p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.display_name, ''),
+SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
+       p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.display_name, ''),
        CAST(strftime('%s', p.acquired_at) AS INTEGER) AS acq_unix,
        p.payload,
        (SELECT v.value FROM valuations v
@@ -104,24 +114,26 @@ SELECT p.id, p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.
 	defer rows.Close()
 
 	any := false
+	held := map[string]bool{}
 	for rows.Next() {
 		var (
-			id, kind, vehicle, currency, displayName, payload string
-			acqUnix                                           int64
-			marketValue, bookValue                            sql.NullString
+			id, acctID, kind, vehicle, currency, displayName, payload string
+			acqUnix                                                   int64
+			marketValue, bookValue                                    sql.NullString
 		)
-		if err := rows.Scan(&id, &kind, &vehicle, &currency, &displayName,
+		if err := rows.Scan(&id, &acctID, &kind, &vehicle, &currency, &displayName,
 			&acqUnix, &payload, &marketValue, &bookValue); err != nil {
 			return batch, err
 		}
 		any = true
+		held[acctID] = true
 		ac := assetClassFor(kind)
 		acNew, veh := taxonomyFor(kind, vehicle)
 		instKey := id
 
 		pos := canonical.PositionChange{
 			SnapshotAt:           t,
-			AccountExternalID:    accountKey,
+			AccountExternalID:    acctID,
 			PositionKey:          id,
 			InstrumentExternalID: &instKey,
 			AssetClass:           acNew,
@@ -177,24 +189,94 @@ SELECT p.id, p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.
 		return batch, nil // nothing held at t
 	}
 
-	// One account for the whole manual book. account_kind 'other': these are
-	// directly-held assets with no institutional container. management_style
-	// self_directed (the holder decides what to hold); the asset-family split
-	// rides on each position's asset_class, not the account. No base_currency:
-	// positions may span multiple currencies.
-	wrapper := canonical.TaxWrapperTaxablePersonal
-	style := canonical.ManagementStyleSelfDirected
-	name := "Manual"
-	batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-		AccountExternalID: accountKey,
-		AccountKind:       canonical.AccountKindOther,
+	accounts, err := c.accountsFor(ctx, held, t)
+	if err != nil {
+		return batch, err
+	}
+	batch.Accounts = accounts
+	return batch, nil
+}
+
+// accountsFor is one AccountChange per account holding something at t.
+//
+// The declared taxonomy wins; the defaults are the ones the single hard-coded
+// account always carried. No base_currency on any of them: a manual book's
+// positions may span currencies, and the account is a sleeve rather than a
+// denominated container.
+func (c *Connection) accountsFor(ctx context.Context, held map[string]bool, t int64) ([]canonical.AccountChange, error) {
+	if len(held) == 0 {
+		return nil, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT id, COALESCE(display_name, ''), COALESCE(account_kind, ''),
+       COALESCE(tax_wrapper, ''), COALESCE(management_style, '')
+  FROM accounts ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("accountsFor: %w", err)
+	}
+	defer rows.Close()
+
+	declared := map[string]canonical.AccountChange{}
+	for rows.Next() {
+		var id, name, kind, wrapper, style string
+		if err := rows.Scan(&id, &name, &kind, &wrapper, &style); err != nil {
+			return nil, err
+		}
+		declared[id] = accountChange(id, name, kind, wrapper, style, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]canonical.AccountChange, 0, len(held))
+	for id := range held {
+		if ac, ok := declared[id]; ok {
+			out = append(out, ac)
+			continue
+		}
+		// A position naming an account the book does not declare. load.py
+		// refuses that, so reaching here means silver predates accounts.csv
+		// (or was written by hand): project the defaults rather than drop the
+		// account and take its positions down with it.
+		out = append(out, accountChange(id, "Manual", "", "", "", t))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].AccountExternalID < out[j].AccountExternalID
+	})
+	return out, nil
+}
+
+// accountChange builds one account, filling each empty field with the value
+// the single pre-accounts manual account carried. account_kind 'other' is the
+// default because a directly-held asset has no institutional container;
+// self_directed because the holder decides what to hold; taxable_personal
+// because that is the common case and a sleeve is the exception worth
+// declaring.
+func accountChange(id, name, kind, wrapper, style string, t int64) canonical.AccountChange {
+	if name == "" {
+		name = "Manual"
+	}
+	ak := canonical.AccountKind(kind)
+	if !ak.Valid() {
+		ak = canonical.AccountKindOther
+	}
+	tw := canonical.TaxWrapper(wrapper)
+	if !tw.Valid() {
+		tw = canonical.TaxWrapperTaxablePersonal
+	}
+	ms := canonical.ManagementStyle(style)
+	if !ms.Valid() {
+		ms = canonical.ManagementStyleSelfDirected
+	}
+	return canonical.AccountChange{
+		AccountExternalID: id,
+		AccountKind:       ak,
 		DisplayName:       &name,
-		TaxWrapper:        &wrapper,
-		ManagementStyle:   &style,
+		TaxWrapper:        &tw,
+		ManagementStyle:   &ms,
 		FirstSeenAt:       t,
 		LastSeenAt:        t,
-	})
-	return batch, nil
+	}
 }
 
 // signed flips a positive-magnitude decimal string to negative for liability

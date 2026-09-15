@@ -8,7 +8,7 @@ A catch-all collector for **private holdings that have no bank or portal
 behind them** — directly-held real estate, convertible loan agreements
 (CLAs) into private companies, and direct equity in a private LLC (a German
 GmbH / Swiss AG). Every other collector scrapes or calls a source; this one
-has **no source**. Two hand-maintained CSVs are the input; `load` validates
+has **no source**. Three hand-maintained CSVs are the input; `load` validates
 them and projects them into a SQLite silver.
 
 > `load` is exercised against the synthetic [examples/](examples/), and the
@@ -22,7 +22,7 @@ them and projects them into a SQLite silver.
 
 | Script | Purpose |
 | --- | --- |
-| [`load.py`](load.py) | Validate `positions.csv` / `valuations.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
+| [`load.py`](load.py) | Validate `accounts.csv` / `positions.csv` / `valuations.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
 | `login.py` | **N/A.** No source, no session. `./manual login` is a no-op that prints this. |
 | `download.py` | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
 
@@ -33,6 +33,7 @@ to authenticate to.
 
 ```
 $XDG_DATA_HOME/wealthdb/manual/            <- hand-maintained data dir (outside the repo)
+├── accounts.csv             OPTIONAL: one row per pseudo-account (tax sleeve)
 ├── positions.csv            one row per held asset
 ├── valuations.csv           periodic mark-to-market, one row per (asset, date)
 └── manual.db                silver SQLite (written by load; safe to delete + rebuild)
@@ -44,10 +45,11 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 [collectors/README.md](../README.md#build-scaffolding)). Then:
 
 ```bash
-# 1. Create $XDG_DATA_HOME/wealthdb/manual/positions.csv + valuations.csv.
+# 1. Create $XDG_DATA_HOME/wealthdb/manual/positions.csv + valuations.csv
+#    (and accounts.csv if the book spans more than one tax sleeve).
 #    Copying examples/ (a synthetic sample covering every asset kind, incl.
-#    a note→equity conversion) makes a good skeleton; replace the
-#    placeholder holdings with your real ones.
+#    a note→equity conversion and a second sleeve) makes a good skeleton;
+#    replace the placeholder holdings with your real ones.
 
 # 2. Load — validates the CSVs and (re)builds $XDG_DATA_HOME/wealthdb/manual/manual.db
 ./manual load
@@ -78,11 +80,42 @@ One stable column set per file; everything kind-specific rides in a JSON
 `payload` column, so a new asset kind or per-kind field never needs a new
 CSV column. Full details + the gold mapping are in [DESIGN.md](DESIGN.md).
 
+**accounts.csv** — one row per pseudo-account. **Optional**: leave the file
+out and every position lands in one account (`manual`, kind `other`,
+`taxable_personal` / `self_directed`), which is right for a book with one
+owner and one tax treatment.
+
+Add it when two holdings sit in different **tax sleeves** — a stake held
+through a trust or a company is not your own taxable property, and rolling
+both into one account makes every wrapper-grained report wrong. An account
+here is a *declaration*, not something fetched: it says "these positions are
+held under this wrapper, managed this way".
+
+| column | notes |
+| --- | --- |
+| `id` | a hand-assigned stable id, e.g. `manual`, `sleeve-b` (unique). Referenced by `positions.account_id`. |
+| `display_name` | a label (synthetic in any committed file) |
+| `account_kind` | canonical gold `account_kind` — `other` for a directly-held asset with no institutional container, which is the usual answer here. Full vocabulary in `load.py`'s `ACCOUNT_KINDS`. |
+| `tax_wrapper` | optional — canonical gold `tax_wrapper` (`trust_non_grantor`, `custodial_utma`, `pillar_3a`, …). Blank means `taxable_personal`. `load.py`'s `TAX_WRAPPERS`. |
+| `management_style` | optional — `self_directed` \| `advisory` \| `discretionary` \| `automated`. Blank means `self_directed`. |
+| `notes` | free text (optional) |
+| `payload` | JSON object (optional) |
+
+All three taxonomy columns are checked against the canonical gold
+vocabularies at load time, so a near-miss (`trust` for `trust_non_grantor`)
+fails with the CSV row number in hand rather than landing unnoticed in gold.
+
+> A per-account entry in `wealthdb.cfg`'s `account_overrides` still wins on
+> overlap — the loader applies config after the adapter stamps. Declaring the
+> sleeve here is the better place for a hand-maintained source, because it
+> sits next to the positions it describes.
+
 **positions.csv** — one row per held asset.
 
 | column | notes |
 | --- | --- |
 | `id` | a hand-assigned stable id, e.g. `re-001`, `pe-001`, `cn-001`, `pf-001`, `spv-001` (unique) |
+| `account_id` | optional — which `accounts.csv` row holds it. Blank means the default account above. Naming an account the file does not declare is an error, not a silently created sleeve. |
 | `kind` | `real_estate` \| `private_equity` \| `convertible_note` \| `private_fund` \| `spv` \| `mortgage` \| `other` — the coarse 1-D classification; the gold adapter maps (`kind`, `vehicle`) to the (`asset_class`, `vehicle`) pair. `other` is the catch-all (e.g. a receivable). Add a kind in `load.py`'s `POSITION_KINDS` (one line, no migration). |
 | `vehicle` | optional — the wrapper dimension of the 2-D taxonomy (wealthdb docs/TAXONOMY.md): `physical` \| `stock` \| `fund` \| `spv` \| `convertible_note` \| `loan` \| `escrow` \| `mortgage` \| … When blank it defaults from `kind` (real_estate→physical, private_equity→stock, spv→spv, private_fund→fund, convertible_note→convertible_note, mortgage→mortgage, other→other). Set it explicitly for a kind=other row to carry the right wrapper into gold — an escrow receivable is `escrow`, a private loan is `loan`. Full vocabulary in `load.py`'s `POSITION_VEHICLES`. |
 | `display_name` | a label (synthetic in any committed file) |
@@ -127,15 +160,86 @@ basis (gold's book value).
  "carry": 0.20, "deal_lead": "...", "platform": "...", "funding_account": "..."}
 ```
 
+## Maintaining the files
+
+Every edit is just a line in a CSV followed by `./manual load`. The load
+rebuilds silver from scratch each time, so there is no state to reconcile and
+no way to get a half-applied change: fix the line, run it again.
+
+**Add a holding.** One row in `positions.csv`, and one row in
+`valuations.csv` dated *exactly* its `acquired_at` — that first valuation is
+the cost basis, and without it the holding has none. Then add marks as they
+arrive.
+
+**Re-mark it.** One row in `valuations.csv` per (asset, date). The value on
+any date is the latest row on or before it, so marks carry forward: a
+property appraised every few years needs a row only when the appraisal
+lands, not one a year. Marks may be irregular and far apart.
+
+**Close it.** Set `closed_at` on the position. It drops out of the portfolio
+from that date — no row is deleted, so history before it stays intact. Pick
+the date the value actually leaves: for a sale, the day the cash arrives in
+whichever account wealthdb already tracks, so the holding hands over to that
+deposit with no gap and no overlap.
+
+**Convert a note to equity.** Close the note (`closed_at`) and open the
+equity with `payload.converted_from_position_id` naming the note. The load
+checks that back-reference resolves. There is no transaction either side —
+the conversion is recorded position-side, because no cash moved.
+
+**Move a holding into a sleeve.** Add the sleeve to `accounts.csv`, set the
+position's `account_id`. Nothing else changes; existing positions without an
+`account_id` stay where they were.
+
+**Record a holding with derived marks.** When no statement reports a
+holding's value, enter it as a position and mark it from whatever evidence
+exists. Say in `notes` and `payload` that the marks are derived, so a later
+reader does not mistake them for reported figures.
+
+**A receivable left by a sale.** Proceeds an agent holds back after a sale
+are a position of their own (`kind=other`, `vehicle=escrow`). It opens the
+day the sale closes, is carried at principal, and is marked down as claims
+are paid. The sold holding closes at the cash it produced, and the
+receivable carries the rest. Together they should account for the gross,
+less any fee; that check catches a wrong share count. The *cash* half of a
+release with no bank in between belongs in the equity-transfer ledger
+rather than here: [DESIGN.md](DESIGN.md) §6.
+
+### What does NOT belong here
+
+Cash. A wire that funds a purchase, pays a fee or returns a distribution is a
+real movement in a bank account another collector already captures, so
+recording it here would double it. The acquisition date lives on the
+position; the money lives with the bank. See [DESIGN.md](DESIGN.md) §6.
+
+Anything a source can be scraped or exported from. A brokerage, a bank, a
+crypto exchange — those get their own collector, and one that fetches beats
+one that is typed.
+
+### Before you run it
+
+```bash
+./manual load --bronze-dir <your dir> --silver-db /tmp/check.db -v
+```
+
+Validates against a throwaway DB and leaves the real silver untouched. Worth
+it after a bulk edit: the load is all-or-nothing, but seeing the failure
+before touching the real file is cheaper than reasoning about it afterwards.
+
 ## Validation
 
 `load` rejects (with a `file:row:column` message and non-zero exit) any:
-duplicate id; unknown `kind`; bad date / currency / number; a `value`
-currency that disagrees with the position's currency; a `valuations`
-`position_id` not present in `positions.csv`; a `converted_from_position_id`
-that references a position not in `positions.csv`; malformed JSON `payload`;
-an unexpected/typo'd column. It warns (but loads) when a valuation
-predates the position's `acquired_at`.
+duplicate id; unknown `kind`; an `account_kind`, `tax_wrapper` or
+`management_style` outside the canonical gold vocabulary; bad date /
+currency / number; a `value` currency that disagrees with the position's
+currency; a `positions` `account_id` not present in `accounts.csv`; a
+`valuations` `position_id` not present in `positions.csv`; a
+`converted_from_position_id` that references a position not in
+`positions.csv`; malformed JSON `payload`; an unexpected/typo'd column.
+
+It warns (but loads) when a valuation predates the position's `acquired_at`,
+and when an account holds no position — that one is usually a typo in an
+`account_id` or a sleeve left behind after its last holding closed.
 
 ## Reclaiming disk (`prune`)
 
@@ -143,7 +247,7 @@ predates the position's `acquired_at`.
 fleet-wide verb deletes debug captures and crashed run dirs from the bronze
 tree; here it has nothing to act on. `manual` is load-only — no timestamped
 bronze run-dirs, and no debug or diagnostic artefacts (there is no download, no
-browser, no capture surface to leave anything behind). Bronze is just the two
+browser, no capture surface to leave anything behind). Bronze is just the
 hand-maintained CSVs sitting flat in the data dir; they are `load`'s only input
 and the collector's source of truth, so they are never a prune target. The
 shared prune engine walks only timestamped run-dirs, so wiring it here would

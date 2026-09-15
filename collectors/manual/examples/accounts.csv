@@ -1,0 +1,3 @@
+id,display_name,account_kind,tax_wrapper,management_style,notes,payload
+manual,Manual,other,taxable_personal,self_directed,Held outright by the holder,{}
+sleeve-b,Example Holding Company,other,other,self_directed,"Positions held through a holding company, not outright",{}

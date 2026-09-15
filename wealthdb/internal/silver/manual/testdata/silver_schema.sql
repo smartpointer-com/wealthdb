@@ -1,7 +1,8 @@
 -- Minimal manual silver schema for adapter tests (mirrors
 -- collectors/manual/migrations/0001_initial.sql, without the migration
 -- wrapper). Money is decimal STRINGS (TEXT); dates are ISO 'YYYY-MM-DD' TEXT.
--- The collector records positions + valuations only (no transactions).
+-- The collector records accounts + positions + valuations only (no
+-- transactions).
 
 CREATE TABLE schema_meta (
     silver_schema_version INTEGER NOT NULL PRIMARY KEY,
@@ -17,8 +18,19 @@ CREATE TABLE load_runs (
     payload               TEXT    NOT NULL
 );
 
+CREATE TABLE accounts (
+    id                TEXT NOT NULL PRIMARY KEY,
+    display_name      TEXT NOT NULL,
+    account_kind      TEXT NOT NULL,
+    tax_wrapper       TEXT,
+    management_style  TEXT,
+    notes             TEXT,
+    payload           TEXT NOT NULL
+);
+
 CREATE TABLE positions (
     id            TEXT NOT NULL PRIMARY KEY,
+    account_id    TEXT,
     kind          TEXT NOT NULL,
     vehicle       TEXT,
     display_name  TEXT NOT NULL,

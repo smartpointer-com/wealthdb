@@ -36,7 +36,7 @@ def _write(d: Path, name: str, text: str) -> None:
 def test_load_examples(tmp_path):
     conn = _fresh_db(tmp_path)
     counts = loader.load(conn, EXAMPLES)
-    assert counts == {"positions": 6, "valuations": 13}
+    assert counts == {"accounts": 2, "positions": 7, "valuations": 15}
 
     # Every position kind in the examples is an accepted kind.
     kinds = {r[0] for r in conn.execute(
@@ -61,8 +61,9 @@ def test_load_is_idempotent(tmp_path):
     conn = _fresh_db(tmp_path)
     loader.load(conn, EXAMPLES)
     loader.load(conn, EXAMPLES)
-    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 6
-    assert conn.execute("SELECT COUNT(*) FROM valuations").fetchone()[0] == 13
+    assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 7
+    assert conn.execute("SELECT COUNT(*) FROM valuations").fetchone()[0] == 15
     # load_runs is an append-only audit log.
     assert conn.execute("SELECT COUNT(*) FROM load_runs").fetchone()[0] == 2
 
@@ -226,3 +227,93 @@ def test_failed_load_leaves_silver_untouched(tmp_path):
         loader.load(conn, tmp_path)
     after = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
     assert after == before
+
+
+# ----------------------------------------------------------------------
+# Accounts — the tax-sleeve split.
+# ----------------------------------------------------------------------
+_ACCOUNTS = (
+    "id,display_name,account_kind,tax_wrapper,management_style\n"
+    "own,Own,other,,\n"
+    "trust,Trust,other,trust_non_grantor,discretionary\n"
+)
+_POSITIONS = (
+    "id,account_id,kind,display_name,currency,acquired_at\n"
+    "p-own,own,private_equity,Alpha,USD,2020-01-01\n"
+    "p-trust,trust,private_equity,Beta,USD,2020-01-01\n"
+)
+_VALUATIONS = (
+    "position_id,as_of_date,value,currency\n"
+    "p-own,2020-01-01,100,USD\n"
+    "p-trust,2020-01-01,200,USD\n"
+)
+
+
+def _write_book(tmp_path, accounts=_ACCOUNTS, positions=_POSITIONS,
+                valuations=_VALUATIONS):
+    d = tmp_path / "bronze"
+    d.mkdir(exist_ok=True)
+    if accounts is not None:
+        _write(d, "accounts.csv", accounts)
+    _write(d, "positions.csv", positions)
+    _write(d, "valuations.csv", valuations)
+    return d
+
+
+def test_accounts_carry_their_declared_sleeve(tmp_path):
+    conn = _fresh_db(tmp_path)
+    counts = loader.load(conn, _write_book(tmp_path))
+    assert counts["accounts"] == 2
+    rows = dict(conn.execute(
+        "SELECT id, tax_wrapper FROM accounts").fetchall())
+    assert rows["trust"] == "trust_non_grantor"
+    # An empty cell takes the default the one account always had, so a book
+    # that declares accounts only to name a trust does not have to restate
+    # the ordinary case.
+    assert rows["own"] == loader.DEFAULT_TAX_WRAPPER
+
+
+def test_a_book_with_no_accounts_file_still_loads(tmp_path):
+    # The compatibility guarantee: positions.csv alone behaves exactly as it
+    # did before accounts existed, in the account it always used.
+    positions = ("id,kind,display_name,currency,acquired_at\n"
+                 "p1,real_estate,Alpha,CHF,2020-01-01\n")
+    valuations = ("position_id,as_of_date,value,currency\n"
+                  "p1,2020-01-01,100,CHF\n")
+    conn = _fresh_db(tmp_path)
+    counts = loader.load(conn, _write_book(
+        tmp_path, accounts=None, positions=positions, valuations=valuations))
+    assert counts == {"accounts": 1, "positions": 1, "valuations": 1}
+    assert conn.execute(
+        "SELECT account_id FROM positions").fetchone()[0] == loader.DEFAULT_ACCOUNT_ID
+    assert conn.execute(
+        "SELECT tax_wrapper FROM accounts").fetchone()[0] == loader.DEFAULT_TAX_WRAPPER
+
+
+def test_a_position_naming_an_undeclared_account_fails(tmp_path):
+    conn = _fresh_db(tmp_path)
+    positions = _POSITIONS + "p-ghost,nowhere,private_equity,Gamma,USD,2020-01-01\n"
+    with pytest.raises(loader.LoadError) as exc:
+        loader.load(conn, _write_book(tmp_path, positions=positions))
+    assert "account_id" in str(exc.value) and "nowhere" in str(exc.value)
+
+
+@pytest.mark.parametrize("col,bad", [
+    ("account_kind", "brokerage_account"),
+    ("tax_wrapper", "trust"),
+    ("management_style", "managed"),
+])
+def test_a_value_gold_would_reject_fails_at_load(tmp_path, col, bad):
+    # Near-misses of the canonical vocabularies. Catching them here is the
+    # point: the CSV row number is in hand, and gold is not.
+    hdr = "id,display_name,account_kind,tax_wrapper,management_style\n"
+    vals = {"account_kind": "other", "tax_wrapper": "", "management_style": ""}
+    vals[col] = bad
+    accounts = hdr + (f"own,Own,{vals['account_kind']},"
+                      f"{vals['tax_wrapper']},{vals['management_style']}\n")
+    conn = _fresh_db(tmp_path)
+    with pytest.raises(loader.LoadError) as exc:
+        loader.load(conn, _write_book(tmp_path, accounts=accounts,
+                                      positions=_POSITIONS.replace(
+                                          "p-trust,trust", "p-trust,own")))
+    assert col in str(exc.value)

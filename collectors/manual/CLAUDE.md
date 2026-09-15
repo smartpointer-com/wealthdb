@@ -14,7 +14,7 @@ the other collectors live by. Most of root [CLAUDE.md](../../CLAUDE.md) §1–§
 (read-only sessions, never weaken auth, protect the cookie jar) simply does
 not apply here: there is no session and no credential.
 
-The only step is `load`: it reads two hand-maintained CSVs from
+The only step is `load`: it reads three hand-maintained CSVs from
 `$XDG_DATA_HOME/wealthdb/manual/`, validates them, and rebuilds a SQLite silver. See
 [DESIGN.md](DESIGN.md).
 
@@ -33,6 +33,10 @@ collector. The real CSVs under `$XDG_DATA_HOME/wealthdb/manual/` can name:
   deal.
 - **Exact figures** — purchase prices, valuations, principal/commitment
   amounts, ownership percentages, rent, dividends, distributions.
+- **Account names in `accounts.csv`** — a sleeve is often named after the
+  legal entity that holds it, and that name is identifying. The tax wrapper
+  itself is a canonical enum and carries nothing; the `display_name` beside
+  it does.
 
 None of that may ever reach a tracked file — not source, not comments, not
 commit messages, not test fixtures, not "sample" CSVs. The real CSVs live

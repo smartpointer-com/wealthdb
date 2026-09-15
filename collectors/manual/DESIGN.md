@@ -1,6 +1,6 @@
 # manual — design notes
 
-`load.py` validates two hand-maintained CSVs into a SQLite silver against the
+`load.py` validates three hand-maintained CSVs into a SQLite silver against the
 synthetic [examples/](examples/) (`tests/`); the gold adapter
 ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
 §6) loads the manual source into gold, so it shows up in `wealthdb holdings positions`.
@@ -57,7 +57,7 @@ debug/diagnostic artefacts (nothing writes a screenshot, trace, or DOM dump into
 bronze), there is nothing for it to reclaim. The shared prune engine
 ([`collectorkit.prune`](../../shared/collectorkit/collectorkit/prune.py)) walks
 only timestamped run-dirs, so it would be permanently empty-handed here; a
-bespoke root-file sweeper is expressly ruled out because the two CSVs are the
+bespoke root-file sweeper is expressly ruled out because the CSVs are the
 irreplaceable source of truth (§2, [CLAUDE.md](CLAUDE.md) §1–2). So `manual`
 accepts `prune` — the `wealthdb-collect` dispatcher forwards it, so the wrapper
 must not crash on it — as a **documented no-op**: it explains why nothing is
@@ -65,7 +65,7 @@ reclaimed and exits 0, never touching the CSVs or the derived silver DB.
 
 ## 2. Bronze: the CSV schema
 
-Two CSVs, one row per thing. The **stable columns are the same across all
+Three CSVs, one row per thing. The **stable columns are the same across all
 asset kinds**; everything kind-specific lives in a JSON `payload` column —
 not sparse per-kind columns. This is the repo's silver convention (promote
 stable filter/join fields, absorb drift in `payload`) applied one layer
@@ -74,8 +74,32 @@ One file across kinds (a `kind` discriminator + `payload`), never a file per
 kind, so adding another asset kind (a crypto cold-wallet, a collectible)
 needs no new file and no schema change.
 
+**accounts.csv** — one row per pseudo-account, and OPTIONAL. A book that
+omits it puts every position in one account (`manual`, kind `other`,
+`taxable_personal` / `self_directed`), which is what this collector did before
+accounts existed and remains right for a book with one owner and one wrapper.
+`id, display_name, account_kind, tax_wrapper, management_style, notes, payload`
+- An account here is a **declaration, not something fetched**: it says "these
+  positions are held under this wrapper, managed this way". It exists because
+  a holding inside a trust or a company is not the holder's own taxable
+  property, and rolling both into one account makes every wrapper-grained
+  report wrong.
+- `account_kind`, `tax_wrapper` and `management_style` are the canonical gold
+  vocabularies, checked by `load.py` against literal sets mirroring
+  `internal/canonical/enums.go` — a value gold would reject fails at load,
+  where the CSV row number is still in hand. The two nullable ones default to
+  the taxonomy the single account always carried, so a file that declares an
+  account only to name a wrapper need not restate the ordinary case.
+- The alternative was a **second silver source per sleeve** — a directory, a
+  silver DB, a config entry and an `account_overrides` entry each time. One
+  table replaces all of that. `account_overrides` still wins on overlap: the
+  loader applies config after the adapter stamps.
+
 **positions.csv** — one row per held asset.
-`id, kind, vehicle, display_name, currency, acquired_at, closed_at, notes, payload`
+`id, account_id, kind, vehicle, display_name, currency, acquired_at, closed_at, notes, payload`
+- `account_id` references `accounts.csv` and is optional; omitted, it is the
+  default account above. A position naming an account the book does not
+  declare is a load error, not a silently synthesised sleeve.
 - `kind` ∈ `real_estate | private_equity | convertible_note | private_fund
   | spv | mortgage | other` (extensible — lives in `load.py`'s
   `POSITION_KINDS`, not a DB constraint). The kind is the coarse 1-D

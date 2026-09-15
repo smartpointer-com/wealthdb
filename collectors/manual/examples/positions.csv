@@ -1,7 +1,8 @@
-id,kind,vehicle,display_name,currency,acquired_at,closed_at,notes,payload
-re-001,real_estate,physical,Property A,CHF,2019-05-01,,Residential rental unit,"{""property_type"": ""residential"", ""ownership_pct"": 100, ""city"": ""Example City"", ""country"": ""CH""}"
-re-002,real_estate,physical,Property B,EUR,2021-09-15,,"Commercial unit, co-owned","{""property_type"": ""commercial"", ""ownership_pct"": 50, ""city"": ""Example Town"", ""country"": ""DE""}"
-cla-001,convertible_note,,Swiss CLA #1,CHF,2022-01-10,,"Convertible note, outstanding (vehicle blank -> defaults to convertible_note)","{""interest_rate"": 0, ""maturity_date"": ""2027-06-30"", ""conversion_terms"": ""converts to equity at next priced round; else worthless"", ""counterparty"": ""Swiss Startup AG #1""}"
-cla-002,convertible_note,convertible_note,Swiss CLA #2,CHF,2023-02-01,2024-07-01,Converted to equity 2024-07-01,"{""interest_rate"": 0, ""maturity_date"": ""2026-03-31"", ""conversion_terms"": ""converts at next priced round"", ""counterparty"": ""Swiss Startup AG #2""}"
-gmbh-001,private_equity,stock,GmbH X,EUR,2020-11-20,,Direct minority stake,"{""share_class"": ""common"", ""ownership_pct"": 10, ""company"": ""GmbH X""}"
-gmbh-002,private_equity,stock,AG Y (ex-CLA #2),CHF,2024-07-01,,Equity from CLA #2 conversion,"{""share_class"": ""common"", ""ownership_pct"": 8, ""company"": ""Swiss Startup AG #2"", ""converted_from_position_id"": ""cla-002""}"
+id,account_id,kind,vehicle,display_name,currency,acquired_at,closed_at,notes,payload
+re-001,manual,real_estate,physical,Property A,CHF,2019-05-01,,Residential rental unit,"{""property_type"": ""residential"", ""ownership_pct"": 100, ""city"": ""Example City"", ""country"": ""CH""}"
+re-002,manual,real_estate,physical,Property B,EUR,2021-09-15,,"Commercial unit, co-owned","{""property_type"": ""commercial"", ""ownership_pct"": 50, ""city"": ""Example Town"", ""country"": ""DE""}"
+cla-001,manual,convertible_note,,Swiss CLA #1,CHF,2022-01-10,,"Convertible note, outstanding (vehicle blank -> defaults to convertible_note)","{""interest_rate"": 0, ""maturity_date"": ""2027-06-30"", ""conversion_terms"": ""converts to equity at next priced round; else worthless"", ""counterparty"": ""Swiss Startup AG #1""}"
+cla-002,manual,convertible_note,convertible_note,Swiss CLA #2,CHF,2023-02-01,2024-07-01,Converted to equity 2024-07-01,"{""interest_rate"": 0, ""maturity_date"": ""2026-03-31"", ""conversion_terms"": ""converts at next priced round"", ""counterparty"": ""Swiss Startup AG #2""}"
+gmbh-001,manual,private_equity,stock,GmbH X,EUR,2020-11-20,,Direct minority stake,"{""share_class"": ""common"", ""ownership_pct"": 10, ""company"": ""GmbH X""}"
+gmbh-002,manual,private_equity,stock,AG Y (ex-CLA #2),CHF,2024-07-01,,Equity from CLA #2 conversion,"{""share_class"": ""common"", ""ownership_pct"": 8, ""company"": ""Swiss Startup AG #2"", ""converted_from_position_id"": ""cla-002""}"
+pe-001,sleeve-b,private_equity,stock,Example Holdings Inc,USD,2018-03-01,,Held in the second sleeve; marks derived,"{""shares"": 1000, ""marks"": ""derived""}"

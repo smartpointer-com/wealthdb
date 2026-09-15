@@ -292,7 +292,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	if len(accts) != 1 {
 		t.Errorf("accounts = %d, want 1 (just the holding account)", len(accts))
 	}
-	a, ok := accts[accountKey]
+	a, ok := accts[defaultAccountKey]
 	if !ok || a.AccountKind != canonical.AccountKindOther {
 		t.Errorf("holding account = %+v (ok=%v), want kind other", a, ok)
 	}
@@ -458,5 +458,136 @@ func TestMortgageLiabilityNegated(t *testing.T) {
 	}
 	if _, ok := at2["re-x"]; !ok {
 		t.Errorf("re-x missing at 2022-01-01")
+	}
+}
+
+// ============================================================
+// Declared accounts
+// ============================================================
+
+// seedAccounts builds a book whose positions sit in two declared accounts
+// under different tax wrappers, plus a third position naming no account at
+// all. Every value is invented.
+func seedAccounts(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+        INSERT INTO load_runs(load_at, silver_schema_version, bronze_dir, payload)
+            VALUES (1700000000, 3, '/tmp', '{}');
+        INSERT INTO accounts(id, display_name, account_kind, tax_wrapper,
+                             management_style, notes, payload) VALUES
+            ('own',   'Own',   'other', NULL,                'self_directed', '', '{}'),
+            ('trust', 'Trust', 'other', 'trust_non_grantor', 'discretionary', '', '{}'),
+            ('later', 'Later', 'other', NULL,                NULL,            '', '{}');
+        INSERT INTO positions(id, account_id, kind, vehicle, display_name,
+                              currency, acquired_at, closed_at, notes, payload) VALUES
+            ('p-own',   'own',   'private_equity', 'stock', 'Alpha', 'USD', '2020-01-01', NULL, '', '{}'),
+            ('p-trust', 'trust', 'private_equity', 'stock', 'Beta',  'USD', '2020-01-01', NULL, '', '{}'),
+            ('p-late',  'later', 'private_equity', 'stock', 'Gamma', 'USD', '2024-01-01', NULL, '', '{}'),
+            ('p-none',  NULL,    'real_estate',    'physical', 'Delta', 'USD', '2020-01-01', NULL, '', '{}');
+        INSERT INTO valuations(position_id, as_of_date, value, currency, notes, payload) VALUES
+            ('p-own',   '2020-01-01', '100', 'USD', '', '{}'),
+            ('p-trust', '2020-01-01', '200', 'USD', '', '{}'),
+            ('p-late',  '2024-01-01', '300', 'USD', '', '{}'),
+            ('p-none',  '2020-01-01', '400', 'USD', '', '{}');`); err != nil {
+		t.Fatalf("seedAccounts: %v", err)
+	}
+}
+
+// TestDeclaredAccountsCarryTheirOwnSleeve is the whole point of the accounts
+// table: positions in one manual book under different tax wrappers reach gold
+// as different accounts. Rolling them into one is what made every
+// wrapper-grained report wrong.
+func TestDeclaredAccountsCarryTheirOwnSleeve(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seedAccounts(t, db)
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	batches := collectSnapshots(t, conn, w)
+
+	accts := map[string]canonical.AccountChange{}
+	posAcct := map[string]string{}
+	for i := range batches {
+		for _, a := range batches[i].Accounts {
+			accts[a.AccountExternalID] = a
+		}
+		for _, p := range batches[i].Positions {
+			posAcct[p.PositionKey] = p.AccountExternalID
+		}
+	}
+	if got := *accts["trust"].TaxWrapper; got != canonical.TaxWrapperTrustNonGrantor {
+		t.Errorf("trust wrapper = %q, want trust_non_grantor", got)
+	}
+	if got := *accts["trust"].ManagementStyle; got != canonical.ManagementStyleDiscretionary {
+		t.Errorf("trust style = %q, want discretionary", got)
+	}
+	// An omitted wrapper still gets the default the one account always had.
+	if got := *accts["own"].TaxWrapper; got != canonical.TaxWrapperTaxablePersonal {
+		t.Errorf("own wrapper = %q, want the taxable_personal default", got)
+	}
+	for key, want := range map[string]string{
+		"p-own": "own", "p-trust": "trust", "p-none": defaultAccountKey,
+	} {
+		if posAcct[key] != want {
+			t.Errorf("%s is in account %q, want %q", key, posAcct[key], want)
+		}
+	}
+}
+
+// TestAPositionWithNoAccountKeepsTheOldTaxonomy is the compatibility
+// guarantee: a silver written before accounts existed projects exactly the
+// account, kind and taxonomy it always did, so adding the table moves
+// nobody's data.
+func TestAPositionWithNoAccountKeepsTheOldTaxonomy(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db) // the pre-accounts fixture: no accounts rows, no account_id
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+
+	for _, b := range collectSnapshots(t, conn, w) {
+		if len(b.Positions) == 0 {
+			continue
+		}
+		if len(b.Accounts) != 1 {
+			t.Fatalf("accounts = %d, want 1", len(b.Accounts))
+		}
+		a := b.Accounts[0]
+		if a.AccountExternalID != defaultAccountKey ||
+			a.AccountKind != canonical.AccountKindOther ||
+			*a.TaxWrapper != canonical.TaxWrapperTaxablePersonal ||
+			*a.ManagementStyle != canonical.ManagementStyleSelfDirected {
+			t.Fatalf("default account = %+v, want the pre-accounts taxonomy", a)
+		}
+		for _, p := range b.Positions {
+			if p.AccountExternalID != defaultAccountKey {
+				t.Fatalf("%s is in %q, want %q", p.PositionKey,
+					p.AccountExternalID, defaultAccountKey)
+			}
+		}
+	}
+}
+
+// TestAnAccountHoldingNothingIsNotEmitted pins that a snapshot describes the
+// source's state on its own date. An account whose only position is not yet
+// acquired held nothing then, and gold reads a snapshot as complete.
+func TestAnAccountHoldingNothingIsNotEmitted(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seedAccounts(t, db)
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	batches := collectSnapshots(t, conn, w)
+
+	first, last := batches[0], batches[len(batches)-1]
+	firstIDs := map[string]bool{}
+	for _, a := range first.Accounts {
+		firstIDs[a.AccountExternalID] = true
+	}
+	if firstIDs["later"] {
+		t.Errorf("the 2020 snapshot carries an account whose position is "+
+			"acquired in 2024: %v", firstIDs)
+	}
+	// Three declared plus the default, which the account-less position is in.
+	if len(last.Accounts) != 4 {
+		t.Errorf("last snapshot accounts = %d, want the three declared plus "+
+			"the default once every position is live", len(last.Accounts))
 	}
 }

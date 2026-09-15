@@ -12,3 +12,5 @@ gmbh-001,2020-11-20,60000,EUR,Cost basis,{}
 gmbh-001,2024-12-31,75000,EUR,Latest fair value,{}
 gmbh-002,2024-07-01,50000,CHF,Converted basis,{}
 gmbh-002,2024-12-31,60000,CHF,Latest fair value,{}
+pe-001,2018-03-01,20000,USD,Purchase price,{}
+pe-001,2024-12-31,30000,USD,Derived mark,{}

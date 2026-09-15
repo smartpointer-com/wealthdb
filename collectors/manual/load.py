@@ -2,7 +2,7 @@
 """manual — load hand-maintained private-holding CSVs into a SQLite silver.
 
 The "manual" collector is the odd one out in wealthdb: there is **no source
-to fetch from**. Bronze is two hand-maintained CSV files in $XDG_DATA_HOME/wealthdb/manual/ for private holdings that have no
+to fetch from**. Bronze is three hand-maintained CSV files in $XDG_DATA_HOME/wealthdb/manual/ for private holdings that have no
 bank or portal behind them — real estate, direct private-company equity,
 convertible notes, fund LP interests, single-deal SPVs, and other illiquid
 positions (e.g. a receivable). The position `kind` is the
@@ -18,7 +18,11 @@ banks. See DESIGN.md §6.
 
 There is therefore no `login` and no `download` step — only `load`:
 
-  1. Read positions.csv / valuations.csv.
+  1. Read accounts.csv / positions.csv / valuations.csv. accounts.csv is
+     optional: without it every position lands in one account, which is
+     what this collector did before accounts existed. With it, a book
+     can span tax sleeves — a holding under one wrapper beside one held
+     outright — without a second silver source per sleeve.
   2. Validate aggressively (bad rows fail loudly with file:row:column
      context — never silently dropped).
   3. Rebuild the SQLite silver from the current CSVs (full truncate-reload,
@@ -117,11 +121,41 @@ DEFAULT_VEHICLE_BY_KIND = {
     "other": "other",
 }
 
+# --- The canonical gold vocabularies an account row is checked against
+# (wealthdb internal/canonical/enums.go). Kept here as literal sets because
+# the collector cannot import Go; a value gold would reject must fail at load,
+# where the CSV row number is still in hand, rather than land unnoticed.
+ACCOUNT_KINDS = {
+    "brokerage", "cash", "safekeeping", "custody", "overlay", "crypto",
+    "crypto_exchange", "crypto_self_custody", "mortgage", "card",
+    "donor_advised_fund", "other",
+}
+TAX_WRAPPERS = {
+    "taxable_personal", "taxable_joint", "foundation", "traditional_ira",
+    "roth_ira", "sep_ira", "simple_ira", "coverdell_esa", "hsa", "charitable",
+    "custodial_utma", "custodial_ugma", "trust_grantor", "trust_non_grantor",
+    "trust_charitable", "pillar_2", "vested_benefits", "pillar_3a", "other",
+}
+MANAGEMENT_STYLES = {"self_directed", "advisory", "discretionary", "automated"}
+
+# The account a position falls into when accounts.csv is absent or the
+# position names none — the single account every manual position was in
+# before accounts existed, with the taxonomy it always had. Keeping the id
+# stable is what makes this change invisible to a deployment that does not
+# want accounts: same gold account_external_id, same wrapper, same style.
+DEFAULT_ACCOUNT_ID = "manual"
+DEFAULT_ACCOUNT_NAME = "Manual"
+DEFAULT_ACCOUNT_KIND = "other"
+DEFAULT_TAX_WRAPPER = "taxable_personal"
+DEFAULT_MANAGEMENT_STYLE = "self_directed"
+
 # --- CSV column contracts. Required columns must be present in the header;
 # optional columns default to empty when a file omits them; any unexpected
 # column is rejected as a likely typo.
+ACCOUNTS_REQUIRED = ["id", "display_name", "account_kind"]
+ACCOUNTS_OPTIONAL = ["tax_wrapper", "management_style", "notes", "payload"]
 POSITIONS_REQUIRED = ["id", "kind", "display_name", "currency", "acquired_at"]
-POSITIONS_OPTIONAL = ["closed_at", "notes", "payload", "vehicle"]
+POSITIONS_OPTIONAL = ["closed_at", "notes", "payload", "vehicle", "account_id"]
 VALUATIONS_REQUIRED = ["position_id", "as_of_date", "value", "currency"]
 VALUATIONS_OPTIONAL = ["notes", "payload"]
 
@@ -223,7 +257,62 @@ def _read_csv(path: Path, required: list[str], optional: list[str],
 # ----------------------------------------------------------------------
 # Per-file validation -> normalized records ready for insert.
 # ----------------------------------------------------------------------
-def validate_positions(rows: list[dict]) -> dict[str, dict]:
+def _enum(fname, rownum, col, value, allowed, *, default=None):
+    """One canonical enum value, or `default` when the cell is empty."""
+    raw = (value or "").strip()
+    if raw == "":
+        return default
+    if raw not in allowed:
+        _fail(fname, rownum, col,
+              f"not a canonical {col}; expected one of {sorted(allowed)}", raw)
+    return raw
+
+
+def default_account() -> dict:
+    """The account a book with no accounts.csv is held in."""
+    return {
+        "id": DEFAULT_ACCOUNT_ID,
+        "display_name": DEFAULT_ACCOUNT_NAME,
+        "account_kind": DEFAULT_ACCOUNT_KIND,
+        "tax_wrapper": DEFAULT_TAX_WRAPPER,
+        "management_style": DEFAULT_MANAGEMENT_STYLE,
+        "notes": None,
+        "payload": {},
+    }
+
+
+def validate_accounts(rows: list[dict]) -> dict[str, dict]:
+    """The declared pseudo-accounts, keyed by id. An empty accounts.csv (or
+    none at all) yields the single default account, which is what every
+    manual book had before accounts existed."""
+    fname = "accounts.csv"
+    out: dict[str, dict] = {}
+    for r in rows:
+        n = r["_row"]
+        aid = _req(fname, n, "id", r["id"])
+        if aid in out:
+            _fail(fname, n, "id", "duplicate account id", aid)
+        out[aid] = {
+            "id": aid,
+            "display_name": _req(fname, n, "display_name", r["display_name"]),
+            "account_kind": _enum(fname, n, "account_kind", r["account_kind"],
+                                  ACCOUNT_KINDS),
+            "tax_wrapper": _enum(fname, n, "tax_wrapper", r["tax_wrapper"],
+                                 TAX_WRAPPERS, default=DEFAULT_TAX_WRAPPER),
+            "management_style": _enum(fname, n, "management_style",
+                                      r["management_style"],
+                                      MANAGEMENT_STYLES,
+                                      default=DEFAULT_MANAGEMENT_STYLE),
+            "notes": r["notes"].strip() or None,
+            "payload": _json_obj(fname, n, "payload", r["payload"]),
+        }
+    if not out:
+        out[DEFAULT_ACCOUNT_ID] = default_account()
+    return out
+
+
+def validate_positions(rows: list[dict], accounts: dict[str, dict],
+                       ) -> dict[str, dict]:
     fname = "positions.csv"
     out: dict[str, dict] = {}
     row_of: dict[str, int] = {}
@@ -247,8 +336,13 @@ def validate_positions(rows: list[dict]) -> dict[str, dict]:
         if closed is not None and closed < acquired:
             _fail(fname, n, "closed_at",
                   f"closed_at {closed} precedes acquired_at {acquired}")
+        account_id = (r.get("account_id") or "").strip() or DEFAULT_ACCOUNT_ID
+        if account_id not in accounts:
+            _fail(fname, n, "account_id",
+                  "references an account not in accounts.csv", account_id)
         out[pid] = {
             "id": pid,
+            "account_id": account_id,
             "kind": kind,
             "vehicle": vehicle,
             "display_name": _req(fname, n, "display_name", r["display_name"]),
@@ -327,6 +421,8 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
     """Validate the CSVs and rebuild silver from them in one transaction.
     Returns a counts dict. Raises LoadError (rolling back) on any bad row."""
     bronze_dir = Path(bronze_dir)
+    accounts_rows = _read_csv(bronze_dir / "accounts.csv",
+                              ACCOUNTS_REQUIRED, ACCOUNTS_OPTIONAL)
     positions_rows = _read_csv(bronze_dir / "positions.csv",
                                POSITIONS_REQUIRED, POSITIONS_OPTIONAL)
     valuations_rows = _read_csv(bronze_dir / "valuations.csv",
@@ -335,22 +431,39 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
     if not positions_rows:
         log.warning("no positions.csv (or it is empty) in %s — nothing to "
                     "load", bronze_dir)
-        return {"positions": 0, "valuations": 0}
+        return {"accounts": 0, "positions": 0, "valuations": 0}
 
     # Validate everything BEFORE touching silver, so a bad row never leaves
     # a half-rebuilt DB.
-    positions = validate_positions(positions_rows)
+    accounts = validate_accounts(accounts_rows)
+    positions = validate_positions(positions_rows, accounts)
     valuations = validate_valuations(valuations_rows, positions)
+    # An account nothing is held in projects no gold account, so it is a
+    # typo or a leftover rather than an empty sleeve worth carrying.
+    held = {p["account_id"] for p in positions.values()}
+    for aid in accounts:
+        if aid not in held and aid != DEFAULT_ACCOUNT_ID:
+            log.warning("accounts.csv: account %r holds no position", aid)
 
     conn.execute("BEGIN")
     try:
         conn.execute("DELETE FROM valuations")
         conn.execute("DELETE FROM positions")
+        conn.execute("DELETE FROM accounts")
         conn.executemany(
-            "INSERT INTO positions (id, kind, vehicle, display_name, currency, "
-            "acquired_at, closed_at, notes, payload) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(p["id"], p["kind"], p["vehicle"], p["display_name"], p["currency"],
+            "INSERT INTO accounts (id, display_name, account_kind, "
+            "tax_wrapper, management_style, notes, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(a["id"], a["display_name"], a["account_kind"], a["tax_wrapper"],
+              a["management_style"], a["notes"], json.dumps(a["payload"]))
+             for a in accounts.values()],
+        )
+        conn.executemany(
+            "INSERT INTO positions (id, account_id, kind, vehicle, "
+            "display_name, currency, acquired_at, closed_at, notes, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(p["id"], p["account_id"], p["kind"], p["vehicle"],
+              p["display_name"], p["currency"],
               p["acquired_at"].isoformat(),
               p["closed_at"].isoformat() if p["closed_at"] else None,
               p["notes"], json.dumps(p["payload"]))
@@ -363,7 +476,8 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
               v["currency"], v["notes"], json.dumps(v["payload"]))
              for v in valuations],
         )
-        counts = {"positions": len(positions),
+        counts = {"accounts": len(accounts),
+                  "positions": len(positions),
                   "valuations": len(valuations)}
         conn.execute(
             "INSERT INTO load_runs (load_at, silver_schema_version, "
@@ -409,8 +523,9 @@ def main(argv: list[str]) -> int:
         version = apply_migrations(conn)
         log.info("silver schema at version %d (%s)", version, silver_db)
         counts = load(conn, bronze_dir)
-        log.info("loaded %d position(s), %d valuation(s)",
-                 counts["positions"], counts["valuations"])
+        log.info("loaded %d account(s), %d position(s), %d valuation(s)",
+                 counts["accounts"], counts["positions"],
+                 counts["valuations"])
     finally:
         conn.close()
     return 0
