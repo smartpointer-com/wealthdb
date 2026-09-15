@@ -220,6 +220,13 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.IncomePrimary) }},
 		{Name: "income_detailed", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.IncomeDetailed) }},
+		// The cheque number of an outgoing paper cheque, for matching a
+		// row against the holder's own paper records. It names no third
+		// party, so it is not free text — but it is an identifier tied
+		// to the holder's own account, which is what PrivacyAccountID
+		// covers.
+		{Name: "check_no", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.CheckNumber) }},
 		{Name: "asset_class", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.AssetClass) }},
 		{Name: "currency", Align: output.AlignLeft,

@@ -253,6 +253,14 @@ Two decisions of record:
 - **`counterparty`** is the card row's merchant, **verbatim**. It
   is the input to gold's merchant signature, so any reformatting
   here would re-key every merchant it touched.
+- **`check_number`** is the cheque number, verbatim, on **outflows only** and
+  on the deposit ledger only — a card cannot be drawn on by cheque. Silver fills
+  its column from the QFX `CHECKNUM` field and from a deposit export whose
+  header reads `Check or Slip #`, so on an inflow the same column can hold a
+  deposit *slip* number; the adapter's sign test drops that. The statement-era
+  rows carry the number inside `description` and not in the column, so they
+  reach gold with `check_number` unset until the statement parser learns to
+  extract it.
 - **`provider_category`** is the provider's own category,
   verbatim and un-normalised — free text, not an enum. Empty on
   payments, which the provider leaves uncategorised.

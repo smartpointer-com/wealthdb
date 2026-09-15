@@ -2311,9 +2311,18 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   (migration 0054).
 - **Lockstep on the transaction macros.** `gold.TransactionsBetween` runs
   `SELECT *` with a positional scan, so every column added to these macros must
-  land in `gold.TransactionRow` and the scan list in the same change (0039 and
-  0042 each made that edit). The returns flow loaders are safe by construction:
-  they project named columns.
+  land in `gold.TransactionRow` and the scan list in the same change (0039,
+  0042, 0071 and 0075 each made that edit). The returns flow loaders are safe by
+  construction: they project named columns.
+- **`transactions.check_number`** (migration 0075) is the number written on a
+  paper cheque drawn on the holder's own account, kept so a row can be matched
+  against the holder's own paper records. An adapter sets it **only on an
+  outflow**: the field names an outgoing payment, and the sign test is what
+  keeps it meaning that, because a bank may put its own instrument reference in
+  the same silver column on an incoming credit and a deposit export may head
+  that column "Check or Slip #". Deliberately not a transaction kind — a cheque
+  is an instrument, not a distinct economic event — and deliberately a column
+  rather than `payload`, which holds what could *not* be canonicalised.
 - **Account display defaults.** `report_accounts_multi` and
   `report_accounts_history_multi` apply the conventional
   `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,

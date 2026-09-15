@@ -65,6 +65,9 @@ type TransactionRow struct {
 	PayerName      *string
 	IncomePrimary  *string
 	IncomeDetailed *string
+	// CheckNumber is the cheque number for an outgoing paper cheque,
+	// nil on everything else (gold migration 0075).
+	CheckNumber *string
 	// ValueOutCcy is NetAmount converted to the requested output
 	// currency at occurred_at by the report_transactions macro (flat
 	// nearest-rate FX in SQL). Nil when no FX path resolves.
@@ -88,8 +91,9 @@ const (
 // transaction_external_id) as a stable tiebreaker. The query and FX
 // are the report_transactions table macro (migration 0021, re-issued
 // with account_kind in 0039, with the merchant / spend-category
-// columns in 0042, and with the payer / income-category columns in
-// 0071); the macro emits ascending, so the descending case re-sorts
+// columns in 0042, with the payer / income-category columns in 0071,
+// and with check_number in 0075 — the last named column before the FX
+// tail); the macro emits ascending, so the descending case re-sorts
 // here.
 //
 // `SELECT *` with a positional Scan: any column added to the macro
@@ -118,6 +122,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			description, valueOut                  sql.NullString
 			merchant, spendPrimary, spendDetailed  sql.NullString
 			payer, incomePrimary, incomeDetailed   sql.NullString
+			checkNumber                            sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
@@ -127,7 +132,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			&r.Kind, &r.Currency,
 			&grossStr, &netStr, &qtyStr, &priceStr,
 			&description, &merchant, &spendPrimary, &spendDetailed,
-			&payer, &incomePrimary, &incomeDetailed, &valueOut,
+			&payer, &incomePrimary, &incomeDetailed, &checkNumber, &valueOut,
 		); err != nil {
 			return nil, fmt.Errorf("TransactionsBetween scan: %w", err)
 		}
@@ -138,6 +143,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 		r.PayerName = nullStringToPtr(payer)
 		r.IncomePrimary = nullStringToPtr(incomePrimary)
 		r.IncomeDetailed = nullStringToPtr(incomeDetailed)
+		r.CheckNumber = nullStringToPtr(checkNumber)
 		r.AccountKind = nullStringToPtr(acctKind)
 		r.DisplayName = nullStringToPtr(displayName)
 		r.RelationshipID = nullStringToPtr(relID)

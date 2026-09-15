@@ -792,3 +792,54 @@ func TestCardTxKindQFXFallback(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckNumberOnlyOnAnOutflow pins gold's contract for the cheque
+// number (migration 0075): it names an OUTGOING payment, so the sign
+// decides whether silver's column reaches gold at all.
+//
+// The gate is not pedantry. Silver fills `check_number` from two places
+// with different meanings — the QFX CHECKNUM field, which is a cheque,
+// and a deposit export whose column is headed "Check or Slip #", where
+// an inflow carries a deposit SLIP number. Only the sign tells them
+// apart, and a slip number surfaced as a cheque number would send the
+// holder looking for a cheque they never wrote.
+func TestCheckNumberOnlyOnAnOutflow(t *testing.T) {
+	path, db := newFixture(t)
+	seed(t, db)
+
+	row := func(fitid string, amt float64, checkNo any) {
+		exec(t, db, insertTxn, fitid, day(2026, 3, 2), "acct-1", amt, "DEBIT",
+			"desc "+fitid, checkNo, nil, "csv", "{}", nil, nil, nil, nil)
+	}
+	row("chk-out", -250.00, "9042") // a cheque the holder wrote
+	row("chk-in", 250.00, "980321") // a deposit SLIP riding in on a credit
+	row("plain-out", -75.00, nil)   // an ordinary outflow, no cheque
+	row("zero", 0.00, "9043")       // not an outflow: no money left
+
+	_, tb := project(t, path)
+	got := map[string]*string{}
+	for _, tx := range tb.Transactions {
+		got[tx.TransactionExternalID] = tx.CheckNumber
+	}
+
+	if v := got["chk-out"]; v == nil || *v != "9042" {
+		t.Errorf("outgoing cheque: CheckNumber = %v, want 9042", v)
+	}
+	for _, id := range []string{"chk-in", "plain-out", "zero"} {
+		if v := got[id]; v != nil {
+			t.Errorf("%s: CheckNumber = %q, want nil — only an outflow carries one", id, *v)
+		}
+	}
+	// Every other row the fixture seeds carries no cheque number, so a
+	// gate that leaked would show up here rather than only on the four
+	// rows above.
+	for _, tx := range tb.Transactions {
+		switch tx.TransactionExternalID {
+		case "chk-out", "chk-in", "plain-out", "zero":
+		default:
+			if tx.CheckNumber != nil {
+				t.Errorf("%s: unexpected CheckNumber %q", tx.TransactionExternalID, *tx.CheckNumber)
+			}
+		}
+	}
+}

@@ -195,7 +195,18 @@ type TransactionChange struct {
 	// way in. The spending provider tier translates it per silver
 	// kind (internal/spending/providermap.go).
 	ProviderCategory *string
-	Payload          json.RawMessage
+	// CheckNumber is the number written on a paper cheque drawn on the
+	// holder's own account, verbatim, kept so a row can be matched
+	// against the holder's own paper records. Nil nearly everywhere.
+	//
+	// An adapter sets it only on an OUTFLOW. The field names an
+	// outgoing payment, and the sign test is what keeps it meaning
+	// that: a bank may put its own instrument reference in the same
+	// silver column on an incoming credit, and a deposit export may
+	// head that column "Check or Slip #", where a slip number rides in
+	// on an inflow. Gold migration 0075.
+	CheckNumber *string
+	Payload     json.RawMessage
 }
 
 // Status is the return value of silver.Connection.Status(). See

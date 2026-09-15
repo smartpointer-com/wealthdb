@@ -167,3 +167,48 @@ func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
 		}
 	}
 }
+
+// TestTransactionCheckNumberColumn pins the cheque-number column
+// migration 0075 put on report_transactions through to the CLI: opt-in,
+// rendered verbatim, empty on the overwhelming majority of rows that
+// carry no cheque, and masked by -p.
+//
+// The privacy class is the part worth pinning. A cheque number names no
+// third party, so it is not free text — but it IS an identifier tied to
+// the holder's own account, and printing it beside a masked account in
+// a redacted readout would undo the masking around it.
+func TestTransactionCheckNumberColumn(t *testing.T) {
+	for _, c := range defaultTransactionColumns {
+		if c == "check_no" {
+			t.Error("check_no is in the default column set; it is opt-in like the other identifiers")
+		}
+	}
+
+	cols, err := resolveTransactionColumns("+check_no", "USD")
+	if err != nil {
+		t.Fatalf("resolve check_no: %v", err)
+	}
+	var spec *columnSpec[gold.TransactionRow]
+	for i := range cols {
+		if cols[i].Name == "check_no" {
+			spec = &cols[i]
+		}
+	}
+	if spec == nil {
+		t.Fatal("check_no did not resolve")
+	}
+	if spec.Privacy != PrivacyAccountID {
+		t.Errorf("check_no privacy = %v, want PrivacyAccountID", spec.Privacy)
+	}
+	if spec.Align != output.AlignLeft {
+		t.Errorf("check_no align = %v, want AlignLeft — it is an identifier, not a number", spec.Align)
+	}
+
+	number := "9042"
+	if got := spec.Extract(gold.TransactionRow{CheckNumber: &number}); got != number {
+		t.Errorf("check_no on a cheque = %q, want %q", got, number)
+	}
+	if got := spec.Extract(gold.TransactionRow{}); got != "" {
+		t.Errorf("check_no on a row with no cheque = %q, want empty", got)
+	}
+}

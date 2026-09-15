@@ -402,10 +402,10 @@ INSERT INTO transactions (
     silver_source_id, transaction_external_id, occurred_at,
     account_external_id, instrument_external_id, kind, currency,
     gross_amount, net_amount, quantity, price, description,
-    counterparty, provider_category, payload
+    counterparty, provider_category, check_number, payload
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "InsertTransactions", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
@@ -416,6 +416,7 @@ INSERT INTO transactions (
 				nullableDecimal(r.Quantity), nullableDecimal(r.Price),
 				storedDescription(r),
 				nullableString(r.Counterparty), nullableString(r.ProviderCategory),
+				nullableString(r.CheckNumber),
 				nullableJSON(r.Payload))
 		})
 }

@@ -40,7 +40,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 SELECT fitid, posted_at, account_external_id, amount,
        COALESCE(kind, ''), COALESCE(description, ''),
        COALESCE(merchant, ''), COALESCE(category, ''),
-       txn_date, COALESCE(currency, ''), payload
+       txn_date, COALESCE(currency, ''), COALESCE(check_number, ''), payload
   FROM transactions
  WHERE posted_at BETWEEN ? AND ?
  ORDER BY posted_at, fitid`
@@ -55,13 +55,14 @@ SELECT fitid, posted_at, account_external_id, amount,
 		var (
 			fitid, id, rawKind, desc   string
 			merchant, category, rowCcy string
+			checkNo                    string
 			payload                    string
 			posted                     int64
 			txnDate                    sql.NullInt64
 			amtFloat                   float64
 		)
 		if err := rows.Scan(&fitid, &posted, &id, &amtFloat, &rawKind, &desc,
-			&merchant, &category, &txnDate, &rowCcy, &payload); err != nil {
+			&merchant, &category, &txnDate, &rowCcy, &checkNo, &payload); err != nil {
 			return nil, err
 		}
 		// The collector rounds money to cents before storing, so the
@@ -111,7 +112,14 @@ SELECT fitid, posted_at, account_external_id, amount,
 			// The provider's own category, verbatim and un-normalised.
 			// Empty on payments, which the provider leaves uncategorised.
 			ProviderCategory: silver.StrPtrIfNonEmpty(category),
-			Payload:          silver.PayloadWith(payload, extra),
+			// The cheque number, on an OUTFLOW only. Silver fills this
+			// column from the QFX CHECKNUM and from a deposit export
+			// whose header reads "Check or Slip #" — so on an inflow it
+			// can be a deposit SLIP number, which is not a cheque the
+			// holder wrote. The sign is what tells them apart, and gold
+			// migration 0075 states the rule for every adapter.
+			CheckNumber: checkNumberOnOutflow(checkNo, net),
+			Payload:     silver.PayloadWith(payload, extra),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -220,4 +228,20 @@ func cardTxKind(raw string, amt canonical.Decimal) (canonical.TxKind, bool) {
 		return canonical.TxKindCardPayment, true
 	}
 	return k, true
+}
+
+// checkNumberOnOutflow returns the cheque number only when the row is
+// money LEAVING the account, and nil otherwise.
+//
+// Silver's `check_number` is not self-describing: the QFX path fills it
+// from CHECKNUM, which is a cheque, while the deposit-export path fills
+// it from a column headed "Check or Slip #", which on a credit is a
+// deposit slip. Gold's contract (migration 0075) is that the field
+// names an outgoing payment, so the sign decides. A zero-amount row is
+// not an outflow and keeps nil.
+func checkNumberOnOutflow(checkNo string, net *canonical.Decimal) *string {
+	if checkNo == "" || net == nil || !net.IsNegative() {
+		return nil
+	}
+	return silver.StrPtrIfNonEmpty(checkNo)
 }
