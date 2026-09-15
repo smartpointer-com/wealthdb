@@ -23,8 +23,12 @@ MIGRATION_FILE_RE = re.compile(r"^(\d+)_.*\.sql$")
 _DB_MODE = 0o600
 
 
-def _own_only(path: Path) -> None:
+def own_only(path: Path) -> None:
     """Narrow the DB file to `_DB_MODE`.
+
+    Public because four collectors open their silver with a bare
+    `sqlite3.connect` rather than through the openers below, and the
+    file they create needs the same mode as everyone else's.
 
     sqlite3 creates it under the process umask, which in a collector
     container is 022 and yields a world-readable file. Applied on every open
@@ -70,7 +74,7 @@ def open_db(path: Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), isolation_level=None)
-    _own_only(path)
+    own_only(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
@@ -100,7 +104,7 @@ def open_db_default_isolation(path: Path) -> sqlite3.Connection:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    _own_only(path)
+    own_only(path)
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL is set here (not just in open_db) because synchronous=NORMAL is
     # only corruption-safe under WAL, and the PRAGMAs run before any DML so

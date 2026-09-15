@@ -89,6 +89,18 @@ func kindFor(raw string, quantity, amount *canonical.Decimal, payload string) ca
 			return canonical.TxKindDeposit
 		}
 		return canonical.TxKindWithdrawal
+	case "WITHDRAWAL", "DEPOSIT":
+		// The statement's own two money sections, read out of the
+		// supplied PDFs because the scraped activity feed carries
+		// almost no cash movement (collectors/fidelity-web
+		// DESIGN.md). A section name states its direction, so unlike
+		// WIRE above there is no sign to read — and a withdrawal has
+		// to reach the spending population for the same reason a
+		// wire out does.
+		if raw == "DEPOSIT" {
+			return canonical.TxKindDeposit
+		}
+		return canonical.TxKindWithdrawal
 	case "TRANSFER", "JOURNAL":
 		// Both can flow either direction; keep source sign so
 		// gold doesn't lose the in/out distinction.

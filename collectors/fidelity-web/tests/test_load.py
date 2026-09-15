@@ -865,3 +865,99 @@ def test_positions_load_sentence_case_headers(migrated, tmp_path):
         "FROM positions WHERE account_external_id = ? AND instrument_key = ?",
         (ACCT_529, SYM_529)).fetchone()
     assert row == (100.0, 10.0, 1000.0, 900.0, 0.05, 12.50)
+
+
+# ============================================================
+# Supplied-statement ACTIVITY
+# ============================================================
+
+# One statement's worth of parsed activity: two same-day wires that
+# differ only in their reference and beneficiary, and a fee. Every
+# value is invented.
+_PARSED_ACTIVITY = {
+    "period_end": "2026-01-31",
+    "accounts": [{
+        "account_external_id": "100000001",
+        "holdings": [],
+        "activity": [
+            {"date": "2026-01-06", "section": "WITHDRAWAL", "amount": -1650.00,
+             "description": "Wire Tfr To Bank WD00000001 A PLACEHOLDER FBO B"},
+            {"date": "2026-01-06", "section": "WITHDRAWAL", "amount": -1650.00,
+             "description": "Wire Tfr To Bank WD00000002 A PLACEHOLDER FBO C"},
+            {"date": "2026-01-11", "section": "FEE", "amount": -4321.00,
+             "description": "Advisor Fee"},
+        ],
+    }],
+}
+
+
+def _activity_rows(conn):
+    return conn.execute(
+        "SELECT activity_id, timestamp, account_external_id, kind, amount "
+        "FROM transactions ORDER BY timestamp, amount, activity_id").fetchall()
+
+
+def test_supplied_activity_lands_in_transactions(migrated):
+    n, dup = load._insert_supplied_activity_rows(
+        migrated, Path("Placeholder 1.26 Statement.PDF"), _PARSED_ACTIVITY, "sha0")
+    assert (n, dup) == (3, 0)
+    rows = _activity_rows(migrated)
+    assert [r[3] for r in rows] == ["WITHDRAWAL", "WITHDRAWAL", "FEE"]
+    assert all(r[0].startswith("stmt_") for r in rows)
+    assert json.loads(migrated.execute(
+        "SELECT payload FROM transactions LIMIT 1").fetchone()[0]
+    )["basis"] == "supplied_statement"
+
+
+def test_two_same_day_same_amount_wires_stay_two_rows(migrated):
+    # Two payments on one account, one day and one amount. Only the
+    # reference and the payee differ, and both are in the description.
+    load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+    assert migrated.execute(
+        "SELECT COUNT(*) FROM transactions WHERE amount = -1650.0").fetchone()[0] == 2
+
+
+def test_the_same_row_on_two_statements_converges(migrated):
+    # A year-end statement repeats the whole year, so every monthly
+    # row is seen twice. The id is content-derived, so the second
+    # sighting replaces the first rather than doubling it.
+    load._insert_supplied_activity_rows(
+        migrated, Path("Placeholder 1.26 Statement.PDF"), _PARSED_ACTIVITY, "sha0")
+    before = _activity_rows(migrated)
+    n, _ = load._insert_supplied_activity_rows(
+        migrated, Path("Placeholder 2026 Year End Statement.PDF"),
+        _PARSED_ACTIVITY, "sha1")
+    assert n == 3
+    assert _activity_rows(migrated) == before
+
+
+def test_a_row_the_scraped_feed_already_has_is_skipped(migrated):
+    migrated.execute(
+        "INSERT INTO transactions (activity_id, timestamp, "
+        "account_external_id, kind, amount, currency, source_sha256, payload) "
+        "VALUES ('scraped-1', ?, '100000001', 'withdrawal', -4321.0, 'USD', "
+        "'sha', '{}')",
+        (load.ts_from_iso("2026-01-12"),),          # one day off: same event
+    )
+    n, dup = load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+    assert (n, dup) == (2, 1)
+    assert migrated.execute(
+        "SELECT COUNT(*) FROM transactions WHERE amount = -4321.0").fetchone()[0] == 1
+
+
+def test_the_redemption_that_funds_a_fee_is_not_mistaken_for_it(migrated):
+    # The feed books the core redemption that RAISES the cash (+4321)
+    # and not the fee that spends it (-4321). Matching on the absolute
+    # amount would read the one as the other and drop the fee.
+    migrated.execute(
+        "INSERT INTO transactions (activity_id, timestamp, "
+        "account_external_id, kind, amount, currency, source_sha256, payload) "
+        "VALUES ('scraped-2', ?, '100000001', 'other', 4321.0, 'USD', "
+        "'sha', '{}')",
+        (load.ts_from_iso("2026-01-11"),),
+    )
+    n, dup = load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+    assert (n, dup) == (3, 0)

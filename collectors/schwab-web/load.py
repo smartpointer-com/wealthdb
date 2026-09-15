@@ -1648,6 +1648,7 @@ def run_load(args: argparse.Namespace) -> int:
     migrations_dir = _resolve_migrations_dir(args.migrations_dir)
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(args.silver_db))
+    silver.own_only(args.silver_db)
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         silver.apply_migrations(conn, migrations_dir)

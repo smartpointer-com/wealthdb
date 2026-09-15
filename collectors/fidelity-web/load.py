@@ -232,6 +232,7 @@ def main(argv=None):
     if args.force:
         silver.reset(args.silver_db)
     conn = sqlite3.connect(str(args.silver_db))
+    silver.own_only(args.silver_db)
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         migrations_dir = Path(__file__).parent / "migrations"
@@ -2016,11 +2017,13 @@ def _supplied_pdf_candidates(supplied_dir):
 
 def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
                                       signature=None, coord=None):
-    """Load every monthly supplied statement from ``supplied_dir`` into
-    ``historical_position_snapshots``. No-op when ``supplied_dir`` is
-    None or empty. Idempotent — INSERT OR REPLACE keyed on
-    ``(as_of_date, account_external_id, description)`` makes
-    re-runs converge.
+    """Load every monthly supplied statement from ``supplied_dir``:
+    its holdings into ``historical_position_snapshots`` and its
+    account-level activity into ``transactions``. No-op when
+    ``supplied_dir`` is None or empty. Idempotent — INSERT OR REPLACE
+    keyed on ``(as_of_date, account_external_id, description)`` for
+    holdings and on a content-derived id for activity makes re-runs
+    converge.
 
     Parsing goes through the shared ``coord`` (cache + pool), so a
     nightly reload replays the unchanged statements from cache
@@ -2071,7 +2074,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
     log.info("supplied-statements: ingesting %d PDF(s)", len(candidates))
     try:
         conn.execute("BEGIN")
-        inserted = skipped = 0
+        inserted = skipped = activity = activity_dup = 0
         for path in candidates:
             sha = coord.sha_for(path)
             result = coord.resolve(
@@ -2095,16 +2098,115 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
                 skipped += 1
                 continue
             inserted += _insert_supplied_historical_rows(conn, path, result, sha)
+            act_in, act_dup = _insert_supplied_activity_rows(
+                conn, path, result, sha)
+            activity += act_in
+            activity_dup += act_dup
         synth = _synthesize_missing_account_masters(conn)
         conn.commit()
         log.info(
-            "supplied-statements: %d holdings rows inserted, %d PDF(s) "
+            "supplied-statements: %d holdings rows inserted, %d activity "
+            "row(s) inserted (%d already in the scraped feed), %d PDF(s) "
             "skipped, %d account master row(s) synthesised",
-            inserted, skipped, synth,
+            inserted, activity, activity_dup, skipped, synth,
         )
     except Exception:
         conn.rollback()
         log.exception("supplied-statements load failed; rolled back")
+
+
+# How far a statement row's date may sit from a scraped row's and
+# still be the same event. The two describe one payment from either
+# side of the settlement, so a day or two of drift is ordinary; three
+# is generous without being loose enough for two genuinely different
+# payments of the same amount on one account to collide.
+_ACTIVITY_MATCH_WINDOW = 3 * 86400
+
+
+def _feed_already_has(conn, account_external_id, amount, ts):
+    """True when the SCRAPED feed already carries this payment.
+
+    The statement and the feed number their rows differently and
+    cannot be joined on an id, so the match is the only thing both
+    agree on: one account, the same signed amount to the cent, within
+    `_ACTIVITY_MATCH_WINDOW`. Signed, not absolute — a core
+    redemption of +450.00 raises the cash that the -450.00 fee then
+    spends, and those two must not cancel each other out.
+
+    Statement-derived rows are excluded from the comparison. They
+    converge on their own content-derived id instead, which is what
+    lets the monthly and year-end statements both carry a row (the
+    year-end repeats the whole year) without inserting it twice.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM transactions "
+        "WHERE account_external_id = ? "
+        "  AND activity_id NOT LIKE 'stmt\\_%' ESCAPE '\\' "
+        "  AND ABS(amount - ?) < 0.005 "
+        "  AND ABS(timestamp - ?) <= ? LIMIT 1",
+        (account_external_id, amount, ts, _ACTIVITY_MATCH_WINDOW),
+    ).fetchone()
+    return row is not None
+
+
+def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha):
+    """Insert the statement's ACCOUNT-LEVEL activity into
+    ``transactions`` — the money in and out, and the account fees.
+
+    Returns ``(inserted, skipped)``. Skipped rows are the ones the
+    scraped feed already carries; see `_feed_already_has`.
+
+    The id is derived from the row's own content plus an occurrence
+    index within the PDF, on the same reasoning as
+    `_synthesise_activity_id`: one real payment printed on both the
+    monthly and the year-end statement hashes the same and converges,
+    while two genuinely distinct payments that share a day and an
+    amount differ in their reference and beneficiary and so keep
+    separate rows.
+    """
+    inserted = skipped = 0
+    occurrence: dict[str, int] = {}
+    for account in parsed.get("accounts", []):
+        aid = account.get("account_external_id")
+        if not aid:
+            continue
+        for row in account.get("activity", []):
+            ts = ts_from_iso(row.get("date"))
+            amount = row.get("amount")
+            if ts is None or amount is None:
+                continue
+            amount = float(amount)
+            desc = (row.get("description") or "").strip()
+            identity = "|".join(
+                (aid, row["date"], row.get("section") or "", f"{amount:.2f}", desc))
+            occ = occurrence.get(identity, 0)
+            occurrence[identity] = occ + 1
+            if _feed_already_has(conn, aid, amount, ts):
+                skipped += 1
+                continue
+            activity_id = "stmt_" + hashlib.sha256(
+                f"{identity}|#{occ}".encode("utf-8")).hexdigest()[:28]
+            conn.execute(
+                "INSERT OR REPLACE INTO transactions ("
+                "activity_id, timestamp, account_external_id, kind, "
+                "instrument_key, amount, currency, source_sha256, payload"
+                ") VALUES (?, ?, ?, ?, NULL, ?, 'USD', ?, ?)",
+                (
+                    activity_id, ts, aid, row.get("section") or "other",
+                    amount, sha,
+                    # `Action` is the key gold's payloadNarrative
+                    # reads, and the statement's own words are the
+                    # action: "Wire Tfr To Bank <ref> <beneficiary>".
+                    normalize_payload({
+                        "Action": desc,
+                        "section": row.get("section"),
+                        "basis": "supplied_statement",
+                        "statement": pdf_path.name,
+                    }),
+                ),
+            )
+            inserted += 1
+    return inserted, skipped
 
 
 def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):

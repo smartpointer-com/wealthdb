@@ -74,6 +74,8 @@ from dataclasses import dataclass
 
 from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
 
+from datetime import date as date_cls
+
 from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
 
 # A coarse, human-readable epoch for load.py's parse-cache namespace.
@@ -225,6 +227,159 @@ class SuppliedHoldingRow:
     market_value: float | None        # USD
     cost_basis: float | None          # USD (None for core / cash)
     unrealized_gain: float | None     # USD
+
+
+# ============================================================
+# Per-account ACTIVITY
+# ============================================================
+#
+# Only three of the statement's Activity sections are read, and the
+# omissions are deliberate. Everything else it prints there is
+# security-level and already arrives through the scraped activity
+# feed: `Dividends, Interest & Other Income`, the corporate actions
+# under `Other Activity In` / `Out`, and the inter-account journals
+# under `Exchanges In` / `Out`.
+#
+# What the feed does NOT carry is money entering or leaving the
+# account, or the fees charged for holding it — wires, cheques,
+# tax payments and account fees. The statement prints all of it
+# and the feed omits it, so this is the only route to it.
+#
+# The gap is easy to miss because the feed DOES book the core-account
+# redemption that raises the cash for such a payment. The money
+# appears to move and then stops: a credit into settled cash with
+# nothing spending it.
+# The value is the silver `kind`, in the collector's existing
+# upper-case vocabulary — `FEE` is the one the scraped feed already
+# uses, and gold's kindFor maps all three.
+ACTIVITY_SECTIONS = {
+    "Withdrawals": "WITHDRAWAL",
+    "Deposits": "DEPOSIT",
+    "Fees and Charges": "FEE",
+}
+
+# A row opens with its MM/DD and closes with the amount; everything
+# between is the description, which the statement spreads over as
+# many columns as it likes (`Reference` and `Description` on the two
+# money sections, `Description` alone on the fee one). pdfplumber
+# collapses those columns to single spaces, so the text between the
+# two anchors is taken whole rather than split by position.
+_ACTIVITY_ROW_RE = re.compile(
+    r"^(?P<mm>\d{2})/(?P<dd>\d{2})\s+(?P<desc>.*?)\s+"
+    r"(?P<amt>-?\$?-?[\d,]+\.\d{2})$")
+
+# Only the two money sections wrap. A `Fees and Charges` row is one
+# line by construction — `Date Description Amount` — so folding there
+# can only pick up the page furniture that follows a section whose
+# total fell on the other side of a page break.
+_ACTIVITY_WRAPS = {"WITHDRAWAL", "DEPOSIT"}
+
+
+@dataclass
+class SuppliedActivityRow:
+    """One account-level activity line.
+
+    ``description`` is the statement's own words, with any
+    continuation lines folded in: on a wire those name the
+    beneficiary and the receiving bank, which is the only thing that
+    says what the payment was for.
+    """
+    date: date_cls                    # resolved against the statement period
+    section: str                      # ACTIVITY_SECTIONS value
+    description: str
+    amount: float                     # USD, signed as the statement prints it
+
+
+def _activity_row_date(mm, dd, period):
+    """Date an MM/DD row against the statement period, which may span
+    a year boundary (a December statement listing a January
+    settlement) or a whole year (the year-end statement).
+
+    A row whose MM/DD lands inside the period takes that year. One
+    that does not is charged in ARREARS — a fee for an earlier
+    dividend can print on a January statement dated 11/12 — so it
+    resolves BACKWARDS to the most recent such day on or before
+    the period end. Resolving it forwards instead would date the fee
+    in the future.
+    """
+    if not period:
+        return None
+    start, end = period
+    for y in (end.year, start.year, end.year - 1):
+        try:
+            d = date_cls(y, mm, dd)
+        except ValueError:
+            continue
+        if start <= d <= end:
+            return d
+    for y in (end.year, end.year - 1):
+        try:
+            d = date_cls(y, mm, dd)
+        except ValueError:
+            continue
+        if d <= end:
+            return d
+    return None
+
+
+def parse_activity_block(account_text, *, period=None):
+    """Extract the account-level activity rows from one per-account
+    section. Returns [] when the statement prints none, which is
+    ordinary — most months move no money.
+
+    A section runs from its heading to its own `Total <heading>`
+    line. In the two money sections a line that does not open with
+    MM/DD continues the row above it — on a wire those lines name the
+    beneficiary and the receiving bank, which is the only thing that
+    says what the payment was for. Fee rows never wrap, so nothing is
+    folded onto them and a section whose total fell on the far side of
+    a page break cannot pick up the page furniture that follows.
+    """
+    rows = []
+    lines = account_text.splitlines()
+    section = None
+    pending = None
+
+    def flush():
+        nonlocal pending
+        if pending is not None:
+            rows.append(pending)
+            pending = None
+
+    for raw in lines:
+        ln = raw.strip()
+        if not ln:
+            continue
+        if ln in ACTIVITY_SECTIONS:
+            flush()
+            section = ACTIVITY_SECTIONS[ln]
+            continue
+        if section is None:
+            continue
+        # `Total Fees and Charge` — the statement truncates its own
+        # heading here, so the prefix is matched rather than the name.
+        if ln.lower().startswith("total "):
+            flush()
+            section = None
+            continue
+        m = _ACTIVITY_ROW_RE.match(ln)
+        if m:
+            flush()
+            d = _activity_row_date(int(m.group("mm")), int(m.group("dd")), period)
+            if d is None:
+                continue
+            amount = _parse_number(m.group("amt").replace("$", ""))
+            if amount is None:
+                continue
+            pending = SuppliedActivityRow(
+                date=d, section=section,
+                description=" ".join(m.group("desc").split()),
+                amount=amount,
+            )
+        elif pending is not None and pending.section in _ACTIVITY_WRAPS:
+            pending.description = (pending.description + " " + ln).strip()
+    flush()
+    return rows
 
 
 def parse_holdings_block(account_text, *, expected_signature=None):
@@ -461,6 +616,7 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
                 {
                     "account_external_id": "NNNNNNNNN",
                     "holdings": [{...}, ...],
+                    "activity": [{...}, ...],
                 },
                 ...
             ],
@@ -489,10 +645,22 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
         rows = parse_holdings_block(
             block.text, expected_signature=expected_signature,
         )
-        if not rows:
+        activity = parse_activity_block(block.text, period=period)
+        # A block with neither holdings nor activity is a cover page
+        # or a summary spread, not an account section.
+        if not rows and not activity:
             continue
         accounts_out.append({
             "account_external_id": block.account_external_id,
+            "activity": [
+                {
+                    "date": r.date.isoformat(),
+                    "section": r.section,
+                    "description": r.description,
+                    "amount": r.amount,
+                }
+                for r in activity
+            ],
             "holdings": [
                 {
                     "description": r.description,

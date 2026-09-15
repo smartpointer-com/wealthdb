@@ -1396,6 +1396,7 @@ def main(argv: list[str]) -> int:
     if args.force:
         silver.reset(args.silver_db)
     conn = sqlite3.connect(str(args.silver_db))
+    silver.own_only(args.silver_db)
     conn.execute("PRAGMA foreign_keys = ON;")
 
     migrations_dir = Path(__file__).parent / "migrations"

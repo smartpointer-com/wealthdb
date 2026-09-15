@@ -207,3 +207,113 @@ def test_parse_accepts_when_signature_present(monkeypatch):
     assert "_error" not in out
     assert out["period_end"] == "2025-11-30"
     assert len(out["accounts"]) == 2
+
+
+# ============================================================
+# Account-level activity
+# ============================================================
+
+# The three sections the feed does not carry, plus two it does — the
+# per-security ADR fee that shares the Fees heading, and a corporate
+# action under Other Activity Out — so the test can show what is read
+# and what is left alone. Every value is invented.
+_ACTIVITY_TEXT = """\
+INVESTMENT REPORT
+January 1, 2026 - January 31, 2026
+
+Account # 100-000001
+PLACEHOLDER HOLDER - INDIVIDUAL
+Activity
+Withdrawals
+Date Reference Description Amount
+01/06 Wire Tfr To Bank WD00000001 -$2,000.00
+PLACEHOLDER PAYEE ONE
+PLACEHOLDER BANK, N.A. ******0001
+01/06 Wire Tfr To Bank WD00000002 -2,000.00
+PLACEHOLDER PAYEE TWO
+PLACEHOLDER BANK, N.A. ******0002
+01/07 Check Issued CHECK PAID 000000001 -600.00
+PLACEHOLDER TREASURY
+Total Withdrawals -$4,600.00
+Deposits
+Date Reference Description Amount
+01/20 Wire Trans From Bank $1,500.00
+Total Deposits $1,500.00
+Fees and Charges
+Date Description Amount
+01/11 Account Fee -$4,000.00
+01/13 Quarterly Fee -500.00
+01/14 Placeholder Adr Each Rep 1 Ord -10.00
+Total Fees and Charge -$4,510.00
+Other Activity Out
+Settlement Symbol/
+Date Security Name CUSIP Description Quantity Price
+01/27 PLACEHOLDER ADR 000000101 Reverse Split 40.000 -
+Total Other Activity Out -
+"""
+
+
+def _activity(text=_ACTIVITY_TEXT):
+    period = ppt.parse_statement_period(text)
+    block = ppt.parse_account_blocks(text)[0]
+    return ppt.parse_activity_block(block.text, period=period)
+
+
+def test_activity_reads_the_three_account_level_sections():
+    rows = _activity()
+    assert [(r.date.isoformat(), r.section, r.amount) for r in rows] == [
+        ("2026-01-06", "WITHDRAWAL", -2000.00),
+        ("2026-01-06", "WITHDRAWAL", -2000.00),
+        ("2026-01-07", "WITHDRAWAL", -600.00),
+        ("2026-01-20", "DEPOSIT", 1500.00),
+        ("2026-01-11", "FEE", -4000.00),
+        ("2026-01-13", "FEE", -500.00),
+        ("2026-01-14", "FEE", -10.00),
+    ]
+
+
+def test_a_wire_keeps_the_beneficiary_lines():
+    # Two wires of the same amount on the same day: the reference and
+    # the beneficiary are the only things that tell them apart, and
+    # both live on the continuation lines.
+    a, b = _activity()[:2]
+    assert a.description == (
+        "Wire Tfr To Bank WD00000001 PLACEHOLDER PAYEE ONE "
+        "PLACEHOLDER BANK, N.A. ******0001")
+    assert b.description.endswith("******0002")
+    assert a.description != b.description
+
+
+def test_a_fee_row_never_folds_the_line_below_it():
+    # Fee rows are one line by construction. A section whose total
+    # fell on the far side of a page break is followed by page
+    # furniture, which must not land in the last fee's description.
+    text = _ACTIVITY_TEXT.replace("Total Fees and Charge -$4,510.00\n", "")
+    fees = [r for r in _activity(text) if r.section == "FEE"]
+    assert fees[-1].description == "Placeholder Adr Each Rep 1 Ord"
+
+
+def test_security_level_sections_are_left_to_the_scraped_feed():
+    # Other Activity Out carries corporate actions, which arrive
+    # through the activity feed; reading them here would double them.
+    assert all(r.section in ("WITHDRAWAL", "DEPOSIT", "FEE") for r in _activity())
+    assert not any("Reverse Split" in r.description for r in _activity())
+
+
+def test_a_month_row_is_dated_inside_the_statement_period():
+    # The row carries MM/DD only; the year comes from the period, and
+    # a year-end statement spans twelve months of them.
+    text = _ACTIVITY_TEXT.replace(
+        "January 1, 2026 - January 31, 2026", "January 1, 2026 - December 31, 2026")
+    assert _activity(text)[0].date == date(2026, 1, 6)
+
+
+def test_an_arrears_row_resolves_backwards_not_into_the_future():
+    # A fee charged for an earlier dividend can print on a January
+    # statement with its own date, outside the period. It
+    # belongs to the November before, not the November after.
+    text = _ACTIVITY_TEXT.replace(
+        "01/14 Placeholder Adr Each Rep 1 Ord -10.00",
+        "11/12 Placeholder Adr Each Rep 1 Ord -10.00")
+    row = next(r for r in _activity(text) if r.amount == -10.00)
+    assert row.date == date(2025, 11, 12)

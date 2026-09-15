@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from itertools import repeat
 from pathlib import Path
 
-from collectorkit import cli, srcfp
+from collectorkit import cli, silver, srcfp
 
 import pdf_parsers_svbwa
 
@@ -366,6 +366,7 @@ def build(silver_db: Path, bronze_dir: Path, *, signature: str | None,
     if silver_db.exists():
         silver_db.unlink()  # full rebuild — reproducible from bronze
     conn = sqlite3.connect(str(silver_db))
+    silver.own_only(silver_db)
     try:
         apply_migrations(conn, migrations_dir)
         inserted = parsed_ok = skipped = 0

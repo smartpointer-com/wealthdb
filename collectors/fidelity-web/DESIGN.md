@@ -121,7 +121,7 @@ bronze subdirectory holds documents that arrive out-of-band.
 ├── 20260525T120000Z/
 │   └── …
 ├── manual/                                     hand-dropped artefacts (documents that arrive out-of-band)
-├── supplied-statements/                        statement PDFs supplied out-of-band (→ historical_position_snapshots, §4.5)
+├── supplied-statements/                        statement PDFs supplied out-of-band (→ historical_position_snapshots + transactions, §4.5)
 └── fidelity-web.db                             silver SQLite (default location)
 ```
 
@@ -510,6 +510,28 @@ the web document center serves no statements for can still have
 statement PDFs supplied out-of-band and dropped in. These use a
 different layout (`pdf_parsers_supplied.py`) and are loaded from a
 directory rather than the scraped dump tree.
+
+They carry two things, not one. **Holdings** rebuild the position
+archive (`historical_position_snapshots`). **Account-level activity**
+goes to `transactions`: the statement's `Withdrawals`, `Deposits` and
+`Fees and Charges` sections — wires, cheques, tax payments and
+account fees. The scraped activity feed omits these rows, and for
+the era before the first scrape the statement is the only source.
+The feed's own `REDEMPTION FROM CORE ACCOUNT` row books the cash
+being RAISED for such a payment but never the payment.
+
+Everything else the statement prints under Activity is deliberately
+left alone, because the feed does carry it: dividends and interest,
+the corporate actions under `Other Activity In` / `Out`, and the
+inter-account journals under `Exchanges In` / `Out`.
+
+Two rows for one event are avoided twice over. Within the statement
+archive an id derived from the row's own content converges the
+monthly and the year-end statement (the year-end repeats the whole
+year). Against the scraped feed, a statement row is dropped when the
+feed already carries the same account, the same **signed** amount to
+the cent, within three days — signed, because a `+450.00` redemption
+and the `-450.00` fee it funds are not the same event.
 
 > **Reproducible-from-bronze.** The supplied PDFs default to
 > **`<bronze-dir>/supplied-statements/`** — *under* the bronze tree —
