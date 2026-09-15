@@ -24,7 +24,15 @@ preserves. This reads, per statement:
   - per segment, transactions from the deposit / withdrawal / check / fee
     sections, signed by section (deposits +, everything else -), and the
     beginning + ending balance, to reconstruct a per-row running balance and
-    to validate the parse (Σ amounts must carry beginning → ending).
+    to validate the parse (Σ amounts must carry beginning → ending);
+  - from the Checks Paid section, whose columns differ from every other
+    section's, the check number as its own field.
+
+A row's description is the words the statement prints ABOUT it, and the page
+prints a good deal that is about something else: a footnote legend under each
+section total, and a document id stamped in the right margin. Both land inside
+the section markers, so both are refused explicitly — the first by ending a
+section's rows at its total, the second by geometry (see `_in_page_margin`).
 
 Card statements
 ---------------
@@ -66,17 +74,27 @@ _PERIOD_RE = re.compile(
     r"([A-Z][a-z]+)\s+(\d{1,2}),\s*(\d{4})")
 _SECTION_RE = re.compile(r"\*start\*([a-z0-9 &]+)")
 # A transaction row always ends in the amount, but the date sits in one of two
-# places: at the line start for deposits / withdrawals (optionally behind a
-# check number), or immediately before the amount in the Checks Paid section
-# (`CHECK# … MM/DD AMOUNT`). Try the start-date shape first, then the
-# date-before-amount shape. The leading `\d+ ` only matches a standalone check
-# number — a date's own digits ("03/20") have no space before the slash.
+# places: at the line start for deposits / withdrawals, or immediately before
+# the amount where the section prints columns ahead of it. Try the start-date
+# shape first, then the date-before-amount shape.
 _ROW_START = re.compile(
-    r"^\s*(?:\d+\s+)?(?P<mm>\d{2})/(?P<dd>\d{2})\s+(?P<desc>.*?)\s*"
+    r"^\s*(?P<mm>\d{2})/(?P<dd>\d{2})\s+(?P<desc>.*?)\s*"
     r"\$?(?P<amt>-?[\d,]+\.\d{2})\s*$")
 _ROW_TRAILING_DATE = re.compile(
     r"^\s*(?P<desc>.*?)(?P<mm>\d{2})/(?P<dd>\d{2})\s+"
     r"\$?(?P<amt>-?[\d,]+\.\d{2})\s*$")
+# The Checks Paid section prints four columns —
+# `CHECK NO. | DESCRIPTION | DATE PAID | AMOUNT` — and each is read into its
+# own field. The number is what a paid check is identified by against the
+# holder's own paper records; the description is whatever Chase knows about
+# the payee, which is usually nothing.
+_CHECK_ROW = re.compile(
+    r"^\s*(?P<no>\d+)\s+(?P<desc>.*?)\s*(?P<mm>\d{2})/(?P<dd>\d{2})\s+"
+    r"\$?(?P<amt>-?[\d,]+\.\d{2})\s*$")
+# What stands in the description column when Chase has nothing to say: the
+# footnote markers `*` (the check numbers on this statement have a gap) and
+# `^` (an image of this check is on chase.com). Neither describes the payment.
+_CHECK_MARKERS = re.compile(r"^[*^\s]+")
 _AMOUNT_RE = r"\$?(-?[\d,]+\.\d{2})"
 
 
@@ -92,6 +110,10 @@ class StatementTxn:
     # `CARD_SECTION_KINDS`). None on a deposit row, whose section only ever
     # supplied the sign.
     kind: str | None = None
+    # The number of the paper check this row paid, from the CHECK NO. column
+    # of the deposit statement's Checks Paid section. None everywhere else —
+    # no other section, and no card statement, prints one.
+    check_number: str | None = None
 
 
 @dataclass
@@ -126,20 +148,33 @@ def pdf_to_text(path: Path) -> str:
         check=True, capture_output=True, text=True).stdout
 
 
+# Headings that open a prose block rather than a table, however transactional
+# the rest of the name reads ("post fees message").
+_NON_TRANSACTION = ("message", "summary", "disclosure", "product",
+                    "address", "notice")
+
+
 def _section_sign(name: str) -> int | None:
     """+1 / -1 for a transaction section, or None for a non-transaction block.
     Keyword-based so section-name drift across years (e.g. "atm & debit card
-    withdrawals", "fees and other withdrawals") still classifies correctly, and
-    prose blocks that merely mention "fee" ("post fees message") are excluded."""
+    withdrawals", "fees and other withdrawals") still classifies correctly."""
     n = name.lower()
-    if any(k in n for k in ("message", "summary", "disclosure", "product",
-                            "address", "notice")):
+    if any(k in n for k in _NON_TRANSACTION):
         return None
     if "deposit" in n or "addition" in n:
         return 1
     if any(k in n for k in ("withdrawal", "check", "fee", "debit", "card")):
         return -1
     return None
+
+
+def _is_check_section(name: str) -> bool:
+    """True for Checks Paid, the one section with its own column layout. Keyed
+    on the same word and the same exclusions `_section_sign` uses, so a heading
+    the two would answer about cannot be a transaction section to one and a
+    prose block to the other."""
+    n = name.lower()
+    return "check" in n and not any(k in n for k in _NON_TRANSACTION)
 
 
 def _period(lines: list[str]) -> tuple[date | None, date | None]:
@@ -193,12 +228,46 @@ def _row_date(mm: int, dd: int, start: date | None, end: date | None) -> date | 
         return None
 
 
+def _match_row(ln: str, checks: bool):
+    """One transaction row as (match, description, check number), or None.
+
+    In Checks Paid the four-column shape is tried first, so the CHECK NO.
+    column lands in its own field instead of being read as the head of the
+    description. Every other section — and a Checks Paid row whose layout does
+    not fit — falls back to the two generic shapes and carries no number."""
+    if checks:
+        m = _CHECK_ROW.match(ln)
+        if m:
+            return m, _CHECK_MARKERS.sub("", m.group("desc")), m.group("no")
+    m = _ROW_START.match(ln) or _ROW_TRAILING_DATE.match(ln)
+    return (m, m.group("desc"), None) if m else None
+
+
+def _is_section_total(ln: str) -> bool:
+    """True for a section's closing `Total …` line, which ends its rows. What
+    a section prints after it is page furniture — the Checks Paid footnote
+    legend, most of all — and belongs to no row."""
+    return ln.strip().lower().startswith("total")
+
+
+def _in_page_margin(ln: str, row_end: int) -> bool:
+    """True when the line begins to the RIGHT of where the section's own rows
+    end, i.e. in the page margin the statement stamps its document id into.
+    That id lands mid-section often enough to matter, and it describes no
+    payment. Geometry decides rather than a pattern because a wrapped
+    reference number is bare digits too — it just sits in the description
+    column, where the text is."""
+    return row_end > 0 and len(ln) - len(ln.lstrip()) >= row_end
+
+
 def _parse_transactions(lines: list[str], start: date | None,
                         end: date | None) -> list[StatementTxn]:
     """Walk the sections, collecting the signed transaction rows (folding each
     row's continuation lines into its description)."""
     txns: list[StatementTxn] = []
     sign: int | None = None
+    checks = False        # inside Checks Paid, which has its own columns
+    row_end = 0           # where this section's rows end (see _in_page_margin)
     pending: StatementTxn | None = None
 
     def flush() -> None:
@@ -208,10 +277,11 @@ def _parse_transactions(lines: list[str], start: date | None,
             pending = None
 
     for ln in lines:
-        m = _SECTION_RE.search(ln.lower())
-        if m:
+        sec = _SECTION_RE.search(ln.lower())
+        if sec:
             flush()
-            sign = _section_sign(m.group(1).strip())
+            name = sec.group(1).strip()
+            sign, checks, row_end = _section_sign(name), _is_check_section(name), 0
             continue
         if "*end*" in ln.lower():
             flush()
@@ -219,17 +289,22 @@ def _parse_transactions(lines: list[str], start: date | None,
             continue
         if sign is None:
             continue
-        row = _ROW_START.match(ln) or _ROW_TRAILING_DATE.match(ln)
+        if _is_section_total(ln):
+            flush()
+            continue
+        row = _match_row(ln, checks)
         if row:
             flush()
-            d = _row_date(int(row.group("mm")), int(row.group("dd")), start, end)
+            m, desc, check_no = row
+            row_end = max(row_end, len(ln.rstrip()))
+            d = _row_date(int(m.group("mm")), int(m.group("dd")), start, end)
             if d is None:
                 continue
             pending = StatementTxn(
-                posted_at=d, amount=sign * _dec(row.group("amt")),
-                description=" ".join(row.group("desc").split()))
+                posted_at=d, amount=sign * _dec(m.group("amt")),
+                description=" ".join(desc.split()), check_number=check_no)
         elif pending is not None and ln.strip() \
-                and not ln.strip().lower().startswith("total"):
+                and not _in_page_margin(ln, row_end):
             # A continuation line (trailing reference) for the current row.
             pending.description = (pending.description + " " + ln.strip()).strip()
     flush()

@@ -1302,6 +1302,22 @@ def test_a_statement_row_with_no_balance_carries_no_basis():
     assert "balance_basis" not in json.loads(row[1])
 
 
+def test_a_statement_check_row_carries_its_number_into_silver():
+    # Statements are the only source of a check older than the export window,
+    # and the number goes in the column: gold reads that, not the narrative.
+    # A payee-less check has no description at all, and an empty one is stored
+    # as NULL like every other absent value.
+    conn = _conn()
+    seg = sp.StatementSegment(
+        beginning_balance=Decimal("100.00"), ending_balance=Decimal("50.00"),
+        transactions=[sp.StatementTxn(date(2024, 7, 20), Decimal("-50.00"), "",
+                                      check_number="9042")])
+    assert load._import_statement(conn, EXT, seg, None) == 1
+    assert conn.execute(
+        "SELECT check_number, description FROM transactions").fetchone() \
+        == ("9042", None)
+
+
 def test_the_csv_export_column_is_the_only_unmarked_balance():
     # The other side of the same invariant: the balances joined off the
     # deposit CSV's running-balance column are the provider's own, and are

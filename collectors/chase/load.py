@@ -995,7 +995,7 @@ def _import_statement(conn, account_external_id: str, seg, seam) -> int:
         _insert_transaction(conn, account_external_id, {
             "fitid": _statement_fitid(account_external_id, posted, amount, desc, occ),
             "posted_at": posted, "amount": amount, "kind": None,
-            "description": desc, "check_number": None,
+            "description": desc, "check_number": txn.check_number,
             "balance": float(bal) if bal is not None else None,
             "source": SOURCE_STATEMENT,
             "payload": payload,

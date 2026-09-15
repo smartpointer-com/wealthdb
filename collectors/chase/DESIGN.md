@@ -452,6 +452,15 @@ rows.
   pooled. `statement_parser` splits on the header and, per segment, reads
   the deposit / withdrawal / check sections (signed by section) and
   validates the parse against the segment's own balance pair.
+- **A row's description is what the statement prints about that row, and
+  nothing else.** Checks Paid has columns of its own — `CHECK NO. |
+  DESCRIPTION | DATE PAID | AMOUNT` — so the number is read into
+  `check_number` (gold's column of the same name, DESIGN.md §10.8) and the
+  description is whatever Chase knows about the payee, which for a check it
+  holds only electronically is nothing at all. Two kinds of page furniture
+  print *inside* the section markers and are refused explicitly rather than
+  folded into the row above as continuation text: the footnote legend under a
+  section total, and a document id stamped in the right margin.
 - **Segments carry no account ids the exports know** (the printed numbers
   are a different form than the export `ACCTID`), so
   `load.load_statement_transactions` pools every deposit statement in the

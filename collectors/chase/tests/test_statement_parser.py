@@ -16,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import statement_parser as sp  # noqa: E402
 
 # A synthetic one-account statement: begin 1000.00, two deposits (+500, +200),
-# a withdrawal (-300) and a check (-250) → end 1150.00. Includes a continuation
-# line and a non-transaction "post fees message" block that must be ignored.
+# a withdrawal (-300) and a check (-250) → end 1150.00. Carries every shape the
+# walk has to tell apart: a continuation line, a document id stamped in the
+# right margin, a section total and the footnote legend under it, a Checks Paid
+# row in its own four-column layout, and a non-transaction message block.
 STATEMENT = """\
                        March 19, 2026 through April 17, 2026
 
@@ -32,6 +34,7 @@ CHECKING SUMMARY
   03/20    Payroll Direct Deposit               500.00
   04/01    Zelle payment from EXAMPLE PARTY      200.00
                 Ref 00000000000
+                                                            10000000000000000001
   Total Deposits and Additions                 700.00
 *end*deposits and additions*
 
@@ -40,7 +43,12 @@ CHECKING SUMMARY
 *end*electronic withdrawal*
 
 *start*checks paid section*
-  04/05    Check                                250.00
+  CHECK NO.        DESCRIPTION           DATE PAID         AMOUNT
+  9042             ^                     04/05             250.00
+  Total Checks Paid                                        250.00
+  If you see a description in the Checks Paid section, it means that we
+  received only electronic information about the check.
+  ^ An image of this check may be available for you to view on Chase.com.
 *end*checks paid section*
 
 *start*post fees message*
@@ -72,6 +80,85 @@ def test_transactions_signed_and_dated():
     zelle = next(t for t in txns if t.posted_at == date(2026, 4, 1))
     assert "Ref 00000000000" in zelle.description
     assert all("not a transaction" not in t.description for t in txns)
+
+
+def test_a_document_id_in_the_page_margin_is_not_a_continuation():
+    # The statement stamps a document id past the right edge of its own rows.
+    # It is bare digits, exactly like a wrapped reference number — what tells
+    # them apart is that one is printed in the margin and the other in the
+    # description column, so the fixture carries one of each on the same row.
+    zelle = next(t for t in sp.parse_statement_text(STATEMENT).segments[0]
+                 .transactions if t.posted_at == date(2026, 4, 1))
+    assert zelle.description == "Zelle payment from EXAMPLE PARTY Ref 00000000000"
+
+
+def test_a_check_row_splits_its_number_from_its_description():
+    # Checks Paid prints CHECK NO. | DESCRIPTION | DATE PAID | AMOUNT, and on
+    # this row Chase has nothing to say about the payee — only the footnote
+    # marker `^`. The number is the row's own field; the description is empty
+    # rather than a restatement of it.
+    check = sp.parse_statement_text(STATEMENT).segments[0].transactions[-1]
+    assert check.check_number == "9042"
+    assert check.description == ""
+    # …and no other section invents one.
+    assert all(t.check_number is None for t in
+               sp.parse_statement_text(STATEMENT).segments[0].transactions[:-1])
+
+
+def test_the_footnote_legend_belongs_to_no_row():
+    # The legend under the section total explains the layout, not the payment.
+    # It is printed inside the section markers, so only the total ends the
+    # section's rows before it.
+    for t in sp.parse_statement_text(STATEMENT).segments[0].transactions:
+        assert "If you see a description" not in t.description
+        assert "An image of this check" not in t.description
+
+
+CHECKS = """\
+                       March 19, 2026 through April 17, 2026
+  Beginning Balance   $1,000.00
+  Ending Balance        $150.00
+*start*checks paid section*
+  CHECK NO.        DESCRIPTION                        DATE PAID      AMOUNT
+  9042             * ^                                04/05          250.00
+  9043             ^                                  04/05          250.00
+  9044             * Check # 9044 EXAMPLE HOA Payment 04/06          350.00
+  Total Checks Paid                                                  850.00
+*end*checks paid section*
+"""
+
+
+def test_checks_paid_rows_keep_their_own_numbers_and_descriptions():
+    txns = sp.parse_statement_text(CHECKS).segments[0].transactions
+    assert [(t.check_number, t.description, str(t.amount)) for t in txns] == [
+        # two payee-less checks on ONE day for the SAME amount: nothing but
+        # the number tells them apart, which is why it is not folded away.
+        ("9042", "", "-250.00"),
+        ("9043", "", "-250.00"),
+        # a check Chase knows the payee of keeps the words verbatim, markers
+        # aside — the number stays in them because the bank printed it there.
+        ("9044", "Check # 9044 EXAMPLE HOA Payment", "-350.00"),
+    ]
+
+
+def test_a_leading_number_is_a_check_number_only_in_checks_paid():
+    # The same rows under a withdrawal heading. They still parse — the
+    # date-before-amount shape is generic — but no other section has a
+    # CHECK NO. column, so the digits stay where the bank put them, in the
+    # narrative, and the field stays empty rather than guessing.
+    text = CHECKS.replace("checks paid section", "electronic withdrawal")
+    txns = sp.parse_statement_text(text).segments[0].transactions
+    assert [t.check_number for t in txns] == [None] * 3
+    assert txns[0].description == "9042 * ^"
+
+
+def test_the_section_checks_paid_is_the_one_with_its_own_columns():
+    assert sp._is_check_section("checks paid section3") is True
+    # …and the same prose-block exclusion `_section_sign` applies, so the two
+    # can never disagree about whether a heading opens a table.
+    assert sp._is_check_section("check disclosure message") is False
+    assert sp._section_sign("check disclosure message") is None
+    assert sp._is_check_section("electronic withdrawal") is False
 
 
 def test_reconciles_and_running_balance():
@@ -136,8 +223,9 @@ CHECKING SUMMARY
 
 def test_reconcile_flags_a_missed_row():
     # Drop a row's amount from the totals → beginning+Σ != ending.
-    bad = STATEMENT.replace("  04/05    Check                                250.00\n", "")
-    s = sp.parse_statement_text(bad)
+    dropped = "  9042             ^                     04/05             250.00\n"
+    assert dropped in STATEMENT
+    s = sp.parse_statement_text(STATEMENT.replace(dropped, ""))
     assert sp.segment_reconciles(s.segments[0]) is False
 
 
