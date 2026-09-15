@@ -135,6 +135,7 @@ const (
 	IncomeDetailedStaking                = "INCOME_STAKING"
 	IncomeDetailedRewards                = "INCOME_REWARDS"
 	IncomeDetailedDistributions          = "INCOME_DISTRIBUTIONS"
+	IncomeDetailedInsurancePayout        = "INCOME_INSURANCE_PAYOUT"
 )
 
 // vendoredSpendCategories is the outflow half of the Plaid subset, in
@@ -403,6 +404,8 @@ var extensionIncomeCategories = []SpendCategory{
 		"Royalties and creator payouts — book, music, software-licence and patent royalties, and a platform's share of what a creator's work earned", FamilyIncome},
 	{"INCOME", IncomeDetailedAlimonyAndChildSupport,
 		"Maintenance received from a former partner or a parent — alimony, spousal maintenance, child support; not a cash gift and not family support given freely", FamilyIncome},
+	{"INCOME", IncomeDetailedInsurancePayout,
+		"What an insurer pays out on a policy — a claim settled, a damage or health cost covered, a premium refunded on cancellation. Income rather than a reimbursement because the premium that bought the cover was already counted as spending, and nothing links a payout back to the premiums it answers: netting the payout out would count the outflow and drop the inflow", FamilyIncome},
 	{"INCOME", IncomeDetailedStaking,
 		"Proof-of-stake rewards and validator income earned by committing a crypto holding; kept apart from interest because jurisdictions tax the two differently", FamilyIncome},
 	{"INCOME", IncomeDetailedRewards,

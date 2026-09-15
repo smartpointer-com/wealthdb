@@ -136,15 +136,24 @@ diffs cleanly — `INCOME_WAGES`, `INCOME_INTEREST_EARNED`,
 primaries stay dropped: `TRANSFER_IN` is the own-account move the matcher
 already names, and the two outflow families are spending's.
 
-**Eight extensions**, ours, in the vendored shape under `INCOME` so the
+**Nine extensions**, ours, in the vendored shape under `INCOME` so the
 model may emit them and a future Plaid value supersedes one as a clean
 diff: `INCOME_SELF_EMPLOYMENT`, `INCOME_GOVERNMENT_BENEFITS`,
 `INCOME_RENT`, `INCOME_ROYALTIES`, `INCOME_ALIMONY_AND_CHILD_SUPPORT`,
-`INCOME_STAKING`, `INCOME_REWARDS`, `INCOME_DISTRIBUTIONS`. The bar each
+`INCOME_STAKING`, `INCOME_REWARDS`, `INCOME_DISTRIBUTIONS`,
+`INCOME_INSURANCE_PAYOUT`. The bar each
 clears is the bar an extension always clears — common, distinct on a
 statement or a tax return, and absent from the vendored vocabulary — and
 it is applied to households in general rather than to one, because the
 product is published.
+
+`INCOME_INSURANCE_PAYOUT` is the one whose placement is not obvious, since
+`reimbursement` below also describes it. It is income because **the premium
+was already counted as spending** and nothing in the data links a payout to
+the premiums it answers — different amounts, different dates, often
+different years. Netting the payout out would count the outflow and drop the
+inflow. `reimbursement` keeps the cases where the outflow IS identifiable: a
+utility credit against a bill, a merchant reversing its own charge.
 
 **Eight deltas**, ours, primary-level and lowercase, decided from
 structure a payer's name cannot reveal:
