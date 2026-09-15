@@ -68,6 +68,24 @@ class MigrationsTest(unittest.TestCase):
         self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 1)
         conn.close()
 
+    def test_both_openers_leave_the_db_owner_only(self):
+        # Silver is the source's financial record; sqlite3 would create it
+        # under the process umask, which in a collector container is 022.
+        for opener in (silver.open_db, silver.open_db_default_isolation):
+            with self.subTest(opener=opener.__name__):
+                self.db.unlink(missing_ok=True)
+                conn = opener(self.db)
+                conn.close()
+                self.assertEqual(self.db.stat().st_mode & 0o777, 0o600)
+
+    def test_a_wider_mode_is_narrowed_on_reopen(self):
+        # `load --force` deletes and recreates the DB, so a mode set once
+        # does not survive a rebuild — every open has to re-assert it.
+        silver.open_db(self.db).close()
+        self.db.chmod(0o644)
+        silver.open_db(self.db).close()
+        self.assertEqual(self.db.stat().st_mode & 0o777, 0o600)
+
     def test_apply_under_default_isolation(self):
         # A connection using the *default* transaction model (not the
         # manual isolation_level=None of open_db) must still persist

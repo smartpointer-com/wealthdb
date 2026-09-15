@@ -18,6 +18,26 @@ log = logging.getLogger(__name__)
 # Migration filenames look like `0001_initial.sql`, `12_add_x.sql`, etc.
 MIGRATION_FILE_RE = re.compile(r"^(\d+)_.*\.sql$")
 
+# Silver holds transactions, balances and holdings — the same financial
+# record its source shows behind a login — so the file is owner-only.
+_DB_MODE = 0o600
+
+
+def _own_only(path: Path) -> None:
+    """Narrow the DB file to `_DB_MODE`.
+
+    sqlite3 creates it under the process umask, which in a collector
+    container is 022 and yields a world-readable file. Applied on every open
+    rather than only on create: `load --force` deletes and recreates the DB,
+    so a mode set once does not survive a rebuild. Called before the first
+    PRAGMA, because SQLite gives the `-wal` and `-shm` sidecars the mode the
+    database file has when journalling turns them on.
+    """
+    try:
+        path.chmod(_DB_MODE)
+    except OSError:                      # a filesystem with no POSIX modes
+        log.debug("silver: could not narrow the mode of %s", path)
+
 
 def reset(path: Path) -> None:
     """Delete the silver DB at `path` (with its SQLite ``-wal`` / ``-shm`` /
@@ -50,6 +70,7 @@ def open_db(path: Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), isolation_level=None)
+    _own_only(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
@@ -79,6 +100,7 @@ def open_db_default_isolation(path: Path) -> sqlite3.Connection:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
+    _own_only(path)
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL is set here (not just in open_db) because synchronous=NORMAL is
     # only corruption-safe under WAL, and the PRAGMAs run before any DML so
