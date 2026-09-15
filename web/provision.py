@@ -135,9 +135,9 @@ def report_models():
     wraps a macro to bind the as-of and to render epoch columns as TIMESTAMP
     (`epoch_ms` -> zone-free UTC, not `to_timestamp`, which is
     TIMESTAMPTZ and renders in the reading session's zone) for Metabase
-    — except the taxonomy and spending models, which wrap the web_*
-    serving views (migrations 0032, 0043 and 0049) that do that
-    rendering, the cash fold-in and the
+    — except the taxonomy, spending and income models, which wrap the
+    web_* serving views (migrations 0032, 0043, 0049 and 0072) that do
+    that rendering, the cash fold-in and the
     '(uncategorized)' labelling themselves. The macros already emit DECIMAL
     money/quantity columns and one value column set per reporting currency
     (USD/CHF/EUR), so no value casting is needed here. The `_latest` reports
@@ -497,17 +497,15 @@ def report_models():
 
 # The investment income TYPES the Wealth Overview's income chart shows.
 #
-# It used to select transaction KINDS, and fenced card accounts out
-# because a card books `interest` and `fee` of its own. Both went with
-# migration 0072: the chart now reads web_income, whose base has
-# already excluded own-account moves and returned capital, and whose
-# rows carry a resolved income TYPE rather than a raw kind. A card's
-# finance charge is not in that base at all — it is an outflow — so the
-# fence it needed is gone with the question it answered.
+# Types, not transaction kinds: the chart reads web_income (migration
+# 0072), whose base has already excluded own-account moves and returned
+# capital and whose rows carry a RESOLVED income type. That is also why
+# the chart needs no card fence — a card's finance charge is an outflow
+# and is not in the base at all.
 #
-# Four types rather than five kinds: a private fund's `distribution`
-# floors to `capital_return` and is not income (docs/INCOME.md), so it
-# is absent by construction rather than by omission here.
+# A private fund's `distribution` floors to `capital_return` and is not
+# income (docs/INCOME.md), so it is absent here by construction rather
+# than by omission.
 INVESTMENT_INCOME_TYPES = ["INCOME_DIVIDENDS", "INCOME_INTEREST_EARNED",
                            "INCOME_STAKING", "INCOME_DISTRIBUTIONS"]
 WO_INCOME_TYPE_LIST = ", ".join(f"'{t}'" for t in INVESTMENT_INCOME_TYPES)
@@ -620,6 +618,24 @@ PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
 # window's own net spend).
 PRIVACY_DESC = " Privacy view: values are shares (%), not absolute amounts."
 
+# The uncategorised-income card, which the Income dashboard and its
+# privacy twin draw identically: a share of ROWS is already
+# privacy-safe, so the twin adds PRIVACY_DESC and changes nothing else.
+# Both the words and the SQL live here so the two cannot drift apart.
+IN_UNCATEGORIZED_DESC = (
+    "Share of the window's income lines no tier and no kind floor "
+    f"could place — the ones labelled '{UNCATEGORIZED}'. The backlog "
+    "`wealthdb categorize income` works through. Most income is "
+    "placed by its transaction kind, so this counts deposits. "
+    "It is a share of rows, so it is the same in every currency and "
+    "declares no currency variable; opened standalone it covers the "
+    "whole history, where the dashboard's time filter defaults to "
+    "the trailing twelve months.")
+IN_UNCATEGORIZED_SQL = (
+    "SELECT count(*) FILTER (WHERE income_label = "
+    f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS uncategorized_share\n"
+    "  FROM web_income")
+
 # The native-SQL returns charts: the Currency / Start-year pickers map onto
 # their {{currency}} / {{start_year}} template variables (the MBQL returns
 # cards get the same pickers on their currency / window_from_year dimensions).
@@ -689,8 +705,9 @@ START_YEAR_TAG = {"id": "year-tag", "name": "start_year",
                   "default": "0", "required": True}
 
 # The gold columns backing the native cards' field filters: the returns
-# charts filter report_returns; the privacy cards and the spending cards
-# filter the web_* serving views (gold migrations 0032 and 0043). Field
+# charts filter report_returns; the privacy cards and the spending and
+# income cards filter the web_* serving views (gold migrations 0032,
+# 0043 and 0072). Field
 # ids are per-Metabase-instance (assigned when the DB syncs), so main()
 # resolves them at provision time into FIELD_IDS — they can't be
 # hard-coded. A missing id (fresh install before the first sync) leaves
@@ -1002,15 +1019,15 @@ def question_defs(db_id, mid):
     in_where, in_val, income_native = _family_native_kit(
         db_id, "web_income", INCOME_FILTERS, INCOME_PICKERS, False, income_native_note)
 
-    # The Wealth Overview's own income tile reads the same view but
-    # carries only that dashboard's two pickers, so it gets its own
-    # tags rather than the Income dashboard's five.
     # The uncategorised-share tile's tags: every filter but the
     # currency variable, which a share of rows has no use for.
     in_share_tags = view_tags("web_income", INCOME_FILTERS)
     register_native_targets("Uncategorized income share", in_share_tags,
                             [t for t in INCOME_PICKERS if t[1] != "currency"])
 
+    # The Wealth Overview's own income tile reads the same view but
+    # carries only that dashboard's two pickers, so it gets its own
+    # tags rather than the Income dashboard's five.
     wo_income_tags = view_tags("web_income", {
         "time_range": INCOME_FILTERS["time_range"],
         "source": INCOME_FILTERS["source"]})
@@ -1397,18 +1414,10 @@ def question_defs(db_id, mid):
         # therefore gets tags without the currency variable rather than
         # declaring a required one it never interpolates.
         "Uncategorized income share": ("scalar",
-            "Share of the window's income lines no tier and no kind floor "
-            f"could place — the ones labelled '{UNCATEGORIZED}'. The backlog "
-            "`wealthdb categorize income` works through. Most income is "
-            "placed by its transaction kind, so this counts deposits. "
-            "It is a share of rows, so it is the same in every currency "
-            "and declares no currency variable; opened standalone it "
-            "covers the whole history, where the dashboard's time filter "
-            "defaults to the trailing twelve months.",
+            IN_UNCATEGORIZED_DESC,
             _native(db_id,
-                "SELECT count(*) FILTER (WHERE income_label = "
-                f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS uncategorized_share\n"
-                "  FROM web_income" + _spend_where(in_share_tags), in_share_tags),
+                    IN_UNCATEGORIZED_SQL + _spend_where(in_share_tags),
+                    in_share_tags),
             _percent_viz("uncategorized_share")),
         "Income by month": income_native("Income by month", "area",
             "Net income per month, stacked by type — the shape of the "
@@ -1420,12 +1429,16 @@ def question_defs(db_id, mid):
             {"graph.dimensions": ["month", "type"],
              "graph.metrics": ["net_income"],
              "stackable.stack_type": "stacked"}),
-        # Every slice drawn: the income vocabulary is small enough to
+        # No slice threshold: the income vocabulary is small enough to
         # name in full, unlike the spending one, so nothing is folded
-        # into an "other" wedge a reader cannot open.
+        # into an "other" wedge a reader cannot open. The ring rule
+        # still applies — a net-negative type has no slice.
         "Income by type": income_native("Income by type", "pie",
-            "Net income by type over the window. Every type is drawn — the "
-            "income vocabulary is short enough to name in full.",
+            "Net income by type over the window, largest first, with the "
+            "drawn types' total in the middle. No type is folded into an "
+            "'other' wedge — the income vocabulary is short enough to name "
+            "in full. A type whose reversals beat its receipts has no slice, "
+            "and is not in that total.",
             f"SELECT income_label AS type,\n       {in_val} AS net_income\n"
             "  FROM web_income" + in_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
             _donut(threshold=0, total=True)),
@@ -1820,9 +1833,10 @@ INCOME_TYPE_PARAM_ID = "aa5df10c"
 
 # The Income filters. `type` binds to income_label rather than to the
 # primary label its spending twin uses: the income taxonomy has ONE
-# vendored primary, so a primary-level picker would offer "Income",
-# "Gift", "Inheritance" and "Cash deposit" and hide every distinction
-# a reader opens the dashboard for.
+# vendored primary, so a primary-level picker would collapse every
+# earned type behind a single "Income" value and offer the deltas
+# beside it — hiding every distinction a reader opens the dashboard
+# for.
 INCOME_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
                   "source": ("silver_source_id", "string/="),
                   "account": ("account_label", "string/="),
@@ -1870,9 +1884,10 @@ def _family_native_kit(db_id, view, filters, pickers, neg, note):
     defines it. The tags stay inside — every card that needs them goes
     through the builder.
 
-    Shared because the two families differ in exactly four things — the
-    view, the filter specs, the picker list and the SIGN — and a second
-    copy of this would be four constants and a drift risk. `neg` flips
+    Shared because the two families differ only in what this takes —
+    the view, the filter specs, the picker list, the SIGN and the note
+    a card's description ends with — and a second copy of this would be
+    those few constants and a drift risk. `neg` flips
     the sum so an outflow, which gold stores negative, reads as a
     positive magnitude; income is already positive and passes False.
     """
@@ -2242,11 +2257,11 @@ def privacy_card_defs(db_id, model_ids):
         _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized"))
 
     out.update(spending_privacy_defs(db_id, model_ids))
-    out.update(income_privacy_defs(db_id, model_ids))
+    out.update(income_privacy_defs(db_id))
     return out
 
 
-def income_privacy_defs(db_id, model_ids):
+def income_privacy_defs(db_id):
     """The Income twin's cards: the same tiles, every figure a share,
     and no card rendering a payer or an account.
 
@@ -2362,18 +2377,9 @@ def income_privacy_defs(db_id, model_ids):
     # view_tags rather than the spend_tags the rest share.
     share_tags = view_tags("web_income", PRIVACY_INCOME_FILTERS)
     out["Uncategorized income share (privacy)"] = ("question", "scalar",
-        "Share of the window's income lines no tier and no kind floor "
-        f"could place — the ones labelled '{UNCATEGORIZED}'. The backlog "
-        "`wealthdb categorize income` works through. Most income is "
-        "placed by its transaction kind, so this counts deposits. "
-        "It is a share of rows, so it is the same in every currency and "
-        "declares no currency variable; opened standalone it covers the "
-        "whole history, where the dashboard's time filter defaults to "
-        "the trailing twelve months." + PRIVACY_DESC,
-        _native(db_id,
-            "SELECT count(*) FILTER (WHERE income_label = "
-            f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS uncategorized_share\n"
-            "  FROM web_income" + _spend_where(share_tags), share_tags),
+        IN_UNCATEGORIZED_DESC + PRIVACY_DESC,
+        _native(db_id, IN_UNCATEGORIZED_SQL + _spend_where(share_tags),
+                share_tags),
         _percent_viz("uncategorized_share"))
     register_native_targets("Uncategorized income share (privacy)", share_tags,
                             [t for t in INCOME_PICKERS if t[1] != "currency"])
@@ -2647,9 +2653,9 @@ def dashboard_defs():
             "Privacy view: values are shares (%) of the latest total "
             "across all sources, not absolute amounts. "),
     }
-    # Spending is a 'range' dashboard whose denominators are its own
-    # window rather than a holdings total, and the only twin that also
-    # redacts, so it names both in a blurb of its own.
+    # Spending and Income are 'range' dashboards whose denominators are
+    # their own window rather than a holdings total, and the two twins
+    # that also redact, so each names both in a blurb of its own.
     own_pdesc = {"Spending": (
         "Privacy view: values are shares (%) of the window's own net "
         "spend, or of its biggest month; merchant and account labels are "
@@ -2675,9 +2681,10 @@ def dashboard_parameters(model_ids, mode, name=""):
     holdings dashboards), 'returns' pairs it with a required currency
     picker (the returns dashboards), None means no filters. The source
     picker draws its dropdown values from the sources model. The Spending
-    dashboards are 'range' plus pickers of their own — three on the money
-    view, two on the privacy twin, which carries no account picker — so
-    they are named rather than moded (see below)."""
+    and Income dashboards are 'range' plus pickers of their own — one
+    more on each money view than on its privacy twin, which carries no
+    account picker — so they are matched by NAME rather than by mode,
+    Income first (see below)."""
     if mode is None:
         return []
 

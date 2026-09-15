@@ -16,9 +16,14 @@ import (
 //
 // A categorisation run's own numbers — counterparties asked, rows rejected,
 // verdicts stored — say whether the model behaved. They say nothing
-// about whether the SPENDING PICTURE is right, and that is the
-// question actually being asked. So the report also prints four
-// canaries, each aimed at a way the picture can be quietly wrong:
+// about whether the PICTURE is right, and that is the question actually
+// being asked. Those counters, and the stratified sample of what is
+// still uncategorised, print per family.
+//
+// The four canaries below do not. They read the SPENDING population, so
+// they are collected once and printed with the spending family; an
+// income run prints its own counters and nothing here. Each is aimed at
+// a way the picture can be quietly wrong:
 //
 //   - the per-source categorisation rate says whether one source is
 //     falling behind the others, which is usually a normalisation or

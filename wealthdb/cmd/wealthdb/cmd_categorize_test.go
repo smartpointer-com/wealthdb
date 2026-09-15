@@ -1535,19 +1535,6 @@ func TestCategorizeDryRunPrintsThePlanBeforeAnyCall(t *testing.T) {
 	}
 }
 
-// TestCollectMerchantCandidatesFencesTheWholeRow pins the fence's
-// row-level reading at candidacy, which is the one place a key-only
-// reading lets a private individual through. A mobile person-to-person
-// rail leads the narrative and names no payee; the reduction prefers
-// the counterparty, so the key is the payee's name and nothing else —
-// not transfer-shaped, carrying a word, not the bank's filing, so
-// every key-only refusal passes it. The rail survives in the provider's
-// filing and in the raw narrative, which is what refuses the row.
-//
-// Every value is invented. The assertions are about a name reaching a
-// prompt, so the fixture is written as one: a person-shaped payee
-// beside an ordinary merchant on the same day and source, which is
-// also what makes the neighbour list non-trivial.
 // TestPersonShapeFenceIsCardExemptAndOptional pins the two things that
 // keep the person-shape arm from being either useless or ruinous.
 //
@@ -1560,8 +1547,8 @@ func TestCategorizeDryRunPrintsThePlanBeforeAnyCall(t *testing.T) {
 // the sender.
 //
 // And it must be possible to turn off: a deployment whose model runs on
-// this machine has nothing to withhold from it, and the user asked for
-// the arm to be a default rather than a law.
+// this machine has nothing to withhold from it, so the arm is a default
+// rather than a law.
 func TestPersonShapeFenceIsCardExemptAndOptional(t *testing.T) {
 	// Two words, no digit, no legal form, no trade word. A person; and
 	// on a card statement, indistinguishable from a small shop.
@@ -1641,6 +1628,19 @@ func TestPersonShapeFenceIsCardExemptAndOptional(t *testing.T) {
 	}
 }
 
+// TestCollectMerchantCandidatesFencesTheWholeRow pins the fence's
+// row-level reading at candidacy, which is the one place a key-only
+// reading lets a private individual through. A mobile person-to-person
+// rail leads the narrative and names no payee; the reduction prefers
+// the counterparty, so the key is the payee's name and nothing else —
+// not transfer-shaped, carrying a word, not the bank's filing, so
+// every key-only refusal passes it. The rail survives in the provider's
+// filing and in the raw narrative, which is what refuses the row.
+//
+// Every value is invented. The assertions are about a name reaching a
+// prompt, so the fixture is written as one: a person-shaped payee
+// beside an ordinary merchant on the same day and source, which is
+// also what makes the neighbour list non-trivial.
 func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 	const (
 		payee     = "EXAMPLE, PERSON"

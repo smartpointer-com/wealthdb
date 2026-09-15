@@ -439,24 +439,23 @@ func IncomeRuleCategory(kind, signature, counterparty, description, providerCate
 	return r.detailed, "", true
 }
 
-// matchRule is RuleCategory's core, returning the RULE that fired
-// rather than only its verdict.
-//
-// Unexported and for the tests: two built-in rules may assign one
-// detailed value — a security-level pass-through and an account's
-// management fee are both what holding the assets costs — so a test
-// asserting the value alone cannot say which of them matched, and
-// would keep passing if a phrase moved from one to the other.
-// Provenance in gold stays the tier rather than the rule, which is why
-// this does not widen the exported signature.
+// matchRule runs matchRuleIn over the BUILT-IN table and is for the
+// tests only: two built-in rules may assign one detailed value — a
+// security-level pass-through and an account's management fee are both
+// what holding the assets costs — so a test asserting the value alone
+// cannot say which of them matched, and would keep passing if a phrase
+// moved from one to the other. Provenance in gold stays the tier rather
+// than the rule, which is why no exported signature returns this.
 func matchRule(signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
 	return matchRuleIn(builtinRules, signature, counterparty, description, providerCategory)
 }
 
-// matchRuleIn is matchRule over a named rule table, so the two
-// families share the narrative-field machinery — the memo split, the
-// refusal pass, the token/phrase/shape matching — and differ only by
-// which rules they consult.
+// matchRuleIn matches one narrative against a named rule table and
+// returns the rule that fired. It is the core RuleCategory calls, and
+// taking the table as an argument is what lets the two families share
+// the narrative-field machinery — the memo split, the refusal pass, the
+// token/phrase/shape matching — and differ only by which rules they
+// consult.
 func matchRuleIn(rules []spendRule, signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
 	description, _ = canonical.SplitDescriptionMemo(description)
 	fields := make([]narrativeField, 0, 3)
@@ -502,16 +501,17 @@ func newNarrativeField(s string) (narrativeField, bool) {
 	return narrativeField{tokens: set, joined: strings.Join(tokens, " ")}, true
 }
 
-// Rule is one entry of `spending.rules`, compiled: a case-insensitive
-// pattern over a row's raw narrative and the category a match places.
-// Rules are the one deployment-specific input to the rule tier. The
-// category may be any valid spend_detailed value, vendored or delta:
-// a rule is the holder's own local input, applied by this pass and
-// never shown to the model, so the vendored-only restriction the
-// model tier lives under has no reason to reach it.
+// Rule is one entry of a family's rule list — `spending.rules` or
+// `income.rules` — compiled: a case-insensitive pattern over a row's
+// raw narrative and the category a match places. Rules are the one
+// deployment-specific input to the rule tier. The category may be any
+// valid value of that family's vocabulary, vendored or delta: a rule
+// is the holder's own local input, applied by this pass and never
+// shown to the model, so the vendored-only restriction the model tier
+// lives under has no reason to reach it.
 //
-// It exists for three populations neither the matcher nor the model
-// can ever reach. One is own-money movement whose receiving side is
+// On the outflow side it exists for three populations neither the
+// matcher nor the model can ever reach. One is own-money movement whose receiving side is
 // booked nowhere in gold — a wire to the holder's account at a bank
 // the product does not track, a transfer to an exchange it does — so
 // the outgoing leg is one-legged forever. Another is capital deployed
@@ -521,10 +521,14 @@ func newNarrativeField(s string) (narrativeField, bool) {
 // person- or IBAN-shaped and therefore fenced from the model
 // (TransferShaped): nothing but a rule or a pin can categorise it,
 // and a rule is the right instrument for a counterparty that recurs.
-// In all three the only thing that identifies the row is text in the
-// narrative: a name, an account number, a legal entity. That text is
-// personal, so the rules live in the user's config, never in the
-// repository.
+// The inflow side has its own version of the same gap: a credit
+// transfer whose narrative is the sender's name, which the fence
+// refuses for exactly the reason it is informative.
+//
+// In every one of them the only thing that identifies the row is text
+// in the narrative: a name, an account number, a legal entity. That
+// text is personal, so the rules live in the deployment's config,
+// never in the repository.
 type Rule struct {
 	Match    *regexp.Regexp
 	Category string

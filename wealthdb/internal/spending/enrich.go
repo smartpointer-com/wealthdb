@@ -186,21 +186,17 @@ type FamilyResult struct {
 	SplitVerdicts int
 }
 
-// RunDeterministicPass recomputes every deterministic spend verdict in
-// gold, in one transaction, and returns what it did.
+// RunDeterministicPass recomputes every deterministic verdict in gold,
+// both families', in one transaction, and returns what it did.
 //
-// The order of the phases is load-bearing. The account scope is
-// stamped FIRST because every population macro reads it, so a scope
-// edit takes effect in the same pass that applies it. The old
-// signatures are captured BEFORE the delete, because the
-// signature-version re-key needs to know where a verdict used to hang.
-// The matcher runs over its own broader pool: every account in gold,
-// and the income-side kinds the spending population excludes. Without
-// the income side a card payment's funding leg has nothing to pair
-// with; without the unscoped accounts, neither does a transfer into an
-// investment account. Pins are resolved against the whole of
-// `transactions`, because a pin describes a row by what a statement
-// shows and owes nothing to any population.
+// What it owns is the work neither family may do twice. Silver kinds
+// are read once. The matcher runs ONCE, before either family, over its
+// own broader pool: every account in gold, and the income-side kinds
+// the spending population excludes. Without the income side a card
+// payment's funding leg has nothing to pair with; without the unscoped
+// accounts, neither does a transfer into an investment account. A pair
+// found there is one pair, seen from both sides. Each family's own
+// phases, and the ordering they require, are enrichFamily's.
 func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Result, error) {
 	now := opts.Now
 	if now == 0 {
@@ -319,8 +315,9 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 
 // ---- phase 1: the account scope ------------------------------------------
 
-// syncAccountScope replaces spend_account_scope with what the config
-// declares, on the SetFxPriorities precedent: configuration is stamped
+// syncAccountScope replaces a family's account-scope table
+// (fam.scopeTable) with what the config declares, on the
+// SetFxPriorities precedent: configuration is stamped
 // into gold so the SQL layer can honour it without a runtime injection
 // point, and a whole re-stamp means removing an entry from the config
 // removes it from gold rather than leaving it behind to haunt a later
@@ -328,9 +325,10 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 // account gold does not hold.
 //
 // The key is an account id, never a nickname or a display name
-// (docs/DESIGN.md §5.1), and `spend_scoped_accounts()` joins the
-// stamped row to `accounts` on exactly that id: an entry naming
-// anything else matches no account and so widens or fences nothing.
+// (docs/DESIGN.md §5.1), and the family's `*_scoped_accounts()` macro
+// joins the stamped row to `accounts` on exactly that id: an entry
+// naming anything else matches no account and so widens or fences
+// nothing.
 // Every entry is stamped whatever it resolves to — the scope table is
 // the config's whole state, and dropping an entry here would hide the
 // typo instead of surfacing it — and the unresolved ones are counted

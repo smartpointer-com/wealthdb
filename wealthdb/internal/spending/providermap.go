@@ -426,17 +426,6 @@ var ubsCardMoneyMovement = map[string]bool{
 	"POI Funding Transactions (Excluding MoneySend)": true,
 }
 
-// raiffeisenCategories translates the Mein ELBA vocabulary, which the
-// bank publishes as lower-case tokens rather than MCC prose.
-//
-// The bank's "*_other" tokens are not all coarse in the same way, and
-// the token's spelling does not decide whether the row is claimed —
-// the TRANSLATION does. `electronics_shop_other` and `insurance_other`
-// name a real line of business and resolve to one, so they claim;
-// `shopping_other` and `utility` resolve to their primary's catch-all
-// and so decline, leaving the merchant name to the model. What the
-// vocabulary declines outright is in raiffeisenUncategorized below.
-
 // ubsIncomeBookingTypes is the inflow half of the UBS booking-type
 // vocabulary: the types that NAME what arrived.
 //
@@ -527,6 +516,16 @@ func raiffeisenIncomeReviewed() map[string]bool {
 	return out
 }
 
+// raiffeisenCategories translates the Mein ELBA vocabulary, which the
+// bank publishes as lower-case tokens rather than MCC prose.
+//
+// The bank's "*_other" tokens are not all coarse in the same way, and
+// the token's spelling does not decide whether the row is claimed —
+// the TRANSLATION does. `electronics_shop_other` and `insurance_other`
+// name a real line of business and resolve to one, so they claim;
+// `shopping_other` and `utility` resolve to their primary's catch-all
+// and so decline, leaving the merchant name to the model. What the
+// vocabulary declines outright is in raiffeisenUncategorized below.
 var raiffeisenCategories = map[string]string{
 	"supermarket":                   "FOOD_AND_DRINK_GROCERIES",
 	"tv_phone_internet":             "RENT_AND_UTILITIES_INTERNET_AND_CABLE",

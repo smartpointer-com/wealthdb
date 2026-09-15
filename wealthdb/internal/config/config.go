@@ -752,11 +752,8 @@ func ValidSpendContext(s string) bool {
 	return false
 }
 
-// ValidIncomeContext is ValidSpendContext for the income family. It
-// admits `payer` — the income spelling of the first level, and what
-// docs/INCOME.md uses — and `merchant` as well, so that a
-// `spending.categorization` block inherited whole by income validates
-// without being rewritten in the income's words.
+// ValidIncomeContext is ValidSpendContext for the income family, which
+// admits SpendContextPayer as well.
 func ValidIncomeContext(s string) bool {
 	return s == SpendContextPayer || ValidSpendContext(s)
 }
@@ -778,10 +775,6 @@ func (s *SpendingCategorization) ContextLevel() string {
 		return DefaultSpendContext
 	}
 	if s.Context == SpendContextPayer {
-		// The income spelling of the first level. The level decides how
-		// much of a TRANSACTION leaves the machine, which is one
-		// question with one answer per level, so the two names resolve
-		// to one constant rather than to two code paths.
 		return SpendContextMerchant
 	}
 	return s.Context
@@ -1097,13 +1090,13 @@ type IncomeRule struct {
 	Scope *SpendingRuleScope `json:"scope,omitempty"`
 }
 
-// The income context levels. `payer` is the income spelling of the
-// first level and is what the documentation uses; `merchant` is
-// accepted as well, so that a `spending.categorization` block INHERITED
-// whole by income validates without being rewritten. Internally the
-// three levels are the existing constants, because the level decides
-// how much of a TRANSACTION leaves the machine and that question has
-// one answer per level whichever family is asking.
+// SpendContextPayer is the income spelling of the first context level,
+// and what docs/INCOME.md uses. `merchant` is accepted from an income
+// block as well, so that a `spending.categorization` block INHERITED
+// whole validates without being rewritten. Both resolve to one
+// constant rather than two code paths: the level decides how much of a
+// TRANSACTION leaves the machine, and that question has one answer per
+// level whichever family is asking.
 const SpendContextPayer = "payer"
 
 // IncomeAccountScope returns the include and exclude maps the income

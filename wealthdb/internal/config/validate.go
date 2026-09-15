@@ -528,12 +528,13 @@ func compileSpendScope(sc *SpendingRuleScope) (CompiledSpendScope, error) {
 }
 
 // validateMatchKnobs bounds one transfer matcher's knobs. Both matchers
-// (returns_transfer_matching, spending.internal_transfer_matching) run on
-// the same core and are checked whether or not their block is enabled or
-// even reachable — there is no income twin, because there is one
-// internal-transfer matcher and income reads its verdicts — so a mis-typed value fails at load rather than lying in
-// wait: the window cap keeps it from pairing unrelated month-apart flows,
-// the tolerance cap from pairing unrelated amounts.
+// (returns_transfer_matching, spending.internal_transfer_matching) run
+// on the same core and are checked whether or not their block is
+// enabled or even reachable, so a mis-typed value fails at load rather
+// than lying in wait: the window cap keeps it from pairing unrelated
+// month-apart flows, the tolerance cap from pairing unrelated amounts.
+// There is no income twin — one matcher runs, and income reads its
+// verdicts.
 func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) error {
 	if windowDays != nil && (*windowDays < 0 || *windowDays > 30) {
 		return fmt.Errorf("config: %s.window_days %d out of range [0, 30]", block, *windowDays)

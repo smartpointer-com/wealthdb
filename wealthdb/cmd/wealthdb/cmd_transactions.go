@@ -292,9 +292,9 @@ Flags:
                            (e.g. -C+description-account)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
   -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts;
-                           statement narratives (description, merchant — the store's name
-                           or the line's own signature — and the name column where it
-                           falls back to one) redact as free text — the cell masks whole
+                           statement narratives (description, and merchant / payer — the
+                           store's name or the line's own signature — and the name column
+                           where it falls back to one) redact as free text — the cell masks whole
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:

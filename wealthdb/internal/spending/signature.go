@@ -1047,10 +1047,13 @@ const wordMinLetters = 3
 // row has. A person whose name happens to contain a marker is NOT
 // fenced, which is why this table is a fence on top of the rail fence
 // rather than instead of it. Extend it by adding a token; a marker that
-// is also a common surname (say HOLDING) is a judgement call and the
-// list errs towards fencing less, because under-fencing here is
-// recoverable by turning the option off and over-fencing quietly
-// removes real merchants from the model tier.
+// is also a common surname (say HOLDING) is a judgement call, and the
+// list errs towards fencing LESS. Both directions cost something: an
+// omitted marker quietly withholds a genuine organisation from the
+// model tier, and an ambiguous one lets a person who shares it through.
+// A deployment that cannot accept the second keeps its model endpoint
+// on this machine, where what leaves is nothing and the arm's setting
+// stops mattering.
 var organisationMarkers = map[string]bool{
 	// Legal forms.
 	"INC": true, "LLC": true, "LTD": true, "LIMITED": true, "PLC": true,
@@ -1132,17 +1135,7 @@ func PersonShaped(s string) bool {
 // any length. It is isWord without the wordMinLetters floor: an initial
 // is a letter of a person's name, and `J EXAMPLE` is exactly the shape
 // PersonShaped exists to catch.
-func isAllLetters(tok string) bool {
-	if tok == "" {
-		return false
-	}
-	for i := 0; i < len(tok); i++ {
-		if tok[i] < 'A' || tok[i] > 'Z' {
-			return false
-		}
-	}
-	return true
-}
+func isAllLetters(tok string) bool { return tok != "" && allUpperASCII(tok) }
 
 // Uninformative reports whether a signature carries nothing a model
 // could name: after normalisation it holds no all-letter token of at
@@ -1246,12 +1239,15 @@ func isBrandWithReference(tok string) bool {
 }
 
 // isWord reports whether a tokenize'd token is all letters and at
-// least wordMinLetters long. tokenize emits upper-case ASCII only, so
-// the letter test is the ASCII range.
+// least wordMinLetters long.
 func isWord(tok string) bool {
-	if len(tok) < wordMinLetters {
-		return false
-	}
+	return len(tok) >= wordMinLetters && allUpperASCII(tok)
+}
+
+// allUpperASCII is the letter test both of the above share. tokenize
+// emits upper-case ASCII only, so the range IS the alphabet. An empty
+// token passes vacuously; each caller states what it wants of length.
+func allUpperASCII(tok string) bool {
 	for i := 0; i < len(tok); i++ {
 		if tok[i] < 'A' || tok[i] > 'Z' {
 			return false

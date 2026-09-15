@@ -50,8 +50,8 @@ type TransactionRow struct {
 	SpendPrimary  *string
 	SpendDetailed *string
 	// PayerName, IncomePrimary and IncomeDetailed are the same three
-	// from the INCOME overlay (migration 0071's
-	// income_txn_categories): who paid, and what kind of income the
+	// from the INCOME overlay (income_txn_categories, migration 0070
+	// and re-issued by 0073): who paid, and what kind of income the
 	// tiers and the kind floor settled on. Nil for every row the income
 	// pass does not reach — a purchase, a sale, anything outside the
 	// income account scope.

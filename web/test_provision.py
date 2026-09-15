@@ -1049,12 +1049,6 @@ check("...and names the four investment income types",
 check("...and no longer fences card accounts",
       "account_kind" not in _wo, _wo[:200])
 
-if FAILS:
-    print(f"provision tests: {FAILS} failed")
-else:
-    print("provision tests: all passed")
-sys.exit(1 if FAILS else 0)
-
 section("the merchant ranking carries every currency")
 MERCH = CARDS["Top 50 merchants"][2]["query"]
 AGGS = MERCH.get("aggregation", [])
@@ -1097,3 +1091,9 @@ for _c, *_ in DEFS["Spending"][3]:
           _c in p.SPEND_ALL_CURRENCY_CARDS
           and [a[2].get("display-name")
                for a in _q["query"]["aggregation"]] == ["USD", "CHF", "EUR"])
+
+if FAILS:
+    print(f"provision tests: {FAILS} failed")
+else:
+    print("provision tests: all passed")
+sys.exit(1 if FAILS else 0)

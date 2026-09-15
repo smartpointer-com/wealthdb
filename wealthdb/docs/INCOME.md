@@ -365,15 +365,8 @@ the sender. `PersonShaped` is the arm that reads the name itself, and it
 is on by default (`spending.categorization.fence_person_names`,
 inherited with the rest of the block).
 
-What is fenced, exactly:
-
-- **rails** — WIRE, ACH, SEPA, ZELLE and the rest, in the signature, in
-  the provider's filing or in the narrative;
-- **IBAN-shaped runs** and **masked contact numbers**;
-- **filing-only and wordless** signatures, which name nothing;
-- **person-shaped** signatures on non-card accounts — two or more
-  all-letter tokens with no organisation marker — unless
-  `fence_person_names` is off.
+What each arm refuses is SPENDING.md §5's table; nothing here changes
+it.
 
 What the model sees on the income side is what is left of the
 **deposits** — candidacy is that one kind and no other (§7) — so in
@@ -383,13 +376,10 @@ the people and is placed by a config rule or a pin, which is the remedy
 every fenced row has; a gift or maintenance payment from a relative is
 fenced and stays uncategorised, which is the honest answer.
 
-**The person arm's reach is wide, and deliberately so.** It cannot tell
-`JANE EXAMPLE` from `MORGAN STANLEY` — nothing about a two-word
-all-letter signature can — so it refuses both, and a real payer whose
-name carries no organisation marker is fenced with the people. That is
-the trade the default makes for a published product pointed at a remote
-endpoint. A deployment whose model runs on this machine turns the arm
-off and gets those payers named (§7).
+The person arm's cost — it cannot tell a person from an organisation
+whose name carries no marker, and refuses both — is SPENDING.md §5's to
+state. It lands harder here, because this is the side whose narratives
+are names.
 
 The context levels are the same three. `income.categorization.context`
 accepts `payer` as the income spelling of the narrowest level, and
@@ -467,8 +457,9 @@ the idiom the whole CLI already uses for it:
 
 `--level` defaults to **`detailed`**, the one default that differs from
 spending's. The income vocabulary has one vendored primary, so at the
-primary level every vendored type and extension folds into `INCOME`
-beside `gift`, `inheritance` and `cash_deposit`. That view has a use —
+primary level every vendored type and extension folds into `INCOME`,
+beside the deltas the base keeps (§3's table) and `(uncategorized)`.
+That view has a use —
 what was earned or yielded against what was given — but it is not the one
 a reader opens the report for.
 

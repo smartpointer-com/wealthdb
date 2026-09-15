@@ -513,14 +513,17 @@ block inherits `spending.categorization` WHOLE when absent, so a
 household that configured one tier gets one tier, and a stricter income
 context is a deliberate act.
 
-Every run ends, per family, with the categorisation rate per source,
-the provider-map misses (a card issuer's categorical vocabulary moving,
-bar the residual bucket its map marks untranslatable; a bank's
-untranslated booking types are rails, not misses — SPENDING.md §3), the
-matched internal-transfer pairs (both legs — the audit surface for what
-the matcher removed from the base), the largest unmatched legs including
-the cross-currency shapes the matcher structurally cannot pair, and a
-stratified sample of what is still uncategorised.
+Every run ends, per family, with its own counters and a stratified
+sample of what that family left uncategorised. The data-quality
+canaries are computed once over the SPENDING population and print with
+the spending family: the categorisation rate per source, the
+provider-map misses (a card issuer's categorical vocabulary moving, bar
+the residual bucket its map marks untranslatable; a bank's untranslated
+booking types are rails, not misses — SPENDING.md §3), the matched
+internal-transfer pairs (both legs — the audit surface for what the
+matcher removed from spending), and the largest unmatched legs
+including the cross-currency shapes the matcher structurally cannot
+pair.
 
 `categorizations` dumps the family's store — the `resolutions`
 counterpart for the enrichment overlays. It takes no source filter:

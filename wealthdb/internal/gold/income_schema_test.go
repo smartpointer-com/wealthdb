@@ -100,8 +100,10 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             -- row above. This is the shape the ordering turns on: one
             -- payer, two kinds, and a single store verdict behind both.
             ('inc-src', 'T-DEP-SHARED',1000, 'CASH1', NULL,          'deposit',      'USD',  150),
-            -- A deposit carrying no amount at all. net_amount is
-            -- nullable, and the sign guard is what decides it.
+            -- A deposit carrying no amount, and one carrying zero.
+            -- net_amount is nullable and the deposit kind has no amount
+            -- guard of its own, so both are rows of the base that
+            -- contribute nothing to a sum.
             ('inc-src', 'T-DEP-NOAMT', 1000, 'CASH1', NULL,          'deposit',      'USD',  NULL),
             ('inc-src', 'T-DEP-ZERO',  1000, 'CASH1', NULL,          'deposit',      'USD',    0),
             -- Interest that moved nothing: it satisfies neither
@@ -136,9 +138,11 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             ('inc-src', 'T-DEPOSIT',   'sig-unknown', 1, NULL,                     'signature-only', 100),
             ('inc-src', 'T-GAIN-STORE','sig-gains',   1, NULL,                     'signature-only', 100),
             ('inc-src', 'T-DEP-SHARED','sig-gains',   1, NULL,                     'signature-only', 100),
-            -- Interest CHARGED, which the population never admits but a
-            -- pin can put in the overlay: the floor's sign guard is what
-            -- stops it reading as interest earned.
+            -- Interest CHARGED. The pass records every population row it
+            -- reaches, so this one has an enrichment row too; what must
+            -- not happen is the floor placing it, because the floor's
+            -- sign guard is what keeps a finance charge out of interest
+            -- earned.
             ('inc-src', 'T-INT-NEG',   'sig-margin',  1, NULL,                     'signature-only', 100),
             -- A deposit reversal, carrying the signature of the
             -- booking it corrects so the two net inside one type.

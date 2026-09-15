@@ -111,9 +111,8 @@ CREATE OR REPLACE MACRO income_withheld_outccy(p_from, p_to, p_ccy, p_period) AS
 -- `withheld` is FULL JOINed by bucket, so neither side can drop a
 -- bucket the other has: a window with income and no withholding shows
 -- the income and an empty memo, and a bucket whose only booking was a
--- tax row keeps its row rather than vanishing. (Comment corrected
--- after the fact; the body below has always been the FULL JOIN, and
--- the join predicate 35 lines down says so.)
+-- tax row keeps its row rather than vanishing. The join itself carries
+-- the reasoning.
 CREATE OR REPLACE MACRO report_income_summary(p_from, p_to, p_ccy, p_period) AS TABLE (
     WITH agg AS (
         SELECT spend_period_bucket(p_period, occurred_at) AS period_start,

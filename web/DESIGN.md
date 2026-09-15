@@ -107,7 +107,7 @@ MBQL/definition-only, no data baked in.
 Each dashboard also gets a **privacy twin** (linked from the dashboard's top
 row): same layout and filters, but every card shows shares (%) instead of
 money. The twins' charts are native SQL over the gold `web_*` serving views
-(migrations 0032 and 0043 — TIMESTAMP-cast reductions of the report macros to
+(migrations 0032, 0043 and 0072 — TIMESTAMP-cast reductions of the report macros to
 the grain each card reads, some folding cash in as a class of its own;
 Metabase syncs views like tables and assigns their columns field ids), with the
 dashboard pickers landing on the cards as field filters. Each card computes

@@ -62,8 +62,11 @@ type IncomeTypeRow struct {
 // PayerName is the INSTRUMENT on a line that carries one — the company
 // that paid the dividend, the protocol that paid the staking reward —
 // the payer store's name for the line's signature otherwise, and the
-// signature itself where the store has nothing. It is nil only on a
-// delta line, which has no payer to name. It is therefore a narrative
+// signature itself where the store has nothing. It is nil where none of
+// the three holds: on a delta line, which has no payer to name, and on
+// a line the kind floor placed off a narrative that reduced to nothing
+// — interest the bank credited under its own booking code, most of
+// all. It is therefore a narrative
 // fold as often as a written name, like PayerSignature and Description
 // beside it, and all three can carry a person: the CLI gives every one
 // of them the free-text privacy class for that reason.

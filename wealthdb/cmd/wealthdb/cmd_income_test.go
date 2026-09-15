@@ -232,23 +232,6 @@ func TestIncomeCLIEndToEnd(t *testing.T) {
 	})
 }
 
-// TestIncomeWindowDefaultsToTrailingYear pins the shared window
-// default at the income command's own entry point.
-func TestIncomeWindowDefaultsToTrailingYear(t *testing.T) {
-	now := time.Date(2026, time.June, 15, 9, 30, 0, 0, time.UTC)
-	from, to, err := parseTrailingYearWindow(nil, now)
-	if err != nil {
-		t.Fatalf("parseTrailingYearWindow: %v", err)
-	}
-	wantFrom := time.Date(2025, time.June, 15, 0, 0, 0, 0, time.UTC).Unix()
-	if from != wantFrom {
-		t.Errorf("from = %d, want %d (the same day one year ago)", from, wantFrom)
-	}
-	if to < now.Unix() {
-		t.Errorf("to = %d, want the end of today", to)
-	}
-}
-
 // TestIncomeFlagReordering pins that a flag may follow the positional
 // window on `wealthdb income` without its value being read as a date.
 //
@@ -372,12 +355,12 @@ func TestIncomeTransactionPrivacyClasses(t *testing.T) {
 		"tx_id": PrivacyAccountID,
 		// The rest, stated rather than skipped, so that a column added
 		// to the registry has to be classified here before the suite
-		// goes green. `tx_id` arrived without a line in this map and
-		// nothing noticed.
-		// The holder's own label for an account, from
-		// `account_overrides`, and legible under -p on all three
-		// transaction surfaces. Stated here rather than assumed: if it
-		// is ever reclassified it must be reclassified on spending and
+		// goes green.
+		//
+		// `account_nickname` is the holder's own label for an account,
+		// from `account_overrides`, and legible under -p on all three
+		// transaction surfaces. Stated rather than assumed: if it is
+		// ever reclassified it must be reclassified on spending and
 		// `wealthdb transactions` in the same change.
 		"account_nickname":        PrivacyNone,
 		"silver_source":           PrivacyNone,

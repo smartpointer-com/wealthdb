@@ -78,8 +78,8 @@ func TestIncomeRuleTypeMustBeAnIncomeValue(t *testing.T) {
 	}
 }
 
-// TestIncomeCategorizationInherits pins the resolution the plan puts in
-// one place: absent, the income model tier IS the spending one.
+// TestIncomeCategorizationInherits pins the one resolution: absent, the
+// income model tier IS the spending one.
 func TestIncomeCategorizationInherits(t *testing.T) {
 	const spendBlock = `"spending": {"categorization": {"context": "descriptor",
         "model": {"name": "shared", "baseUrl": "http://localhost:1/v1", "api": "openai"}}}`

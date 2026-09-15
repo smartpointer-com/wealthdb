@@ -24,7 +24,7 @@ func TestFormatWatermark(t *testing.T) {
 }
 
 // TestStatusVerbosePrintsBothFamilies pins `status -v`'s per-family
-// block, which PLAN M3 named and the build never wrote a test for.
+// block.
 //
 // Both enrichment families report a backlog here, and the income
 // section is two lines; deleting them leaves the rest of the suite

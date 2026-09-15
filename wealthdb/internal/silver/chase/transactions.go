@@ -112,12 +112,8 @@ SELECT fitid, posted_at, account_external_id, amount,
 			// The provider's own category, verbatim and un-normalised.
 			// Empty on payments, which the provider leaves uncategorised.
 			ProviderCategory: silver.StrPtrIfNonEmpty(category),
-			// The cheque number, on an OUTFLOW only. Silver fills this
-			// column from the QFX CHECKNUM and from a deposit export
-			// whose header reads "Check or Slip #" — so on an inflow it
-			// can be a deposit SLIP number, which is not a cheque the
-			// holder wrote. The sign is what tells them apart, and gold
-			// migration 0075 states the rule for every adapter.
+			// The cheque number, on an OUTFLOW only — see
+			// checkNumberOnOutflow for why the sign decides.
 			CheckNumber: checkNumberOnOutflow(checkNo, net),
 			Payload:     silver.PayloadWith(payload, extra),
 		})

@@ -21,7 +21,7 @@ func init() {
 }
 
 // signatureList is the repeatable --forget flag: every occurrence
-// appends one merchant signature, verbatim. A signature named twice
+// appends one counterparty signature, verbatim. A signature named twice
 // is kept once, so it is reported once as removed rather than once as
 // removed and once as missing.
 type signatureList []string
@@ -41,17 +41,18 @@ func (l *signatureList) Set(v string) error {
 	return nil
 }
 
-// cmdCategorizations dumps the spend_merchant_categories table — the
-// model-derived merchant verdicts the spending report macros COALESCE
-// in behind the per-transaction ones — and, with --forget, removes
-// verdicts from it. The dump is read-only, the resolutions
-// counterpart for the spending overlay; --forget is the one write,
-// and the only way short of hand-editing gold to undo a verdict the
-// model got wrong at merchant scope.
+// cmdCategorizations dumps a family's verdict store — the
+// model-derived counterparty verdicts its report macros COALESCE in
+// behind the per-transaction ones — and, with --forget, removes
+// verdicts from it. The positional picks the family; with none, both
+// stores are dumped under a `family` column. The dump is read-only,
+// the resolutions counterpart for the enrichment overlays; --forget is
+// the one write, and the only way short of hand-editing gold to undo a
+// verdict the model got wrong at counterparty scope.
 //
-// The table has no source column and takes no source filter: a
-// merchant is the same merchant whichever card met it, which is the
-// deliberate keying difference from symbol_resolutions.
+// Neither store has a source column or takes a source filter: a
+// counterparty is the same counterparty whichever account met it,
+// which is the deliberate keying difference from symbol_resolutions.
 func cmdCategorizations(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb categorizations", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -280,9 +281,9 @@ type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// forgetCategorizations removes the named verdicts from the merchant
+// forgetCategorizations removes the named verdicts from each family's
 // store, matched by exact signature, in one transaction: the list is
-// removed whole or not at all. Its gate and its dry-run shape follow
+// removed whole or not at all — and with no family named, from both. Its gate and its dry-run shape follow
 // resolve-symbols and categorize — the read-only rejection names the
 // dry run, and the dry run opens gold read-only so it takes no write
 // lock. A miss is reported on stdout beside the removals and is not an

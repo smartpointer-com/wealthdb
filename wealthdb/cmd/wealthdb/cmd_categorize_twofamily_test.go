@@ -165,8 +165,7 @@ func writeTwoFamilyConfig(t *testing.T, dir, goldPath string) *config.Config {
 }
 
 // TestCategorizeRunsBothFamiliesEndToEnd drives the whole two-family
-// loop — the part of `categorize` with the sequencing in it, and the
-// part PLAN §7 asked to be pinned.
+// loop — the part of `categorize` with the sequencing in it.
 //
 // Three things it holds, none of which any other test reaches:
 //
@@ -395,8 +394,8 @@ func TestPersonFenceReachesCandidacyFromConfig(t *testing.T) {
 }
 
 // TestCategorizeFlushesOneFamilyBeforeTheNextSpends is the last-batch
-// lock hazard PLAN §7 names, and the one property the loop test above
-// cannot reach.
+// lock hazard, and the one property the loop test above cannot
+// reach.
 //
 // The batch sink stores each batch as it completes, so in the ordinary
 // case there is nothing left over and the family's closing retryFlush

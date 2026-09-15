@@ -22,7 +22,7 @@ func init() {
 func cmdStatus(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	verbose := fs.Bool("v", false, "verbose: include taxonomy-drift, spending and per-account-kind counts")
+	verbose := fs.Bool("v", false, "verbose: include taxonomy-drift, enrichment-backlog and per-account-kind counts")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, `usage: wealthdb status [<silver_source_id>] [-v]
 
@@ -39,8 +39,8 @@ class='other' positions, kind='other' transactions), the
 transactions an adapter kinded by the sign of the amount instead
 (raw value in payload.source_kind), and positions with no 2-D
 vehicle pair yet, so taxonomy drift in the adapters is visible. It
-also reports the spending backlog, the transactions a spending
-report cannot see because their kind is 'other', and — for a
+also reports each enrichment family's backlog and the transactions
+its reports cannot see because their kind is 'other', and — for a
 source holding more than one account kind — how fresh each kind's
 data is, so a card population that stops updating behind a current
 deposit population is visible.`)
@@ -262,11 +262,6 @@ func formatDateTime(epoch int64) string {
 	return time.Unix(epoch, 0).UTC().Format("2006-01-02 15:04:05Z")
 }
 
-// formatWatermark renders a stored change-number watermark as
-// "<epoch> (<UTC datetime>)". Change numbers are Unix seconds by
-// contract (canonical.Status — every adapter reports its newest
-// dump/snapshot time), so the datetime form is always meaningful;
-// non-positive values (sentinel / never loaded) stay bare.
 // printStatusVerbose is `status -v`'s extra block: the taxonomy drift
 // counters and one section per enrichment family.
 //
@@ -301,6 +296,11 @@ func printStatusVerbose(stdout io.Writer, st *gold.SourceStatus) {
 	}
 }
 
+// formatWatermark renders a stored change-number watermark as
+// "<epoch> (<UTC datetime>)". Change numbers are Unix seconds by
+// contract (canonical.Status — every adapter reports its newest
+// dump/snapshot time), so the datetime form is always meaningful;
+// non-positive values (sentinel / never loaded) stay bare.
 func formatWatermark(w int64) string {
 	if w <= 0 {
 		return fmt.Sprintf("%d", w)

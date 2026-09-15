@@ -455,7 +455,7 @@ rows.
 - **A row's description is what the statement prints about that row, and
   nothing else.** Checks Paid has columns of its own — `CHECK NO. |
   DESCRIPTION | DATE PAID | AMOUNT` — so the number is read into
-  `check_number` (gold's column of the same name, DESIGN.md §10.8) and the
+  `check_number` (gold's column of the same name, docs/DESIGN.md §10.8) and the
   description is whatever Chase knows about the payee, which for a check it
   holds only electronically is nothing at all. Two kinds of page furniture
   print *inside* the section markers and are refused explicitly rather than

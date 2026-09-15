@@ -294,7 +294,8 @@ func TestIncomeKindGateHoldsAtEveryPlaceASignatureLeaves(t *testing.T) {
 }
 
 // TestCategorizeRunsBothFamiliesWhenNoneIsNamed pins the positional
-// selector on both commands.
+// family selector that both commands resolve through — the arg alone,
+// with no command run.
 func TestCategorizeRunsBothFamiliesWhenNoneIsNamed(t *testing.T) {
 	for _, tc := range []struct {
 		arg   string
@@ -368,9 +369,12 @@ func TestIncomeVerdictsPersistToThePayerStore(t *testing.T) {
 	}
 }
 
-// openIncomeCategorizeGold builds gold holding one floored dividend,
-// one unplaced deposit, and one person-shaped deposit the fence keeps
-// from the model. Every name is invented.
+// openIncomeCategorizeGold builds gold holding five rows, each with a
+// job: a floored dividend (excluded by the KIND gate, not by the
+// fence, since its signature carries an organisation marker), two
+// unfenced deposits so a candidate has a neighbour at all, and two the
+// fence refuses — a bare person's name, and a name beside an IBAN.
+// Every name is invented.
 func openIncomeCategorizeGold(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
 	db, err := gold.Open(":memory:", gold.ModeReadWrite)

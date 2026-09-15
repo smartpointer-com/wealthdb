@@ -280,7 +280,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		// A real run holds the gold write mutex end to end. The
 		// verdicts it buys are the one thing in gold with no other
 		// source of truth, and 'compact' / 'reload -a' carry the
-		// merchant store by a read taken at the start of a rebuild
+		// verdict stores by a read taken at the start of a rebuild
 		// that ends in a rename — anything stored after that read
 		// would be swapped away and still reported as stored.
 		lock, err := lockGoldForWrite(cfg.GoldDB, "categorize")
@@ -332,8 +332,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 // It is its own function so a test can drive the whole loop — two
 // families, the close-and-reopen between them, the per-family flush —
 // with a scripted endpoint. cmdCategorize above is flags, gates and the
-// deterministic pass; this is the part with the sequencing in it, and
-// the sequencing is what the milestone plan asked to be pinned.
+// deterministic pass; this is the part with the sequencing in it.
 //
 // Returns the handle and whether it is still open, so the caller's
 // deferred close stays correct on every path.
@@ -571,9 +570,9 @@ func backlogOf(all, refine bool) backlog {
 
 // collectMerchantCandidates reads the model tier's backlog.
 //
-// DEFAULT: every merchant signature with at least one row whose
-// RESOLVED category is still NULL — read from spend_txn_categories(),
-// the lattice's one definition (SPENDING.md §3), so this command
+// DEFAULT: every counterparty signature with at least one row whose
+// RESOLVED category is still NULL — read from the family's resolution
+// macro, the lattice's one definition (SPENDING.md §3), so this command
 // cannot drift from what a report would call categorised. A resolved
 // category covers both halves at once: a signature the store already
 // answers is paid for, and a signature every one of whose rows a rule
@@ -1572,8 +1571,8 @@ func (s *verdictStore) flush() error {
 	return nil
 }
 
-// persistCategorizations upserts the verdicts into the global merchant
-// store and returns the table's row count afterwards. The store is
+// persistCategorizations upserts the verdicts into the family's global
+// verdict store and returns the table's row count afterwards. The store is
 // keyed by signature alone, so a re-run with a better model simply
 // overwrites; signature_version stamps the normalisation that produced
 // the key, which is what lets a later bump carry the verdict forward.
