@@ -6,6 +6,7 @@ the projected silver rows. Synthetic ids / ISINs / amounts only.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -15,7 +16,7 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import load as loader  # noqa: E402
-from collectorkit import silver  # noqa: E402
+from collectorkit import bronze, silver  # noqa: E402
 
 RUN_SLUG = "20240101T000000Z"
 ACC = "ACC1"
@@ -186,4 +187,71 @@ def test_an_unmoved_report_parser_drops_nothing(tmp_path):
 
     assert loader._purge_stale_pdf_rows(conn) == 0
     assert loader._pdf_pass_row_count(conn) == 2
+    conn.close()
+
+
+# ============================================================
+# Documents: a restated document supersedes, it does not collide
+# ============================================================
+
+DOC_ID = 4242
+FIRST_RUN = "20240101T000000Z"
+RESTATED_RUN = "20240401T000000Z"
+
+
+def _seed_document_dump(root: Path, slug: str, body: bytes) -> Path:
+    """A bronze run dir carrying one indexed document. The documents phase
+    hashes the file and never parses it, so `body` stands in for the PDF."""
+    d = root / slug
+    _write_json(d / "run.json", {"tool": "relevate.download", "status": "complete"})
+    _write_json(d / "accounts" / "investment-overview.json", {"portfolios": []})
+    _write_json(d / "documents" / "index.json", {"documents": [
+        {"id": DOC_ID, "fileName": "Quartalsbericht.pdf", "documentYear": 2024}]})
+    (d / "documents" / f"{DOC_ID}.pdf").write_bytes(body)
+    return d
+
+
+def test_a_restated_document_supersedes_the_row_it_restates(tmp_path):
+    # Relevate re-issues one document id with corrected content: the sha
+    # lookup misses, and without superseding the row already holding that
+    # id the insert violated UNIQUE(relevate_doc_id) — taking down the
+    # whole dump, which then stayed pending forever.
+    bronze_root = tmp_path / "bronze"
+    first = _seed_document_dump(bronze_root, FIRST_RUN, b"%PDF-1.4 original")
+    restated = _seed_document_dump(bronze_root, RESTATED_RUN, b"%PDF-1.4 restated")
+
+    conn, version = _fresh_db(tmp_path)
+    loader.load_one_dump(conn, first, version)
+    loader.load_one_dump(conn, restated, version)
+
+    rows = conn.execute(
+        "SELECT content_sha256, relevate_doc_id, bronze_path FROM documents"
+    ).fetchall()
+    # One row per provider document id, holding the restated content.
+    assert len(rows) == 1
+    assert rows[0][1] == DOC_ID
+    assert rows[0][0] == hashlib.sha256(b"%PDF-1.4 restated").hexdigest()
+    assert rows[0][2] == f"{RESTATED_RUN}/documents/{DOC_ID}.pdf"
+    # And the dump COMMITTED — the restatement did not abort the load.
+    assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 2
+    conn.close()
+
+
+def test_unchanged_content_refreshes_rather_than_superseding(tmp_path):
+    # The other half of the branch: identical bytes in a later dump keep
+    # the one row and advance last_seen_at. Guards a supersede that fires
+    # too eagerly and resets first_seen_at on every load.
+    bronze_root = tmp_path / "bronze"
+    first = _seed_document_dump(bronze_root, FIRST_RUN, b"%PDF-1.4 original")
+    again = _seed_document_dump(bronze_root, RESTATED_RUN, b"%PDF-1.4 original")
+
+    conn, version = _fresh_db(tmp_path)
+    loader.load_one_dump(conn, first, version)
+    loader.load_one_dump(conn, again, version)
+
+    rows = conn.execute(
+        "SELECT first_seen_at, last_seen_at FROM documents").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == bronze.parse_run_ts(FIRST_RUN)
+    assert rows[0][1] == bronze.parse_run_ts(RESTATED_RUN)
     conn.close()

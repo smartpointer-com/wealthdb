@@ -342,6 +342,7 @@ def load_documents_phase(
     index = json.loads(index_path.read_text(encoding="utf-8"))
     docs = index.get("documents") or []
     inserted = 0
+    restated = 0
     refreshed = 0
     missing = 0
     for d in docs:
@@ -362,13 +363,30 @@ def load_documents_phase(
         # /data) and on the host (root = $XDG_DATA_HOME/wealthdb/relevate).
         bronze_path = pdf_path.relative_to(run_dir.parent).as_posix()
         file_name = d.get("fileName") or ""
-        # INSERT first; on conflict, update last_seen_at and any
-        # fields that may differ in metadata between dumps.
+        # The provider's document id is the IDENTITY; content_sha256 is
+        # the version. Content already held is refreshed in place below.
+        # New content under a document id silver already holds is a
+        # RESTATEMENT — Relevate re-issued the document — and the row it
+        # supersedes gives way to it.
+        #
+        # Without that, the insert below collided with
+        # UNIQUE(relevate_doc_id) and took the whole DUMP down with it:
+        # the transaction rolls back, its `dump_runs` row with it, so the
+        # dump stays pending and every later dump plus both PDF passes
+        # never run — on that load and on every load after it.
+        #
+        # One row per document id is also what the ids derived from it
+        # need: `credit_note:<doc id>` transaction ids and
+        # `historical_*.document_id` would both be ambiguous with two.
         row = conn.execute(
             "SELECT 1 FROM documents WHERE content_sha256 = ?",
             (sha,),
         ).fetchone()
         if row is None:
+            restated += conn.execute(
+                "DELETE FROM documents WHERE relevate_doc_id = ?",
+                (doc_id,),
+            ).rowcount
             conn.execute(
                 """
                 INSERT INTO documents (
@@ -405,8 +423,9 @@ def load_documents_phase(
             )
             refreshed += 1
     logger.info(
-        "  documents phase: %d new, %d existing refreshed, %d missing-on-disk",
-        inserted, refreshed, missing,
+        "  documents phase: %d new (%d superseding a restated document), "
+        "%d existing refreshed, %d missing-on-disk",
+        inserted, restated, refreshed, missing,
     )
 
 
