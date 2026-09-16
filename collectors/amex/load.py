@@ -42,7 +42,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, silver, srcfp
 
 import statement_parser
 
@@ -58,6 +58,14 @@ apply_migrations = silver.apply_migrations
 # statement PDFs carry below it.
 SOURCE_ACTIVITY = "activity"
 SOURCE_STATEMENT = "statement"
+
+# `rebuild_statements` parses every statement PDF, drops the whole
+# `source='statement'` era and re-imports it, so a re-parse already REPLACES.
+# The stamp is what gives it a reason to run when no bronze run has landed:
+# a parser edit alone used to change nothing, because its only gate was
+# whether a dump had been ingested. See migration 0002.
+STATEMENT_GENERATION_SCOPE = "statement"
+STATEMENT_GENERATION = srcfp.parser_fingerprint([statement_parser])
 
 
 # A year-end summary is filed under this stem by download.py.
@@ -828,6 +836,8 @@ def rebuild_statements(conn, bronze_dir: Path) -> None:
             _restore_activity_balances(conn, acct_id, by_name, runs_by_until)
         for acct_id, parsed_by_end in parsed_by_account.items():
             _import_statements(conn, acct_id, parsed_by_end)
+        silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
+                                STATEMENT_GENERATION)
         conn.execute("COMMIT")
     except Exception:
         try:
@@ -963,7 +973,11 @@ def main(argv: list[str]) -> int:
         for run_dir in bronze.iter_run_dirs(args.bronze_dir):
             if load_run(conn, run_dir):
                 loaded += 1
-        if loaded:
+        # A moved statement parser owes the rebuild a run just as a new
+        # bronze run does, and it is the case the old gate could not see:
+        # a parser-only change lands no run, so nothing re-read the PDFs.
+        if loaded or silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
+                                             STATEMENT_GENERATION):
             # Only after every run is in: the seam this depends on is the
             # MIN over all of them together.
             try:

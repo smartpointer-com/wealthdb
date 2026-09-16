@@ -27,14 +27,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from collectorkit import bronze, cli, parse, silver
+from collectorkit import bronze, cli, parse, silver, srcfp
 
+import pdf_parsers
 from pdf_parsers import parse_credit_note, parse_quarterly_report
 
 logger = logging.getLogger("load")
 
 # Path to migrations dir relative to this script.
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+
+# Both PDF passes key their rows on what the parser read off the page — the
+# historical tables have their whole primary keys parsed out of the report,
+# so an edit to any capture re-keys the row and `INSERT OR REPLACE` has
+# nothing left to replace. `parser_generations` (migration 0003) records
+# which generation produced the rows in hand; when it has moved they are
+# dropped before the passes re-derive them. One scope for both passes: they
+# share `pdf_parsers`, so one fingerprint moves both.
+PDF_GENERATION_SCOPE = "pdf_reports"
+PDF_GENERATION = srcfp.parser_fingerprint([pdf_parsers], ("pypdf",))
+
+# The tables the two PDF passes own outright, and the predicate that names
+# their rows. The `transactions` table is shared with the deposits endpoint,
+# so the credit-note rows are named by `source`; the two historical tables
+# hold nothing else.
+_PDF_PASS_TABLES = (
+    ("historical_position_snapshots", ""),
+    ("historical_cash_balances", ""),
+    ("transactions", " WHERE source = 'credit_note_pdf'"),
+)
 
 # Default mount points inside the container.
 DEFAULT_BRONZE_DIR = Path("/data")
@@ -716,12 +737,53 @@ def do_load(args: argparse.Namespace) -> int:
         # `documents` table reflects every PDF the loader knows about,
         # including ones from earlier dumps that survived as content-
         # deduped rows. Idempotent — safe even when no new dumps landed.
+        before = _pdf_pass_row_count(conn)
+        reparse = silver.stale_generation(conn, PDF_GENERATION_SCOPE,
+                                          PDF_GENERATION)
+        _purge_stale_pdf_rows(conn)
         load_historical_snapshots(conn, args.bronze_dir)
         load_credit_note_transactions(conn, args.bronze_dir)
+        if reparse and _pdf_pass_row_count(conn) < before:
+            # The re-derivation came back short — a PDF that no longer
+            # parses, a document gone from the archive. Not stamping is what
+            # makes the next load try again rather than commit the shortfall.
+            logger.warning(
+                "re-derivation produced fewer rows than silver held; not "
+                "stamping the parser generation, so the next load "
+                "re-derives again")
+        else:
+            silver.stamp_generation(conn, PDF_GENERATION_SCOPE,
+                                    PDF_GENERATION)
 
         return 0
     finally:
         conn.close()
+
+
+
+def _pdf_pass_row_count(conn: sqlite3.Connection) -> int:
+    """How many rows the two PDF passes are holding — the before/after a
+    re-derivation is judged on."""
+    return sum(conn.execute(f"SELECT COUNT(*) FROM {table}{where}").fetchone()[0]
+               for table, where in _PDF_PASS_TABLES)
+
+
+def _purge_stale_pdf_rows(conn: sqlite3.Connection) -> int:
+    """Drop what the PDF passes wrote when the parser that produced it has
+    moved, so the passes re-derive rather than add to it.
+
+    Whole-pass rather than per-document: a parser edit moves the row's own
+    key, so no key-derived scope can name the rows it left behind. Both
+    passes re-read the entire document archive on every load, so the
+    re-derivation is complete by construction.
+    """
+    if not silver.stale_generation(conn, PDF_GENERATION_SCOPE, PDF_GENERATION):
+        return 0
+    dropped = sum(conn.execute(f"DELETE FROM {table}{where}").rowcount
+                  for table, where in _PDF_PASS_TABLES)
+    logger.info("the report parser has changed since these rows were "
+                "written; dropped %d for re-derivation", dropped)
+    return dropped
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

@@ -661,3 +661,45 @@ class CollectorImportsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+GENERATIONS_SQL = (
+    "CREATE TABLE parser_generations (\n"
+    "    scope      TEXT    NOT NULL PRIMARY KEY,\n"
+    "    generation TEXT    NOT NULL,\n"
+    "    stamped_at INTEGER NOT NULL);\n"
+)
+
+
+class ParserGenerationTest(unittest.TestCase):
+    """What a document-fed pass asks before it re-derives its rows: did the
+    parser that wrote them differ from the one running now?"""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.executescript(GENERATIONS_SQL)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_an_unstamped_scope_reads_as_stale(self):
+        # This is what heals a silver DB predating the stamp: its rows came
+        # from a generation it never recorded, so they are re-derived once.
+        self.assertTrue(silver.stale_generation(self.conn, "statement", "g1"))
+
+    def test_a_stamped_scope_stays_current_until_the_parser_moves(self):
+        silver.stamp_generation(self.conn, "statement", "g1")
+        self.assertFalse(silver.stale_generation(self.conn, "statement", "g1"))
+        self.assertTrue(silver.stale_generation(self.conn, "statement", "g2"))
+
+    def test_one_scope_does_not_vouch_for_another(self):
+        silver.stamp_generation(self.conn, "statement", "g1")
+        self.assertTrue(silver.stale_generation(self.conn, "supplied", "g1"))
+
+    def test_re_stamping_replaces_rather_than_accumulates(self):
+        silver.stamp_generation(self.conn, "statement", "g1")
+        silver.stamp_generation(self.conn, "statement", "g2")
+        self.assertEqual(
+            [("g2",)],
+            self.conn.execute(
+                "SELECT generation FROM parser_generations").fetchall())

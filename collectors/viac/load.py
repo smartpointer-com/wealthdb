@@ -27,11 +27,22 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from collectorkit import bronze, cli, parse, silver
+from collectorkit import bronze, cli, parse, silver, srcfp
 
 import pdf_parsers
 
 logger = logging.getLogger("load")
+
+# A report row's identity is (snapshot_at, account, ISIN) — no free text,
+# but every component is a regex capture off the page, so moving the as-of
+# date, the portfolio anchor or the ISIN token re-lands a whole quarter
+# under a different key while the old rows stay. `parser_generations`
+# (migration 0004) records which generation produced the rows in hand; when
+# it has moved they are dropped before the pass re-derives them. The pass
+# runs per bronze dump, so that lands on the next dump rather than the next
+# load — `load --force` is the way to re-derive sooner.
+REPORT_GENERATION_SCOPE = "reports"
+REPORT_GENERATION = srcfp.parser_fingerprint([pdf_parsers], ("pypdfium2",))
 
 # Path to migrations dir relative to this script.
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -598,6 +609,27 @@ def _upsert_report_instrument(
     )
 
 
+def _purge_stale_report_rows(conn: sqlite3.Connection) -> int:
+    """Drop the report-derived rows when the parser that produced them has
+    moved, so the pass below re-derives rather than adds to them.
+
+    Scoped by `source`, which is already stamped 'report:<docid>' on every
+    row this pass writes; the live REST rows carry their own tags and are
+    untouched. `instruments` is deliberately left alone — master data shared
+    with the REST phases, with no source marker and a MIN() first_seen_at
+    that cannot be raised back once lowered.
+    """
+    if not silver.stale_generation(conn, REPORT_GENERATION_SCOPE,
+                                   REPORT_GENERATION):
+        return 0
+    dropped = sum(
+        conn.execute(f"DELETE FROM {table} WHERE source LIKE 'report:%'").rowcount
+        for table in ("positions", "cash_balances"))
+    logger.info("the report parser has changed since these rows were "
+                "written; dropped %d for re-derivation", dropped)
+    return dropped
+
+
 def load_historical_reports_phase(
     conn: sqlite3.Connection,
     run_dir: Path,
@@ -825,7 +857,10 @@ def load_one_dump(
         # snapshot_at-independent (keyed on each report's as-of date),
         # so it runs after the live phases and outside their per-dump
         # snapshot grain.
+        _purge_stale_report_rows(conn)
         load_historical_reports_phase(conn, run_dir)
+        silver.stamp_generation(conn, REPORT_GENERATION_SCOPE,
+                                REPORT_GENERATION)
 
         # dump_runs row last → a failure mid-load rolls everything
         # back and the dump remains "not yet loaded" on re-run.

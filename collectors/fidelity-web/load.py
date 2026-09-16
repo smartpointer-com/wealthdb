@@ -94,6 +94,33 @@ _DAF_STATEMENT_PARSER_VERSION = (
     + srcfp.parser_fingerprint([pdf_parsers_daf], _EXTRACTOR_DISTS)
 )
 
+# Those three values are also the PARSER GENERATIONS stamped into
+# `parser_generations` (migration 0008) once a pass has run, so silver can be
+# asked in plain SQL which parser produced the rows it is holding.
+#
+# All three passes key their rows on text read off the page — a holding's
+# description is part of the `historical_position_snapshots` primary key, an
+# activity row's is inside its id — so a parser edit re-keys them and
+# `INSERT OR REPLACE` has nothing left to replace. The scraped feed already
+# paid for this lesson: migration 0005 rebuilt `transactions` because
+# Fidelity's mutable description text sat inside the identity and a re-label
+# duplicated the rows.
+#
+# What makes a re-parse REPLACE is applied at whichever grain each row family
+# can actually be addressed at:
+#
+#   * activity rows — scope-wide (`_drop_supplied_activity`), gated on the
+#     stamp and held until a statement has actually parsed. The `stmt_`
+#     prefix names exactly the supplied pass's rows, so nothing escapes the
+#     purge.
+#   * holdings rows — per document (`_drop_document_holdings`), every time
+#     the document is re-parsed. Three passes share that table and only
+#     `source_sha256` says which PDF a row came from, so the document is the
+#     largest scope that can be named without reaching into another pass.
+_GENERATION_SCOPE_STATEMENT = "statement_529"
+_GENERATION_SCOPE_DAF = "daf_statement"
+_GENERATION_SCOPE_SUPPLIED = "supplied_statement"
+
 
 def _logical_bronze_path(path):
     """Strip a compression suffix (`.zst` / `.gz`) so silver records the
@@ -1019,6 +1046,48 @@ def _activity_identity(account_ext, ts, kind, symbol, quantity, price,
         separators=(",", ":"))
 
 
+def _drop_document_holdings(conn, sha):
+    """Drop the `historical_position_snapshots` rows one source PDF
+    materialised, so re-parsing that PDF REPLACES them instead of leaving
+    the old ones beside them.
+
+    A holding's DESCRIPTION — read off the page — is part of that table's
+    primary key, so a parser edit re-keys the row and `INSERT OR REPLACE`
+    has nothing to replace. Scoped by the document rather than by the pass
+    because three passes share the table and nothing on a row says which of
+    them wrote it, while `source_sha256` says exactly which PDF did. The
+    document is also the only unit any of them can re-derive.
+
+    Called only once a parse has SUCCEEDED. A statement that fails to parse,
+    fails its signature guard or fails reconciliation is never dropped:
+    stale rows beat no rows when nothing can re-derive them.
+
+    The one case this grain cannot reach: a row whose last writer was a
+    statement since removed from bronze carries THAT statement's sha, so the
+    statement still present does not delete it and a re-key would leave both.
+    Removing a supplied statement is a deliberate act; `load --force` is the
+    repair.
+    """
+    conn.execute(
+        "DELETE FROM historical_position_snapshots WHERE source_sha256 = ?",
+        (sha,))
+
+
+def _drop_supplied_activity(conn):
+    """Drop every statement-derived activity row, for a re-derivation of all
+    of them.
+
+    Scope-wide rather than per-document, because it can be: the `stmt_`
+    prefix names exactly the rows the supplied pass writes into
+    `transactions`, so unlike the holdings above there is no row this cannot
+    reach — including one whose statement has since left the tree. Rows of
+    the scraped feed carry structural ids and are untouched.
+    """
+    return conn.execute(
+        r"DELETE FROM transactions WHERE activity_id LIKE 'stmt\_%' "
+        r"ESCAPE '\'").rowcount
+
+
 def _synthesise_activity_id(identity, occurrence):
     """Stable, file-independent dedup key for one activity row.
 
@@ -1573,6 +1642,7 @@ def _load_daf_historical(conn, dump_dir, coord=None):
             log.warning("daf historical: %s missing as-of date or "
                         "account master; skipped", path.name)
             continue
+        _drop_document_holdings(conn, sha)
         for pool in parsed.get("pools", []):
             desc = (pool.get("description") or "").strip()
             if not desc:
@@ -1593,6 +1663,9 @@ def _load_daf_historical(conn, dump_dir, coord=None):
                 ),
             )
             inserted += 1
+    if inserted:
+        silver.stamp_generation(conn, _GENERATION_SCOPE_DAF,
+                                _DAF_STATEMENT_PARSER_VERSION)
     return inserted
 
 
@@ -1858,7 +1931,11 @@ def _load_historical_from_pdfs(conn, dump_dir, coord=None):
                 path.name, result["_error"],
             )
             continue
+        _drop_document_holdings(conn, sha)
         inserted += _insert_historical_rows(conn, path, result, sha)
+    if inserted:
+        silver.stamp_generation(conn, _GENERATION_SCOPE_STATEMENT,
+                                _STATEMENT_PARSER_VERSION)
     return inserted
 
 
@@ -2074,6 +2151,13 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
     log.info("supplied-statements: ingesting %d PDF(s)", len(candidates))
     try:
         conn.execute("BEGIN")
+        # Held until the FIRST statement parses, never spent before: a purge
+        # ahead of the walk would delete the whole statement-derived ledger
+        # on the run where poppler broke or the PDFs became unreadable, and
+        # then re-derive nothing. Unspent, it also leaves the generation
+        # unstamped, so the next load tries the whole thing again.
+        owed_a_purge = silver.stale_generation(
+            conn, _GENERATION_SCOPE_SUPPLIED, version)
         inserted = skipped = activity = activity_dup = 0
         for path in candidates:
             sha = coord.sha_for(path)
@@ -2097,12 +2181,27 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
                 )
                 skipped += 1
                 continue
+            if owed_a_purge:
+                dropped = _drop_supplied_activity(conn)
+                log.info(
+                    "supplied-statements: the parser has changed since these "
+                    "rows were written; dropped %d activity row(s) for "
+                    "re-derivation", dropped,
+                )
+                owed_a_purge = False
+            _drop_document_holdings(conn, sha)
             inserted += _insert_supplied_historical_rows(conn, path, result, sha)
             act_in, act_dup = _insert_supplied_activity_rows(
                 conn, path, result, sha)
             activity += act_in
             activity_dup += act_dup
         synth = _synthesize_missing_account_masters(conn)
+        if not owed_a_purge:
+            # Either the generation had not moved, or it had and the
+            # re-derivation ran. A purge still owed means nothing parsed, so
+            # the rows in hand are the older parser's and still the best
+            # record there is.
+            silver.stamp_generation(conn, _GENERATION_SCOPE_SUPPLIED, version)
         conn.commit()
         log.info(
             "supplied-statements: %d holdings rows inserted, %d activity "

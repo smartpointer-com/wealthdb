@@ -51,7 +51,7 @@ from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli, silver
+from collectorkit import cli, silver, srcfp
 
 # Re-export for backward compatibility with existing tests that call
 # load.apply_migrations(...) / load._current_schema_version(...) directly.
@@ -60,6 +60,18 @@ _current_schema_version = silver.current_schema_version
 
 import pdf_parsers as pp
 import tax_form_parsers as tf
+
+# `parser_generations` (migration 0005) records which generation of the
+# document parsers produced the rows in hand. A stale one implies
+# `--reparse` for the whole invocation — the single lever the run gate, the
+# per-document gates and the per-document deletes all already read — plus a
+# purge of the two snapshot tables, which have no delete path of their own.
+DOCUMENT_GENERATION_SCOPE = "documents"
+
+# Written exclusively by the statement passes, and keyed on parser output
+# (`as_of_date` / `period_end`, `instrument_key`), so a moved capture
+# strands the old row under a key nothing will write again.
+_SNAPSHOT_TABLES = ("historical_position_snapshots", "historical_cash_balances")
 from numparse import parse_amount
 
 log = logging.getLogger("schwab-web.load")
@@ -1644,6 +1656,31 @@ def _insert_cash_balance(conn: sqlite3.Connection,
 # Top-level
 # ============================================================
 
+def _document_generation() -> str:
+    """Fingerprint of every parser that materialises rows into silver: the
+    statement / distribution parsers and the tax-form parser, in one value.
+
+    One generation rather than one per pass. They are edited together as
+    often as not, a false purge costs a re-parse of an archive the run is
+    walking anyway, and a missed one costs a duplicated row.
+    """
+    return srcfp.parser_fingerprint([pp, tf], ("pypdfium2",))
+
+
+def _purge_stale_snapshots(conn: sqlite3.Connection) -> int:
+    """Drop the statement-derived snapshot tables, which have no delete path
+    of their own, so the re-walk refills them rather than adding to them.
+
+    Only ever called once a stale generation has forced `reparse` on, which
+    is what guarantees the walk that refills them actually happens.
+    """
+    dropped = sum(conn.execute(f"DELETE FROM {t}").rowcount
+                  for t in _SNAPSHOT_TABLES)
+    log.info("the document parsers have changed since these rows were "
+             "written; dropped %d snapshot row(s) for re-derivation", dropped)
+    return dropped
+
+
 def run_load(args: argparse.Namespace) -> int:
     migrations_dir = _resolve_migrations_dir(args.migrations_dir)
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
@@ -1652,6 +1689,18 @@ def run_load(args: argparse.Namespace) -> int:
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         silver.apply_migrations(conn, migrations_dir)
+
+        # A moved parser owes the archive a re-read, and `--reparse` is the
+        # lever that already delivers one: it opens the run gate, the
+        # per-document gates and the per-document deletes together.
+        generation = _document_generation()
+        reparse = args.reparse or silver.stale_generation(
+            conn, DOCUMENT_GENERATION_SCOPE, generation)
+        if reparse and not args.reparse:
+            log.info("the document parsers have changed since silver was "
+                     "written; re-parsing the archive")
+            _purge_stale_snapshots(conn)
+            conn.commit()
 
         runs = discover_bronze_runs(args.bronze_dir)
         log.info("found %d bronze run(s) under %s", len(runs), args.bronze_dir)
@@ -1670,7 +1719,7 @@ def run_load(args: argparse.Namespace) -> int:
         pinned_accounts: set[str] = set()
         pending = [
             r for r in runs
-            if args.reparse or not already_loaded(conn, parse_snapshot_at(r.name))
+            if reparse or not already_loaded(conn, parse_snapshot_at(r.name))
         ]
         pool_ctx: contextlib.AbstractContextManager = (
             _ParsePoolManager(_resolve_worker_count(args.workers))
@@ -1680,7 +1729,7 @@ def run_load(args: argparse.Namespace) -> int:
         with pool_ctx as pool:
             for run_dir in runs:
                 snapshot_at = parse_snapshot_at(run_dir.name)
-                if already_loaded(conn, snapshot_at) and not args.reparse:
+                if already_loaded(conn, snapshot_at) and not reparse:
                     log.info("skipping %s (already loaded)", run_dir.name)
                     continue
                 log.info("loading %s (snapshot_at=%d)", run_dir.name, snapshot_at)
@@ -1692,7 +1741,7 @@ def run_load(args: argparse.Namespace) -> int:
                 seen_before = set(seen_logical_docs)
                 try:
                     stats = load_run(
-                        conn, run_dir, reparse=args.reparse,
+                        conn, run_dir, reparse=reparse,
                         workers=args.workers, pool=pool,
                         seen_logical_docs=seen_logical_docs,
                     )
@@ -1745,6 +1794,9 @@ def run_load(args: argparse.Namespace) -> int:
         except Exception:
             conn.rollback()
             log.exception("account-number reconcile failed; rolled back")
+
+        silver.stamp_generation(conn, DOCUMENT_GENERATION_SCOPE, generation)
+        conn.commit()
 
         _log_registration_histogram(conn)
         _log_account_number_coverage(conn)

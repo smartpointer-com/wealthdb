@@ -647,6 +647,7 @@ Storage conventions:
 | `documents` | `content_sha256` | Content-deduped index of PDFs on disk. `first_seen_at` is the earliest dump that captured the content; `last_seen_at` advances on subsequent dumps. Promotes numeric `document_type_code` and `category_code` (enum-to-name mapping not exposed; `doc_kind` is derived from fileName needles — `DOC_KIND_PATTERNS`, `'other'` only for unrecognised names). |
 | `historical_position_snapshots` | `(snapshot_at, account_external_id, isin)` | Per-quarter holdings parsed from the quarterly-report PDFs (migration 0002). |
 | `historical_cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | Per-quarter cash/valuation figures from the same reports (migration 0002). |
+| `parser_generations` | `scope` | Which generation of the PDF parsing logic produced the rows a pass is holding (`collectorkit.srcfp` fingerprint). A moved generation drops them before the pass re-derives, so a re-parse replaces rather than accumulates. |
 
 #### 7.1.1 `accounts.product_key` is forensic, not behavioural
 

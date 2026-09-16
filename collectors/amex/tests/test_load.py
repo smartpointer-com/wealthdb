@@ -1043,3 +1043,45 @@ def test_a_row_the_ledger_cannot_key_is_not_a_short_fetch(db, tmp_path,
         load_all(db, root)
     assert "came back short" not in caplog.text
     assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+
+
+# ============================================================
+# Parser generations — a moved parser is a reason to rebuild
+# ============================================================
+
+def test_a_moved_parser_rebuilds_without_a_new_bronze_run(tmp_path, monkeypatch):
+    # `rebuild_statements` already parses, deletes the whole statement era
+    # and re-imports, inside one transaction. What it lacked was a reason to
+    # run: its gate was whether a dump had been ingested, so editing the
+    # parser and re-loading did nothing at all.
+    root = tmp_path / "bronze"
+    write_run(root, "20260312T000000Z", activity={KEY_A: _activity([_tx(1)])})
+    db_path = tmp_path / "amex.db"
+    args = ["--bronze-dir", str(root), "--silver-db", str(db_path)]
+    assert load.main(args) == 0
+
+    ran = []
+    real = load.rebuild_statements
+    monkeypatch.setattr(load, "rebuild_statements",
+                        lambda *a, **k: (ran.append(1), real(*a, **k))[1])
+
+    # Nothing new in bronze: the old gate would skip the rebuild entirely.
+    assert load.main(args) == 0
+    assert ran == []
+
+    conn = silver.open_db(db_path)
+    silver.stamp_generation(conn, load.STATEMENT_GENERATION_SCOPE,
+                            "an older parser")
+    conn.close()
+
+    assert load.main(args) == 0
+    assert ran == [1]
+
+    conn = silver.open_db(db_path)
+    try:
+        assert conn.execute(
+            "SELECT generation FROM parser_generations WHERE scope = ?",
+            (load.STATEMENT_GENERATION_SCOPE,)).fetchone()[0] == \
+            load.STATEMENT_GENERATION
+    finally:
+        conn.close()

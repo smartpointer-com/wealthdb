@@ -2487,3 +2487,120 @@ def test_an_anchor_that_changes_value_between_runs_moves_the_balances(tmp_path):
     _anchor(conn, _epoch(2026, 6, 1), 250.0)
     assert _derive(conn, tmp_path) == (2, 1, 0)
     assert _balances(conn) == [230.0, 250.0]
+
+
+# ============================================================
+# Parser generations — a re-parse replaces, it does not accumulate
+# ============================================================
+
+def _seed_statement_row(conn, fitid="stmt_written_by_an_older_parser"):
+    load._insert_transaction(conn, EXT, {
+        "fitid": fitid, "posted_at": _epoch(2020, 1, 1), "amount": -5.0,
+        "kind": None, "description": "a payee the parser used to read",
+        "check_number": None, "balance": None, "source": "statement",
+        "payload": {}})
+    conn.commit()
+
+
+def test_a_moved_parser_drops_the_statement_rows_and_nothing_else():
+    conn = _conn()
+    _seed_export(conn, [(_epoch(2026, 1, 1), 20.0)])
+    _seed_statement_row(conn)
+    load.silver.stamp_generation(
+        conn, load.STATEMENT_GENERATION_SCOPE, "an older parser")
+
+    conn.execute(
+        "INSERT INTO statement_balances (account_external_id, period_start, "
+        "period_end, opening, closing, snapshot_at) "
+        "VALUES (?, 1, 2, 0.0, 1.0, 3)", (CARD_EXT,))
+
+    assert load._purge_stale_statement_rows(conn) == 1
+    # The export ledgers key on structural ids that carry no parsed text, so
+    # they are not the loader's to re-derive and must survive untouched.
+    assert [r[0] for r in conn.execute(
+        "SELECT source FROM transactions").fetchall()] == ["qfx"]
+    # The period anchors are parser output too — their key holds the period
+    # the parser read — and the same pass re-derives them.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM statement_balances").fetchone()[0] == 0
+
+
+def test_an_unmoved_parser_drops_nothing():
+    conn = _conn()
+    _seed_statement_row(conn)
+    load.silver.stamp_generation(
+        conn, load.STATEMENT_GENERATION_SCOPE, load.STATEMENT_GENERATION)
+
+    assert load._purge_stale_statement_rows(conn) == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+
+
+def test_a_db_that_predates_the_stamp_re_derives_once():
+    # No row for the scope at all: the rows in hand came from a parser this
+    # DB never recorded, so they cannot be vouched for and are re-derived.
+    conn = _conn()
+    _seed_statement_row(conn)
+    assert load._purge_stale_statement_rows(conn) == 1
+
+
+def _load_once(tmp_path):
+    """A loaded silver DB plus the argv that reloads it."""
+    root = tmp_path / "bronze"
+    root.mkdir()
+    _make_run(root, "20260801T120000Z")
+    db = tmp_path / "chase.db"
+    args = ["--bronze-dir", str(root), "--silver-db", str(db)]
+    assert load.main(args) == 0
+    return db, args
+
+
+def _age_the_stamp(db):
+    """Seed what an older parser wrote, and the stamp it left behind."""
+    conn = sqlite3.connect(db)
+    _seed_statement_row(conn)
+    load.silver.stamp_generation(
+        conn, load.STATEMENT_GENERATION_SCOPE, "an older parser")
+    conn.commit()
+    conn.close()
+
+
+def test_a_moved_parser_re_derives_without_a_new_bronze_run(tmp_path):
+    # The whole defect, end to end. A parser-only change lands no bronze run,
+    # so the pending flag stays down — the generation itself has to raise the
+    # gate, or silver goes on holding rows no parser in the tree produces
+    # while the re-keyed ones pile up beside them.
+    db, args = _load_once(tmp_path)
+    _age_the_stamp(db)
+
+    assert load.main(args) == 0          # nothing new in bronze
+
+    conn = sqlite3.connect(db)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE source = 'statement'"
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_a_short_re_derivation_is_not_stamped_so_the_next_load_retries(tmp_path):
+    # The seeded row cannot come back: the fixture's statement PDF is a stub,
+    # so the re-derivation returns fewer rows than silver held. Committing
+    # that as the new truth would bury a parser that had broken.
+    db, args = _load_once(tmp_path)
+    _age_the_stamp(db)
+    assert load.main(args) == 0
+
+    conn = sqlite3.connect(db)
+    assert conn.execute(
+        "SELECT generation FROM parser_generations WHERE scope = ?",
+        (load.STATEMENT_GENERATION_SCOPE,)).fetchone()[0] == "an older parser"
+    conn.close()
+
+    # One retry, which has nothing better to compare against, settles it.
+    assert load.main(args) == 0
+    conn = sqlite3.connect(db)
+    assert conn.execute(
+        "SELECT generation FROM parser_generations WHERE scope = ?",
+        (load.STATEMENT_GENERATION_SCOPE,)).fetchone()[0] == \
+        load.STATEMENT_GENERATION
+    conn.close()

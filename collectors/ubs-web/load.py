@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import hashlib
 import json
 import logging
@@ -40,11 +41,59 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, silver, srcfp
 
 import card_parsers  # local module
 
 log = logging.getLogger("ubs-web.load")
+
+# `parser_generations` (migration 0009) records which generation of
+# `pdf_parsers` produced the document-derived rows in hand, so that a moved
+# parser drops them before re-deriving instead of landing new ones beside
+# them. See `_purge_stale_document_rows`.
+DOCUMENT_GENERATION_SCOPE = "documents"
+
+# The tables the PDF passes own. Each `historical_*` table is written by
+# exactly one of them and holds nothing else; `transactions` is shared with
+# the live CSV export, whose ids are UBS's own transaction numbers, so the
+# statement era is named by its `stmt:` prefix (DESIGN.md §3.6).
+_DOCUMENT_PASS_DELETES = (
+    "DELETE FROM historical_position_snapshots",
+    "DELETE FROM historical_cash_balances",
+    "DELETE FROM historical_mortgages",
+    "DELETE FROM transactions WHERE transaction_external_id LIKE 'stmt:%'",
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _document_generation() -> str:
+    """Fingerprint of the PDF parsing logic.
+
+    `pdf_parsers` is imported lazily here as it is at its other call site:
+    pdfplumber is slow to import, and a load whose dumps carry no documents
+    never needs it.
+    """
+    import pdf_parsers  # noqa: PLC0415
+    return srcfp.parser_fingerprint(
+        [pdf_parsers], ("pdfplumber", "pdfminer.six"))
+
+
+def _purge_stale_document_rows(conn: sqlite3.Connection) -> int:
+    """Drop the document-derived rows when the parser that produced them has
+    moved, so the pass re-derives rather than adds to them.
+
+    Whole-pass rather than per-document, though every row carries a
+    `source_doc_token`: the precious-metals overview row is written by
+    several documents that collapse onto one key, so a per-document delete
+    would remove a row another document still owns.
+    """
+    if not silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
+                                   _document_generation()):
+        return 0
+    dropped = sum(conn.execute(sql).rowcount for sql in _DOCUMENT_PASS_DELETES)
+    log.info("the document parsers have changed since these rows were "
+             "written; dropped %d for re-derivation", dropped)
+    return dropped
 
 # UBS positions.csv columns we care about (semicolon-delimited,
 # UTF-8 BOM, CRLF). Header row defines them in the order below.
@@ -243,8 +292,11 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     pos_count = _load_positions(conn, snapshot_at, dump_dir)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
+    _purge_stale_document_rows(conn)
     hist_pos, hist_cash, hist_mort, hist_txn = _load_historical_from_pdfs(
         conn, snapshot_at, dump_dir, parse_cache)
+    silver.stamp_generation(conn, DOCUMENT_GENERATION_SCOPE,
+                            _document_generation())
     card_acc, card_txn, card_inv, card_stmt = _load_cards(
         conn, snapshot_at, dump_dir)
 

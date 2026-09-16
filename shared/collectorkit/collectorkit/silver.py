@@ -208,3 +208,56 @@ def canonical_json(obj, *, ascii: bool = False) -> str:
     """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=ascii, default=str)
+
+
+# ============================================================
+# Parser generations
+# ============================================================
+#
+# A pass that materialises rows PARSED OUT OF A DOCUMENT keys those rows on
+# a hash of what the parser emitted, so editing the parser changes the ids.
+# The inserts converge on the id (`INSERT OR IGNORE` / `OR REPLACE`), which
+# makes re-loading under the SAME parser idempotent — and re-loading under a
+# CHANGED one purely additive: the re-keyed rows land beside the ones they
+# replace and silver silently holds both copies.
+#
+# `srcfp.parser_fingerprint` already names "the logic that produced this",
+# as a parse-cache key. Stamping it in silver too lets a pass notice that
+# the rows it is about to re-derive are of an older generation and DELETE
+# them first, so a re-parse REPLACES rather than accumulates and silver
+# stays hand-queryable.
+#
+# The table belongs to each collector's own migrations (collectorkit owns no
+# schema). These two calls are the whole protocol: ask before importing,
+# stamp once the import has returned.
+
+
+def stale_generation(conn: sqlite3.Connection, scope: str,
+                     generation: str) -> bool:
+    """Whether `scope`'s materialised rows were produced by a parser
+    generation other than `generation`, and so need re-deriving.
+
+    A silver DB predating the stamp holds no row for the scope and reads as
+    stale, which is what heals it: its rows came from an unknown generation,
+    so the first load after the stamp ships purges and re-derives them.
+    """
+    row = conn.execute(
+        "SELECT generation FROM parser_generations WHERE scope = ?",
+        (scope,)).fetchone()
+    return row is None or row[0] != generation
+
+
+def stamp_generation(conn: sqlite3.Connection, scope: str,
+                     generation: str) -> None:
+    """Record `generation` as the one that produced `scope`'s rows.
+
+    Called once the import has RETURNED, never before it runs: a pass that
+    dies half-way leaves the older generation stored, so the next load
+    purges and re-derives in full rather than trusting a partial import.
+    """
+    conn.execute(
+        "INSERT INTO parser_generations (scope, generation, stamped_at) "
+        "VALUES (?, ?, CAST(strftime('%s','now') AS INTEGER)) "
+        "ON CONFLICT(scope) DO UPDATE SET generation = excluded.generation, "
+        "stamped_at = excluded.stamped_at",
+        (scope, generation))

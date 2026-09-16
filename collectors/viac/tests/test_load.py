@@ -178,3 +178,45 @@ def test_list_pending_skips_run_dir_without_manifest(tmp_path):
     (bronze / "20240106T000000Z").mkdir(parents=True)
     conn, _ = _fresh_db(tmp_path)
     assert _pending_names(bronze, conn) == set()
+
+
+# ============================================================
+# Parser generations — a re-parse replaces, it does not accumulate
+# ============================================================
+
+def _seed_position(conn, source, isin="CH0000000001", snapshot_at=1700000000):
+    conn.execute(
+        "INSERT OR REPLACE INTO positions (snapshot_at, account_external_id, "
+        "instrument_external_id, asset_class, source, payload) "
+        "VALUES (?, 'acct-1', ?, 'equity', ?, '{}')",
+        (snapshot_at, isin, source))
+
+
+def test_the_purge_takes_report_rows_and_leaves_the_live_ones(tmp_path):
+    conn, _ = _fresh_db(tmp_path)
+    _seed_position(conn, "report:D1")
+    _seed_position(conn, "report:D2", isin="CH0000000002")
+    _seed_position(conn, "live", isin="CH0000000003")
+    conn.execute(
+        "INSERT OR REPLACE INTO cash_balances (snapshot_at, "
+        "account_external_id, currency, balance_kind, amount, source) "
+        "VALUES (1700000000, 'acct-1', 'CHF', 'cash', 1.0, 'report:D1')")
+
+    assert loader._purge_stale_report_rows(conn) == 3
+
+    assert [r[0] for r in conn.execute(
+        "SELECT source FROM positions").fetchall()] == ["live"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM cash_balances").fetchone()[0] == 0
+    conn.close()
+
+
+def test_an_unmoved_report_parser_drops_nothing(tmp_path):
+    conn, _ = _fresh_db(tmp_path)
+    _seed_position(conn, "report:D1")
+    silver.stamp_generation(conn, loader.REPORT_GENERATION_SCOPE,
+                            loader.REPORT_GENERATION)
+
+    assert loader._purge_stale_report_rows(conn) == 0
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
+    conn.close()

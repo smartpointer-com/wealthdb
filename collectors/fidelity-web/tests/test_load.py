@@ -162,8 +162,8 @@ def test_apply_migrations_creates_schema(conn):
     names = [r[0] for r in cur.fetchall()]
     assert names == [
         "accounts", "documents", "dump_runs",
-        "historical_position_snapshots", "portfolios",
-        "positions", "schema_meta", "transactions",
+        "historical_position_snapshots", "parser_generations",
+        "portfolios", "positions", "schema_meta", "transactions",
     ]
 
 
@@ -961,3 +961,85 @@ def test_the_redemption_that_funds_a_fee_is_not_mistaken_for_it(migrated):
     n, dup = load._insert_supplied_activity_rows(
         migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
     assert (n, dup) == (3, 0)
+
+
+# ============================================================
+# Parser generations — a re-parse replaces, it does not accumulate
+# ============================================================
+
+def _seed_holding(conn, sha, description, as_of=1700000000,
+                  aid="100000001"):
+    conn.execute(
+        "INSERT OR REPLACE INTO historical_position_snapshots ("
+        "as_of_date, account_external_id, description, instrument_key, "
+        "quantity, price, market_value, percent_of_total, currency, "
+        "source_sha256, payload) "
+        "VALUES (?, ?, ?, NULL, 1, 1, 1, NULL, 'USD', ?, '{}')",
+        (as_of, aid, description, sha))
+
+
+def _seed_feed_row(conn, activity_id="20260105-100000001-1", sha="csv0"):
+    conn.execute(
+        "INSERT OR REPLACE INTO transactions ("
+        "activity_id, timestamp, account_external_id, kind, amount, "
+        "currency, source_sha256, payload) "
+        "VALUES (?, 1700000000, '100000001', 'FEE', -1.0, 'USD', ?, '{}')",
+        (activity_id, sha))
+
+
+def test_re_parsing_a_document_replaces_only_its_own_holdings(migrated):
+    _seed_holding(migrated, "sha_a", "a fund the parser used to name this way")
+    _seed_holding(migrated, "sha_b", "a holding from another statement")
+
+    load._drop_document_holdings(migrated, "sha_a")
+
+    assert [r[0] for r in migrated.execute(
+        "SELECT source_sha256 FROM historical_position_snapshots").fetchall()
+    ] == ["sha_b"]
+
+
+def test_dropping_a_documents_holdings_touches_no_transaction(migrated):
+    _seed_feed_row(migrated)
+    load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha_a")
+
+    load._drop_document_holdings(migrated, "sha_a")
+
+    assert migrated.execute(
+        "SELECT COUNT(*) FROM transactions").fetchone()[0] == 4
+
+
+def test_the_activity_purge_spares_the_scraped_feed(migrated):
+    # The feed's ids are structural (migration 0005) and its rows are not
+    # the statement pass's to re-derive.
+    _seed_feed_row(migrated)
+    load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha_a")
+
+    assert load._drop_supplied_activity(migrated) == 3
+
+    assert [r[0] for r in migrated.execute(
+        "SELECT activity_id FROM transactions").fetchall()
+    ] == ["20260105-100000001-1"]
+
+
+def test_a_re_keyed_activity_row_lands_beside_the_one_it_replaces(migrated):
+    # The hazard the purge exists for, stated as a test: the id hashes the
+    # description, so a parser that reads the same payment differently mints
+    # a different id and INSERT OR REPLACE has nothing to replace.
+    load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha_a")
+    before = len(_activity_rows(migrated))
+
+    reparsed = json.loads(json.dumps(_PARSED_ACTIVITY))
+    for row in reparsed["accounts"][0]["activity"]:
+        row["description"] += " as the parser now reads it"
+    load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), reparsed, "sha_a")
+    assert len(_activity_rows(migrated)) == before * 2
+
+    # Purging the scope first is what makes the re-parse a replacement.
+    load._drop_supplied_activity(migrated)
+    load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), reparsed, "sha_a")
+    assert len(_activity_rows(migrated)) == before

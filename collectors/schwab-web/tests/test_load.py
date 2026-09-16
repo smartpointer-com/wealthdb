@@ -214,7 +214,7 @@ class TestMigrations:
         # logical_doc_key backfilled from the documents join (sha256-independent).
         assert rows["aaa"] == "NNN|1709251200|Stmt_2024-03.PDF"
         assert rows["ccc"] == "NNN|1709251200|Stmt_2024-03.PDF"
-        assert load._current_schema_version(conn) == 4
+        assert load._current_schema_version(conn) == 5
 
 
 # ============================================================
@@ -1934,3 +1934,73 @@ class TestDistributionLoad:
             " WHERE source='third_party_distribution'"
         ).fetchone()[0]
         assert n == 1                                # prior row preserved
+
+
+# ============================================================
+# Parser generations — a moved parser implies --reparse
+# ============================================================
+
+def _generation_args(tmp_path):
+    import argparse
+    (tmp_path / "bronze").mkdir(exist_ok=True)
+    return argparse.Namespace(
+        silver_db=tmp_path / "silver.db",
+        bronze_dir=tmp_path / "bronze",
+        migrations_dir=MIGRATIONS_DIR,
+        reparse=False, workers=1, verbose=False, force=False,
+    )
+
+
+def _seed_snapshot_rows(db):
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO historical_position_snapshots ("
+            "as_of_date, account_external_id, instrument_key, quantity, "
+            "source_sha256, payload) "
+            "VALUES (1700000000, '1234', 'ABCDE1234', 1.0, 'sha0', '{}')")
+        conn.execute(
+            "INSERT OR REPLACE INTO historical_cash_balances ("
+            "period_end, period_start, account_external_id, currency_iso, "
+            "closing_balance, source_sha256, payload) "
+            "VALUES (1700000000, 1697500000, '1234', 'USD', 1.0, "
+            "'sha0', '{}')")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _snapshot_row_count(db):
+    conn = sqlite3.connect(str(db))
+    try:
+        return sum(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                   for t in load._SNAPSHOT_TABLES)
+    finally:
+        conn.close()
+
+
+def test_a_moved_parser_purges_the_snapshot_tables(tmp_path):
+    # Neither table has a delete path of its own — `--reparse` deletes only
+    # from `transactions` — and both key on parser output, so a moved
+    # capture would strand the old row under a key nothing writes again.
+    args = _generation_args(tmp_path)
+    assert load.run_load(args) == 0          # stamps the current generation
+    _seed_snapshot_rows(args.silver_db)
+
+    conn = sqlite3.connect(str(args.silver_db))
+    load.silver.stamp_generation(
+        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+    conn.commit()
+    conn.close()
+
+    assert load.run_load(args) == 0
+    assert _snapshot_row_count(args.silver_db) == 0
+
+
+def test_an_unmoved_parser_leaves_the_snapshot_tables_alone(tmp_path):
+    args = _generation_args(tmp_path)
+    assert load.run_load(args) == 0
+    _seed_snapshot_rows(args.silver_db)
+
+    assert load.run_load(args) == 0
+    assert _snapshot_row_count(args.silver_db) == 2

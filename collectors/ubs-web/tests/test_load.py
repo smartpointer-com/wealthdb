@@ -358,3 +358,44 @@ def test_stmt_txn_id_stable_and_namespaced():
     assert a == b and a.startswith("stmt:")
     # Different occurrence → different id.
     assert loader._stmt_txn_id(_IBAN_A, {**r, "occurrence": 1}) != a
+
+
+# ============================================================
+# Parser generations — a re-parse replaces, it does not accumulate
+# ============================================================
+
+def _seed_txn(conn, txn_id, account="CH0000000001"):
+    conn.execute(
+        "INSERT OR REPLACE INTO transactions (transaction_external_id, "
+        "account_external_id, snapshot_at, value_date, currency_iso, payload) "
+        "VALUES (?, ?, 1700000000, 1700000000, 'CHF', '{}')",
+        (txn_id, account))
+
+
+def test_the_purge_takes_the_statement_era_and_leaves_the_csv_export(tmp_path):
+    # DESIGN.md §3.6: the two id spaces are disjoint by construction, and
+    # the `stmt:` prefix is the era marker. Only the statement era is the
+    # PDF parser's to re-derive.
+    conn = _fresh_db(tmp_path)
+    _seed_txn(conn, "stmt:0001")
+    _seed_txn(conn, "stmt:0002")
+    _seed_txn(conn, "9876543210")          # UBS's own Transaction no.
+
+    loader._purge_stale_document_rows(conn)
+
+    assert [r[0] for r in conn.execute(
+        "SELECT transaction_external_id FROM transactions").fetchall()
+    ] == ["9876543210"]
+    conn.close()
+
+
+def test_an_unmoved_document_parser_drops_nothing(tmp_path):
+    conn = _fresh_db(tmp_path)
+    _seed_txn(conn, "stmt:0001")
+    silver.stamp_generation(conn, loader.DOCUMENT_GENERATION_SCOPE,
+                            loader._document_generation())
+
+    assert loader._purge_stale_document_rows(conn) == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+    conn.close()

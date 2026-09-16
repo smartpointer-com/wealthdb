@@ -483,6 +483,31 @@ rows.
   balance is exact regardless of intra-day order — and the reconstructed
   tail must land exactly on the export's opening balance, which the first
   full-archive load verified to the cent.
+- A statement row's id hashes the **description the parser read**, and
+  `_insert_transaction` is `INSERT OR IGNORE`, so editing the parser re-keys
+  the rows and the next load would insert the new ones beside the old — a
+  silent, permanent double-count of those outflows. `parser_generations`
+  (migration 0005) records which generation of `statement_parser` produced
+  the rows silver is holding; when it has moved, every `source='statement'`
+  row **and every period anchor** is dropped before the passes re-derive
+  them, so a re-parse REPLACES. The anchors go too because
+  `statement_balances` is keyed on the period the parser READ, so a shifted
+  period mints a new anchor and orphans the old one — and
+  `_card_balance_anchors` takes every anchor an account has, so the orphan
+  lands in the span walk `derive_card_balances` rolls between. Both
+  statement passes share one generation and one purge: they both write
+  `source='statement'` and nothing on a row separates a deposit statement's
+  from a card's. The export ledgers are untouched — migration 0002 moved
+  them onto structural ids that carry no parsed text.
+- A moved generation **raises the post-pass gate by itself**. A parser-only
+  change lands no bronze run, so `post_passes_pending` stays down and
+  nothing else would ever run the passes again. Two guards bound what a
+  re-derivation can do: the stamp is written only once all three passes
+  return, so a pass that dies leaves the older generation stored; and a
+  re-derivation that comes back with FEWER rows than silver held is not
+  stamped at all, so the next load tries again rather than committing the
+  shortfall. That settles after one retry, which has nothing better to
+  compare against, and warns each time.
 
 ### §F — Session persistence (answered: not persistent)
 

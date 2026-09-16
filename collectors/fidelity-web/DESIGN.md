@@ -370,6 +370,7 @@ databases always conform to the latest schema.
 | `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's structural columns + a per-file occurrence index; §3.3 — file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
 | `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `currency`, `source_sha256`; rest in `payload`. Populated from two PDF archives — scraped 529 statements (`pdf_parsers.parse_statement_pdf()`) and statements supplied out-of-band under `<bronze-dir>/supplied-statements/` (`pdf_parsers_supplied.parse_supplied_statement_pdf()`). See §4.5. |
+| `parser_generations` | meta | `scope` | `generation`, `stamped_at`. Which generation of a document parser produced the rows a pass is holding — the same fingerprint the parse cache is keyed on. See §4.5. |
 
 Notes:
 - `currency` defaults to `'USD'` on both `positions` and
@@ -559,6 +560,50 @@ The loader synthesises it at the account's last historical
 to join against. Gold's per-source latest-snapshot semantics then
 zero the account out automatically for every date after its final
 statement (no zombie balances).
+
+#### 4.5.1 A re-parse replaces its rows
+
+All three PDF passes key their rows on text read off the page: a
+holding's description is part of the `historical_position_snapshots`
+primary key, and an activity row's description is inside its
+`activity_id`. Editing a parser therefore re-keys the rows it
+produces, and `INSERT OR REPLACE` has nothing left to replace — the
+old rows simply stay beside the new ones, and silver holds both
+copies of the same holding or the same payment. The scraped feed
+already paid for this: **migration 0005** had to rebuild
+`transactions` because Fidelity's mutable description text sat inside
+the identity, so a security re-label between exports duplicated its
+rows.
+
+Each pass therefore drops what it is about to re-derive, at whichever
+grain that family of rows can be named at:
+
+- **Activity rows** — scope-wide, gated on the stamp in
+  `parser_generations`. The `stmt_` id prefix names exactly the rows
+  the supplied pass writes, so nothing escapes the purge, including a
+  row whose statement has since left the tree. The purge is held until
+  the first statement has actually parsed: spending it ahead of the
+  walk would empty the ledger on the run where poppler broke and then
+  re-derive nothing. Unspent it leaves the generation unstamped, so the
+  next load tries the whole thing again.
+- **Holdings rows** — per document, every time the document is
+  re-parsed. Three passes share that table and only `source_sha256`
+  says which PDF a row came from, so the document is the largest
+  scope that can be named without reaching into another pass. The
+  residual: a row whose last writer was a statement since removed
+  from bronze keeps that statement's sha, so the statement still
+  present will not delete it. `load --force` is the repair.
+
+A document is dropped only once its parse has **succeeded**. One that
+fails to parse, fails its signature guard or fails reconciliation
+keeps whatever it wrote before — stale rows beat no rows when nothing
+can re-derive them.
+
+The generation itself is not hand-maintained: it is the
+`collectorkit.srcfp.parser_fingerprint` value the parse cache is
+already keyed on, which folds in the parser's first-party import
+closure, the extraction libraries and — for the supplied statements —
+the signature guard.
 
 ### 4.6 Tax-form structured data
 

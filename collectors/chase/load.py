@@ -87,7 +87,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, silver, srcfp
 
 import statement_parser
 
@@ -104,6 +104,21 @@ SOURCE_QFX = "qfx"
 SOURCE_CSV = "csv"
 SOURCE_STATEMENT = "statement"
 EXPORT_SOURCES = (SOURCE_QFX, SOURCE_CSV)
+
+# The statement passes' rows are re-derived from the PDFs every time they
+# run, and their ids hash the description the parser read, so an edit to the
+# parser re-keys them. `parser_generations` (migration 0005) records which
+# generation produced the rows silver is holding; when it has moved, the
+# statement rows are dropped before the passes re-derive them, so a re-parse
+# replaces rather than accumulates.
+#
+# The extraction side is the `pdftotext` BINARY rather than a Python
+# distribution, so there is nothing for srcfp to pin there: a poppler upgrade
+# that shifted a column would not move this fingerprint. What it does cover
+# is the parsing logic and its import closure, which is where the statement
+# layouts are read.
+STATEMENT_GENERATION_SCOPE = "statement"
+STATEMENT_GENERATION = srcfp.parser_fingerprint([statement_parser])
 
 # transactions.payload marker for a balance this loader computed rather than
 # read off the provider's own file. EXACTLY ONE balance in silver is
@@ -1120,6 +1135,58 @@ def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
     return pool
 
 
+def _statement_row_count(conn: sqlite3.Connection) -> int:
+    """How many statement-derived rows silver is holding — the before/after
+    the re-derivation is judged on."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE source = ?",
+        (SOURCE_STATEMENT,)).fetchone()[0]
+
+
+def _purge_stale_statement_rows(conn: sqlite3.Connection) -> int:
+    """Drop the statement-derived ledger when the parser that produced it has
+    moved, so the passes below re-derive it rather than add to it.
+
+    Both statement passes write `source='statement'` and both key their rows
+    on a hash that includes the parsed description, so they share one
+    generation and one purge — nothing on a row separates a deposit
+    statement's from a card's, and the re-derivation is per-tree either way.
+    The export ledgers are untouched: their ids carry no parsed text.
+
+    Deliberately not wrapped in a transaction of its own. `post_passes_pending`
+    is this loader's recovery mechanism: a crash between the purge and the
+    re-import leaves the flag raised and the generation unstamped, so the next
+    load purges and re-derives in full. That is the window a crash part-way
+    through an import already had.
+
+    This drops BEFORE the re-parse rather than after, so a load on which the
+    statements stopped parsing at all — poppler gone, the PDFs unreadable —
+    leaves silver short of its statement rows until the next good load. The
+    caller's row-count check is what makes that loud and temporary: a
+    re-derivation that comes back short is not stamped, so the next load
+    tries again. Deferring the purge until a statement has actually parsed
+    would close that window, but it would also let a load where nothing
+    parsed stamp the new generation over rows the old parser wrote — which
+    re-arms the very duplication this exists to stop.
+    """
+    if not silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
+                                   STATEMENT_GENERATION):
+        return 0
+    dropped = conn.execute("DELETE FROM transactions WHERE source = ?",
+                           (SOURCE_STATEMENT,)).rowcount
+    # The period anchors go too. `statement_balances` is keyed on
+    # (account, period_end) and the period is READ OFF THE STATEMENT, so a
+    # parser that dates a period differently mints a new anchor and leaves
+    # the old one — and `_card_balance_anchors` takes every anchor an
+    # account has, so the orphan lands in the span walk `derive_card_balances`
+    # rolls between. They are re-derived from the same PDFs by the same pass.
+    anchors = conn.execute("DELETE FROM statement_balances").rowcount
+    log.info("statements: the parser has changed since these rows were "
+             "written; dropped %d transaction(s) and %d period anchor(s) "
+             "for re-derivation", dropped, anchors)
+    return dropped
+
+
 def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path) -> int:
     """Parse the statement PDFs under the bronze tree and import the
     transactions older than the export window. Run after the export runs so
@@ -1155,7 +1222,6 @@ def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path) -> i
         return 0
     pool = _deposit_statements_in_tree(bronze_dir, card_ids,
                                        max(deposit_seams.values()))
-
     imported = skipped = 0
     for ext_id, seam in sorted(deposit_seams.items()):
         # Per account: the statements whose period OPENED before its seam —
@@ -2031,13 +2097,43 @@ def main(argv: list[str]) -> int:
         # forever, leaving silver permanently without its pre-export backfill
         # and its reconstructed card balances. A clean load leaves the flag
         # down, so a no-op reload still skips the PDF parsing they cost.
-        if _post_passes_pending(conn):
-            if not loaded:
+        # A moved statement parser owes the passes a run just as an
+        # unfinished load does, and it is the case nothing else would raise:
+        # a parser-only change lands no bronze run, so the pending flag stays
+        # down and silver would go on holding rows no parser in the tree
+        # produces.
+        reparse = silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
+                                          STATEMENT_GENERATION)
+        if _post_passes_pending(conn) or reparse:
+            if reparse:
+                log.info("the statement parser has changed since silver was "
+                         "written; re-deriving the statement rows")
+            elif not loaded:
                 log.info("the previous load's post passes did not finish; "
                          "re-running them")
+            before = _statement_row_count(conn)
+            _purge_stale_statement_rows(conn)
             load_statement_transactions(conn, args.bronze_dir)
             load_card_statements(conn, args.bronze_dir)
             derive_card_balances(conn, args.bronze_dir)
+            after = _statement_row_count(conn)
+            if reparse and after < before:
+                # The re-derivation came back short: a PDF that no longer
+                # parses, a segment that stopped reconciling, a bronze tree
+                # thinned since. Leaving the generation unstamped is what
+                # makes the NEXT load try again instead of committing the
+                # shortfall as the new truth — and it settles after that one
+                # retry, which has nothing better to compare against.
+                log.warning(
+                    "statements: re-derivation produced %d row(s) where "
+                    "silver held %d; not stamping the parser generation, so "
+                    "the next load re-derives again", after, before)
+            else:
+                # Stamped only once all three have returned, so a pass that
+                # dies leaves the older generation stored and the next load
+                # re-derives.
+                silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
+                                        STATEMENT_GENERATION)
             _set_post_passes_pending(conn, False)
         log.info("done: %d run(s) ingested into %s", loaded, db_path)
     finally:

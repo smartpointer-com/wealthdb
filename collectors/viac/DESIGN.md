@@ -335,6 +335,7 @@ the overview.
 | `transactions` | `transaction_external_id` | One row per event from `/p3a/portfolio/transactions`. `transaction_external_id` synthesised per §3.3. `kind` is the canonical mapping (`buy`, `sell`, `dividend`, `interest`, `fee`, `deposit`, `corporate_action`, `other`). |
 | `wealth_history` | `(snapshot_at, value_date)` | Customer-level daily NAV from `/wealth/summary`. Zips `dailyWealth` + `dailyPerformance` + `dailyInvestedAmounts` by date. NOT per-portfolio (VIAC's API doesn't expose per-portfolio history). |
 | `documents` | `content_sha256` | Content-deduped PDF index. Promotes `viac_doc_id`, `doc_type`, `doc_subtype`, `timestamp`, `product`. `bronze_path` is relative to bronze root. |
+| `parser_generations` | `scope` | Which generation of the Reporting-PDF parsing logic produced the rows a pass is holding (`collectorkit.srcfp` fingerprint). A moved generation drops them before the pass re-derives, so a re-parse replaces rather than accumulates. |
 
 Migrations land under `migrations/NNNN_<slug>.sql`. The loader
 runs pending migrations on every invocation. Same discipline

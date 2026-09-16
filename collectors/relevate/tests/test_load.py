@@ -148,3 +148,42 @@ def test_list_pending_skips_dir_without_run_json(tmp_path):
                 {"portfolios": []})
     conn, _ = _fresh_db(tmp_path)
     assert loader.list_pending_dumps(conn, bronze) == []
+
+
+# ============================================================
+# Parser generations — a re-parse replaces, it does not accumulate
+# ============================================================
+
+def _seed_pdf_pass_rows(conn):
+    conn.execute(
+        "INSERT OR REPLACE INTO historical_position_snapshots ("
+        "snapshot_at, account_external_id, isin, security_name, currency, "
+        "market_value, source_sha256, payload) "
+        "VALUES (1700000000, '1000.100000.1', 'CH0000000001', "
+        "'Example Fund', 'CHF', 1.0, 'sha0', '{}')")
+    conn.execute(
+        "INSERT OR REPLACE INTO historical_cash_balances ("
+        "snapshot_at, account_external_id, currency, balance_kind, amount, "
+        "source_sha256, payload) "
+        "VALUES (1700000000, '1000.100000.1', 'CHF', 'cash', 1.0, "
+        "'sha0', '{}')")
+
+
+def test_the_purge_takes_everything_the_pdf_passes_wrote(tmp_path):
+    conn, _ = _fresh_db(tmp_path)
+    _seed_pdf_pass_rows(conn)
+
+    assert loader._purge_stale_pdf_rows(conn) == 2
+    assert loader._pdf_pass_row_count(conn) == 0
+    conn.close()
+
+
+def test_an_unmoved_report_parser_drops_nothing(tmp_path):
+    conn, _ = _fresh_db(tmp_path)
+    _seed_pdf_pass_rows(conn)
+    silver.stamp_generation(conn, loader.PDF_GENERATION_SCOPE,
+                            loader.PDF_GENERATION)
+
+    assert loader._purge_stale_pdf_rows(conn) == 0
+    assert loader._pdf_pass_row_count(conn) == 2
+    conn.close()
