@@ -1092,6 +1092,136 @@ for _c, *_ in DEFS["Spending"][3]:
           and [a[2].get("display-name")
                for a in _q["query"]["aggregation"]] == ["USD", "CHF", "EUR"])
 
+# ---- the Cash Flow dashboard ------------------------------------------
+
+section("the Cash Flow dashboard")
+
+CASHFLOW_CARD_NAMES = ["Cash in", "Cash out", "Net cash flow", "Savings rate",
+                       "Yield share", "Cash flow",
+                       "Cash flow statement by month",
+                       "Inflows by class by month", "Outflows by class by month",
+                       "Investing by month", "Financing and vehicles by month",
+                       "Largest flows"]
+check("every Cash Flow tile is defined",
+      all(n in CARDS for n in CASHFLOW_CARD_NAMES),
+      [n for n in CASHFLOW_CARD_NAMES if n not in CARDS])
+
+_cf_sql = {n: (sql_of(CARDS[n][2]) or "") for n in CASHFLOW_CARD_NAMES if n in CARDS}
+check("every Cash Flow tile is native over web_cashflow",
+      all("web_cashflow" in q for q in _cf_sql.values()),
+      [n for n, q in _cf_sql.items() if "web_cashflow" not in q])
+check("...and names its currency through the variable",
+      all("{{currency}}" in q for q in _cf_sql.values()),
+      [n for n, q in _cf_sql.items() if "{{currency}}" not in q])
+# The Investing grain is a VARIABLE, not a field filter: it changes how
+# the investing section is GROUPED, and a field filter can only narrow a
+# population. The tiles that draw investing must read it.
+for _n in ("Cash flow", "Investing by month"):
+    check(f"'{_n}' honours the Investing picker",
+          "{{investing}}" in _cf_sql.get(_n, ""), _cf_sql.get(_n, "")[:200])
+
+# The diagram is what the dashboard is for, and a Sankey visualisation
+# reads three named columns.
+_sankey_viz = p.question_defs(1, MID)["Cash flow"][3]
+check("the diagram is wired as a Sankey over source/target/value",
+      _sankey_viz.get("sankey.source") == "source"
+      and _sankey_viz.get("sankey.target") == "target"
+      and _sankey_viz.get("sankey.value") == "value", _sankey_viz)
+check("...and it computes the hub where the pickers apply",
+      "hub AS" in _cf_sql["Cash flow"] and "Household" in _cf_sql["Cash flow"])
+
+# No account picker, and no tile that groups by one. The household
+# boundary is what separates the household's cash flow from its
+# vehicles', and a picker that moved accounts in and out of the pool
+# would turn every crossing it split into an unexplained disappearance.
+_cf_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Cash Flow")]
+check("the Cash Flow dashboard carries five pickers and no account one",
+      _cf_pickers == ["currency", "investing", "time_range", "source", "section"],
+      _cf_pickers)
+check("the Cash Flow twin carries the same five",
+      [q["slug"] for q in p.dashboard_parameters(MID, "range", "Cash Flow (privacy)")]
+      == _cf_pickers)
+_cf_picker = [q for q in p.dashboard_parameters(MID, "range", "Cash Flow")
+              if q["slug"] == "section"][0]
+check("the Section picker binds to a column report_cashflow projects",
+      _cf_picker["values_source_config"]["value_field"][1] in _model_columns("report_cashflow"),
+      _model_columns("report_cashflow"))
+check("the Cash Flow dashboard and its twin are laid out",
+      "Cash Flow" in _dash and "Cash Flow (privacy)" in _dash)
+check("the Cash Flow twin has a card for every base tile",
+      all(p.privacy_name(n) in CARDS for n in CASHFLOW_CARD_NAMES),
+      [n for n in CASHFLOW_CARD_NAMES if p.privacy_name(n) not in CARDS])
+
+# THE TWIN PROJECTS NO LABEL AT ANY GRAIN. The diagram's nodes are
+# vocabulary — no node is ever a merchant, a payer, an account or an
+# instrument — so the twin needs normalisation rather than redaction;
+# the one card that DID name an account and a counterparty drops both
+# columns and ranks instead. This is the assertion that keeps it true.
+_cf_twin_sql = {p.privacy_name(n): (sql_of(CARDS[p.privacy_name(n)][2]) or "")
+                for n in CASHFLOW_CARD_NAMES if p.privacy_name(n) in CARDS}
+for _col in ("account_label", "display_name", "account_external_id", "name"):
+    _leaking = [n for n, q in _cf_twin_sql.items()
+                if any(_star_projection(pr) or re.search(rf"\b{_col}\b", pr)
+                       for pr in _projections(q))]
+    check(f"no Cash Flow twin card projects {_col}", not _leaking, _leaking)
+check("the twin's largest-flows card ranks instead of naming",
+      "row_number() OVER" in _cf_twin_sql["Largest flows (privacy)"],
+      _cf_twin_sql["Largest flows (privacy)"][:200])
+# Every twin figure is a share of the hub or of the peak month, and the
+# hub moves with the Investing picker exactly as the diagram does.
+check("the twin's scalars divide by the hub",
+      all("hub" in _cf_twin_sql[p.privacy_name(n)]
+          for n in ("Cash in", "Cash out", "Net cash flow")),
+      [n for n in ("Cash in", "Cash out", "Net cash flow")
+       if "hub" not in _cf_twin_sql[p.privacy_name(n)]])
+
+# The serving view is in the registry that drives the pre-view abort, so
+# a stale gold snapshot halts provisioning rather than converging every
+# cashflow card to a degraded shape.
+# The rate tiles' arithmetic, pinned. web_cashflow's values are already
+# SIGNED — an outflow is negative — so operating cash flow is the plain
+# sum over the two halves. Multiplying the outflow half by -1 and summing
+# computes income PLUS spending, which is the inverse of what the card's
+# own description promises and of what the summary macro returns, and no
+# shape test would catch it.
+for _n in ("Savings rate", "Savings rate (privacy)"):
+    _q = _cf_sql.get(_n) or _cf_twin_sql.get(_n, "")
+    check(f"'{_n}' sums the two operating halves signed",
+          "THEN 1 ELSE -1 END" not in _q, _q[:240])
+    check(f"...and divides by what came in",
+          "section = 'operating_in'" in _q and "nullif" in _q, _q[:240])
+# The twin's scalars must read the same way round as the base tiles they
+# stand in for: gold stores an outflow negative and the base "Cash out"
+# prints a positive magnitude, so its share has to be one too.
+check("'Cash out (privacy)' reports a positive magnitude, as its base tile does",
+      "-value_usd" in _cf_twin_sql["Cash out (privacy)"],
+      _cf_twin_sql["Cash out (privacy)"][:240])
+check("'Cash in (privacy)' does not negate",
+      "-value_usd" not in _cf_twin_sql["Cash in (privacy)"],
+      _cf_twin_sql["Cash in (privacy)"][:240])
+# One hub. It is the sum of the positive nets AT THE LEVEL DRAWN, so a
+# class-level sum is a different number from the diagram's whenever a
+# leaf nets against its class — and a reader comparing a scalar against
+# the diagram beside it would find they did not agree.
+for _n in ("Cash in (privacy)", "Cash out (privacy)", "Net cash flow (privacy)",
+           "Largest flows (privacy)", "Cash flow (privacy)"):
+    check(f"'{_n}' divides by the diagram's own hub",
+          "atoms AS" in _cf_twin_sql[_n] and "hub AS" in _cf_twin_sql[_n],
+          _cf_twin_sql[_n][:200])
+
+# A Sankey cannot render an edge whose two ends are the same node, and
+# the backlog class IS its own leaf. The card must therefore keep it out
+# of the leaf stage and attach it to the hub directly.
+for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
+               ("Cash flow (privacy)", _cf_twin_sql["Cash flow (privacy)"])):
+    check(f"'{_n}' keeps the backlog out of the leaf stage",
+          "class NOT IN ('Uncategorised in', 'Uncategorised out')" in _q, _q[:400])
+    check(f"...and attaches it to the hub instead",
+          "OR class IN ('Uncategorised in', 'Uncategorised out')" in _q, _q[:400])
+
+check("web_cashflow is one of the views provisioning requires",
+      "web_cashflow" in p.web_views_wanted(), p.web_views_wanted())
+
 if FAILS:
     print(f"provision tests: {FAILS} failed")
 else:

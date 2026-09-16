@@ -243,15 +243,22 @@ func TestTheKindTable(t *testing.T) {
 			why: "capital deployed to a destination the product does not track"},
 
 		// The outflow kinds, by resolved category, with the three lifts.
+		// The outflow leaf is the PRIMARY: the spending vocabulary has
+		// ninety detailed values, and a diagram with ninety leaves is
+		// not a diagram. The detailed value is a column away, behind
+		// `-C +detailed` on the transactions view.
 		{id: "K-SHOP", account: "CARD", kind: "purchase", amount: -40,
-			spend: "FOOD_AND_DRINK_GROCERIES", want: "operating_out.consumption.FOOD_AND_DRINK_GROCERIES",
-			why: "groceries are consumption"},
+			spend: "FOOD_AND_DRINK_GROCERIES", want: "operating_out.consumption.FOOD_AND_DRINK",
+			why: "groceries are consumption, and the leaf is the primary they roll up to"},
 		{id: "K-REFUND", account: "CARD", kind: "refund", amount: 12,
-			spend: "FOOD_AND_DRINK_GROCERIES", want: "operating_out.consumption.FOOD_AND_DRINK_GROCERIES",
+			spend: "FOOD_AND_DRINK_GROCERIES", want: "operating_out.consumption.FOOD_AND_DRINK",
 			why: "a refund nets inside the category it reverses"},
+		// The three lifted classes keep the DETAILED value: each was
+		// lifted for the distinction inside it, and a class whose one
+		// leaf repeats its own name is a self-edge.
 		{id: "K-FEE", account: "BROK", kind: "fee", amount: -30,
 			spend: "BANK_FEES_INVESTMENT_FEES", want: "operating_out.fees.BANK_FEES_INVESTMENT_FEES",
-			why: "the cost of being invested is lifted out of spending"},
+			why: "a fee for investing is not a fee for banking, which is why the class exists"},
 		{id: "K-TAX", account: "CASH", kind: "tax", amount: -4000,
 			spend: "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT", want: "operating_out.taxes.GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT",
 			why: "every household-balance diagram lifts taxes"},
@@ -263,8 +270,8 @@ func TestTheKindTable(t *testing.T) {
 			why: "a donation is giving, not a government department"},
 		{id: "K-PASSPORT", account: "CASH", kind: "purchase", amount: -90,
 			spend: "GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES",
-			want:  "operating_out.consumption.GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES",
-			why:   "what remains of the government primary is consumption"},
+			want:  "operating_out.consumption.GOVERNMENT_AND_NON_PROFIT",
+			why:   "what remains of the government primary is consumption, under that primary's own leaf"},
 		{id: "K-ATM", account: "CASH", kind: "withdrawal", amount: -200,
 			spend: "cash_withdrawal", want: "operating_out.consumption.cash_withdrawal",
 			why: "cash out is spend whose use is unobservable"},

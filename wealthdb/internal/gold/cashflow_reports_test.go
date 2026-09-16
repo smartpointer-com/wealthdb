@@ -312,7 +312,7 @@ func TestSankeyStagesConserveThroughTheClass(t *testing.T) {
 	}
 	// The swing leaf supplied cash, so it attaches to the hub directly
 	// rather than hanging off a class on the other side.
-	if v, ok := byEdge["Flights -> Household"]; !ok || math.Abs(v-300) > 0.005 {
+	if v, ok := byEdge["Travel -> Household"]; !ok || math.Abs(v-300) > 0.005 {
 		t.Errorf("the swing leaf is not attached to the hub: %v", byEdge)
 	}
 	// Its class carries only the leaf that stayed with it.
@@ -761,5 +761,140 @@ func TestMigration0083DDLIsRerunnable(t *testing.T) {
 	rerunMigrationDDL(t, db, ctx, "0083_cashflow_reconciliation.sql")
 	if rows, err := CashflowSummary(ctx, db, 172800, 3500000, "USD", "total"); err != nil || len(rows) != 1 {
 		t.Fatalf("the replayed summary returned %d rows: %v", len(rows), err)
+	}
+}
+
+// ---- the serving view ----------------------------------------------------
+
+// TestWebCashflowIsLineGrainAndReadyToDraw pins what the serving view
+// adds over the report macro it wraps: a row per (line, reporting
+// currency), and node NAMES a Sankey can key on. A visualisation keys a
+// node by the string it is called, so a gift given and a gift received
+// sharing a name would merge into one node with a self-edge.
+func TestWebCashflowIsLineGrainAndReadyToDraw(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReportFixture(t, db, ctx)
+	seedLines(t, db, ctx, []line{
+		{id: "W-GIFT-IN", account: "CASH", kind: "deposit", amount: 500, income: "gift"},
+		{id: "W-GIFT-OUT", account: "CASH", kind: "withdrawal", amount: -200, spend: "gift"},
+		{id: "W-UNPLACED-IN", account: "CASH", kind: "deposit", amount: 30},
+		{id: "W-UNPLACED-OUT", account: "CASH", kind: "withdrawal", amount: -30},
+	})
+
+	// The node names, read straight off the view.
+	named, err := db.QueryContext(ctx, `
+        SELECT DISTINCT section, class_node, group_node FROM web_cashflow
+         WHERE grp IN ('gift', '(uncategorized)') ORDER BY 1, 3`)
+	if err != nil {
+		t.Fatalf("read web_cashflow: %v", err)
+	}
+	defer named.Close()
+	got := map[string]bool{}
+	for named.Next() {
+		var section, classNode, groupNode string
+		if err := named.Scan(&section, &classNode, &groupNode); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[groupNode] = true
+		if section == "operating_in" && classNode == "Uncategorised" {
+			t.Error("the uncategorised CLASS node is not disambiguated by side")
+		}
+	}
+	for _, want := range []string{"Gift in", "Gift out", "Uncategorised in", "Uncategorised out"} {
+		if !got[want] {
+			t.Errorf("web_cashflow has no node named %q: %v", want, got)
+		}
+	}
+
+	// One row per line, valued in all three reporting currencies.
+	var n, lines int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cashflow`).Scan(&n); err != nil {
+		t.Fatalf("count web_cashflow: %v", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cashflow_lines_base(0, 9223372036854775807)`).Scan(&lines); err != nil {
+		t.Fatalf("count the base: %v", err)
+	}
+	if n != lines {
+		t.Errorf("web_cashflow holds %d rows over a base of %d", n, lines)
+	}
+	// Nothing an account is identified by beyond the two the dashboard
+	// groups on, and never a raw taxonomy value where a label belongs.
+	for _, col := range []string{"class_node", "group_node", "account_label", "display_name", "name"} {
+		var present int
+		if err := db.QueryRowContext(ctx, `
+            SELECT COUNT(*) FROM duckdb_columns()
+             WHERE table_name = 'web_cashflow' AND column_name = ?`, col).Scan(&present); err != nil {
+			t.Fatalf("inspect web_cashflow: %v", err)
+		}
+		if present != 1 {
+			t.Errorf("web_cashflow has no %s column", col)
+		}
+	}
+}
+
+// TestMigration0084DDLIsRerunnable holds the serving view to the replay
+// bar: one OR REPLACE VIEW.
+func TestMigration0084DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReportFixture(t, db, ctx)
+	rerunMigrationDDL(t, db, ctx, "0084_web_cashflow.sql")
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cashflow`).Scan(&n); err != nil {
+		t.Fatalf("web_cashflow after replay: %v", err)
+	}
+	if n == 0 {
+		t.Error("the replayed view answers nothing")
+	}
+}
+
+// TestNoNodeIsDrawnIntoItself pins the one shape a Sankey cannot render:
+// an edge whose two ends are the same node. The backlog class IS its own
+// leaf — nothing placed those rows, so there is nothing finer to say
+// about them — so it attaches to the hub directly rather than through a
+// leaf stage, the way cash and the vehicles do.
+func TestNoNodeIsDrawnIntoItself(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReportFixture(t, db, ctx)
+	seedLines(t, db, ctx, []line{
+		{id: "L-UNPLACED-IN", account: "CASH", kind: "deposit", amount: 700},
+		{id: "L-UNPLACED-OUT", account: "CASH", kind: "withdrawal", amount: -300},
+	})
+
+	for _, level := range []string{"group", "class"} {
+		rows, err := CashflowSankey(ctx, db, 0, 3500000, "USD", level, "whole")
+		if err != nil {
+			t.Fatalf("CashflowSankey(%s): %v", level, err)
+		}
+		var sawBacklog bool
+		for _, r := range rows {
+			if r.Source == r.Target {
+				t.Errorf("%s: %q is drawn into itself", level, r.Source)
+			}
+			if r.Source == "Uncategorised in" || r.Target == "Uncategorised out" {
+				sawBacklog = true
+			}
+		}
+		if !sawBacklog {
+			t.Errorf("%s: the backlog vanished from the diagram rather than attaching to the hub", level)
+		}
+	}
+	// It still conserves: the backlog enters the hub at its own net,
+	// not at the sum of leaves it does not have.
+	rows, err := CashflowSankey(ctx, db, 0, 3500000, "USD", "group", "whole")
+	if err != nil {
+		t.Fatalf("CashflowSankey: %v", err)
+	}
+	var in, out float64
+	for _, r := range rows {
+		v := mustFloat(t, r.Value, "value")
+		if r.Target == "Household" {
+			in += v
+		} else if r.Source == "Household" {
+			out += v
+		}
+	}
+	if math.Abs(in-out) > 0.005 {
+		t.Errorf("the hub is %.2f on one side and %.2f on the other", in, out)
 	}
 }

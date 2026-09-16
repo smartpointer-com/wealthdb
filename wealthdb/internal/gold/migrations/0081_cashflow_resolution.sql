@@ -175,7 +175,8 @@ CREATE OR REPLACE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                END AS verdict
           FROM joined j
     ),
-    -- THE ORDERED FAR-ACCOUNT TEST (design §2.4). First match wins, and
+    -- THE ORDERED FAR-ACCOUNT TEST (docs/CASHFLOW.md §4). First match
+    -- wins, and
     -- the WRAPPER is asked before the account KIND: a mortgage on a
     -- trust-owned property and a card inside a foundation are both, and
     -- the wrapper is what says whose money moved.
@@ -204,7 +205,7 @@ CREATE OR REPLACE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                END AS far_place
           FROM verdicted v
     ),
-    -- THE KIND TABLE (design §2.3), as one ladder over the verdict and
+    -- THE KIND TABLE (docs/CASHFLOW.md §4), as one ladder over the verdict and
     -- the kind. Ordered because the verdict outranks the kind wherever
     -- both have something to say: an own-account move is sorted by its
     -- far account whatever kind carried it, and a withdrawal that
@@ -352,9 +353,31 @@ CREATE OR REPLACE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
     grouped AS (
         SELECT n.*,
                CASE n.place
-                   -- The operating leaves are the families' own values.
+                   -- The inflow leaves are the income family's own
+                   -- values. Income has ONE vendored primary, so a
+                   -- primary-level leaf would fold every earned and
+                   -- yielded type into `INCOME` and say nothing.
                    WHEN 'in'  THEN COALESCE(n.verdict, '(uncategorized)')
-                   WHEN 'out' THEN COALESCE(n.verdict, '(uncategorized)')
+                   -- The outflow leaves are the spending family's
+                   -- PRIMARIES, which is where the two families differ:
+                   -- that vocabulary has ninety detailed values, and a
+                   -- diagram with ninety leaves is not a diagram.
+                   --
+                   -- Taxes, fees and giving keep the detailed value,
+                   -- because those three classes were lifted out of
+                   -- spending precisely for the distinction inside them
+                   -- — a tax assessed against one withheld at source, a
+                   -- fee for banking against a fee for investing, a
+                   -- donation against a gift given — and a class whose
+                   -- one leaf repeats its own name is a self-edge.
+                   --
+                   -- A delta is primary-level, so `card_spend`,
+                   -- `cash_withdrawal` and `other` are their own leaves
+                   -- either way.
+                   WHEN 'out' THEN
+                        CASE WHEN n.verdict IS NULL THEN '(uncategorized)'
+                             WHEN n.class IN ('taxes', 'fees', 'giving') THEN n.verdict
+                             ELSE COALESCE(n.verdict_primary, n.verdict) END
                    -- A crossing to or from a giving vehicle has no
                    -- family value behind it: the row's verdict is
                    -- `internal_transfer`, which names a movement rather
@@ -373,9 +396,9 @@ CREATE OR REPLACE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    WHEN 'loans' THEN n.verdict
                    -- Financing's mortgage, the four pools, the untracked
                    -- accounts: the class is the leaf. Nothing finer
-                   -- exists to say, and §5's diagram draws these
+                   -- exists to say, and the diagram draws these
                    -- attached to the hub rather than through a leaf
-                   -- stage.
+                   -- stage (docs/CASHFLOW.md §5).
                    ELSE n.class
                END AS grp
           FROM nodes n
@@ -395,7 +418,7 @@ CREATE OR REPLACE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    WHEN 'vehicle_receipt' THEN 'From giving vehicles'
                    WHEN '(uncategorized)' THEN 'Uncategorised'
                END,
-               gc.label,
+               gc.label, gp.primary_label,
                cashflow_class_label(g.grp)) AS group_label,
            -- The instrument on an investing line, the payer on a
            -- receipt, the merchant on an outflow. A financing, vehicle
@@ -412,7 +435,13 @@ CREATE OR REPLACE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
            g.far_silver_source_id, g.far_account_external_id,
            g.far_side, g.far_place, g.far_known
       FROM grouped g
+      -- A leaf is a detailed value, a primary, or a word of cashflow's
+      -- own, and the dimension keys the first two differently. A delta
+      -- matches both, its primary being its detailed value, and the two
+      -- labels agree.
       LEFT JOIN spend_categories gc ON gc.spend_detailed = g.grp
+      LEFT JOIN (SELECT DISTINCT spend_primary, primary_label FROM spend_categories) gp
+             ON gp.spend_primary = g.grp
 );
 
 -- ============================================================

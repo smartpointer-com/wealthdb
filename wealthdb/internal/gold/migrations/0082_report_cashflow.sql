@@ -80,9 +80,9 @@ CREATE OR REPLACE MACRO cashflow_class_rank(p_class) AS (
         WHEN 'fees'            THEN 2
         WHEN 'taxes'           THEN 3
         WHEN 'giving'          THEN 4
-        WHEN '(uncategorized)' THEN 9
+        WHEN '(uncategorized)' THEN 90
         WHEN 'investments'     THEN 1
-        WHEN 'elsewhere'       THEN 8
+        WHEN 'elsewhere'       THEN 80
         WHEN 'mortgage'        THEN 1
         WHEN 'loans'           THEN 2
         WHEN 'retirement'      THEN 1
@@ -91,7 +91,12 @@ CREATE OR REPLACE MACRO cashflow_class_rank(p_class) AS (
         WHEN 'trusts'          THEN 4
         WHEN 'untracked'       THEN 5
         WHEN 'cash'            THEN 1
-        ELSE 5  -- an asset class: ordered by size within the section
+        -- An asset class, which the investing section's vocabulary IS:
+        -- ordered by size within the section, after `investments` and
+        -- before the rows with no instrument. The value is one no
+        -- invented class uses, so a class that fell through here is
+        -- distinguishable from one that was ranked.
+        ELSE 40
     END
 );
 
@@ -312,12 +317,18 @@ CREATE OR REPLACE MACRO report_cashflow_sankey(p_from, p_to, p_ccy, p_level, p_i
         UNION ALL
         SELECT 'cash', 'cash', 'Cash',
                CAST(-COALESCE(SUM(value_outccy), 0) AS DECIMAL(28,4)) FROM v),
-    -- The leaves, operating only.
+    -- The leaves: the operating sections, less the backlog. The
+    -- backlog class IS its own leaf — nothing placed those rows, so
+    -- there is nothing finer to say about them — and a class drawn into
+    -- a leaf of the same name is a self-edge, which a Sankey renders as
+    -- a node pointing at itself. It attaches to the hub directly
+    -- instead, the way cash and the vehicles do.
     leaf AS (
         SELECT section, node_class AS class, node_group AS grp, node_group_label AS label,
                CAST(SUM(value_outccy) AS DECIMAL(28,4)) AS net
           FROM v
          WHERE section IN ('operating_in', 'operating_out')
+           AND node_class <> '(uncategorized)'
          GROUP BY 1, 2, 3, 4),
     -- A node's printable name, disambiguated where the same value
     -- reaches both operating sections.
@@ -350,7 +361,9 @@ CREATE OR REPLACE MACRO report_cashflow_sankey(p_from, p_to, p_ccy, p_level, p_i
     -- operating classes give way to their leaves.
     atoms AS (
         SELECT node_id, node_name, section, net FROM named_cls
-         WHERE p_level = 'class' OR section NOT IN ('operating_in', 'operating_out')
+         WHERE p_level = 'class'
+            OR section NOT IN ('operating_in', 'operating_out')
+            OR class = '(uncategorized)'
         UNION ALL
         SELECT node_id, node_name, section,
                CASE WHEN stays THEN CAST(0 AS DECIMAL(28,4)) ELSE net END

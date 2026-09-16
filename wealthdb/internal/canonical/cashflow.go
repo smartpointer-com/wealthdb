@@ -124,6 +124,30 @@ const (
 	ClassCash CashflowClass = "cash"
 )
 
+// cashflowClassValues are the classes cashflow INVENTS, in the order
+// the reports print them. The investing section's other classes are the
+// instrument's asset class and are deliberately absent: enumerating
+// them would be a second copy of assetClassValues that a new exposure
+// value could silently fall out of.
+//
+// It exists so gold's `cashflow_class_label` and `cashflow_class_rank`
+// can be pinned to one list rather than drifting from it — the same
+// generator-style pin `spend_categories` has against SpendCategories.
+var cashflowClassValues = []CashflowClass{
+	ClassEarnings, ClassYield, ClassBenefits, ClassOtherReceipts,
+	ClassConsumption, ClassFees, ClassTaxes, ClassGiving,
+	ClassInvestments, ClassElsewhere,
+	ClassMortgage, ClassLoans,
+	ClassRetirement, ClassEducation, ClassHealth, ClassTrusts, ClassUntracked,
+	ClassCash,
+}
+
+// CashflowClasses returns the classes cashflow invents, in report
+// order. A copy, for the reason the taxonomy accessors hand one out.
+func CashflowClasses() []CashflowClass {
+	return append([]CashflowClass(nil), cashflowClassValues...)
+}
+
 // vehicleClassValues are the four pools a tax wrapper can name. The
 // stamped wrapper table's `class` column holds one of these or NULL,
 // and `untracked` is deliberately absent: no wrapper puts a crossing

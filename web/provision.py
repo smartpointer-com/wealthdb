@@ -298,6 +298,38 @@ def report_models():
                 "  FROM web_income i,\n"
                 "       (VALUES ('USD'), ('CHF'), ('EUR')) AS c(currency)")
 
+    def cashflow():
+        """The cashflow model over gold's web_cashflow view.
+
+        The income model's shape with the statement's vocabulary: the
+        node columns carry the DISPLAY names, the keys sit beside them
+        as `*_id`, and the wide value trio is unpivoted to one row per
+        (line, reporting currency).
+
+        Like the income model it exists for a dashboard PICKER — the
+        Section one, which needs a card-backed value list — rather than
+        for a card: every cashflow tile is native over the serving view,
+        because the diagram's sides depend on the sign of a net over the
+        filtered window and no MBQL card can express that.
+
+        It projects no account label and no account id. The Cash Flow
+        dashboard carries no account picker (docs/CASHFLOW.md §9), so a
+        model column for one would exist only to be drilled into."""
+        cols = ("f.occurred_at, f.silver_source_id, f.kind,\n"
+                "       f.section,\n"
+                "       f.class_node AS class,\n"
+                "       f.group_node AS \"group\",\n"
+                "       f.class AS class_id,\n"
+                "       f.grp   AS group_id,\n"
+                "       f.name, c.currency")
+        legs = ["CASE c.currency"] + [
+            f" WHEN '{c.upper()}' THEN f.value_{c}" for c in ("chf", "eur")] + [
+            " ELSE f.value_usd", " END"]
+        return (f"SELECT {cols},\n"
+                f"       {''.join(legs)} AS value\n"
+                "  FROM web_cashflow f,\n"
+                "       (VALUES ('USD'), ('CHF'), ('EUR')) AS c(currency)")
+
     V3 = [f"{p}_{c}" for p in ("positions_value", "cash_balance", "total_value")
           for c in ("usd", "chf", "eur")]
     V1 = ["value_usd", "value_chf", "value_eur"]
@@ -480,6 +512,16 @@ def report_models():
             "and EUR carried as one row per currency (pick one with a "
             "`currency` filter). A receipt is positive and a reversal "
             "negative. Mirrors `wealthdb income transactions`."),
+        "report_cashflow": (
+            cashflow(),
+            "Every cashflow line over all time — the node it landed on "
+            "(section, class and group, with the keys beside the display "
+            "names), the name the line carries where it has one, and the "
+            "kind it was booked as — with its amount in USD, CHF and EUR "
+            "carried as one row per currency (pick one with a `currency` "
+            "filter). Positive is cash arriving in the household's pool "
+            "and negative is cash leaving it. Mirrors `wealthdb cashflow "
+            "transactions`."),
         "report_spending_pct": (
             spending(pct=True),
             "Privacy variant of report_spending: values as % of the latest "
@@ -703,6 +745,13 @@ CURRENCY_TAG = {"id": "ccy-tag", "name": "currency", "display-name": "Currency",
 START_YEAR_TAG = {"id": "year-tag", "name": "start_year",
                   "display-name": "Start year", "type": "number",
                   "default": "0", "required": True}
+# The Cash Flow dashboard's investing grain. Required with a `whole`
+# default, so a card opened away from the dashboard draws the section as
+# one movement — the reading a household opens the statement with —
+# rather than running with the variable cleared.
+INVESTING_TAG = {"id": "inv-tag", "name": "investing",
+                 "display-name": "Investing", "type": "text",
+                 "default": "whole", "required": True}
 
 # The gold columns backing the native cards' field filters: the returns
 # charts filter report_returns; the privacy cards and the spending and
@@ -734,6 +783,11 @@ FILTER_FIELD_COLUMNS = {
     # cards matching them against vendored values — every tile empty.
     "web_spending": ("occurred_at", "silver_source_id", "account_label",
                      "spend_primary_label"),
+    # The cashflow view. No account column is bound: the Cash Flow
+    # dashboard carries no account picker, because a picker that moved
+    # accounts in and out of the cash pool would turn every crossing it
+    # split into an unexplained disappearance.
+    "web_cashflow": ("occurred_at", "silver_source_id", "section"),
     # The income view. `income_label`, not `income_primary_label`: the
     # income taxonomy has ONE vendored primary, so a primary-level
     # dropdown would offer four values and hide every distinction a
@@ -1018,6 +1072,26 @@ def question_defs(db_id, mid):
     # positive magnitude.
     in_where, in_val, income_native = _family_native_kit(
         db_id, "web_income", INCOME_FILTERS, INCOME_PICKERS, False, income_native_note)
+
+    # The cashflow tiles are the same kit over the third serving view,
+    # plus one template variable of its own: {{investing}}, the display
+    # grain of the investing section. It is a VARIABLE and not a field
+    # filter because it changes how rows are GROUPED rather than which
+    # rows are selected — `whole` nets the section into one Investments
+    # node, `class` opens it into one node per asset class — and a field
+    # filter can only narrow a population.
+    cf_tags = {**spend_tags("web_cashflow", CASHFLOW_FILTERS),
+               "investing": INVESTING_TAG}
+    cf_where = _spend_where({k: v for k, v in cf_tags.items()
+                             if k not in ("currency", "investing")})
+    cf_val = f"sum({_ccy_case('value')})::DOUBLE"
+    cf_note = (" Built for the Cash Flow dashboard; opened standalone it "
+               "runs in USD with investing netted as a whole, the two "
+               "variables' defaults.")
+
+    def cashflow_native(name, display, desc, sql, viz):
+        register_native_targets(name, cf_tags, CASHFLOW_PICKERS)
+        return (display, desc + cf_note, _native(db_id, sql, cf_tags), viz)
 
     # The uncategorised-share tile's tags: every filter but the
     # currency variable, which a share of rows has no use for.
@@ -1469,6 +1543,161 @@ def question_defs(db_id, mid):
             f"       {_ccy_case('value')} AS net_income\n"
             "  FROM web_income" + in_where + "\n ORDER BY net_income DESC\n LIMIT 50",
             {}),
+        # ---- Cash Flow ----------------------------------------------
+        # Every cashflow tile is native over web_cashflow, for the
+        # reason the other two families' are — a row per (line,
+        # reporting currency), and a required {{currency}} variable that
+        # picks the column rather than filtering rows — plus one of its
+        # own: {{investing}}, which changes how the investing section is
+        # GROUPED and which no field filter could express.
+        #
+        # There is no account tile and no account picker. The household
+        # boundary is what separates the household's cash flow from its
+        # vehicles', and a per-account view would ask a question this
+        # statement does not answer: a wire between two of the
+        # household's own accounts is invisible here by construction.
+        "Net cash flow": cashflow_native("Net cash flow", "scalar",
+            "What the household's cash pool did over the window: every "
+            "line summed, positive where cash arrived. It is the residual "
+            "of the statement — operating plus investing plus financing "
+            "plus the vehicles — and the Cash node of the diagram is its "
+            "negative, because cash the household kept is cash the pool "
+            "absorbed.",
+            f"SELECT {cf_val} AS net_cash_flow\n  FROM web_cashflow" + cf_where,
+            {}),
+        "Cash in": cashflow_native("Cash in", "scalar",
+            "Everything the household received over the window: wages, "
+            "yield, benefits and the other receipts. Smaller than "
+            "`wealthdb income` reports, by the vehicles' own income and "
+            "three other terms — see docs/CASHFLOW.md §8.",
+            f"SELECT {cf_val} AS cash_in\n  FROM web_cashflow" + cf_where +
+            "\n   AND section = 'operating_in'",
+            {}),
+        "Cash out": cashflow_native("Cash out", "scalar",
+            "Everything the household spent over the window — consumption, "
+            "fees, taxes and giving — as a positive magnitude. Buying and "
+            "selling is NOT here: investing is its own section and is shown "
+            "net.",
+            f"SELECT -({cf_val}) AS cash_out\n  FROM web_cashflow" + cf_where +
+            "\n   AND section = 'operating_out'",
+            {}),
+        "Savings rate": cashflow_native("Savings rate", "scalar",
+            "Operating cash flow as a share of what came in: what the "
+            "household kept of its receipts before it invested, serviced "
+            "debt or funded a vehicle. Blank where nothing came in.",
+            # The view's values are already signed — an outflow is
+            # negative — so operating is the plain SUM over the two
+            # halves, not a difference between two magnitudes.
+            f"SELECT {cf_val}\n"
+            f"       / nullif(sum(CASE WHEN section = 'operating_in'"
+            f" THEN {_ccy_case('value')} END), 0) * 100 AS savings_rate\n"
+            "  FROM web_cashflow" + cf_where +
+            "\n   AND section IN ('operating_in', 'operating_out')",
+            _percent_viz("savings_rate")),
+        "Yield share": cashflow_native("Yield share", "scalar",
+            "What share of the household's receipts its assets produced "
+            "without its labour — dividends, interest, fund distributions, "
+            "staking, rent and royalties over everything that came in.",
+            f"SELECT sum(CASE WHEN class_node = 'Yield' THEN {_ccy_case('value')} END)::DOUBLE\n"
+            f"       / nullif({cf_val}, 0) * 100 AS yield_share\n"
+            "  FROM web_cashflow" + cf_where +
+            "\n   AND section = 'operating_in'",
+            _percent_viz("yield_share")),
+        # The diagram, and the centre of the dashboard. A native query in
+        # the three columns the BI layer's Sankey visualisation reads,
+        # over the LINE-grain serving view: a node's side is the sign of
+        # its net over the filtered window, so the nets and the sides
+        # have to be computed where the pickers apply.
+        "Cash flow": cashflow_native("Cash flow", "sankey",
+            "Where the household's cash came from and where it went over "
+            "the window, as one diagram. Every node is a place money came "
+            "from or went to, and it sits on the left if cash came from it "
+            "on net and on the right if cash went to it. Own-account moves "
+            "are invisible; buying and selling is one net movement, as a "
+            "whole or per asset class per the Investing picker.",
+            _cashflow_sankey_sql(cf_where, cf_val),
+            {"sankey.source": "source", "sankey.target": "target",
+             "sankey.value": "value"}),
+        "Cash flow statement by month": cashflow_native(
+            "Cash flow statement by month", "combo",
+            "The statement per month: operating, investing, financing and "
+            "the vehicles as stacked signed bars, with net cash flow as a "
+            "line over them. A section below the axis drew cash down that "
+            "month.",
+            f"SELECT {sp_month},\n"
+            "       CASE WHEN section IN ('operating_in', 'operating_out')\n"
+            "            THEN 'operating' ELSE section END AS statement_section,\n"
+            f"       {cf_val} AS value\n"
+            "  FROM web_cashflow" + cf_where + "\n GROUP BY 1, 2\n ORDER BY 1",
+            {"graph.dimensions": ["month", "statement_section"],
+             "graph.metrics": ["value"],
+             "stackable.stack_type": "stacked"}),
+        "Inflows by class by month": cashflow_native(
+            "Inflows by class by month", "area",
+            "What came in each month, stacked by class: earnings, yield, "
+            "pensions and benefits, other receipts, and the backlog no "
+            "tier could place.",
+            f"SELECT {sp_month},\n       class_node AS class,\n"
+            f"       {cf_val} AS value\n"
+            "  FROM web_cashflow" + cf_where +
+            "\n   AND section = 'operating_in'\n GROUP BY 1, 2\n ORDER BY 1",
+            {"graph.dimensions": ["month", "class"],
+             "graph.metrics": ["value"],
+             "stackable.stack_type": "stacked"}),
+        "Outflows by class by month": cashflow_native(
+            "Outflows by class by month", "area",
+            "What went out each month, stacked by class: spending, fees, "
+            "taxes, giving, and the backlog. Fees, taxes and giving are "
+            "lifted out of spending because each is worth a line of its "
+            "own.",
+            f"SELECT {sp_month},\n       class_node AS class,\n"
+            f"       -({cf_val}) AS value\n"
+            "  FROM web_cashflow" + cf_where +
+            "\n   AND section = 'operating_out'\n GROUP BY 1, 2\n ORDER BY 1",
+            {"graph.dimensions": ["month", "class"],
+             "graph.metrics": ["value"],
+             "stackable.stack_type": "stacked"}),
+        "Investing by month": cashflow_native("Investing by month", "bar",
+            "Investing per month, signed: above the axis the portfolio fed "
+            "the household, below it the household fed the portfolio. One "
+            "series or one per asset class, per the Investing picker — and "
+            "the difference between the two is the reallocation the whole "
+            "nets away.",
+            f"SELECT {sp_month},\n"
+            "       CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
+            "            ELSE class_node END AS class,\n"
+            f"       {cf_val} AS value\n"
+            "  FROM web_cashflow" + cf_where +
+            "\n   AND section = 'investing'\n GROUP BY 1, 2\n ORDER BY 1",
+            {"graph.dimensions": ["month", "class"],
+             "graph.metrics": ["value"],
+             "stackable.stack_type": "stacked"}),
+        "Financing and vehicles by month": cashflow_native(
+            "Financing and vehicles by month", "bar",
+            "Debt serviced or drawn, and the earmarked pools funded or "
+            "drawn on, per month and signed. A mortgage being repaid while "
+            "a loan is drawn are two bars, and so are a retirement plan "
+            "being funded while a trust pays out.",
+            f"SELECT {sp_month},\n       class_node AS class,\n"
+            f"       {cf_val} AS value\n"
+            "  FROM web_cashflow" + cf_where +
+            "\n   AND section IN ('financing', 'vehicles')\n GROUP BY 1, 2\n ORDER BY 1",
+            {"graph.dimensions": ["month", "class"],
+             "graph.metrics": ["value"],
+             "stackable.stack_type": "stacked"}),
+        "Largest flows": cashflow_native("Largest flows", "table",
+            "The fifty largest single lines of the window, with the node "
+            "each landed on and the account it moved through. The name is "
+            "the instrument on an investing line and the payer or merchant "
+            "on an operating one; a financing or vehicle line names "
+            "nothing, its counterparty being an account.",
+            "SELECT occurred_at,\n       section,\n       class_node AS class,\n"
+            "       group_node AS \"group\",\n       name,\n"
+            "       account_label AS account,\n"
+            f"       {_ccy_case('value')} AS value\n"
+            "  FROM web_cashflow" + cf_where +
+            f"\n ORDER BY abs({_ccy_case('value')}) DESC\n LIMIT 50",
+            {}),
         # The returns cards run over the materialized report_returns table.
         # The three scalars and the by-source table are MBQL (grain 'global' /
         # 'sources', granularity 'total'); the Returns dashboard's Currency and
@@ -1631,6 +1860,9 @@ SPENDING_DASHBOARDS = {"Spending", "Spending" + PRIVACY_SUFFIX}
 # The same for the Income dashboards.
 INCOME_DASHBOARDS = {"Income", "Income" + PRIVACY_SUFFIX}
 
+# The same for the Cash Flow dashboards.
+CASHFLOW_DASHBOARDS = {"Cash Flow", "Cash Flow" + PRIVACY_SUFFIX}
+
 # The asset-class and vehicle filters (the two taxonomy dimensions) are
 # linked only to these tiles: the Top-positions widgets, which list
 # individual holdings. The breakdown widgets each already group by one of
@@ -1762,6 +1994,31 @@ def base_dashboards():
             ("Income by account", 20, 0, 24, 8, "occurred_at"),
             ("Largest receipts", 28, 0, 24, 8, "occurred_at"),
         ]),
+        "Cash Flow": (
+            "Where the household's cash came from and where it went: the "
+            "cash flow statement and the Sankey that draws it. The "
+            "household is the accounts in its own tax wrappers; "
+            "retirement plans, trusts and charitable vehicles are "
+            "vehicles it pays into and draws on. Own-account moves are "
+            "invisible, and buying and selling is shown NET. " + note,
+            "range", [
+            # Five headline figures, then the diagram at the centre, then
+            # the shape of the window, then the two sides of operating,
+            # then the swing sections, then the lines.
+            ("Cash in", 0, 0, 5, 3, "occurred_at"),
+            ("Cash out", 0, 5, 5, 3, "occurred_at"),
+            ("Net cash flow", 0, 10, 5, 3, "occurred_at"),
+            ("Savings rate", 0, 15, 4, 3, "occurred_at"),
+            ("Yield share", 0, 19, 5, 3, "occurred_at"),
+            # Full width and tall: the diagram is the dashboard.
+            ("Cash flow", 3, 0, 24, 12, "occurred_at"),
+            ("Cash flow statement by month", 15, 0, 24, 8, "occurred_at"),
+            ("Inflows by class by month", 23, 0, 12, 7, "occurred_at"),
+            ("Outflows by class by month", 23, 12, 12, 7, "occurred_at"),
+            ("Investing by month", 30, 0, 12, 7, "occurred_at"),
+            ("Financing and vehicles by month", 30, 12, 12, 7, "occurred_at"),
+            ("Largest flows", 37, 0, 24, 8, "occurred_at"),
+        ]),
         "Data Freshness": (
             "Age of each source's latest snapshot — which feeds need a "
             "collector run. Unfiltered by design: it must show every "
@@ -1830,6 +2087,7 @@ PRIVACY_CARD_BALANCE_FILTERS = {k: v for k, v in CARD_BALANCE_FILTERS.items()
 INCOME_CURRENCY_PARAM_ID = "aa5df10a"
 INCOME_ACCOUNT_PARAM_ID = "aa5df10b"
 INCOME_TYPE_PARAM_ID = "aa5df10c"
+CASHFLOW_SECTION_PARAM_ID = "aa5df10f"
 
 # The Income filters. `type` binds to income_label rather than to the
 # primary label its spending twin uses: the income taxonomy has ONE
@@ -1851,6 +2109,35 @@ INCOME_PICKERS = [(INCOME_CURRENCY_PARAM_ID, "currency"),
                   (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
                   (INCOME_ACCOUNT_PARAM_ID, "account"),
                   (INCOME_TYPE_PARAM_ID, "type")]
+
+CASHFLOW_CURRENCY_PARAM_ID = "aa5df10d"
+CASHFLOW_INVESTING_PARAM_ID = "aa5df10e"
+
+# The Cash Flow filters, and what is NOT among them.
+#
+# There is no ACCOUNT filter and no level filter, and both absences are
+# the design rather than an omission. The household boundary is what
+# separates the household's cash flow from its vehicles', and a picker
+# that moved accounts in and out of the pool would turn every crossing
+# it split into an unexplained disappearance — a wire between two of the
+# household's own accounts is invisible only while both are in the pool.
+# A level picker would say the same thing the Investing one says, less
+# clearly.
+#
+# `section` is the one field filter of its own: the six statement
+# sections are a short, stable vocabulary, and narrowing to one is how a
+# reader asks "what did investing do" without leaving the dashboard.
+CASHFLOW_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
+                    "source": ("silver_source_id", "string/="),
+                    "section": ("section", "string/=")}
+# The twin's filters are the same: none of the three renders a dropdown
+# of anything that identifies an account, which is the reason the other
+# two twins drop theirs.
+PRIVACY_CASHFLOW_FILTERS = dict(CASHFLOW_FILTERS)
+CASHFLOW_PICKERS = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"),
+                    (CASHFLOW_INVESTING_PARAM_ID, "investing"),
+                    (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
+                    (CASHFLOW_SECTION_PARAM_ID, "section")]
 
 SPEND_PICKERS = [(SPEND_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
@@ -1875,6 +2162,99 @@ def _ccy_case(col, neg=False):
     s = "-" if neg else ""
     return (f"CASE {{{{currency}}}} WHEN 'CHF' THEN {s}{col}_chf"
             f" WHEN 'EUR' THEN {s}{col}_eur ELSE {s}{col}_usd END")
+
+
+def _cashflow_nodes(where, sum_expr):
+    """The node grain the Cash Flow tiles group by, with the Investing
+    picker applied. `sum_expr` is an AGGREGATE over the picked currency
+    column — the CTE groups, so a bare column would not bind.
+
+    `--investing whole`, the default, nets the section into one
+    Investments node and folds its leaves with it: a class on the other
+    side cannot be drawn as a child of a node on this one, so "as a
+    whole" means as a whole. `class` is a no-op on everything else."""
+    return ("  SELECT section,\n"
+            "         CASE WHEN section = 'investing' AND {{investing}} = 'whole'\n"
+            "              THEN 'Investments' ELSE class_node END AS class,\n"
+            "         CASE WHEN section = 'investing' AND {{investing}} = 'whole'\n"
+            "              THEN 'Investments' ELSE group_node END AS grp,\n"
+            f"         {sum_expr} AS v\n"
+            "    FROM web_cashflow" + where + "\n   GROUP BY 1, 2, 3")
+
+
+def _cashflow_atoms_cte(where, sum_expr):
+    """The CTE chain every Cash Flow figure that needs a HUB is built
+    on: the node grain, its class and leaf nets, which leaves stayed
+    with their class, the atomic nodes, and the hub itself.
+
+    Shared so the diagram and the twin's scalars cannot divide by two
+    different hubs. They would: the hub is the sum of the positive nets
+    AT THE LEVEL DRAWN, and a leaf that nets against its class appears
+    at the group level and not at the class level, so a class-level sum
+    is a different number. A reader comparing a scalar against the
+    diagram beside it would find they did not agree."""
+    return (
+        "WITH n AS (\n" + _cashflow_nodes(where, sum_expr) + "),\n"
+        "cls AS (SELECT section, class, sum(v) AS net FROM n GROUP BY 1, 2\n"
+        "        UNION ALL SELECT 'cash', 'Cash', -sum(v) FROM n),\n"
+        # The backlog class IS its own leaf, so it attaches to the hub
+        # directly: a class drawn into a leaf of the same name is a
+        # self-edge, which a Sankey renders as a node pointing at itself.
+        "leaf AS (SELECT section, class, grp, sum(v) AS net FROM n\n"
+        "          WHERE section IN ('operating_in', 'operating_out')\n"
+        "            AND class NOT IN ('Uncategorised in', 'Uncategorised out')\n"
+        "          GROUP BY 1, 2, 3),\n"
+        "att AS (SELECT l.*, c.net AS cnet,\n"
+        "               (l.net > 0 AND c.net > 0) OR (l.net < 0 AND c.net < 0) AS stays\n"
+        "          FROM leaf l JOIN cls c ON c.section = l.section AND c.class = l.class),\n"
+        "atoms AS (SELECT class AS node, net FROM cls\n"
+        "           WHERE section NOT IN ('operating_in', 'operating_out')\n"
+        "              OR class IN ('Uncategorised in', 'Uncategorised out')\n"
+        "          UNION ALL SELECT grp, CASE WHEN stays THEN 0 ELSE net END FROM att\n"
+        "          UNION ALL SELECT class, sum(CASE WHEN stays THEN net ELSE 0 END)\n"
+        "                      FROM att GROUP BY 1),\n"
+        "hub AS (SELECT nullif(sum(CASE WHEN net > 0 THEN net ELSE 0 END), 0)"
+        " AS total FROM atoms)")
+
+
+def _cashflow_sankey_sql(where, sum_expr, share=False):
+    """The window's diagram as an edge list, computed where the pickers
+    apply.
+
+    A node's SIDE is the sign of its net over the FILTERED window, so a
+    pre-netted table would be netted over the wrong window the moment a
+    reader moved a picker. The stages, the hub and the swing rule are
+    the `report_cashflow_sankey` macro's, in the three columns the BI
+    layer's Sankey visualisation reads.
+
+    The operating sections alone get a leaf stage: the design draws
+    investing, financing, the vehicles and cash attached to the hub
+    directly, and the Investing picker rather than a level is what opens
+    the investing one. A leaf whose net runs opposite to its class
+    attaches to the hub directly too, and its class then carries only
+    the leaves that stayed with it — so every stage conserves flow and
+    no node appears twice.
+
+    `share` divides by the hub, which is what the privacy twin draws:
+    with the hub at 100 there is nothing left to hide, the nodes being
+    vocabulary and never a merchant, a payer, an account or an
+    instrument."""
+    value = "e.value / (SELECT total FROM hub) * 100" if share else "e.value"
+    return (
+        _cashflow_atoms_cte(where, sum_expr) + ",\n"
+        "e AS (SELECT CASE WHEN net > 0 THEN 2 ELSE 3 END AS stage,\n"
+        "             CASE WHEN net > 0 THEN node ELSE 'Household' END AS source,\n"
+        "             CASE WHEN net > 0 THEN 'Household' ELSE node END AS target,\n"
+        "             abs(net) AS value\n"
+        "        FROM atoms WHERE net <> 0\n"
+        "      UNION ALL\n"
+        "      SELECT CASE WHEN cnet > 0 THEN 1 ELSE 4 END,\n"
+        "             CASE WHEN cnet > 0 THEN grp ELSE class END,\n"
+        "             CASE WHEN cnet > 0 THEN class ELSE grp END,\n"
+        "             abs(net)\n"
+        "        FROM att WHERE stays AND net <> 0)\n"
+        f"SELECT e.stage, e.source, e.target, {value} AS value\n"
+        "  FROM e ORDER BY e.stage, e.value DESC")
 
 
 def _family_native_kit(db_id, view, filters, pickers, neg, note):
@@ -2258,6 +2638,166 @@ def privacy_card_defs(db_id, model_ids):
 
     out.update(spending_privacy_defs(db_id, model_ids))
     out.update(income_privacy_defs(db_id))
+    out.update(cashflow_privacy_defs(db_id))
+    return out
+
+
+def cashflow_privacy_defs(db_id):
+    """The Cash Flow twin's cards: the same tiles with the hub at 100.
+
+    NORMALISATION ALONE, almost. The diagram's nodes are vocabulary —
+    no node is ever a merchant, a payer, an account or an instrument —
+    so with the hub at 100 there is nothing left to hide in it, and the
+    twin's Sankey is the same edge list divided through. That is the
+    property §5 of docs/CASHFLOW.md exists to guarantee, and the
+    assertion in web/test_provision.py is what holds it.
+
+    ONE card does redact, and for the reason every twin card redacts:
+    the fix for a leaking column is to drop it. `Largest flows` names
+    the account a line moved through and, on an operating line, the
+    payer or merchant behind it. The twin's version ranks instead and
+    projects neither.
+
+    THE HUB, not a total, is the denominator, and it is recomputed
+    in-query so a narrowed selection rescales to itself. It is the sum
+    of the positive nets at the level drawn — which equals the sum of
+    the negative ones, because the statement sums to zero once cash is a
+    node — so it moves with the Investing picker exactly as the base
+    dashboard's diagram does."""
+    tags = {**spend_tags("web_cashflow", PRIVACY_CASHFLOW_FILTERS),
+            "investing": INVESTING_TAG}
+    where = _spend_where({k: v for k, v in tags.items()
+                          if k not in ("currency", "investing")})
+    val = f"sum({_ccy_case('value')})::DOUBLE"
+    out = {}
+
+    def cashflow_card(name, display, desc, sql, viz):
+        out[name] = ("question", display, desc + PRIVACY_DESC,
+                     _native(db_id, sql, tags), viz)
+        register_native_targets(name, tags, CASHFLOW_PICKERS)
+
+    # The hub, built by the same helper the diagram uses, so a scalar
+    # and the diagram beside it cannot divide by two different numbers.
+    hub_cte = _cashflow_atoms_cte(where, val) + "\n"
+    peak_cte = ("p AS (SELECT max(t) AS peak FROM"
+                " (SELECT sum(abs(v)) AS t FROM m GROUP BY month))\n")
+
+    def month_cte(extra="", filt=""):
+        return ("WITH m AS (\n"
+                "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
+                f" AS month,\n         {extra}{val} AS v\n"
+                "    FROM web_cashflow" + where + filt + "\n")
+
+    # `neg` is what keeps each twin scalar reading the same way round as
+    # the base tile it stands in for: gold stores an outflow negative
+    # and the base "Cash out" prints it as a positive magnitude, so its
+    # share has to be one too.
+    for name, section, neg, label in (
+            ("Cash in", "operating_in", False, "came in"),
+            ("Cash out", "operating_out", True, "went out"),
+            ("Net cash flow", None, False, "the pool kept")):
+        filt = "" if section is None else f"\n   AND section = '{section}'"
+        expr = f"sum({_ccy_case('value', neg=neg)})::DOUBLE"
+        cashflow_card(privacy_name(name), "scalar",
+            f"What {label} over the window as a share (%) of the hub — "
+            "the total the diagram flows through, which is the sum of "
+            "the positive nets at the level drawn and moves with the "
+            "Investing picker.",
+            hub_cte +
+            f"SELECT (SELECT {expr} FROM web_cashflow" + where + filt + ")\n"
+            "       / (SELECT total FROM hub) * 100 AS share_pct",
+            _percent_viz("share_pct"))
+
+    # The diagram, with the hub at 100: the same edges divided through.
+    cashflow_card(privacy_name("Cash flow"), "sankey",
+        "The window's diagram with every edge as a share (%) of the hub. "
+        "The nodes are unchanged — they are vocabulary, never a merchant, "
+        "a payer, an account or an instrument — so this twin is the base "
+        "diagram normalised rather than redacted.",
+        _cashflow_sankey_sql(where, val, share=True),
+        {"sankey.source": "source", "sankey.target": "target",
+         "sankey.value": "value"})
+
+    cashflow_card(privacy_name("Cash flow statement by month"), "combo",
+        "The statement per month, each section as % of the window's "
+        "biggest month by gross movement — the peak month's bars sum to "
+        "100.",
+        month_cte("CASE WHEN section IN ('operating_in', 'operating_out')\n"
+                  "              THEN 'operating' ELSE section END"
+                  " AS statement_section,\n         ")
+        + "   GROUP BY 1, 2),\n" + peak_cte +
+        "SELECT month, statement_section,\n"
+        "       v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100 AS share_pct\n"
+        "  FROM m\n ORDER BY 1",
+        {"graph.dimensions": ["month", "statement_section"],
+         "graph.metrics": ["share_pct"],
+         "stackable.stack_type": "stacked"})
+
+    for name, filt, neg, blurb in (
+            ("Inflows by class by month", "\n   AND section = 'operating_in'", False,
+             "What came in each month by class"),
+            ("Outflows by class by month", "\n   AND section = 'operating_out'", True,
+             "What went out each month by class"),
+            ("Investing by month", "\n   AND section = 'investing'", False,
+             "Investing per month, signed"),
+            ("Financing and vehicles by month",
+             "\n   AND section IN ('financing', 'vehicles')", False,
+             "Debt and the earmarked pools per month, signed")):
+        sign = "-" if neg else ""
+        grp = ("CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
+               "              ELSE class_node END" if "investing" in filt else "class_node")
+        cashflow_card(privacy_name(name), "area" if "class by month" in name else "bar",
+            f"{blurb}, each as % of the window's biggest month by gross "
+            "movement.",
+            month_cte(f"{grp} AS class,\n         ", filt).replace(
+                f"         {val} AS v", f"         {sign}({val}) AS v")
+            + "   GROUP BY 1, 2),\n" + peak_cte +
+            "SELECT month, class,\n"
+            "       v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100 AS share_pct\n"
+            "  FROM m\n ORDER BY 1",
+            {"graph.dimensions": ["month", "class"],
+             "graph.metrics": ["share_pct"],
+             "stackable.stack_type": "stacked"})
+
+    # The one card that redacts rather than normalising: the base
+    # version names the account a line moved through and the payer or
+    # merchant behind it, and the fix for a leaking column is to drop
+    # it. Ranked, so the shape of "how concentrated was this window"
+    # survives without naming anyone.
+    cashflow_card(privacy_name("Largest flows"), "table",
+        "The fifty largest single lines of the window, ranked and "
+        "unnamed, each as a share (%) of the hub, with the node it "
+        "landed on but no name and no account.",
+        hub_cte + ", m AS (\n"
+        "  SELECT occurred_at, section, class_node AS class,\n"
+        "         group_node AS \"group\",\n"
+        f"         {_ccy_case('value')} AS v\n"
+        "    FROM web_cashflow" + where + ")\n"
+        "SELECT row_number() OVER (ORDER BY abs(v) DESC) AS rank,\n"
+        "       section, class, \"group\",\n"
+        "       v / (SELECT total FROM hub) * 100 AS share_pct\n"
+        "  FROM m\n ORDER BY 1\n LIMIT 50",
+        {})
+
+    for name in ("Savings rate", "Yield share"):
+        # A rate is a proportion already: the twin shows it as it is,
+        # the way the returns percentages survive their own twin.
+        base = name.lower()
+        cashflow_card(privacy_name(name), "scalar",
+            f"The {base} as it is: a rate is a proportion, so it needs no "
+            "normalising and hides nothing.",
+            "SELECT " + (
+                f"{val}\n"
+                f"       / nullif(sum(CASE WHEN section = 'operating_in'"
+                f" THEN {_ccy_case('value')} END), 0) * 100 AS share_pct\n"
+                "  FROM web_cashflow" + where +
+                "\n   AND section IN ('operating_in', 'operating_out')"
+                if name == "Savings rate" else
+                f"sum(CASE WHEN class_node = 'Yield' THEN {_ccy_case('value')} END)::DOUBLE\n"
+                f"       / nullif({val}, 0) * 100 AS share_pct\n"
+                "  FROM web_cashflow" + where +
+                "\n   AND section = 'operating_in'"),
+            _percent_viz("share_pct"))
     return out
 
 
@@ -2663,7 +3203,14 @@ def dashboard_defs():
         "Income": (
         "Privacy view: values are shares (%) of the window's own net "
         "income, or of its biggest month; payer and account labels are "
-        "redacted and absolute amounts never show. ")}
+        "redacted and absolute amounts never show. "),
+        "Cash Flow": (
+        "Privacy view: values are shares (%) of the window's own hub — "
+        "the total the diagram flows through, which moves with the "
+        "Investing picker — or of its biggest month. The diagram's nodes "
+        "are vocabulary and never a merchant, a payer, an account or an "
+        "instrument, so the twin needs normalisation rather than "
+        "redaction; the one card that named an account drops the column. ")}
     out = {}
     for name, (desc, mode, tiles) in base_dashboards().items():
         pname = f"{name}{PRIVACY_SUFFIX}"
@@ -2761,6 +3308,37 @@ def dashboard_parameters(model_ids, mode, name=""):
     time_range = {"id": TIME_PARAM_ID, "name": "Time range",
                   "slug": "time_range", "type": "date/all-options",
                   "sectionId": "date", "default": "past12months~"}
+    if name in CASHFLOW_DASHBOARDS:
+        # A required currency with a USD default, over a serving view
+        # that carries a row per reporting currency — the shape the other
+        # two money dashboards take, and for the same reason.
+        cashflow_currency = {"id": CASHFLOW_CURRENCY_PARAM_ID, "name": "Currency",
+                             "slug": "currency", "type": "string/=",
+                             "sectionId": "string", "isMultiSelect": False,
+                             "default": ["USD"], "required": True,
+                             "values_source_type": "static-list",
+                             "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
+        # The Investing grain: net the section as one movement — the
+        # question a reader opens with, "did the portfolio feed the
+        # household this year or the household feed the portfolio" — or
+        # per asset class, which is the step in. Required with a `whole`
+        # default so a card never runs with it cleared, and a static list
+        # because the two grains are the feature's, not the data's.
+        investing = {"id": CASHFLOW_INVESTING_PARAM_ID, "name": "Investing",
+                     "slug": "investing", "type": "string/=",
+                     "sectionId": "string", "isMultiSelect": False,
+                     "default": ["whole"], "required": True,
+                     "values_source_type": "static-list",
+                     "values_source_config": {"values": ["whole", "class"]}}
+        # BOTH dashboards carry the same five: unlike the spending and
+        # income pairs, the twin drops nothing, because none of these
+        # pickers renders a dropdown of anything that identifies an
+        # account. There is no account picker to drop — §7 of
+        # docs/CASHFLOW.md §9 — and a section picker offers six words of
+        # the feature's own vocabulary.
+        return [cashflow_currency, investing, time_range, source,
+                card_picker(CASHFLOW_SECTION_PARAM_ID, "Section", "section",
+                            "report_cashflow", "section")]
     if name in INCOME_DASHBOARDS:
         # The income pickers, in the shape the spending ones take and
         # for the same reasons — a required currency with a USD default

@@ -154,7 +154,7 @@ pool, where its own trades become household investing and its
 contributions become invisible. Nothing in the reconciliation can see
 that, because the crossing is **absent** rather than wrong. So the load
 summary and `status -v` both count pooled accounts with no wrapper
-(§9).
+(§10).
 
 ### What follows from the boundary
 
@@ -188,7 +188,7 @@ summary and `status -v` both count pooled accounts with no wrapper
   trust is a vehicle.
 - **The boundary is time-invariant.** A wrapper is one column with no
   validity range, so a grantor trust that becomes non-grantor changes
-  every year at once. A dated override is a follow-up (§10).
+  every year at once. A dated override is a follow-up (§11).
 
 ---
 
@@ -226,12 +226,12 @@ wherever both have something to say.
 | `buy` `sell` | investing | by the instrument's asset class; a `cash`-class instrument is pool-internal |
 | `contribution` `distribution` | investing | private capital, by the vehicle's asset class |
 | `transfer_in` `transfer_out` | matched → by the far account; otherwise **excluded, counted** | an unmatched one is an in-kind ledger leg or a source's own tagging, and is counted rather than guessed at |
-| `fx` `fx_forward` `fx_swap` `corporate_action` | **excluded, counted** | gold pins no canonical sign for any of these, so their direction is a per-source convention and a section that reads direction cannot admit them. Admitting the last three needs a per-adapter sign pin first (§10) |
+| `fx` `fx_forward` `fx_swap` `corporate_action` | **excluded, counted** | gold pins no canonical sign for any of these, so their direction is a per-source convention and a section that reads direction cannot admit them. Admitting the last three needs a per-adapter sign pin first (§11) |
 | `journal` `other` | **excluded, counted** | the same catch-all exclusion both families make |
 
 **Excluded means counted.** A counter nobody reads is how a silent hole
 starts, so `status -v` reports the declined rows on pooled accounts
-(§9). Pool-internal rows are NOT counted there: they are movements the
+(§10). Pool-internal rows are NOT counted there: they are movements the
 statement deliberately does not draw, and a permanently large counter
 is an unreadable one.
 
@@ -308,14 +308,40 @@ worth seeing beside the tax rather than inside a catch-all. The uncategorised cl
 leaf inside Spending: the families made the backlog a visible label on
 purpose.
 
-The leaves are the families' own values, plus four of cashflow's own
-where no family value says the right thing: `trades` and
-`private_capital` on the investing classes, and `vehicle_giving` /
-`vehicle_receipt` for a crossing to or from a giving vehicle (whose
-verdict is `internal_transfer`, which names a movement rather than a
-kind of giving). On financing, the vehicles and cash the class **is**
-the leaf: nothing finer exists to say, and the diagram draws those
-attached to the hub rather than through a leaf stage.
+### The leaves
+
+The leaves are the families' own values, at the level each family's
+vocabulary makes readable — and the two differ:
+
+- **operating in**: the income **detailed** value. Income has one
+  vendored primary, so a primary-level leaf would fold every earned and
+  yielded type into `INCOME` and say nothing.
+- **operating out**: the spending **primary**. That vocabulary has
+  ninety detailed values, and a diagram with ninety leaves is not a
+  diagram. The detailed value is a column away, behind `-C +detailed`
+  on the transactions view.
+- **taxes, fees and giving** keep the detailed value. Each of those
+  three classes was lifted out of spending precisely for the
+  distinction inside it — a tax assessed against one withheld at
+  source, a fee for banking against a fee for investing, a donation
+  against a gift given — and a class whose one leaf repeats its own
+  name is a self-edge.
+- A **delta** is primary-level, so `card_spend`, `cash_withdrawal` and
+  `other` are their own leaves either way.
+
+Four leaves are cashflow's own, where no family value says the right
+thing: `trades` and `private_capital` on the investing classes, and
+`vehicle_giving` / `vehicle_receipt` for a crossing to or from a giving
+vehicle — whose verdict is `internal_transfer`, which names a movement
+rather than a kind of giving or a kind of receipt.
+
+On the vehicles, on financing's `mortgage` and on cash the class **is**
+the leaf: nothing finer exists to say. `loans` is the one exception —
+its two leaves are `loan_proceeds` and `debt_repayment`, money borrowed
+against money repaid, which is the distinction the class exists to
+carry. The diagram draws all of them attached to the hub rather than
+through a leaf stage, so the leaf level shows in `flows --level group`
+and not in the Sankey.
 
 ### The five new taxonomy values
 
@@ -477,8 +503,14 @@ an account or an instrument.
 `wealthdb transactions` gains `cashflow_section`, `cashflow_class` and
 `cashflow_group` behind `-C`, beside the spending and income trios, so
 the one surface that shows a row from every side keeps doing so. They
-read the **resolution**, so a row this feature declines or calls
-pool-internal still says what it was resolved as.
+read the **resolution** rather than the base, so a row on an account no
+cashflow report charts still carries its node.
+
+They are **blank** where the resolution reached no node at all: a
+pool-internal move and a declined kind both land there, and the columns
+say only that the statement does not draw the row. Which of the two it
+was is `cashflow_txn_nodes`' `disposition`, one query below the
+reports.
 
 ### Reconciliation
 
@@ -548,7 +580,46 @@ and that bridge is the cheapest place to see it.
 
 ---
 
-## 9. Storage and lifecycle
+## 9. The dashboard
+
+**Cash Flow**, in the Spending and Income dashboards' shape, with a
+privacy twin linked from the top row. Five pickers: time range, source,
+a required currency, a section, and **Investing** — as a whole (the
+default) or by asset class, bound to the diagram and the investing
+trend.
+
+**No account picker**, and that is the design rather than an omission.
+The household boundary is what separates the household's cash flow from
+its vehicles', and a picker that moved accounts in and out of the pool
+would turn every crossing it split into an unexplained disappearance: a
+wire between two of the household's own accounts is invisible only
+while both are in the pool.
+
+| row | cards |
+|---|---|
+| headlines | Cash in · Cash out · Net cash flow · Savings rate · Yield share |
+| the diagram | Cash flow — the Sankey, full width, the window's four stages |
+| the shape of the window | Cash flow statement by month: signed stacked bars per section |
+| the two sides | Inflows by class by month · Outflows by class by month |
+| the swing sections | Investing by month · Financing and vehicles by month |
+| the lines | Largest flows: the fifty largest lines of the window |
+
+Every tile is a **native query over `web_cashflow`**, the line-grain
+serving view. The Sankey card computes its nets, its sides and its hub
+**in-query**: a node's side is the sign of its net over the FILTERED
+window, so a pre-netted table would be netted over the wrong window the
+moment a reader moved a picker.
+
+The twin is **normalisation, not redaction** — with the hub at 100 there
+is nothing left to hide, because no node is ever a merchant, a payer, an
+account or an instrument. One card is the exception and drops columns
+the way every other twin card does: `Largest flows` names the account a
+line moved through and the payer or merchant behind it, so the twin
+ranks instead and projects neither.
+
+---
+
+## 10. Storage and lifecycle
 
 Cashflow has no store of its own. What it adds to gold is three columns
 on the spending overlay and two stamped tables:
@@ -585,7 +656,7 @@ each naming a way the statement can be quietly wrong:
 
 ---
 
-## 10. Open follow-ups
+## 11. Open follow-ups
 
 1. **The interest-versus-principal split.** Cashflow gives it a home
    for the first time — interest to spending, principal to financing —

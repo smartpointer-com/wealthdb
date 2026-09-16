@@ -193,7 +193,10 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		if !strings.Contains(so, "Household") {
 			t.Errorf("the diagram has no hub:\n%s", so)
 		}
-		for _, want := range []string{"Wages", "Earnings", "Groceries", "Spending"} {
+		// The outflow leaf is the spending PRIMARY, so a grocery
+		// purchase draws as "Food and drink" rather than as one of
+		// ninety detailed values.
+		for _, want := range []string{"Wages", "Earnings", "Food and drink", "Spending"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("the diagram is missing %q:\n%s", want, so)
 			}
@@ -239,7 +242,8 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
 		for _, want := range []string{"operating_in", "Earnings", "Wages",
-			"investing", "Public equity", "Trades", "Corner Market"} {
+			"investing", "Public equity", "Trades", "Corner Market",
+			"Food and drink"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("transactions is missing %q:\n%s", want, so)
 			}

@@ -258,3 +258,51 @@ func TestWrapperSidesRefusesAnIncoherentRow(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryCashflowClassReadsAsSomething is the generator-style pin
+// between canonical's class vocabulary and the two macros that render
+// it. A class gold can emit with no label reads as its bare enum
+// spelling on every chart, and one with no rank sorts with the asset
+// classes — both silent, and both a single forgotten CASE arm away.
+func TestEveryCashflowClassReadsAsSomething(t *testing.T) {
+	db, ctx := openMigrated(t)
+	for _, c := range canonical.CashflowClasses() {
+		var label string
+		var rank int
+		if err := db.QueryRowContext(ctx,
+			`SELECT cashflow_class_label(?), cashflow_class_rank(?)`,
+			string(c), string(c)).Scan(&label, &rank); err != nil {
+			t.Fatalf("read %s: %v", c, err)
+		}
+		if label == string(c) {
+			t.Errorf("class %q has no label and would draw as its own enum spelling", c)
+		}
+		// 40 is the fallback the asset classes share, so an invented
+		// class landing on it has no rank of its own.
+		if rank == 40 {
+			t.Errorf("class %q has no rank and would sort with the asset classes", c)
+		}
+	}
+}
+
+// TestEveryAssetClassGoldHoldsReadsAsSomething is the same pin for the
+// investing section, whose classes ARE the instrument taxonomy: a new
+// exposure value would otherwise draw as `private_debt` rather than as
+// "Private debt". `cash` is excluded because a cash-class instrument is
+// pool-internal and never reaches a node.
+func TestEveryAssetClassGoldHoldsReadsAsSomething(t *testing.T) {
+	db, ctx := openMigrated(t)
+	for _, a := range canonical.AssetClasses() {
+		if a == canonical.AssetClassCash {
+			continue
+		}
+		var label string
+		if err := db.QueryRowContext(ctx,
+			`SELECT cashflow_class_label(?)`, string(a)).Scan(&label); err != nil {
+			t.Fatalf("read %s: %v", a, err)
+		}
+		if label == string(a) {
+			t.Errorf("asset class %q has no cashflow label and would draw as its enum spelling", a)
+		}
+	}
+}

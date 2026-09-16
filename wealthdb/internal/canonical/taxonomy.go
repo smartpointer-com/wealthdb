@@ -1,5 +1,7 @@
 package canonical
 
+import "sort"
+
 // This file carries the two-dimensional instrument taxonomy:
 // exposure (the asset class — what moves the value) and vehicle (the
 // wrapper — how the exposure is held). See docs/TAXONOMY.md for
@@ -40,6 +42,18 @@ var assetClassValues = map[AssetClass]struct{}{
 	AssetClassMetal: {}, AssetClassCrypto: {}, AssetClassCash: {},
 	AssetClassForeignExchange: {}, AssetClassHedgeFund: {},
 	AssetClassMultiAsset: {}, AssetClassOther: {},
+}
+
+// AssetClasses returns the exposure dimension — every asset class that
+// reaches gold — sorted, so a caller walking it is byte-stable across
+// runs. A copy, for the reason the taxonomy accessors hand one out.
+func AssetClasses() []AssetClass {
+	out := make([]AssetClass, 0, len(assetClassValues))
+	for a := range assetClassValues {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // Valid reports whether the receiver is a recognised exposure value.
