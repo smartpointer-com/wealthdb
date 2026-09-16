@@ -23,8 +23,8 @@ That last clause is the whole of the difficulty, and §2's deltas are
 where it is written down. Money arriving is not automatically income: a
 funding wire between two of the holder's own accounts arrived, a private
 fund returning contributed capital arrived, a loan being disbursed
-arrived, an insurance payout for a bill already paid arrived. None of
-them is earnings, and each leaves the base by a different route.
+arrived. None of them is earnings, and each leaves the base by a
+different route.
 
 What is deliberately **not** here:
 
@@ -521,7 +521,7 @@ one number answers for both.
 
 1. **Three CLI views**, `summary / types / transactions`. No `payers`
    view: payers rank on the dashboard only, as merchants do.
-2. **Plaid's `INCOME` vendored verbatim**, plus eight extensions and
+2. **Plaid's `INCOME` vendored verbatim**, plus nine extensions and
    eight deltas. Widened deliberately for a general audience — the
    product is published, so the vocabulary names what a household
    commonly receives rather than what one deployment does.
@@ -564,9 +564,12 @@ one number answers for both.
   `internal/spending` and is now the enrichment engine for both
   families. Renaming it (`internal/enrichment`) touches every import for
   no behavioural gain and was left out of scope.
-- **Reimbursement netting** on the spending side: an insurance payout or
-  an expense claim is money back for money spent, and spending's refund
-  side is where that would net. Excluded from income here; not designed.
+- **Reimbursement netting** on the spending side: an expense claim is
+  money back for a specific outflow, and spending's refund side is where
+  that would net. Excluded from income here; not designed. An insurance
+  payout is NOT this case and is income — see §2: the premium was
+  already counted as spending, and nothing links a payout to the
+  premiums it answers.
 - **`TODO(cashflow)`**: investment buys and sells, maturities and
   corporate actions, beside income and spending. The interest-versus-
   principal split stays where SPENDING.md §10 leaves it.

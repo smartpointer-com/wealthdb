@@ -270,7 +270,7 @@ func TestValidSpendDetailed(t *testing.T) {
 }
 
 // TestValidIncomeDetailed is the mirror over the income vocabulary:
-// the seven vendored values, the eight extensions, and the eight
+// the seven vendored values, the nine extensions, and the eight
 // deltas the income side reads — the three shared ones included, since
 // a movement between tracked accounts and a cash gift mean the same
 // thing whichever way the money went. Spending-only values are refused

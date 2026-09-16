@@ -511,7 +511,7 @@ func ValidSpendDetailed(s string) bool {
 }
 
 // ValidIncomeDetailed is the same for income_detailed: the seven
-// vendored INCOME values, the eight extensions, and the eight deltas
+// vendored INCOME values, the nine extensions, and the eight deltas
 // the income side reads. Income rules and pins validate against it.
 func ValidIncomeDetailed(s string) bool {
 	_, ok := incomeDetailedValues[s]
