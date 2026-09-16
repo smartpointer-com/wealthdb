@@ -117,6 +117,8 @@ host_resolve_dirs() {
     fi
     [[ -z "$SILVER_DB" ]] && SILVER_DB="$DATA_DIR/$NAME.db"
     mkdir -p "$DATA_DIR"
+    # Same reasoning as the Docker wrappers: per-collector, owner-only.
+    chmod 700 "$DATA_DIR"
 }
 
 # The silver-consuming verbs as a display string, for the reject message.

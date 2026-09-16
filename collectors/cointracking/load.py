@@ -1358,6 +1358,10 @@ def main(argv: list[str]) -> int:
     work_db, promote = _stage_work_db(args.silver_db, args.scratch_dir)
     try:
         conn = duckdb.connect(str(work_db))
+        # The only silver here that is DuckDB rather than SQLite, so it
+        # never passed through collectorkit's own open_db. _promote_work_db
+        # copies the mode along with the bytes.
+        silver.own_only(work_db)
         try:
             rc = run_load(conn, args)
         finally:

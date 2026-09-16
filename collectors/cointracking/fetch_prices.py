@@ -34,7 +34,7 @@ from pathlib import Path
 
 import duckdb
 
-from collectorkit import cli
+from collectorkit import cli, silver
 
 from binance import BinanceClient, get_api_key
 from frankfurter import FrankfurterClient
@@ -76,6 +76,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     conn = duckdb.connect(str(args.silver_db))
+    silver.own_only(args.silver_db)
     try:
         # Make sure the schema is current (in case fetch-prices is
         # run against a silver DB that pre-dates migration 0002).

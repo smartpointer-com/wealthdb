@@ -270,6 +270,9 @@ wrapper_host_prune() {
 # wrapper should paper over.
 wrapper_check_mounts() {
     mkdir -p "$HOST_DATA"
+    # Per-collector, not the shared root: the tree below holds the
+    # source's own financial record, and the container runs as this uid.
+    chmod 700 "$HOST_DATA"
     # 0700 here is authoritative: the container's own chmod of the mounted
     # cache root is rejected by the VM file share (non-owner uid), so
     # collectorkit treats that as best-effort and relies on this.
