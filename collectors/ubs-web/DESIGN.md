@@ -707,6 +707,18 @@ Four decisions of record:
   goes stale in the direction of claiming more than is there. A period
   counts as covered only when the account's loaded ledger reaches past
   *both* of its edges.
+- **No free text is inside a card row's identity.** The id hashes the
+  card, the transaction and value dates, and the amounts and currencies
+  — never the merchant, which UBS re-labels between fetches. Combined
+  with the upsert-only rule above, text in the key meant a re-label
+  minted a second id and nothing removed the first, so one purchase
+  stood in the ledger twice (migration 0010; the same defect
+  fidelity-web's migration 0005 paid for on its own feed). The key
+  therefore collides where two same-day, same-amount purchases differ
+  only by merchant, and the occurrence index separates them — sorted on
+  the facts outside the key so the assignment does not follow the order
+  the API happened to page them in. Do not resolve that collision by
+  putting text back.
 
 ## 6. Feed-coverage gaps the adapter must reckon with
 

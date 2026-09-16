@@ -164,25 +164,55 @@ def parse_transactions(pages: list[dict],
     return _keyed_by_content(list(rows.values())), reserved
 
 
+# The facts a card row's identity is built from. Deliberately WITHOUT the
+# merchant text: UBS re-labels a merchant between fetches, and free text
+# inside an identity plus an upsert-only writer is how a re-label mints a
+# second id and doubles the transaction — the defect fidelity-web's
+# migration 0005 already paid for on its own feed. The reduced key collides
+# where two same-day, same-amount purchases differ only by merchant; the
+# occurrence index separates them, exactly as chase's deposit content key
+# does. Do not put text back in here to resolve that collision.
+_CARD_KEY_FIELDS = ("card_number", "transaction_date", "value_date", "amount",
+                    "currency_iso", "original_amount", "original_currency_iso")
+
+# What separates two rows that share the key. Used ONLY to order the group
+# before handing out occurrence indices — never `_handle` or `payload`,
+# which carry the session id migration 0008 had to purge this table over.
+_CARD_TIEBREAK_FIELDS = ("merchant", "merchant_category", "merchant_group_code",
+                         "exchange_rate", "settled_in_invoice")
+
+
 def _keyed_by_content(rows: list[dict]) -> list[dict]:
     """Give each row the id silver stores, and drop the API handle.
 
     The handle deduped the fetch above — overlapping windows return a
     row more than once, and within one session the same row carries the
     same `_id` — but it cannot survive the session, so it is spent here
-    and discarded. Order does not enter: rows sharing a content key are
-    identical in every fact the key is built from, so the group hands
-    out the same set of ids whichever way round it is read.
+    and discarded.
+
+    Order does not enter, and since the merchant left the key it takes
+    work to keep it that way: members of a group are no longer identical
+    in every stored fact, so which one takes occurrence 0 would otherwise
+    follow the order the API happened to page them in. Nothing promises
+    that order. Sorting the group on the facts outside the key fixes the
+    assignment, which gives the invariant the whole scheme rests on: a
+    group of n rows yields ids for occurrences 0..n-1, so the SET of ids
+    depends on the group's SIZE alone. No fetch order and no re-label can
+    mint an id that did not already exist.
     """
-    occurrences: dict[tuple, int] = {}
+    groups: dict[tuple, list[dict]] = {}
     for row in rows:
-        key = (row["card_number"], row["transaction_date"], row["value_date"],
-               row["amount"], row["currency_iso"],
-               row["original_amount"], row["original_currency_iso"],
-               row["merchant"])
-        n = occurrences.get(key, 0)
-        occurrences[key] = n + 1
-        row["transaction_external_id"] = _content_id("card:", key, n)
+        key = tuple(row[f] for f in _CARD_KEY_FIELDS)
+        groups.setdefault(key, []).append(row)
+
+    for key, members in groups.items():
+        members.sort(key=lambda r: tuple(
+            "" if r.get(f) is None else str(r.get(f))
+            for f in _CARD_TIEBREAK_FIELDS))
+        for n, row in enumerate(members):
+            row["transaction_external_id"] = _content_id("card:", key, n)
+
+    for row in rows:
         del row["_handle"]
     return rows
 

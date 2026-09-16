@@ -700,3 +700,54 @@ def test_the_whole_dump_loads_with_the_real_shapes(tmp_path):
     assert conn.execute(
         "SELECT reserved_amount, reserved_count FROM card_accounts"
     ).fetchone() == (pytest.approx(-40.0), 1)
+
+
+def test_a_relabelled_merchant_keeps_the_same_id():
+    # UBS re-labels a merchant between fetches. With the text inside the
+    # identity that minted a second id, and since nothing deletes a card
+    # row, the purchase stood in the ledger twice and gold counted the
+    # spend twice. The merchant is stored and refreshed; it is not what
+    # makes a row that row.
+    before, _ = card_parsers.parse_transactions([_page([
+        _booked("ROW-1", "2026-01-05", "-42.50"),
+    ])])
+    after, _ = card_parsers.parse_transactions([_page([
+        _booked("ROW-1", "2026-01-05", "-42.50",
+                details="EXAMPLE SHOP AG  EXAMPLETOWN  CHE",
+                merchantName="Supermarkets"),
+    ])])
+
+    assert (before[0]["transaction_external_id"]
+            == after[0]["transaction_external_id"])
+    assert after[0]["merchant"] == "EXAMPLE SHOP AG  EXAMPLETOWN  CHE"
+
+
+def test_two_same_day_purchases_at_different_merchants_stay_two_rows():
+    # The reduced key collides on purpose here; the occurrence index is
+    # what separates them, as it does for two coffees at one merchant.
+    rows, _ = card_parsers.parse_transactions([_page([
+        _booked("ROW-1", "2026-01-05", "-4.50"),
+        _booked("ROW-2", "2026-01-05", "-4.50",
+                details="OTHER SHOP  EXAMPLETOWN  CHE"),
+    ])])
+    assert len({r["transaction_external_id"] for r in rows}) == 2
+
+
+def test_the_ids_do_not_depend_on_the_order_the_api_paged_them():
+    # Nothing promises the server's row order, and with the merchant out
+    # of the key the members of a group are no longer interchangeable —
+    # so the group is sorted before the occurrence indices are handed out.
+    # A group of n rows always yields the ids for occurrences 0..n-1.
+    one = _booked("ROW-1", "2026-01-05", "-4.50")
+    two = _booked("ROW-2", "2026-01-05", "-4.50",
+                  details="OTHER SHOP  EXAMPLETOWN  CHE")
+    forwards, _ = card_parsers.parse_transactions([_page([one, two])])
+    backwards, _ = card_parsers.parse_transactions([_page([two, one])])
+
+    assert ({r["transaction_external_id"] for r in forwards}
+            == {r["transaction_external_id"] for r in backwards})
+    # And the same merchant keeps the same id either way round.
+    by_merchant = {r["merchant"]: r["transaction_external_id"]
+                   for r in forwards}
+    for row in backwards:
+        assert by_merchant[row["merchant"]] == row["transaction_external_id"]
