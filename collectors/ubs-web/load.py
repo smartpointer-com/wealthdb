@@ -292,11 +292,8 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     pos_count = _load_positions(conn, snapshot_at, dump_dir)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
-    _purge_stale_document_rows(conn)
     hist_pos, hist_cash, hist_mort, hist_txn = _load_historical_from_pdfs(
         conn, snapshot_at, dump_dir, parse_cache)
-    silver.stamp_generation(conn, DOCUMENT_GENERATION_SCOPE,
-                            _document_generation())
     card_acc, card_txn, card_inv, card_stmt = _load_cards(
         conn, snapshot_at, dump_dir)
 
@@ -1145,6 +1142,12 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     if not work:
         return 0, 0, 0, 0
 
+    # Inside the function, and below both early returns, because the purge
+    # has no refill of its own: a dump with no `documents/` dir, or one
+    # whose archive lists nothing parseable, returns above this line — and
+    # purging there would empty the historical tables and put nothing back.
+    _purge_stale_document_rows(conn)
+
     # Per-account MT940 cut-over floors: coverage can begin at
     # different dates per account (or be absent), so a single global
     # floor would silently drop movements. PDF movements are ingested
@@ -1208,6 +1211,11 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
         log.warning("%d Account-Statement PDF(s) failed movement "
                     "reconciliation; their transactions were NOT ingested",
                     txn_reject_stmts)
+    # Stamped here rather than by the caller, so it records a walk that
+    # actually ran: the early returns above leave the older generation in
+    # place and the next dump tries again.
+    silver.stamp_generation(conn, DOCUMENT_GENERATION_SCOPE,
+                            _document_generation())
     return pos_rows, cash_rows, mortgage_rows, txn_rows
 
 

@@ -117,9 +117,9 @@ _DAF_STATEMENT_PARSER_VERSION = (
 #     the document is re-parsed. Three passes share that table and only
 #     `source_sha256` says which PDF a row came from, so the document is the
 #     largest scope that can be named without reaching into another pass.
-_GENERATION_SCOPE_STATEMENT = "statement_529"
-_GENERATION_SCOPE_DAF = "daf_statement"
-_GENERATION_SCOPE_SUPPLIED = "supplied_statement"
+STATEMENT_GENERATION_SCOPE = "statement_529"
+DAF_GENERATION_SCOPE = "daf_statement"
+SUPPLIED_GENERATION_SCOPE = "supplied_statement"
 
 
 def _logical_bronze_path(path):
@@ -1664,7 +1664,7 @@ def _load_daf_historical(conn, dump_dir, coord=None):
             )
             inserted += 1
     if inserted:
-        silver.stamp_generation(conn, _GENERATION_SCOPE_DAF,
+        silver.stamp_generation(conn, DAF_GENERATION_SCOPE,
                                 _DAF_STATEMENT_PARSER_VERSION)
     return inserted
 
@@ -1934,7 +1934,7 @@ def _load_historical_from_pdfs(conn, dump_dir, coord=None):
         _drop_document_holdings(conn, sha)
         inserted += _insert_historical_rows(conn, path, result, sha)
     if inserted:
-        silver.stamp_generation(conn, _GENERATION_SCOPE_STATEMENT,
+        silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
                                 _STATEMENT_PARSER_VERSION)
     return inserted
 
@@ -2157,7 +2157,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
         # then re-derive nothing. Unspent, it also leaves the generation
         # unstamped, so the next load tries the whole thing again.
         owed_a_purge = silver.stale_generation(
-            conn, _GENERATION_SCOPE_SUPPLIED, version)
+            conn, SUPPLIED_GENERATION_SCOPE, version)
         inserted = skipped = activity = activity_dup = 0
         # One ledger for the whole walk: a feed row absorbed by one
         # statement must not be absorbed again by the next.
@@ -2204,7 +2204,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
             # re-derivation ran. A purge still owed means nothing parsed, so
             # the rows in hand are the older parser's and still the best
             # record there is.
-            silver.stamp_generation(conn, _GENERATION_SCOPE_SUPPLIED, version)
+            silver.stamp_generation(conn, SUPPLIED_GENERATION_SCOPE, version)
         conn.commit()
         log.info(
             "supplied-statements: %d holdings rows inserted, %d activity "
@@ -2234,7 +2234,8 @@ class _FeedClaims:
     row that carries one of them, and the other payment is dropped with
     nothing in the log to say so. The shape is not hypothetical: two
     payments can share an account, a day and an amount and still be
-    different payments.
+    different payments, telling apart only by a reference and a payee
+    the scraped feed does not carry.
 
     Only rows the feed ABSORBED are recorded. A row that found no feed
     match is simply inserted, and its id converges on a re-sighting
@@ -2316,8 +2317,8 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
     `_synthesise_activity_id`: one real payment printed on both the
     monthly and the year-end statement hashes the same and converges,
     while two genuinely distinct payments that share a day and an
-    amount differ in their reference and beneficiary and so keep
-    separate rows.
+    amount differ in their reference and payee, and so keep separate
+    rows.
     """
     inserted = skipped = 0
     claims = _FeedClaims() if claims is None else claims

@@ -192,31 +192,31 @@ def _seed_position(conn, source, isin="CH0000000001", snapshot_at=1700000000):
         (snapshot_at, isin, source))
 
 
-def test_the_purge_takes_report_rows_and_leaves_the_live_ones(tmp_path):
-    conn, _ = _fresh_db(tmp_path)
+def test_a_dump_load_does_not_wipe_another_dumps_reports(tmp_path):
+    # The purge is per DOCUMENT, not per scope. `load_historical_reports_
+    # phase` walks one dump's own index, so a scope-wide purge would delete
+    # every other dump's report rows and refill none of them — the dump
+    # being loaded here carries no documents at all, which is the worst
+    # case of exactly that.
+    run_dir = _seed_bronze(tmp_path / "bronze")
+    conn, version = _fresh_db(tmp_path)
     _seed_position(conn, "report:D1")
-    _seed_position(conn, "report:D2", isin="CH0000000002")
-    _seed_position(conn, "live", isin="CH0000000003")
-    conn.execute(
-        "INSERT OR REPLACE INTO cash_balances (snapshot_at, "
-        "account_external_id, currency, balance_kind, amount, source) "
-        "VALUES (1700000000, 'acct-1', 'CHF', 'cash', 1.0, 'report:D1')")
 
-    assert loader._purge_stale_report_rows(conn) == 3
+    loader.load_one_dump(conn, run_dir, version)
 
-    assert [r[0] for r in conn.execute(
-        "SELECT source FROM positions").fetchall()] == ["live"]
     assert conn.execute(
-        "SELECT COUNT(*) FROM cash_balances").fetchone()[0] == 0
+        "SELECT COUNT(*) FROM positions WHERE source = 'report:D1'"
+    ).fetchone()[0] == 1
     conn.close()
 
 
 def test_an_unmoved_report_parser_drops_nothing(tmp_path):
+    # The stamp is a record here, not a gate: nothing is purged by scope,
+    # so a matching generation and a moved one behave identically.
     conn, _ = _fresh_db(tmp_path)
     _seed_position(conn, "report:D1")
     silver.stamp_generation(conn, loader.REPORT_GENERATION_SCOPE,
                             loader.REPORT_GENERATION)
 
-    assert loader._purge_stale_report_rows(conn) == 0
     assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
     conn.close()

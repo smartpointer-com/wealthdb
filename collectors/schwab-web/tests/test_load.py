@@ -2004,3 +2004,24 @@ def test_an_unmoved_parser_leaves_the_snapshot_tables_alone(tmp_path):
 
     assert load.run_load(args) == 0
     assert _snapshot_row_count(args.silver_db) == 2
+
+
+def test_an_explicit_reparse_still_purges_a_moved_generation(tmp_path):
+    # The purge is the only delete path these tables have. Gating it on
+    # `reparse` rather than on the generation let `load --reparse` over a
+    # moved parser re-walk the archive, insert the re-keyed rows beside the
+    # old ones, and then stamp the generation current — putting that miss
+    # permanently out of reach of any later load.
+    args = _generation_args(tmp_path)
+    assert load.run_load(args) == 0
+    _seed_snapshot_rows(args.silver_db)
+
+    conn = sqlite3.connect(str(args.silver_db))
+    load.silver.stamp_generation(
+        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+    conn.commit()
+    conn.close()
+
+    args.reparse = True
+    assert load.run_load(args) == 0
+    assert _snapshot_row_count(args.silver_db) == 0

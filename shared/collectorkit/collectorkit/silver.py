@@ -30,10 +30,11 @@ def own_only(path: Path) -> None:
     `sqlite3.connect` rather than through the openers below, and the
     file they create needs the same mode as everyone else's.
 
-    sqlite3 creates it under the process umask, which in a collector
-    container is 022 and yields a world-readable file. Applied on every open
-    rather than only on create: `load --force` deletes and recreates the DB,
-    so a mode set once does not survive a rebuild. Called before the first
+    The package umask (`collectorkit/__init__.py`) already creates the file
+    at this mode, so this is the repair path for one already on disk at a
+    wider one. Applied on every open rather than only on create: `load
+    --force` deletes and recreates the DB, so a mode set once does not
+    survive a rebuild. Called before the first
     PRAGMA, because SQLite gives the `-wal` and `-shm` sidecars the mode the
     database file has when journalling turns them on.
     """

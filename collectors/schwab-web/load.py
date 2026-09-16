@@ -1691,8 +1691,10 @@ def _purge_stale_snapshots(conn: sqlite3.Connection) -> int:
     """Drop the statement-derived snapshot tables, which have no delete path
     of their own, so the re-walk refills them rather than adding to them.
 
-    Only ever called once a stale generation has forced `reparse` on, which
-    is what guarantees the walk that refills them actually happens.
+    Called whenever the generation has moved — never on a bare `--reparse`,
+    which re-walks under keys that have not changed and so has nothing to
+    collapse. A stale generation also forces `reparse` on, which is what
+    guarantees the walk that refills these tables actually happens.
     """
     dropped = sum(conn.execute(f"DELETE FROM {t}").rowcount
                   for t in _SNAPSHOT_TABLES)
@@ -1713,10 +1715,19 @@ def run_load(args: argparse.Namespace) -> int:
         # A moved parser owes the archive a re-read, and `--reparse` is the
         # lever that already delivers one: it opens the run gate, the
         # per-document gates and the per-document deletes together.
+        #
+        # The two conditions are kept apart on purpose. The purge follows
+        # the GENERATION, never the flag: it is the only delete path the
+        # snapshot tables have, so gating it on `reparse` would let
+        # `load --reparse` over a moved parser re-walk the archive, insert
+        # the re-keyed rows beside the old ones, and then stamp the
+        # generation current — which puts that miss permanently out of
+        # reach of a later load.
         generation = _document_generation()
-        reparse = args.reparse or silver.stale_generation(
-            conn, DOCUMENT_GENERATION_SCOPE, generation)
-        if reparse and not args.reparse:
+        stale = silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
+                                        generation)
+        reparse = args.reparse or stale
+        if stale:
             log.info("the document parsers have changed since silver was "
                      "written; re-parsing the archive")
             _purge_stale_snapshots(conn)

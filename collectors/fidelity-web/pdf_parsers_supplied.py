@@ -269,9 +269,10 @@ _ACTIVITY_ROW_RE = re.compile(
     r"(?P<amt>-?\$?-?[\d,]+\.\d{2})$")
 
 # Only the two money sections wrap. A `Fees and Charges` row is one
-# line by construction — `Date Description Amount` — so folding there
-# can only pick up the page furniture that follows a section whose
-# total fell on the other side of a page break.
+# line by construction — `Date Description Amount` — so there is
+# nothing below a fee row for a fold to pick up. Page furniture is a
+# separate concern and is handled for every section by the
+# `_is_boilerplate` branch in `parse_activity_block`.
 _ACTIVITY_WRAPS = {"WITHDRAWAL", "DEPOSIT"}
 
 

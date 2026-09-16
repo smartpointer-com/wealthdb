@@ -36,11 +36,14 @@ logger = logging.getLogger("load")
 # A report row's identity is (snapshot_at, account, ISIN) — no free text,
 # but every component is a regex capture off the page, so moving the as-of
 # date, the portfolio anchor or the ISIN token re-lands a whole quarter
-# under a different key while the old rows stay. `parser_generations`
-# (migration 0004) records which generation produced the rows in hand; when
-# it has moved they are dropped before the pass re-derives them. The pass
-# runs per bronze dump, so that lands on the next dump rather than the next
-# load — `load --force` is the way to re-derive sooner.
+# under a different key while the old rows stay. What stops that is the
+# per-document delete in `load_historical_reports_phase`: re-parsing a
+# report replaces its own rows, whatever keys they land under.
+#
+# `parser_generations` (migration 0004) records which generation produced
+# them, so silver can be asked in plain SQL. It is a record, not a gate —
+# the pass walks one dump's index, so it cannot re-derive a report the dump
+# does not carry, and `load --force` is what re-reads the whole archive.
 REPORT_GENERATION_SCOPE = "reports"
 REPORT_GENERATION = srcfp.parser_fingerprint([pdf_parsers], ("pypdfium2",))
 
@@ -609,27 +612,6 @@ def _upsert_report_instrument(
     )
 
 
-def _purge_stale_report_rows(conn: sqlite3.Connection) -> int:
-    """Drop the report-derived rows when the parser that produced them has
-    moved, so the pass below re-derives rather than adds to them.
-
-    Scoped by `source`, which is already stamped 'report:<docid>' on every
-    row this pass writes; the live REST rows carry their own tags and are
-    untouched. `instruments` is deliberately left alone — master data shared
-    with the REST phases, with no source marker and a MIN() first_seen_at
-    that cannot be raised back once lowered.
-    """
-    if not silver.stale_generation(conn, REPORT_GENERATION_SCOPE,
-                                   REPORT_GENERATION):
-        return 0
-    dropped = sum(
-        conn.execute(f"DELETE FROM {table} WHERE source LIKE 'report:%'").rowcount
-        for table in ("positions", "cash_balances"))
-    logger.info("the report parser has changed since these rows were "
-                "written; dropped %d for re-derivation", dropped)
-    return dropped
-
-
 def load_historical_reports_phase(
     conn: sqlite3.Connection,
     run_dir: Path,
@@ -683,6 +665,14 @@ def load_historical_reports_phase(
             logger.warning("report %s: no positions parsed — skipping", doc_id)
             continue
         source = f"report:{doc_id}"
+        # Drop what this report wrote last time before writing it again.
+        # Per DOCUMENT, because a document is the only unit this pass can
+        # re-derive: it walks `run_dir`'s own index, so a scope-wide purge
+        # here would delete every other dump's reports and refill none of
+        # them. The `source` tag (migration 0003) names a document's rows
+        # exactly; the live REST rows carry their own tag and are untouched.
+        for table in ("positions", "cash_balances"):
+            conn.execute(f"DELETE FROM {table} WHERE source = ?", (source,))
         for p in parsed.positions:
             conn.execute(
                 """
@@ -857,7 +847,6 @@ def load_one_dump(
         # snapshot_at-independent (keyed on each report's as-of date),
         # so it runs after the live phases and outside their per-dump
         # snapshot grain.
-        _purge_stale_report_rows(conn)
         load_historical_reports_phase(conn, run_dir)
         silver.stamp_generation(conn, REPORT_GENERATION_SCOPE,
                                 REPORT_GENERATION)
