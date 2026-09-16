@@ -113,12 +113,13 @@ EXPORT_SOURCES = (SOURCE_QFX, SOURCE_CSV)
 # replaces rather than accumulates.
 #
 # The extraction side is the `pdftotext` BINARY rather than a Python
-# distribution, so there is nothing for srcfp to pin there: a poppler upgrade
-# that shifted a column would not move this fingerprint. What it does cover
-# is the parsing logic and its import closure, which is where the statement
-# layouts are read.
+# distribution, so it is pinned by the version it reports rather than by an
+# installed dist: a poppler upgrade that re-renders a column changes every
+# parsed description, and it is the drift this collector is otherwise least
+# able to see.
 STATEMENT_GENERATION_SCOPE = "statement"
-STATEMENT_GENERATION = srcfp.parser_fingerprint([statement_parser])
+STATEMENT_GENERATION = srcfp.parser_fingerprint(
+    [statement_parser], extra_tools=(("pdftotext", "-v"),))
 
 # transactions.payload marker for a balance this loader computed rather than
 # read off the provider's own file. EXACTLY ONE balance in silver is

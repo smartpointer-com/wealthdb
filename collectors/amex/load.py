@@ -65,7 +65,11 @@ SOURCE_STATEMENT = "statement"
 # a parser edit alone used to change nothing, because its only gate was
 # whether a dump had been ingested. See migration 0002.
 STATEMENT_GENERATION_SCOPE = "statement"
-STATEMENT_GENERATION = srcfp.parser_fingerprint([statement_parser])
+# `pdftotext` is a binary, not a Python dist, so it is pinned by the version
+# it reports — a poppler upgrade that re-renders a column is exactly the
+# drift that would otherwise pass unnoticed here.
+STATEMENT_GENERATION = srcfp.parser_fingerprint(
+    [statement_parser], extra_tools=(("pdftotext", "-v"),))
 
 
 # A year-end summary is filed under this stem by download.py.

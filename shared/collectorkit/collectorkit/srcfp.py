@@ -25,7 +25,12 @@ naive keys fall short:
   imports are not followed (they can't be meaningfully AST-hashed);
 * folds in the installed versions of the declared third-party extraction
   dependencies and the running Python version, since either can shift
-  extraction for identical input bytes.
+  extraction for identical input bytes;
+* folds in the self-reported version of any declared extraction BINARY.
+  A collector that shells out to `pdftotext` has no Python distribution to
+  pin, so without this a poppler upgrade that re-renders a column would
+  change every parsed description while the fingerprint stood still —
+  which is the drift such a collector is otherwise least able to see.
 
 The result only ever *adds* invalidation relative to a raw-byte hash of
 one file, so it cannot serve staler data than the eager scheme — it just
@@ -38,6 +43,7 @@ import ast
 import hashlib
 import importlib.util
 import platform
+import subprocess
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
 from pathlib import Path
@@ -165,13 +171,37 @@ def _closure_files(roots: list[ModuleType]) -> list[Path]:
     return sorted(files)
 
 
+def _tool_version(argv: tuple[str, ...]) -> str:
+    """What an extraction binary reports about itself, normalised to one
+    line.
+
+    Version banners go to stdout on some tools and stderr on others
+    (`pdftotext -v` is the latter), so both are captured. Every failure mode
+    — the binary absent, non-zero exit, a hang — collapses to
+    ``"unavailable"`` rather than raising: a fingerprint is a cache and
+    regeneration key, and refusing to compute one would fail the load over a
+    diagnostic. "unavailable" is itself a value, so a tool that disappears
+    between runs still moves the fingerprint.
+    """
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    banner = (proc.stdout + proc.stderr).strip().splitlines()
+    return banner[0].strip() if banner else "unavailable"
+
+
 def parser_fingerprint(
-    roots: list[ModuleType], extra_dists: tuple[str, ...] = ()
+    roots: list[ModuleType],
+    extra_dists: tuple[str, ...] = (),
+    extra_tools: tuple[tuple[str, ...], ...] = (),
 ) -> str:
     """A 32-hex-char fingerprint of the parsing logic rooted at ``roots``:
     the normalised source of their first-party import closure, plus the
     installed versions of ``extra_dists`` (the third-party extraction
-    stack) and the running Python version. Suitable as a cache-key /
+    stack), the self-reported version of each argv in ``extra_tools`` (the
+    extraction BINARIES, for collectors that shell out rather than import),
+    and the running Python version. Suitable as a cache-key /
     sidecar-filename component (hex only). Location-independent: only file
     *contents* feed the hash, never their paths, so the same code in two
     checkouts fingerprints identically."""
@@ -183,5 +213,7 @@ def parser_fingerprint(
             parts.append(f"dist:{dist}={_dist_version(dist)}")
         except PackageNotFoundError:
             parts.append(f"dist:{dist}=unavailable")
+    for tool in extra_tools:
+        parts.append(f"tool:{tool[0]}={_tool_version(tool)}")
     parts.append("py:" + platform.python_version())
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]

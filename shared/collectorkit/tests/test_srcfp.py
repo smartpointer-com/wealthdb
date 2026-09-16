@@ -155,3 +155,40 @@ def test_fingerprint_is_hex_and_stable(tmp_path):
     assert len(fp) == 32 and all(c in "0123456789abcdef" for c in fp)
     assert fp == srcfp.parser_fingerprint([root])  # deterministic within a run
     sys.modules.pop("stable", None)
+
+
+def test_an_extraction_binary_moves_the_fingerprint(tmp_path, monkeypatch):
+    """A collector that shells out to `pdftotext` has no Python dist to pin,
+    so the binary's own version is what stands in for it. Without this a
+    poppler upgrade re-renders every column while the fingerprint holds
+    still — the drift such a collector is least able to see."""
+    _write(tmp_path / "shellout.py", "def parse():\n    return 1\n")
+    root = _import_from(tmp_path, "shellout")
+    tool = (("pdftotext", "-v"),)
+
+    monkeypatch.setattr(srcfp, "_tool_version", lambda argv: "poppler 1.0.0")
+    fp_a = srcfp.parser_fingerprint([root], extra_tools=tool)
+    monkeypatch.setattr(srcfp, "_tool_version", lambda argv: "poppler 1.0.1")
+    fp_b = srcfp.parser_fingerprint([root], extra_tools=tool)
+    assert fp_a != fp_b
+
+    # Declaring a tool changes the key against not declaring one, so a
+    # collector that starts pinning its extractor re-derives once.
+    assert srcfp.parser_fingerprint([root]) != fp_b
+
+    sys.modules.pop("shellout", None)
+
+
+def test_a_missing_extraction_binary_is_a_value_not_an_error(tmp_path):
+    """Refusing to compute a fingerprint would fail the load over a
+    diagnostic. An absent binary reads as "unavailable", which is itself a
+    value — so a tool that disappears between runs still moves the key."""
+    _write(tmp_path / "noexe.py", "def parse():\n    return 1\n")
+    root = _import_from(tmp_path, "noexe")
+
+    assert srcfp._tool_version(("definitely-not-on-this-path", "-v")) == "unavailable"
+    fp = srcfp.parser_fingerprint(
+        [root], extra_tools=(("definitely-not-on-this-path", "-v"),))
+    assert len(fp) == 32
+
+    sys.modules.pop("noexe", None)
