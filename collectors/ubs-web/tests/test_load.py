@@ -399,3 +399,72 @@ def test_an_unmoved_document_parser_drops_nothing(tmp_path):
     assert conn.execute(
         "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
     conn.close()
+
+
+# ============================================================
+# Historical cash rows collapse instead of accumulating
+# ============================================================
+
+def _hist_row(isin=None, ccy="CHF", value=1000.0, date=1700000000,
+              account="CH00 0000 0000 0000 0000 0", doc="doc-1"):
+    """One parsed row as `_insert_hist_positions` takes them. A cash line is
+    exactly a position row with no ISIN."""
+    return {
+        "as_of_date": date, "portfolio_external_id": "0000A0000000000",
+        "account_external_id": account, "instrument_isin": isin,
+        "currency_iso": ccy, "units": value, "market_value": value,
+        "market_value_currency": "CHF", "cost_price": None,
+        "market_price": None, "accrued_interest": None,
+        "exchange_rate_to_base": None, "description": "Account",
+        "sector": None, "source_doc_token": doc, "payload": "{}",
+    }
+
+
+def _hist_count(conn, isin_is_null=True):
+    op = "IS NULL" if isin_is_null else "IS NOT NULL"
+    return conn.execute(
+        f"SELECT COUNT(*) FROM historical_position_snapshots "
+        f"WHERE instrument_isin {op}").fetchone()[0]
+
+
+def test_a_cash_row_re_derived_does_not_accumulate(tmp_path):
+    # The pass re-lists the whole document archive on every dump, so every
+    # cash row is re-derived once per dump. The primary key ends in the
+    # ISIN, a cash line has none, and SQLite treats NULLs in a key as
+    # distinct — so INSERT OR REPLACE never collapsed them and the table
+    # grew by one copy of every cash row per dump, without limit.
+    conn = _fresh_db(tmp_path)
+    for _ in range(3):
+        loader._insert_hist_positions(conn, [_hist_row()])
+
+    assert _hist_count(conn) == 1
+    conn.close()
+
+
+def test_a_re_derived_cash_row_keeps_the_latest_figure(tmp_path):
+    # Collapsing must not freeze the first copy: cash is last-writer-wins,
+    # the same as a securities row under the key.
+    conn = _fresh_db(tmp_path)
+    loader._insert_hist_positions(conn, [_hist_row(value=1000.0)])
+    loader._insert_hist_positions(conn, [_hist_row(value=2500.0)])
+
+    assert _hist_count(conn) == 1
+    assert conn.execute(
+        "SELECT market_value FROM historical_position_snapshots"
+    ).fetchone()[0] == 2500.0
+    conn.close()
+
+
+def test_cash_rows_that_are_genuinely_different_stay_apart(tmp_path):
+    # Two currencies on one account at one date are two facts, and a
+    # security is not cash at all — the collapse must reach neither.
+    conn = _fresh_db(tmp_path)
+    loader._insert_hist_positions(conn, [
+        _hist_row(ccy="CHF"), _hist_row(ccy="USD"),
+        _hist_row(isin="CH0000000001"),
+    ])
+    loader._insert_hist_positions(conn, [_hist_row(ccy="CHF")])
+
+    assert _hist_count(conn) == 2
+    assert _hist_count(conn, isin_is_null=False) == 1
+    conn.close()

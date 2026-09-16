@@ -1211,11 +1211,40 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     return pos_rows, cash_rows, mortgage_rows, txn_rows
 
 
+# What identifies a CASH row in `historical_position_snapshots` — the
+# primary key with the ISIN taken out, since a cash line has none.
+_HIST_CASH_IDENTITY = ("as_of_date", "portfolio_external_id",
+                       "account_external_id", "currency_iso")
+
+
+def _replace_hist_cash_row(conn: sqlite3.Connection, r: dict) -> None:
+    """Clear the cash row `r` is about to replace.
+
+    `INSERT OR REPLACE` cannot do it: the table's primary key ends in
+    `instrument_isin`, a cash line has none, and SQLite treats NULLs in a
+    primary key as DISTINCT — so the upsert never fires and every re-derived
+    copy lands as a new row. The pass re-lists the whole document archive on
+    every dump, so that is one extra copy of every cash row per dump, without
+    limit (migration 0011 collapsed the ones already stored).
+
+    Deleting the match first is exactly what the key would do if NULLs
+    compared equal, which keeps last-writer-wins for cash the same as it is
+    for securities.
+    """
+    conn.execute(
+        "DELETE FROM historical_position_snapshots WHERE instrument_isin IS NULL"
+        + "".join(f" AND {col} = ?" for col in _HIST_CASH_IDENTITY),
+        tuple(r[col] for col in _HIST_CASH_IDENTITY),
+    )
+
+
 def _insert_hist_positions(conn: sqlite3.Connection,
                            rows: list[dict]) -> int:
     n = 0
     for r in rows:
         try:
+            if r["instrument_isin"] is None:
+                _replace_hist_cash_row(conn, r)
             conn.execute(
                 "INSERT OR REPLACE INTO historical_position_snapshots ("
                 "as_of_date, portfolio_external_id, account_external_id, "

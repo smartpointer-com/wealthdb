@@ -707,6 +707,17 @@ Four decisions of record:
   goes stale in the direction of claiming more than is there. A period
   counts as covered only when the account's loaded ledger reaches past
   *both* of its edges.
+- **A cash row in `historical_position_snapshots` collapses on
+  re-derivation.** That table's key ends in the ISIN and a cash line has
+  none, so SQLite — which treats NULLs in a key as distinct — never let
+  the upsert fire. Since the historical pass re-lists the whole document
+  archive on every dump, the cash rows grew by one copy per dump without
+  limit, every copy byte-identical (migration 0011 collapsed those already
+  stored). The loader now deletes the row a cash line is about to replace,
+  which is what the key would do if NULLs compared equal. They are kept
+  rather than dropped even though the gold adapter reads cash from
+  `historical_cash_balances`: most carry a quarter-end date that series has
+  no row for, so those observations exist nowhere else.
 - **No free text is inside a card row's identity.** The id hashes the
   card, the transaction and value dates, and the amounts and currencies
   — never the merchant, which UBS re-labels between fetches. Combined
