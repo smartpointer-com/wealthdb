@@ -253,10 +253,57 @@ Total Other Activity Out -
 """
 
 
-def _activity(text=_ACTIVITY_TEXT):
+# A Withdrawals section broken across a page. `parse_account_blocks` glues
+# the two pages into one block, so the second page's masthead, its re-stamped
+# account header, the registration line and the repeated column header all
+# sit between the last row on page one and the first row on page two.
+_PAGE_BREAK_TEXT = """
+INVESTMENT REPORT
+January 1, 2026 - January 31, 2026
+
+Account # 100-000001
+PLACEHOLDER HOLDER - INDIVIDUAL
+Activity
+Withdrawals
+Date Reference Description Amount
+01/06 Wire Tfr To Bank WD00000001 -$2,000.00
+PLACEHOLDER PAYEE ONE
+PLACEHOLDER BANK, N.A. ******0001
+
+INVESTMENT REPORT
+January 1, 2026 - January 31, 2026
+Envelope # XXX
+Account # 100-000001
+PLACEHOLDER HOLDER - INDIVIDUAL
+Date Reference Description Amount
+01/22 Wire Tfr To Bank WD00000002 -$3,000.00
+PLACEHOLDER PAYEE TWO
+PLACEHOLDER BANK, N.A. ******0002
+Total Withdrawals -$5,000.00
+"""
+
+
+def _activity(text=_ACTIVITY_TEXT, signature=None):
     period = ppt.parse_statement_period(text)
     block = ppt.parse_account_blocks(text)[0]
-    return ppt.parse_activity_block(block.text, period=period)
+    return ppt.parse_activity_block(
+        block.text, period=period, expected_signature=signature)
+
+
+def test_a_page_break_does_not_fold_the_masthead_into_the_row():
+    # The last money row on a page is followed by the next page's frame:
+    # masthead, re-stamped account header, registration line, repeated
+    # column header. None of it is part of the payment, and the description
+    # is what gold reads as the narrative.
+    rows = _activity(_PAGE_BREAK_TEXT, signature="PLACEHOLDER HOLDER")
+    # Two rows, not one: the guard ends the row at the furniture without
+    # ending the SECTION, which continues on the next page.
+    assert len(rows) == 2
+    assert rows[0].description == (
+        "Wire Tfr To Bank WD00000001 PLACEHOLDER PAYEE ONE "
+        "PLACEHOLDER BANK, N.A. ******0001")
+    # The far side of the break still folds its own continuations.
+    assert rows[1].description.endswith("******0002")
 
 
 def test_activity_reads_the_three_account_level_sections():

@@ -322,7 +322,8 @@ def _activity_row_date(mm, dd, period):
     return None
 
 
-def parse_activity_block(account_text, *, period=None):
+def parse_activity_block(account_text, *, period=None,
+                         expected_signature=None):
     """Extract the account-level activity rows from one per-account
     section. Returns [] when the statement prints none, which is
     ordinary — most months move no money.
@@ -332,8 +333,15 @@ def parse_activity_block(account_text, *, period=None):
     MM/DD continues the row above it — on a wire those lines name the
     beneficiary and the receiving bank, which is the only thing that
     says what the payment was for. Fee rows never wrap, so nothing is
-    folded onto them and a section whose total fell on the far side of
-    a page break cannot pick up the page furniture that follows.
+    folded onto them.
+
+    That fold is bounded by `_is_boilerplate`, which ends the row at the
+    first line of page furniture. `parse_account_blocks` glues the pages
+    of one account together, so a section spanning a page break has the
+    next page's masthead, re-stamped account header, registration line
+    and repeated column header sitting between two of its rows — and the
+    row above them would otherwise swallow the lot into the description
+    that gold reads as the payment's narrative.
     """
     rows = []
     lines = account_text.splitlines()
@@ -376,6 +384,19 @@ def parse_activity_block(account_text, *, period=None):
                 description=" ".join(m.group("desc").split()),
                 amount=amount,
             )
+        elif _is_boilerplate(ln, expected_signature):
+            # A money section that spans a page break carries the next
+            # page's frame inside the glued block — the masthead, the
+            # re-stamped `Account #` header, the registration line, the
+            # repeated column header. End the row at the FIRST of them:
+            # everything after it then arrives with nothing pending, so the
+            # rest of the frame is inert whether or not it is recognised.
+            # Skipping instead would need every furniture line matched, and
+            # the column header and period line match nothing.
+            #
+            # flush() only — NOT `section = None`. The section continues on
+            # the next page, and clearing it would drop every remaining row.
+            flush()
         elif pending is not None and pending.section in _ACTIVITY_WRAPS:
             pending.description = (pending.description + " " + ln).strip()
     flush()
@@ -645,7 +666,9 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
         rows = parse_holdings_block(
             block.text, expected_signature=expected_signature,
         )
-        activity = parse_activity_block(block.text, period=period)
+        activity = parse_activity_block(
+            block.text, period=period, expected_signature=expected_signature,
+        )
         # A block with neither holdings nor activity is a cover page
         # or a summary spread, not an account section.
         if not rows and not activity:

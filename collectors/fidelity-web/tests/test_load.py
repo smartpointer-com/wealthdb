@@ -1043,3 +1043,54 @@ def test_a_re_keyed_activity_row_lands_beside_the_one_it_replaces(migrated):
     load._insert_supplied_activity_rows(
         migrated, Path("p.PDF"), reparsed, "sha_a")
     assert len(_activity_rows(migrated)) == before
+
+
+def test_two_statement_rows_cannot_both_claim_one_feed_row(migrated):
+    # The feed books one of a pair of same-day, same-amount wires and
+    # not the other. Both statement rows
+    # resemble that one feed row equally; only one may be absorbed by it,
+    # or the payment the feed never carried disappears.
+    migrated.execute(
+        "INSERT INTO transactions (activity_id, timestamp, "
+        "account_external_id, kind, amount, currency, source_sha256, payload) "
+        "VALUES ('scraped-wire-1', ?, '100000001', 'withdrawal', -1650.0, "
+        "'USD', 'sha', '{}')",
+        (load.ts_from_iso("2026-01-06"),),
+    )
+    n, dup = load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+
+    # the fee plus the wire the feed never carried
+    assert (n, dup) == (2, 1)
+    assert migrated.execute(
+        "SELECT COUNT(*) FROM transactions WHERE amount = -1650.0"
+    ).fetchone()[0] == 2
+
+
+def test_a_repeat_sighting_does_not_claim_a_second_feed_row(migrated):
+    # The year-end statement repeats the whole year, so each payment is
+    # offered twice within one pass. The second sighting must re-use the
+    # claim the first made — a ledger keyed on the FEED row's id instead
+    # would let it reach for the other feed row and insert a phantom.
+    for i in (1, 2):
+        migrated.execute(
+            "INSERT INTO transactions (activity_id, timestamp, "
+            "account_external_id, kind, amount, currency, source_sha256, "
+            "payload) VALUES (?, ?, '100000001', 'withdrawal', -1650.0, "
+            "'USD', 'sha', '{}')",
+            (f"scraped-wire-{i}", load.ts_from_iso("2026-01-06")),
+        )
+    claims = load._FeedClaims()
+    first = load._insert_supplied_activity_rows(
+        migrated, Path("Placeholder 1.26 Statement.PDF"), _PARSED_ACTIVITY,
+        "sha0", claims=claims)
+    second = load._insert_supplied_activity_rows(
+        migrated, Path("Placeholder 2026 Year End Statement.PDF"),
+        _PARSED_ACTIVITY, "sha1", claims=claims)
+
+    # Only the fee is the statement's to derive, both times.
+    assert first == (1, 2)
+    assert second == (1, 2)
+    assert migrated.execute(
+        "SELECT COUNT(*) FROM transactions WHERE amount = -1650.0"
+    ).fetchone()[0] == 2

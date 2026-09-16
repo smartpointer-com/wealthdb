@@ -2159,6 +2159,9 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
         owed_a_purge = silver.stale_generation(
             conn, _GENERATION_SCOPE_SUPPLIED, version)
         inserted = skipped = activity = activity_dup = 0
+        # One ledger for the whole walk: a feed row absorbed by one
+        # statement must not be absorbed again by the next.
+        claims = _FeedClaims()
         for path in candidates:
             sha = coord.sha_for(path)
             result = coord.resolve(
@@ -2192,7 +2195,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
             _drop_document_holdings(conn, sha)
             inserted += _insert_supplied_historical_rows(conn, path, result, sha)
             act_in, act_dup = _insert_supplied_activity_rows(
-                conn, path, result, sha)
+                conn, path, result, sha, claims=claims)
             activity += act_in
             activity_dup += act_dup
         synth = _synthesize_missing_account_masters(conn)
@@ -2222,8 +2225,40 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
 _ACTIVITY_MATCH_WINDOW = 3 * 86400
 
 
-def _feed_already_has(conn, account_external_id, amount, ts):
-    """True when the SCRAPED feed already carries this payment.
+class _FeedClaims:
+    """One-to-one bookkeeping for the statement-to-feed match, held for
+    the whole supplied pass.
+
+    Without it the match is many-to-one: two statement rows sharing an
+    account, an amount and the window both resolve to the single feed
+    row that carries one of them, and the other payment is dropped with
+    nothing in the log to say so. The shape is not hypothetical: two
+    payments can share an account, a day and an amount and still be
+    different payments.
+
+    Only rows the feed ABSORBED are recorded. A row that found no feed
+    match is simply inserted, and its id converges on a re-sighting
+    through INSERT OR REPLACE exactly as before, so the ledger can never
+    suppress an insert.
+    """
+
+    def __init__(self):
+        self._by_statement = {}   # statement activity_id -> feed activity_id
+        self._taken = set()       # feed activity_ids already absorbed
+
+    def claimed_for(self, statement_id):
+        return self._by_statement.get(statement_id)
+
+    def claim(self, statement_id, feed_id):
+        self._by_statement[statement_id] = feed_id
+        self._taken.add(feed_id)
+
+    def is_taken(self, feed_id):
+        return feed_id in self._taken
+
+
+def _unclaimed_feed_match(conn, account_external_id, amount, ts, claims):
+    """The SCRAPED feed row that already carries this payment, or None.
 
     The statement and the feed number their rows differently and
     cannot be joined on an id, so the match is the only thing both
@@ -2236,24 +2271,45 @@ def _feed_already_has(conn, account_external_id, amount, ts):
     converge on their own content-derived id instead, which is what
     lets the monthly and year-end statements both carry a row (the
     year-end repeats the whole year) without inserting it twice.
+
+    Only a feed row nothing has claimed yet counts. The match is a
+    resemblance rather than an identity, so unclaimed, the one feed row
+    carrying one of a same-day same-amount pair would absorb both and
+    the payment the feed never carried would vanish.
+
+    Candidates come back closest-in-time first, then by id, because
+    with claiming the pick is no longer arbitrary: which row is taken
+    now decides what the next statement row can still find.
     """
-    row = conn.execute(
-        "SELECT 1 FROM transactions "
+    for (feed_id,) in conn.execute(
+        "SELECT activity_id FROM transactions "
         "WHERE account_external_id = ? "
         "  AND activity_id NOT LIKE 'stmt\\_%' ESCAPE '\\' "
         "  AND ABS(amount - ?) < 0.005 "
-        "  AND ABS(timestamp - ?) <= ? LIMIT 1",
-        (account_external_id, amount, ts, _ACTIVITY_MATCH_WINDOW),
-    ).fetchone()
-    return row is not None
+        "  AND ABS(timestamp - ?) <= ? "
+        "ORDER BY ABS(timestamp - ?), activity_id",
+        (account_external_id, amount, ts, _ACTIVITY_MATCH_WINDOW, ts),
+    ):
+        if claims.is_taken(feed_id):
+            log.info(
+                "supplied-statements: feed row %s already absorbed another "
+                "statement row; %s %+.2f keeps looking",
+                feed_id, account_external_id, amount,
+            )
+            continue
+        return feed_id
+    return None
 
 
-def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha):
+def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
     """Insert the statement's ACCOUNT-LEVEL activity into
     ``transactions`` — the money in and out, and the account fees.
 
     Returns ``(inserted, skipped)``. Skipped rows are the ones the
-    scraped feed already carries; see `_feed_already_has`.
+    scraped feed already carries; see `_unclaimed_feed_match`. `claims`
+    is the pass-wide one-to-one ledger; a caller that omits it gets a
+    private one, which is right for a single statement read in
+    isolation and wrong for a walk (the walk threads its own).
 
     The id is derived from the row's own content plus an occurrence
     index within the PDF, on the same reasoning as
@@ -2264,6 +2320,7 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha):
     separate rows.
     """
     inserted = skipped = 0
+    claims = _FeedClaims() if claims is None else claims
     occurrence: dict[str, int] = {}
     for account in parsed.get("accounts", []):
         aid = account.get("account_external_id")
@@ -2280,11 +2337,31 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha):
                 (aid, row["date"], row.get("section") or "", f"{amount:.2f}", desc))
             occ = occurrence.get(identity, 0)
             occurrence[identity] = occ + 1
-            if _feed_already_has(conn, aid, amount, ts):
-                skipped += 1
-                continue
             activity_id = "stmt_" + hashlib.sha256(
                 f"{identity}|#{occ}".encode("utf-8")).hexdigest()[:28]
+            # Keyed on the STATEMENT row's own id, not the feed row's:
+            # the year-end statement repeats the whole year, so this
+            # payment may be offered again later in the pass and hashes
+            # the same both times. The second sighting re-uses the claim
+            # the first made rather than reaching for a second feed row.
+            absorbed_by = claims.claimed_for(activity_id)
+            if absorbed_by is None:
+                absorbed_by = _unclaimed_feed_match(
+                    conn, aid, amount, ts, claims)
+                if absorbed_by is not None:
+                    claims.claim(activity_id, absorbed_by)
+                    # The description stays out of the line: on a wire it
+                    # names the beneficiary. The account, date, section,
+                    # signed amount and feed id locate the row.
+                    log.info(
+                        "supplied-statements: %s %s %s %+.2f is already in "
+                        "the scraped feed as %s; not deriving it from %s",
+                        aid, row["date"], row.get("section") or "other",
+                        amount, absorbed_by, pdf_path.name,
+                    )
+            if absorbed_by is not None:
+                skipped += 1
+                continue
             conn.execute(
                 "INSERT OR REPLACE INTO transactions ("
                 "activity_id, timestamp, account_external_id, kind, "
