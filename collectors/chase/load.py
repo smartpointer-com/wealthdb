@@ -1144,9 +1144,14 @@ def _statement_row_count(conn: sqlite3.Connection) -> int:
         (SOURCE_STATEMENT,)).fetchone()[0]
 
 
-def _purge_stale_statement_rows(conn: sqlite3.Connection) -> int:
-    """Drop the statement-derived ledger when the parser that produced it has
-    moved, so the passes below re-derive it rather than add to it.
+def _purge_stale_statement_rows(conn: sqlite3.Connection, stale: bool) -> int:
+    """Drop the statement-derived ledger so the passes below re-derive it
+    rather than add to it.
+
+    `stale` is the caller's verdict on the parser generation, taken as an
+    argument rather than re-derived here so that ONE condition decides when
+    this fires. Asking twice lets an edit to the call site's condition be
+    silently ignored by the helper.
 
     Both statement passes write `source='statement'` and both key their rows
     on a hash that includes the parsed description, so they share one
@@ -1170,8 +1175,7 @@ def _purge_stale_statement_rows(conn: sqlite3.Connection) -> int:
     parsed stamp the new generation over rows the old parser wrote — which
     re-arms the very duplication this exists to stop.
     """
-    if not silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
-                                   STATEMENT_GENERATION):
+    if not stale:
         return 0
     dropped = conn.execute("DELETE FROM transactions WHERE source = ?",
                            (SOURCE_STATEMENT,)).rowcount
@@ -2113,7 +2117,7 @@ def main(argv: list[str]) -> int:
                 log.info("the previous load's post passes did not finish; "
                          "re-running them")
             before = _statement_row_count(conn)
-            _purge_stale_statement_rows(conn)
+            _purge_stale_statement_rows(conn, reparse)
             load_statement_transactions(conn, args.bronze_dir)
             load_card_statements(conn, args.bronze_dir)
             derive_card_balances(conn, args.bronze_dir)

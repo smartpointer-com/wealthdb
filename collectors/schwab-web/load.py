@@ -60,19 +60,24 @@ _current_schema_version = silver.current_schema_version
 
 import pdf_parsers as pp
 import tax_form_parsers as tf
+from numparse import parse_amount
 
 # `parser_generations` (migration 0005) records which generation of the
 # document parsers produced the rows in hand. A stale one implies
 # `--reparse` for the whole invocation — the single lever the run gate, the
 # per-document gates and the per-document deletes all already read — plus a
 # purge of the two snapshot tables, which have no delete path of their own.
+#
+# One fingerprint over both parsers rather than one each: they are edited
+# together as often as not, a false purge costs a re-parse of an archive the
+# run is walking anyway, and a missed one costs a duplicated row.
 DOCUMENT_GENERATION_SCOPE = "documents"
+DOCUMENT_GENERATION = srcfp.parser_fingerprint([pp, tf], ("pypdfium2",))
 
 # Written exclusively by the statement passes, and keyed on parser output
 # (`as_of_date` / `period_end`, `instrument_key`), so a moved capture
 # strands the old row under a key nothing will write again.
 _SNAPSHOT_TABLES = ("historical_position_snapshots", "historical_cash_balances")
-from numparse import parse_amount
 
 log = logging.getLogger("schwab-web.load")
 
@@ -1676,18 +1681,7 @@ def _insert_cash_balance(conn: sqlite3.Connection,
 # Top-level
 # ============================================================
 
-def _document_generation() -> str:
-    """Fingerprint of every parser that materialises rows into silver: the
-    statement / distribution parsers and the tax-form parser, in one value.
-
-    One generation rather than one per pass. They are edited together as
-    often as not, a false purge costs a re-parse of an archive the run is
-    walking anyway, and a missed one costs a duplicated row.
-    """
-    return srcfp.parser_fingerprint([pp, tf], ("pypdfium2",))
-
-
-def _purge_stale_snapshots(conn: sqlite3.Connection) -> int:
+def _purge_stale_snapshots(conn: sqlite3.Connection) -> None:
     """Drop the statement-derived snapshot tables, which have no delete path
     of their own, so the re-walk refills them rather than adding to them.
 
@@ -1700,7 +1694,6 @@ def _purge_stale_snapshots(conn: sqlite3.Connection) -> int:
                   for t in _SNAPSHOT_TABLES)
     log.info("the document parsers have changed since these rows were "
              "written; dropped %d snapshot row(s) for re-derivation", dropped)
-    return dropped
 
 
 def run_load(args: argparse.Namespace) -> int:
@@ -1723,9 +1716,8 @@ def run_load(args: argparse.Namespace) -> int:
         # the re-keyed rows beside the old ones, and then stamp the
         # generation current — which puts that miss permanently out of
         # reach of a later load.
-        generation = _document_generation()
         stale = silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
-                                        generation)
+                                        DOCUMENT_GENERATION)
         reparse = args.reparse or stale
         if stale:
             log.info("the document parsers have changed since silver was "
@@ -1826,7 +1818,8 @@ def run_load(args: argparse.Namespace) -> int:
             conn.rollback()
             log.exception("account-number reconcile failed; rolled back")
 
-        silver.stamp_generation(conn, DOCUMENT_GENERATION_SCOPE, generation)
+        silver.stamp_generation(conn, DOCUMENT_GENERATION_SCOPE,
+                                DOCUMENT_GENERATION)
         conn.commit()
 
         _log_registration_histogram(conn)

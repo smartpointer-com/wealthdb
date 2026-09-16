@@ -208,15 +208,3 @@ def test_a_dump_load_does_not_wipe_another_dumps_reports(tmp_path):
         "SELECT COUNT(*) FROM positions WHERE source = 'report:D1'"
     ).fetchone()[0] == 1
     conn.close()
-
-
-def test_an_unmoved_report_parser_drops_nothing(tmp_path):
-    # The stamp is a record here, not a gate: nothing is purged by scope,
-    # so a matching generation and a moved one behave identically.
-    conn, _ = _fresh_db(tmp_path)
-    _seed_position(conn, "report:D1")
-    silver.stamp_generation(conn, loader.REPORT_GENERATION_SCOPE,
-                            loader.REPORT_GENERATION)
-
-    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
-    conn.close()

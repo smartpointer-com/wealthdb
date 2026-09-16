@@ -756,20 +756,23 @@ def do_load(args: argparse.Namespace) -> int:
         # `documents` table reflects every PDF the loader knows about,
         # including ones from earlier dumps that survived as content-
         # deduped rows. Idempotent — safe even when no new dumps landed.
-        before = _pdf_pass_row_count(conn)
         reparse = silver.stale_generation(conn, PDF_GENERATION_SCOPE,
                                           PDF_GENERATION)
-        _purge_stale_pdf_rows(conn)
+        # Counted only when the answer will be read: an ordinary load has
+        # nothing to compare and should not pay for three COUNT(*).
+        before = _pdf_pass_row_count(conn) if reparse else 0
+        _purge_stale_pdf_rows(conn, reparse)
         load_historical_snapshots(conn, args.bronze_dir)
         load_credit_note_transactions(conn, args.bronze_dir)
-        if reparse and _pdf_pass_row_count(conn) < before:
+        after = _pdf_pass_row_count(conn) if reparse else 0
+        if reparse and after < before:
             # The re-derivation came back short — a PDF that no longer
             # parses, a document gone from the archive. Not stamping is what
             # makes the next load try again rather than commit the shortfall.
             logger.warning(
-                "re-derivation produced fewer rows than silver held; not "
+                "re-derivation produced %d row(s) where silver held %d; not "
                 "stamping the parser generation, so the next load "
-                "re-derives again")
+                "re-derives again", after, before)
         else:
             silver.stamp_generation(conn, PDF_GENERATION_SCOPE,
                                     PDF_GENERATION)
@@ -787,16 +790,18 @@ def _pdf_pass_row_count(conn: sqlite3.Connection) -> int:
                for table, where in _PDF_PASS_TABLES)
 
 
-def _purge_stale_pdf_rows(conn: sqlite3.Connection) -> int:
-    """Drop what the PDF passes wrote when the parser that produced it has
-    moved, so the passes re-derive rather than add to it.
+def _purge_stale_pdf_rows(conn: sqlite3.Connection, stale: bool) -> int:
+    """Drop what the PDF passes wrote so they re-derive rather than add to
+    it. `stale` is the caller's verdict on the parser generation, taken as
+    an argument rather than re-derived here so that one condition decides
+    when this fires.
 
     Whole-pass rather than per-document: a parser edit moves the row's own
     key, so no key-derived scope can name the rows it left behind. Both
     passes re-read the entire document archive on every load, so the
     re-derivation is complete by construction.
     """
-    if not silver.stale_generation(conn, PDF_GENERATION_SCOPE, PDF_GENERATION):
+    if not stale:
         return 0
     dropped = sum(conn.execute(f"DELETE FROM {table}{where}").rowcount
                   for table, where in _PDF_PASS_TABLES)

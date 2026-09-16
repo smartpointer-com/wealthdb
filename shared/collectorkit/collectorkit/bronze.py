@@ -98,7 +98,7 @@ def short_token(value: str, length: int = 16) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length]
 
 
-def atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
+def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write `data` to `path` via a sibling .tmp file + rename, owner-only.
 
     The mode is stamped on the TMP file, before the rename, so the artefact
@@ -110,7 +110,7 @@ def atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(data)
-    tmp.chmod(mode)
+    tmp.chmod(0o600)
     tmp.rename(path)
 
 

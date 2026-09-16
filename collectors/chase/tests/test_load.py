@@ -2514,7 +2514,7 @@ def test_a_moved_parser_drops_the_statement_rows_and_nothing_else():
         "period_end, opening, closing, snapshot_at) "
         "VALUES (?, 1, 2, 0.0, 1.0, 3)", (CARD_EXT,))
 
-    assert load._purge_stale_statement_rows(conn) == 1
+    assert load._purge_stale_statement_rows(conn, True) == 1
     # The export ledgers key on structural ids that carry no parsed text, so
     # they are not the loader's to re-derive and must survive untouched.
     assert [r[0] for r in conn.execute(
@@ -2526,22 +2526,16 @@ def test_a_moved_parser_drops_the_statement_rows_and_nothing_else():
 
 
 def test_an_unmoved_parser_drops_nothing():
+    # Whether the generation moved is the caller's verdict now; what this
+    # pins is that a negative one is an early return, not a no-op delete.
+    # (`stale_generation` itself — including an absent stamp reading as
+    # stale — is pinned in collectorkit's own tests.)
     conn = _conn()
     _seed_statement_row(conn)
-    load.silver.stamp_generation(
-        conn, load.STATEMENT_GENERATION_SCOPE, load.STATEMENT_GENERATION)
 
-    assert load._purge_stale_statement_rows(conn) == 0
+    assert load._purge_stale_statement_rows(conn, False) == 0
     assert conn.execute(
         "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
-
-
-def test_a_db_that_predates_the_stamp_re_derives_once():
-    # No row for the scope at all: the rows in hand came from a parser this
-    # DB never recorded, so they cannot be vouched for and are re-derived.
-    conn = _conn()
-    _seed_statement_row(conn)
-    assert load._purge_stale_statement_rows(conn) == 1
 
 
 def _load_once(tmp_path):

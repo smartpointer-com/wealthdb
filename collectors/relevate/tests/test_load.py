@@ -174,18 +174,18 @@ def test_the_purge_takes_everything_the_pdf_passes_wrote(tmp_path):
     conn, _ = _fresh_db(tmp_path)
     _seed_pdf_pass_rows(conn)
 
-    assert loader._purge_stale_pdf_rows(conn) == 2
+    assert loader._purge_stale_pdf_rows(conn, True) == 2
     assert loader._pdf_pass_row_count(conn) == 0
     conn.close()
 
 
 def test_an_unmoved_report_parser_drops_nothing(tmp_path):
+    # The generation verdict is the caller's now; what this pins is that a
+    # negative one is an early return rather than a no-op delete.
     conn, _ = _fresh_db(tmp_path)
     _seed_pdf_pass_rows(conn)
-    silver.stamp_generation(conn, loader.PDF_GENERATION_SCOPE,
-                            loader.PDF_GENERATION)
 
-    assert loader._purge_stale_pdf_rows(conn) == 0
+    assert loader._purge_stale_pdf_rows(conn, False) == 0
     assert loader._pdf_pass_row_count(conn) == 2
     conn.close()
 

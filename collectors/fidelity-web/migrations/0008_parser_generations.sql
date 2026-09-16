@@ -19,7 +19,7 @@
 -- What prevents that here is finer-grained than a scope stamp, because the
 -- hazard is finer-grained: every row carries the `source_sha256` of the PDF
 -- it came from, so a pass drops that document's rows before re-deriving
--- them (`_drop_document_rows`). A document is also the only unit any pass
+-- them (`_drop_document_holdings`). A document is also the only unit any pass
 -- can re-derive, and the three share one table with nothing on a row saying
 -- which of them wrote it — so the document, not the pass, is the grain that
 -- can actually be addressed. A statement that fails to parse, fails its
