@@ -27,8 +27,8 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 		{"vendoredIncomeCategories", len(vendoredIncomeCategories), 7},
 		{"extensionSpendCategories", len(extensionSpendCategories), 3},
 		{"extensionIncomeCategories", len(extensionIncomeCategories), 9},
-		{"deltaCategories", len(deltaCategories), 11},
-		{"SpendCategories", len(SpendCategories), 110},
+		{"deltaCategories", len(deltaCategories), 16},
+		{"SpendCategories", len(SpendCategories), 115},
 		{"modelSpendCategories", len(modelSpendCategories), 83},
 		{"modelIncomeCategories", len(modelIncomeCategories), 16},
 	} {
@@ -38,14 +38,14 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 	}
 
 	// The membership sets the two families' predicates answer from.
-	// Spending's 89 is the count from before the income side existed
-	// and must not move: every income value added here is fenced out
-	// of it.
-	if got := len(spendDetailedValues); got != 89 {
-		t.Errorf("spending vocabulary = %d values, want 89", got)
+	// Spending's 94 is the 89 it held before cashflow widened the
+	// vocabulary, plus `debt_repayment` and the four crossings; no
+	// income-only value is ever in it.
+	if got := len(spendDetailedValues); got != 94 {
+		t.Errorf("spending vocabulary = %d values, want 94", got)
 	}
-	if got := len(incomeDetailedValues); got != 24 {
-		t.Errorf("income vocabulary = %d values, want 24", got)
+	if got := len(incomeDetailedValues); got != 28 {
+		t.Errorf("income vocabulary = %d values, want 28", got)
 	}
 
 	primaries := map[string]struct{}{}
@@ -141,22 +141,29 @@ func TestEveryCategoryCarriesAFamily(t *testing.T) {
 			t.Errorf("%s = %d rows, want %d", tc.name, n, tc.count)
 		}
 	}
-	// The three deltas both families read, by name: they are what
-	// FamilyBoth exists for, and one of them going one-sided would
-	// take a value out of a vocabulary without anything else saying so.
+	// The deltas both families read, by name: they are what FamilyBoth
+	// exists for, and one of them going one-sided would take a value
+	// out of a vocabulary without anything else saying so. The four
+	// vehicle crossings are shared for `internal_transfer`'s reason —
+	// one movement has a leg on each side, and which leg gold holds is
+	// not a property of the value.
 	both := map[string]bool{}
 	for _, c := range deltaCategories {
 		if c.Family == FamilyBoth {
 			both[c.Detailed] = true
 		}
 	}
-	for _, d := range []string{SpendDetailedInternalTransfer, SpendDetailedGift, SpendDetailedOther} {
+	for _, d := range []string{
+		SpendDetailedInternalTransfer, SpendDetailedGift, SpendDetailedOther,
+		DetailedRetirementTransfer, DetailedEducationTransfer,
+		DetailedHealthTransfer, DetailedTrustTransfer,
+	} {
 		if !both[d] {
 			t.Errorf("%q must be read from either side", d)
 		}
 	}
-	if len(both) != 3 {
-		t.Errorf("shared deltas = %d, want 3", len(both))
+	if len(both) != 7 {
+		t.Errorf("shared deltas = %d, want 7", len(both))
 	}
 }
 
@@ -198,6 +205,11 @@ func TestSpendDeltasAreSelfDetailed(t *testing.T) {
 		IncomeDetailedReimbursement:   {},
 		IncomeDetailedInheritance:     {},
 		IncomeDetailedCashDeposit:     {},
+		SpendDetailedDebtRepayment:    {},
+		DetailedRetirementTransfer:    {},
+		DetailedEducationTransfer:     {},
+		DetailedHealthTransfer:        {},
+		DetailedTrustTransfer:         {},
 	}
 	for _, c := range deltaCategories {
 		if c.Primary != c.Detailed {
@@ -399,13 +411,17 @@ func TestModelIncomeDetailed(t *testing.T) {
 // income family had to be added without breaking: every spending
 // predicate answers exactly what it answered before, for every input.
 // The values that did not exist then all fall into one set — the
-// income vocabulary less the three deltas both families read — and
-// every one of them must read as unknown on the spending side.
+// income vocabulary less the deltas both families read — and every one
+// of them must read as unknown on the spending side.
 func TestSpendPredicatesRefuseTheIncomeVocabulary(t *testing.T) {
 	shared := map[string]bool{
 		SpendDetailedInternalTransfer: true,
 		SpendDetailedGift:             true,
 		SpendDetailedOther:            true,
+		DetailedRetirementTransfer:    true,
+		DetailedEducationTransfer:     true,
+		DetailedHealthTransfer:        true,
+		DetailedTrustTransfer:         true,
 	}
 	n := 0
 	for _, c := range SpendCategories {
@@ -455,8 +471,8 @@ func TestVendoredSpendCategoriesIsACopy(t *testing.T) {
 // the prompt's prohibition sentence reads.
 func TestDeltaSpendCategoriesIsACopy(t *testing.T) {
 	got := DeltaSpendCategories()
-	if len(got) != 6 {
-		t.Fatalf("got %d rows, want 6", len(got))
+	if len(got) != 11 {
+		t.Fatalf("got %d rows, want 11", len(got))
 	}
 	first := deltaCategories[0]
 	got[0] = SpendCategory{"X", "Y", "Z", FamilySpending}
@@ -478,7 +494,7 @@ func TestIncomeAccessorsAreCopiesOfTheirFamily(t *testing.T) {
 	}{
 		{"VendoredIncomeCategories", VendoredIncomeCategories(), 7},
 		{"ModelIncomeCategories", ModelIncomeCategories(), 16},
-		{"DeltaIncomeCategories", DeltaIncomeCategories(), 8},
+		{"DeltaIncomeCategories", DeltaIncomeCategories(), 12},
 	} {
 		if len(tc.got) != tc.want {
 			t.Errorf("%s = %d rows, want %d", tc.name, len(tc.got), tc.want)
@@ -660,6 +676,10 @@ func TestIncomeLabels(t *testing.T) {
 		SpendDetailedInternalTransfer:        "Internal transfer",
 		SpendDetailedGift:                    "Gift",
 		SpendDetailedOther:                   "Other",
+		DetailedRetirementTransfer:           "Retirement transfer",
+		DetailedEducationTransfer:            "Education transfer",
+		DetailedHealthTransfer:               "Health transfer",
+		DetailedTrustTransfer:                "Trust transfer",
 	}
 	for _, c := range SpendCategories {
 		if !c.Family.InFamily(FamilyIncome) {
@@ -681,7 +701,7 @@ func TestIncomeLabels(t *testing.T) {
 	if got := IncomePrimaryLabel("INCOME"); got != "Income" {
 		t.Errorf("IncomePrimaryLabel(INCOME) = %q, want %q", got, "Income")
 	}
-	// The three shared deltas are expected above by the labels they read
-	// BEFORE the income family existed, which is the contract: one row in
-	// the dimension, one label, whichever side reads it.
+	// The shared deltas are expected above by the labels they read on
+	// the spending side, which is the contract: one row in the
+	// dimension, one label, whichever side reads it.
 }

@@ -31,18 +31,21 @@ import "strings"
 // own-account move the matcher already names `internal_transfer`, and
 // LOAN_PAYMENTS is the load-bearing drop — a mortgage payment is an
 // own-account move to a tracked AccountKindMortgage (docs/SPENDING.md
-// §2).
+// §2), and an instalment to a lender the product does not track is the
+// `debt_repayment` delta rather than a merchant category.
 // TODO(cashflow): interest-versus-principal split — docs/SPENDING.md §10.
 //
-// Eleven delta values are ours rather than Plaid's and are
+// Sixteen delta values are ours rather than Plaid's and are
 // primary-level (primary == detailed, so they group as their own
 // bucket): `internal_transfer`, `cash_withdrawal`, `card_spend`,
-// `gift`, `investment`, `other`, `capital_return`, `loan_proceeds`,
-// `reimbursement`, `inheritance` and `cash_deposit`. They keep the
-// repo's lowercase enum idiom, which also marks them at a glance as
-// not-from-Plaid. Three of them — `internal_transfer`, `gift` and
-// `other` — are one row read from either side, which is what
-// FamilyBoth means.
+// `gift`, `investment`, `other`, `debt_repayment`, `capital_return`,
+// `loan_proceeds`, `reimbursement`, `inheritance`, `cash_deposit` and
+// the four vehicle crossings — `retirement_transfer`,
+// `education_transfer`, `health_transfer` and `trust_transfer`. They
+// keep the repo's lowercase enum idiom, which also marks them at a
+// glance as not-from-Plaid. Seven of them — `internal_transfer`,
+// `gift`, `other` and the four crossings — are one row read from
+// either side, which is what FamilyBoth means.
 //
 // EXTENSIONS are the third class, and they differ from the deltas in
 // the one way that matters: a model MAY emit them. A delta is decided
@@ -82,7 +85,8 @@ func (f Family) InFamily(want Family) bool { return f == want || f == FamilyBoth
 // the taxonomy. Gold's `spend_categories` dimension is seeded from this
 // table — migration 0040 seeded the vendored spending rows and the
 // first three deltas, 0045/0046/0047 one delta each, 0056 and 0065 the
-// extensions, 0069 the whole income side and the family column — and a
+// extensions, 0069 the whole income side and the family column, 0076
+// one extension, 0078 the five the cash flow statement needed — and a
 // generator-style test pins the migrated dimension to the table so they
 // cannot drift. A new value is a row here plus a new migration; an
 // applied migration is never edited.
@@ -103,6 +107,11 @@ const (
 	SpendDetailedGift             = "gift"
 	SpendDetailedInvestment       = "investment"
 	SpendDetailedOther            = "other"
+	// SpendDetailedDebtRepayment is the outflow mirror of
+	// `loan_proceeds`: an instalment to a lender the product does not
+	// track. It is what the dropped LOAN_PAYMENTS primary was for,
+	// minus the interest share nothing in the data splits out.
+	SpendDetailedDebtRepayment = "debt_repayment"
 )
 
 // The income delta values, placed by the same tiers. The three shared
@@ -115,6 +124,26 @@ const (
 	IncomeDetailedReimbursement = "reimbursement"
 	IncomeDetailedInheritance   = "inheritance"
 	IncomeDetailedCashDeposit   = "cash_deposit"
+)
+
+// The four vehicle crossings: a move between the household and an
+// earmarked pool whose far side the product does not hold. Read from
+// either side like `internal_transfer`, and for the same reason — one
+// movement, two possible legs — so they carry neutral names rather
+// than a family's.
+//
+// The direction is the ROW's, never the value's: a withdrawal placed
+// `retirement_transfer` is a contribution and a deposit placed the same
+// is a distribution. One value per pool rather than one for all four,
+// because money set aside for retirement and money set aside for a
+// child's education are different decisions read at different stages of
+// a life — and because the alternative would need a rule to carry a
+// second field saying which pool it meant.
+const (
+	DetailedRetirementTransfer = "retirement_transfer"
+	DetailedEducationTransfer  = "education_transfer"
+	DetailedHealthTransfer     = "health_transfer"
+	DetailedTrustTransfer      = "trust_transfer"
 )
 
 // The spending extension values: ours, but shaped like the vendored
@@ -249,15 +278,15 @@ var vendoredIncomeCategories = []SpendCategory{
 	{"INCOME", "INCOME_OTHER_INCOME", "Other miscellaneous income, including alimony, social security, child support, and rental", FamilyIncome},
 }
 
-// deltaCategories are the eleven own values the vendored taxonomy has
-// no room for, both families in one table because three of them are
+// deltaCategories are the sixteen own values the vendored taxonomy has
+// no room for, both families in one table because seven of them are
 // one value read from either side.
 //
-// The spending six: an own-account move, cash whose eventual use is
+// The spending seven: an own-account move, cash whose eventual use is
 // unobservable, a bill for a card whose purchases are not itemised, a
 // cash gift with no merchant behind it, capital deployed to a
-// destination the product does not track, and a line nothing could
-// place.
+// destination the product does not track, a line nothing could place,
+// and an instalment to an untracked lender.
 //
 // The income five that have no spending twin: capital of the holder's
 // own coming back, money borrowed arriving, money back for money
@@ -267,6 +296,14 @@ var vendoredIncomeCategories = []SpendCategory{
 // spending one — each names money that arrived without being earned —
 // while `inheritance` and `cash_deposit` are receipts in their own
 // right and stay in it.
+//
+// The four vehicle crossings leave BOTH bases, like `internal_transfer`
+// and for the same reason: the money is still the holder's, and a
+// crossing is neither a receipt nor a thing bought. `debt_repayment`
+// leaves the spending base for the reason `investment` does — it
+// reduces a liability rather than buying anything — and, like the
+// crossings, it exists so the cashflow statement has an honest home for
+// a movement the two families decline.
 //
 // A delta is primary-level, so a report grouped by primary shows it as
 // its own bucket, and gold reads delta-ness off that equality rather
@@ -284,6 +321,8 @@ var deltaCategories = []SpendCategory{
 		"Capital deployed from a cash account — a securities subscription, a deposit into a wallet — whose destination the product does not track; not consumed, and not an own-account move", FamilySpending},
 	{SpendDetailedOther, SpendDetailedOther,
 		"Money moved that no rule, matcher or model could place — a payment on the outflow side, a receipt on the inflow side", FamilyBoth},
+	{SpendDetailedDebtRepayment, SpendDetailedDebtRepayment,
+		"An instalment paid to a lender the product does not track — a car or student loan serviced, a credit line paid down; principal and interest together, a liability reduced rather than anything consumed. The outflow mirror of `loan_proceeds`; a payment to a lender gold DOES hold is an own-account move and pairs", FamilySpending},
 
 	{IncomeDetailedCapitalReturn, IncomeDetailedCapitalReturn,
 		"Capital of the holder's own coming back from a destination the product does not track — a private fund returning contributed basis, a loan the holder made repaid, a personal asset sold, a deposit refunded; returned rather than earned", FamilyIncome},
@@ -295,6 +334,15 @@ var deltaCategories = []SpendCategory{
 		"An estate's distribution to the holder; kept apart from a gift because it arrives once or twice in a life and is often the largest receipt in it", FamilyIncome},
 	{IncomeDetailedCashDeposit, IncomeDetailedCashDeposit,
 		"Cash paid in at a counter or a machine; where it came from is unobservable", FamilyIncome},
+
+	{DetailedRetirementTransfer, DetailedRetirementTransfer,
+		"A move between the holder and a retirement plan the product does not track, either leg — a contribution wired out, a plan payout arriving. The row's own direction says which; the money is the holder's throughout, in a pool earmarked for a stage of life rather than for spending", FamilyBoth},
+	{DetailedEducationTransfer, DetailedEducationTransfer,
+		"The same crossing for an education plan or savings account the product does not track — money paid in, or drawn out for the costs it was set aside for", FamilyBoth},
+	{DetailedHealthTransfer, DetailedHealthTransfer,
+		"The same crossing for a health savings account the product does not track — a contribution paid in, or a medical cost reimbursed out of it", FamilyBoth},
+	{DetailedTrustTransfer, DetailedTrustTransfer,
+		"The same crossing for a trust that is a separate taxpayer and that the product does not track — a funding transfer out, a distribution arriving. A grantor trust is not this: it is tax-transparent and its accounts are the holder's own", FamilyBoth},
 }
 
 // extensionSpendCategories are detailed values of OURS that sit under
@@ -500,7 +548,7 @@ func categoriesIn(family Family, cats []SpendCategory) []SpendCategory {
 
 // ValidSpendDetailed reports whether s is a recognised spend_detailed
 // value — a vendored Plaid outflow value, a spending extension of
-// ours, or one of the six deltas the spending side reads. A primary on
+// ours, or one of the eleven deltas the spending side reads. A primary on
 // its own is not valid unless it is also a delta, and an income value
 // is not valid here: the two families are separate vocabularies that
 // happen to share a table, so a spending rule or pin naming
@@ -511,7 +559,7 @@ func ValidSpendDetailed(s string) bool {
 }
 
 // ValidIncomeDetailed is the same for income_detailed: the seven
-// vendored INCOME values, the nine extensions, and the eight deltas
+// vendored INCOME values, the nine extensions, and the twelve deltas
 // the income side reads. Income rules and pins validate against it.
 func ValidIncomeDetailed(s string) bool {
 	_, ok := incomeDetailedValues[s]
@@ -531,7 +579,7 @@ func ModelSpendDetailed(s string) bool {
 }
 
 // ModelIncomeDetailed is the income side's gauntlet check, and refuses
-// the eight income deltas for the same reason. `capital_return` is the
+// the twelve income deltas for the same reason. `capital_return` is the
 // one that would hurt most: it is what a private fund's distribution
 // floors to, it is OUT of the income base, and a payer-keyed verdict
 // carrying it would silently remove that payer from every income
