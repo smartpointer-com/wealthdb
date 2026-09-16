@@ -290,7 +290,7 @@ var deltaCategories = []SpendCategory{
 	{IncomeDetailedLoanProceeds, IncomeDetailedLoanProceeds,
 		"Money borrowed arriving from a lender the product does not track — a loan disbursed, a mortgage or a credit line drawn; a liability incurred rather than income", FamilyIncome},
 	{IncomeDetailedReimbursement, IncomeDetailedReimbursement,
-		"Money back for money spent — an insurance payout, an expense claim settled, a merchant refunding by bank transfer; a repayment of an outflow rather than income", FamilyIncome},
+		"Money back for money spent, where the outflow it answers is identifiable — an expense claim settled, a utility credit against a bill, a merchant reversing its own charge; a repayment of an outflow rather than income. An insurance payout is not this and is income (INCOME_INSURANCE_PAYOUT): the premium was already counted as spending, and nothing links a payout to the premiums it answers", FamilyIncome},
 	{IncomeDetailedInheritance, IncomeDetailedInheritance,
 		"An estate's distribution to the holder; kept apart from a gift because it arrives once or twice in a life and is often the largest receipt in it", FamilyIncome},
 	{IncomeDetailedCashDeposit, IncomeDetailedCashDeposit,
