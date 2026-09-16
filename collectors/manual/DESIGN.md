@@ -157,11 +157,13 @@ position-side**, no transaction:
 ## 3. Silver schema
 
 SQLite + JSON1, mirroring the bronze CSV shape one-to-one. Realized in
-[migrations/0001_initial.sql](migrations/0001_initial.sql).
+[migrations/0001_initial.sql](migrations/0001_initial.sql), extended by
+[0003_accounts.sql](migrations/0003_accounts.sql).
 
 | Table | Grain | Notes |
 |---|---|---|
-| `positions` | `id` | `kind`, `display_name`, `currency`, `acquired_at`, `closed_at` (NULL = held), `notes`, `payload`. |
+| `accounts` | `id` | `display_name`, `account_kind`, `tax_wrapper`, `management_style`, `notes`, `payload`. Optional (migration 0003): the sleeve a position is held in. |
+| `positions` | `id` | `account_id` (NULL → the default account), `kind`, `display_name`, `currency`, `acquired_at`, `closed_at` (NULL = held), `notes`, `payload`. |
 | `valuations` | (`position_id`, `as_of_date`) | `value`, `currency`, `notes`, `payload`. The per-date mark series; the row dated at the position's `acquired_at` is the cost basis. |
 | `load_runs` | — (append-only) | Audit log: `load_at`, schema version, `bronze_dir`, row counts, `payload`. No idempotency gate (full rebuild each run). |
 | `schema_meta` | `silver_schema_version` | collectorkit migration bookkeeping. |
@@ -200,7 +202,11 @@ non-numeric or negative `value`; a `value` currency that disagrees with the
 position's; a `valuations` `position_id` absent from `positions.csv`; a
 `converted_from_position_id` that references a position absent from
 `positions.csv`; malformed or non-object JSON `payload`; an unexpected
-(typo'd) column. It **warns** but loads when a valuation predates the
+(typo'd) column. From `accounts.csv`: a duplicate account id; an
+`account_kind`, `tax_wrapper` or `management_style` outside the canonical
+vocabulary (mirrored from `internal/canonical/enums.go` — a collectorkit
+test pins the two copies together); a position naming an `account_id` no
+account declares. It **warns** but loads when a valuation predates the
 position's `acquired_at`.
 
 ## 6. Gold mapping
@@ -209,15 +215,27 @@ The gold adapter is in [`wealthdb/internal/silver/manual/`](../../wealthdb/inter
 registered in `cmd/wealthdb/main.go`. It follows the carta/equityzen
 structure, minus the transaction half.
 
-**Account — ONE gold account** for the whole `manual` source, every position
-under it:
-- `account_kind = other` — directly-held assets with **no institutional
-  container** (not brokerage/cash/custody/crypto); the honest value. (Carta
-  uses `custody` because Carta administers the holdings; here nobody does.)
-- `tax_wrapper = taxable_personal`, `management_style = self_directed`
-  (overridable via `account_overrides`). No `base_currency` — the book spans
-  CHF / EUR / USD. The asset-family split rides on each position's
-  `asset_class`, not the account.
+**Accounts — one per declared sleeve**, and one default account for every
+position that names none. A book with no `accounts.csv` therefore still
+projects exactly one account, which is what this collector did before
+accounts existed.
+
+- The DEFAULT account keeps the taxonomy it always had: `account_kind =
+  other` — directly-held assets with **no institutional container** (not
+  brokerage/cash/custody/crypto); the honest value (Carta uses `custody`
+  because Carta administers the holdings; here nobody does) — plus
+  `tax_wrapper = taxable_personal`, `management_style = self_directed`.
+  Its id is stable, so a deployment that does not want accounts sees no
+  change at all.
+- A DECLARED account carries its own `account_kind`, `tax_wrapper` and
+  `management_style` from `accounts.csv`, which is what lets one book span
+  tax sleeves — holdings under one wrapper beside personally-held ones.
+- Either way, `account_overrides` still has the last word. No
+  `base_currency` — the book spans CHF / EUR / USD. The asset-family split
+  rides on each position's `asset_class`, not the account.
+- An account is emitted at a snapshot date only while it holds something
+  then, so a sleeve that is fully closed stops appearing rather than
+  lingering as an empty shell.
 - There is **no funding sentinel** — the adapter projects no transactions
   (below), so there is nothing to balance.
 

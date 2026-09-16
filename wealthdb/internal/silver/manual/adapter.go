@@ -3,17 +3,24 @@
 // collectors/manual/DESIGN.md for the bronze/silver schema and the gold
 // mapping this implements.
 //
-// Two hand-maintained CSV-backed silver tables back this source — positions, valuations —
-// for illiquid private holdings with no bank or portal: real estate, direct
-// private-company equity, convertible notes, fund LP interests, single-deal
-// SPVs, and other positions (escrow receivables, private loans, …).
+// Three hand-maintained CSV-backed silver tables back this source —
+// accounts, positions, valuations — for illiquid private holdings with no
+// bank or portal: real estate, direct private-company equity, convertible
+// notes, fund LP interests, single-deal SPVs, and other positions (escrow
+// receivables, private loans, …). accounts is optional; a book without one
+// projects the single default account this source had before accounts
+// existed.
 //
 // Gold projection:
 //
-//   - ONE account (account_external_id = "manual") of AccountKind 'other' —
-//     directly-held assets with no institutional container — holding every
-//     position. TaxWrapper 'taxable_personal', ManagementStyle 'self_directed';
-//     all overridable via account_overrides.
+//   - One ACCOUNT per declared sleeve, plus the default account
+//     (account_external_id = "manual") for every position naming none:
+//     AccountKind 'other' — directly-held assets with no institutional
+//     container — TaxWrapper 'taxable_personal', ManagementStyle
+//     'self_directed'. A declared account carries its own three values
+//     instead, which is what lets one book span tax sleeves. All still
+//     overridable via account_overrides. An account is emitted at a date
+//     only while it holds something then.
 //
 //   - One INSTRUMENT + one POSITION per held asset, keyed on the position id.
 //     The bronze `kind` IS the canonical asset_class (identity classmap,

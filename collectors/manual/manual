@@ -2,8 +2,11 @@
 # manual — host wrapper for the wealthdb "manual" collector.
 #
 # Unlike every other collector, `manual` has NO source to fetch from: the
-# bronze CSVs (positions.csv / valuations.csv) are maintained by hand in
-# the data dir (default $XDG_DATA_HOME/wealthdb/manual/). So there is no `login` and
+# bronze CSVs (accounts.csv / positions.csv / valuations.csv) are maintained
+# by hand in the data dir (default $XDG_DATA_HOME/wealthdb/manual/).
+# accounts.csv is optional — omit it and every position lands in one default
+# account, which is what the collector did before accounts existed. So there
+# is no `login` and
 # no `download` — only `load`, which validates those CSVs and rebuilds the
 # SQLite silver from them. Host-venv collector (no Docker).
 #
@@ -43,8 +46,10 @@ case "$cmd" in
         cat >&2 <<'EOF'
 manual: no-op. This collector has no source to fetch from — you are the
 source of truth. Maintain the CSVs by hand in the data dir (default
-$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv — then run
-`./manual load` to validate them and rebuild the silver.
+$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
+optionally accounts.csv to give positions their own tax sleeve and
+management style — then run `./manual load` to validate them and rebuild
+the silver. See README.md for the columns and how to maintain them.
 EOF
         exit 0
         ;;
@@ -55,10 +60,11 @@ EOF
 manual: prune is a no-op — nothing to reclaim. This collector is load-only:
 it has no timestamped bronze run-dirs and writes no debug or diagnostic
 artefacts (no download, no browser, no capture surface). Bronze is just the
-two hand-maintained CSVs (positions.csv, valuations.csv) sitting flat in the
-data dir — they are load's only input and the collector's source of truth, so
-they are never deleted. The silver DB (manual.db) is rebuilt from them by
-`load` (delete it by hand to reclaim its space).
+hand-maintained CSVs (positions.csv, valuations.csv and the optional
+accounts.csv) sitting flat in the data dir — they are load's only input and
+the collector's source of truth, so they are never deleted. The silver DB
+(manual.db) is rebuilt from them by `load` (delete it by hand to reclaim its
+space).
 EOF
         exit 0
         ;;

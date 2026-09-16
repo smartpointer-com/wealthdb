@@ -132,7 +132,8 @@ ACCOUNT_KINDS = {
 }
 TAX_WRAPPERS = {
     "taxable_personal", "taxable_joint", "foundation", "traditional_ira",
-    "roth_ira", "sep_ira", "simple_ira", "coverdell_esa", "hsa", "charitable",
+    "roth_ira", "sep_ira", "simple_ira", "401k", "403b", "457b", "529",
+    "coverdell_esa", "hsa", "charitable",
     "custodial_utma", "custodial_ugma", "trust_grantor", "trust_non_grantor",
     "trust_charitable", "pillar_2", "vested_benefits", "pillar_3a", "other",
 }
