@@ -1,5 +1,7 @@
 package canonical
 
+import "sort"
+
 // The cashflow vocabulary: the three-level hierarchy the statement
 // groups by, and the boundary that says which accounts are the
 // household's at all.
@@ -251,6 +253,33 @@ func DefaultWrapperSide(w TaxWrapper) (WrapperSide, CashflowClass) {
 		return d.side, d.class
 	}
 	return SideHousehold, ""
+}
+
+// WrapperBoundary is one row of the engine's household boundary: a tax
+// wrapper, the side it sits on, and — on the vehicle side alone — the
+// pool it names.
+type WrapperBoundary struct {
+	Wrapper TaxWrapper
+	Side    WrapperSide
+	Class   CashflowClass
+}
+
+// WrapperBoundaries returns the whole boundary, one row per tax
+// wrapper, ordered by wrapper so a stamp is byte-stable across runs.
+//
+// It exists so the enrichment pass can write the boundary into gold
+// without enumerating the enum itself. Stamping every wrapper rather
+// than only the overridden ones is what keeps DefaultWrapperSide the
+// single place a wrapper's side is decided: the alternative would put
+// the defaults in SQL a second time, where a wrapper added for a new
+// jurisdiction would take two edits to reach the statement.
+func WrapperBoundaries() []WrapperBoundary {
+	out := make([]WrapperBoundary, 0, len(defaultWrapperSides))
+	for w, d := range defaultWrapperSides {
+		out = append(out, WrapperBoundary{w, d.side, d.class})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Wrapper < out[j].Wrapper })
+	return out
 }
 
 // The destinations `cashflow.wrappers` may name — where a crossing to

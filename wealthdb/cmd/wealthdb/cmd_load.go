@@ -148,6 +148,10 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdo
 	if err != nil {
 		return err
 	}
+	// The pool inherits neither family's scope, so it reads its own
+	// block. The include half is always nil: every account is pooled
+	// until an entry takes one out.
+	_, cashflowExclude := cfg.CashflowAccountScope()
 	res, err := spending.RunDeterministicPass(ctx, db, spending.Options{
 		Include:           include,
 		Exclude:           exclude,
@@ -161,6 +165,10 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdo
 			Exclude: incomeExclude,
 			Rules:   compiledRules(cfg.IncomeRules()),
 			Pins:    incomePins,
+		},
+		Cashflow: spending.CashflowOptions{
+			Exclude:  cashflowExclude,
+			Wrappers: cfg.CashflowWrappers(),
 		},
 	})
 	if err != nil {
@@ -191,6 +199,33 @@ func printPassSummary(stdout io.Writer, res *spending.Result) {
 			res.UnmatchedTransferOverrides)
 	}
 	printFamilySummary(stdout, "income", "payer", res.Income)
+	printCashflowSummary(stdout, res.Cashflow)
+}
+
+// printCashflowSummary is the boundary's block. It is not a family
+// block: cashflow enriches nothing, so there is no population, no tier
+// breakdown and no backlog to print.
+//
+// The wrapper-coverage line is the one that has to be loud. An unset
+// wrapper reads as household, which keeps the statement complete but
+// puts a retirement or health account INSIDE the cash pool, where its
+// own trades become household investing and its contributions become
+// invisible. The crossing is then absent rather than wrong, so no
+// reconciliation downstream can find it: the load saying so is the
+// only place it surfaces at load time.
+func printCashflowSummary(stdout io.Writer, res spending.CashflowResult) {
+	fmt.Fprintf(stdout, "cashflow: household boundary stamped — %d wrapper(s), %d overridden, %d account(s) out of the pool\n",
+		res.WrapperRows, res.WrapperOverrides, res.ScopeRows)
+	if res.PooledAccountsWithoutWrapper > 0 {
+		fmt.Fprintf(stdout, "cashflow: %d pooled account(s) have no tax wrapper — each reads as the household's, "+
+			"so a vehicle among them contributes no crossing at all\n",
+			res.PooledAccountsWithoutWrapper)
+	}
+	if res.UnresolvedScopeAccounts > 0 {
+		fmt.Fprintf(stdout, "cashflow: %d account scope id(s) matched no account — "+
+			"`cashflow.accounts` keys on the account id, and such an entry scopes nothing\n",
+			res.UnresolvedScopeAccounts)
+	}
 }
 
 // printFamilySummary is the per-family block `load` prints. One shape

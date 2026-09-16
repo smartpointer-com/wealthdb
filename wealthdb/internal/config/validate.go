@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -319,6 +321,30 @@ func (c *Config) Validate() error {
 		in.rules = rules
 		if err := validateCategorization("income.categorization", IncomeContextLevels, in.Categorization, ValidIncomeContext); err != nil {
 			return err
+		}
+	}
+
+	// cashflow: the pool's exclusions get the account-scope treatment
+	// the two families' do, and the wrapper overrides are checked
+	// against the same two vocabularies gold's stamped table restates
+	// as CHECK constraints. Both are rejected here rather than at the
+	// stamp, because a boundary that fails mid-load leaves the table
+	// half-written and the statement silently redrawn.
+	if cf := c.Cashflow; cf != nil {
+		if cf.Accounts != nil {
+			if err := validateAccountScope("cashflow.accounts",
+				&SpendingAccounts{Exclude: cf.Accounts.Exclude}, seenIDs); err != nil {
+				return err
+			}
+		}
+		for _, wrapper := range slices.Sorted(maps.Keys(cf.Wrappers)) {
+			if !canonical.TaxWrapper(wrapper).Valid() {
+				return fmt.Errorf("config: cashflow.wrappers[%q] is not a tax wrapper", wrapper)
+			}
+			if _, _, ok := canonical.ParseWrapperDestination(cf.Wrappers[wrapper]); !ok {
+				return fmt.Errorf("config: cashflow.wrappers[%q]: %q is not a destination (want %s)",
+					wrapper, cf.Wrappers[wrapper], strings.Join(canonical.WrapperDestinations, " | "))
+			}
 		}
 	}
 

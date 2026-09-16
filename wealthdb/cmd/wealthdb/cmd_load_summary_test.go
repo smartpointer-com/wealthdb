@@ -88,3 +88,43 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 		t.Errorf("a quiet income run printed %d extra line(s):\n%s", n, quiet.String())
 	}
 }
+
+// TestLoadPrintsTheCashflowBoundary pins the third block, and the same
+// defect the two family blocks are pinned against: delete the call and
+// nothing else in the suite notices.
+//
+// The wrapper-coverage line is the one worth having. An unset wrapper
+// reads as household, so a retirement or health account among the
+// unset ones sits INSIDE the cash pool — its trades counted as the
+// household's investing, its contributions absent rather than wrong.
+// No reconciliation downstream can see a crossing that never happened.
+func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
+	var out strings.Builder
+	printPassSummary(&out, &spending.Result{Cashflow: spending.CashflowResult{
+		ScopeRows: 2, UnresolvedScopeAccounts: 1,
+		WrapperRows: 23, WrapperOverrides: 1,
+		PooledAccountsWithoutWrapper: 4,
+	}})
+	got := out.String()
+	for _, want := range []string{
+		"cashflow: household boundary stamped — 23 wrapper(s), 1 overridden, 2 account(s) out of the pool",
+		"cashflow: 4 pooled account(s) have no tax wrapper",
+		"`cashflow.accounts` keys on the account id",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the load summary is missing %q:\n%s", want, got)
+		}
+	}
+	// After both families: the boundary is a stamp rather than an
+	// enrichment, and the pass writes it last.
+	if strings.Index(got, "cashflow:") < strings.Index(got, "income:") {
+		t.Errorf("the cashflow block prints before income's:\n%s", got)
+	}
+
+	// A deployment whose wrappers are all set says one line.
+	var quiet strings.Builder
+	printCashflowSummary(&quiet, spending.CashflowResult{WrapperRows: 23})
+	if n := strings.Count(strings.TrimSpace(quiet.String()), "\n"); n != 0 {
+		t.Errorf("a covered deployment printed %d extra line(s):\n%s", n, quiet.String())
+	}
+}

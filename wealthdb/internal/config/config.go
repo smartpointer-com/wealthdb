@@ -134,6 +134,14 @@ type Config struct {
 	// knobs or a transfer-override ledger, because there is one
 	// matcher and both families read its verdicts.
 	Income *IncomeConfig `json:"income,omitempty"`
+	// Cashflow is the cash flow statement's two knobs: which accounts
+	// are in the household's cash pool, and where a crossing to a
+	// given tax wrapper lands. It inherits neither family's scope —
+	// cashflow reads their verdicts rather than their bases, so an
+	// account one of them excludes is not thereby outside the pool.
+	// Absent block ⇒ every account is pooled and the engine's own
+	// household boundary stands. See docs/CASHFLOW.md.
+	Cashflow *CashflowConfig `json:"cashflow,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
 	// user-authored override list. Both fields inside are optional;
@@ -1088,6 +1096,72 @@ type IncomeRule struct {
 	Match string             `json:"match"`
 	Type  string             `json:"type"`
 	Scope *SpendingRuleScope `json:"scope,omitempty"`
+}
+
+// CashflowConfig is the `cashflow` block of wealthdb.cfg: one block,
+// two fields, both optional.
+//
+// It is deliberately small. Cashflow adds no categorisation tier and
+// buys nothing from a model, so there is no endpoint to point at and
+// no backlog to steer; the rules, pins and transfer overrides that
+// decide what a row IS are the two families', and a verdict written
+// there is what cashflow reads.
+type CashflowConfig struct {
+	// Accounts is the cash pool's only gate. An account listed here is
+	// treated exactly like an account the product does not hold: a move
+	// to it is a crossing into `vehicles · Untracked accounts` rather
+	// than an invisible internal step, and the balance memo does not
+	// count it. That equivalence is what keeps an exclusion from
+	// growing the residual forever.
+	//
+	// Exclusion only, and that is a decision rather than half a
+	// feature: every account is pooled by default, so an `include`
+	// could never fence anything and a knob that does nothing is worse
+	// than one that is absent.
+	Accounts *CashflowAccounts `json:"accounts,omitempty"`
+	// Wrappers moves a tax wrapper across the household boundary,
+	// keyed by wrapper and valued by where a crossing to it lands —
+	// one of canonical.WrapperDestinations. An unlisted wrapper keeps
+	// the engine default (canonical.DefaultWrapperSide); an unknown
+	// wrapper or destination fails the load naming the entry.
+	//
+	// Per WRAPPER, not per account. An account a source mis-labelled
+	// is fixed with the existing per-account `tax_wrapper` override, so
+	// that every consumer of the wrapper agrees about whose money it
+	// is. The two knobs also take effect on different triggers: this
+	// block is re-stamped by every enrichment pass, while an account
+	// override reaches the rows a load actually touches, so a reload is
+	// what applies one to history.
+	Wrappers map[string]string `json:"wrappers,omitempty"`
+}
+
+// CashflowAccounts lists the accounts fenced out of the cash pool,
+// keyed by silver_source_id in the shape the two families' scope
+// blocks use.
+type CashflowAccounts struct {
+	Exclude map[string][]string `json:"exclude,omitempty"` // source_id -> [account_external_id...]
+}
+
+// CashflowAccountScope returns the pool's exclusions, in the (include,
+// exclude) shape the pass stamps scopes in. The include map is always
+// nil: the pool's default is every account, so there is nothing for an
+// include to widen.
+func (c *Config) CashflowAccountScope() (include, exclude map[string][]string) {
+	if c.Cashflow == nil || c.Cashflow.Accounts == nil {
+		return nil, nil
+	}
+	return nil, c.Cashflow.Accounts.Exclude
+}
+
+// CashflowWrappers returns the per-wrapper boundary overrides, or nil
+// when none are set. Only call after Validate has vetted them (Load
+// does): the pass composes them over canonical.DefaultWrapperSide and
+// stamps the result, so an unvetted destination would reach gold.
+func (c *Config) CashflowWrappers() map[string]string {
+	if c.Cashflow == nil {
+		return nil
+	}
+	return c.Cashflow.Wrappers
 }
 
 // SpendContextPayer is the income spelling of the first context level,

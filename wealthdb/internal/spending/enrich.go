@@ -93,6 +93,13 @@ type Options struct {
 	// families read its verdicts (docs/INCOME.md, decision 8).
 	Income IncomeOptions
 
+	// Cashflow is the `cashflow` config block. It has no rules and no
+	// pins, because cashflow places no verdicts: it reads the two
+	// families' and folds them into a statement. What the pass does for
+	// it is stamp the household boundary into gold, the same way it
+	// stamps a family's account scope.
+	Cashflow CashflowOptions
+
 	// Now overrides the assignment timestamp. Zero means time.Now();
 	// tests set it so a pass's output is byte-comparable across runs.
 	Now int64
@@ -120,6 +127,11 @@ type Result struct {
 
 	// Income is the same counters for the income family.
 	Income FamilyResult
+
+	// Cashflow is what the boundary stamp did. Not a FamilyResult:
+	// cashflow enriches nothing, so there is no population, no tier and
+	// no backlog to count.
+	Cashflow CashflowResult
 
 	// UnmatchedTransferOverrides is the number of transfer-override
 	// rules that named no leg in the matcher pool. It sits here rather
@@ -197,6 +209,11 @@ type FamilyResult struct {
 // accounts, neither does a transfer into an investment account. A pair
 // found there is one pair, seen from both sides. Each family's own
 // phases, and the ordering they require, are enrichFamily's.
+//
+// The cash flow statement's boundary is stamped here too, after both
+// families. It is not an enrichment — cashflow places no verdicts —
+// but it is configuration that has to reach SQL, and this is the pass
+// that turns configuration into tables.
 func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Result, error) {
 	now := opts.Now
 	if now == 0 {
@@ -252,6 +269,13 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		return nil, err
 	}
 
+	// The cash flow statement's boundary, last: it is a stamp rather
+	// than an enrichment, and it reads the accounts dimension the two
+	// families have already been scoped against.
+	if err := stampCashflowBoundary(ctx, tx, opts.Cashflow, &res.Cashflow); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("spending: commit: %w", err)
 	}
@@ -272,7 +296,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, out *FamilyResult) error {
 	var err error
 	out.ScopeRows, out.UnresolvedScopeAccounts, err =
-		syncAccountScope(ctx, tx, fam, in.include, in.exclude)
+		syncAccountScope(ctx, tx, fam.name, fam.scopeTable, in.include, in.exclude)
 	if err != nil {
 		return err
 	}
@@ -315,39 +339,41 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 
 // ---- phase 1: the account scope ------------------------------------------
 
-// syncAccountScope replaces a family's account-scope table
-// (fam.scopeTable) with what the config declares, on the
-// SetFxPriorities precedent: configuration is stamped
+// syncAccountScope replaces one account-scope table with what the
+// config declares, on the SetFxPriorities precedent: configuration is stamped
 // into gold so the SQL layer can honour it without a runtime injection
 // point, and a whole re-stamp means removing an entry from the config
 // removes it from gold rather than leaving it behind to haunt a later
 // report. It returns the rows stamped and how many of them name an
 // account gold does not hold.
 //
+// It takes the table and the name to prefix its errors with rather
+// than a family, because the cash pool has a scope table and is not a
+// family: it has no vocabulary, no overlay and no tier of its own.
+//
 // The key is an account id, never a nickname or a display name
-// (docs/DESIGN.md §5.1), and the family's `*_scoped_accounts()` macro
-// joins the stamped row to `accounts` on exactly that id: an entry
-// naming anything else matches no account and so widens or fences
-// nothing.
+// (docs/DESIGN.md §5.1), and the macro that reads the stamped row
+// joins it to `accounts` on exactly that id: an entry naming anything
+// else matches no account and so widens or fences nothing.
 // Every entry is stamped whatever it resolves to — the scope table is
 // the config's whole state, and dropping an entry here would hide the
 // typo instead of surfacing it — and the unresolved ones are counted
 // for the caller to report, because a scope knob that silently does
 // nothing is the wrong failure mode for the surface that decides which
 // accounts the model tier may ever see.
-func syncAccountScope(ctx context.Context, tx *sql.Tx, fam family, include, exclude map[string][]string) (stamped, unresolved int, err error) {
-	known, err := loadAccountIDs(ctx, tx, fam.name)
+func syncAccountScope(ctx context.Context, tx *sql.Tx, name, table string, include, exclude map[string][]string) (stamped, unresolved int, err error) {
+	known, err := loadAccountIDs(ctx, tx, name)
 	if err != nil {
 		return 0, 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM `+fam.scopeTable); err != nil {
-		return 0, 0, fmt.Errorf("%s: clear account scope: %w", fam.name, err)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
+		return 0, 0, fmt.Errorf("%s: clear account scope: %w", name, err)
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO `+fam.scopeTable+` (silver_source_id, account_external_id, mode)
+        INSERT INTO `+table+` (silver_source_id, account_external_id, mode)
         VALUES (?, ?, ?)`)
 	if err != nil {
-		return 0, 0, fmt.Errorf("%s: prepare account scope: %w", fam.name, err)
+		return 0, 0, fmt.Errorf("%s: prepare account scope: %w", name, err)
 	}
 	defer stmt.Close()
 
@@ -360,7 +386,7 @@ func syncAccountScope(ctx context.Context, tx *sql.Tx, fam family, include, excl
 			sort.Strings(ids)
 			for _, id := range ids {
 				if _, err := stmt.ExecContext(ctx, source, id, mode.name); err != nil {
-					return 0, 0, fmt.Errorf("%s: stamp account scope %s/%s: %w", fam.name, source, id, err)
+					return 0, 0, fmt.Errorf("%s: stamp account scope %s/%s: %w", name, source, id, err)
 				}
 				stamped++
 				if _, ok := known[source][id]; !ok {

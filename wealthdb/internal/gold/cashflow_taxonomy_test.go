@@ -184,3 +184,77 @@ func TestMigration0078DDLIsRerunnable(t *testing.T) {
 		t.Error("the replayed base charts a debt repayment")
 	}
 }
+
+// TestMigration0079DDLIsRerunnable holds the far-account columns to the
+// replay bar: three IF NOT EXISTS ALTERs, so a second application
+// neither fails nor drops what the first wrote.
+func TestMigration0079DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedCashflowTaxonomyFixture(t, db, ctx)
+	if _, err := db.ExecContext(ctx, `
+        UPDATE spend_txn_enrichment SET far_class = 'mortgage'
+         WHERE transaction_external_id = 'T-LOAN-OUT'`); err != nil {
+		t.Fatalf("seed a far class: %v", err)
+	}
+	rerunMigrationDDL(t, db, ctx, "0079_spend_far_account.sql")
+
+	var class sql.NullString
+	if err := db.QueryRowContext(ctx, `
+        SELECT far_class FROM spend_txn_enrichment
+         WHERE transaction_external_id = 'T-LOAN-OUT'`).Scan(&class); err != nil {
+		t.Fatalf("read far class after replay: %v", err)
+	}
+	if class.String != "mortgage" {
+		t.Errorf("far_class after replay = %q, want mortgage", class.String)
+	}
+}
+
+// TestMigration0080DDLIsRerunnable holds the boundary tables to the same
+// bar: CREATE TABLE IF NOT EXISTS and an OR REPLACE macro, so a replay
+// keeps the stamped rows and the pool still reads them.
+func TestMigration0080DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              tax_wrapper, first_seen_at, last_seen_at) VALUES
+            ('cf-src', 'POOLED', 'cash', 'taxable_personal', 1, 1),
+            ('cf-src', 'PLAN',   'brokerage', 'roth_ira',     1, 1);
+        INSERT INTO cashflow_wrapper_sides (tax_wrapper, side, class) VALUES
+            ('taxable_personal', 'household', NULL),
+            ('roth_ira', 'vehicle', 'retirement');`); err != nil {
+		t.Fatalf("seed the boundary: %v", err)
+	}
+	rerunMigrationDDL(t, db, ctx, "0080_cashflow_boundary.sql")
+
+	var pooled int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cashflow_pool_accounts()`).Scan(&pooled); err != nil {
+		t.Fatalf("read the pool after replay: %v", err)
+	}
+	if pooled != 1 {
+		t.Errorf("pool holds %d accounts after replay, want 1", pooled)
+	}
+}
+
+// TestWrapperSidesRefusesAnIncoherentRow pins the CHECK constraints the
+// stamped table carries: a side the vocabulary does not hold, a class
+// outside the four pools, and the pairing rule — a class exactly on the
+// vehicle side, never beside a household or a giving one.
+func TestWrapperSidesRefusesAnIncoherentRow(t *testing.T) {
+	db, ctx := openMigrated(t)
+	for _, tc := range []struct{ name, values string }{
+		{"unknown side", `('other', 'pool', NULL)`},
+		{"unknown class", `('other', 'vehicle', 'untracked')`},
+		{"a vehicle with no class", `('other', 'vehicle', NULL)`},
+		{"a household with a class", `('other', 'household', 'retirement')`},
+		{"a giving side with a class", `('other', 'giving', 'trusts')`},
+	} {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO cashflow_wrapper_sides (tax_wrapper, side, class) VALUES `+tc.values); err == nil {
+			t.Errorf("%s was accepted: %s", tc.name, tc.values)
+			if _, err := db.ExecContext(ctx, `DELETE FROM cashflow_wrapper_sides`); err != nil {
+				t.Fatalf("clear: %v", err)
+			}
+		}
+	}
+}
