@@ -155,7 +155,7 @@ different years. Netting the payout out would count the outflow and drop the
 inflow. `reimbursement` keeps the cases where the outflow IS identifiable: a
 utility credit against a bill, a merchant reversing its own charge.
 
-**Eight deltas**, ours, primary-level and lowercase, decided from
+**Twelve deltas**, ours, primary-level and lowercase, decided from
 structure a payer's name cannot reveal:
 
 | value | meaning | in the base? |
@@ -164,13 +164,27 @@ structure a payer's name cannot reveal:
 | `capital_return` | the holder's own capital coming back | no |
 | `loan_proceeds` | money borrowed arriving; a liability incurred | no |
 | `reimbursement` | money back for money spent | no |
+| `retirement_transfer` | a payout from, or a contribution to, an untracked retirement plan | no |
+| `education_transfer` | the same for an education plan or savings account | no |
+| `health_transfer` | the same for a health savings account | no |
+| `trust_transfer` | the same for a trust that is a separate taxpayer | no |
 | `gift` | a cash gift or family support received | yes |
 | `inheritance` | an estate's distribution to the holder | yes |
 | `cash_deposit` | cash paid in at a counter or a machine | yes |
 | `other` | a receipt no tier could place, that a tier nonetheless placed there | yes, labelled `Other` |
 
-Three of them — `internal_transfer`, `gift` and `other` — are **one row**
-read from either side, which is what `family = 'both'` means.
+Seven of them — `internal_transfer`, `gift`, `other` and the four
+crossings — are **one row** read from either side, which is what
+`family = 'both'` means.
+
+The four crossings arrived with the cash flow statement
+([CASHFLOW.md](CASHFLOW.md), migration 0078) and leave the base for
+`internal_transfer`'s reason: the money is the holder's throughout, in
+a pool earmarked for a purpose rather than earned. The DIRECTION is the
+row's own, so a deposit placed `retirement_transfer` is a plan payout
+and a withdrawal placed the same is a contribution. None of them is
+needed where the far account IS tracked — the matcher's verdict says
+everything, and it outranks a rule.
 
 `other` is **not** `(uncategorized)`, and the difference is the backlog.
 `other` is a stored value with a label of its own: a tier looked at the

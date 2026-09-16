@@ -101,7 +101,7 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 		return nil, nil, err
 	}
 	raw := matchTransferPairs(legs, windowDays, tolerancePct, overrides)
-	matched := matchedLegSet(raw)
+	matched := matchedPartners(raw)
 
 	byKey := make(map[txKey]Leg, len(legs))
 	for _, l := range legs {
@@ -123,7 +123,7 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 	unmatched := make([]Leg, 0, len(legs)-len(matched))
 	for _, l := range legs {
 		key := txKey{l.Group, l.ID}
-		if matched[key] {
+		if _, ok := matched[key]; ok {
 			continue
 		}
 		unmatched = append(unmatched, byKey[key])

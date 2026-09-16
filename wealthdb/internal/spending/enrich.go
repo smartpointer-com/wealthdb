@@ -650,6 +650,19 @@ type enrichmentRow struct {
 	// disagreement is a number rather than a silent overwrite. Empty
 	// where the issuer published nothing this build translates.
 	providerDetailed string
+	// farSource and farAccount identify the account on the OTHER side
+	// of an own-account move: the matcher's partner leg, and the one
+	// thing the matcher has always known and never written down. They
+	// are a record of what was SEEN rather than a verdict, so they stay
+	// on a row a later tier re-categorises — nothing reads them unless
+	// the surviving verdict says the money stayed the holder's.
+	farSource, farAccount string
+	// farClass is the cashflow class a rule stands for where it placed
+	// an own-account move without pairing anything — the mortgage
+	// rule's alone today. It describes the verdict the rule placed
+	// rather than the row, exactly as merchantLabel does, so a tier
+	// above the rule clears it with the category it replaces.
+	farClass string
 }
 
 // assignCategories applies the deterministic tiers to every reachable
@@ -695,7 +708,7 @@ func assignCategories(
 	fam family,
 	population []candidate,
 	pool map[txKey]candidate,
-	matched map[txKey]bool,
+	matched map[txKey]gold.TransferLeg,
 	kinds map[string]string,
 	rules []Rule,
 	pinned map[txKey]pinnedRow,
@@ -736,10 +749,13 @@ func assignCategories(
 			} else if drift {
 				counts.UnmappedProviderCategories++
 			}
-			if detailed, label, ok := fam.builtinRule(r.kind, row.signature, r.counterparty, r.description, r.providerCategory); ok {
+			if detailed, label, farClass, ok := fam.builtinRule(r.kind, row.signature, r.counterparty, r.description, r.providerCategory); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
 				if fam.labelCol != "" {
 					row.merchantLabel = label
+				}
+				if len(fam.farCols) > 0 {
+					row.farClass = farClass
 				}
 			} else if detailed, ok := ConfigRuleCategory(rules, RuleRow{
 				Counterparty: r.counterparty, Description: r.description,
@@ -750,21 +766,29 @@ func assignCategories(
 				row.detailed, row.provenance = detailed, ProvenanceRule
 			}
 		}
-		// A tier above the rule clears the label with the verdict it
-		// replaces. The label says which issuer a card bill was paid
-		// to, which is only true of a row this pass filed as a card
-		// bill: on a bill whose card the matcher paired, or on a row
-		// the holder pinned as something else, it would name an issuer
-		// on a line that is no longer a card bill at all.
-		if matched[r.key] {
+		// A tier above the rule clears the label and the far class with
+		// the verdict it replaces. The label says which issuer a card
+		// bill was paid to, which is only true of a row this pass filed
+		// as a card bill: on a bill whose card the matcher paired, or
+		// on a row the holder pinned as something else, it would name
+		// an issuer on a line that is no longer a card bill at all. The
+		// far class is the same shape of claim — a rule's word for
+		// where an unpaired move went — and a row the matcher DID pair
+		// has the far account itself, which is better than any stand-in.
+		if partner, ok := matched[r.key]; ok {
 			row.detailed = internalTransfer
 			row.provenance = ProvenanceMatcher
 			row.merchantLabel = ""
+			row.farClass = ""
+			if len(fam.farCols) > 0 {
+				row.farSource, row.farAccount = partner.Group, partner.Owner
+			}
 		}
 		if p, ok := pinned[r.key]; ok {
 			row.detailed = p.detailed
 			row.provenance = ProvenanceManual
 			row.merchantLabel = ""
+			row.farClass = ""
 		}
 		out = append(out, row)
 
@@ -826,6 +850,7 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 	if fam.labelCol != "" {
 		cols = append(cols, fam.labelCol)
 	}
+	cols = append(cols, fam.farCols...)
 	cols = append(cols, fam.providerCol, "assigned_at")
 
 	head := "INSERT INTO " + fam.overlayTable + " (" + strings.Join(cols, ", ") + ") VALUES "
@@ -839,6 +864,10 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 				SignatureVersion, nullableString(r.detailed), r.provenance)
 			if fam.labelCol != "" {
 				args = append(args, nullableString(r.merchantLabel))
+			}
+			if len(fam.farCols) > 0 {
+				args = append(args, nullableString(r.farSource),
+					nullableString(r.farAccount), nullableString(r.farClass))
 			}
 			return append(args, nullableString(r.providerDetailed), now)
 		})

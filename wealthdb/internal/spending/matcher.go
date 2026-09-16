@@ -72,16 +72,25 @@ type txKey struct {
 }
 
 // matchInternalTransfers pairs the legs of the matcher pool and
-// returns the set of transactions that are therefore own-account
-// moves. BOTH legs of a pair are marked: the outgoing leg because it
-// is not spending, the incoming leg because a later report that widens
-// the population must not suddenly start counting it as income.
+// returns, for every transaction that is therefore an own-account
+// move, the leg on the OTHER side of it. BOTH legs of a pair are
+// marked: the outgoing leg because it is not spending, the incoming
+// leg because a later report that widens the population must not
+// suddenly start counting it as income.
+//
+// The partner is what the cash flow statement needs and neither family
+// does. An own-account move tells the two families all they have to
+// know — it is not spending and not income whichever account it went
+// to — but a statement drawn around the household's cash pool has to
+// ask whether the money stayed inside that pool, and only the far
+// account answers. The pairs have always carried both legs; keeping
+// the partner rather than flattening to a set is the whole change.
 //
 // The result is deterministic — MatchTransferLegs sorts its input and
 // resolves ties by amount gap then day distance — so two runs over the
-// same gold produce the same set.
-func matchInternalTransfers(legs []gold.TransferLeg, windowDays int, tolerancePct float64, overrides gold.TransferOverrides) map[txKey]bool {
-	return matchedLegSet(matchTransferPairs(legs, windowDays, tolerancePct, overrides))
+// same gold produce the same map.
+func matchInternalTransfers(legs []gold.TransferLeg, windowDays int, tolerancePct float64, overrides gold.TransferOverrides) map[txKey]gold.TransferLeg {
+	return matchedPartners(matchTransferPairs(legs, windowDays, tolerancePct, overrides))
 }
 
 // matchTransferPairs is the call into the shared core, in one place so
@@ -98,15 +107,22 @@ func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct fl
 	})
 }
 
-// matchedLegSet flattens pairs to the set of transactions they cover.
-func matchedLegSet(pairs []gold.TransferMatchPair) map[txKey]bool {
+// matchedPartners flattens pairs to a map from each matched leg to the
+// leg it was paired with. Membership answers "was this an own-account
+// move?" exactly as the flattened set did; the value answers "to
+// where?".
+//
+// A leg reaches this map once. MatchTransferLegs pairs each leg with
+// at most one partner, so there is no case where a second pair would
+// overwrite a first and make the answer depend on iteration order.
+func matchedPartners(pairs []gold.TransferMatchPair) map[txKey]gold.TransferLeg {
 	if len(pairs) == 0 {
 		return nil
 	}
-	out := make(map[txKey]bool, len(pairs)*2)
+	out := make(map[txKey]gold.TransferLeg, len(pairs)*2)
 	for _, p := range pairs {
-		out[txKey{p.Debit.Group, p.Debit.ID}] = true
-		out[txKey{p.Credit.Group, p.Credit.ID}] = true
+		out[txKey{p.Debit.Group, p.Debit.ID}] = p.Credit
+		out[txKey{p.Credit.Group, p.Credit.ID}] = p.Debit
 	}
 	return out
 }

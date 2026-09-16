@@ -1,6 +1,9 @@
 package spending
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import (
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+)
 
 // The two families this package enriches, and everything that differs
 // between them.
@@ -61,15 +64,17 @@ type family struct {
 
 	// builtinRule is the engine's own rule tier: structural facts
 	// about the product's account graph that no provider can know. It
-	// returns the value it places and, where the family has one, a
-	// label describing the counterparty of the verdict it placed.
+	// returns the value it places, a label describing the counterparty
+	// of that verdict where the family has one, and the cashflow class
+	// the rule stands for where it placed an own-account move without
+	// pairing anything.
 	//
 	// It takes the transaction KIND because one family's rules are
 	// gated on it: income's single built-in reads a narrative, and on
 	// this side a narrative may only speak for the one kind the floor
 	// does not (rules.go, IncomeRuleCategory). Spending's are ungated —
 	// an outflow's kind says how money left, never what it bought.
-	builtinRule func(kind, signature, counterparty, description, providerCategory string) (detailed, label string, ok bool)
+	builtinRule func(kind, signature, counterparty, description, providerCategory string) (detailed, label, farClass string, ok bool)
 
 	// providerCategory translates the source's own filing of a row,
 	// and providerClaims says whether that translation is a verdict or
@@ -78,6 +83,19 @@ type family struct {
 	// merchant category, and only the account kind says which.
 	providerCategory func(silverKind, accountKind, providerCategory string) (detailed string, ok, drift bool)
 	providerClaims   func(silverKind, accountKind, detailed string) bool
+
+	// farCols are the columns recording the OTHER end of an own-account
+	// move — the partner leg's account, and the class a rule stands for
+	// where it placed the move without pairing anything. Empty on the
+	// family that does not write them, exactly as an empty labelCol is
+	// a column that family does not have.
+	//
+	// Spending's alone, for the same reason emitOutsidePopulation is:
+	// it writes a row for every matched leg whether or not the leg is
+	// in its own population, so a card bill's own leg — a pair's far
+	// side as often as not — has a row here to carry the fact and none
+	// on the income overlay.
+	farCols []string
 
 	// emitOutsidePopulation says whether a matched leg the population
 	// does not hold still earns an overlay row.
@@ -114,6 +132,9 @@ var spendingFamily = family{
 	builtinRule:       spendingBuiltinRule,
 	providerCategory:  ProviderCategory,
 	providerClaims:    ProviderCategoryClaims,
+	farCols: []string{
+		"far_silver_source_id", "far_account_external_id", "far_class",
+	},
 
 	emitOutsidePopulation: true,
 }
@@ -126,19 +147,21 @@ type familyInput struct {
 	rules            []Rule
 	pins             []Pin
 	kinds            map[string]string
-	matched          map[txKey]bool
+	matched          map[txKey]gold.TransferLeg
 	pool             map[txKey]candidate
 	now              int64
 }
 
 // incomeFamily is the inflow side: what was received, and from whom.
 //
-// Three differences from its twin, each a decision rather than an
+// Four differences from its twin, each a decision rather than an
 // omission. There is no label column, because the issuer label is the
 // card rule's alone. There is one built-in rule, because almost every
 // structural inflow fact is the matcher's already (IncomeRuleCategory).
-// And a matched leg outside the population earns no row, because this
-// family's half of every pair is already in its population.
+// A matched leg outside the population earns no row, because this
+// family's half of every pair is already in its population — and for
+// that same reason there are no far-account columns: the overlay that
+// holds every matched leg is the one that can record where each went.
 var incomeFamily = family{
 	name:              "income",
 	populationMacro:   "income_enrichment_population",
@@ -152,18 +175,27 @@ var incomeFamily = family{
 	storeSignatureCol: "payer_signature",
 	storeNameCol:      "payer_name",
 	storeDetailedCol:  "income_detailed",
-	builtinRule:       IncomeRuleCategory,
+	builtinRule:       incomeBuiltinRule,
 	providerCategory:  ProviderIncomeCategory,
 	providerClaims:    ProviderIncomeCategoryClaims,
 
 	emitOutsidePopulation: false,
 }
 
-// spendingBuiltinRule adapts RuleCategory to the kind-taking hook. The
-// outflow rules read narratives and account graphs, never the kind: a
-// card bill is a card bill whether the adapter kinded it `card_payment`
-// or `withdrawal`, and gating them would make the rule tier depend on
-// how well each source kinds its rows.
-func spendingBuiltinRule(_, signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
-	return RuleCategory(signature, counterparty, description, providerCategory)
+// spendingBuiltinRule adapts the outflow rule table to the kind-taking
+// hook. The outflow rules read narratives and account graphs, never the
+// kind: a card bill is a card bill whether the adapter kinded it
+// `card_payment` or `withdrawal`, and gating them would make the rule
+// tier depend on how well each source kinds its rows.
+func spendingBuiltinRule(_, signature, counterparty, description, providerCategory string) (detailed, label, farClass string, ok bool) {
+	return rulePlacement(builtinRules, signature, counterparty, description, providerCategory)
+}
+
+// incomeBuiltinRule adapts IncomeRuleCategory to the same hook. It
+// places no label and no far class: the label column is the card
+// rule's alone, and the one inflow built-in names cash paid in over a
+// counter, which is not an own-account move at all.
+func incomeBuiltinRule(kind, signature, counterparty, description, providerCategory string) (detailed, label, farClass string, ok bool) {
+	detailed, label, ok = IncomeRuleCategory(kind, signature, counterparty, description, providerCategory)
+	return detailed, label, "", ok
 }

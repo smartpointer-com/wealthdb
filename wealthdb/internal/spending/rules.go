@@ -62,6 +62,16 @@ type spendRule struct {
 	// two patterns genuinely overlap on the same row and rule order
 	// alone would give it to the wrong one.
 	refusedBy *spendRule
+	// farClass is the cashflow class this rule stands for when it
+	// places an own-account move it did not pair. A rule that matches a
+	// NARRATIVE fires whether or not the far account is tracked, so the
+	// pairing the matcher would have made is sometimes unavailable —
+	// and without a word from the rule the move would read as a
+	// crossing to an untracked account rather than as what the rule
+	// already knew it was. Empty on every rule but the mortgage one,
+	// and read only where the verdict survives to the overlay: a tier
+	// above clears it with the category it replaces.
+	farClass string
 }
 
 // cardIssuer is one row of the card-payment rule's issuer table
@@ -289,13 +299,24 @@ var builtinRules = []spendRule{
 		// Counting it as spend would double-count against the liability
 		// the payment reduces.
 		//
+		// It is a NARRATIVE rule, not an account one: it fires on the
+		// words a mortgage payment is described with, whether or not
+		// the lender is tracked. Where the lender is not, no pair
+		// exists and nothing else on the row says where the money
+		// went, so the rule records the class it stands for. The
+		// cashflow statement reads that as debt service — the same
+		// place a payment the matcher DID pair with a mortgage account
+		// lands — rather than as a crossing to an account nobody
+		// collects.
+		//
 		// TODO(cashflow): part of that payment — the interest — really
 		// IS consumed, and only the principal share is the own-account
 		// move. The transaction does not carry the split, and deriving
 		// it needs an amortisation view the product has no place for
-		// yet. When the cashflow feature lands, revisit whether the
-		// interest leg should surface as spending after all.
+		// yet; the estimator it would need — the mortgage balance's
+		// observed change between snapshots — is a cashflow follow-up.
 		detailed: canonical.SpendDetailedInternalTransfer,
+		farClass: string(canonical.ClassMortgage),
 		tokens:   []string{"MORTGAGE", "HYPOTHEK", "HYPOTHEKARZINS"},
 		phrases:  []string{"HOME LOAN", "MORTGAGE PAYMENT"},
 	},
@@ -380,11 +401,25 @@ var builtinRules = []spendRule{
 // Reading it to decline a row is the opposite move: it lets the tier
 // below, which owns that filing, have the row.
 func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
-	r, fields, ok := matchRuleIn(builtinRules, signature, counterparty, description, providerCategory)
+	detailed, label, _, ok = rulePlacement(builtinRules, signature, counterparty, description, providerCategory)
+	return detailed, label, ok
+}
+
+// rulePlacement is everything a built-in rule places: the category, the
+// issuer label a card bill carries, and the cashflow class a rule
+// stands for where it places an own-account move it did not pair.
+//
+// One function so the three are read from ONE match. RuleCategory asks
+// the narrow question every caller but the enrichment pass asks, and
+// delegates here rather than calling the matcher a second time: two
+// entry points running the rule table separately is exactly how a
+// label and a class would come to disagree about which rule fired.
+func rulePlacement(rules []spendRule, signature, counterparty, description, providerCategory string) (detailed, label, farClass string, ok bool) {
+	r, fields, ok := matchRuleIn(rules, signature, counterparty, description, providerCategory)
 	if !ok {
-		return "", "", false
+		return "", "", "", false
 	}
-	return r.detailed, r.label(fields), true
+	return r.detailed, r.label(fields), r.farClass, true
 }
 
 // IncomeRuleCategory is the income family's built-in rule tier, and it

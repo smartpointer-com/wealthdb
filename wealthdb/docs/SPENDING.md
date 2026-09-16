@@ -96,7 +96,8 @@ a reviewable diff instead of silently re-labelling history. Gold's
 `spend_categories` dimension is seeded from this table — migration
 0040 seeded the vendored rows and the first three deltas,
 0045 / 0046 / 0047 one delta each, 0056 and 0065 the EXTENSIONS, 0069
-the whole income side and the `family` column — and a
+the whole income side and the `family` column, 0078 the five the
+cashflow statement needed — and a
 generator-style test pins the migrated dimension to the table so they
 cannot drift. A new value
 is a row here plus a new migration; an applied migration is never
@@ -114,17 +115,20 @@ cash account is classified `internal_transfer` by a built-in rule,
 because the mortgage is itself a tracked account
 (`AccountKindMortgage`): the payment moves value between two accounts
 the product already holds, which makes it an own-account move by the
-product's own definition rather than spend.
+product's own definition rather than spend. An instalment to a lender
+the product does NOT hold is the `debt_repayment` delta below, which is
+what the dropped primary was for minus the interest share nothing in
+the data splits out.
 
-### The six spending deltas
+### The eleven deltas the spending side reads
 
-Six values the SPENDING side reads are the product's own rather than
-Plaid's — eleven rows across both families, of which these six are
-spending's and three are shared. They are primary-level (primary ==
-detailed, so each groups as its own bucket) and keep the repo's
-lowercase enum idiom, which also marks them at a glance as
-not-from-Plaid. The three marked *both* mean the same thing read from
-either direction and are ONE row in the dimension:
+Eleven values the SPENDING side reads are the product's own rather than
+Plaid's — sixteen rows across both families, of which these eleven
+reach this one. They are primary-level (primary == detailed, so each
+groups as its own bucket) and keep the repo's lowercase enum idiom,
+which also marks them at a glance as not-from-Plaid. The ones marked
+*both* mean the same thing read from either direction and are ONE row
+in the dimension:
 
 | value | meaning |
 |---|---|
@@ -134,6 +138,19 @@ either direction and are ONE row in the dimension:
 | `gift` | *(both)* a cash gift or family support, given or received — with no merchant, employer or issuer behind it; not a gift item bought in a shop, and not a donation to a non-profit |
 | `investment` | capital deployed from a cash account — a securities subscription, a deposit into a wallet — to a destination the product does not track; not consumed, and not an own-account move |
 | `other` | *(both)* money moved that no rule, matcher or model could place — a payment on the outflow side, a receipt on the inflow side |
+| `debt_repayment` | an instalment to a lender the product does not track — a car or student loan serviced, a credit line paid down; a liability reduced rather than anything consumed |
+| `retirement_transfer` | *(both)* a crossing to or from a retirement plan the product does not track; the row's own direction says which |
+| `education_transfer` | *(both)* the same for an education plan or savings account |
+| `health_transfer` | *(both)* the same for a health savings account |
+| `trust_transfer` | *(both)* the same for a trust that is a separate taxpayer |
+
+The last five arrived with the cash flow statement
+([CASHFLOW.md](CASHFLOW.md)) and leave `spending_lines_base` — the
+crossings because the money is still the holder's, `debt_repayment`
+because it reduces a liability rather than buying anything, which is
+`investment`'s argument read against a debt. Nothing on the spending
+side reads them: they exist so the movement has an honest home rather
+than reading as uncategorised spend.
 
 `cash_withdrawal` is its own primary rather than a guess, so a report
 can show how much of a period's spending is simply unattributable
@@ -569,7 +586,7 @@ accounts rather than from anyone's preference.
 |---|---|---|
 | `card_payment` | `card_spend` | A card bill with no counter-leg in gold is a bill for a card wealthdb does not itemise — a card no collector exists for, or the deep era, where a card payment is dated before the card's own ledger begins — and the bill is the only trace of that spending. So it is kept in the base as generic card spend, not deleted as an own-account move; a bill whose card *is* in gold never reaches this verdict, because the matcher outranks it. Matched on card-payment phrases and an issuer table, never on a store card that names its merchant, and refused outright on a row the `atm` rule matches — cash taken at a machine carries the same masked card number. A match on a named issuer's descriptor also LABELS the bill with that issuer, which is what the line carries as its merchant (§7). |
 | `atm` | `cash_withdrawal` | The money is gone, but *what it bought* has no record anywhere. |
-| `mortgage` | `internal_transfer` | The mortgage is a tracked account; counting the payment as spend would double-count against the liability it reduces. |
+| `mortgage` | `internal_transfer` | The mortgage is a tracked account; counting the payment as spend would double-count against the liability it reduces. It matches a NARRATIVE, so it fires whether or not the lender is tracked — and where no pair exists, nothing else on the row says where the money went, so it records `mortgage` as the cashflow class it stands for (`far_class`, migration 0079). That column is not the card rule's `merchant_label`: a class name there would print as the merchant of every card bill. |
 | `investment_fee` | `investment_fees` | A custodian's per-security pass-through, such as an ADR depositary charge, booked once per security per period. The narrative names the security and never a payee, so nothing else can reach it. It is a cost of INVESTING rather than of banking, which is what the extension exists to say. |
 | `wire_fee` | `other_bank_fees` | Sits on the same statements as the pass-through above and is deliberately not one: paying to move money is a banking service, and filing it as an investment fee would overstate what holding the assets costs. Not the wire itself, which no rule places — that is the matcher's to pair or nobody's to guess. |
 | `withholding` | `withholding_tax` | Tax deducted at source on foreign dividend income. The gross dividend is booked as income, so leaving the withholding out would report the gross as though it were net. |
@@ -1729,7 +1746,7 @@ stay legible, like the returns percentages.
 
 | table | keyed by | lifecycle |
 |---|---|---|
-| `spend_txn_enrichment` | (silver_source_id, transaction_external_id) | derived; rewritten whole by every pass, pinned rows included; `reset <source>` clears THAT source's rows only, and the surviving leg of a cross-source matcher pair keeps its `internal_transfer` verdict until the next `load -a` re-asserts the pass — which is what `reset` prints; a fresh-file `reload -a` does not carry it (the rebuild re-projects the transactions it is derived from, and the pins are re-stamped from the ledger) |
+| `spend_txn_enrichment` | (silver_source_id, transaction_external_id) | derived; rewritten whole by every pass, pinned rows included; carries the far-account columns of migration 0079 — the partner leg's account for a matched row, and the class a rule stands for where it placed an own-account move it did not pair — which nothing on this side reads; `reset <source>` clears THAT source's rows only, and the surviving leg of a cross-source matcher pair keeps its `internal_transfer` verdict until the next `load -a` re-asserts the pass — which is what `reset` prints; a fresh-file `reload -a` does not carry it (the rebuild re-projects the transactions it is derived from, and the pins are re-stamped from the ledger) |
 | `spend_merchant_categories` | merchant_signature | GLOBAL and paid for; survives `reset`, and `reload -a` carries it across the fresh-file swap because nothing could regenerate it; a row leaves only by `categorizations --forget` |
 | `spend_account_scope` | (silver_source_id, account_external_id) | configuration stamped into gold; re-stamped whole every pass |
 
