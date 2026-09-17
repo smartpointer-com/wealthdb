@@ -190,6 +190,12 @@ type FamilyResult struct {
 	// spending side, payers on the income side — carried forward onto
 	// a new signature by a SignatureVersion bump.
 	RekeyedVerdicts int
+	// StatedFarAccounts counts the rows whose far account came from the
+	// SOURCE naming it rather than from a pairing. It is the spending
+	// family's alone — the income overlay has no far columns — and it is
+	// the observable that says how much of "where the money went" the
+	// product now knows about movements it collects only one side of.
+	StatedFarAccounts int
 	// SplitVerdicts counts older-version verdicts a SignatureVersion
 	// bump left behind: the old signature's rows now land on several
 	// new signatures, so the verdict was about a shape several
@@ -253,10 +259,17 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	res.UnmatchedTransferOverrides = len(unresolvedOverrides)
 	matched := matchInternalTransfers(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides)
 
+	// Read once and shared, for the matcher's reason: where a movement
+	// went is one fact, and two families reading it apart could disagree.
+	stated, err := loadStatedCounterAccounts(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := enrichFamily(ctx, tx, spendingFamily, familyInput{
 		include: opts.Include, exclude: opts.Exclude,
 		rules: opts.Rules, pins: opts.Pins,
-		kinds: kinds, matched: matched, pool: poolNarratives, now: now,
+		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
 	}, &res.FamilyResult); err != nil {
 		return nil, err
 	}
@@ -264,7 +277,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	if err := enrichFamily(ctx, tx, incomeFamily, familyInput{
 		include: opts.Income.Include, exclude: opts.Income.Exclude,
 		rules: opts.Income.Rules, pins: opts.Income.Pins,
-		kinds: kinds, matched: matched, pool: poolNarratives, now: now,
+		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
 	}, &res.Income); err != nil {
 		return nil, err
 	}
@@ -275,6 +288,10 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	if err := stampCashflowBoundary(ctx, tx, opts.Cashflow, &res.Cashflow); err != nil {
 		return nil, err
 	}
+	// Carried across from the spending family, which is where the far
+	// columns live: the boundary block is where a reader looks to learn
+	// whether the pass knows enough to resolve an own-account move.
+	res.Cashflow.StatedFarAccounts = res.FamilyResult.StatedFarAccounts
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("spending: commit: %w", err)
@@ -326,7 +343,7 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 		return err
 	}
 
-	rows := assignCategories(fam, population, in.pool, in.matched, in.kinds, in.rules, pinned, out)
+	rows := assignCategories(fam, population, in.pool, in.matched, in.stated, in.kinds, in.rules, pinned, out)
 	if err := insertEnrichment(ctx, tx, fam, rows, in.now); err != nil {
 		return err
 	}
@@ -462,6 +479,54 @@ type candidate struct {
 // project the same columns by construction — the income one adds
 // `instrument_external_id`, which the pass has no use for and does not
 // select — so one query shape serves both.
+// loadStatedCounterAccounts reads, per transaction, the OWN account the
+// source itself named as the other side of the movement.
+//
+// It is the far account arriving by a second road. The matcher's road is a
+// pairing: two legs the product collected, joined by amount and day. This one
+// is the source's own statement of where the money went — a counter account
+// in the row's payload, put there by the UBS adapter from whichever of its
+// feeds stated it. Where the product does not collect the far side at all,
+// the pairing road has nothing to walk on and this one still does.
+//
+// The join is what makes it safe. Only a counter account gold ALREADY HOLDS,
+// under the same silver source, resolves; every other stated account — the
+// overwhelming majority, third parties being what most payments are for —
+// returns nothing and the row is left exactly as it was. A row naming its own
+// account is refused too: a movement is not its own counterparty, and a source
+// that echoes the debited account into the field would otherwise pair a row
+// with itself.
+//
+// It places no verdict. What a row IS stays the tiers' question — the
+// evidence here answers only where it went, which is the one thing a tier
+// below the matcher has never been able to say.
+func loadStatedCounterAccounts(ctx context.Context, tx querier) (map[txKey]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+        SELECT t.silver_source_id, t.transaction_external_id, a.account_external_id
+          FROM transactions t
+          JOIN accounts a
+                 ON a.silver_source_id = t.silver_source_id
+                AND upper(replace(a.account_external_id, ' ', ''))
+                  = upper(replace(json_extract_string(t.payload, '$.counter_account'), ' ', ''))
+         WHERE json_extract_string(t.payload, '$.counter_account') IS NOT NULL
+           AND json_extract_string(t.payload, '$.counter_account') <> ''
+           AND a.account_external_id IS DISTINCT FROM t.account_external_id`)
+	if err != nil {
+		return nil, fmt.Errorf("spending: read stated counter accounts: %w", err)
+	}
+	defer rows.Close()
+	out := map[txKey]string{}
+	for rows.Next() {
+		var k txKey
+		var far string
+		if err := rows.Scan(&k.source, &k.txID, &far); err != nil {
+			return nil, fmt.Errorf("spending: scan stated counter accounts: %w", err)
+		}
+		out[k] = far
+	}
+	return out, rows.Err()
+}
+
 func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,
@@ -735,6 +800,7 @@ func assignCategories(
 	population []candidate,
 	pool map[txKey]candidate,
 	matched map[txKey]gold.TransferLeg,
+	stated map[txKey]string,
 	kinds map[string]string,
 	rules []Rule,
 	pinned map[txKey]pinnedRow,
@@ -809,6 +875,16 @@ func assignCategories(
 			if len(fam.farCols) > 0 {
 				row.farSource, row.farAccount = partner.Group, partner.Owner
 			}
+		} else if far, ok := stated[r.key]; ok && len(fam.farCols) > 0 {
+			// No pairing, but the source named the far account itself.
+			// Only the ACCOUNT is taken: the verdict stays whatever the
+			// tiers decided, because "where it went" and "what it was"
+			// are different questions and this evidence answers only the
+			// first. A rule's far CLASS is a stand-in for exactly this
+			// and gives way to it, the way it gives way to a pairing.
+			row.farSource, row.farAccount = r.key.source, far
+			row.farClass = ""
+			counts.StatedFarAccounts++
 		}
 		if p, ok := pinned[r.key]; ok {
 			row.detailed = p.detailed

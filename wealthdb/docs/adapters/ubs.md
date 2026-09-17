@@ -511,6 +511,47 @@ identity rather than a signature over amounts, the same one
 the one dropped**, matching what the cut does on every later day: the
 MT940 row reaches gold and the export's text folds onto it.
 
+### The counter account, across both eras
+
+Two of the adapter's readers ask the same question — "does this row's
+other side belong to this relationship?" — and until both eras could
+answer it, only one was asked.
+
+The **statement era** carries the counter account in a field of its
+own: the collector's PDF parser writes `counter_account` into the
+row's payload, reading it off the booking's continuation lines (a full
+CH-IBAN, or a UBS mortgage account stamp). `pdfCashIsExternal` has
+always used it — a counter account the relationship owns demotes the
+row to internal, which is rule 2 of its decision order and the whole
+reason `buildOwnIBANSet` exists.
+
+The **export era** states the same fact in free text. The CSV writes a
+three-part narrative into `Description3`:
+
+```
+Reason for payment: <purpose>; Account no. IBAN: <iban>; Transaction no. <n>
+```
+
+`counterAccountFromNarrative` lifts the IBAN out of it — the IBAN
+only, never the purpose or the payee, because those name a person and
+this value is compared against account ids. It is written into the
+emitted payload under the SAME key the statement era uses, so every
+consumer reads one field whichever feed produced the row.
+
+Two consumers follow from that:
+
+- **Returns.** The own-counter demotion now runs on both eras. It is
+  DEMOTE-ONLY, which is the direction the conduit model insists on: a
+  known own counter can take a row out of the flow series, never put
+  one in. Before this, a wire between two of the holder's own accounts
+  counted as owner capital leaving the bank whenever it came from the
+  export feed.
+- **The far account.** gold keeps the payload verbatim, so the
+  enrichment pass can resolve the stated counter account against the
+  accounts gold holds and record where an own-account move went even
+  where the far side contributes no transactions to pair with
+  (docs/CASHFLOW.md §4). It places no verdict — only the destination.
+
 ## 8. Change number
 
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if

@@ -239,10 +239,28 @@ is an unreadable one.
 
 An `internal_transfer` verdict says the money stayed the holder's.
 Cashflow needs one more fact: whether it stayed in the **pool**. The
-matcher has seen both accounts, so its verdict carries the far
-account's identity (`far_silver_source_id`, `far_account_external_id`,
-migration 0079); the rules that place the verdict without pairing
-anything carry a class instead (`far_class`).
+far account is how it knows, and it arrives by two roads.
+
+The **matcher's** road is a pairing: two legs the product collected,
+joined by amount and day, each then naming the other's account
+(`far_silver_source_id`, `far_account_external_id`, migration 0079).
+
+The **source's** road is the bank stating the counter account outright.
+Where the product does not collect the far side at all — a wire to an
+account of the holder's own whose transactions no feed reports — there
+is one row, the matcher needs two, and only the narrative knows. The
+UBS adapter reads it from whichever of its feeds states it and puts it
+in the row's payload; the pass resolves it against the accounts gold
+already holds, and takes it only when it names one of them. A third
+party's account resolves to nothing, which is the common case and the
+right answer.
+
+That road answers **where the money went and nothing else**. What the
+movement WAS stays the tiers' question: a stated counter account places
+no verdict, so a row still needs a matcher, a rule or a pin to be
+called an own-account move at all. Where no far account is known by
+either road, the rules that place the verdict carry a class instead
+(`far_class`).
 
 The test is ordered, first match wins, and **the wrapper is asked
 before the kind** — a mortgage on a trust-owned property and a card

@@ -61,8 +61,12 @@ type CashflowResult struct {
 	FirstPass bool
 	// FarAccounts is how many enrichment rows this pass wrote a far
 	// account onto — the other half of what the resolution needs, and
-	// a plain counter once the first pass is past.
-	FarAccounts int
+	// a plain counter once the first pass is past. StatedFarAccounts is
+	// the subset the SOURCE named rather than the matcher paired, which
+	// is the only road that reaches a movement the product collects one
+	// side of.
+	FarAccounts       int
+	StatedFarAccounts int
 	// PooledAccountsWithoutWrapper is the boundary's coverage gap:
 	// accounts in the pool whose tax wrapper is unset.
 	//

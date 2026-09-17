@@ -148,8 +148,12 @@ type familyInput struct {
 	pins             []Pin
 	kinds            map[string]string
 	matched          map[txKey]gold.TransferLeg
-	pool             map[txKey]candidate
-	now              int64
+	// stated is the far account the SOURCE named, for the rows the
+	// matcher could not pair. Read once for both families, as `matched`
+	// is and for the same reason.
+	stated map[txKey]string
+	pool   map[txKey]candidate
+	now    int64
 }
 
 // incomeFamily is the inflow side: what was received, and from whom.

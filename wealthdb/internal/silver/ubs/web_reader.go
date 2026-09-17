@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -525,11 +526,30 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// purchase is not owner capital under any reading, and it is
 		// still spending — so the flag lets returns skip the row while
 		// it stays in the spending base.
+		// The counter account, from whichever era stated it. The
+		// statement parser fills the field; the export feed states the
+		// same fact in free text, and deriving it here is what lets one
+		// field answer for both eras — downstream, and in the payload
+		// gold keeps.
+		if p.CounterAccount == "" {
+			p.CounterAccount = counterAccountFromNarrative(p)
+		}
 		returnsInternal := false
 		if kind == canonical.TxKindDeposit || kind == canonical.TxKindWithdrawal {
 			railEra := mt940Start > 0 && valueDate >= mt940Start
 			switch {
 			case offsetVeto[txID+"@"+accountID]:
+				returnsInternal = true
+			// A counter account the relationship OWNS, whatever the era.
+			// pdfCashIsExternal already applies this rule to the
+			// statement era (its rule 2) and is the whole reason the
+			// own-IBAN set is built; the export era never consulted it,
+			// so a wire between two of the holder's own accounts counted
+			// as owner capital leaving the bank. Demote-only, which is
+			// the direction that model insists on: a KNOWN own counter
+			// can only take a row out of the flow series, never put one
+			// in.
+			case ownIBANs[normalizeIBAN(p.CounterAccount)]:
 				returnsInternal = true
 			case pdfBackfill && !pdfCashIsExternal(p, ownIBANs, kind == canonical.TxKindWithdrawal, railEra):
 				returnsInternal = true
@@ -539,7 +559,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// The verdict is stamped here, before the sign is pinned: a
 		// payload that cannot carry it degrades to the older demotion,
 		// and the sign must then be read off the kind the row ENDS with.
-		rowPayload := json.RawMessage(payload)
+		rowPayload := withCounterAccount(payload, p.CounterAccount)
 		if returnsInternal {
 			rowPayload, kind = markReturnsInternal(rowPayload, kind)
 		}
@@ -607,6 +627,63 @@ SELECT transaction_external_id, value_date, account_external_id,
 		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
 	}
 	return silver.NewTransactionStream(out), psnHints{veto: psnVeto, carry: fold.psn}, rows.Err()
+}
+
+// counterAccountInNarrative finds the counter account the EXPORT feed states
+// in its own narrative. The statement era carries it in a field of its own
+// (the PDF parser's `counter_account`); the CSV era does not, and writes it
+// into free text instead, in a fixed three-part shape:
+//
+//	Reason for payment: <purpose>; Account no. IBAN: <iban>; Transaction no. <n>
+//
+// It is the bank's own statement of where the money went, and it is the
+// strongest evidence of an own-account move there is — stronger than a
+// narrative regex, and available on rows whose other leg the product does not
+// collect at all. Left in the free text it reached gold as prose and nothing
+// could read it.
+//
+// The IBAN alone is taken, never the purpose or the payee: those name a
+// person, and this value is compared against the relationship's own account
+// ids. A narrative that states no IBAN returns empty, which is the common
+// case — most rows pay a third party whose account gold does not hold.
+// Case-insensitive because normalizeIBAN raises the case anyway, and a
+// matcher stricter than the normaliser it feeds would drop a row for a
+// difference that makes no difference.
+var counterAccountInNarrative = regexp.MustCompile(`(?i)IBAN:\s*([A-Z]{2}[0-9]{2}[0-9A-Z ]{10,32}?)\s*(?:;|$)`)
+
+// counterAccountFromNarrative returns the normalised counter IBAN a row's
+// narrative names, or "" where it names none.
+func counterAccountFromNarrative(p webTxPayload) string {
+	for _, s := range []string{p.Description3, p.Description1} {
+		if m := counterAccountInNarrative.FindStringSubmatch(s); m != nil {
+			return normalizeIBAN(m[1])
+		}
+	}
+	return ""
+}
+
+// counterAccountKey is the payload key the statement era already uses, so a
+// consumer reads ONE field whichever feed produced the row.
+const counterAccountKey = `"counter_account":`
+
+// withCounterAccount stamps a narrative-derived counter account onto a row's
+// payload, by the same splice-after-the-brace rule withReturnsFlow uses and
+// for the same reason: the payload is silver's JSON verbatim and
+// re-marshalling it would reorder every other key.
+//
+// It is written only when the payload does not already carry the key — the
+// statement era's own value is the parser's, and a derived one must never
+// overwrite a stated one.
+func withCounterAccount(payload, iban string) json.RawMessage {
+	trimmed := strings.TrimSpace(payload)
+	if iban == "" || !strings.HasPrefix(trimmed, "{") || strings.Contains(trimmed, counterAccountKey) {
+		return json.RawMessage(payload)
+	}
+	field := counterAccountKey + `"` + iban + `"`
+	if trimmed == "{}" {
+		return json.RawMessage("{" + field + "}")
+	}
+	return json.RawMessage("{" + field + "," + trimmed[1:])
 }
 
 // returnsFlowInternal is the payload key carrying the conduit verdict to the
@@ -926,11 +1003,27 @@ SELECT transaction_external_id, value_date, account_external_id,
 		if suppressed[txID+"@"+acct] {
 			continue
 		}
-		kind := webKind(webKindHint(kindStr, counterparty), debit.Valid, credit.Valid)
+		// The amount the row will REACH GOLD with, not the raw column
+		// difference. The two web eras write the amount columns to
+		// different conventions — the export signs its Debit cell, the
+		// statement prints the figure as printed — and the only thing
+		// they state identically is WHICH column carries it. Differencing
+		// the raw columns therefore read every export-era withdrawal as a
+		// positive figure and filed it beside the deposits, where it
+		// could mirror nothing: no export leg could veto against a
+		// statement or a PSN one, which is most of what this probe exists
+		// to catch. `bookingKey` names the same rule for the era fold —
+		// take the adapter's own projection, because only the projection
+		// resolves the conventions — and this is that rule applied here.
+		hint := webKindHint(kindStr, counterparty)
+		kind, _, netAmount := webProjectedNet(hint, isStatementEraID(txID), debit, credit)
 		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
 			continue
 		}
-		amt := credit.Float64 - debit.Float64
+		if netAmount == nil {
+			continue
+		}
+		amt := netAmount.InexactFloat64()
 		k := groupKey{day: valueDate / 86400, ccy: ccy}
 		groups[k] = append(groups[k], offsetLeg{
 			vetoKey: txID + "@" + acct, txID: txID, acct: acct, amt: amt,

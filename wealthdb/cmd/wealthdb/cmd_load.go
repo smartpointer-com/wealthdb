@@ -220,8 +220,9 @@ func printCashflowSummary(stdout io.Writer, res spending.CashflowResult) {
 	// accounts, and a reader checking that a load did its work should
 	// find both in one place.
 	fmt.Fprintf(stdout, "cashflow: household boundary stamped — %d wrapper(s), %d overridden, "+
-		"%d account(s) out of the pool; %d own-account move(s) carry a far account\n",
-		res.WrapperRows, res.WrapperOverrides, res.ScopeRows, res.FarAccounts)
+		"%d account(s) out of the pool; %d own-account move(s) carry a far account "+
+		"(%d of them from the source's own statement)\n",
+		res.WrapperRows, res.WrapperOverrides, res.ScopeRows, res.FarAccounts, res.StatedFarAccounts)
 	// Said once, on the pass that ends the state, because the state
 	// itself is unreadable from the outside: with no boundary stamped
 	// and no far account written, every matched own-account move

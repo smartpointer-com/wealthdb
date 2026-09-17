@@ -102,13 +102,14 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 	var out strings.Builder
 	printPassSummary(&out, &spending.Result{Cashflow: spending.CashflowResult{
 		ScopeRows: 2, UnresolvedScopeAccounts: 1,
-		WrapperRows: 23, WrapperOverrides: 1, FarAccounts: 17,
+		WrapperRows: 23, WrapperOverrides: 1, FarAccounts: 17, StatedFarAccounts: 5,
 		PooledAccountsWithoutWrapper: 4,
 	}})
 	got := out.String()
 	for _, want := range []string{
 		"cashflow: household boundary stamped — 23 wrapper(s), 1 overridden, 2 account(s) " +
-			"out of the pool; 17 own-account move(s) carry a far account",
+			"out of the pool; 17 own-account move(s) carry a far account " +
+			"(5 of them from the source's own statement)",
 		"cashflow: 4 pooled account(s) have no tax wrapper",
 		"`cashflow.accounts` keys on the account id",
 	} {

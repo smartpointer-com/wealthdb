@@ -305,3 +305,111 @@ func reportShape(t *testing.T, db *sql.DB, ctx context.Context) []string {
 	}
 	return out
 }
+
+// seedCounterAccount stamps a stated counter account into a seeded row's
+// payload, which is where the UBS adapter puts the one its source named.
+func seedCounterAccount(t *testing.T, db *sql.DB, ctx context.Context, source, id, counter string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+        UPDATE transactions SET payload = ?
+         WHERE silver_source_id = ? AND transaction_external_id = ?`,
+		`{"counter_account":"`+counter+`"}`, source, id); err != nil {
+		t.Fatalf("stamp counter account on %s/%s: %v", id, source, err)
+	}
+}
+
+// TestASourceStatedCounterAccountIsTheFarAccount pins the second road to
+// the far account: the source naming it outright, for the movement whose
+// other leg the product does not collect.
+//
+// This is the shape that has no pairing to find. A wire to an account of
+// the holder's own that no feed reports transactions for leaves ONE row
+// in gold, and the matcher — which needs two — can say nothing about it.
+// The bank's own narrative can.
+func TestASourceStatedCounterAccountIsTheFarAccount(t *testing.T) {
+	db, ctx := openGold(t)
+	seedTxns(t, db, ctx,
+		txn{source: "bank", id: "T-STATED", account: "CASH1", kind: "withdrawal",
+			occurredAt: day(10), amount: -5000, description: "TRANSFER"},
+	)
+	// The far account is held by gold and contributes no transactions of
+	// its own — the case the matcher cannot reach.
+	seedCounterAccount(t, db, ctx, "bank", "T-STATED", "BRK1")
+	runPass(t, db, ctx, Options{})
+
+	if src, acct, class := farOf(t, db, ctx, "bank", "T-STATED"); src != "bank" || acct != "BRK1" || class != "" {
+		t.Errorf("stated far = (%q, %q, %q), want (bank, BRK1, \"\")", src, acct, class)
+	}
+}
+
+// TestAStatedCounterAccountGoldDoesNotHoldIsIgnored is the guard that
+// keeps the road narrow. Most payments name a third party, and a third
+// party's account is not the household's — so a stated account that
+// resolves to nothing must leave the row exactly as it was rather than
+// inventing a destination.
+func TestAStatedCounterAccountGoldDoesNotHoldIsIgnored(t *testing.T) {
+	db, ctx := openGold(t)
+	seedTxns(t, db, ctx,
+		txn{source: "bank", id: "T-THIRD-PARTY", account: "CASH1", kind: "withdrawal",
+			occurredAt: day(10), amount: -300, description: "PAYMENT"},
+	)
+	seedCounterAccount(t, db, ctx, "bank", "T-THIRD-PARTY", "AN-ACCOUNT-GOLD-DOES-NOT-HOLD")
+	runPass(t, db, ctx, Options{})
+
+	if src, acct, class := farOf(t, db, ctx, "bank", "T-THIRD-PARTY"); src != "" || acct != "" || class != "" {
+		t.Errorf("far = (%q, %q, %q), want all empty: a third party is not a destination", src, acct, class)
+	}
+}
+
+// TestAPairingOutranksAStatedCounterAccount pins the precedence between
+// the two roads. A pairing is two collected legs agreeing; a statement is
+// one row's narrative. Where both exist they agree anyway, and the
+// pairing is the one that also names the SOURCE the far account lives on
+// — which a bare account id in a narrative cannot.
+func TestAPairingOutranksAStatedCounterAccount(t *testing.T) {
+	db, ctx := openGold(t)
+	seedTxns(t, db, ctx,
+		txn{source: "bank", id: "T-PAIRED-OUT", account: "CASH1", kind: "withdrawal",
+			occurredAt: day(10), amount: -2500, description: "TRANSFER TO SAVINGS"},
+		txn{source: "other-bank", id: "T-PAIRED-IN", account: "CASH2", kind: "deposit",
+			occurredAt: day(11), amount: 2500, description: "INCOMING TRANSFER"},
+	)
+	// The narrative names a DIFFERENT own account from the one the
+	// matcher pairs, so the test can tell which road was taken.
+	seedCounterAccount(t, db, ctx, "bank", "T-PAIRED-OUT", "BRK1")
+	runPass(t, db, ctx, Options{})
+
+	if src, acct, _ := farOf(t, db, ctx, "bank", "T-PAIRED-OUT"); src != "other-bank" || acct != "CASH2" {
+		t.Errorf("far = (%q, %q), want the matcher's partner (other-bank, CASH2)", src, acct)
+	}
+}
+
+// TestAStatedCounterAccountPlacesNoVerdict is the boundary of what this
+// evidence answers. Where the money went and what the movement WAS are
+// different questions; the tiers own the second one, and a far account
+// arriving from the narrative must not quietly re-file a row as an
+// own-account move.
+func TestAStatedCounterAccountPlacesNoVerdict(t *testing.T) {
+	db, ctx := openGold(t)
+	seedTxns(t, db, ctx,
+		txn{source: "bank", id: "T-NO-VERDICT", account: "CASH1", kind: "withdrawal",
+			occurredAt: day(10), amount: -5000, description: "TRANSFER"},
+	)
+	seedCounterAccount(t, db, ctx, "bank", "T-NO-VERDICT", "BRK1")
+	runPass(t, db, ctx, Options{})
+
+	var detailed sql.NullString
+	var provenance string
+	if err := db.QueryRowContext(ctx, `
+        SELECT spend_detailed, provenance FROM spend_txn_enrichment
+         WHERE silver_source_id = 'bank' AND transaction_external_id = 'T-NO-VERDICT'`).
+		Scan(&detailed, &provenance); err != nil {
+		t.Fatalf("read the overlay row: %v", err)
+	}
+	if detailed.Valid && detailed.String == string(canonical.SpendDetailedInternalTransfer) {
+		t.Error("a stated counter account placed the matcher's verdict; it answers only where the money went")
+	}
+	if provenance == string(ProvenanceMatcher) {
+		t.Errorf("provenance = %q, want the tier that actually placed the row", provenance)
+	}
+}
