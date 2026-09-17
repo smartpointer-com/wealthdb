@@ -183,10 +183,26 @@ statement era prints it as a negative in the debit column, which
 `webReversal` reads (below).
 
 
+`ORDER` is a PAYMENT, not a securities order, and it sat among the
+settlements long enough to be worth saying why it does not belong
+there. Every other member of that group names an instrument type — a
+share, a fund, a structured product — or spells a buy or a sell
+outright. This one names neither, and the rows carrying it say so in
+every column the bank fills: no quantity, no price, no instrument, and
+a narrative naming the party paid rather than anything bought. What it
+pays is an account of the same relationship, often in another
+currency, and the receiving side books the mirror as a plain `CREDIT`.
+It is the statement era's abbreviation of what the export feed spells
+out as `payment order` / `e-banking payment order` / `special payment
+order`, and it takes the direction exactly as those do. It is named in
+the classifier rather than left to fall through, because that case
+list is also the adapter's record of which types it knows.
+
 | Booking type (any case) | Gold `kind` |
 | --- | --- |
 | `PAYMENT UBS TWINT`, `DEBIT UBS TWINT` | `withdrawal` |
 | `CREDIT UBS TWINT`, `REVERSAL UBS TWINT` | `deposit` |
+| `ORDER` | `deposit` / `withdrawal` by direction — a payment order |
 | (other) | `deposit` / `withdrawal` by the column the figure sits in; `other` when neither or both are set |
 
 The kind follows the type, not the column: the silver row carries
@@ -598,6 +614,52 @@ an ordinary thing and refusing it is not a loss.
 **This lands on already-loaded rows only after a `reload`.** The value
 travels in the payload, and an incremental load re-projects only the
 window it touches.
+
+### The other leg, where the statement describes it
+
+A reference names the movement; a counter account names the far
+account. There is a third thing a statement says, and it is the only
+one that reaches a booking carrying no reference at all: on one of the
+two rows it writes what the OTHER row holds.
+
+```
+CCY 1 234.56 Rate 1.234567
+```
+
+`counterLegFromNarrative` lifts the currency and the figure out of
+that line — anchored whole, and on the rate that closes it, because
+the amount separates thousands with a space and a line of running text
+must not be read as one. Both values go into the payload together
+(`counter_currency`, `counter_amount`) or neither does: a currency
+with no figure names no leg.
+
+It is a weaker claim than either sibling, and it is used accordingly.
+A reference is READ; a description must be MATCHED against a row that
+answers to it, and two conversions of the same size on one day would
+answer equally. So both consumers demand that exactly one row of the
+source answer the description and exactly one row make it, and refuse
+outright otherwise — the matcher's stated-counter phase
+(docs/SPENDING.md §3) and the offset veto's conversion phase, below.
+
+What it buys is the shape nothing else reaches: a conversion between
+two accounts of one relationship, whose two legs carry different
+figures in different currencies and, in the statement era, share no
+reference. Both roads are blind to it and the description is the only
+link the two rows have.
+
+**The veto's conversion phase.** The same-day offset veto buckets by
+(day, currency) and matches equal, opposite amounts, so neither of its
+phases can see such a pair — its own note about FX legs says as much.
+That mattered more than it looked: `pdfCashIsExternal` reads a
+statement-era arrival credit as an interbank arrival on its booking
+type alone, because the intra-relationship shapes that booking could
+smuggle in are supposed to be peeled off by the veto. A conversion
+between own accounts is such a shape, and nothing peeled it — the
+paying leg was demoted by the gate's conservative default while its
+receiving twin was promoted to external. That is a one-sided demotion,
+the exact failure the veto exists to prevent, and it fabricated an
+arrival of owner capital that the returns engine then counted.
+`vetoConversions` closes it, demoting both legs or neither.
 
 ## 8. Change number
 

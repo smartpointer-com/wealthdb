@@ -3,6 +3,7 @@ package gold
 import (
 	"math"
 	"sort"
+	"strconv"
 )
 
 // Transfer matching, the shared core.
@@ -11,9 +12,9 @@ import (
 // sending account, a credit on the receiving one — and nothing in the data
 // links the halves — except where the source itself does, by stamping one
 // reference on both. This file holds the algorithm that re-pairs them: a
-// deterministic 1:1 matcher in three phases, asserting first what the holder
-// stated, then what the source stamped, and only then guessing from
-// same-currency amounts inside a day window and a relative tolerance. It
+// deterministic 1:1 matcher in four phases, asserting first what the holder
+// stated, then what the source stamped and what it described, and only then
+// guessing from same-currency amounts inside a day window and a tolerance. It
 // knows nothing about returns, spending, or accounts; it takes legs and hands
 // back pairs. Callers own what a leg IS, which legs are offered, and what a
 // pair MEANS:
@@ -92,6 +93,28 @@ type TransferLeg struct {
 	// here is the cost of every false pair: a real spending line deleted,
 	// not merely mislabelled.
 	Ref string
+
+	// CounterCcy and CounterAmt are the OTHER leg as the source DESCRIBES
+	// it: the currency and the figure the movement became, or came from.
+	// Both empty when the source describes none, which is the common case
+	// and the only case the returns engine has.
+	//
+	// It is a weaker claim than Ref and a stronger one than an amount. A
+	// reference NAMES the movement, so it needs no corroboration; a
+	// description has to be matched against a leg that answers to it, and
+	// two unrelated conversions of the same size on the same day would
+	// answer equally well. So the phase that reads this
+	// (matchStatedCounters) keeps the day constraint an identity does not
+	// need, and refuses any description more than one leg answers to.
+	//
+	// What it buys is the movement whose two legs share nothing else. A
+	// bank converting between two of one holder's accounts may stamp no
+	// common reference on the pair — a statement reconstruction carries
+	// none at all — and the two figures differ by the rate, so no tolerance
+	// can bring them together. A narrative saying "this became CCY 1234.56"
+	// is then the only link there is.
+	CounterCcy string
+	CounterAmt float64
 }
 
 // TransferMatchOpts are the matcher's knobs. The zero value pairs only
@@ -160,6 +183,8 @@ const (
 	MatchedByOverride TransferMatchPhase = "override"
 	// MatchedByReference is the source stamping one reference on both.
 	MatchedByReference TransferMatchPhase = "reference"
+	// MatchedByStatedCounter is the source describing one leg on the other.
+	MatchedByStatedCounter TransferMatchPhase = "stated-counter"
 	// MatchedByAmount is the greedy banded pass: everything the data says
 	// when nothing has said it outright.
 	MatchedByAmount TransferMatchPhase = "amount"
@@ -212,7 +237,12 @@ const referenceMatchMaxDays = 90
 //  2. REFERENCE pairs — two legs carrying the reference their source stamped
 //     on both halves of one movement (matchSharedReferences). An identity
 //     the source asserts, not an inference drawn from it.
-//  3. AMOUNT pairs — the greedy banded pass below, which is everything the
+//  3. STATED-COUNTER pairs — a leg whose narrative describes the other leg's
+//     currency and figure, matched to the leg that answers to the
+//     description (matchStatedCounters). Weaker than a reference, because a
+//     description has to be matched rather than merely read, and guarded
+//     accordingly.
+//  4. AMOUNT pairs — the greedy banded pass below, which is everything the
 //     data says when nothing has said it outright.
 //
 // An amount pair must agree on native currency, sit within opts.WindowDays of
@@ -300,6 +330,7 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 	}
 	matchForcedPairs(debits, credits, used, claimed, opts, claim)
 	matchSharedReferences(debits, credits, used, claimed, opts, claim)
+	namedByDescription := matchStatedCounters(debits, credits, used, claimed, opts, claim)
 	if len(out) > 0 {
 		kept := debits[:0]
 		for i, d := range debits {
@@ -324,6 +355,10 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 				continue
 			}
 			same := c.Group == d.Group && c.Owner == d.Owner
+			if same && (namedByDescription[LegRef{d.Group, d.Owner, d.ID}.key()] ||
+				namedByDescription[LegRef{c.Group, c.Owner, c.ID}.key()]) {
+				continue // the source places this leg's other half elsewhere
+			}
 			dist := c.Day - d.Day
 			if dist < 0 {
 				dist = -dist
@@ -510,6 +545,131 @@ func matchSharedReferences(debits, credits []TransferLeg, used, claimed []bool, 
 		}
 		claim(di, e.ci, MatchedByReference)
 	}
+}
+
+// matchStatedCounters pairs a leg whose narrative DESCRIBES the other leg —
+// its currency and its figure — with the leg that answers to the description.
+//
+// It exists for the movement that shares nothing else. A conversion between
+// two of one holder's own accounts carries two different figures in two
+// different currencies, so no tolerance reaches it; and where the source
+// stamps no common reference on the pair — a statement reconstructed from a
+// printed page carries none — the reference phase above cannot reach it
+// either. What is left is the bank writing, on one of the two rows, what the
+// other row holds.
+//
+// A DESCRIPTION IS NOT AN IDENTITY, and the guards are set to that. A
+// reference names one movement and needs no corroboration; "CCY 1234.56" is a
+// claim that has to be matched, and two unrelated conversions of that size
+// would answer it equally. So this phase keeps constraints the reference
+// phase drops:
+//
+//   - the two legs must fall on the SAME DAY. A conversion settles both
+//     halves on one value date, and the day is most of what keeps a
+//     description from reaching a coincidence in another month.
+//   - the described leg must be the ONLY leg that answers, and the ONLY leg
+//     described. Two legs of one currency and figure on one day cannot say
+//     which was meant, and two narratives describing one leg cannot say which
+//     movement it belongs to. Both refuse.
+//   - same group, different accounts, and the holder's unmatch still binds —
+//     the reference phase's reasons, unchanged.
+//
+// Either leg may be the one that describes. A bank writes the conversion on
+// whichever side its statement had room for, so the phase reads a debit's
+// description first and, failing that, asks whether any credit describes the
+// debit. The result is the same pair either way.
+func matchStatedCounters(debits, credits []TransferLeg, used, claimed []bool, opts TransferMatchOpts, claim func(di, ci int, by TransferMatchPhase)) map[string]bool {
+	if opts.CrossGroupOnly {
+		return nil
+	}
+	// A leg's own identity as a description would state it, and the
+	// description it carries. Both are (group, day, currency, figure) — the
+	// same shape, so one answers the other by equality.
+	type legKey struct {
+		group string
+		day   int64
+		ccy   string
+		amt   string
+	}
+	key := func(group string, day int64, ccy string, amt float64) legKey {
+		return legKey{group, day, ccy, strconv.FormatFloat(math.Abs(amt), 'f', 2, 64)}
+	}
+	ownKey := func(l TransferLeg) legKey { return key(l.Group, l.Day, l.Ccy, l.Amt) }
+	statedKey := func(l TransferLeg) (legKey, bool) {
+		if l.CounterCcy == "" || l.CounterAmt == 0 {
+			return legKey{}, false
+		}
+		return key(l.Group, l.Day, l.CounterCcy, l.CounterAmt), true
+	}
+
+	// Two censuses over every leg offered, claimed ones included, for
+	// matchSharedReferences' reason: what a description resolves to must be
+	// a property of the data rather than of what an earlier phase removed.
+	owners, described := map[legKey]int{}, map[legKey]int{}
+	creditOwning, creditDescribing := map[legKey]int{}, map[legKey]int{}
+	for _, l := range append(append([]TransferLeg{}, debits...), credits...) {
+		owners[ownKey(l)]++
+		if k, ok := statedKey(l); ok {
+			described[k]++
+		}
+	}
+	for i, c := range credits {
+		creditOwning[ownKey(c)] = i
+		if k, ok := statedKey(c); ok {
+			creditDescribing[k] = i
+		}
+	}
+	// resolved reports the credit a key names, when exactly one leg answers
+	// to the key and exactly one leg describes it.
+	resolved := func(k legKey, at map[legKey]int) (int, bool) {
+		if owners[k] != 1 || described[k] != 1 {
+			return 0, false
+		}
+		ci, ok := at[k]
+		return ci, ok
+	}
+
+	for di, d := range debits {
+		if claimed[di] {
+			continue
+		}
+		ci, ok := -1, false
+		if k, has := statedKey(d); has {
+			ci, ok = resolved(k, creditOwning) // the debit describes the credit
+		}
+		if !ok {
+			ci, ok = resolved(ownKey(d), creditDescribing) // a credit describes the debit
+		}
+		if !ok || used[ci] {
+			continue
+		}
+		c := credits[ci]
+		if c.Owner == d.Owner || c.Amt == 0 || c.Day != d.Day {
+			continue
+		}
+		if opts.Overrides.blocks(d, c) {
+			continue
+		}
+		claim(di, ci, MatchedByStatedCounter)
+	}
+
+	// What the descriptions NAMED, whether or not a pair came of it. A leg
+	// some narrative places on another account, in another currency, is not
+	// half of a same-account round trip, and the amount pass is told so
+	// (pairableLegs). Without that, a leg this phase could not resolve falls
+	// through to a pass that may hand it the credit sitting on its own
+	// account — a pair the source has already contradicted, and one that
+	// takes that credit away from the leg it really belongs to.
+	named := map[string]bool{}
+	for _, l := range append(append([]TransferLeg{}, debits...), credits...) {
+		if k, ok := statedKey(l); ok && described[k] > 0 {
+			named[LegRef{l.Group, l.Owner, l.ID}.key()] = true
+		}
+		if described[ownKey(l)] > 0 {
+			named[LegRef{l.Group, l.Owner, l.ID}.key()] = true
+		}
+	}
+	return named
 }
 
 // pairableLegs reports whether two legs may pair at all, before amount and day

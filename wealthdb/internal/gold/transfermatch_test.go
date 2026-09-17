@@ -472,3 +472,90 @@ func pairIDs(pairs []TransferMatchPair) map[string]string {
 	}
 	return out
 }
+
+// counterLeg is a matcher input that describes the other leg of its movement.
+func counterLeg(owner, id string, day int64, ccy string, amt float64, statedCcy string, statedAmt float64) TransferLeg {
+	l := leg("bank", owner, id, day, amt)
+	l.Ccy, l.CounterCcy, l.CounterAmt = ccy, statedCcy, statedAmt
+	return l
+}
+
+// A currency conversion between two own accounts pairs on the leg the bank
+// described, which is the only link two legs of different currencies and
+// different figures have when the source stamped no reference on either.
+func TestAStatedCounterPairsAConversion(t *testing.T) {
+	legs := []TransferLeg{
+		counterLeg("gbp-account", "pays", 100, "GBP", -1234.50, "", 0),
+		counterLeg("usd-account", "gets", 100, "USD", 1587.75, "GBP", 1234.50),
+	}
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true})
+	if len(got) != 1 || got[0].By != MatchedByStatedCounter ||
+		got[0].Debit.ID != "pays" || got[0].Credit.ID != "gets" {
+		t.Fatalf("stated-counter pair = %+v, want pays→gets", got)
+	}
+}
+
+// A description is matched rather than merely read, so anything it cannot
+// resolve pairs nothing. Unlike a reference it also keeps the day: a figure
+// repeating in another month is a coincidence, not a movement.
+func TestAStatedCounterRefusesWhatItCannotResolve(t *testing.T) {
+	opts := TransferMatchOpts{WindowDays: 30, TolerancePct: 0.5, AllowSameOwner: true}
+	cases := []struct {
+		name string
+		legs []TransferLeg
+	}{
+		{"two legs answer the description", []TransferLeg{
+			counterLeg("usd-account", "gets", 100, "USD", 1587.75, "GBP", 1234.50),
+			counterLeg("gbp-account", "pays", 100, "GBP", -1234.50, "", 0),
+			counterLeg("other-gbp", "also-pays", 100, "GBP", -1234.50, "", 0),
+		}},
+		{"two descriptions name one leg", []TransferLeg{
+			counterLeg("usd-account", "gets", 100, "USD", 1587.75, "GBP", 1234.50),
+			counterLeg("other-usd", "also-gets", 100, "USD", 1587.75, "GBP", 1234.50),
+			counterLeg("gbp-account", "pays", 100, "GBP", -1234.50, "", 0),
+		}},
+		{"the described leg is on the same account", []TransferLeg{
+			counterLeg("one-account", "gets", 100, "USD", 1587.75, "GBP", 1234.50),
+			counterLeg("one-account", "pays", 100, "GBP", -1234.50, "", 0),
+		}},
+		{"the described leg is a day away", []TransferLeg{
+			counterLeg("usd-account", "gets", 100, "USD", 1587.75, "GBP", 1234.50),
+			counterLeg("gbp-account", "pays", 101, "GBP", -1234.50, "", 0),
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MatchTransferLegs(append([]TransferLeg(nil), tc.legs...), opts); len(got) != 0 {
+				t.Errorf("paired %+v", got)
+			}
+		})
+	}
+}
+
+// A leg the source places on ANOTHER account is not half of a same-account
+// round trip, and the amount pass is told so. Without that, a conversion leg
+// the description could not resolve falls through and takes the credit
+// sitting on its own account — which the source has already contradicted, and
+// which steals that credit from the transfer it really belongs to.
+func TestADescribedLegDoesNotPairWithItsOwnAccount(t *testing.T) {
+	// One relationship, one day: a transfer from `far` into `hub`, and then a
+	// conversion out of `hub` into `eur`. Three legs answer "USD 135790", so
+	// the description resolves none of them — and the hub's own two legs must
+	// still not fuse into a round trip.
+	legs := []TransferLeg{
+		counterLeg("far", "transfer-out", 100, "USD", -135790, "", 0),
+		counterLeg("hub", "transfer-in", 100, "USD", 135790, "", 0),
+		counterLeg("hub", "converts-out", 100, "USD", -135790, "", 0),
+		counterLeg("eur", "converts-in", 100, "EUR", 123456.78, "USD", 135790),
+	}
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true})
+	if len(got) != 1 {
+		t.Fatalf("matched %d pair(s), want 1: %+v", len(got), got)
+	}
+	if got[0].Debit.ID != "transfer-out" || got[0].Credit.ID != "transfer-in" {
+		t.Errorf("paired %s→%s, want transfer-out→transfer-in", got[0].Debit.ID, got[0].Credit.ID)
+	}
+	if got[0].Debit.Owner == got[0].Credit.Owner {
+		t.Error("the hub's own two legs were fused into a round trip")
+	}
+}

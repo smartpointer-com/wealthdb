@@ -242,9 +242,10 @@ Cashflow needs one more fact: whether it stayed in the **pool**. The
 far account is how it knows, and it arrives by two roads.
 
 The **matcher's** road is a pairing: two legs the product collected,
-joined either by amount and day or by a reference the source stamped on
-both halves, each then naming the other's account
-(`far_silver_source_id`, `far_account_external_id`, migration 0079).
+joined by amount and day, by a reference the source stamped on both
+halves, or by the other leg the source described on one of them, each
+then naming the other's account (`far_silver_source_id`,
+`far_account_external_id`, migration 0079).
 
 The two joins are not interchangeable. A pairing on amount is an
 inference, so its two legs necessarily agree in currency and very

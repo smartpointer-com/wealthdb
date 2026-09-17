@@ -222,9 +222,9 @@ func printCashflowSummary(stdout io.Writer, res spending.CashflowResult) {
 	fmt.Fprintf(stdout, "cashflow: household boundary stamped — %d wrapper(s), %d overridden, "+
 		"%d account(s) out of the pool; %d own-account move(s) carry a far account "+
 		"(%d of them from the source's own statement, %d paired on a reference the source "+
-		"stamped on both legs)\n",
+		"stamped on both legs, %d on the other leg it described)\n",
 		res.WrapperRows, res.WrapperOverrides, res.ScopeRows, res.FarAccounts,
-		res.StatedFarAccounts, res.ReferencePairs)
+		res.StatedFarAccounts, res.ReferencePairs, res.StatedCounterPairs)
 	// Said only when there is something to say. A handful of refused
 	// references is the ordinary shape of a bank that books a charge under
 	// the reference of the payment it belongs to; a number that grows with

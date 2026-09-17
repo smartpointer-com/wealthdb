@@ -9,6 +9,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -560,6 +561,8 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// payload that cannot carry it degrades to the older demotion,
 		// and the sign must then be read off the kind the row ENDS with.
 		rowPayload := withBankRef(withCounterAccount(payload, p.CounterAccount), webBankRef(txID))
+		counterCcy, counterAmt := counterLegFromNarrative(p)
+		rowPayload = withCounterLeg(rowPayload, counterCcy, counterAmt)
 		if returnsInternal {
 			rowPayload, kind = markReturnsInternal(rowPayload, kind)
 		}
@@ -660,6 +663,66 @@ func counterAccountFromNarrative(p webTxPayload) string {
 		}
 	}
 	return ""
+}
+
+// counterLegInNarrative finds the line on which a statement writes the OTHER
+// LEG of a movement that converted currency: what the money became, or came
+// from, and the rate between the two.
+//
+//	CCY 1 234.56 Rate 1.234567
+//
+// It is the counter account's sibling, and a strictly stronger claim. A
+// counter account says WHERE the money went; this says what the other side of
+// the booking IS — its currency and its figure — which is the one fact that
+// can join two legs no amount test can compare, because a conversion's two
+// legs never carry the same number.
+//
+// Anchored on the whole line, and on the rate that closes it. The amount uses
+// a space as its thousands separator and a dot for decimals, and a minor unit
+// the currency does not have is simply absent, so the rate is what marks the
+// end of the figure and keeps a line of running text from being read as one.
+// A row stating no conversion — the overwhelming majority — matches nothing
+// and is left exactly as it was.
+var counterLegInNarrative = regexp.MustCompile(
+	`^([A-Z]{3}) ([0-9][0-9 ]*(?:\.[0-9]+)?) Rate [0-9]+(?:\.[0-9]+)?$`)
+
+// counterLegFromNarrative returns the currency and amount a row's narrative
+// states for the other leg of its movement, or two empty strings where it
+// states none.
+//
+// The statement era writes each continuation line separately, which is where
+// the line is looked for; the export era's two narrative columns are read
+// after it, so a feed that ever spells the same fact there is covered by the
+// same rule rather than by a second one.
+func counterLegFromNarrative(p webTxPayload) (currency, amount string) {
+	lines := make([]string, 0, len(p.Continuation)+2)
+	lines = append(lines, p.Continuation...)
+	lines = append(lines, p.Description3, p.Description1)
+	for _, s := range lines {
+		if m := counterLegInNarrative.FindStringSubmatch(strings.TrimSpace(s)); m != nil {
+			return m[1], strings.ReplaceAll(m[2], " ", "")
+		}
+	}
+	return "", ""
+}
+
+// counterCurrencyKey and counterAmountKey carry the stated other leg into
+// gold. Two keys rather than one object because the splice below writes a
+// string value, and because either half is meaningless without the other:
+// a consumer takes both or neither.
+const (
+	counterCurrencyKey = `"counter_currency":`
+	counterAmountKey   = `"counter_amount":`
+)
+
+// withCounterLeg stamps the stated other leg onto a row's payload. Both keys
+// or neither: a currency with no figure names no leg.
+func withCounterLeg(payload json.RawMessage, currency, amount string) json.RawMessage {
+	if currency == "" || amount == "" {
+		return payload
+	}
+	out := spliceStringField(string(payload), counterAmountKey, amount)
+	return spliceStringField(string(out), counterCurrencyKey, currency)
 }
 
 // counterAccountKey is the payload key the statement era already uses, so a
@@ -989,6 +1052,13 @@ type offsetLeg struct {
 	txID    string
 	acct    string
 	amt     float64
+	// day, ccy and the stated counter leg are what the CONVERSION phase
+	// needs: it pairs across currencies, so it cannot read them off the
+	// per-(day, currency) bucket the other two phases are grouped into.
+	day       int64
+	ccy       string
+	statedCcy string
+	statedAmt string
 }
 
 // buildSameDayOffsetVeto pairs cash rows that offset each other on the same
@@ -1034,7 +1104,7 @@ func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, 
 	rows, err := r.db.QueryContext(ctx, `
 SELECT transaction_external_id, value_date, account_external_id,
        currency_iso, amount_debit, amount_credit, description_kind,
-       counterparty
+       counterparty, payload
   FROM transactions`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("buildSameDayOffsetVeto (web): %w", err)
@@ -1046,8 +1116,9 @@ SELECT transaction_external_id, value_date, account_external_id,
 			valueDate             int64
 			debit, credit         sql.NullFloat64
 			kindStr, counterparty sql.NullString
+			payload               string
 		)
-		if err := rows.Scan(&txID, &valueDate, &acct, &ccy, &debit, &credit, &kindStr, &counterparty); err != nil {
+		if err := rows.Scan(&txID, &valueDate, &acct, &ccy, &debit, &credit, &kindStr, &counterparty, &payload); err != nil {
 			return nil, nil, fmt.Errorf("buildSameDayOffsetVeto scan (web): %w", err)
 		}
 		// Emitted-universe filter: mirror the transaction loop's hard cut at
@@ -1085,9 +1156,14 @@ SELECT transaction_external_id, value_date, account_external_id,
 			continue
 		}
 		amt := netAmount.InexactFloat64()
+		statedCcy, statedAmt := "", ""
+		if decoded, ok := decodeWebTxPayload(payload); ok {
+			statedCcy, statedAmt = counterLegFromNarrative(decoded)
+		}
 		k := groupKey{day: valueDate / 86400, ccy: ccy}
 		groups[k] = append(groups[k], offsetLeg{
 			vetoKey: txID + "@" + acct, txID: txID, acct: acct, amt: amt,
+			day: k.day, ccy: ccy, statedCcy: statedCcy, statedAmt: statedAmt,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -1135,6 +1211,7 @@ SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
 			k := groupKey{day: ts / 86400, ccy: c}
 			groups[k] = append(groups[k], offsetLeg{
 				vetoKey: eventID, psnLeg: true, txID: eventID, acct: acct, amt: amt,
+				day: k.day, ccy: c,
 			})
 		}
 		if err := prows.Err(); err != nil {
@@ -1150,9 +1227,17 @@ SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
 			webVeto[l.vetoKey] = true
 		}
 	}
+	var allLegs []offsetLeg
+	for _, legs := range groups {
+		allLegs = append(allLegs, legs...)
+	}
+	consumed := vetoConversions(allLegs, record)
 	for _, legs := range groups {
 		var debits, credits []offsetLeg
 		for _, l := range legs {
+			if consumed[l.vetoKey] {
+				continue
+			}
 			if l.amt < 0 {
 				debits = append(debits, l)
 			} else if l.amt > 0 {
@@ -1200,6 +1285,98 @@ SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
 		}
 	}
 	return webVeto, psnVeto, nil
+}
+
+// vetoConversions demotes both legs of an own-account move that CONVERTED
+// CURRENCY, and returns the legs it consumed so the phases after it do not
+// pair them with anything else.
+//
+// It is the veto's blind spot, closed. The two phases below it bucket by
+// (day, currency) and match equal, opposite amounts, so neither can see a
+// movement whose two legs are denominated differently — the veto's own note
+// about FX legs says exactly that. And the gate the veto backstops
+// (pdfCashIsExternal) reads a statement-era arrival credit as an interbank
+// arrival on its booking type alone, because the intra-relationship shapes
+// that booking could smuggle in are supposed to be peeled off HERE. A
+// conversion between two accounts of one relationship is precisely such a
+// shape, and until now nothing peeled it: the paying leg was demoted by the
+// gate's conservative default while its receiving twin was promoted to
+// external, which is the one-sided demotion the whole mechanism exists to
+// prevent — a phantom arrival of owner capital, counted as return.
+//
+// The link it reads is the bank's own: on one of the two rows the statement
+// writes what the other row holds, its currency and its figure
+// (counterLegFromNarrative). A description is weaker than the shared
+// transaction number the twin phase uses, so it is guarded harder — the
+// described leg must be the ONLY leg of the day answering to it, and the only
+// one so described. Anything else demotes NOTHING, because a demotion is only
+// safe in pairs.
+func vetoConversions(all []offsetLeg, record func(offsetLeg)) map[string]bool {
+	type ownKey struct {
+		day int64
+		ccy string
+		amt string
+	}
+	key := func(day int64, ccy string, amt float64) ownKey {
+		return ownKey{day, ccy, strconv.FormatFloat(math.Abs(amt), 'f', 2, 64)}
+	}
+	// Ordered before anything is read. The caller flattens a map, and a map
+	// is not an order; the phases after this one tolerate that because they
+	// act within a bucket, but this one reaches across buckets and would
+	// otherwise let two equally eligible legs resolve differently per run.
+	sort.Slice(all, func(i, j int) bool {
+		a, b := all[i], all[j]
+		if a.day != b.day {
+			return a.day < b.day
+		}
+		if a.acct != b.acct {
+			return a.acct < b.acct
+		}
+		return a.vetoKey < b.vetoKey
+	})
+
+	owners, described := map[ownKey]int{}, map[ownKey]int{}
+	at := map[ownKey]int{}
+	stated := func(l offsetLeg) (ownKey, bool) {
+		if l.statedCcy == "" || l.statedAmt == "" {
+			return ownKey{}, false
+		}
+		amt, err := strconv.ParseFloat(l.statedAmt, 64)
+		if err != nil || amt == 0 {
+			return ownKey{}, false
+		}
+		return key(l.day, l.statedCcy, amt), true
+	}
+	for i, l := range all {
+		k := key(l.day, l.ccy, l.amt)
+		owners[k]++
+		at[k] = i
+		if sk, ok := stated(l); ok {
+			described[sk]++
+		}
+	}
+
+	consumed := map[string]bool{}
+	for _, l := range all {
+		if consumed[l.vetoKey] || l.amt == 0 {
+			continue
+		}
+		sk, ok := stated(l)
+		if !ok || owners[sk] != 1 || described[sk] != 1 {
+			continue
+		}
+		other := all[at[sk]]
+		// A movement crosses two accounts and nets out across them. Same
+		// account, same sign, or a leg already spoken for is not one.
+		if other.acct == l.acct || consumed[other.vetoKey] || other.amt == 0 ||
+			(other.amt < 0) == (l.amt < 0) {
+			continue
+		}
+		consumed[l.vetoKey], consumed[other.vetoKey] = true, true
+		record(l)
+		record(other)
+	}
+	return consumed
 }
 
 // buildPSNStartByWebRel resolves the PSN-start cutoff per web
@@ -1499,7 +1676,7 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		return canonical.TxKindSell
 	case "SHARE", "MUTUAL FUNDS", "INVESTMENT FUNDS",
 		"UBS INVESTMENT FUNDS", "STRUCTURED PRODUCTS",
-		"ORDER", "PURCHASE", "SALE",
+		"PURCHASE", "SALE",
 		"PRECIOUS METAL BUY", "PRECIOUS METAL SELL",
 		"BUY PM SPOT W/O VAT", "SELL PM SPOT W/O VAT",
 		"SUBSCRIPTION RIGHT",
@@ -1534,6 +1711,35 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		return canonical.TxKindWithdrawal
 	case "CREDIT UBS TWINT", "REVERSAL UBS TWINT":
 		return canonical.TxKindDeposit
+	// ---- The statement's bare payment order. It is a PAYMENT, not a
+	// securities order, and it sat among the settlements above for long
+	// enough to be worth saying why it does not belong there.
+	//
+	// Every other member of that case names an instrument type — a share,
+	// a fund, a structured product — or spells a buy or a sell outright.
+	// This one names neither, and the rows carrying it say so in every
+	// column the bank fills: no quantity, no price, no instrument, and a
+	// narrative that names the party paid rather than anything bought.
+	// What it pays is usually another account of the same relationship,
+	// frequently in another currency, and the receiving side books the
+	// mirror as a plain credit. The statement era abbreviates to this bare
+	// form what the export feed spells out as "payment order",
+	// "e-banking payment order", "special payment order" — all of which
+	// this classifier already leaves to the direction fallback.
+	//
+	// Named explicitly rather than dropped through to that fallback so the
+	// vocabulary still records the type: the case is the list of booking
+	// types the adapter knows, and a type deleted from it is a type the
+	// adapter has forgotten. The kind is the fallback's, arrived at by the
+	// same rule for the same reason.
+	case "ORDER":
+		switch {
+		case hasCredit && !hasDebit:
+			return canonical.TxKindDeposit
+		case hasDebit && !hasCredit:
+			return canonical.TxKindWithdrawal
+		}
+		return canonical.TxKindOther
 	}
 	// No description_kind hint → use direction. Credit-only
 	// without instrument context = deposit; debit-only =
@@ -1826,7 +2032,7 @@ func webDescription(captionDesc *string, bookingType string, p webTxPayload) *st
 
 // isBookingType reports whether a string is nothing but the bank's own
 // classification of the entry — "Third-Party Charges", "Dividend",
-// "e-banking payment order".
+// "Custody Price".
 //
 // webKind already carries that vocabulary, and reading it there keeps
 // one list rather than two that drift: with neither direction set, a
@@ -1835,6 +2041,17 @@ func webDescription(captionDesc *string, bookingType string, p webTxPayload) *st
 // TxKindOther. So "resolves to something" is exactly "is a booking
 // type", and a type added to the classifier is recognised here for
 // free.
+//
+// ONE BLIND SPOT, and it is structural rather than an oversight: a
+// booking type whose kind comes from the DIRECTION — every payment
+// order, "ORDER" among them — resolves to TxKindOther when asked with
+// no direction, so this returns false for it. Such a type is a booking
+// type by any other measure, and the two callers are written to survive
+// the answer: webKindHint returns the booking type unchanged when
+// neither text is recognised, and the payee refusal in text.go only
+// declines to blank a payee it would have blanked. Widening the probe
+// is not the fix — asked WITH a direction the fallback answers for
+// every string, and then nothing is not a booking type.
 func isBookingType(s string) bool {
 	return strings.TrimSpace(s) != "" &&
 		webKind(s, false, false) != canonical.TxKindOther

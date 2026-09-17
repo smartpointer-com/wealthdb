@@ -84,3 +84,54 @@ func TestASplicedValueIsEncodedRatherThanQuoted(t *testing.T) {
 		t.Error("the splice dropped the keys that were already there")
 	}
 }
+
+// The stated other leg: what the bank writes when a booking converted
+// currency, and the one fact that can join two legs no amount test can
+// compare — a conversion's two legs never carry the same number.
+func TestTheStatedOtherLegIsLiftedOutOfTheNarrative(t *testing.T) {
+	for _, tc := range []struct {
+		name, line, wantCcy, wantAmt string
+	}{
+		{"a figure with a decimal", "HKD 111 222.33 Rate 7.500000", "HKD", "111222.33"},
+		{"a currency with no minor unit", "JPY 3 333 333 Rate 150.0000", "JPY", "3333333"},
+		{"a figure under a thousand", "USD 444.55 Rate 8.000000", "USD", "444.55"},
+		// The same figure without the rate that closes it: a line of
+		// running text that happens to open with three capitals and a
+		// number is not a statement of the other leg.
+		{"no rate closing the line", "GBP 1234,50", "", ""},
+		{"prose around the figure", "PAID GBP 7 777.70 Rate 1.25 TO SOMEONE", "", ""},
+		{"an ordinary narrative line", "EXAMPLE PAYEE; EXAMPLE TOWN", "", ""},
+		{"an empty line", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ccy, amt := counterLegFromNarrative(webTxPayload{Continuation: []string{tc.line}})
+			if ccy != tc.wantCcy || amt != tc.wantAmt {
+				t.Errorf("counter leg = (%q, %q), want (%q, %q)", ccy, amt, tc.wantCcy, tc.wantAmt)
+			}
+		})
+	}
+}
+
+// Both keys or neither: a currency with no figure names no leg, and half a
+// statement spliced into the payload would read downstream as a whole one.
+func TestTheStatedOtherLegReachesThePayloadWholeOrNotAtAll(t *testing.T) {
+	var out map[string]any
+	got := withCounterLeg(json.RawMessage(`{"a":1}`), "HKD", "111222.33")
+	if err := json.Unmarshal(got, &out); err != nil {
+		t.Fatalf("the stamped payload is not an object: %v", err)
+	}
+	if out["counter_currency"] != "HKD" || out["counter_amount"] != "111222.33" {
+		t.Errorf("payload carries (%v, %v), want (HKD, 111222.33)", out["counter_currency"], out["counter_amount"])
+	}
+	for _, tc := range []struct{ name, ccy, amt string }{
+		{"no currency", "", "111222.33"},
+		{"no amount", "HKD", ""},
+		{"neither", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := string(withCounterLeg(json.RawMessage(`{"a":1}`), tc.ccy, tc.amt)); got != `{"a":1}` {
+				t.Errorf("a half-stated leg rewrote the payload: %s", got)
+			}
+		})
+	}
+}

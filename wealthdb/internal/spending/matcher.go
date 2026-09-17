@@ -56,6 +56,12 @@ import (
 //     nothing. It comes from `payload.$.bank_ref` by way of
 //     loadMovementReferences, and only where the source minted that
 //     reference on exactly two rows.
+//   - so is the OTHER LEG the source describes — its currency and its
+//     figure (TransferLeg.CounterCcy / CounterAmt, from
+//     `payload.$.counter_currency` and `$.counter_amount`). Weaker than
+//     a reference, because a description has to be matched rather than
+//     read, and guarded to match; it reaches the conversion whose two
+//     legs share no reference at all.
 //
 // That last one is what reaches a cross-currency own-transfer, and it
 // is worth stating why it can. MatchTransferLegs partitions candidates

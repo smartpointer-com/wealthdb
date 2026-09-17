@@ -100,7 +100,12 @@ func TestWebKindClassification(t *testing.T) {
 		{"pdf ubs funds sell", "UBS INVESTMENT FUNDS", N, C, canonical.TxKindSell},
 		{"pdf purchase", "PURCHASE", D, N, canonical.TxKindBuy},
 		{"pdf sale", "SALE", N, C, canonical.TxKindSell},
-		{"pdf order buy", "ORDER", D, N, canonical.TxKindBuy},
+		// The bare payment order is NOT a securities settlement: the rows
+		// carrying it have no quantity, no price and no instrument, and
+		// name the party paid rather than anything bought. It takes the
+		// direction, like every other payment order the bank books.
+		{"pdf payment order out", "ORDER", D, N, canonical.TxKindWithdrawal},
+		{"pdf payment order in", "ORDER", N, C, canonical.TxKindDeposit},
 		// The mandate management charge is a charge, not a
 		// settlement: it moves cash out and buys nothing, so
 		// classified by direction it booked a purchase of nothing at

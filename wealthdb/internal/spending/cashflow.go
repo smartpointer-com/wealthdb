@@ -80,6 +80,14 @@ type CashflowResult struct {
 	// them carries none until a `reload`, and a count of zero where
 	// pairs are expected is what says the reload has not happened.
 	ReferencePairs int
+	// StatedCounterPairs is how many were paired on the OTHER LEG the
+	// source described — its currency and its figure — rather than on a
+	// reference or on amount and day. It is the road that reaches a
+	// currency conversion the source stamped no reference on, and it is
+	// counted separately because it is the weakest of the three: a
+	// description is matched rather than read, so a number that grows
+	// out of proportion to the references is the shape to look at.
+	StatedCounterPairs int
 	// AmbiguousReferences is how many (source, reference) groups were
 	// REFUSED because the source had stamped the same reference on
 	// MORE than two rows — so it named something, and what it named

@@ -472,17 +472,21 @@ bank), same-**account** pairing is allowed too (`AllowSameOwner`),
 whether or not spending is scoped to it, and amounts and currencies
 are **native**.
 
-The core pairs in **three phases**, each withdrawing the legs it claims
+The core pairs in **four phases**, each withdrawing the legs it claims
 before the next one looks, in the order of what the evidence is worth:
 
 1. **the override ledger** — the holder naming two rows as one movement;
 2. **a shared reference** — the source stamping one transaction number
    on both halves (*The reference road*, below);
-3. **amounts** — the greedy banded pass, which is everything the data
+3. **a described counter leg** — the source writing, on one row, the
+   currency and figure the other row holds (*The reference road*,
+   below);
+4. **amounts** — the greedy banded pass, which is everything the data
    says when nothing has said it outright.
 
-Only the third is banded. `window_days` and `tolerance_pct` bound a
-guess; the first two assert, so there is no band to draw around them.
+Only the fourth is banded. `window_days` and `tolerance_pct` bound a
+guess; the first three read what the holder or the source said, so
+there is no band to draw around them.
 
 Same-account pairing is the one knob the returns caller leaves off. A
 withdrawal and a deposit of the same amount on the same account within
@@ -627,11 +631,40 @@ the payload, so a source loaded before the adapter that stamps them
 carries none until a `reload`, and a count of zero where pairs are
 expected is what says so.
 
+#### When the source describes the other leg instead
+
+A reference is READ. A **description** — "this became CCY 1 234.56" —
+must be MATCHED against a row that answers to it, and two conversions
+of that size on one day would answer equally. It is the weakest of the
+three roads and it is guarded hardest: the described leg must be the
+**only** leg answering and the **only** leg so described, on the same
+day, on another account of the same source. Anything else pairs
+nothing.
+
+It earns its place because it reaches what neither sibling can. A bank
+converting between two of the holder's own accounts may stamp no
+shared reference at all — a statement reconstructed from a printed
+page carries none — while the two figures differ by the rate, so the
+amount pass is blind to it too. The sentence in the narrative is then
+the only link the two rows have.
+
+One consequence is load-bearing beyond the pairing: **a leg the source
+describes may not pair with its own account.** A description places
+this leg's other half elsewhere, so it is not half of a same-account
+round trip; without that, a description the phase could not resolve
+would fall through to the amount pass, which might hand the leg the
+credit sitting on its own account — a pair the source has already
+contradicted, and one that takes that credit from the transfer it
+belongs to.
+
 **What is still out of reach:** a movement whose source stamps no
-reference on it, or stamps one its other rows also carry. Those stay
-one-legged and are left to the rule tier, and `wealthdb categorize`
-surfaces them as *cross-currency near-pairs* rather than pretending to
-fix them.
+reference and describes no counter leg, or whose description more than
+one row answers. A chain — a same-currency transfer into an account
+followed by a conversion out of it — is the shape that produces the
+second: three rows then carry the described figure and none can be
+told from the others. Those stay one-legged and are left to the rule
+tier, and `wealthdb categorize` surfaces them as *cross-currency
+near-pairs* rather than pretending to fix them.
 
 That residue has a sharp edge once a card IS collected. A card ledger
 mints its own ids, so the bank-side payment order and the card's record

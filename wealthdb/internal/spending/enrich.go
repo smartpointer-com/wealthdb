@@ -260,6 +260,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	pairs := matchTransferPairs(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides)
 	matched := matchedPartners(pairs)
 	res.Cashflow.ReferencePairs = countPairsBy(pairs, gold.MatchedByReference)
+	res.Cashflow.StatedCounterPairs = countPairsBy(pairs, gold.MatchedByStatedCounter)
 	res.Cashflow.AmbiguousReferences = ambiguousRefs
 
 	// Read once and shared, for the matcher's reason: where a movement
@@ -620,6 +621,67 @@ func loadMovementReferences(ctx context.Context, tx querier) (map[txKey]string, 
 	return out, len(ambiguous), rows.Err()
 }
 
+// statedCounterLeg is the other leg of a movement as the source describes it:
+// the currency the money became, or came from, and the figure.
+type statedCounterLeg struct {
+	currency string
+	amount   float64
+}
+
+// loadStatedCounterLegs reads, per transaction, the OTHER LEG the source
+// itself described — `payload.$.counter_currency` and `$.counter_amount`.
+//
+// It is the third thing a source can say about where a movement went, and the
+// weakest of the three. A reference NAMES the movement, so two legs carrying
+// it are one movement and nothing more need be shown. A counter account names
+// the far ACCOUNT, which gold either holds or does not. A described leg names
+// neither: it says only "the other side of this booking was CCY 1234.56", and
+// something still has to find the row that answers.
+//
+// Its worth is that it reaches what neither of the others can. A bank
+// converting between two accounts of one holder may stamp no shared reference
+// — a statement reconstructed from a printed page carries none at all — and
+// name no counter account, while the two figures differ by the rate, so no
+// tolerance can bring them together. The sentence in the narrative is then
+// the only link between the two rows there is.
+//
+// UNLIKE the reference road, THE CENSUS IS NOT HERE. The reference query
+// refuses a reference the source did not mint per movement, because a leg
+// carrying an over-used reference must reach the matcher looking like a leg
+// carrying none. A description is different: the matcher needs to know a leg
+// was described EVEN WHEN THE DESCRIPTION RESOLVES TO NOTHING, because the
+// fact that some narrative places this leg's other half on another account,
+// in another currency, is itself a reason to keep it away from the credit
+// sitting on its own account. Filtered here, that fact would be gone before
+// the matcher could use it, and an unresolvable description would silently
+// become a same-account round trip. So this reads the description as written
+// and matchStatedCounters does all the counting, over the legs it was
+// actually offered.
+func loadStatedCounterLegs(ctx context.Context, tx querier) (map[txKey]statedCounterLeg, error) {
+	rows, err := tx.QueryContext(ctx, `
+        SELECT silver_source_id, transaction_external_id,
+               json_extract_string(payload, '$.counter_currency'),
+               TRY_CAST(json_extract_string(payload, '$.counter_amount') AS DOUBLE)
+          FROM transactions
+         WHERE json_extract_string(payload, '$.counter_currency') IS NOT NULL
+           AND json_extract_string(payload, '$.counter_currency') <> ''
+           AND TRY_CAST(json_extract_string(payload, '$.counter_amount') AS DOUBLE) IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("spending: read stated counter legs: %w", err)
+	}
+	defer rows.Close()
+	out := map[txKey]statedCounterLeg{}
+	for rows.Next() {
+		var k txKey
+		var leg statedCounterLeg
+		if err := rows.Scan(&k.source, &k.txID, &leg.currency, &leg.amount); err != nil {
+			return nil, fmt.Errorf("spending: scan stated counter legs: %w", err)
+		}
+		out[k] = leg
+	}
+	return out, rows.Err()
+}
+
 func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,
@@ -673,6 +735,10 @@ func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[t
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	counters, err := loadStatedCounterLegs(ctx, tx)
+	if err != nil {
+		return nil, nil, 0, err
+	}
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, account_external_id, transaction_external_id,
                occurred_at, currency, CAST(net_amount AS DOUBLE),
@@ -707,6 +773,9 @@ func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[t
 		leg.Rail, leg.RailPartner = legRail(row.counterparty, row.description)
 		row.key = txKey{leg.Group, leg.ID}
 		leg.Ref = refs[row.key]
+		if c, ok := counters[row.key]; ok {
+			leg.CounterCcy, leg.CounterAmt = c.currency, c.amount
+		}
 		legs = append(legs, leg)
 		narratives[row.key] = row
 	}
