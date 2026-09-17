@@ -689,3 +689,32 @@ func TestMigration0085DDLIsRerunnable(t *testing.T) {
 		t.Error("the replayed base lost a line")
 	}
 }
+
+// TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing pins the
+// one exception to "the outflow leaves are the spending PRIMARIES".
+//
+// The rule earns its keep: ninety detailed values would make a diagram
+// nobody can read. But `GENERAL_SERVICES` is a catch-all rather than a
+// category, and the value filed under it for school fees is a bigger
+// line in most households than several primaries that do get an edge of
+// their own. So that one value is promoted, and its neighbours are not.
+func TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+
+	lines := []line{
+		{id: "L-SCHOOL", account: "CASH", kind: "withdrawal", amount: -9000,
+			spend: "GENERAL_SERVICES_EDUCATION",
+			want:  "operating_out.consumption.GENERAL_SERVICES_EDUCATION",
+			why:   "school fees are comparable to a home improvement, not to dry cleaning"},
+		{id: "L-SIBLING", account: "CASH", kind: "withdrawal", amount: -60,
+			spend: "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+			want:  "operating_out.consumption.GENERAL_SERVICES",
+			why:   "everything else under the catch-all still groups by primary"},
+		{id: "L-HOME", account: "CASH", kind: "withdrawal", amount: -4000,
+			spend: "HOME_IMPROVEMENT_REPAIR_AND_MAINTENANCE",
+			want:  "operating_out.consumption.HOME_IMPROVEMENT",
+			why:   "a primary that describes its members is left alone"},
+	}
+	check(t, seedLines(t, db, ctx, lines), lines)
+}
