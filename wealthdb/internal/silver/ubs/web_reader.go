@@ -545,7 +545,20 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// IBAN above strikes: the adapter knows which of its feeds said
 		// what, and gold reads one field. Only a mortgage silver already
 		// holds resolves — a stamp for anything else finds nothing.
-		if p.CounterAccount == "" {
+		//
+		// The STATEMENT era needs the same resolution for the opposite
+		// reason. Its parser fills the field, but with the stamp's own
+		// text — the mortgage's name, not the id silver holds it under —
+		// so the field looked answered and joined to nothing. A stamp is
+		// therefore run through the index whether it arrived in the
+		// counter account or only in the narrative, and the id replaces
+		// the name in both.
+		statedMortgage := ""
+		if k := mortgageRefFromNarrative(p.CounterAccount); k != "" {
+			if id := mortgageAccounts[k]; id != "" {
+				statedMortgage, p.CounterAccount = p.CounterAccount, id
+			}
+		} else if p.CounterAccount == "" {
 			if k := mortgageRefFromNarrative(p.Description2); k != "" {
 				p.CounterAccount = mortgageAccounts[k]
 			}
@@ -575,7 +588,9 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// The verdict is stamped here, before the sign is pinned: a
 		// payload that cannot carry it degrades to the older demotion,
 		// and the sign must then be read off the kind the row ENDS with.
-		rowPayload := withBankRef(withCounterAccount(json.RawMessage(payload), p.CounterAccount), webBankRef(txID))
+		rowPayload := withBankRef(withCounterAccount(
+			withResolvedMortgage(json.RawMessage(payload), statedMortgage, p.CounterAccount),
+			p.CounterAccount), webBankRef(txID))
 		counterCcy, counterAmt := counterLegFromNarrative(p)
 		rowPayload = withCounterLeg(rowPayload, counterCcy, counterAmt)
 		if returnsInternal {
@@ -800,6 +815,38 @@ const counterAccountKey = `"counter_account":`
 // derived value from displacing a stated one.
 func withCounterAccount(payload json.RawMessage, iban string) json.RawMessage {
 	return spliceStringField(string(payload), counterAccountKey, iban)
+}
+
+// withResolvedMortgage rewrites a STATED counter account that names a
+// mortgage in prose to the id silver holds that mortgage under.
+//
+// It replaces where withCounterAccount refuses to, and what is being
+// replaced is the difference. That function guards the statement
+// parser's answer against a value derived from free text. This one
+// touches no derived value at all: it rewrites the parser's own answer
+// from the mortgage's NAME to the mortgage's ID — the same fact, in the
+// spelling every consumer joins on. A name nothing can join to is not
+// an answer worth protecting, and leaving it made the field look
+// resolved while resolving to nothing.
+//
+// Surgical on purpose. The stamp occurs in the narrative lines too,
+// where it belongs and is what the bank printed; only the value of the
+// counter account key moves, and the rest of the payload stays the
+// bytes the collector wrote.
+func withResolvedMortgage(payload json.RawMessage, stamp, id string) json.RawMessage {
+	if stamp == "" || id == "" || stamp == id {
+		return payload
+	}
+	encoded, err := json.Marshal(id)
+	if err != nil {
+		return payload
+	}
+	re, err := regexp.Compile(`"counter_account"\s*:\s*"` + regexp.QuoteMeta(stamp) + `"`)
+	if err != nil {
+		return payload
+	}
+	return json.RawMessage(re.ReplaceAllLiteralString(
+		string(payload), `"counter_account":`+string(encoded)))
 }
 
 // bankRefKey is the payload key the MT940 feed already writes its `:61:`

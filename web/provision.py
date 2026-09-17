@@ -1639,7 +1639,15 @@ def question_defs(db_id, mid):
             "whole or per asset class per the Investing picker.",
             _cashflow_sankey_sql(cf_where_nosec, cf_val),
             {"sankey.source": "source", "sankey.target": "target",
-             "sankey.value": "value"}, section=False),
+             "sankey.value": "value",
+             # Metabase defaults this to "left", which lays a node out
+             # at the depth its INCOMING edge puts it at. A class with
+             # no leaves then sits on the middle level as a dead end
+             # beside the classes that do have leaves, and the diagram
+             # reads as though it were one. "justify" is left alignment
+             # with one change: a node with no outgoing edge moves to
+             # the last level, where every other ending sits.
+             "sankey.node_align": "justify"}, section=False),
         "Cash flow statement by month": cashflow_native(
             "Cash flow statement by month", "combo",
             "The statement per month: operating, investing, financing and "
@@ -2223,19 +2231,35 @@ def _cashflow_atoms_cte(where, sum_expr):
         "WITH n AS (\n" + _cashflow_nodes(where, sum_expr) + "),\n"
         "cls AS (SELECT section, class, sum(v) AS net FROM n GROUP BY 1, 2\n"
         "        UNION ALL SELECT 'cash', 'Cash', -sum(v) FROM n),\n"
-        # The backlog class IS its own leaf, so it attaches to the hub
-        # directly: a class drawn into a leaf of the same name is a
-        # self-edge, which a Sankey renders as a node pointing at itself.
+        # A class drawn into a leaf of the same NAME is a self-edge,
+        # which a Sankey renders as a node pointing at itself, so it
+        # attaches to the hub directly instead. That rule is stated as
+        # itself rather than left to a list of sections and class names
+        # to imply — the backlog class IS its own leaf, and so is every
+        # vehicle class, and both fall out of `class <> grp` without
+        # being named. The list had also excluded financing, which HAS
+        # something finer to say now that a mortgage instalment splits
+        # into interest and amortisation, and no amount of splitting it
+        # would have drawn.
+        #
+        # Investing stays out deliberately: the Investing picker rather
+        # than a level is what opens it.
         "leaf AS (SELECT section, class, grp, sum(v) AS net FROM n\n"
-        "          WHERE section IN ('operating_in', 'operating_out')\n"
-        "            AND class NOT IN ('Uncategorised in', 'Uncategorised out')\n"
+        "          WHERE section IN ('operating_in', 'operating_out', 'financing')\n"
+        "            AND class <> grp\n"
         "          GROUP BY 1, 2, 3),\n"
         "att AS (SELECT l.*, c.net AS cnet,\n"
         "               (l.net > 0 AND c.net > 0) OR (l.net < 0 AND c.net < 0) AS stays\n"
         "          FROM leaf l JOIN cls c ON c.section = l.section AND c.class = l.class),\n"
-        "atoms AS (SELECT class AS node, net FROM cls\n"
-        "           WHERE section NOT IN ('operating_in', 'operating_out')\n"
-        "              OR class IN ('Uncategorised in', 'Uncategorised out')\n"
+        # A class enters the hub in its own right exactly when it has
+        # no leaves to enter through. Spelled as a section list this
+        # stopped agreeing with the leaf rule the moment financing grew
+        # leaves: the class then entered BOTH here and as the sum of its
+        # leaves below, and the diagram drew the same edge twice.
+        "atoms AS (SELECT c.class AS node, c.net FROM cls c\n"
+        "           WHERE NOT EXISTS (SELECT 1 FROM att a\n"
+        "                              WHERE a.section = c.section\n"
+        "                                AND a.class = c.class)\n"
         "          UNION ALL SELECT grp, CASE WHEN stays THEN 0 ELSE net END FROM att\n"
         "          UNION ALL SELECT class, sum(CASE WHEN stays THEN net ELSE 0 END)\n"
         "                      FROM att GROUP BY 1),\n"
@@ -2253,10 +2277,12 @@ def _cashflow_sankey_sql(where, sum_expr, share=False):
     the `report_cashflow_sankey` macro's, in the three columns the BI
     layer's Sankey visualisation reads.
 
-    The operating sections alone get a leaf stage: the design draws
-    investing, financing, the vehicles and cash attached to the hub
-    directly, and the Investing picker rather than a level is what opens
-    the investing one. A leaf whose net runs opposite to its class
+    A class gets a leaf stage when it has something finer to say than
+    its own name — the operating sections, and financing since a
+    mortgage instalment splits into interest and amortisation. The
+    vehicles and cash have nothing finer and attach to the hub directly;
+    investing is held back deliberately, the Investing picker rather
+    than a level being what opens it. A leaf whose net runs opposite to its class
     attaches to the hub directly too, and its class then carries only
     the leaves that stayed with it — so every stage conserves flow and
     no node appears twice.
@@ -2756,7 +2782,7 @@ def cashflow_privacy_defs(db_id):
         "diagram normalised rather than redacted.",
         _cashflow_sankey_sql(where_nosec, val, share=True),
         {"sankey.source": "source", "sankey.target": "target",
-         "sankey.value": "value"}, section=False)
+         "sankey.value": "value", "sankey.node_align": "justify"}, section=False)
 
     cashflow_card(privacy_name("Cash flow statement by month"), "combo",
         "The statement per month, each section as % of the window's "
@@ -3598,14 +3624,30 @@ def ensure_database(base, sid, db_name, gold_path):
     when several history-heavy dashboard tiles query concurrently. Both
     keys land as instance-level DuckDB config (the driver forwards
     unknown detail keys as JDBC properties); threads is capped because
-    peak memory scales with per-query parallelism. Spill goes to the
+    peak memory scales with per-query parallelism.
+
+    The cap is INSTANCE-level, so every tile of a dashboard shares it,
+    and a dashboard opens by firing all of its tiles at once. It was set
+    below what its own busiest page needs: the cash flow tiles each scan
+    the statement over all history, and the twelve of them together
+    exhausted a 2 GB pool, which surfaced as "There was a problem
+    displaying this chart" on most of the page. Measured against that
+    page, at eight threads, a 2 GB pool serves six such tiles and fails
+    around nine of twelve; 3 GB serves twelve and fails at sixteen;
+    4 GB serves twenty. Four is the value here because a dashboard that
+    gains a tile should not take the page down.
+
+    Lowering `threads` instead does NOT trade off the same way — it
+    makes matters worse, because a query that cannot parallelise holds
+    its intermediates longer. Both were measured before this was
+    raised. Spill goes to the
     driver's hard-wired "<database_file>.tmp", which web/web mounts
     writable. Do NOT move these into init_sql: that runs per connection,
     and DuckDB refuses to re-SET a used temp_directory, which breaks
     every query after the first connection cycle ("" converges the key
     away from older provisions)."""
     details = {"database_file": gold_path, "read_only": True,
-               "memory_limit": "2GB", "threads": "8", "init_sql": ""}
+               "memory_limit": "4GB", "threads": "8", "init_sql": ""}
 
     db_id, cur = None, None
     _, dbs = req(base, "/api/database", session=sid)

@@ -309,12 +309,15 @@ var builtinRules = []spendRule{
 		// lands — rather than as a crossing to an account nobody
 		// collects.
 		//
-		// TODO(cashflow): part of that payment — the interest — really
-		// IS consumed, and only the principal share is the own-account
-		// move. The transaction does not carry the split, and deriving
-		// it needs an amortisation view the product has no place for
-		// yet; the estimator it would need — the mortgage balance's
-		// observed change between snapshots — is a cashflow follow-up.
+		// Part of that payment — the interest — really IS consumed,
+		// and only the principal share is the own-account move. The
+		// transaction does not carry the split and no narrative yields
+		// it, so the cash flow statement derives it from the mortgage
+		// balance's observed change between snapshots (migration 0091,
+		// `cashflow_mortgage_principal`). The rule stays whole: it
+		// places the payment and names the class, and the statement
+		// splits the amount. A rule cannot do the splitting — it sees
+		// one row's text and never the lender's balance.
 		detailed: canonical.SpendDetailedInternalTransfer,
 		farClass: string(canonical.ClassMortgage),
 		tokens:   []string{"MORTGAGE", "HYPOTHEK", "HYPOTHEKARZINS"},

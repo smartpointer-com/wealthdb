@@ -390,13 +390,44 @@ thing: `trades` and `private_capital` on the investing classes, and
 vehicle — whose verdict is `internal_transfer`, which names a movement
 rather than a kind of giving or a kind of receipt.
 
-On the vehicles, on financing's `mortgage` and on cash the class **is**
-the leaf: nothing finer exists to say. `loans` is the one exception —
-its two leaves are `loan_proceeds` and `debt_repayment`, money borrowed
-against money repaid, which is the distinction the class exists to
-carry. The diagram draws all of them attached to the hub rather than
-through a leaf stage, so the leaf level shows in `flows --level group`
-and not in the Sankey.
+On the vehicles and on cash the class **is** the leaf: nothing finer
+exists to say, so the diagram draws them attached to the hub and their
+leaf level shows in `flows --level group` and not in the Sankey. A
+class enters the hub in its own right exactly when it has no leaves;
+where it has them, it enters as their sum and they draw below it.
+
+Financing has leaves on both its classes. `loans` splits into
+`loan_proceeds` and `debt_repayment` — money borrowed against money
+repaid, which is the distinction the class exists to carry.
+
+`mortgage` splits into **`Mortgage interest`** and **`Mortgage
+amortization`**, and they are not the same kind of thing. Interest is
+consumed: it buys the use of the money and is gone. Principal is not
+spending at all — it moves value from one side of the balance sheet to
+the other, and the household is no poorer for it. Summed into one node
+they overstate what was consumed by whatever was repaid — and in any
+period that happens to carry an extraordinary repayment, that is most
+of the node.
+
+**The split is derived, and it has to be.** No bank prints the share,
+and the narrative cannot be made to yield it: a tranche may bundle its
+scheduled amortisation into the same row as its interest under one
+booking type, and a closing may book the principal and the final
+interest as two rows identical in every field. So the rule reads
+neither. Whatever a period retired of the mortgage's own outstanding
+balance was principal, and the rest of what was paid into it that
+period was interest; within a period the principal goes to the largest
+instalment first, capped at its face value, which is the order the two
+really occur in on a closing. The balance is **observed** — the
+lender's own figure, carried as the mortgage account's position — which
+makes this an estimator of the split and not of the debt.
+
+A mortgage the product does not hold has no balance to read, so its
+instalments keep their whole amount and draw as interest: the
+conservative direction, since it overstates what was consumed rather
+than inventing a repayment. `cashflow_txn_nodes` still emits one row
+per transaction, so the reconciliation memo is untouched; the split
+happens in `cashflow_lines_base`, and the two shares sum to the row.
 
 ### The six new taxonomy values
 
@@ -849,26 +880,32 @@ each naming a way the statement can be quietly wrong:
 
 ## 11. Open follow-ups
 
-1. **The interest-versus-principal split.** Cashflow gives it a home
-   for the first time — interest to spending, principal to financing —
-   and an estimator that did not exist before: the mortgage balance's
-   observed change between snapshots. Two properties of that series
-   make a naive reading wrong. A quarter-end snapshot is the balance
-   **before** that day's amortization posts, so a straight difference
-   overstates by one instalment; and a tranche that closes stops being
-   snapshotted, so its final repayment has no later balance to bracket
-   and has to be read from the account's disappearance.
+1. **The interest-versus-principal split — DONE** (migration 0091,
+   §5). The estimator is the one this note predicted, and both traps it
+   named are real and handled: a snapshot is the balance **before** that
+   day's instalment posts, so an interval runs from one observation up
+   to (not including) the next; and a tranche that closes stops being
+   snapshotted, so its last interval retires whatever was left, which is
+   read from the account's disappearance from its source's latest
+   snapshot.
 
-   Until the split lands, a mortgage payment reaches `financing ·
-   Mortgage` whole, interest included. It gets there through the
-   built-in narrative rule in `rules.go`, which stamps
-   `far_class = 'mortgage'` on a description carrying MORTGAGE /
-   HYPOTHEK / HYPOTHEKARZINS — a far CLASS rather than a far account,
-   which is why the section needs no dimension row and no config. The
-   cost of that is a coverage which is a property of what a source
-   prints: a feed that stops carrying the token in `description` drops
-   its mortgage rows into `vehicles · Untracked accounts`, and nothing
-   in the statement says that is what happened.
+   One deviation from the sketch above. It proposed interest to
+   spending and principal to financing. Both stay in **financing**, as
+   two leaves under `Mortgage`. Moving interest to spending would put
+   one half of a payment in a section the other half is netted against,
+   and a reader comparing years would see consumption jump on a
+   refinancing that changed nothing about the household. The leaves say
+   which is which without moving either.
+
+   The rule in `rules.go` is unchanged and still places the payment:
+   a rule sees one row's text and never the lender's balance, so it
+   names the class and the statement splits the amount. The coverage
+   note below still holds — a feed that stops carrying MORTGAGE /
+   HYPOTHEK / HYPOTHEKARZINS in `description` drops its mortgage rows
+   into `vehicles · Untracked accounts`, and nothing in the statement
+   says that is what happened. A mortgage the product does not hold now
+   has a second, quieter cost: no balance to read means no split, and
+   the instalment draws whole as interest.
 2. **A per-vehicle statement.** The same statement with the edge drawn
    around one plan or one trust. Every mechanism here applies
    unchanged; only the boundary moves. It is where a payroll-funded

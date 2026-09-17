@@ -1129,6 +1129,14 @@ check("the diagram is wired as a Sankey over source/target/value",
       and _sankey_viz.get("sankey.value") == "value", _sankey_viz)
 check("...and it computes the hub where the pickers apply",
       "hub AS" in _cf_sql["Cash flow"] and "Household" in _cf_sql["Cash flow"])
+# Metabase lays a node out at the depth its INCOMING edge puts it at, so
+# a class with no leaves would sit on the middle level as a dead end
+# beside the classes that have them, and read as though it were one.
+_twin_sankey_viz = p.privacy_card_defs(1, MID)[p.privacy_name("Cash flow")][4]
+for _n, _viz in (("Cash flow", _sankey_viz),
+                 ("Cash flow (privacy)", _twin_sankey_viz)):
+    check(f"'{_n}' draws every ending on the last level",
+          _viz.get("sankey.node_align") == "justify", _viz)
 
 # No account picker, and no tile that groups by one. The household
 # boundary is what separates the household's cash flow from its
@@ -1212,14 +1220,23 @@ for _n in ("Operating in (privacy)", "Operating out (privacy)",
           _cf_twin_sql[_n][:200])
 
 # A Sankey cannot render an edge whose two ends are the same node, and
-# the backlog class IS its own leaf. The card must therefore keep it out
-# of the leaf stage and attach it to the hub directly.
+# several classes ARE their own leaf — the backlog, and every vehicle
+# class. The card keeps them out of the leaf stage and attaches them to
+# the hub directly.
+#
+# The rule is asserted as the rule, not as the list of names it used to
+# be spelled with. That list had drifted: it also excluded financing,
+# which HAS something finer to say now that a mortgage instalment splits
+# into interest and amortisation, so no amount of splitting one would
+# have drawn a leaf.
 for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
                ("Cash flow (privacy)", _cf_twin_sql["Cash flow (privacy)"])):
-    check(f"'{_n}' keeps the backlog out of the leaf stage",
-          "class NOT IN ('Uncategorised in', 'Uncategorised out')" in _q, _q[:400])
-    check(f"...and attaches it to the hub instead",
-          "OR class IN ('Uncategorised in', 'Uncategorised out')" in _q, _q[:400])
+    check(f"'{_n}' keeps a class that is its own leaf out of the leaf stage",
+          "AND class <> grp" in _q, _q[:400])
+    check("...and attaches such a class to the hub instead",
+          "NOT EXISTS" in _q, _q[:400])
+    check("...and gives financing a leaf stage, mortgage having two",
+          "'operating_in', 'operating_out', 'financing'" in _q, _q[:400])
 
 check("web_cashflow is one of the views provisioning requires",
       "web_cashflow" in p.web_views_wanted(), p.web_views_wanted())

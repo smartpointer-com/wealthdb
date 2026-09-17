@@ -149,3 +149,50 @@ func TestAMortgagePaymentReachesGoldNamingItsMortgage(t *testing.T) {
 			payloads["GROCERIES@"+vetoAcctA])
 	}
 }
+
+// TestTheStatementEraResolvesItsMortgageStampToo is the same fact
+// arriving by the other door, and the reason it went unnoticed for so
+// long: the statement parser FILLS the counter account, so the field
+// looked answered. What it fills it with is the stamp's own text — the
+// mortgage's name — where every consumer joins on the id silver holds
+// it under, so the field resolved to nothing at all.
+//
+// It matters more than a missing name. The cashflow split reads a
+// mortgage's own outstanding balance to tell interest from principal,
+// and it can only find that balance through the account the row names;
+// a row naming the mortgage in prose reaches it as a payment to nobody
+// and keeps its whole amount as interest.
+func TestTheStatementEraResolvesItsMortgageStampToo(t *testing.T) {
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, vetoAcctA)
+	if _, err := r.db.Exec(`
+        CREATE TABLE mortgages (snapshot_at INTEGER, account_external_id TEXT,
+            banking_relationship_id TEXT, portfolio_external_id TEXT,
+            currency_iso TEXT, description TEXT, payload TEXT);
+        INSERT INTO mortgages (snapshot_at, account_external_id, currency_iso, payload)
+        VALUES (1000, ?, 'CHF', '{}')`, synMortgageID); err != nil {
+		t.Fatalf("seed mortgages: %v", err)
+	}
+	// The statement era as it writes one: the parser's own
+	// counter_account field, carrying the stamp text rather than an id.
+	seedWebTxRaw(t, r, statementIDPrefix+"AMORT", vetoAcctA, vetoDay1, "CHF", -321987.65, "MATURITY",
+		`{"source":"account_statement_pdf","booking_type":"MATURITY",`+
+			`"counter_account":"`+synMortgageStamp+`","continuation":["`+synMortgageStamp+`"]}`)
+	// A stated IBAN is not a mortgage stamp and must survive untouched:
+	// the index is asked only about text shaped like a stamp.
+	seedWebTxRaw(t, r, statementIDPrefix+"WIRE", vetoAcctA, vetoDay1, "CHF", -50.00, "E-BANKING PAYMENT ORDER",
+		`{"source":"account_statement_pdf","booking_type":"E-BANKING PAYMENT ORDER",`+
+			`"counter_account":"`+vetoAcctB+`"}`)
+
+	payloads := emittedPayloads(t, r)
+	if !strings.Contains(payloads[statementIDPrefix+"AMORT@"+vetoAcctA],
+		`"counter_account":"`+synMortgageID+`"`) {
+		t.Errorf("the statement-era payment still names its mortgage in prose: %s",
+			payloads[statementIDPrefix+"AMORT@"+vetoAcctA])
+	}
+	if !strings.Contains(payloads[statementIDPrefix+"WIRE@"+vetoAcctA],
+		`"counter_account":"`+vetoAcctB+`"`) {
+		t.Errorf("a stated IBAN was rewritten: %s",
+			payloads[statementIDPrefix+"WIRE@"+vetoAcctA])
+	}
+}
