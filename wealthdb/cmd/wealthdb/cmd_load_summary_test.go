@@ -110,8 +110,8 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 	for _, want := range []string{
 		"cashflow: household boundary stamped — 23 wrapper(s), 1 overridden, 2 account(s) " +
 			"out of the pool; 17 own-account move(s) carry a far account " +
-			"(5 of them from the source's own statement, 3 paired on a reference the source " +
-			"stamped on both legs, 4 on the other leg it described)",
+			"(5 stated by the source itself); the matcher asserted 3 pair(s) on a shared " +
+			"reference and 4 on a described counter leg",
 		"cashflow: 2 source reference(s) named more than one movement",
 		"cashflow: 4 pooled account(s) have no tax wrapper",
 		"`cashflow.accounts` keys on the account id",

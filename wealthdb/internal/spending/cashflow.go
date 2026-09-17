@@ -69,8 +69,9 @@ type CashflowResult struct {
 	StatedFarAccounts int
 	// ReferencePairs is how many own-account moves were paired on the
 	// reference their source stamped on both legs rather than on
-	// amount and day — the third road, and the only one that reaches a
-	// movement whose two legs are denominated differently.
+	// amount and day — of the ways the matcher joins two legs the
+	// strongest short of the holder's own word, and the only one that
+	// reaches a movement whose two legs are denominated differently.
 	//
 	// It is counted for the same reason StatedFarAccounts is: a road
 	// nobody can see the traffic on is a road nobody can tell has
@@ -84,8 +85,9 @@ type CashflowResult struct {
 	// source described — its currency and its figure — rather than on a
 	// reference or on amount and day. It is the road that reaches a
 	// currency conversion the source stamped no reference on, and it is
-	// counted separately because it is the weakest of the three: a
-	// description is matched rather than read, so a number that grows
+	// counted separately because it is the weakest of the three joins
+	// the matcher asserts on: a description is matched rather than
+	// read, so a number that grows
 	// out of proportion to the references is the shape to look at.
 	StatedCounterPairs int
 	// AmbiguousReferences is how many (source, reference) groups were

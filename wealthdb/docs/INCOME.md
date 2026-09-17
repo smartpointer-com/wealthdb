@@ -584,9 +584,13 @@ one number answers for both.
   payout is NOT this case and is income — see §2: the premium was
   already counted as spending, and nothing links a payout to the
   premiums it answers.
-- **`TODO(cashflow)`**: investment buys and sells, maturities and
-  corporate actions, beside income and spending. The interest-versus-
-  principal split stays where SPENDING.md §10 leaves it.
+- **Investment buys and sells, and maturities, have a home now.** The
+  cash flow statement's investing section reads them beside income and
+  spending ([CASHFLOW.md](CASHFLOW.md) §4). Corporate actions did NOT
+  join them: gold pins no canonical sign for the kind, so the
+  resolution excludes it outright and a per-adapter sign pin is what
+  would change that (CASHFLOW.md §11). The interest-versus-principal
+  split stays where SPENDING.md §10 leaves it.
 - **A rewards credit reaches gold as `refund` today.** Every card adapter
   maps a statement credit to `refund`, being unable to tell one from a
   merchant credit once the issuer's descriptor is gone, so the `reward`

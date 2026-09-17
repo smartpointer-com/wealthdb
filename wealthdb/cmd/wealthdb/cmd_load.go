@@ -219,10 +219,14 @@ func printCashflowSummary(stdout io.Writer, res spending.CashflowResult) {
 	// halves the resolution needs are the boundary and the far
 	// accounts, and a reader checking that a load did its work should
 	// find both in one place.
+	// The two figures count different things and are worded to say so:
+	// far accounts are enrichment ROWS, one per leg, while the matcher
+	// reports PAIRS, each of which writes two of those rows. Read as
+	// subsets of one another they would never add up.
 	fmt.Fprintf(stdout, "cashflow: household boundary stamped — %d wrapper(s), %d overridden, "+
 		"%d account(s) out of the pool; %d own-account move(s) carry a far account "+
-		"(%d of them from the source's own statement, %d paired on a reference the source "+
-		"stamped on both legs, %d on the other leg it described)\n",
+		"(%d stated by the source itself); the matcher asserted %d pair(s) on a shared "+
+		"reference and %d on a described counter leg\n",
 		res.WrapperRows, res.WrapperOverrides, res.ScopeRows, res.FarAccounts,
 		res.StatedFarAccounts, res.ReferencePairs, res.StatedCounterPairs)
 	// Said only when there is something to say. A handful of refused

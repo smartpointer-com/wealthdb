@@ -714,8 +714,11 @@ added for a new jurisdiction would take two edits to reach the
 statement.
 
 `wealthdb load` prints a `cashflow:` block: the boundary stamped, how
-many own-account moves carry a far account, and — loudly — how many
-pooled accounts have no tax wrapper.
+many own-account moves carry a far account and how many of those the
+source stated itself, what the matcher asserted on a shared reference
+and on a described counter leg, and — loudly — how many pooled accounts
+have no tax wrapper. The far accounts are rows, one per leg; the
+matcher's figures are pairs, each writing two of them.
 
 ### After an upgrade, the statement is wrong until a load has run
 
@@ -759,7 +762,23 @@ each naming a way the statement can be quietly wrong:
 1. **The interest-versus-principal split.** Cashflow gives it a home
    for the first time — interest to spending, principal to financing —
    and an estimator that did not exist before: the mortgage balance's
-   observed change between snapshots.
+   observed change between snapshots. Two properties of that series
+   make a naive reading wrong. A quarter-end snapshot is the balance
+   **before** that day's amortization posts, so a straight difference
+   overstates by one instalment; and a tranche that closes stops being
+   snapshotted, so its final repayment has no later balance to bracket
+   and has to be read from the account's disappearance.
+
+   Until the split lands, a mortgage payment reaches `financing ·
+   Mortgage` whole, interest included. It gets there through the
+   built-in narrative rule in `rules.go`, which stamps
+   `far_class = 'mortgage'` on a description carrying MORTGAGE /
+   HYPOTHEK / HYPOTHEKARZINS — a far CLASS rather than a far account,
+   which is why the section needs no dimension row and no config. The
+   cost of that is a coverage which is a property of what a source
+   prints: a feed that stops carrying the token in `description` drops
+   its mortgage rows into `vehicles · Untracked accounts`, and nothing
+   in the statement says that is what happened.
 2. **A per-vehicle statement.** The same statement with the edge drawn
    around one plan or one trust. Every mechanism here applies
    unchanged; only the boundary moves. It is where a payroll-funded
@@ -773,10 +792,12 @@ each naming a way the statement can be quietly wrong:
    income and spending, and the tax they withheld before the household
    saw the money.
 6. **Platform custody deposits**, **reimbursement netting** and the
-   **cross-currency own-account moves no reference reaches**: the two
+   **cross-currency own-account moves no assertion reaches**: the two
    families' standing follow-ups, each of which shows up here too. The
-   third narrowed when the matcher learned to pair on a source's own
-   transaction number; what is left is the movement whose source stamps
-   none, and the card bill whose two feeds share no id space.
+   third narrowed twice — first when the matcher learned to pair on the
+   transaction number a source stamps on both halves, then when it
+   learned to read the counter leg a source describes on one of them.
+   What is left is the movement whose source does neither, and the card
+   bill whose two feeds share no id space.
 7. **Net cash flow on the Wealth Overview**, once the feature has been
    read for a while.

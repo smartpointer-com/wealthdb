@@ -33,7 +33,9 @@ import "strings"
 // own-account move to a tracked AccountKindMortgage (docs/SPENDING.md
 // §2), and an instalment to a lender the product does not track is the
 // `debt_repayment` delta rather than a merchant category.
-// TODO(cashflow): interest-versus-principal split — docs/SPENDING.md §10.
+// TODO(cashflow): interest-versus-principal split — docs/SPENDING.md
+// §10, and docs/CASHFLOW.md §11, where the statement that would consume
+// the split records what it costs to be without it.
 //
 // Sixteen delta values are ours rather than Plaid's and are
 // primary-level (primary == detailed, so they group as their own

@@ -560,7 +560,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// The verdict is stamped here, before the sign is pinned: a
 		// payload that cannot carry it degrades to the older demotion,
 		// and the sign must then be read off the kind the row ENDS with.
-		rowPayload := withBankRef(withCounterAccount(payload, p.CounterAccount), webBankRef(txID))
+		rowPayload := withBankRef(withCounterAccount(json.RawMessage(payload), p.CounterAccount), webBankRef(txID))
 		counterCcy, counterAmt := counterLegFromNarrative(p)
 		rowPayload = withCounterLeg(rowPayload, counterCcy, counterAmt)
 		if returnsInternal {
@@ -730,15 +730,11 @@ func withCounterLeg(payload json.RawMessage, currency, amount string) json.RawMe
 const counterAccountKey = `"counter_account":`
 
 // withCounterAccount stamps a narrative-derived counter account onto a row's
-// payload, by the same splice-after-the-brace rule withReturnsFlow uses and
-// for the same reason: the payload is silver's JSON verbatim and
-// re-marshalling it would reorder every other key.
-//
-// It is written only when the payload does not already carry the key — the
-// statement era's own value is the parser's, and a derived one must never
-// overwrite a stated one.
-func withCounterAccount(payload, iban string) json.RawMessage {
-	return spliceStringField(payload, counterAccountKey, iban)
+// payload. The statement era's own value is the parser's, and spliceStringField
+// refuses to overwrite a key the payload already carries, which is what keeps a
+// derived value from displacing a stated one.
+func withCounterAccount(payload json.RawMessage, iban string) json.RawMessage {
+	return spliceStringField(string(payload), counterAccountKey, iban)
 }
 
 // bankRefKey is the payload key the MT940 feed already writes its `:61:`

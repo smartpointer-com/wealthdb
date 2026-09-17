@@ -71,7 +71,7 @@ func TestTheExportNarrativeYieldsItsCounterAccount(t *testing.T) {
 // answer; a value derived from free text must never replace it.
 func TestAStatedCounterAccountIsNotOverwritten(t *testing.T) {
 	const stated = `{"counter_account":"CH0000000000000000DDD","Description3":"Account no. IBAN: CH0000000000000000CCC;"}`
-	got := string(withCounterAccount(stated, "CH0000000000000000CCC"))
+	got := string(withCounterAccount(json.RawMessage(stated), "CH0000000000000000CCC"))
 	if !strings.Contains(got, "CH0000000000000000DDD") {
 		t.Fatalf("the stated counter account was lost: %s", got)
 	}
@@ -91,7 +91,7 @@ func TestTheDerivedCounterAccountReachesThePayload(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out map[string]any
-			if err := json.Unmarshal(withCounterAccount(tc.payload, iban), &out); err != nil {
+			if err := json.Unmarshal(withCounterAccount(json.RawMessage(tc.payload), iban), &out); err != nil {
 				t.Fatalf("the stamped payload is not an object: %v", err)
 			}
 			if out["counter_account"] != iban {
@@ -101,12 +101,12 @@ func TestTheDerivedCounterAccountReachesThePayload(t *testing.T) {
 	}
 	// Nothing to stamp leaves the payload byte-identical: a row that
 	// names no counter account must not be rewritten at all.
-	if got := string(withCounterAccount(`{"a":1}`, "")); got != `{"a":1}` {
+	if got := string(withCounterAccount(json.RawMessage(`{"a":1}`), "")); got != `{"a":1}` {
 		t.Errorf("an empty counter account rewrote the payload: %s", got)
 	}
 	// A payload that is not an object has nowhere to put the key, and
 	// silently producing malformed JSON would be worse than not trying.
-	if got := string(withCounterAccount(`not json`, iban)); got != `not json` {
+	if got := string(withCounterAccount(json.RawMessage(`not json`), iban)); got != `not json` {
 		t.Errorf("a non-object payload was rewritten: %s", got)
 	}
 }

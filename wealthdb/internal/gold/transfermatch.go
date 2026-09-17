@@ -168,7 +168,7 @@ type TransferMatchPair struct {
 	By            TransferMatchPhase
 }
 
-// TransferMatchPhase names which of MatchTransferLegs' three phases asserted a
+// TransferMatchPhase names which of MatchTransferLegs' four phases asserted a
 // pair, and therefore how strong the claim behind it is.
 //
 // It is carried because an audit of the matcher cannot be read without it. A
@@ -228,7 +228,7 @@ const referenceMatchMaxDays = 90
 
 // MatchTransferLegs pairs debit legs with the credit legs they funded.
 //
-// Pairing runs in three phases over one pool, each withdrawing the legs it
+// Pairing runs in four phases over one pool, each withdrawing the legs it
 // claims before the next one looks. The order is the order of how much the
 // evidence is worth:
 //
@@ -318,10 +318,10 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 	}
 
 	used := make([]bool, len(credits))
-	// claimed marks a debit taken by one of the two phases that assert a pair
-	// outright. Both share it, and the pool is compacted ONCE afterwards, so
-	// the amount pass below sees a debit slice holding only what neither
-	// phase spoke for.
+	// claimed marks a debit taken by one of the three phases that assert a
+	// pair outright. All three share it, and the pool is compacted ONCE
+	// afterwards, so the amount pass below sees a debit slice holding only
+	// what none of them spoke for.
 	claimed := make([]bool, len(debits))
 	var out []TransferMatchPair
 	claim := func(di, ci int, by TransferMatchPhase) {
@@ -414,6 +414,30 @@ func matchForcedPairs(debits, credits []TransferLeg, used, claimed []bool, opts 
 		}
 		claim(di, ci, MatchedByOverride)
 	}
+}
+
+// assertedPairHolds reports whether a pair one of the asserting phases has
+// resolved may actually be claimed.
+//
+// The tests are the same for every phase above the amount pass, and they are
+// why an assertion is not simply obeyed: a source can name a movement it did
+// not make. The credit must still be free, the two legs must sit on different
+// accounts — a leg is not its own counterparty — a zero credit funds nothing,
+// and the holder's own ledger still outranks the source, so a blocked pair
+// stays blocked however plainly the source asserts it.
+//
+// maxDays is the one test that varies, and it varies with the strength of the
+// claim: a reference is an identity and survives a settlement lag, while a
+// description is matched rather than read and is only ever offered against
+// the same day's legs (maxDays 0).
+func assertedPairHolds(d, c TransferLeg, creditUsed bool, maxDays int64, opts TransferMatchOpts) bool {
+	if creditUsed || c.Owner == d.Owner || c.Amt == 0 {
+		return false
+	}
+	if dist := c.Day - d.Day; dist > maxDays || dist < -maxDays {
+		return false
+	}
+	return !opts.Overrides.blocks(d, c)
 }
 
 // matchSharedReferences pairs the legs a source stamped with one reference:
@@ -533,14 +557,7 @@ func matchSharedReferences(debits, credits []TransferLeg, used, claimed []bool, 
 		if e.debits != 1 || e.credits != 1 {
 			continue
 		}
-		c := credits[e.ci]
-		if used[e.ci] || c.Owner == d.Owner || c.Amt == 0 {
-			continue
-		}
-		if dist := c.Day - d.Day; dist > referenceMatchMaxDays || dist < -referenceMatchMaxDays {
-			continue
-		}
-		if opts.Overrides.blocks(d, c) {
+		if !assertedPairHolds(d, credits[e.ci], used[e.ci], referenceMatchMaxDays, opts) {
 			continue
 		}
 		claim(di, e.ci, MatchedByReference)
@@ -607,7 +624,9 @@ func matchStatedCounters(debits, credits []TransferLeg, used, claimed []bool, op
 	// a property of the data rather than of what an earlier phase removed.
 	owners, described := map[legKey]int{}, map[legKey]int{}
 	creditOwning, creditDescribing := map[legKey]int{}, map[legKey]int{}
-	for _, l := range append(append([]TransferLeg{}, debits...), credits...) {
+	allLegs := make([]TransferLeg, 0, len(debits)+len(credits))
+	allLegs = append(append(allLegs, debits...), credits...)
+	for _, l := range allLegs {
 		owners[ownKey(l)]++
 		if k, ok := statedKey(l); ok {
 			described[k]++
@@ -640,14 +659,7 @@ func matchStatedCounters(debits, credits []TransferLeg, used, claimed []bool, op
 		if !ok {
 			ci, ok = resolved(ownKey(d), creditDescribing) // a credit describes the debit
 		}
-		if !ok || used[ci] {
-			continue
-		}
-		c := credits[ci]
-		if c.Owner == d.Owner || c.Amt == 0 || c.Day != d.Day {
-			continue
-		}
-		if opts.Overrides.blocks(d, c) {
+		if !ok || !assertedPairHolds(d, credits[ci], used[ci], 0, opts) {
 			continue
 		}
 		claim(di, ci, MatchedByStatedCounter)
@@ -661,11 +673,9 @@ func matchStatedCounters(debits, credits []TransferLeg, used, claimed []bool, op
 	// account — a pair the source has already contradicted, and one that
 	// takes that credit away from the leg it really belongs to.
 	named := map[string]bool{}
-	for _, l := range append(append([]TransferLeg{}, debits...), credits...) {
-		if k, ok := statedKey(l); ok && described[k] > 0 {
-			named[LegRef{l.Group, l.Owner, l.ID}.key()] = true
-		}
-		if described[ownKey(l)] > 0 {
+	for _, l := range allLegs {
+		k, stated := statedKey(l)
+		if (stated && described[k] > 0) || described[ownKey(l)] > 0 {
 			named[LegRef{l.Group, l.Owner, l.ID}.key()] = true
 		}
 	}

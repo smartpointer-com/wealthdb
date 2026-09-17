@@ -479,17 +479,14 @@ type candidate struct {
 	occurredAt int64
 }
 
-// loadPopulation reads one family's candidates. The two populations
-// project the same columns by construction — the income one adds
-// `instrument_external_id`, which the pass has no use for and does not
-// select — so one query shape serves both.
 // loadStatedCounterAccounts reads, per transaction, the OWN account the
 // source itself named as the other side of the movement.
 //
 // It is the far account arriving by the road that needs only ONE leg. The
-// matcher's roads both need two — joined by amount and day, or by a reference
-// the source stamped on both — and where the product does not collect the far
-// side at all, neither has anything to walk on. This one is the source's own
+// matcher's road needs two however its phases join them — on amount and day,
+// on a reference the source stamped on both, or on the other leg it described
+// — and where the product does not collect the far side at all, none of them
+// has anything to walk on. This one is the source's own
 // statement of where the money went: a counter account in the row's payload,
 // put there by the UBS adapter from whichever of its feeds stated it.
 //
@@ -535,14 +532,15 @@ func loadStatedCounterAccounts(ctx context.Context, tx querier) (map[txKey]strin
 // stamped on BOTH halves of one money movement — the bank's own transaction
 // number, written once and printed on the debit and on the credit alike.
 //
-// It is the far account's third road, and the only one that is an identity
-// rather than an inference. The matcher's road joins two legs by amount and
-// day; the stated counter account (loadStatedCounterAccounts) is the source
-// naming where the money went. This one is the source naming the MOVEMENT,
-// and because it names it rather than describing it, it holds across a
-// currency conversion — where the two legs carry different figures and the
-// amount matcher, which partitions by native currency on purpose, can never
-// bring them together.
+// The far account arrives by two roads (CASHFLOW.md §4): the matcher's, which
+// is a pairing, and the source's, which is the counter account it states
+// outright (loadStatedCounterAccounts). This feeds the first, and of the ways
+// that road joins two legs it is the strongest short of the holder's own
+// word — the only one that is an identity rather than an inference. The
+// source names the MOVEMENT, and because it names it rather than describing
+// it, the join holds across a currency conversion, where the two legs carry
+// different figures and the amount phase, which partitions by native currency
+// on purpose, can never bring them together.
 //
 // The key is `payload.$.bank_ref`, and reading ONE key is the whole reason
 // the adapter writes it. A bank states its reference in as many places as it
@@ -645,7 +643,7 @@ type statedCounterLeg struct {
 // tolerance can bring them together. The sentence in the narrative is then
 // the only link between the two rows there is.
 //
-// UNLIKE the reference road, THE CENSUS IS NOT HERE. The reference query
+// UNLIKE the reference phase, THE CENSUS IS NOT HERE. The reference query
 // refuses a reference the source did not mint per movement, because a leg
 // carrying an over-used reference must reach the matcher looking like a leg
 // carrying none. A description is different: the matcher needs to know a leg
@@ -682,6 +680,10 @@ func loadStatedCounterLegs(ctx context.Context, tx querier) (map[txKey]statedCou
 	return out, rows.Err()
 }
 
+// loadPopulation reads one family's candidates. The two populations
+// project the same columns by construction — the income one adds
+// `instrument_external_id`, which the pass has no use for and does not
+// select — so one query shape serves both.
 func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,

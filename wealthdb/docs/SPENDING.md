@@ -636,10 +636,10 @@ expected is what says so.
 A reference is READ. A **description** — "this became CCY 1 234.56" —
 must be MATCHED against a row that answers to it, and two conversions
 of that size on one day would answer equally. It is the weakest of the
-three roads and it is guarded hardest: the described leg must be the
-**only** leg answering and the **only** leg so described, on the same
-day, on another account of the same source. Anything else pairs
-nothing.
+three joins the matcher asserts on, and it is guarded hardest: the
+described leg must be the **only** leg answering and the **only** leg
+so described, on the same day, on another account of the same source.
+Anything else pairs nothing.
 
 It earns its place because it reaches what neither sibling can. A bank
 converting between two of the holder's own accounts may stamp no
@@ -2116,6 +2116,9 @@ tidies the store — by then the rows have moved on.
   carry the split, and deriving it needs an amortisation view the
   product has no place for yet. Recorded in `rules.go` and in the
   taxonomy header beside the `LOAN_PAYMENTS` drop.
+  [CASHFLOW.md](CASHFLOW.md) §11 carries what the statement loses
+  meanwhile: `financing` has no source a config rule can reach, so an
+  amortization is drawn in `vehicles · Untracked accounts`.
 - **Model-tier measurements.** The `categorize` loop is covered
   against a scripted client, and batching was set from live runs: a
   backlog sent whole times out, and a local model answers a batch of
