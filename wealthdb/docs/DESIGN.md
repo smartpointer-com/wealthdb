@@ -119,6 +119,7 @@ wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, 
 wealthdb transactions [flags]         (RO)    Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
+wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a          (RO)    List snapshots gold has loaded (one silver, or all).
 wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM.
@@ -643,7 +644,32 @@ both — a deposit the matcher paired is `internal_transfer` in each
 overlay — and that view is the one surface showing a transaction from
 both sides at once.
 
-### 4.14 Future subcommands (sketch only)
+### 4.14 `wealthdb cashflow <view>`
+
+The household's cash flow statement over both populations plus the
+movements neither family books (docs/CASHFLOW.md, and §10.11 for the
+macros underneath). Same window default, same flags, same privacy
+classes; four views instead of three, one flag of its own, and two
+refusals.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `<view>` | required | `summary` \| `flows` \| `sankey` \| `transactions`. |
+| `[FROM [TO]]` | trailing twelve months | As §4.12. A household reads this per year: `wealthdb cashflow sankey 2025`. |
+| `--period` | `monthly` | As §4.12, and **refused** on `sankey`: a period on an edge list would mean one list per bucket, which is a loop's job. `transactions` ignores it, as the families' do. |
+| `--level` | `group` | `section` \| `class` \| `group` — the grain a node is netted at. `section` is **refused** on `sankey`, which would then have no inner column. |
+| `--investing` | `whole` | `whole` \| `class` — net the investing section as one `Investments` node, or per asset class. Honoured by `flows` and `sankey`; the summary is always whole. |
+| `-C/--columns` | `default` | `summary` carries `yield`, `taxes`, `fees`, `giving`, `savings_rate` and the reconciliation memo (`cash_measured`, `fx_effect`, `unexplained`) off by default; `flows` and `sankey` carry the dotted node keys. |
+| `-f`, `-x`, `-p` | as §4.12 | `-p` masks account ids, amounts and the `name` column; sections, classes, groups and shares stay legible, which is what makes the diagram's privacy twin normalisation alone. |
+
+Positive is cash arriving in the pool and negative is cash leaving it.
+The four sections sum to `net_cash_flow`, and a bucket's `flows` rows —
+the Cash row included — sum to zero; both identities are structural.
+
+`wealthdb transactions` carries `cashflow_section`, `cashflow_class`
+and `cashflow_group` behind `-C`, beside the other two trios.
+
+### 4.15 Future subcommands (sketch only)
 
 These are reserved namespaces; their final shape will be designed
 when implemented. The schema must not preclude them.

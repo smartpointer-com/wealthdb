@@ -33,6 +33,7 @@ var spendingViews = map[string]bool{
 var reportValueFlags = map[string]bool{
 	"-f": true, "--format": true, "-C": true, "--columns": true,
 	"-x": true, "--currency": true, "--period": true, "--level": true,
+	"--investing": true,
 }
 
 // reportPeriods maps the CLI's bucket vocabulary onto the date_trunc

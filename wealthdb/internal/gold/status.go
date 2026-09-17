@@ -73,6 +73,33 @@ type SourceStatus struct {
 	// whole category of card rows under a catch-all would otherwise
 	// shrink a spending report silently. Counting it makes that loud.
 	ExcludedUnmappedCount int
+	// The cash flow statement's three canaries, each naming a way it
+	// can be quietly wrong. All three are all-time on this source, as
+	// the two backlog counters beside them are.
+	//
+	// CashflowExcludedByKindCount is rows on this source's POOLED
+	// accounts that the resolution declined: the FX family and
+	// corporate actions, which carry no canonical sign; an unpaired
+	// card bill or in-kind transfer leg, which no tier could have
+	// placed; and the two catch-all kinds. The exclusions are
+	// deliberate, and counting them is what keeps a silent hole from
+	// growing behind one.
+	CashflowExcludedByKindCount int
+	// CashflowPooledNoWrapperCount is pooled accounts with no tax
+	// wrapper set — the boundary's coverage gap. An unset wrapper reads
+	// as household, which keeps the statement complete but puts a
+	// retirement or health account INSIDE the pool, where its own
+	// trades become household investing and its contributions become
+	// invisible. Nothing else can see that: the crossing is absent
+	// rather than wrong.
+	CashflowPooledNoWrapperCount int
+	// CashflowNoFarAccountCount is own-account moves that landed in
+	// `vehicles · Untracked accounts` because nothing said where they
+	// went — a rule placed the verdict and no pairing exists. They are
+	// the household's own money at an institution the product does not
+	// collect, and they are also exactly the rows collecting that
+	// account would resolve.
+	CashflowNoFarAccountCount int
 	// PerKindActivity is the per-account-kind freshness breakdown,
 	// populated only for sources holding more than one account kind
 	// (see AccountKindActivity). Empty otherwise, and empty when the
@@ -250,6 +277,42 @@ func spendDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
 		s.SilverSourceID,
 	).Scan(&s.ExcludedUnmappedCount); err != nil {
 		return fmt.Errorf("StatusForSource(%s) excluded-unmapped spend: %w", s.SilverSourceID, err)
+	}
+	return cashflowDrift(ctx, db, s)
+}
+
+// cashflowDrift fills the cash flow statement's three canaries.
+//
+// Each reads the layered macros rather than restating their predicates,
+// so a change to what the pool holds or to what the resolution declines
+// moves the numbers with it. The first two join the pool: a vehicle's
+// own FX legs are not the household's, and counting them would make the
+// number permanently large and therefore unreadable.
+func cashflowDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*)
+          FROM cashflow_txn_nodes(?, ?) n
+          JOIN cashflow_pool_accounts() p
+                 ON p.silver_source_id    = n.silver_source_id
+                AND p.account_external_id = n.account_external_id
+         WHERE n.silver_source_id = ? AND n.disposition = 'excluded'`,
+		int64(0), MaxEpoch, s.SilverSourceID,
+	).Scan(&s.CashflowExcludedByKindCount); err != nil {
+		return fmt.Errorf("StatusForSource(%s) cashflow excluded by kind: %w", s.SilverSourceID, err)
+	}
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM cashflow_pool_accounts()
+         WHERE silver_source_id = ? AND tax_wrapper IS NULL`,
+		s.SilverSourceID,
+	).Scan(&s.CashflowPooledNoWrapperCount); err != nil {
+		return fmt.Errorf("StatusForSource(%s) cashflow wrapper coverage: %w", s.SilverSourceID, err)
+	}
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM cashflow_lines_base(?, ?)
+         WHERE silver_source_id = ? AND class = 'untracked' AND NOT far_known`,
+		int64(0), MaxEpoch, s.SilverSourceID,
+	).Scan(&s.CashflowNoFarAccountCount); err != nil {
+		return fmt.Errorf("StatusForSource(%s) cashflow moves with no far account: %w", s.SilverSourceID, err)
 	}
 	return nil
 }

@@ -114,7 +114,7 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
             INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                       account_external_id, instrument_external_id,
                                       kind, currency, net_amount, description)
-                 VALUES ('cf', ?, 1000, ?, ?, ?, 'USD', ?, ?)`,
+                 VALUES ('cf', ?, 1728000, ?, ?, ?, 'USD', ?, ?)`,
 			l.id, l.account, nullable(l.instrument), l.kind, l.amount, l.id); err != nil {
 			t.Fatalf("seed transaction %s: %v", l.id, err)
 		}
@@ -144,7 +144,7 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
 	rows, err := db.QueryContext(ctx, `
         SELECT transaction_external_id, disposition,
                COALESCE(section, ''), COALESCE(class, ''), COALESCE(grp, '')
-          FROM cashflow_txn_nodes(0, 5000)`)
+          FROM cashflow_txn_nodes(0, 3500000)`)
 	if err != nil {
 		t.Fatalf("read cashflow_txn_nodes: %v", err)
 	}
@@ -263,8 +263,8 @@ func TestTheKindTable(t *testing.T) {
 			why: "a donation is giving, not a government department"},
 		{id: "K-PASSPORT", account: "CASH", kind: "purchase", amount: -90,
 			spend: "GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES",
-			want: "operating_out.consumption.GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES",
-			why: "what remains of the government primary is consumption"},
+			want:  "operating_out.consumption.GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES",
+			why:   "what remains of the government primary is consumption"},
 		{id: "K-ATM", account: "CASH", kind: "withdrawal", amount: -200,
 			spend: "cash_withdrawal", want: "operating_out.consumption.cash_withdrawal",
 			why: "cash out is spend whose use is unobservable"},
@@ -284,10 +284,10 @@ func TestTheKindTable(t *testing.T) {
 		// The backlog is a node on each side, and they are two nodes.
 		{id: "K-UNPLACED-OUT", account: "CASH", kind: "withdrawal", amount: -77,
 			want: "operating_out.(uncategorized).(uncategorized)",
-			why: "an unplaced outflow is shown as the backlog, not guessed at"},
+			why:  "an unplaced outflow is shown as the backlog, not guessed at"},
 		{id: "K-UNPLACED-IN", account: "CASH", kind: "deposit", amount: 77,
 			want: "operating_in.(uncategorized).(uncategorized)",
-			why: "an unplaced receipt is the other backlog"},
+			why:  "an unplaced receipt is the other backlog"},
 
 		// Investing: trades by asset class, private capital beside them,
 		// and a cash-class instrument is cash becoming cash.
@@ -299,7 +299,7 @@ func TestTheKindTable(t *testing.T) {
 			want: "investing.private_equity.private_capital", why: "a capital call is private capital out"},
 		{id: "K-DIST", account: "BROK", kind: "distribution", amount: 7000, instrument: "PE",
 			want: "investing.private_equity.private_capital",
-			why: "a fund's distribution returns contributed basis until something proves otherwise"},
+			why:  "a fund's distribution returns contributed basis until something proves otherwise"},
 		{id: "K-DIST-PROMOTED", account: "BROK", kind: "distribution", amount: 300, instrument: "PE",
 			income: "INCOME_INTEREST_EARNED", want: "operating_in.yield.INCOME_INTEREST_EARNED",
 			why: "a rule promoting it to an income type moves it to operating in, as the holder's word should"},
@@ -400,11 +400,11 @@ func TestTheWrapperIsAskedBeforeTheKind(t *testing.T) {
 		{id: "O-TRUSTMORT", account: "CASH", kind: "withdrawal", amount: -1800,
 			spend: "internal_transfer", farAccount: "TRUSTMORT",
 			want: "vehicles.trusts.trusts",
-			why: "servicing a trust's mortgage moves the trust's money, not the household's debt"},
+			why:  "servicing a trust's mortgage moves the trust's money, not the household's debt"},
 		{id: "O-DAFCARD", account: "CASH", kind: "withdrawal", amount: -300,
 			spend: "internal_transfer", farAccount: "DAFCARD",
 			want: "operating_out.giving.vehicle_giving",
-			why: "paying a foundation's card is giving, whatever the container is called"},
+			why:  "paying a foundation's card is giving, whatever the container is called"},
 	}
 	check(t, seedLines(t, db, ctx, lines), lines)
 }
@@ -457,7 +457,7 @@ func TestTheBaseIsThePoolsLines(t *testing.T) {
 		{id: "B-EXCLUDED", account: "CASH", kind: "journal", amount: 1},
 	})
 
-	got := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 5000)
+	got := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 3500000)
 	if _, ok := got["B-HOUSEHOLD"]; !ok {
 		t.Error("the base dropped a household receipt")
 	}
@@ -491,7 +491,7 @@ func TestExcludedMeansCounted(t *testing.T) {
 
 	rows, err := db.QueryContext(ctx, `
         SELECT n.transaction_external_id
-          FROM cashflow_txn_nodes(0, 5000) n
+          FROM cashflow_txn_nodes(0, 3500000) n
           JOIN cashflow_pool_accounts() p
                  ON p.silver_source_id    = n.silver_source_id
                 AND p.account_external_id = n.account_external_id
@@ -537,7 +537,7 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 
 	rows, err := db.QueryContext(ctx, `
         SELECT transaction_external_id, class_label, group_label
-          FROM cashflow_txn_nodes(0, 5000) WHERE disposition = 'line'`)
+          FROM cashflow_txn_nodes(0, 3500000) WHERE disposition = 'line'`)
 	if err != nil {
 		t.Fatalf("read labels: %v", err)
 	}
@@ -551,7 +551,7 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 		got[id] = class + " / " + grp
 	}
 	for id, want := range map[string]string{
-		"L-WAGE":      "Earnings / Wages",
+		"L-WAGE": "Earnings / Wages",
 		// The class says what the money was in and the group what it
 		// did, so a direct holding bought on an exchange reads as a
 		// trade even inside the private-markets class.
@@ -576,7 +576,7 @@ func TestMigration0081DDLIsRerunnable(t *testing.T) {
 		{id: "R-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_WAGES"},
 	})
 	rerunMigrationDDL(t, db, ctx, "0081_cashflow_resolution.sql")
-	if _, ok := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 5000)["R-WAGE"]; !ok {
+	if _, ok := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 3500000)["R-WAGE"]; !ok {
 		t.Error("the replayed base lost a line")
 	}
 }

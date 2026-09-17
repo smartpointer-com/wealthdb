@@ -93,6 +93,16 @@ func TestMigration0075DDLIsRerunnable(t *testing.T) {
 	seedCheckFixture(t, db, ctx)
 
 	rerunMigrationDDL(t, db, ctx, "0075_transactions_check_number.sql")
+	// Replaying a SUPERSEDED migration is a downgrade, not a no-op:
+	// 0075 puts report_transactions back at its own 28-column shape,
+	// and TransactionsBetween below scans the CURRENT one positionally.
+	// Replay forward, exactly as Migrate would — and extend this list
+	// when another migration re-issues the macro.
+	for _, later := range []string{
+		"0082_report_cashflow.sql", // the cashflow trio
+	} {
+		rerunMigrationDDL(t, db, ctx, later)
+	}
 
 	var n int
 	if err := db.QueryRowContext(ctx,

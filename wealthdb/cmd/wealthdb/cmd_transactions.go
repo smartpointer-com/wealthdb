@@ -227,6 +227,20 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 		// covers.
 		{Name: "check_no", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.CheckNumber) }},
+		// The node the cash flow statement resolved the row to
+		// (migration 0081), beside the two families' trios: which
+		// section of the statement, which inner node, which leaf. The
+		// three are vocabulary and stay legible under -p, as the
+		// families' categories do. Blank where the resolution reached
+		// no node — a kind with no canonical sign, an unpaired card
+		// bill — and on a pool-internal move, which is a movement the
+		// statement deliberately does not draw.
+		{Name: "cashflow_section", Align: output.AlignLeft,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.CashflowSection) }},
+		{Name: "cashflow_class", Align: output.AlignLeft,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.CashflowClass) }},
+		{Name: "cashflow_group", Align: output.AlignLeft,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.CashflowGroup) }},
 		{Name: "asset_class", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.AssetClass) }},
 		{Name: "currency", Align: output.AlignLeft,

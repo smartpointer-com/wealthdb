@@ -286,6 +286,16 @@ func printStatusVerbose(stdout io.Writer, st *gold.SourceStatus) {
 		st.ExcludedUnmappedCount)
 	fmt.Fprintln(stdout, "  income:")
 	fmt.Fprintf(stdout, "    uncategorised:           %d income lines\n", st.UncategorizedIncomeCount)
+	// The cash flow statement has no backlog of its own — it reads the
+	// two families' verdicts — so its block counts the three ways the
+	// statement can be quietly wrong instead.
+	fmt.Fprintln(stdout, "  cashflow:")
+	fmt.Fprintf(stdout, "    excluded by kind:        %d transactions on pooled accounts\n",
+		st.CashflowExcludedByKindCount)
+	fmt.Fprintf(stdout, "    no tax wrapper:          %d pooled accounts (each reads as the household's)\n",
+		st.CashflowPooledNoWrapperCount)
+	fmt.Fprintf(stdout, "    no far account:          %d own-account moves (in 'Untracked accounts')\n",
+		st.CashflowNoFarAccountCount)
 	if len(st.PerKindActivity) > 0 {
 		fmt.Fprintln(stdout, "  per account kind (latest snapshot / latest transaction):")
 		for _, a := range st.PerKindActivity {

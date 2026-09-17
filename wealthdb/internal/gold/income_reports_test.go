@@ -452,6 +452,7 @@ func TestMigration0071DDLIsRerunnable(t *testing.T) {
 	// when another migration re-issues the macro.
 	for _, later := range []string{
 		"0075_transactions_check_number.sql", // the check_number column
+		"0082_report_cashflow.sql",           // the cashflow trio
 	} {
 		rerunMigrationDDL(t, db, ctx, later)
 	}

@@ -68,6 +68,21 @@ type TransactionRow struct {
 	// CheckNumber is the cheque number for an outgoing paper cheque,
 	// nil on everything else (gold migration 0075).
 	CheckNumber *string
+	// CashflowSection, CashflowClass and CashflowGroup are the node the
+	// cash flow statement resolved the row to (migration 0081): which
+	// section of the statement, which inner node, which leaf. Read from
+	// the RESOLUTION rather than from the base, so a row on an account
+	// no cashflow report charts still carries its node.
+	//
+	// Nil where the resolution reached NO node, which covers two cases
+	// the columns do not tell apart: a movement it calls pool-internal —
+	// a wire between two of the household's own accounts — and a kind it
+	// declines, such as an FX leg or an unpaired card bill. Both mean
+	// only that the statement does not draw the row; which of the two it
+	// was is `cashflow_txn_nodes`' `disposition`.
+	CashflowSection *string
+	CashflowClass   *string
+	CashflowGroup   *string
 	// ValueOutCcy is NetAmount converted to the requested output
 	// currency at occurred_at by the report_transactions macro (flat
 	// nearest-rate FX in SQL). Nil when no FX path resolves.
@@ -123,6 +138,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			merchant, spendPrimary, spendDetailed  sql.NullString
 			payer, incomePrimary, incomeDetailed   sql.NullString
 			checkNumber                            sql.NullString
+			cfSection, cfClass, cfGroup            sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
@@ -132,7 +148,8 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			&r.Kind, &r.Currency,
 			&grossStr, &netStr, &qtyStr, &priceStr,
 			&description, &merchant, &spendPrimary, &spendDetailed,
-			&payer, &incomePrimary, &incomeDetailed, &checkNumber, &valueOut,
+			&payer, &incomePrimary, &incomeDetailed, &checkNumber,
+			&cfSection, &cfClass, &cfGroup, &valueOut,
 		); err != nil {
 			return nil, fmt.Errorf("TransactionsBetween scan: %w", err)
 		}
@@ -144,6 +161,9 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 		r.IncomePrimary = nullStringToPtr(incomePrimary)
 		r.IncomeDetailed = nullStringToPtr(incomeDetailed)
 		r.CheckNumber = nullStringToPtr(checkNumber)
+		r.CashflowSection = nullStringToPtr(cfSection)
+		r.CashflowClass = nullStringToPtr(cfClass)
+		r.CashflowGroup = nullStringToPtr(cfGroup)
 		r.AccountKind = nullStringToPtr(acctKind)
 		r.DisplayName = nullStringToPtr(displayName)
 		r.RelationshipID = nullStringToPtr(relID)

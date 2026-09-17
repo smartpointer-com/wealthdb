@@ -73,6 +73,8 @@ var commandHelps = []commandHelp{
 		long: "What the tracked accounts spent: summary, categories, transactions ('wealthdb spending <view> -h')."},
 	{name: "income", args: "<view>", short: "income reports: summary, types, transactions",
 		long: "What the tracked accounts received: summary, types, transactions ('wealthdb income <view> -h')."},
+	{name: "cashflow", args: "<view>", short: "the household's cash flow statement and its Sankey",
+		long: "Where the household's cash came from and where it went: summary, flows, sankey, transactions ('wealthdb cashflow <view> -h')."},
 
 	{name: "categorize", args: "[spending|income]", short: "categorise the counterparties no deterministic tier placed",
 		long: "Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in config.<family>.categorization.model; a positional selects one family, and no positional runs both."},
