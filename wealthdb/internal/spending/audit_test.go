@@ -70,11 +70,12 @@ func TestMatchedPairsSortsUnmatchedByMagnitude(t *testing.T) {
 	}
 }
 
-// TestMatchedPairsCannotPairCrossCurrency pins the structural
-// limitation the run report has to surface rather than fix: the shared
-// core partitions by native currency, so two legs that are obviously
-// one movement to a human stay unpaired.
-func TestMatchedPairsCannotPairCrossCurrency(t *testing.T) {
+// TestMatchedPairsCannotPairCrossCurrencyWithoutAReference pins what the
+// run report still has to surface rather than fix. The amount pass
+// partitions by native currency, so two legs that are obviously one
+// movement to a human stay unpaired unless the SOURCE says they are one
+// — and where no reference reaches them, nothing does.
+func TestMatchedPairsCannotPairCrossCurrencyWithoutAReference(t *testing.T) {
 	db, ctx := openGold(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
@@ -91,7 +92,8 @@ func TestMatchedPairsCannotPairCrossCurrency(t *testing.T) {
 		t.Fatalf("MatchedPairs: %v", err)
 	}
 	if len(pairs) != 0 {
-		t.Errorf("pairs = %d, want 0 — the core partitions by native currency", len(pairs))
+		t.Errorf("pairs = %d, want 0 — the amount pass partitions by native currency "+
+			"and these legs carry no reference", len(pairs))
 	}
 	if len(unmatched) != 2 {
 		t.Fatalf("unmatched = %d, want both legs", len(unmatched))

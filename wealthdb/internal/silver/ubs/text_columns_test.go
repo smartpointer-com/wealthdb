@@ -322,29 +322,29 @@ func TestTextProjectionLeavesNonTextColumnsUnchanged(t *testing.T) {
 			want[id+"@"+textAcct] = txShape{id + "@" + textAcct, day * 86400, textAcct, instr, kind, "CHF", no, net, no, no, payload}
 		}
 		add("W1", 100, "XS0000000001", canonical.TxKindDividend, "12.5",
-			`{"Description1":"Example Fund Caption; XS0000000001","Description2":"Dividend","Description3":"Coupon detail","Transaction no.":"W1"}`)
+			`{"bank_ref":"W1","Description1":"Example Fund Caption; XS0000000001","Description2":"Dividend","Description3":"Coupon detail","Transaction no.":"W1"}`)
 		add("W2", 101, no, wd, "-80",
-			`{"Description1":"EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLE CITY","Description2":"e-banking payment order","Description3":"Invoice 42"}`)
-		add("W3", 102, no, wd, "-5", `{"Description1":"","Description2":"KH","Description3":""}`)
-		add("W4", 103, no, dp, "7", `{"Description1":"","Description2":"","Description3":""}`)
-		add("W5", 104, no, dp, "9", `{"Description1":"","Description2":"credit","Description3":"Ref 7"}`)
+			`{"bank_ref":"W2","Description1":"EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLE CITY","Description2":"e-banking payment order","Description3":"Invoice 42"}`)
+		add("W3", 102, no, wd, "-5", `{"bank_ref":"W3","Description1":"","Description2":"KH","Description3":""}`)
+		add("W4", 103, no, dp, "7", `{"bank_ref":"W4","Description1":"","Description2":"","Description3":""}`)
+		add("W5", 104, no, dp, "9", `{"bank_ref":"W5","Description1":"","Description2":"credit","Description3":"Ref 7"}`)
 		// Message-bearing rows: the kind is classified from the raw
 		// column, and a message-led column falls to the direction.
 		add("W6", 105, no, wd, "-65",
-			`{"Description1":"EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLETOWN","Description2":"THANKS; e-banking payment order","Description3":""}`)
-		add("W7", 106, no, dp, "11", `{"Description1":"","Description2":"see you soon; credit","Description3":"Ref 9"}`)
-		add("W8", 107, no, wd, "-42", `{"Description1":"","Description2":"UCCDDEXAMPLE1; order","Description3":""}`)
+			`{"bank_ref":"W6","Description1":"EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLETOWN","Description2":"THANKS; e-banking payment order","Description3":""}`)
+		add("W7", 106, no, dp, "11", `{"bank_ref":"W7","Description1":"","Description2":"see you soon; credit","Description3":"Ref 9"}`)
+		add("W8", 107, no, wd, "-42", `{"bank_ref":"W8","Description1":"","Description2":"UCCDDEXAMPLE1; order","Description3":""}`)
 		// PDF rail-era payment order: external, stays a withdrawal.
 		add("P1", 200, no, wd, "-150",
-			`{"source":"account_statement_pdf","booking_type":"E-BANKING PAYMENT ORDER","internal_transfer":false,"counter_account":null,"continuation":["EXAMPLE GROCER","  ","EXAMPLE CITY","INVOICE 42"],"running_balance":1000.0,"value_date":"01.02.2025","post_closing":false}`)
+			`{"bank_ref":"P1","source":"account_statement_pdf","booking_type":"E-BANKING PAYMENT ORDER","internal_transfer":false,"counter_account":null,"continuation":["EXAMPLE GROCER","  ","EXAMPLE CITY","INVOICE 42"],"running_balance":1000.0,"value_date":"01.02.2025","post_closing":false}`)
 		add("P2", 201, no, canonical.TxKindFee, "-3",
-			`{"source":"account_statement_pdf","booking_type":"FEES","internal_transfer":false,"counter_account":null,"continuation":[]}`)
+			`{"bank_ref":"P2","source":"account_statement_pdf","booking_type":"FEES","internal_transfer":false,"counter_account":null,"continuation":[]}`)
 		// PDF credit with no counter IBAN and no rail booking: conservative
 		// internal. The verdict rides the payload now, so the row keeps
 		// its deposit kind (the spending population reads the kind) and
 		// carries `returns_flow`.
 		add("P3", 202, no, dp, "40",
-			`{"returns_flow":"internal","source":"account_statement_pdf","booking_type":null,"internal_transfer":false,"counter_account":null,"continuation":[]}`)
+			`{"returns_flow":"internal","bank_ref":"P3","source":"account_statement_pdf","booking_type":null,"internal_transfer":false,"counter_account":null,"continuation":[]}`)
 		checkShapes(t, got, want)
 	})
 	t.Run("psn", func(t *testing.T) {

@@ -7,14 +7,20 @@ import (
 
 // Manual overrides on transfer matching.
 //
-// The matcher decides from amount, day and — where a caller supplies it — the
-// rail a leg demands. That is everything the data says, and it is sometimes
-// not enough: two unrelated rows of the same size land in the window and are
-// fused, or the two halves of one real movement sit further apart than any
-// window a person would dare set, because a bank posted its side of an ACH a
-// week after the other side credited. Neither is a rule that can be tightened
-// into existence — one is a coincidence, the other is a fact about a
-// particular pair — so both need a place for a person to say what happened.
+// The matcher decides from amount, day, the rail a leg demands and — where
+// the source stamped one on both legs — a shared reference. That is everything
+// the data says, and it is sometimes not enough: two unrelated rows of the
+// same size land in the window and are fused, or the two halves of one real
+// movement sit further apart than any window a person would dare set, because
+// a bank posted its side of an ACH a week after the other side credited.
+// Neither is a rule that can be tightened into existence — one is a
+// coincidence, the other is a fact about a particular pair — so both need a
+// place for a person to say what happened.
+//
+// The ledger binds EVERY phase, reference pairs included. An identity the bank
+// asserted is the strongest evidence in the data, and it is still weaker than
+// a person saying these two rows are not one movement: the clerk stamped a
+// number, the holder was there.
 //
 // An override names legs the way the pins ledger names transactions: by what
 // a person can read off a statement, never by gold's opaque

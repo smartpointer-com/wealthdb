@@ -219,6 +219,10 @@ silver-side facts that make a clean date-splice possible:
   and the credit row in the destination account; the web silver
   uses a compound PK on `(transaction_external_id,
   account_external_id)` so both rows survive a per-account splice.
+  The shared number is not only a key hazard: it is an identity
+  the gold adapter re-exports as `payload.bank_ref`, and gold's
+  internal-transfer matcher pairs the two rows on it without
+  looking at their amounts.
 - **The two transaction-ID schemes do not overlap.** Web uses
   UBS's "Transaction no."; PSN derives event IDs from SWIFT
   message references (`mt515:…`). There is zero overlap between
@@ -686,13 +690,16 @@ The settlement appears on the card's own ledger under the booking texts
 Those two are what gold's internal-transfer matcher has to pair.
 
 **A card's native currency need not be that of the account that settles
-it.** The matcher partitions candidates by native currency and cannot
-pair across two — a documented limitation of the shared core, not a
-setting — so where a card is billed in one currency and settled from an
-account in another, both legs stay unpaired however well the projection
-works, and the built-in card-payment rule keeps placing `card_spend`
-over a card that *is* collected. The gold work has to answer that case
-rather than assume the matcher will.
+it.** The matcher's amount pass partitions candidates by native currency
+and cannot pair across two, which is a property of that pass rather than
+a setting. Its reference pass does cross the partition, but only on a
+number one source stamped on both legs — and the card ledger mints its
+own ids, so the invoice and the cash account's debit share none. Where a
+card is billed in one currency and settled from an account in another,
+both legs therefore stay unpaired however well the projection works, and
+the built-in card-payment rule keeps placing `card_spend` over a card
+that *is* collected. The gold work has to answer that case rather than
+assume the matcher will.
 
 ### 5.7 The per-transaction detail view
 

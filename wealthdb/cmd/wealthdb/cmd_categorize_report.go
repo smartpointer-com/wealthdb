@@ -43,9 +43,12 @@ import (
 //     listed, so the screenful is the audit and nothing is hidden;
 //   - the large unmatched legs are the mirror image: a big one-legged
 //     movement is either real spending or a pair the matcher missed.
-//     Cross-currency shapes get their own line because the matcher
-//     partitions by native currency and STRUCTURALLY cannot pair them,
-//     however obvious the pairing looks to a human.
+//     Cross-currency shapes get their own line because the amount pass
+//     partitions by native currency and cannot pair them however obvious
+//     the pairing looks to a human. What CAN pair them is a reference the
+//     source stamped on both legs, so a shape listed here is one no such
+//     reference reached — the pairing is not refused, the evidence for it
+//     is simply absent.
 
 // canaryListLimit caps each canary listing. The point is a signal a
 // human will actually read, not a dump; every listing says how much it
@@ -73,7 +76,7 @@ type providerMiss struct {
 
 // crossCurrencyShape is a pair of unmatched legs that look like two
 // halves of one movement but differ in native currency — the shape the
-// matcher cannot pair by construction.
+// amount pass cannot pair, and that no shared reference reached.
 type crossCurrencyShape struct {
 	Debit  spending.Leg
 	Credit spending.Leg
@@ -212,9 +215,14 @@ SELECT p.silver_source_id, s.silver_kind, COALESCE(p.account_kind, ''),
 // findCrossCurrencyShapes pairs up unmatched legs that differ only in
 // currency: opposite signs, within the matcher's day window, different
 // native currencies. Amounts are deliberately NOT compared — doing so
-// would need an FX rate, and the whole reason these cannot be matched
-// automatically is that converting would make the same movement pair
-// differently per output currency.
+// would need an FX rate, and the reason the amount pass cannot reach these
+// is that converting would make the same movement pair differently per
+// output currency.
+//
+// It walks the UNMATCHED legs, so a conversion the reference phase paired
+// has already left this scan. What is left is the residue: a movement whose
+// two legs no source stamped with one reference, and which therefore still
+// needs a person to say whether either half is really spending.
 //
 // The scan is quadratic, so it runs over the largest legs only (the
 // input arrives sorted by descending magnitude). A small cross-currency
@@ -373,6 +381,11 @@ func printSpendCanaries(w io.Writer, c *spendCanaries) {
 			fmt.Fprintf(w, "    ... and %d more\n", len(c.Pairs)-pairListLimit)
 			break
 		}
+		// The phase leads the pair, because it is what says how to read the
+		// two lines under it: legs that disagree in amount and currency are
+		// the expected shape of a pair the source asserted and the alarming
+		// shape of one the amounts alone produced.
+		fmt.Fprintf(w, "    (%s)\n", p.By)
 		fmt.Fprintf(w, "    %s  %s %s %.2f %s [%s]\n",
 			formatEpochDay(p.Debit.Day), p.Debit.Source, p.Debit.Account, p.Debit.Amount, p.Debit.Currency, p.Debit.Signature)
 		fmt.Fprintf(w, "    %s  %s %s %.2f %s [%s]\n",
@@ -400,7 +413,7 @@ func printSpendCanaries(w io.Writer, c *spendCanaries) {
 		fmt.Fprintln(w, "  cross-currency near-pairs: none")
 	} else {
 		fmt.Fprintf(w, "  cross-currency near-pairs (%d): opposite signs within the window but different native currencies,\n", len(c.CrossCurrency))
-		fmt.Fprintln(w, "    which the matcher cannot pair by construction — check whether either is really spending:")
+		fmt.Fprintln(w, "    which the amount pass cannot pair and no shared reference reached — check whether either is really spending:")
 		for _, s := range c.CrossCurrency {
 			fmt.Fprintf(w, "    %s  %s %.2f %s  ⟷  %s  %s %.2f %s\n",
 				formatEpochDay(s.Debit.Day), s.Debit.Source, s.Debit.Amount, s.Debit.Currency,

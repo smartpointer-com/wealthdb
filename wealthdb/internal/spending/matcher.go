@@ -51,15 +51,36 @@ import (
 //     it buys false pairs, and a false pair does not surface as a wrong
 //     category — it deletes a real spending line.
 //   - amounts and currencies are NATIVE, never converted.
+//   - the REFERENCE a source stamps on both legs of one movement is
+//     offered (TransferLeg.Ref), which the returns engine fills for
+//     nothing. It comes from `payload.$.bank_ref` by way of
+//     loadMovementReferences, and only where the source minted that
+//     reference on exactly two rows.
 //
-// KNOWN LIMITATION: a cross-currency own-transfer cannot match.
-// MatchTransferLegs partitions candidates by native currency, because
-// matching converted amounts would make the same movement pair
-// differently per output currency — a report's display currency must
-// not change what counts as spending. So a withdrawal in one currency
-// funding a card in another stays one-legged and is left to the rule
-// tier. This is a property of the shared core, not something a caller
-// can configure away.
+// That last one is what reaches a cross-currency own-transfer, and it
+// is worth stating why it can. MatchTransferLegs partitions candidates
+// by native currency, because matching converted amounts would make
+// the same movement pair differently per output currency — a report's
+// display currency must not change what counts as spending. So no
+// amount test can ever join a conversion's two legs: they carry
+// different figures by definition. A shared reference is not an amount
+// test. It is the source asserting that two rows are one movement, and
+// an identity is currency-blind, so the pairing holds without
+// converting anything.
+//
+// The bill for it is that such a pair's two legs DISAGREE — different
+// currencies, different amounts, and the difference is the rate.
+// Nothing downstream nets a pair (each leg carries the other's account
+// and is drawn, or not drawn, on its own figure), so the disagreement
+// costs nothing; but a reader auditing the matcher has always checked a
+// pair by comparing its two lines, and for this road that check inverts.
+// The pairs therefore say which phase asserted them
+// (gold.TransferMatchPhase).
+//
+// WHAT IS STILL OUT OF REACH: a movement whose source stamps no
+// reference on it, or stamps one the pool's other rows also carry. Both
+// stay one-legged and are left to the rule tier, exactly as every
+// cross-currency movement was before.
 
 // ProvenanceMatcher tags an enrichment row placed by this tier.
 const ProvenanceMatcher = "matcher"
@@ -69,28 +90,6 @@ const ProvenanceMatcher = "matcher"
 type txKey struct {
 	source string
 	txID   string
-}
-
-// matchInternalTransfers pairs the legs of the matcher pool and
-// returns, for every transaction that is therefore an own-account
-// move, the leg on the OTHER side of it. BOTH legs of a pair are
-// marked: the outgoing leg because it is not spending, the incoming
-// leg because a later report that widens the population must not
-// suddenly start counting it as income.
-//
-// The partner is what the cash flow statement needs and neither family
-// does. An own-account move tells the two families all they have to
-// know — it is not spending and not income whichever account it went
-// to — but a statement drawn around the household's cash pool has to
-// ask whether the money stayed inside that pool, and only the far
-// account answers. The pairs have always carried both legs; keeping
-// the partner rather than flattening to a set is the whole change.
-//
-// The result is deterministic — MatchTransferLegs sorts its input and
-// resolves ties by amount gap then day distance — so two runs over the
-// same gold produce the same map.
-func matchInternalTransfers(legs []gold.TransferLeg, windowDays int, tolerancePct float64, overrides gold.TransferOverrides) map[txKey]gold.TransferLeg {
-	return matchedPartners(matchTransferPairs(legs, windowDays, tolerancePct, overrides))
 }
 
 // matchTransferPairs is the call into the shared core, in one place so
@@ -105,6 +104,19 @@ func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct fl
 		AllowSameOwner:  true,
 		Overrides:       overrides,
 	})
+}
+
+// countPairsBy counts the pairs one phase asserted. What it is for is the
+// load summary: a road whose traffic nobody can see is a road nobody can tell
+// has stopped carrying any.
+func countPairsBy(pairs []gold.TransferMatchPair, by gold.TransferMatchPhase) int {
+	n := 0
+	for _, p := range pairs {
+		if p.By == by {
+			n++
+		}
+	}
+	return n
 }
 
 // matchedPartners flattens pairs to a map from each matched leg to the

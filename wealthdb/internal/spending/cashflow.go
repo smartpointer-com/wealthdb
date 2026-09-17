@@ -67,6 +67,31 @@ type CashflowResult struct {
 	// side of.
 	FarAccounts       int
 	StatedFarAccounts int
+	// ReferencePairs is how many own-account moves were paired on the
+	// reference their source stamped on both legs rather than on
+	// amount and day — the third road, and the only one that reaches a
+	// movement whose two legs are denominated differently.
+	//
+	// It is counted for the same reason StatedFarAccounts is: a road
+	// nobody can see the traffic on is a road nobody can tell has
+	// stopped working. The number also answers the one operational
+	// question this road raises — the references travel in the
+	// payload, so a source whose rows predate the adapter that stamps
+	// them carries none until a `reload`, and a count of zero where
+	// pairs are expected is what says the reload has not happened.
+	ReferencePairs int
+	// AmbiguousReferences is how many (source, reference) groups were
+	// REFUSED because the source had stamped the same reference on
+	// MORE than two rows — so it named something, and what it named
+	// was not one movement.
+	//
+	// It is the early warning that a reference space is not per
+	// movement. A handful is ordinary — a bank booking a charge under
+	// the reference of the payment it belongs to produces one — but a
+	// number that climbs with the archive says the source mints its
+	// references per day or per batch, and that no pair drawn from
+	// them should be trusted.
+	AmbiguousReferences int
 	// PooledAccountsWithoutWrapper is the boundary's coverage gap:
 	// accounts in the pool whose tax wrapper is unset.
 	//

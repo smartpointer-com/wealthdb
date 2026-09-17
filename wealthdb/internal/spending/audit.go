@@ -21,6 +21,14 @@ import (
 // large one-legged movement is either a real outflow or a pair the
 // matcher missed, and only a human can say which.
 //
+// Each pair says which PHASE asserted it, because the check a reader
+// performs on two legs depends on the answer. On a pair the amounts
+// produced, two legs that disagree in size or currency are the defect
+// this listing exists to catch; on a pair the source asserted by
+// stamping one reference on both, they are the expected shape — a
+// currency conversion's two legs differ by the rate, and that road
+// exists precisely to reach movements no amount test can.
+//
 // Each leg also says whether it was in the spending population. The
 // pool is wider than the population on purpose — every account, the
 // income-side kinds — so most of what the matcher pairs was never a
@@ -65,10 +73,17 @@ type Leg struct {
 	InPopulation bool
 }
 
-// Pair is one matched own-account move.
+// Pair is one matched own-account move, and the phase that asserted it.
+//
+// By is what makes the listing readable. A reader checking a pair has always
+// asked whether its two legs agree in amount and currency; a pair the source
+// stamped one reference on is supposed to disagree, because that is the only
+// road a currency conversion can pair on. Unlabelled, the correct answer and
+// the over-eager one look the same on the page.
 type Pair struct {
 	Debit  Leg
 	Credit Leg
+	By     gold.TransferMatchPhase
 }
 
 // RemovedFromSpending reports whether the pair took anything out of
@@ -84,7 +99,7 @@ func (p Pair) RemovedFromSpending() bool {
 // matcher pool and returns the pairs it found together with every leg
 // it left unpaired. Both results are sorted for stable output.
 func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct float64, rules []gold.TransferOverrideRule) ([]Pair, []Leg, error) {
-	legs, narratives, err := loadMatcherPool(ctx, db)
+	legs, narratives, _, err := loadMatcherPool(ctx, db)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -142,17 +157,30 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 	return pairs, unmatched, nil
 }
 
-// liftPairs turns the core's matched pairs into the audit shape.
+// liftPairs turns the core's matched pairs into the audit shape, ordered so
+// that the pairs worth a human's attention survive the listing's cap.
+//
+// Reference pairs come FIRST, ahead of the chronological order everything
+// else keeps. The cap exists so the listing stays a signal rather than a
+// dump, but a day-ordered listing of a long history is the OLDEST pairs, and
+// a road that only started asserting pairs on the last reload would never
+// appear in one. Reference pairs are also the only ones whose legs a reader
+// is told to expect to disagree, so they are precisely the ones the cut must
+// not swallow.
 func liftPairs(raw []gold.TransferMatchPair, byKey map[txKey]Leg) []Pair {
 	out := make([]Pair, 0, len(raw))
 	for _, p := range raw {
 		out = append(out, Pair{
 			Debit:  byKey[txKey{p.Debit.Group, p.Debit.ID}],
 			Credit: byKey[txKey{p.Credit.Group, p.Credit.ID}],
+			By:     p.By,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
+		if ar, br := a.By == gold.MatchedByReference, b.By == gold.MatchedByReference; ar != br {
+			return ar
+		}
 		if a.Debit.Day != b.Debit.Day {
 			return a.Debit.Day < b.Debit.Day
 		}

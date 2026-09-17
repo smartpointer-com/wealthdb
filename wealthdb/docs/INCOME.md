@@ -618,9 +618,11 @@ one number answers for both.
   rather than filled — an unread macro is a shape to keep true for
   nothing. A Metabase card that needs the summary in three currencies
   is what would close it.
-- **Whether a transfer override can assert a cross-currency pair.** The
-  matching core partitions by native currency, so the two legs of a wire
-  converted in transit are never candidates for each other. It is
-  unverified whether the override ledger can force such a pair or is
-  refused by the same partition; SPENDING.md's override section should
-  say which.
+- ~~**Whether a transfer override can assert a cross-currency pair.**~~
+  Answered: it can. The partition by native currency belongs to the
+  matcher's AMOUNT pass, and both phases that assert a pair outright —
+  the override ledger and a reference the source stamped on both legs —
+  run ahead of it and never consult a currency. So the two legs of a
+  wire converted in transit are reachable by a `match` line, and
+  reachable without one wherever the bank stamped one transaction
+  number on both. SPENDING.md §3 says so in both places.

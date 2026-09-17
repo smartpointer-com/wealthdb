@@ -323,6 +323,11 @@ line repeats as its bank reference (`payload.bank_ref`) — paired with
 the account, because UBS stamps both legs of an inter-account transfer
 with one number and the two legs have different payees to state.
 
+That one number is also what lets gold re-pair the two legs at all,
+which is why the adapter now writes it under `payload.bank_ref` for the
+WEB eras too rather than leaving it readable only as half of a
+composed id (§7, *The bank reference, across both feeds*).
+
 Per column, and only downward: a column that is empty or a bare code
 (no separator, at most a few alphanumerics, a trailing MT940
 subfield marker discounted — `isCodeOnly`) takes the
@@ -538,7 +543,7 @@ this value is compared against account ids. It is written into the
 emitted payload under the SAME key the statement era uses, so every
 consumer reads one field whichever feed produced the row.
 
-Two consumers follow from that:
+Three consumers follow from that:
 
 - **Returns.** The own-counter demotion now runs on both eras. It is
   DEMOTE-ONLY, which is the direction the conduit model insists on: a
@@ -551,6 +556,48 @@ Two consumers follow from that:
   accounts gold holds and record where an own-account move went even
   where the far side contributes no transactions to pair with
   (docs/CASHFLOW.md §4). It places no verdict — only the destination.
+- **The far account again, by identity.** See below: the same bargain,
+  struck a second time for a different fact.
+
+### The bank reference, across both feeds
+
+The counter account answers "where did it go". The bank's own
+transaction number answers something stronger — "these two rows are one
+movement" — and UBS states it in both feeds, in two places that look
+nothing alike.
+
+The **MT940 feed** writes it into the `:61:` account-servicing-institution
+reference, which the collector keeps as `payload.bank_ref`. The **web
+feeds** put it in the id itself: a web row's silver
+`transaction_external_id` IS the "Transaction no." the statement prints,
+which is exactly why that silver's transactions primary key is compound
+— UBS stamps the SAME number on both sides of a move between two
+accounts of one relationship, so the number alone cannot key a row.
+
+Gold's id for a web row is the per-leg composition (`<number>@<account>`),
+so the number reaches gold already fused to something else. The adapter
+therefore splices it out into `payload.bank_ref`, under the same key the
+MT940 feed uses and by the same rule the counter account follows: one
+key, whichever feed wrote the row, and a derived value never displaces a
+parsed one.
+
+Statement-era rows are the exception and are left unstamped. Their ids
+are the collector's own content hash of a printed row (`stmt:`), not
+anything the bank wrote, and a reference that names nothing has no
+business being offered as one.
+
+The consumer is the internal-transfer matcher, which pairs on it ahead
+of amounts and therefore reaches the one shape amounts can never reach:
+a conversion between two of the relationship's own accounts, whose two
+legs carry different figures in different currencies (docs/SPENDING.md
+§3, *The reference road*). The reference is trusted only where the
+source minted it on exactly two rows — UBS books a transfer's charge
+under the transfer's own reference, so a third row under one number is
+an ordinary thing and refusing it is not a loss.
+
+**This lands on already-loaded rows only after a `reload`.** The value
+travels in the payload, and an incremental load re-projects only the
+window it touches.
 
 ## 8. Change number
 
@@ -788,12 +835,16 @@ built-in rule reads the raw narrative fields as well as the signature,
 which is what finds the creditor in either.
 
 **It does not pair across currencies, and there it double-counts.** The
-matcher partitions candidates by native currency and cannot pair across
-two — converting them would make the same movement pair differently per
-report currency. A relationship can hold cards in several currencies, so
-a card billed in one and settled from an account in another leaves both
-legs one-legged: the card's purchases are itemised *and* its bill stays
-in the base as `card_spend`, counting the same spending twice.
+matcher's amount pass partitions candidates by native currency and
+cannot pair across two — converting them would make the same movement
+pair differently per report currency. Its reference pass can cross that
+partition, but not here: the card ledger mints its own ids, so the
+bank-side payment order and the card's record of being settled share no
+transaction number and no reference joins them. A relationship can hold
+cards in several currencies, so a card billed in one and settled from an
+account in another leaves both legs one-legged: the card's purchases are
+itemised *and* its bill stays in the base as `card_spend`, counting the
+same spending twice.
 
 The issuer entry is deliberately **not** narrowed to avoid this. The
 rule tier reads narratives, not the account graph, and the alternative —
@@ -804,9 +855,10 @@ invisible in a report. Over-counting is visible; under-counting is not.
 
 The shape is surfaced rather than left to be discovered: `wealthdb
 categorize` lists unmatched opposite-sign legs that differ only in
-currency as cross-currency near-pairs. The correction is a pin or a
-config rule (SPENDING.md §3) on the bills of a card whose currency
-differs from the account settling it.
+currency as cross-currency near-pairs. The correction is a pin, a config
+rule, or a `match` line in the transfer-override ledger — which asserts
+ahead of the currency partition and so can state the pair outright
+(SPENDING.md §3).
 
 ### 10.7 The card reference on a cash-account row
 

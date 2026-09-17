@@ -42,7 +42,7 @@ than the one it reads, so no Go-side predicate restates any of it:
 |---|---|
 | `spend_scoped_accounts()` | which accounts count at all: EVERY account by default since migration 0068 — whether an account can pay a fee is not a property of its kind — and a `spend_account_scope` row is the only thing that takes one out |
 | `spend_enrichment_population(f, t)` | what the enrichment pass may write a verdict for |
-| `spend_matcher_pool(f, t)` | what the internal-transfer matcher sees — deliberately BROADER on two axes: the transfer-eligible KINDS, which include the income side the spending base excludes, on EVERY account rather than the scoped ones (migration 0044). ONE pool for both families: income reads its verdicts and pairs nothing ([INCOME.md](INCOME.md) §1) |
+| `spend_matcher_pool(f, t)` | what the internal-transfer matcher sees — deliberately BROADER on two axes: the transfer-eligible KINDS, which include the income side the spending base excludes, on EVERY account rather than the scoped ones (migration 0044). ONE pool for both families: income reads its verdicts and pairs nothing ([INCOME.md](INCOME.md) §1). The legs the pass builds from it also carry the reference their source stamped, which is not a column of the macro but a second read over `transactions` (§3, *The reference road*) |
 | `spending_lines_base(f, t)` | what a report charts: the population with its category resolved and its own-account moves and capital deployed removed — a bill on a card not itemised (`card_spend`) and a cash gift (`gift`) stay in |
 
 The layering is not decoration. The enrichment pass is the thing that
@@ -472,6 +472,18 @@ bank), same-**account** pairing is allowed too (`AllowSameOwner`),
 whether or not spending is scoped to it, and amounts and currencies
 are **native**.
 
+The core pairs in **three phases**, each withdrawing the legs it claims
+before the next one looks, in the order of what the evidence is worth:
+
+1. **the override ledger** — the holder naming two rows as one movement;
+2. **a shared reference** — the source stamping one transaction number
+   on both halves (*The reference road*, below);
+3. **amounts** — the greedy banded pass, which is everything the data
+   says when nothing has said it outright.
+
+Only the third is banded. `window_days` and `tolerance_pct` bound a
+guess; the first two assert, so there is no band to draw around them.
+
 Same-account pairing is the one knob the returns caller leaves off. A
 withdrawal and a deposit of the same amount on the same account within
 the window is a round trip that nets to zero — a transfer bounced
@@ -525,12 +537,22 @@ transaction id.
 |---|---|---|
 | `unmatch` | both | those two may not pair with **each other**; each stays free to find its real partner |
 | `unmatch` | first only | that leg is not half of a movement at all, whatever sits near it |
-| `match` | both | assert the pair, ahead of the day window, the tolerance and the rail rules |
+| `match` | both | assert the pair, ahead of the day window, the tolerance, the rail rules **and the currency partition** |
 
 `match` exists for the movement whose halves no window can reach: a
 bank posting its side of an ACH days after the other side credited.
-Forced pairs are asserted before the greedy pass and withdrawn from
-it, so a stated pair cannot lose either half to a nearer coincidence.
+Forced pairs are asserted first of all and withdrawn from the pool, so
+a stated pair cannot lose either half to a nearer coincidence.
+
+Because it asserts rather than infers, `match` also reaches **across
+currencies**: the native-currency partition belongs to the amount pass
+alone, and a stated pair never meets it. That is the correction surface
+for a conversion whose source stamped no reference on either leg.
+
+The ledger binds **every** phase, a reference pair included. An
+identity the bank asserted is the strongest evidence the data holds,
+and it is still weaker than a person saying these two rows are not one
+movement: the clerk stamped a number, the holder was there.
 
 A rule that names no leg is **reported, not dropped** — the pass counts
 it exactly as it counts an unmatched pin. An override is something a
@@ -554,20 +576,71 @@ of a movement out of it. Widening the set buys false pairs, and a
 false pair does not read as a wrong category — it deletes a real
 spending line.
 
-**Known limitation:** a cross-currency own-transfer cannot match. The
-core partitions candidates by native currency, because matching
-converted amounts would make the same movement pair differently per
-output currency — a report's display currency must not change what
-counts as spending. A withdrawal in one currency funding a card in
-another stays one-legged and is left to the rule tier. `wealthdb
-categorize` surfaces these as *cross-currency near-pairs* rather than
-pretending to fix them.
+### The reference road
 
-That limitation has a sharp edge once a card IS collected. A card billed
-in one currency and settled from an account in another leaves both legs
-one-legged, so its purchases are itemised *and* its bill stays in the
-base as `card_spend` — the same spending, counted twice. The card rule is
-not narrowed to prevent it: the alternative, suppressing `card_spend`
+**No amount test can join a currency conversion.** The core partitions
+candidates by native currency because matching converted amounts would
+make the same movement pair differently per output currency — a
+report's display currency must not change what counts as spending —
+and a conversion's two legs carry different figures by definition. So
+a withdrawal in one currency funding an account in another was, for as
+long as amounts were the only evidence, unpairable.
+
+A **shared reference is not an amount test.** Where a bank stamps one
+transaction number on both halves of a move between two accounts of
+one relationship, it is asserting that the two rows are one movement,
+and an identity is currency-blind. The matcher's second phase pairs on
+that, spending neither the tolerance nor the window.
+
+The reference travels as `payload.$.bank_ref`, one key whichever feed
+wrote the row, filled by each adapter from whatever its own feed calls
+its reference. A generic reader decoding one source's id composition
+would be the wrong layer and would mis-fire on the next source whose
+ids merely looked similar.
+
+What makes it safe is **uniqueness, tested twice**:
+
+- in SQL, over the whole of `transactions` and scoped to one silver
+  source: a reference carried by any number of rows other than two is
+  not offered at all. That census deliberately spans rows the matcher
+  pool cannot see — a fee booked under the reference of the payment it
+  belongs to, an FX leg, any unsigned kind — because those are exactly
+  the cases a pool-level census is blind to;
+- in the matcher, over the legs actually offered: the reference must
+  name exactly one debit and one credit, on **different accounts** of
+  the **same source**, neither amount zero, within a staleness bound of
+  a quarter. One account's two rows under one reference are the bank's
+  own bookkeeping, not money crossing between accounts; two banks can
+  mint the same string, so a cross-source pair would be a coincidence
+  wearing the clothes of a fact; and a "pair" resolving across a span
+  no settlement takes is a reference space that has wrapped.
+
+Anything that fails a test pairs **nothing** rather than its best
+guess, and falls through to the amount pass exactly as it did before.
+Refusing costs a match; guessing costs a real spending line, because a
+false pair withdraws both legs.
+
+The load says how much traffic the road carried, and how many
+references it had to refuse — a road whose traffic nobody can see is a
+road nobody can tell has stopped carrying any. The references live in
+the payload, so a source loaded before the adapter that stamps them
+carries none until a `reload`, and a count of zero where pairs are
+expected is what says so.
+
+**What is still out of reach:** a movement whose source stamps no
+reference on it, or stamps one its other rows also carry. Those stay
+one-legged and are left to the rule tier, and `wealthdb categorize`
+surfaces them as *cross-currency near-pairs* rather than pretending to
+fix them.
+
+That residue has a sharp edge once a card IS collected. A card ledger
+mints its own ids, so the bank-side payment order and the card's record
+of being settled share no number and no reference can join them. A card
+billed in one currency and settled from an account in another therefore
+leaves both legs one-legged, so its purchases are itemised *and* its
+bill stays in the base as `card_spend` — the same spending, counted
+twice. The card rule is not narrowed to prevent it: the alternative,
+suppressing `card_spend`
 wherever the source holds any card account, would delete a genuine bill
 for a card that is not collected, and an over-count is visible in a
 report where an under-count is not. The near-pair canary is what makes
@@ -821,8 +894,11 @@ does not translate *means*:
   types whose meaning is the movement itself translate: the bank's fee
   and charge types to `BANK_FEES_*`, ATM and Bancomat withdrawals to
   `cash_withdrawal`, FX conversions between the holder's own currency
-  accounts to `internal_transfer` — the matcher cannot pair those,
-  because the legs differ in currency — and a bill paid to a card to
+  accounts to `internal_transfer` — the matcher's amount pass cannot
+  pair those, because the legs differ in currency, and its reference
+  pass reaches only the ones the bank stamped one number on; this entry
+  places the rest, without a far account, so the statement draws such a
+  row as leaving the pool — and a bill paid to a card to
   `card_spend`. A value the map does not hold is the normal case, not
   drift: the row falls through exactly as an unmapped category does,
   and nothing is counted. The shape is a flag on the map
@@ -1528,8 +1604,14 @@ picture is right:
   line, `N pair(s) matched outside the spending population, not
   listed`, rather than listed or silently dropped;
 - **the largest unmatched legs**, including opposite-sign
-  cross-currency shapes the native-currency matcher structurally
-  cannot pair;
+  cross-currency shapes the amount pass cannot pair and that no shared
+  reference reached. Each pair listed above also says which phase
+  asserted it, because the check a reader runs on two legs depends on
+  the answer: legs that disagree in size or currency are the defect the
+  listing exists to catch on an amount pair and the expected shape on a
+  reference one. Reference pairs are listed first, ahead of the
+  chronological order, so the cut cannot swallow the road whose pairs
+  are least self-evident;
 - **a stratified sample of what is still uncategorised**, spread
   across sources rather than taken from the head of the biggest one.
 

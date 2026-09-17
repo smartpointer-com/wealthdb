@@ -649,7 +649,12 @@ type SpendingAccounts struct {
 	Exclude map[string][]string `json:"exclude,omitempty"` // source_id -> [account_external_id...]
 }
 
-// SpendingTransferMatching are the internal-transfer matcher's knobs.
+// SpendingTransferMatching are the internal-transfer matcher's knobs
+// for its AMOUNT pass — the phase that infers a pair from two figures
+// landing near each other. The phases that assert one outright, from
+// the override ledger or from a reference the source stamped on both
+// legs, are not banded and these do not reach them.
+//
 // Pointer fields distinguish "not set" (use the default) from an
 // explicit value.
 type SpendingTransferMatching struct {

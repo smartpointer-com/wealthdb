@@ -208,3 +208,267 @@ func TestMatchTransferLegsCapsToleranceInAbsoluteTerms(t *testing.T) {
 		t.Errorf("a 20 wire fee on 40000 must still pair; got %v", got)
 	}
 }
+
+// refLeg is a matcher input carrying the reference its source stamped on both
+// halves of one movement, in a currency of its own.
+func refLeg(owner, id string, day int64, ccy string, amt float64, ref string) TransferLeg {
+	l := leg("bank", owner, id, day, amt)
+	l.Ccy, l.Ref = ccy, ref
+	return l
+}
+
+// A shared reference pairs two legs the amount phase can never see, because
+// they are denominated differently. An FX conversion between two accounts of
+// one holder is booked as a debit in one currency and a credit in another,
+// the two figures differ by the rate, and the currency partition that keeps a
+// report's display currency from deciding what counts as spending puts them
+// in separate pools forever. The bank stamped one transaction number on both,
+// and that is an identity rather than a guess, so it crosses the partition.
+func TestSharedReferencePairsAcrossCurrencies(t *testing.T) {
+	legs := []TransferLeg{
+		refLeg("usd-account", "out", 100, "USD", -1000, "TXN-1"),
+		refLeg("chf-account", "in", 100, "CHF", 987.65, "TXN-1"),
+	}
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true})
+	if len(got) != 1 || got[0].Debit.ID != "out" || got[0].Credit.ID != "in" {
+		t.Fatalf("cross-currency reference pair = %+v, want out→in", got)
+	}
+	// Nothing about the pair was inferred from the figures, so the two legs
+	// come back exactly as they went in, differing amounts and all.
+	if got[0].Debit.Ccy == got[0].Credit.Ccy {
+		t.Errorf("the pair's legs share a currency: the fixture no longer tests what it claims")
+	}
+}
+
+// The reference spends neither the tolerance nor the amount pass's window,
+// because neither bounds an identity: two legs orders of magnitude apart, on
+// days no window would admit, still pair when the source says they are one
+// movement. What DOES bound it is the reference space going stale — a "pair"
+// resolving across a span no settlement takes is a reused string, not a
+// movement.
+func TestSharedReferenceSpendsNoToleranceAndOnlyAStalenessBound(t *testing.T) {
+	within := []TransferLeg{
+		refLeg("checking", "out", 100, "USD", -25, "TXN-2"),
+		refLeg("savings", "in", 100+referenceMatchMaxDays, "USD", 900000, "TXN-2"),
+	}
+	if got := MatchTransferLegs(within, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}); len(got) != 1 {
+		t.Errorf("a reference pair must not be bounded by the amount band or the amount window, got %+v", got)
+	}
+	stale := []TransferLeg{
+		refLeg("checking", "out", 100, "USD", -25, "TXN-2b"),
+		refLeg("savings", "in", 100+referenceMatchMaxDays+1, "USD", 900000, "TXN-2b"),
+	}
+	if got := MatchTransferLegs(stale, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}); len(got) != 0 {
+		t.Errorf("a reference resolving past the staleness bound must pair nothing, got %+v", got)
+	}
+}
+
+// Every pair says which phase asserted it, because an audit of the matcher
+// cannot be read without it: a correct reference pair's two legs are supposed
+// to disagree in amount and currency, which is exactly what an over-eager
+// amount pair looks like.
+func TestEveryPairNamesThePhaseThatAssertedIt(t *testing.T) {
+	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
+		Debit: LegRef{"bank", "checking", "manual-out"}, Credit: LegRef{"bank", "wallet", "manual-in"},
+	}})
+	if err != nil {
+		t.Fatalf("newTransferOverrides: %v", err)
+	}
+	legs := []TransferLeg{
+		leg("bank", "checking", "manual-out", 100, -11),
+		leg("bank", "wallet", "manual-in", 300, 999),
+		refLeg("checking", "ref-out", 100, "USD", -500, "TXN-12"),
+		refLeg("savings", "ref-in", 100, "CHF", 440, "TXN-12"),
+		leg("bank", "brokerage", "plain-out", 100, -75),
+		leg("bank", "custody", "plain-in", 100, 75),
+	}
+	want := map[string]TransferMatchPhase{
+		"manual-out": MatchedByOverride,
+		"ref-out":    MatchedByReference,
+		"plain-out":  MatchedByAmount,
+	}
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, Overrides: forced})
+	if len(got) != len(want) {
+		t.Fatalf("matched %d pair(s), want %d: %+v", len(got), len(want), got)
+	}
+	for _, p := range got {
+		if p.By != want[p.Debit.ID] {
+			t.Errorf("%s was asserted by %q, want %q", p.Debit.ID, p.By, want[p.Debit.ID])
+		}
+	}
+}
+
+// A reference that does not name exactly one debit and one credit names no
+// movement this pool can resolve, and the phase refuses rather than guessing
+// which two legs were meant. Refusing is not a lost match: a false pair
+// withdraws BOTH legs, so the spending line the debit stood for is not
+// mislabelled but deleted.
+func TestSharedReferenceRefusesWhatItCannotResolve(t *testing.T) {
+	opts := TransferMatchOpts{AllowSameOwner: true}
+	cases := []struct {
+		name string
+		legs []TransferLeg
+	}{
+		{"three legs under one reference", []TransferLeg{
+			refLeg("checking", "out", 100, "USD", -500, "TXN-3"),
+			refLeg("savings", "in", 100, "CHF", 440, "TXN-3"),
+			refLeg("brokerage", "also-in", 100, "CHF", 440, "TXN-3"),
+		}},
+		{"two legs in the same direction", []TransferLeg{
+			refLeg("checking", "out", 100, "USD", -500, "TXN-4"),
+			refLeg("savings", "also-out", 100, "CHF", -440, "TXN-4"),
+		}},
+		{"two legs of one account", []TransferLeg{
+			refLeg("checking", "charge", 100, "USD", -500, "TXN-5"),
+			refLeg("checking", "credit", 100, "CHF", 440, "TXN-5"),
+		}},
+		{"a leg with no amount to move", []TransferLeg{
+			refLeg("checking", "out", 100, "USD", -500, "TXN-6"),
+			refLeg("savings", "in", 100, "CHF", 0, "TXN-6"),
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MatchTransferLegs(append([]TransferLeg(nil), tc.legs...), opts); len(got) != 0 {
+				t.Errorf("paired %+v", got)
+			}
+		})
+	}
+}
+
+// A reference is an identity only inside one source's id space. Two banks can
+// mint the same string, so a pair drawn across the seam would be a
+// coincidence wearing the clothes of a fact — and under CrossGroupOnly, which
+// forbids same-group pairing outright, the phase has nothing left to do at
+// all.
+func TestSharedReferenceNeverCrossesSources(t *testing.T) {
+	legs := []TransferLeg{
+		refLeg("checking", "out", 100, "USD", -500, "TXN-7"),
+		{Group: "other-bank", Owner: "acct", ID: "in", Day: 100, Ccy: "CHF", Amt: 440, Ref: "TXN-7"},
+	}
+	if got := MatchTransferLegs(append([]TransferLeg(nil), legs...), TransferMatchOpts{AllowSameOwner: true}); len(got) != 0 {
+		t.Errorf("a bare reference must not pair across sources, got %+v", got)
+	}
+	sameSource := []TransferLeg{
+		refLeg("checking", "out", 100, "USD", -500, "TXN-8"),
+		refLeg("savings", "in", 100, "CHF", 440, "TXN-8"),
+	}
+	if got := MatchTransferLegs(append([]TransferLeg(nil), sameSource...),
+		TransferMatchOpts{CrossGroupOnly: true}); len(got) != 0 {
+		t.Errorf("CrossGroupOnly must leave the reference phase with nothing to pair, got %+v", got)
+	}
+}
+
+// The holder outranks the clerk. An `unmatch` says these two rows are not one
+// movement whatever is stamped on them, and it is the one claim about a pair
+// that beats an identity; a `match` is asserted first and takes its legs out
+// of the pool, so the reference phase finds one half already spoken for and
+// refuses the rest.
+func TestManualOverridesOutrankASharedReference(t *testing.T) {
+	legs := func() []TransferLeg {
+		return []TransferLeg{
+			refLeg("checking", "out", 100, "USD", -500, "TXN-9"),
+			refLeg("savings", "in", 100, "CHF", 440, "TXN-9"),
+			leg("bank", "brokerage", "coincidence", 100, 500),
+		}
+	}
+	unmatched, err := newTransferOverrides(nil, [][2]LegRef{{
+		{"bank", "checking", "out"}, {"bank", "savings", "in"},
+	}}, nil)
+	if err != nil {
+		t.Fatalf("newTransferOverrides: %v", err)
+	}
+	got := MatchTransferLegs(legs(), TransferMatchOpts{Overrides: unmatched})
+	if len(got) != 1 || got[0].Credit.ID != "coincidence" {
+		t.Errorf("an unmatched reference pair = %+v, want the debit left to the amount phase", got)
+	}
+
+	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
+		Debit: LegRef{"bank", "checking", "out"}, Credit: LegRef{"bank", "brokerage", "coincidence"},
+	}})
+	if err != nil {
+		t.Fatalf("newTransferOverrides: %v", err)
+	}
+	got = MatchTransferLegs(legs(), TransferMatchOpts{Overrides: forced})
+	if len(got) != 1 || got[0].Credit.ID != "coincidence" {
+		t.Errorf("a forced pair over a reference twin = %+v, want the forced pair alone", got)
+	}
+}
+
+// A `match` line reaches a movement no amount test can: the phases that
+// ASSERT a pair run ahead of the currency partition and never consult a
+// currency, so the holder can state a conversion's two legs as one movement
+// even where the source stamped nothing on them.
+func TestAForcedPairCrossesTheCurrencyPartition(t *testing.T) {
+	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
+		Debit: LegRef{"bank", "usd-account", "out"}, Credit: LegRef{"bank", "chf-account", "in"},
+	}})
+	if err != nil {
+		t.Fatalf("newTransferOverrides: %v", err)
+	}
+	legs := []TransferLeg{
+		refLeg("usd-account", "out", 100, "USD", -1000, ""),
+		refLeg("chf-account", "in", 104, "CHF", 987.65, ""),
+	}
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, Overrides: forced})
+	if len(got) != 1 || got[0].By != MatchedByOverride {
+		t.Errorf("a stated cross-currency pair = %+v, want one pair asserted by the ledger", got)
+	}
+}
+
+// The reference phase runs BEFORE the amount phase and withdraws what it
+// claims, so a leg the amount phase would have taken on size and date alone
+// goes to the leg the source named instead. That ordering is the point: an
+// identity is better evidence than a coincidence of figures, and the
+// coincidence is left one-legged, which is what it is.
+func TestSharedReferenceIsSettledBeforeAmountsAre(t *testing.T) {
+	legs := []TransferLeg{
+		refLeg("checking", "out", 100, "USD", -500, "TXN-10"),
+		refLeg("savings", "in", 100, "CHF", 440, "TXN-10"),
+		leg("bank", "brokerage", "exact-coincidence", 100, 500),
+	}
+	got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5})
+	if len(got) != 1 || got[0].Credit.ID != "in" {
+		t.Errorf("reference pair versus an exact same-day amount = %+v, want out→in", got)
+	}
+}
+
+// Legs carrying no reference pair exactly as they did before the phase
+// existed, and the phase's verdict does not depend on the order legs arrive
+// in.
+func TestSharedReferenceLeavesUnreferencedLegsAlone(t *testing.T) {
+	plain := []TransferLeg{
+		leg("bank", "checking", "out", 100, -5000),
+		leg("bank", "savings", "in", 101, 5000),
+	}
+	if got := MatchTransferLegs(append([]TransferLeg(nil), plain...),
+		TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}); len(got) != 1 {
+		t.Errorf("legs with no reference must match as they always did, got %+v", got)
+	}
+
+	mixed := []TransferLeg{
+		refLeg("checking", "out", 100, "USD", -500, "TXN-11"),
+		refLeg("savings", "in", 100, "CHF", 440, "TXN-11"),
+		leg("bank", "brokerage", "plain-out", 100, -75),
+		leg("bank", "wallet", "plain-in", 100, 75),
+	}
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true}
+	want := pairIDs(MatchTransferLegs(append([]TransferLeg(nil), mixed...), opts))
+	for i := len(mixed) - 1; i >= 0; i-- {
+		shuffled := append([]TransferLeg(nil), mixed[i:]...)
+		shuffled = append(shuffled, mixed[:i]...)
+		if got := pairIDs(MatchTransferLegs(shuffled, opts)); !reflect.DeepEqual(got, want) {
+			t.Errorf("rotation by %d changed the pairing: %v, want %v", i, got, want)
+		}
+	}
+}
+
+// pairIDs reduces a match to the set of debit→credit ids it asserted, so two
+// runs can be compared without depending on the order the pairs came back in.
+func pairIDs(pairs []TransferMatchPair) map[string]string {
+	out := map[string]string{}
+	for _, p := range pairs {
+		out[p.Debit.ID] = p.Credit.ID
+	}
+	return out
+}

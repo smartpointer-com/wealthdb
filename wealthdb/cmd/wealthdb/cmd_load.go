@@ -221,8 +221,19 @@ func printCashflowSummary(stdout io.Writer, res spending.CashflowResult) {
 	// find both in one place.
 	fmt.Fprintf(stdout, "cashflow: household boundary stamped — %d wrapper(s), %d overridden, "+
 		"%d account(s) out of the pool; %d own-account move(s) carry a far account "+
-		"(%d of them from the source's own statement)\n",
-		res.WrapperRows, res.WrapperOverrides, res.ScopeRows, res.FarAccounts, res.StatedFarAccounts)
+		"(%d of them from the source's own statement, %d paired on a reference the source "+
+		"stamped on both legs)\n",
+		res.WrapperRows, res.WrapperOverrides, res.ScopeRows, res.FarAccounts,
+		res.StatedFarAccounts, res.ReferencePairs)
+	// Said only when there is something to say. A handful of refused
+	// references is the ordinary shape of a bank that books a charge under
+	// the reference of the payment it belongs to; a number that grows with
+	// the archive says the source mints references per day or per batch, and
+	// that the road should not be trusted on it.
+	if res.AmbiguousReferences > 0 {
+		fmt.Fprintf(stdout, "cashflow: %d source reference(s) named more than one movement "+
+			"and paired nothing\n", res.AmbiguousReferences)
+	}
 	// Said once, on the pass that ends the state, because the state
 	// itself is unreadable from the outside: with no boundary stamped
 	// and no far account written, every matched own-account move

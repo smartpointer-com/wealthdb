@@ -248,7 +248,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	// read its verdicts. A movement is own-account or it is not, and two
 	// matchers with two bandings would call the same wire internal on
 	// one side and external on the other.
-	legs, poolNarratives, err := loadMatcherPool(ctx, tx)
+	legs, poolNarratives, ambiguousRefs, err := loadMatcherPool(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +257,10 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		return nil, fmt.Errorf("spending: transfer overrides: %w", err)
 	}
 	res.UnmatchedTransferOverrides = len(unresolvedOverrides)
-	matched := matchInternalTransfers(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides)
+	pairs := matchTransferPairs(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides)
+	matched := matchedPartners(pairs)
+	res.Cashflow.ReferencePairs = countPairsBy(pairs, gold.MatchedByReference)
+	res.Cashflow.AmbiguousReferences = ambiguousRefs
 
 	// Read once and shared, for the matcher's reason: where a movement
 	// went is one fact, and two families reading it apart could disagree.
@@ -482,12 +485,12 @@ type candidate struct {
 // loadStatedCounterAccounts reads, per transaction, the OWN account the
 // source itself named as the other side of the movement.
 //
-// It is the far account arriving by a second road. The matcher's road is a
-// pairing: two legs the product collected, joined by amount and day. This one
-// is the source's own statement of where the money went — a counter account
-// in the row's payload, put there by the UBS adapter from whichever of its
-// feeds stated it. Where the product does not collect the far side at all,
-// the pairing road has nothing to walk on and this one still does.
+// It is the far account arriving by the road that needs only ONE leg. The
+// matcher's roads both need two — joined by amount and day, or by a reference
+// the source stamped on both — and where the product does not collect the far
+// side at all, neither has anything to walk on. This one is the source's own
+// statement of where the money went: a counter account in the row's payload,
+// put there by the UBS adapter from whichever of its feeds stated it.
 //
 // The join is what makes it safe. Only a counter account gold ALREADY HOLDS,
 // under the same silver source, resolves; every other stated account — the
@@ -527,6 +530,96 @@ func loadStatedCounterAccounts(ctx context.Context, tx querier) (map[txKey]strin
 	return out, rows.Err()
 }
 
+// loadMovementReferences reads, per transaction, the reference the source
+// stamped on BOTH halves of one money movement — the bank's own transaction
+// number, written once and printed on the debit and on the credit alike.
+//
+// It is the far account's third road, and the only one that is an identity
+// rather than an inference. The matcher's road joins two legs by amount and
+// day; the stated counter account (loadStatedCounterAccounts) is the source
+// naming where the money went. This one is the source naming the MOVEMENT,
+// and because it names it rather than describing it, it holds across a
+// currency conversion — where the two legs carry different figures and the
+// amount matcher, which partitions by native currency on purpose, can never
+// bring them together.
+//
+// The key is `payload.$.bank_ref`, and reading ONE key is the whole reason
+// the adapter writes it. A bank states its reference in as many places as it
+// has feeds — a statement column here, an MT940 field there, an id
+// composition somewhere else — and an adapter is the layer that knows which.
+// Decoding an id's composition HERE would put one source's private shape into
+// a reader that serves every source, and would mis-fire on the next source
+// whose ids happen to look similar.
+//
+// THE UNIQUENESS TEST IS THE SAFETY, and it is why this is a query rather
+// than a column. A reference is trustworthy exactly insofar as the source
+// mints one per movement, so a reference carried by anything other than two
+// rows of one source is not offered at all: a reference the bank also stamped
+// on a charge booked beside the payment, on a correction, or on every row of
+// a batch names no single movement, and the matcher must be given no chance
+// to guess which pair it meant. The census is taken over the WHOLE of
+// `transactions` rather than over the matcher's pool, deliberately: a
+// reference shared with a row the pool cannot see — a fee, an FX leg, a
+// booking of a kind no leg is made from — is exactly the case the pool's own
+// census is blind to, and the case that would otherwise pair two legs whose
+// reference belongs to something larger than they are.
+//
+// Scoping by silver source is the second half of the same argument. A
+// reference is an identity only inside one source's id space; two banks can
+// mint the same string, and a pair drawn across that seam would be a
+// coincidence wearing the clothes of a fact.
+func loadMovementReferences(ctx context.Context, tx querier) (map[txKey]string, int, error) {
+	rows, err := tx.QueryContext(ctx, `
+        SELECT silver_source_id, transaction_external_id, ref, rows_under_ref
+          FROM (
+            SELECT silver_source_id, transaction_external_id, ref,
+                   COUNT(*) OVER (PARTITION BY silver_source_id, ref) AS rows_under_ref
+              FROM (
+                SELECT silver_source_id, transaction_external_id,
+                       json_extract_string(payload, '$.bank_ref') AS ref
+                  FROM transactions
+              )
+             WHERE ref IS NOT NULL AND ref <> ''
+          )
+         ORDER BY silver_source_id, ref, transaction_external_id`)
+	if err != nil {
+		return nil, 0, fmt.Errorf("spending: read movement references: %w", err)
+	}
+	defer rows.Close()
+	out := map[txKey]string{}
+	ambiguous := map[string]bool{}
+	for rows.Next() {
+		var k txKey
+		var ref string
+		var under int
+		if err := rows.Scan(&k.source, &k.txID, &ref, &under); err != nil {
+			return nil, 0, fmt.Errorf("spending: scan movement references: %w", err)
+		}
+		if under != 2 {
+			// More than two rows under one reference is the case worth
+			// counting: there the source HAS named something, and what it
+			// named is not one movement, so a pairing had to be refused.
+			// A few are ordinary — a bank books a charge under the
+			// reference of the payment it belongs to — but the number
+			// climbing with the archive is how a reference space that is
+			// per-day or per-batch rather than per-movement announces
+			// itself, and nothing else downstream would say so.
+			//
+			// One row under a reference is NOT counted. It is the ordinary
+			// shape of most rows, whose other half belongs to a third
+			// party and was never gold's to hold; there is nothing to
+			// refuse, and counting it would bury the signal above under
+			// the whole archive.
+			if under > 2 {
+				ambiguous[k.source+"\x00"+ref] = true
+			}
+			continue
+		}
+		out[k] = ref
+	}
+	return out, len(ambiguous), rows.Err()
+}
+
 func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,
@@ -555,9 +648,16 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 }
 
 // loadMatcherPool reads the matcher's legs and, alongside them, the
-// narrative of each leg. A matched leg outside the spending population
-// still gets an enrichment row, and that row needs a signature like
-// any other.
+// narrative of each leg and the count of source references it had to
+// refuse. A matched leg outside the spending population still gets an
+// enrichment row, and that row needs a signature like any other.
+//
+// The references are read HERE, rather than beside the pool at the call
+// site, because this is the one place a leg is built. Both callers — the
+// pass and the audit surface — take their legs from it, and a reference
+// fetched at one call site and not the other would let the two disagree
+// about which movements paired, which is the drift matchTransferPairs
+// exists to prevent for the options.
 //
 // Most of the pool is outside the population — the pool spans every
 // account and admits the income kinds — and the enrichment table takes
@@ -568,7 +668,11 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 // which reads spend_txn_categories() directly and so can name the leg
 // for what it is. Nothing leaks and nothing is orphaned: the next
 // pass deletes every derived row before re-asserting.
-func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[txKey]candidate, error) {
+func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[txKey]candidate, int, error) {
+	refs, ambiguous, err := loadMovementReferences(ctx, tx)
+	if err != nil {
+		return nil, nil, 0, err
+	}
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, account_external_id, transaction_external_id,
                occurred_at, currency, CAST(net_amount AS DOUBLE),
@@ -576,7 +680,7 @@ func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[t
           FROM spend_matcher_pool(?, ?)
          ORDER BY silver_source_id, transaction_external_id`, int64(0), gold.MaxEpoch)
 	if err != nil {
-		return nil, nil, fmt.Errorf("spending: read matcher pool: %w", err)
+		return nil, nil, 0, fmt.Errorf("spending: read matcher pool: %w", err)
 	}
 	defer rows.Close()
 
@@ -591,7 +695,7 @@ func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[t
 		)
 		if err := rows.Scan(&leg.Group, &leg.Owner, &leg.ID, &occurredAt,
 			&leg.Ccy, &amount, &row.counterparty, &row.description); err != nil {
-			return nil, nil, fmt.Errorf("spending: scan matcher pool: %w", err)
+			return nil, nil, 0, fmt.Errorf("spending: scan matcher pool: %w", err)
 		}
 		if !amount.Valid {
 			// A leg with no amount cannot be oriented, so it can neither
@@ -601,14 +705,15 @@ func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[t
 		leg.Day = gold.EpochDay(occurredAt)
 		leg.Amt = amount.Float64
 		leg.Rail, leg.RailPartner = legRail(row.counterparty, row.description)
-		legs = append(legs, leg)
 		row.key = txKey{leg.Group, leg.ID}
+		leg.Ref = refs[row.key]
+		legs = append(legs, leg)
 		narratives[row.key] = row
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
-	return legs, narratives, nil
+	return legs, narratives, ambiguous, nil
 }
 
 func loadSilverKinds(ctx context.Context, tx *sql.Tx) (map[string]string, error) {

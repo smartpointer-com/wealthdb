@@ -222,7 +222,7 @@ wherever both have something to say.
 | `distribution` | investing | floors to `capital_return`; a rule or a pin promoting it to an income type moves it to operating in, as the holder's word should |
 | `purchase` `refund` `fee` `tax` `interest` (−) | operating out | by resolved spend category |
 | `withdrawal` | by verdict | matched → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles; a rule-placed `internal_transfer` with no far account → `vehicles · Untracked accounts`; otherwise operating out |
-| `card_payment` | matched → by the far account; otherwise **excluded, counted** | an unpaired card bill is in neither family's population, so no tier ever saw it. It also has a known false shape: a cross-currency pair the matcher cannot join, whose bank leg the provider tier already files as card spend. Counting it as a receipt would print a phantom inflow and double the bill |
+| `card_payment` | matched → by the far account; otherwise **excluded, counted** | an unpaired card bill is in neither family's population, so no tier ever saw it. It also has a known false shape: a cross-currency pair no road joins — the amount pass partitions by currency, and a card ledger mints its own ids, so no shared reference reaches it either — whose bank leg the provider tier already files as card spend. Counting it as a receipt would print a phantom inflow and double the bill |
 | `buy` `sell` | investing | by the instrument's asset class; a `cash`-class instrument is pool-internal |
 | `contribution` `distribution` | investing | private capital, by the vehicle's asset class |
 | `transfer_in` `transfer_out` | matched → by the far account; otherwise **excluded, counted** | an unmatched one is an in-kind ledger leg or a source's own tagging, and is counted rather than guessed at |
@@ -242,8 +242,20 @@ Cashflow needs one more fact: whether it stayed in the **pool**. The
 far account is how it knows, and it arrives by two roads.
 
 The **matcher's** road is a pairing: two legs the product collected,
-joined by amount and day, each then naming the other's account
+joined either by amount and day or by a reference the source stamped on
+both halves, each then naming the other's account
 (`far_silver_source_id`, `far_account_external_id`, migration 0079).
+
+The two joins are not interchangeable. A pairing on amount is an
+inference, so its two legs necessarily agree in currency and very
+nearly in size; a pairing on a reference is the source asserting an
+identity, so its legs may differ in **both** — a conversion between two
+of the holder's own accounts is exactly that shape, and it is the only
+shape the amount join can never reach (SPENDING.md §3, *The reference
+road*). Nothing here nets a pair: each leg is placed on its own figure,
+by its own far account, so the disagreement costs the statement
+nothing. Where both accounts are in the pool both legs are simply
+invisible, which is what a move inside the household's cash is.
 
 The **source's** road is the bank stating the counter account outright.
 Where the product does not collect the far side at all — a wire to an
@@ -597,7 +609,13 @@ otherwise be wrong about itself rather than about the statement:
    fund bought with idle cash. Both move the spine and the statement
    rightly draws neither. What the flow side does NOT count is the rows
    the resolution declined — showing up in `unexplained` is exactly
-   what the memo is for.
+   what the memo is for. Counting the pool-internal rows is
+   load-bearing rather than merely harmless, and a pair whose two legs
+   are one currency conversion is what makes it so: those legs do not
+   offset each other in native terms, so a flow side that dropped them
+   would put the whole conversion into `unexplained` on every bucket it
+   touched. Included at their own amounts, they move the measured spine
+   by exactly what the balances moved by.
 
 A bucket reports blank where nothing is measurable, or where no rate
 can value an amount at a boundary. It is a diagnostic with a stated
@@ -753,8 +771,11 @@ each naming a way the statement can be quietly wrong:
 5. **Memo pairs for what the boundary removes** — the vehicles' own
    income and spending, and the tax they withheld before the household
    saw the money.
-6. **Platform custody deposits**, **reimbursement netting** and
-   **cross-currency own-account moves**: the two families' standing
-   follow-ups, each of which shows up here too.
+6. **Platform custody deposits**, **reimbursement netting** and the
+   **cross-currency own-account moves no reference reaches**: the two
+   families' standing follow-ups, each of which shows up here too. The
+   third narrowed when the matcher learned to pair on a source's own
+   transaction number; what is left is the movement whose source stamps
+   none, and the card bill whose two feeds share no id space.
 7. **Net cash flow on the Wealth Overview**, once the feature has been
    read for a while.

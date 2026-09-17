@@ -561,6 +561,12 @@ func compileSpendScope(sc *SpendingRuleScope) (CompiledSpendScope, error) {
 // month-apart flows, the tolerance cap from pairing unrelated amounts.
 // There is no income twin — one matcher runs, and income reads its
 // verdicts.
+//
+// Both knobs bound the matcher's AMOUNT pass, which is the only phase
+// that guesses. A pair the holder stated in the override ledger, or one
+// the source asserted by stamping a reference on both legs, spends
+// neither: neither is a guess, so there is no band to widen or narrow
+// around it.
 func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) error {
 	if windowDays != nil && (*windowDays < 0 || *windowDays > 30) {
 		return fmt.Errorf("config: %s.window_days %d out of range [0, 30]", block, *windowDays)

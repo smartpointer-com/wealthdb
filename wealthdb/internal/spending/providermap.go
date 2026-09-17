@@ -176,8 +176,12 @@ var amexUncategorized = map[string]bool{"other": true}
 // same verdict from a narrative that names the machine, and this
 // reaches the rows whose narrative is a bare bank tag. A conversion
 // between the holder's own currency accounts is an own-account move,
-// `internal_transfer`, which the matcher cannot reach because the two
-// legs differ in currency. A bill paid to a card is `card_spend` by
+// `internal_transfer`; the matcher's amount pass cannot reach one,
+// because the two legs differ in currency and it partitions on that,
+// and its reference pass reaches only the conversions whose two legs
+// the bank stamped with one transaction number. This entry is what
+// places the rest — and unlike a pairing it places a verdict without a
+// far account, so the statement draws such a row as leaving the pool. A bill paid to a card is `card_spend` by
 // the card-payment policy (docs/SPENDING.md §2); the matcher still
 // outranks this when the card's own leg is in gold.
 //

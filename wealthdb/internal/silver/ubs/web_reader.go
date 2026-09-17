@@ -559,7 +559,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// The verdict is stamped here, before the sign is pinned: a
 		// payload that cannot carry it degrades to the older demotion,
 		// and the sign must then be read off the kind the row ENDS with.
-		rowPayload := withCounterAccount(payload, p.CounterAccount)
+		rowPayload := withBankRef(withCounterAccount(payload, p.CounterAccount), webBankRef(txID))
 		if returnsInternal {
 			rowPayload, kind = markReturnsInternal(rowPayload, kind)
 		}
@@ -675,11 +675,72 @@ const counterAccountKey = `"counter_account":`
 // statement era's own value is the parser's, and a derived one must never
 // overwrite a stated one.
 func withCounterAccount(payload, iban string) json.RawMessage {
+	return spliceStringField(payload, counterAccountKey, iban)
+}
+
+// bankRefKey is the payload key the MT940 feed already writes its `:61:`
+// account-servicing-institution reference to (cashMovementPayload.BankRef),
+// so a consumer reads ONE field whichever feed produced the row — the same
+// bargain counterAccountKey strikes.
+const bankRefKey = `"bank_ref":`
+
+// webBankRef returns the bank reference a web transaction id names, or "" for
+// an id that names none.
+//
+// A web row's silver id IS the bank's own "Transaction no.": the number the
+// account statement prints against the entry, which UBS stamps on BOTH sides
+// of a move between two accounts of one relationship — the very fact the
+// ubs-web silver schema makes its transactions primary key compound to
+// accommodate. So the reference is already in hand here and needs no parsing;
+// what it needs is to travel as a FIELD, because gold's id for the row is the
+// per-leg composition and nothing downstream should have to take that apart
+// to find the number inside it.
+//
+// The statement era is the exception and is refused. Those ids are the
+// collector's own content hash of a printed row (statementIDPrefix), not
+// anything the bank wrote, so stamping one would claim an identity no bank
+// ever asserted. A hash is unique per row and would pair nothing, which makes
+// the refusal cheap — but a reference that names nothing has no business
+// being offered as one.
+func webBankRef(txID string) string {
+	if isStatementEraID(txID) {
+		return ""
+	}
+	return txID
+}
+
+// withBankRef stamps the bank's own reference for the entry onto a row's
+// payload, by the same rule and for the same reason as withCounterAccount:
+// one key, whichever feed wrote the row.
+func withBankRef(payload json.RawMessage, ref string) json.RawMessage {
+	return spliceStringField(string(payload), bankRefKey, ref)
+}
+
+// spliceStringField writes one string-valued key into a silver payload by
+// splicing it in after the opening brace, rather than decoding the object and
+// re-marshalling it. The payload is silver's JSON verbatim, and a round trip
+// through a map would reorder and re-space every other key, making each row's
+// payload churn on a change that added nothing.
+//
+// Three refusals, all of them leaving the payload byte for byte as it came:
+// an empty value (there is nothing to state), a payload that is not a JSON
+// object (a row whose payload never decoded is not one to start editing), and
+// a payload that already carries the key — a parsed value is the feed's own
+// and a derived one must never overwrite it.
+//
+// The value is marshalled rather than quoted, so a reference or an account id
+// carrying a quote or a backslash produces valid JSON instead of a payload
+// that no longer parses.
+func spliceStringField(payload, key, value string) json.RawMessage {
 	trimmed := strings.TrimSpace(payload)
-	if iban == "" || !strings.HasPrefix(trimmed, "{") || strings.Contains(trimmed, counterAccountKey) {
+	if value == "" || !strings.HasPrefix(trimmed, "{") || strings.Contains(trimmed, key) {
 		return json.RawMessage(payload)
 	}
-	field := counterAccountKey + `"` + iban + `"`
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(payload)
+	}
+	field := key + string(encoded)
 	if trimmed == "{}" {
 		return json.RawMessage("{" + field + "}")
 	}

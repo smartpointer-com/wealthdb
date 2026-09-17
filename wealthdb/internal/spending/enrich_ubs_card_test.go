@@ -151,12 +151,15 @@ func TestUBSDirectDebitBillAlsoNetsOut(t *testing.T) {
 // rather than a defect, and is the reason the placeholder does not
 // retire for every collected card.
 //
-// The matcher partitions candidates by NATIVE currency and cannot pair
-// across two — converting them would make the same movement pair
-// differently per report currency. So a card billed in one currency and
-// settled from an account in another leaves both legs one-legged
-// however well the card is projected, and the built-in rule keeps
-// placing `card_spend` on the bill.
+// The matcher's amount pass partitions candidates by NATIVE currency and
+// cannot pair across two — converting them would make the same movement
+// pair differently per report currency. Its reference pass can, but only
+// where one source stamped one reference on both legs, and a card ledger
+// mints its own ids: the bank-side payment order and the card's record of
+// being settled share no number. So a card billed in one currency and
+// settled from an account in another leaves both legs one-legged however
+// well the card is projected, and the built-in rule keeps placing
+// `card_spend` on the bill.
 //
 // That is the honest verdict for the row: the purchases on that card
 // ARE itemised, so the bill double-counts them — but a matcher that
@@ -179,7 +182,7 @@ func TestUBSCrossCurrencyCardBillStaysCardSpend(t *testing.T) {
 	detailed, provenance := verdictOf(t, db, ctx, "ubs", "T-BILL-CHF")
 	if detailed != canonical.SpendDetailedCardSpend || provenance != ProvenanceRule {
 		t.Errorf("cross-currency bill = (%q, %q), want card_spend via rule — "+
-			"the matcher cannot pair across native currencies",
+			"no reference joins the two feeds and the amount pass cannot cross currencies",
 			detailed, provenance)
 	}
 	// The card's own leg is not spending either way: `card_payment` is
