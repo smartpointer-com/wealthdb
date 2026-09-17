@@ -536,6 +536,10 @@ func TestSnapshotsForwardContract(t *testing.T) {
 	if overlays[0].PortfolioExternalID == nil || *overlays[0].PortfolioExternalID != "P1" {
 		t.Errorf("overlay PortfolioExternalID = %v, want 'P1'", overlays[0].PortfolioExternalID)
 	}
+	// The overlay holds the relationship's own forward contracts, so it
+	// carries the relationship's wrapper rather than reaching gold with
+	// the column unset.
+	assertEveryAccountOfKind(t, batch.Accounts, canonical.AccountKindOverlay)
 }
 
 func TestKindMapping(t *testing.T) {

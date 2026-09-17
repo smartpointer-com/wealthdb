@@ -1838,6 +1838,7 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindMortgage,
+			TaxWrapper:          relationshipTaxWrapper(),
 			DisplayName:         silver.StrPtrIfNonEmpty(descr.String),
 			BaseCurrency:        silver.StrPtrIfNonEmpty(currency),
 			RelationshipID:      silver.StrPtrIfNonEmpty(relID.String),

@@ -766,6 +766,7 @@ SELECT snapshot_at, contract_external_id, payload
 			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 				AccountExternalID:   overlayID,
 				AccountKind:         canonical.AccountKindOverlay,
+				TaxWrapper:          relationshipTaxWrapper(),
 				DisplayName:         silver.StrPtrIfNonEmpty("Portfolio overlay"),
 				PortfolioExternalID: &pid,
 				FirstSeenAt:         snap,

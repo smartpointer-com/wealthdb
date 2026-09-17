@@ -226,6 +226,15 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			} else {
 				ac.AccountKind = canonical.AccountKindOverlay
 				ac.DisplayName = silver.StrPtrIfNonEmpty("Portfolio overlay (historical)")
+				// The synthetic overlay only. A real safekeeping
+				// account's wrapper is the AcctTpCd tables' answer,
+				// and stamping one here would let the PDF era supply
+				// a wrapper for a product code PSN deliberately left
+				// unmapped — gold's merge backfills from older
+				// observations and absence never wins, so the
+				// caution those tables exist for would be undone from
+				// behind.
+				ac.TaxWrapper = relationshipTaxWrapper()
 			}
 			batch.Accounts = append(batch.Accounts, ac)
 		}
@@ -513,6 +522,7 @@ SELECT as_of_date, account_external_id, currency_iso,
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindMortgage,
+			TaxWrapper:        relationshipTaxWrapper(),
 			DisplayName:       silver.StrPtrIfNonEmpty(display.String),
 			BaseCurrency:      silver.StrPtrIfNonEmpty(currency),
 			FirstSeenAt:       asOf,

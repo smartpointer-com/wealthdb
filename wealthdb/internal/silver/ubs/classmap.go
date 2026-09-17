@@ -434,3 +434,29 @@ func managementStyleForSafekeepingSubType(subType string) canonical.ManagementSt
 	}
 	return ""
 }
+
+// relationshipTaxWrapper is the tax wrapper the account kinds this
+// adapter constructs itself carry — a card, a mortgage and the
+// synthetic portfolio `overlay`, none of which PSN describes with an
+// AcctTpCd. The two tables above answer for the cash and safekeeping
+// accounts it does.
+//
+// Those kinds are not a separate tax position. A card and a mortgage
+// are liabilities of the relationship whose cash and custody accounts
+// the AcctTpCd tables already place, and an overlay is a synthetic
+// account over that relationship's own contracts, so all three take the
+// relationship's wrapper. An unset wrapper is not neutral: cashflow
+// reads it as household, which is right here and wrong for a pension
+// account nothing mapped, and `wealthdb status -v` reports the unset
+// ones as the cash flow boundary's coverage gap. Stating it removes the
+// ambiguity without moving a number.
+//
+// It is deliberately NOT a default applied to the AcctTpCd tables'
+// misses: an unknown product code may be a pension product, and
+// guessing taxable there is the error those tables exist to avoid. This
+// answers only for the kinds the adapter itself constructs, where the
+// tax position is known because the adapter is the thing that knows it.
+func relationshipTaxWrapper() *canonical.TaxWrapper {
+	w := canonical.TaxWrapperTaxablePersonal
+	return &w
+}

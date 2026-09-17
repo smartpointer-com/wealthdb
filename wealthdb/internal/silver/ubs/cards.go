@@ -89,6 +89,7 @@ SELECT snapshot_at, account_external_id, currency_iso, balance,
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindCard,
+			TaxWrapper:        relationshipTaxWrapper(),
 			// The product line, falling back to the printed account
 			// number. Neither is a card number.
 			DisplayName:  silver.StrPtrIfNonEmpty(cardDisplayName(product, acctNumber)),

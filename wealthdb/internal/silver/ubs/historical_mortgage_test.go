@@ -80,6 +80,7 @@ func TestHistoricalMortgageAnchoring(t *testing.T) {
 
 	// Collect every position keyed by snapshot_at.
 	posBySnap := map[int64][]canonical.PositionChange{}
+	var accounts []canonical.AccountChange
 	for {
 		batch, more, err := stream.Next(ctx)
 		if err != nil {
@@ -88,10 +89,16 @@ func TestHistoricalMortgageAnchoring(t *testing.T) {
 		for _, p := range batch.Positions {
 			posBySnap[p.SnapshotAt] = append(posBySnap[p.SnapshotAt], p)
 		}
+		accounts = append(accounts, batch.Accounts...)
 		if !more {
 			break
 		}
 	}
+
+	// A mortgage is a liability of the same relationship as the cash
+	// and custody accounts, so it carries the same wrapper rather than
+	// reaching gold with the column unset.
+	assertEveryAccountOfKind(t, accounts, canonical.AccountKindMortgage)
 
 	// t=1000 (anchored): security + mortgage both present.
 	got1000 := posBySnap[1000]
@@ -194,6 +201,16 @@ func TestHistoricalSecuritiesSafekeepingRepointing(t *testing.T) {
 	if kindByID["0999AAAAAAAA09:overlay"] != canonical.AccountKindOverlay {
 		t.Errorf("unmapped account kind = %q, want overlay",
 			kindByID["0999AAAAAAAA09:overlay"])
+	}
+	// The synthetic overlay carries the relationship's wrapper; the
+	// real safekeeping account beside it deliberately does NOT get one
+	// from here, because its wrapper is the AcctTpCd tables' answer.
+	assertEveryAccountOfKind(t, accounts, canonical.AccountKindOverlay)
+	for _, a := range accounts {
+		if a.AccountKind == canonical.AccountKindSafekeeping && a.TaxWrapper != nil {
+			t.Errorf("the PDF era supplied a wrapper for a safekeeping account, "+
+				"overruling the product-code tables: %v", *a.TaxWrapper)
+		}
 	}
 }
 
