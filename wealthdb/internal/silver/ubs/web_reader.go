@@ -401,6 +401,10 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if err != nil {
 		return nil, psnHints{}, err
 	}
+	mortgageAccounts, err := r.buildMortgageAccountIndex(ctx)
+	if err != nil {
+		return nil, psnHints{}, err
+	}
 	// Both folds run BEFORE the offset veto, and their verdicts reach it
 	// together: a web row either fold suppresses is not in the ledger, so
 	// it must not consume an offset-veto match either. The veto's universe
@@ -534,6 +538,17 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// gold keeps.
 		if p.CounterAccount == "" {
 			p.CounterAccount = counterAccountFromNarrative(p)
+		}
+		// A mortgage payment names its mortgage rather than an IBAN, and
+		// the export era states that name in a field the composed
+		// description drops. Resolving it here is the same bargain the
+		// IBAN above strikes: the adapter knows which of its feeds said
+		// what, and gold reads one field. Only a mortgage silver already
+		// holds resolves — a stamp for anything else finds nothing.
+		if p.CounterAccount == "" {
+			if k := mortgageRefFromNarrative(p.Description2); k != "" {
+				p.CounterAccount = mortgageAccounts[k]
+			}
 		}
 		returnsInternal := false
 		if kind == canonical.TxKindDeposit || kind == canonical.TxKindWithdrawal {
@@ -723,6 +738,56 @@ func withCounterLeg(payload json.RawMessage, currency, amount string) json.RawMe
 	}
 	out := spliceStringField(string(payload), counterAmountKey, amount)
 	return spliceStringField(string(out), counterCurrencyKey, currency)
+}
+
+// mortgageStampInNarrative matches the reference UBS prints for the mortgage a
+// payment services — `HYPOTHEK <base>.<tranche> <sequence>`.
+//
+// The export era states it in `Description2` and nowhere else. The statement
+// era composed the same stamp into the description itself, which is why a
+// mortgage payment booked before 2024 is recognised by the narrative rule and
+// one booked after is not: the bank stopped printing the word where the
+// composed description could reach it, and nothing else on the row said so.
+var mortgageStampInNarrative = regexp.MustCompile(`(?i)\bHYPOTHEK\s+([0-9]+\s*\.\s*[A-Z0-9]+\s+[0-9]{4})\b`)
+
+// mortgageRefShape is the reference itself, once the spaces are gone:
+// a digit run, a dot, a tranche code, and a four-digit sub-account sequence.
+var mortgageRefShape = regexp.MustCompile(`^([0-9]+)\.([A-Z0-9]+?)([0-9]{4})$`)
+
+// mortgageRefKey folds either spelling of a mortgage reference onto one
+// lookup key, so a stamp the bank prints can be matched against an account id
+// gold holds without either being rewritten into the other.
+//
+// The two spellings differ in the branch. An account id is
+// `BBBB AAAAAAAA.MMM NNNN` — a four-digit branch, then the account base
+// zero-padded to eight. The stamp carries the base alone, unpadded. So the
+// fold drops the branch (withBranch) and then the padding, leaving the part
+// both spellings agree on. Nothing is constructed and no branch is guessed:
+// an unknown stamp simply finds no account.
+func mortgageRefKey(ref string, withBranch bool) string {
+	m := mortgageRefShape.FindStringSubmatch(
+		strings.ToUpper(strings.ReplaceAll(ref, " ", "")))
+	if m == nil {
+		return ""
+	}
+	base := m[1]
+	if withBranch && len(base) > 8 {
+		base = base[len(base)-8:]
+	}
+	if base = strings.TrimLeft(base, "0"); base == "" {
+		return ""
+	}
+	return base + "." + m[2] + m[3]
+}
+
+// mortgageRefFromNarrative returns the folded key a narrative's HYPOTHEK stamp
+// names, or "" for a narrative carrying none.
+func mortgageRefFromNarrative(s string) string {
+	m := mortgageStampInNarrative.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	return mortgageRefKey(m[1], false)
 }
 
 // counterAccountKey is the payload key the statement era already uses, so a
@@ -1788,6 +1853,7 @@ type webTxPayload struct {
 	CounterAccount   string   `json:"counter_account"`
 	Continuation     []string `json:"continuation"`
 	Description1     string   `json:"Description1"`
+	Description2     string   `json:"Description2"`
 	Description3     string   `json:"Description3"`
 }
 
@@ -2296,15 +2362,66 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
 // loaded before that migration just return false and the caller
 // skips the projection.
 func (r *webReader) hasMortgagesTable(ctx context.Context) (bool, error) {
+	return r.hasTable(ctx, "mortgages")
+}
+
+// hasTable reports whether the silver database carries a table. Older silvers
+// predate some of them, and a reader that serves every vintage asks rather
+// than assumes.
+func (r *webReader) hasTable(ctx context.Context, name string) (bool, error) {
 	var n int
 	err := r.db.QueryRowContext(ctx, `
         SELECT COUNT(*)
           FROM sqlite_master
-         WHERE type = 'table' AND name = 'mortgages'`).Scan(&n)
+         WHERE type = 'table' AND name = ?`, name).Scan(&n)
 	if err != nil {
-		return false, fmt.Errorf("hasMortgagesTable: %w", err)
+		return false, fmt.Errorf("hasTable %s: %w", name, err)
 	}
 	return n > 0, nil
+}
+
+// buildMortgageAccountIndex maps a folded mortgage reference onto the account
+// id gold holds the mortgage under.
+//
+// It reads the ids rather than composing them. The branch a stamp omits is
+// knowable only from the account itself, and the two places silver records one
+// — the live positions export and the maturity-notice PDFs — already agree on
+// the spelling, deliberately (the collector re-pads the PDF form so the two
+// are byte-equal). Looking the whole id up therefore guesses nothing: a stamp
+// naming a mortgage silver has never seen resolves to nothing, which is the
+// right answer and leaves the row exactly as it was.
+func (r *webReader) buildMortgageAccountIndex(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	for _, table := range []string{"mortgages", "historical_mortgages"} {
+		ok, err := r.hasTable(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		rows, err := r.db.QueryContext(ctx,
+			`SELECT DISTINCT account_external_id FROM `+table)
+		if err != nil {
+			return nil, fmt.Errorf("buildMortgageAccountIndex %s: %w", table, err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if k := mortgageRefKey(id, true); k != "" {
+				out[k] = id
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
 }
 
 // looksLikeISIN: 12 chars, first two ASCII letters (country
