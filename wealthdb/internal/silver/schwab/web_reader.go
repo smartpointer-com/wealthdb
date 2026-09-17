@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 
@@ -319,7 +320,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 		}
 		netAmount, quantity, price := extractWebTxAmounts(payload)
 		description := extractWebTxDescription(payload)
-		txKind := webKind(kind)
+		txKind := webKind(kind, netAmount, description)
 		built = append(built, builtWebTx{source: source, tx: canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            ts,
@@ -667,7 +668,22 @@ func absInt64(v int64) int64 {
 // passes source-supplied signs through for that kind because
 // the cash impact varies: cash-in-lieu yields cash, a plain
 // split is zero, a cash merger pays out.
-func webKind(s string) canonical.TxKind {
+// Two of the web vocabulary's transfer words name a movement between this
+// broker and an OUTSIDE bank — "MoneyLink Transfer" and the undirected
+// "Transfer" — and both used to be journals, on the reasoning that an
+// undirected word states no direction. The amount states it. Kept as journals
+// they were invisible to the internal-transfer matcher, which admits no such
+// kind, so the deposit waiting for them at the bank could never be paired and
+// was drawn as money arriving from nowhere. The API era already books the same
+// movements as withdrawals and deposits, so reading the sign here restores
+// continuity across the feed cutover rather than inventing semantics.
+//
+// A row with no amount, or a zero one, keeps the old answer: the sign is the
+// whole of the evidence, and a directionless row has no right answer.
+// "Journal", "Journaled Shares" and "Security Transfer" stay journals whatever
+// their sign — those are movements inside the household's own Schwab
+// accounts, and no member of them names an outside bank.
+func webKind(s string, netAmount *canonical.Decimal, description *string) canonical.TxKind {
 	switch s {
 	case "Buy", "Buy to Open", "Buy to Close", "Purchase",
 		"Reinvest", "Reinvest Shares":
@@ -691,20 +707,57 @@ func webKind(s string) canonical.TxKind {
 		return canonical.TxKindWithdrawal
 	case "Transfer Out":
 		// Directional third_party_distribution rows (INTEROP §8.2);
-		// distinct from the undirected "Transfer" below, which stays
-		// a Journal because its capital direction is unknown.
+		// distinct from the undirected "Transfer" below, whose
+		// direction is read off the amount rather than the word.
 		return canonical.TxKindTransferOut
 	case "Transfer In":
 		return canonical.TxKindTransferIn
-	case "MoneyLink Transfer", "Transfer", "Security Transfer",
-		"Journal", "Journaled Shares":
+	case "MoneyLink Transfer", "Transfer":
+		return webTransferSide(netAmount)
+	case "Security Transfer", "Journal", "Journaled Shares":
 		return canonical.TxKindJournal
 	case "Exchange", "Reorganized Issue", "Spin-off", "Split",
 		"Reverse Split", "Return Of Capital", "Cash In Lieu",
 		"Litigation", "Unissued Rights Redemption":
 		return canonical.TxKindCorporateAction
+	case "Unknown":
+		// The statement parser's catch-all, and it is heterogeneous on
+		// purpose: option legs, ADR fees, corporate actions, share
+		// journals. One shape inside it is plainly cash and nothing
+		// else — a funds journal between two of the holder's accounts,
+		// which the statement narrates as a direction and a partner
+		// account. Read only that, by name: remapping the catch-all
+		// wholesale would re-kind everything else in it.
+		//
+		// Such a journal is NOT automatically internal. "The holder's
+		// accounts" is a wider set than the household: the partner can be an account
+		// outside the household. Making the row directional is what lets the
+		// household boundary decide — kept as an unsigned catch-all it could
+		// decide nothing, and a move out of the household would draw as no
+		// movement at all.
+		if description != nil && fundsJournalDescription.MatchString(*description) {
+			return webTransferSide(netAmount)
+		}
 	}
 	return canonical.TxKindOther
+}
+
+// fundsJournalDescription names the one cash shape inside the statement
+// parser's "Unknown" bucket. Anchored, because the word has to lead: a
+// narrative merely mentioning a journal is not one.
+var fundsJournalDescription = regexp.MustCompile(`^Journaled Funds\b`)
+
+// webTransferSide reads an external transfer's direction off its amount, and
+// refuses to guess one for a row that carries none.
+func webTransferSide(netAmount *canonical.Decimal) canonical.TxKind {
+	switch {
+	case netAmount == nil || netAmount.IsZero():
+		return canonical.TxKindJournal
+	case netAmount.IsNegative():
+		return canonical.TxKindWithdrawal
+	default:
+		return canonical.TxKindDeposit
+	}
 }
 
 // schwabWebTxPayload captures the payload shapes the silver

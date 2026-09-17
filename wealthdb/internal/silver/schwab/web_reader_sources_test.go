@@ -277,24 +277,63 @@ func buildWebTxFromPayload(id, source string, kind canonical.TxKind, acct string
 	}}
 }
 
-// TestWebKindTransferDirections pins the webKind mappings added for the new
-// sources: directional transfers map to the directional canonical kinds while the
-// undirected "Transfer" stays a Journal, and the 1099-B "Sale" string maps to
+// TestWebKindTransferDirections pins the webKind mappings for the transfer
+// words: the directional ones map to the directional canonical kinds, the two
+// that name an OUTSIDE bank take their direction from the amount, the three
+// that name a movement inside the household's own Schwab accounts stay
+// journals whatever their sign, and the 1099-B "Sale" string maps to
 // TxKindSell.
 func TestWebKindTransferDirections(t *testing.T) {
+	out := canonical.NewDecimalFromInt(-2500)
+	in := canonical.NewDecimalFromInt(2500)
+	zero := canonical.NewDecimalFromInt(0)
 	cases := []struct {
-		raw  string
-		want canonical.TxKind
+		raw    string
+		amount *canonical.Decimal
+		descr  string
+		want   canonical.TxKind
 	}{
-		{"Transfer Out", canonical.TxKindTransferOut},
-		{"Transfer In", canonical.TxKindTransferIn},
-		{"Transfer", canonical.TxKindJournal},          // undirected stays a journal
-		{"Security Transfer", canonical.TxKindJournal}, // unchanged
-		{"Sale", canonical.TxKindSell},                 // 1099-B sale rows
+		{"Transfer Out", nil, "", canonical.TxKindTransferOut},
+		{"Transfer In", nil, "", canonical.TxKindTransferIn},
+		{"Sale", nil, "", canonical.TxKindSell}, // 1099-B sale rows
+
+		// The two that reach an outside bank. Left as journals these
+		// never entered the internal-transfer matcher, so the deposit
+		// waiting at the bank could never be paired with them.
+		{"Transfer", &out, "", canonical.TxKindWithdrawal},
+		{"Transfer", &in, "", canonical.TxKindDeposit},
+		{"MoneyLink Transfer", &out, "", canonical.TxKindWithdrawal},
+		{"MoneyLink Transfer", &in, "", canonical.TxKindDeposit},
+
+		// No amount, no direction: the sign is the whole of the
+		// evidence and a guess would invent a flow.
+		{"Transfer", nil, "", canonical.TxKindJournal},
+		{"Transfer", &zero, "", canonical.TxKindJournal},
+		{"MoneyLink Transfer", nil, "", canonical.TxKindJournal},
+
+		// Movements inside the household's own Schwab accounts. These
+		// must NOT move: they are signed too, and a sign-driven split
+		// here would turn every own-account journal into a pair of
+		// external flows.
+		{"Security Transfer", &out, "", canonical.TxKindJournal},
+		{"Journal", &out, "", canonical.TxKindJournal},
+		{"Journal", &in, "", canonical.TxKindJournal},
+		{"Journaled Shares", &out, "", canonical.TxKindJournal},
+
+		// The statement parser's catch-all. A funds journal inside it
+		// is cash and takes its direction from the sign; everything
+		// else in the bucket stays TxKindOther — including the SHARE
+		// journal whose narrative begins with the same word.
+		{"Unknown", &out, "Journaled Funds JOURNAL TO 00000000", canonical.TxKindWithdrawal},
+		{"Unknown", &in, "Journaled Funds JOURNAL FRM 00000000", canonical.TxKindDeposit},
+		{"Unknown", &out, "Journaled Shares EXAMPLE FUND: XMPL", canonical.TxKindOther},
+		{"Unknown", &out, "Short Sale CALL EXAMPLE INC", canonical.TxKindOther},
+		{"Unknown", &out, "A note mentioning Journaled Funds midway", canonical.TxKindOther},
+		{"Unknown", nil, "Journaled Funds JOURNAL TO 00000000", canonical.TxKindJournal},
 	}
 	for _, c := range cases {
-		if got := webKind(c.raw); got != c.want {
-			t.Errorf("webKind(%q) = %q, want %q", c.raw, got, c.want)
+		if got := webKind(c.raw, c.amount, &c.descr); got != c.want {
+			t.Errorf("webKind(%q, %v, %q) = %q, want %q", c.raw, c.amount, c.descr, got, c.want)
 		}
 	}
 }
