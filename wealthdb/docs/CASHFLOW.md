@@ -221,7 +221,7 @@ wherever both have something to say.
 | `deposit` | by verdict | matched → by the far account; `capital_return` → investing; `loan_proceeds` → financing; a `*_transfer` delta → vehicles; `reimbursement` → operating in (income excludes it, cashflow keeps it — it is cash that arrived); otherwise operating in |
 | `distribution` | investing | floors to `capital_return`; a rule or a pin promoting it to an income type moves it to operating in, as the holder's word should |
 | `purchase` `refund` `fee` `tax` `interest` (−) | operating out | by resolved spend category |
-| `withdrawal` | by verdict | matched → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles; a rule-placed `internal_transfer` with no far account → `vehicles · Untracked accounts`; otherwise operating out |
+| `withdrawal` | by verdict | matched → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles (`deposit_transfer` → `vehicles · Bank deposits`); a rule-placed `internal_transfer` with no far account → `vehicles · Untracked accounts`; otherwise operating out |
 | `card_payment` | matched → by the far account; otherwise **excluded, counted** | an unpaired card bill is in neither family's population, so no tier ever saw it. It also has a known false shape: a cross-currency pair no road joins — the amount pass partitions by currency, and a card ledger mints its own ids, so no shared reference reaches it either — whose bank leg the provider tier already files as card spend. Counting it as a receipt would print a phantom inflow and double the bill |
 | `buy` `sell` | investing | by the instrument's asset class; a `cash`-class instrument is pool-internal |
 | `contribution` `distribution` | investing | private capital, by the vehicle's asset class |
@@ -398,7 +398,7 @@ carry. The diagram draws all of them attached to the hub rather than
 through a leaf stage, so the leaf level shows in `flows --level group`
 and not in the Sankey.
 
-### The five new taxonomy values
+### The six new taxonomy values
 
 [SPENDING.md](SPENDING.md) §2 and [INCOME.md](INCOME.md) §2 carry the
 tables; the policy is here.
@@ -416,6 +416,30 @@ bases. They exist for the crossing whose far side the product does not
 hold. **The direction is the row's own**: a withdrawal placed
 `retirement_transfer` is a contribution and a deposit placed the same
 is a distribution.
+
+`deposit_transfer` is the fifth crossing and the one with no wrapper
+behind it: a bank's own deposit product — a call deposit, a fixed-term
+deposit, a notice account. The bank books every movement of one on the
+account that FUNDS it and never lists the product beside it, so the
+collector has no account to collect and the move reaches the resolution
+with a single leg. Nothing can pair it, and drawn by the far-account
+test it fell to `vehicles · Untracked accounts` — the node for a
+destination nothing identifies, where this one is identified on every
+row.
+
+It is a verdict rather than a far account for a reason worth stating:
+`far_class` lives on the spending overlay, which holds the outflow leg
+and not the return. That road would have named the money going in and
+left the money coming back anonymous. A verdict can be placed by either
+family, so both legs carry it.
+
+Two things it deliberately does not change. The move stays a **line**:
+the money left the measured pool, so the statement has to say so, and
+drawing it as internal netting would make the statement stop tying to
+the balances it is drawn from. `deposits` is `untracked` made specific,
+not made invisible. And the **interest** a deposit pays is untouched —
+it is income, it arrives on its own row, and it is the one movement of
+a deposit that is not a transfer.
 
 One value per class rather than one `vehicle_transfer` for all four.
 The alternative would need a rule to carry a second field saying which

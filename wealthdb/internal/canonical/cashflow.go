@@ -125,7 +125,21 @@ const (
 	ClassEducation  CashflowClass = "education"
 	ClassHealth     CashflowClass = "health"
 	ClassTrusts     CashflowClass = "trusts"
-	ClassUntracked  CashflowClass = "untracked"
+	// ClassDeposits is the household's own cash, parked in a bank
+	// product the collector does not enumerate as an account: a call
+	// deposit, a fixed-term deposit, a notice account. The money never
+	// left the household and it bought nothing, but it did leave the
+	// measured pool, so the move is a LINE and not internal netting —
+	// the pool's balance really fell and the statement has to say why.
+	//
+	// It is `untracked` made specific. Both are own-account moves whose
+	// far side the product does not hold; the difference is that the
+	// narrative names this one, so drawing it as `Untracked accounts`
+	// throws away a fact the row states outright. Splitting it off is
+	// what lets the untracked node mean what it says: destinations
+	// nothing identifies.
+	ClassDeposits  CashflowClass = "deposits"
+	ClassUntracked CashflowClass = "untracked"
 
 	// ClassCash is the residual's one class, as it is its one node.
 	ClassCash CashflowClass = "cash"
@@ -145,7 +159,8 @@ var cashflowClassValues = []CashflowClass{
 	ClassConsumption, ClassFees, ClassTaxes, ClassGiving,
 	ClassInvestments, ClassElsewhere,
 	ClassMortgage, ClassLoans,
-	ClassRetirement, ClassEducation, ClassHealth, ClassTrusts, ClassUntracked,
+	ClassRetirement, ClassEducation, ClassHealth, ClassTrusts,
+	ClassDeposits, ClassUntracked,
 	ClassCash,
 }
 
@@ -361,9 +376,15 @@ func ParseWrapperDestination(s string) (WrapperSide, CashflowClass, bool) {
 
 // VehicleTransferDetailed is the delta that stands for a crossing to a
 // vehicle whose far side the product does not hold, for each of the
-// four pools. It is the bridge between the wrapper boundary and the
-// taxonomy: a rule places the value, and the resolution reads the value
-// back as the class it names.
+// pools a rule can place. It is the bridge between the wrapper boundary
+// and the taxonomy: a rule places the value, and the resolution reads
+// the value back as the class it names.
+//
+// The first four are the wrapper boundary's own. `deposits` is not a
+// wrapper — no tax treatment sends a crossing there — and it is here
+// because the same one-legged shape needs the same bridge: a bank's
+// deposit product is a destination the collector cannot enumerate, so
+// the verdict is the only thing that can name it.
 //
 // Reported per class rather than as a lookup table so that a class
 // without a delta — `untracked`, which no rule can place — is a
@@ -378,6 +399,8 @@ func VehicleTransferDetailed(c CashflowClass) (string, bool) {
 		return DetailedHealthTransfer, true
 	case ClassTrusts:
 		return DetailedTrustTransfer, true
+	case ClassDeposits:
+		return DetailedDepositTransfer, true
 	}
 	return "", false
 }

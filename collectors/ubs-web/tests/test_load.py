@@ -933,3 +933,175 @@ def test_the_walk_writes_the_advices_after_the_statement_ledger(tmp_path):
         "SELECT transaction_external_id FROM transactions").fetchall()]
     assert len(ids) == 1 and ids[0].startswith("stmt:")
     conn.close()
+
+
+# ============================================================
+# One transaction number, several movements
+# ============================================================
+#
+# UBS mints the "Transaction no." per BOOKING EVENT as the bank models
+# it, and the bank sometimes models several movements as one. Keying
+# silver on the bare number let those rows overwrite each other, and an
+# ON CONFLICT upsert cannot be told from a re-load of the same row — so
+# the loss was silent and a deposit product's whole ledger could reduce
+# to whichever row the export happened to print last.
+#
+# Every value below is synthetic: an IBAN-shaped placeholder, an
+# invented transaction number, and an impossible year (CLAUDE.md §4).
+
+TXN_IBAN = "CH00 0000 0000 0000 00AA A"
+TXN_ACCT = "CH0000000000000000AAA"
+
+
+def _txn_csv(rows: list[str], iban: str = TXN_IBAN) -> str:
+    """An export-era transactions CSV: 8 metadata lines, the header,
+    then the data rows the caller gives."""
+    head = "\r\n".join([
+        "Account number:;0000 00000000.00;",
+        f"IBAN:;{iban};",
+        "From:;2098-01-01;",
+        "To:;2098-12-31;",
+        "Currency:;CHF;",
+        "Valued in:;CHF;",
+        ";",
+        ";",
+    ])
+    return "﻿" + head + "\r\n" + loader.TXN_DATA_HEADER + "\r\n" + \
+        "\r\n".join(rows) + "\r\n"
+
+
+def _txn_row(day: str, debit: str, credit: str, balance: str, txn_no: str,
+             d1: str, d2: str) -> str:
+    return (f"2098-{day};;2098-{day};2098-{day};CHF;{debit};{credit};;"
+            f"{balance};{txn_no};\"{d1}\";{d2};;;")
+
+
+def _seed_txn_bronze(root: Path, rows: list[str], name: str = "cash_x") -> Path:
+    dump = root / "20980101T000000Z"
+    (dump / "transactions").mkdir(parents=True, exist_ok=True)
+    (dump / "transactions" / f"{name}.csv").write_text(
+        _txn_csv(rows), encoding="utf-8")
+    return dump
+
+
+def test_a_products_whole_ledger_survives_one_transaction_number(tmp_path):
+    """The defect, end to end: a deposit product stamps ONE number on
+    every movement of its life. All of them must land."""
+    conn = _fresh_db(tmp_path)
+    rows = [
+        _txn_row("07-12", "", "222000.00", "222000.00", "GZ00000YQ0000000",
+                 "Example Call Deposit; Serial no. 00000", "Call Deposit Repayment"),
+        _txn_row("07-12", "", "56.78", "222056.78", "GZ00000YQ0000000",
+                 "Example Call Deposit; Serial no. 00000", "Call Deposit Interest Payment"),
+        _txn_row("03-04", "-333000.00", "", "555000.00", "GZ00000YQ0000000",
+                 "Example Call Deposit; Serial no. 00000", "Call Deposit Increase"),
+    ]
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path, rows))
+
+    got = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE account_external_id = ?",
+        (TXN_ACCT,)).fetchone()[0]
+    assert got == 3, f"{3 - got} movement(s) were overwritten by a sibling"
+    # And the figures are the ones the bank printed, not one of them
+    # three times.
+    amounts = sorted(
+        (r[0] or 0) + (r[1] or 0) for r in conn.execute(
+            "SELECT amount_debit, amount_credit FROM transactions "
+            "WHERE account_external_id = ?", (TXN_ACCT,)))
+    assert amounts == [-333000.00, 56.78, 222000.00]
+
+
+def test_the_largest_movement_keeps_the_banks_own_number(tmp_path):
+    """A payment and the correspondent's fee share one number. The
+    PAYMENT must keep the bare number: the advice pass is keyed by it
+    (load.py's header note), and an advice names the payment."""
+    conn = _fresh_db(tmp_path)
+    rows = [
+        _txn_row("02-11", "-444.44", "", "1000.00", "ZD00000TI0000000",
+                 "Example Payee; XX EXAMPLECITY 0000", "e-banking payment order"),
+        _txn_row("02-11", "-98.76", "", "901.24", "ZD00000TI0000000",
+                 "Third-Party Charges", ""),
+    ]
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path, rows))
+
+    bare = conn.execute(
+        "SELECT amount_debit FROM transactions "
+        "WHERE transaction_external_id = ?", ("ZD00000TI0000000",)).fetchone()
+    assert bare[0] == -444.44, "the fee took the number its payment needs"
+    suffixed = conn.execute(
+        "SELECT COUNT(*) FROM transactions "
+        "WHERE transaction_external_id LIKE ?", ("ZD00000TI0000000#%",)).fetchone()[0]
+    assert suffixed == 1
+
+
+def test_a_number_used_once_is_the_id_unchanged(tmp_path):
+    """Every row the export has ever loaded but the collided ones keeps
+    the id it had, so the fix moves nothing it did not have to."""
+    conn = _fresh_db(tmp_path)
+    rows = [_txn_row("01-02", "-10.00", "", "990.00", "AA00000TO0000001",
+                     "Example Payee", "e-banking payment order")]
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path, rows))
+    ids = [r[0] for r in conn.execute(
+        "SELECT transaction_external_id FROM transactions")]
+    assert ids == ["AA00000TO0000001"]
+
+
+def test_the_ids_do_not_move_when_the_export_reprints_the_group(tmp_path):
+    """The suffix is derived from the row's own content, not from its
+    position in the file, so a re-dump that prints the group in another
+    order converges on the same rows rather than doubling them."""
+    conn = _fresh_db(tmp_path)
+    rows = [
+        _txn_row("03-15", "", "111000.00", "666000.00", "GZ00000YQ0000000",
+                 "Example Call Deposit; Serial no. 00000", "Call Deposit Decrease"),
+        _txn_row("06-13", "", "444000.00", "777000.00", "GZ00000YQ0000000",
+                 "Example Call Deposit; Serial no. 00000", "Call Deposit Decrease"),
+        _txn_row("03-04", "-333000.00", "", "555000.00", "GZ00000YQ0000000",
+                 "Example Call Deposit; Serial no. 00000", "Call Deposit Increase"),
+    ]
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path, rows))
+    first = sorted(r[0] for r in conn.execute(
+        "SELECT transaction_external_id FROM transactions"))
+
+    loader._load_transactions(
+        conn, 2000, _seed_txn_bronze(tmp_path, list(reversed(rows))))
+    again = sorted(r[0] for r in conn.execute(
+        "SELECT transaction_external_id FROM transactions"))
+    assert again == first, "a reprint of the same group minted new ids"
+
+
+def test_a_group_split_across_two_files_is_numbered_once(tmp_path):
+    """UBS splits one account's history across several CSVs. Grouping
+    per file would let a product whose movements straddle the split
+    mint the same ids twice."""
+    conn = _fresh_db(tmp_path)
+    dump = tmp_path / "20980101T000000Z"
+    (dump / "transactions").mkdir(parents=True, exist_ok=True)
+    (dump / "transactions" / "cash_a_early.csv").write_text(_txn_csv([
+        _txn_row("03-04", "-333000.00", "", "555000.00", "GZ00000YQ0000000",
+                 "Example Call Deposit; Serial no. 00000", "Call Deposit Increase"),
+    ]), encoding="utf-8")
+    (dump / "transactions" / "cash_a_late.csv").write_text(_txn_csv([
+        _txn_row("07-12", "", "333000.00", "222000.00", "GZ00000YQ0000000",
+                 "Example Call Deposit; Serial no. 00000", "Call Deposit Repayment"),
+    ]), encoding="utf-8")
+    loader._load_transactions(conn, 1000, dump)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
+
+
+def test_identical_rows_sharing_a_number_stay_apart(tmp_path):
+    """Two rows a group cannot tell apart by any movement field hash
+    alike. An ordinal keeps them, rather than letting one eat the
+    other — which is the whole defect."""
+    conn = _fresh_db(tmp_path)
+    twin = _txn_row("05-05", "-43.21", "", "100.00", "ZD00000TI0000009",
+                    "Third-Party Charges", "")
+    rows = [
+        _txn_row("05-05", "-943.21", "", "143.21", "ZD00000TI0000009",
+                 "Example Payee", "e-banking payment order"),
+        twin, twin,
+    ]
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path, rows))
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions").fetchone()[0] == 3

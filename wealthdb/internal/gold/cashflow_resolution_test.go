@@ -440,6 +440,17 @@ func TestTheCrossingDeltasAreDirectional(t *testing.T) {
 		{id: "D-TRUST", account: "CASH", kind: "withdrawal", amount: -800,
 			spend: "trust_transfer", want: "vehicles.trusts.trusts",
 			why: "funding a trust the product does not collect"},
+		// The fifth delta, and the one with no wrapper behind it: a
+		// bank's own deposit product. Both legs must name it, because
+		// a far account could only ever have been written on the
+		// spending one — the return leg reaches the resolution through
+		// the income overlay and nothing else.
+		{id: "D-DEP-OUT", account: "CASH", kind: "withdrawal", amount: -900,
+			spend: "deposit_transfer", want: "vehicles.deposits.deposits",
+			why: "cash parked in a call deposit the bank books under the funding account"},
+		{id: "D-DEP-IN", account: "CASH", kind: "deposit", amount: 900,
+			income: "deposit_transfer", want: "vehicles.deposits.deposits",
+			why: "the principal coming back, read from the income side"},
 		{id: "D-DEBT", account: "CASH", kind: "withdrawal", amount: -400,
 			spend: "debt_repayment", want: "financing.loans.debt_repayment",
 			why: "an instalment to a lender the product does not track"},

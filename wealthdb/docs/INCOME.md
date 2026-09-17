@@ -168,6 +168,7 @@ structure a payer's name cannot reveal:
 | `education_transfer` | the same for an education plan or savings account | no |
 | `health_transfer` | the same for a health savings account | no |
 | `trust_transfer` | the same for a trust that is a separate taxpayer | no |
+| `deposit_transfer` | the principal of a bank deposit product coming back — a call or fixed-term deposit repaid or drawn down; the interest is `INCOME_INTEREST_EARNED` and is not this | no |
 | `gift` | a cash gift or family support received | yes |
 | `inheritance` | an estate's distribution to the holder | yes |
 | `cash_deposit` | cash paid in at a counter or a machine | yes |

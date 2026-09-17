@@ -146,6 +146,21 @@ const (
 	DetailedEducationTransfer  = "education_transfer"
 	DetailedHealthTransfer     = "health_transfer"
 	DetailedTrustTransfer      = "trust_transfer"
+	// DetailedDepositTransfer is the same crossing with no wrapper
+	// behind it: the household's own cash, moved into a bank's deposit
+	// PRODUCT — a call deposit, a fixed-term deposit, a notice account
+	// — that the collector never lists as an account because the bank
+	// books it under the funding account rather than beside it.
+	//
+	// It is a delta rather than `internal_transfer` because nothing can
+	// pair it: the far leg does not exist in the product at all, so the
+	// move reaches the resolution one-legged and would otherwise read
+	// as a crossing to an account nobody collects. Placing it by
+	// VERDICT is what lets both legs carry it — the outflow through the
+	// spending overlay, the return through income's — where a far
+	// account could only ever have been written on the one leg the
+	// spending overlay holds.
+	DetailedDepositTransfer = "deposit_transfer"
 )
 
 // The spending extension values: ours, but shaped like the vendored
@@ -345,6 +360,8 @@ var deltaCategories = []SpendCategory{
 		"The same crossing for a health savings account the product does not track — a contribution paid in, or a medical cost reimbursed out of it", FamilyBoth},
 	{DetailedTrustTransfer, DetailedTrustTransfer,
 		"The same crossing for a trust that is a separate taxpayer and that the product does not track — a funding transfer out, a distribution arriving. A grantor trust is not this: it is tax-transparent and its accounts are the holder's own", FamilyBoth},
+	{DetailedDepositTransfer, DetailedDepositTransfer,
+		"The same crossing for a bank's own deposit product the collector does not list as an account — a call deposit, a fixed-term deposit, a notice account: money paid in, or the principal coming back. Earmarked for nothing and taxed like the funding account; it is here because the far leg does not exist in the product, not because the money went anywhere. Interest the product pays is NOT this — it is income, and it arrives on its own row", FamilyBoth},
 }
 
 // extensionSpendCategories are detailed values of OURS that sit under

@@ -223,6 +223,25 @@ silver-side facts that make a clean date-splice possible:
   the gold adapter re-exports as `payload.bank_ref`, and gold's
   internal-transfer matcher pairs the two rows on it without
   looking at their amounts.
+- **One number, several movements — WITHIN one account.** The
+  compound PK above answers the case UBS reuses a number ACROSS two
+  accounts. It does not answer the case the bank reuses one within a
+  single account, and the bank does, in two shapes. A deposit product
+  (a call deposit, a fixed-term deposit) stamps the number derived from
+  its own serial on every increase, decrease, repayment and monthly
+  interest payment, so the product's whole life shares one number; and
+  a cross-border payment carries the correspondent bank's third-party
+  charge under the number of the payment it belongs to. Keyed on the
+  bare number those rows overwrite each other, and because the write is
+  an `ON CONFLICT` upsert it is indistinguishable from a re-load of the
+  same row: nothing fails, nothing is logged, and the survivor looks
+  like a complete account. `_assign_export_txn_ids` therefore keeps the
+  bare number on the group's LARGEST movement — the advice pass is keyed
+  by it, and an advice names the payment rather than its fee — and gives
+  every other member a suffix derived from its own content, the way the
+  statement era has always suffixed the legs of a split movement. The
+  suffix is content-derived rather than positional so a dump covering a
+  different slice of the same group converges on the same rows.
 - **The two transaction-ID schemes do not overlap.** Web uses
   UBS's "Transaction no."; PSN derives event IDs from SWIFT
   message references (`mt515:…`). There is zero overlap between

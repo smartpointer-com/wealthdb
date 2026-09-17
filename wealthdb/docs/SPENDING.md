@@ -143,8 +143,9 @@ in the dimension:
 | `education_transfer` | *(both)* the same for an education plan or savings account |
 | `health_transfer` | *(both)* the same for a health savings account |
 | `trust_transfer` | *(both)* the same for a trust that is a separate taxpayer |
+| `deposit_transfer` | *(both)* the same for a bank's own deposit product the collector does not list as an account — a call deposit, a fixed-term deposit, a notice account; the interest it pays is income and is not this |
 
-The last five arrived with the cash flow statement
+The last six arrived with the cash flow statement
 ([CASHFLOW.md](CASHFLOW.md)) and leave `spending_lines_base` — the
 crossings because the money is still the holder's, `debt_repayment`
 because it reduces a liability rather than buying anything, which is

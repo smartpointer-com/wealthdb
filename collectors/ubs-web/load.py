@@ -15,7 +15,10 @@ Load semantics
 - Already-loaded dumps are skipped via the `dump_runs` table.
 - Transactions are UPSERTed on the compound key
   (`transaction_external_id`, `account_external_id`). Re-running a
-  window converges to UBS's current view.
+  window converges to UBS's current view. UBS's own transaction number
+  is that id, except where the bank stamps one number on several
+  movements, in which case all but the largest take a suffix — see
+  `_assign_export_txn_ids`.
 - Snapshot tables (banking_relationships, portfolios, accounts,
   positions) take a new row per `snapshot_at` (dedup-by-PK only).
 - Documents are indexed by `doc_token` (UBS API token); the binary
@@ -61,7 +64,9 @@ DOCUMENT_GENERATION_SCOPE = "documents"
 # The advice pass is the exception the prefix rule cannot cover. An advice
 # row is deliberately keyed by UBS's own transaction number — that is the
 # whole point of it, since the number is what carries the row to the twin
-# leg the export already holds — so from the id alone it is indistinguishable
+# leg the export already holds, and why `_assign_export_txn_ids` leaves that
+# number on the payment rather than on its fee — so from the id alone it is
+# indistinguishable
 # from an export row, and a prefix delete would either miss it or take the
 # export with it. It is recognised by the marker the parser writes into its
 # payload instead (`document` = `payment_advice_pdf`), which no export row
@@ -665,18 +670,143 @@ def _load_transactions(conn: sqlite3.Connection, snapshot_at: int,
                        dump_dir: Path) -> int:
     """Parse every `transactions/cash_*.csv` in the dump dir;
     UPSERT into transactions keyed by (transaction_external_id,
-    account_external_id)."""
+    account_external_id).
+
+    Every CSV of the dump is parsed before anything is written, because
+    the id a row gets depends on the other rows sharing its transaction
+    number (`_assign_export_txn_ids`) and UBS splits one account's
+    history across several files. Grouping per file would let a product
+    whose movements straddle a split boundary mint the same ids twice.
+    """
     txn_dir = dump_dir / "transactions"
     if not txn_dir.is_dir():
         return 0
-    inserted = 0
+    rows: list[dict] = []
     for csv_path in sorted(txn_dir.glob("cash_*.csv")):
-        inserted += _ingest_transactions_csv(conn, snapshot_at, csv_path)
-    return inserted
+        rows.extend(_parse_transactions_csv(csv_path))
+    ids = _assign_export_txn_ids(rows)
+    for txn_id, row in zip(ids, rows):
+        _upsert_export_transaction(conn, snapshot_at, txn_id, row)
+    return len(rows)
 
 
-def _ingest_transactions_csv(conn: sqlite3.Connection, snapshot_at: int,
-                             csv_path: Path) -> int:
+# UBS's "Transaction no." is not one per movement. It is one per
+# BOOKING EVENT as the bank models it, and the bank sometimes models
+# several movements as one:
+#
+#   * a deposit product (a call deposit, a fixed-term deposit) stamps
+#     every increase, decrease, repayment and monthly interest payment
+#     with the number derived from the product's own serial, so the
+#     whole life of the product shares ONE number;
+#   * a cross-border payment carries the correspondent bank's
+#     third-party charge under the number of the payment it belongs to,
+#     so a payment and its fee share one number.
+#
+# Keying silver on the bare number therefore made the rows of such a
+# group overwrite each other, and an ON CONFLICT upsert cannot tell
+# that from a re-load of the same row: no parse failed, nothing was
+# logged, and the survivor looked like a complete account. A deposit
+# product's whole ledger reduced to whichever row the export printed
+# last.
+#
+# The fix follows the statement era, which has always suffixed the
+# rows of a split movement (`_stmt_txn_id`). One row of the group keeps
+# UBS's bare number — the advice pass needs it, since an advice is
+# keyed by the number that carries it to its twin leg (see the note at
+# the head of this module) — and the rest take a suffix.
+#
+# Which row keeps it is chosen by largest absolute amount, so the
+# PAYMENT keeps the number and its fee takes the suffix, which is the
+# pairing the advice pass wants. The suffix itself is derived from the
+# row's own content rather than its position in the file, so a dump
+# whose window covers a different slice of the same group still mints
+# the same ids.
+
+
+def _export_row_fingerprint(row: dict) -> str:
+    """The movement fields that distinguish two rows sharing a
+    transaction number. Raw cell text, not parsed values, so a
+    formatting change in how an amount is rendered cannot move an id."""
+    return "|".join((
+        row["booking_date_raw"], row["value_date_raw"],
+        row["debit_raw"], row["credit_raw"],
+        row["description_kind"] or "", row["description1"],
+    ))
+
+
+def _assign_export_txn_ids(rows: list[dict]) -> list[str]:
+    """Return one id per row, positionally aligned with `rows`.
+
+    A transaction number used once is its row's id unchanged, which is
+    every row the export has ever loaded but the collided ones."""
+    groups: dict[tuple[str, str], list[int]] = {}
+    for i, row in enumerate(rows):
+        groups.setdefault((row["account_external_id"], row["txn_no"]), []).append(i)
+
+    ids: list[str] = [""] * len(rows)
+    for (_, txn_no), members in groups.items():
+        if len(members) == 1:
+            ids[members[0]] = txn_no
+            continue
+        # The largest movement keeps the bare number. Ties fall back to
+        # the fingerprint so the choice never depends on file order.
+        primary = max(members, key=lambda i: (
+            abs(rows[i]["amount_debit"] or 0.0) + abs(rows[i]["amount_credit"] or 0.0),
+            _export_row_fingerprint(rows[i]),
+        ))
+        # Two rows of a group that are identical in every movement
+        # field hash alike; an ordinal keeps them apart rather than
+        # letting one eat the other, which is the whole defect.
+        used: dict[str, int] = {}
+        for i in members:
+            if i == primary:
+                ids[i] = txn_no
+                continue
+            digest = hashlib.sha256(
+                _export_row_fingerprint(rows[i]).encode("utf-8")).hexdigest()[:8]
+            seen = used.get(digest, 0)
+            used[digest] = seen + 1
+            ids[i] = f"{txn_no}#{digest}" + (f".{seen}" if seen else "")
+        log.info("transaction no. %s names %d movements on %s; "
+                 "%d kept under suffixed ids",
+                 txn_no, len(members), rows[primary]["account_external_id"],
+                 len(members) - 1)
+    return ids
+
+
+def _upsert_export_transaction(conn: sqlite3.Connection, snapshot_at: int,
+                               txn_id: str, row: dict) -> None:
+    """Write one parsed export row under the id `_assign_export_txn_ids`
+    gave it."""
+    conn.execute(
+        "INSERT INTO transactions ("
+        "transaction_external_id, account_external_id, snapshot_at, "
+        "trade_date, booking_date, value_date, currency_iso, "
+        "amount_debit, amount_credit, counterparty, "
+        "description_kind, payload"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(transaction_external_id, account_external_id) "
+        "DO UPDATE SET "
+        "snapshot_at = excluded.snapshot_at, "
+        "trade_date = excluded.trade_date, "
+        "booking_date = excluded.booking_date, "
+        "value_date = excluded.value_date, "
+        "currency_iso = excluded.currency_iso, "
+        "amount_debit = excluded.amount_debit, "
+        "amount_credit = excluded.amount_credit, "
+        "counterparty = excluded.counterparty, "
+        "description_kind = excluded.description_kind, "
+        "payload = excluded.payload",
+        (
+            txn_id, row["account_external_id"], snapshot_at,
+            row["trade_date"], row["booking_date"], row["value_date"],
+            row["currency_iso"], row["amount_debit"], row["amount_credit"],
+            row["counterparty"], row["description_kind"], row["payload"],
+        ),
+    )
+
+
+def _parse_transactions_csv(csv_path: Path) -> list[dict]:
     """Parse the 8-line metadata block + 1-line column header + data."""
     with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
         lines = f.read().splitlines()
@@ -691,14 +821,14 @@ def _ingest_transactions_csv(conn: sqlite3.Connection, snapshot_at: int,
             break
     if header_idx is None:
         log.warning("no transactions header in %s; skipping", csv_path.name)
-        return 0
+        return []
     account_ext = iban_canonical(iban) or ""
     if not account_ext:
         log.warning("no IBAN in %s; skipping", csv_path.name)
-        return 0
+        return []
     header = [c.strip() for c in lines[header_idx].split(";")]
     idx = {name: i for i, name in enumerate(header) if name}
-    inserted = 0
+    rows: list[dict] = []
     for raw_line in lines[header_idx + 1:]:
         if not raw_line.strip():
             continue
@@ -715,41 +845,29 @@ def _ingest_transactions_csv(conn: sqlite3.Connection, snapshot_at: int,
             log.warning("unparseable value_date %r in %s; skipping row",
                         value_date_s, csv_path.name)
             continue
-        conn.execute(
-            "INSERT INTO transactions ("
-            "transaction_external_id, account_external_id, snapshot_at, "
-            "trade_date, booking_date, value_date, currency_iso, "
-            "amount_debit, amount_credit, counterparty, "
-            "description_kind, payload"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(transaction_external_id, account_external_id) "
-            "DO UPDATE SET "
-            "snapshot_at = excluded.snapshot_at, "
-            "trade_date = excluded.trade_date, "
-            "booking_date = excluded.booking_date, "
-            "value_date = excluded.value_date, "
-            "currency_iso = excluded.currency_iso, "
-            "amount_debit = excluded.amount_debit, "
-            "amount_credit = excluded.amount_credit, "
-            "counterparty = excluded.counterparty, "
-            "description_kind = excluded.description_kind, "
-            "payload = excluded.payload",
-            (
-                txn_no, account_ext, snapshot_at,
-                ts_from_iso(trade_date),
-                ts_from_iso(_cell(raw, idx, "Booking date")),
-                value_date_ts,
-                _cell(raw, idx, "Currency"),
-                parse_decimal(_cell(raw, idx, "Debit")),
-                parse_decimal(_cell(raw, idx, "Credit")),
-                # description1's first semi-line is usually the counterparty
-                (_cell(raw, idx, "Description1").split(";", 1)[0] or None),
-                _cell(raw, idx, "Description2") or None,
-                normalize_payload({h: c for h, c in zip(header, raw)}),
-            ),
-        )
-        inserted += 1
-    return inserted
+        description1 = _cell(raw, idx, "Description1")
+        rows.append({
+            "txn_no": txn_no,
+            "account_external_id": account_ext,
+            "trade_date": ts_from_iso(trade_date),
+            "booking_date": ts_from_iso(_cell(raw, idx, "Booking date")),
+            "value_date": value_date_ts,
+            "currency_iso": _cell(raw, idx, "Currency"),
+            "amount_debit": parse_decimal(_cell(raw, idx, "Debit")),
+            "amount_credit": parse_decimal(_cell(raw, idx, "Credit")),
+            # description1's first semi-line is usually the counterparty
+            "counterparty": (description1.split(";", 1)[0] or None),
+            "description_kind": _cell(raw, idx, "Description2") or None,
+            "payload": normalize_payload({h: c for h, c in zip(header, raw)}),
+            # Raw cells, kept only to fingerprint a row against its
+            # siblings when UBS gives several of them one number.
+            "booking_date_raw": _cell(raw, idx, "Booking date"),
+            "value_date_raw": value_date_s,
+            "debit_raw": _cell(raw, idx, "Debit"),
+            "credit_raw": _cell(raw, idx, "Credit"),
+            "description1": description1,
+        })
+    return rows
 
 
 # ----------------------------------------------------------------

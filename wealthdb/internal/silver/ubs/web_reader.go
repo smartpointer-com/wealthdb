@@ -2082,6 +2082,19 @@ func extractInstrumentFromDescription1(p webTxPayload) (instrumentID, descriptio
 // A payload that does not decode contributes only the booking type.
 func webDescription(captionDesc *string, bookingType string, p webTxPayload) *string {
 	if captionDesc != nil {
+		// A deposit product is the one caption that is not a security.
+		// Description1 names the PRODUCT ("UBS Call Deposit; Serial
+		// no. …") and the booking type carries the only fact that
+		// separates one of its rows from another — a principal
+		// movement from the interest it pays. Dropping the type here
+		// left every row of a deposit reading identically, which is
+		// what made the export era unreadable to any tier that works
+		// from the narrative: not ambiguous, IDENTICAL. Prepending it
+		// gives the row the same shape the statement era already
+		// composes, so one spelling reaches both eras.
+		if isDepositProductBooking(bookingType) {
+			return silver.StrPtrIfNonEmpty(silver.JoinText(bookingType, *captionDesc))
+		}
 		return captionDesc
 	}
 	own, _ := bookingLines(p.Continuation)
@@ -2090,6 +2103,37 @@ func webDescription(captionDesc *string, bookingType string, p webTxPayload) *st
 	parts = append(parts, own...)
 	parts = append(parts, p.Description3)
 	return silver.StrPtrIfNonEmpty(silver.JoinText(parts...))
+}
+
+// depositProductBookings are the booking types that move PRINCIPAL in
+// or out of one of the bank's own cash-parking products — a call
+// deposit, a fixed-term deposit, a notice account. The bank books
+// every one of them on the account that funds the product and never
+// lists the product as an account of its own, so these rows are the
+// only trace of it there is.
+//
+// The interest payment is deliberately absent. It is the one movement
+// of a deposit that is not a transfer: the money is new, it is income,
+// and a list that swept it in with the rest would take a year of
+// interest out of the income statement.
+var depositProductBookings = map[string]bool{
+	"CALL DEPOSIT NEW INVESTMENT":       true,
+	"CALL DEPOSIT INCREASE":             true,
+	"CALL DEPOSIT DECREASE":             true,
+	"CALL DEPOSIT REPAYMENT":            true,
+	"FIXED TERM DEPOSIT NEW INVESTMENT": true,
+	"FIXED TERM DEPOSIT INCREASE":       true,
+	"FIXED TERM DEPOSIT DECREASE":       true,
+	"FIXED TERM DEPOSIT REPAYMENT":      true,
+}
+
+// isDepositProductBooking reports whether a booking type moves a
+// deposit product's principal. Case-folded because the two feeds spell
+// the same type differently — the statement era shouts it, the CSV
+// export title-cases it — which is the same fold webKind applies for
+// the same reason.
+func isDepositProductBooking(bookingType string) bool {
+	return depositProductBookings[strings.ToUpper(strings.TrimSpace(bookingType))]
 }
 
 // isBookingType reports whether a string is nothing but the bank's own
