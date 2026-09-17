@@ -210,10 +210,15 @@ func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold
 			Extract: func(r gold.CashflowSummaryRow) string { return periodStart(r.PeriodStart) }},
 		{Name: "txn_count", Align: output.AlignRight,
 			Extract: func(r gold.CashflowSummaryRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
-		{Name: "income", Header: "income_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Income) }},
-		{Name: "spending", Header: "spending_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Spending) }},
+		// The two halves of operating. NOT named `income` and
+		// `spending`: those are two other reports whose numbers differ
+		// from these by construction, and a column a reader cannot
+		// safely compare to the report it is named after is a trap.
+		// The flows view already spells them this way.
+		{Name: "operating_in", Header: "operating_in_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.OperatingIn) }},
+		{Name: "operating_out", Header: "operating_out_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.OperatingOut) }},
 		{Name: "operating", Header: "operating_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Operating) }},
 		{Name: "investing", Header: "investing_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
@@ -246,13 +251,20 @@ func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold
 			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.CashMeasured) }},
 		{Name: "fx_effect", Header: "fx_effect_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.FXEffect) }},
+		// The flow term the residual is taken against, so the four
+		// memo columns close on their face. It is the flow over the
+		// MEASURED slice, pool-internal moves included, and so is not
+		// net_cash_flow — printing the residual without it left a
+		// reader's own arithmetic short.
+		{Name: "cash_flow_measured", Header: "cash_flow_measured_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.CashFlowMeasured) }},
 		{Name: "unexplained", Header: "unexplained_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Unexplained) }},
 	}
 }
 
 var defaultCashflowSummaryColumns = []string{
-	"period", "income", "spending", "operating",
+	"period", "operating_in", "operating_out", "operating",
 	"investing", "financing", "vehicles", "net_cash_flow",
 }
 
@@ -441,8 +453,8 @@ and selling is shown NET per period, never as two gross bands.
 Positive is cash arriving, negative is cash leaving.
 
 Views (coarsest → finest):
-  summary       one row per period bucket: income, spending, operating,
-                investing, financing, vehicles, net_cash_flow
+  summary       one row per period bucket: operating_in, operating_out,
+                operating, investing, financing, vehicles, net_cash_flow
   flows         one row per bucket and node at --level, netted at that level
   sankey        the window's diagram as edges: stage, source, target, value
                 (period-less; --level class for the inner two stages only)
@@ -472,8 +484,14 @@ Notes
   The four sections sum to net_cash_flow, and a bucket's flows rows —
   the Cash row included — sum to zero. Both identities are structural
   and guard arithmetic rather than population: the reconciliation that
-  can catch a population hole is -C +cash_measured,+fx_effect,+unexplained
-  on the summary.
+  can catch a population hole is
+  -C +cash_measured,+fx_effect,+cash_flow_measured,+unexplained on the
+  summary. Those four close on their face — unexplained is
+  cash_measured minus fx_effect minus cash_flow_measured — and
+  cash_flow_measured is deliberately NOT net_cash_flow: the memo can
+  only compare observed balances against the flow over the accounts
+  and dates those balances cover, which counts moves inside the pool
+  and starts each account at its own first snapshot.
 
   A NODE IS A NET, and the level decides what nets. A class with a
   large gross and a small net is one node, not two bands; inflow and
@@ -481,8 +499,9 @@ Notes
   the hub at the level drawn, so a finer level can have a larger hub
   than a coarser one — that is what netting means.
 
-  Totals here are smaller than 'wealthdb income' and 'wealthdb
-  spending' report, by four terms: the vehicles' own income and
+  operating_in and operating_out are NOT what 'wealthdb income' and
+  'wealthdb spending' report, which is why they are not named after
+  them. Totals here are smaller than those reports', by four terms: the vehicles' own income and
   spending, the reimbursements cashflow keeps and income drops, the
   verdicts cashflow re-homes, and any account the families' own scopes
   exclude but the pool keeps.
@@ -497,8 +516,8 @@ Available columns (per view):
   sankey        ` + joinColumnNames(buildCashflowSankeyColumnRegistry("CCY")) + `
   transactions  ` + joinColumnNames(buildCashflowTransactionColumnRegistry("CCY")) + `
 
-  (The money columns render as income_<CCY> / net_<CCY> / value_<CCY>,
-   reflecting your -x/--currency choice.)
+  (The money columns render as operating_in_<CCY> / net_<CCY> /
+   value_<CCY>, reflecting your -x/--currency choice.)
 
 Default column sets:
   summary       ` + strings.Join(defaultCashflowSummaryColumns, ", ") + `

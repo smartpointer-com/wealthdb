@@ -600,7 +600,7 @@ func TestPassIsIdempotent(t *testing.T) {
 		t.Errorf("overlay changed on a second pass over unchanged gold:\nfirst:\n%s\nsecond:\n%s",
 			strings.Join(before, "\n"), strings.Join(after, "\n"))
 	}
-	if *first != *second {
+	if !sameOnRerun(first, second) {
 		t.Errorf("pass result changed on re-run: %+v then %+v", *first, *second)
 	}
 }
@@ -758,7 +758,7 @@ func TestPassMatchesOntoAnAccountOutsideTheSpendingScope(t *testing.T) {
 		t.Errorf("overlay changed on a second pass:\nfirst:\n%s\nsecond:\n%s",
 			strings.Join(before, "\n"), strings.Join(after, "\n"))
 	}
-	if *second != *res {
+	if !sameOnRerun(res, second) {
 		t.Errorf("pass result changed on re-run: %+v then %+v", *res, *second)
 	}
 }
@@ -917,7 +917,7 @@ func TestPassAppliesConfigRules(t *testing.T) {
 		t.Errorf("overlay changed on a second pass with rules:\nfirst:\n%s\nsecond:\n%s",
 			strings.Join(before, "\n"), strings.Join(after, "\n"))
 	}
-	if *second != *res {
+	if !sameOnRerun(res, second) {
 		t.Errorf("pass result changed on re-run: %+v then %+v", *res, *second)
 	}
 }
@@ -1003,7 +1003,7 @@ func TestPassAppliesPins(t *testing.T) {
 		t.Errorf("overlay changed on a second pass with pins:\nfirst:\n%s\nsecond:\n%s",
 			strings.Join(before, "\n"), strings.Join(after, "\n"))
 	}
-	if *second != *res {
+	if !sameOnRerun(res, second) {
 		t.Errorf("pass result changed on re-run: %+v then %+v", *res, *second)
 	}
 
@@ -1940,4 +1940,20 @@ func TestSyncAccountScopeIsDeterministic(t *testing.T) {
 	if snapshots[0] != want {
 		t.Errorf("scope = %q, want %q", snapshots[0], want)
 	}
+}
+
+// sameOnRerun compares two pass results for the idempotence checks,
+// with Cashflow.FirstPass normalised away.
+//
+// That one field is deliberately NOT idempotent: it reports that the
+// boundary table was EMPTY when the pass began, which is true of the
+// first pass after the cashflow migrations and false of every pass
+// after it. It describes the database the pass found rather than the
+// work the pass did, and the load prints it once for exactly that
+// reason. Everything else in the result must be identical, which is
+// what these tests are for.
+func sameOnRerun(a, b *Result) bool {
+	x, y := *a, *b
+	x.Cashflow.FirstPass, y.Cashflow.FirstPass = false, false
+	return x == y
 }

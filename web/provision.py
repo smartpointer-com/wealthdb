@@ -1082,16 +1082,35 @@ def question_defs(db_id, mid):
     # filter can only narrow a population.
     cf_tags = {**spend_tags("web_cashflow", CASHFLOW_FILTERS),
                "investing": INVESTING_TAG}
+    # THE SECTION PICKER REACHES ONLY THE CARDS IT MEANS SOMETHING ON.
+    # A card that does not declare the {{section}} tag cannot be bound
+    # to the picker, so the scope is expressed once, here, rather than
+    # as a rule a later card has to remember. The headline figures and
+    # the diagram decline it: a statement whose sections have been
+    # narrowed to one is not a statement, its savings rate and yield
+    # share have lost a leg of their own ratio, and a one-section
+    # diagram draws a Cash node that absorbs the whole section rather
+    # than the residual it names (docs/CASHFLOW.md §9).
+    cf_tags_nosec = {k: v for k, v in cf_tags.items() if k != "section"}
     cf_where = _spend_where({k: v for k, v in cf_tags.items()
                              if k not in ("currency", "investing")})
+    cf_where_nosec = _spend_where({k: v for k, v in cf_tags_nosec.items()
+                                   if k not in ("currency", "investing")})
+    cf_pickers_nosec = [t for t in CASHFLOW_PICKERS if t[1] != "section"]
     cf_val = f"sum({_ccy_case('value')})::DOUBLE"
     cf_note = (" Built for the Cash Flow dashboard; opened standalone it "
                "runs in USD with investing netted as a whole, the two "
                "variables' defaults.")
 
-    def cashflow_native(name, display, desc, sql, viz):
-        register_native_targets(name, cf_tags, CASHFLOW_PICKERS)
-        return (display, desc + cf_note, _native(db_id, sql, cf_tags), viz)
+    def cashflow_native(name, display, desc, sql, viz, section=True):
+        """A native Cash Flow card. `section` says whether the card
+        takes the dashboard's Section picker; a card that declines it
+        must have been built with `cf_where_nosec`, since a tag a card
+        does not declare cannot appear in its SQL."""
+        tags = cf_tags if section else cf_tags_nosec
+        register_native_targets(
+            name, tags, CASHFLOW_PICKERS if section else cf_pickers_nosec)
+        return (display, desc + cf_note, _native(db_id, sql, tags), viz)
 
     # The uncategorised-share tile's tags: every filter but the
     # currency variable, which a share of rows has no use for.
@@ -1563,24 +1582,27 @@ def question_defs(db_id, mid):
             "plus the vehicles — and the Cash node of the diagram is its "
             "negative, because cash the household kept is cash the pool "
             "absorbed.",
-            f"SELECT {cf_val} AS net_cash_flow\n  FROM web_cashflow" + cf_where,
-            {}),
-        "Cash in": cashflow_native("Cash in", "scalar",
+            f"SELECT {cf_val} AS net_cash_flow\n  FROM web_cashflow" + cf_where_nosec,
+            {}, section=False),
+        # Named for the SECTION, not for "cash": the residual section
+        # is also called cash and is a different number, and the CLI's
+        # columns behind these two tiles are operating_in / operating_out.
+        "Operating in": cashflow_native("Operating in", "scalar",
             "Everything the household received over the window: wages, "
             "yield, benefits and the other receipts. Smaller than "
             "`wealthdb income` reports, by the vehicles' own income and "
             "three other terms — see docs/CASHFLOW.md §8.",
-            f"SELECT {cf_val} AS cash_in\n  FROM web_cashflow" + cf_where +
+            f"SELECT {cf_val} AS operating_in\n  FROM web_cashflow" + cf_where_nosec +
             "\n   AND section = 'operating_in'",
-            {}),
-        "Cash out": cashflow_native("Cash out", "scalar",
+            {}, section=False),
+        "Operating out": cashflow_native("Operating out", "scalar",
             "Everything the household spent over the window — consumption, "
             "fees, taxes and giving — as a positive magnitude. Buying and "
             "selling is NOT here: investing is its own section and is shown "
             "net.",
-            f"SELECT -({cf_val}) AS cash_out\n  FROM web_cashflow" + cf_where +
+            f"SELECT -({cf_val}) AS operating_out\n  FROM web_cashflow" + cf_where_nosec +
             "\n   AND section = 'operating_out'",
-            {}),
+            {}, section=False),
         "Savings rate": cashflow_native("Savings rate", "scalar",
             "Operating cash flow as a share of what came in: what the "
             "household kept of its receipts before it invested, serviced "
@@ -1590,19 +1612,19 @@ def question_defs(db_id, mid):
             # halves, not a difference between two magnitudes.
             f"SELECT {cf_val}\n"
             f"       / nullif(sum(CASE WHEN section = 'operating_in'"
-            f" THEN {_ccy_case('value')} END), 0) * 100 AS savings_rate\n"
-            "  FROM web_cashflow" + cf_where +
+            f" THEN {_ccy_case('value')} END), 0) AS savings_rate\n"
+            "  FROM web_cashflow" + cf_where_nosec +
             "\n   AND section IN ('operating_in', 'operating_out')",
-            _percent_viz("savings_rate")),
+            _percent_viz("savings_rate"), section=False),
         "Yield share": cashflow_native("Yield share", "scalar",
             "What share of the household's receipts its assets produced "
             "without its labour — dividends, interest, fund distributions, "
             "staking, rent and royalties over everything that came in.",
-            f"SELECT sum(CASE WHEN class_node = 'Yield' THEN {_ccy_case('value')} END)::DOUBLE\n"
-            f"       / nullif({cf_val}, 0) * 100 AS yield_share\n"
-            "  FROM web_cashflow" + cf_where +
+            f"SELECT sum(CASE WHEN class = 'yield' THEN {_ccy_case('value')} END)::DOUBLE\n"
+            f"       / nullif({cf_val}, 0) AS yield_share\n"
+            "  FROM web_cashflow" + cf_where_nosec +
             "\n   AND section = 'operating_in'",
-            _percent_viz("yield_share")),
+            _percent_viz("yield_share"), section=False),
         # The diagram, and the centre of the dashboard. A native query in
         # the three columns the BI layer's Sankey visualisation reads,
         # over the LINE-grain serving view: a node's side is the sign of
@@ -1615,9 +1637,9 @@ def question_defs(db_id, mid):
             "on net and on the right if cash went to it. Own-account moves "
             "are invisible; buying and selling is one net movement, as a "
             "whole or per asset class per the Investing picker.",
-            _cashflow_sankey_sql(cf_where, cf_val),
+            _cashflow_sankey_sql(cf_where_nosec, cf_val),
             {"sankey.source": "source", "sankey.target": "target",
-             "sankey.value": "value"}),
+             "sankey.value": "value"}, section=False),
         "Cash flow statement by month": cashflow_native(
             "Cash flow statement by month", "combo",
             "The statement per month: operating, investing, financing and "
@@ -1646,10 +1668,10 @@ def question_defs(db_id, mid):
              "stackable.stack_type": "stacked"}),
         "Outflows by class by month": cashflow_native(
             "Outflows by class by month", "area",
-            "What went out each month, stacked by class: spending, fees, "
-            "taxes, giving, and the backlog. Fees, taxes and giving are "
-            "lifted out of spending because each is worth a line of its "
-            "own.",
+            "What went out each month, stacked by class: consumption, "
+            "fees, taxes, giving, and the backlog. Fees, taxes and giving "
+            "are lifted out of consumption because each is worth a line "
+            "of its own.",
             f"SELECT {sp_month},\n       class_node AS class,\n"
             f"       -({cf_val}) AS value\n"
             "  FROM web_cashflow" + cf_where +
@@ -2005,8 +2027,8 @@ def base_dashboards():
             # Five headline figures, then the diagram at the centre, then
             # the shape of the window, then the two sides of operating,
             # then the swing sections, then the lines.
-            ("Cash in", 0, 0, 5, 3, "occurred_at"),
-            ("Cash out", 0, 5, 5, 3, "occurred_at"),
+            ("Operating in", 0, 0, 5, 3, "occurred_at"),
+            ("Operating out", 0, 5, 5, 3, "occurred_at"),
             ("Net cash flow", 0, 10, 5, 3, "occurred_at"),
             ("Savings rate", 0, 15, 4, 3, "occurred_at"),
             ("Yield share", 0, 19, 5, 3, "occurred_at"),
@@ -2126,7 +2148,11 @@ CASHFLOW_INVESTING_PARAM_ID = "aa5df10e"
 #
 # `section` is the one field filter of its own: the six statement
 # sections are a short, stable vocabulary, and narrowing to one is how a
-# reader asks "what did investing do" without leaving the dashboard.
+# reader asks "what did investing do" without leaving the dashboard. It
+# is NOT a picker the design asked for (§7 lists four), and it reaches
+# only the cards it means something on — the by-month charts and the
+# line list. cashflow_card_defs draws that line, by withholding the tag
+# from the cards that decline it.
 CASHFLOW_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
                     "source": ("silver_source_id", "string/="),
                     "section": ("section", "string/=")}
@@ -2666,19 +2692,33 @@ def cashflow_privacy_defs(db_id):
     dashboard's diagram does."""
     tags = {**spend_tags("web_cashflow", PRIVACY_CASHFLOW_FILTERS),
             "investing": INVESTING_TAG}
+    # The Section picker's scope is the base dashboard's, card for card:
+    # a twin tile stands in for a base tile and has to answer the same
+    # pickers, or a reader comparing the two would find one narrowed and
+    # the other not.
+    tags_nosec = {k: v for k, v in tags.items() if k != "section"}
     where = _spend_where({k: v for k, v in tags.items()
                           if k not in ("currency", "investing")})
+    where_nosec = _spend_where({k: v for k, v in tags_nosec.items()
+                                if k not in ("currency", "investing")})
+    pickers_nosec = [t for t in CASHFLOW_PICKERS if t[1] != "section"]
     val = f"sum({_ccy_case('value')})::DOUBLE"
     out = {}
 
-    def cashflow_card(name, display, desc, sql, viz):
+    def cashflow_card(name, display, desc, sql, viz, section=True):
+        card_tags = tags if section else tags_nosec
         out[name] = ("question", display, desc + PRIVACY_DESC,
-                     _native(db_id, sql, tags), viz)
-        register_native_targets(name, tags, CASHFLOW_PICKERS)
+                     _native(db_id, sql, card_tags), viz)
+        register_native_targets(
+            name, card_tags, CASHFLOW_PICKERS if section else pickers_nosec)
 
     # The hub, built by the same helper the diagram uses, so a scalar
     # and the diagram beside it cannot divide by two different numbers.
     hub_cte = _cashflow_atoms_cte(where, val) + "\n"
+    # A tile that declines the Section picker must divide by a hub that
+    # declines it too, or the numerator and the denominator would answer
+    # different filters.
+    hub_cte_nosec = _cashflow_atoms_cte(where_nosec, val) + "\n"
     peak_cte = ("p AS (SELECT max(t) AS peak FROM"
                 " (SELECT sum(abs(v)) AS t FROM m GROUP BY month))\n")
 
@@ -2690,11 +2730,11 @@ def cashflow_privacy_defs(db_id):
 
     # `neg` is what keeps each twin scalar reading the same way round as
     # the base tile it stands in for: gold stores an outflow negative
-    # and the base "Cash out" prints it as a positive magnitude, so its
-    # share has to be one too.
+    # and the base "Operating out" prints it as a positive magnitude, so
+    # its share has to be one too.
     for name, section, neg, label in (
-            ("Cash in", "operating_in", False, "came in"),
-            ("Cash out", "operating_out", True, "went out"),
+            ("Operating in", "operating_in", False, "came in"),
+            ("Operating out", "operating_out", True, "went out"),
             ("Net cash flow", None, False, "the pool kept")):
         filt = "" if section is None else f"\n   AND section = '{section}'"
         expr = f"sum({_ccy_case('value', neg=neg)})::DOUBLE"
@@ -2703,10 +2743,10 @@ def cashflow_privacy_defs(db_id):
             "the total the diagram flows through, which is the sum of "
             "the positive nets at the level drawn and moves with the "
             "Investing picker.",
-            hub_cte +
-            f"SELECT (SELECT {expr} FROM web_cashflow" + where + filt + ")\n"
-            "       / (SELECT total FROM hub) * 100 AS share_pct",
-            _percent_viz("share_pct"))
+            hub_cte_nosec +
+            f"SELECT (SELECT {expr} FROM web_cashflow" + where_nosec + filt + ")\n"
+            "       / (SELECT total FROM hub) AS share_pct",
+            _percent_viz("share_pct"), section=False)
 
     # The diagram, with the hub at 100: the same edges divided through.
     cashflow_card(privacy_name("Cash flow"), "sankey",
@@ -2714,9 +2754,9 @@ def cashflow_privacy_defs(db_id):
         "The nodes are unchanged — they are vocabulary, never a merchant, "
         "a payer, an account or an instrument — so this twin is the base "
         "diagram normalised rather than redacted.",
-        _cashflow_sankey_sql(where, val, share=True),
+        _cashflow_sankey_sql(where_nosec, val, share=True),
         {"sankey.source": "source", "sankey.target": "target",
-         "sankey.value": "value"})
+         "sankey.value": "value"}, section=False)
 
     cashflow_card(privacy_name("Cash flow statement by month"), "combo",
         "The statement per month, each section as % of the window's "
@@ -2789,15 +2829,15 @@ def cashflow_privacy_defs(db_id):
             "SELECT " + (
                 f"{val}\n"
                 f"       / nullif(sum(CASE WHEN section = 'operating_in'"
-                f" THEN {_ccy_case('value')} END), 0) * 100 AS share_pct\n"
-                "  FROM web_cashflow" + where +
+                f" THEN {_ccy_case('value')} END), 0) AS share_pct\n"
+                "  FROM web_cashflow" + where_nosec +
                 "\n   AND section IN ('operating_in', 'operating_out')"
                 if name == "Savings rate" else
-                f"sum(CASE WHEN class_node = 'Yield' THEN {_ccy_case('value')} END)::DOUBLE\n"
-                f"       / nullif({val}, 0) * 100 AS share_pct\n"
-                "  FROM web_cashflow" + where +
+                f"sum(CASE WHEN class = 'yield' THEN {_ccy_case('value')} END)::DOUBLE\n"
+                f"       / nullif({val}, 0) AS share_pct\n"
+                "  FROM web_cashflow" + where_nosec +
                 "\n   AND section = 'operating_in'"),
-            _percent_viz("share_pct"))
+            _percent_viz("share_pct"), section=False)
     return out
 
 
@@ -3333,9 +3373,12 @@ def dashboard_parameters(model_ids, mode, name=""):
         # BOTH dashboards carry the same five: unlike the spending and
         # income pairs, the twin drops nothing, because none of these
         # pickers renders a dropdown of anything that identifies an
-        # account. There is no account picker to drop — §7 of
-        # docs/CASHFLOW.md §9 — and a section picker offers six words of
-        # the feature's own vocabulary.
+        # account. There is no account picker to drop — docs/CASHFLOW.md
+        # §9 — and a section picker offers six words of the feature's own
+        # vocabulary. The Section picker is declared here for both
+        # dashboards but BINDS only to the cards that declare its tag;
+        # the headline figures and the diagram decline it, identically on
+        # the base and the twin.
         return [cashflow_currency, investing, time_range, source,
                 card_picker(CASHFLOW_SECTION_PARAM_ID, "Section", "section",
                             "report_cashflow", "section")]

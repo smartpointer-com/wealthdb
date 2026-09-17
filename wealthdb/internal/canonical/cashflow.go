@@ -93,6 +93,13 @@ const (
 	// whose money comes from wealth, the cost of being invested is
 	// worth reading beside the tax, and every household-balance diagram
 	// lifts taxes and giving.
+	//
+	// What is left reads as "Consumption" and not as "Spending", even
+	// though it IS the spending family's categories minus the three
+	// lifts: the spending report's number differs from this one by
+	// construction (docs/CASHFLOW.md §8), and one word for two figures
+	// a reader is meant to compare is a trap. The label lives in the
+	// cashflow_class_label macro; this is the id.
 	ClassConsumption CashflowClass = "consumption"
 	ClassFees        CashflowClass = "fees"
 	ClassTaxes       CashflowClass = "taxes"

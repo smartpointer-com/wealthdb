@@ -1096,7 +1096,7 @@ for _c, *_ in DEFS["Spending"][3]:
 
 section("the Cash Flow dashboard")
 
-CASHFLOW_CARD_NAMES = ["Cash in", "Cash out", "Net cash flow", "Savings rate",
+CASHFLOW_CARD_NAMES = ["Operating in", "Operating out", "Net cash flow", "Savings rate",
                        "Yield share", "Cash flow",
                        "Cash flow statement by month",
                        "Inflows by class by month", "Outflows by class by month",
@@ -1171,8 +1171,8 @@ check("the twin's largest-flows card ranks instead of naming",
 # hub moves with the Investing picker exactly as the diagram does.
 check("the twin's scalars divide by the hub",
       all("hub" in _cf_twin_sql[p.privacy_name(n)]
-          for n in ("Cash in", "Cash out", "Net cash flow")),
-      [n for n in ("Cash in", "Cash out", "Net cash flow")
+          for n in ("Operating in", "Operating out", "Net cash flow")),
+      [n for n in ("Operating in", "Operating out", "Net cash flow")
        if "hub" not in _cf_twin_sql[p.privacy_name(n)]])
 
 # The serving view is in the registry that drives the pre-view abort, so
@@ -1191,20 +1191,22 @@ for _n in ("Savings rate", "Savings rate (privacy)"):
     check(f"...and divides by what came in",
           "section = 'operating_in'" in _q and "nullif" in _q, _q[:240])
 # The twin's scalars must read the same way round as the base tiles they
-# stand in for: gold stores an outflow negative and the base "Cash out"
-# prints a positive magnitude, so its share has to be one too.
-check("'Cash out (privacy)' reports a positive magnitude, as its base tile does",
-      "-value_usd" in _cf_twin_sql["Cash out (privacy)"],
-      _cf_twin_sql["Cash out (privacy)"][:240])
-check("'Cash in (privacy)' does not negate",
-      "-value_usd" not in _cf_twin_sql["Cash in (privacy)"],
-      _cf_twin_sql["Cash in (privacy)"][:240])
+# stand in for: gold stores an outflow negative and the base
+# "Operating out" prints a positive magnitude, so its share has to be
+# one too.
+check("'Operating out (privacy)' reports a positive magnitude, as its base tile does",
+      "-value_usd" in _cf_twin_sql["Operating out (privacy)"],
+      _cf_twin_sql["Operating out (privacy)"][:240])
+check("'Operating in (privacy)' does not negate",
+      "-value_usd" not in _cf_twin_sql["Operating in (privacy)"],
+      _cf_twin_sql["Operating in (privacy)"][:240])
 # One hub. It is the sum of the positive nets AT THE LEVEL DRAWN, so a
 # class-level sum is a different number from the diagram's whenever a
 # leaf nets against its class — and a reader comparing a scalar against
 # the diagram beside it would find they did not agree.
-for _n in ("Cash in (privacy)", "Cash out (privacy)", "Net cash flow (privacy)",
-           "Largest flows (privacy)", "Cash flow (privacy)"):
+for _n in ("Operating in (privacy)", "Operating out (privacy)",
+           "Net cash flow (privacy)", "Largest flows (privacy)",
+           "Cash flow (privacy)"):
     check(f"'{_n}' divides by the diagram's own hub",
           "atoms AS" in _cf_twin_sql[_n] and "hub AS" in _cf_twin_sql[_n],
           _cf_twin_sql[_n][:200])
@@ -1221,6 +1223,62 @@ for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
 
 check("web_cashflow is one of the views provisioning requires",
       "web_cashflow" in p.web_views_wanted(), p.web_views_wanted())
+
+# The Section picker is not a picker the design asked for, so its scope
+# is pinned rather than left to whichever card was written last. It
+# reaches the by-month charts and the line list; the headline figures
+# and the diagram decline it, on the base and on the twin alike. A card
+# that does not declare the {{section}} tag cannot be bound to the
+# picker, so the tag IS the scope.
+_CF_TAKES_SECTION = {"Cash flow statement by month", "Inflows by class by month",
+                     "Outflows by class by month", "Investing by month",
+                     "Financing and vehicles by month", "Largest flows"}
+for _n in CASHFLOW_CARD_NAMES:
+    for _name, _q in ((_n, _cf_sql.get(_n, "")),
+                      (p.privacy_name(_n), _cf_twin_sql.get(p.privacy_name(_n), ""))):
+        if not _q:
+            continue
+        _want = _n in _CF_TAKES_SECTION
+        check(f"'{_name}' {'takes' if _want else 'declines'} the Section picker",
+              ("{{section}}" in _q) == _want, _q[:240])
+
+# A predicate keyed on a DISPLAY LABEL turns its tile to zero the day
+# the label is reworded, with every shape test above still passing. The
+# serving view carries the id beside every label for exactly this
+# reason, so no card may filter on one of the four label columns.
+for _name, _q in list(_cf_sql.items()) + list(_cf_twin_sql.items()):
+    _bad = [c for c in ("class_label", "class_node", "group_label", "group_node")
+            if f"{c} =" in _q or f"{c} IN" in _q]
+    check(f"'{_name}' keys its predicates on ids, not labels", not _bad, _bad)
+
+section("a percent-styled column is a fraction, not a percentage")
+
+# _percent_viz's contract is "ratio columns (0.07 -> 7%)": Metabase
+# multiplies by 100 itself. A card that also multiplies renders 51% as
+# 5.1k%, and no shape test would see it — the column exists, the viz
+# setting is attached, and only the figure is wrong.
+_PCT_CARDS = {}
+for _defs in (p.question_defs(1, MID), p.privacy_card_defs(1, MID)):
+    for _name, _tup in _defs.items():
+        _query, _viz = _tup[-2], _tup[-1]
+        _sql = sql_of(_query)
+        if not _sql or not isinstance(_viz, dict):
+            continue
+        for _key, _setting in (_viz.get("column_settings") or {}).items():
+            if _setting.get("number_style") == "percent":
+                _PCT_CARDS.setdefault(_name, (_sql, []))[1].append(
+                    json.loads(_key)[1])
+
+check("some card declares a percent column", bool(_PCT_CARDS), list(_PCT_CARDS))
+for _name, (_sql, _cols) in sorted(_PCT_CARDS.items()):
+    for _col in _cols:
+        # `* 100` and not `* 1000`: `end_day * 1000` converts an epoch
+        # day to milliseconds and is not a scaling of anything.
+        _scaled = [m.start() for m in re.finditer(r"\bAS\s+" + re.escape(_col) + r"\b", _sql)
+                   if re.search(r"\*\s*100(?!\d)",
+                                _sql[max(0, m.start() - 60):m.start()])]
+        check(f"'{_name}'.{_col} is a fraction, not already a percentage",
+              not _scaled, _sql[:300])
 
 if FAILS:
     print(f"provision tests: {FAILS} failed")

@@ -214,8 +214,24 @@ func printPassSummary(stdout io.Writer, res *spending.Result) {
 // reconciliation downstream can find it: the load saying so is the
 // only place it surfaces at load time.
 func printCashflowSummary(stdout io.Writer, res spending.CashflowResult) {
-	fmt.Fprintf(stdout, "cashflow: household boundary stamped — %d wrapper(s), %d overridden, %d account(s) out of the pool\n",
-		res.WrapperRows, res.WrapperOverrides, res.ScopeRows)
+	// One line when the deployment is covered, and the far-account
+	// count rides on it rather than taking a line of its own: the two
+	// halves the resolution needs are the boundary and the far
+	// accounts, and a reader checking that a load did its work should
+	// find both in one place.
+	fmt.Fprintf(stdout, "cashflow: household boundary stamped — %d wrapper(s), %d overridden, "+
+		"%d account(s) out of the pool; %d own-account move(s) carry a far account\n",
+		res.WrapperRows, res.WrapperOverrides, res.ScopeRows, res.FarAccounts)
+	// Said once, on the pass that ends the state, because the state
+	// itself is unreadable from the outside: with no boundary stamped
+	// and no far account written, every matched own-account move
+	// resolves to `vehicles · Untracked accounts` and the dashboard
+	// shows one enormous node that looks exactly like a finding.
+	if res.FirstPass {
+		fmt.Fprintf(stdout, "cashflow: this was the FIRST pass to stamp the boundary — "+
+			"until now the statement drew every own-account move as `Untracked accounts`, "+
+			"and any cash flow report read before this run was wrong\n")
+	}
 	if res.PooledAccountsWithoutWrapper > 0 {
 		fmt.Fprintf(stdout, "cashflow: %d pooled account(s) have no tax wrapper — each reads as the household's, "+
 			"so a vehicle among them contributes no crossing at all\n",

@@ -172,7 +172,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
-		for _, want := range []string{"Earnings", "Yield", "Spending", "Taxes",
+		for _, want := range []string{"Earnings", "Yield", "Consumption", "Taxes",
 			"Investments", "Mortgage", "Retirement", "Cash"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("flows is missing the %q node:\n%s", want, so)
@@ -196,7 +196,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		// The outflow leaf is the spending PRIMARY, so a grocery
 		// purchase draws as "Food and drink" rather than as one of
 		// ninety detailed values.
-		for _, want := range []string{"Wages", "Earnings", "Food and drink", "Spending"} {
+		for _, want := range []string{"Wages", "Earnings", "Food and drink", "Consumption"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("the diagram is missing %q:\n%s", want, so)
 			}

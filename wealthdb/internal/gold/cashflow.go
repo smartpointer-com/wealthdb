@@ -17,30 +17,32 @@ import (
 //
 // THE SIGN, once for every struct below: positive is cash arriving in
 // the pool and negative is cash leaving it. The magnitude columns
-// (Income, Spending, Inflow, Outflow) are positive, as the families'
-// spend and refund columns are; the net and section columns are signed,
-// the Cash row included.
+// (OperatingIn, OperatingOut, Inflow, Outflow) are positive, as the
+// families' spend and refund columns are; the net and section columns
+// are signed, the Cash row included.
 
 // CashflowSummaryRow is one period bucket of the statement.
 //
-// Income and Spending are positive MAGNITUDES — the two halves of
-// operating, each summed over its own section — and Operating is their
-// signed difference. Investing, Financing and Vehicles are signed nets,
+// OperatingIn and OperatingOut are positive MAGNITUDES — the two halves
+// of operating, each summed over its own section — and Operating is
+// their signed difference. They are NOT the income and spending
+// features' numbers and are deliberately not named after them: the
+// three populations differ by construction (docs/CASHFLOW.md §2). Investing, Financing and Vehicles are signed nets,
 // and NetCashFlow is the four summed. That the four sum to NetCashFlow
 // is structural and therefore a guard against arithmetic alone; the
-// reconciliation that can catch a wrong population is the memo trio.
+// reconciliation that can catch a wrong population is the memo.
 type CashflowSummaryRow struct {
 	// PeriodStart is the bucket's opening UTC-midnight epoch second,
 	// nil for the single `total` bucket.
-	PeriodStart *int64
-	TxnCount    int64
-	Income      *string
-	Spending    *string
-	Operating   *string
-	Investing   *string
-	Financing   *string
-	Vehicles    *string
-	NetCashFlow *string
+	PeriodStart  *int64
+	TxnCount     int64
+	OperatingIn  *string
+	OperatingOut *string
+	Operating    *string
+	Investing    *string
+	Financing    *string
+	Vehicles     *string
+	NetCashFlow  *string
 	// Yield is the yield class alone: what the household's assets
 	// produced without its labour. Taxes, Fees and Giving are the three
 	// classes lifted out of spending, each a positive magnitude.
@@ -48,7 +50,8 @@ type CashflowSummaryRow struct {
 	Taxes  *string
 	Fees   *string
 	Giving *string
-	// SavingsRate is Operating over Income, nil where nothing came in.
+	// SavingsRate is Operating over OperatingIn, nil where nothing
+	// came in.
 	SavingsRate *float64
 	// The reconciliation memo, off by default and never read by
 	// NetCashFlow. CashMeasured is the pool's observed value at the
@@ -63,9 +66,10 @@ type CashflowSummaryRow struct {
 	// nil together on a bucket whose boundary has no observed snapshot
 	// — a figure computed from part of the pool would be worse than
 	// none.
-	CashMeasured *string
-	FXEffect     *string
-	Unexplained  *string
+	CashMeasured     *string
+	FXEffect         *string
+	CashFlowMeasured *string
+	Unexplained      *string
 }
 
 // CashflowFlowRow is one (bucket, node) of the flows view, netted at
@@ -174,21 +178,22 @@ func CashflowSummary(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, 
 		var (
 			r                                     CashflowSummaryRow
 			bucket                                sql.NullInt64
-			income, spending, operating           sql.NullString
+			opIn, opOut, operating                sql.NullString
 			investing, financing, vehicles, netCF sql.NullString
 			yieldCol, taxes, fees, giving         sql.NullString
 			savingsRate                           sql.NullFloat64
 			measured, fxEffect, unexplained       sql.NullString
+			flowMeasured                          sql.NullString
 		)
-		if err := rows.Scan(&bucket, &r.TxnCount, &income, &spending, &operating,
+		if err := rows.Scan(&bucket, &r.TxnCount, &opIn, &opOut, &operating,
 			&investing, &financing, &vehicles, &netCF,
 			&yieldCol, &taxes, &fees, &giving, &savingsRate,
-			&measured, &fxEffect, &unexplained); err != nil {
+			&measured, &fxEffect, &flowMeasured, &unexplained); err != nil {
 			return nil, fmt.Errorf("CashflowSummary scan: %w", err)
 		}
 		r.PeriodStart = nullInt64ToPtr(bucket)
-		r.Income = trimmedDecimalPtr(income)
-		r.Spending = trimmedDecimalPtr(spending)
+		r.OperatingIn = trimmedDecimalPtr(opIn)
+		r.OperatingOut = trimmedDecimalPtr(opOut)
 		r.Operating = trimmedDecimalPtr(operating)
 		r.Investing = trimmedDecimalPtr(investing)
 		r.Financing = trimmedDecimalPtr(financing)
@@ -201,6 +206,7 @@ func CashflowSummary(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, 
 		r.SavingsRate = nullFloatToPtr(savingsRate)
 		r.CashMeasured = trimmedDecimalPtr(measured)
 		r.FXEffect = trimmedDecimalPtr(fxEffect)
+		r.CashFlowMeasured = trimmedDecimalPtr(flowMeasured)
 		r.Unexplained = trimmedDecimalPtr(unexplained)
 		out = append(out, r)
 	}

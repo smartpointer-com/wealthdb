@@ -48,6 +48,21 @@ type CashflowResult struct {
 	// them a config entry moved.
 	WrapperRows      int
 	WrapperOverrides int
+	// FirstPass reports that the boundary table was EMPTY when this
+	// pass began — the state between applying the cashflow migrations
+	// and running the first load. In it the statement is not merely
+	// incomplete, it is wrong in a way that looks like a finding: the
+	// pool is every account, no enrichment row carries a far account,
+	// and every matched own-account move therefore resolves to
+	// `vehicles · Untracked accounts`. A reader who opens the
+	// dashboard in that window sees one enormous node and has no way
+	// to tell it from a data problem, so the load that ends the state
+	// says that it did.
+	FirstPass bool
+	// FarAccounts is how many enrichment rows this pass wrote a far
+	// account onto — the other half of what the resolution needs, and
+	// a plain counter once the first pass is past.
+	FarAccounts int
 	// PooledAccountsWithoutWrapper is the boundary's coverage gap:
 	// accounts in the pool whose tax wrapper is unset.
 	//
@@ -72,6 +87,17 @@ type CashflowResult struct {
 // second time in SQL, and a wrapper added for a new jurisdiction would
 // take two edits to reach the statement instead of one.
 func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions, out *CashflowResult) error {
+	// Read BEFORE stampWrapperSides clears the table: an empty
+	// boundary is what the state between the migrations and the first
+	// load looks like, and it is unrecoverable once this pass has
+	// written into it.
+	var existing int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cashflow_wrapper_sides`).
+		Scan(&existing); err != nil {
+		return fmt.Errorf("cashflow: read the standing boundary: %w", err)
+	}
+	out.FirstPass = existing == 0
+
 	var err error
 	out.ScopeRows, out.UnresolvedScopeAccounts, err =
 		syncAccountScope(ctx, tx, "cashflow", "cashflow_account_scope", nil, opts.Exclude)
@@ -80,6 +106,11 @@ func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions
 	}
 	if err := stampWrapperSides(ctx, tx, opts.Wrappers, out); err != nil {
 		return err
+	}
+	if err := tx.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM spend_txn_enrichment
+         WHERE far_silver_source_id IS NOT NULL`).Scan(&out.FarAccounts); err != nil {
+		return fmt.Errorf("cashflow: count far accounts: %w", err)
 	}
 	return countPooledAccountsWithoutWrapper(ctx, tx, out)
 }

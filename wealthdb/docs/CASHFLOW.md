@@ -294,7 +294,7 @@ alone would collide a gift given with a gift received in one edge list.
 |---|---|
 | operating in | `earnings` · `yield` · `benefits` · `other_receipts` · `(uncategorized)` |
 | operating out | `consumption` · `fees` · `taxes` · `giving` · `(uncategorized)` |
-| investing | the instrument's asset class, every value but `cash`; `elsewhere` for the rows with no instrument; all of them folded into `investments` under `--investing whole` |
+| investing | the instrument's asset class, every value but `cash`; `other` where a row names an instrument whose class is missing; `elsewhere` for the rows that name no instrument at all; all of them folded into `investments` under `--investing whole` |
 | financing | `mortgage` · `loans` |
 | vehicles | `retirement` · `education` · `health` · `trusts` · `untracked` |
 | cash | `cash` |
@@ -305,8 +305,15 @@ do either: income has one vendored primary, and taxes hide inside a
 government-and-non-profit bucket beside donations and a passport
 renewal. Fees are lifted because the cost of being invested is a line
 worth seeing beside the tax rather than inside a catch-all. The uncategorised class is its own node on each side rather than a
-leaf inside Spending: the families made the backlog a visible label on
-purpose.
+leaf inside Consumption: the families made the backlog a visible
+label on purpose.
+
+**`consumption` reads as "Consumption", not "Spending".** The class is
+the spending family's categories minus the three lifts, and it is
+deliberately not named after the spending report: that report's number
+differs from this one by construction (§8), and one word for two
+figures a reader is meant to compare is a trap. The same rule renames
+the summary's two operating columns — see §8.
 
 ### The leaves
 
@@ -477,7 +484,7 @@ The families' idiom, unchanged. Four views:
 
 | view | a row is | default columns |
 |---|---|---|
-| `summary` | a period bucket: the cash flow statement | period, income, spending, operating, investing, financing, vehicles, net_cash_flow |
+| `summary` | a period bucket: the cash flow statement | period, operating_in, operating_out, operating, investing, financing, vehicles, net_cash_flow |
 | `flows` | a (bucket, node) pair at `--level`, netted at that level | period, section, class, group, txn_count, inflow, outflow, net, share_% |
 | `sankey` | an edge of the window's diagram | stage, source, target, value, share_% |
 | `transactions` | a cashflow line, oldest first | silver_source, date, account, kind, section, class, group, name, currency, net_amount, value |
@@ -518,12 +525,13 @@ Two identities are **structural** and therefore guard arithmetic rather
 than population: the four section figures sum to `net_cash_flow`, and a
 bucket's `flows` rows — the Cash row included — sum to zero.
 
-The check that can catch a wrong POPULATION is the memo trio on
-`summary`, behind `-C +cash_measured,+fx_effect,+unexplained`. The cash
-section is computed, never measured, so an unpaired transfer or a wire
-a bank books under a catch-all kind lands in the residual and looks
-like cash saved or spent. The pool's balances, unlike the residual, are
-**observed**.
+The check that can catch a wrong POPULATION is the memo on
+`summary`, behind
+`-C +cash_measured,+fx_effect,+cash_flow_measured,+unexplained`. The
+cash section is computed, never measured, so an unpaired transfer or a
+wire a bank books under a catch-all kind lands in the residual and
+looks like cash saved or spent. The pool's balances, unlike the
+residual, are **observed**.
 
 - `cash_measured` — the pool's cash balances at the bucket's end minus
   at its start, each at its own boundary day's rate.
@@ -532,7 +540,21 @@ like cash saved or spent. The pool's balances, unlike the residual, are
   movement in the bucket revalued from its own day's rate to the
   closing one. Without the second, a salary received mid-year and held
   to the year's end would masquerade as an error.
+- `cash_flow_measured` — the flow the residual is taken against.
+  **Not `net_cash_flow`**, and the difference is the point: the memo
+  can only compare observed balances against the flow over the accounts
+  and dates those balances cover, so this term counts the movements
+  inside the pool and starts each account at its own first snapshot
+  (the six narrowings below). Printed because without it the four
+  columns do not close on their face and a reader doing the arithmetic
+  finds a residual that is neither zero nor `unexplained`.
 - `unexplained` — what is left. Near zero, **not** zero.
+
+The four printed columns close exactly:
+
+```
+unexplained = cash_measured - fx_effect - cash_flow_measured
+```
 
 Six things narrow what the memo measures, and each is a way it would
 otherwise be wrong about itself rather than about the statement:
@@ -588,6 +610,20 @@ a required currency, a section, and **Investing** — as a whole (the
 default) or by asset class, bound to the diagram and the investing
 trend.
 
+**The Section picker is narrower than the other four**, and it is the
+one picker the design did not ask for. It reaches the by-month charts
+and `Largest flows`, and the headline figures and the diagram decline
+it. A statement narrowed to one section is not a statement; a savings
+rate or a yield share narrowed to one has lost a leg of its own ratio;
+and a one-section diagram draws a Cash node that absorbs the whole
+section rather than the residual it names. A by-month chart that is
+already scoped to one section — Inflows, Outflows, Investing — goes
+empty when a different section is picked, which is what a dashboard
+filter means. The scope is enforced by withholding the filter's
+template tag from the cards that decline it, so a card cannot drift
+into the picker by being written later, and `test_provision.py` pins
+it card by card.
+
 **No account picker**, and that is the design rather than an omission.
 The household boundary is what separates the household's cash flow from
 its vehicles', and a picker that moved accounts in and out of the pool
@@ -597,7 +633,7 @@ while both are in the pool.
 
 | row | cards |
 |---|---|
-| headlines | Cash in · Cash out · Net cash flow · Savings rate · Yield share |
+| headlines | Operating in · Operating out · Net cash flow · Savings rate · Yield share |
 | the diagram | Cash flow — the Sankey, full width, the window's four stages |
 | the shape of the window | Cash flow statement by month: signed stacked bars per section |
 | the two sides | Inflows by class by month · Outflows by class by month |
@@ -640,8 +676,33 @@ overrides would put the defaults in SQL a second time, where a wrapper
 added for a new jurisdiction would take two edits to reach the
 statement.
 
-`wealthdb load` prints a `cashflow:` block: the boundary stamped, and
-— loudly — how many pooled accounts have no tax wrapper.
+`wealthdb load` prints a `cashflow:` block: the boundary stamped, how
+many own-account moves carry a far account, and — loudly — how many
+pooled accounts have no tax wrapper.
+
+### After an upgrade, the statement is wrong until a load has run
+
+Applying the cashflow migrations creates the two boundary tables and
+the three far-account columns **empty**. Nothing backfills them: they
+are written by the enrichment pass, which runs inside `wealthdb load`
+and `reload`. Between the two the statement is not merely incomplete,
+it is wrong in a way that reads like a finding:
+
+- `cashflow_wrapper_sides` is empty, so every wrapper reads as
+  household and the pool is **every account**, vehicles included;
+- no enrichment row carries a far account, so the far-account ladder
+  (§4) falls to its last arm and **every matched own-account move**
+  resolves to `vehicles · Untracked accounts`.
+
+The dashboard then shows one enormous `Untracked accounts` node that
+looks like a data problem and is not. `wealthdb load -a` ends the
+state, and the load that does prints a line saying so — once, because
+after it the counters alone tell the story.
+
+A binary carrying unapplied migrations applies them **on any
+read-write open of gold**, which includes `web-materialize` and every
+command that is not explicitly read-only. So the state above can begin
+without anyone running a migration on purpose.
 
 `wealthdb status -v` prints a `cashflow:` block with three counters,
 each naming a way the statement can be quietly wrong:

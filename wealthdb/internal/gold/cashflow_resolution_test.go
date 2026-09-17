@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -583,7 +584,108 @@ func TestMigration0081DDLIsRerunnable(t *testing.T) {
 		{id: "R-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_WAGES"},
 	})
 	rerunMigrationDDL(t, db, ctx, "0081_cashflow_resolution.sql")
+	// A downgrade, not a no-op: 0081 puts both macros back at their
+	// pre-0085 shape. Replay forward, exactly as Migrate would — and
+	// extend this list when another migration re-issues them.
+	rerunMigrationDDL(t, db, ctx, "0085_cashflow_resolution_fixes.sql")
 	if _, ok := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 3500000)["R-WAGE"]; !ok {
+		t.Error("the replayed base lost a line")
+	}
+}
+
+// TestNoVerdictPromotesAnUnsignedKind pins the RULE rather than the one
+// instance that exposed it: the ladder tests the kinds gold pins no
+// canonical sign for before it reads any verdict, so a pin or a rule
+// cannot pull such a row out of the excluded set and into a section
+// that reads direction.
+//
+// Every canonical kind is seeded once, each carrying the strongest
+// verdict a tier can write — `internal_transfer` with a far account
+// inside a retirement plan, which places a row in `vehicles` — so a
+// kind that declines to be promoted declines on the kind alone. The six
+// that must decline are exactly canonical.canonicalSign's zero-signed
+// set minus `interest`, `staking` and `capital_gain`: the ladder reads
+// interest BY its sign, and a negative staking or capital gain nets
+// inside its own class rather than choosing a side of the diagram.
+func TestNoVerdictPromotesAnUnsignedKind(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+
+	unsigned := map[string]bool{
+		"fx": true, "fx_forward": true, "fx_swap": true,
+		"corporate_action": true, "journal": true, "other": true,
+	}
+	var rows []line
+	for _, k := range []string{
+		"buy", "sell", "dividend", "coupon", "capital_gain", "interest",
+		"staking", "contribution", "distribution", "fee", "tax", "deposit",
+		"withdrawal", "purchase", "refund", "card_payment", "reward",
+		"fx", "fx_forward", "fx_swap", "corporate_action",
+		"transfer_in", "transfer_out", "journal", "other",
+	} {
+		rows = append(rows, line{
+			id: "U-" + k, account: "CASH", kind: k, amount: -100,
+			spend: "internal_transfer", farAccount: "IRA",
+		})
+	}
+	got := seedLines(t, db, ctx, rows)
+
+	for _, l := range rows {
+		kind := strings.TrimPrefix(l.id, "U-")
+		node := got[l.id]
+		if unsigned[kind] {
+			if node != "excluded" {
+				t.Errorf("a pin promoted the unsigned kind %q to %q; gold pins no sign for it",
+					kind, node)
+			}
+			continue
+		}
+		if node == "excluded" {
+			t.Errorf("kind %q refused a verdict it should have taken", kind)
+		}
+	}
+}
+
+// TestElsewhereIsForARowWithNoInstrument pins what "Untracked
+// investments" means. A row that names an instrument is tracked — a
+// missing dimension row or an unset asset class is a gap IN the
+// instrument — so it belongs in `other`, where the gap is visible as
+// what it is. `elsewhere` keeps the rows that name no instrument at
+// all, which is what the `investment` and `capital_return` verdicts
+// place.
+// gold's `instruments.asset_class` is NOT NULL, so a null class on a
+// joined row means one thing only: the dimension row is absent. That is
+// the case this pins — and it is why the arm tests the row's OWN
+// instrument_external_id rather than the joined class.
+func TestElsewhereIsForARowWithNoInstrument(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+
+	got := seedLines(t, db, ctx, []line{
+		{id: "E-MISSING", account: "BROK", kind: "buy", amount: -300, instrument: "GHOST",
+			want: "investing.other.trades",
+			why:  "an instrument whose dimension row is absent is still a tracked holding"},
+		{id: "E-DEPLOYED", account: "CASH", kind: "withdrawal", amount: -900, spend: "investment",
+			want: "investing.elsewhere.investment",
+			why:  "capital deployed where the product holds nothing names no instrument"},
+	})
+	for _, id := range []string{"E-MISSING", "E-DEPLOYED"} {
+		if got[id] == "" {
+			t.Errorf("%s resolved to nothing", id)
+		}
+	}
+}
+
+// TestMigration0085DDLIsRerunnable holds the corrected resolution to the
+// replay bar: two OR REPLACE macros and nothing else.
+func TestMigration0085DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	seedLines(t, db, ctx, []line{
+		{id: "R85-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_WAGES"},
+	})
+	rerunMigrationDDL(t, db, ctx, "0085_cashflow_resolution_fixes.sql")
+	if _, ok := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 3500000)["R85-WAGE"]; !ok {
 		t.Error("the replayed base lost a line")
 	}
 }

@@ -102,12 +102,13 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 	var out strings.Builder
 	printPassSummary(&out, &spending.Result{Cashflow: spending.CashflowResult{
 		ScopeRows: 2, UnresolvedScopeAccounts: 1,
-		WrapperRows: 23, WrapperOverrides: 1,
+		WrapperRows: 23, WrapperOverrides: 1, FarAccounts: 17,
 		PooledAccountsWithoutWrapper: 4,
 	}})
 	got := out.String()
 	for _, want := range []string{
-		"cashflow: household boundary stamped — 23 wrapper(s), 1 overridden, 2 account(s) out of the pool",
+		"cashflow: household boundary stamped — 23 wrapper(s), 1 overridden, 2 account(s) " +
+			"out of the pool; 17 own-account move(s) carry a far account",
 		"cashflow: 4 pooled account(s) have no tax wrapper",
 		"`cashflow.accounts` keys on the account id",
 	} {
@@ -123,8 +124,22 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 
 	// A deployment whose wrappers are all set says one line.
 	var quiet strings.Builder
-	printCashflowSummary(&quiet, spending.CashflowResult{WrapperRows: 23})
+	printCashflowSummary(&quiet, spending.CashflowResult{WrapperRows: 23, FarAccounts: 17})
 	if n := strings.Count(strings.TrimSpace(quiet.String()), "\n"); n != 0 {
 		t.Errorf("a covered deployment printed %d extra line(s):\n%s", n, quiet.String())
+	}
+
+	// The pass that ENDS the migrated-but-unloaded state says so, once.
+	// Before it the pool is every account and every matched own-account
+	// move resolves to `vehicles · Untracked accounts`, which reads as a
+	// finding and is not one — so the load that fixes it is the place a
+	// reader learns that any earlier report was wrong.
+	var first strings.Builder
+	printCashflowSummary(&first, spending.CashflowResult{WrapperRows: 23, FirstPass: true})
+	if !strings.Contains(first.String(), "FIRST pass") {
+		t.Errorf("the first pass did not announce itself:\n%s", first.String())
+	}
+	if strings.Contains(quiet.String(), "FIRST pass") {
+		t.Errorf("a later pass repeated the first-pass notice:\n%s", quiet.String())
 	}
 }

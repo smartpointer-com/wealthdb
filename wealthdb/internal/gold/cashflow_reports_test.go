@@ -82,8 +82,8 @@ func TestSummaryClosesOnNetCashFlow(t *testing.T) {
 		t.Fatalf("got %d buckets, want 1", len(rows))
 	}
 	r := rows[0]
-	income := mustFloat(t, r.Income, "income")
-	spending := mustFloat(t, r.Spending, "spending")
+	income := mustFloat(t, r.OperatingIn, "operating_in")
+	spending := mustFloat(t, r.OperatingOut, "operating_out")
 	operating := mustFloat(t, r.Operating, "operating")
 	investing := mustFloat(t, r.Investing, "investing")
 	financing := mustFloat(t, r.Financing, "financing")
@@ -316,7 +316,7 @@ func TestSankeyStagesConserveThroughTheClass(t *testing.T) {
 		t.Errorf("the swing leaf is not attached to the hub: %v", byEdge)
 	}
 	// Its class carries only the leaf that stayed with it.
-	if v, ok := byEdge["Household -> Spending"]; !ok || math.Abs(v-2000) > 0.005 {
+	if v, ok := byEdge["Household -> Consumption"]; !ok || math.Abs(v-2000) > 0.005 {
 		t.Errorf("the class edge is %v, want the 2000 that stayed with it", byEdge)
 	}
 	var in, out float64
@@ -482,7 +482,8 @@ func TestMigration0082DDLIsRerunnable(t *testing.T) {
 	// Replay forward, exactly as Migrate would — and extend this list
 	// when another migration re-issues the macro.
 	for _, later := range []string{
-		"0083_cashflow_reconciliation.sql", // the memo trio
+		"0083_cashflow_reconciliation.sql",    // the memo
+		"0086_cashflow_operating_columns.sql", // the operating halves, the memo's flow term
 	} {
 		rerunMigrationDDL(t, db, ctx, later)
 	}
@@ -759,8 +760,28 @@ func TestMigration0083DDLIsRerunnable(t *testing.T) {
 	seedBalanceSpine(t, db, ctx, 10000, 12150)
 	seedReportFixture(t, db, ctx)
 	rerunMigrationDDL(t, db, ctx, "0083_cashflow_reconciliation.sql")
+	// A downgrade, not a no-op: 0083 puts both macros back at their
+	// pre-0086 shape and CashflowSummary scans the CURRENT one
+	// positionally. Replay forward, exactly as Migrate would.
+	rerunMigrationDDL(t, db, ctx, "0086_cashflow_operating_columns.sql")
 	if rows, err := CashflowSummary(ctx, db, 172800, 3500000, "USD", "total"); err != nil || len(rows) != 1 {
 		t.Fatalf("the replayed summary returned %d rows: %v", len(rows), err)
+	}
+}
+
+// TestMigration0086DDLIsRerunnable holds the re-issued summary and memo
+// to the replay bar: two OR REPLACE macros and nothing else.
+func TestMigration0086DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedBalanceSpine(t, db, ctx, 10000, 12150)
+	seedReportFixture(t, db, ctx)
+	rerunMigrationDDL(t, db, ctx, "0086_cashflow_operating_columns.sql")
+	rows, err := CashflowSummary(ctx, db, 172800, 3500000, "USD", "total")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("the replayed summary returned %d rows: %v", len(rows), err)
+	}
+	if rows[0].CashFlowMeasured == nil {
+		t.Error("the replayed summary lost the memo's flow term")
 	}
 }
 
