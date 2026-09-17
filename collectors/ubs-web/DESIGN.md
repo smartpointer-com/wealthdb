@@ -239,16 +239,88 @@ third, in the PSN silver, with ids prefixed `mt940:`. The three id
 spaces are disjoint by construction, so the prefix — or its absence —
 is the era a row belongs to, readable without decoding a payload.
 
+**The advice era: the leg the export never saw.** UBS does not issue
+the CSV export for every account kind — a managed mandate's cash
+sub-account has none — and the MT940 feed reaches back only as far as
+its own go-live. For a transfer into such an account in the years
+between, silver holds the debit leg and nothing receiving it: capital
+leaving a payment account and arriving nowhere, so a consumer that
+pairs legs to recognise an internal move sees money leave the
+household that never left.
+
+UBS does record that leg, in a document. It issues a Credit Advice to
+the account a payment lands on and a Debit Advice to the account it
+leaves — one PDF per side, each addressed to its own account, and
+**both printing the same TRX-No.**, which is the "Transaction no." the
+export puts in its id column. The loader parses those advices and
+stores the movement under that bare number with the advice's OWN
+account, which is not a new id scheme but exactly the shape the
+compound primary key was built for (§3.6 above, migration 0001): the
+missing leg lands beside the leg the export already holds, and a
+consumer that pairs legs on a shared transaction number finds both.
+
+Three consequences follow from sharing the export's id space rather
+than minting one:
+
+- **An advice never overwrites.** It states four facts — direction,
+  amount, currency, and the booking and value dates — where the export
+  and the feed state all of those plus the booking type, the
+  counterparty and the trade date. Because the two feeds meet on the
+  same key here, the insert is `ON CONFLICT DO NOTHING`: the advice
+  fills a hole, it does not restate a row that already has an owner.
+- **An advice never restates a movement the statement era already
+  printed.** Against the statement the key argues the other way: a
+  statement row is keyed by a minted `stmt:` hash, so the very booking
+  an advice names can already sit on the same account under an id the
+  primary key can never collide with, an advice having been issued for
+  a payment the account's own statement went on to print in its ledger. Writing it again would not
+  fill a hole, it would book the payment twice, which is the phantom
+  flow this path exists to remove. So the movement is looked for by its
+  CONTENT before an advice is written — same account, same currency,
+  either date, same column, same magnitude — and an advice that finds
+  it is dropped in favour of the ledger row, which carries a booking
+  type and reconciled against the statement's printed running balance.
+  Each existing row can excuse at most one advice, so two genuinely
+  distinct same-day payments of one amount both still land; and the
+  advices are written after every statement in the same pass, so the
+  order the PDF workers happen to finish in cannot change the result.
+- **The MT940 floor does not gate it.** That floor exists because the
+  statement era mints ids of its own, so a statement and the feed
+  recording one booking produce two rows nothing can recognise as one.
+  An advice carries the feed's own id, so an overlap there collides on
+  the key and the first rule resolves it in the richer row's favour —
+  and the floor is keyed by account, while the whole value of an
+  advice is the leg on the account the feed does not cover at all. What
+  the floor would have caught against the statement era, the content
+  check above catches on the movement itself.
+
+The price is that the prefix rule above no longer identifies the rail
+on its own: an advice row has no prefix and is not an export row. What
+distinguishes it is its payload, which carries `document` =
+`payment_advice_pdf`; that marker is also what the loader's
+document-generation purge deletes on, so advice rows re-derive when the
+parser moves without the delete reaching an export row.
+
+Not every document UBS labels an advice is a payment — a mortgage
+interest settlement and a safe-deposit-box rental bill wear the same
+label — and neither prints a TRX-No. The absence of one is what rejects
+them: a document that does not state the id its row would be keyed by
+is not a movement the parser can place, and stays in the `documents`
+catalog alone.
+
 The two web eras also write the amount columns to different conventions,
 because each records what its own source states. `amount_debit` /
 `amount_credit` on an export row are the CSV's "Debit" / "Credit" cells
 verbatim, already signed by the sheet; on a statement row they are the
 figures the statement *prints*, and a statement prints a debit as a
 positive figure in its debit column (a printed trailing minus is the only
-thing that makes a stored figure negative). What the two eras do state
-identically is *which* column carries the figure. A consumer that needs a
-signed amount must therefore take the direction from the column, not from
-the stored sign — which is what the adapter's projection does.
+thing that makes a stored figure negative). An advice row follows the
+printed convention too: the advice states one unsigned total and says
+which way it moved in its headline, so the figure goes in the column the
+headline names. What the eras do state identically is *which* column
+carries the figure. A consumer that needs a signed amount must therefore
+take the direction from the column, not from the stored sign — which is
+what the adapter's projection does.
 
 The PDF archive reaches further back than the export window and the
 feed, and its coverage runs forward into both. Silver keeps each era's
@@ -317,7 +389,10 @@ lists — so older token-named dumps keep loading unchanged.
 ### 3.8 Historical snapshots reconstructed from PDFs
 
 The web silver also reconstructs **historical** position + cash
-snapshots from the PDF document archive. Three dedicated tables:
+snapshots from the PDF document archive. Three dedicated tables (the
+two document types that write `transactions` instead — the
+Account-Statement movement ledger and the Credit/Debit Advices — are
+in §3.6):
 
 | Table | Source PDF type | Granularity |
 | --- | --- | --- |
@@ -435,7 +510,9 @@ wins per date) is owned by the wealthdb UBS adapter — see
   5. Walk the `documents` table, route every PDF whose label
      matches a known statement type to `pdf_parsers.py`, and
      upsert the parsed positions / cash balances into the
-     `historical_*` tables.
+     `historical_*` tables. The Account-Statement movement walker
+     and the Credit/Debit Advice parser write `transactions` from
+     the same walk (§3.6).
 
 - **PDF parsing isolation.** `pdfplumber` is bundled in the
   Docker image (`requirements.txt`). The parsers live in

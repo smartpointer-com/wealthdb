@@ -57,12 +57,31 @@ DOCUMENT_GENERATION_SCOPE = "documents"
 # exactly one of them and holds nothing else; `transactions` is shared with
 # the live CSV export, whose ids are UBS's own transaction numbers, so the
 # statement era is named by its `stmt:` prefix (DESIGN.md §3.6).
+#
+# The advice pass is the exception the prefix rule cannot cover. An advice
+# row is deliberately keyed by UBS's own transaction number — that is the
+# whole point of it, since the number is what carries the row to the twin
+# leg the export already holds — so from the id alone it is indistinguishable
+# from an export row, and a prefix delete would either miss it or take the
+# export with it. It is recognised by the marker the parser writes into its
+# payload instead (`document` = `payment_advice_pdf`), which no export row
+# carries — an export payload being the CSV line verbatim — and no statement
+# row spells.
 _DOCUMENT_PASS_DELETES = (
     "DELETE FROM historical_position_snapshots",
     "DELETE FROM historical_cash_balances",
     "DELETE FROM historical_mortgages",
     "DELETE FROM transactions WHERE transaction_external_id LIKE 'stmt:%'",
+    "DELETE FROM transactions WHERE payload LIKE '%payment_advice_pdf%'",
 )
+
+# The `doc_type` spellings of the per-movement payment advices. UBS labels
+# them inconsistently — one archive holds both 'Debit Advice' and 'Debit
+# advice' — so the match is case-folded and the next casing it invents still
+# routes. 'UBS Advice' (a fee the bank bills itself) and 'Advice _ Statement'
+# (a securities confirmation) are deliberately NOT in the set: neither is a
+# payment, and neither carries the movement block this pass reads.
+ADVICE_DOC_TYPES = frozenset({"credit advice", "debit advice"})
 
 
 @functools.lru_cache(maxsize=1)
@@ -1075,7 +1094,7 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
     `rows` or `error_message` is set on every non-skipped call."""
     from pdf_parsers import (
         parse_statement_of_assets, parse_account_statement_combined,
-        parse_maturity_notice,
+        parse_maturity_notice, parse_payment_advice,
     )
     token, fp, label, doc_type = args
     path = Path(fp)
@@ -1088,6 +1107,11 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
         if doc_type == "Maturity notice":
             rows = parse_maturity_notice(path, token, label)
             return token, "mortgage", path.name, rows, None
+        # Before the Account-Statement fallthrough below, which would
+        # otherwise take every doc_type the SELECT admits.
+        if (doc_type or "").strip().lower() in ADVICE_DOC_TYPES:
+            rows = parse_payment_advice(path, token, label)
+            return token, "payment_advice", path.name, rows, None
         # Account Statement: a single PDF open yields BOTH the summary
         # balances (for historical_cash_balances) and the per-transaction
         # movement rows (for the transactions backfill), reusing one
@@ -1103,11 +1127,12 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
                                dump_dir: Path,
                                parse_cache: dict) -> tuple[int, int, int, int]:
     """Walk every PDF tracked in the documents table whose label
-    indicates a Statement of assets, an Account Statement, or a
-    Maturity notice; parse it in a worker-pool of subprocesses,
-    and upsert into the historical_* / transactions tables on the
-    main thread. Returns (position_rows, cash_rows, mortgage_rows,
-    transaction_rows).
+    indicates a Statement of assets, an Account Statement, a
+    Maturity notice or a payment advice; parse it in a worker-pool of
+    subprocesses, and upsert into the historical_* / transactions
+    tables on the main thread. Returns (position_rows, cash_rows,
+    mortgage_rows, transaction_rows) — the advice rows are
+    transactions and are counted with the statement ones.
 
     pdfplumber / pdfminer text extraction is CPU-bound and largely
     GIL-bound, so the speedup comes from real OS processes, not
@@ -1131,12 +1156,18 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     # Pull (doc_token, file_path, label, doc_type, content_sha256) for
     # relevant docs from the documents table — that's where bronze
     # metadata lives. content_sha256 keys the cross-dump parse cache.
+    # The advice spellings come from the one set the router reads too, so a
+    # casing UBS invents is admitted here and routed there by the same edit.
+    advice_types = sorted(ADVICE_DOC_TYPES)
+    advice_slots = ", ".join("?" for _ in advice_types)
     cur = conn.execute(
         "SELECT doc_token, file_path, label, doc_type, content_sha256 "
         "FROM documents "
         "WHERE label LIKE '%Statement of assets%' "
         "   OR doc_type = 'Account Statement' "
-        "   OR doc_type = 'Maturity notice'"
+        "   OR doc_type = 'Maturity notice' "
+        f"   OR LOWER(doc_type) IN ({advice_slots})",
+        advice_types,
     )
     work = cur.fetchall()
     if not work:
@@ -1191,6 +1222,7 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     mortgage_rows = 0
     txn_rows = 0
     txn_reject_stmts = 0
+    advices: list[dict] = []
     for _token, kind, name, rows, err in results:
         if err is not None:
             log.warning("PDF parse failed for %s: %s", name, err)
@@ -1199,6 +1231,14 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
             pos_rows += _insert_hist_positions(conn, rows or [])
         elif kind == "mortgage":
             mortgage_rows += _insert_hist_mortgages(conn, rows or [])
+        elif kind == "payment_advice":
+            # Collected, not written here: an advice is only worth writing
+            # where nothing else recorded the movement, and the statement
+            # ledger it has to be measured against is written by the branch
+            # below. Inside one loop the two would race — the results arrive
+            # in whatever order the parse workers finished — and the same
+            # archive would produce a different silver on each load.
+            advices.extend(rows or [])
         elif kind == "account_statement":
             cash_rows += _insert_hist_cash_balances(
                 conn, (rows or {}).get("cash") or [])
@@ -1211,6 +1251,10 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
         log.warning("%d Account-Statement PDF(s) failed movement "
                     "reconciliation; their transactions were NOT ingested",
                     txn_reject_stmts)
+    advice_rows = _insert_advice_transactions(conn, snapshot_at, advices)
+    if advice_rows:
+        log.info("%d movement(s) from payment advices", advice_rows)
+    txn_rows += advice_rows
     # Stamped here rather than by the caller, so it records a walk that
     # actually ran: the early returns above leave the older generation in
     # place and the next dump tries again.
@@ -1438,6 +1482,173 @@ def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
     return inserted, 0
 
 
+def _insert_advice_transactions(conn: sqlite3.Connection, snapshot_at: int,
+                                rows: list[dict]) -> int:
+    """Insert the movement a Credit/Debit Advice states into the silver
+    `transactions` table, under UBS's own transaction number. Returns the
+    number of rows actually written.
+
+    Why these rows carry no minted id. The advice prints the very
+    "Transaction no." the CSV export puts in the id column, and UBS stamps
+    BOTH sides of an inter-account transfer with one number — which is
+    precisely why silver's primary key is the compound
+    (transaction_external_id, account_external_id) in the first place
+    (migration 0001). Storing the advice's leg under the bare number and
+    its OWN account is therefore not a new id scheme but the shape that key
+    was designed to hold: the leg the export never saw lands beside the leg
+    it did, and a consumer that pairs legs on a shared transaction number
+    finds both.
+
+    Why ON CONFLICT DO NOTHING rather than DO UPDATE. An advice states four
+    facts — direction, amount, currency and the two dates — and nothing
+    else: no booking type, no counter account, no trade date. The export and
+    the MT940 feed state all of those for the same movement. Since the two
+    feeds meet on the SAME key here (unlike the statement era, whose minted
+    ids can never collide with theirs), an upsert would overwrite a full row
+    with a thinner one every time the document pass ran, and the loss would
+    be invisible. The advice fills a hole; it does not restate a row that
+    already has an owner. Re-derivation when the parser moves comes from the
+    pass-level delete instead (`_DOCUMENT_PASS_DELETES`), which drops the
+    advice rows by their payload marker so the next run writes them afresh
+    — an export row, having no such marker, is not touched.
+
+    Why the MT940 floor does NOT gate these rows. The floor exists because
+    the statement era mints content-hashed ids of its own, so a statement
+    and the feed recording one booking produce two rows that nothing can
+    recognise as one; cutting the PDF off where the feed begins is the only
+    way to keep the movement from being counted twice. An advice cannot
+    create that duplicate against the FEED: it carries the feed's own id, so
+    an overlap there collides on the primary key and the DO NOTHING above
+    resolves it in the richer row's favour. Applying the floor as well would
+    only ever discard rows the key has already made harmless — and it is
+    keyed by account, while the whole value of an advice is the leg on the
+    account the feed does not cover at all, which has no floor to be
+    measured against.
+
+    Why the key is not enough on its own. Against the STATEMENT era the same
+    argument runs backwards: a statement row is keyed by a minted `stmt:`
+    hash, so the very movement an advice states can already sit on the same
+    account under an id the primary key can never collide with — and most of
+    the archive is exactly that, an advice issued for a payment the account's
+    own statement went on to print in its ledger. Inserting there does not
+    fill a hole, it books the payment a second time, which is the phantom
+    flow this whole path exists to remove. So before an advice is written the
+    movement is looked for by its CONTENT (`_advice_already_recorded`), and
+    an advice that restates a movement silver already holds is dropped. The
+    ledger row is the better record anyway: it carries the booking type and
+    it reconciled against the statement's printed running balance.
+    """
+    inserted = 0
+    skipped = 0
+    # Each existing row may explain at most ONE advice, and the order the
+    # advices are considered in decides which. Sorted so that a second run
+    # over the same archive reaches the same silver: the pass hands them over
+    # in whatever order the parse workers finished. Claims are per (account,
+    # id) because that is the row — the two legs of one transfer share the id
+    # and a claim on one must not reach across to the other's account.
+    claimed: set[tuple[str, str]] = set()
+    for r in sorted(rows, key=lambda r: (r.get("transaction_external_id") or "",
+                                         r.get("account_external_id") or "")):
+        account = iban_canonical(r.get("account_external_id"))
+        txn_id = r.get("transaction_external_id")
+        if not account or not txn_id:
+            continue
+        already = _advice_already_recorded(conn, account, r, claimed)
+        if already is not None:
+            claimed.add((account, already))
+            skipped += 1
+            continue
+        claimed.add((account, txn_id))
+        cur = conn.execute(
+            "INSERT INTO transactions ("
+            "transaction_external_id, account_external_id, snapshot_at, "
+            "trade_date, booking_date, value_date, currency_iso, "
+            "amount_debit, amount_credit, counterparty, "
+            "description_kind, payload"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(transaction_external_id, account_external_id) "
+            "DO NOTHING",
+            (
+                txn_id, account, snapshot_at,
+                None,  # trade_date: an advice prints no trade date
+                r["booking_date"], r["value_date"],
+                r.get("currency_iso") or "",
+                r.get("amount_debit"), r.get("amount_credit"),
+                r.get("counterparty"), r.get("description_kind"),
+                r.get("payload") or "{}",
+            ),
+        )
+        # 0 when the conflict clause kept the row an earlier, richer feed
+        # already wrote; 1 when the advice actually filled a hole.
+        if cur.rowcount > 0:
+            inserted += 1
+    if skipped:
+        log.info("%d payment advice(s) restate a movement silver already "
+                 "holds; left to the row that has it", skipped)
+    return inserted
+
+
+# Two amounts are the same movement when they agree to the cent. The eras
+# print to two decimals and the figures travel through float, so an exact
+# comparison would turn a representation artefact into a duplicate row.
+_ADVICE_AMOUNT_EPS = 0.005
+
+
+def _advice_already_recorded(conn: sqlite3.Connection, account: str,
+                             r: dict,
+                             claimed: set[tuple[str, str]]) -> str | None:
+    """The id of the row silver already holds for the movement this advice
+    states, or None when nothing holds it.
+
+    Identity is the content, not the id, because the whole difficulty is
+    that the eras do not agree on ids: the statement walker mints a `stmt:`
+    hash for the very booking the advice names with UBS's transaction
+    number. What they do agree on is the account, the day, the currency, the
+    COLUMN the figure sits in — and the figure's magnitude. The magnitude is
+    compared with abs() on both sides deliberately: the export writes the
+    sheet's own signed cell and the PDF eras write the unsigned figure they
+    print, so the direction has to be read from the column and never from
+    the sign (DESIGN.md §3.6).
+
+    Either date may carry the match. The advice states a bookkeeping entry
+    date and a value date; a back-valued payment prints them days apart, and
+    which of the two the other era filed the booking under varies with the
+    era. Requiring only one to line up keeps such a pair from being written
+    twice.
+
+    `claimed` names the rows earlier advices in this pass already matched or
+    wrote, so one row can excuse only one advice: two genuinely distinct
+    payments of the same amount, on one account, on one day are a shape the
+    archive really holds (an FX leg and a same-currency leg landing
+    together), and the second of them must still be written."""
+    amount = r.get("amount_debit")
+    outbound = amount is not None
+    if amount is None:
+        amount = r.get("amount_credit")
+    if amount is None:
+        return None
+    cur = conn.execute(
+        "SELECT transaction_external_id, amount_debit, amount_credit "
+        "FROM transactions "
+        "WHERE account_external_id = ? AND currency_iso = ? "
+        "  AND (value_date = ? OR booking_date = ?) "
+        "ORDER BY transaction_external_id",
+        (account, r.get("currency_iso") or "",
+         r["value_date"], r["booking_date"]),
+    )
+    for tid, debit, credit in cur.fetchall():
+        if (account, tid) in claimed:
+            continue
+        if (debit is not None) != outbound:
+            continue
+        figure = debit if outbound else credit
+        if figure is None:
+            continue
+        if abs(abs(figure) - abs(amount)) <= _ADVICE_AMOUNT_EPS:
+            return tid
+    return None
+
+
 def _insert_hist_mortgages(conn: sqlite3.Connection,
                            rows: list[dict]) -> int:
     n = 0
@@ -1477,6 +1688,47 @@ def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
 # Main
 # ============================================================
 
+def _rederive_documents_if_parsers_moved(
+        conn: sqlite3.Connection, dumps: list[Path], parse_cache: dict) -> None:
+    """Re-derive the document-backed slice when the PARSERS have changed
+    but no new dump has arrived to carry the change.
+
+    The archive walk lives inside the per-dump load, because a dump is
+    what indexes its own PDFs. What the walk DERIVES, though, is the
+    whole cumulative archive, and `_document_generation` exists so that
+    a changed parser re-derives it. In steady state — every dump loaded,
+    no new one yet — that fingerprint could never be read: the walk sat
+    behind the already-loaded skip, so a parser improvement took effect
+    only on whichever night a new dump happened to arrive, and until
+    then the same bronze produced different silver depending on when it
+    was loaded.
+
+    Runs against the newest dump that has an archive directory. Which
+    dump is immaterial to what is derived — the file paths come from the
+    `documents` table, which spans every dump — and the newest is the
+    right stamp for rows written now.
+    """
+    if not silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
+                                   _document_generation()):
+        return
+    newest = next((d for d in reversed(dumps) if (d / "documents").is_dir()), None)
+    if newest is None:
+        return
+    log.info("the document parsers have changed and no new dump carries the "
+             "change; re-deriving the archive against %s", newest.name)
+    try:
+        conn.execute("BEGIN")
+        pos, cash, mort, txn = _load_historical_from_pdfs(
+            conn, ts_from_dir(newest.name), newest, parse_cache)
+        conn.execute("COMMIT")
+    except Exception:  # noqa: BLE001 — log + rollback, as the dump loop does
+        conn.execute("ROLLBACK")
+        log.exception("re-deriving the document archive failed")
+        return
+    log.info("re-derived from documents: positions=%d cash_balances=%d "
+             "mortgages=%d transactions=%d", pos, cash, mort, txn)
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
@@ -1513,6 +1765,8 @@ def main(argv: list[str]) -> int:
         except Exception:  # noqa: BLE001 — log + rollback + continue
             conn.execute("ROLLBACK")
             log.exception("load failed for %s; skipped", dump_dir.name)
+    if not n_loaded:
+        _rederive_documents_if_parsers_moved(conn, dumps, parse_cache)
     conn.close()
     log.info("done: %d dumps loaded, %d already-loaded skipped",
              n_loaded, n_skipped)

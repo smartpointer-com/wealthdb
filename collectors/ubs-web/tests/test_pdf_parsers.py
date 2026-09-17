@@ -7,15 +7,19 @@ identifiers are placeholders per CLAUDE.md §4.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from pdf_parsers import (
+    _advice_trx_no,
     _stmt_is_internal_transfer,
     _stmt_split_multi,
     parse_account_statement_text,
     parse_account_statement_transactions_pages,
     parse_label_statement_of_assets,
     parse_maturity_notice_text,
+    parse_payment_advice_text,
     parse_statement_of_assets_text,
 )
 
@@ -821,3 +825,280 @@ class TestMaturityNotice:
         assert datetime.fromtimestamp(
             rows[0]["as_of_date"], timezone.utc).date() \
             == datetime(2023, 9, 30).date()
+
+
+# ============================================================
+# Credit / Debit Advice PDFs (per-movement payment advices)
+# ============================================================
+#
+# UBS issues one advice per side of a payment, each addressed to its
+# own account and both printing the SAME transaction number. The
+# fixtures below are the two layouts the archive holds — the current
+# one, which sets the account block on its own lines, and the older
+# one, whose two columns extract_text merges into a single line — plus
+# the two documents that wear the same label without being payments.
+# All identifiers, amounts and addresses synthetic per CLAUDE.md §4.
+
+_ADV_IBAN_FROM = "CH00 0000 0000 0000 0000 1"
+_ADV_IBAN_TO = "CH00 0000 0000 0000 0000 2"
+
+
+def _advice_pdf_text(direction: str, iban: str, *, trx: str,
+                     amount: str = "12 345.67", ccy: str = "CHF",
+                     purpose: str | None = "Increase Example Mandate",
+                     value_line: str = "Val. 01.01.2020") -> str:
+    """One payment advice in the current layout. `direction` is the
+    headline UBS prints ('Credit Advice' / 'Debit Advice')."""
+    party = ("By order of" if direction.startswith("Credit")
+             else "Order of 01.01.2020\nBeneficiary")
+    details = f"Details of payment\n{purpose}\n" if purpose else ""
+    return (
+        "aUBS UBS Switzerland AG\n"
+        "Postfach, 8098 Zürich\n"
+        "www.ubs.com\n"
+        "For information:\n"
+        "Ms Example Adviser\n"
+        "Tel. +41-00-000 00 00\n"
+        f"Cash Account for investment solutions {ccy}\n"
+        f"IBAN {iban}\n"
+        "Herr\n"
+        "Account no. 000-000000.001\n"
+        "A. Example u/o B. Example\n"
+        "Category EXAMPLE CATEGORY\n"
+        "Example Street 1\n"
+        "Client no. 000-000000\n"
+        "0000 Example Town\n"
+        "BIC EXAMPLEXXXX\n"
+        "VAT number CHE-000.000.000 MWST\n"
+        f"{direction}\n"
+        "Produced on 2 January 2020\n"
+        "Information/References\n"
+        f"TRX-No. {trx}\n"
+        "Bookkeeping entry date 1 January 2020\n"
+        "Description\n"
+        f"{party}\n"
+        "A. Example u/o B. Example Additional information of the ordering bank\n"
+        f"Example Street 1 Original amount {ccy} {amount}\n"
+        "CH 0000 Example Town\n"
+        f"{details}"
+        "Currency Amount\n"
+        f"Total amount {ccy} {amount}\n"
+        f"{value_line}\n"
+        "Yours sincerely,\n"
+        "UBS Switzerland AG\n"
+        "Form without signature Page 1 / 1\n"
+        "XX000X00/000000/EXAMPLE000000000000 01.01.2020\n"
+    )
+
+
+# The older layout: the addressee column and the account column share
+# each printed line, so the IBAN is not at the start of one.
+_ADV_TWO_COLUMN_TEXT = (
+    "aUBS UBS Switzerland AG\n"
+    "Postfach, 8098 Zürich\n"
+    "www.ubs.com\n"
+    "Cash Account for investment solutions CHF\n"
+    f"Herr IBAN {_ADV_IBAN_TO}\n"
+    "A. Example u/o Account no. 000-000000.001\n"
+    "B. Example\n"
+    "Category EXAMPLE CATEGORY\n"
+    "Example Street 1\n"
+    "Client no. 000-000000\n"
+    "0000 Example Town\n"
+    "BIC EXAMPLEXXXX\n"
+    "Credit Advice\n"
+    "Produced on 3 January 2020\n"
+    "Information/References\n"
+    "TRX-No. 0000 024 ED 0000456 ABC/ABC\n"
+    "Bookkeeping entry date 2 January 2020\n"
+    "Description\n"
+    "By order of\n"
+    "A. Example u/o B. Example\n"
+    "Details of payment\n"
+    "Funding Example Managed Account\n"
+    "Currency Amount\n"
+    "Total amount CHF 98 765.43\n"
+    "Val. 02.01.2020\n"
+)
+
+# A safe-deposit-box rental bill. UBS labels it a Debit Advice and it
+# is not a payment: no transaction number, and its total is printed in
+# a shape of its own.
+_ADV_SAFE_BOX_TEXT = (
+    "aUBS UBS Switzerland AG\n"
+    "UBS safe deposit box\n"
+    f"Herr Box no. 000-00-000\n"
+    "A. Example u/o Client no. 000-000000\n"
+    "B. Example\n"
+    "Account no. 000-000000.001\n"
+    "Debit Advice\n"
+    "Produced on 4 January 2020\n"
+    "Rental fee from 01.01.2020 to 31.12.2020 CHF 11.11\n"
+    "Total CHF 11.11\n"
+    "0.00 % VAT (on CHF 11.11) CHF 2.22\n"
+    "Total Val. 03.01.2020 CHF 13.33\n"
+)
+
+# A mortgage interest settlement, labelled 'Debit advice'. It names an
+# account and an amount but no transaction number, so there is no id
+# to key a movement row by.
+_ADV_MORTGAGE_TEXT = (
+    "aUBS UBS Switzerland AG\n"
+    "UBS personal account CHF\n"
+    f"IBAN {_ADV_IBAN_FROM}\n"
+    "Herr\n"
+    "Account no. 000-000000.001\n"
+    "Debit advice\n"
+    "Produced on 5 January 2020\n"
+    "General information\n"
+    "We will debit the following:\n"
+    "Settlement\n"
+    "UBS SARON Mortgage\n"
+    "Account no. 000-000000.H1D 0000\n"
+    "Description Value date Amount in CHF\n"
+    "Interest 04.01.2020 44.44\n"
+)
+
+
+def _advice_row(direction: str, iban: str, **kw) -> dict:
+    rows = parse_payment_advice_text(
+        _advice_pdf_text(direction, iban, **kw), "synthetic-token")
+    assert len(rows) == 1
+    return rows[0]
+
+
+class TestPaymentAdvice:
+    def test_a_credit_advice_becomes_a_credit_on_the_receiving_account(self):
+        r = _advice_row("Credit Advice", _ADV_IBAN_TO,
+                        trx="0000 036 ED 0000123 ABC/ABC")
+        assert r["account_external_id"] == "CH0000000000000000002"
+        assert r["amount_credit"] == 12345.67
+        assert r["amount_debit"] is None
+        assert r["currency_iso"] == "CHF"
+        assert json.loads(r["payload"])["advice_direction"] == "credit"
+
+    def test_a_debit_advice_becomes_a_debit_on_the_paying_account(self):
+        r = _advice_row("Debit Advice", _ADV_IBAN_FROM,
+                        trx="0000 036 ED 0000123 ABC/ABC")
+        assert r["account_external_id"] == "CH0000000000000000001"
+        assert r["amount_debit"] == 12345.67
+        assert r["amount_credit"] is None
+        assert json.loads(r["payload"])["advice_direction"] == "debit"
+
+    def test_the_amount_is_the_figure_printed_not_a_signed_one(self):
+        # DESIGN.md §3.6: the PDF eras state the direction with the
+        # column, never with the sign, and a consumer reads it there.
+        debit = _advice_row("Debit Advice", _ADV_IBAN_FROM,
+                            trx="0000 036 ED 0000123")
+        assert debit["amount_debit"] > 0
+
+    def test_both_legs_of_one_transfer_carry_the_same_id(self):
+        # The pairing the whole parser exists for: UBS stamps one
+        # transaction number on both sides, and silver's compound key
+        # keeps them apart by account while the id brings them together.
+        credit = _advice_row("Credit Advice", _ADV_IBAN_TO,
+                             trx="0000 036 ED 0000123 ABC/ABC")
+        debit = _advice_row("Debit Advice", _ADV_IBAN_FROM,
+                            trx="0000 036 ED 0000123 ABC/ABC")
+        assert (credit["transaction_external_id"]
+                == debit["transaction_external_id"])
+        assert (credit["account_external_id"]
+                != debit["account_external_id"])
+
+    def test_the_dates_are_the_booking_and_the_value_date(self):
+        from datetime import datetime, timezone
+        r = _advice_row("Credit Advice", _ADV_IBAN_TO,
+                        trx="0000 036 ED 0000123 ABC/ABC")
+        booked = datetime.fromtimestamp(r["booking_date"], timezone.utc)
+        value = datetime.fromtimestamp(r["value_date"], timezone.utc)
+        assert (booked.year, booked.month, booked.day) == (2020, 1, 1)
+        assert (value.year, value.month, value.day) == (2020, 1, 1)
+
+    def test_an_advice_without_a_value_date_books_on_its_entry_date(self):
+        r = _advice_row("Credit Advice", _ADV_IBAN_TO,
+                        trx="0000 036 ED 0000123", value_line="")
+        assert r["value_date"] == r["booking_date"]
+
+    def test_the_purpose_line_is_the_counterparty_not_the_holder(self):
+        # The "By order of" block on an advice for a move between the
+        # holder's own accounts is the holder; the purpose is the only
+        # text that says anything about the movement.
+        r = _advice_row("Credit Advice", _ADV_IBAN_TO,
+                        trx="0000 036 ED 0000123 ABC/ABC")
+        assert r["counterparty"] == "Increase Example Mandate"
+        assert json.loads(r["payload"])["continuation"] == [
+            "Increase Example Mandate"]
+
+    def test_a_mandate_purpose_is_marked_an_internal_transfer(self):
+        internal = _advice_row("Credit Advice", _ADV_IBAN_TO,
+                               trx="0000 036 ED 0000123",
+                               purpose="Uebertrag Example Portfolio")
+        assert json.loads(internal["payload"])["internal_transfer"]
+        external = _advice_row("Debit Advice", _ADV_IBAN_FROM,
+                               trx="0000 036 ED 0000123",
+                               purpose="YOUR PAYMENT ORDER DATED 01012020")
+        assert not json.loads(external["payload"])["internal_transfer"]
+
+    def test_no_booking_type_and_no_counter_account_are_invented(self):
+        # Gold promotes a row to external capital off the booking type,
+        # so a type this document never printed would fabricate capital.
+        r = _advice_row("Credit Advice", _ADV_IBAN_TO,
+                        trx="0000 036 ED 0000123")
+        assert r["description_kind"] is None
+        assert r["counter_account"] is None
+
+    def test_the_row_is_marked_as_the_pdf_rail_and_as_an_advice(self):
+        # `source` names the rail gold dates the MT940 feed against;
+        # `document` is what the loader's re-derivation delete keys on.
+        p = json.loads(_advice_row("Credit Advice", _ADV_IBAN_TO,
+                                   trx="0000 036 ED 0000123")["payload"])
+        assert p["source"] == "account_statement_pdf"
+        assert p["document"] == "payment_advice_pdf"
+
+    def test_the_older_two_column_layout_still_finds_its_account(self):
+        rows = parse_payment_advice_text(_ADV_TWO_COLUMN_TEXT, "synthetic-token")
+        assert len(rows) == 1
+        assert rows[0]["account_external_id"] == "CH0000000000000000002"
+        assert rows[0]["amount_credit"] == 98765.43
+        assert rows[0]["transaction_external_id"] == "0000024ED0000456"
+
+    def test_a_headline_sharing_its_line_with_the_date_still_reads(self):
+        # Whether the headline and the production date arrive as one
+        # printed line depends on how the page's columns resolve. The
+        # headline is the only place the document says which way the
+        # money went, so a direction lost to a merge would drop the
+        # movement without a word.
+        text = _advice_pdf_text("Credit Advice", _ADV_IBAN_TO,
+                                trx="0000 036 ED 0000123").replace(
+            "Credit Advice\nProduced on 2 January 2020",
+            "Credit Advice Produced on 2 January 2020")
+        rows = parse_payment_advice_text(text, "synthetic-token")
+        assert len(rows) == 1
+        assert rows[0]["amount_credit"] == 12345.67
+
+    def test_a_document_that_is_not_a_payment_yields_nothing(self):
+        # Both wear an advice label and neither is a movement: a
+        # document that does not state the id its row would be keyed by
+        # cannot be placed, and is left to the documents catalog alone.
+        assert parse_payment_advice_text(_ADV_SAFE_BOX_TEXT, "t") == []
+        assert parse_payment_advice_text(_ADV_MORTGAGE_TEXT, "t") == []
+
+
+class TestAdviceTransactionNumber:
+    """The advice prints the transaction number in space-separated
+    groups; the CSV export spells the same number without them. The
+    two have to normalise to one string or the legs never meet."""
+
+    def test_the_printed_groups_join_into_the_exports_spelling(self):
+        assert _advice_trx_no("0000 036 ED 0000123") == "0000036ED0000123"
+
+    def test_the_booking_desks_initials_are_not_part_of_the_number(self):
+        assert _advice_trx_no("0000 036 ED 0000123 ABC/ABC") == "0000036ED0000123"
+        assert _advice_trx_no("ZZ00 068 ED 0000123 AB1/CD2") == "ZZ00068ED0000123"
+
+    def test_a_line_that_is_not_a_number_is_refused(self):
+        # A wrong id would key a row onto a transfer it has nothing to
+        # do with, so anything but bare alphanumeric groups is rejected
+        # rather than salvaged.
+        assert _advice_trx_no("see enclosed advice") is None
+        assert _advice_trx_no("0000 036") is None
