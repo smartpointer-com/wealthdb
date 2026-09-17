@@ -540,6 +540,14 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 			spend: "internal_transfer"},
 		{id: "L-DAF", account: "CASH", kind: "withdrawal", amount: -100,
 			spend: "internal_transfer", farAccount: "DAF"},
+		// The two earmarked vehicles. Their labels name the ACT — money
+		// set aside — because the word alone names two things: an
+		// education plan and a tuition payment are both "Education",
+		// and a contribution and a pension are both "Retirement".
+		{id: "L-PLAN", account: "CASH", kind: "withdrawal", amount: -100,
+			spend: "internal_transfer", farAccount: "PLAN529"},
+		{id: "L-IRA", account: "CASH", kind: "withdrawal", amount: -100,
+			spend: "internal_transfer", farAccount: "IRA"},
 		{id: "L-UNPLACED", account: "CASH", kind: "withdrawal", amount: -100},
 	})
 
@@ -567,6 +575,8 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 		"L-MORT":      "Mortgage / Mortgage",
 		"L-UNTRACKED": "Untracked accounts / Untracked accounts",
 		"L-DAF":       "Giving / To giving vehicles",
+		"L-PLAN":      "Education savings / Education savings",
+		"L-IRA":       "Retirement savings / Retirement savings",
 		"L-UNPLACED":  "Uncategorised / Uncategorised",
 	} {
 		if got[id] != want {

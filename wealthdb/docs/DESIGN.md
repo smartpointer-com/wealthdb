@@ -650,7 +650,7 @@ both sides at once.
 The household's cash flow statement over both populations plus the
 movements neither family books (docs/CASHFLOW.md, and §10.11 for the
 macros underneath). Same window default, same flags, same privacy
-classes; four views instead of three, one flag of its own, and two
+classes; five views instead of three, one flag of its own, and three
 refusals.
 
 | Flag | Default | Meaning |

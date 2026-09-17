@@ -128,8 +128,8 @@ the earmark.
 | tax wrapper | household? | a crossing lands in |
 |---|---|---|
 | `taxable_personal` `taxable_joint` `trust_grantor` `other`, and unset | yes | nothing: it is pool-internal |
-| the seven US retirement wrappers, `pillar_2` `vested_benefits` `pillar_3a` | no — earmarked | `vehicles · Retirement` |
-| `529` `coverdell_esa` | no — earmarked | `vehicles · Education` |
+| the seven US retirement wrappers, `pillar_2` `vested_benefits` `pillar_3a` | no — earmarked | `vehicles · Retirement savings` |
+| `529` `coverdell_esa` | no — earmarked | `vehicles · Education savings` |
 | `hsa` | no — earmarked | `vehicles · Health` |
 | `trust_non_grantor` | no — a separate taxpayer | `vehicles · Trusts` |
 | `charitable` `trust_charitable` `foundation` `custodial_utma` `custodial_ugma` | no — given away | out: `operating_out · Giving`; in: `operating_in · Other receipts` |
@@ -283,7 +283,7 @@ moved:
 1. the far account's wrapper is on the **vehicle** side → that
    wrapper's class, with the leg's own direction. An outgoing leg to a
    retirement plan is a contribution, an incoming leg from one is a
-   distribution, and both are `vehicles · Retirement`.
+   distribution, and both are `vehicles · Retirement savings`.
 2. the far account's wrapper is a **giving** one → outgoing legs are
    `operating_out · Giving`, because the contribution is irrevocable
    and the vehicle's later grants are its own. **Incoming legs are
@@ -366,6 +366,23 @@ vocabulary makes readable — and the two differ:
   name is a self-edge.
 - A **delta** is primary-level, so `card_spend`, `cash_withdrawal` and
   `other` are their own leaves either way.
+- **One detailed value is promoted**: `GENERAL_SERVICES_EDUCATION`.
+  The primary rule above is right and one primary breaks it —
+  `GENERAL_SERVICES` is a catch-all rather than a category, and school
+  fees are a bigger line in most households than several primaries that
+  do get an edge. The criterion is a property of the vendored
+  vocabulary rather than of any deployment's data: a detailed value
+  whose primary does not describe it (migration 0088). Its siblings
+  under the catch-all still group by primary.
+
+The vehicle classes are named for the ACT rather than the subject
+(migration 0087): **Education savings** and **Retirement savings**, not
+`Education` and `Retirement`. Each of those words names two things — a
+529 contribution and a tuition payment, a plan contribution and a
+pension — and the two sit in different sections but would have read as
+the same node on a diagram. `Health` and `Trusts` keep their names:
+"Health savings" is right for an HSA and wrong for the class the day it
+holds anything else, and nobody says "Trust savings".
 
 Four leaves are cashflow's own, where no family value says the right
 thing: `trades` and `private_capital` on the investing classes, and
@@ -511,7 +528,7 @@ wealthdb cashflow <view> [FROM [TO]] [--period P] [--level L] [--investing G]
                          [-f FORMAT] [-C COLS] [-x CCY] [-p]
 ```
 
-The families' idiom, unchanged. Four views:
+The families' idiom, unchanged. Five views:
 
 | view | a row is | default columns |
 |---|---|---|
@@ -519,13 +536,15 @@ The families' idiom, unchanged. Four views:
 | `flows` | a (bucket, node) pair at `--level`, netted at that level | period, section, class, group, txn_count, inflow, outflow, net, share_% |
 | `sankey` | an edge of the window's diagram | stage, source, target, value, share_% |
 | `transactions` | a cashflow line, oldest first | silver_source, date, account, kind, section, class, group, name, currency, net_amount, value |
+| `coverage` | an (account, currency, bucket): the ledger against the account's own balances | period, silver_source, account, currency, ledger, measured, gap, status |
 
-**Two refusals, both usage errors rather than silent ignores.**
+**Three refusals, all usage errors rather than silent ignores.**
 `sankey --period` would mean one edge list per bucket, which is a
 loop's job; `sankey --level section` would draw a diagram with no inner
-column. Ignoring either would hand back a plausible answer to a
-question nobody asked. `transactions` DOES ignore `--period`, as the
-families' transactions views do.
+column; `coverage -x` would put a rate error on top of the one number
+that view exists to make trustworthy. Ignoring any of them would hand
+back a plausible answer to a question nobody asked. `transactions` DOES
+ignore `--period`, as the families' transactions views do.
 
 Behind `-C`: `section_id` / `class_id` / `group_id` on `flows` (the
 dotted node keys), `source_id` / `target_id` / `section` on `sankey`,

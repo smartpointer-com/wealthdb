@@ -18,25 +18,28 @@ import (
 // `wealthdb cashflow <view>` — where the household's cash came from and
 // where it went.
 //
-// cmd_income.go's shape with four views instead of three, and the two
+// cmd_income.go's shape with five views instead of three, and the two
 // families' idiom unchanged: the grain in a positional view, everything
 // else in a flag, the window positional with the trailing twelve months
 // as its default, `share_%` rendered by the same percentage formatter.
-// What is its own is one flag — `--investing` — and two refusals.
+// What is its own is one flag — `--investing` — and three refusals.
 //
-// `coverage` is the odd one and says so in its own currency column: it
-// reports each account against its OWN balances, so there is nothing to
-// convert and `-x` is refused rather than ignored.
+// `coverage` is the odd one out: it does not aggregate, and it reports
+// each account against that account's OWN balances in that account's
+// own currency. So it carries a currency COLUMN where its siblings
+// carry a currency FLAG.
 //
 // THE THREE REFUSALS are `sankey --period`, `sankey --level section` and
-// `coverage -x`,
-// and both are usage errors rather than silent ignores. A period on an
-// edge list would mean one list per bucket, which is a loop's job; a
-// section level would draw a diagram with no inner column, which is not
-// the diagram. Ignoring either would hand back a plausible answer to a
-// question the caller did not ask. `transactions` DOES ignore --period,
-// as the families' transactions views do: a list of lines means the
-// same thing however it is bucketed.
+// `coverage -x`, and all three are usage errors rather than silent
+// ignores. A period on an edge list would mean one list per bucket,
+// which is a loop's job; a section level would draw a diagram with no
+// inner column, which is not the diagram; and an output currency on
+// coverage would put a rate error on top of the one number that view
+// exists to make trustworthy. Ignoring any of them would hand back a
+// plausible answer to a question the caller did not ask.
+// `transactions` DOES ignore --period, as the families' transactions
+// views do: a list of lines means the same thing however it is
+// bucketed.
 func init() {
 	register("cashflow", cmdCashflow)
 }
