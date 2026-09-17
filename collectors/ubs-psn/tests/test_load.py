@@ -10,8 +10,14 @@ same per-order-type loaders as `<OT>.zip`, and re-delivered batch
 content converging instead of duplicating — for the snapshot tables
 (upsert on their snapshot-scoped keys) and for the change-point master
 tables (dedup bounded at the file's as-of date), including a replay
-after the master data has since changed. Synthetic safekeeping ids /
-ISINs / IBANs / amounts only.
+after the master data has since changed.
+
+The MT940 section at the end is about the two ways a cash movement can
+be lost between bronze and silver: two entries the bank booked under
+one :61: reference collapsing into one row, and an entry value-dated
+outside the statement that carries it being deleted by the statement
+that covers that date. Synthetic safekeeping ids / ISINs / IBANs /
+amounts only.
 """
 from __future__ import annotations
 
@@ -473,3 +479,278 @@ def test_master_data_recover_replay_converges(tmp_path):
         _write_zip(recovered, f"ZMD_{stamp}.zip", {inner: xml})
     assert loader.load_dump(conn, recovered, REL)["skipped"] is False
     assert _rows(conn, "cash_accounts") == before
+
+
+# ============================================================
+# MT940: which entry a row is, and which statement owns it
+# ============================================================
+
+# Synthetic MT940 customer statement. Every account form, reference and
+# amount is invented, and the dates sit in a decade the source cannot
+# have booked in. `entries` are (:61: body, :86: narrative) pairs, in
+# the order the statement prints them; the balance lines carry only the
+# dates the loader reads off them.
+def _mt940(stmt_no: str, opening_yymmdd: str, closing_yymmdd: str,
+           entries: list[tuple[str, str]],
+           acct: str = "ACCT_MT_FORM_1") -> str:
+    lines = [
+        "{1:F01TESTXXXXAXXX0000000000}{2:I940TESTXXXXXXXXN}{4:",
+        ":20:TESTSTMT00000001",
+        f":25:{acct}",
+        f":28C:{stmt_no}",
+        f":60F:C{opening_yymmdd}CHF1000,00",
+    ]
+    for line61, narrative in entries:
+        lines.append(f":61:{line61}")
+        lines.append(f":86:{narrative}")
+    lines.append(f":62F:C{closing_yymmdd}CHF1000,00")
+    lines.append("-}")
+    return "\n".join(lines)
+
+
+# The charge UBS books for a transfer carries the transfer's own :61:
+# bank reference — the shape that used to cost one of the two rows.
+CHARGE_61 = "9811131113D2,50NCHGNONREF//TESTBANKREF001"
+TRANSFER_61 = "9811131113D100,00NTRFNONREF//TESTBANKREF001"
+
+IBAN_1 = "CH99XXXX0000000000001"
+IBAN_2 = "CH99XXXX0000000000002"
+
+
+def _mt940_db(tmp_path: Path,
+              accounts=((IBAN_1, "ACCT_MT_FORM_1"),)) -> sqlite3.Connection:
+    """A silver DB with cash_accounts seeded, so the MT940 ':25:' →
+    IBAN canonicalisation has something to resolve against and the rows
+    land under the account id the rest of silver uses."""
+    conn = _fresh_db(tmp_path)
+    with conn:
+        for iban, acct_mt_form in accounts:
+            conn.execute(
+                "INSERT INTO cash_accounts"
+                "(snapshot_at, relationship_id, account_external_id, payload) "
+                "VALUES (?, ?, ?, ?)",
+                (1700000000, REL, iban,
+                 json.dumps({"AcctId": acct_mt_form})),
+            )
+    return conn
+
+
+def _movements(conn, account: str = IBAN_1) -> list[tuple[str, float, str]]:
+    """(event id, amount, txn_type) per cash_movement row of an account."""
+    rows = conn.execute(
+        "SELECT event_external_id, payload FROM events "
+        "WHERE kind = 'cash_movement' AND account_external_id = ? "
+        "ORDER BY event_external_id", (account,)).fetchall()
+    out = []
+    for r in rows:
+        p = json.loads(r["payload"])
+        out.append((r["event_external_id"], float(p["amount"]), p["txn_type"]))
+    return out
+
+
+def test_mt940_keeps_both_entries_booked_under_one_bank_reference(tmp_path):
+    """UBS books its own charge under the reference of the transfer that
+    incurred it, so a :61: bank reference names a pair of entries rather
+    than one. Identified by the reference alone, the second entry
+    REPLACEd the first and a real booking disappeared — the charge, in
+    every pair seen so far.
+
+    The second entry is told apart by its position in the statement, and
+    the first keeps the bare id, so a re-load of the same statement
+    converges on the same two rows instead of minting new ones."""
+    conn = _mt940_db(tmp_path)
+    stmt = _mt940("7/1", "981113", "981113",
+                  [(CHARGE_61, "CHARGE"), (TRANSFER_61, "TRANSFER")])
+    with conn:
+        assert loader.load_mt940(conn, 1700000000, REL, stmt) == (2, 2)
+
+    base = f"mt940:{IBAN_1}:TESTBANKREF001"
+    assert _movements(conn) == [
+        (base, 2.50, "NCHG"),
+        (f"{base}#1", 100.00, "NTRF"),
+    ]
+
+    before = _movements(conn)
+    with conn:
+        loader.load_mt940(conn, 1700000100, REL, stmt)
+    assert _movements(conn) == before
+
+
+def test_mt940_separates_identical_entries_without_a_bank_reference(tmp_path):
+    """The same collision reaches the fallback id, which is synthesised
+    from the entry's own content: two entries a statement prints
+    identically are still two bookings, and the position that separates
+    a reference pair separates these too."""
+    conn = _mt940_db(tmp_path)
+    same = "9811131113D7,00NCHGNONREF"
+    with conn:
+        assert loader.load_mt940(
+            conn, 1700000000, REL,
+            _mt940("8/1", "981113", "981113",
+                   [(same, "FEE"), (same, "FEE")])) == (2, 2)
+    ids = [eid for eid, _, _ in _movements(conn)]
+    assert len(ids) == 2 and len(set(ids)) == 2
+    assert ids[1] == f"{ids[0]}#1"
+
+
+def test_mt940_forward_valued_entry_survives_the_next_statement(tmp_path):
+    """An entry booked for a forward value date is timestamped outside
+    the window of the statement that carries it, and inside the window
+    of a later one. Deleting a value-date range therefore deleted a
+    booking no statement would re-insert: the later statement does not
+    carry it, and the statement that does was already loaded.
+
+    Here the entry arrives booked on the 13th for value on the 15th, and
+    the next statement covers the 15th and carries nothing at all."""
+    conn = _mt940_db(tmp_path)
+    forward = "9811151113C55,00NTRFNONREF//TESTBANKREF003"
+    with conn:
+        loader.load_mt940(conn, 1700000000, REL,
+                          _mt940("9/1", "981113", "981113",
+                                 [(forward, "TRANSFER")]))
+    assert len(_movements(conn)) == 1
+
+    with conn:
+        loader.load_mt940(conn, 1700000100, REL,
+                          _mt940("10/1", "981115", "981115", []))
+    assert _movements(conn) == [
+        (f"mt940:{IBAN_1}:TESTBANKREF003", 55.00, "NTRF")]
+
+
+def test_mt940_reload_drops_an_entry_the_bank_has_amended_away(tmp_path):
+    """The delete is what keeps a re-loaded statement honest: an entry
+    the bank has since removed must not survive as a row nothing in
+    bronze backs any more. Scoping the delete to the statement rather
+    than to a date range keeps that property — a statement still
+    replaces everything it owns, whatever the entries were value-dated
+    to."""
+    conn = _mt940_db(tmp_path)
+    amended = "9811151113D30,00NMSCNONREF//TESTBANKREF004"
+    with conn:
+        loader.load_mt940(conn, 1700000000, REL,
+                          _mt940("11/1", "981113", "981113",
+                                 [(CHARGE_61, "CHARGE"), (amended, "MISC")]))
+    assert len(_movements(conn)) == 2
+
+    with conn:
+        loader.load_mt940(conn, 1700000100, REL,
+                          _mt940("11/1", "981113", "981113",
+                                 [(CHARGE_61, "CHARGE")]))
+    assert _movements(conn) == [
+        (f"mt940:{IBAN_1}:TESTBANKREF001", 2.50, "NCHG")]
+
+
+def test_mt940_statement_delete_stays_within_its_own_account(tmp_path):
+    """:28C: numbers each account's statements separately, so two
+    accounts routinely have a statement with the same number covering
+    the same days. One account's statement must not delete the other's
+    rows."""
+    conn = _mt940_db(tmp_path, accounts=((IBAN_1, "ACCT_MT_FORM_1"),
+                                         (IBAN_2, "ACCT_MT_FORM_2")))
+    with conn:
+        loader.load_mt940(conn, 1700000000, REL,
+                          _mt940("12/1", "981113", "981113",
+                                 [(CHARGE_61, "CHARGE")]))
+        loader.load_mt940(conn, 1700000000, REL,
+                          _mt940("12/1", "981113", "981113",
+                                 [(TRANSFER_61, "TRANSFER")],
+                                 acct="ACCT_MT_FORM_2"))
+    assert _movements(conn, IBAN_1) == [
+        (f"mt940:{IBAN_1}:TESTBANKREF001", 2.50, "NCHG")]
+    assert _movements(conn, IBAN_2) == [
+        (f"mt940:{IBAN_2}:TESTBANKREF001", 100.00, "NTRF")]
+
+
+def test_mt940_statement_without_a_number_says_so(tmp_path, caplog):
+    """The statement mark is the period plus the :28C: number, and UBS
+    closes a Z40 every day — so without :28C: two statements it issued
+    for the same account and day would look like one, and the second
+    would delete the first's rows and re-insert only its own. Every Z40
+    seen so far carries the tag; if that ever stops, the load log has to
+    say so rather than merge in silence."""
+    conn = _mt940_db(tmp_path)
+    stmt = _mt940("", "981113", "981113", [(CHARGE_61, "CHARGE")])
+    stmt = stmt.replace(":28C:\n", "")
+    with caplog.at_level("WARNING"), conn:
+        loader.load_mt940(conn, 1700000000, REL, stmt)
+    assert ":28C:" in caplog.text
+    # The entry still lands: the warning is about what a *second*
+    # same-day statement would do, not a reason to drop this one.
+    assert len(_movements(conn)) == 1
+
+
+def test_mt940_reload_replaces_a_row_the_old_id_scheme_left_behind(tmp_path):
+    """A row already in silver carries no statement mark — the fixed
+    loader deletes on a mark the loader that wrote it never set. The
+    thing that keeps it from surviving as a duplicate is that the first
+    entry under a bank reference keeps the bare id, so the re-load
+    rewrites that row in place.
+
+    Migration 0004 clears the slice anyway, so this is the safety net
+    rather than the repair path; it is asserted because the argument for
+    a bare first id is exactly this, and a later change that suffixed
+    every id (`#0` for the first) would quietly double the slice."""
+    conn = _mt940_db(tmp_path)
+    old_id = f"mt940:{IBAN_1}:TESTBANKREF001"
+    with conn:
+        conn.execute(
+            "INSERT INTO events(event_external_id, timestamp, relationship_id, "
+            " account_external_id, kind, currency_iso, payload) "
+            "VALUES (?, ?, ?, ?, 'cash_movement', 'CHF', ?)",
+            (old_id, loader.parse_yymmdd("981113"), REL, IBAN_1,
+             json.dumps({"value_date": "981113", "credit_debit": "D",
+                         "amount": "100.00", "txn_type": "NTRF",
+                         "bank_ref": "TESTBANKREF001", "account": IBAN_1})),
+        )
+    with conn:
+        loader.load_mt940(conn, 1700000000, REL,
+                          _mt940("13/1", "981113", "981113",
+                                 [(CHARGE_61, "CHARGE"),
+                                  (TRANSFER_61, "TRANSFER")]))
+    assert _movements(conn) == [
+        (old_id, 2.50, "NCHG"),
+        (f"{old_id}#1", 100.00, "NTRF"),
+    ]
+
+
+def test_migration_0004_clears_only_what_has_to_re_derive(tmp_path):
+    """0004 throws the cash_movement slice away so the fixed loader can
+    write it again from bronze: the rows the id collision lost were
+    never written, and the survivors carry no statement mark, so neither
+    is reconstructible from silver. dump_runs goes with it because the
+    load skip is per dump — it is the only thing that would stop the
+    re-derive.
+
+    Everything else stays. The balances a statement writes are keyed per
+    snapshot and rewritten identically by the replay, and the other
+    event kinds have nothing to do with either defect, so widening the
+    delete to them would be throwing away rows for no reason."""
+    db = tmp_path / "ubs-psn.db"
+    conn = loader.open_db(db)
+    conn.row_factory = sqlite3.Row
+    for sql in sorted(loader.MIGRATIONS_DIR.glob("*.sql")):
+        if sql.name.startswith("0004"):
+            break
+        conn.executescript(sql.read_text(encoding="utf-8"))
+    assert silver.current_schema_version(conn) == 3
+
+    with conn:
+        conn.execute(
+            "INSERT INTO events(event_external_id, timestamp, relationship_id, "
+            " account_external_id, kind, currency_iso, payload) VALUES "
+            "('mt940:X:R1', 911915200, ?, ?, 'cash_movement', 'CHF', '{}'), "
+            "('SEME1', 911915200, ?, 'SK123', 'trade_confirmation', 'CHF', '{}')",
+            (REL, IBAN_1, REL))
+        conn.execute(
+            "INSERT INTO cash_balances(snapshot_at, relationship_id, "
+            " account_external_id, balance_kind, currency_iso, payload) "
+            "VALUES (1700000000, ?, ?, 'closing', 'CHF', '{}')", (REL, IBAN_1))
+        conn.execute(
+            "INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) "
+            "VALUES (1700000000, 3, '/nonexistent/20260101T000000Z')")
+
+    assert silver.apply_migrations(conn, loader.MIGRATIONS_DIR) == 4
+    assert _rows(conn, "dump_runs") == []
+    assert [r["kind"] for r in conn.execute("SELECT kind FROM events")] == [
+        "trade_confirmation"]
+    assert len(_rows(conn, "cash_balances")) == 1

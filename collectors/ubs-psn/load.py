@@ -780,15 +780,31 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
       - 1-2 cash_balances rows  (closing :62F:, optional available :64:)
       - N events rows of kind='cash_movement'  (one per :61: line)
 
-    Window-DELETE-then-INSERT for the events: per (account, kind=cash_movement,
-    value-date range from :60F: to :62F:). For rows already present from a
-    prior dump with the same statement, this catches upstream amendments.
+    DELETE-then-INSERT for the events, scoped to the statement that owns
+    them: every row records the statement it was booked from (payload
+    `statement`), and re-loading a statement deletes exactly the rows
+    carrying that mark before writing the ones it now carries. So a
+    re-delivered statement still converges, and an entry the bank has
+    since amended away still disappears.
+
+    Scoping the delete to a *value-date range* instead deletes by a
+    date that does not say which statement a row belongs to. A :61:
+    line carries both a booking date and a value date, and the row is
+    timestamped with the value date; nothing keeps that value date
+    inside the :60F:/:62F: window the entry was booked in. UBS does
+    book forward: an entry booked on the 7th for value on the 9th
+    arrives in the statement that closes on the 7th, lands outside that
+    statement's own window, and is then deleted — and never
+    re-inserted — by the next statement, whose window does cover the
+    9th. The loss is silent, permanent, and bounded only by how often
+    the bank value-dates forward.
     """
     fields = parse_mt_block4(mt_text)
     if not fields:
         return (0, 0)
 
     account: str | None = None
+    statement_no: str | None = None
     opening: dict | None = None
     closing: dict | None = None
     available: dict | None = None
@@ -799,6 +815,8 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
     for tag, val in fields:
         if tag == "25":
             account = val.strip()
+        elif tag == "28C":
+            statement_no = val.strip()
         elif tag == "60F":
             opening = parse_mt_balance(val)
         elif tag == "62F":
@@ -859,29 +877,73 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
         )
         balances_inserted += 1
 
-    # Window-DELETE-INSERT for events.
-    window_start = opening["date_unix"] if opening else closing["date_unix"]
-    window_end   = closing["date_unix"]
+    # Which statement this is, in the bank's own terms: the :28C:
+    # statement number over the period the statement covers. The number
+    # alone climbs and then restarts on the bank's own cycle (two digits
+    # so far, and back to 1 at some point past 99), and the period alone
+    # is only as trustworthy as the two balance lines, so the mark
+    # carries both — it has to identify one statement for as long as
+    # silver keeps its rows, not merely until the number comes round
+    # again. It is derived from the statement's own content, so every
+    # delivery of the same statement (queue pull and dated archive copy
+    # alike) computes the same mark and deletes the same rows.
+    period_start = opening["date_unix"] if opening else closing["date_unix"]
+    period_end   = closing["date_unix"]
+    if not statement_no:
+        # The tag is the only half of the mark the bank chooses; the other
+        # half is the period, and UBS closes a Z40 statement every day, so
+        # without :28C: two statements it issued for the same account and
+        # day are indistinguishable and the second would delete the first's
+        # rows and re-insert only its own. Every Z40 seen so far carries the
+        # tag, so this is a shout rather than a fallback: the merge would
+        # otherwise be silent, and a loud line in the load log is what makes
+        # it findable if UBS ever stops sending it.
+        log.warning(
+            "MT940 for %r covering %d has no :28C: statement number; its "
+            "rows are identified by the period alone",
+            raw_acct, period_end,
+        )
+    statement = f"{period_start}:{period_end}:{statement_no or ''}"
     conn.execute(
         "DELETE FROM events WHERE account_external_id = ? AND kind = 'cash_movement' "
-        "AND timestamp >= ? AND timestamp <= ?",
-        (account, window_start, window_end),
+        "AND json_extract(payload, '$.statement') = ?",
+        (account, statement),
     )
     events_inserted = 0
+    # How many rows this statement has already minted under each id base.
+    # UBS does not give every entry its own :61: bank reference: when it
+    # charges for a transfer it books the charge (NCHG) under the same
+    # reference as the transfer (NTRF) it belongs to. Keyed on the
+    # reference alone, the second of the two entries REPLACEd the first
+    # and one real booking — the charge, in every observed pair —
+    # silently vanished. So the reference names the *pair*, and an entry
+    # needs its position within the pair to be told apart from its
+    # sibling. The sibling's position is what the statement prints, and a
+    # re-delivered statement prints the same lines in the same order, so
+    # the position is as stable across re-loads as the reference is.
+    # First occurrence keeps the bare id — as the sibling ubs-web
+    # statement loader does with its split bundles (_stmt_txn_id) — so
+    # no id minted before this fix moves, and a re-load rewrites those
+    # rows in place instead of leaving them behind as duplicates.
+    occurrence: dict[str, int] = {}
     for parsed_61, narrative in movements:
         # event_external_id: prefer the bank reference; fall back to a deterministic
         # synthesis from (account, value_date, sign, amount, customer_ref).
         bank_ref = parsed_61.get("bank_ref")
         if bank_ref:
-            eid = f"mt940:{account}:{bank_ref}"
+            base = f"mt940:{account}:{bank_ref}"
         else:
-            eid = (f"mt940:{account}:{parsed_61['value_date']}:"
-                   f"{parsed_61['credit_debit']}:{parsed_61['amount']}:"
-                   f"{parsed_61.get('customer_ref','')}")
+            base = (f"mt940:{account}:{parsed_61['value_date']}:"
+                    f"{parsed_61['credit_debit']}:{parsed_61['amount']}:"
+                    f"{parsed_61.get('customer_ref','')}")
+        n = occurrence.get(base, 0)
+        occurrence[base] = n + 1
+        eid = base if n == 0 else f"{base}#{n}"
         payload = canonical_json({
             **parsed_61,
             "narrative": "\n".join(narrative),
             "account": account,
+            "statement": statement,
         })
         conn.execute(
             "INSERT OR REPLACE INTO events"

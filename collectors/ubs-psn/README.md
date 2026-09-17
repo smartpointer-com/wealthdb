@@ -223,11 +223,21 @@ Reload semantics:
   whose content has since changed from re-inserting old state as a new
   change-point; a redelivery carrying a different payload for an
   already-loaded as-of date replaces that date's row.
-- **Events** (`events`) use either window-DELETE-then-INSERT
-  (cash_movement, keyed on account + value-date range) or row-level
-  `INSERT OR REPLACE` on `event_external_id` for events the upstream
-  retracts only by sending a new CANC message (trade_confirmation,
-  corporate_action_confirmation).
+- **Events** (`events`) use either statement-DELETE-then-INSERT
+  (cash_movement) or row-level `INSERT OR REPLACE` on
+  `event_external_id` for events the upstream retracts only by sending
+  a new CANC message (trade_confirmation, corporate_action_confirmation).
+  A cash movement records the statement that booked it (payload
+  `statement`: the MT940 `:60F:`/`:62F:` period and the `:28C:`
+  statement number), and re-loading a statement deletes exactly the
+  rows carrying that mark — so a re-delivery converges and an entry the
+  bank has amended away disappears, whatever the entries were
+  value-dated to. Keying the delete on a value-date range instead lost
+  entries the bank value-dated outside the statement that carried them
+  (migration 0004). Two entries the bank booked under one `:61:` bank
+  reference — its own charge alongside the transfer that incurred it —
+  are told apart by their position in the statement, the second taking
+  a `#1` suffix on the shared id.
 
 Identifier canonicalisation (since migration 0002):
 
