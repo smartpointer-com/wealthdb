@@ -24,7 +24,12 @@ import (
 // as its default, `share_%` rendered by the same percentage formatter.
 // What is its own is one flag — `--investing` — and two refusals.
 //
-// THE TWO REFUSALS are `sankey --period` and `sankey --level section`,
+// `coverage` is the odd one and says so in its own currency column: it
+// reports each account against its OWN balances, so there is nothing to
+// convert and `-x` is refused rather than ignored.
+//
+// THE THREE REFUSALS are `sankey --period`, `sankey --level section` and
+// `coverage -x`,
 // and both are usage errors rather than silent ignores. A period on an
 // edge list would mean one list per bucket, which is a loop's job; a
 // section level would draw a diagram with no inner column, which is not
@@ -38,6 +43,7 @@ func init() {
 
 var cashflowViews = map[string]bool{
 	"summary": true, "flows": true, "sankey": true, "transactions": true,
+	"coverage": true,
 }
 
 // cashflowInvestingGrains is the `--investing` vocabulary: net the
@@ -59,7 +65,7 @@ func cmdCashflow(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	}
 	if !cashflowViews[view] {
 		fmt.Fprintln(stderr, cashflowUsage())
-		return errs.Newf(2, "cashflow: unknown view %q (want summary | flows | sankey | transactions)", view)
+		return errs.Newf(2, "cashflow: unknown view %q (want summary | flows | sankey | transactions | coverage)", view)
 	}
 	return runCashflowView(ctx, g, view, rest, stdout, stderr)
 }
@@ -89,6 +95,14 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "cashflow: bad flags")
 	}
 	// The refusals have to be asked before the values are validated:
+	// `coverage -x` is refused for the same reason the report has no
+	// output currency: a per-account gap belongs in the account's own
+	// money, and converting it would add a rate error to the very
+	// number the report exists to make trustworthy.
+	if view == "coverage" && isSet(fs, "currency") {
+		return errs.Newf(2, "cashflow: coverage takes no -x/--currency — "+
+			"each account is measured against its own balances, in its own currency")
+	}
 	// `sankey --period annual` is refused for what it means, not for
 	// being misspelled.
 	if view == "sankey" {
@@ -169,6 +183,16 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 			return errs.Newf(2, "cashflow: %s", err.Error())
 		}
 		rows, err := gold.CashflowSankey(ctx, db, fromEpoch, toEpoch, outCcy, *level, *investing)
+		if err != nil {
+			return err
+		}
+		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+	case "coverage":
+		colSet, err := resolveCashflowCoverageColumns(*cols, *period)
+		if err != nil {
+			return errs.Newf(2, "cashflow: %s", err.Error())
+		}
+		rows, err := gold.CashflowCoverage(ctx, db, fromEpoch, toEpoch, part)
 		if err != nil {
 			return err
 		}
@@ -362,6 +386,45 @@ func resolveCashflowSankeyColumns(flagValue, outCcy string) ([]columnSpec[gold.C
 	return resolveColumns(flagValue, defaultCashflowSankeyColumns, buildCashflowSankeyColumnRegistry(outCcy))
 }
 
+var defaultCashflowCoverageColumns = []string{
+	"period", "silver_source", "account", "currency", "ledger", "measured", "gap", "status"}
+
+// The coverage registry carries no output currency: every amount is in
+// the account's own. A column header naming a currency the row is not in
+// would be worse than no header at all.
+func buildCashflowCoverageColumnRegistry(period string) []columnSpec[gold.CashflowCoverageRow] {
+	return []columnSpec[gold.CashflowCoverageRow]{
+		{Name: "period", Align: output.AlignLeft,
+			Extract: func(r gold.CashflowCoverageRow) string { return periodLabel(r.PeriodStart, period) }},
+		{Name: "period_start", Align: output.AlignLeft,
+			Extract: func(r gold.CashflowCoverageRow) string { return periodStart(r.PeriodStart) }},
+		{Name: "silver_source", Align: output.AlignLeft,
+			Extract: func(r gold.CashflowCoverageRow) string { return r.SourceID }},
+		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+			Extract: func(r gold.CashflowCoverageRow) string { return r.Account }},
+		{Name: "account_kind", Align: output.AlignLeft,
+			Extract: func(r gold.CashflowCoverageRow) string { return r.AccountKind }},
+		{Name: "currency", Align: output.AlignLeft,
+			Extract: func(r gold.CashflowCoverageRow) string { return r.Currency }},
+		{Name: "txn_count", Align: output.AlignRight,
+			Extract: func(r gold.CashflowCoverageRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
+		{Name: "ledger", Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Ledger) }},
+		{Name: "unsigned", Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.UnsignedVolume) }},
+		{Name: "measured", Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Measured) }},
+		{Name: "gap", Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Gap) }},
+		{Name: "status", Align: output.AlignLeft,
+			Extract: func(r gold.CashflowCoverageRow) string { return r.Status }},
+	}
+}
+
+func resolveCashflowCoverageColumns(flagValue, period string) ([]columnSpec[gold.CashflowCoverageRow], error) {
+	return resolveColumns(flagValue, defaultCashflowCoverageColumns, buildCashflowCoverageColumnRegistry(period))
+}
+
 func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.CashflowTransactionRow] {
 	return []columnSpec[gold.CashflowTransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
@@ -461,6 +524,15 @@ Views (coarsest → finest):
   transactions  one row per line: section, class, group, and the family's
                 own verdict behind it
 
+                coverage      per account and period: the cash delta its transactions
+                              imply against the delta its own balances show, in the
+                              ACCOUNT'S currency. 'status' is the column to read first:
+                              'measured' is a real disagreement, 'obscured' means the
+                              account carries more unsigned FX than the gap so nothing
+                              can be concluded, 'opening' means the balance series began
+                              mid-period, 'unmeasurable' means no balances at all.
+                              Sort by gap where status is 'measured'.
+
 Window (positional, optional; default: the trailing twelve months):
   YYYY / YYYY-MM / YYYY-MM-DD   that calendar period
   FROM TO                       explicit range; '-' is open-ended
@@ -476,7 +548,8 @@ Flags beyond the ones every report shares:
   -f FORMAT     table | csv | csv_plain | json
   -C COLS       comma-separated names, 'default', 'all', or a
                 +ADD,-REMOVE delta on the default set
-  -x CCY        output currency (default: config.default_currency)
+  -x CCY        output currency (default: config.default_currency);
+                coverage refuses it - every account is reported in its own
   -p            redact account ids, names and amounts; sections, classes,
                 groups and shares stay legible
 

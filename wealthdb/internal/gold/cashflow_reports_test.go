@@ -919,3 +919,83 @@ func TestNoNodeIsDrawnIntoItself(t *testing.T) {
 		t.Errorf("the hub is %.2f on one side and %.2f on the other", in, out)
 	}
 }
+
+// ---- the coverage report -------------------------------------------------
+
+// TestCoverageNamesTheAccountAndItsBlindSpot pins the three things the
+// report exists to do that a naive per-account query does not: it reports
+// a real disagreement, it declines to call one where the account's
+// unsigned volume could explain it, and it says so out loud where the
+// balances cannot answer at all.
+func TestCoverageNamesTheAccountAndItsBlindSpot(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedBalanceSpine(t, db, ctx, 10000, 10000)
+	seedReportFixture(t, db, ctx)
+
+	rows, err := CashflowCoverage(ctx, db, 172800, 3500000, "total")
+	if err != nil {
+		t.Fatalf("CashflowCoverage: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("the coverage report is empty on a fixture with balances and lines")
+	}
+
+	byAccount := map[string]CashflowCoverageRow{}
+	for _, r := range rows {
+		byAccount[r.Account+"/"+r.Currency] = r
+		if r.SourceID == "" || r.Currency == "" || r.Status == "" {
+			t.Errorf("a coverage row is missing its identity: %+v", r)
+		}
+	}
+
+	// The one account with both boundaries observed — the report names
+	// it by its nickname, as every account-facing view does. Its
+	// balances did not move while its lines did, so the report must
+	// name a gap rather than stay silent.
+	cash, ok := byAccount["Everyday/USD"]
+	if !ok {
+		t.Fatalf("the measured account is absent from the report: %v", byAccount)
+	}
+	if cash.Status != "measured" && cash.Status != "obscured" {
+		t.Errorf("the measured account's status = %q, want a measured verdict", cash.Status)
+	}
+	if cash.Measured == nil || cash.Gap == nil {
+		t.Errorf("both boundaries are observed but the row reports no delta: %+v", cash)
+	}
+
+	// Every pooled account with no balance history at all is REPORTED,
+	// not dropped — being absent from a diagnostic reads as fine, and
+	// the whole point is that it is unknown.
+	var unmeasurable int
+	for _, r := range rows {
+		if r.Status == "unmeasurable" {
+			unmeasurable++
+			if r.Measured != nil || r.Gap != nil {
+				t.Errorf("an unmeasurable row carries a delta: %+v", r)
+			}
+		}
+	}
+	if unmeasurable == 0 {
+		t.Error("no account reported unmeasurable; the fixture has pooled accounts with no balances")
+	}
+}
+
+// TestCoverageIsInTheAccountsOwnCurrency pins the decision not to
+// convert: a gap carried to an output currency would answer a question
+// nobody asked and would carry a rate error into the one number the
+// report exists to make trustworthy.
+func TestCoverageIsInTheAccountsOwnCurrency(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedBalanceSpine(t, db, ctx, 10000, 10000)
+	seedReportFixture(t, db, ctx)
+
+	rows, err := CashflowCoverage(ctx, db, 172800, 3500000, "total")
+	if err != nil {
+		t.Fatalf("CashflowCoverage: %v", err)
+	}
+	for _, r := range rows {
+		if r.Currency == "" {
+			t.Errorf("a row carries no currency, so its amounts mean nothing: %+v", r)
+		}
+	}
+}

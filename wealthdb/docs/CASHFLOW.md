@@ -622,6 +622,53 @@ A bucket reports blank where nothing is measurable, or where no rate
 can value an amount at a boundary. It is a diagnostic with a stated
 tolerance, never an input: `net_cash_flow` does not read it.
 
+### Coverage: which accounts the statement can be trusted on
+
+The memo above answers one question per period for the whole pool. When
+it does not close it says so in one number and stops, and finding the
+account behind that number has been hand archaeology every time.
+
+`wealthdb cashflow coverage` is that archaeology, promoted: per account
+and per period, the cash delta its transactions imply against the delta
+its own balances show.
+
+```
+period  silver_source  account  currency      ledger    unsigned    measured         gap  status
+2099    bank           Everyday CHF      -111111.11   999999.99  -22222.22  -88888.89  obscured
+2099    bank           Mandate  USD        99999.99        0.00    1111.11   98888.88  measured
+```
+
+(Figures invented; the shapes are the two that matter. The first account
+converts currencies, so the gap is smaller than the volume no sign could
+be read from and nothing can be concluded. The second carries no
+unsigned volume at all, so its gap is real.)
+
+Three things separate it from the query anyone would write first, and
+each is a way that query is wrong.
+
+1. **It does not convert.** A per-account gap belongs in the account's
+   own currency; carrying it to an output currency puts a rate error on
+   top of the number the report exists to make trustworthy. `-x` is
+   refused rather than ignored.
+2. **It publishes its own blind spot.** Gold pins no canonical sign for
+   six kinds — the FX family, corporate actions, the two catch-alls — so
+   their amounts cannot be summed into a cash delta. Dropping them
+   quietly makes an account that converts currencies look like an
+   account with an enormous hole. The volume that had to be dropped is
+   the `unsigned` column, and a gap no larger than it reads **obscured**:
+   not clean, not damning, not answerable from what the adapters signed.
+3. **It reports what it cannot measure.** An account with no balance
+   history never enters a join-based version's output at all — absent
+   reads as fine. Those rows are here as **unmeasurable**, and an
+   account whose balance series begins inside the period reads
+   **opening**, because the difference across that boundary is not a
+   delta.
+
+Read `status` first and sort by `gap` within `measured`. That ordering
+puts at the top whichever account's balances moved most without flows
+to explain it, which is how a feed that stopped covering an account
+mid-window surfaces itself instead of waiting to be found.
+
 ### The gap to the family reports
 
 Cashflow's income differs from `wealthdb income`'s total by exactly

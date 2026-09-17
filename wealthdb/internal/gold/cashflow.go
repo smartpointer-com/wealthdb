@@ -345,3 +345,69 @@ func nullFloatToPtr(n sql.NullFloat64) *float64 {
 	v := n.Float64
 	return &v
 }
+
+// CashflowCoverageRow is one (account, currency, period) of the coverage
+// report: what the ledger says the account's cash did, what its balances
+// say it did, and whether the two are comparable at all.
+//
+// Amounts are in the ACCOUNT'S OWN currency. A per-account gap converted
+// to an output currency carries a rate error on top of whatever it is
+// meant to expose, and the question the report answers — does this
+// account's ledger agree with its own balances — is not a question about
+// any other currency.
+type CashflowCoverageRow struct {
+	PeriodStart *int64
+	SourceID    string
+	Account     string
+	AccountKind string
+	Currency    string
+	TxnCount    int64
+	// Ledger is the signed cash delta the transactions imply.
+	// UnsignedVolume is the gross the six unsigned kinds carried and
+	// that therefore could NOT be summed into it — the report's own
+	// blind spot, published rather than hidden.
+	Ledger         *string
+	UnsignedVolume *string
+	// Measured is the balance delta across the period, nil where the
+	// balances cannot answer. Gap is Ledger minus Measured.
+	Measured *string
+	Gap      *string
+	// Status is `measured`, `obscured` (the gap is no larger than the
+	// unsigned volume, so it is not answerable), `opening` (the balance
+	// series begins inside the period) or `unmeasurable` (no balances).
+	Status string
+}
+
+// CashflowCoverage reads the per-account coverage report.
+func CashflowCoverage(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, period string) ([]CashflowCoverageRow, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT * FROM report_cashflow_coverage(?, ?, ?)`, fromEpoch, toEpoch, period)
+	if err != nil {
+		return nil, fmt.Errorf("CashflowCoverage: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CashflowCoverageRow
+	for rows.Next() {
+		var (
+			r                CashflowCoverageRow
+			periodStart      sql.NullInt64
+			ledger, unsigned sql.NullString
+			measured, gap    sql.NullString
+		)
+		if err := rows.Scan(&periodStart, &r.SourceID, &r.Account, &r.AccountKind,
+			&r.Currency, &r.TxnCount, &ledger, &unsigned, &measured, &gap, &r.Status); err != nil {
+			return nil, fmt.Errorf("CashflowCoverage scan: %w", err)
+		}
+		if periodStart.Valid {
+			v := periodStart.Int64
+			r.PeriodStart = &v
+		}
+		r.Ledger = trimmedDecimalPtr(ledger)
+		r.UnsignedVolume = trimmedDecimalPtr(unsigned)
+		r.Measured = trimmedDecimalPtr(measured)
+		r.Gap = trimmedDecimalPtr(gap)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
