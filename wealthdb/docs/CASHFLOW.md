@@ -384,14 +384,15 @@ the same node on a diagram. `Health` and `Trusts` keep their names:
 "Health savings" is right for an HSA and wrong for the class the day it
 holds anything else, and nobody says "Trust savings".
 
-Six leaves are cashflow's own, where no family value says the right
+Seven leaves are cashflow's own, where no family value says the right
 thing: `trades` and `private_capital` on the investing classes;
 `vehicle_giving` / `vehicle_receipt` for a crossing to or from a giving
 vehicle — whose verdict is `internal_transfer`, which names a movement
 rather than a kind of giving or a kind of receipt; and
-`mortgage_interest` / `mortgage_amortization`, which the derived split
-below mints in `cashflow_lines_base` rather than in the resolution,
-because no family value can name half a row.
+`mortgage_interest`, `mortgage_amortization` and `mortgage_drawdown`,
+which `cashflow_lines_base` mints from direction and the derived split
+rather than reading from the resolution, no family value naming half a
+row or naming money borrowed against an account the product holds.
 
 On the vehicles and on cash the class **is** the leaf: nothing finer
 exists to say, so the diagram draws them attached to the hub and their
@@ -408,14 +409,27 @@ Financing has leaves on both its classes. `loans` splits into
 `loan_proceeds` and `debt_repayment` — money borrowed against money
 repaid, which is the distinction the class exists to carry.
 
-`mortgage` splits into **`Mortgage interest`** and **`Mortgage
-amortization`**, and they are not the same kind of thing. Interest is
+`mortgage` has three, decided by direction first. An instalment is an
+outflow and splits into **`Mortgage interest`** and **`Mortgage
+amortization`**, which are not the same kind of thing. Interest is
 consumed: it buys the use of the money and is gone. Principal is not
 spending at all — it moves value from one side of the balance sheet to
 the other, and the household is no poorer for it. Summed into one node
 they overstate what was consumed by whatever was repaid — and in any
 period that happens to carry an extraordinary repayment, that is most
 of the node.
+
+Money running the other way is **`Mortgage drawdown`**: a tranche
+drawn, a line increased. It is a leaf rather than the bare class for a
+structural reason as much as a readable one — a leaf-stage section
+draws a row THROUGH a leaf, so a row whose group repeated its class
+would be dropped by the self-edge rule and dropped again by its class
+having other leaves, reaching the diagram nowhere while the residual
+went on counting it. Where it draws follows from the ordinary rule
+that a leaf running against its class's net detaches: in a year of
+repayments it attaches to the hub in its own right, and in a year that
+borrowed more than it repaid the repayment leaves are the ones that
+detach.
 
 **The split is derived, and it has to be.** No bank prints the share,
 and the narrative cannot be made to yield it: a tranche may bundle its

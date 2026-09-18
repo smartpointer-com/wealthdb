@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -77,11 +78,13 @@ func mortgageShares(t *testing.T, db *sql.DB, ctx context.Context) map[string]ma
 			t.Fatalf("scan: %v", err)
 		}
 		// The leaf is what a reader sees; a wrong label is a wrong node.
-		// A line that does not split keeps the class's own leaf, which
-		// the Sankey attaches to the hub rather than drawing below it.
+		// The leaf is the whole of what the diagram says about a
+		// mortgage line: which half of an instalment it is, or that it
+		// is money borrowed rather than either.
 		if want, split := map[string]string{
 			"mortgage_interest":     "Mortgage interest",
 			"mortgage_amortization": "Mortgage amortization",
+			"mortgage_drawdown":     "Mortgage drawdown",
 		}[grp]; split && want != label {
 			t.Errorf("group %q drew as %q, want %q", grp, label, want)
 		}
@@ -446,5 +449,170 @@ func TestAClosedMortgageRetiresWhatWasLeft(t *testing.T) {
 	if got["C-CLOSE"]["mortgage_interest"] != -1000 {
 		t.Errorf("the closing's interest = %v, want -1000",
 			got["C-CLOSE"]["mortgage_interest"])
+	}
+}
+
+// TestADrawdownIsDrawnAndTheHubStillConserves is the defect a class
+// with BOTH shapes produces. The Sankey's leaf stage is the self-edge
+// rule, and the split relabels the group on an OUTFLOW only, so a
+// drawdown kept `mortgage` for its group and fell out of the leaves.
+// Its class then had leaves, which took the class out of the atoms in
+// its own right too — and a class's hub edge is the sum of its leaves,
+// so the drawdown was in neither. The residual cash node went on
+// counting it, so the diagram did not merely lose the money: it read
+// as a household that saved what it had in fact borrowed.
+//
+// Both orientations, because which way the class nets decides where
+// the drawdown hangs and only one of the two was ever exercised.
+func TestADrawdownIsDrawnAndTheHubStillConserves(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		draw, repay     float64
+		wantResidual    float64
+		wantDrawdownVia string
+	}{
+		// Borrowed more than repaid: the class nets INTO the household,
+		// the drawdown runs with it and draws through it, and the two
+		// repayment leaves detach onto the other side.
+		{"the class nets the way the drawdown runs", 40000, -9500, 30500, "Mortgage"},
+		// Repaid more than borrowed: the class nets OUT, so the
+		// drawdown runs against it and attaches to the hub itself.
+		{"the class nets against the drawdown", 4000, -9500, -5500, "Household"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := openMigrated(t)
+			seedResolutionFixture(t, db, ctx)
+			if _, err := db.ExecContext(ctx, `
+                INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+                     VALUES ('cf', 0, 'USD', 'USD', 1.0)`); err != nil {
+				t.Fatalf("seed fx: %v", err)
+			}
+			// The interval retired 8,000, so the repayment splits.
+			seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000})
+			seedMortgagePayment(t, db, ctx, "H-REPAY", 100, tc.repay, "MORT")
+			seedMortgagePayment(t, db, ctx, "H-DRAW", 110, tc.draw, "MORT")
+
+			rows, err := CashflowSankey(ctx, db, 0, 100000000000, "USD", "group", "whole")
+			if err != nil {
+				t.Fatalf("CashflowSankey: %v", err)
+			}
+			var intoHub, outOfHub float64
+			edge := map[string]float64{}
+			for _, r := range rows {
+				v := mustFloat(t, r.Value, "value")
+				switch {
+				case r.Target == "Household":
+					intoHub += v
+				case r.Source == "Household":
+					outOfHub += v
+				}
+				edge[r.Source+"->"+r.Target] = v
+			}
+			if math.Abs(intoHub-outOfHub) > 0.005 {
+				t.Errorf("%.2f reaches the hub and %.2f leaves it; edges: %v",
+					intoHub, outOfHub, edge)
+			}
+			// The money borrowed is on the page, through whichever node
+			// the class's own direction puts it behind.
+			if got := edge["Mortgage drawdown->"+tc.wantDrawdownVia]; math.Abs(got-tc.draw) > 0.005 {
+				t.Errorf("the drawdown draws into %q as %.2f, want %.2f; edges: %v",
+					tc.wantDrawdownVia, got, tc.draw, edge)
+			}
+			// And the residual says what the household actually kept.
+			residual := edge["Cash savings->Household"] - edge["Household->Cash savings"]
+			if math.Abs(residual+tc.wantResidual) > 0.005 {
+				t.Errorf("the residual is %.2f, want %.2f; edges: %v",
+					-residual, tc.wantResidual, edge)
+			}
+		})
+	}
+}
+
+// TestNoFinancingGroupRepeatsItsClass is the invariant behind the fix
+// rather than the one case that broke it. A section with a leaf stage
+// draws a row through a leaf, and a row whose group repeats its class
+// has no leaf to be drawn through — it is dropped from the leaves by
+// the self-edge rule and from the atoms by its class having others, so
+// it reaches the diagram nowhere while the residual keeps counting it.
+func TestNoFinancingGroupRepeatsItsClass(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000})
+	seedMortgagePayment(t, db, ctx, "I-REPAY", 100, -9500, "MORT")
+	seedMortgagePayment(t, db, ctx, "I-DRAW", 110, 40000, "MORT")
+	seedMortgagePayment(t, db, ctx, "I-ZERO", 120, 0, "MORT")
+
+	// Both spellings of the rule: gold's Sankey compares the node IDS
+	// and the dashboard's compares the LABELS, so a pair that collides
+	// in either one is dropped on that surface alone.
+	rows, err := db.QueryContext(ctx, `
+        SELECT section, class, grp, class = grp AS same_id, COUNT(*)
+          FROM cashflow_lines_base(0, 100000000000)
+         WHERE section IN ('operating_in', 'operating_out', 'financing')
+           AND class <> '(uncategorized)'
+           AND (class = grp OR class_label = group_label)
+         GROUP BY 1, 2, 3, 4`)
+	if err != nil {
+		t.Fatalf("read cashflow_lines_base: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var section, class, grp string
+		var sameID bool
+		var n int
+		if err := rows.Scan(&section, &class, &grp, &sameID, &n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		t.Errorf("%d row(s) in %s.%s group as %q, repeating the class's %s: "+
+			"a leaf-stage section draws them nowhere",
+			n, section, class, grp, map[bool]string{true: "id", false: "label"}[sameID])
+	}
+}
+
+// TestEveryMortgageRowSurvivesItsSplit is the macro's own invariant,
+// asked of every shape at once: a row's emitted shares sum to the row,
+// and no row is emitted as nothing. A mortgage outflow that retired no
+// principal and was itself under half a cent satisfied neither share's
+// admission test and vanished — small, but the one way a split could
+// fail to conserve.
+func TestEveryMortgageRowSurvivesItsSplit(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	seedMortgageBalances(t, db, ctx, map[int]float64{100: -88000, 200: -80000, 300: -33000})
+	for _, tc := range []struct {
+		id     string
+		day    int
+		amount float64
+	}{
+		{"V-MIXED", 100, -9500},  // splits into both shares
+		{"V-WHOLE", 200, -47000}, // the interval's whole decline
+		{"V-OPEN", 300, -2200},   // retired nothing: all interest
+		{"V-DUST", 300, -0.004},  // retired nothing and under half a cent
+		{"V-DRAW", 110, 40000},   // money borrowed
+		{"V-NIL", 120, 0},        // a zero-amount mortgage row
+	} {
+		seedMortgagePayment(t, db, ctx, tc.id, tc.day, tc.amount, "MORT")
+	}
+
+	shares := mortgageShares(t, db, ctx)
+	for _, tc := range []struct {
+		id   string
+		want float64
+	}{
+		{"V-MIXED", -9500}, {"V-WHOLE", -47000}, {"V-OPEN", -2200},
+		{"V-DUST", -0.004}, {"V-DRAW", 40000}, {"V-NIL", 0},
+	} {
+		lines, ok := shares[tc.id]
+		if !ok {
+			t.Errorf("%s was emitted as no line at all", tc.id)
+			continue
+		}
+		var sum float64
+		for _, v := range lines {
+			sum += v
+		}
+		if math.Abs(sum-tc.want) > 0.0005 {
+			t.Errorf("%s: the shares sum to %v, want %v (%v)", tc.id, sum, tc.want, lines)
+		}
 	}
 }
