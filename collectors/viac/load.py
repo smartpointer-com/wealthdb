@@ -425,6 +425,28 @@ def _parse_window_bound(s: str | None) -> date | None:
         return None
 
 
+def _instrument_for_description(conn, description: str | None) -> str | None:
+    """The instrument a transaction's description names, or None.
+
+    VIAC states the fund in free text and nowhere else, but that text IS
+    the `name` this silver already stores against the ISIN, so the
+    resolution is a lookup rather than a parse.
+
+    A name matching more than one instrument resolves to None — the
+    shape being a fund reissued under a second ISIN with both rows
+    keeping the name. A trade put on the wrong line of a portfolio
+    holding both would be invisible from the outside, where an
+    unresolved row is not.
+    """
+    if not description:
+        return None
+    rows = conn.execute(
+        "SELECT instrument_external_id FROM instruments WHERE name = ?",
+        (description,),
+    ).fetchall()
+    return rows[0]["instrument_external_id"] if len(rows) == 1 else None
+
+
 def load_transactions_phase(
     conn: sqlite3.Connection,
     snapshot_at: int,
@@ -499,8 +521,9 @@ def load_transactions_phase(
                     occurred_at, account_external_id,
                     type, kind,
                     amount_chf, balance_after_chf,
-                    document_number, currency, payload
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    document_number, currency, payload,
+                    instrument_external_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     tx_id, first_observation,
@@ -508,6 +531,7 @@ def load_transactions_phase(
                     tx_type, tx_kind_for(tx_type),
                     amount_chf, t.get("balanceAfterBooking"),
                     doc_num, "CHF", canonical_json(t),
+                    _instrument_for_description(conn, t.get("description")),
                 ),
             )
             n_total += 1

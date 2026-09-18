@@ -208,3 +208,63 @@ def test_a_dump_load_does_not_wipe_another_dumps_reports(tmp_path):
         "SELECT COUNT(*) FROM positions WHERE source = 'report:D1'"
     ).fetchone()[0] == 1
     conn.close()
+
+
+def test_transaction_resolves_its_instrument_by_name(tmp_path):
+    """VIAC names the fund in free text and nowhere else, and that text
+    IS the instrument's name in this silver — so the link is a lookup.
+
+    A name matching two instruments resolves to nothing: guessing would
+    put a trade on the wrong line of a portfolio holding both, and a
+    wrong row is invisible from the outside where an unresolved one is
+    not.
+    """
+    conn, _ = _fresh_db(tmp_path)
+    conn.executescript(
+        """
+        INSERT INTO instruments(instrument_external_id, isin, name, asset_class,
+                                first_seen_at, last_seen_at, payload) VALUES
+            ('CH0000000001', 'CH0000000001', 'Example Equity Index', 'equity', 1, 1, '{}'),
+            ('CH0000000011', 'CH0000000011', 'Example Twice Named',  'equity', 1, 1, '{}'),
+            ('CH0000000012', 'CH0000000012', 'Example Twice Named',  'equity', 1, 1, '{}');
+        """
+    )
+    assert loader._instrument_for_description(
+        conn, "Example Equity Index") == "CH0000000001"
+    assert loader._instrument_for_description(conn, "Example Twice Named") is None
+    assert loader._instrument_for_description(conn, "Never Held") is None
+    assert loader._instrument_for_description(conn, None) is None
+
+
+def test_migration_backfills_the_instrument_on_rows_already_held(tmp_path):
+    """The rows silver is already holding get the link too, or the gap
+    would only close for whatever lands after the upgrade."""
+    conn, _ = _fresh_db(tmp_path)
+    conn.executescript(
+        """
+        INSERT INTO instruments(instrument_external_id, isin, name, asset_class,
+                                first_seen_at, last_seen_at, payload) VALUES
+            ('CH0000000001', 'CH0000000001', 'Example Equity Index', 'equity', 1, 1, '{}');
+        INSERT INTO transactions(transaction_external_id, snapshot_at, occurred_at,
+                                 account_external_id, type, kind, amount_chf,
+                                 currency, payload) VALUES
+            ('t1', 1, 1, 'P3A1', 'TRADE_BUY', 'buy', -100.0, 'CHF',
+             '{"description":"Example Equity Index"}'),
+            ('t2', 1, 2, 'P3A1', 'TRADE_BUY', 'buy',  -50.0, 'CHF',
+             '{"description":"Never Held"}');
+        """
+    )
+    # Re-run the backfill statement the migration carries.
+    conn.execute(
+        """
+        UPDATE transactions
+           SET instrument_external_id = (
+               SELECT i.instrument_external_id FROM instruments i
+                WHERE i.name = json_extract(transactions.payload, '$.description')
+                  AND (SELECT COUNT(*) FROM instruments j WHERE j.name = i.name) = 1)
+        """
+    )
+    got = {r["transaction_external_id"]: r["instrument_external_id"]
+           for r in conn.execute(
+               "SELECT transaction_external_id, instrument_external_id FROM transactions")}
+    assert got == {"t1": "CH0000000001", "t2": None}

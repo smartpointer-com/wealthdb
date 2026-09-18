@@ -70,5 +70,6 @@ CREATE TABLE transactions (
     kind                    TEXT    NOT NULL,
     amount_chf              REAL,
     currency                TEXT    NOT NULL DEFAULT 'CHF',
-    payload                 TEXT    NOT NULL
+    payload                 TEXT    NOT NULL,
+    instrument_external_id  TEXT                                -- migration 0005
 );
