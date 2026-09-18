@@ -249,7 +249,14 @@ wealthdb doesn't need to dedupe further.
   the api doesn't surface. The web silver's `form_1099b` sale
   rows are ingested as transactions (`web_reader.go`); the
   lot-level detail is not — a future `tax_lots` gold table
-  could project it.
+  could project it. Those rows carry no `instrument_key`, only
+  `security_name`, which `securityNameInstrument` reads in its two
+  shapes: a plain ticker resolves through the same symbol→CUSIP
+  bridge as any web row, and an OCC-style option resolves to its
+  UNDERLYING with `option` in `transactions.vehicle` (DESIGN.md
+  §10.8) — the exposure a trade touched is the underlying's, and how
+  it was held is the other dimension. A name of neither shape states
+  no instrument and offers itself as `instrument_hint` instead.
 - **Explicit suffix→hashValue override config.** The bridge is
   auto-only. The exact tier (§7.1) resolves any realistic suffix
   collision once `account_number_full` is present, so an

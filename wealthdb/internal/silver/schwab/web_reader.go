@@ -856,17 +856,6 @@ func extractWebTxAmounts(payload string) (netAmount, quantity, price *canonical.
 // tx_history_json uses capital `Description`. Returns nil when
 // both are absent or empty so cash-only rows (interest, fees,
 // transfers) don't get a spurious name.
-// extractWebTxSecurityName is the 1099-B feed's only statement of what
-// a row traded. Empty for every other web source, which is what makes
-// it safe to reach for whenever no instrument_key was stored.
-func extractWebTxSecurityName(payload string) string {
-	var p struct {
-		SecurityName string `json:"security_name"`
-	}
-	_ = json.Unmarshal([]byte(payload), &p)
-	return strings.TrimSpace(p.SecurityName)
-}
-
 func extractWebTxDescription(payload string) *string {
 	var p struct {
 		Lower string `json:"description"`
@@ -882,6 +871,17 @@ func extractWebTxDescription(payload string) *string {
 		}
 	}
 	return nil
+}
+
+// extractWebTxSecurityName is the 1099-B feed's only statement of what
+// a row traded. Empty for every other web source, which is what makes
+// it safe to reach for whenever no instrument_key was stored.
+func extractWebTxSecurityName(payload string) string {
+	var p struct {
+		SecurityName string `json:"security_name"`
+	}
+	_ = json.Unmarshal([]byte(payload), &p)
+	return strings.TrimSpace(p.SecurityName)
 }
 
 // extractTaxYear reads payload.tax_year off a form_1099b row. The tax year is

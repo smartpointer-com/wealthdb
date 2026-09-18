@@ -141,7 +141,7 @@ func reloadFreshAndSwap(
 		ld := loader.New(db)
 		var firstErr error
 		for _, s := range targets {
-			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, cfg.TransactionInstruments, ledger)
+			spec, err := buildSourceSpec(s, cfg, ledger)
 			if err != nil {
 				fmt.Fprintf(stderr, "reload: %s: %s\n", s.ID, err.Error())
 				if firstErr == nil {
@@ -458,7 +458,7 @@ func reloadInPlace(
 			}
 			continue
 		}
-		spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, cfg.TransactionInstruments, ledger)
+		spec, err := buildSourceSpec(s, cfg, ledger)
 		if err != nil {
 			fmt.Fprintf(stderr, "reload: %s: %s\n", s.ID, err.Error())
 			if firstErr == nil {

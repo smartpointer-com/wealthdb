@@ -778,6 +778,7 @@ Example config file:
 | `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …), or `auto` to auto-detect (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |
 | `silver_sources[].path` | string | Filesystem path to the silver SQLite. `~` and `$HOME` expanded. Relative paths resolved against the config file's directory. Used by single-file adapters (Schwab, Swissquote, single-source UBS, fred). Mutually exclusive with `subsources`. |
 | `silver_sources[].fx_priority` | integer | Optional. FX-rate precedence when several sources publish the same `(base, quote)` pair: lower = higher priority, absent/null = lowest. Ties broken by the order sources appear in this array. Affects only FX resolution (§10.6 / §13.2) — no effect on positions or transactions. |
+| `silver_sources[].taxable_wrapper` | string | Optional. The taxable wrapper this source's taxable accounts actually sit in, validated against the canonical `tax_wrapper` enum at config-load time. A bank feed says what a product IS and never who holds it, so an adapter emits the generic `taxable_personal` for any taxable account; this states the deployment's answer once per source instead of once per account, so an account opened later is right on the load that first sees it. It rewrites `taxable_personal` and nothing else — a retirement, trust or custodial wrapper the adapter had positive evidence for is kept, and an account with no wrapper at all is left alone. A per-account `account_overrides.tax_wrapper` still wins. See §13.9. |
 | `silver_sources[].subsources[]` | array | Optional. For adapters that merge several backing silvers under one logical source (UBS = `ubs-web` + `ubs-psn`). Each entry has its own `kind` and `path`. At least one entry required when present. |
 | `silver_sources[].subsources[].kind` | string | Subsource discriminator. UBS recognises `ubs-web` and `ubs-psn`. |
 | `silver_sources[].subsources[].path` | string | Filesystem path to that subsource's silver SQLite. Expanded like `path`. |
@@ -789,6 +790,7 @@ Example config file:
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.9). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.9. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
+| `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a securities trade whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
@@ -2355,6 +2357,27 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   that column "Check or Slip #". Deliberately not a transaction kind — a cheque
   is an instrument, not a distinct economic event — and deliberately a column
   rather than `payload`, which holds what could *not* be canonicalised.
+- **`transactions.asset_class` / `.vehicle`** (migration 0097) are what a
+  securities trade says it TRADED, in the same 2-D taxonomy `positions` and
+  `instruments` carry (docs/TAXONOMY.md). An adapter sets them **only for what
+  the instrument cannot answer**: both NULL on every row that is not a
+  securities trade and on every trade whose instrument is known, one half
+  alone where that is all the trade adds (an option resolves to its underlying
+  and states `option` in the vehicle, leaving the exposure to it), and both
+  where the feed named the kind of thing but no instrument. Restating a known
+  instrument's pair here is the one thing they are not for: the copy would
+  freeze at load time and mask the dimension, which `cashflow_txn_nodes` reads
+  in preference (migration 0100 coalesces the trade's over the instrument's).
+  The writer gates each half against its own vocabulary and the two together
+  as an admitted pair, so a wrapper value cannot reach the exposure column.
+  Denormalised by decision: a transaction points at no position and no lot.
+- **`transactions.instrument_hint`** (migration 0098) is the token an adapter
+  resolved a trade's instrument from when that resolution found nothing — a
+  Swiss valor, a fund name, a ticker, whatever the feed states. NULL where no
+  lookup was needed or it succeeded, so `instrument_external_id IS NULL AND
+  instrument_hint IS NOT NULL` is exactly the set a `transaction_instruments`
+  entry can still close, and `wealthdb transactions -C +instrument_hint`
+  (migration 0099) is how that set is read. See §13.9.
 - **Account display defaults.** `report_accounts_multi` and
   `report_accounts_history_multi` apply the conventional
   `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,
@@ -3220,12 +3243,45 @@ The instrument dimension has the same escape hatch:
 instrument_external_id)`, pins a per-instrument `(asset_class,
 vehicle)` pair (validated as an admitted taxonomy pair). The loader
 patches both the `instruments` row and every `positions` row
-referencing the instrument — the fact rows carry their own
-`asset_class`/`vehicle` copy, so the two must move together. Use it
-where neither the source's structured signal nor the ETF name
-refinement (§6.8) gets the pair right — the canonical example is an
-exchange-traded commodity trust whose security name never mentions
-the metal or the ETF-ness (`metal × etf`).
+referencing the instrument — position rows carry their own
+`asset_class`/`vehicle` copy, so the two must move together.
+`transactions` needs no such patch: a trade states a pair only where
+its instrument cannot answer (§10.8), so there is no copy of the
+instrument's own classification to keep in step. Use it where neither
+the source's structured signal nor the ETF name refinement (§6.8) gets
+the pair right — the canonical example is an exchange-traded commodity
+trust whose security name never mentions the metal or the ETF-ness
+(`metal × etf`).
+
+Two statements in the same family are not overrides of an adapter's
+answer but answers an adapter cannot have.
+
+`silver_sources[].taxable_wrapper` names the taxable wrapper a
+source's taxable accounts actually sit in. A bank feed says what a
+product IS and never who holds it — a jointly held account and a
+personally held one are the same product — so an adapter emits the
+generic `taxable_personal`, and whose it is belongs to the deployment.
+Stated once per source rather than once per account, it reaches an
+account opened later on the load that first sees it. It rewrites
+`taxable_personal` and nothing else: a retirement, trust or custodial
+wrapper the adapter had positive evidence for is not a blanket rule's
+to overrule, and an account with no wrapper at all is a gap for the
+coverage canary to report rather than one to guess at. It applies
+before both override maps, so a named `account_overrides` entry still
+wins.
+
+`transaction_instruments` links a securities trade whose feed named an
+instrument nothing in the product could resolve. It is keyed by the
+TOKEN the adapter looked up and failed on, which the adapter states on
+the row (`instrument_hint`, §10.8) rather than the loader digging it
+out of a payload whose shape differs per feed — one mechanism for
+every source, and the source-blind layer stays source-blind. A row the
+adapter already resolved is never touched, a token nothing states any
+more is a silent no-op (that is what an adapter learning to resolve it
+looks like), and the trade's own coarse taxonomy pair is dropped as
+the link lands, the instrument now named answering better. It states
+the identity only, so it composes with `instrument_overrides`: pin the
+link here, pin its classification there.
 
 Selectable columns: `wealthdb holdings accounts -C
 silver_source,account,account_kind,tax_wrapper,management_style,...`.

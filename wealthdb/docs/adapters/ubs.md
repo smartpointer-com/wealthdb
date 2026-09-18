@@ -661,6 +661,39 @@ the exact failure the veto exists to prevent, and it fabricated an
 arrival of owner capital that the returns engine then counted.
 `vetoConversions` closes it, demoting both legs or neither.
 
+### The instrument, across both eras
+
+The same bargain once more, for what a trade traded.
+
+The **export era** states an ISIN in `Description1`, which
+`projectWebTxText` puts straight on `instrument_external_id`.
+
+The **statement era** states no identifier at all — it names the
+security in free text. But the text closes with the Swiss **valor**,
+which identifies one security line, so the match is an identity and
+not a name guess. The collector's PDF parser promotes it beside
+`counter_account` (`security_valor`), and the adapter resolves it
+against `instrumentValorIndex`, built from the instruments PSN
+describes by two roads: `payload.InstrIdtfr.Valor` where the feed
+carries the identifier object, and **the ISIN itself** for a Swiss
+line — a `CH` ISIN is `CH` plus the valor zero-padded to nine digits
+plus a check digit — which reaches the lines that omit the object. A
+valor naming two instruments is dropped rather than resolved.
+
+A stated identifier outranks a looked-up one, so the export era keeps
+what it already resolved and never consults the index.
+
+Where the lookup finds nothing, two weaker claims follow, in order:
+
+- The valor goes on `instrument_hint` (DESIGN.md §10.8), which is
+  what a `transaction_instruments` entry is keyed by.
+- `unlinkedSecurityTaxonomy` reads what KIND of thing the row traded
+  off the booking type, and failing that the narrative — see §4's
+  sibling table in docs/TAXONOMY.md §6. On buys and sells only: a cash
+  movement whose narrative happens to carry one of those tokens traded
+  no security. Nothing is stamped beside a RESOLVED instrument; the
+  instrument's own row answers, and a copy would only go stale.
+
 ## 8. Change number
 
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if

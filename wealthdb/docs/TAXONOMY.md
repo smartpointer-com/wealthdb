@@ -153,7 +153,17 @@ needed real classification logic; every other mapping is mechanical.
 | Security-name keywords (shared refiner) | asset_class | bullion / crypto / bond keywords refine exposure inside etf/fund vehicles |
 | Collector kind (private-market + manual) | both | carta/angellist/equityzen/manual kinds map directly to pairs |
 | `instrument_overrides` (config) | both | escape hatch; pins both `asset_class` and `vehicle` for a named instrument |
+| Booking type / narrative on a trade (UBS statements) | both | last resort, on the TRADE row rather than the instrument: `SHARE`→(public_equity, stock), `SUBSCRIPTION RIGHT` and a narrative `ANR`→(…, right), `PRECIOUS METAL …` and the metal currency codes→(metal, physical), `CAPITAL CALL`→(private_equity, fund) |
 
 Where a source pins only one dimension, the other defaults from the
 pair tables above (e.g. a vehicle-only "Funds" section header defaults
 to the fund's name-derived exposure, `other` if underivable).
+
+The last row is the exception, and the only signal that lands on a
+fact row rather than on the instrument. `transactions` carries its own
+`(asset_class, vehicle)` for what the instrument cannot answer: both
+NULL where the instrument is known, one half alone where that is all
+the trade adds (an option resolves to its underlying and states
+`option` in the vehicle), and both where the feed named the kind of
+thing but no instrument at all. Neither half defaults — an unstated
+half means "ask the instrument", not `other`. See DESIGN.md §10.8.

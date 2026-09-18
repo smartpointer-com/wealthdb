@@ -46,14 +46,15 @@ type SourceSpec struct {
 	// Overrides — so an account-level override always wins over
 	// a portfolio-level one on the same column.
 	PortfolioOverrides map[string]PortfolioOverride
+	// TaxableWrapper rewrites `taxable_personal` on this source's
+	// accounts, BEFORE both override maps above; see
+	// config.SilverSource.TaxableWrapper.
+	TaxableWrapper string
 	// InstrumentOverrides is the per-instrument_external_id
 	// override map for this source — asset_class values from the
 	// config-file `instrument_overrides` block. Applied after the
 	// adapter has classified, to the instrument dimension and to
 	// every position row referencing the instrument.
-	// TaxableWrapper rewrites `taxable_personal` on this source's
-	// accounts; see config.SilverSource.TaxableWrapper.
-	TaxableWrapper      string
 	InstrumentOverrides map[string]InstrumentOverride
 	// TransactionInstruments links a trade the adapter could not
 	// resolve, keyed by the token it looked up and failed on
@@ -210,13 +211,13 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 			return nil, fmt.Errorf("Load(%s): delete window: %w", spec.ID, err)
 		}
 
-		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window, spec.Overrides, spec.PortfolioOverrides, spec.InstrumentOverrides, spec.TaxableWrapper)
+		nSnap, err := applySnapshots(ctx, tx, conn, window, spec)
 		if err != nil {
 			return nil, fmt.Errorf("Load(%s): apply snapshots: %w", spec.ID, err)
 		}
 		res.SnapshotsLoaded = nSnap
 
-		nTx, err := applyTransactions(ctx, tx, spec.ID, conn, window, spec.TransactionInstruments)
+		nTx, err := applyTransactions(ctx, tx, conn, window, spec)
 		if err != nil {
 			return nil, fmt.Errorf("Load(%s): apply transactions: %w", spec.ID, err)
 		}
@@ -330,13 +331,14 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 // defer), so facts landing before their dimensions is fine within
 // the transaction. Returns the total count of fact rows written.
 //
-// The override maps (any may be nil) are applied after stamping:
-// account/portfolio overrides to AccountChange records
-// (portfolio_overrides go first so per-account overrides win on
-// overlap), instrument overrides to InstrumentChange and
-// PositionChange records. See applyAccountOverrides,
-// applyPortfolioOverrides and applyInstrumentOverrides.
-func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, overrides map[string]AccountOverride, portfolioOverrides map[string]PortfolioOverride, instrumentOverrides map[string]InstrumentOverride, taxableWrapper string) (int, error) {
+// The spec's config statements (any may be empty) are applied after
+// stamping, widest scope first so the narrower always wins on the same
+// column: the source-wide taxable wrapper, then portfolio overrides,
+// then per-account ones, all to AccountChange records; instrument
+// overrides to InstrumentChange and PositionChange records. See
+// applyTaxableWrapper, applyPortfolioOverrides, applyAccountOverrides
+// and applyInstrumentOverrides.
+func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w canonical.Window, spec SourceSpec) (int, error) {
 	stream, err := conn.Snapshots(ctx, w)
 	if err != nil {
 		return 0, err
@@ -353,17 +355,14 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 		}
 
 		// Stamp the silver_source_id on every record before write.
-		stampSnapshotBatch(&batch, sourceID)
-		// Config-file overrides go on top of whatever the adapter
-		// emitted; see DESIGN.md §13.9. Portfolio overrides apply
-		// first (broader scope); per-account overrides override on
-		// the same column (narrower scope wins).
-		// The source-wide statement first, the per-account one after,
-		// so a named account still overrules the blanket rule.
-		applyTaxableWrapper(batch.Accounts, taxableWrapper)
-		applyPortfolioOverrides(batch.Accounts, portfolioOverrides)
-		applyAccountOverrides(batch.Accounts, overrides)
-		applyInstrumentOverrides(batch.Instruments, batch.Positions, instrumentOverrides)
+		stampSnapshotBatch(&batch, spec.ID)
+		// Config-file statements go on top of whatever the adapter
+		// emitted; see DESIGN.md §13.9. Widest scope first, so a named
+		// account still overrules the blanket rule on the same column.
+		applyTaxableWrapper(batch.Accounts, spec.TaxableWrapper)
+		applyPortfolioOverrides(batch.Accounts, spec.PortfolioOverrides)
+		applyAccountOverrides(batch.Accounts, spec.Overrides)
+		applyInstrumentOverrides(batch.Instruments, batch.Positions, spec.InstrumentOverrides)
 
 		if err := dims.AddBatch(&batch); err != nil {
 			return total, err
@@ -387,7 +386,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 }
 
 // applyTransactions drains conn.Transactions into the gold writer.
-func applyTransactions(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, transactionInstruments map[string]string) (int, error) {
+func applyTransactions(ctx context.Context, tx *sql.Tx, conn silver.Connection, w canonical.Window, spec SourceSpec) (int, error) {
 	stream, err := conn.Transactions(ctx, w)
 	if err != nil {
 		return 0, err
@@ -401,10 +400,10 @@ func applyTransactions(ctx context.Context, tx *sql.Tx, sourceID string, conn si
 		if err != nil {
 			return total, err
 		}
-		stampTransactionBatch(&batch, sourceID)
+		stampTransactionBatch(&batch, spec.ID)
 		// Config-file overrides go on top of whatever the adapter
 		// emitted, as they do on the snapshot side; see DESIGN.md §13.9.
-		applyTransactionInstruments(batch.Transactions, transactionInstruments)
+		applyTransactionInstruments(batch.Transactions, spec.TransactionInstruments)
 		if err := writer.InsertTransactions(ctx, batch.Transactions); err != nil {
 			return total, err
 		}
@@ -734,7 +733,10 @@ func applyInstrumentOverrides(instruments []canonical.InstrumentChange, position
 // an error, because that is what success looks like.
 //
 // The IDENTITY only. What the instrument is remains
-// `instrument_overrides`' question; the two compose.
+// `instrument_overrides`' question; the two compose. A trade's own
+// taxonomy pair is dropped as the link lands — it was the adapter's
+// answer for a row nothing could name, and the instrument now named
+// answers better and stays current as the dimension is reclassified.
 func applyTransactionInstruments(txns []canonical.TransactionChange, links map[string]string) {
 	if len(links) == 0 {
 		return
@@ -744,8 +746,8 @@ func applyTransactionInstruments(txns []canonical.TransactionChange, links map[s
 			continue
 		}
 		if id, ok := links[txns[i].InstrumentHint]; ok && id != "" {
-			linked := id
-			txns[i].InstrumentExternalID = &linked
+			txns[i].InstrumentExternalID = &id
+			txns[i].AssetClass, txns[i].Vehicle = "", ""
 		}
 	}
 }

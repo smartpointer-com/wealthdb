@@ -14,6 +14,11 @@ import (
 // looked up and failed on, never second-guesses a row that resolved,
 // and no-ops silently on a token nothing states any more — which is
 // what an adapter learning to resolve it looks like.
+//
+// And pins what the link takes AWAY. A trade's own taxonomy pair is
+// the adapter's answer for a row nothing could name; once config names
+// the instrument, that answer is the worse of the two and would mask
+// the dimension's, which the cash flow statement reads in preference.
 func TestTransactionInstrumentsLinksOnlyWhatTheAdapterCouldNot(t *testing.T) {
 	already := "EXAMPLE0001"
 	txns := []canonical.TransactionChange{
@@ -24,26 +29,49 @@ func TestTransactionInstrumentsLinksOnlyWhatTheAdapterCouldNot(t *testing.T) {
 		{TransactionExternalID: "t3", InstrumentExternalID: &already, InstrumentHint: "1234567"},
 		// States no token at all.
 		{TransactionExternalID: "t4"},
-		// A token the list does not carry.
-		{TransactionExternalID: "t5", InstrumentHint: "9999999"},
+		// A token the list does not carry: keeps the coarse pair its
+		// feed could state, having nothing better to fall back on.
+		{TransactionExternalID: "t5", InstrumentHint: "9999999",
+			AssetClass: canonical.AssetClassMetal, Vehicle: canonical.VehiclePhysical},
+		// A linked row hands the question back to the instrument.
+		{TransactionExternalID: "t6", InstrumentHint: "7654321",
+			AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleFund},
 	}
 	applyTransactionInstruments(txns, map[string]string{
 		"1234567":               "EXAMPLE0009",
 		"Example Fund, Renamed": "EXAMPLE0010",
+		"7654321":               "EXAMPLE0012",
 		// A token nothing states any more: a no-op, not an error.
 		"0000001": "EXAMPLE0011",
 	})
-	want := map[string]string{
-		"t1": "EXAMPLE0009", "t2": "EXAMPLE0010",
-		"t3": "EXAMPLE0001", "t4": "", "t5": "",
-	}
-	for _, x := range txns {
-		got := ""
-		if x.InstrumentExternalID != nil {
-			got = *x.InstrumentExternalID
+	for _, tc := range []struct {
+		id, instrument string
+		class          canonical.AssetClass
+		vehicle        canonical.Vehicle
+	}{
+		{"t1", "EXAMPLE0009", "", ""},
+		{"t2", "EXAMPLE0010", "", ""},
+		{"t3", "EXAMPLE0001", "", ""},
+		{"t4", "", "", ""},
+		{"t5", "", canonical.AssetClassMetal, canonical.VehiclePhysical},
+		{"t6", "EXAMPLE0012", "", ""},
+	} {
+		var got canonical.TransactionChange
+		for _, x := range txns {
+			if x.TransactionExternalID == tc.id {
+				got = x
+			}
 		}
-		if got != want[x.TransactionExternalID] {
-			t.Errorf("%s linked to %q, want %q", x.TransactionExternalID, got, want[x.TransactionExternalID])
+		id := ""
+		if got.InstrumentExternalID != nil {
+			id = *got.InstrumentExternalID
+		}
+		if id != tc.instrument {
+			t.Errorf("%s linked to %q, want %q", tc.id, id, tc.instrument)
+		}
+		if got.AssetClass != tc.class || got.Vehicle != tc.vehicle {
+			t.Errorf("%s kept (%q, %q), want (%q, %q)",
+				tc.id, got.AssetClass, got.Vehicle, tc.class, tc.vehicle)
 		}
 	}
 }

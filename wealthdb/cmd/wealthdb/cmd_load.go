@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
@@ -55,7 +56,7 @@ load semantics.`)
 		return errs.Newf(2, "load: '-a' and a positional id are mutually exclusive")
 	case *all:
 		for _, s := range cfg.SilverSources {
-			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, cfg.TransactionInstruments, ledger)
+			spec, err := buildSourceSpec(s, cfg, ledger)
 			if err != nil {
 				return err
 			}
@@ -70,7 +71,7 @@ load semantics.`)
 		if !ok {
 			return fmt.Errorf("load: silver source %q not found in config", id)
 		}
-		spec, err := buildSourceSpec(*s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, cfg.TransactionInstruments, ledger)
+		spec, err := buildSourceSpec(*s, cfg, ledger)
 		if err != nil {
 			return err
 		}
@@ -321,16 +322,13 @@ func compiledRules(compiled []config.CompiledSpendRule) []spending.Rule {
 
 // buildSourceSpec assembles a loader.SourceSpec for one configured
 // silver source: translates `path` / `subsources` / `relationships`
-// to their silver-package counterparts and folds in the per-source
-// account_overrides + portfolio_overrides + instrument_overrides
-// slices. Returns an error when the config can't be translated
-// (e.g. invalid psn_start_override date).
+// to their silver-package counterparts and folds in every config
+// statement scoped to this source — the override families and
+// `transaction_instruments`. Returns an error when the config can't
+// be translated (e.g. invalid psn_start_override date).
 func buildSourceSpec(
 	s config.SilverSource,
-	accountOverrides map[string]map[string]config.AccountOverride,
-	portfolioOverrides map[string]map[string]config.PortfolioOverride,
-	instrumentOverrides map[string]map[string]config.InstrumentOverride,
-	transactionInstruments map[string]map[string]string,
+	cfg *config.Config,
 	transferLedger map[string][]loader.TransferEntry,
 ) (loader.SourceSpec, error) {
 	openSpec, err := s.ToSilverOpenSpec()
@@ -346,7 +344,7 @@ func buildSourceSpec(
 		Relationships:  openSpec.Relationships,
 		TransferLedger: transferLedger[s.ID],
 	}
-	if cfgOvr := accountOverrides[s.ID]; len(cfgOvr) > 0 {
+	if cfgOvr := cfg.AccountOverrides[s.ID]; len(cfgOvr) > 0 {
 		spec.Overrides = make(map[string]loader.AccountOverride, len(cfgOvr))
 		for acctID, ov := range cfgOvr {
 			spec.Overrides[acctID] = loader.AccountOverride{
@@ -358,7 +356,7 @@ func buildSourceSpec(
 			}
 		}
 	}
-	if cfgOvr := portfolioOverrides[s.ID]; len(cfgOvr) > 0 {
+	if cfgOvr := cfg.PortfolioOverrides[s.ID]; len(cfgOvr) > 0 {
 		spec.PortfolioOverrides = make(map[string]loader.PortfolioOverride, len(cfgOvr))
 		for portfolioID, ov := range cfgOvr {
 			spec.PortfolioOverrides[portfolioID] = loader.PortfolioOverride{
@@ -367,7 +365,7 @@ func buildSourceSpec(
 			}
 		}
 	}
-	if cfgOvr := instrumentOverrides[s.ID]; len(cfgOvr) > 0 {
+	if cfgOvr := cfg.InstrumentOverrides[s.ID]; len(cfgOvr) > 0 {
 		spec.InstrumentOverrides = make(map[string]loader.InstrumentOverride, len(cfgOvr))
 		for instrID, ov := range cfgOvr {
 			spec.InstrumentOverrides[instrID] = loader.InstrumentOverride{
@@ -376,11 +374,8 @@ func buildSourceSpec(
 			}
 		}
 	}
-	if links := transactionInstruments[s.ID]; len(links) > 0 {
-		spec.TransactionInstruments = make(map[string]string, len(links))
-		for token, instrID := range links {
-			spec.TransactionInstruments[token] = instrID
-		}
+	if links := cfg.TransactionInstruments[s.ID]; len(links) > 0 {
+		spec.TransactionInstruments = maps.Clone(links)
 	}
 	return spec, nil
 }

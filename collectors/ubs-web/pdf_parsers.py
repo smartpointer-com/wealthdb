@@ -923,45 +923,36 @@ def _stmt_counter_account(cont_lines: list[str]) -> str | None:
     return None
 
 
-# A securities line's continuation carries the instrument's caption and,
-# closing it, the Swiss VALOR — a globally unique identifier for a
-# security line, which is what makes the match to gold's instrument
-# dimension an identity rather than a guess.
-#
-#     "EXAMPLEETF WORLD 1234567"
-#
-# A valor is the LAST whitespace-separated token, all digits, with
-# something bearing a letter in front of it. A turnover trailer
-# ("Turnover total 1 111 111.11 ...") ends in a decimal group and falls
-# out on its own.
-#
-# A TRADE'S SETTLEMENT REFERENCE DOES NOT. It is a letter, a date and a
-# number — "V 01.01.2020 12345678" — and that number is not a valor. It
-# also comes FIRST, so a scan that takes the earliest match takes the
-# reference and never reaches the security line below it. Both reference
-# shapes are skipped by their own pattern rather than left to the valor
-# test to reject, because one of them passes it.
-#
-# A caption that legitimately ends in digits would still mint a number
-# that is not a valor. Nothing here guards that and nothing needs to:
-# the consumer looks the number up in the instrument dimension, and a
-# number that is not a valor matches nothing.
+# An order or settlement reference — a letter, a date and a number,
+# "V 01.01.2020 12345678". Skipped before the valor scan rather than
+# left to it: the reference opens a trade's continuation, so it is
+# reached first, and its number passes the valor test.
 _STMT_REFERENCE_RE = re.compile(r"^[A-Z]\s+\d{2}\.\d{2}\.\d{4}\b")
+# The valor closing a security line: the last whitespace-separated
+# token, all digits, with something bearing a letter in front of it
+# ("EXAMPLEETF WORLD 1234567"). A turnover trailer ends in a decimal
+# group and falls out on its own.
 _STMT_VALOR_RE = re.compile(r"^(?P<caption>.*[A-Za-z].*?)\s+(?P<valor>\d{4,12})$")
-# A long caption leaves the statement no room for the space, and the
-# valor is printed hard against it ("Example Group Rg199999991"). Tried
-# only where the spaced form found nothing, so an ordinary line is
-# parsed exactly as before. The floor is higher here — six digits, not
-# four — because with no separator a short run is far likelier to be the
-# tail of a name than a valor.
+# The same, where a long caption left no room for the separator and the
+# valor is printed hard against it ("Example Group Rg199999991"). Six
+# digits, not four: with no separator a short run is far likelier to be
+# the tail of a name than a valor.
 _STMT_GLUED_VALOR_RE = re.compile(r"^(?P<caption>.*[A-Za-z].*?)(?P<valor>\d{6,12})$")
 
 
 def _stmt_security(cont_lines: list[str]) -> tuple[str | None, str | None]:
-    """The instrument caption and valor a securities movement names.
+    """The instrument caption and Swiss VALOR a securities movement names.
 
-    Returns (caption, valor), or (None, None) where no continuation line
-    closes with a valor — which is every movement that is not a trade.
+    The valor identifies one security line, which is what lets the gold
+    engine match the movement to an instrument by identity rather than
+    by name. Returns (caption, valor), or (None, None) where no
+    continuation line closes with one — every movement that is not a
+    trade, and any whose caption itself ends in digits, which mints a
+    number that matches no instrument and so resolves to nothing.
+
+    The spaced form is tried across every line before the glued one, so
+    an ordinary line parses exactly as it did before the glued form
+    existed.
     """
     lines = [c.strip() for c in cont_lines if not _STMT_REFERENCE_RE.match(c.strip())]
     for pattern in (_STMT_VALOR_RE, _STMT_GLUED_VALOR_RE):

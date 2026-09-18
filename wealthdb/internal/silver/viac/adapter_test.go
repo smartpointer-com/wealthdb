@@ -398,12 +398,11 @@ func TestTransactions(t *testing.T) {
 	}
 }
 
-// TestTransactionsCarryTheInstrumentAndItsPair covers the link silver
-// resolves at load and the taxonomy pair gold derives from it. VIAC
-// names the fund in free text and nowhere else, so a trade that did not
-// carry the id reached gold as an untracked destination — which is what
-// the third row still is, and should be.
-func TestTransactionsCarryTheInstrumentAndItsPair(t *testing.T) {
+// TestTransactionsCarryTheInstrumentTheyNamed covers the link silver
+// resolves at load. VIAC names the fund in free text and nowhere else,
+// so a trade that did not carry the id reached gold as an untracked
+// destination — which is what the third row still is, and should be.
+func TestTransactionsCarryTheInstrumentTheyNamed(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
         INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 5, '/x/1');
@@ -427,31 +426,31 @@ func TestTransactionsCarryTheInstrumentAndItsPair(t *testing.T) {
 	for _, x := range batch.Transactions {
 		byID[x.TransactionExternalID] = x
 	}
-	for _, tc := range []struct {
-		id, instrument string
-		class          canonical.AssetClass
-		vehicle        canonical.Vehicle
-	}{
-		// A CSIF is a non-exchange-traded index fund, so the wrapper is
-		// `fund` and the exposure comes off silver's own class.
-		{"tx1", "CH0000000001", canonical.AssetClassPublicEquity, canonical.VehicleFund},
-		{"tx2", "CH0000000002", canonical.AssetClassFixedIncome, canonical.VehicleFund},
+	for _, tc := range []struct{ id, instrument string }{
+		{"tx1", "CH0000000001"},
+		{"tx2", "CH0000000002"},
 	} {
 		got := byID[tc.id]
 		if got.InstrumentExternalID == nil || *got.InstrumentExternalID != tc.instrument {
 			t.Errorf("%s instrument = %v, want %s", tc.id, got.InstrumentExternalID, tc.instrument)
 			continue
 		}
-		if got.AssetClass != tc.class || got.Vehicle != tc.vehicle {
-			t.Errorf("%s pair = (%q, %q), want (%q, %q)",
-				tc.id, got.AssetClass, got.Vehicle, tc.class, tc.vehicle)
+		// A resolved row adds nothing of its own: the instrument row
+		// carries the pair, and a copy here would only go stale
+		// against it.
+		if got.AssetClass != "" || got.Vehicle != "" {
+			t.Errorf("%s restated the instrument's pair as (%q, %q), want both empty",
+				tc.id, got.AssetClass, got.Vehicle)
 		}
 	}
-	// An unresolved row states nothing rather than guessing: the pair
-	// must stay empty or gold would file it under an exposure no feed
-	// ever asserted.
-	if u := byID["tx3"]; u.InstrumentExternalID != nil || u.AssetClass != "" || u.Vehicle != "" {
+	// An unresolved row states no instrument rather than guessing one,
+	// and offers the name it failed on so a config link can close it.
+	u := byID["tx3"]
+	if u.InstrumentExternalID != nil || u.AssetClass != "" || u.Vehicle != "" {
 		t.Errorf("an unresolved trade carried (%v, %q, %q), want all empty",
 			u.InstrumentExternalID, u.AssetClass, u.Vehicle)
+	}
+	if u.InstrumentHint != "Something Unresolved" {
+		t.Errorf("an unresolved trade hinted %q, want the name it failed on", u.InstrumentHint)
 	}
 }

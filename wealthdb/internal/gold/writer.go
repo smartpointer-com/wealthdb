@@ -300,6 +300,26 @@ func validateTaxonomyPair(op string, i int, a canonical.AssetClass, v canonical.
 	return nil
 }
 
+// validateOptionalTaxonomyPair is the same gate for a TRANSACTION,
+// where either half may be unset: a trade states only what its
+// instrument cannot, so both empty is the ordinary case and one alone
+// is legitimate (an option on a share states the wrapper and leaves
+// the exposure to the underlying). Each half is checked against its
+// own vocabulary when present — which is what keeps a wrapper value
+// out of the exposure column — and the two are checked together only
+// when both are there to check.
+func validateOptionalTaxonomyPair(op string, i int, a canonical.AssetClass, v canonical.Vehicle) error {
+	switch {
+	case a != "" && v != "":
+		return validateTaxonomyPair(op, i, a, v)
+	case a != "" && !a.Valid():
+		return fmt.Errorf("%s row %d: invalid asset_class %q", op, i, a)
+	case v != "" && !v.Valid():
+		return fmt.Errorf("%s row %d: invalid vehicle %q", op, i, v)
+	}
+	return nil
+}
+
 // InsertPositions inserts `positions` rows. Snapshot-grain: the
 // caller guarantees the window-DELETE step (per docs/DESIGN.md
 // §8.1) has already wiped overlapping rows, so a plain INSERT is
@@ -396,24 +416,9 @@ func (w *Writer) InsertTransactions(ctx context.Context, batch []canonical.Trans
 		if !batch[i].Kind.Valid() {
 			return fmt.Errorf("InsertTransactions row %d: invalid kind %q", i, batch[i].Kind)
 		}
-		// Both halves of the trade's own taxonomy are optional and both
-		// are gated when set, so a wrapper value cannot reach the
-		// exposure column — the mistake the 2-D split exists to prevent.
-		a, v := batch[i].AssetClass, batch[i].Vehicle
-		if a != "" && !a.Valid() {
-			return fmt.Errorf("InsertTransactions row %d: invalid asset_class %q", i, a)
-		}
-		if v != "" && !v.Valid() {
-			return fmt.Errorf("InsertTransactions row %d: invalid vehicle %q", i, v)
-		}
-		// And admissible TOGETHER where both are set, as an instrument's
-		// pair is. Two individually valid halves can still be a
-		// combination the taxonomy does not admit, and a trade is no
-		// freer to invent one than a holding is.
-		if a != "" && v != "" {
-			if err := validateTaxonomyPair("InsertTransactions", i, a, v); err != nil {
-				return err
-			}
+		if err := validateOptionalTaxonomyPair("InsertTransactions", i,
+			batch[i].AssetClass, batch[i].Vehicle); err != nil {
+			return err
 		}
 	}
 	const head = `
@@ -431,8 +436,8 @@ INSERT INTO transactions (
 			return append(args,
 				r.SilverSourceID, r.TransactionExternalID, r.OccurredAt,
 				r.AccountExternalID, nullableString(r.InstrumentExternalID),
-				nullableEnum(string(r.AssetClass)), nullableEnum(string(r.Vehicle)),
-				nullableEnum(r.InstrumentHint),
+				nullableEnumValue(r.AssetClass), nullableEnumValue(r.Vehicle),
+				nullableEnumValue(r.InstrumentHint),
 				string(r.Kind), r.Currency,
 				nullableDecimal(r.GrossAmount), nullableDecimal(r.NetAmount),
 				nullableDecimal(r.Quantity), nullableDecimal(r.Price),
@@ -443,15 +448,15 @@ INSERT INTO transactions (
 		})
 }
 
-// nullableEnum stores a trade's own exposure or wrapper, and NULL
-// where the adapter set none — which is every row that is not a
-// securities trade and most that are, the instrument's own pair
-// answering for those.
-func nullableEnum(v string) any {
+// nullableEnumValue is nullableEnumString's by-value twin, for a
+// typed-string column whose "unset" is the empty string rather than a
+// nil pointer — a trade's own exposure, wrapper, or instrument hint,
+// all of which the adapter leaves empty where it has nothing to add.
+func nullableEnumValue[T ~string](v T) any {
 	if v == "" {
 		return nil
 	}
-	return v
+	return string(v)
 }
 
 // storedDescription composes the `description` column from a change's

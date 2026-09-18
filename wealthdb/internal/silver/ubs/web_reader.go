@@ -404,10 +404,6 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if err != nil {
 		return nil, psnHints{}, err
 	}
-	instMeta, err := psn.instrumentMetaByISIN(ctx)
-	if err != nil {
-		return nil, psnHints{}, err
-	}
 	mt940Start, err := r.mt940FeedStart(ctx)
 	if err != nil {
 		return nil, psnHints{}, err
@@ -625,18 +621,19 @@ SELECT transaction_external_id, value_date, account_external_id,
 		text, instrumentID, message := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
 		// The statement era's own road to the instrument. The export era
 		// already resolved one from Description1's ISIN above, and keeps
-		// it: a stated identifier outranks a looked-up one.
-		var assetClass canonical.AssetClass
-		var vehicle canonical.Vehicle
-		var instrHint string
+		// it: a stated identifier outranks a looked-up one. Nothing is
+		// added beside a resolved id — the instrument's own row answers
+		// the taxonomy, and a copy here would only go stale against it.
+		var (
+			assetClass canonical.AssetClass
+			vehicle    canonical.Vehicle
+			instrHint  string
+		)
 		if instrumentID == nil {
 			if valor := normalizeValor(p.SecurityValor); valor != "" {
 				if isin, ok := valorToISIN[valor]; ok {
 					id := isin
 					instrumentID = &id
-					if m, ok := instMeta[isin]; ok {
-						assetClass, vehicle = m.AssetClass, m.Vehicle
-					}
 				} else {
 					// The valor is well-formed and names no instrument
 					// gold holds. Stated so a config link can close it.
@@ -647,8 +644,10 @@ SELECT transaction_external_id, value_date, account_external_id,
 			// says it TRADED, where the booking type says it. An
 			// unidentified security is not an unknown ASSET CLASS, and
 			// the statement draws it in its real class rather than as
-			// an untracked destination.
-			if instrumentID == nil {
+			// an untracked destination. Trades only — a cash movement
+			// whose narrative happens to carry one of these tokens
+			// traded no security.
+			if instrumentID == nil && (kind == canonical.TxKindBuy || kind == canonical.TxKindSell) {
 				assetClass, vehicle = unlinkedSecurityTaxonomy(
 					p.BookingType, strings.Join(p.Continuation, " ")+" "+text.description)
 			}
@@ -1978,14 +1977,15 @@ type webTxPayload struct {
 	CounterAccount   string   `json:"counter_account"`
 	Continuation     []string `json:"continuation"`
 	// SecurityValor is the Swiss valor the statement parser lifts off a
-	// trade's continuation line, and SecurityCaption the instrument
-	// text beside it. Statement era only: the export era states its
-	// instrument as an ISIN in Description1 and takes the other road.
-	SecurityValor   string `json:"security_valor"`
-	SecurityCaption string `json:"security_caption"`
-	Description1    string `json:"Description1"`
-	Description2    string `json:"Description2"`
-	Description3    string `json:"Description3"`
+	// trade's continuation line. Statement era only: the export era
+	// states its instrument as an ISIN in Description1 and takes the
+	// other road. The caption the parser promotes beside it is for a
+	// person reading silver, not for this adapter — the valor is the
+	// identity and the caption only a label.
+	SecurityValor string `json:"security_valor"`
+	Description1  string `json:"Description1"`
+	Description2  string `json:"Description2"`
+	Description3  string `json:"Description3"`
 }
 
 // decodeWebTxPayload decodes a silver payload, discarding a partial
