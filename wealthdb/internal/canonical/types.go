@@ -155,12 +155,30 @@ type TransactionChange struct {
 	OccurredAt            int64
 	AccountExternalID     string
 	InstrumentExternalID  *string
-	Kind                  TxKind
-	Currency              string
-	GrossAmount           *Decimal
-	NetAmount             *Decimal
-	Quantity              *Decimal
-	Price                 *Decimal
+	// AssetClass and Vehicle are what was TRADED, in the same 2-D
+	// taxonomy `positions` and `instruments` carry (TAXONOMY.md):
+	// exposure and wrapper. An option on a share is
+	// (`public_equity`, `option`) — the exposure is the underlying's
+	// and the option is how it was held, which is why a wrapper value
+	// never appears in AssetClass.
+	//
+	// They are columns rather than a lookup through the instrument for
+	// the reason `positions` carries them: one instrument is traded in
+	// more than one wrapper, so the trio with the instrument is the
+	// grain. Both empty where the adapter has nothing to add, which is
+	// every row that is not a securities trade and most that are — the
+	// instrument's own pair answers for those.
+	//
+	// Best-effort and denormalised by decision: a transaction points at
+	// no position and no lot, because most feeds cannot state which.
+	AssetClass  AssetClass
+	Vehicle     Vehicle
+	Kind        TxKind
+	Currency    string
+	GrossAmount *Decimal
+	NetAmount   *Decimal
+	Quantity    *Decimal
+	Price       *Decimal
 	// Description is a free-text label provided by the adapter
 	// when an instrument/account/event identifier doesn't carry
 	// enough context on its own. Used as a fallback for the

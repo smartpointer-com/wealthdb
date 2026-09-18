@@ -396,21 +396,42 @@ func (w *Writer) InsertTransactions(ctx context.Context, batch []canonical.Trans
 		if !batch[i].Kind.Valid() {
 			return fmt.Errorf("InsertTransactions row %d: invalid kind %q", i, batch[i].Kind)
 		}
+		// Both halves of the trade's own taxonomy are optional and both
+		// are gated when set, so a wrapper value cannot reach the
+		// exposure column — the mistake the 2-D split exists to prevent.
+		a, v := batch[i].AssetClass, batch[i].Vehicle
+		if a != "" && !a.Valid() {
+			return fmt.Errorf("InsertTransactions row %d: invalid asset_class %q", i, a)
+		}
+		if v != "" && !v.Valid() {
+			return fmt.Errorf("InsertTransactions row %d: invalid vehicle %q", i, v)
+		}
+		// And admissible TOGETHER where both are set, as an instrument's
+		// pair is. Two individually valid halves can still be a
+		// combination the taxonomy does not admit, and a trade is no
+		// freer to invent one than a holding is.
+		if a != "" && v != "" {
+			if err := validateTaxonomyPair("InsertTransactions", i, a, v); err != nil {
+				return err
+			}
+		}
 	}
 	const head = `
 INSERT INTO transactions (
     silver_source_id, transaction_external_id, occurred_at,
-    account_external_id, instrument_external_id, kind, currency,
+    account_external_id, instrument_external_id, asset_class, vehicle,
+    kind, currency,
     gross_amount, net_amount, quantity, price, description,
     counterparty, provider_category, check_number, payload
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "InsertTransactions", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
 				r.SilverSourceID, r.TransactionExternalID, r.OccurredAt,
 				r.AccountExternalID, nullableString(r.InstrumentExternalID),
+				nullableEnum(string(r.AssetClass)), nullableEnum(string(r.Vehicle)),
 				string(r.Kind), r.Currency,
 				nullableDecimal(r.GrossAmount), nullableDecimal(r.NetAmount),
 				nullableDecimal(r.Quantity), nullableDecimal(r.Price),
@@ -419,6 +440,17 @@ INSERT INTO transactions (
 				nullableString(r.CheckNumber),
 				nullableJSON(r.Payload))
 		})
+}
+
+// nullableEnum stores a trade's own exposure or wrapper, and NULL
+// where the adapter set none — which is every row that is not a
+// securities trade and most that are, the instrument's own pair
+// answering for those.
+func nullableEnum(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 // storedDescription composes the `description` column from a change's

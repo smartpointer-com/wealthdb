@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -628,5 +629,37 @@ func TestInsertTransactionsComposesDescription(t *testing.T) {
 	}
 	if none.Valid {
 		t.Errorf("a change with neither narrative nor memo stored %q, want NULL", none.String)
+	}
+}
+
+// TestInsertTransactionsRefusesAnInadmissiblePair holds a trade to the
+// bar an instrument is held to. Two individually valid halves can still
+// be a combination the taxonomy does not admit, and a trade is no freer
+// to invent one than a holding is — the gate checked each half alone
+// and let the pair through.
+func TestInsertTransactionsRefusesAnInadmissiblePair(t *testing.T) {
+	db, ctx := openMigrated(t)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+	w := NewWriter(tx)
+	err = w.InsertTransactions(ctx, []canonical.TransactionChange{{
+		SilverSourceID:        "cf",
+		TransactionExternalID: "T1",
+		AccountExternalID:     "A1",
+		Kind:                  canonical.TxKindBuy,
+		Currency:              "USD",
+		// Cash exposure in an option wrapper: each half is a real
+		// value, the pair is not one the taxonomy admits.
+		AssetClass: canonical.AssetClassCash,
+		Vehicle:    canonical.VehicleOption,
+	}})
+	if err == nil {
+		t.Fatal("an inadmissible (asset_class, vehicle) pair reached gold")
+	}
+	if !strings.Contains(err.Error(), "InsertTransactions") {
+		t.Errorf("error does not name the writer: %v", err)
 	}
 }
