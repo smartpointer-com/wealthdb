@@ -1022,3 +1022,33 @@ func TestLoadIncomePins(t *testing.T) {
 		}
 	}
 }
+
+// TestTransactionInstrumentsValidation holds the new link list to the
+// bar the other override families meet: the source must be declared,
+// and neither half of an entry may be blank.
+func TestTransactionInstrumentsValidation(t *testing.T) {
+	base := func(links map[string]map[string]string) *Config {
+		return &Config{
+			GoldDB:          "/tmp/g.db",
+			DefaultCurrency: "USD",
+			SilverSources: []SilverSource{
+				{ID: "viac", Kind: "viac", Path: "/tmp/v.db"},
+			},
+			TransactionInstruments: links,
+		}
+	}
+	if err := base(map[string]map[string]string{
+		"viac": {"Example Fund": "CH0000000001"},
+	}).Validate(); err != nil {
+		t.Errorf("a well-formed link list was rejected: %v", err)
+	}
+	for name, links := range map[string]map[string]map[string]string{
+		"unknown source":   {"nope": {"Example Fund": "CH0000000001"}},
+		"empty token":      {"viac": {"   ": "CH0000000001"}},
+		"empty instrument": {"viac": {"Example Fund": ""}},
+	} {
+		if err := base(links).Validate(); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}

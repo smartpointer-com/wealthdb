@@ -63,6 +63,30 @@ type Config struct {
 	// every position row referencing it, so config wins on
 	// overlap. See docs/DESIGN.md §13.9.
 	InstrumentOverrides map[string]map[string]InstrumentOverride `json:"instrument_overrides,omitempty"`
+	// TransactionInstruments links a securities trade whose own feed
+	// states its instrument in a way nothing else in the product can
+	// resolve — a Swiss valor for a line the instrument dimension has
+	// no valor for, a fund named before it was renamed, a ticker the
+	// symbol index never saw.
+	//
+	// Keyed by silver_source_id (outer) and then by the TOKEN the
+	// adapter looked up and failed on (inner) — read it from
+	// `wealthdb transactions -C +instrument_hint`, which prints exactly
+	// what a row was looked up by. The value is the
+	// `instrument_external_id` gold holds, copied from the gold
+	// `instruments` table.
+	//
+	// Applied by the loader after the adapter has resolved what it can,
+	// so config wins on overlap, and only on the rows a load touches —
+	// `wealthdb reload <source>` is what re-applies it against history.
+	// An entry matching nothing is a silent no-op, as the other
+	// override families' are: a token that stops appearing because the
+	// adapter learned to resolve it is a success, not an error.
+	//
+	// It states the IDENTITY only. What the instrument IS remains
+	// `instrument_overrides`' question, and the two compose: pin the
+	// link here, pin its classification there.
+	TransactionInstruments map[string]map[string]string `json:"transaction_instruments,omitempty"`
 	// InceptionOverrides pins the returns-window START date per silver
 	// source, portfolio, or account, so an entity's track record can
 	// begin at its first real capital instead of a tiny pre-history

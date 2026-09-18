@@ -482,8 +482,9 @@ func TestMigration0082DDLIsRerunnable(t *testing.T) {
 	// Replay forward, exactly as Migrate would — and extend this list
 	// when another migration re-issues the macro.
 	for _, later := range []string{
-		"0083_cashflow_reconciliation.sql",    // the memo
-		"0086_cashflow_operating_columns.sql", // the operating halves, the memo's flow term
+		"0083_cashflow_reconciliation.sql",             // the memo
+		"0086_cashflow_operating_columns.sql",          // the operating halves, the memo's flow term
+		"0099_report_transactions_instrument_hint.sql", // report_transactions
 	} {
 		rerunMigrationDDL(t, db, ctx, later)
 	}

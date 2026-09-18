@@ -68,6 +68,10 @@ type TransactionRow struct {
 	// CheckNumber is the cheque number for an outgoing paper cheque,
 	// nil on everything else (gold migration 0075).
 	CheckNumber *string
+	// InstrumentHint is the token an adapter resolved this row's
+	// instrument from when that resolution failed; nil where none was
+	// needed or it succeeded. `transaction_instruments` is keyed by it.
+	InstrumentHint *string
 	// CashflowSection, CashflowClass and CashflowGroup are the node the
 	// cash flow statement resolved the row to (migration 0081): which
 	// section of the statement, which inner node, which leaf. Read from
@@ -137,7 +141,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			description, valueOut                  sql.NullString
 			merchant, spendPrimary, spendDetailed  sql.NullString
 			payer, incomePrimary, incomeDetailed   sql.NullString
-			checkNumber                            sql.NullString
+			checkNumber, instrumentHint            sql.NullString
 			cfSection, cfClass, cfGroup            sql.NullString
 		)
 		if err := rows.Scan(
@@ -148,7 +152,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			&r.Kind, &r.Currency,
 			&grossStr, &netStr, &qtyStr, &priceStr,
 			&description, &merchant, &spendPrimary, &spendDetailed,
-			&payer, &incomePrimary, &incomeDetailed, &checkNumber,
+			&payer, &incomePrimary, &incomeDetailed, &checkNumber, &instrumentHint,
 			&cfSection, &cfClass, &cfGroup, &valueOut,
 		); err != nil {
 			return nil, fmt.Errorf("TransactionsBetween scan: %w", err)
@@ -161,6 +165,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 		r.IncomePrimary = nullStringToPtr(incomePrimary)
 		r.IncomeDetailed = nullStringToPtr(incomeDetailed)
 		r.CheckNumber = nullStringToPtr(checkNumber)
+		r.InstrumentHint = nullStringToPtr(instrumentHint)
 		r.CashflowSection = nullStringToPtr(cfSection)
 		r.CashflowClass = nullStringToPtr(cfClass)
 		r.CashflowGroup = nullStringToPtr(cfGroup)

@@ -208,6 +208,25 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// transaction_instruments: the source must be declared, the lookup
+	// token must be non-empty, and so must the instrument it names. The
+	// instrument id cannot be checked against gold here (no DB access
+	// at config load) — the same known gap the families above carry —
+	// so a typo'd id resolves to a dimension row that is not there.
+	for sourceID, byToken := range c.TransactionInstruments {
+		if !seenIDs[sourceID] {
+			return fmt.Errorf("config: transaction_instruments[%q]: no silver_sources[].id matches", sourceID)
+		}
+		for token, instrID := range byToken {
+			if strings.TrimSpace(token) == "" {
+				return fmt.Errorf("config: transaction_instruments[%q]: empty lookup token key", sourceID)
+			}
+			if strings.TrimSpace(instrID) == "" {
+				return fmt.Errorf("config: transaction_instruments[%q][%q]: empty instrument_external_id", sourceID, token)
+			}
+		}
+	}
+
 	// inception_overrides: source ids must name a declared silver
 	// source (catches typos early); portfolio/account ids must be
 	// non-empty; every value must parse as YYYY-MM-DD. Portfolio /

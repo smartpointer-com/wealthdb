@@ -55,7 +55,7 @@ load semantics.`)
 		return errs.Newf(2, "load: '-a' and a positional id are mutually exclusive")
 	case *all:
 		for _, s := range cfg.SilverSources {
-			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, ledger)
+			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, cfg.TransactionInstruments, ledger)
 			if err != nil {
 				return err
 			}
@@ -70,7 +70,7 @@ load semantics.`)
 		if !ok {
 			return fmt.Errorf("load: silver source %q not found in config", id)
 		}
-		spec, err := buildSourceSpec(*s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, ledger)
+		spec, err := buildSourceSpec(*s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, cfg.TransactionInstruments, ledger)
 		if err != nil {
 			return err
 		}
@@ -330,6 +330,7 @@ func buildSourceSpec(
 	accountOverrides map[string]map[string]config.AccountOverride,
 	portfolioOverrides map[string]map[string]config.PortfolioOverride,
 	instrumentOverrides map[string]map[string]config.InstrumentOverride,
+	transactionInstruments map[string]map[string]string,
 	transferLedger map[string][]loader.TransferEntry,
 ) (loader.SourceSpec, error) {
 	openSpec, err := s.ToSilverOpenSpec()
@@ -372,6 +373,12 @@ func buildSourceSpec(
 				AssetClass: ov.AssetClass,
 				Vehicle:    ov.Vehicle,
 			}
+		}
+	}
+	if links := transactionInstruments[s.ID]; len(links) > 0 {
+		spec.TransactionInstruments = make(map[string]string, len(links))
+		for token, instrID := range links {
+			spec.TransactionInstruments[token] = instrID
 		}
 	}
 	return spec, nil

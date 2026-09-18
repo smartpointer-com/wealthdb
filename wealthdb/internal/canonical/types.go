@@ -171,14 +171,29 @@ type TransactionChange struct {
 	//
 	// Best-effort and denormalised by decision: a transaction points at
 	// no position and no lot, because most feeds cannot state which.
-	AssetClass  AssetClass
-	Vehicle     Vehicle
-	Kind        TxKind
-	Currency    string
-	GrossAmount *Decimal
-	NetAmount   *Decimal
-	Quantity    *Decimal
-	Price       *Decimal
+	AssetClass AssetClass
+	Vehicle    Vehicle
+	// InstrumentHint is the token the adapter looked the instrument up
+	// by and FAILED on — a valor, a fund name, a ticker, whatever the
+	// feed states. Set only where InstrumentExternalID is nil.
+	//
+	// It exists so the config override that closes the tail has one key
+	// for every source. The alternative was for the loader to reach
+	// into each feed's payload for a differently-named field, which
+	// would put three source-shaped parsers in the one layer that is
+	// supposed to be source-blind.
+	//
+	// Stored (gold migration 0098) rather than consumed and dropped:
+	// the token is what a person authoring that link needs to see, and
+	// `instrument_external_id IS NULL AND instrument_hint IS NOT NULL`
+	// is exactly the set still to close.
+	InstrumentHint string
+	Kind           TxKind
+	Currency       string
+	GrossAmount    *Decimal
+	NetAmount      *Decimal
+	Quantity       *Decimal
+	Price          *Decimal
 	// Description is a free-text label provided by the adapter
 	// when an instrument/account/event identifier doesn't carry
 	// enough context on its own. Used as a fallback for the

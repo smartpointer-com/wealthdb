@@ -628,12 +628,19 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// it: a stated identifier outranks a looked-up one.
 		var assetClass canonical.AssetClass
 		var vehicle canonical.Vehicle
+		var instrHint string
 		if instrumentID == nil {
-			if isin, ok := valorToISIN[normalizeValor(p.SecurityValor)]; ok {
-				id := isin
-				instrumentID = &id
-				if m, ok := instMeta[isin]; ok {
-					assetClass, vehicle = m.AssetClass, m.Vehicle
+			if valor := normalizeValor(p.SecurityValor); valor != "" {
+				if isin, ok := valorToISIN[valor]; ok {
+					id := isin
+					instrumentID = &id
+					if m, ok := instMeta[isin]; ok {
+						assetClass, vehicle = m.AssetClass, m.Vehicle
+					}
+				} else {
+					// The valor is well-formed and names no instrument
+					// gold holds. Stated so a config link can close it.
+					instrHint = valor
 				}
 			}
 		}
@@ -666,6 +673,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			InstrumentExternalID:  instrumentID,
 			AssetClass:            assetClass,
 			Vehicle:               vehicle,
+			InstrumentHint:        instrHint,
 			Kind:                  kind,
 			Currency:              ccy,
 			NetAmount:             netAmount,

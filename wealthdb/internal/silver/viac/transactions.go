@@ -85,6 +85,12 @@ SELECT t.transaction_external_id, t.occurred_at, t.account_external_id,
 			id := instID.String
 			tx.InstrumentExternalID = &id
 			tx.AssetClass, tx.Vehicle = taxonomyFor(instClass, instName)
+		} else if desc != "" && (kind == canonical.TxKindBuy || kind == canonical.TxKindSell) {
+			// The fund VIAC named, which this silver's instrument table
+			// does not carry under that spelling — a fund renamed after
+			// the trade, most often. Stated so a config link can close
+			// it; only on a trade, since no other kind names a fund.
+			tx.InstrumentHint = desc
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}

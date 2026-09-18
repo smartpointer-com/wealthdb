@@ -306,6 +306,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 		}
 		var instrPtr *string
 		var vehicle canonical.Vehicle
+		var hint string
 		resolve := func(sym string) *string {
 			// Web stores the ticker as instrument_key. Translate
 			// to the api-side CUSIP when known so the row lands
@@ -320,8 +321,13 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 		}
 		if instrumentKey.Valid && instrumentKey.String != "" {
 			instrPtr = resolve(instrumentKey.String)
-		} else if sym, isOption, ok := securityNameInstrument(
-			extractWebTxSecurityName(payload)); ok {
+		} else if sec := extractWebTxSecurityName(payload); sec == "" {
+			// nothing stated: no hint to offer
+		} else if sym, isOption, ok := securityNameInstrument(sec); !ok {
+			// A name of neither shape. Stated so a config link can
+			// close it rather than leaving the row mute.
+			hint = sec
+		} else {
 			// The 1099-B road: the feed states the instrument by NAME
 			// and nothing else. An option resolves to its underlying
 			// and says so in the vehicle — the exposure it touched is
@@ -341,6 +347,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			AccountExternalID:     hash,
 			InstrumentExternalID:  instrPtr,
 			Vehicle:               vehicle,
+			InstrumentHint:        hint,
 			Kind:                  txKind,
 			// Currency unknown from the web row — Schwab statements
 			// don't structure it. Default to USD: Schwab

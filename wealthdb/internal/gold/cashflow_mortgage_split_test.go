@@ -121,9 +121,9 @@ func TestAMortgageInstalmentSplitsByWhatItRetired(t *testing.T) {
 
 	got := mortgageShares(t, db, ctx)
 	for _, tc := range []struct {
-		id                 string
+		id                  string
 		interest, principal float64
-		why                string
+		why                 string
 	}{
 		{"M-MIXED", -1500, -8000, "the period retired 8,000 of the debt; the rest bought the use of it"},
 		{"M-EXTRA", 0, -44000, "an extraordinary repayment retires its own face value"},

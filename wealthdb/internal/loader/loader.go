@@ -52,6 +52,10 @@ type SourceSpec struct {
 	// adapter has classified, to the instrument dimension and to
 	// every position row referencing the instrument.
 	InstrumentOverrides map[string]InstrumentOverride
+	// TransactionInstruments links a trade the adapter could not
+	// resolve, keyed by the token it looked up and failed on
+	// (canonical.TransactionChange.InstrumentHint).
+	TransactionInstruments map[string]string
 	// TransferLedger holds this source's rows from the optional
 	// equity-transfer ledger (config `equity_transfers`). The loader
 	// injects each as a canonical transfer_in/transfer_out transaction
@@ -209,7 +213,7 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 		}
 		res.SnapshotsLoaded = nSnap
 
-		nTx, err := applyTransactions(ctx, tx, spec.ID, conn, window)
+		nTx, err := applyTransactions(ctx, tx, spec.ID, conn, window, spec.TransactionInstruments)
 		if err != nil {
 			return nil, fmt.Errorf("Load(%s): apply transactions: %w", spec.ID, err)
 		}
@@ -377,7 +381,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 }
 
 // applyTransactions drains conn.Transactions into the gold writer.
-func applyTransactions(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window) (int, error) {
+func applyTransactions(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, transactionInstruments map[string]string) (int, error) {
 	stream, err := conn.Transactions(ctx, w)
 	if err != nil {
 		return 0, err
@@ -392,6 +396,9 @@ func applyTransactions(ctx context.Context, tx *sql.Tx, sourceID string, conn si
 			return total, err
 		}
 		stampTransactionBatch(&batch, sourceID)
+		// Config-file overrides go on top of whatever the adapter
+		// emitted, as they do on the snapshot side; see DESIGN.md §13.9.
+		applyTransactionInstruments(batch.Transactions, transactionInstruments)
 		if err := writer.InsertTransactions(ctx, batch.Transactions); err != nil {
 			return total, err
 		}
@@ -683,6 +690,34 @@ func applyInstrumentOverrides(instruments []canonical.InstrumentChange, position
 			continue
 		}
 		applyInstrumentOverrideTo(&positions[i].AssetClass, &positions[i].Vehicle, ov)
+	}
+}
+
+// applyTransactionInstruments links a trade whose feed named an
+// instrument nothing in the product could resolve, keyed by the token
+// the adapter looked up and failed on.
+//
+// One key for every source, because the adapter states the token rather
+// than the loader digging it out of a payload whose shape differs per
+// feed. A row that already resolved is never touched: config closes the
+// tail, it does not second-guess the adapter — and a token still listed
+// after the adapter learned to resolve it is a silent no-op rather than
+// an error, because that is what success looks like.
+//
+// The IDENTITY only. What the instrument is remains
+// `instrument_overrides`' question; the two compose.
+func applyTransactionInstruments(txns []canonical.TransactionChange, links map[string]string) {
+	if len(links) == 0 {
+		return
+	}
+	for i := range txns {
+		if txns[i].InstrumentExternalID != nil || txns[i].InstrumentHint == "" {
+			continue
+		}
+		if id, ok := links[txns[i].InstrumentHint]; ok && id != "" {
+			linked := id
+			txns[i].InstrumentExternalID = &linked
+		}
 	}
 }
 
