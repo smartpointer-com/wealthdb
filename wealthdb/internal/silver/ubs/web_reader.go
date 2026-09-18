@@ -643,6 +643,15 @@ SELECT transaction_external_id, value_date, account_external_id,
 					instrHint = valor
 				}
 			}
+			// Whether or not a valor was there to try: what the row
+			// says it TRADED, where the booking type says it. An
+			// unidentified security is not an unknown ASSET CLASS, and
+			// the statement draws it in its real class rather than as
+			// an untracked destination.
+			if instrumentID == nil {
+				assetClass, vehicle = unlinkedSecurityTaxonomy(
+					p.BookingType, strings.Join(p.Continuation, " ")+" "+text.description)
+			}
 		}
 		description := silver.StrPtrIfNonEmpty(text.description)
 		payee := silver.StrPtrIfNonEmpty(text.counterparty)
