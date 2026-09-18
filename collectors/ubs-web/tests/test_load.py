@@ -1105,3 +1105,73 @@ def test_identical_rows_sharing_a_number_stay_apart(tmp_path):
     loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path, rows))
     assert conn.execute(
         "SELECT COUNT(*) FROM transactions").fetchone()[0] == 3
+
+
+def test_a_partial_window_does_not_re_auction_the_bare_number(tmp_path):
+    """The regression that matters most, because it is routine rather
+    than exotic: UBS clamps its transactions UI and `--lookback` is a
+    window, so a later run sees only PART of a group.
+
+    Picking the largest member of whatever the dump can see hands the
+    bare number to a different row each time — overwriting the row that
+    held it and storing the newcomer twice, which is the silent loss the
+    whole id scheme exists to prevent."""
+    conn = _fresh_db(tmp_path)
+    pay = _txn_row("02-11", "-6000.00", "", "1000.00", "ZD00000TI0000000",
+                   "Example Payee; XX EXAMPLECITY 0000", "e-banking payment order")
+    fee = _txn_row("02-11", "-25.00", "", "975.00", "ZD00000TI0000000",
+                   "Third-Party Charges", "")
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path / "r0", [pay, fee]))
+
+    def state():
+        return {r[0]: r[1] for r in conn.execute(
+            "SELECT transaction_external_id, amount_debit FROM transactions")}
+    full = state()
+    assert full["ZD00000TI0000000"] == -6000.00, "the payment should hold the bank's number"
+
+    # Three more runs whose window covers only the fee.
+    for i, snap in enumerate((2000, 3000, 4000)):
+        loader._load_transactions(
+            conn, snap, _seed_txn_bronze(tmp_path / f"r{i + 1}", [fee]))
+        assert state() == full, f"run {i} moved the bare number or lost a row"
+
+    # And the full window returning changes nothing either.
+    loader._load_transactions(conn, 5000, _seed_txn_bronze(tmp_path / "r9", [pay, fee]))
+    assert state() == full
+
+
+def test_a_group_nobody_holds_yet_gives_the_number_to_the_payment(tmp_path):
+    """The advice pass is keyed by UBS's number and an advice names a
+    payment rather than the fee beside it, so an unclaimed group hands
+    the number to the largest movement."""
+    conn = _fresh_db(tmp_path)
+    rows = [
+        _txn_row("02-11", "-25.00", "", "975.00", "ZD00000TI0000000",
+                 "Third-Party Charges", ""),
+        _txn_row("02-11", "-6000.00", "", "1000.00", "ZD00000TI0000000",
+                 "Example Payee; XX EXAMPLECITY 0000", "e-banking payment order"),
+    ]
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path, rows))
+    bare = conn.execute(
+        "SELECT amount_debit FROM transactions WHERE transaction_external_id = ?",
+        ("ZD00000TI0000000",)).fetchone()
+    assert bare[0] == -6000.00
+
+
+def test_a_holder_this_window_cannot_see_keeps_its_number(tmp_path):
+    """A group whose holder is outside the window is not this dump's to
+    re-key. Nothing it carries may take that number, even where the
+    dump's own largest would otherwise have claimed it."""
+    conn = _fresh_db(tmp_path)
+    big = _txn_row("02-11", "-9000.00", "", "1000.00", "ZD00000TI0000001",
+                   "Example Payee; XX EXAMPLECITY 0000", "e-banking payment order")
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path / "r0", [big]))
+
+    other = _txn_row("05-05", "-40.00", "", "960.00", "ZD00000TI0000001",
+                     "Third-Party Charges", "")
+    loader._load_transactions(conn, 2000, _seed_txn_bronze(tmp_path / "r1", [other]))
+
+    rows = {r[0]: r[1] for r in conn.execute(
+        "SELECT transaction_external_id, amount_debit FROM transactions")}
+    assert rows["ZD00000TI0000001"] == -9000.00, "the absent holder lost its number"
+    assert len(rows) == 2, rows

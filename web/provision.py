@@ -2230,7 +2230,14 @@ def _cashflow_atoms_cte(where, sum_expr):
     return (
         "WITH n AS (\n" + _cashflow_nodes(where, sum_expr) + "),\n"
         "cls AS (SELECT section, class, sum(v) AS net FROM n GROUP BY 1, 2\n"
-        "        UNION ALL SELECT 'cash', 'Cash', -sum(v) FROM n),\n"
+        # The residual, named as the gold macro names it
+        # (`cashflow_class_label`): the section is the four others summed
+        # and negated, so cash the household kept is cash the pool
+        # absorbed — savings, in either direction. `Cash` alone read as
+        # physical money, which the diagram already has a node for in
+        # the `Cash withdrawal` consumption leaf.
+        "        UNION ALL SELECT 'cash', cashflow_class_label('cash'),\n"
+        "                          -sum(v) FROM n),\n"
         # A class drawn into a leaf of the same NAME is a self-edge,
         # which a Sankey renders as a node pointing at itself, so it
         # attaches to the hub directly instead. That rule is stated as
@@ -2294,19 +2301,34 @@ def _cashflow_sankey_sql(where, sum_expr, share=False):
     value = "e.value / (SELECT total FROM hub) * 100" if share else "e.value"
     return (
         _cashflow_atoms_cte(where, sum_expr) + ",\n"
+        # `kin` groups a class's leaves together in the emitted edge
+        # list: a leaf sorts by ITS CLASS's size first and its own
+        # second, so reading the rows one can see which class each leaf
+        # belongs to. An atomic node is its own kin, so stages 2 and 3
+        # sort by value as before.
+        #
+        # It does NOT decide the diagram's layout, and it was measured
+        # rather than assumed. The renderer seeds each column in the
+        # order the rows arrive and then RELAXES, pulling every node
+        # toward the weighted mean of its neighbours for a fixed number
+        # of iterations; the seed is forgotten. Running the real edge
+        # list through that layout with the rows in this order and in
+        # plain value order gives the same column, node for node. If the
+        # leaf column reads wrongly, the lever is `sankey.node_align`
+        # (see the parameter list) and not this ORDER BY.
         "e AS (SELECT CASE WHEN net > 0 THEN 2 ELSE 3 END AS stage,\n"
         "             CASE WHEN net > 0 THEN node ELSE 'Household' END AS source,\n"
         "             CASE WHEN net > 0 THEN 'Household' ELSE node END AS target,\n"
-        "             abs(net) AS value\n"
+        "             abs(net) AS value, abs(net) AS kin\n"
         "        FROM atoms WHERE net <> 0\n"
         "      UNION ALL\n"
         "      SELECT CASE WHEN cnet > 0 THEN 1 ELSE 4 END,\n"
         "             CASE WHEN cnet > 0 THEN grp ELSE class END,\n"
         "             CASE WHEN cnet > 0 THEN class ELSE grp END,\n"
-        "             abs(net)\n"
+        "             abs(net), abs(cnet)\n"
         "        FROM att WHERE stays AND net <> 0)\n"
         f"SELECT e.stage, e.source, e.target, {value} AS value\n"
-        "  FROM e ORDER BY e.stage, e.value DESC")
+        "  FROM e ORDER BY e.stage, e.kin DESC, e.value DESC")
 
 
 def _family_native_kit(db_id, view, filters, pickers, neg, note):
@@ -3326,6 +3348,7 @@ def dashboard_parameters(model_ids, mode, name=""):
                     "slug": "currency", "type": "string/=",
                     "sectionId": "string", "isMultiSelect": False,
                     "default": ["USD"], "required": True,
+                    "values_query_type": "list",
                     "values_source_type": "card",
                     "values_source_config": {
                         "card_id": model_ids["report_returns"],
@@ -3382,6 +3405,7 @@ def dashboard_parameters(model_ids, mode, name=""):
                              "slug": "currency", "type": "string/=",
                              "sectionId": "string", "isMultiSelect": False,
                              "default": ["USD"], "required": True,
+                             "values_query_type": "list",
                              "values_source_type": "static-list",
                              "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
         # The Investing grain: net the section as one movement — the
@@ -3394,6 +3418,7 @@ def dashboard_parameters(model_ids, mode, name=""):
                      "slug": "investing", "type": "string/=",
                      "sectionId": "string", "isMultiSelect": False,
                      "default": ["whole"], "required": True,
+                     "values_query_type": "list",
                      "values_source_type": "static-list",
                      "values_source_config": {"values": ["whole", "class"]}}
         # BOTH dashboards carry the same five: unlike the spending and
@@ -3418,6 +3443,7 @@ def dashboard_parameters(model_ids, mode, name=""):
                            "slug": "currency", "type": "string/=",
                            "sectionId": "string", "isMultiSelect": False,
                            "default": ["USD"], "required": True,
+                           "values_query_type": "list",
                            "values_source_type": "static-list",
                            "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
         pickers = [income_currency, time_range, source]
@@ -3452,6 +3478,7 @@ def dashboard_parameters(model_ids, mode, name=""):
     currency = {"id": SPEND_CURRENCY_PARAM_ID, "name": "Currency",
                 "slug": "currency", "type": "string/=", "sectionId": "string",
                 "isMultiSelect": False, "default": ["USD"], "required": True,
+                "values_query_type": "list",
                 "values_source_type": "static-list",
                 "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
     # The account picker targets `display_name` — the model's name for

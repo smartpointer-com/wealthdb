@@ -313,8 +313,8 @@ var builtinRules = []spendRule{
 		// and only the principal share is the own-account move. The
 		// transaction does not carry the split and no narrative yields
 		// it, so the cash flow statement derives it from the mortgage
-		// balance's observed change between snapshots (migration 0091,
-		// `cashflow_mortgage_principal`). The rule stays whole: it
+		// balance's observed change between snapshots — the allocation
+		// inside `cashflow_lines_base`. The rule stays whole: it
 		// places the payment and names the class, and the statement
 		// splits the amount. A rule cannot do the splitting — it sees
 		// one row's text and never the lender's balance.

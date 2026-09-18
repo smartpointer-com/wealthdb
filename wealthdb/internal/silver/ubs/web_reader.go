@@ -476,7 +476,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// booking in that window is held by both feeds and excluded by
 		// neither window. The MT940 row keeps it, as it does on every
 		// day after the cut.
-		if seam[webTxTextKey{account: accountID, txnNo: txID}] {
+		if seam[webTxTextKey{account: accountID, txnNo: webTxNumber(txID)}] {
 			folded++
 			continue
 		}
@@ -849,6 +849,34 @@ func withResolvedMortgage(payload json.RawMessage, stamp, id string) json.RawMes
 		string(payload), `"counter_account":`+string(encoded)))
 }
 
+// webTxNumber returns the bank's own "Transaction no." from a web row's
+// silver id.
+//
+// The id IS that number, except on the rows whose number the bank gave
+// to several movements at once — a deposit product stamps the number
+// derived from its serial on every movement of its life, and a
+// cross-border payment carries the correspondent's charge under the
+// number of the payment it belongs to. The collector tells those apart
+// with a suffix of its own (`_assign_export_txn_ids`), which is not part
+// of anything the bank wrote and has to come off wherever the id is read
+// AS a number: the reference this adapter publishes for the matcher to
+// pair legs on, the PSN seam fold, and the narrative overlay. Left on,
+// the row simply matches nothing — silently, because a reference that
+// pairs nothing looks exactly like a movement that has no twin.
+//
+// A statement-era id comes back whole. Those are the collector's own
+// content hashes, `#` and all, where the suffix names a LEG of a split
+// movement; folding two legs onto one key would be a different bug.
+func webTxNumber(txID string) string {
+	if isStatementEraID(txID) {
+		return txID
+	}
+	if i := strings.IndexByte(txID, '#'); i >= 0 {
+		return txID[:i]
+	}
+	return txID
+}
+
 // bankRefKey is the payload key the MT940 feed already writes its `:61:`
 // account-servicing-institution reference to (cashMovementPayload.BankRef),
 // so a consumer reads ONE field whichever feed produced the row — the same
@@ -877,7 +905,7 @@ func webBankRef(txID string) string {
 	if isStatementEraID(txID) {
 		return ""
 	}
-	return txID
+	return webTxNumber(txID)
 }
 
 // withBankRef stamps the bank's own reference for the entry onto a row's

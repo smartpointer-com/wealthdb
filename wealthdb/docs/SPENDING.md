@@ -120,10 +120,10 @@ the product does NOT hold is the `debt_repayment` delta below, which is
 what the dropped primary was for minus the interest share nothing in
 the data splits out.
 
-### The eleven deltas the spending side reads
+### The twelve deltas the spending side reads
 
-Eleven values the SPENDING side reads are the product's own rather than
-Plaid's — sixteen rows across both families, of which these eleven
+Twelve values the SPENDING side reads are the product's own rather than
+Plaid's — seventeen rows across both families, of which these twelve
 reach this one. They are primary-level (primary == detailed, so each
 groups as its own bucket) and keep the repo's lowercase enum idiom,
 which also marks them at a glance as not-from-Plaid. The ones marked
@@ -2111,15 +2111,14 @@ tidies the store — by then the rows have moved on.
 
 ## 10. Open follow-ups
 
-- **`TODO(cashflow)`: the interest-versus-principal split.** Part of a
-  mortgage payment — the interest — really is consumed, and only the
-  principal share is the own-account move. The transaction does not
-  carry the split, and deriving it needs an amortisation view the
-  product has no place for yet. Recorded in `rules.go` and in the
-  taxonomy header beside the `LOAN_PAYMENTS` drop.
-  [CASHFLOW.md](CASHFLOW.md) §11 carries what the statement loses
-  meanwhile: `financing` has no source a config rule can reach, so an
-  amortization is drawn in `vehicles · Untracked accounts`.
+- **The interest-versus-principal split — DONE, and not here.** Part of
+  a mortgage payment is consumed and only the principal share is the
+  own-account move, but no category can carry that: the split needs the
+  lender's own outstanding balance. The cash flow statement derives it
+  and draws the two shares as separate leaves
+  ([CASHFLOW.md](CASHFLOW.md) §5). The rule in `rules.go` is unchanged
+  and still places the payment whole — a rule sees one row's text and
+  never a balance.
 - **Model-tier measurements.** The `categorize` loop is covered
   against a scripted client, and batching was set from live runs: a
   backlog sent whole times out, and a local model answers a batch of

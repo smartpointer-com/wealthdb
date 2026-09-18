@@ -192,7 +192,7 @@ SELECT transaction_external_id, account_external_id, counterparty, description_k
 		}
 		p, pdfBackfill := decodeWebTxEra(payload)
 		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
-		out[webTxTextKey{account: acct, txnNo: txID}] = text
+		out[webTxTextKey{account: acct, txnNo: webTxNumber(txID)}] = text
 	}
 	return out, rows.Err()
 }

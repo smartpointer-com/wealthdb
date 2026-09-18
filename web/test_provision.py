@@ -1238,6 +1238,22 @@ for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
     check("...and gives financing a leaf stage, mortgage having two",
           "'operating_in', 'operating_out', 'financing'" in _q, _q[:400])
 
+# A picker whose values are known must OFFER them. Metabase derives the
+# widget from `values_query_type`, and a parameter that declares a value
+# source but not that key renders as a free-text box: the reader has to
+# know that the currencies are spelled USD/CHF/EUR and the investing
+# grains `whole`/`class`, and a typo silently filters everything away.
+_LISTED = {"Currency", "Investing"}
+_seen_listed = 0
+for _dash, _def in p.dashboard_defs().items():
+    for _param in p.dashboard_parameters(MID, _def[1], _dash):
+        if _param.get("name") in _LISTED:
+            _seen_listed += 1
+            check(f"'{_dash}' offers its {_param['name']} values as a list",
+                  _param.get("values_query_type") == "list", _param)
+check("...and that check read every dashboard that has one",
+      _seen_listed >= 8, _seen_listed)
+
 check("web_cashflow is one of the views provisioning requires",
       "web_cashflow" in p.web_views_wanted(), p.web_views_wanted())
 

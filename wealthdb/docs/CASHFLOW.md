@@ -327,8 +327,8 @@ alone would collide a gift given with a gift received in one edge list.
 | operating out | `consumption` · `fees` · `taxes` · `giving` · `(uncategorized)` |
 | investing | the instrument's asset class, every value but `cash`; `other` where a row names an instrument whose class is missing; `elsewhere` for the rows that name no instrument at all; all of them folded into `investments` under `--investing whole` |
 | financing | `mortgage` · `loans` |
-| vehicles | `retirement` · `education` · `health` · `trusts` · `untracked` |
-| cash | `cash` |
+| vehicles | `retirement` · `education` · `health` · `trusts` · `deposits` · `untracked` |
+| cash | `cash`, drawn as **Cash savings** |
 
 **Four lifts and no new tier.** Yield is lifted out of income, and
 fees, taxes and giving out of spending. The families' primaries cannot
@@ -773,8 +773,8 @@ one picker the design did not ask for. It reaches the by-month charts
 and `Largest flows`, and the headline figures and the diagram decline
 it. A statement narrowed to one section is not a statement; a savings
 rate or a yield share narrowed to one has lost a leg of its own ratio;
-and a one-section diagram draws a Cash node that absorbs the whole
-section rather than the residual it names. A by-month chart that is
+and a one-section diagram draws a `Cash savings` node that absorbs the
+whole section rather than the residual it names. A by-month chart that is
 already scoped to one section — Inflows, Outflows, Investing — goes
 empty when a different section is picked, which is what a dashboard
 filter means. The scope is enforced by withholding the filter's
@@ -840,6 +840,37 @@ source stated itself, what the matcher asserted on a shared reference
 and on a described counter leg, and — loudly — how many pooled accounts
 have no tax wrapper. The far accounts are rows, one per leg; the
 matcher's figures are pairs, each writing two of them.
+
+### The diagram's node order is the renderer's, not ours
+
+Within a column the BI layer's Sankey orders nodes by a force
+relaxation: each node is pulled toward the weighted centre of its
+neighbours and the column is re-sorted on position, for a fixed number
+of iterations. It converges to a fixed point that ignores the input —
+reversing the entire edge list produces a byte-identical layout — and
+the BI layer exposes no iteration count and no node-sort setting.
+
+So a class's leaves are NOT drawn together. A large leaf settles high
+and can land among another class's leaves, which reads as though it
+belonged to that class. Where it lands depends on the data: over one
+window a mortgage's amortisation sits second in the column, over
+another it sits twenty-fourth.
+
+Two things follow, and both were measured rather than assumed.
+
+The edge list's own ORDER BY groups a class's leaves together, which
+makes the rows readable — and does nothing for the diagram. The comment
+on it says so.
+
+And flattening a class into its leaves, so it has none to interleave,
+is not a fix. It is tidier by the count (four to six order changes down
+the column against eight to twelve) but only because it removes a
+level: the same interleaving reappears between whichever classes still
+have leaves, so a mortgage's amortisation stops landing among the
+consumption leaves and a gift starts landing among the fees. Trading a
+node of the vocabulary for that is a fix aimed at one window of one
+deployment. If the BI layer ever exposes the layout's iteration count,
+this becomes a visualisation setting and none of it is a data question.
 
 ### After an upgrade, the statement is wrong until a load has run
 

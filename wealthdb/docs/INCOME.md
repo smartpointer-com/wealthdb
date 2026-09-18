@@ -155,7 +155,7 @@ different years. Netting the payout out would count the outflow and drop the
 inflow. `reimbursement` keeps the cases where the outflow IS identifiable: a
 utility credit against a bill, a merchant reversing its own charge.
 
-**Twelve deltas**, ours, primary-level and lowercase, decided from
+**Thirteen deltas**, ours, primary-level and lowercase, decided from
 structure a payer's name cannot reveal:
 
 | value | meaning | in the base? |
@@ -537,7 +537,7 @@ one number answers for both.
 1. **Three CLI views**, `summary / types / transactions`. No `payers`
    view: payers rank on the dashboard only, as merchants do.
 2. **Plaid's `INCOME` vendored verbatim**, plus nine extensions and
-   eight deltas. Widened deliberately for a general audience — the
+   nine deltas. Widened deliberately for a general audience — the
    product is published, so the vocabulary names what a household
    commonly receives rather than what one deployment does.
 3. **Gross as booked.** `withheld` is a memo, off by default, never read

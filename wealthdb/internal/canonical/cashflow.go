@@ -141,7 +141,12 @@ const (
 	ClassDeposits  CashflowClass = "deposits"
 	ClassUntracked CashflowClass = "untracked"
 
-	// ClassCash is the residual's one class, as it is its one node.
+	// ClassCash is the residual's one class, as it is its one node. It
+	// draws as `Cash savings`: the section is the other four summed and
+	// negated, so cash the household kept is cash the pool absorbed —
+	// money set aside, or drawn on, in either direction. `Cash` alone
+	// read as physical money, which the statement already names
+	// elsewhere in the `cash_withdrawal` consumption leaf.
 	ClassCash CashflowClass = "cash"
 )
 

@@ -33,20 +33,21 @@ import "strings"
 // own-account move to a tracked AccountKindMortgage (docs/SPENDING.md
 // §2), and an instalment to a lender the product does not track is the
 // `debt_repayment` delta rather than a merchant category.
-// TODO(cashflow): interest-versus-principal split — docs/SPENDING.md
-// §10, and docs/CASHFLOW.md §11, where the statement that would consume
-// the split records what it costs to be without it.
+// The interest-versus-principal split of such an instalment is the
+// statement's, not this vocabulary's: it needs the lender's own
+// balance, which no category can carry (docs/CASHFLOW.md §5).
 //
-// Sixteen delta values are ours rather than Plaid's and are
+// Seventeen delta values are ours rather than Plaid's and are
 // primary-level (primary == detailed, so they group as their own
 // bucket): `internal_transfer`, `cash_withdrawal`, `card_spend`,
 // `gift`, `investment`, `other`, `debt_repayment`, `capital_return`,
-// `loan_proceeds`, `reimbursement`, `inheritance`, `cash_deposit` and
+// `loan_proceeds`, `reimbursement`, `inheritance`, `cash_deposit`,
+// `deposit_transfer` and
 // the four vehicle crossings — `retirement_transfer`,
 // `education_transfer`, `health_transfer` and `trust_transfer`. They
 // keep the repo's lowercase enum idiom, which also marks them at a
-// glance as not-from-Plaid. Seven of them — `internal_transfer`,
-// `gift`, `other` and the four crossings — are one row read from
+// glance as not-from-Plaid. Eight of them — `internal_transfer`,
+// `gift`, `other` and the five crossings — are one row read from
 // either side, which is what FamilyBoth means.
 //
 // EXTENSIONS are the third class, and they differ from the deltas in
@@ -128,8 +129,9 @@ const (
 	IncomeDetailedCashDeposit   = "cash_deposit"
 )
 
-// The four vehicle crossings: a move between the household and an
-// earmarked pool whose far side the product does not hold. Read from
+// The vehicle crossings: a move between the household and a pool whose
+// far side the product does not hold — four of them earmarked by a tax
+// wrapper, and `deposit_transfer` below with no wrapper at all. Read from
 // either side like `internal_transfer`, and for the same reason — one
 // movement, two possible legs — so they carry neutral names rather
 // than a family's.

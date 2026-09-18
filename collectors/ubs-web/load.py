@@ -684,7 +684,7 @@ def _load_transactions(conn: sqlite3.Connection, snapshot_at: int,
     rows: list[dict] = []
     for csv_path in sorted(txn_dir.glob("cash_*.csv")):
         rows.extend(_parse_transactions_csv(csv_path))
-    ids = _assign_export_txn_ids(rows)
+    ids = _assign_export_txn_ids(rows, _bare_number_holders(conn, rows))
     for txn_id, row in zip(ids, rows):
         _upsert_export_transaction(conn, snapshot_at, txn_id, row)
     return len(rows)
@@ -734,32 +734,100 @@ def _export_row_fingerprint(row: dict) -> str:
     ))
 
 
-def _assign_export_txn_ids(rows: list[dict]) -> list[str]:
+def _bare_number_holders(conn: sqlite3.Connection,
+                         rows: list[dict]) -> dict[tuple[str, str], str]:
+    """(account, transaction no.) -> the fingerprint of the row silver
+    ALREADY holds under the bare number, for the groups this dump
+    touches.
+
+    Which row of a group keeps the bank's bare number cannot be decided
+    from the dump alone. UBS clamps its transactions UI and the
+    collector's own `--lookback` is a window, so a later run routinely
+    sees only PART of a group — and a rule that picks the largest member
+    of whatever it can see hands the number to a different row each
+    time. That is not a cosmetic churn: the row holding the number is
+    overwritten with the newcomer's data and the newcomer is stored a
+    second time under its suffix, which is the silent loss this whole id
+    scheme exists to prevent, arriving by the back door.
+
+    So the question is asked of the union of what is stored and what
+    arrived: whoever holds the number keeps it, and only a group with no
+    holder yet picks one. Advice rows are ignored — they carry the bare
+    number by design (see `_insert_advice_transactions`) and state four
+    facts where an export row states all of them, so an export row takes
+    the number from one rather than yielding to it."""
+    keys = {(r["account_external_id"], r["txn_no"]) for r in rows}
+    if not keys:
+        return {}
+    held: dict[tuple[str, str], str] = {}
+    accounts = sorted({a for a, _ in keys})
+    numbers = sorted({n for _, n in keys})
+    q = ("SELECT account_external_id, transaction_external_id, payload"
+         "  FROM transactions"
+         " WHERE account_external_id IN (%s) AND transaction_external_id IN (%s)"
+         % (",".join("?" * len(accounts)), ",".join("?" * len(numbers))))
+    for account, _txn_no, payload in conn.execute(q, (*accounts, *numbers)):
+        key = (account, _txn_no)
+        if key not in keys:
+            continue
+        try:
+            cells = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(cells, dict) or "payment_advice_pdf" in str(payload):
+            continue
+        held[key] = _export_row_fingerprint({
+            "booking_date_raw": (cells.get("Booking date") or "").strip(),
+            "value_date_raw": (cells.get("Value date") or cells.get("Trade date") or "").strip(),
+            "debit_raw": (cells.get("Debit") or "").strip(),
+            "credit_raw": (cells.get("Credit") or "").strip(),
+            "description_kind": (cells.get("Description2") or "").strip() or None,
+            "description1": (cells.get("Description1") or "").strip(),
+        })
+    return held
+
+
+def _assign_export_txn_ids(rows: list[dict],
+                           held: dict[tuple[str, str], str] | None = None) -> list[str]:
     """Return one id per row, positionally aligned with `rows`.
 
     A transaction number used once is its row's id unchanged, which is
     every row the export has ever loaded but the collided ones."""
+    held = held or {}
     groups: dict[tuple[str, str], list[int]] = {}
     for i, row in enumerate(rows):
         groups.setdefault((row["account_external_id"], row["txn_no"]), []).append(i)
 
     ids: list[str] = [""] * len(rows)
-    for (_, txn_no), members in groups.items():
-        if len(members) == 1:
+    for key, members in groups.items():
+        txn_no = key[1]
+        if len(members) == 1 and key not in held:
             ids[members[0]] = txn_no
             continue
-        # The largest movement keeps the bare number. Ties fall back to
-        # the fingerprint so the choice never depends on file order.
-        primary = max(members, key=lambda i: (
-            abs(rows[i]["amount_debit"] or 0.0) + abs(rows[i]["amount_credit"] or 0.0),
-            _export_row_fingerprint(rows[i]),
-        ))
+        # Whoever already holds the bare number keeps it, whatever else
+        # this dump happens to carry. Only a group nobody holds yet
+        # picks one, and then the largest movement takes it: the advice
+        # pass is keyed by the number and an advice names a payment
+        # rather than the fee beside it.
+        incumbent = [i for i in members
+                     if _export_row_fingerprint(rows[i]) == held.get(key)]
+        if incumbent:
+            primary = incumbent[0]
+        elif key in held:
+            # The holder is a row this window does not cover. It is not
+            # ours to move, and nothing here may take its number.
+            primary = None
+        else:
+            primary = max(members, key=lambda i: (
+                abs(rows[i]["amount_debit"] or 0.0) + abs(rows[i]["amount_credit"] or 0.0),
+                _export_row_fingerprint(rows[i]),
+            ))
         # Two rows of a group that are identical in every movement
         # field hash alike; an ordinal keeps them apart rather than
         # letting one eat the other, which is the whole defect.
         used: dict[str, int] = {}
         for i in members:
-            if i == primary:
+            if primary is not None and i == primary:
                 ids[i] = txn_no
                 continue
             digest = hashlib.sha256(
@@ -767,10 +835,11 @@ def _assign_export_txn_ids(rows: list[dict]) -> list[str]:
             seen = used.get(digest, 0)
             used[digest] = seen + 1
             ids[i] = f"{txn_no}#{digest}" + (f".{seen}" if seen else "")
-        log.info("transaction no. %s names %d movements on %s; "
-                 "%d kept under suffixed ids",
-                 txn_no, len(members), rows[primary]["account_external_id"],
-                 len(members) - 1)
+        if len(members) > 1:
+            log.info("transaction no. %s names %d movements on %s; "
+                     "%d kept under suffixed ids",
+                     txn_no, len(members), key[0],
+                     len(members) - (1 if primary is not None else 0))
     return ids
 
 
