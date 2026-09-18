@@ -120,7 +120,11 @@ func setupCashflowGold(t *testing.T) string {
 	return cfg
 }
 
-// TestCashflowCLIEndToEnd drives the four views against seeded gold.
+// TestCashflowCLIEndToEnd drives the four aggregating views — summary,
+// flows, sankey and transactions — against seeded gold. The fifth,
+// coverage, does not aggregate and is pinned at the report layer in
+// internal/gold/cashflow_reports_test.go; what the CLI owns of it is
+// the -x refusal, below.
 func TestCashflowCLIEndToEnd(t *testing.T) {
 	cfg := setupCashflowGold(t)
 	window := []string{"2026-05-01", "2026-06-30"}
@@ -309,11 +313,30 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 			t.Errorf("an unknown --level exited %d, want 2: %s", code, se)
 		}
 	})
+
+	// A refusal that only answers to one spelling of its flag is worse
+	// than no refusal: the caller who types the short form gets the
+	// plausible answer the refusal exists to withhold.
+	t.Run("both spellings of every refused flag are refused", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"coverage", "-x", "CHF"},
+			{"coverage", "--currency", "CHF"},
+			{"sankey", "--period", "annual"},
+			{"sankey", "--level", "section"},
+		} {
+			if _, se, code := cf(args...); code != 2 {
+				t.Errorf("`cashflow %s` exited %d, want 2: %s",
+					strings.Join(args, " "), code, se)
+			}
+		}
+	})
 }
 
 // TestCashflowUsageNamesEveryView keeps the help text honest about the
-// surface it documents: the four views, the flag of its own, and both
-// refusals.
+// surface it documents: every view, the flag of its own, every
+// refusal, and a column list per view — `coverage` is the one view
+// whose columns cannot be guessed from the families' idiom, so it is
+// also the one a help text must not omit.
 func TestCashflowUsageNamesEveryView(t *testing.T) {
 	usage := cashflowUsage()
 	for _, want := range []string{
@@ -327,6 +350,40 @@ func TestCashflowUsageNamesEveryView(t *testing.T) {
 	for view := range cashflowViews {
 		if !strings.Contains(usage, view) {
 			t.Errorf("the usage text does not name the %q view", view)
+		}
+	}
+	// Naming a view is not documenting it. Every view's default column
+	// set has to appear too, or a view can be listed and still have no
+	// discoverable columns.
+	for view, cols := range map[string][]string{
+		"summary":      defaultCashflowSummaryColumns,
+		"flows":        defaultCashflowFlowColumns,
+		"sankey":       defaultCashflowSankeyColumns,
+		"transactions": defaultCashflowTransactionColumns,
+		"coverage":     defaultCashflowCoverageColumns,
+	} {
+		if !strings.Contains(usage, strings.Join(cols, ", ")) {
+			t.Errorf("the usage text does not list the %q default columns", view)
+		}
+	}
+}
+
+// TestCashflowHelpEntryNamesEveryView holds the one-line help the
+// dispatch listing prints against the views the command actually
+// routes. The listing is where a caller learns a view exists at all.
+func TestCashflowHelpEntryNamesEveryView(t *testing.T) {
+	var entry commandHelp
+	for _, c := range commandHelps {
+		if c.name == "cashflow" {
+			entry = c
+		}
+	}
+	if entry.name == "" {
+		t.Fatal("no cashflow entry in commandHelps")
+	}
+	for view := range cashflowViews {
+		if !strings.Contains(entry.detail(), view) {
+			t.Errorf("`wealthdb help cashflow` does not name the %q view", view)
 		}
 	}
 }

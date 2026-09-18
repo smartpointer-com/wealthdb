@@ -27,8 +27,8 @@ line with no store row falls back to).
 Spending covers money leaving the tracked accounts. Income, interest
 credited and dividends are the other direction and are deliberately
 absent here: they are [INCOME.md](INCOME.md)'s, read by the same engine
-from the same enrichment pass. Buys and sells remain the future
-**cashflow** feature and belong to neither. The taxonomy carries only
+from the same enrichment pass. Buys and sells belong to neither: they
+are the **cashflow** feature's ([CASHFLOW.md](CASHFLOW.md)). The taxonomy carries only
 what this side may assign — it drops `TRANSFER_IN`, `TRANSFER_OUT` and
 `LOAN_PAYMENTS` as primaries, and Plaid's fourth flow primary, `INCOME`,
 is vendored for the other family (migration 0069). Investment FEES are
@@ -266,7 +266,7 @@ refreshed CSV as a clean diff instead of sitting beside it.
 ### Two validity predicates, and why
 
 `canonical.ValidSpendDetailed` admits everything storable — the 80
-vendored values, our extensions, *and* the six deltas.
+vendored values, our extensions, *and* the twelve deltas.
 `canonical.ModelSpendDetailed` is the stricter sibling: it admits
 what a model may emit — vendored and extension — and refuses only the
 deltas.
@@ -968,7 +968,7 @@ gold stores at the end of the description behind the memo separator
 #### Reading the taxonomy
 
 The vendored values shout in full caps and repeat their primary in the
-detail; the six deltas are lower-case, because one vocabulary is
+detail; the deltas are lower-case, because one vocabulary is
 Plaid's and the other is ours. Each row therefore carries what it
 should READ as beside what it IS: `spend_categories.label` and
 `.primary_label` (migration 0058), seeded from `canonical.SpendLabel`.
@@ -1638,14 +1638,14 @@ picture is right:
   line, `N pair(s) matched outside the spending population, not
   listed`, rather than listed or silently dropped;
 - **the largest unmatched legs**, including opposite-sign
-  cross-currency shapes the amount pass cannot pair and that no shared
-  reference reached. Each pair listed above also says which phase
-  asserted it, because the check a reader runs on two legs depends on
-  the answer: legs that disagree in size or currency are the defect the
-  listing exists to catch on an amount pair and the expected shape on a
-  reference one. Reference pairs are listed first, ahead of the
-  chronological order, so the cut cannot swallow the road whose pairs
-  are least self-evident;
+  cross-currency shapes no phase could pair. Each pair listed above
+  also says which phase asserted it, because the check a reader runs on
+  two legs depends on the answer: legs that disagree in size or
+  currency are the defect the listing exists to catch on an amount pair
+  and the expected shape on an asserted one. Asserted pairs are listed
+  first, ahead of the chronological order, so the cut cannot swallow the
+  roads whose pairs are least self-evident — which are the newest roads,
+  and the ones a day-ordered listing would never reach;
 - **a stratified sample of what is still uncategorised**, spread
   across sources rather than taken from the head of the biggest one.
 
@@ -1900,8 +1900,8 @@ tidies the store — by then the rows have moved on.
 ## 9. Decisions of record
 
 - **Family name `spending`; outflows only.** Income is
-  [INCOME.md](INCOME.md); buys and sells remain the future `cashflow`
-  feature.
+  [INCOME.md](INCOME.md); buys and sells are `cashflow`'s
+  ([CASHFLOW.md](CASHFLOW.md)).
 - **Plaid PFC, vendored verbatim**, plus extensions and deltas. A
   revision arrives as a diff. The dimension carries both families, told
   apart by a `family` column (migration 0069); the two vocabularies are

@@ -235,12 +235,22 @@ silver-side facts that make a clean date-splice possible:
   bare number those rows overwrite each other, and because the write is
   an `ON CONFLICT` upsert it is indistinguishable from a re-load of the
   same row: nothing fails, nothing is logged, and the survivor looks
-  like a complete account. `_assign_export_txn_ids` therefore keeps the
-  bare number on the group's LARGEST movement — the advice pass is keyed
-  by it, and an advice names the payment rather than its fee — and gives
-  every other member a suffix derived from its own content, the way the
-  statement era has always suffixed the legs of a split movement. The
-  suffix is content-derived rather than positional so a dump covering a
+  like a complete account. `_assign_export_txn_ids` therefore leaves the
+  bare number on exactly one member of the group and gives every other a
+  suffix derived from its own content, the way the statement era has
+  always suffixed the legs of a split movement. Which member that is is
+  not re-decided per dump: UBS clamps its transactions UI and
+  `--lookback` is a window, so a run routinely sees only PART of a
+  group, and re-auctioning the number there would overwrite the row that
+  held it and store the newcomer a second time — the silent loss this
+  scheme exists to prevent, by the back door. So the row silver already
+  holds the number under keeps it; a window that does not cover that row
+  leaves the number untouched and suffixes every member it does carry;
+  and only a group no row holds yet picks, where the largest movement
+  takes it — the advice pass is keyed by the bare number, and an advice
+  names the payment rather than the fee beside it. The suffix is
+  content-derived rather than positional — bar the ordinal separating
+  two rows identical in every movement field — so a dump covering a
   different slice of the same group converges on the same rows.
 - **The two transaction-ID schemes do not overlap.** Web uses
   UBS's "Transaction no."; PSN derives event IDs from SWIFT
@@ -296,13 +306,14 @@ than minting one:
   statement row is keyed by a minted `stmt:` hash, so the very booking
   an advice names can already sit on the same account under an id the
   primary key can never collide with, an advice having been issued for
-  a payment the account's own statement went on to print in its ledger. Writing it again would not
-  fill a hole, it would book the payment twice, which is the phantom
-  flow this path exists to remove. So the movement is looked for by its
-  CONTENT before an advice is written — same account, same currency,
-  either date, same column, same magnitude — and an advice that finds
-  it is dropped in favour of the ledger row, which carries a booking
-  type and reconciled against the statement's printed running balance.
+  a payment the account's own statement went on to print in its ledger.
+  Writing it again would not fill a hole, it would book the payment
+  twice, which is the phantom flow this path exists to remove. So the
+  movement is looked for by its CONTENT before an advice is written —
+  same account, same currency, either date, same column, same
+  magnitude — and an advice that finds it is dropped in favour of the
+  ledger row, which carries a booking type and reconciled against the
+  statement's printed running balance.
   Each existing row can excuse at most one advice, so two genuinely
   distinct same-day payments of one amount both still land; and the
   advices are written after every statement in the same pass, so the

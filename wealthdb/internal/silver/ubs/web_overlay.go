@@ -181,7 +181,16 @@ SELECT transaction_external_id, account_external_id, counterparty, description_k
 		return nil, fmt.Errorf("ubs-web transactionTextByKey: %w", err)
 	}
 	defer rows.Close()
+	// The key is the BANK's number, so the several rows a collector
+	// suffix splits one number into all answer to it: a cross-border
+	// payment and the correspondent's charge, a deposit product's whole
+	// ledger. The row holding the bare number is the one the number
+	// names — by the collector's rule the group's principal movement —
+	// so it wins outright, and among suffixed rows the lowest id wins,
+	// because the query is unordered and a fold that depends on scan
+	// order is a fold that changes under a silver rewrite.
 	out := map[webTxTextKey]webTxText{}
+	won := map[webTxTextKey]string{}
 	for rows.Next() {
 		var (
 			txID, acct, payload   string
@@ -190,9 +199,15 @@ SELECT transaction_external_id, account_external_id, counterparty, description_k
 		if err := rows.Scan(&txID, &acct, &counterparty, &kindStr, &payload); err != nil {
 			return nil, fmt.Errorf("ubs-web transactionTextByKey scan: %w", err)
 		}
+		key := webTxTextKey{account: acct, txnNo: webTxNumber(txID)}
+		if held, taken := won[key]; taken {
+			if held == key.txnNo || (txID != key.txnNo && txID > held) {
+				continue
+			}
+		}
 		p, pdfBackfill := decodeWebTxEra(payload)
 		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
-		out[webTxTextKey{account: acct, txnNo: webTxNumber(txID)}] = text
+		out[key], won[key] = text, txID
 	}
 	return out, rows.Err()
 }

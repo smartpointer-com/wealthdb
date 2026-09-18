@@ -24,10 +24,11 @@ import (
 // Each pair says which PHASE asserted it, because the check a reader
 // performs on two legs depends on the answer. On a pair the amounts
 // produced, two legs that disagree in size or currency are the defect
-// this listing exists to catch; on a pair the source asserted by
-// stamping one reference on both, they are the expected shape — a
-// currency conversion's two legs differ by the rate, and that road
-// exists precisely to reach movements no amount test can.
+// this listing exists to catch; on a pair something ASSERTED — the
+// holder's own ledger, one reference the source stamped on both legs,
+// one leg's narrative stating the other's currency and figure — they
+// are the expected shape, those roads existing precisely to reach
+// movements no amount test can.
 //
 // Each leg also says whether it was in the spending population. The
 // pool is wider than the population on purpose — every account, the
@@ -76,10 +77,10 @@ type Leg struct {
 // Pair is one matched own-account move, and the phase that asserted it.
 //
 // By is what makes the listing readable. A reader checking a pair has always
-// asked whether its two legs agree in amount and currency; a pair the source
-// stamped one reference on is supposed to disagree, because that is the only
-// road a currency conversion can pair on. Unlabelled, the correct answer and
-// the over-eager one look the same on the page.
+// asked whether its two legs agree in amount and currency; an ASSERTED pair is
+// supposed to disagree, an assertion being what reaches a currency conversion
+// the amount pass partitions away. Unlabelled, the correct answer and the
+// over-eager one look the same on the page.
 type Pair struct {
 	Debit  Leg
 	Credit Leg
@@ -160,13 +161,14 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 // liftPairs turns the core's matched pairs into the audit shape, ordered so
 // that the pairs worth a human's attention survive the listing's cap.
 //
-// Reference pairs come FIRST, ahead of the chronological order everything
-// else keeps. The cap exists so the listing stays a signal rather than a
-// dump, but a day-ordered listing of a long history is the OLDEST pairs, and
-// a road that only started asserting pairs on the last reload would never
-// appear in one. Reference pairs are also the only ones whose legs a reader
-// is told to expect to disagree, so they are precisely the ones the cut must
-// not swallow.
+// ASSERTED pairs come FIRST, ahead of the chronological order everything else
+// keeps, and in phase order among themselves. The cap exists so the listing
+// stays a signal rather than a dump, but a day-ordered listing of a long
+// history is the OLDEST pairs, and a road that only started asserting pairs
+// on the last reload would never appear in one — which is the newest road
+// every time, and so the one most in need of a reader. Asserted pairs are
+// also the ones whose legs a reader is told to expect to disagree, so they
+// are precisely the ones the cut must not swallow.
 func liftPairs(raw []gold.TransferMatchPair, byKey map[txKey]Leg) []Pair {
 	out := make([]Pair, 0, len(raw))
 	for _, p := range raw {
@@ -178,8 +180,11 @@ func liftPairs(raw []gold.TransferMatchPair, byKey map[txKey]Leg) []Pair {
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		if ar, br := a.By == gold.MatchedByReference, b.By == gold.MatchedByReference; ar != br {
+		if ar, br := a.By != gold.MatchedByAmount, b.By != gold.MatchedByAmount; ar != br {
 			return ar
+		}
+		if a.By != b.By {
+			return a.By < b.By
 		}
 		if a.Debit.Day != b.Debit.Day {
 			return a.Debit.Day < b.Debit.Day

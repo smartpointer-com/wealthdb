@@ -34,8 +34,9 @@ func TestAMortgageStampAndAnAccountIDFoldTogether(t *testing.T) {
 	if fromID == "" || fromID != fromStamp {
 		t.Fatalf("id folds to %q, stamp folds to %q — they must agree", fromID, fromStamp)
 	}
-	// The branch is dropped rather than compared: a second mortgage at a
-	// different branch with the same base must NOT fold onto this one.
+	// The branch is dropped rather than compared: the stamp omits it, so
+	// the same base and tranche at another branch has to fold onto the
+	// same key or the stamp would resolve to nothing.
 	if other := mortgageRefKey("0001 00111111.AAA 0009", true); other != fromID {
 		t.Errorf("the branch is not part of the key; got %q want %q", other, fromID)
 	}

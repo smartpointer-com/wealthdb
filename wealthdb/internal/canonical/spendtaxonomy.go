@@ -297,8 +297,8 @@ var vendoredIncomeCategories = []SpendCategory{
 	{"INCOME", "INCOME_OTHER_INCOME", "Other miscellaneous income, including alimony, social security, child support, and rental", FamilyIncome},
 }
 
-// deltaCategories are the sixteen own values the vendored taxonomy has
-// no room for, both families in one table because seven of them are
+// deltaCategories are the seventeen own values the vendored taxonomy
+// has no room for, both families in one table because eight of them are
 // one value read from either side.
 //
 // The spending seven: an own-account move, cash whose eventual use is
@@ -316,9 +316,12 @@ var vendoredIncomeCategories = []SpendCategory{
 // while `inheritance` and `cash_deposit` are receipts in their own
 // right and stay in it.
 //
-// The four vehicle crossings leave BOTH bases, like `internal_transfer`
-// and for the same reason: the money is still the holder's, and a
-// crossing is neither a receipt nor a thing bought. `debt_repayment`
+// The five crossings leave BOTH bases, like `internal_transfer` and for
+// the same reason: the money is still the holder's, and a crossing is
+// neither a receipt nor a thing bought. Four are earmarked by a tax
+// wrapper; `deposit_transfer` is earmarked by nothing and is here
+// because the far leg is a bank's own deposit product the collector
+// does not list as an account. `debt_repayment`
 // leaves the spending base for the reason `investment` does — it
 // reduces a liability rather than buying anything — and, like the
 // crossings, it exists so the cashflow statement has an honest home for
@@ -569,8 +572,8 @@ func categoriesIn(family Family, cats []SpendCategory) []SpendCategory {
 
 // ValidSpendDetailed reports whether s is a recognised spend_detailed
 // value — a vendored Plaid outflow value, a spending extension of
-// ours, or one of the eleven deltas the spending side reads. A primary on
-// its own is not valid unless it is also a delta, and an income value
+// ours, or one of the twelve deltas the spending side reads. A primary
+// on its own is not valid unless it is also a delta, and an income value
 // is not valid here: the two families are separate vocabularies that
 // happen to share a table, so a spending rule or pin naming
 // `INCOME_WAGES` is as wrong as one naming nothing at all.
@@ -580,7 +583,7 @@ func ValidSpendDetailed(s string) bool {
 }
 
 // ValidIncomeDetailed is the same for income_detailed: the seven
-// vendored INCOME values, the nine extensions, and the twelve deltas
+// vendored INCOME values, the nine extensions, and the thirteen deltas
 // the income side reads. Income rules and pins validate against it.
 func ValidIncomeDetailed(s string) bool {
 	_, ok := incomeDetailedValues[s]
@@ -600,7 +603,7 @@ func ModelSpendDetailed(s string) bool {
 }
 
 // ModelIncomeDetailed is the income side's gauntlet check, and refuses
-// the twelve income deltas for the same reason. `capital_return` is the
+// the thirteen income deltas for the same reason. `capital_return` is the
 // one that would hurt most: it is what a private fund's distribution
 // floors to, it is OUT of the income base, and a payer-keyed verdict
 // carrying it would silently remove that payer from every income

@@ -17,8 +17,9 @@ Load semantics
   (`transaction_external_id`, `account_external_id`). Re-running a
   window converges to UBS's current view. UBS's own transaction number
   is that id, except where the bank stamps one number on several
-  movements, in which case all but the largest take a suffix — see
-  `_assign_export_txn_ids`.
+  movements, in which case one row keeps it and the rest take a suffix
+  — which row, and whether any row in the window keeps it at all,
+  depends on what silver already holds; see `_assign_export_txn_ids`.
 - Snapshot tables (banking_relationships, portfolios, accounts,
   positions) take a new row per `snapshot_at` (dedup-by-PK only).
 - Documents are indexed by `doc_token` (UBS API token); the binary
@@ -715,12 +716,18 @@ def _load_transactions(conn: sqlite3.Connection, snapshot_at: int,
 # keyed by the number that carries it to its twin leg (see the note at
 # the head of this module) — and the rest take a suffix.
 #
-# Which row keeps it is chosen by largest absolute amount, so the
-# PAYMENT keeps the number and its fee takes the suffix, which is the
-# pairing the advice pass wants. The suffix itself is derived from the
-# row's own content rather than its position in the file, so a dump
-# whose window covers a different slice of the same group still mints
-# the same ids.
+# Which row keeps it is decided against silver, not against the dump.
+# A row that already holds the bare number keeps it, whatever else this
+# window carries; a group whose holder this window does not cover
+# leaves that number alone and suffixes every member present; and only
+# a group nobody holds yet picks, there by largest absolute amount, so
+# the PAYMENT takes the number and its fee the suffix, which is the
+# pairing the advice pass wants (`_bare_number_holders`).
+#
+# The suffix is derived from the row's own content rather than its
+# position in the file — bar the ordinal that separates two rows
+# identical in every movement field — so a dump whose window covers a
+# different slice of the same group still mints the same ids.
 
 
 def _export_row_fingerprint(row: dict) -> str:
@@ -778,7 +785,8 @@ def _bare_number_holders(conn: sqlite3.Connection,
             continue
         held[key] = _export_row_fingerprint({
             "booking_date_raw": (cells.get("Booking date") or "").strip(),
-            "value_date_raw": (cells.get("Value date") or cells.get("Trade date") or "").strip(),
+            "value_date_raw": ((cells.get("Value date") or "").strip()
+                               or (cells.get("Trade date") or "").strip()),
             "debit_raw": (cells.get("Debit") or "").strip(),
             "credit_raw": (cells.get("Credit") or "").strip(),
             "description_kind": (cells.get("Description2") or "").strip() or None,

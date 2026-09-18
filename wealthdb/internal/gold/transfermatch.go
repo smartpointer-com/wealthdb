@@ -672,10 +672,13 @@ func matchStatedCounters(debits, credits []TransferLeg, used, claimed []bool, op
 	// through to a pass that may hand it the credit sitting on its own
 	// account — a pair the source has already contradicted, and one that
 	// takes that credit away from the leg it really belongs to.
+	// A leg that states a counter is named by its own description, so no
+	// census lookup can add anything: `described` was built by walking
+	// these same legs. The census is asked only about the other
+	// direction — whether some OTHER leg named this one.
 	named := map[string]bool{}
 	for _, l := range allLegs {
-		k, stated := statedKey(l)
-		if (stated && described[k] > 0) || described[ownKey(l)] > 0 {
+		if _, stated := statedKey(l); stated || described[ownKey(l)] > 0 {
 			named[LegRef{l.Group, l.Owner, l.ID}.key()] = true
 		}
 	}

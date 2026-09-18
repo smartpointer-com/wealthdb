@@ -648,19 +648,20 @@ both sides at once.
 ### 4.14 `wealthdb cashflow <view>`
 
 The household's cash flow statement over both populations plus the
-movements neither family books (docs/CASHFLOW.md, and §10.11 for the
-macros underneath). Same window default, same flags, same privacy
-classes; five views instead of three, one flag of its own, and three
-refusals.
+movements neither family books (docs/CASHFLOW.md for the design, and
+the `report_cashflow_*` macros for the surface underneath). Same window
+default, same flags, same privacy classes; five views instead of three,
+one flag of its own, and three refusals — the third being `coverage -x`,
+each account being reported in its own currency.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `<view>` | required | `summary` \| `flows` \| `sankey` \| `transactions`. |
+| `<view>` | required | `summary` \| `flows` \| `sankey` \| `transactions` \| `coverage`. |
 | `[FROM [TO]]` | trailing twelve months | As §4.12. A household reads this per year: `wealthdb cashflow sankey 2025`. |
 | `--period` | `monthly` | As §4.12, and **refused** on `sankey`: a period on an edge list would mean one list per bucket, which is a loop's job. `transactions` ignores it, as the families' do. |
 | `--level` | `group` | `section` \| `class` \| `group` — the grain a node is netted at. `section` is **refused** on `sankey`, which would then have no inner column. |
 | `--investing` | `whole` | `whole` \| `class` — net the investing section as one `Investments` node, or per asset class. Honoured by `flows` and `sankey`; the summary is always whole. |
-| `-C/--columns` | `default` | `summary` carries `yield`, `taxes`, `fees`, `giving`, `savings_rate` and the reconciliation memo (`cash_measured`, `fx_effect`, `unexplained`) off by default; `flows` and `sankey` carry the dotted node keys. |
+| `-C/--columns` | `default` | `summary` carries `yield`, `taxes`, `fees`, `giving`, `savings_rate` and the reconciliation memo (`cash_measured`, `fx_effect`, `cash_flow_measured`, `unexplained`) off by default; `flows` and `sankey` carry the dotted node keys. |
 | `-f`, `-x`, `-p` | as §4.12 | `-p` masks account ids, amounts and the `name` column; sections, classes, groups and shares stay legible, which is what makes the diagram's privacy twin normalisation alone. |
 
 Positive is cash arriving in the pool and negative is cash leaving it.
@@ -800,7 +801,7 @@ Example config file:
 | `income.categorization` | object | Optional. As `spending.categorization`, `fence_person_names` included. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model, one answer to what may leave the machine. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down, and a half-inherited fence would be one that quietly turned itself off. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
 | `spending.accounts` | object | Optional. Account-scope overrides, keyed by `silver_source_id` in the `returns_exclude` shape, with `include` / `exclude` lists of account ids. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. Which way round the overrides bite is the scope rule — see docs/SPENDING.md §1. |
-| `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. Both bound the matcher's AMOUNT pass only: a pair the override ledger states, or one a source asserts by stamping a reference on both legs, is not a guess and is not banded. See docs/SPENDING.md §3. |
+| `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. Both bound the matcher's AMOUNT pass only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. See docs/SPENDING.md §3. |
 | `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed> }`. `match` is compiled case-insensitively at load and tested against `counterparty`, the full `description` (memo included) and `provider_category` — the issuer's own filing of the row — each on its own; among config rules the first written wins. Matching the issuer's filing is how a rule reaches a class of merchant the descriptor never names, and is what makes the provider an input to the rule tier rather than a tier that outranks it. `category` may be **any** valid `spend_detailed` value, vendored or delta, in the taxonomy's case-sensitive spelling. An invalid pattern, one matching the empty string, or an unknown category fails the load naming `spending.rules[i]` and the text. Consulted after the built-in rules and below the matcher and the pins, with provenance `rule`. Deployment-specific: lives in the user's config, never in the repository. See docs/SPENDING.md §3, *Config-supplied rules*. |
 | `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, note`; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.11. |
 | `spending.categorization` | object | Optional. Configures `wealthdb categorize`: the model endpoint (`model`), how much of a transaction reaches it (`context`), and the per-merchant narrative cap (`descriptor_samples`). Absent ⇒ the subcommand refuses; the deterministic tiers are unaffected and keep running on load. |
@@ -1999,11 +2000,12 @@ fresh (treating `high_watermark` as -1).
 and `income_txn_enrichment` — go with the rest because all are per-source
 derived data — resolved tickers keyed to the source's instruments,
 enrichment derived from the transactions being deleted — and the next
-resolve or enrichment pass regenerates them. Four tables deliberately
+resolve or enrichment pass regenerates them. Six tables deliberately
 survive, two per family: the verdict stores `spend_merchant_categories`
 and `income_payer_categories` are global knowledge keyed by signature,
 with no source column and verdicts that were paid for, and the scope
-stamps `spend_account_scope` and `income_account_scope` are configuration
+stamps `spend_account_scope`, `income_account_scope`,
+`cashflow_account_scope` and `cashflow_wrapper_sides` are configuration
 stamped into gold and re-stamped whole by every enrichment pass — the
 `fx_priority` precedent rather than source data. Lifecycle table:
 docs/SPENDING.md §8. The invariant is pinned by

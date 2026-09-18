@@ -102,7 +102,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	// output currency: a per-account gap belongs in the account's own
 	// money, and converting it would add a rate error to the very
 	// number the report exists to make trustworthy.
-	if view == "coverage" && isSet(fs, "currency") {
+	if view == "coverage" && isSet(fs, "x", "currency") {
 		return errs.Newf(2, "cashflow: coverage takes no -x/--currency — "+
 			"each account is measured against its own balances, in its own currency")
 	}
@@ -213,15 +213,19 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	}
 }
 
-// isSet reports whether a flag was given on the command line, as
-// opposed to sitting at its default. The refusals need it: `--period
-// monthly` is the default value AND a thing a caller can type at a
-// sankey, and only one of the two is an error.
-func isSet(fs *flag.FlagSet, name string) bool {
+// isSet reports whether any of the given spellings of a flag was typed
+// on the command line, as opposed to sitting at its default. The
+// refusals need it twice over: `--period monthly` is the default value
+// AND a thing a caller can type at a sankey, and a flag registered
+// under both a short and a long name is a different *flag.Flag under
+// each, so a refusal that asks for one spelling misses the other.
+func isSet(fs *flag.FlagSet, names ...string) bool {
 	found := false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			found = true
+		for _, name := range names {
+			if f.Name == name {
+				found = true
+			}
 		}
 	})
 	return found
@@ -526,15 +530,14 @@ Views (coarsest → finest):
                 (period-less; --level class for the inner two stages only)
   transactions  one row per line: section, class, group, and the family's
                 own verdict behind it
-
-                coverage      per account and period: the cash delta its transactions
-                              imply against the delta its own balances show, in the
-                              ACCOUNT'S currency. 'status' is the column to read first:
-                              'measured' is a real disagreement, 'obscured' means the
-                              account carries more unsigned FX than the gap so nothing
-                              can be concluded, 'opening' means the balance series began
-                              mid-period, 'unmeasurable' means no balances at all.
-                              Sort by gap where status is 'measured'.
+  coverage      per account and period: the cash delta its transactions
+                imply against the delta its own balances show, in the
+                ACCOUNT'S currency. 'status' is the column to read first:
+                'measured' is a real disagreement, 'obscured' means the
+                account carries more unsigned FX than the gap so nothing
+                can be concluded, 'opening' means the balance series
+                began mid-period, 'unmeasurable' means no balances at
+                all. Sort by gap where status is 'measured'.
 
 Window (positional, optional; default: the trailing twelve months):
   YYYY / YYYY-MM / YYYY-MM-DD   that calendar period
@@ -577,10 +580,10 @@ Notes
 
   operating_in and operating_out are NOT what 'wealthdb income' and
   'wealthdb spending' report, which is why they are not named after
-  them. Totals here are smaller than those reports', by four terms: the vehicles' own income and
-  spending, the reimbursements cashflow keeps and income drops, the
-  verdicts cashflow re-homes, and any account the families' own scopes
-  exclude but the pool keeps.
+  them. Totals here are smaller than those reports', by four terms:
+  the vehicles' own income and spending, the reimbursements cashflow
+  keeps and income drops, the verdicts cashflow re-homes, and any
+  account the families' own scopes exclude but the pool keeps.
 
   Tax a vehicle withheld before the household saw the money is on no
   node at all, so the Taxes node is the tax the household paid from its
@@ -591,13 +594,16 @@ Available columns (per view):
   flows         ` + joinColumnNames(buildCashflowFlowColumnRegistry("CCY", "monthly")) + `
   sankey        ` + joinColumnNames(buildCashflowSankeyColumnRegistry("CCY")) + `
   transactions  ` + joinColumnNames(buildCashflowTransactionColumnRegistry("CCY")) + `
+  coverage      ` + joinColumnNames(buildCashflowCoverageColumnRegistry("monthly")) + `
 
   (The money columns render as operating_in_<CCY> / net_<CCY> /
-   value_<CCY>, reflecting your -x/--currency choice.)
+   value_<CCY>, reflecting your -x/--currency choice. Coverage's do
+   not: every one of its amounts is in the account's own currency.)
 
 Default column sets:
   summary       ` + strings.Join(defaultCashflowSummaryColumns, ", ") + `
   flows         ` + strings.Join(defaultCashflowFlowColumns, ", ") + `
   sankey        ` + strings.Join(defaultCashflowSankeyColumns, ", ") + `
-  transactions  ` + strings.Join(defaultCashflowTransactionColumns, ", ")
+  transactions  ` + strings.Join(defaultCashflowTransactionColumns, ", ") + `
+  coverage      ` + strings.Join(defaultCashflowCoverageColumns, ", ")
 }

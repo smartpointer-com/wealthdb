@@ -1268,7 +1268,14 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// its booking is represented by the row that kept it, and letting
 		// the suppressed copy stand here would let one booking consume two
 		// mirrors.
-		if suppressed[txID+"@"+acct] {
+		//
+		// Both spellings, because the two folds key differently: the PSN
+		// fold keys on the BANK's number, which is what a collector
+		// suffix hangs off (webTxNumber strips it), while fold.drop keys
+		// on the emitted id whole. A dump that leaves every member of a
+		// transaction-number group suffixed would otherwise suppress a
+		// row in the emit loop and leave it standing here.
+		if suppressed[txID+"@"+acct] || suppressed[webTxNumber(txID)+"@"+acct] {
 			continue
 		}
 		// The amount the row will REACH GOLD with, not the raw column
@@ -1709,18 +1716,6 @@ func webReversal(descKind string, statementEra bool, debit, credit sql.NullFloat
 	return statementEra && (debit.Valid && debit.Float64 < 0 || credit.Valid && credit.Float64 < 0)
 }
 
-// webKind maps the web silver's `description_kind` string plus
-// debit/credit indicators to a canonical.TxKind. Conservative —
-// unknown / ambiguous shapes route to TxKindOther so we never
-// invent semantics that PSN's own MT940 events would contradict.
-//
-// UBS marks bank-side corrections with a `<base>;Reversal`
-// suffix (e.g. `Dividend;Reversal`, a clawback of a dividend
-// booking). Reversals carry a negative amount in the
-// credit column; we map them to the same canonical kind as the
-// underlying event so they net out when summed by kind, and
-// rely on ApplyCanonicalSign preserving the source's negative
-// sign rather than forcing it positive.
 // webKindHint is the text webKind classifies a row by: the booking type
 // when it is one the vocabulary knows; otherwise the first segment of
 // the promoted counterparty when THAT is one. Some CSV-feed rows leave
@@ -1741,10 +1736,21 @@ func webKindHint(descKind, counterparty sql.NullString) string {
 	return descKind.String
 }
 
+// webKind maps the web silver's `description_kind` string plus
+// debit/credit indicators to a canonical.TxKind. Conservative —
+// unknown or ambiguous shapes route to TxKindOther rather than invent
+// semantics that PSN's own MT940 events would contradict.
+//
+// A bank-side correction wears a `<base>;Reversal` suffix (e.g.
+// `Dividend;Reversal`, a clawback of a dividend booking) and takes the
+// same canonical kind as the event it reverses, so the two net out when
+// summed by kind. Whether a row IS a reversal is webReversal's
+// question, not this one's: the two eras state it differently, and this
+// function sees neither the amounts nor the era.
 func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
-	// Strip a `;Reversal` suffix if present and recurse on the
-	// base. Lets us pick up any future reversal flavour the bank
-	// invents without enumerating each.
+	// Strip a `;Reversal` suffix if present and recurse on the base, so
+	// a reversal flavour the bank invents later needs no entry of its
+	// own.
 	if base, ok := stripReversalSuffix(descKind); ok {
 		return webKind(base, hasDebit, hasCredit)
 	}

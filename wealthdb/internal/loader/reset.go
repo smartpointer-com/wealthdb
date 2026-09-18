@@ -34,13 +34,14 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	// from the transactions being deleted and are recomputed by the
 	// next enrichment pass, which writes them in one transaction.
 	//
-	// Four tables deliberately survive a reset, two per family. The
+	// Six tables deliberately survive a reset, two per family. The
 	// verdict stores — spend_merchant_categories and
 	// income_payer_categories — are global knowledge keyed by
 	// signature rather than by source, since the same counterparty
 	// reappears under every account and those verdicts were paid for.
-	// The account scopes are configuration stamped into gold (the
-	// fx_priority precedent), not source data.
+	// The three account scopes and the cashflow wrapper boundary are
+	// configuration stamped into gold (the fx_priority precedent), not
+	// source data.
 	for _, stmt := range []string{
 		`DELETE FROM symbol_resolutions   WHERE silver_source_id = ?`,
 		`DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?`,

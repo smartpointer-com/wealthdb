@@ -384,17 +384,25 @@ the same node on a diagram. `Health` and `Trusts` keep their names:
 "Health savings" is right for an HSA and wrong for the class the day it
 holds anything else, and nobody says "Trust savings".
 
-Four leaves are cashflow's own, where no family value says the right
-thing: `trades` and `private_capital` on the investing classes, and
+Six leaves are cashflow's own, where no family value says the right
+thing: `trades` and `private_capital` on the investing classes;
 `vehicle_giving` / `vehicle_receipt` for a crossing to or from a giving
 vehicle — whose verdict is `internal_transfer`, which names a movement
-rather than a kind of giving or a kind of receipt.
+rather than a kind of giving or a kind of receipt; and
+`mortgage_interest` / `mortgage_amortization`, which the derived split
+below mints in `cashflow_lines_base` rather than in the resolution,
+because no family value can name half a row.
 
 On the vehicles and on cash the class **is** the leaf: nothing finer
 exists to say, so the diagram draws them attached to the hub and their
 leaf level shows in `flows --level group` and not in the Sankey. A
-class enters the hub in its own right exactly when it has no leaves;
-where it has them, it enters as their sum and they draw below it.
+class enters the hub in its own right when it has no leaves; where it
+has them, it enters as their sum and they draw below it. **Investing is
+held out of that stage deliberately**, at either grain: its classes do
+have leaves — `trades` and `private_capital`, which `flows --level
+group` shows — but what a leaf stage there would draw, a trade against
+a capital call, is a different question from the one the diagram asks,
+so investing's classes enter the hub in their own right as well.
 
 Financing has leaves on both its classes. `loans` splits into
 `loan_proceeds` and `debt_repayment` — money borrowed against money
@@ -422,12 +430,31 @@ really occur in on a closing. The balance is **observed** — the
 lender's own figure, carried as the mortgage account's position — which
 makes this an estimator of the split and not of the debt.
 
+A snapshot is the balance **before** that day's instalment posts, so an
+interval runs from one observation up to — not including — the next;
+and a tranche that closes stops being snapshotted, so its last interval
+retires whatever was left, read from the account's disappearance from
+its source's latest snapshot.
+
 A mortgage the product does not hold has no balance to read, so its
 instalments keep their whole amount and draw as interest: the
 conservative direction, since it overstates what was consumed rather
-than inventing a repayment. `cashflow_txn_nodes` still emits one row
-per transaction, so the reconciliation memo is untouched; the split
-happens in `cashflow_lines_base`, and the two shares sum to the row.
+than inventing a repayment. It is the second, quieter cost of not
+holding the mortgage — the first being that the narrative rule which
+places the payment fires on the words a feed prints (`MORTGAGE`,
+`HYPOTHEK`, `HYPOTHEKARZINS`), so a feed that stops carrying them drops
+its mortgage rows into `vehicles · Untracked accounts`, with nothing in
+the statement to say that is what happened. A rule sees one row's text
+and never the lender's balance: it names the class, and the statement
+splits the amount. `cashflow_txn_nodes` still emits one row per
+transaction, so the reconciliation memo is untouched; the split happens
+in `cashflow_lines_base`, and the two shares sum to the row.
+
+Both shares stay in **financing**. Putting interest in `operating_out`
+would net one half of a payment against the section the other half sits
+in, and a reader comparing years would see consumption jump on a
+refinancing that changed nothing about the household. The leaves say
+which is which without moving either.
 
 ### The six new taxonomy values
 
@@ -572,7 +599,7 @@ is what applies one to history.
 
 Nothing else is configurable. Rules, pins and transfer overrides are
 the families'; a verdict written there is what cashflow reads, and the
-five new values are placed through those surfaces.
+six new values are placed through those surfaces.
 
 ---
 
@@ -699,12 +726,12 @@ tolerance, never an input: `net_cash_flow` does not read it.
 ### Coverage: which accounts the statement can be trusted on
 
 The memo above answers one question per period for the whole pool. When
-it does not close it says so in one number and stops, and finding the
-account behind that number has been hand archaeology every time.
+it does not close it says so in one number and stops, and the account
+behind that number is not in the statement.
 
-`wealthdb cashflow coverage` is that archaeology, promoted: per account
-and per period, the cash delta its transactions imply against the delta
-its own balances show.
+`wealthdb cashflow coverage` is where it is: per account and per
+period, the cash delta its transactions imply against the delta its own
+balances show.
 
 ```
 period  silver_source  account  currency      ledger    unsigned    measured         gap  status
@@ -911,45 +938,19 @@ each naming a way the statement can be quietly wrong:
 
 ## 11. Open follow-ups
 
-1. **The interest-versus-principal split — DONE** (migration 0091,
-   §5). The estimator is the one this note predicted, and both traps it
-   named are real and handled: a snapshot is the balance **before** that
-   day's instalment posts, so an interval runs from one observation up
-   to (not including) the next; and a tranche that closes stops being
-   snapshotted, so its last interval retires whatever was left, which is
-   read from the account's disappearance from its source's latest
-   snapshot.
-
-   One deviation from the sketch above. It proposed interest to
-   spending and principal to financing. Both stay in **financing**, as
-   two leaves under `Mortgage`. Moving interest to spending would put
-   one half of a payment in a section the other half is netted against,
-   and a reader comparing years would see consumption jump on a
-   refinancing that changed nothing about the household. The leaves say
-   which is which without moving either.
-
-   The rule in `rules.go` is unchanged and still places the payment:
-   a rule sees one row's text and never the lender's balance, so it
-   names the class and the statement splits the amount. The coverage
-   note below still holds — a feed that stops carrying MORTGAGE /
-   HYPOTHEK / HYPOTHEKARZINS in `description` drops its mortgage rows
-   into `vehicles · Untracked accounts`, and nothing in the statement
-   says that is what happened. A mortgage the product does not hold now
-   has a second, quieter cost: no balance to read means no split, and
-   the instalment draws whole as interest.
-2. **A per-vehicle statement.** The same statement with the edge drawn
+1. **A per-vehicle statement.** The same statement with the edge drawn
    around one plan or one trust. Every mechanism here applies
    unchanged; only the boundary moves. It is where a payroll-funded
    plan's growth, and giving routed through a vehicle, become visible.
-3. **A sign pin for the unsigned kinds.** A per-adapter pin, recorded
+2. **A sign pin for the unsigned kinds.** A per-adapter pin, recorded
    where the canonical signs live, is what would let the cash leg of a
    merger or a rights issue join investing.
-4. **A dated wrapper override.** The boundary is time-invariant (§3); an
+3. **A dated wrapper override.** The boundary is time-invariant (§3); an
    effective-from date is the fix.
-5. **Memo pairs for what the boundary removes** — the vehicles' own
+4. **Memo pairs for what the boundary removes** — the vehicles' own
    income and spending, and the tax they withheld before the household
    saw the money.
-6. **Platform custody deposits**, **reimbursement netting** and the
+5. **Platform custody deposits**, **reimbursement netting** and the
    **cross-currency own-account moves no assertion reaches**: the two
    families' standing follow-ups, each of which shows up here too. The
    third narrowed twice — first when the matcher learned to pair on the
@@ -957,5 +958,5 @@ each naming a way the statement can be quietly wrong:
    learned to read the counter leg a source describes on one of them.
    What is left is the movement whose source does neither, and the card
    bill whose two feeds share no id space.
-7. **Net cash flow on the Wealth Overview**, once the feature has been
+6. **Net cash flow on the Wealth Overview**, once the feature has been
    read for a while.

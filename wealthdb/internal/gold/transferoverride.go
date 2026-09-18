@@ -7,12 +7,13 @@ import (
 
 // Manual overrides on transfer matching.
 //
-// The matcher decides from amount, day, the rail a leg demands and — where
-// the source stamped one on both legs — a shared reference. That is everything
-// the data says, and it is sometimes not enough: two unrelated rows of the
-// same size land in the window and are fused, or the two halves of one real
-// movement sit further apart than any window a person would dare set, because
-// a bank posted its side of an ACH a week after the other side credited.
+// The matcher decides from amount, day, the rail a leg demands, a reference
+// the source stamped on both legs, and a narrative on one leg stating the
+// other's currency and figure. That is everything the data says, and it is
+// sometimes not enough: two unrelated rows of the same size land in the
+// window and are fused, or the two halves of one real movement sit further
+// apart than any window a person would dare set, because a bank posted its
+// side of an ACH a week after the other side credited.
 // Neither is a rule that can be tightened into existence — one is a
 // coincidence, the other is a fact about a particular pair — so both need a
 // place for a person to say what happened.
@@ -121,8 +122,8 @@ type TransferOverrideSelector struct {
 // is not half of a movement at all. With both A and B given it forbids just
 // that pairing, which is the narrower and commoner statement — the row IS a
 // transfer, only not with that partner. Verb "match" asserts the pair
-// outright, ahead of the amount, day and rail rules, for the movement whose
-// halves those rules cannot reach.
+// outright, ahead of every other phase, for the movement whose halves none of
+// them can reach.
 type TransferOverrideRule struct {
 	Verb string // "match" | "unmatch"
 	A    TransferOverrideSelector

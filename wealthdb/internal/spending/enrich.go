@@ -422,22 +422,22 @@ func syncAccountScope(ctx context.Context, tx *sql.Tx, name, table string, inclu
 // loadAccountIDs reads the account ids gold holds, per source — the
 // set a configured scope entry has to hit to fence anything.
 //
-// It reads the `accounts` table whole and is family-blind, but it is
-// called once per family, so its errors carry the family name: a
-// failure on an income run reported as `spending:` sends a reader to
+// It reads the `accounts` table whole and is scope-blind, but it is
+// called once per scope table, so its errors carry that table's name:
+// a failure on an income run reported as `spending:` sends a reader to
 // the wrong block of the config.
-func loadAccountIDs(ctx context.Context, tx querier, fam string) (map[string]map[string]struct{}, error) {
+func loadAccountIDs(ctx context.Context, tx querier, name string) (map[string]map[string]struct{}, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT DISTINCT silver_source_id, account_external_id FROM accounts`)
 	if err != nil {
-		return nil, fmt.Errorf("%s: read account ids: %w", fam, err)
+		return nil, fmt.Errorf("%s: read account ids: %w", name, err)
 	}
 	defer rows.Close()
 	out := map[string]map[string]struct{}{}
 	for rows.Next() {
 		var source, id string
 		if err := rows.Scan(&source, &id); err != nil {
-			return nil, fmt.Errorf("%s: scan account ids: %w", fam, err)
+			return nil, fmt.Errorf("%s: scan account ids: %w", name, err)
 		}
 		if out[source] == nil {
 			out[source] = map[string]struct{}{}
@@ -445,7 +445,7 @@ func loadAccountIDs(ctx context.Context, tx querier, fam string) (map[string]map
 		out[source][id] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: iterate account ids: %w", fam, err)
+		return nil, fmt.Errorf("%s: iterate account ids: %w", name, err)
 	}
 	return out, nil
 }

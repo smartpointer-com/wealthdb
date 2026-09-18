@@ -1092,10 +1092,8 @@ def question_defs(db_id, mid):
     # diagram draws a Cash node that absorbs the whole section rather
     # than the residual it names (docs/CASHFLOW.md §9).
     cf_tags_nosec = {k: v for k, v in cf_tags.items() if k != "section"}
-    cf_where = _spend_where({k: v for k, v in cf_tags.items()
-                             if k not in ("currency", "investing")})
-    cf_where_nosec = _spend_where({k: v for k, v in cf_tags_nosec.items()
-                                   if k not in ("currency", "investing")})
+    cf_where = _spend_where(cf_tags)
+    cf_where_nosec = _spend_where(cf_tags_nosec)
     cf_pickers_nosec = [t for t in CASHFLOW_PICKERS if t[1] != "section"]
     cf_val = f"sum({_ccy_case('value')})::DOUBLE"
     cf_note = (" Built for the Cash Flow dashboard; opened standalone it "
@@ -2117,7 +2115,6 @@ PRIVACY_CARD_BALANCE_FILTERS = {k: v for k, v in CARD_BALANCE_FILTERS.items()
 INCOME_CURRENCY_PARAM_ID = "aa5df10a"
 INCOME_ACCOUNT_PARAM_ID = "aa5df10b"
 INCOME_TYPE_PARAM_ID = "aa5df10c"
-CASHFLOW_SECTION_PARAM_ID = "aa5df10f"
 
 # The Income filters. `type` binds to income_label rather than to the
 # primary label its spending twin uses: the income taxonomy has ONE
@@ -2140,8 +2137,10 @@ INCOME_PICKERS = [(INCOME_CURRENCY_PARAM_ID, "currency"),
                   (INCOME_ACCOUNT_PARAM_ID, "account"),
                   (INCOME_TYPE_PARAM_ID, "type")]
 
+# The Cash Flow dashboards' own picker ids.
 CASHFLOW_CURRENCY_PARAM_ID = "aa5df10d"
 CASHFLOW_INVESTING_PARAM_ID = "aa5df10e"
+CASHFLOW_SECTION_PARAM_ID = "aa5df10f"
 
 # The Cash Flow filters, and what is NOT among them.
 #
@@ -2154,13 +2153,14 @@ CASHFLOW_INVESTING_PARAM_ID = "aa5df10e"
 # A level picker would say the same thing the Investing one says, less
 # clearly.
 #
-# `section` is the one field filter of its own: the six statement
-# sections are a short, stable vocabulary, and narrowing to one is how a
-# reader asks "what did investing do" without leaving the dashboard. It
-# is NOT a picker the design asked for (§7 lists four), and it reaches
+# `section` is the one field filter of its own: the statement's sections
+# are a short, stable vocabulary, and narrowing to one is how a reader
+# asks "what did investing do" without leaving the dashboard. It is NOT
+# a picker the design asked for (docs/CASHFLOW.md §9), and it reaches
 # only the cards it means something on — the by-month charts and the
-# line list. cashflow_card_defs draws that line, by withholding the tag
-# from the cards that decline it.
+# line list. `cashflow_native` (question_defs) and `cashflow_card`
+# (cashflow_privacy_defs) draw that line, by withholding the tag from
+# the cards that decline it.
 CASHFLOW_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
                     "source": ("silver_source_id", "string/="),
                     "section": ("section", "string/=")}
@@ -2357,13 +2357,18 @@ def _family_native_kit(db_id, view, filters, pickers, neg, note):
 
 
 def _spend_where(tags, indent="   "):
-    """`WHERE TRUE` plus one optional [[AND {{tag}}]] clause per field
-    filter on the card — every tag but {{currency}}, which picks a column
-    rather than filtering rows. A filter whose field id has not synced is
-    absent from `tags` and left out entirely: referencing an undefined
-    tag would invalidate the query."""
+    """`WHERE TRUE` plus one optional [[AND {{tag}}]] clause per FIELD
+    FILTER on the card.
+
+    A plain variable — {{currency}}, {{investing}} — picks a column or a
+    grain rather than filtering rows, and an [[AND {{x}}]] clause around
+    one is not valid SQL. The test is the tag's own type, so a variable
+    added to a family later cannot silently produce a broken predicate.
+    A filter whose field id has not synced is absent from `tags` and left
+    out entirely: referencing an undefined tag would invalidate the
+    query."""
     return f"\n{indent}WHERE TRUE" + "".join(
-        _cl(tags, n) for n in tags if n != "currency")
+        _cl(tags, n) for n in tags if tags[n].get("type") == "dimension")
 
 
 # Dashboard picker -> template tag wiring for the native cards (the
@@ -2745,10 +2750,8 @@ def cashflow_privacy_defs(db_id):
     # pickers, or a reader comparing the two would find one narrowed and
     # the other not.
     tags_nosec = {k: v for k, v in tags.items() if k != "section"}
-    where = _spend_where({k: v for k, v in tags.items()
-                          if k not in ("currency", "investing")})
-    where_nosec = _spend_where({k: v for k, v in tags_nosec.items()
-                                if k not in ("currency", "investing")})
+    where = _spend_where(tags)
+    where_nosec = _spend_where(tags_nosec)
     pickers_nosec = [t for t in CASHFLOW_PICKERS if t[1] != "section"]
     val = f"sum({_ccy_case('value')})::DOUBLE"
     out = {}
@@ -2770,10 +2773,15 @@ def cashflow_privacy_defs(db_id):
     peak_cte = ("p AS (SELECT max(t) AS peak FROM"
                 " (SELECT sum(abs(v)) AS t FROM m GROUP BY month))\n")
 
-    def month_cte(extra="", filt=""):
+    def month_cte(extra="", filt="", sign=""):
+        # `sign` is built in rather than applied to the finished SQL: a
+        # post-hoc string replacement would depend on this function's own
+        # indentation, and a reflow here would silently turn a card's
+        # bars negative with every shape test still green.
+        v = f"{sign}({val})" if sign else val
         return ("WITH m AS (\n"
                 "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
-                f" AS month,\n         {extra}{val} AS v\n"
+                f" AS month,\n         {extra}{v} AS v\n"
                 "    FROM web_cashflow" + where + filt + "\n")
 
     # `neg` is what keeps each twin scalar reading the same way round as
@@ -2821,24 +2829,27 @@ def cashflow_privacy_defs(db_id):
          "graph.metrics": ["share_pct"],
          "stackable.stack_type": "stacked"})
 
-    for name, filt, neg, blurb in (
+    # The grouping expression rides in the tuple rather than being
+    # inferred from the filter text: the investing row is the one that
+    # folds its classes under the Investing picker, and a substring test
+    # against the filter would break the day another row's filter names
+    # a section list containing it.
+    investing_grp = ("CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
+                     "              ELSE class_node END")
+    for name, filt, neg, grp, blurb in (
             ("Inflows by class by month", "\n   AND section = 'operating_in'", False,
-             "What came in each month by class"),
+             "class_node", "What came in each month by class"),
             ("Outflows by class by month", "\n   AND section = 'operating_out'", True,
-             "What went out each month by class"),
+             "class_node", "What went out each month by class"),
             ("Investing by month", "\n   AND section = 'investing'", False,
-             "Investing per month, signed"),
+             investing_grp, "Investing per month, signed"),
             ("Financing and vehicles by month",
              "\n   AND section IN ('financing', 'vehicles')", False,
-             "Debt and the earmarked pools per month, signed")):
-        sign = "-" if neg else ""
-        grp = ("CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
-               "              ELSE class_node END" if "investing" in filt else "class_node")
+             "class_node", "Debt and the earmarked pools per month, signed")):
         cashflow_card(privacy_name(name), "area" if "class by month" in name else "bar",
             f"{blurb}, each as % of the window's biggest month by gross "
             "movement.",
-            month_cte(f"{grp} AS class,\n         ", filt).replace(
-                f"         {val} AS v", f"         {sign}({val}) AS v")
+            month_cte(f"{grp} AS class,\n         ", filt, sign="-" if neg else "")
             + "   GROUP BY 1, 2),\n" + peak_cte +
             "SELECT month, class,\n"
             "       v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100 AS share_pct\n"
@@ -3315,11 +3326,13 @@ def dashboard_parameters(model_ids, mode, name=""):
     dashboards), 'asof' pairs it with a single as-of day (point-in-time
     holdings dashboards), 'returns' pairs it with a required currency
     picker (the returns dashboards), None means no filters. The source
-    picker draws its dropdown values from the sources model. The Spending
-    and Income dashboards are 'range' plus pickers of their own — one
-    more on each money view than on its privacy twin, which carries no
-    account picker — so they are matched by NAME rather than by mode,
-    Income first (see below)."""
+    picker draws its dropdown values from the sources model. The
+    Spending, Income and Cash Flow dashboards are 'range' plus pickers of
+    their own, so they are matched by NAME rather than by mode — Cash
+    Flow first, then Income, then the Spending fall-through. Spending and
+    Income each carry one more picker than their twin, which has no
+    account picker; Cash Flow's twin carries the same set, having no
+    account picker to drop."""
     if mode is None:
         return []
 
@@ -3334,6 +3347,25 @@ def dashboard_parameters(model_ids, mode, name=""):
                     "card_id": model_ids[model],
                     "value_field": ["field", field,
                                     {"base-type": "type/Text"}]}}
+
+    def currency_picker(pid):
+        """The required, USD-defaulted reporting-currency picker each of
+        the three money dashboards carries.
+
+        Required with a default, because their serving views carry one
+        row per (line, reporting currency): a card running with the
+        currency cleared would sum USD + CHF + EUR, and a required
+        parameter resets to its default rather than clearing. The list is
+        static because the reporting trio is the product's, not the
+        data's, and a card-backed list would re-scan the whole population
+        for three known strings. `values_query_type` is what makes
+        Metabase render a dropdown instead of a free-text box."""
+        return {"id": pid, "name": "Currency", "slug": "currency",
+                "type": "string/=", "sectionId": "string",
+                "isMultiSelect": False, "default": ["USD"], "required": True,
+                "values_query_type": "list",
+                "values_source_type": "static-list",
+                "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
 
     source = card_picker(SOURCE_PARAM_ID, "Source", "source",
                          "report_sources_latest", "silver_source_id")
@@ -3398,16 +3430,6 @@ def dashboard_parameters(model_ids, mode, name=""):
                   "slug": "time_range", "type": "date/all-options",
                   "sectionId": "date", "default": "past12months~"}
     if name in CASHFLOW_DASHBOARDS:
-        # A required currency with a USD default, over a serving view
-        # that carries a row per reporting currency — the shape the other
-        # two money dashboards take, and for the same reason.
-        cashflow_currency = {"id": CASHFLOW_CURRENCY_PARAM_ID, "name": "Currency",
-                             "slug": "currency", "type": "string/=",
-                             "sectionId": "string", "isMultiSelect": False,
-                             "default": ["USD"], "required": True,
-                             "values_query_type": "list",
-                             "values_source_type": "static-list",
-                             "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
         # The Investing grain: net the section as one movement — the
         # question a reader opens with, "did the portfolio feed the
         # household this year or the household feed the portfolio" — or
@@ -3425,28 +3447,21 @@ def dashboard_parameters(model_ids, mode, name=""):
         # income pairs, the twin drops nothing, because none of these
         # pickers renders a dropdown of anything that identifies an
         # account. There is no account picker to drop — docs/CASHFLOW.md
-        # §9 — and a section picker offers six words of the feature's own
-        # vocabulary. The Section picker is declared here for both
-        # dashboards but BINDS only to the cards that declare its tag;
-        # the headline figures and the diagram decline it, identically on
-        # the base and the twin.
-        return [cashflow_currency, investing, time_range, source,
+        # §9 — and a section picker offers the feature's own vocabulary,
+        # the sections the serving view carries. The Section picker is
+        # declared here for both dashboards but BINDS only to the cards
+        # that declare its tag; the headline figures and the diagram
+        # decline it, identically on the base and the twin.
+        return [currency_picker(CASHFLOW_CURRENCY_PARAM_ID), investing,
+                time_range, source,
                 card_picker(CASHFLOW_SECTION_PARAM_ID, "Section", "section",
                             "report_cashflow", "section")]
     if name in INCOME_DASHBOARDS:
         # The income pickers, in the shape the spending ones take and
-        # for the same reasons — a required currency with a USD default
-        # over a serving view that carries a row per reporting currency,
-        # and no account picker on the twin, a picker being unable to
-        # redact what its own dropdown offers.
-        income_currency = {"id": INCOME_CURRENCY_PARAM_ID, "name": "Currency",
-                           "slug": "currency", "type": "string/=",
-                           "sectionId": "string", "isMultiSelect": False,
-                           "default": ["USD"], "required": True,
-                           "values_query_type": "list",
-                           "values_source_type": "static-list",
-                           "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
-        pickers = [income_currency, time_range, source]
+        # for the same reasons — including no account picker on the
+        # twin, a picker being unable to redact what its own dropdown
+        # offers.
+        pickers = [currency_picker(INCOME_CURRENCY_PARAM_ID), time_range, source]
         if not name.endswith(PRIVACY_SUFFIX):
             pickers.append(card_picker(INCOME_ACCOUNT_PARAM_ID, "Account",
                                        "account", "report_income", "display_name"))
@@ -3468,19 +3483,7 @@ def dashboard_parameters(model_ids, mode, name=""):
         return pickers
     if name not in SPENDING_DASHBOARDS:
         return [time_range, source]
-    # Required + USD default: report_spending carries one row per
-    # (spending line, reporting currency), so a card must never run with
-    # the currency cleared — every figure would sum USD + CHF + EUR (a
-    # required parameter resets to its default instead of clearing). The
-    # value list is static: the reporting trio is fixed, not
-    # data-dependent, and a card-backed list would re-scan the whole
-    # spending population for three known strings.
-    currency = {"id": SPEND_CURRENCY_PARAM_ID, "name": "Currency",
-                "slug": "currency", "type": "string/=", "sectionId": "string",
-                "isMultiSelect": False, "default": ["USD"], "required": True,
-                "values_query_type": "list",
-                "values_source_type": "static-list",
-                "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
+    currency = currency_picker(SPEND_CURRENCY_PARAM_ID)
     # The account picker targets `display_name` — the model's name for
     # the account LABEL (migration 0063) — and NOT
     # `account_external_id`: a picker lists the raw values of the column
@@ -3654,25 +3657,23 @@ def ensure_database(base, sid, db_name, gold_path):
     peak memory scales with per-query parallelism.
 
     The cap is INSTANCE-level, so every tile of a dashboard shares it,
-    and a dashboard opens by firing all of its tiles at once. It was set
-    below what its own busiest page needs: the cash flow tiles each scan
-    the statement over all history, and the twelve of them together
-    exhausted a 2 GB pool, which surfaced as "There was a problem
-    displaying this chart" on most of the page. Measured against that
-    page, at eight threads, a 2 GB pool serves six such tiles and fails
-    around nine of twelve; 3 GB serves twelve and fails at sixteen;
-    4 GB serves twenty. Four is the value here because a dashboard that
-    gains a tile should not take the page down.
+    and a dashboard opens by firing all of its tiles at once — so it is
+    sized against the busiest page rather than against one query. The
+    busiest is Cash Flow, whose tiles each scan the statement over all
+    history: measured at eight threads, a 2 GB pool serves six such
+    tiles, 3 GB twelve, and 4 GB twenty. Four, because a dashboard that
+    gains a tile should not take the page down; a pool too small
+    surfaces as "There was a problem displaying this chart" on most of
+    the page rather than as anything naming memory.
 
     Lowering `threads` instead does NOT trade off the same way — it
     makes matters worse, because a query that cannot parallelise holds
-    its intermediates longer. Both were measured before this was
-    raised. Spill goes to the
-    driver's hard-wired "<database_file>.tmp", which web/web mounts
-    writable. Do NOT move these into init_sql: that runs per connection,
-    and DuckDB refuses to re-SET a used temp_directory, which breaks
-    every query after the first connection cycle ("" converges the key
-    away from older provisions)."""
+    its intermediates longer. Spill goes to the driver's hard-wired
+    "<database_file>.tmp", which web/web mounts writable. Do NOT move
+    these into init_sql: that runs per connection, and DuckDB refuses to
+    re-SET a used temp_directory, which breaks every query after the
+    first connection cycle ("" converges the key away from older
+    provisions)."""
     details = {"database_file": gold_path, "read_only": True,
                "memory_limit": "4GB", "threads": "8", "init_sql": ""}
 

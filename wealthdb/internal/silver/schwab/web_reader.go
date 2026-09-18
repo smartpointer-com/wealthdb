@@ -668,27 +668,28 @@ func absInt64(v int64) int64 {
 // passes source-supplied signs through for that kind because
 // the cash impact varies: cash-in-lieu yields cash, a plain
 // split is zero, a cash merger pays out.
+//
 // THREE OF THE TRANSFER WORDS TAKE THEIR DIRECTION FROM THE AMOUNT rather
-// than from the word, and all three used to be journals on the reasoning that
-// an undirected word states no direction. The amount states it, and a journal
-// is invisible to the internal-transfer matcher — which admits no such kind —
-// so the leg waiting at the other end could never be paired and was drawn as
-// money arriving from, or vanishing into, nowhere.
+// than from the word, which states none. A journal is invisible to the
+// internal-transfer matcher — which admits no such kind — and excluded from
+// the cash flow statement outright, so an undirected word leaves the leg
+// waiting at the other end unpairable and drawn as money arriving from, or
+// vanishing into, nowhere.
 //
 // Two of them name an OUTSIDE bank: "MoneyLink Transfer" and the undirected
-// "Transfer". The API era already books those as withdrawals and deposits, so
-// reading the sign restores continuity across the feed cutover rather than
-// inventing semantics. The third is a funds journal inside the statement
-// parser's "Unknown" catch-all, matched by narrative rather than by kind
-// because that bucket is heterogeneous on purpose (see the case below).
+// "Transfer". The API era books those as withdrawals and deposits, so reading
+// the sign is continuity across the feed cutover rather than invented
+// semantics. The third is a funds journal inside the statement parser's
+// "Unknown" catch-all, matched by narrative rather than by kind because that
+// bucket is heterogeneous on purpose (see the case below).
 //
 // What stays a journal is narrower than "the holder's own accounts", and the
 // distinction is the point: "Journal" and the two SHARE journals move
 // securities, or move cash the boundary has no interest in, while a funds
-// journal can reach an account outside the household. Whether a
-// move between two accounts one person can log into crosses the household
-// boundary is gold's question, not this adapter's — which is why the answer
-// here is a DIRECTION and never a verdict.
+// journal can reach an account outside the household. Whether a move
+// between two accounts one person can log into crosses the household boundary
+// is gold's question, not this adapter's — which is why the answer here is a
+// DIRECTION and never a verdict.
 //
 // A row with no amount, or a zero one, keeps the old answer either way: the
 // sign is the whole of the evidence, and a directionless row has no right

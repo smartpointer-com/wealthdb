@@ -83,8 +83,9 @@ import (
 // The pairs therefore say which phase asserted them
 // (gold.TransferMatchPhase).
 //
-// WHAT IS STILL OUT OF REACH: a movement whose source stamps no
-// reference on it, or stamps one the pool's other rows also carry. Both
+// WHAT IS STILL OUT OF REACH: a movement whose source neither stamps a
+// per-movement reference on it — stamping none, or one the pool's other
+// rows also carry — nor describes by counter currency and figure. Those
 // stay one-legged and are left to the rule tier, exactly as every
 // cross-currency movement was before.
 

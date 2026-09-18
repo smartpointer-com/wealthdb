@@ -29,8 +29,8 @@ different route.
 What is deliberately **not** here:
 
 - **Investment buys and sells**, maturities, corporate actions and FX
-  legs — the future `cashflow` feature. Sale proceeds are not income
-  under any reading and never enter the base.
+  legs — the `cashflow` feature's ([CASHFLOW.md](CASHFLOW.md)). Sale
+  proceeds are not income under any reading and never enter the base.
 - **Gross-of-payroll wages.** A bank sees the net salary; the gross, the
   deductions and the employer's contributions live on a payslip the
   product does not collect. Income is what arrived (§5).
@@ -174,14 +174,16 @@ structure a payer's name cannot reveal:
 | `cash_deposit` | cash paid in at a counter or a machine | yes |
 | `other` | a receipt no tier could place, that a tier nonetheless placed there | yes, labelled `Other` |
 
-Seven of them — `internal_transfer`, `gift`, `other` and the four
+Eight of them — `internal_transfer`, `gift`, `other` and the five
 crossings — are **one row** read from either side, which is what
 `family = 'both'` means.
 
-The four crossings arrived with the cash flow statement
-([CASHFLOW.md](CASHFLOW.md), migration 0078) and leave the base for
-`internal_transfer`'s reason: the money is the holder's throughout, in
-a pool earmarked for a purpose rather than earned. The DIRECTION is the
+The five crossings arrived with the cash flow statement
+([CASHFLOW.md](CASHFLOW.md), migrations 0078 and 0090) and leave the
+base for `internal_transfer`'s reason: the money is the holder's
+throughout, in a pool whose far side the product does not hold rather
+than earned — four of them earmarked by a tax wrapper,
+`deposit_transfer` with no wrapper at all. The DIRECTION is the
 row's own, so a deposit placed `retirement_transfer` is a plan payout
 and a withdrawal placed the same is a contribution. None of them is
 needed where the far account IS tracked — the matcher's verdict says
@@ -537,7 +539,7 @@ one number answers for both.
 1. **Three CLI views**, `summary / types / transactions`. No `payers`
    view: payers rank on the dashboard only, as merchants do.
 2. **Plaid's `INCOME` vendored verbatim**, plus nine extensions and
-   nine deltas. Widened deliberately for a general audience — the
+   thirteen deltas. Widened deliberately for a general audience — the
    product is published, so the vocabulary names what a household
    commonly receives rather than what one deployment does.
 3. **Gross as booked.** `withheld` is a memo, off by default, never read

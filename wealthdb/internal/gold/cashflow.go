@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// The cashflow readers: spending.go and income.go with four grains
+// The cashflow readers: spending.go and income.go with five grains
 // instead of three.
 //
 // Same positional-scan discipline — each function scans `SELECT *` over
@@ -27,10 +27,11 @@ import (
 // of operating, each summed over its own section — and Operating is
 // their signed difference. They are NOT the income and spending
 // features' numbers and are deliberately not named after them: the
-// three populations differ by construction (docs/CASHFLOW.md §2). Investing, Financing and Vehicles are signed nets,
-// and NetCashFlow is the four summed. That the four sum to NetCashFlow
-// is structural and therefore a guard against arithmetic alone; the
-// reconciliation that can catch a wrong population is the memo.
+// three populations differ by construction (docs/CASHFLOW.md §8).
+// Investing, Financing and Vehicles are signed nets, and NetCashFlow
+// is the four summed. That the four sum to NetCashFlow is structural
+// and therefore a guard against arithmetic alone; the reconciliation
+// that can catch a wrong population is the memo.
 type CashflowSummaryRow struct {
 	// PeriodStart is the bucket's opening UTC-midnight epoch second,
 	// nil for the single `total` bucket.
@@ -399,10 +400,7 @@ func CashflowCoverage(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64,
 			&r.Currency, &r.TxnCount, &ledger, &unsigned, &measured, &gap, &r.Status); err != nil {
 			return nil, fmt.Errorf("CashflowCoverage scan: %w", err)
 		}
-		if periodStart.Valid {
-			v := periodStart.Int64
-			r.PeriodStart = &v
-		}
+		r.PeriodStart = nullInt64ToPtr(periodStart)
 		r.Ledger = trimmedDecimalPtr(ledger)
 		r.UnsignedVolume = trimmedDecimalPtr(unsigned)
 		r.Measured = trimmedDecimalPtr(measured)

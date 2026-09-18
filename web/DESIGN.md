@@ -92,22 +92,30 @@ reports (+ all-time `report_transactions`), the daily `_history` reports
 (migration 0022) for time-series charts, the two taxonomy models over the
 `web_*` breakdown views (migration 0032), cast-only shims over the materialized
 `report_returns` table (§8), the spending models over `web_spending`
-(migration 0043), the income models over `web_income` (migration 0072) —
+(migration 0043), the income models over `web_income` (migration 0072),
+the `report_cashflow` model over `web_cashflow` (migration 0084) — which
+backs the Cash Flow dashboard's Section picker rather than any card —
 and `_pct` privacy variants of the models the privacy
 surface reads. On top of the models, provisioning creates pre-defined
-metrics, questions and six dashboards — **Wealth
+metrics, questions and seven dashboards — **Wealth
 Overview** and **Allocation** carry dashboard-level filters (a time range
 resp. a required as-of day, plus a source picker), **Returns** carries a
 required currency picker (returns are stored one row set per currency),
 **Spending** carries the time range and source picker plus a required
 currency picker, an account picker and a category multi-select,
 **Income** carries the same five with a *type* picker in place of the
-category one, **Data Freshness** is deliberately unfiltered — all of them
+category one, **Cash Flow** carries the time range and source picker, a
+required currency picker, and two grain pickers of its own — a required
+*Investing* picker (the section netted whole, or by asset class) and a
+*Section* picker deliberately narrower than the rest, which the by-month
+charts and the line list take and the headline figures and the Sankey
+decline — and no account picker at all, the household boundary being
+what defines the pool, **Data Freshness** is deliberately unfiltered — all of them
 MBQL/definition-only, no data baked in.
 Each dashboard also gets a **privacy twin** (linked from the dashboard's top
 row): same layout and filters, but every card shows shares (%) instead of
 money. The twins' charts are native SQL over the gold `web_*` serving views
-(migrations 0032, 0043 and 0072 — TIMESTAMP-cast reductions of the report macros to
+(migrations 0032, 0043, 0072 and 0084 — TIMESTAMP-cast reductions of the report macros to
 the grain each card reads, some folding cash in as a class of its own;
 Metabase syncs views like tables and assigns their columns field ids), with the
 dashboard pickers landing on the cards as field filters. Each card computes
@@ -217,11 +225,15 @@ tiles concurrently, and the history-heavy privacy queries once ballooned
 the process until the kernel OOM-killed it (taking the whole Docker VM's
 memory with it). Four settings work together, each load-bearing:
 
-- **DuckDB `memory_limit` (2GB) + `threads` (8)** — set by `provision.py`
+- **DuckDB `memory_limit` (4GB) + `threads` (8)** — set by `provision.py`
   as connection *details*, which the driver forwards as instance-level
-  JDBC config. They must NOT move into `init_sql`: that runs per pooled
-  connection, and DuckDB refuses to re-`SET` a used `temp_directory` —
-  the second connection then poisons every query after it.
+  JDBC config. Instance-level means every tile a dashboard fires at once
+  shares one pool, so the cap is sized against the busiest page rather
+  than a single query (`ensure_database`'s docstring carries the
+  measured thresholds). They must NOT move into `init_sql`: that runs
+  per pooled connection, and DuckDB refuses to re-`SET` a used
+  `temp_directory` — the second connection then poisons every query
+  after it.
 - **A writable spill mount** — the driver hard-wires DuckDB's
   `temp_directory` to `<database_file>.tmp`, which sits on the read-only
   snapshot mount. `web/web` mounts a host directory at exactly that path

@@ -4,12 +4,10 @@
 --
 -- The reconciliation memo (0083) answers one question per period for the
 -- whole pool: does the computed cash section agree with the observed
--- balances? When it does not, it says so in a single number and stops.
--- Finding the account behind that number has been hand archaeology every
--- time, and the answer has never been in the statement — it has been in
--- a query somebody wrote from scratch.
+-- balances? When it does not, it says so in a single number and stops,
+-- and the account behind that number is nowhere in the statement.
 --
--- This is that query, per account and per period, and it differs from a
+-- This report is where it is, per account and per period, and it differs from a
 -- naive version in the three ways a naive version is wrong.
 --
 --   1. IT DOES NOT CONVERT. A per-account gap belongs in the account's

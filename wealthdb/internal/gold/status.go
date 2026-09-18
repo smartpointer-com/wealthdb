@@ -232,9 +232,10 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 }
 
 // spendDrift fills the enrichment counters, one per family plus the
-// catch-all kinds. Each reads the layered macros rather than restating
-// their predicates, so a change to what counts as a scoped account or
-// a family's kind moves the status numbers with it.
+// catch-all kinds, and hands off to cashflowDrift for the statement's
+// own three. Each reads the layered macros rather than restating their
+// predicates, so a change to what counts as a scoped account or a
+// family's kind moves the status numbers with it.
 //
 // The last counter watches the two CATCH-ALL kinds — `other` and
 // `journal` — on in-scope accounts. Those are where an adapter files a

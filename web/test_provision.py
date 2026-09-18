@@ -1183,9 +1183,6 @@ check("the twin's scalars divide by the hub",
       [n for n in ("Operating in", "Operating out", "Net cash flow")
        if "hub" not in _cf_twin_sql[p.privacy_name(n)]])
 
-# The serving view is in the registry that drives the pre-view abort, so
-# a stale gold snapshot halts provisioning rather than converging every
-# cashflow card to a degraded shape.
 # The rate tiles' arithmetic, pinned. web_cashflow's values are already
 # SIGNED — an outflow is negative — so operating cash flow is the plain
 # sum over the two halves. Multiplying the outflow half by -1 and summing
@@ -1254,6 +1251,9 @@ for _dash, _def in p.dashboard_defs().items():
 check("...and that check read every dashboard that has one",
       _seen_listed >= 8, _seen_listed)
 
+# The serving view is in the registry that drives the pre-view abort, so
+# a stale gold snapshot halts provisioning rather than converging every
+# cashflow card to a degraded shape.
 check("web_cashflow is one of the views provisioning requires",
       "web_cashflow" in p.web_views_wanted(), p.web_views_wanted())
 
