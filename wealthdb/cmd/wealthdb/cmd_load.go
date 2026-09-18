@@ -340,6 +340,7 @@ func buildSourceSpec(
 	spec := loader.SourceSpec{
 		ID:             s.ID,
 		Kind:           s.Kind,
+		TaxableWrapper: s.TaxableWrapper,
 		Path:           openSpec.Path,
 		Subsources:     openSpec.Subsources,
 		Relationships:  openSpec.Relationships,

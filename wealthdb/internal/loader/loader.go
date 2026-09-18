@@ -51,6 +51,9 @@ type SourceSpec struct {
 	// config-file `instrument_overrides` block. Applied after the
 	// adapter has classified, to the instrument dimension and to
 	// every position row referencing the instrument.
+	// TaxableWrapper rewrites `taxable_personal` on this source's
+	// accounts; see config.SilverSource.TaxableWrapper.
+	TaxableWrapper      string
 	InstrumentOverrides map[string]InstrumentOverride
 	// TransactionInstruments links a trade the adapter could not
 	// resolve, keyed by the token it looked up and failed on
@@ -207,7 +210,7 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 			return nil, fmt.Errorf("Load(%s): delete window: %w", spec.ID, err)
 		}
 
-		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window, spec.Overrides, spec.PortfolioOverrides, spec.InstrumentOverrides)
+		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window, spec.Overrides, spec.PortfolioOverrides, spec.InstrumentOverrides, spec.TaxableWrapper)
 		if err != nil {
 			return nil, fmt.Errorf("Load(%s): apply snapshots: %w", spec.ID, err)
 		}
@@ -333,7 +336,7 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 // overlap), instrument overrides to InstrumentChange and
 // PositionChange records. See applyAccountOverrides,
 // applyPortfolioOverrides and applyInstrumentOverrides.
-func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, overrides map[string]AccountOverride, portfolioOverrides map[string]PortfolioOverride, instrumentOverrides map[string]InstrumentOverride) (int, error) {
+func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, overrides map[string]AccountOverride, portfolioOverrides map[string]PortfolioOverride, instrumentOverrides map[string]InstrumentOverride, taxableWrapper string) (int, error) {
 	stream, err := conn.Snapshots(ctx, w)
 	if err != nil {
 		return 0, err
@@ -355,6 +358,9 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 		// emitted; see DESIGN.md §13.9. Portfolio overrides apply
 		// first (broader scope); per-account overrides override on
 		// the same column (narrower scope wins).
+		// The source-wide statement first, the per-account one after,
+		// so a named account still overrules the blanket rule.
+		applyTaxableWrapper(batch.Accounts, taxableWrapper)
 		applyPortfolioOverrides(batch.Accounts, portfolioOverrides)
 		applyAccountOverrides(batch.Accounts, overrides)
 		applyInstrumentOverrides(batch.Instruments, batch.Positions, instrumentOverrides)
@@ -623,6 +629,29 @@ func applyPortfolioOverrides(accounts []canonical.AccountChange, overrides map[s
 		if ov.TaxWrapper != "" {
 			w := canonical.TaxWrapper(ov.TaxWrapper)
 			accounts[i].TaxWrapper = &w
+		}
+	}
+}
+
+// applyTaxableWrapper restates which taxable wrapper this source's
+// taxable accounts sit in.
+//
+// ONLY `taxable_personal` moves. That is the adapter's generic answer
+// for "a taxable account", given a bank feed says what a product is and
+// never who holds it; every other wrapper is something the adapter had
+// positive evidence for, and a blanket rule has no business touching
+// it. An account with no wrapper at all is also left alone — absent is
+// not the same as taxable, and guessing there is the error the
+// coverage canary exists to report.
+func applyTaxableWrapper(accounts []canonical.AccountChange, wrapper string) {
+	if wrapper == "" {
+		return
+	}
+	w := canonical.TaxWrapper(wrapper)
+	for i := range accounts {
+		if accounts[i].TaxWrapper != nil && *accounts[i].TaxWrapper == canonical.TaxWrapperTaxablePersonal {
+			v := w
+			accounts[i].TaxWrapper = &v
 		}
 	}
 }

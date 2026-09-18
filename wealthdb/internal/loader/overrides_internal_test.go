@@ -47,3 +47,45 @@ func TestTransactionInstrumentsLinksOnlyWhatTheAdapterCouldNot(t *testing.T) {
 		}
 	}
 }
+
+// TestTaxableWrapperMovesOnlyTheGenericTaxableAnswer pins the blanket
+// rule and, more importantly, what it must not touch. An adapter says
+// `taxable_personal` because a bank feed states what a product is and
+// never who holds it; every other wrapper is something it had positive
+// evidence for, and a source-wide statement about joint ownership has
+// no business overruling that.
+func TestTaxableWrapperMovesOnlyTheGenericTaxableAnswer(t *testing.T) {
+	w := func(s canonical.TaxWrapper) *canonical.TaxWrapper { return &s }
+	accounts := []canonical.AccountChange{
+		{AccountExternalID: "a1", TaxWrapper: w(canonical.TaxWrapperTaxablePersonal)},
+		{AccountExternalID: "a2", TaxWrapper: w(canonical.TaxWrapperRothIRA)},
+		{AccountExternalID: "a3", TaxWrapper: w(canonical.TaxWrapperTrustNonGrantor)},
+		{AccountExternalID: "a4", TaxWrapper: w(canonical.TaxWrapperCustodialUTMA)},
+		// No wrapper at all: absent is not the same as taxable, and
+		// guessing here is the error the coverage canary reports.
+		{AccountExternalID: "a5"},
+	}
+	applyTaxableWrapper(accounts, string(canonical.TaxWrapperTaxableJoint))
+	want := map[string]canonical.TaxWrapper{
+		"a1": canonical.TaxWrapperTaxableJoint,
+		"a2": canonical.TaxWrapperRothIRA,
+		"a3": canonical.TaxWrapperTrustNonGrantor,
+		"a4": canonical.TaxWrapperCustodialUTMA,
+		"a5": "",
+	}
+	for _, a := range accounts {
+		got := canonical.TaxWrapper("")
+		if a.TaxWrapper != nil {
+			got = *a.TaxWrapper
+		}
+		if got != want[a.AccountExternalID] {
+			t.Errorf("%s = %q, want %q", a.AccountExternalID, got, want[a.AccountExternalID])
+		}
+	}
+	// Unset is a no-op, not a wipe.
+	before := *accounts[0].TaxWrapper
+	applyTaxableWrapper(accounts, "")
+	if *accounts[0].TaxWrapper != before {
+		t.Errorf("an empty rule changed %q", *accounts[0].TaxWrapper)
+	}
+}

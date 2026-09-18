@@ -58,6 +58,16 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: silver_sources[%d].kind %q not registered (known: %v)", i, s.Kind, known)
 		}
 
+		// A taxable wrapper the deployment states for the source. Any
+		// valid wrapper is accepted rather than only the taxable ones:
+		// the field says what this source's generically-taxable
+		// accounts really are, and a jurisdiction may spell that in a
+		// wrapper the vocabulary already has for another purpose.
+		if s.TaxableWrapper != "" && !canonical.TaxWrapper(s.TaxableWrapper).Valid() {
+			return fmt.Errorf("config: silver_sources[%d].taxable_wrapper %q is not a known tax wrapper",
+				i, s.TaxableWrapper)
+		}
+
 		// Single-file form OR subsources form — exactly one.
 		hasPath := s.Path != ""
 		hasSubs := len(s.Subsources) > 0

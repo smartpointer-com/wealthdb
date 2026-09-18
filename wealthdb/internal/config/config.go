@@ -276,8 +276,24 @@ type SilverSource struct {
 	// fills only the days no account source covered). Absent/null =
 	// minimum priority. Ties (equal or both-null) break by the order
 	// sources appear in the config — earlier wins. See FxSourceOrder.
-	FxPriority *int              `json:"fx_priority,omitempty"`
-	Subsources []SilverSubsource `json:"subsources,omitempty"`
+	FxPriority *int `json:"fx_priority,omitempty"`
+	// TaxableWrapper is the taxable wrapper this source's taxable
+	// accounts ACTUALLY sit in.
+	//
+	// An adapter emits `taxable_personal` as its generic taxable
+	// answer, because a bank feed says what a product is and never who
+	// holds it — a jointly held account and a personally held one are
+	// the same product. Whose it is, is the deployment's fact, and
+	// this is where it is stated: once per source rather than once per
+	// account, so an account opened later is right on the load that
+	// first sees it.
+	//
+	// It rewrites `taxable_personal` and NOTHING ELSE. An account the
+	// adapter placed in a retirement, trust or custodial wrapper keeps
+	// it, which is what makes a blanket statement safe to make. A
+	// per-account `account_overrides` entry still wins over this.
+	TaxableWrapper string            `json:"taxable_wrapper,omitempty"`
+	Subsources     []SilverSubsource `json:"subsources,omitempty"`
 	// Relationships pairs cross-subsource entity identities under
 	// a single user-chosen label. Used by the UBS adapter to link
 	// the web `banking_relationship_id` (opaque SPA token) to the
