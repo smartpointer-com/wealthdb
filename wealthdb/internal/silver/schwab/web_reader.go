@@ -305,18 +305,32 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			continue
 		}
 		var instrPtr *string
-		if instrumentKey.Valid && instrumentKey.String != "" {
+		var vehicle canonical.Vehicle
+		resolve := func(sym string) *string {
 			// Web stores the ticker as instrument_key. Translate
 			// to the api-side CUSIP when known so the row lands
 			// on the same gold instruments row the api side
 			// registered (and thus the symbol/name/asset_class
 			// columns populate via the LEFT JOIN). Web-only
 			// tickers fall through to using the ticker as-is.
-			s := instrumentKey.String
-			if cusip, ok := symbolToCUSIP[s]; ok {
-				s = cusip
+			if cusip, ok := symbolToCUSIP[sym]; ok {
+				sym = cusip
 			}
-			instrPtr = &s
+			return &sym
+		}
+		if instrumentKey.Valid && instrumentKey.String != "" {
+			instrPtr = resolve(instrumentKey.String)
+		} else if sym, isOption, ok := securityNameInstrument(
+			extractWebTxSecurityName(payload)); ok {
+			// The 1099-B road: the feed states the instrument by NAME
+			// and nothing else. An option resolves to its underlying
+			// and says so in the vehicle — the exposure it touched is
+			// the underlying's, and the asset class is left to that
+			// instrument rather than restated here.
+			instrPtr = resolve(sym)
+			if isOption {
+				vehicle = canonical.VehicleOption
+			}
 		}
 		netAmount, quantity, price := extractWebTxAmounts(payload)
 		description := extractWebTxDescription(payload)
@@ -326,6 +340,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			OccurredAt:            ts,
 			AccountExternalID:     hash,
 			InstrumentExternalID:  instrPtr,
+			Vehicle:               vehicle,
 			Kind:                  txKind,
 			// Currency unknown from the web row — Schwab statements
 			// don't structure it. Default to USD: Schwab
@@ -834,6 +849,17 @@ func extractWebTxAmounts(payload string) (netAmount, quantity, price *canonical.
 // tx_history_json uses capital `Description`. Returns nil when
 // both are absent or empty so cash-only rows (interest, fees,
 // transfers) don't get a spurious name.
+// extractWebTxSecurityName is the 1099-B feed's only statement of what
+// a row traded. Empty for every other web source, which is what makes
+// it safe to reach for whenever no instrument_key was stored.
+func extractWebTxSecurityName(payload string) string {
+	var p struct {
+		SecurityName string `json:"security_name"`
+	}
+	_ = json.Unmarshal([]byte(payload), &p)
+	return strings.TrimSpace(p.SecurityName)
+}
+
 func extractWebTxDescription(payload string) *string {
 	var p struct {
 		Lower string `json:"description"`
