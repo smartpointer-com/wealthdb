@@ -12,6 +12,7 @@ import json
 import pytest
 
 from pdf_parsers import (
+    _stmt_security,
     _advice_trx_no,
     _stmt_is_internal_transfer,
     _stmt_split_multi,
@@ -1102,3 +1103,58 @@ class TestAdviceTransactionNumber:
         # rather than salvaged.
         assert _advice_trx_no("see enclosed advice") is None
         assert _advice_trx_no("0000 036") is None
+
+
+def test_stmt_security_reads_the_valor_that_closes_a_caption():
+    """A trade's continuation names the instrument and closes with the
+    Swiss valor. The lines beside it — the order reference, the turnover
+    trailer — do not end in a bare run of digits, which is the test."""
+    caption, valor = _stmt_security([
+        "A 28.09.2023 AA123980",
+        "EXAMPLEETF WORLD 1234567",
+        "Turnover total 1 111 111.11 1 111 111.11",
+    ])
+    assert (caption, valor) == ("EXAMPLEETF WORLD", "1234567")
+
+
+def test_stmt_security_skips_the_settlement_reference_above_it():
+    """A trade's settlement reference is a letter, a date and a NUMBER,
+    and it comes first — so a scan taking the earliest match takes the
+    reference and never reaches the security below it. The number is not
+    a valor, so nothing was ever mis-stamped; the row simply stayed
+    unresolved."""
+    caption, valor = _stmt_security([
+        "V 01.01.2020 16000000",
+        "EXAMPLE SP 400 US 1234567",
+    ])
+    assert (caption, valor) == ("EXAMPLE SP 400 US", "1234567")
+
+
+def test_stmt_security_declines_what_is_not_a_security_line():
+    for lines in (
+        [],
+        ["A 01.01.2020 AB000000"],                      # an order reference
+        ["V 01.01.2020 16000000"],                      # a settlement reference
+        ["Turnover total 1 111 111.11 1 111 111.11"],   # an amount, not a valor
+        ["1234567"],                                    # a number with no caption
+        ["Payment to Example Payee"],                   # ordinary narrative
+    ):
+        assert _stmt_security(lines) == (None, None), lines
+
+
+def test_stmt_security_reads_a_valor_printed_hard_against_its_caption():
+    """A long caption leaves no room for the space and the statement
+    prints the valor against it. The spaced form is tried first, so an
+    ordinary line is unaffected."""
+    assert _stmt_security(["Example Group Rg199999991"]) == (
+        "Example Group Rg", "199999991")
+    assert _stmt_security(["Exmp Index USD-2D-199999992"]) == (
+        "Exmp Index USD-2D-", "199999992")
+    # A spaced line still parses spaced — the glued pattern would split
+    # it differently and must never get the chance.
+    assert _stmt_security(["EXAMPLEETF WORLD 1234567"]) == (
+        "EXAMPLEETF WORLD", "1234567")
+    # And the shapes that are not valors stay rejected: a turnover
+    # trailer, a bare date, a short trailing number in a name.
+    for line in ("Turnover total 1 111 111.11", "10.04.2025", "Example Index 500"):
+        assert _stmt_security([line]) == (None, None), line

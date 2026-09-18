@@ -923,6 +923,57 @@ def _stmt_counter_account(cont_lines: list[str]) -> str | None:
     return None
 
 
+# A securities line's continuation carries the instrument's caption and,
+# closing it, the Swiss VALOR — a globally unique identifier for a
+# security line, which is what makes the match to gold's instrument
+# dimension an identity rather than a guess.
+#
+#     "EXAMPLEETF WORLD 1234567"
+#
+# A valor is the LAST whitespace-separated token, all digits, with
+# something bearing a letter in front of it. A turnover trailer
+# ("Turnover total 1 111 111.11 ...") ends in a decimal group and falls
+# out on its own.
+#
+# A TRADE'S SETTLEMENT REFERENCE DOES NOT. It is a letter, a date and a
+# number — "V 01.01.2020 12345678" — and that number is not a valor. It
+# also comes FIRST, so a scan that takes the earliest match takes the
+# reference and never reaches the security line below it. Both reference
+# shapes are skipped by their own pattern rather than left to the valor
+# test to reject, because one of them passes it.
+#
+# A caption that legitimately ends in digits would still mint a number
+# that is not a valor. Nothing here guards that and nothing needs to:
+# the consumer looks the number up in the instrument dimension, and a
+# number that is not a valor matches nothing.
+_STMT_REFERENCE_RE = re.compile(r"^[A-Z]\s+\d{2}\.\d{2}\.\d{4}\b")
+_STMT_VALOR_RE = re.compile(r"^(?P<caption>.*[A-Za-z].*?)\s+(?P<valor>\d{4,12})$")
+# A long caption leaves the statement no room for the space, and the
+# valor is printed hard against it ("Example Group Rg199999991"). Tried
+# only where the spaced form found nothing, so an ordinary line is
+# parsed exactly as before. The floor is higher here — six digits, not
+# four — because with no separator a short run is far likelier to be the
+# tail of a name than a valor.
+_STMT_GLUED_VALOR_RE = re.compile(r"^(?P<caption>.*[A-Za-z].*?)(?P<valor>\d{6,12})$")
+
+
+def _stmt_security(cont_lines: list[str]) -> tuple[str | None, str | None]:
+    """The instrument caption and valor a securities movement names.
+
+    Returns (caption, valor), or (None, None) where no continuation line
+    closes with a valor — which is every movement that is not a trade.
+    """
+    lines = [c.strip() for c in cont_lines if not _STMT_REFERENCE_RE.match(c.strip())]
+    for pattern in (_STMT_VALOR_RE, _STMT_GLUED_VALOR_RE):
+        for c in lines:
+            m = pattern.match(c)
+            if m:
+                caption = re.sub(r"\s+", " ", m.group("caption")).strip()
+                if caption:
+                    return caption, m.group("valor")
+    return None, None
+
+
 # A bundled payment order. The statement books a batch of e-banking
 # payments as ONE movement carrying the batch total, and prints the
 # beneficiaries under it, closed by a "<N> times <rail>" trailer. With
@@ -1178,6 +1229,7 @@ def parse_account_statement_transactions_pages(
                 "reconciled": reconciled,
                 "source_doc_token": doc_token,
             }
+            sec_caption, sec_valor = _stmt_security(cont)
             payload = {
                 "booking_type": raw_kind,
                 "internal_transfer": is_internal,
@@ -1188,6 +1240,12 @@ def parse_account_statement_transactions_pages(
                 "post_closing": mv["post_closing"],
                 "source": "account_statement_pdf",
             }
+            # Promoted beside `counter_account` and for the same reason:
+            # the fact is in the continuation either way, and parsing it
+            # once here beats every consumer re-deriving it.
+            if sec_valor:
+                payload["security_caption"] = sec_caption
+                payload["security_valor"] = sec_valor
             if extra:
                 row.update(extra["row"])
                 payload["multi_leg"] = extra["payload"]

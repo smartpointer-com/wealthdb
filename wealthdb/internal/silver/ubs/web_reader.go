@@ -397,6 +397,17 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if err != nil {
 		return nil, psnHints{}, err
 	}
+	// The valor index, built once per read: a statement-era trade names
+	// its instrument in free text and carries no id, and this is what
+	// turns the valor beside that text into the instrument gold holds.
+	valorToISIN, err := psn.instrumentValorIndex(ctx)
+	if err != nil {
+		return nil, psnHints{}, err
+	}
+	instMeta, err := psn.instrumentMetaByISIN(ctx)
+	if err != nil {
+		return nil, psnHints{}, err
+	}
 	mt940Start, err := r.mt940FeedStart(ctx)
 	if err != nil {
 		return nil, psnHints{}, err
@@ -612,6 +623,20 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// already classified from the raw column above and no text read
 		// here can move it.
 		text, instrumentID, message := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
+		// The statement era's own road to the instrument. The export era
+		// already resolved one from Description1's ISIN above, and keeps
+		// it: a stated identifier outranks a looked-up one.
+		var assetClass canonical.AssetClass
+		var vehicle canonical.Vehicle
+		if instrumentID == nil {
+			if isin, ok := valorToISIN[normalizeValor(p.SecurityValor)]; ok {
+				id := isin
+				instrumentID = &id
+				if m, ok := instMeta[isin]; ok {
+					assetClass, vehicle = m.AssetClass, m.Vehicle
+				}
+			}
+		}
 		description := silver.StrPtrIfNonEmpty(text.description)
 		payee := silver.StrPtrIfNonEmpty(text.counterparty)
 		category := silver.StrPtrIfNonEmpty(text.providerCategory)
@@ -639,6 +664,8 @@ SELECT transaction_external_id, value_date, account_external_id,
 			OccurredAt:            valueDate,
 			AccountExternalID:     accountID,
 			InstrumentExternalID:  instrumentID,
+			AssetClass:            assetClass,
+			Vehicle:               vehicle,
 			Kind:                  kind,
 			Currency:              ccy,
 			NetAmount:             netAmount,
@@ -1933,9 +1960,15 @@ type webTxPayload struct {
 	InternalTransfer bool     `json:"internal_transfer"`
 	CounterAccount   string   `json:"counter_account"`
 	Continuation     []string `json:"continuation"`
-	Description1     string   `json:"Description1"`
-	Description2     string   `json:"Description2"`
-	Description3     string   `json:"Description3"`
+	// SecurityValor is the Swiss valor the statement parser lifts off a
+	// trade's continuation line, and SecurityCaption the instrument
+	// text beside it. Statement era only: the export era states its
+	// instrument as an ISIN in Description1 and takes the other road.
+	SecurityValor   string `json:"security_valor"`
+	SecurityCaption string `json:"security_caption"`
+	Description1    string `json:"Description1"`
+	Description2    string `json:"Description2"`
+	Description3    string `json:"Description3"`
 }
 
 // decodeWebTxPayload decodes a silver payload, discarding a partial

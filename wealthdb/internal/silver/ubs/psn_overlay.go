@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -137,6 +138,9 @@ func (r *psnReader) holdingsSnapshotRange(ctx context.Context) (first, last int6
 // overlay for no real gain. Keep the taxonomy mapping here in sync with
 // appendInstruments if it ever changes.
 func (r *psnReader) instrumentMetaByISIN(ctx context.Context) (map[string]instrumentMeta, error) {
+	if r == nil {
+		return nil, nil
+	}
 	const q = `SELECT snapshot_at, isin, payload FROM instruments ORDER BY snapshot_at ASC`
 	rows, err := r.db.QueryContext(ctx, q)
 	if err != nil {
@@ -169,4 +173,94 @@ func utcDay(epoch int64) int64 {
 	t := time.Unix(epoch, 0).UTC()
 	t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 	return t.Unix()
+}
+
+// instrumentValorIndex maps a Swiss VALOR to the instrument gold holds
+// under it, so a statement-era trade — which names its instrument in
+// free text and carries no id — can be resolved to an identity rather
+// than guessed at.
+//
+// Two roads to the same number, because PSN states it only sometimes:
+//
+//   - `payload.InstrIdtfr.Valor`, where the feed carries the identifier
+//     object at all.
+//   - THE ISIN ITSELF, for a Swiss line. A `CH` ISIN is `CH` plus the
+//     valor zero-padded to nine digits plus a check digit, so
+//     `CH0012345678` IS valor 1234567. This reaches the instruments the
+//     first road cannot: the identifier object is optional in the feed,
+//     and a line that omits it would otherwise be invisible to a valor
+//     lookup.
+//
+// A valor naming more than one instrument is dropped rather than
+// resolved. That should not happen — a valor identifies one security
+// line, which is the whole reason this is an identity — so a collision
+// means an assumption here is wrong, and the honest answer to a wrong
+// assumption is no answer.
+func (r *psnReader) instrumentValorIndex(ctx context.Context) (map[string]string, error) {
+	// No PSN side means no instrument dimension to resolve against, and
+	// an empty index resolves nothing — which is the right answer, not
+	// an error.
+	if r == nil {
+		return nil, nil
+	}
+	const q = `SELECT isin, payload FROM instruments`
+	rows, err := r.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("psn instrumentValorIndex: %w", err)
+	}
+	defer rows.Close()
+	out, ambiguous := map[string]string{}, map[string]bool{}
+	add := func(valor, isin string) {
+		if valor == "" || ambiguous[valor] {
+			return
+		}
+		if held, ok := out[valor]; ok && held != isin {
+			delete(out, valor)
+			ambiguous[valor] = true
+			return
+		}
+		out[valor] = isin
+	}
+	for rows.Next() {
+		var isin, payload string
+		if err := rows.Scan(&isin, &payload); err != nil {
+			return nil, err
+		}
+		var p struct {
+			InstrIdtfr struct {
+				Valor string `json:"Valor"`
+			} `json:"InstrIdtfr"`
+		}
+		_ = json.Unmarshal([]byte(payload), &p)
+		add(normalizeValor(p.InstrIdtfr.Valor), isin)
+		add(valorFromSwissISIN(isin), isin)
+	}
+	return out, rows.Err()
+}
+
+// valorFromSwissISIN recovers the valor a Swiss ISIN is built from: the
+// nine digits between the `CH` prefix and the trailing check digit,
+// with leading zeros dropped. Empty for anything that is not a
+// twelve-character CH ISIN of digits.
+func valorFromSwissISIN(isin string) string {
+	if len(isin) != 12 || !strings.HasPrefix(isin, "CH") {
+		return ""
+	}
+	return normalizeValor(isin[2:11])
+}
+
+// normalizeValor drops leading zeros and refuses anything that is not
+// all digits, so the two roads above agree on one spelling of a number.
+func normalizeValor(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	v = strings.TrimLeft(v, "0")
+	return v
 }
