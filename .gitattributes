@@ -1,0 +1,8 @@
+# CSVs are hand-maintained input in this repo — the manual collector's
+# examples, which a new setup copies to seed its own files. CRLF in one
+# of them propagates to every copy, and the next tool that rewrites the
+# file churns every line instead of the one that changed.
+#
+# Source CSVs captured from a provider are bronze and live outside the
+# repo, so nothing here rewrites what a bank actually sent.
+*.csv text eol=lf
