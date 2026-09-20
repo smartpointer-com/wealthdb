@@ -420,6 +420,108 @@ re-download and each document gains a stable cross-run identity
 loader is filename-agnostic — it catalogs whatever `*.pdf` the manifest
 lists — so older token-named dumps keep loading unchanged.
 
+### 3.7b Portfolio securities transactions
+
+Web-only, and a different surface from §3.6's splice. The cash
+transaction list reaches the accounts the homepage files as cash
+tiles; a managed portfolio's own movements — its securities trades,
+and the corporate actions against its holdings — are published on a
+separate list under the legacy `/assetview/` path the SPA hosts in
+child frames.
+
+**It is driven, not requested.** The surface answers an export from
+the list the page is showing, so a request that reconstructs that
+state — however faithfully, and the parameter blob its own frame is
+addressed by was reconstructed exactly — is answered with the rendered
+page instead of a file. Three things follow, and between them they are
+the whole shape of the pass:
+
+- **The window is set through the filter panel**, by filling its date
+  fields and submitting. The fields carrying it
+  (`dateFromIndex[0]` / `dateToIndex[0]`) exist only in the panel,
+  which the SPA builds into a frame of its own and which is absent
+  from the document the endpoint answers with; there is no request
+  that carries them. The surface then keeps that period **per scope,
+  server-side, across sessions**, which is why an export never has to
+  restate it — and why a walk leaves the period it asked for behind
+  for the next person to open that page.
+- **The file is taken by clicking** the list's own CSV control.
+- **The answer states its period** in a footer line, which the walk
+  checks against what it asked for: a window that was not applied
+  comes back as the list's default and would otherwise be stored as
+  though it were the answer. A start date *later* than asked for is
+  accepted — that is the archive's floor (observed at 2024-01-01),
+  and what it returns is real.
+
+**Every portfolio is reached through the switcher in the SPA's
+header**, which both lists them and moves between them
+(`landmarks.PORTFOLIO_SWITCHER_BUTTON`). It has to be: the route takes
+a `portfolioUid` and the homepage offers exactly one, so the route
+alone reaches one portfolio. Two traps sit here.
+
+The first is that the switcher is not the chooser the list renders
+into its own HTML — that one is the custody-account filter *within* a
+portfolio, and selecting a scope on it does not move the page. The
+second is that re-navigating to the route after switching silently
+undoes the switch, because the route still carries the one
+`portfolioUid`; so the window is set on whatever list the page is
+already showing rather than on a freshly-navigated one.
+
+The switcher also lists the consolidated views beside the real
+portfolios, and those answer for bookings a real portfolio already
+gave. A portfolio already harvested is therefore not fetched twice,
+keyed on what the export itself says it is for.
+
+Silver keeps it in `portfolio_transactions` (migration 0012),
+deliberately apart from `transactions`, because two things have to be
+settled before one of these rows can be a ledger row and neither is
+answerable from this feed:
+
+- **Which account settled it.** The export names the custody account
+  the securities moved in and the currency the cash moved in, but not
+  the cash account that paid. A portfolio holds one cash account per
+  currency, so portfolio + settlement currency determines it — via a
+  roster this collector does not carry.
+- **Whether another rail already has it.** From the day the sibling
+  PSN feed's MT515 confirmations begin, the same trade arrives there
+  too under an id this one cannot match.
+
+Both are cross-source questions, so both belong to the adapter (§6),
+and both are answered there now — see the gold adapter's own
+[§11](../../wealthdb/docs/adapters/ubs.md).
+
+**Keying a row.** Every actual trade carries UBS's own `External
+reference`; corporate actions and FX legs are published without one
+and are keyed by a content hash instead. Only columns that state the
+BOOKING may enter that hash. The valuation is not one of them: each
+scope values the same booking in its own reporting currency, so the
+value and the currency beside it differ between a portfolio's own
+export and a consolidated view's — and hashing them gave one booking
+two ids, which defeated the dedupe below and let a trade reach the
+ledger twice.
+
+**The consolidated scopes.** UBS offers them in the same chooser as
+the real portfolios, reporting their rows under a lettered id of their
+own, so the same booking arrives twice. The loader keeps the copy that
+names a numbered portfolio (`load.names_a_portfolio`), falling back to
+the consolidated copy only when nothing else reported the booking.
+
+**Two identifier spaces that look alike.** The export writes an
+account as `<rel> <body>.<code>` and a portfolio as `<rel> <body>
+<code>`, and the sibling feed keys them differently: an account's
+middle group is zero-padded to ten digits, a portfolio's is not.
+Padding the portfolio produced an id that joins to nothing
+(`load.portfolio_id_canonical`).
+
+**Units travel with the figures.** A quantity is counted in pieces
+(`4'000 p`), a price is quoted per unit (`250.75 a`) or in percent
+(`100%`), and the annotation is read and dropped — refusing it left a
+real trade with no quantity at all. An FX leg states a PAIR in one
+cell (`50'000 / -45'000.5`: bought the one, sold the other), and that
+is not a figure: taking the first half would book one leg's amount
+under the other leg's currency, so the pair reads as no value and both
+numbers stay in the payload (`load.parse_grouped_decimal`).
+
 ### 3.8 Historical snapshots reconstructed from PDFs
 
 The web silver also reconstructs **historical** position + cash
@@ -867,3 +969,19 @@ listed here because they are properties of the feeds, not of gold.
   the web loader does not parse PDF bodies; `documents` is indexed
   by type + date + account only. Per-ISIN attribution would need a
   PDF text-extraction pass.
+- **A managed portfolio's trades arrive on three rails, none of
+  which covers the whole timeline.** The Account Statement PDF
+  reprints a year's movements, but is published annually — so it
+  says nothing about the current year until the following January.
+  The PSN MT515 confirmations start wherever that feed was first
+  ingested and cover nothing before it. Between the two sits the
+  `portfolio_transactions` export (§3.7b), the only rail that can be
+  asked for a past window at all — though not an unbounded one: its
+  archive begins where the surface's own floor does, observed at
+  2024-01-01, so the deep history stays the statements'. Both
+  consequences for the adapter are settled there rather than here: a
+  row from the export is matched against what the other rails already
+  settled on that cash account and day before it enters the ledger, or
+  the trade is counted twice; and its account is resolved from
+  (portfolio, settlement currency) to the cash account that paid,
+  which is a pairing only gold holds.

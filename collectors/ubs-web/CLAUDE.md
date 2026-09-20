@@ -18,6 +18,17 @@ binding):
 - The UBS login form and the MFA approval page that follows it.
 - Read-only listing pages for: account overview, transactions,
   custody/portfolio holdings, eDocuments archive.
+- The **portfolio securities-transaction list**, its filter panel and
+  its CSV export button, plus the **portfolio switcher** in the SPA
+  header used to move between portfolios. This surface is *driven*,
+  not merely requested: the portfolio is chosen from the switcher, the
+  period set by filling the panel's date fields and submitting it, and
+  the file taken by clicking the list's export control (DESIGN.md
+  §3.7b). These are the read-only navigation, filter-Apply and
+  export-generation actions the list allows — they change what is
+  shown and nothing else. Note that the surface remembers the
+  submitted period per portfolio, so a walk leaves it on the window it
+  asked for.
 - The card area's **read** surfaces: the card roster, a card's
   transaction list and its exports, a single transaction's expanded
   detail, and the invoice archive with its statement downloads.

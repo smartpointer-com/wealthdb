@@ -154,6 +154,8 @@ def _mock_export_layer(monkeypatch):
     browser. enumerate_accounts already returns [], so the transaction
     loop is empty and only the 10-home capture fires."""
     monkeypatch.setattr(download, "export_positions", lambda *a, **k: [])
+    monkeypatch.setattr(download, "export_portfolio_transactions",
+                        lambda *a, **k: [])
     monkeypatch.setattr(download, "harvest_documents", lambda *a, **k: [])
 
 
@@ -542,3 +544,48 @@ def test_export_transactions_records_a_format_that_produced_nothing(
     assert meta["csv_gaps"] == ["2026-01-01..2026-03-31"]
     assert len(meta["mt940_filenames"]) == 1
     assert meta["mt940_gaps"] == []
+
+
+# --------------------------------------------------------------------
+# --only: one pass, and a dump that says so
+# --------------------------------------------------------------------
+
+def test_only_runs_the_named_pass_and_skips_the_rest(tmp_path, monkeypatch):
+    called = []
+    for name in ("export_positions", "export_portfolio_transactions",
+                 "harvest_documents"):
+        monkeypatch.setattr(download, name,
+                            (lambda n: lambda *a, **k: called.append(n) or [])(name))
+    _mock_playwright_layer(monkeypatch)
+    dest = tmp_path / "bronze"
+    state = tmp_path / "state.json"
+    state.write_text("{}")
+    rc = download.main(["--state-path", str(state), "--bronze-dir", str(dest),
+                        "--only", "portfolio-transactions", "--no-cards"])
+    assert rc == 0
+    assert called == ["export_portfolio_transactions"]
+
+
+def test_a_one_pass_dump_is_not_called_complete(tmp_path, monkeypatch):
+    # `prune` reclaims anything not "complete", and a reader must not
+    # take a dump of one surface for a record of them all.
+    for name in ("export_positions", "export_portfolio_transactions",
+                 "harvest_documents"):
+        monkeypatch.setattr(download, name, lambda *a, **k: [])
+    _mock_playwright_layer(monkeypatch)
+    dest = tmp_path / "bronze"
+    state = tmp_path / "state.json"
+    state.write_text("{}")
+    download.main(["--state-path", str(state), "--bronze-dir", str(dest),
+                   "--only", "documents", "--no-cards"])
+    manifest = json.loads(next(dest.glob("*/run.json")).read_text())
+    assert manifest["status"] == "partial"
+    assert manifest["partial_pass"] == "documents"
+
+
+def test_a_whole_walk_is_still_complete(tmp_path, monkeypatch):
+    rc, dest = _real_run(tmp_path, monkeypatch, "--no-cards")
+    assert rc == 0
+    manifest = json.loads(next(dest.glob("*/run.json")).read_text())
+    assert manifest["status"] == "complete"
+    assert "partial_pass" not in manifest

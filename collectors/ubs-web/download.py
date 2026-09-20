@@ -27,6 +27,7 @@ import hashlib
 import logging
 import re
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
@@ -46,9 +47,22 @@ USER_AGENT = (
     "Chrome/151.0.0.0 Safari/537.36"
 )
 
+# The walk's passes, in the order it runs them. `--only` names one.
+PASSES = ("positions", "transactions", "portfolio-transactions",
+          "documents", "cards")
+
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
 DOWNLOAD_TIMEOUT_MS = 60_000
+# The transaction list's chooser is behind two loads, not one: the SPA
+# resolves the hash route, and the legacy application it hosts then
+# builds its own frame and fetches the list into it. That is slower than
+# any single landmark on the SPA's own pages, so it gets its own budget.
+PORTFOLIO_SCOPE_TIMEOUT_MS = 90_000
+# How long the list takes to come back after the filter is submitted.
+PANEL_SETTLE_MS = 2_500
+# How long the header's portfolio switcher takes to open or settle.
+SWITCHER_SETTLE_MS = 1_000
 
 # Canonical storageState location — must match login.py, which
 # mints the file there (the wrapper's /secrets mount).
@@ -122,6 +136,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "statement PDFs. Narrower than --no-cards: the "
                         "periods and their balances still land, only the "
                         "rendered documents are skipped.")
+    p.add_argument("--only", choices=sorted(PASSES), default=None,
+                   metavar="PASS",
+                   help=("Run one pass and skip the rest (%s). The dump it "
+                         "writes is a partial one and is marked as such, so "
+                         "`load` and `prune` treat it as the fragment it is; "
+                         "it is for working on a single surface without "
+                         "paying for the whole walk." % ", ".join(sorted(PASSES))))
     p.add_argument("--dry-run", action="store_true",
                    help="Validate session and selectors; do not export "
                         "anything. Use to confirm the UI hasn't shifted "
@@ -1150,7 +1171,9 @@ def _capture_cards(context, page, apikey_holder: dict, run_dir: Path,
 def write_run_json(run_dir: Path, since: date, until: date,
                    accounts: list[dict], documents: list[dict],
                    positions: list[dict],
-                   cards_meta: dict | None = None) -> None:
+                   cards_meta: dict | None = None,
+                   portfolio_transactions: list[dict] | None = None,
+                   only: str | None = None) -> None:
     payload = {
         "dump_started_at": bronze.ts_slug(),
         # Terminal status for the run.json lifecycle: this function is
@@ -1161,7 +1184,13 @@ def write_run_json(run_dir: Path, since: date, until: date,
         # on this field; the `dry_run` bool is kept alongside it because
         # the statusless-manifest fallback classifies on it (see
         # prune._is_complete).
-        "status": "complete",
+        # A walk that ran one pass covers one surface, and saying
+        # "complete" of it would tell every reader the others were
+        # looked at and found empty. It is named for what it is, which
+        # also puts it among the dumps `prune` reclaims: it exists to
+        # work on a surface, not to be the record of a day.
+        "status": "complete" if only is None else "partial",
+        **({"partial_pass": only} if only is not None else {}),
         "dry_run": False,
         # One window for the whole run: transactions, documents and
         # positions are all fetched over it. (Dumps predating the single
@@ -1173,6 +1202,14 @@ def write_run_json(run_dir: Path, since: date, until: date,
         "transactions": {
             "accounts": accounts,
         },
+        # The managed portfolios' own movements, one export per
+        # portfolio scope. Absent on a dump taken before the surface was
+        # harvested, which is what tells a reader the dump predates it
+        # rather than that the portfolios were idle.
+        **({"portfolio_transactions": {
+            "count": len(portfolio_transactions),
+            "items": portfolio_transactions,
+        }} if portfolio_transactions is not None else {}),
         "documents": {
             "count": len(documents),
             "items": documents,
@@ -1364,6 +1401,304 @@ def _download_positions_csv(page, hash_route: str, out_dir: Path,
 
 
 # ============================================================
+# Portfolio securities transactions
+# ============================================================
+
+def export_portfolio_transactions(page, run_dir: Path,
+                                  since: date, until: date,
+                                  screenshot_dir: Path | None) -> list[dict]:
+    """Download every managed portfolio's securities transactions.
+
+    The cash pass above reaches only the accounts the homepage files as
+    cash tiles. A managed portfolio's own movements — its trades, and
+    the corporate actions against its holdings — are on the separate
+    surface `landmarks.securities_transactions_url_for_portfolio` names,
+    a legacy application the SPA hosts in child frames.
+
+    It is reached THROUGH the portfolio overview rather than directly:
+    both are hash routes on the same bundle, but arriving at the list
+    cold leaves those frames unbuilt, and the walk sees a route that
+    rendered with nothing in it.
+
+    The route names one portfolio — the only one the homepage offers a
+    `portfolioUid` for — so the rest are reached the way a person
+    reaches them, through the switcher in the SPA's header. Each is
+    exported under the window this walk asks for, and a portfolio
+    already harvested is not fetched twice: the switcher also lists
+    consolidated views, which report the same bookings under an id of
+    their own."""
+    out_dir = run_dir / "portfolio_transactions"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    portfolios = _enumerate_portfolios(page, screenshot_dir)
+    if not portfolios:
+        log.warning("no portfolioUid anchors on the homepage; the portfolio "
+                    "transaction surface cannot be opened")
+        return []
+    anchor = portfolios[0]
+    _dismiss_open_overlays(page)
+    page.goto(_build_spa_url(page.url, ubs.portfolio_overview_url_for_portfolio(
+        anchor["portfolio_uid"], anchor["banking_relation_id"])),
+        wait_until="domcontentloaded")
+    route = ubs.securities_transactions_url_for_portfolio(
+        anchor["portfolio_uid"], anchor["banking_relation_id"])
+    page.goto(_build_spa_url(page.url, route), wait_until="domcontentloaded")
+
+    titles = _portfolio_switcher_options(page)
+    if not titles:
+        log.warning("the portfolio switcher offered nothing; only the "
+                    "portfolio this route names is harvested")
+        titles = [None]
+    else:
+        log.info("the switcher offers %d portfolio(s)", len(titles))
+    results: list[dict] = []
+    harvested: set[str] = set()
+    for title in titles:
+        if title is not None and not _switch_portfolio(page, title):
+            continue
+        meta = _fetch_portfolio_transactions_csv(
+            page, since, until, out_dir, route)
+        if not meta:
+            continue
+        # The switcher lists the relationship and the consolidated views
+        # beside the real portfolios, and those answer for a portfolio
+        # already fetched. What came back says which it was.
+        if meta["portfolio"] and meta["portfolio"] in harvested:
+            Path(out_dir / meta["filename"]).unlink(missing_ok=True)
+            continue
+        if meta["portfolio"]:
+            harvested.add(meta["portfolio"])
+        results.append(meta)
+    return results
+
+
+def _portfolio_switcher_options(page) -> list[str]:
+    """The portfolios the header's switcher offers, by their titles.
+
+    They exist only while it is open, so it is opened to read them and
+    closed again — leaving it open would cover the list underneath."""
+    try:
+        page.click(ubs.PORTFOLIO_SWITCHER_BUTTON, timeout=LANDMARK_TIMEOUT_MS)
+        page.wait_for_timeout(SWITCHER_SETTLE_MS)
+        titles = page.eval_on_selector_all(
+            ubs.PORTFOLIO_SWITCHER_ITEM,
+            "els => els.map(e => (e.innerText || '').trim()).filter(Boolean)")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(SWITCHER_SETTLE_MS)
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not read the portfolio switcher (%s)",
+                    debugcap.safe_error(e))
+        return []
+    # The first option is the banking relationship the portfolios hang
+    # from, which is not one of them.
+    return [t for t in dict.fromkeys(titles)][1:]
+
+
+def _switch_portfolio(page, title: str) -> bool:
+    """Put the SPA on one portfolio, through the header's switcher."""
+    try:
+        page.click(ubs.PORTFOLIO_SWITCHER_BUTTON, timeout=LANDMARK_TIMEOUT_MS)
+        page.wait_for_timeout(SWITCHER_SETTLE_MS)
+        page.click(f'{ubs.PORTFOLIO_SWITCHER_ITEM}:text-is("{title}")',
+                   timeout=LANDMARK_TIMEOUT_MS)
+        # Switching rebuilds the legacy frames under the route, which is
+        # what the filter panel and the export are then found in.
+        page.wait_for_timeout(PANEL_SETTLE_MS)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not switch to a portfolio (%s)",
+                    debugcap.safe_error(e))
+        return False
+
+
+def _fetch_portfolio_transactions_csv(page, since: date, until: date,
+                                      out_dir: Path,
+                                      route: str) -> dict | None:
+    """The loaded portfolio's transactions over [since..until].
+
+    The window is set through the filter panel and the file taken from
+    the list's own CSV button, because the surface answers an export
+    from the list it is showing rather than from anything a request
+    restates — a reconstructed request is answered with the rendered
+    page however faithfully it is built.
+
+    The answer states the period it covers, and that is checked: a
+    window that was not applied comes back as the list's own default,
+    which would otherwise be stored as though it were the answer. A
+    start later than asked for is different — that is the archive's
+    floor, and what it returns is real."""
+    if not _apply_portfolio_window(page, since, until):
+        return None
+    body = _click_portfolio_export(page)
+    if body is None:
+        return None
+    text = body.decode("utf-8-sig", errors="replace")
+    if not text.lstrip().startswith("Valuation date;"):
+        log.warning("the portfolio export produced %d bytes that are not the "
+                    "CSV header; skipping", len(body))
+        return None
+    covered = _export_window(text)
+    if covered and covered[1] != _fmt_dmy(until):
+        log.warning("portfolio export covers %s..%s but %s..%s was requested; "
+                    "the period was not applied, so the file is not kept",
+                    covered[0], covered[1], _fmt_dmy(since), _fmt_dmy(until))
+        return None
+    if covered and covered[0] != _fmt_dmy(since):
+        log.info("portfolio archive begins %s; requested %s",
+                 covered[0], _fmt_dmy(since))
+    portfolio = _exported_portfolio(text)
+    short = bronze.short_token(portfolio or route)
+    out_path = out_dir / f"transactions_{short}.csv"
+    out_path.write_bytes(body)
+    log.info("portfolio transactions saved: %s (%d bytes)",
+             out_path.name, len(body))
+    return {
+        "filename": out_path.name,
+        "portfolio": portfolio,
+        "size_bytes": len(body),
+        "covered_from": covered[0] if covered else None,
+        "covered_to": covered[1] if covered else None,
+        "captured_at": bronze.ts_slug(),
+    }
+
+
+def _exported_portfolio(text: str) -> str | None:
+    """The portfolio an export says it is for, from its first row.
+
+    The file is named for this rather than for the scope asked of the
+    surface, so a dump never claims a portfolio it does not hold."""
+    rows = text.splitlines()
+    if len(rows) < 2:
+        return None
+    cells = rows[1].split(";")
+    return cells[2].strip() if len(cells) > 2 and cells[2].strip() else None
+
+
+def _apply_portfolio_window(page, since: date, until: date) -> bool:
+    """Put the transaction list on a window, through its own panel.
+
+    The panel is a form in a frame of its own, and the fields carrying
+    the window exist only there — so the window is set by filling them
+    and submitting, and the page's own script builds the post. The
+    surface then keeps that period for the portfolio until it is set
+    again, which is also why an export never has to restate it.
+
+    Works on the list the page is already showing. Re-navigating to the
+    route here would undo the switch that put it on this portfolio: the
+    route carries a `portfolioUid`, and it is the only one the homepage
+    offers."""
+    deadline = time.monotonic() + PORTFOLIO_SCOPE_TIMEOUT_MS / 1000
+    panel = None
+    while time.monotonic() < deadline and panel is None:
+        for frame in page.frames:
+            try:
+                if frame.query_selector(ubs.TXN_FILTER_DATE_FROM):
+                    panel = frame
+                    break
+            except Exception:  # noqa: BLE001 — a frame can navigate mid-read
+                continue
+        if panel is None:
+            page.wait_for_timeout(500)
+    if panel is None:
+        log.warning("the filter panel never appeared; the window cannot be set")
+        return False
+    try:
+        # Manual mode, which is what makes the dates count at all. The
+        # radio is styled invisible, so it can be neither clicked nor
+        # checked: it is set directly, and the panel's own transition —
+        # which only reveals the fields — is run around it.
+        panel.evaluate(_PANEL_MANUAL_MODE, ubs.TXN_FILTER_MANUAL_RADIO)
+        # The panel is rendered twice, in the header and the sidebar,
+        # and the button submits the FIRST form in the document. So the
+        # fields filled are that form's own: filling the other copy
+        # submits dates nobody touched, which the surface reads as no
+        # period at all.
+        if not panel.evaluate(_PANEL_MARK_DATE_FIELDS):
+            log.warning("the submitted filter form carries no date fields")
+            return False
+        # Typed, not assigned: these are date-picker widgets that keep
+        # their own value, and a value written onto the element changes
+        # what the page shows and nothing the submission reads.
+        panel.fill(_PANEL_FROM_MARK, _fmt_dmy(since))
+        panel.fill(_PANEL_TO_MARK, _fmt_dmy(until))
+        # Filling can clear the radio, so it is re-asserted at the last
+        # moment before the form goes.
+        panel.evaluate(_PANEL_MANUAL_MODE, ubs.TXN_FILTER_MANUAL_RADIO)
+        panel.evaluate(_PANEL_SUBMIT)
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not set the window (%s)", debugcap.safe_error(e))
+        return False
+    # The submit navigates the list frame in place; the export that
+    # follows is answered from what it then holds.
+    page.wait_for_timeout(PANEL_SETTLE_MS)
+    return True
+
+
+# Attributes the walk puts on the two date fields of the form that will
+# actually be submitted, so they can be typed into by selector.
+_PANEL_FROM_MARK = "[data-wdb-from]"
+_PANEL_TO_MARK = "[data-wdb-to]"
+
+_PANEL_MANUAL_MODE = """(sel) => {
+    const radio = document.querySelector(sel);
+    if (radio) radio.checked = true;
+    if (typeof setToManual === 'function') setToManual();
+    if (radio) radio.checked = true;
+}"""
+
+_PANEL_MARK_DATE_FIELDS = """() => {
+    const submit = document.getElementsByName('filterSubmitButton')[0];
+    const form = submit && submit.closest('form');
+    if (!form) return false;
+    const dates = form.querySelectorAll('input[data-date-format]');
+    if (dates.length < 2) return false;
+    dates[0].setAttribute('data-wdb-from', '1');
+    dates[1].setAttribute('data-wdb-to', '1');
+    return true;
+}"""
+
+_PANEL_SUBMIT = """() => {
+    document.getElementsByName('filterSubmitButton')[0].click();
+}"""
+
+
+def _click_portfolio_export(page) -> bytes | None:
+    """The list's own CSV export, as the file it produces."""
+    frame = None
+    deadline = time.monotonic() + LANDMARK_TIMEOUT_MS / 1000
+    while time.monotonic() < deadline and frame is None:
+        for candidate in page.frames:
+            try:
+                if candidate.query_selector(ubs.TXN_EXPORT_CSV_BUTTON):
+                    frame = candidate
+                    break
+            except Exception:  # noqa: BLE001 — a frame can navigate mid-read
+                continue
+        if frame is None:
+            page.wait_for_timeout(500)
+    if frame is None:
+        log.warning("the transaction list offered no CSV export")
+        return None
+    try:
+        with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as info:
+            frame.click(ubs.TXN_EXPORT_CSV_BUTTON)
+        return Path(info.value.path()).read_bytes()
+    except Exception as e:  # noqa: BLE001
+        log.warning("the export produced no download (%s)",
+                    debugcap.safe_error(e))
+        return None
+
+
+def _export_window(text: str) -> tuple[str, str] | None:
+    """The period the export's own footer states, or None when absent."""
+    for line in reversed(text.splitlines()):
+        if line.startswith(ubs.TXN_EXPORT_FOOTER_PREFIX):
+            m = ubs.TXN_EXPORT_FOOTER_RE.search(line)
+            if m:
+                return m.group(1), m.group(2)
+    return None
+
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -1440,6 +1775,7 @@ def main(argv: list[str]) -> int:
                 txn_results: list[dict] = []
                 doc_results: list[dict] = []
                 positions_meta: list[dict] = []
+                portfolio_txn_meta: list[dict] = []
                 cards_meta: dict | None = None
                 if args.dry_run:
                     # Read-only walk: session verified and accounts
@@ -1449,7 +1785,8 @@ def main(argv: list[str]) -> int:
                     log.info("--dry-run set; skipping exports")
                     log.info("dry-run plan: would export positions + "
                              "transactions + documents for %d cash "
-                             "account(s) in [%s..%s]%s",
+                             "account(s), plus one securities-transaction "
+                             "export per managed portfolio, in [%s..%s]%s",
                              len(accounts), since, until,
                              "" if args.no_cards else
                              ", plus the card roster, each card's ledger "
@@ -1458,10 +1795,12 @@ def main(argv: list[str]) -> int:
                               else " and statement PDFs"))
                     txn_results = accounts  # echo discovery only
                 else:
-                    positions_meta = export_positions(
-                        page, run_dir, args.screenshot_dir,
-                    )
-                    for account in accounts:
+                    run = lambda name: args.only in (None, name)
+                    if run("positions"):
+                        positions_meta = export_positions(
+                            page, run_dir, args.screenshot_dir,
+                        )
+                    for account in (accounts if run("transactions") else []):
                         try:
                             meta = export_transactions(
                                 page, account, since, until, run_dir,
@@ -1483,12 +1822,25 @@ def main(argv: list[str]) -> int:
                             capture(page, "20-txn-"
                                     f"{bronze.short_token(account['account_id'])}"
                                     "-failed")
-                    doc_results = harvest_documents(
-                        page, since, until, run_dir,
-                        context, args.screenshot_dir, debug=args.debug,
-                        mask=mask,
-                    )
-                    if not args.no_cards:
+                    try:
+                        if run("portfolio-transactions"):
+                            portfolio_txn_meta = export_portfolio_transactions(
+                                page, run_dir, since, until,
+                                args.screenshot_dir,
+                            )
+                    except SystemExit:
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        log.exception("portfolio transactions export "
+                                      "failed: %s", e)
+                        capture(page, "25-portfolio-txn-failed")
+                    if run("documents"):
+                        doc_results = harvest_documents(
+                            page, since, until, run_dir,
+                            context, args.screenshot_dir, debug=args.debug,
+                            mask=mask,
+                        )
+                    if not args.no_cards and run("cards"):
                         cards_meta = _capture_cards(
                             context, page, apikey_holder, run_dir,
                             since, until,
@@ -1496,7 +1848,8 @@ def main(argv: list[str]) -> int:
                         )
                     write_run_json(run_dir, since, until,
                                    txn_results, doc_results,
-                                   positions_meta, cards_meta)
+                                   positions_meta, cards_meta,
+                                   portfolio_txn_meta, args.only)
             finally:
                 if args.trace:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)

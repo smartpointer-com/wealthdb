@@ -35,6 +35,7 @@ import argparse
 import csv
 import functools
 import hashlib
+import io
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ from pathlib import Path
 from collectorkit import bronze, cli, silver, srcfp
 
 import card_parsers  # local module
+import landmarks as ubs  # local module: the export's shared vocabulary
 
 log = logging.getLogger("ubs-web.load")
 
@@ -316,18 +318,20 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
 
     pos_count = _load_positions(conn, snapshot_at, dump_dir)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
+    ptxn_count = _load_portfolio_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
     hist_pos, hist_cash, hist_mort, hist_txn = _load_historical_from_pdfs(
         conn, snapshot_at, dump_dir, parse_cache)
     card_acc, card_txn, card_inv, card_stmt = _load_cards(
         conn, snapshot_at, dump_dir)
 
-    log.info("loaded %s: positions=%d transactions=%d documents=%d "
+    log.info("loaded %s: positions=%d transactions=%d "
+             "portfolio_transactions=%d documents=%d "
              "hist_positions=%d hist_cash_balances=%d "
              "hist_mortgages=%d hist_transactions=%d "
              "card_accounts=%d card_transactions=%d card_invoices=%d "
              "card_statements=%d",
-             dump_dir.name, pos_count, txn_count, doc_count,
+             dump_dir.name, pos_count, txn_count, ptxn_count, doc_count,
              hist_pos, hist_cash, hist_mort, hist_txn,
              card_acc, card_txn, card_inv, card_stmt)
 
@@ -658,6 +662,266 @@ def _ingest_mortgage_row(conn: sqlite3.Connection, snapshot_at: int,
             parse_decimal(row.get("Number/Amt.")),
             start_ts, end_ts, rate_type, collateral, description,
             normalize_payload({k: row[k] for k in POSITIONS_COLS}),
+        ),
+    )
+    return 1
+
+
+# ----------------------------------------------------------------
+# Portfolio securities transactions
+# ----------------------------------------------------------------
+
+# The export's columns, in the order it writes them. Two are headed
+# `Ccy.`: the first sits beside the ISIN and is always empty, the second
+# carries the settlement currency. csv.DictReader would keep only one of
+# them, so the header is matched positionally against this list instead
+# and the duplicate resolved by position.
+PORTFOLIO_TXN_COLUMNS = (
+    "Valuation date", "Banking relationship", "Portfolio", "Product",
+    "Trade date", "Trade time", "Booking", "Value date",
+    "Description 1", "Description 2", "Description 3",
+    "Valor", "ISIN", "ISIN currency", "Number/Amt.", "Settlement currency",
+    "Trans. price", "Exchange rate", "Valuation currency", "Trans. value",
+    "Accrued interest", "Realized P/L in %", "Realized P/L",
+    "Order no.", "External reference",
+    "Asset class", "Sub-asset class", "Instrument category",
+)
+# The two headings the export repeats, renamed above by position.
+_PORTFOLIO_TXN_RAW_HEADER = tuple(
+    "Ccy." if c in ("ISIN currency", "Settlement currency") else c
+    for c in PORTFOLIO_TXN_COLUMNS
+)
+
+
+def _load_portfolio_transactions(conn: sqlite3.Connection, snapshot_at: int,
+                                 dump_dir: Path) -> int:
+    """Parse every `portfolio_transactions/*.csv`; UPSERT into
+    portfolio_transactions (migration 0012).
+
+    A dump taken before this surface was harvested has no such dir and
+    loads as it always did."""
+    src_dir = dump_dir / "portfolio_transactions"
+    if not src_dir.is_dir():
+        return 0
+    inserted = 0
+    for csv_path in sorted(src_dir.glob("*.csv")):
+        try:
+            rows = _read_portfolio_txn_csv(csv_path)
+        except ValueError as e:
+            log.warning("portfolio transactions %s: %s", csv_path.name, e)
+            continue
+        for row in rows:
+            inserted += _ingest_portfolio_txn_row(conn, snapshot_at, row)
+    return inserted
+
+
+def _read_portfolio_txn_csv(csv_path: Path) -> list[dict]:
+    """Rows of one export, as dicts keyed by PORTFOLIO_TXN_COLUMNS.
+
+    The file closes with a footer line stating the window it covers;
+    that line and anything after it is not data. A header that is not
+    the one this parser was written against raises rather than being
+    read positionally anyway — a column UBS inserts would otherwise
+    shift every value one place to the left in silence."""
+    text = csv_path.read_text(encoding="utf-8-sig", errors="replace")
+    reader = csv.reader(io.StringIO(text), delimiter=";")
+    try:
+        header = next(reader)
+    except StopIteration:
+        return []
+    header = [h.strip() for h in header]
+    if tuple(header) != _PORTFOLIO_TXN_RAW_HEADER:
+        raise ValueError(
+            f"unexpected header ({len(header)} columns); the export's "
+            f"layout has changed and the parser must be revisited")
+    out: list[dict] = []
+    for raw in reader:
+        if not raw or not raw[0].strip():
+            continue
+        if raw[0].startswith(ubs.TXN_EXPORT_FOOTER_PREFIX):
+            break
+        # A short row is padded rather than dropped: the export omits
+        # trailing empties on some rows.
+        raw = raw + [""] * (len(PORTFOLIO_TXN_COLUMNS) - len(raw))
+        out.append({k: raw[i].strip()
+                    for i, k in enumerate(PORTFOLIO_TXN_COLUMNS)})
+    return out
+
+
+def parse_grouped_decimal(s: str | None) -> float | None:
+    """Parse a decimal written with apostrophe thousands separators
+    ("-98'765", "1'234.50"). Distinct from `parse_decimal`, which
+    reads the plain form the cash CSVs use.
+
+    The portfolio export annotates some figures with the unit they are
+    counted in — a quantity in pieces ("4'000 p"), a price per unit
+    ("250.75 a"), a bond or deposit quoted in percent ("100%"). The
+    number is the same number whatever unit it is stated in, so the
+    annotation is read and dropped; refusing it left a real trade with
+    no quantity at all.
+
+    An FX leg states a PAIR in one cell ("50'000 / -45'000.5": bought
+    the one, sold the other), and that is not a figure this returns.
+    Taking the first half would silently book one leg's amount against
+    the other leg's currency, so the pair reads as no value and the
+    two numbers stay in the payload where both are visible."""
+    if s is None:
+        return None
+    s = s.strip().replace("'", "").replace("’", "")
+    if not s:
+        return None
+    m = _GROUPED_DECIMAL_RE.fullmatch(s)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+# A signed decimal, optionally followed by the unit it is counted in.
+_GROUPED_DECIMAL_RE = re.compile(r"([+-]?\d*\.?\d+)\s*(?:%|[a-zA-Z]{1,3})?")
+
+
+def portfolio_account_canonical(product: str | None) -> str | None:
+    """Canonical safekeeping-account id from the export's "Product".
+
+    The export writes the spaced, dotted form (`1234 00000001.S5`);
+    the PSN feed keys the same account `12340000000001S5`,
+    zero-padding the middle group to ten digits. Both feeds naming one
+    account the same way is what lets the adapter tell a trade it
+    already holds from a new one, so a shape this cannot convert
+    returns None rather than a near-miss id."""
+    if not product:
+        return None
+    m = _PRODUCT_RE.fullmatch(product.strip())
+    if not m:
+        return None
+    head, body, suffix = m.group(1), m.group(2), m.group(3)
+    return f"{head}{body.zfill(10)}{suffix}"
+
+
+_PRODUCT_RE = re.compile(r"(\d{4})\s+(\d{1,10})\.([A-Z0-9]{1,6})")
+_PORTFOLIO_RE = re.compile(r"(\d{4})\s+(\d{1,10})\s+([A-Z0-9]{1,6})")
+
+
+def portfolio_id_canonical(portfolio: str | None) -> str | None:
+    """Canonical portfolio id from the export's "Portfolio" column.
+
+    `1234 00000001 0006` is the same identifier the sibling feed keys
+    portfolios by as `1234000000010006`. Unlike an account id (above),
+    a portfolio id is NOT zero-padded: the two identifier spaces look
+    alike and pad differently, and a padded portfolio id joins to
+    nothing."""
+    if not portfolio:
+        return None
+    m = _PORTFOLIO_RE.fullmatch(portfolio.strip())
+    if not m:
+        return None
+    return "".join(m.groups())
+
+
+def portfolio_txn_id(account: str, row: dict) -> str:
+    """Stable id for one export row.
+
+    Every actual trade carries UBS's own "External reference", which is
+    what the id is built from. Corporate actions and FX legs are
+    published without one, so those hash the columns the bank does fill
+    — enough of them that two distinct bookings of the same type on the
+    same security and day do not collide.
+
+    Only columns that state the BOOKING may enter the hash. The
+    valuation is not one of them: each scope values the same booking in
+    its own reporting currency, so "Trans. value" (and the currency
+    beside it) differ between a portfolio's own export and a
+    consolidated view's, and hashing them gave one booking two ids —
+    which defeated the dedupe below and let a trade reach the ledger
+    twice."""
+    ref = (row.get("External reference") or "").strip()
+    if ref:
+        return f"ptx:{ref}"
+    parts = "|".join(str(row.get(k, "") or "") for k in (
+        "Product", "Trade date", "Trade time", "Booking", "Value date",
+        "Description 1", "Description 2", "Valor", "ISIN",
+        "Number/Amt.", "Order no.",
+    ))
+    digest = hashlib.sha256(f"{account}|{parts}".encode("utf-8")).hexdigest()
+    return f"ptx:{digest[:16]}"
+
+
+def names_a_portfolio(portfolio_external_id: str | None) -> bool:
+    """Whether an id names one of the numbered portfolios.
+
+    UBS files consolidated views beside the real portfolios and offers
+    them in the same chooser. A consolidated view reports every row it
+    covers under its own id, which is lettered rather than numbered
+    (`…R001`) and belongs to no portfolio — so a row carrying one
+    states which custody account moved but not which cash account
+    settled, and the pair that answers that is portfolio + currency."""
+    return bool(portfolio_external_id) and portfolio_external_id.isdigit()
+
+
+def _ingest_portfolio_txn_row(conn: sqlite3.Connection, snapshot_at: int,
+                              row: dict) -> int:
+    account = portfolio_account_canonical(row.get("Product"))
+    portfolio = portfolio_id_canonical(row.get("Portfolio"))
+    value_date = ts_from_dmy(row.get("Value date"))
+    booking_type = (row.get("Description 1") or "").strip()
+    # The three columns without which a row cannot be placed, keyed or
+    # classified. The export pads its own footer area with blank-ish
+    # lines, so this is also what keeps those out of silver.
+    if not account or value_date is None or not booking_type:
+        return 0
+    txn_id = portfolio_txn_id(account, row)
+    # The same booking is published under every scope that covers it, so
+    # a consolidated copy arrives keyed identically to the real
+    # portfolio's own. Whichever lands second would otherwise win and
+    # take the portfolio id down with it. A copy that names a portfolio
+    # is kept over one that does not; a booking only a consolidated
+    # scope reported is still kept, because the alternative is losing
+    # it.
+    if not names_a_portfolio(portfolio):
+        held = conn.execute(
+            "SELECT portfolio_external_id FROM portfolio_transactions "
+            "WHERE transaction_external_id = ? "
+            "  AND safekeeping_account_external_id = ?",
+            (txn_id, account),
+        ).fetchone()
+        if held is not None and names_a_portfolio(held[0]):
+            return 0
+    conn.execute(
+        "INSERT OR REPLACE INTO portfolio_transactions ("
+        "transaction_external_id, safekeeping_account_external_id, "
+        "portfolio_external_id, snapshot_at, trade_date, booking_date, "
+        "value_date, booking_type, security_name, valor, isin, quantity, "
+        "settlement_currency_iso, trans_price, exchange_rate, "
+        "valuation_currency_iso, trans_value, accrued_interest, "
+        "realized_pl, order_no, external_reference, asset_class, "
+        "sub_asset_class, instrument_category, payload"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            txn_id, account,
+            portfolio or "", snapshot_at,
+            ts_from_dmy(row.get("Trade date")),
+            ts_from_dmy(row.get("Booking")),
+            value_date, booking_type,
+            row.get("Description 2") or None,
+            row.get("Valor") or None,
+            row.get("ISIN") or None,
+            parse_grouped_decimal(row.get("Number/Amt.")),
+            row.get("Settlement currency") or None,
+            parse_grouped_decimal(row.get("Trans. price")),
+            parse_grouped_decimal(row.get("Exchange rate")),
+            row.get("Valuation currency") or None,
+            parse_grouped_decimal(row.get("Trans. value")),
+            parse_grouped_decimal(row.get("Accrued interest")),
+            parse_grouped_decimal(row.get("Realized P/L")),
+            row.get("Order no.") or None,
+            row.get("External reference") or None,
+            row.get("Asset class") or None,
+            row.get("Sub-asset class") or None,
+            row.get("Instrument category") or None,
+            normalize_payload(row),
         ),
     )
     return 1

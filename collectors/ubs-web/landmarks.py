@@ -13,6 +13,7 @@ CLAUDE.md §1.
 
 from __future__ import annotations
 
+import base64
 import re
 
 # ============================================================
@@ -330,4 +331,106 @@ DOC_LIST_CAP = 999
 # the transactions CSV button but with a different aria-label.
 POSITIONS_BUTTON_CSV_SELECTOR = (
     'button[data-name="button-csvExport"][aria-label*="positions"]'
+)
+
+
+
+# ============================================================
+# Portfolio securities transactions
+# (#/assets/asset-view/securitiesTransactions)
+# ============================================================
+#
+# The cash surface above reaches only the accounts the homepage files
+# as cash tiles. A managed portfolio's own movements — every securities
+# trade, the corporate actions against its holdings — live here
+# instead, on a legacy `/assetview/` application the SPA hosts in child
+# frames. Before this route existed as a landmark those movements
+# reached silver only through the annual Account Statement PDF, which
+# is published once a year and therefore leaves the current year's
+# trades unreadable until the following January.
+
+
+def portfolio_overview_url_for_portfolio(
+        portfolio_uid: str, banking_relation_id: str) -> str:
+    """Hash route for a portfolio's overview page.
+
+    The step before the transaction list. Both routes render from the
+    same bundle, but the list hosts a legacy application in child
+    frames that are only built when the SPA has a portfolio in hand;
+    arriving at the list cold renders the route and nothing inside
+    it."""
+    return (
+        "#/assets/asset-view/portfolio-overview"
+        f"?bankingRelationId={banking_relation_id}"
+        "&navitemid=PortfolioDashboard"
+        f"&portfolioUid={portfolio_uid}"
+    )
+
+
+def securities_transactions_url_for_portfolio(
+        portfolio_uid: str, banking_relation_id: str) -> str:
+    """Hash route for the securities transaction list.
+
+    Takes the same (portfolioUid, bankingRelationId) pair as
+    `positions_url_for_portfolio`, and shows that portfolio: the
+    surface's other scopes are reachable only through its chooser."""
+    return (
+        "#/assets/asset-view/securitiesTransactions"
+        f"?bankingRelationId={banking_relation_id}"
+        "&navitemid=PortfolioDashboard"
+        f"&portfolioUid={portfolio_uid}"
+    )
+
+
+# The portfolio switcher, in the SPA's own header.
+#
+# This is what moves the surface from one portfolio to another, and it
+# is NOT the chooser the list renders into its own HTML: that one is
+# the custody-account filter within a portfolio. Two of these sit side
+# by side, for the banking relationship and the portfolio; the
+# relationship's is read-only where a login holds one, so the portfolio
+# is the one that is not disabled.
+#
+# The class hashes are CSS-modules build output and rotate whenever UBS
+# redeploys, so these match on the stable prefix and on the semantics
+# beside it, never on a full class (see DOC_FILTER_BUTTON_SELECTOR).
+PORTFOLIO_SWITCHER_BUTTON = (
+    'button[class*="UWR_ContextSelector"][aria-expanded]'
+    ':not([aria-disabled="true"])'
+)
+# Its options, rendered only while it is open.
+PORTFOLIO_SWITCHER_ITEM = '[class*="UWR_ContextSelectorItemTitle_container_"]'
+
+
+# The filter panel, as live controls.
+#
+# The window is not a property of any request: the surface keeps one
+# period per scope and answers every export for it, and the fields that
+# carry it exist only in the panel — a form the SPA builds into a frame
+# of its own, absent from the document the endpoint answers with. So it
+# is set by driving these, letting the page's own script assemble and
+# submit the form.
+#
+# The panel is found by the presence of its from-field rather than by
+# URL: it is a sibling of the list's frame and is addressed by nothing
+# the walk already holds.
+TXN_FILTER_DATE_FROM = "#dateFrom0"
+# "Set manually", against the preset dropdown beside it. Rendered
+# already selected, and set anyway: a panel remembering a preset
+# ignores both dates.
+TXN_FILTER_MANUAL_RADIO = 'input[name="dateRangeRadioButton"][value="0"]'
+
+# The list's own CSV export, in its toolbar. Clicking it is what
+# produces the file: the surface answers an export from the state the
+# page holds, and a request reconstructing that state is answered with
+# the rendered page instead, however faithfully it is built.
+TXN_EXPORT_CSV_BUTTON = "img.gj9XLSButton"
+
+# The footer that closes an export. It states the period the answer
+# covers, the way the cash CSV's `From:` header does, and is the row
+# the parser stops at.
+TXN_EXPORT_FOOTER_PREFIX = "Transaction list:"
+TXN_EXPORT_FOOTER_RE = re.compile(
+    r"from\s+(\d{2}\.\d{2}\.\d{4})\s+to\s+(\d{2}\.\d{2}\.\d{4})",
+    re.IGNORECASE,
 )
