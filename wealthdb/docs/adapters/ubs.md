@@ -55,6 +55,7 @@ identifier dimensions show up in every gold row:
 | `money_market_contracts` | `positions` — `(cash, time_deposit)` | Same. |
 | `otc_contracts` | `positions` — `(foreign_exchange, forward)`, or `(other, other)` for a non-FX underlying | Same. |
 | `events` | `transactions` | See `kind` mapping in §5. |
+| `portfolio_transactions` (web) | `transactions` | A managed portfolio's securities settlements, booked on the cash account that paid. See §11. |
 
 ## 4. `(asset_class, vehicle)` derivation for `holdings`
 
@@ -981,7 +982,74 @@ only up to the memo separator and the part before it is untouched. No
 The raw column survives whole in the row's payload, so the reference is
 dropped from a projection, not from the record.
 
-## 11. Open questions
+## 11. The portfolio transaction list (ubs-web migration 0012)
+
+A managed portfolio's securities trades reach gold on three rails, and
+the two older ones leave a hole between them.
+
+| Rail | Ids | Covers |
+| --- | --- | --- |
+| Annual Account Statement PDF | `stmt:` | A calendar year, published the following January — so the current year is unreadable for as long as twelve months, and a year whose statement was never published for an account is never covered at all. |
+| PSN MT515 confirmations | `mt515:` | From wherever that feed was first ingested. Nothing earlier is recoverable from it. |
+| The portfolio transaction list | `ptx:` | Back to the surface's own archive floor, which the collector records per export. |
+
+Between the last statement and the first confirmation, a discretionary
+mandate's cash account shows money arriving and leaving with nothing to
+explain it — which the cash flow statement can only read as cash the
+household kept.
+
+**The rows are booked on the CASH ACCOUNT that paid**, not on the
+custody account the securities moved in: that is the account whose
+balance the trade moved, the one `report_cashflow_coverage`
+reconciles, and the one the MT515 rail already books its own
+confirmations against, so the two rails are continuous. The list names
+the custody account and the settlement currency, never the cash
+account; the pair (portfolio, currency) determines it, resolved
+through PSN's account master data because the web collector's own
+account rows carry the banking relationship rather than the numbered
+portfolio. A pair naming more than one account — a dormant account
+beside a live one — is refused rather than guessed at.
+
+**The kind is read off the figure, not the booking type.** The export
+signs its own values (positive leaves the portfolio, which on the cash
+leg means money going out), so a purchase is a `buy` and a disposal a
+`sell` without the classifier knowing a vocabulary of several dozen
+booking types that grows without notice. The type still travels, as
+the row's `provider_category`. Two things say a row settles nothing:
+no value stated (corporate actions, in-kind issues, and the currency
+conversions — which state a PAIR of figures in one cell and so state
+no single settlement amount), and the free-of-payment custody
+transfers, which are valued because the securities are worth something
+and settle nothing.
+
+**Gross, not net.** The list states a trade's value; the commission is
+not in it. Measured against the confirmations that carry both, the
+difference is a few tenths of a percent, so a coverage gap this rail
+closes closes to within the fees rather than exactly.
+
+### The settled-day fold
+
+One booking, one row, as everywhere else in this adapter — but the
+identity has to be weaker here than the [era fold](#the-era-fold)'s,
+because the three rails state different AMOUNTS for the same trade:
+the gross value here, the net debit on the statement and on the
+confirmation. So the key is (cash account, currency, settlement day),
+with no amount in it, and it counts rather than sets: a day the other
+rails cover only partly — a statement published for some of a year's
+trades and not others — keeps its surplus.
+
+What it counts is the EMITTED universe, never silver's contents. The
+cash pass hands over its own count, accumulated from the rows it
+emitted after its cut, its era fold and its seam; the feed's half is
+rebuilt through the same [settlement fold](#the-settlement-fold) the
+PSN pass applies, so a trade recorded there twice — as a confirmation
+and as the MT940 line for its cash leg — is counted once.
+
+No PSN cutoff applies, and none could: the cut arbitrates between two
+records of one booking, and this pass emits only where no rail
+recorded the booking at all.
+
+## 12. Open questions
 
 - **MT568 vs MT566 collapsing.** Both carry corporate-action info;
   MT568 is narrative supplementing MT566. The adapter currently

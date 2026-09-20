@@ -169,15 +169,21 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 		// Cards emit at their own dates — a billing period ends on a
 		// date no dump run need share — so the window has to reach them
 		// or gold's delete-then-reinsert would leave duplicates behind.
-		cardLo, cardHi, err := r.cardRange(ctx)
-		if err != nil {
-			return canonical.Window{}, err
-		}
-		if cardLo >= 0 && cardLo < w.Start {
-			w.Start = cardLo
-		}
-		if cardHi > w.End {
-			w.End = cardHi
+		// The managed portfolios' trades are the same case, reaching
+		// years back past the oldest live dump.
+		for _, span := range []func(context.Context) (int64, int64, error){
+			r.cardRange, r.portfolioTxnRange,
+		} {
+			lo, hi, err := span(ctx)
+			if err != nil {
+				return canonical.Window{}, err
+			}
+			if lo >= 0 && lo < w.Start {
+				w.Start = lo
+			}
+			if hi > w.End {
+				w.End = hi
+			}
 		}
 	}
 	return w, nil
@@ -375,42 +381,38 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 // the bank's own number for the entry. Both verdicts reach the offset
 // veto, which must not count a row nothing emits.
 //
-// The second return value is what this pass decided about rows the PSN
-// stream will emit (psnHints): the event ids of PSN cash movements whose
-// mirror leg pairs a web row, which the caller demotes — a pair must drop
-// on BOTH sides or the surviving side books a one-sided phantom external
-// flow — and the narrative of any statement row the era fold dropped in
-// favour of a PSN event, for the caller to carry onto it.
-func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, psnHints, error) {
+// The second return value is what this pass decided that a LATER pass
+// needs (webTxOutcome).
+func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, webTxOutcome, error) {
 	if !w.HasChanges {
-		return silver.NewTransactionStream(canonical.TransactionBatch{}), psnHints{}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), webTxOutcome{}, nil
 	}
 	cutoff, err := buildPSNStartByWebRel(ctx, psn, rels)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 	accountToRel, err := r.buildAccountToRelMap(ctx)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 	ownIBANs, err := r.buildOwnIBANSet(ctx)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 	// The valor index, built once per read: a statement-era trade names
 	// its instrument in free text and carries no id, and this is what
 	// turns the valor beside that text into the instrument gold holds.
-	valorToISIN, err := psn.instrumentValorIndex(ctx)
+	valorToISIN, err := buildValorIndex(ctx, psn, r)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 	mt940Start, err := r.mt940FeedStart(ctx)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 	mortgageAccounts, err := r.buildMortgageAccountIndex(ctx)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 	// Both folds run BEFORE the offset veto, and their verdicts reach it
 	// together: a web row either fold suppresses is not in the ledger, so
@@ -422,11 +424,11 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	// prevent.
 	fold, err := r.buildEraFold(ctx, psn, cutoff, accountToRel)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 	seam, err := r.buildSeamBankRefs(ctx, psn)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 	suppressed := make(map[string]bool, len(fold.drop)+len(seam))
 	for k := range fold.drop {
@@ -437,7 +439,7 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	}
 	offsetVeto, psnVeto, err := r.buildSameDayOffsetVeto(ctx, psn, cutoff, accountToRel, suppressed)
 	if err != nil {
-		return nil, psnHints{}, err
+		return nil, webTxOutcome{}, err
 	}
 
 	const q = `
@@ -447,11 +449,17 @@ SELECT transaction_external_id, value_date, account_external_id,
  WHERE value_date BETWEEN ? AND ?`
 	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
-		return nil, psnHints{}, fmt.Errorf("ubs-web Transactions: %w", err)
+		return nil, webTxOutcome{}, fmt.Errorf("ubs-web Transactions: %w", err)
 	}
 	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
+	// Per (cash account, currency, settlement day), how many securities
+	// settlements this pass EMITS. The portfolio pass folds its own
+	// copy of a trade against it, and only an emitted row may be
+	// counted: a booking this pass dropped is one gold will not hold,
+	// and folding against it would lose the trade from both rails.
+	settled := map[settledDayKey]int{}
 	summaries, folded := 0, 0
 	for rows.Next() {
 		var (
@@ -461,7 +469,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			counterparty, kindStr         sql.NullString
 		)
 		if err := rows.Scan(&txID, &valueDate, &accountID, &ccy, &debit, &credit, &counterparty, &kindStr, &payload); err != nil {
-			return nil, psnHints{}, fmt.Errorf("ubs-web Transactions scan: %w", err)
+			return nil, webTxOutcome{}, fmt.Errorf("ubs-web Transactions scan: %w", err)
 		}
 		// Hard cut at PSN_start per relationship.
 		if rel, ok := accountToRel[accountID]; ok {
@@ -695,6 +703,9 @@ SELECT transaction_external_id, value_date, account_external_id,
 			ProviderCategory: category,
 			Payload:          rowPayload,
 		})
+		if kind == canonical.TxKindBuy || kind == canonical.TxKindSell {
+			settled[newSettledDayKey(accountID, ccy, valueDate)]++
+		}
 	}
 	if summaries > 0 {
 		log.Printf("ubs adapter: dropped %d period-close row(s) — a zero-amount summary or service-price line, not a booking", summaries)
@@ -702,7 +713,10 @@ SELECT transaction_external_id, value_date, account_external_id,
 	if folded > 0 {
 		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
 	}
-	return silver.NewTransactionStream(out), psnHints{veto: psnVeto, carry: fold.psn}, rows.Err()
+	return silver.NewTransactionStream(out), webTxOutcome{
+		hints:   psnHints{veto: psnVeto, carry: fold.psn},
+		settled: settled,
+	}, rows.Err()
 }
 
 // counterAccountInNarrative finds the counter account the EXPORT feed states

@@ -303,6 +303,21 @@ type psnHints struct {
 	carry map[string]webTxText
 }
 
+// webTxOutcome is what the web cash pass decided that a later pass
+// needs. Both halves are by-products of the row loop rather than
+// separate reads: the pass has already resolved every cut, fold and
+// classification by the time it emits, and re-deriving any of that
+// downstream would be re-deriving it from different inputs.
+type webTxOutcome struct {
+	// hints is what the PSN stream reads (psnHints).
+	hints psnHints
+	// settled counts the securities settlements the pass EMITTED, per
+	// cash account, currency and settlement day. The portfolio pass
+	// folds its own record of a trade against it — see
+	// portfolioSettledDays.
+	settled map[settledDayKey]int
+}
+
 // buildEraFold pairs each statement reconstruction with the export or feed
 // record of the same booking, so one booking reaches gold as one row.
 //

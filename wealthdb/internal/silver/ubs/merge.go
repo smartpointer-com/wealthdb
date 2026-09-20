@@ -273,11 +273,11 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	// back the PSN half, so a vetoed pair drops on both sides of the seam.
 	var hints psnHints
 	if c.web != nil {
-		s, h, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, c.relationships)
+		s, outcome, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, c.relationships)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Transactions: %w", err)
 		}
-		hints = h
+		hints = outcome.hints
 		streams = append(streams, s)
 		// Cards are web-only and the PSN cut does not touch them: there
 		// is no PSN row for the seam to arbitrate against. They ride as
@@ -290,6 +290,20 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		}
 		if len(cards.Transactions) > 0 {
 			streams = append(streams, silver.NewTransactionStream(cards))
+		}
+		// The managed portfolios' own trades, on the cash accounts that
+		// settled them. Also its own stream, and for the stronger
+		// reason: the cut decides which of two records of one booking
+		// gold keeps, and this pass emits only where neither of the
+		// other rails recorded the booking at all. What it folds
+		// against is what the cash pass just emitted, which is why it
+		// runs after it.
+		portfolio, err := c.web.portfolioTransactions(ctx, w, c.psn, outcome.settled)
+		if err != nil {
+			return nil, fmt.Errorf("ubs web portfolio Transactions: %w", err)
+		}
+		if len(portfolio.Transactions) > 0 {
+			streams = append(streams, silver.NewTransactionStream(portfolio))
 		}
 	}
 	if c.psn != nil {
