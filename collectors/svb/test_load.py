@@ -440,16 +440,46 @@ def test_core_fund_rows_book_as_sweeps(tmp_path, monkeypatch):
     assert kinds == {"CASH_SWEEP_OUT": 900.0, "CASH_SWEEP_IN": -100.0}
 
 
-def test_unbooked_sections_are_skipped(tmp_path, monkeypatch):
+def test_the_pending_sections_are_skipped(tmp_path, monkeypatch):
+    """Both pending sections are projections that settle into a later
+    statement, which books them again."""
+    conn = _with_activity(tmp_path, monkeypatch, [
+        _activity_row(section=P.SECTION_PENDING_DISTRIBUTIONS, verb="",
+                      amount=175.0),
+        _activity_row(section=P.SECTION_TRADES_PENDING, verb="BOUGHT",
+                      amount=-800.0, ordinal=1),
+    ])
+    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+
+
+def test_the_trade_blotter_is_booked(tmp_path, monkeypatch):
+    """A buy and a sell are what moved the money inside the account. Left
+    out, a sale at one custodian and the purchase it funded at another read
+    as capital appearing from nowhere."""
     conn = _with_activity(tmp_path, monkeypatch, [
         _activity_row(section=P.SECTION_TRADES, verb="YOU BOUGHT",
                       amount=-4000.0, quantity=100.0),
-        _activity_row(section=P.SECTION_PENDING_DISTRIBUTIONS, verb="",
-                      amount=175.0, ordinal=1),
-        _activity_row(section=P.SECTION_TRADES_PENDING, verb="BOUGHT",
-                      amount=-800.0, ordinal=2),
+        _activity_row(section=P.SECTION_TRADES, verb="YOU SOLD",
+                      amount=6000.0, quantity=50.0, ordinal=1),
     ])
-    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+    rows = conn.execute(
+        "SELECT kind, amount, quantity FROM transactions ORDER BY amount"
+    ).fetchall()
+    assert rows == [("BUY", -4000.0, 100.0), ("SELL", 6000.0, 50.0)]
+
+
+def test_a_core_fund_sweep_is_not_a_trade(tmp_path, monkeypatch):
+    """The same verbs appear in the core-fund section, where they are the
+    account's cash <-> money-market sweep rather than a trade. The section is
+    what tells them apart, so booking the blotter must not blur the two."""
+    conn = _with_activity(tmp_path, monkeypatch, [
+        _activity_row(section=P.SECTION_CORE_FUND, verb="YOU BOUGHT",
+                      amount=-4000.0),
+        _activity_row(section=P.SECTION_TRADES, verb="YOU BOUGHT",
+                      amount=-4000.0, ordinal=1),
+    ])
+    kinds = sorted(k for (k,) in conn.execute("SELECT kind FROM transactions"))
+    assert kinds == ["BUY", "CASH_SWEEP_IN"]
 
 
 def test_undated_and_verbless_rows_are_not_booked(tmp_path, monkeypatch, caplog):

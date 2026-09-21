@@ -718,11 +718,10 @@ _ACTIVITY_START_RE = re.compile(r"^\s*Activity\s*$", re.MULTILINE)
 _ACTIVITY_END_RE = re.compile(
     r"^\s*(?:Miscellaneous Footnotes|GLOSSARY)", re.MULTILINE)
 
-# Canonical section keys. The first six carry settled money
-# movements; the last three are read (so nothing goes missing
-# unnoticed) but are the loader's to leave unbooked — the trade
-# blotter is a separate surface, and the two pending sections are
-# projections that settle into a later statement.
+# Canonical section keys. The first seven carry settled money
+# movements; the last two are read (so nothing goes missing
+# unnoticed) but are the loader's to leave unbooked — a pending
+# section is a projection that settles into a later statement.
 SECTION_ADDITIONS = "additions_withdrawals"
 SECTION_INCOME = "income"
 SECTION_TAXES_FEES = "taxes_fees"

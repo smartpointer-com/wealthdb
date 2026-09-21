@@ -86,7 +86,7 @@ they default cleanly and the overrides set the precise values.
   level — to its statement's sha256, or, for a gap filled from the advisor
   workbook, to the `derived-advisor-mark` marker in the same `source_sha256`
   column (see the derived-mark bullet under *Data caveats*).
-- **Activity is read, the blotter is not.** The statements' Activity region
+- **Activity is read, projections are not.** The statements' Activity region
   carries the dated cash movements — transfers, wires, dividends, withholding,
   fees, interest, corporate actions — and those become `transactions` rows, with
   the amount signed as the statement prints it (parens → negative). The
@@ -96,10 +96,13 @@ they default cleanly and the overrides set the precise values.
   on — as printed on the 2022+ `MISC. & CORPORATE ACTIONS` template, negated on
   the pre-2022 `MISCELLANEOUS & CORPORATE ACTIONS` one, which prints
   cash-equivalent (a receipt of shares parenthesised). Without that negation an
-  in-kind receipt books as an outflow of the same size. The trade blotter and
-  the two projection sections (pending distributions, trades pending settlement)
-  are read and labelled but not booked: the blotter is a separate surface, and a
-  projection settles into a later statement, so booking one double-counts.
+  in-kind receipt books as an outflow of the same size. The trade blotter books
+  too, as buy/sell — what moved the money inside the account, and the other half
+  of a round trip that would otherwise read as capital appearing from nowhere
+  when the proceeds are reinvested at another custodian. The two projection
+  sections (pending distributions, trades pending settlement) are read and
+  labelled but not booked: a projection settles into a later statement, which
+  books it, so booking one double-counts.
 - **The statement checks the parse.** Each Activity section strikes its own
   total, and the build reconciles what it parsed against what the statement
   states, section by section, reporting any statement that does not add up.

@@ -281,10 +281,16 @@ _CORE_FUND_KINDS = {"BUY": "CASH_SWEEP_IN", "REINVESTMENT": "CASH_SWEEP_IN",
 # counts it, so the section it sits in continues to add up.
 _UNKNOWN_KIND = "UNKNOWN"
 
-# Activity sections that record settled money movement — the deposit ledger
-# and the brokerage statements' cash-movement sections. The trade blotter is
-# a separate surface; the two pending sections are projections that settle
-# into a later statement, so booking them would double-count.
+# Activity sections that reach `transactions` — the deposit ledger, the
+# brokerage statements' cash-movement sections, and the trade blotter. The
+# blotter books for the reason every other broker adapter books its trades:
+# a sale here and the purchase it funded at another custodian are one round
+# trip, and omitting this half leaves the other reading as capital from
+# nowhere. Both kinds are internal to the returns engine (`BankExternal`
+# omits them), so booking them moves no net flow.
+#
+# The two PENDING sections stay out: they are projections that settle into a
+# later statement, which books them again.
 _BOOKED_SECTIONS = frozenset({
     pdf_parsers_svbdep.SECTION_LEDGER,
     pdf_parsers_svbwa.SECTION_ADDITIONS,
@@ -293,6 +299,7 @@ _BOOKED_SECTIONS = frozenset({
     pdf_parsers_svbwa.SECTION_MISC,
     pdf_parsers_svbwa.SECTION_CORE_FUND,
     pdf_parsers_svbwa.SECTION_OTHER,
+    pdf_parsers_svbwa.SECTION_TRADES,
 })
 
 
