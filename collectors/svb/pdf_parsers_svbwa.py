@@ -779,6 +779,18 @@ _ACTIVITY_ROW_RE = re.compile(
     r"\s+(?P<rest>\S.*)$"
 )
 
+# The checking sub-section of Additions and Withdrawals prints a
+# different row: "Date Check Number Description Code Amount", with
+# no account-type column for the main pattern above to anchor on.
+# Its figure is part of the parent section's stated total, so a
+# statement carrying one does not add up without it. Gated on the
+# sub-section rather than tried everywhere, because a pattern this
+# loose would otherwise match continuation lines.
+_CHECK_ROW_RE = re.compile(
+    r"^(?P<date>\d{2}/\d{2}/\d{2})\s+(?P<verb>CHECK\s+PAID)\s+"
+    r"(?P<number>\d+)\s+(?P<amt>\(?\$?-?[\d,]+\.\d{2}\)?)\s*$"
+)
+
 # The Transaction column's closed vocabulary, alphabetical (the
 # match order is derived below, so this list is only ever read by a
 # human adding to it). The text extraction preserves no column gaps
@@ -788,6 +800,7 @@ _ACTIVITY_ROW_RE = re.compile(
 # for the loader to report by statement and leave unbooked.
 _ACTIVITY_VERBS = (
     "ADJ NON-RESIDENT TAX",
+    "CHECK PAID",
     "ADJUSTMENT",
     "ADVISOR FEE DEDUCTED",
     "BOUGHT",
@@ -834,8 +847,16 @@ _ACTIVITY_VERB_TOKENS = tuple(
 # and the transferred value on a following ``TRAN VALUE:`` line;
 # the section's own total is struck on those values, so they are
 # the row's amount.
+#
+# What really ends the search is the next activity row, which the
+# lookahead stops on — the count below is only a backstop against a
+# malformed section running away. It is set well clear of the
+# continuation a row can carry: a reorganisation names the security
+# twice, the ratio, and the reference, which puts its figure five
+# lines down. Too small a bound loses the value silently, and the
+# section then fails its own total, so err high.
 _TRAN_VALUE_RE = re.compile(rf"^TRAN\s+VALUE:\s*(?P<amt>{_MONEY})\s*$")
-_TRAN_VALUE_LOOKAHEAD = 4
+_TRAN_VALUE_LOOKAHEAD = 8
 
 # An UNDATED amount line inside a section — a bond sleeve's
 # "Corporate Accrued Interest Earned $50.00" and the like. It has
@@ -914,18 +935,34 @@ def parse_activity_block(account_text):
     totals = {}
     section = None
     legacy_misc = False
+    checking = False
     for i, line in enumerate(lines):
         if not line:
             continue
         found = _section_for_banner(line)
         if found is not None:
             section, legacy_misc = found
+            checking = "CHECKINGACTIVITY" in _banner_key(line)
             continue
         total = _section_total(line)
         if total is not None:
             key, amount = total
             totals[key] = amount
             continue
+        if checking and section == SECTION_ADDITIONS:
+            mc = _CHECK_ROW_RE.match(line)
+            if mc:
+                rows.append(SvbwaActivityRow(
+                    date=iso_from_short_date(mc["date"]),
+                    account_type="CASH",
+                    section=section,
+                    verb="CHECK PAID",
+                    description=f'CHECK {mc["number"]}',
+                    quantity=None,
+                    amount=parse_money(mc["amt"]),
+                    ordinal=len(rows),
+                ))
+                continue
         m = _ACTIVITY_ROW_RE.match(line)
         if m:
             row = _parse_activity_row(

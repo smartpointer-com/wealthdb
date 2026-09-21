@@ -253,6 +253,10 @@ _KIND_BY_VERB = {
     # pinned one.
     "CANCELLED BUY": "ADJUSTMENT",
     "CANCELLED SELL": "ADJUSTMENT",
+    # A brokerage statement's checking sub-section. The number stays in the
+    # description, as the deposit ledger's cleared checks do — gold's
+    # `check_number` column is filled by no svb path today.
+    "CHECK PAID": "WITHDRAWAL",
     # The deposit ledger has no Transaction column. A row's direction is the
     # column its figure lands in, and its KIND is what the statement's own
     # wording says it is — a credit the summary counts as interest, a debit it

@@ -45,8 +45,16 @@ Coverage scope:
   lines with CUSIPs on dedicated lines) and are redundant with
   the December monthly statement at the same period end, so
   they're skipped.
-* Holdings sections per account; Activity / Income Summary /
-  Estimated Cash Flow blocks are ignored.
+* Holdings sections per account. Of the Activity blocks only
+  Withdrawals, Deposits and Fees and Charges are read (see
+  ``ACTIVITY_SECTIONS``); the income, transfer and trade blocks
+  are not, nor are Income Summary / Estimated Cash Flow.
+* That limit is invisible on an account the live activity feed
+  also covers, which carries the rest. It is not invisible on a
+  CLOSED one, which the feed no longer returns: such an account's
+  ledger is whatever those three sections held, so a wind-up
+  transfer out of it is absent while the receiving account's side
+  of the same movement is present.
 * Assets Held Away is excluded by design.
 
 Architecture:

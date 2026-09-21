@@ -332,6 +332,87 @@ def test_a_reinvestment_price_is_not_an_undated_amount():
     assert m is not None and m["amt"] == "$50.00"
 
 
+_CHECK_TEXT = """\
+SVB WEALTH ADVISORY, INC.
+STATEMENT FOR THE PERIOD APRIL 1, 2022 TO APRIL 30, 2022
+EXAMPLE HOLDER - Example Property
+Account Number: SVM-000000
+Activity
+ACTIVITY >ADDITIONS AND WITHDRAWALS > CHECKING ACTIVITY
+Expense
+Date Check Number Description Code Amount
+Checking Activity
+04/11/22 CHECK PAID 100200300 ($3,000.00)
+EXAMPLE PAYEE
+Total Checking Activity ($3,000.00)
+ACTIVITY >ADDITIONS AND WITHDRAWALS > OTHER ADDITIONS AND WITHDRAWALS
+Account
+Date Type Transaction Description Quantity Amount
+04/29/22 CASH TRANSFERRED TO VS SV M-0000 0 0-1 ($2,000.00)
+Total Other Additions and Withdrawals ($2,000.00)
+TOTAL ADDITIONS AND WITHDRAWALS ($5,000.00)
+"""
+
+
+def test_a_tran_value_below_a_long_continuation_is_still_found():
+    """A reorganisation names the security twice, the ratio and the
+    reference before its TRAN VALUE line. A lookahead too short to reach it
+    loses the figure silently, and the section then fails its own total —
+    the two legs of a split must cancel to what the statement struck."""
+    text = """\
+SVB WEALTH ADVISORY, INC.
+STATEMENT FOR THE PERIOD AUGUST 1, 2022 TO AUGUST 31, 2022
+EXAMPLE HOLDER - Example Property
+Account Number: SVM-000000
+Activity
+ACTIVITY >MISC. & CORPORATE ACTIONS
+Date Type Transaction Description Quantity Amount
+08/30/22 CASH REVERSE SPLIT EXAMPLE CO SPON ADS EACH (496) $0.00
+REPR 2 ORD SHS 13 FOR 14 R/S
+INTO EXAMPLE CO SPON ADR
+REPSTG 2 R/S TO 111111111 #REOR
+M000 1111111 0 00
+TRAN VALUE: ($3,000.00)
+08/30/22 CASH REVERSE SPLIT EXAMPLE CO SPON ADS EACH 460 $0.00
+REPR 2 ORD SHS WI R/S FROM
+11111 1111 #R E OR M0001111111001
+TRAN VALUE: $2,800.00
+TOTAL MISC. & CORPORATE ACTIONS ($200.00)
+"""
+    rows, totals = ps.parse_activity_block(ps.parse_account_blocks(text)[0].text)
+    amounts = sorted(r.amount for r in rows if r.section == ps.SECTION_MISC)
+    assert amounts == [-3000.0, 2800.0], "a TRAN VALUE was lost to the lookahead"
+    assert sum(amounts) == totals[ps.SECTION_MISC] == -200.0
+
+
+def test_a_paid_check_is_part_of_its_section():
+    """The checking sub-section prints "Date Check Number Description Code
+    Amount" — no account-type column for the ordinary row pattern to anchor
+    on. Its figure is inside the parent section's stated total, so a
+    statement carrying one does not add up without it."""
+    rows, totals = ps.parse_activity_block(
+        ps.parse_account_blocks(_CHECK_TEXT)[0].text)
+    chk = [r for r in rows if r.verb == "CHECK PAID"]
+    assert len(chk) == 1, "the paid check was not read"
+    assert chk[0].amount == -3000.0
+    assert chk[0].section == ps.SECTION_ADDITIONS
+    assert "100200300" in chk[0].description
+    # And the section now adds up to what the statement struck for it.
+    booked = sum(r.amount or 0 for r in rows
+                 if r.section == ps.SECTION_ADDITIONS)
+    assert booked == totals[ps.SECTION_ADDITIONS] == -5000.0
+
+
+def test_a_check_row_is_only_read_inside_its_sub_section():
+    """The pattern is loose enough to match a continuation line, so it is
+    gated on the sub-section rather than tried everywhere."""
+    stray = _CHECK_TEXT.replace(
+        "ACTIVITY >ADDITIONS AND WITHDRAWALS > CHECKING ACTIVITY",
+        "ACTIVITY >INCOME > TAXABLE INCOME")
+    rows, _ = ps.parse_activity_block(ps.parse_account_blocks(stray)[0].text)
+    assert not [r for r in rows if r.verb == "CHECK PAID"]
+
+
 def test_a_cusip_keyed_row_is_not_refused_for_width():
     """A CUSIP is an identifier, not a figure — but an all-digit one reads as
     numeric, so a CUSIP-keyed row counts five trailing numerics where the
