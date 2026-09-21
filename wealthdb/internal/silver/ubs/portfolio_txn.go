@@ -38,12 +38,16 @@ import (
 // that nothing could pair them against.
 //
 // WHAT IT LEAVES ALONE. The currency conversions the list also carries
-// are already in the cash ledger, and from both sides: an FX deal
-// books an entry on each of the two cash accounts it moves, and each
-// is an ordinary statement or MT940 entry. The list states the deal
-// once, as a pair of figures in a single cell, so it states no
-// settlement amount — and the rule below excludes it for that reason
-// rather than by naming it.
+// state no settlement amount: a conversion is a PAIR of figures in one
+// cell, which is no single amount, and the rule below excludes it for
+// that reason rather than by naming it.
+//
+// Nothing is lost by that. Where the MT940 feed covers both cash
+// accounts a conversion moves, both legs are already in the ledger as
+// ordinary entries. Where it does not — an account the bank sends no
+// MT940 for has its conversions on no rail at all, and its coverage
+// gap is exactly them — the list does not carry that account's
+// conversions either, so there is nothing here to emit for it.
 //
 // GROSS, NOT NET. The list states a trade's VALUE; the commission is
 // not in it. Measured against the confirmations that carry both, the

@@ -27,8 +27,8 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 		{"vendoredIncomeCategories", len(vendoredIncomeCategories), 7},
 		{"extensionSpendCategories", len(extensionSpendCategories), 3},
 		{"extensionIncomeCategories", len(extensionIncomeCategories), 9},
-		{"deltaCategories", len(deltaCategories), 17},
-		{"SpendCategories", len(SpendCategories), 116},
+		{"deltaCategories", len(deltaCategories), 18},
+		{"SpendCategories", len(SpendCategories), 117},
 		{"modelSpendCategories", len(modelSpendCategories), 83},
 		{"modelIncomeCategories", len(modelIncomeCategories), 16},
 	} {
@@ -38,14 +38,15 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 	}
 
 	// The membership sets the two families' predicates answer from.
-	// Spending's 95 is the 89 it held before cashflow widened the
-	// vocabulary, plus `debt_repayment`, the four wrapper crossings and
-	// `deposit_transfer`; no income-only value is ever in it.
-	if got := len(spendDetailedValues); got != 95 {
-		t.Errorf("spending vocabulary = %d values, want 95", got)
+	// Spending's 96 is the 89 it held before cashflow widened the
+	// vocabulary, plus `debt_repayment`, the four wrapper crossings,
+	// `deposit_transfer` and `mortgage_transfer`; no income-only value
+	// is ever in it.
+	if got := len(spendDetailedValues); got != 96 {
+		t.Errorf("spending vocabulary = %d values, want 96", got)
 	}
-	if got := len(incomeDetailedValues); got != 29 {
-		t.Errorf("income vocabulary = %d values, want 29", got)
+	if got := len(incomeDetailedValues); got != 30 {
+		t.Errorf("income vocabulary = %d values, want 30", got)
 	}
 
 	primaries := map[string]struct{}{}
@@ -157,13 +158,14 @@ func TestEveryCategoryCarriesAFamily(t *testing.T) {
 		SpendDetailedInternalTransfer, SpendDetailedGift, SpendDetailedOther,
 		DetailedRetirementTransfer, DetailedEducationTransfer,
 		DetailedHealthTransfer, DetailedTrustTransfer,
+		DetailedMortgageTransfer,
 	} {
 		if !both[d] {
 			t.Errorf("%q must be read from either side", d)
 		}
 	}
-	if len(both) != 8 {
-		t.Errorf("shared deltas = %d, want 8", len(both))
+	if len(both) != 9 {
+		t.Errorf("shared deltas = %d, want 9", len(both))
 	}
 }
 
@@ -211,6 +213,7 @@ func TestSpendDeltasAreSelfDetailed(t *testing.T) {
 		DetailedHealthTransfer:        {},
 		DetailedTrustTransfer:         {},
 		DetailedDepositTransfer:       {},
+		DetailedMortgageTransfer:      {},
 	}
 	for _, c := range deltaCategories {
 		if c.Primary != c.Detailed {
@@ -424,6 +427,7 @@ func TestSpendPredicatesRefuseTheIncomeVocabulary(t *testing.T) {
 		DetailedHealthTransfer:        true,
 		DetailedTrustTransfer:         true,
 		DetailedDepositTransfer:       true,
+		DetailedMortgageTransfer:      true,
 	}
 	n := 0
 	for _, c := range SpendCategories {
@@ -473,8 +477,8 @@ func TestVendoredSpendCategoriesIsACopy(t *testing.T) {
 // the prompt's prohibition sentence reads.
 func TestDeltaSpendCategoriesIsACopy(t *testing.T) {
 	got := DeltaSpendCategories()
-	if len(got) != 12 {
-		t.Fatalf("got %d rows, want 12", len(got))
+	if len(got) != 13 {
+		t.Fatalf("got %d rows, want 13", len(got))
 	}
 	first := deltaCategories[0]
 	got[0] = SpendCategory{"X", "Y", "Z", FamilySpending}
@@ -496,7 +500,7 @@ func TestIncomeAccessorsAreCopiesOfTheirFamily(t *testing.T) {
 	}{
 		{"VendoredIncomeCategories", VendoredIncomeCategories(), 7},
 		{"ModelIncomeCategories", ModelIncomeCategories(), 16},
-		{"DeltaIncomeCategories", DeltaIncomeCategories(), 13},
+		{"DeltaIncomeCategories", DeltaIncomeCategories(), 14},
 	} {
 		if len(tc.got) != tc.want {
 			t.Errorf("%s = %d rows, want %d", tc.name, len(tc.got), tc.want)
@@ -683,6 +687,7 @@ func TestIncomeLabels(t *testing.T) {
 		DetailedHealthTransfer:               "Health transfer",
 		DetailedTrustTransfer:                "Trust transfer",
 		DetailedDepositTransfer:              "Deposit transfer",
+		DetailedMortgageTransfer:             "Mortgage transfer",
 	}
 	for _, c := range SpendCategories {
 		if !c.Family.InFamily(FamilyIncome) {

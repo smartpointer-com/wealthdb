@@ -120,10 +120,10 @@ the product does NOT hold is the `debt_repayment` delta below, which is
 what the dropped primary was for minus the interest share nothing in
 the data splits out.
 
-### The twelve deltas the spending side reads
+### The thirteen deltas the spending side reads
 
-Twelve values the SPENDING side reads are the product's own rather than
-Plaid's — seventeen rows across both families, of which these twelve
+Thirteen values the SPENDING side reads are the product's own rather than
+Plaid's — eighteen rows across both families, of which these thirteen
 reach this one. They are primary-level (primary == detailed, so each
 groups as its own bucket) and keep the repo's lowercase enum idiom,
 which also marks them at a glance as not-from-Plaid. The ones marked
@@ -144,8 +144,9 @@ in the dimension:
 | `health_transfer` | *(both)* the same for a health savings account |
 | `trust_transfer` | *(both)* the same for a trust that is a separate taxpayer |
 | `deposit_transfer` | *(both)* the same for a bank's own deposit product the collector does not list as an account — a call deposit, a fixed-term deposit, a notice account; the interest it pays is income and is not this |
+| `mortgage_transfer` | *(both)* an instalment paid to, or a tranche drawn from, a mortgage servicer the product does not hold as an account; drawn under financing, where the interest/principal split applies, rather than as a crossing |
 
-The last six arrived with the cash flow statement
+The last seven arrived with the cash flow statement
 ([CASHFLOW.md](CASHFLOW.md)) and leave `spending_lines_base` — the
 crossings because the money is still the holder's, `debt_repayment`
 because it reduces a liability rather than buying anything, which is
@@ -266,7 +267,7 @@ refreshed CSV as a clean diff instead of sitting beside it.
 ### Two validity predicates, and why
 
 `canonical.ValidSpendDetailed` admits everything storable — the 80
-vendored values, our extensions, *and* the twelve deltas.
+vendored values, our extensions, *and* the thirteen deltas.
 `canonical.ModelSpendDetailed` is the stricter sibling: it admits
 what a model may emit — vendored and extension — and refuses only the
 deltas.

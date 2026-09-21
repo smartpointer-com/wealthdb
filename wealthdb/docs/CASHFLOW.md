@@ -43,7 +43,7 @@ in, what went out, and what was left.
 | `operating_in` | the income verdicts, plus the reimbursements income excludes | + (net of reversals) |
 | `operating_out` | the spending verdicts, plus moves into a charitable or custodial vehicle | − (net of refunds) |
 | `investing` | buys and sells; private capital called and returned; capital deployed to or returned from a destination the product does not track | net |
-| `financing` | what the mortgage rule places, a matched move to a mortgage account, `loan_proceeds`, `debt_repayment` | net |
+| `financing` | what the mortgage rule places, a matched move to a mortgage account, `mortgage_transfer`, `loan_proceeds`, `debt_repayment` | net |
 | `vehicles` | moves to or from a retirement plan, an education or health account, a non-grantor trust, or an untracked account of the household's own | net |
 | `cash` | the residual: the four summed, seen from the pool's side | computed |
 
@@ -221,7 +221,7 @@ wherever both have something to say.
 | `deposit` | by verdict | matched → by the far account; `capital_return` → investing; `loan_proceeds` → financing; a `*_transfer` delta → vehicles; `reimbursement` → operating in (income excludes it, cashflow keeps it — it is cash that arrived); otherwise operating in |
 | `distribution` | investing | floors to `capital_return`; a rule or a pin promoting it to an income type moves it to operating in, as the holder's word should |
 | `purchase` `refund` `fee` `tax` `interest` (−) | operating out | by resolved spend category |
-| `withdrawal` | by verdict | matched → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles (`deposit_transfer` → `vehicles · Bank deposits`); a rule-placed `internal_transfer` with no far account → `vehicles · Untracked accounts`; otherwise operating out |
+| `withdrawal` | by verdict | matched → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles (`deposit_transfer` → `vehicles · Bank deposits`), except `mortgage_transfer` → `financing · Mortgage`; a rule-placed `internal_transfer` with no far account → `vehicles · Untracked accounts`; otherwise operating out |
 | `card_payment` | matched → by the far account; otherwise **excluded, counted** | an unpaired card bill is in neither family's population, so no tier ever saw it. It also has a known false shape: a cross-currency pair no road joins — the amount pass partitions by currency, and a card ledger mints its own ids, so no shared reference reaches it either — whose bank leg the provider tier already files as card spend. Counting it as a receipt would print a phantom inflow and double the bill |
 | `buy` `sell` | investing | by the instrument's asset class; a `cash`-class instrument is pool-internal |
 | `contribution` `distribution` | investing | private capital, by the vehicle's asset class |
@@ -305,6 +305,13 @@ product does not track, and that money **leaves the pool**. Drawn as
 invisible it would vanish into the residual forever; drawn as
 `Untracked accounts` it is visible as what it is, and the remedy —
 collect that account — is obvious from the chart.
+
+This ladder runs for `internal_transfer` and nothing else, so it is
+not the only road to the nodes it reaches. `mortgage_transfer` (§5)
+resolves to `financing · Mortgage` on the verdict alone, ahead of any
+far-account test — which is the point of it: both steps above that
+reach that node read a far side, and a servicer the product holds no
+account for has none to read.
 
 ---
 
@@ -458,7 +465,9 @@ holding the mortgage — the first being that the narrative rule which
 places the payment fires on the words a feed prints (`MORTGAGE`,
 `HYPOTHEK`, `HYPOTHEKARZINS`), so a feed that stops carrying them drops
 its mortgage rows into `vehicles · Untracked accounts`, with nothing in
-the statement to say that is what happened. A rule sees one row's text
+the statement to say that is what happened — which is what
+`mortgage_transfer` (below) answers: a pin reaches `financing ·
+Mortgage` on the verdict alone. A rule sees one row's text
 and never the lender's balance: it names the class, and the statement
 splits the amount. `cashflow_txn_nodes` still emits one row per
 transaction, so the reconciliation memo is untouched; the split happens
@@ -470,7 +479,7 @@ in, and a reader comparing years would see consumption jump on a
 refinancing that changed nothing about the household. The leaves say
 which is which without moving either.
 
-### The six new taxonomy values
+### The seven new taxonomy values
 
 [SPENDING.md](SPENDING.md) §2 and [INCOME.md](INCOME.md) §2 carry the
 tables; the policy is here.
@@ -488,6 +497,20 @@ bases. They exist for the crossing whose far side the product does not
 hold. **The direction is the row's own**: a withdrawal placed
 `retirement_transfer` is a contribution and a deposit placed the same
 is a distribution.
+
+`mortgage_transfer` is a delta of the same family **both**, and the
+one that is not a crossing: it reaches `financing · Mortgage`, where
+the interest/principal split applies, rather than the vehicles
+section. It exists because that node had only two roads in, and both
+read the far side — a far account of kind `mortgage`, or `far_class`,
+which only the built-in tier may write. A servicer whose narrative is
+its own legal entity cannot go in a tracked built-in, so an instalment
+to one had no road at all and fell to `vehicles · Untracked accounts`.
+`debt_repayment` stays the value for every other untracked lender: a
+mortgage is split into interest and principal and a car loan is not.
+A servicer with no balance series in gold has no principal to
+apportion against, so its instalments draw whole as `Mortgage
+interest`.
 
 `deposit_transfer` is the fifth crossing and the one with no wrapper
 behind it: a bank's own deposit product — a call deposit, a fixed-term
@@ -613,7 +636,7 @@ is what applies one to history.
 
 Nothing else is configurable. Rules, pins and transfer overrides are
 the families'; a verdict written there is what cashflow reads, and the
-six new values are placed through those surfaces.
+seven new values are placed through those surfaces.
 
 ---
 

@@ -46,9 +46,9 @@ import "strings"
 // the four vehicle crossings — `retirement_transfer`,
 // `education_transfer`, `health_transfer` and `trust_transfer`. They
 // keep the repo's lowercase enum idiom, which also marks them at a
-// glance as not-from-Plaid. Eight of them — `internal_transfer`,
-// `gift`, `other` and the five crossings — are one row read from
-// either side, which is what FamilyBoth means.
+// glance as not-from-Plaid. Nine of them — `internal_transfer`,
+// `gift`, `other`, the five crossings and `mortgage_transfer` — are
+// one row read from either side, which is what FamilyBoth means.
 //
 // EXTENSIONS are the third class, and they differ from the deltas in
 // the one way that matters: a model MAY emit them. A delta is decided
@@ -164,6 +164,32 @@ const (
 	// spending overlay holds.
 	DetailedDepositTransfer = "deposit_transfer"
 )
+
+// DetailedMortgageTransfer is an instalment paid to, or a tranche drawn
+// from, a MORTGAGE servicer the product does not hold as an account.
+//
+// It is a delta like the crossings above and placed by the same tiers,
+// but it is not a vehicle crossing: it reaches `financing · Mortgage`,
+// where the interest/principal split applies, rather than the vehicles
+// section. `debt_repayment` is the neighbouring value and a different
+// one — a car loan or a credit line, drawn as `loans`, with no split
+// because nothing in the data separates the two halves.
+//
+// It exists because `financing · Mortgage` was otherwise reachable
+// only through a far account of kind `mortgage` or a `far_class` only
+// the built-in tier may write. A servicer whose narrative is its own
+// legal entity — personal text that cannot go in a tracked built-in —
+// had no road to that node at all. A payment to a mortgage gold DOES
+// hold is an own-account move and pairs; this is for the one it does
+// not.
+//
+// The direction is the ROW's, as for the crossings: an outflow is an
+// instalment and an inflow is a drawdown, and `cashflow_lines_base`
+// reads the sign. A servicer with no balance in gold has no principal
+// series to apportion against, so its instalments draw whole as
+// `Mortgage interest` — right for an interest-only tranche, and a
+// visible approximation for any other.
+const DetailedMortgageTransfer = "mortgage_transfer"
 
 // The spending extension values: ours, but shaped like the vendored
 // rows and emittable by the model tier. See extensionSpendCategories.
@@ -321,11 +347,14 @@ var vendoredIncomeCategories = []SpendCategory{
 // neither a receipt nor a thing bought. Four are earmarked by a tax
 // wrapper; `deposit_transfer` is earmarked by nothing and is here
 // because the far leg is a bank's own deposit product the collector
-// does not list as an account. `debt_repayment`
-// leaves the spending base for the reason `investment` does — it
-// reduces a liability rather than buying anything — and, like the
-// crossings, it exists so the cashflow statement has an honest home for
-// a movement the two families decline.
+// does not list as an account. `mortgage_transfer` leaves both bases
+// on the same reasoning without being a crossing: it reduces the
+// household's own liability, and it draws under financing rather than
+// vehicles. `debt_repayment` leaves the spending base for the reason
+// `investment` does — it reduces a liability rather than buying
+// anything — and, like the crossings, it exists so the cashflow
+// statement has an honest home for a movement the two families
+// decline.
 //
 // A delta is primary-level, so a report grouped by primary shows it as
 // its own bucket, and gold reads delta-ness off that equality rather
@@ -365,6 +394,8 @@ var deltaCategories = []SpendCategory{
 		"The same crossing for a health savings account the product does not track — a contribution paid in, or a medical cost reimbursed out of it", FamilyBoth},
 	{DetailedTrustTransfer, DetailedTrustTransfer,
 		"The same crossing for a trust that is a separate taxpayer and that the product does not track — a funding transfer out, a distribution arriving. A grantor trust is not this: it is tax-transparent and its accounts are the holder's own", FamilyBoth},
+	{DetailedMortgageTransfer, DetailedMortgageTransfer,
+		"An instalment paid to, or a tranche drawn from, a mortgage servicer the product does not hold as an account — the row's own direction says which. Drawn under financing beside a tracked mortgage rather than as a vehicle crossing; `debt_repayment` is the value for any other untracked lender. A payment to a mortgage gold does hold is an own-account move and pairs instead", FamilyBoth},
 	{DetailedDepositTransfer, DetailedDepositTransfer,
 		"The same crossing for a bank's own deposit product the collector does not list as an account — a call deposit, a fixed-term deposit, a notice account: money paid in, or the principal coming back. Earmarked for nothing and taxed like the funding account; it is here because the far leg does not exist in the product, not because the money went anywhere. Interest the product pays is NOT this — it is income, and it arrives on its own row", FamilyBoth},
 }
@@ -572,7 +603,7 @@ func categoriesIn(family Family, cats []SpendCategory) []SpendCategory {
 
 // ValidSpendDetailed reports whether s is a recognised spend_detailed
 // value — a vendored Plaid outflow value, a spending extension of
-// ours, or one of the twelve deltas the spending side reads. A primary
+// ours, or one of the thirteen deltas the spending side reads. A primary
 // on its own is not valid unless it is also a delta, and an income value
 // is not valid here: the two families are separate vocabularies that
 // happen to share a table, so a spending rule or pin naming
@@ -583,7 +614,7 @@ func ValidSpendDetailed(s string) bool {
 }
 
 // ValidIncomeDetailed is the same for income_detailed: the seven
-// vendored INCOME values, the nine extensions, and the thirteen deltas
+// vendored INCOME values, the nine extensions, and the fourteen deltas
 // the income side reads. Income rules and pins validate against it.
 func ValidIncomeDetailed(s string) bool {
 	_, ok := incomeDetailedValues[s]
@@ -603,7 +634,7 @@ func ModelSpendDetailed(s string) bool {
 }
 
 // ModelIncomeDetailed is the income side's gauntlet check, and refuses
-// the thirteen income deltas for the same reason. `capital_return` is the
+// the fourteen income deltas for the same reason. `capital_return` is the
 // one that would hurt most: it is what a private fund's distribution
 // floors to, it is OUT of the income base, and a payer-keyed verdict
 // carrying it would silently remove that payer from every income

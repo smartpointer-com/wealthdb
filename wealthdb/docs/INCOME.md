@@ -155,7 +155,7 @@ different years. Netting the payout out would count the outflow and drop the
 inflow. `reimbursement` keeps the cases where the outflow IS identifiable: a
 utility credit against a bill, a merchant reversing its own charge.
 
-**Thirteen deltas**, ours, primary-level and lowercase, decided from
+**Fourteen deltas**, ours, primary-level and lowercase, decided from
 structure a payer's name cannot reveal:
 
 | value | meaning | in the base? |
@@ -169,14 +169,15 @@ structure a payer's name cannot reveal:
 | `health_transfer` | the same for a health savings account | no |
 | `trust_transfer` | the same for a trust that is a separate taxpayer | no |
 | `deposit_transfer` | the principal of a bank deposit product coming back — a call or fixed-term deposit repaid or drawn down; the interest is `INCOME_INTEREST_EARNED` and is not this | no |
+| `mortgage_transfer` | a tranche drawn from a mortgage servicer the product does not hold as an account; the outflow leg is the instalment | no |
 | `gift` | a cash gift or family support received | yes |
 | `inheritance` | an estate's distribution to the holder | yes |
 | `cash_deposit` | cash paid in at a counter or a machine | yes |
 | `other` | a receipt no tier could place, that a tier nonetheless placed there | yes, labelled `Other` |
 
-Eight of them — `internal_transfer`, `gift`, `other` and the five
-crossings — are **one row** read from either side, which is what
-`family = 'both'` means.
+Nine of them — `internal_transfer`, `gift`, `other`, the five
+crossings and `mortgage_transfer` — are **one row** read from either
+side, which is what `family = 'both'` means.
 
 The five crossings arrived with the cash flow statement
 ([CASHFLOW.md](CASHFLOW.md), migrations 0078 and 0090) and leave the
@@ -539,7 +540,7 @@ one number answers for both.
 1. **Three CLI views**, `summary / types / transactions`. No `payers`
    view: payers rank on the dashboard only, as merchants do.
 2. **Plaid's `INCOME` vendored verbatim**, plus nine extensions and
-   thirteen deltas. Widened deliberately for a general audience — the
+   fourteen deltas. Widened deliberately for a general audience — the
    product is published, so the vocabulary names what a household
    commonly receives rather than what one deployment does.
 3. **Gross as booked.** `withheld` is a memo, off by default, never read

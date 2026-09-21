@@ -458,6 +458,61 @@ func TestTheCrossingDeltasAreDirectional(t *testing.T) {
 	check(t, seedLines(t, db, ctx, lines), lines)
 }
 
+// TestAMortgageServicerNeedsNoFarAccount pins the verdict that reaches
+// `financing · Mortgage` on its own.
+//
+// Both other roads to that node read the far side — a far account of
+// kind `mortgage`, or `far_class`, which only the built-in tier may
+// write — so a servicer gold holds no account for fell through to the
+// untracked residual. `mortgage_transfer` is tested here with NEITHER
+// far signal set, because needing neither is the whole of the point;
+// and on both legs, since a drawdown arrives the other way.
+//
+// `debt_repayment` is asserted beside it unchanged: the two values
+// must not collapse, because a mortgage is split into interest and
+// principal downstream and a car loan is not.
+func TestAMortgageServicerNeedsNoFarAccount(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	lines := []line{
+		{id: "MT-OUT", account: "CASH", kind: "withdrawal", amount: -1800,
+			spend: "mortgage_transfer", want: "financing.mortgage.mortgage",
+			why: "an instalment to a servicer the product holds no account for"},
+		{id: "MT-IN", account: "CASH", kind: "deposit", amount: 50000,
+			income: "mortgage_transfer", want: "financing.mortgage.mortgage",
+			why: "a tranche drawn from the same servicer, read from the income side"},
+		{id: "MT-NOT-DEBT", account: "CASH", kind: "withdrawal", amount: -400,
+			spend: "debt_repayment", want: "financing.loans.debt_repayment",
+			why: "every other untracked lender still draws as loans, unsplit"},
+	}
+	check(t, seedLines(t, db, ctx, lines), lines)
+}
+
+// TestAServicerWithNoBalanceDrawsAsInterest pins what the leaf stage
+// makes of the verdict above. The instalment/principal split reads a
+// mortgage's own balance series, and a servicer gold holds no account
+// for has none — so nothing is apportioned and the row draws whole.
+//
+// Interest is the right whole: it is exact for an interest-only
+// tranche, which is the shape that motivated the verdict, and for any
+// other it is a visible approximation rather than invented principal.
+func TestAServicerWithNoBalanceDrawsAsInterest(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	seedLines(t, db, ctx, []line{
+		{id: "MT-LEAF", account: "CASH", kind: "withdrawal", amount: -1800,
+			spend: "mortgage_transfer"},
+	})
+	got := mortgageShares(t, db, ctx)
+	if got["MT-LEAF"]["mortgage_interest"] != -1800 {
+		t.Errorf("interest = %v, want the whole instalment",
+			got["MT-LEAF"]["mortgage_interest"])
+	}
+	if _, split := got["MT-LEAF"]["mortgage_amortization"]; split {
+		t.Error("principal was apportioned against a servicer with no balance series")
+	}
+}
+
 // TestTheBaseIsThePoolsLines pins what cashflow_lines_base adds over
 // the resolution: the near account must be in the pool, and the row
 // must be a line. A vehicle's own dividends, trades and fees are not
