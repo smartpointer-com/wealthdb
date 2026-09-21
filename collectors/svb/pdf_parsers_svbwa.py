@@ -396,6 +396,16 @@ _NONDATA_LINE_PREFIXES = (
     "There were no positions",
 )
 
+# Two of the prefixes above are short enough to match the opening of a
+# security's own description rather than the prose they were written for, and
+# would drop the holding without a word. What they exist to catch never
+# carries a symbol column before a numeric tail: a credit rating ("S&P A") and
+# a bond's coupon-date line ("ON JAN 01, JUL 01"). So for these two, and only
+# these two, a line that parses as a holdings row wins. The rest of the list is
+# structural labels, which DO tokenise like a data row now and then ("Total
+# Pending Accrued Dividends $… TOTAL 100.0% $…"), so they keep precedence.
+_AMBIGUOUS_LINE_PREFIXES = ("S&P ", "ON ")
+
 # Account-class words that appear alone on a line (group sub-headers
 # inside a section) — skipped.
 _GROUP_HEADERS = {
@@ -479,7 +489,7 @@ def parse_holdings_block(account_text):
                 continue
             # Fall through if it didn't look like a real option row.
 
-        if _is_boilerplate(stripped):
+        if _is_boilerplate(stripped) and not _shadows_a_holding(stripped):
             i += 1
             continue
 
@@ -500,6 +510,18 @@ def _parse_security_row(line):
     """
     tokens = line.split()
     tail = _trailing_numeric_count(tokens)
+    # A CUSIP is an identifier, not a figure, but an all-digit one reads as
+    # numeric, so it joins the trailing run and pushes the row past the width
+    # the layout allows. A description that itself ends in a numeral — an ADR
+    # "… SPON ADS EACH REPR 2" — pushes it further still, so the CUSIP is not
+    # necessarily the run's first token. Cut the run at the CUSIP wherever it
+    # sits and let it be the key.
+    if tail > 4:
+        run_start = len(tokens) - tail
+        for offset in range(tail):
+            if _CUSIP_RE.match(tokens[run_start + offset]):
+                tail -= offset + 1
+                break
     # Data rows carry 3 (qty, price, mv) or 4 (… + eai) numerics.
     if tail < 3 or tail > 4:
         return None
@@ -627,6 +649,13 @@ def _parse_option_block(lines, idx):
         quantity=qty, price=price, market_value=mv,
         cost_basis=None, unrealized_gain=None,
     ), consumed
+
+
+def _shadows_a_holding(line):
+    """True when a boilerplate prefix has matched a line that is really a
+    holdings row — see :data:`_AMBIGUOUS_LINE_PREFIXES`."""
+    return (line.startswith(_AMBIGUOUS_LINE_PREFIXES)
+            and _parse_security_row(line) is not None)
 
 
 def _is_boilerplate(line):
@@ -816,8 +845,13 @@ _TRAN_VALUE_LOOKAHEAD = 4
 # does not. The label must open on a non-digit, which is what keeps
 # a dated row — including the two-date rows of the pending-
 # settlement section — off this path.
+#
+# The label may not END on "@", which is what separates an amount from a
+# PRICE: a money-market dividend prints "REINVEST @ $1.00" beneath it, and
+# reading that dollar-a-share as an amount adds it to a section the
+# statement already totalled without it.
 _UNDATED_AMOUNT_RE = re.compile(
-    rf"^(?P<label>[^\d$(].*?)\s+(?P<amt>{_MONEY})\s*$")
+    rf"^(?P<label>[^\d$(].*?[^@\s])\s+(?P<amt>{_MONEY})\s*$")
 
 # A section total, e.g. "TOTAL ADDITIONS AND WITHDRAWALS
 # ($4,000.00)". Upper-case TOTAL only — the title-case

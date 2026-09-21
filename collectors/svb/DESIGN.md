@@ -103,6 +103,19 @@ they default cleanly and the overrides set the precise values.
   a `symbol_resolution.overrides` entry (`silver_source_id: "svb"`,
   `lookup_kind: "name"`) pins by exact match. The payload also keeps the name
   unprefixed, and the section that says whether it names a security at all.
+- **A data row outranks a boilerplate prefix, but not a label.** Holdings rows
+  are separated from the surrounding prose by a list of line prefixes, and two
+  of those are short enough to match the opening of a security's description
+  rather than the prose they were written for — dropping the holding silently.
+  A line that parses as a holdings row therefore wins over those two. It does
+  NOT win over the rest, which are structural labels: a label tokenises like a
+  data row often enough that admitting one would invent a holding out of a
+  total, which is the failure the list exists to prevent.
+- **An identifier is not a figure.** A CUSIP of all digits reads as numeric and
+  joins the row's trailing run, taking it past the width the layout allows —
+  further still when the description itself ends in a numeral. The run is cut
+  at the CUSIP wherever it falls, so the key is the key and the tail is the
+  tail.
 - **PK disambiguation.** `historical_position_snapshots` is keyed on
   `(as_of, account, description)`, but option legs share a description (the strike
   is off-description); colliding descriptions are disambiguated by the unique

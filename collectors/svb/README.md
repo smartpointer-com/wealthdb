@@ -91,6 +91,13 @@ are what keep each family's carry-forward self-contained — see
 `management_style`) comes from `account_overrides[<id>]`, and all three need
 reloading together after a build.
 
+The ids above name one archive. An archive held under a different registration
+is a separate run of the same collector — its own `--data-dir`, its own
+`--silver-db`, its own `signature.txt` — and so its own ids, because the
+accounts are a different holder's and must not share a carry-forward with
+these. A run whose archive has only one of the three families still creates the
+other two DBs, empty; leave them unregistered.
+
 ## Tests
 
 ```sh

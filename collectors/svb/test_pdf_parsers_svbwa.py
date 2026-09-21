@@ -301,6 +301,87 @@ _IMAGE_ONLY_TEXT = "\n \n\n"
 # parse_statement_period — uppercase, "TO", quarterly span
 # ============================================================
 
+_SHADOWED_TEXT = """\
+SVB WEALTH ADVISORY, INC.
+STATEMENT FOR THE PERIOD DECEMBER 1, 2022 TO DECEMBER 31, 2022
+EXAMPLE HOLDER - Example Property
+Account Number: SVM-000000
+Holdings
+HOLDINGS > EQUITIES - 100.00% of Total Account Value
+Symbol/Cusip Price on Current Estimated
+Description Account Type Quantity 12/31/22 Market Value Annual Income
+Equity
+S&P EXAMPLE INDEX CO COM AAAA 10 $100.00 $1,000.00 $20.00
+S&P A
+ON EXAMPLE DEVICES CORP COM BBBB 200 $50.00 $10,000.00 $30.00
+ON JAN 01, JUL 01
+Total Return Fund TRFXX 100 $10.00 $1,000.00 $5.00
+Total Securities $11,000.00
+"""
+
+
+def test_a_reinvestment_price_is_not_an_undated_amount():
+    """An undated line inside a section is an amount the section's stated
+    total already includes. A money-market dividend prints its reinvestment
+    PRICE beneath it — "REINVEST @ $1.00" — and counting a dollar a share as
+    an amount puts the section a dollar over its own total."""
+    assert ps._UNDATED_AMOUNT_RE.match("REINVEST @ $1.00") is None
+    assert ps._UNDATED_AMOUNT_RE.match("REINVEST @ $1.000") is None
+    # The real undated amounts still land.
+    m = ps._UNDATED_AMOUNT_RE.match("Corporate Accrued Interest Earned $50.00")
+    assert m is not None and m["amt"] == "$50.00"
+
+
+def test_a_cusip_keyed_row_is_not_refused_for_width():
+    """A CUSIP is an identifier, not a figure — but an all-digit one reads as
+    numeric, so a CUSIP-keyed row counts five trailing numerics where the
+    layout allows four. Refusing it on width silently drops the holding."""
+    line = ("EXAMPLE ADR EA REP 2 CL A  111111111  200  $50.00  $10,000.00  $400.00")
+    row = ps._parse_security_row(line)
+    assert row is not None, "CUSIP-keyed row refused on width"
+    assert row.instrument_key == "111111111"
+    assert row.description == "EXAMPLE ADR EA REP 2 CL A"
+    assert row.quantity == 200.0 and row.market_value == 10000.0
+    # A description ending in a numeral joins the run, so the CUSIP is not
+    # the token the run opens on.
+    row = ps._parse_security_row(
+        "EXAMPLE ADR SPON ADS EACH REPR 2  222222222  460  $5.00  $2,300.00")
+    assert row is not None, "CUSIP not the run's first token"
+    assert row.instrument_key == "222222222"
+    assert row.description == "EXAMPLE ADR SPON ADS EACH REPR 2"
+    assert row.market_value == 2300.0
+    # A genuinely over-wide row is still refused.
+    assert ps._parse_security_row(
+        "EXAMPLE CO COM EXCO 1 2 3 $4.00 $5.00 $6.00") is None
+
+
+def test_a_security_named_like_boilerplate_is_still_a_holding():
+    """Two boilerplate prefixes are short enough to collide with a real
+    security's name. What they exist to catch — a credit rating, a bond's
+    coupon-date line — never carries a symbol column before a numeric tail,
+    so a line that parses as a holdings row wins over them."""
+    rows = ps.parse_holdings_block(ps.parse_account_blocks(_SHADOWED_TEXT)[0].text)
+    by_key = {r.instrument_key: r for r in rows}
+    assert "AAAA" in by_key, "S&P-prefixed holding was dropped as boilerplate"
+    assert "BBBB" in by_key, "ON-prefixed holding was dropped as boilerplate"
+    assert by_key["AAAA"].market_value == 1000.0
+    assert by_key["BBBB"].market_value == 10000.0
+    assert by_key["AAAA"].description == "S&P EXAMPLE INDEX CO COM"
+
+
+def test_a_structural_label_keeps_precedence_over_a_data_row():
+    """The rest of the prefix list is structural, and a label CAN tokenise
+    like a data row — admitting one would invent a holding out of a summary
+    line, which is the failure the prefix list exists to prevent."""
+    rows = ps.parse_holdings_block(ps.parse_account_blocks(_SHADOWED_TEXT)[0].text)
+    # "Total Return Fund TRFXX 100 $10.00 $1,000.00 $5.00" tokenises exactly
+    # like a holdings row — symbol column, four trailing numerics — and is
+    # still a section label. Admitting it would invent a holding from a total.
+    assert "TRFXX" not in {r.instrument_key for r in rows}
+    # And the rating / coupon-date lines the two prefixes exist for stay out.
+    assert len(rows) == 2
+
+
 def test_parse_statement_period_quarterly_uppercase_to():
     p = ps.parse_statement_period(_MM_BOND_TEXT)
     assert p == (date(2021, 1, 1), date(2021, 3, 31))
