@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # svb — host wrapper for the wealthdb "svb" collector.
 #
-# A one-shot historical sideload: it parses a static archive of SVB Wealth
-# Advisory / NFS brokerage statement PDFs into a silver SQLite (svb.db) that
-# uses the fidelity-web silver schema, so the shared Fidelity gold adapter
-# projects it under a separate source id ("svb"). SVB wound down in 2023;
-# there is no live source to log into and nothing to download on a schedule —
-# the statements are a fixed archive you drop in the data dir — so `login`
-# and `download` are no-ops. Host-venv collector (no Docker).
+# A one-shot historical sideload: it parses a static archive of SVB statement
+# PDFs — brokerage, deposit and mortgage — into silver SQLites that use the
+# fidelity-web schema, so the shared Fidelity gold adapter projects them, one
+# gold source id per family. SVB wound down in 2023; there is no live source to
+# log into and nothing to download on a schedule — the statements are a fixed
+# archive dropped into the data dir — so `login` and `download` are no-ops.
+# Host-venv collector (no Docker).
 #
 # Subcommands:
-#   load [args...]      Rebuild svb.db from the statement PDFs in the data dir.
+#   load [args...]      Rebuild the silver DBs from the statement PDFs in the
+#                       data dir — one per statement family, each a gold source
+#                       of its own (svb, svb-deposit, svb-mortgage).
 #   download | login    No-op (explains the sideload model).
-#   prune               No-op. The bronze is a flat archive of the load-input
-#                       statement PDFs — no timestamped run dirs and no debug
+#   prune               No-op. The bronze holds the load-input statement PDFs
+#                       themselves — no timestamped run dirs and no debug
 #                       artefacts to reclaim — so there is nothing to prune and
 #                       the PDFs are never deleted.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on `load`:
-#   --data-dir  DIR     data dir; PDFs in <data-dir>/bronze/
-#                       (default $XDG_DATA_HOME/wealthdb/svb)
-#   --silver-db PATH    silver DB path (default <data-dir>/svb.db)
-# Extra `load` flags pass through to load.py (e.g. --closure-date,
-# --statement-signature).
+#   --data-dir  DIR     data dir; PDFs under <data-dir>/bronze/, searched
+#                       recursively (default $XDG_DATA_HOME/wealthdb/svb)
+#   --silver-db PATH    brokerage silver DB path (default <data-dir>/svb.db);
+#                       the deposit and mortgage DBs sit beside it
+# Extra `load` flags pass through to load.py (e.g. --statement-signature).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,11 +47,13 @@ case "$cmd" in
         # with no session, so there is nothing for it to probe.
         case " $* " in *" --check "*) echo "svb: login --check is a no-op; there is no session to probe." >&2 ;; esac
         cat >&2 <<'EOF'
-svb: no-op. This collector has no live source — the SVB Wealth Advisory
-statements are a fixed historical archive (SVB wound down in 2023). Drop the
-in-scope statement PDFs (+ an optional signature.txt page-1 guard) into
-<data-dir>/bronze/ (default $XDG_DATA_HOME/wealthdb/svb/bronze/), then run
-`./svb load` to rebuild svb.db from them.
+svb: no-op. This collector has no live source — the SVB statements are a fixed
+historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
+(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx advisor
+workbook where the archive has interior gaps) into <data-dir>/bronze/ (default
+$XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
+searches it recursively — then run `./svb load` to rebuild the silver DBs from
+them.
 EOF
         exit 0
         ;;
@@ -61,11 +65,11 @@ EOF
         # never touches bronze-root files). The arm exists so the orchestrator
         # can forward `prune` uniformly without erroring.
         cat >&2 <<'EOF'
-svb: prune is a no-op. The bronze is a flat archive of the SVB Wealth Advisory
-statement PDFs (+ an optional signature.txt) — the load inputs themselves,
-git-ignored and the only copy. There are no timestamped run dirs, no download
-stage, and no debug artefacts to reclaim, so there is nothing to prune. The
-statement PDFs are never deleted.
+svb: prune is a no-op. The bronze holds the SVB statement PDFs (+ an optional
+signature.txt and the derived-marks.xlsx advisor workbook) — the load inputs
+themselves, git-ignored and the only copy.
+There are no timestamped run dirs, no download stage, and no debug artefacts to
+reclaim, so there is nothing to prune. The statement PDFs are never deleted.
 EOF
         exit 0
         ;;

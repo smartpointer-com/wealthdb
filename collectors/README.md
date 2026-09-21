@@ -591,7 +591,7 @@ restated here.
 | [`angellist`](angellist/) | AngelList LP portal (SPVs / fund deals) | scraped session | Docker (Camoufox) |
 | [`carta`](carta/) | Carta (private holdings / cap table) | scraped session | Docker (Camoufox) |
 | [`equityzen`](equityzen/) | EquityZen (pre-IPO secondary SPVs) | scraped session | Docker (Camoufox) |
-| [`svb`](svb/) | SVB Wealth Advisory statements (historical sideload) | none — load-only | host venv |
+| [`svb`](svb/) | SVB brokerage, deposit and mortgage statements (historical sideload) | none — load-only | host venv |
 | [`manual`](manual/) | Private holdings with no portal (CSV) | none — manual entry | host venv |
 | [`fred`](fred/) | FRED / US Fed H.10 (historic FX rates) | API key | host venv |
 

@@ -50,6 +50,14 @@ Thumbs.db
 # The page-1 signature guard contains a real registration string (PII).
 signature.txt
 
+# The advisor workbook is PII on the same footing: one sheet per account,
+# named by the account's own serial, every row a real month-end value. It
+# lives outside the repo too. Blocked by extension rather than by name,
+# because --derived-marks takes an arbitrary path, so a renamed or dated
+# copy must be caught as well (the tests write their workbooks to tmp
+# dirs, never into the tree, so there is nothing to allowlist):
+*.xlsx
+
 # In case someone overrides the data path to sit under the repo.
 bronze/
 data/

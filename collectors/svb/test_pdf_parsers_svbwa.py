@@ -140,17 +140,161 @@ Activity
 """
 
 # A closing / $0 statement: no holdings table, just the
-# no-positions sentence.
+# no-positions sentence, and the stated $0 portfolio total in both
+# of the places the layout prints it.
 _NO_POSITIONS_TEXT = """\
 SVB WEALTH ADVISORY, INC.
 STATEMENT FOR THE PERIOD JUNE 1, 2022 TO JUNE 30, 2022
 EXAMPLE HOLDER - Example Property
 Account Number: SVM-000000
+For questions about your accounts: TOTAL VALUE OF YOUR PORTFOLIO $0.00
+Account Overview
+BEGINNING VALUE $1,000.00 $1,000.00
+ENDING VALUE (AS OF 06/30/22) $0.00 $0.00
 Account carried with National Financial Services LLC
 Holdings
 There were no positions in your account at the close of the statement period.
 Activity
 """
+
+# A statement carrying every Activity section, one row per known
+# Transaction verb, in the sign each prints with. The section
+# totals are the statement's own arithmetic, so the fixture also
+# proves the reconciliation.
+_ACTIVITY_TEXT = """\
+SVB INVESTMENT SERVICES, INC.
+STATEMENT FOR THE PERIOD JANUARY 1, 2022 TO JANUARY 31, 2022
+EXAMPLE HOLDER - Example Property
+Account Number: SVM-000000
+For questions about your accounts: TOTAL VALUE OF YOUR PORTFOLIO $7,000.00
+ENDING VALUE (AS OF 01/31/22) $7,000.00 $7,000.00
+Holdings
+HOLDINGS > EQUITIES - 100.00% of Total Account Value
+Symbol/Cusip Price on Current Estimated
+Description Account Type Quantity 01/31/22 Market Value Annual Income
+EXAMPLE COMPANY CL A AAAA 175 $40.00 $7,000.00
+Total Securities $7,000.00
+Activity
+ADDITIONS AND WITHDRAWALS > DEPOSITS
+Account
+Date Type Transaction Description Quantity Amount
+Deposits
+01/04/22 CASH DIRECT DEPOSIT EXAMPLE BROKERAGE MONEYLINK $500.00
+DepositsDeposits
+01/05/22 CASH WIRE TRANS FROM BANK WR00 000001 $1,000.00
+Total Deposits $1,500.00
+ACTIVITY >ADDITIONS AND WITHDRAWALS > OTHER ADDITIONS AND WITHDRAWALS
+Account
+Date Type Transaction Description Quantity Amount
+Other Additions and Withdrawals
+01/06/22 CASH TRANSFERRED FROM VS SV M-0000 0 0-1 $2,000.00
+Other Additions and WithdrawalsOther Additions and Withdrawals
+01/07/22 CASH TRANSFERRED TO VS SV R-0000 00 -1 ($3,000.00)
+01/08/22 CASH WIRE TRANS TO BANK WD00 000002 1 ST PTY TRF TO EXAMPLE ($4,000.00)
+EXAMPLE BANK AG *****000X
+01/09/22 CASH DIRECT DEBIT EXAMPLE BROKERAGE MONEYLINK ($500.00)
+Total Other Additions and Withdrawals ($5,500.00)
+TOTAL ADDITIONS AND WITHDRAWALS ($4,000.00)
+ACTIVITY >INCOME > TAXABLE INCOME
+Settlement Account
+Date Type Transaction Description Quantity Amount
+Taxable Dividends
+01/10/22 CASH DIVIDEND RECEIVED EXAMPLE COMPANY CL A $300.00
+01/11/22 CASH INTEREST EXAMPLE CORP NOTE CALL MAKE WHOLE $200.00
+Corporate Accrued Interest Earned $50.00
+Total Taxable Income $550.00
+ACTIVITY >INCOME > NON-TAXABLE INCOME
+Settlement Account
+Date Type Transaction Description Quantity Amount
+Return of Capital
+01/12/22 CASH RETURN OF CAPITAL EXAMPLE PARTNERS L P $100.00
+COM
+TOTAL INCOME $650.00
+ACTIVITY >TAXES,FEES AND EXPENSES
+Settlement Account
+Date Type Transaction Description Quantity Amount
+Non-Resident Alien Tax
+01/10/22 CASH NON-RESIDENT TAX EXAMPLE COMPANY CL A ($90.00)
+01/11/22 CASH FOREIGN TAX PAID EXAMPLE COMPANY CL A ($10.00)
+01/13/22 CASH ADJ NON-RESIDENT TAX EXAMPLE COMPANY CL A $30.00
+Account Fees
+01/14/22 CASH FEE PAID EXAMPLE ACCOUNT FEE ($200.00)
+01/15/22 CASH ADVISOR FEE DEDUCTED Advisor Fee ($400.00)
+01/16/22 MARGIN MARGIN INTEREST @ 3.250% ($20.00)
+01/17/22 CASH ADJUSTMENT FEE REVERSAL-EXAMPLE $60.00
+TOTAL TAXES, FEES AND EXPENSES ($630.00)
+ACTIVITY >MISC. & CORPORATE ACTIONS
+This section includes miscellaneous and corporate action transactions.
+Account
+Date Type Transaction Description Quantity Amount
+01/18/22 CASH TRANSFERRED TO EXAMPLE BROAD MARKET INDEX FUND VS (1,000) $0.00
+SV R-0000 00-1
+TRAN VALUE: ($5,000.00)
+01/19/22 CASH DISTRIBUTION EXAMPLE PARTNERS L P 100 $1,200.00
+01/20/22 MARGIN EXPIRED CALL (AAAA) EXAMPLE COMPANY CL A (2) $0.00
+TRAN VALUE: $800.00
+TOTAL MISC. & CORPORATE ACTIONS ($3,000.00)
+ACTIVITY >CORE FUND ACTIVITY
+Settlement Account
+Date Type Transaction Description Quantity Amount
+01/22/22 CASH YOU SOLD EXAMPLE GOVERNMENT MONEY MARKET (900.0) $900.00
+@ 1
+01/23/22 CASH REINVESTMENT EXAMPLE GOVERNMENT MONEY MARKET 100.0 ($100.00)
+TOTAL CORE FUND ACTIVITY $800.00
+ACTIVITY >OTHER ACTIVITY
+Settlement Account
+Date Type Transaction Description Quantity Amount
+01/24/22 MARGIN JOURNALED MARGIN TO CASH A/C ($700.00)
+01/24/22 CASH JOURNALED MARGIN TO CASH A/C $700.00
+TOTAL OTHER ACTIVITY $0.00
+PURCHASES, SALES, AND REDEMPTIONS
+Settlement Account
+Date Type Transaction Description Quantity Amount
+Securities Purchased
+01/25/22 CASH YOU BOUGHT EXAMPLE COMPANY CL A @ 40.00 100 ($4,000.00)
+Securities Sold
+01/26/22 CASH YOU SOLD EXAMPLE BROAD MARKET INDEX FUND 10 $3,000.00
+Total Securities Sold $3,000.00
+ACTIVITY > TRADES PENDING SETTLEMENT
+These trades settle after the closing date of this statement.
+Trade Settlement
+Date Date Transaction Description Quantity Amount
+01/28/22 02/01/22 BOUGHT EXAMPLE COMPANY CL A 20 ($800.00)
+ACTIVITY >PENDING DISTRIBUTIONS 1
+Symbol/Cusip Security Description Eligible Quantity Rate Payment Amount
+Pending Accrued Dividends
+AAAA EXAMPLE COMPANY CL A 175 $1.00 $175.00
+Miscellaneous Footnotes
+CHANGE IN VALUE reflects appreciation or depreciation of your holdings.
+"""
+
+# The 2021 corporate-actions template: banner spelled out in full,
+# no section total, and TRAN VALUE printed in the cash-equivalent
+# convention — a receipt of shares parenthesised, a delivery plain.
+_LEGACY_MISC_TEXT = """\
+SVB WEALTH ADVISORY, INC.
+STATEMENT FOR THE PERIOD JANUARY 1, 2021 TO MARCH 31, 2021
+EXAMPLE HOLDER - Example Property
+Account Number: SVT-000000
+For questions about your accounts: TOTAL VALUE OF YOUR PORTFOLIO $1,000.00
+ENDING VALUE (AS OF 03/31/21) $1,000.00 $1,000.00
+Holdings
+There were no positions in your account at the close of the statement period.
+Activity
+ACTIVITY >MISCELLANEOUS & CORPORATE ACTIONS
+This section includes miscellaneous and certain corporate action transactions.
+Account
+Date Type Transaction Description Quantity Amount
+03/08/21 CASH RECEIVED FROM YOU EXAMPLE COMPANY CL A 1,000 $0.00
+TRAN VALUE: ($40,000.00)
+03/08/21 CASH TRANSFERRED TO EXAMPLE COMPANY CL A VS (900) $0.00
+SV M-0000 00-1
+TRAN VALUE: $36,000.00
+Miscellaneous Footnotes
+"""
+
+# A scanned deposit / mortgage statement: no text layer at all.
+_IMAGE_ONLY_TEXT = "\n \n\n"
 
 
 # ============================================================
@@ -358,27 +502,260 @@ def test_no_positions_yields_empty_holdings():
 
 
 # ============================================================
+# classify_statement_text — family, off the text not the filename
+# ============================================================
+
+def test_classify_brokerage_across_both_mastheads():
+    # The masthead changed mid-archive; the period + account headers
+    # are what identify the family, so both spellings classify alike.
+    assert ps.classify_statement_text(_MM_BOND_TEXT) == ps.FAMILY_BROKERAGE
+    assert ps.classify_statement_text(_ACTIVITY_TEXT) == ps.FAMILY_BROKERAGE
+    assert "SVB INVESTMENT SERVICES" in _ACTIVITY_TEXT
+    assert "SVB WEALTH ADVISORY" in _MM_BOND_TEXT
+
+
+def test_classify_image_only_has_no_text_layer():
+    assert ps.classify_statement_text(_IMAGE_ONLY_TEXT) == ps.FAMILY_IMAGE_ONLY
+    assert ps.classify_statement_text("") == ps.FAMILY_IMAGE_ONLY
+
+
+def test_classify_unknown_when_text_is_not_a_brokerage_statement():
+    other = "A LETTER ABOUT SOMETHING ELSE ENTIRELY, WITH PLENTY OF TEXT ON IT."
+    assert ps.classify_statement_text(other) == ps.FAMILY_UNKNOWN
+
+
+# ============================================================
+# parse_statement_total — the STATED closing value
+# ============================================================
+
+def test_stated_total_read_from_both_printings():
+    assert ps.parse_statement_total(_ACTIVITY_TEXT) == 7000.0
+
+
+def test_stated_zero_is_a_value_not_an_absence():
+    assert ps.parse_statement_total(_NO_POSITIONS_TEXT) == 0.0
+
+
+def test_stated_total_none_when_the_two_printings_disagree():
+    # Either printing may be misread; requiring agreement means a
+    # misread yields "the statement did not say" rather than a value.
+    text = _NO_POSITIONS_TEXT.replace(
+        "ENDING VALUE (AS OF 06/30/22) $0.00 $0.00",
+        "ENDING VALUE (AS OF 06/30/22) $12.00 $12.00")
+    assert ps.parse_statement_total(text) is None
+
+
+def test_stated_total_none_when_absent():
+    assert ps.parse_statement_total("no totals printed here") is None
+
+
+# ============================================================
+# parse_activity_block — sections, signs, totals
+# ============================================================
+
+def _activity():
+    block = ps.parse_account_blocks(_ACTIVITY_TEXT)[0]
+    return ps.parse_activity_block(block.text)
+
+
+def _by_verb(rows):
+    return {r.verb: r for r in rows if r.verb}
+
+
+def test_activity_sign_per_verb():
+    # The make-or-break for the flow legs: gold reads a wire's
+    # direction off the sign alone, so an inverted parse reverses a
+    # transfer instead of failing. One assertion per verb the
+    # statements print, in the direction each prints with.
+    rows, _ = _activity()
+    got = {v: r.amount for v, r in _by_verb(rows).items()}
+    assert got == {
+        "DIRECT DEPOSIT": 500.0,
+        "WIRE TRANS FROM BANK": 1000.0,
+        "TRANSFERRED FROM": 2000.0,
+        "TRANSFERRED TO": -5000.0,      # the misc row's TRAN VALUE wins
+        "WIRE TRANS TO BANK": -4000.0,
+        "DIRECT DEBIT": -500.0,
+        "DIVIDEND RECEIVED": 300.0,
+        "INTEREST": 200.0,
+        "RETURN OF CAPITAL": 100.0,
+        "NON-RESIDENT TAX": -90.0,
+        "FOREIGN TAX PAID": -10.0,
+        "ADJ NON-RESIDENT TAX": 30.0,   # a withholding REVERSAL: a credit
+        "FEE PAID": -200.0,
+        "ADVISOR FEE DEDUCTED": -400.0,
+        "MARGIN INTEREST": -20.0,
+        "ADJUSTMENT": 60.0,
+        "DISTRIBUTION": 1200.0,
+        "EXPIRED": 800.0,
+        "YOU SOLD": 3000.0,             # the blotter row, after core fund
+        "REINVESTMENT": -100.0,
+        "JOURNALED": 700.0,             # the cash leg, after the margin leg
+        "YOU BOUGHT": -4000.0,
+    }
+
+
+def test_activity_sections_reconcile_to_stated_totals():
+    rows, totals = _activity()
+    sums = {}
+    for r in rows:
+        sums[r.section] = round(sums.get(r.section, 0.0) + (r.amount or 0.0), 2)
+    assert totals == {
+        ps.SECTION_ADDITIONS: -4000.0,
+        ps.SECTION_INCOME: 650.0,
+        ps.SECTION_TAXES_FEES: -630.0,
+        ps.SECTION_MISC: -3000.0,
+        ps.SECTION_CORE_FUND: 800.0,
+        ps.SECTION_OTHER: 0.0,
+    }
+    for section, stated in totals.items():
+        assert sums[section] == stated, section
+
+
+def test_activity_undated_accrual_row_counts_but_is_not_a_movement():
+    rows, _ = _activity()
+    undated = [r for r in rows
+               if r.date is None and r.section == ps.SECTION_INCOME]
+    assert [(r.description, r.amount) for r in undated] == [
+        ("Corporate Accrued Interest Earned", 50.0)]
+    # It carries no Transaction column, which is what marks it as not
+    # a movement — the income section's stated total still includes it,
+    # so without the row the section would not reconcile.
+    assert undated[0].verb == ""
+
+
+def test_activity_quantity_only_where_the_column_exists():
+    # A counterparty account id kerns into fragments whose tail
+    # ("-1") parses as a number. Reading a Quantity outside the
+    # sections that print one is what would harvest it.
+    rows, _ = _activity()
+    additions = [r for r in rows if r.section == ps.SECTION_ADDITIONS]
+    assert all(r.quantity is None for r in additions)
+    misc = {r.verb: r.quantity for r in rows if r.section == ps.SECTION_MISC}
+    assert misc == {"TRANSFERRED TO": -1000.0, "DISTRIBUTION": 100.0,
+                    "EXPIRED": -2.0}
+
+
+def test_activity_kerned_counterparty_stays_in_the_description():
+    rows, _ = _activity()
+    row = next(r for r in rows
+               if r.section == ps.SECTION_ADDITIONS and r.verb == "TRANSFERRED TO")
+    assert row.description == "VS SV R-0000 00 -1"
+    assert row.amount == -3000.0
+
+
+def test_activity_ordinals_are_unique_and_in_document_order():
+    rows, _ = _activity()
+    assert [r.ordinal for r in rows] == list(range(len(rows)))
+
+
+def test_activity_same_day_duplicates_stay_distinct():
+    # Two identical same-day transfers from one counterparty differ
+    # only by their position on the page.
+    text = _ACTIVITY_TEXT.replace(
+        "01/06/22 CASH TRANSFERRED FROM VS SV M-0000 0 0-1 $2,000.00",
+        "01/06/22 CASH TRANSFERRED FROM VS SV M-0000 0 0-1 $2,000.00\n"
+        "01/06/22 CASH TRANSFERRED FROM VS SV M-0000 0 0-1 $2,000.00")
+    rows, _ = ps.parse_activity_block(ps.parse_account_blocks(text)[0].text)
+    dupes = [r for r in rows if r.verb == "TRANSFERRED FROM"]
+    assert len(dupes) == 2
+    assert dupes[0].ordinal != dupes[1].ordinal
+
+
+def test_activity_pending_and_blotter_sections_are_labelled_not_dropped():
+    rows, totals = _activity()
+    sections = {r.section for r in rows}
+    assert ps.SECTION_TRADES in sections
+    assert ps.SECTION_PENDING_DISTRIBUTIONS in sections
+    # Neither strikes a section total, so neither joins a reconciliation.
+    assert ps.SECTION_TRADES not in totals
+    assert ps.SECTION_PENDING_DISTRIBUTIONS not in totals
+
+
+def test_activity_trades_pending_settlement_rows_are_not_movements():
+    # They carry two dates and no account-type column, and settle
+    # into the NEXT statement's blotter — booking them double-counts.
+    rows, _ = _activity()
+    assert not any(r.date == "2022-01-28" for r in rows)
+
+
+def test_activity_dates_span_the_statement_period():
+    rows, _ = _activity()
+    dated = [r.date for r in rows if r.date]
+    assert min(dated) == "2022-01-04"
+    assert max(dated) == "2022-01-26"
+
+
+def test_activity_row_whose_date_names_no_real_day_is_refused():
+    # Kept with a null date, the row would read as one of the undated
+    # components a section prints: counted in the stated total, never
+    # booked. The section would still reconcile and the movement would be
+    # gone. Refused, its amount leaves the sum and the section stops
+    # adding up, which is the only signal the statement offers.
+    text = _ACTIVITY_TEXT.replace("01/08/22 CASH WIRE TRANS TO BANK",
+                                  "01/32/22 CASH WIRE TRANS TO BANK")
+    rows, totals = ps.parse_activity_block(
+        ps.parse_account_blocks(text)[0].text)
+    assert not any(r.verb == "WIRE TRANS TO BANK" for r in rows)
+    assert not any(r.description.startswith("WD00") for r in rows)
+    parsed = sum(r.amount or 0.0 for r in rows
+                 if r.section == ps.SECTION_ADDITIONS)
+    assert parsed != totals[ps.SECTION_ADDITIONS]
+
+
+def test_activity_empty_when_no_region():
+    assert ps.parse_activity_block("Holdings\nnothing here\n") == ([], {})
+
+
+def test_legacy_corporate_actions_tran_value_is_normalised():
+    # The 2021 template prints TRAN VALUE cash-equivalent: a receipt
+    # of shares parenthesised, a delivery plain. Normalised to the
+    # later template's value-flow convention, a receipt reads
+    # positive and the two legs of a move cancel.
+    block = ps.parse_account_blocks(_LEGACY_MISC_TEXT)[0]
+    rows, totals = ps.parse_activity_block(block.text)
+    got = {r.verb: r.amount for r in rows if r.verb}
+    assert got == {"RECEIVED FROM YOU": 40000.0, "TRANSFERRED TO": -36000.0}
+    # The legacy template strikes no section total, so there is
+    # nothing to reconcile against.
+    assert totals == {}
+
+
+# ============================================================
 # parse_svbwa_statement_pdf — orchestration + signature gate
 # ============================================================
 
 def test_pdf_signature_mismatch(monkeypatch):
+    other_registration = _MM_BOND_TEXT.replace(
+        _SIG, "EXAMPLE COMPANY LLC - Example Business")
     monkeypatch.setattr(
-        ps, "_extract_pdf_text",
-        lambda path: "SVB WEALTH ADVISORY, INC. — UNRELATED ACCOUNT",
-    )
+        ps, "_extract_pdf_text", lambda path: other_registration)
     out = ps.parse_svbwa_statement_pdf(
-        "/fake/path.pdf", expected_signature=_SIG,
+        "/fake/path.pdf", expected_signatures=(_SIG,),
     )
     assert out["_error"] == "signature-mismatch"
-    assert out["expected_signature"] == _SIG
+
+
+def test_pdf_accepts_any_configured_registration(monkeypatch):
+    # An archive can span several registrations; a statement signed
+    # with any one of the configured ones is in scope.
+    second = _MM_BOND_TEXT.replace(
+        _SIG, "EXAMPLE COMPANY LLC - Example Business")
+    monkeypatch.setattr(ps, "_extract_pdf_text", lambda path: second)
+    out = ps.parse_svbwa_statement_pdf(
+        "/fake/path.pdf",
+        expected_signatures=(_SIG, "EXAMPLE COMPANY LLC"),
+    )
+    assert "_error" not in out
 
 
 def test_pdf_accepts_when_signature_present(monkeypatch):
     monkeypatch.setattr(ps, "_extract_pdf_text", lambda path: _MM_BOND_TEXT)
     out = ps.parse_svbwa_statement_pdf(
-        "/fake/path.pdf", expected_signature=_SIG,
+        "/fake/path.pdf", expected_signatures=(_SIG,),
     )
     assert "_error" not in out
+    assert out["family"] == ps.FAMILY_BROKERAGE
     assert out["period_start"] == "2021-01-01"
     assert out["period_end"] == "2021-03-31"
     assert len(out["accounts"]) == 1
@@ -392,15 +769,40 @@ def test_pdf_accepts_when_signature_present(monkeypatch):
     }
 
 
+def test_pdf_activity_dicts_carry_the_loader_consumed_keys(monkeypatch):
+    monkeypatch.setattr(ps, "_extract_pdf_text", lambda path: _ACTIVITY_TEXT)
+    out = ps.parse_svbwa_statement_pdf("/fake/path.pdf")
+    acct = out["accounts"][0]
+    assert set(acct["activity"][0]) == {
+        "date", "section", "account_type", "verb", "description",
+        "quantity", "amount", "ordinal",
+    }
+    assert acct["activity_totals"][ps.SECTION_ADDITIONS] == -4000.0
+    assert out["stated_total"] == 7000.0
+
+
+def test_pdf_non_brokerage_never_reaches_the_row_parsers(monkeypatch):
+    monkeypatch.setattr(ps, "_extract_pdf_text", lambda path: _IMAGE_ONLY_TEXT)
+    out = ps.parse_svbwa_statement_pdf(
+        "/fake/path.pdf", expected_signatures=(_SIG,))
+    # Reported as its family, not as a signature failure: an
+    # image-only document has no text for the guard to read.
+    assert out["family"] == ps.FAMILY_IMAGE_ONLY
+    assert out["accounts"] == []
+    assert "_error" not in out
+
+
 def test_pdf_no_positions_returns_account_with_period(monkeypatch):
-    # A $0 closing statement returns the account (empty holdings)
-    # plus the correct period_end so a terminal snapshot is recorded.
+    # A $0 closing statement returns the account (empty holdings),
+    # the correct period_end, and the STATED zero — which is what
+    # lets a real $0 snapshot be recorded without inferring one.
     monkeypatch.setattr(
         ps, "_extract_pdf_text", lambda path: _NO_POSITIONS_TEXT,
     )
     out = ps.parse_svbwa_statement_pdf("/fake/path.pdf")
     assert "_error" not in out
     assert out["period_end"] == "2022-06-30"
+    assert out["stated_total"] == 0.0
     assert len(out["accounts"]) == 1
     assert out["accounts"][0]["account_external_id"] == "SVM-000000"
     assert out["accounts"][0]["holdings"] == []

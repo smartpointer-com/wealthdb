@@ -1,32 +1,46 @@
 #!/usr/bin/env python3
-"""Build the standalone ``svb`` silver DB from SVB Wealth Advisory statements.
+"""Build the svb silver DBs — one per statement family — from the archive.
 
-A family of SVB Wealth Advisory / NFS-custodied brokerage accounts (ids of the
-form ``SV[MRT]-NNNNNN``) that predate the live collectors — STATIC historical
-data, so this is a one-shot builder rather than a recurring docker collector. It
-parses the statement PDFs with :mod:`pdf_parsers_svbwa` into a silver SQLite that
-uses the **fidelity-web** schema, so the existing fidelity gold adapter projects
-it — but under a SEPARATE source id (``svb``). Keeping it a separate source is
-load-bearing: the gold history macros carry positions forward per *source*, so
-folding these staggered-date accounts into ``fidelity-web`` would let unrelated
-fidelity snapshots supersede and drop them. See DESIGN.md.
+Brokerage, deposit and mortgage accounts that predate the live collectors —
+STATIC historical data, so this is a one-shot builder rather than a recurring
+docker collector. It parses the statement PDFs with :mod:`pdf_parsers_svbwa`
+and :mod:`pdf_parsers_svbdep` into silver SQLites that use the **fidelity-web**
+schema, so the existing fidelity gold adapter projects them — but under
+SEPARATE source ids (``svb``, ``svb-deposit``, ``svb-mortgage``), one per
+statement family. Keeping them apart from fidelity is load-bearing: the gold
+history macros carry positions forward per *source*, so folding these
+staggered-date accounts into ``fidelity-web`` would let unrelated fidelity
+snapshots supersede and drop them. Keeping the families apart from each other
+is load-bearing for a second reason — see :data:`_SILVER_BY_FAMILY`. See
+DESIGN.md.
 
-Carry-forward policy: a statement with no holdings (an account's empty unwind) is
-SKIPPED, so an account carries its last real value forward until a later
-statement supersedes it, rather than zeroing mid-stream. Real exits are modelled
-instead by a synthetic $0 closure injected for the still-held accounts at
-``--closure-date``, so they zero out at that date.
+The archive is hand-filed, so discovery is recursive and the folder layout
+carries no meaning. Three document families share this layout, and all three are
+loaded, each into its own silver DB: the brokerage statements have a text layer
+and are read directly; the deposit and mortgage statements have none, so they
+are rastered and OCRed by :mod:`pdf_parsers_svbdep` first. Every PDF is
+classified from its own text before parsing, and the build summary prints a
+per-family census — an uncounted skip is how a statement goes missing unnoticed.
 
-Runs on the host with stdlib sqlite3 + pdfplumber. Idempotent
-and reproducible-from-bronze: re-running against the same bronze dir converges.
+Zero policy: a $0 month is recorded only where the statement STATES $0 (its
+``TOTAL VALUE OF YOUR PORTFOLIO`` / ``ENDING VALUE`` line). An empty holdings
+table on its own carries the account forward instead, because a future parse
+failure would otherwise read as a real zero. Closure is never inferred: an
+account can state $0 one month and a residual the next (a late dividend
+landing), so the series ends where the statements end.
+
+Runs on the host, not in docker: stdlib sqlite3 plus the extraction stacks and
+workbook reader pinned in requirements.txt. Idempotent and
+reproducible-from-bronze: re-running against the same bronze dir converges.
 
 Parsing the statement PDFs dominates the run and is CPU-bound, so it is fanned
 out across a process pool and memoised in a persistent sidecar cache keyed by
-(statement sha256, parser-logic fingerprint, signature) — the fingerprint
-folds in the parser's import closure and the pdfplumber / pdfminer.six versions.
-Since the bronze is a static, closed-account archive, a warm run replays every
-parse from the sidecar and re-emits byte-identical silver. See
-:func:`parse_statements`.
+(statement sha256, parser-logic fingerprint, signature set) — the fingerprint
+folds in both parsers' import closure and the versions of both extraction
+stacks (:data:`_EXTRACTOR_DISTS`), the per-platform OCR recogniser included, so
+a cache does not move between platforms. Since the bronze is a static,
+closed-account archive, a warm run replays every parse from the sidecar and
+re-emits byte-identical silver. See :func:`parse_statements`.
 """
 from __future__ import annotations
 
@@ -37,6 +51,7 @@ import logging
 import os
 import sqlite3
 import sys
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from itertools import repeat
@@ -44,15 +59,21 @@ from pathlib import Path
 
 from collectorkit import cli, silver, srcfp
 
+import derived_marks
+import pdf_parsers_svbdep
 import pdf_parsers_svbwa
 
 log = logging.getLogger("svb")
 
 _SYNTHETIC_PORTFOLIO = "SVB-Sleeves"
 _SYNTHETIC_KIND = "other"  # gold default → taxable_personal; config sets the real wrapper
-_CLOSURE_SHA = "synthetic-closure"
-_CLOSURE_DESC = "Account closed — assets transferred"
+
+# Description of the row that records a statement's STATED $0 total. It is a
+# real observation carrying the statement's own sha, not a marker: the account
+# held nothing that month, which a later statement may reverse.
+_ZERO_DESC = "NO POSITIONS"
 _SIGNATURE_SIDECAR = "signature.txt"
+_DERIVED_MARKS_FILE = "derived-marks.xlsx"
 _PARSE_CACHE_FILE = "parse-cache.json"
 _PARSE_CACHE_SCHEMA = 1  # bump whenever the sidecar's on-disk layout changes
 _MIGRATIONS = (
@@ -70,17 +91,27 @@ def ts_from_iso(d: str) -> int:
     )
 
 
-def read_signature(bronze_dir: Path, override: str | None) -> str | None:
+def read_signatures(bronze_dir: Path,
+                    override: list[str] | None) -> tuple[str, ...]:
+    """The page-1 substrings a statement may be signed with.
+
+    A statement is titled by the registration its account is held under, and one
+    archive can span several of them, so the guard accepts a SET: one
+    blank-and-comment-stripped line of ``signature.txt`` per registration, or
+    one ``--statement-signature`` per registration. A statement matching none of
+    them is refused, which is the point: a misfiled PDF must not load. Empty
+    means no guard is configured.
+    """
     if override:
-        return override
+        return tuple(override)
     sidecar = bronze_dir / _SIGNATURE_SIDECAR
     if not sidecar.is_file():
-        return None
-    for line in sidecar.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if s and not s.startswith("#"):
-            return s
-    return None
+        return ()
+    return tuple(
+        s for s in (line.strip()
+                    for line in sidecar.read_text(encoding="utf-8").splitlines())
+        if s and not s.startswith("#")
+    )
 
 
 def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
@@ -90,18 +121,41 @@ def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
 
 
 def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
-    """Insert one historical row per holding. Empty-holdings accounts are
-    skipped (carry-forward policy); accounts with holdings overwrite any prior
-    row at the same (as_of, account, description)."""
+    """Insert one historical row per holding, or a single $0 row for a
+    statement that STATES a zero portfolio total.
+
+    Accounts with holdings overwrite any prior row at the same (as_of,
+    account, description). An account with no holdings and no stated zero is
+    skipped, so it carries its last real value forward — a parse that lost the
+    table must not read as a real unwind.
+    """
     period_end = parsed.get("period_end")
     if not period_end:
         return 0
     as_of = ts_from_iso(period_end)
+    stated_total = parsed.get("stated_total")
     inserted = 0
     for acct in parsed.get("accounts", []):
         aid = acct.get("account_external_id")
         holdings = acct.get("holdings", [])
-        if not aid or not holdings:
+        if not aid:
+            continue
+        if not holdings:
+            if stated_total == 0:
+                conn.execute(
+                    "INSERT OR REPLACE INTO historical_position_snapshots ("
+                    "as_of_date, account_external_id, description, instrument_key, "
+                    "quantity, price, market_value, percent_of_total, currency, "
+                    "source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        as_of, aid, _ZERO_DESC, None, None, None, 0.0, None, "USD",
+                        sha, json.dumps({"description": _ZERO_DESC,
+                                         "market_value": 0.0,
+                                         "source": "stated-portfolio-total"},
+                                        separators=(",", ":")),
+                    ),
+                )
+                inserted += 1
             continue
         # The PK is (as_of, account, description), but option legs share a
         # description (the strike lives on a separate line), so a naive insert
@@ -137,38 +191,280 @@ def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
     return inserted
 
 
-def inject_closures(conn: sqlite3.Connection, closure_date: str) -> list[str]:
-    """Emit a synthetic $0 row at ``closure_date`` for every account that is
-    still held at the latest *real* statement, so those accounts drop to zero at
-    the handoff instead of carrying their last value forward forever (which would double-count). Returns the closed
-    accounts. An account already superseded before the latest statement is not in
-    this set, so it is correctly left to carry forward then drop out."""
-    row = conn.execute(
-        "SELECT MAX(as_of_date) FROM historical_position_snapshots "
-        "WHERE source_sha256 <> ?", (_CLOSURE_SHA,)
-    ).fetchone()
-    if row is None or row[0] is None:
-        return []
-    last_real = row[0]
-    accts = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT account_external_id FROM historical_position_snapshots "
-            "WHERE as_of_date = ? AND source_sha256 <> ?", (last_real, _CLOSURE_SHA)
-        )
-    ]
-    as_of = ts_from_iso(closure_date)
-    for aid in accts:
+# ============================================================
+# Activity → transactions
+# ============================================================
+#
+# The silver is read by the Fidelity gold adapter, so `transactions.kind` has
+# to be a verb that adapter's kindFor() understands. These are the SVB
+# Transaction-column verbs translated into it.
+#
+# Four translations are deliberately NOT the obvious one, because the canonical
+# sign for the obvious kind is pinned and would invert the row:
+#   * ADJ NON-RESIDENT TAX is a withholding REVERSAL and is always a credit;
+#     TAX pins the sign negative, which would book a refund as a charge.
+#   * DIVIDEND ADJUSTMENT is a dividend CLAWBACK and is always a debit;
+#     DIVIDEND pins the sign positive.
+# These map to ADJUSTMENT, which the adapter keeps source-signed; so do the two
+# trade cancellations, for the reason given at their entries below.
+_KIND_BY_VERB = {
+    "DIVIDEND RECEIVED": "DIVIDEND",
+    "DIVIDEND ADJUSTMENT": "ADJUSTMENT",
+    "INTEREST": "INTEREST",
+    "MARGIN INTEREST": "INTEREST",
+    "RETURN OF CAPITAL": "RETURN_OF_CAPITAL",
+    "DISTRIBUTION": "DISTRIBUTION",
+    "NON-RESIDENT TAX": "TAX",
+    "FOREIGN TAX PAID": "TAX",
+    "ADJ NON-RESIDENT TAX": "ADJUSTMENT",
+    "FEE PAID": "FEE",
+    "ADVISOR FEE DEDUCTED": "ADVISOR",
+    "ADJUSTMENT": "ADJUSTMENT",
+    "TRANSFERRED TO": "TRANSFER",
+    "TRANSFERRED FROM": "TRANSFER",
+    "INTER BROKER DELIVER": "TRANSFER",
+    "INTER BROKER RECEIVE": "TRANSFER",
+    "INTER BROKER DEBIT": "TRANSFER",
+    "INTER BROKER CREDIT": "TRANSFER",
+    # An in-kind deposit of securities. Source-signed like the other position
+    # transfers: whether it is external capital or the far leg of a move
+    # between tracked accounts is gold's to decide, not the collector's.
+    "RECEIVED FROM YOU": "TRANSFER",
+    "JOURNALED": "JOURNAL",
+    # Direction lives in the sign alone — the verb pairs carry it too, but the
+    # adapter reads the sign, so an inverted parse would reverse the flow
+    # rather than fail.
+    "WIRE TRANS TO BANK": "WIRE",
+    "WIRE TRANS FROM BANK": "WIRE",
+    "DIRECT DEBIT": "DIRECT_DEBIT",
+    "DIRECT DEPOSIT": "DIRECT_DEPOSIT",
+    "MERGER": "MERGER",
+    "TENDERED": "TENDER",
+    "EXPIRED": "EXPIRATION",
+    "IN LIEU OF FRX SHARE": "CASH_IN_LIEU",
+    "REINVESTMENT": "REINVESTMENT",
+    "YOU BOUGHT": "BUY",
+    "BOUGHT": "BUY",
+    "YOU SOLD": "SELL",
+    "SOLD": "SELL",
+    "REDEEMED": "REDEMPTION",
+    # Trade cancellations print in the reversed direction — a cancelled buy is
+    # a credit — so they stay source-signed rather than taking BUY/SELL's
+    # pinned one.
+    "CANCELLED BUY": "ADJUSTMENT",
+    "CANCELLED SELL": "ADJUSTMENT",
+    # The deposit ledger has no Transaction column. A row's direction is the
+    # column its figure lands in, and its KIND is what the statement's own
+    # wording says it is — a credit the summary counts as interest, a debit it
+    # counts as a service charge — which the parser resolves into the verb and
+    # only when all four buckets reconcile against that summary. The two below
+    # are what is left once those are taken out, so there is no sign to read.
+    "DEPOSIT": "DEPOSIT",
+    "WITHDRAWAL": "WITHDRAWAL",
+}
+
+# Core-fund rows are the account's cash ↔ money-market sweep, which the
+# adapter has its own source-signed pair of kinds for. They are the same
+# YOU BOUGHT / YOU SOLD / REINVESTMENT verbs the blotter uses, so the section
+# is what tells them apart, not the verb.
+_CORE_FUND_KINDS = {"BUY": "CASH_SWEEP_IN", "REINVESTMENT": "CASH_SWEEP_IN",
+                    "SELL": "CASH_SWEEP_OUT"}
+
+# A row whose Transaction column was blank or held no known verb. It is not
+# booked: without the verb neither the movement's kind nor the boundary
+# between it and the description is known, and a row booked under a guessed
+# kind is worse than one the build reports by name. The reconciliation still
+# counts it, so the section it sits in continues to add up.
+_UNKNOWN_KIND = "UNKNOWN"
+
+# Activity sections that record settled money movement — the deposit ledger
+# and the brokerage statements' cash-movement sections. The trade blotter is
+# a separate surface; the two pending sections are projections that settle
+# into a later statement, so booking them would double-count.
+_BOOKED_SECTIONS = frozenset({
+    pdf_parsers_svbdep.SECTION_LEDGER,
+    pdf_parsers_svbwa.SECTION_ADDITIONS,
+    pdf_parsers_svbwa.SECTION_INCOME,
+    pdf_parsers_svbwa.SECTION_TAXES_FEES,
+    pdf_parsers_svbwa.SECTION_MISC,
+    pdf_parsers_svbwa.SECTION_CORE_FUND,
+    pdf_parsers_svbwa.SECTION_OTHER,
+})
+
+
+def unreadable_sections(parsed: dict) -> list[str]:
+    """Return one message per account section the parser refused.
+
+    A section is refused when the statement's own arithmetic did not close —
+    which on the OCRed families is the only thing that can tell a misread digit
+    from a real one. It reaches silver as nothing at all rather than as a
+    plausible wrong number, so the account carries its last real value forward
+    and the build says which statement to look at.
+    """
+    return [f"{acct.get('account_external_id') or '?'}: {acct['_error']}"
+            for acct in parsed.get("accounts", []) if acct.get("_error")]
+
+
+def activity_kind(row: dict) -> str:
+    """Translate one activity row's Transaction verb into the silver `kind`
+    the Fidelity gold adapter reads."""
+    kind = _KIND_BY_VERB.get(row.get("verb") or "", _UNKNOWN_KIND)
+    if row.get("section") == pdf_parsers_svbwa.SECTION_CORE_FUND:
+        kind = _CORE_FUND_KINDS.get(kind, kind)
+    return kind
+
+
+def activity_id(sha: str, account: str, row: dict) -> str:
+    """Deterministic primary key for one activity row.
+
+    Keyed on the statement's sha, the account the row was printed under, and
+    the row's own date, verb, amount and ordinal. The account and the ordinal
+    are both required, not belt-and-braces: a statement can print two same-day
+    transfers of the same shape from the same counterparty, which only the
+    ordinal separates, and one document can carry several account sections,
+    each numbering its rows from zero, which only the account separates. Every
+    part is a parsed value rather than a rendered one, so a warm parse-cache
+    replay reproduces the id byte for byte.
+    """
+    amount = row.get("amount")
+    parts = (
+        sha, account, row.get("date") or "", row.get("verb") or "",
+        "" if amount is None else f"{amount:.6f}", str(row.get("ordinal")),
+    )
+    h = hashlib.sha256("\x00".join(parts).encode("utf-8"))
+    return "svb-" + h.hexdigest()[:28]
+
+
+def insert_transactions(conn: sqlite3.Connection, parsed: dict,
+                        sha: str) -> tuple[int, int]:
+    """Insert the statement's settled activity rows. Returns
+    ``(inserted, unknown-verb count)``.
+
+    `instrument_key` stays NULL: the Activity region prints a security's
+    NAME, kerned ("EXAMPLE C ORP C O M U SD0.01"), never the symbol the
+    Holdings rows carry, so deriving an identity from it would invent
+    instruments that never reconcile with the real ones. Resolving it is
+    gold's job, and the payload is shaped to let gold do it — `Action` is the
+    row's narrative, which is the lookup key `wealthdb resolve-symbols` reads
+    for a transaction with no instrument link, and which a
+    `symbol_resolution.overrides` entry pins by exact match. The name is also
+    kept unprefixed under `Description`, and `Section` says whether that name
+    is a security at all (income / taxes / corporate actions) or a
+    counterparty account (additions and withdrawals).
+
+    `price` and `settlement_date` stay NULL too — the layout prints neither
+    column, and its single date column is the settlement date in some sections
+    and the effective date in others, so there is no second date to record.
+    """
+    inserted = unknown = 0
+    for acct in parsed.get("accounts", []):
+        aid = acct.get("account_external_id")
+        if not aid:
+            continue
+        for row in acct.get("activity", []):
+            if row.get("section") not in _BOOKED_SECTIONS:
+                continue
+            if row.get("amount") is None or not row.get("date"):
+                continue
+            kind = activity_kind(row)
+            if kind == _UNKNOWN_KIND:
+                unknown += 1
+                continue
+            verb = row.get("verb") or ""
+            description = row.get("description") or ""
+            payload = {
+                # `Action` is the narrative the gold adapter categorises a row
+                # by; it reads the verb and the counterparty together, exactly
+                # as the live Fidelity feed's own Action column does.
+                "Action": f"{verb} {description}".strip(),
+                "Description": description,
+                "Transaction": verb,
+                "Section": row.get("section"),
+                "AccountType": row.get("account_type"),
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO transactions ("
+                "activity_id, timestamp, account_external_id, kind, "
+                "instrument_key, quantity, price, amount, settlement_date, "
+                "currency, source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    activity_id(sha, aid, row), ts_from_iso(row["date"]), aid,
+                    kind, None, row.get("quantity"), None, row.get("amount"),
+                    None, "USD", sha,
+                    json.dumps(payload, separators=(",", ":")),
+                ),
+            )
+            inserted += 1
+    return inserted, unknown
+
+
+def reconcile_activity(parsed: dict) -> list[str]:
+    """Return one message per Activity section whose parsed rows do not sum to
+    the total the statement states for it.
+
+    Each section strikes its own total, so this is the statement checking the
+    parse against itself — the only independent arithmetic these documents
+    offer. Reported, not fatal: a stale total on a re-issued statement must not
+    stop the rest of the archive loading.
+    """
+    out = []
+    for acct in parsed.get("accounts", []):
+        sums: dict[str, float] = {}
+        for row in acct.get("activity", []):
+            if row.get("amount") is not None:
+                section = row.get("section")
+                sums[section] = sums.get(section, 0.0) + row["amount"]
+        for section, stated in (acct.get("activity_totals") or {}).items():
+            got = round(sums.get(section, 0.0), 2)
+            if abs(got - stated) >= 0.01:
+                out.append(f"{acct.get('account_external_id')} {section}: "
+                           f"parsed {got:.2f} vs stated {stated:.2f}")
+    return out
+
+
+def insert_derived_marks(conn: sqlite3.Connection, workbook: Path | None) -> int:
+    """Fill the archive's interior gaps with the advisor workbook's month-end
+    values, and return how many were written.
+
+    Runs after every statement is in, so "where the archive has nothing" means
+    the finished archive, not whatever had been read so far. A statement that
+    later joins the archive takes its month back with no other change.
+
+    The workbook names each sheet after a brokerage account serial
+    (``derived_marks._SHEET_RE``), so it can only yield ``SV[MRT]-NNNNNN``
+    ids; the deposit and mortgage families number their accounts as bare
+    10-digit ids. The brokerage DB is therefore the only one with gaps this
+    can fill — running it against the other two would match nothing.
+    """
+    marks = derived_marks.read_workbook(workbook)
+    if not marks:
+        return 0
+    covered: dict[str, set[tuple[int, int]]] = {}
+    for ts, account in conn.execute(
+            "SELECT DISTINCT as_of_date, account_external_id "
+            "FROM historical_position_snapshots"):
+        when = datetime.fromtimestamp(ts, timezone.utc).date()
+        covered.setdefault(account, set()).add((when.year, when.month))
+    fill = derived_marks.gaps_to_fill(marks, covered)
+    for mark in fill:
         conn.execute(
             "INSERT OR REPLACE INTO historical_position_snapshots ("
             "as_of_date, account_external_id, description, instrument_key, "
             "quantity, price, market_value, percent_of_total, currency, "
             "source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
-                as_of, aid, _CLOSURE_DESC, None, None, None, 0.0, None, "USD",
-                _CLOSURE_SHA, json.dumps({"synthetic": "closure"}),
+                ts_from_iso(mark.as_of), mark.account_external_id,
+                derived_marks.DERIVED_DESC, None, None, None,
+                mark.market_value, None, "USD", derived_marks.DERIVED_SHA,
+                json.dumps({"description": derived_marks.DERIVED_DESC,
+                            "market_value": mark.market_value,
+                            "source": derived_marks.DERIVED_SHA},
+                           separators=(",", ":")),
             ),
         )
-    return accts
+        log.info("derived mark: %s %s %.2f", mark.account_external_id,
+                 mark.as_of, mark.market_value)
+    return len(fill)
 
 
 def synthesize_masters(conn: sqlite3.Connection) -> int:
@@ -200,16 +496,15 @@ def synthesize_masters(conn: sqlite3.Connection) -> int:
 
 def mark_dump_run(conn: sqlite3.Connection) -> None:
     """Record one synthetic dump_runs row at the latest as_of. The fidelity
-    gold adapter keys its change-trigger on dump_runs/transactions (historical
-    content alone never fires a load), so a historical-only silver needs this
-    marker for `wealthdb load` to pick it up. positions/activity/etc. are all
-    absent (this is a one-shot statement build, not a live scrape)."""
+    gold adapter keys its change-trigger on dump_runs/transactions, so a build
+    whose positions are all historical needs this marker for `wealthdb load` to
+    pick it up."""
     row = conn.execute(
         "SELECT MAX(as_of_date) FROM historical_position_snapshots").fetchone()
     if row is None or row[0] is None:
         return
-    # Only the NOT-NULL columns; the *_present flags default to 0 (no live
-    # positions/activity/documents in a one-shot statement build).
+    # Only the NOT-NULL columns; the *_present flags describe what a download's
+    # dump dir held, and this build has no dump dir, so they stay 0.
     conn.execute(
         "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version, "
         "run_dir, mode) VALUES (?,?,?,?)",
@@ -228,15 +523,25 @@ def mark_dump_run(conn: sqlite3.Connection) -> None:
 # warm run therefore never spawns a pool.
 
 
-def _parse_statement(path: str, signature: str | None) -> dict:
+def _parse_statement(path: str, signatures: tuple[str, ...]) -> dict:
     """Parse one statement PDF into the parser's structured dict.
+
+    The text layer decides which parser reads it: a brokerage statement has
+    one, and the deposit and mortgage families have none at all, so a document
+    the first pass reports as image-only goes round again through OCR. Probing
+    for a text layer costs a cheap open and saves a whole OCR pass on every
+    document that has one.
 
     Module-level (not a closure) so it pickles for
     :class:`~concurrent.futures.ProcessPoolExecutor` under the ``spawn`` start
     method used on macOS.
     """
-    return pdf_parsers_svbwa.parse_svbwa_statement_pdf(
-        path, expected_signature=signature)
+    parsed = pdf_parsers_svbwa.parse_svbwa_statement_pdf(
+        path, expected_signatures=signatures)
+    if parsed.get("family") == pdf_parsers_svbwa.FAMILY_IMAGE_ONLY:
+        return pdf_parsers_svbdep.parse_svbdep_statement_pdf(
+            path, expected_signatures=signatures)
+    return parsed
 
 
 def _default_cache_dir() -> Path:
@@ -251,22 +556,35 @@ def _default_cache_dir() -> Path:
     return Path(base) / "wealthdb" / "svb"
 
 
-_EXTRACTOR_DISTS = ("pdfplumber", "pdfminer.six")
+# Both extraction stacks: pdfplumber reads the brokerage statements' text
+# layer, pypdfium2 plus a recogniser rasters and OCRs the families that have
+# none. A version change in any of them can shift what a parse produces for
+# identical input bytes, so all of them belong in the cache key.
+#
+# Both recognisers are listed although only one is installed on a given
+# platform — which is the point. srcfp records an absent one as unavailable,
+# so a macOS key and a Linux key differ, and moving a cache between them
+# re-parses instead of replaying text the other engine produced.
+_EXTRACTOR_DISTS = ("pdfplumber", "pdfminer.six", "pypdfium2",
+                    "ocrmac", "rapidocr")
 
 
 def _parser_logic_fingerprint() -> str:
     """Fingerprint of the parsing logic, folded into every cache key so a code
-    edit to ``pdf_parsers_svbwa.py`` (or anything in its import closure) or a
-    pdfplumber / pdfminer.six upgrade auto-invalidates cached parses, while a
-    comment / formatting / docstring edit — which can't change a parse — does
-    not. See :func:`collectorkit.srcfp.parser_fingerprint`."""
-    return srcfp.parser_fingerprint([pdf_parsers_svbwa], _EXTRACTOR_DISTS)
+    edit to either parser (or anything in their import closure) or an upgrade
+    to either extraction stack auto-invalidates cached parses, while a comment
+    / formatting / docstring edit — which can't change a parse — does not. See
+    :func:`collectorkit.srcfp.parser_fingerprint`."""
+    return srcfp.parser_fingerprint(
+        [pdf_parsers_svbwa, pdf_parsers_svbdep], _EXTRACTOR_DISTS)
 
 
-def _cache_key(file_sha: str, logic_fp: str, signature: str | None) -> str:
+def _cache_key(file_sha: str, logic_fp: str,
+               signatures: tuple[str, ...]) -> str:
     # Opaque key; the statement sha and logic fingerprint are hex (no ':'), and
-    # the signature is last, so the join stays unambiguous.
-    return f"{file_sha}:{logic_fp}:{signature or ''}"
+    # the signature set is last and order-normalised, so the join stays
+    # unambiguous and reordering the sidecar's lines does not evict the cache.
+    return f"{file_sha}:{logic_fp}:" + "\x00".join(sorted(signatures))
 
 
 def _load_parse_cache(cache_dir: Path | None) -> dict[str, dict]:
@@ -301,7 +619,7 @@ def _save_parse_cache(cache_dir: Path | None, entries: dict[str, dict]) -> None:
 
 
 def parse_statements(pdfs: list[Path], shas: list[str], *,
-                     signature: str | None, cache_dir: Path | None,
+                     signatures: tuple[str, ...], cache_dir: Path | None,
                      max_workers: int | None) -> list[dict]:
     """Return the parsed dict for each PDF in ``pdfs`` order.
 
@@ -317,7 +635,7 @@ def parse_statements(pdfs: list[Path], shas: list[str], *,
     parsed: list[dict | None] = [None] * len(pdfs)
     misses: list[int] = []
     for i, sha in enumerate(shas):
-        hit = cached.get(_cache_key(sha, logic_fp, signature))
+        hit = cached.get(_cache_key(sha, logic_fp, signatures))
         if hit is not None:
             parsed[i] = hit
         else:
@@ -330,91 +648,168 @@ def parse_statements(pdfs: list[Path], shas: list[str], *,
         if workers > 1 and len(paths) > 1:
             with ProcessPoolExecutor(max_workers=workers) as pool:
                 outputs = list(pool.map(_parse_statement, paths,
-                                        repeat(signature)))
+                                        repeat(signatures)))
         else:
-            outputs = [_parse_statement(p, signature) for p in paths]
+            outputs = [_parse_statement(p, signatures) for p in paths]
         fresh = dict(cached)
         for i, out in zip(misses, outputs):
             parsed[i] = out
             if not out.get("_error"):
-                fresh[_cache_key(shas[i], logic_fp, signature)] = out
+                fresh[_cache_key(shas[i], logic_fp, signatures)] = out
         _save_parse_cache(cache_dir, fresh)
 
     return parsed  # type: ignore[return-value]
 
 
-def build(silver_db: Path, bronze_dir: Path, *, signature: str | None,
-          closure_date: str, migrations_dir: Path,
-          cache_dir: Path | None = None, max_workers: int | None = None) -> None:
+def discover_statements(bronze_dir: Path) -> list[Path]:
+    """Every PDF under the bronze archive, in a deterministic order.
+
+    The archive is hand-filed and the folder layout carries no meaning, so
+    discovery is recursive. The order is the POSIX relative path, and it is
+    load-bearing rather than cosmetic: inserts replay it serially and
+    `INSERT OR REPLACE` is last-writer-wins, so two statements that touch the
+    same key must resolve the same way on every run.
+    """
+    if not bronze_dir.is_dir():
+        return []
+    pdfs = [p for p in bronze_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() == ".pdf"]
+    return sorted(pdfs, key=lambda p: p.relative_to(bronze_dir).as_posix())
+
+
+# One silver DB per statement calendar, each registered in gold under its own
+# source id. That separation is load-bearing, not tidiness: gold ends an
+# account's series at the first later snapshot of its SOURCE that re-covers
+# every account seen alongside it. A month-end brokerage statement and a
+# month-end deposit statement share a snapshot date, so in one source each
+# family's next statement repeatedly reads as the others' closure and their
+# values flicker in and out. Separate ids give each family its own clock.
+#
+# The file for each sits beside the one `--silver-db` names, which stays the
+# brokerage DB so the original id keeps its path.
+_SILVER_BY_FAMILY = {
+    pdf_parsers_svbwa.FAMILY_BROKERAGE: "",
+    pdf_parsers_svbdep.FAMILY_DEPOSIT: "-deposit",
+    pdf_parsers_svbdep.FAMILY_MORTGAGE: "-mortgage",
+}
+
+
+def silver_paths(silver_db: Path) -> dict[str, Path]:
+    """The output path per statement family, keyed as the parsers report it."""
+    return {family: silver_db.with_name(f"{silver_db.stem}{suffix}{silver_db.suffix}")
+            for family, suffix in _SILVER_BY_FAMILY.items()}
+
+
+def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
+          migrations_dir: Path, cache_dir: Path | None = None,
+          max_workers: int | None = None, workbook: Path | None = None) -> None:
     # Validate the bronze BEFORE touching the existing silver: a mis-pointed
-    # --bronze-dir must fail loudly, not silently replace a good svb.db with
-    # an empty rebuild (which then zeroes the source out of gold).
-    pdfs = sorted(p for p in bronze_dir.iterdir()
-                  if p.is_file() and p.suffix.lower() == ".pdf") if bronze_dir.is_dir() else []
+    # --bronze-dir must fail loudly, not silently replace good silver DBs with
+    # an empty rebuild (which then zeroes the sources out of gold).
+    pdfs = discover_statements(bronze_dir)
     if not pdfs:
         raise SystemExit(
             f"svb load: no statement PDFs in {bronze_dir} — refusing to "
             f"rebuild {silver_db} from an empty bronze. Point --data-dir / "
             f"--bronze-dir at the archive (PDFs live in <data-dir>/bronze/).")
     # Hash then parse every statement (cache replay + process pool) before the
-    # existing silver is touched, so a parse crash also leaves the good svb.db in
+    # existing silver is touched, so a parse crash also leaves the good DBs in
     # place. Inserts still run serially below in sorted-PDF order, preserving the
     # INSERT OR REPLACE last-writer semantics and the per-statement log order.
     shas = [hashlib.sha256(pdf.read_bytes()).hexdigest() for pdf in pdfs]
-    results = parse_statements(pdfs, shas, signature=signature,
+    results = parse_statements(pdfs, shas, signatures=signatures,
                                cache_dir=cache_dir, max_workers=max_workers)
-    if silver_db.exists():
-        silver_db.unlink()  # full rebuild — reproducible from bronze
-    conn = sqlite3.connect(str(silver_db))
-    silver.own_only(silver_db)
+    outputs = silver_paths(silver_db)
+    for path in outputs.values():
+        silver.reset(path)  # full rebuild — reproducible from bronze
+    conns = {}
     try:
-        apply_migrations(conn, migrations_dir)
-        inserted = parsed_ok = skipped = 0
+        for family, path in outputs.items():
+            conns[family] = sqlite3.connect(str(path))
+            silver.own_only(path)
+            apply_migrations(conns[family], migrations_dir)
+        holdings = txns = unknown_verbs = 0
+        census: Counter[str] = Counter()
         for pdf, sha, res in zip(pdfs, shas, results):
             if res.get("_error"):
                 log.warning("skip %s: %s", pdf.name, res["_error"])
-                skipped += 1
+                census[res["_error"]] += 1
                 continue
+            family = res.get("family") or pdf_parsers_svbwa.FAMILY_UNKNOWN
+            census[family] += 1
+            if family not in conns:
+                log.info("not parsed (%s): %s", family, pdf.name)
+                continue
+            conn = conns[family]
+            for msg in unreadable_sections(res):
+                log.warning("refusing %s — %s", pdf.name, msg)
+                census["unreadable-section"] += 1
             n = insert_statement(conn, res, sha)
-            parsed_ok += 1
-            inserted += n
+            holdings += n
+            t, u = insert_transactions(conn, res, sha)
+            txns += t
+            unknown_verbs += u
             if n == 0:
-                log.info("carry-forward (no holdings): %s", pdf.name)
-        closed = inject_closures(conn, closure_date)
-        synth = synthesize_masters(conn)
-        mark_dump_run(conn)
-        conn.commit()
+                log.info("carry-forward (no holdings, no stated zero): %s",
+                         pdf.name)
+            if u:
+                log.warning("%d activity row(s) in %s carry no recognised "
+                            "transaction verb and were not booked", u, pdf.name)
+            for msg in reconcile_activity(res):
+                log.warning("activity does not reconcile in %s — %s",
+                            pdf.name, msg)
+        # Brokerage only: the workbook keys its sheets on brokerage serials.
+        derived = insert_derived_marks(
+            conns[pdf_parsers_svbwa.FAMILY_BROKERAGE], workbook)
+        synth = 0
+        for conn in conns.values():
+            synth += synthesize_masters(conn)
+            mark_dump_run(conn)
+            conn.commit()
         log.info(
-            "svb silver built: %d holdings rows from %d statement(s) "
-            "(%d skipped), %d account(s) closed @ %s, %d master(s) synthesised",
-            inserted, parsed_ok, skipped, len(closed), closure_date, synth,
+            "svb silver built: %d holdings rows + %d transactions from %d "
+            "document(s) [%s], %d derived mark(s), %d unbooked activity row(s), "
+            "%d master(s) synthesised across %d silver DB(s)",
+            holdings, txns, len(pdfs),
+            ", ".join(f"{k}={v}" for k, v in sorted(census.items())),
+            derived, unknown_verbs, synth, len(conns),
         )
     finally:
-        conn.close()
+        for conn in conns.values():
+            conn.close()
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--silver-db", type=Path, required=True,
-                   help="output svb silver SQLite path")
+                   help="brokerage silver SQLite path; the deposit and "
+                        "mortgage DBs sit beside it")
     p.add_argument("--bronze-dir", type=Path, required=True,
-                   help="directory of SVB statement PDFs + signature.txt")
-    p.add_argument("--statement-signature", default=None,
-                   help="page-1 signature substring (else read signature.txt)")
-    p.add_argument("--closure-date", required=True,
-                   help="synthetic $0 closure date for still-held accounts "
-                        "(the handoff to the destination source), e.g. "
-                        "2020-12-31")
+                   help="root of the statement archive (searched recursively) "
+                        "+ signature.txt")
+    p.add_argument("--statement-signature", action="append", default=None,
+                   help="page-1 signature substring; repeat to accept any one "
+                        "of several registrations (else read the lines of "
+                        "signature.txt)")
+    p.add_argument("--derived-marks", type=Path, default=None,
+                   help="advisor workbook of month-end account values, used "
+                        "to fill the brokerage months no statement covers "
+                        "(default "
+                        "<bronze>/derived-marks.xlsx). Absent means the "
+                        "archive stands on its statements alone.")
     p.add_argument("--migrations-dir", type=Path,
                    default=Path(__file__).parent / "migrations")
     p.add_argument("--parse-cache-dir", type=Path, default=_default_cache_dir(),
                    help="directory for the persistent parse cache sidecar "
                         "(default $XDG_CACHE_HOME/wealthdb/svb). Keyed by "
-                        "(statement sha256, parser-logic fingerprint, signature), "
-                        "so a parser edit or a pdfplumber / pdfminer.six upgrade "
-                        "auto-invalidates it; a warm run replays every parse from "
-                        "it. It holds parsed statement data, so it lives outside "
-                        "the repo like the silver DB.")
+                        "(statement sha256, parser-logic fingerprint, "
+                        "signature set), "
+                        "so a parser edit or an upgrade to either extraction "
+                        "stack auto-invalidates it — the OCR recogniser is "
+                        "per-platform and part of the key, so a cache does not "
+                        "move between platforms. A warm run replays every parse "
+                        "from it. It holds parsed statement data, so it lives "
+                        "outside the repo like the silver DB.")
     # svb has no incremental path — build() always deletes and rebuilds —
     # so --force parses but cannot change the outcome.
     cli.add_standard_args(p, verb="load", always_rebuilds=True)
@@ -422,13 +817,14 @@ def main(argv=None) -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(message)s")
-    sig = read_signature(args.bronze_dir, args.statement_signature)
-    if sig is None:
+    sigs = read_signatures(args.bronze_dir, args.statement_signature)
+    if not sigs:
         log.warning("no signature configured (--statement-signature or "
                     "signature.txt); ingesting every PDF unverified")
-    build(args.silver_db, args.bronze_dir, signature=sig,
-          closure_date=args.closure_date, migrations_dir=args.migrations_dir,
-          cache_dir=args.parse_cache_dir)
+    workbook = args.derived_marks or (args.bronze_dir / _DERIVED_MARKS_FILE)
+    build(args.silver_db, args.bronze_dir, signatures=sigs,
+          migrations_dir=args.migrations_dir, cache_dir=args.parse_cache_dir,
+          workbook=workbook)
     return 0
 
 

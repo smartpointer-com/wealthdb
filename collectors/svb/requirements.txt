@@ -1,9 +1,35 @@
-# The svb collector parses a static archive of SVB Wealth Advisory / NFS
-# brokerage statement PDFs into the silver DB. pdfplumber (on pdfminer.six)
-# gives the table-aware text extraction the statement layout needs. It is
-# imported lazily inside pdf_parsers_svbwa._extract_pdf_text, so the unit
-# tests (which monkeypatch that seam) don't need it, but a real `load` does.
+# The svb collector parses a static archive of SVB statement PDFs into the
+# silver DBs. Three document families, two extraction stacks.
+#
+# The brokerage statements have a text layer: pdfplumber (on pdfminer.six)
+# gives the table-aware extraction that layout needs. It is imported lazily
+# inside pdf_parsers_svbwa._extract_pdf_text, so the unit tests (which
+# monkeypatch that seam) don't need it, but a real `load` does.
 pdfplumber>=0.11,<1
+
+# The deposit and mortgage statements are print-stream renderings with NO
+# text layer — every extractor returns zero characters — so they are rastered
+# and read by OCR instead, via collectorkit.pdf.extract_text_ocr. pypdfium2
+# rasters everywhere; the recogniser is per-platform, because macOS ships one
+# and nowhere else does.
+#
+# ocrmac reaches Apple's Vision framework: nothing to download, and it reads
+# this archive at the default raster. rapidocr carries its own models and runs
+# anywhere; it needs the finer raster the parser escalates to on the worst of
+# the 1-bit scans, which is why that escalation exists. Neither is imported
+# until a document actually needs OCR, so the unit tests need neither. What
+# rapidocr's wheel does not carry is the inference runtime those models
+# execute on, so onnxruntime is pinned beside it under the same marker.
+pypdfium2>=4,<6
+ocrmac>=1,<2 ; sys_platform == "darwin"
+rapidocr>=3,<4 ; sys_platform != "darwin"
+onnxruntime>=1.17 ; sys_platform != "darwin"
+
+# An advisor workbook supplies month-end marks for the months no brokerage
+# statement covers (DESIGN.md "Data caveats"; the rules are in
+# derived_marks.py). openpyxl reads it; the pass is skipped when the file
+# is absent, so this is only needed to fill those gaps.
+openpyxl>=3.1,<4
 
 # pytest for the host-venv test run (`make test-svb`).
 pytest>=8,<9

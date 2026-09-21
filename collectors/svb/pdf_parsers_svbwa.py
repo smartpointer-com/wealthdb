@@ -5,10 +5,15 @@ A third statement layout, distinct from the 529 statements
 (``fidelity-web/pdf_parsers.py``) and the supplied statements
 (``fidelity-web/pdf_parsers_supplied.py``):
 
-* Masthead is ``SVB WEALTH ADVISORY, INC.`` (a brokerage carried
-  by National Financial Services LLC — every page footer reads
-  ``Account carried with National Financial Services LLC``). There
-  is **no** ``svb> Private | Wealth | Trust | Banking`` banner.
+* Masthead is ``SVB WEALTH ADVISORY, INC.`` on the earlier
+  statements and ``SVB INVESTMENT SERVICES, INC.`` on the later
+  ones — the same brokerage family either way, carried by
+  National Financial Services LLC (every page footer reads
+  ``Account carried with National Financial Services LLC``).
+  There is **no** ``svb> Private | Wealth | Trust | Banking``
+  banner. Because the masthead moves, the family is recognised by
+  the period header plus the ``Account Number: SV[MRT]-NNNNNN``
+  header instead — see :func:`classify_statement_text`.
 * **One account per PDF** (unlike the multi-account supplied
   statements), but the ``Account Number:`` header is still
   re-stamped on every page; the parser splits on that header and
@@ -70,16 +75,37 @@ those keys are always ``None`` in the output):
 * **Closing / $0 statements** render no table, just the sentence
   ``There were no positions in your account at the close of the
   statement period.`` → the account is returned with an empty
-  ``holdings`` list and the correct ``period_end`` so a terminal
-  $0 snapshot can still be recorded. This is not an error.
+  ``holdings`` list and the correct ``period_end``. Whether that
+  means $0 is NOT inferred from the empty table: the statement's
+  own ``TOTAL VALUE OF YOUR PORTFOLIO`` / ``ENDING VALUE`` line is
+  parsed (``parse_statement_total``) and only a stated zero is
+  recorded as one. This is not an error.
+
+Beyond Holdings, every statement carries an **Activity** region
+(``parse_activity_block``) of dated, signed money movements,
+sub-sectioned as additions/withdrawals, income, taxes+fees,
+misc. & corporate actions, core-fund sweeps, other activity, the
+trade blotter, and two informational sections (pending
+distributions, trades pending settlement). Rows are
+``MM/DD/YY  CASH|MARGIN  <TRANSACTION>  <description>  [qty]
+$amount`` with **parens → negative**, exactly as in the option
+holdings rows; the ``TRANSACTION`` column is a closed verb
+vocabulary (``_ACTIVITY_VERBS``) because the text extraction
+preserves no column gaps to split on. Each section prints its own
+``TOTAL <section> $amount`` line, returned alongside the rows so a
+loader can reconcile what it parsed against what the statement
+states.
 
 The text-level parsers (``parse_statement_period``,
-``parse_account_blocks``, ``parse_holdings_block``) are pure
-functions of strings, exercised by unit tests against synthetic
-fixtures. ``parse_svbwa_statement_pdf(path, expected_signature=…)``
-is the orchestration entry-point; it opens the PDF via pdfplumber
-and returns the same dict shape as the supplied-statement parser's
-``parse_supplied_statement_pdf``.
+``parse_account_blocks``, ``parse_holdings_block``,
+``parse_activity_block``, ``parse_statement_total``,
+``classify_statement_text``) are pure functions of strings,
+exercised by unit tests against synthetic fixtures.
+``parse_svbwa_statement_pdf(path, expected_signatures=…)`` is the
+orchestration entry-point; it opens the PDF via pdfplumber and
+returns the same dict shape as the supplied-statement parser's
+``parse_supplied_statement_pdf``, plus the svb-specific
+``family`` / ``stated_total`` / per-account ``activity`` keys.
 """
 
 from __future__ import annotations
@@ -87,6 +113,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date
+
+from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
+
+from statement_tokens import iso_from_short_date, parse_money
 
 
 # ============================================================
@@ -125,6 +155,51 @@ def parse_statement_period(text):
     except (KeyError, ValueError):
         return None
     return start, end
+
+
+# ============================================================
+# Stated portfolio total
+# ============================================================
+
+# A money column: always carries "$", which is what separates it
+# from a bare Quantity. Parens mean negative, as everywhere else in
+# this layout.
+_MONEY = r"\(?-?\$-?[\d,]*\d(?:\.\d+)?\)?"
+_MONEY_TOKEN_RE = re.compile(rf"^{_MONEY}$")
+
+# The account's own closing value, stated twice: on page 1 next to
+# the contact block, and again in the Account Overview's change-in-
+# value table as the current-period column of ENDING VALUE (whose
+# second column is the year-to-date figure, identical to it).
+_TOTAL_VALUE_RE = re.compile(
+    rf"TOTAL\s+VALUE\s+OF\s+YOUR\s+PORTFOLIO\s+(?P<amt>{_MONEY})")
+_ENDING_VALUE_RE = re.compile(
+    rf"ENDING\s+VALUE\s*\([^)]*\)\s+(?P<amt>{_MONEY})")
+
+
+def parse_statement_total(text):
+    """Return the closing portfolio value the statement STATES, or
+    ``None`` when neither stated form is readable or the two
+    disagree.
+
+    Both forms are read and required to agree, so a mis-parse of
+    one cannot pass as a value. ``None`` means "the statement did
+    not say", which is materially different from "the statement
+    said zero" — the loader records a zero only from a stated one,
+    never from an empty holdings table.
+    """
+    seen = []
+    for rx in (_TOTAL_VALUE_RE, _ENDING_VALUE_RE):
+        m = rx.search(text)
+        if m:
+            val = parse_money(m["amt"])
+            if val is not None:
+                seen.append(val)
+    if not seen:
+        return None
+    if any(v != seen[0] for v in seen[1:]):
+        return None
+    return seen[0]
 
 
 # ============================================================
@@ -176,6 +251,49 @@ def parse_account_blocks(text):
     if cur_acct is not None:
         blocks.append(AccountBlock(cur_acct, text[cur_start:last_end]))
     return blocks
+
+
+# ============================================================
+# Document family
+# ============================================================
+
+# Three statement families share this archive's layout. Only the
+# brokerage family is text-extractable and only it is this parser's
+# business; the deposit and mortgage families are image-only
+# print-stream renderings whose page-1 text is empty, so they are
+# recognised as such rather than misread as an unparseable
+# brokerage statement.
+FAMILY_BROKERAGE = "brokerage"
+FAMILY_IMAGE_ONLY = "image_only"
+FAMILY_UNKNOWN = "unknown"
+
+# Text below this many non-whitespace characters is a scanned page
+# with nothing but incidental glyphs, not a text-layer statement.
+_IMAGE_ONLY_MAX_CHARS = 32
+
+
+def classify_statement_text(text):
+    """Return the document family of a statement from its extracted
+    text — ``brokerage`` / ``image_only`` / ``unknown``.
+
+    Keyed on the text, never the filename: the archive's filenames
+    are hand-assigned and inconsistent. A brokerage statement is
+    identified by its page-1 ``STATEMENT FOR THE PERIOD`` header
+    (upper-case only on page 1; later pages re-stamp a title-case
+    echo) together with an ``Account Number: SV[MRT]-NNNNNN``
+    header — both present on every statement of the family across
+    both mastheads it was issued under.
+
+    A deposit or mortgage statement carries no text layer at all, so
+    it is reported as ``image_only`` — a single bucket, because with
+    no text there is nothing to tell the two apart until an OCR pass
+    supplies some.
+    """
+    if _PERIOD_RE.search(text) and _ACCOUNT_HEADER_RE.search(text):
+        return FAMILY_BROKERAGE
+    if len(re.sub(r"\s+", "", text)) <= _IMAGE_ONLY_MAX_CHARS:
+        return FAMILY_IMAGE_ONLY
+    return FAMILY_UNKNOWN
 
 
 # ============================================================
@@ -412,9 +530,9 @@ def _parse_security_row(line):
         instrument_key, desc_tokens = recovered
     desc = " ".join(desc_tokens).strip()
     nums = tokens[key_idx + 1:]
-    qty = _parse_number(nums[0])
-    price = _parse_number(nums[1])
-    mv = _parse_number(nums[2])
+    qty = parse_money(nums[0])
+    price = parse_money(nums[1])
+    mv = parse_money(nums[2])
     if qty is None and price is None and mv is None:
         return None
     return SvbwaHoldingRow(
@@ -477,9 +595,9 @@ def _parse_option_block(lines, idx):
     # push the rest (the expiry day/year) back into the description.
     nums = tokens[-3:]
     desc = " ".join(tokens[:len(tokens) - 3]).strip()
-    qty = _parse_number(nums[0])
-    price = _parse_number(nums[1])
-    mv = _parse_number(nums[2])
+    qty = parse_money(nums[0])
+    price = parse_money(nums[1])
+    mv = parse_money(nums[2])
     if qty is None and mv is None:
         return None, 0
 
@@ -556,72 +674,447 @@ def _last_number(line):
     parens mapped to negative), or ``None``."""
     for tok in reversed(line.split()):
         if _NUM_TOKEN_RE.match(tok):
-            return _parse_number(tok)
+            return parse_money(tok)
     return None
 
 
-def _parse_number(tok):
-    """Parse one money/numeric token. Strips ``$`` and thousands
-    commas; maps surrounding parens to a negative sign; ``%`` is
-    dropped. Returns ``None`` for non-numeric / empty tokens."""
-    if tok is None:
+# ============================================================
+# Activity rows
+# ============================================================
+
+# The Activity region opens on a bare ``Activity`` heading (once
+# per statement; later pages re-stamp ``ACTIVITY continued``) and
+# runs to the closing boilerplate.
+_ACTIVITY_START_RE = re.compile(r"^\s*Activity\s*$", re.MULTILINE)
+_ACTIVITY_END_RE = re.compile(
+    r"^\s*(?:Miscellaneous Footnotes|GLOSSARY)", re.MULTILINE)
+
+# Canonical section keys. The first six carry settled money
+# movements; the last three are read (so nothing goes missing
+# unnoticed) but are the loader's to leave unbooked — the trade
+# blotter is a separate surface, and the two pending sections are
+# projections that settle into a later statement.
+SECTION_ADDITIONS = "additions_withdrawals"
+SECTION_INCOME = "income"
+SECTION_TAXES_FEES = "taxes_fees"
+SECTION_MISC = "misc_corporate"
+SECTION_CORE_FUND = "core_fund"
+SECTION_OTHER = "other_activity"
+SECTION_TRADES = "trades"
+SECTION_TRADES_PENDING = "trades_pending"
+SECTION_PENDING_DISTRIBUTIONS = "pending_distributions"
+
+# Section banners, keyed on the banner text with whitespace and
+# commas removed — the extraction kerns those inconsistently
+# ("TAXES, FEES" vs "TAXES,FEES"). Matched as a prefix, so the
+# "… continued" page echoes and the sub-section suffixes
+# ("INCOME > TAXABLE INCOME") resolve to the same section.
+_SECTION_PREFIXES = (
+    ("ADDITIONSANDWITHDRAWALS", SECTION_ADDITIONS),
+    ("INCOME", SECTION_INCOME),
+    ("TAXESFEESANDEXPENSES", SECTION_TAXES_FEES),
+    ("MISC.&CORPORATEACTIONS", SECTION_MISC),
+    ("MISCELLANEOUS&CORPORATEACTIONS", SECTION_MISC),
+    ("COREFUNDACTIVITY", SECTION_CORE_FUND),
+    ("OTHERACTIVITY", SECTION_OTHER),
+    ("PURCHASESSALESANDREDEMPTIONS", SECTION_TRADES),
+    ("TRADESPENDINGSETTLEMENT", SECTION_TRADES_PENDING),
+    ("PENDINGDISTRIBUTIONS", SECTION_PENDING_DISTRIBUTIONS),
+)
+
+# The corporate-actions section was re-templated between the 2021 and the
+# 2022+ statements, and the spelling of its banner is the marker. The earlier
+# one strikes no section total and prints TRAN VALUE in the CASH-EQUIVALENT
+# convention — receiving shares reads like paying for them, so it is
+# parenthesised (negative) and a delivery is positive. The later one prints
+# the value FLOW, which is the direction its own section totals are struck on
+# and the one that makes the two legs of an inter-account move cancel. The
+# earlier convention is negated into the later one so both read alike; without
+# that, an in-kind receipt books as an outflow of the same size.
+_LEGACY_MISC_BANNER = "MISCELLANEOUS&CORPORATEACTIONS"
+
+# Sections whose rows carry a Quantity column. Everywhere else the
+# column is blank, and reading one anyway would misfire: a
+# counterparty account id kerns into fragments
+# ("SV R-0001 15 -1") whose tail parses as the number -1.
+_QUANTITY_SECTIONS = frozenset(
+    {SECTION_MISC, SECTION_CORE_FUND, SECTION_TRADES})
+
+# A data row: settlement/effective date, then the account-type
+# column (the only two values the statements print), then the
+# Transaction column. Requiring the account type is what keeps the
+# dated continuation lines ("10/02/23 RECORD DATE 10/03/23") and
+# the two-date trades-pending rows out.
+_ACTIVITY_ROW_RE = re.compile(
+    r"^(?P<date>\d{2}/\d{2}/\d{2})\s+(?P<acct_type>CASH|MARGIN)"
+    r"\s+(?P<rest>\S.*)$"
+)
+
+# The Transaction column's closed vocabulary, alphabetical (the
+# match order is derived below, so this list is only ever read by a
+# human adding to it). The text extraction preserves no column gaps
+# — every run of spaces collapses to one — so the verb cannot be
+# split off by position and is matched against this list instead. A
+# row whose verb is not here still comes back, with an empty verb,
+# for the loader to report by statement and leave unbooked.
+_ACTIVITY_VERBS = (
+    "ADJ NON-RESIDENT TAX",
+    "ADJUSTMENT",
+    "ADVISOR FEE DEDUCTED",
+    "BOUGHT",
+    "CANCELLED BUY",
+    "CANCELLED SELL",
+    "DIRECT DEBIT",
+    "DIRECT DEPOSIT",
+    "DISTRIBUTION",
+    "DIVIDEND ADJUSTMENT",
+    "DIVIDEND RECEIVED",
+    "EXPIRED",
+    "FEE PAID",
+    "FOREIGN TAX PAID",
+    "IN LIEU OF FRX SHARE",
+    "INTER BROKER CREDIT",
+    "INTER BROKER DEBIT",
+    "INTER BROKER DELIVER",
+    "INTER BROKER RECEIVE",
+    "INTEREST",
+    "JOURNALED",
+    "MARGIN INTEREST",
+    "MERGER",
+    "NON-RESIDENT TAX",
+    "RECEIVED FROM YOU",
+    "REDEEMED",
+    "REINVESTMENT",
+    "RETURN OF CAPITAL",
+    "SOLD",
+    "TENDERED",
+    "TRANSFERRED FROM",
+    "TRANSFERRED TO",
+    "WIRE TRANS FROM BANK",
+    "WIRE TRANS TO BANK",
+    "YOU BOUGHT",
+    "YOU SOLD",
+)
+# Longest first, so "MARGIN INTEREST" wins over "INTEREST" and
+# "ADJ NON-RESIDENT TAX" over "NON-RESIDENT TAX".
+_ACTIVITY_VERB_TOKENS = tuple(
+    sorted((tuple(v.split()) for v in _ACTIVITY_VERBS),
+           key=len, reverse=True))
+
+# In-kind corporate-action rows print $0.00 in the Amount column
+# and the transferred value on a following ``TRAN VALUE:`` line;
+# the section's own total is struck on those values, so they are
+# the row's amount.
+_TRAN_VALUE_RE = re.compile(rf"^TRAN\s+VALUE:\s*(?P<amt>{_MONEY})\s*$")
+_TRAN_VALUE_LOOKAHEAD = 4
+
+# An UNDATED amount line inside a section — a bond sleeve's
+# "Corporate Accrued Interest Earned $50.00" and the like. It has
+# no date and no Transaction column, so it is not a movement, but
+# the section's stated total DOES include it. Returned with a null
+# date so a reconciliation sees it and a loader booking dated rows
+# does not. The label must open on a non-digit, which is what keeps
+# a dated row — including the two-date rows of the pending-
+# settlement section — off this path.
+_UNDATED_AMOUNT_RE = re.compile(
+    rf"^(?P<label>[^\d$(].*?)\s+(?P<amt>{_MONEY})\s*$")
+
+# A section total, e.g. "TOTAL ADDITIONS AND WITHDRAWALS
+# ($4,000.00)". Upper-case TOTAL only — the title-case
+# "Total Taxable Dividends" lines are per-group subtotals inside a
+# section, which the section total already covers.
+_SECTION_TOTAL_RE = re.compile(
+    rf"^TOTAL\s*(?P<name>[A-Z][^$(]*?)\s*(?P<amt>{_MONEY})\s*$")
+
+@dataclass
+class SvbwaActivityRow:
+    """One money movement from the Activity region.
+
+    ``verb`` is the Transaction column verbatim (empty when the
+    column was blank or held no known verb); ``section`` says which
+    sub-section it was printed under, which is what decides whether
+    it is a settled movement at all. ``ordinal`` is the row's
+    position among every row in the account's Activity region, in
+    document order — it disambiguates rows that are otherwise
+    identical (a same-day pair of transfers from one counterparty)
+    and makes the loader's row identity reproducible.
+
+    ``date`` is ``None`` on the undated lines a section can carry —
+    a bond sleeve's accrued-interest figure struck for the whole
+    period. Those are part of the section's stated total but are
+    not movements, so they belong in a reconciliation and not in a
+    transactions table.
+    """
+    date: str | None              # ISO YYYY-MM-DD
+    section: str
+    account_type: str             # "CASH" / "MARGIN"; empty when undated
+    verb: str
+    description: str
+    quantity: float | None
+    amount: float | None
+    ordinal: int
+
+
+def parse_activity_block(account_text):
+    """Extract every Activity row from one account's section.
+
+    Returns ``(rows, totals)`` — the rows in document order, and
+    the per-section ``TOTAL …`` figures the statement states, keyed
+    by the same section keys the rows carry. A caller reconciles
+    the two: a section whose rows do not sum to its stated total
+    has been misread. Every amount-bearing line in a section is
+    returned, including the undated ones, so that sum is complete.
+
+    Returns ``([], {})`` when the statement renders no Activity
+    region at all.
+    """
+    m_start = _ACTIVITY_START_RE.search(account_text)
+    if not m_start:
+        return [], {}
+    after = m_start.end()
+    m_end = _ACTIVITY_END_RE.search(account_text, after)
+    block = account_text[after:m_end.start() if m_end else len(account_text)]
+
+    lines = [ln.strip() for ln in block.splitlines()]
+    rows = []
+    totals = {}
+    section = None
+    legacy_misc = False
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        found = _section_for_banner(line)
+        if found is not None:
+            section, legacy_misc = found
+            continue
+        total = _section_total(line)
+        if total is not None:
+            key, amount = total
+            totals[key] = amount
+            continue
+        m = _ACTIVITY_ROW_RE.match(line)
+        if m:
+            row = _parse_activity_row(
+                m, section, len(rows),
+                _lookahead_tran_value(lines, i, legacy_misc))
+        elif section is None:
+            continue
+        else:
+            row = _parse_undated_row(line, section, len(rows))
+        if row is not None:
+            rows.append(row)
+    return rows, totals
+
+
+def _banner_key(text):
+    """Normalise a section name for matching: upper-cased, with the
+    ``ACTIVITY >`` prefix, whitespace and commas removed. The
+    extraction kerns those inconsistently, so they cannot be part of
+    the comparison."""
+    return re.sub(r"[\s,]+", "",
+                  re.sub(r"^ACTIVITY\s*>\s*", "", text.upper()))
+
+
+def _section_for_banner(line):
+    """Return ``(section key, is-legacy-corporate-actions)`` for a
+    banner line, or ``None`` when the line is not one."""
+    if line.upper().startswith("TOTAL"):
         return None
-    t = tok.strip()
-    negative = False
-    if t.startswith("(") and t.endswith(")"):
-        negative = True
-        t = t[1:-1]
-    t = t.replace("$", "").replace(",", "").rstrip("%").strip()
-    if t.startswith("-"):
-        negative = True
-        t = t[1:]
-    if not t or t in ("-", "+"):
+    key = _banner_key(line)
+    for prefix, name in _SECTION_PREFIXES:
+        if key.startswith(prefix):
+            return name, key.startswith(_LEGACY_MISC_BANNER)
+    return None
+
+
+def _section_total(line):
+    """Return ``(section key, amount)`` for a ``TOTAL …`` line, or
+    ``None`` when the line is not one (or names no known section)."""
+    m = _SECTION_TOTAL_RE.match(line)
+    if not m:
         return None
-    try:
-        val = float(t)
-    except ValueError:
+    amount = parse_money(m["amt"])
+    if amount is None:
         return None
-    return -val if negative else val
+    key = _banner_key(m["name"])
+    for prefix, name in _SECTION_PREFIXES:
+        if key.startswith(prefix):
+            return name, amount
+    return None
+
+
+def _parse_activity_row(m, section, ordinal, tran_value):
+    """Build one :class:`SvbwaActivityRow` from a matched data
+    line. Returns ``None`` when the line carries no money column,
+    which no real data row does, or when its date column names no
+    real day. ``tran_value`` is the transferred value printed under
+    the row, already normalised, and stands in for the Amount
+    column on the in-kind rows that print $0.00.
+
+    Refusing a date that names no real day is what keeps the
+    statement's own arithmetic in charge: a null date here would
+    read exactly like the section components
+    :func:`_parse_undated_row` returns on purpose — counted in the
+    section's stated total, never booked — so the section would go
+    on reconciling while the movement was silently lost. Dropped,
+    the row's amount leaves that sum too, the section stops
+    matching its stated total, and the loader reports it.
+    """
+    when = iso_from_short_date(m["date"])
+    if when is None:
+        return None
+    tokens = m["rest"].split()
+    verb, rest = _split_activity_verb(tokens)
+    if not rest or not _MONEY_TOKEN_RE.match(rest[-1]):
+        return None
+    amount = parse_money(rest[-1])
+    rest = rest[:-1]
+    quantity = None
+    if (section in _QUANTITY_SECTIONS and rest
+            and _NUM_TOKEN_RE.match(rest[-1])
+            and "$" not in rest[-1]):
+        quantity = parse_money(rest[-1])
+        rest = rest[:-1]
+    if amount == 0.0 and tran_value is not None:
+        amount = tran_value
+    return SvbwaActivityRow(
+        date=when,
+        section=section,
+        account_type=m["acct_type"],
+        verb=verb,
+        description=" ".join(rest).strip(),
+        quantity=quantity,
+        amount=amount,
+        ordinal=ordinal,
+    )
+
+
+def _parse_undated_row(line, section, ordinal):
+    """Build a dateless :class:`SvbwaActivityRow` for a labelled
+    amount line inside a section, or ``None`` when the line is not
+    one.
+
+    A total counted as a component would double its section, so
+    every ``Total …`` line is excluded — case-insensitively, since
+    the layout strikes the section totals upper-case and the
+    per-group subtotals title-case. So is the ``TRAN VALUE:``
+    continuation, already folded into the row above it. Group
+    headers and page furniture carry no money column and so never
+    match in the first place.
+    """
+    if line.upper().startswith("TOTAL") or _TRAN_VALUE_RE.match(line):
+        return None
+    m = _UNDATED_AMOUNT_RE.match(line)
+    if not m:
+        return None
+    amount = parse_money(m["amt"])
+    if amount is None:
+        return None
+    return SvbwaActivityRow(
+        date=None,
+        section=section,
+        account_type="",
+        verb="",
+        description=m["label"].strip(),
+        quantity=None,
+        amount=amount,
+        ordinal=ordinal,
+    )
+
+
+def _split_activity_verb(tokens):
+    """Split the Transaction column off the front of a row's
+    tokens. Returns ``(verb, remaining tokens)``; the verb is the
+    empty string when no known verb starts the run, in which case
+    its text stays in the remainder so nothing is silently lost."""
+    for cand in _ACTIVITY_VERB_TOKENS:
+        if tuple(tokens[:len(cand)]) == cand:
+            return " ".join(cand), tokens[len(cand):]
+    return "", tokens
+
+
+def _lookahead_tran_value(lines, idx, legacy_misc):
+    """Return the ``TRAN VALUE:`` figure printed under the row at
+    ``lines[idx]``, normalised to the value-flow convention, or
+    ``None``. Bounded so it can only ever reach the row's own
+    continuation lines.
+
+    ``legacy_misc`` marks the earlier template, which prints the
+    figure cash-equivalent — negative for a receipt of shares — and
+    is negated here so every row in the section reads the same way
+    regardless of which template struck it."""
+    stop = min(idx + 1 + _TRAN_VALUE_LOOKAHEAD, len(lines))
+    for look in range(idx + 1, stop):
+        cand = lines[look]
+        if not cand:
+            continue
+        if _ACTIVITY_ROW_RE.match(cand):
+            return None
+        m = _TRAN_VALUE_RE.match(cand)
+        if m:
+            value = parse_money(m["amt"])
+            if value is None:
+                return None
+            return -value if legacy_misc else value
+    return None
 
 
 # ============================================================
 # PDF orchestration
 # ============================================================
 
-def parse_svbwa_statement_pdf(path, *, expected_signature=None):
+def parse_svbwa_statement_pdf(path, *, expected_signatures=()):
     """Open an SVB-WA statement PDF and return a structured dict
-    with the same shape as the supplied-statement parser::
+    with the same shape as the supplied-statement parser, plus the
+    svb-specific ``family`` / ``stated_total`` / ``activity`` keys::
 
         {
             "path": "<absolute path>",
+            "family": "brokerage",
             "period_start": "YYYY-MM-DD" | None,
             "period_end":   "YYYY-MM-DD" | None,
+            "stated_total": 12345.67 | None,
             "accounts": [
                 {"account_external_id": "SVM-000000",
-                 "holdings": [{...}, ...]},
+                 "holdings": [{...}, ...],
+                 "activity": [{...}, ...],
+                 "activity_totals": {"income": 1.23, ...}},
                 ...
             ],
         }
 
-    ``expected_signature`` is an optional page-1 substring (e.g. the
-    personal registration line) the concatenated text must contain;
-    on mismatch the function returns
-    ``{"_error": "signature-mismatch", …}`` so the loader can log
-    and skip a misfiled PDF without bailing the whole run.
+    The family is settled first, off the extracted text, and a
+    document that is not a brokerage statement returns immediately
+    with no accounts — the brokerage row parsers never see it. The
+    image-only families have no text layer for the signature guard
+    to read either, so the guard applies only once the family is
+    known.
 
-    A no-positions / $0 statement still returns its account (with an
-    empty ``holdings`` list) and the correct ``period_end`` so a
-    terminal $0 snapshot can be recorded.
+    ``expected_signatures`` is an optional set of page-1
+    substrings (the registration lines the archive's accounts are
+    titled under); the text must contain at least one. On no match
+    the function returns ``{"_error": "signature-mismatch", …}`` so
+    the loader can log and skip a misfiled PDF without bailing the
+    whole run.
+
+    A no-positions statement still returns its account (with an
+    empty ``holdings`` list), the correct ``period_end`` and the
+    ``stated_total`` the statement prints, so a real $0 snapshot can
+    be recorded from what the statement SAYS rather than inferred
+    from the absence of rows.
 
     pdfplumber is imported inside :func:`_extract_pdf_text` so the
     text-level parsers stay importable in environments without it
     (e.g. unit tests with synthetic fixtures).
     """
     text = _extract_pdf_text(path)
-    if expected_signature and expected_signature not in text:
+    family = classify_statement_text(text)
+    if family != FAMILY_BROKERAGE:
+        return {"path": str(path), "family": family, "accounts": []}
+    if expected_signatures and not any(s in text for s in expected_signatures):
         return {
             "_error": "signature-mismatch",
-            "expected_signature": expected_signature,
+            "family": family,
             "path": str(path),
         }
     period = parse_statement_period(text)
@@ -629,6 +1122,7 @@ def parse_svbwa_statement_pdf(path, *, expected_signature=None):
     accounts_out = []
     for block in blocks:
         rows = parse_holdings_block(block.text)
+        activity, activity_totals = parse_activity_block(block.text)
         accounts_out.append({
             "account_external_id": block.account_external_id,
             "holdings": [
@@ -643,24 +1137,29 @@ def parse_svbwa_statement_pdf(path, *, expected_signature=None):
                 }
                 for r in rows
             ],
+            "activity": [
+                {
+                    "date": a.date,
+                    "section": a.section,
+                    "account_type": a.account_type,
+                    "verb": a.verb,
+                    "description": a.description,
+                    "quantity": a.quantity,
+                    "amount": a.amount,
+                    "ordinal": a.ordinal,
+                }
+                for a in activity
+            ],
+            "activity_totals": activity_totals,
         })
     return {
         "path": str(path),
+        "family": family,
         "period_start": period[0].isoformat() if period else None,
         "period_end": period[1].isoformat() if period else None,
+        "stated_total": parse_statement_total(text),
         "accounts": accounts_out,
     }
-
-
-def _extract_pdf_text(path):
-    """Concatenate every page's text via pdfplumber, joined with
-    newlines so ``parse_account_blocks`` can split on the
-    per-page-restamped ``Account Number:`` header."""
-    import pdfplumber
-    with pdfplumber.open(str(path)) as pdf:
-        return "\n".join(
-            (page.extract_text() or "") for page in pdf.pages
-        )
 
 
 # ============================================================
@@ -677,8 +1176,9 @@ def _main(argv):
     )
     p.add_argument("pdf", nargs="+", help="One or more PDF paths.")
     p.add_argument(
-        "--signature", default=None,
-        help="Optional page-1 substring guard.",
+        "--signature", action="append", default=None,
+        help="Optional page-1 substring guard; repeat to accept "
+             "any one of several registrations.",
     )
     p.add_argument(
         "--json-out", default="-",
@@ -686,7 +1186,8 @@ def _main(argv):
     )
     args = p.parse_args(argv)
     out = [
-        parse_svbwa_statement_pdf(pp, expected_signature=args.signature)
+        parse_svbwa_statement_pdf(
+            pp, expected_signatures=tuple(args.signature or ()))
         for pp in args.pdf
     ]
     blob = _json.dumps(out, indent=2, ensure_ascii=False, default=str)
