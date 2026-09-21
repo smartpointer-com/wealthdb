@@ -809,3 +809,73 @@ func TestABankChargeNamesTheBankAsPayee(t *testing.T) {
 		}
 	}
 }
+
+// TestBookBalanceFillsTheAccountsTheStatementFeedNeverReaches pins the
+// gap the account master-data feed closes, and the rule that keeps it
+// from disturbing what already worked.
+//
+// MT940 delivery is per-account and the master data is not, so an
+// account out of scope for statements had a ledger and no balance —
+// which the coverage report cannot measure and, worse, reports as a
+// measured gap because both period boundaries resolve to the same
+// stale snapshot.
+//
+// Three accounts, one of each shape: one the statement feed covers,
+// which must keep exactly the balance it had and gain nothing; one it
+// does not, which gains the book balance; and one whose master-data row
+// states no balance at all, which must gain nothing rather than a zero.
+func TestBookBalanceFillsTheAccountsTheStatementFeedNeverReaches(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 2, '/x/1');
+        INSERT INTO cash_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
+            (1000, 'SFTPCHxx', 'CHKKBBBBRRRRAAAAAAAAC',
+             '{"AcctCcyIsoCd":"CHF","BookBalAmt":1500.00,"BookBalCcyIsoCd":"CHF"}'),
+            (1000, 'SFTPCHxx', 'CHKKBBBBRRRRAAAAAAAAJ',
+             '{"AcctCcyIsoCd":"JPY","BookBalAmt":-7777777,"BookBalCcyIsoCd":"JPY"}'),
+            (1000, 'SFTPCHxx', 'CHKKBBBBRRRRAAAAAAAAN',
+             '{"AcctCcyIsoCd":"EUR"}');
+        INSERT INTO cash_balances(snapshot_at, relationship_id, account_external_id, balance_kind, currency_iso, payload) VALUES
+            (1000, 'SFTPCHxx', 'CHKKBBBBRRRRAAAAAAAAC', 'closing', 'CHF',
+             '{"amount":1500.00,"credit_debit":"C","currency_iso":"CHF"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	byAccount := map[string][]canonical.CashBalanceChange{}
+	for _, b := range batch.CashBalances {
+		byAccount[b.AccountExternalID] = append(byAccount[b.AccountExternalID], b)
+	}
+	// The statement's account keeps ONE balance. A second would not
+	// collide — gold has no uniqueness constraint here and the writer
+	// plain INSERTs — it would read as two observations of one day.
+	if got := len(byAccount["CHKKBBBBRRRRAAAAAAAAC"]); got != 1 {
+		t.Errorf("the statement's account has %d balances, want 1", got)
+	}
+	// The account the statement feed never reaches gains the book
+	// balance, as a CLOSING balance and signed as the feed states it.
+	jpy := byAccount["CHKKBBBBRRRRAAAAAAAAJ"]
+	if len(jpy) != 1 {
+		t.Fatalf("the statement-less account has %d balances, want 1", len(jpy))
+	}
+	if jpy[0].BalanceKind != canonical.BalanceKindClosing {
+		t.Errorf("book balance kind = %q, want closing", jpy[0].BalanceKind)
+	}
+	if got := jpy[0].Amount.String(); got != "-7777777" {
+		t.Errorf("book balance = %s, want -7777777 (signed at the source)", got)
+	}
+	if jpy[0].Currency != "JPY" {
+		t.Errorf("book balance currency = %q, want JPY", jpy[0].Currency)
+	}
+	// A master-data row stating no balance states nothing. A cash
+	// account legitimately sits at zero, so a missing figure must not
+	// be read as having observed one.
+	if got := len(byAccount["CHKKBBBBRRRRAAAAAAAAN"]); got != 0 {
+		t.Errorf("an account stating no book balance got %d, want 0", got)
+	}
+}

@@ -61,6 +61,9 @@ func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	if err := c.appendCashBalances(ctx, w, byTime); err != nil {
 		return nil, err
 	}
+	if err := c.appendBookBalances(ctx, w, byTime); err != nil {
+		return nil, err
+	}
 	if err := c.appendFxRates(ctx, w, byTime); err != nil {
 		return nil, err
 	}
@@ -607,6 +610,100 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 		})
 	}
 	return rows.Err()
+}
+
+// appendBookBalances emits the book balance the account master-data
+// block states for EVERY cash account, filling the accounts the
+// statement feed never reaches.
+//
+// MT940 delivery is per-account and the master data is not: an
+// account out of scope for statements receives none on any day, while
+// its book balance arrives with every dump. Such an account had a
+// ledger and no balance — which the coverage report cannot measure,
+// and does not merely leave unchecked: it resolves both period
+// boundaries ASOF, so a series ending before the period puts both on
+// one stale snapshot and the row reports a measured gap it never
+// looked at.
+//
+// The book balance is the CLOSING balance rather than a kind of its
+// own. Measured, not assumed: wherever the two feeds overlap it
+// equals the MT940 closing figure to the cent and matches neither the
+// opening nor the available one. It is signed at the source, so the
+// statement rail's credit/debit indicator has no counterpart here.
+//
+// Runs after appendCashBalances and skips whatever that pass EMITTED,
+// which is why it takes the balances it wrote rather than re-reading
+// silver: the two would diverge on a balance kind the statement pass
+// declines. Gold's cash_balances has no uniqueness constraint and the
+// writer plain INSERTs, so a duplicate would not collide — it would
+// read as two observations of one day.
+//
+// The skip key is deliberately (snapshot, account, currency) and not
+// the balance KIND: an account-day the statement rail spoke for at all
+// is one this pass has nothing to add to, and a second closing figure
+// standing beside the statement's own is the outcome being avoided.
+func (c *psnReader) appendBookBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+	type key struct {
+		snapshotAt int64
+		account    string
+		currency   string
+	}
+	stated := map[key]struct{}{}
+	for snap, batch := range byTime {
+		for _, b := range batch.CashBalances {
+			stated[key{snap, b.AccountExternalID, b.Currency}] = struct{}{}
+		}
+	}
+	const q = `
+SELECT snapshot_at, account_external_id, payload
+  FROM cash_accounts
+ WHERE snapshot_at BETWEEN ? AND ?`
+	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	if err != nil {
+		return fmt.Errorf("appendBookBalances: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			snap           int64
+			extID, payload string
+		)
+		if err := rows.Scan(&snap, &extID, &payload); err != nil {
+			return err
+		}
+		batch, ok := byTime[snap]
+		if !ok {
+			continue
+		}
+		var p bookBalancePayload
+		if err := json.Unmarshal([]byte(payload), &p); err != nil {
+			return fmt.Errorf("cash_accounts payload (snap=%d): %w", snap, err)
+		}
+		if p.BookBalance == nil || p.Currency == "" {
+			continue
+		}
+		if _, spoken := stated[key{snap, extID, p.Currency}]; spoken {
+			continue
+		}
+		batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
+			SnapshotAt:        snap,
+			AccountExternalID: extID,
+			Currency:          p.Currency,
+			BalanceKind:       canonical.BalanceKindClosing,
+			Amount:            *p.BookBalance,
+			Payload:           json.RawMessage(payload),
+		})
+	}
+	return rows.Err()
+}
+
+// bookBalancePayload is the balance half of the account master-data
+// block. The amount is a pointer so an absent figure is told from a
+// zero one: a cash account legitimately sits at zero, and a feed that
+// stated nothing must not be read as having stated that.
+type bookBalancePayload struct {
+	BookBalance *canonical.Decimal `json:"BookBalAmt"`
+	Currency    string             `json:"BookBalCcyIsoCd"`
 }
 
 func canonicalBalanceKind(silverKind string) canonical.BalanceKind {

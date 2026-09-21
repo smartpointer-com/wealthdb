@@ -45,7 +45,8 @@ identifier dimensions show up in every gold row:
 | `portfolios` | `portfolios` | `PrtflId` as `portfolio_external_id` (the dedicated gold table, migration 0004). |
 | `instruments` | `instruments` | See §4 for the `(asset_class, vehicle)` derivation. |
 | `holdings` | `positions` | One securities holding per row. |
-| `cash_balances` | `cash_balances` | Direct one-to-one; UBS `balance_kind` enum carries over. |
+| `cash_balances` | `cash_balances` | Direct one-to-one; UBS `balance_kind` enum carries over. From the MT940 statement feed, whose delivery is per-account: an account is in scope for statements or it is not, and one that is not receives none on any day. |
+| `cash_accounts.payload.BookBalAmt` | `cash_balances` (kind=`closing`) | The account master data states a daily book balance for EVERY cash account, so it fills the ones the statement feed never reaches (`appendBookBalances`). It IS the closing balance — measured, not assumed: on every (snapshot, account) the two feeds share it equals the MT940 closing figure to the cent and matches neither the opening nor the available one. Signed at the source, so no credit/debit indicator applies. A key the statement feed already emitted is skipped, so the pass is strictly additive. |
 | `pending_securities` | — | Most rows are "no activity" markers (`ACTI//N`). Deferred. |
 | `fx_rates` | `fx_rates` | Base currency is CHF in the current PSN setup. |
 | `portfolio_performance` | — | Monthly TDPOPF analytics. Deferred. |
