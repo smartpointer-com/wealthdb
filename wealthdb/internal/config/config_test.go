@@ -84,6 +84,71 @@ func TestLoadInceptionOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadSupersession pins the block that ends a source's account at a
+// date because something else carries it from there. Every load reads it
+// through Epochs(), including the loads of the configs that do not have
+// it — so the absent block has to answer too, not panic.
+func TestLoadSupersession(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"cointracking","kind":"cointracking","path":"/tmp/ct.db"}],`
+
+	c, err := Load(writeConfig(t, base+`"supersession":{"accounts":{"cointracking":{"WALLET1":"2023-03-10"}}}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want, _ := parseYYYYMMDD("2023-03-10")
+	if got := c.Supersession.Epochs()["cointracking"]["WALLET1"]; got != want {
+		t.Errorf("epoch = %d, want %d (UTC midnight of the handover)", got, want)
+	}
+
+	// No block at all: the shape every deployment without a handover has.
+	c, err = Load(writeConfig(t, strings.TrimSuffix(base, ",")+`}`))
+	if err != nil {
+		t.Fatalf("a config without the block must load: %v", err)
+	}
+	if c.Supersession != nil {
+		t.Errorf("Supersession = %v, want nil when the block is absent", c.Supersession)
+	}
+	if got := c.Supersession.Epochs(); got != nil {
+		t.Errorf("Epochs() = %v, want nil — the nil receiver is the ordinary case", got)
+	}
+
+	// An empty block supersedes nothing, which is not the same as an error.
+	c, err = Load(writeConfig(t, base+`"supersession":{}}`))
+	if err != nil {
+		t.Fatalf("an empty block must load: %v", err)
+	}
+	if got := c.Supersession.Epochs(); got != nil {
+		t.Errorf("Epochs() = %v, want nil for an empty block", got)
+	}
+}
+
+// TestLoadSupersessionRejects: the block names a source and a date, and
+// both fail SILENTLY downstream when wrong — a source id that matches
+// nothing supersedes nothing, and a date that will not parse is dropped
+// by Epochs(). Either way the two sources both keep contributing and
+// gold double-counts the account, so the config file is the only place
+// left to catch it.
+func TestLoadSupersessionRejects(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"cointracking","kind":"cointracking","path":"/tmp/ct.db"}],`
+	cases := map[string]string{
+		"unknown source":    `"supersession":{"accounts":{"nope":{"WALLET1":"2019-01-01"}}}}`,
+		"empty account key": `"supersession":{"accounts":{"cointracking":{"":"2019-01-01"}}}}`,
+		"bad date":          `"supersession":{"accounts":{"cointracking":{"WALLET1":"not-a-date"}}}}`,
+	}
+	for name, block := range cases {
+		_, err := Load(writeConfig(t, base+block))
+		if err == nil {
+			t.Errorf("%s: Load should have failed", name)
+			continue
+		}
+		// The message names the block it came from: this call site is the
+		// only one that reaches the "supersession." template.
+		if !strings.Contains(err.Error(), "supersession.accounts") {
+			t.Errorf("%s: error %q does not name the block", name, err)
+		}
+	}
+}
+
 func TestLoadReturnsExclude(t *testing.T) {
 	path := writeConfig(t, `{
         "gold_db": "/tmp/wealthdb.db",

@@ -10,9 +10,13 @@ import (
 // kindFor maps fidelity-web's `transactions.kind` (the
 // first word of Fidelity's "Action" column, e.g. "BUY",
 // "DIVIDEND", "CASH_SWEEP_IN") to canonical TxKind values.
-// DISTRIBUTION is the one kind that needs row context — the
-// quantity and the payload's raw Action text — because Fidelity
-// overloads it (see the case below).
+// Some kinds need more than the raw verb. DISTRIBUTION reads the
+// quantity and the payload's raw Action text, because Fidelity
+// overloads it. WIRE and DIRECT_DEBIT / DIRECT_DEPOSIT read the
+// sign of `amount`, because their verbs do not state the direction
+// from this account's side — WIRE carries none at all, and the
+// DIRECT_* pair names the leg the originating bank saw. See the
+// cases below.
 //
 // Fidelity's signed `amount` already follows the single-entry
 // convention from the account's perspective (positive = cash in,
@@ -85,6 +89,23 @@ func kindFor(raw string, quantity, amount *canonical.Decimal, payload string) ca
 		// account wealthdb also tracks pairs and nets out, one to an
 		// account it does not is spend. Landing it in TxKindOther, as
 		// an unrecognised kind would, puts it beyond both.
+		if amount != nil && amount.IsPositive() {
+			return canonical.TxKindDeposit
+		}
+		return canonical.TxKindWithdrawal
+	case "DIRECT_DEBIT", "DIRECT_DEPOSIT":
+		// ACH pulls and pushes, read off the SVB Wealth Advisory
+		// statements. The verb names a direction, but only the one the
+		// originating bank saw: the same movement books as DIRECT DEBIT
+		// on the account it leaves and DIRECT DEPOSIT on the one it
+		// reaches, and a reversal books under the verb of the leg it
+		// undoes. The sign is what actually says which way the money
+		// went, so read it, exactly as WIRE above — and for the same
+		// downstream reason: an ACH out has to reach the spending
+		// population, where the internal-transfer matcher pairs it
+		// against the receiving leg when wealthdb tracks that account
+		// too. TxKindOther, which an unrecognised kind would give, puts
+		// it beyond both.
 		if amount != nil && amount.IsPositive() {
 			return canonical.TxKindDeposit
 		}

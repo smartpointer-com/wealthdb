@@ -377,6 +377,11 @@ func buildSourceSpec(
 	if links := cfg.TransactionInstruments[s.ID]; len(links) > 0 {
 		spec.TransactionInstruments = maps.Clone(links)
 	}
+	// No clone, unlike the line above: Epochs() parses into a fresh map
+	// each call, so nothing else holds this one.
+	if ends := cfg.Supersession.Epochs()[s.ID]; len(ends) > 0 {
+		spec.Supersession = ends
+	}
 	return spec, nil
 }
 

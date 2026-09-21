@@ -8,6 +8,7 @@ package loader
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -60,6 +61,22 @@ type SourceSpec struct {
 	// resolve, keyed by the token it looked up and failed on
 	// (canonical.TransactionChange.InstrumentHint).
 	TransactionInstruments map[string]string
+	// Supersession ends this source's account at a date because
+	// another source carries it from there (config `supersession`),
+	// as Unix seconds at UTC midnight per account_external_id. Rows
+	// dated on or after it are dropped before they reach gold —
+	// positions, cash balances and transactions alike — so the two
+	// sources tile instead of double-counting. Dropping alone would
+	// not end the series: gold carries a key forward until something
+	// supersedes it, so one zero row is also written AT the date for
+	// every key the account still held at its last pre-handover
+	// snapshot (see supersessionClosing). Empty is a no-op.
+	//
+	// The drop is of what the ADAPTER read. A TransferLedger row past
+	// the date is refused instead of dropped, because it is written by
+	// hand rather than read from a statement — see
+	// rejectSupersededTransfers.
+	Supersession map[string]int64
 	// TransferLedger holds this source's rows from the optional
 	// equity-transfer ledger (config `equity_transfers`). The loader
 	// injects each as a canonical transfer_in/transfer_out transaction
@@ -231,6 +248,14 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 			return nil, fmt.Errorf("Load(%s): %w", spec.ID, err)
 		}
 
+		// A ledger row dated past a superseded account's handover is
+		// refused rather than dropped the way the adapter's rows are, and
+		// refused before any of the ledger is written — see
+		// rejectSupersededTransfers.
+		if err := rejectSupersededTransfers(ctx, tx, spec); err != nil {
+			return nil, fmt.Errorf("Load(%s): %w", spec.ID, err)
+		}
+
 		// Inject the optional equity-transfer ledger as canonical transfer
 		// transactions, replacing this source's prior ledger rows. The
 		// delete+insert spans the whole ledger (rows are dated outside the
@@ -322,8 +347,9 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 }
 
 // applySnapshots drains conn.Snapshots into the gold writer.
-// Fact rows (positions, cash, fx) are written per batch; dimension
-// rows (portfolios, accounts, instruments) fold into a
+// Fact rows (positions, cash, fx) are written per batch, plus a
+// closing set once the stream drains (below); dimension rows
+// (portfolios, accounts, instruments) fold into a
 // gold.ChangeAccumulator and upsert once after the stream drains —
 // adapters re-emit dimension rows alongside every snapshot, so
 // folding them to one record per entity removes the bulk of the
@@ -337,7 +363,16 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 // then per-account ones, all to AccountChange records; instrument
 // overrides to InstrumentChange and PositionChange records. See
 // applyTaxableWrapper, applyPortfolioOverrides, applyAccountOverrides
-// and applyInstrumentOverrides.
+// and applyInstrumentOverrides. Then dropSuperseded removes the rows
+// of an account another source carries from a date on — after the
+// rest, so it drops finished records rather than leaving half-dressed
+// ones behind. Last, once the stream drains, comes the closing write:
+// one zero row at each superseded account's handover date for every
+// key it still held going in, so the old mark cannot carry forward
+// past the handover (see supersessionClosing). Those rows are
+// synthesised rather than read from silver, and count toward the
+// total returned; deleteClosingRows clears the previous load's set
+// first, because the delete that opens the load may not reach them.
 func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w canonical.Window, spec SourceSpec) (int, error) {
 	stream, err := conn.Snapshots(ctx, w)
 	if err != nil {
@@ -347,6 +382,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 
 	writer := gold.NewWriter(tx)
 	dims := gold.NewChangeAccumulator()
+	closing := newSupersessionClosing(spec.Supersession)
 	total := 0
 	for {
 		batch, more, err := stream.Next(ctx)
@@ -363,6 +399,21 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		applyPortfolioOverrides(batch.Accounts, spec.PortfolioOverrides)
 		applyAccountOverrides(batch.Accounts, spec.Overrides)
 		applyInstrumentOverrides(batch.Instruments, batch.Positions, spec.InstrumentOverrides)
+		// Before the drop, record what each superseded account held
+		// going into its handover — read after the statements above, so
+		// the zero row carries the same dressed keys as the row it ends.
+		closing.observe(batch.Positions, batch.CashBalances)
+		// Last of the per-batch statements, so it drops rows the ones
+		// above have finished dressing rather than leaving half-applied
+		// ones behind.
+		batch.Positions = dropSuperseded(batch.Positions, spec.Supersession,
+			func(p canonical.PositionChange) (string, int64) {
+				return p.AccountExternalID, p.SnapshotAt
+			})
+		batch.CashBalances = dropSuperseded(batch.CashBalances, spec.Supersession,
+			func(c canonical.CashBalanceChange) (string, int64) {
+				return c.AccountExternalID, c.SnapshotAt
+			})
 
 		if err := dims.AddBatch(&batch); err != nil {
 			return total, err
@@ -380,9 +431,224 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		total += len(batch.Positions) + len(batch.CashBalances) + len(batch.FxRates)
 
 		if !more {
+			positions, balances := closing.rows(spec.ID)
+			if err := deleteClosingRows(ctx, tx, spec.ID, positions, balances); err != nil {
+				return total, err
+			}
+			if err := writer.InsertPositions(ctx, positions); err != nil {
+				return total, err
+			}
+			if err := writer.InsertCashBalances(ctx, balances); err != nil {
+				return total, err
+			}
+			total += len(positions) + len(balances)
 			return total, dims.Flush(ctx, writer)
 		}
 	}
+}
+
+// deleteClosingRows removes the rows this load is about to rewrite at
+// a handover date, ahead of writing that date's zeros again.
+//
+// The window delete that opens a load spans what silver itself
+// reports, and a superseded source's data can stop before the date
+// another source takes the account over — so the zeros the last load
+// wrote at the handover can sit outside every window this source will
+// ever report, and re-inserting them would collide on the primary key.
+// Nothing else of this source's can be dated there: dropSuperseded has
+// already cut everything from the handover on.
+//
+// It deletes exactly what this load recomputed, per account and per
+// table, never the whole configured set. The closing rows are a
+// function of the source's PRE-handover history, not of the change
+// window, so an incremental window that opens after the handover
+// recomputes nothing and must leave the standing zeros alone — wiping
+// them there would let the last pre-handover mark carry forward again,
+// which is the double-count the feature exists to prevent. Per-table
+// scoping matters for the same reason: a source whose cash series ends
+// before its positions produces position zeros and no balance zeros in
+// one load, and the standing cash zero must survive it. Retiring a zero
+// for an account that has left silver altogether is `reload`'s job.
+func deleteClosingRows(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceID string,
+	positions []canonical.PositionChange,
+	balances []canonical.CashBalanceChange,
+) error {
+	if err := deleteClosing(ctx, tx, sourceID, "positions", positions,
+		func(p canonical.PositionChange) (string, int64) {
+			return p.AccountExternalID, p.SnapshotAt
+		}); err != nil {
+		return err
+	}
+	return deleteClosing(ctx, tx, sourceID, "cash_balances", balances,
+		func(b canonical.CashBalanceChange) (string, int64) {
+			return b.AccountExternalID, b.SnapshotAt
+		})
+}
+
+// deleteClosing issues one DELETE per (account, snapshot) pair the rows
+// name, deduped so the table is hit once per pair.
+//
+// Generic over the fact kinds for the same reason dropSuperseded is:
+// both tables are addressed by the same pair of fields, and `at` reads
+// that pair off a row. The dedup key mirrors the DELETE predicate
+// rather than the caller's per-account cutoff, so it stays correct by
+// local inspection if a caller ever names more than one date per
+// account.
+func deleteClosing[T any](ctx context.Context, tx *sql.Tx, sourceID, table string,
+	rows []T, at func(T) (string, int64)) error {
+	q := fmt.Sprintf(
+		`DELETE FROM %s WHERE silver_source_id = ? AND account_external_id = ? AND snapshot_at = ?`,
+		table,
+	)
+	seen := map[[2]any]bool{}
+	for _, row := range rows {
+		account, when := at(row)
+		k := [2]any{account, when}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if _, err := tx.ExecContext(ctx, q, sourceID, account, when); err != nil {
+			return fmt.Errorf("delete closing rows from %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// supersessionClosing builds the zero rows that END a superseded
+// account's series.
+//
+// Dropping an account's rows from the handover on is only half of it.
+// Gold carries a key forward until something supersedes it, and a
+// source that simply stops reporting supersedes nothing — so the last
+// mark before the handover would linger for up to hist_carry_days,
+// double-counting against whatever carries the account now. An explicit
+// zero ends a key immediately, which is what an adapter emits on
+// closure, so that is what this synthesises: at the handover date, one
+// zero for every key the account still held going into it.
+//
+// "Still held" is read off the account's LAST snapshot before the
+// handover, not off everything it ever held — a key already gone by
+// then has already ended, and re-zeroing it would resurrect it for a
+// day.
+//
+// Positions and cash keep separate clocks: gold resolves the two on
+// their own tables, so a cash row dated after the last positions
+// snapshot ends no position, and a position row after the last cash
+// snapshot ends no balance. One clock would let either silence the
+// other's zeros.
+type supersessionClosing struct {
+	ends     map[string]int64
+	atKeys   map[string]int64                                      // account -> its last positions snapshot before the handover
+	atBals   map[string]int64                                      // account -> its last cash snapshot before the handover
+	keys     map[string]map[string]canonical.PositionChange        // account -> position key -> the row to zero
+	balances map[string]map[balanceKey]canonical.CashBalanceChange // account -> currency+kind -> the row to zero
+}
+
+// balanceKey is gold's identity for a cash series minus the account:
+// cash_balances is keyed on (source, snapshot, account, currency,
+// balance_kind), and the carry-forward runs per currency. Collecting by
+// kind alone would keep one currency of an account and leave every
+// other one carrying past the handover.
+type balanceKey struct {
+	currency string
+	kind     canonical.BalanceKind
+}
+
+func newSupersessionClosing(ends map[string]int64) *supersessionClosing {
+	return &supersessionClosing{
+		ends:     ends,
+		atKeys:   map[string]int64{},
+		atBals:   map[string]int64{},
+		keys:     map[string]map[string]canonical.PositionChange{},
+		balances: map[string]map[balanceKey]canonical.CashBalanceChange{},
+	}
+}
+
+// observe records what each superseded account held at the latest
+// snapshot it has been seen at so far — per fact kind, each on its own
+// clock — discarding an earlier one when a later (but still
+// pre-handover) snapshot arrives.
+func (c *supersessionClosing) observe(positions []canonical.PositionChange,
+	balances []canonical.CashBalanceChange) {
+	if len(c.ends) == 0 {
+		return
+	}
+	for _, p := range positions {
+		account := p.AccountExternalID
+		if !c.advance(c.atKeys, account, p.SnapshotAt, func() {
+			c.keys[account] = map[string]canonical.PositionChange{}
+		}) {
+			continue
+		}
+		c.keys[account][p.PositionKey] = p
+	}
+	for _, b := range balances {
+		account := b.AccountExternalID
+		if !c.advance(c.atBals, account, b.SnapshotAt, func() {
+			c.balances[account] = map[balanceKey]canonical.CashBalanceChange{}
+		}) {
+			continue
+		}
+		c.balances[account][balanceKey{b.Currency, b.BalanceKind}] = b
+	}
+}
+
+// advance reports whether a row belongs to the account's newest
+// pre-handover snapshot on the given clock, calling reset to discard
+// what was collected for an older one.
+func (c *supersessionClosing) advance(clock map[string]int64, account string, at int64, reset func()) bool {
+	cutoff, superseded := c.ends[account]
+	if !superseded || at >= cutoff {
+		return false
+	}
+	seen, ok := clock[account]
+	if ok && at < seen {
+		return false
+	}
+	if !ok || at > seen {
+		clock[account] = at
+		reset()
+	}
+	return true
+}
+
+// supersessionMarkerPayload replaces the payload of the row a zero was
+// built from. Every other value-bearing field is zeroed or dropped, and
+// a payload restating the pre-handover holding would be the one place
+// the row still claimed it; the marker also makes it recognisable in
+// gold as synthesised rather than read. Mirrors silver's closure marker.
+const supersessionMarkerPayload = `{"supersession_marker": true}`
+
+// rows returns the zeroed positions and balances to write at each
+// superseded account's handover date. An account the stream never
+// carried contributes nothing — there is no series to end.
+func (c *supersessionClosing) rows(sourceID string) ([]canonical.PositionChange, []canonical.CashBalanceChange) {
+	var positions []canonical.PositionChange
+	var balances []canonical.CashBalanceChange
+	zero := canonical.NewDecimalFromInt(0)
+	for account, cutoff := range c.ends {
+		for _, p := range c.keys[account] {
+			p.SilverSourceID = sourceID
+			p.SnapshotAt = cutoff
+			q, v := zero, zero
+			p.Quantity, p.MarketValue = &q, &v
+			p.BookValue, p.AccruedInterest, p.AcquisitionDate = nil, nil, nil
+			p.Payload = json.RawMessage(supersessionMarkerPayload)
+			positions = append(positions, p)
+		}
+		for _, b := range c.balances[account] {
+			b.SilverSourceID = sourceID
+			b.SnapshotAt = cutoff
+			b.Amount = zero
+			b.Payload = json.RawMessage(supersessionMarkerPayload)
+			balances = append(balances, b)
+		}
+	}
+	return positions, balances
 }
 
 // applyTransactions drains conn.Transactions into the gold writer.
@@ -404,6 +670,10 @@ func applyTransactions(ctx context.Context, tx *sql.Tx, conn silver.Connection, 
 		// Config-file overrides go on top of whatever the adapter
 		// emitted, as they do on the snapshot side; see DESIGN.md §13.9.
 		applyTransactionInstruments(batch.Transactions, spec.TransactionInstruments)
+		batch.Transactions = dropSuperseded(batch.Transactions, spec.Supersession,
+			func(x canonical.TransactionChange) (string, int64) {
+				return x.AccountExternalID, x.OccurredAt
+			})
 		if err := writer.InsertTransactions(ctx, batch.Transactions); err != nil {
 			return total, err
 		}
@@ -630,6 +900,79 @@ func applyPortfolioOverrides(accounts []canonical.AccountChange, overrides map[s
 			accounts[i].TaxWrapper = &w
 		}
 	}
+}
+
+// dropSuperseded removes the rows of an account another source carries
+// from a date on — everything dated on or AFTER that date, keeping what
+// precedes it, so a statement or a dump straddling the handover still
+// contributes its earlier half.
+//
+// Generic over the fact kinds because all three are filtered the same
+// way and by the same pair of fields; `at` reads that pair off a row.
+// Returns the slice unchanged when nothing is configured, and when the
+// configured accounts appear in no row — an entry matching nothing is a
+// no-op, not an error, since a source that stops emitting the account
+// on its own is the outcome this was for.
+func dropSuperseded[T any](rows []T, from map[string]int64, at func(T) (string, int64)) []T {
+	if len(from) == 0 || len(rows) == 0 {
+		return rows
+	}
+	kept := rows[:0]
+	for _, row := range rows {
+		account, when := at(row)
+		if cutoff, ok := from[account]; ok && when >= cutoff {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	return kept
+}
+
+// rejectSupersededTransfers fails the load when an equity-transfer
+// ledger row falls on or after the handover of the account it names.
+//
+// The adapter's rows are DROPPED there: a statement straddling the
+// handover is expected, and its later half is the successor's to state.
+// A ledger row is the opposite — it is written by hand, one row at a
+// time, asserting a capital flow nothing else in silver carries.
+// Dropping one silently would delete a real flow, which the returns
+// engine then reads as performance inside the account; the row belongs
+// under the source that carries the account from the handover on, and
+// saying so is the only outcome that gets it there.
+//
+// Resolution is the ledger's own (account_external_id or nickname,
+// gold.NewAccountResolver), because supersession is keyed on the
+// resolved id.
+func rejectSupersededTransfers(ctx context.Context, tx *sql.Tx, spec SourceSpec) error {
+	if len(spec.Supersession) == 0 || len(spec.TransferLedger) == 0 {
+		return nil
+	}
+	resolve, err := gold.NewAccountResolver(ctx, tx, spec.ID)
+	if err != nil {
+		return fmt.Errorf("equity_transfers: %w", err)
+	}
+	return checkSupersededTransfers(spec.ID, spec.TransferLedger, spec.Supersession, resolve)
+}
+
+// checkSupersededTransfers is rejectSupersededTransfers' decision, split
+// off from the gold read so it can be exercised without one.
+func checkSupersededTransfers(sourceID string, entries []TransferEntry,
+	ends map[string]int64, resolve gold.AccountResolver) error {
+	day := func(t int64) string { return time.Unix(t, 0).UTC().Format("2006-01-02") }
+	for _, e := range entries {
+		account, err := resolve(e.Account)
+		if err != nil {
+			return fmt.Errorf("equity_transfers: %w", err)
+		}
+		cutoff, superseded := ends[account]
+		if !superseded || e.OccurredAt < cutoff {
+			continue
+		}
+		return fmt.Errorf(
+			"equity_transfers: %s is superseded in source %s from %s, so its row dated %s belongs under the source that carries it from there",
+			account, sourceID, day(cutoff), day(e.OccurredAt))
+	}
+	return nil
 }
 
 // applyTaxableWrapper restates which taxable wrapper this source's

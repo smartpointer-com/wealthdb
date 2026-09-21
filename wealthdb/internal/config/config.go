@@ -87,6 +87,33 @@ type Config struct {
 	// `instrument_overrides`' question, and the two compose: pin the
 	// link here, pin its classification there.
 	TransactionInstruments map[string]map[string]string `json:"transaction_instruments,omitempty"`
+	// Supersession ends a silver source's account at a date, because
+	// something else carries it from there. An account can outlive its
+	// source — a deposit account whose bank is acquired keeps running
+	// under the collector for the acquirer, a holding moves custodian —
+	// and gold keys an account on (silver_source_id,
+	// account_external_id), so the two sources are two accounts and BOTH
+	// count. Naming the date the later source takes over stops the older
+	// one contributing from there: positions, cash balances and
+	// transactions alike. It also writes one zero row AT that date for
+	// whatever the account still held, because gold carries a key
+	// forward until something supersedes it and a source that simply
+	// stops reporting supersedes nothing.
+	//
+	// What is cut is what the ADAPTER read. An `equity_transfers` row
+	// dated on or after the date is refused by name instead, failing the
+	// load rather than silently dropping a hand-written capital flow —
+	// see loader.rejectSupersededTransfers.
+	//
+	// It cuts by DATE, not by dropping the account, so a statement or a
+	// dump straddling the handover still contributes the part that
+	// precedes it. It bounds a series at the END; InceptionOverrides
+	// below bounds the start, and the two are different knobs.
+	//
+	// An entry matching nothing is a silent no-op, as the other override
+	// families' are — a source that stops emitting the account on its own
+	// is a success, not an error. See docs/DESIGN.md §13.9.
+	Supersession *Supersession `json:"supersession,omitempty"`
 	// InceptionOverrides pins the returns-window START date per silver
 	// source, portfolio, or account, so an entity's track record can
 	// begin at its first real capital instead of a tiny pre-history
@@ -415,6 +442,37 @@ type PortfolioOverride struct {
 type InstrumentOverride struct {
 	AssetClass string `json:"asset_class,omitempty"`
 	Vehicle    string `json:"vehicle,omitempty"`
+}
+
+// Supersession is the `supersession` block of wealthdb.cfg: per
+// source, per account_external_id, the YYYY-MM-DD from which that
+// source's rows are dropped because another source carries the account
+// from then on.
+type Supersession struct {
+	Accounts map[string]map[string]string `json:"accounts,omitempty"` // source_id -> account_external_id -> date
+}
+
+// Epochs parses the YYYY-MM-DD values to Unix-seconds (UTC midnight),
+// keyed source -> account. Only call after Validate, which has already
+// verified the date format. A nil receiver returns a nil map.
+func (s *Supersession) Epochs() map[string]map[string]int64 {
+	if s == nil || len(s.Accounts) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]int64, len(s.Accounts))
+	for source, accounts := range s.Accounts {
+		for account, day := range accounts {
+			e, err := parseYYYYMMDD(day)
+			if err != nil {
+				continue
+			}
+			if out[source] == nil {
+				out[source] = make(map[string]int64, len(accounts))
+			}
+			out[source][account] = e
+		}
+	}
+	return out
 }
 
 // InceptionOverrides is the `inception_overrides` block of wealthdb.cfg.

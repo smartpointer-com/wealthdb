@@ -791,6 +791,7 @@ Example config file:
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.9. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
 | `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a securities trade whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.9. |
+| `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, cash balances and transactions dated on or AFTER the date, and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.10) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
@@ -3238,6 +3239,31 @@ one: it keeps the money in net worth and removes it from the
 coarse-grain return math, where `exclude` here removes it from gold
 entirely.
 
+`supersession` (§5.1) is the temporal member of the same family: where
+`exclude` removes an account from gold outright, this ends one source's
+account at a date because something else carries it from there. An
+account can outlive its source — a deposit account whose bank is
+acquired keeps running under the acquirer's collector, a holding moves
+custodian — and gold keys an account on `(silver_source_id,
+account_external_id)`, so the two are two accounts and both count.
+Dropping the later rows is not enough on its own: gold carries a key
+forward until something supersedes it, and a source that simply stops
+reporting supersedes nothing (§10.7), so the loader also writes one zero
+row AT the date for whatever the account still held — the explicit
+closure that absence cannot be. Cutting by date rather than by account
+keeps the earlier half of a statement or dump that straddles the
+handover, and bounds the series at the END where `inception_overrides`
+(§5.4) bounds its start.
+
+What is cut is what the adapter read. An `equity_transfers` (§13.10)
+row dated on or after the date is refused by name instead, failing the
+load: a ledger row is written by hand, one at a time, asserting a
+capital flow nothing else in silver carries, so dropping it silently
+would delete a real flow and the returns engine would read the gap as
+performance inside the account. The row belongs under the source that
+carries the account from the handover on, and saying so is the only
+outcome that gets it there.
+
 The instrument dimension has the same escape hatch:
 `instrument_overrides`, keyed by `(silver_source_id,
 instrument_external_id)`, pins a per-instrument `(asset_class,
@@ -3331,9 +3357,11 @@ each load deletes the source's prior `xfer:` rows and re-inserts the
 current set, so a `reload` picks up edits. A transfer dated at or
 before an account's first snapshot is *subsumed by the
 staggered-inception onboarding flow* (§10.9) — it is not
-double-counted — while a mid-life transfer is booked in full. The
-ledger is source-agnostic; any source's transfers are just rows
-with that `silver_source_id`.
+double-counted — while a mid-life transfer is booked in full. A row
+dated on or after the account's `supersession` (§5.1) date is refused
+and fails the load, rather than dropped the way the adapter's own
+rows are (§13.9). The ledger is source-agnostic; any source's
+transfers are just rows with that `silver_source_id`.
 
 That includes the positions-only source. `manual` collects no
 transactions, but value can reach it from another tracked vehicle

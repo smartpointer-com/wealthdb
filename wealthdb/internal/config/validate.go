@@ -251,10 +251,20 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("config: inception_overrides.sources[%q]: %w", sourceID, err)
 			}
 		}
-		if err := validateInceptionNested("portfolios", o.Portfolios, seenIDs); err != nil {
+		if err := validateNestedDates("inception_overrides", "portfolios", o.Portfolios, seenIDs); err != nil {
 			return err
 		}
-		if err := validateInceptionNested("accounts", o.Accounts, seenIDs); err != nil {
+		if err := validateNestedDates("inception_overrides", "accounts", o.Accounts, seenIDs); err != nil {
+			return err
+		}
+	}
+
+	// supersession: same shape and same checks as inception_overrides'
+	// nested grains — a source id that names nothing is a typo worth
+	// failing on, and a date that will not parse would silently supersede
+	// nothing.
+	if s := c.Supersession; s != nil {
+		if err := validateNestedDates("supersession", "accounts", s.Accounts, seenIDs); err != nil {
 			return err
 		}
 	}
@@ -457,20 +467,23 @@ func validateCategorization(key, levels string, cz *SpendingCategorization, vali
 	return nil
 }
 
-// validateInceptionNested checks one grain map of inception_overrides
-// (portfolios or accounts): every source id must be declared, every
-// inner id non-empty, every value a YYYY-MM-DD date.
-func validateInceptionNested(grain string, m map[string]map[string]string, seenIDs map[string]bool) error {
+// validateNestedDates checks a source_id -> external_id -> YYYY-MM-DD
+// map: every source id names a declared silver source (which catches a
+// typo at load), every inner key is non-empty, and every value parses.
+// Inner ids can't be checked against gold here — no DB access at config
+// load — so a typo'd one silently no-ops, as the other override
+// families' do.
+func validateNestedDates(block, grain string, m map[string]map[string]string, seenIDs map[string]bool) error {
 	for sourceID, inner := range m {
 		if !seenIDs[sourceID] {
-			return fmt.Errorf("config: inception_overrides.%s[%q]: no silver_sources[].id matches", grain, sourceID)
+			return fmt.Errorf("config: %s.%s[%q]: no silver_sources[].id matches", block, grain, sourceID)
 		}
 		for id, d := range inner {
 			if id == "" {
-				return fmt.Errorf("config: inception_overrides.%s[%q]: empty external-id key", grain, sourceID)
+				return fmt.Errorf("config: %s.%s[%q]: empty external-id key", block, grain, sourceID)
 			}
 			if _, err := parseYYYYMMDD(d); err != nil {
-				return fmt.Errorf("config: inception_overrides.%s[%q][%q]: %w", grain, sourceID, id, err)
+				return fmt.Errorf("config: %s.%s[%q][%q]: %w", block, grain, sourceID, id, err)
 			}
 		}
 	}

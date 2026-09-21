@@ -278,9 +278,10 @@ func TestAssetClassVehicleFor(t *testing.T) {
 	}
 }
 
-// TestClassifyHistoricalPair covers the statement-PDF shapes: statement rows carry no
-// structured type code, so the (exposure, Vehicle) pair comes from instrument-key
-// and description shapes alone. First match wins.
+// TestClassifyHistoricalPair covers the statement-PDF shapes: the
+// trust, brokerage, deposit and mortgage historical rows carry no
+// structured type code, so the (exposure, Vehicle) pair comes from
+// instrument-key and description shapes alone. First match wins.
 func TestClassifyHistoricalPair(t *testing.T) {
 	cases := []struct {
 		key, desc    string
@@ -315,8 +316,16 @@ func TestClassifyHistoricalPair(t *testing.T) {
 		{"EXB", "VANGUARD INTL EQUITY INDEX FDS EXAMPLE", canonical.AssetClassPublicEquity, canonical.VehicleETF},
 		{"EXC", "ISHARES TREASURY FLOATING RATE EXAMPLE", canonical.AssetClassFixedIncome, canonical.VehicleETF},
 		{"EXMPX", "VANGUARD EXAMPLE ADMIRAL SHARES", canonical.AssetClassPublicEquity, canonical.VehicleFund},
-		// The svb $0 closure marker carries no exposure.
-		{"", "Account closed — assets transferred", canonical.AssetClassOther, canonical.VehicleOther},
+		// The svb stated-$0 row carries no exposure.
+		{"", "NO POSITIONS", canonical.AssetClassOther, canonical.VehicleOther},
+		// The svb OCRed deposit and mortgage rows. Neither names an
+		// instrument, so without these both take the fall-through below —
+		// which would book a home loan as public equity.
+		{"", "CASH BALANCE", canonical.AssetClassCash, canonical.VehicleDemandDeposit},
+		// A whole-account value for a month the archive misses: worth
+		// known, composition not, so no exposure to claim.
+		{"", "ACCOUNT VALUE (ADVISOR MARK)", canonical.AssetClassOther, canonical.VehicleOther},
+		{"", "MORTGAGE PRINCIPAL", canonical.AssetClassRealEstate, canonical.VehicleMortgage},
 		// Fall-through: plain stock / ADR rows → public_equity / stock.
 		{"AAPL", "APPLE INC", canonical.AssetClassPublicEquity, canonical.VehicleStock},
 		{"", "PLACEHOLDER AG SPON ADR EACH REP 1 ORD SHS", canonical.AssetClassPublicEquity, canonical.VehicleStock},
@@ -494,6 +503,12 @@ func TestOutflowKindsReachSpending(t *testing.T) {
              '{"Action": "WIRE TRANSFER TO BANK (Cash)"}'),
             ('wirein', 915, 'ACC1', 'WIRE',   NULL, 'USD', 0, 0,  5678.00,
              '{"Action": "WIRE TRANSFER FROM BANK (Cash)"}'),
+            ('achout', 916, 'ACC1', 'DIRECT_DEBIT', NULL, 'USD', 0, 0, -2000.00,
+             '{"Action": "DIRECT DEBIT EXAMPLE BROKERAGE MONEYLINK"}'),
+            ('achin', 917, 'ACC1', 'DIRECT_DEPOSIT', NULL, 'USD', 0, 0, 2000.00,
+             '{"Action": "DIRECT DEPOSIT EXAMPLE BROKERAGE MONEYLINK"}'),
+            ('achrev', 918, 'ACC1', 'DIRECT_DEBIT', NULL, 'USD', 0, 0, 15.00,
+             '{"Action": "DIRECT DEBIT EXAMPLE BROKERAGE MONEYLINK"}'),
             ('adr',  920, 'ACC1', 'FEE',     'XYZ', 'USD', 0, 0, -1.50,
              '{"Action": "FEE CHARGED EXAMPLE CORP SPON ADR (XYZ) (Cash)", "Description": "EXAMPLE CORP SPON ADR"}');
     `); err != nil {
@@ -518,6 +533,14 @@ func TestOutflowKindsReachSpending(t *testing.T) {
 		// calling an inbound wire one would store a credit as a debit
 		// rather than merely mislabel it.
 		"wirein": canonical.TxKindDeposit,
+		// The ACH verbs name only the direction the ORIGINATING bank
+		// saw, and a reversal books under the verb of the leg it
+		// undoes — so, as with WIRE, the sign is what says which way
+		// the money went. `achrev` is the case that makes this more
+		// than tidiness: a DIRECT DEBIT carrying a credit.
+		"achout": canonical.TxKindWithdrawal,
+		"achin":  canonical.TxKindDeposit,
+		"achrev": canonical.TxKindDeposit,
 		"adr":    canonical.TxKindFee,
 	} {
 		if got[id].Kind != want {
@@ -529,10 +552,11 @@ func TestOutflowKindsReachSpending(t *testing.T) {
 	// reach gold — without it a fidelity row carries no merchant, no
 	// counterparty and nothing for a rule to match.
 	for id, want := range map[string]string{
-		"adv":  "ADVISOR FEE DEDUCTED Investment Mgr Fee (Cash)",
-		"wire": "WIRE TRANSFER TO BANK (Cash)",
+		"adv":    "ADVISOR FEE DEDUCTED Investment Mgr Fee (Cash)",
+		"wire":   "WIRE TRANSFER TO BANK (Cash)",
 		"wirein": "WIRE TRANSFER FROM BANK (Cash)",
-		"adr":  "FEE CHARGED EXAMPLE CORP SPON ADR (XYZ) (Cash)",
+		"achout": "DIRECT DEBIT EXAMPLE BROKERAGE MONEYLINK",
+		"adr":    "FEE CHARGED EXAMPLE CORP SPON ADR (XYZ) (Cash)",
 	} {
 		if got[id].Description == nil {
 			t.Errorf("%s carries no description; gold would have nothing to categorise it by", id)
