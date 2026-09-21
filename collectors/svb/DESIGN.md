@@ -34,8 +34,16 @@ one silver DB per family and the config registers each under its own id:
 ```
 
 `--silver-db` names the brokerage DB, so that id keeps its original path; the
-other two sit beside it. All three take the same `kind`, so this costs no new
+other two sit beside it. They take the same `kind`, so this costs no new
 adapter and no gold migration.
+
+A silver is written only for a family the archive actually holds, so an
+archive holding one family alone leaves no empty DBs beside its own; an empty
+one is indistinguishable from a source whose statements have all been
+withdrawn. A file that already exists is still rebuilt
+when its family drops out of bronze, so that source empties in gold instead of
+standing at the previous load's values, and a path some config already names
+never goes missing.
 
 ## Why a separate gold source from `fidelity-web`, not a fold-in
 

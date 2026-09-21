@@ -75,12 +75,15 @@ amount **before** the first `git add`.
 
 ## 2. `load` is a full, reproducible-from-bronze rebuild
 
-`load.py` deletes and rebuilds all three silver DBs from the PDFs on every run
-— `svb.db` plus the `-deposit` and `-mortgage` DBs that `silver_paths()`
-derives beside `--silver-db` — so it is idempotent and reproducible from the
-bronze archive alone. Every input sits under `--bronze-dir`: the statement
+`load.py` deletes and rebuilds the silver DBs from the PDFs on every run —
+`svb.db` plus the `-deposit` and `-mortgage` DBs that `silver_paths()` derives
+beside `--silver-db` — so it is idempotent and reproducible from the bronze
+archive alone. A family the archive does not hold gets no DB, so a
+single-family archive leaves none empty beside its own; one already built is
+still rebuilt after its family leaves the archive, so it empties rather than
+going stale. Every input sits under `--bronze-dir`: the statement
 PDFs, the `signature.txt` page-1 guard, and the optional `derived-marks.xlsx`
-advisor workbook. It writes the three SQLite DBs and a parse-cache sidecar
+advisor workbook. It writes those SQLite DBs and a parse-cache sidecar
 under `--parse-cache-dir`; there is no network call and no credential, and it
 never writes back into the input PDFs.
 

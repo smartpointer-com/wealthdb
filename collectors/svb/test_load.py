@@ -704,3 +704,50 @@ def test_parse_worker_is_picklable():
     import pickle
 
     assert pickle.loads(pickle.dumps(B._parse_statement)) is B._parse_statement
+
+
+def _rows(path, table):
+    conn = sqlite3.connect(str(path))
+    try:
+        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    finally:
+        conn.close()
+
+
+_BROKERAGE_ONLY = [s for s, c in _CANNED.items()
+                   if c["family"] == P.FAMILY_BROKERAGE]
+
+
+def test_a_family_the_archive_lacks_gets_no_silver(tmp_path, monkeypatch):
+    """An archive holding one family alone must not get a DB for the others:
+    each would be an empty source, indistinguishable from a family whose
+    statements had all been withdrawn."""
+    bronze = _write_bronze(tmp_path, stems=_BROKERAGE_ONLY)
+    _patch_parsers(monkeypatch, bronze)
+    db = tmp_path / "svb-second.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    paths = B.silver_paths(db)
+    assert paths[P.FAMILY_BROKERAGE].exists()
+    assert not paths[D.FAMILY_DEPOSIT].exists()
+    assert not paths[D.FAMILY_MORTGAGE].exists()
+
+
+def test_a_family_that_drops_out_is_emptied_not_left_stale(tmp_path, monkeypatch):
+    """A silver that already exists is rebuilt even when its family leaves
+    bronze, so its gold source zeroes rather than standing at the last load's
+    values — and a path the config already names never goes missing."""
+    bronze = _write_bronze(tmp_path)  # every family
+    _patch_parsers(monkeypatch, bronze)
+    db = tmp_path / "svb.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    deposit = B.silver_paths(db)[D.FAMILY_DEPOSIT]
+    assert _rows(deposit, "historical_position_snapshots")
+
+    later = _write_bronze(tmp_path / "again", stems=_BROKERAGE_ONLY)
+    _patch_parsers(monkeypatch, later)
+    B.build(db, later, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    assert deposit.exists()
+    assert _rows(deposit, "historical_position_snapshots") == 0

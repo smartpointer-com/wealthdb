@@ -690,7 +690,8 @@ def discover_statements(bronze_dir: Path) -> list[Path]:
 # values flicker in and out. Separate ids give each family its own clock.
 #
 # The file for each sits beside the one `--silver-db` names, which stays the
-# brokerage DB so the original id keeps its path.
+# brokerage DB so the original id keeps its path. A family the archive does not
+# hold gets no file at all — see `build`.
 _SILVER_BY_FAMILY = {
     pdf_parsers_svbwa.FAMILY_BROKERAGE: "",
     pdf_parsers_svbdep.FAMILY_DEPOSIT: "-deposit",
@@ -723,7 +724,17 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
     shas = [hashlib.sha256(pdf.read_bytes()).hexdigest() for pdf in pdfs]
     results = parse_statements(pdfs, shas, signatures=signatures,
                                cache_dir=cache_dir, max_workers=max_workers)
-    outputs = silver_paths(silver_db)
+    # Build a silver only for a family the archive actually holds. An archive
+    # holding one family alone would otherwise get an empty DB per absent
+    # family sitting beside its own, each indistinguishable from a source whose
+    # statements had all been withdrawn.
+    # A file that ALREADY exists is still rebuilt even when its family drops
+    # out of bronze, so withdrawing a family's statements empties its source in
+    # gold rather than leaving the previous load's values standing, and a path
+    # some config already names never goes missing.
+    present = {res.get("family") for res in results if not res.get("_error")}
+    outputs = {family: path for family, path in silver_paths(silver_db).items()
+               if family in present or path.exists()}
     for path in outputs.values():
         silver.reset(path)  # full rebuild — reproducible from bronze
     conns = {}
@@ -763,8 +774,10 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
                 log.warning("activity does not reconcile in %s — %s",
                             pdf.name, msg)
         # Brokerage only: the workbook keys its sheets on brokerage serials.
-        derived = insert_derived_marks(
-            conns[pdf_parsers_svbwa.FAMILY_BROKERAGE], workbook)
+        # An archive with no brokerage statements has no DB to fill and no
+        # sheet that could match one.
+        brokerage = conns.get(pdf_parsers_svbwa.FAMILY_BROKERAGE)
+        derived = insert_derived_marks(brokerage, workbook) if brokerage else 0
         synth = 0
         for conn in conns.values():
             synth += synthesize_masters(conn)
@@ -786,8 +799,9 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--silver-db", type=Path, required=True,
-                   help="brokerage silver SQLite path; the deposit and "
-                        "mortgage DBs sit beside it")
+                   help="brokerage silver SQLite path; a deposit and a "
+                        "mortgage DB sit beside it when the archive holds "
+                        "those families")
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="root of the statement archive (searched recursively) "
                         "+ signature.txt")

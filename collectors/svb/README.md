@@ -24,12 +24,15 @@ $XDG_DATA_HOME/wealthdb/svb/        # the data dir (override: --data-dir)
 │   │                               # statement covers (PII; --derived-marks)
 │   └── signature.txt               # page-1 guard substrings, one per line (PII)
 ├── svb.db                          # built silver, brokerage (override: --silver-db)
-├── svb-deposit.db                  # built silver, deposit accounts
-└── svb-mortgage.db                 # built silver, mortgage loan
+├── svb-deposit.db                  # built silver, deposit accounts (if any)
+└── svb-mortgage.db                 # built silver, mortgage loan (if any)
 ```
 
 Each PDF is classified from its own text, so each statement family reaches its
 own parser; the build summary prints a per-family census of everything it saw.
+Only a family the archive holds gets a silver, so an archive of one family
+leaves no empty DBs beside its own — though one already built is rebuilt even
+after its family leaves the archive, so it empties rather than going stale.
 The brokerage statements have a text layer. The deposit and mortgage statements
 have none, so they are rastered and OCRed: Apple's Vision framework on macOS
 (nothing to install), RapidOCR everywhere else (a pip wheel carrying its own
