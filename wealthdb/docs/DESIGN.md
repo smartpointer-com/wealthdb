@@ -119,7 +119,7 @@ wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, 
 wealthdb transactions [flags]         (RO)    Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
-wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions.
+wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions, coverage.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a          (RO)    List snapshots gold has loaded (one silver, or all).
 wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM.
@@ -797,6 +797,9 @@ Example config file:
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `returns_transfer_matching` | object | Optional, off by default. Enables the cross-source transfer matcher: an external leg whose counterparty leg exists in ANOTHER source (opposite sign, same native currency, equal amount within `tolerance_pct`, within `window_days`) nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. Fields: `enabled` (bool), `window_days` (0–30, default 5), `tolerance_pct` (0–5, default 0.5). See §5.8. |
+| `cashflow` | object | Optional. Groups the cash flow statement's two knobs. It is deliberately small: cashflow adds no tier and buys nothing from a model, so the rules, pins and transfer overrides that decide what a row IS are the two families' — a verdict written there is what cashflow reads. See docs/CASHFLOW.md §7. |
+| `cashflow.accounts` | object | Optional. The cash POOL, and the only account gate cashflow applies. **Exclusion only** — `{"exclude": {"<source>": ["<account-id>"]}}` — because every account is pooled by default, so an `include` could fence nothing and the loader refuses the unknown field rather than ignoring it. It inherits neither family's scope on purpose: an account a family drops is not thereby outside the household's cash. |
+| `cashflow.wrappers` | object | Optional. Moves a tax wrapper across the household boundary, `{"<wrapper>": "<destination>"}`, where the destination is `household` (no crossing at all), `retirement`, `education`, `health`, `trusts` or `giving`. Per WRAPPER, not per account — an account a source mis-labelled is fixed with the per-account `tax_wrapper` override, so every consumer agrees whose money it is. An unknown wrapper or destination fails the load naming the entry. Re-stamped by every enrichment pass. |
 | `income` | object | Optional. Groups the income feature's per-deployment knobs — `accounts`, `rules[]`, `pins`, `categorization` — in `spending`'s shapes. Two blocks spending has are deliberately absent: there is one internal-transfer matcher and one transfer-override ledger, and both families read them (docs/INCOME.md §1). Absent ⇒ every account counts, no rules and no pins apply, and the model tier inherits `spending.categorization`. |
 | `income.accounts` | object | Optional. The income account scope, in `spending.accounts`' shape and stamped into gold's `income_account_scope`. Its own table on purpose: an account excluded from spending because its outflows double-count something is not thereby an account whose inflows are not income. |
 | `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. Its optional `asset_class` is admitted only where `type` is `capital_return`. |
@@ -2672,6 +2675,55 @@ row struct and the scan list move together in one change.
 one row per (line, reporting currency), epoch-ms timestamps, the shared
 account-label macro, and `(uncategorized)` on the type columns — but
 NOT on the payer, which a delta line has none of by construction.
+
+### 10.12 Cash flow statement
+
+The third reading of the same engine, and the only one that is mostly
+SQL. The boundary is stamped (`0080`): `cashflow_wrapper_sides` holds
+each tax wrapper's side, `cashflow_account_scope` the pool's exclusions,
+and `cashflow_pool_accounts()` is the account gate over them — every
+account not excluded by `cashflow.accounts`. `cashflow_txn_nodes(f, t)`
+maps every transaction to a `section.class.group` node and a
+disposition saying whether it is a line at all, and
+`cashflow_lines_base(f, t)` is that restricted to the pool and to the
+lines (both `0081`; the node macro re-issued by `0085`, `0088`, `0090`,
+`0100`, `0101` and `0102`, the base by `0091`, `0092`, `0093` and
+`0096`).
+
+Six reports sit over it: `report_cashflow_summary`, `_flows`, `_sankey`
+and `_transactions` with the FX pair `cashflow_lines_outccy` /
+`cashflow_nodes_outccy` (`0082`), `_reconciliation` (`0083`),
+`_coverage` (`0089`), and `web_cashflow` (`0084`); the summary was
+re-issued by `0083` and `0086`, the reconciliation by `0086`, the
+sankey by `0091` and `0095`, the flows by `0095`. Two of the six are
+diagnostics rather than views of the statement: `_reconciliation` is
+the memo that compares the OBSERVED balances of `cashflow_balance_pool()`
+— the pooled accounts carrying both transactions and balances — against
+the flow over the dates those balances cover, and `_coverage` is that
+per account and period, in the account's own currency and never
+converted.
+
+Four things differ from the two family sets:
+
+- **It reads each family's RESOLUTION macro, never its `_lines_base`.**
+  Four of the verdicts it wants — the crossings, `investment`,
+  `capital_return`, `debt_repayment` — are exactly the ones a base
+  excludes.
+- **It has no scope of its own and no backlog of its own.** The pool
+  inherits neither family's account scope, and every verdict is
+  theirs; `status -v`'s cashflow block therefore counts the three ways
+  the statement can be quietly wrong instead of a backlog.
+- **The resolution is SQL rather than Go** because the dashboard needs
+  the same node assignment the CLI uses, computed after its pickers
+  apply; a Go-side resolution would have to be re-implemented in the
+  serving view and would drift.
+- **Excluded means counted.** Rows the resolution declines are
+  reported, because a counter nobody reads is how a silent hole starts.
+  Pool-internal rows are NOT counted there: they are movements the
+  statement deliberately does not draw.
+
+docs/CASHFLOW.md is the spec; it is written as a delta against
+SPENDING.md and INCOME.md and does not repeat what they own.
 
 ## 11. Repository layout
 

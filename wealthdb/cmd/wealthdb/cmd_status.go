@@ -40,10 +40,11 @@ transactions an adapter kinded by the sign of the amount instead
 (raw value in payload.source_kind), and positions with no 2-D
 vehicle pair yet, so taxonomy drift in the adapters is visible. It
 also reports each enrichment family's backlog and the transactions
-its reports cannot see because their kind is 'other', and — for a
-source holding more than one account kind — how fresh each kind's
-data is, so a card population that stops updating behind a current
-deposit population is visible.`)
+its reports cannot see because their kind is 'other', the two
+row-level ways the cash flow statement can be quietly wrong, and —
+for a source holding more than one account kind — how fresh each
+kind's data is, so a card population that stops updating behind a
+current deposit population is visible.`)
 	}
 	if err := fs.Parse(subargs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -187,6 +188,15 @@ func printOneLineStatus(ctx context.Context, db *sql.DB, src *config.SilverSourc
 	}
 	if verbose && st.UncategorizedIncomeCount > 0 {
 		driftHint += fmt.Sprintf("  income: %d uncategorised", st.UncategorizedIncomeCount)
+	}
+	// The cash flow statement has no backlog to hint at — it reads the
+	// two families' verdicts — so the hint carries the two row-level
+	// ways it can be quietly wrong. The third, a pooled account with no
+	// wrapper, is about accounts rather than rows and stays in the
+	// per-source block with the rest.
+	if verbose && (st.CashflowExcludedByKindCount > 0 || st.CashflowNoFarAccountCount > 0) {
+		driftHint += fmt.Sprintf("  cashflow: %d excluded_by_kind, %d no_far_account",
+			st.CashflowExcludedByKindCount, st.CashflowNoFarAccountCount)
 	}
 
 	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, watermark=%s%s%s\n",

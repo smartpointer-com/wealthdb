@@ -15,7 +15,10 @@ shared, this file says so and points at the section that explains it.
 What it adds is smaller than either predecessor and worth stating up
 front:
 
-- **No collector work.** Nothing in bronze or silver changes.
+- **Almost no collector work.** The resolution reads neither bronze nor
+  silver. The one exception is the far account: the counter account a
+  bank states on its own row is a fact only a collector can carry, so
+  the adapters able to state one do (§4).
 - **No new tier and no model.** The precedence lattice is untouched,
   `categorize` gains nothing, and the backlog is the two families'.
 - **No new store.** Nothing is bought from a model, so `reload -a`
@@ -213,7 +216,9 @@ ones a base excludes.
 ### Where each kind lands
 
 A row's **kind** decides its section; the verdict outranks the kind
-wherever both have something to say.
+wherever both have something to say — except on the six kinds gold
+pins no canonical sign for, which are excluded whatever a verdict
+says, because a section that reads direction cannot admit them.
 
 | kind | section | note |
 |---|---|---|
