@@ -305,6 +305,7 @@ func TestTxKind(t *testing.T) {
 		{"internet is not interest", "tv_phone_internet", "INTERNET", neg, canonical.TxKindWithdrawal},
 		{"fee slug token", "fees_bank", "", neg, canonical.TxKindFee},
 		{"german compound fee", "other", "KONTOFÜHRUNGSENTGELT", neg, canonical.TxKindFee},
+		{"listing closing entry, no category", "", "Kontoführung", neg, canonical.TxKindFee},
 		{"german interest", "other", "HABENZINSEN", pos, canonical.TxKindInterest},
 		{"interest category", "interest_income", "", pos, canonical.TxKindInterest},
 	}

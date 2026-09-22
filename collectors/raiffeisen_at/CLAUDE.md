@@ -34,9 +34,9 @@ soft-blocked after ~6 rapid logins in one day). Allowed without asking:
 reading code/config/docs, `make build-raiffeisen_at` /
 `make test-raiffeisen_at`, `--help`, and unit tests. Not allowed unless
 explicitly asked: anything that touches the live site — a real
-`explore` (or later `login` / `download`), or "just checking the
-selectors" against the live login page. Every live run is explicitly
-requested with the owner present; waits on a pushTAN approval use long
+`explore`, `login` or `download`, or "just checking the selectors"
+against the live login page. Every live run is explicitly
+requested with the user present; waits on a pushTAN approval use long
 timeouts (1h+); never fire logins in quick succession.
 
 ## 1. Read-only Mein ELBA retail access — never trigger writes
@@ -184,7 +184,9 @@ See the repo-root [CLAUDE.md](../../CLAUDE.md) §3 (authentication) and
 
 Raiffeisen PII: IBANs and account numbers, the Verfüger number /
 username, balances, transaction counterparties and amounts, statement
-PDFs, names and addresses — **and the account roster itself** (which
+PDFs, supplied transaction listings (`<data-dir>/supplied/`, and every
+line in them — their file names can be account numbers), names and
+addresses — **and the account roster itself** (which
 accounts/products the login holds, their number or type, or that a
 product is absent; see root [CLAUDE.md](../../CLAUDE.md) §4). None of
 it enters tracked files (source, fixtures, comments, commit messages) —

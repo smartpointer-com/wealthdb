@@ -247,6 +247,9 @@ entries are cheap when framed this way — correct them and move on.
    export reaches — the chase collector's DESIGN.md documents the
    reference implementation); attribute multi-product statements per
    segment by balance chaining, stopping on ambiguity, never guessing.
+   Where neither reaches far enough, a document the bank prints on
+   request can: raiffeisen_at stitches such listings from `supplied/`
+   beside the live history (its DESIGN.md §I).
 6. **Gold adapter** — wealthdb/internal/silver/<name>/ modeled on the
    newest comparable adapter (contract: wealthdb/docs/DESIGN.md §6):
    the Adapter/Connection interface, a silver_sources whitelist

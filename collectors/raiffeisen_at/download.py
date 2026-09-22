@@ -74,12 +74,16 @@ def build_manifest(status: str, *, accounts: list[dict], counts: dict,
 def _fetch_history(context, watch, iban: str,
                    since: date | None) -> dict | None:
     """Paginate `kontoumsaetze` (newest-first, keyset cursor) and merge the
-    pages into `{iban, minBuchungstag, transactions: [...]}` (DESIGN.md §C).
-    `since` floors the window server-side via `buchungVon`. Returns None if
-    page 1 fails."""
+    pages into `{iban, minBuchungstag, complete, transactions: [...]}`
+    (DESIGN.md §C). `since` floors the window server-side via `buchungVon`.
+    `complete` is true only when the walk reached the last page — a later
+    page's failure, a missing cursor or the page cap leave the oldest days
+    of the window unfetched, and the loader must not treat them as covered
+    (DESIGN.md §I). Returns None if page 1 fails."""
     all_tx: list = []
     cursor = None
     min_buchungstag = None
+    complete = False
     for pg in range(1, elba.MAX_HISTORY_PAGES + 1):
         body_req = elba.kontoumsaetze_body(iban, buchung_von=since,
                                            cursor=cursor)
@@ -96,6 +100,7 @@ def _fetch_history(context, watch, iban: str,
         if min_buchungstag is None:
             min_buchungstag = elba.umsaetze_min_buchungstag(body)
         if not elba.umsaetze_has_more(body) or not rows:
+            complete = True
             break
         cursor = elba.next_cursor(rows[-1])
         if cursor is None:
@@ -103,7 +108,7 @@ def _fetch_history(context, watch, iban: str,
                         "(stopping)", safe_stem(iban), pg)
             break
     return {"iban": iban, "minBuchungstag": min_buchungstag,
-            "transactions": all_tx}
+            "complete": complete, "transactions": all_tx}
 
 
 def _fetch_details(context, watch, iban: str) -> object:

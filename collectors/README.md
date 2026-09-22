@@ -515,7 +515,8 @@ guarantees, for every collector:
   incompleteness, so it is skipped before the collector predicate runs;
 - **symlinks are never followed or deleted**, and nothing at the bronze
   root that isn't a timestamped run dir (a silver `.db`, a shared
-  `manual/` tree) is ever touched;
+  `manual/` tree, supplied inputs such as raiffeisen_at's `supplied/`) is
+  ever touched;
 - a whole-dir deletion **rechecks completeness + quiescence immediately
   before `rmtree`**, closing the window between planning and deletion.
 
@@ -591,7 +592,7 @@ restated here.
 | [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | hybrid: Docker (Camoufox) + host venv |
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
 | [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) — full pipeline through gold, validated live |
-| [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch) — full pipeline through gold, validated |
+| [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch) — full pipeline through gold, validated; bank-supplied transaction listings in `supplied/` backfill the deep past |
 | [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) — full pipeline through gold, validated live; `login --check` reads the profile only, `download --dry-run` still signs in |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a / vested benefits) | REST + mTAN | Docker |

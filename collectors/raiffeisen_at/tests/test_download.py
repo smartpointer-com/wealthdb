@@ -84,7 +84,8 @@ def _install_rest_stubs(monkeypatch, *, roster, history_pages, balances, docs,
                         details=None):
     """Patch login.api_get_json / api_post_json with canned responses keyed
     by URL, so walk() runs without a browser. `history_pages` is a list of
-    (rows, has_more) tuples served in order per POST to kontoumsaetze."""
+    (rows, has_more) tuples served in order per POST to kontoumsaetze; a
+    None entry answers that page with an HTTP error."""
     hist_iter = iter(history_pages)
 
     def get_json(context, watch, url):
@@ -99,7 +100,10 @@ def _install_rest_stubs(monkeypatch, *, roster, history_pages, balances, docs,
 
     def post_json(context, watch, url, data):
         if url == elba.kontoumsaetze_url():
-            rows, has_more = next(hist_iter)
+            page = next(hist_iter)
+            if page is None:
+                return 500, None
+            rows, has_more = page
             return 200, {"list": rows,
                          "info": {"hasMore": has_more,
                                   "minBuchungstag": "2023-08-01"}}
@@ -153,12 +157,27 @@ def test_walk_paginates_history_and_writes_bronze(monkeypatch, tmp_path):
     hist = json.loads((run_dir / "history" / f"{IBAN_A}.json").read_text())
     assert [t["id"] for t in hist["transactions"]] == [2, 1, 0]
     assert hist["minBuchungstag"] == "2023-08-01"
+    assert hist["complete"] is True
     assert (run_dir / "balances" / f"{IBAN_A}.json").is_file()
     assert (run_dir / "details" / f"{IBAN_A}.json").is_file()
     pdfs = list((run_dir / "statements" / IBAN_A).glob("*.pdf"))
     assert len(pdfs) == 1
     # The PDF name embeds the stable (created, systemId, docId) key.
     assert "EAZ" in pdfs[0].name and "a1" in pdfs[0].name
+
+
+def test_walk_marks_a_history_cut_short(monkeypatch, tmp_path):
+    # Page 2 fails: the run still completes, but its history says the oldest
+    # days of the window were never fetched.
+    page1 = ([{"id": 2, "buchungstag": "2026-07-01", "neuanlage": "n2"}], True)
+    _install_rest_stubs(
+        monkeypatch, roster=_roster(), history_pages=[page1, None],
+        balances={"tagessalden": [], "kontostand": 100.0}, docs=[])
+    summary = download.walk(_Context(), watch=login._Watch(), bronze_dir=tmp_path,
+                            since=date(2026, 5, 1), until=date(2026, 8, 15))
+    hist = json.loads((Path(summary["run_dir"]) / "history" / f"{IBAN_A}.json").read_text())
+    assert [t["id"] for t in hist["transactions"]] == [2]
+    assert hist["complete"] is False
 
 
 def test_walk_downloads_kdm_via_versioned_url(monkeypatch, tmp_path):

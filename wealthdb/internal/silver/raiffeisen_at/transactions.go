@@ -124,13 +124,17 @@ func textColumns(desc, cp, payload string) (description, counterparty *string) {
 // The long, unambiguous tokens (INTEREST, ZINS, ENTGELT, …) are matched as
 // substrings so a German compound (Kontoentgelt) or an inflection (Zinsen)
 // still hits; the short, ambiguous ones (FEE) are matched only as whole slug /
-// word tokens, so "coffee" is not mistaken for a fee.
+// word tokens, so "coffee" is not mistaken for a fee. Rows from a supplied
+// transaction listing carry no category, so their account-closing entries
+// are recognised from the booking text alone — "Kontoführung" (the account
+// maintenance charge) names no ENTGELT and needs its own token.
 func txKind(category, description string, amt canonical.Decimal) canonical.TxKind {
 	hay := strings.ToUpper(category + " " + description)
 	switch {
 	case containsAny(hay, "INTEREST", "ZINS"):
 		return canonical.TxKindInterest
-	case containsAny(hay, "ENTGELT", "SPESEN", "GEBÜHR", "GEBUEHR", "SERVICE CHARGE", "SERVICE FEE"):
+	case containsAny(hay, "ENTGELT", "SPESEN", "GEBÜHR", "GEBUEHR", "KONTOFÜHRUNG", "KONTOFUEHRUNG",
+		"SERVICE CHARGE", "SERVICE FEE"):
 		return canonical.TxKindFee
 	case hasWholeToken(hay, "FEE", "FEES", "CHARGE", "CHARGES"):
 		return canonical.TxKindFee

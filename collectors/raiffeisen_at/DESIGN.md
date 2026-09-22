@@ -56,7 +56,8 @@ complete (two capture sessions); the only residual probes are in
   `bankingquer-dokumentenablage`) — monthly Kontoauszüge with stable
   document ids, listed and downloaded like firstcitizens. It reaches
   back only ~5 months past the transaction floor, so it feeds bronze
-  as provenance, not a deep backfill (§G).
+  as provenance, not a deep backfill (§G). The deep past comes from
+  transaction listings the bank supplies on request instead (§I).
 - **The UI is entirely German.** Selectors never key on display text
   where an id / test-id / ARIA role exists; load-bearing German labels
   are recorded here as captures land. Repo prose stays English.
@@ -499,7 +500,7 @@ because a cold/`--fresh`/expired profile shows no card; the warm-profile
 happy path is just "click the card → approve pushTAN". Detect which by
 whether the profile card is present on the identify screen.
 
-### §G — History floor vs archive floor: no deep backfill (Phase 5 verdict)
+### §G — History floor vs archive floor: no deep backfill from the live surfaces (Phase 5 verdict)
 
 - Transaction-history JSON floor (§C): a rolling 36-month window —
   the platform retention, not an account property.
@@ -516,6 +517,10 @@ bronze as documents** (provenance, on the firstcitizens model), and
 **defer/skip** parsing them for the ~5 months of extra transactions
 unless that slice is explicitly wanted — a low-value PDF-parser build.
 
+The deep tail does exist on paper: transaction listings the bank supplies on
+request cover it, the statements' span included, so statement parsing stays
+unnecessary (§I).
+
 ### §H — Still open (next explore session / probes)
 
 1. **Access-token refresh** — the Bearer's JWT `exp` is ~300 s; the live
@@ -529,6 +534,140 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
    full daily series, so gold's balance series comes straight from it?).
 3. Whether `pending: true` rows need special handling in the loader (a
    pending row's `id` stability across settlement).
+
+### §I — Supplied transaction listings: the deep backfill (added 2026-09-22)
+
+A branch can print, on request, a
+**core-banking transaction listing** (a "SMARTBank Abfrage" PDF) for one
+account from any start date up to the print day — years past the live
+floor. Listings dropped into `<data-dir>/supplied/` are stitched into silver
+on every `load` (listing_parser.py reads them, stitch.py places them,
+load.py's supplied pass writes them).
+
+**Layout** (a fixed-width table; `pdftotext -layout` keeps the geometry):
+
+- Every page repeats a header block: a banner with the print time and page
+  number (`…/<dd.mm.yyyy>/<hh:mm>/… Seite <n>`), then
+  `Kontonummer: … Ausgabe Datum ab: <dd.mm.yy> Auswahl Umsätze: <x>`, two
+  `Schlüsseltext:` lines, `Saldo anzeigen J/N: …  Klartext anz. J/N: …`, a
+  rule, the column header
+  `BUTAG AN PRNR HERK TXT VAL. UMSATZ SALDO DRUCKDATUM ART`, a rule, the
+  account line (`<account no>/<ccy>  <holder>  REF: …`) and a
+  `KTO-WHG/<ccy>` units banner. The last page carries only `Summe Soll` /
+  `Summe Haben`.
+- **Load-bearing labels** (German, no ids exist): the column header above;
+  `Kontonummer`, `Ausgabe Datum ab` (the coverage start), `Auswahl Umsätze`
+  (`A` = all postings), `Schlüsseltext` (`alle Umsätze`), `Saldo anzeigen`,
+  `Klartext anz.`; `Summe Soll` / `Summe Haben`; the continuation labels
+  `Zahlungsempfänger`, `Empfänger`, `Auftraggeber`, `Verwendungszweck`,
+  `Zahlungsreferenz`, `Kundendaten`, `Mandat`, `Empfänger-Kennung`,
+  `Auftraggeberinformation`, `Entgelte`.
+- The columns **drift a few characters page to page**, and the header
+  labels are not flush with their data: each page's own column header
+  tells the two right-aligned money columns apart (UMSATZ and SALDO end
+  ~17 columns apart); the left-hand codes are read by shape.
+- **BUTAG** (booking day) prints on a day's first row only, even across a
+  page break; **SALDO** (the day's closing balance) on its last row only.
+  A debit carries a trailing minus. **VAL.** has no year — it takes the
+  booking day's, or the neighbouring year's when the months are more than
+  six apart.
+- **DRUCKDATUM** is the day the posting was printed on a statement, blank
+  until it has been — so two extracts of one account differ there.
+- **Continuation lines** belong to the row above, run on across page breaks
+  and past a mid-page units banner, and the bank's fixed-width text record
+  can split a label across two lines (`… EUR 1,00Auftrag` / `geber: …`),
+  which the parser re-joins.
+- The operation code **HERK** tells booking families apart (`SELE` direct
+  debit, `SEUA`/`SEUE` outgoing/incoming transfer, `ABS` account-closing
+  entries, `SBGA` cash/card, `DT` standing order, …); it is kept in the
+  payload, not mapped to a category.
+
+**Per-listing checks** (`listing_parser.problems`; a failure excludes that
+listing only): the selection is complete (`A`, `alle Umsätze`, balances
+shown); booking days are in order inside `[Ausgabe Datum ab, print day]`;
+every day's printed balance follows from the previous one plus that day's
+postings (the chain); and the postings net exactly to the stated totals —
+the bank leaves reversal pairs out of `Summe Soll`/`Summe Haben`, so each
+gross side may exceed its total by the same amount, no more than same-day
+equal-and-opposite pairs explain. The listing binds to the one silver
+account whose IBAN ends in its zero-padded `Kontonummer`.
+
+**Coverage** (recorded per loaded run in silver's `run_windows`). A
+download certifies its transaction window `[max(since, minBuchungstag),
+until]` (from `run.json` and the history file) up to the day before its own
+— the run's day is partial. `download.py` records whether the history walk
+reached its last page (`complete` in the history file): a walk cut short by
+a failed page, a missing cursor or the page cap misses the *oldest* days,
+so it certifies only from the day after the oldest day it returned (a page
+boundary can cut that day too), and so does every run from before the flag.
+Balances are certified over the `kontostaende` `[von, bis − 1]`. A listing
+certifies `[Ausgabe Datum ab, print day − 1]`.
+
+**Ownership** (stitch.py). Every booking day has one source of truth:
+
+1. **live**, when a download certified the day;
+2. else the **highest-precedence accepted listing** certifying it. On a
+   day live saw only partly (a download's own day, the oldest day of a
+   cut-short walk), the listing tops live up: it contributes only the
+   postings live lacks, and its closing balance replaces live's intraday
+   one;
+3. else nobody.
+
+So the seam is not `MIN(posted_at)`: a hole between two downloads is
+filled, and a later deeper download takes days back. A live balance on a
+day live certifies always stands.
+
+**The stitch.** Listings are tried in precedence order — with booking text
+(`Klartext J`) first, then the newest print, then the file hash — in
+repeated passes until a pass accepts nothing. A listing is **rejected** if,
+on any day it shares with the live history or an accepted listing, the
+postings (booking day, amount) differ — on a day only one side certifies,
+the certifying side must hold the other's — or the closing balance
+differs; it is **accepted** when it agrees and its balance is continuous at
+every join with another source; otherwise it waits, and one still waiting
+at the end is rejected with the uncovered gap named. Which accepted listing
+speaks for a day is then settled by precedence alone (they agree on every
+shared day), so the result depends only on the set of files. With no
+certified live history for the account, the first listing that agrees with
+what live did see seeds it.
+
+**Rows.** A supplied posting's `txn_id` is `doc_` + a hash of its
+structural columns and an occurrence count — never the parsed text, never
+DRUCKDATUM — so every extract gives it the same id. `category` stays NULL
+(a listing has no `kategorieCode`); `description` is the purpose / customer
+data, else the payment reference, else the booking text; `counterparty`
+the first payee/payer line. The payload keeps the listing's own vocabulary
+and the owning file's hash; a top-up row also records what live saw of
+its day (`live_seen`). Each listing that binds to an account gets a
+`documents` row (`doc_kind = 'transaction_listing'`) recording its
+coverage, status, reason and the day ranges it speaks for; a file that
+does not read as a listing or binds to no account is only logged. The gold
+classifier recognises the closing entries from their text (`Entgelt …`,
+`Buchungsentgelt`, `Kontoführung`) — the operation code alone cannot tell
+a fee from interest or tax.
+
+**Applying it** (load.py). The supplied layer is re-derived on every load
+and written only when it differs from the stored one:
+
+- first, in a transaction of its own, supplied rows the live history has
+  overtaken are dropped — postings on a day live now certifies or now sees
+  differently than when they were stitched, balances on a day live now
+  certifies — so no failure later in the load can leave both sources on
+  one day;
+- an unchanged stitch writes nothing;
+- a stitch that would lose days while every file that contributed before
+  is still present is not applied (a parser or poppler regression, not a
+  decision — removing the file or `load --force` applies it);
+- a missing `pdftotext`, or a contributing file that no longer extracts,
+  keeps the stored layer; any other unreadable file is skipped alone;
+- the write asserts that supplied postings sit only on days live does not
+  certify and, with what live saw, add up to the listing's exactly.
+
+An absent `supplied/` keeps the stored layer; an empty one clears it.
+Whenever silver changes without a download in the same load, a `dump_runs`
+row (`run_dir` = the supplied dir, `snapshot_at` one past the latest)
+moves gold's load clock — never the wall clock, which could outrun the slug
+of a download still in flight.
 
 ## 4. Phase roadmap
 
@@ -657,14 +796,13 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
    history, daily balances, and both statement lineages (EAZ + KDM) load,
    and a re-load is a clean no-op.
 
-5. **Statement transaction-backfill — not planned (§G).** The document
-   archive predates the transaction-history floor by only ~5 months
-   (and both floors roll forward together), so there is no deep tail to
-   reconstruct — the chase reconcile-gated backfill is not ported.
-   Statement PDFs are still fetched to bronze as documents (Phase 3)
-   and loaded as a statement inventory (Phase 4), just not parsed for
-   transactions. Revisit only if that ~5-month slice is explicitly
-   wanted.
+5. **Deep backfill — from supplied transaction listings (§I), built
+   2026-09-22; not from statements (§G).** Statements stay a document
+   inventory (fetched in Phase 3, loaded in Phase 4). The listings go
+   through `listing_parser.py` and `stitch.py` (both pure) and load.py's
+   supplied pass, over migration 0002 (`daily_balances.source`,
+   `run_windows`); `pdftotext` comes from the image's `poppler-utils`.
+   Unit-tested on synthetic listings.
 
 6. **Gold adapter — built** (`wealthdb/internal/silver/raiffeisen_at/`,
    package `raiffeisenat`, kind `raiffeisen_at`). On the
@@ -685,18 +823,21 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
 
 ## 5. Handoff checklist / status
 
-**Status: full pipeline through gold built and validated (2026-08-15).**
-`login` + `download` validated live; `load` validated on the real
-bronze into the SQLite silver, idempotently; and the **gold adapter**
-(`internal/silver/raiffeisen_at/`, kind `raiffeisen_at`) is built,
-registered, and unit-tested with the whole gold suite green. The
-collector is feature-complete. Remaining is operational, not code: a
-real `wealthdb load` merge into gold (user-triggered, like the
-download/load), plus adding the source to `wealthdb.cfg` (a silver
-source entry; conduit row-hiding ships in the registered
-ReturnsPolicy, no config needed). The §H probes (token
-refresh on a >300 s walk; `kontostaende` reach — the live series
-bottomed at the ~2023-07 history floor) fold into future runs.
+**Status: full pipeline through gold built and validated (2026-08-15);
+the supplied-listing backfill (§I) built and validated on a real listing
+(2026-09-23).** `login` + `download` validated live; `load` validated on
+the real bronze into the SQLite silver, idempotently; and the **gold
+adapter** (`internal/silver/raiffeisen_at/`, kind `raiffeisen_at`) is
+built, registered, and unit-tested with the whole gold suite green. Gold
+needs a `wealthdb.cfg` silver source entry (conduit row-hiding ships in
+the registered ReturnsPolicy, no config needed) and a `wealthdb load`.
+The §H probes (token refresh on a >300 s walk; `kontostaende` reach —
+the live series bottomed at the history floor) fold into future runs.
+
+A listing that reaches past the live floor moves an account's history
+earlier in gold, so its returns inception, flows before inception,
+net-worth history and spending categorisation (supplied rows carry no
+category) want a look when it first lands.
 
 - `make build-raiffeisen_at` builds the image;
   `make test-raiffeisen_at` runs the unit tests in the container.

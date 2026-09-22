@@ -46,8 +46,8 @@ this repository is financial, legal, or tax advice.
 
 A read-only collector for [Mein ELBA](https://mein.elba.raiffeisen.at/),
 the Austrian Raiffeisen retail e-banking portal: **deposit accounts**
-(checking + savings), their transaction history / CSV exports, and
-on-demand statement PDFs. Cards, financing, and any securities / wealth
+(checking + savings), their transaction history, daily balances and
+archived statement PDFs. Cards, financing, and any securities / wealth
 surface the same login may expose are out of scope (see
 [CLAUDE.md](CLAUDE.md)). The collector is named `raiffeisen_at` because
 Raiffeisen operates distinct banking systems in other countries. Like
@@ -61,7 +61,7 @@ Part of the **wealthdb** suite — see
 gold model and [collectors/README.md](../README.md) for shared collector
 conventions.
 
-## Status: `login` + `download` built — awaiting live validation
+## Status: built and validated through gold
 
 Two `explore` captures (2026-08-15) mapped the whole surface: an OIDC
 login on `sso.raiffeisen.at` with a **region (Mandant) dropdown that
@@ -76,7 +76,8 @@ floor. The CSV export turned out to be a client-side dump of that same
 JSON (so the JSON is the ledger source), and statements are a
 **document archive** (Dokumente) of monthly Kontoauszüge, not an
 on-demand generator — reaching only ~5 months past the transaction
-floor, so there is no deep backfill. Because 2FA fires every run,
+floor, so they are no deep backfill; transaction listings the bank
+prints on request are (below). Because 2FA fires every run,
 `login` folds into `download` (chase's shape). See
 [DESIGN.md](DESIGN.md) §3-Observed. The [`chase`](../chase/) collector
 is the retail-deposit playbook this one adapts, with
@@ -90,8 +91,8 @@ closing-balance series, the account roster, and the statement
 inventory), and the **gold adapter**
 (`wealthdb/internal/silver/raiffeisen_at/`) projecting that silver into
 the canonical store (cash accounts, the closing-balance series, and the
-deposit ledger). What remains is operational: a `wealthdb load` merge
-into gold and adding the source to `wealthdb.cfg`.
+deposit ledger). Gold needs only a `wealthdb.cfg` source entry and a
+`wealthdb load`.
 
 ## Setup
 
@@ -117,7 +118,7 @@ RAIFFEISEN_AT_REGION='...'     # the Mandant code selecting the regional bank (D
 ./raiffeisen_at download --fresh          # force the cold region/Verfüger/PIN form
 ./raiffeisen_at login --check             # is a session still alive? (dead between runs is expected)
 ./raiffeisen_at vnc-login                 # by-hand login fallback over VNC
-./raiffeisen_at load                      # bronze → silver SQLite
+./raiffeisen_at load                      # bronze + supplied listings → silver SQLite
 ./raiffeisen_at load --force              # rebuild the silver from all bronze
 
 ./raiffeisen_at explore                   # discovery harness over VNC
@@ -135,5 +136,35 @@ network log + click log + DOM snapshots + downloads) under
 `~/.cache/wealthdb/debug/raiffeisen_at/<UTC-ts>/`; connect a VNC viewer
 to the forwarded port and walk the three flows in
 [DESIGN.md](DESIGN.md) §3. The login is confirmed via **pushTAN** in the
-Raiffeisen mobile app. Real sessions fire real pushTAN prompts — run
-them only deliberately, never in quick succession.
+Raiffeisen mobile app, like every real session.
+
+## Supplied transaction listings
+
+A branch can print a core-banking transaction listing (a "SMARTBank Abfrage"
+PDF) for an account from any start date. Such listings go in `supplied/`
+under the data dir, beside the run dirs:
+
+```
+<data-dir>/
+  <UTC-ts>/          download runs
+  supplied/          transaction listings, any *.pdf / *.PDF, any names
+  raiffeisen_at.db   the silver
+```
+
+Every `load` reads them — no flag, so `wealthdb-collect raiffeisen_at load`
+picks them up too. Each listing is checked against its own arithmetic (every
+day's closing balance, the stated totals), bound to its account, and stitched
+next to the live history: a day a download fully covered stays live, other
+days come from a listing covering them (one printing booking text first, then
+the newest), which also tops up a day a download saw only partly; a listing
+must agree with everything it overlaps and join it without a balance jump, or
+it is left out whole. Overlapping and repeated listings are fine. Each
+listing's outcome — accepted with the days it speaks for, or rejected with
+the reason — is logged, and a listing that binds to an account is recorded in
+the silver `documents` table (`doc_kind = 'transaction_listing'`).
+
+The stitch is recomputed on every load, so adding, replacing or removing a
+listing takes effect on the next `load`, and so does a later, deeper
+download. An empty `supplied/` removes the stitched rows; a missing one leaves
+them alone. Listings are account data like everything else in the data dir —
+they are never committed. The mechanics are in [DESIGN.md](DESIGN.md) §I.
