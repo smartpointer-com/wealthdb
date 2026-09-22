@@ -97,6 +97,11 @@ type family struct {
 	// on the income overlay.
 	farCols []string
 
+	// investingValue is this family's one verdict whose cash flow
+	// section is `investing`, and so the only one an exposure may
+	// accompany. The pass reads it to count the backlog: rows placed
+	// there that still say nothing about what the capital went into.
+	investingValue string
 	// emitOutsidePopulation says whether a matched leg the population
 	// does not hold still earns an overlay row.
 	//
@@ -130,6 +135,7 @@ var spendingFamily = family{
 	storeNameCol:      "merchant_name",
 	storeDetailedCol:  "spend_detailed",
 	builtinRule:       spendingBuiltinRule,
+	investingValue:    canonical.SpendDetailedInvestment,
 	providerCategory:  ProviderCategory,
 	providerClaims:    ProviderCategoryClaims,
 	farCols: []string{
@@ -180,6 +186,7 @@ var incomeFamily = family{
 	storeNameCol:      "payer_name",
 	storeDetailedCol:  "income_detailed",
 	builtinRule:       incomeBuiltinRule,
+	investingValue:    canonical.IncomeDetailedCapitalReturn,
 	providerCategory:  ProviderIncomeCategory,
 	providerClaims:    ProviderIncomeCategoryClaims,
 

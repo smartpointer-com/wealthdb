@@ -799,14 +799,14 @@ Example config file:
 | `returns_transfer_matching` | object | Optional, off by default. Enables the cross-source transfer matcher: an external leg whose counterparty leg exists in ANOTHER source (opposite sign, same native currency, equal amount within `tolerance_pct`, within `window_days`) nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. Fields: `enabled` (bool), `window_days` (0–30, default 5), `tolerance_pct` (0–5, default 0.5). See §5.8. |
 | `income` | object | Optional. Groups the income feature's per-deployment knobs — `accounts`, `rules[]`, `pins`, `categorization` — in `spending`'s shapes. Two blocks spending has are deliberately absent: there is one internal-transfer matcher and one transfer-override ledger, and both families read them (docs/INCOME.md §1). Absent ⇒ every account counts, no rules and no pins apply, and the model tier inherits `spending.categorization`. |
 | `income.accounts` | object | Optional. The income account scope, in `spending.accounts`' shape and stamped into gold's `income_account_scope`. Its own table on purpose: an account excluded from spending because its outflows double-count something is not thereby an account whose inflows are not income. |
-| `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. |
+| `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. Its optional `asset_class` is admitted only where `type` is `capital_return`. |
 | `income.pins` | string | Optional. Path to the income pins ledger: the spending ledger's format with an `income_detailed` column. See §13.11. |
 | `income.categorization` | object | Optional. As `spending.categorization`, `fence_person_names` included. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model, one answer to what may leave the machine. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down, and a half-inherited fence would be one that quietly turned itself off. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
 | `spending.accounts` | object | Optional. Account-scope overrides, keyed by `silver_source_id` in the `returns_exclude` shape, with `include` / `exclude` lists of account ids. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. Which way round the overrides bite is the scope rule — see docs/SPENDING.md §1. |
 | `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. Both bound the matcher's AMOUNT pass only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. See docs/SPENDING.md §3. |
-| `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed> }`. `match` is compiled case-insensitively at load and tested against `counterparty`, the full `description` (memo included) and `provider_category` — the issuer's own filing of the row — each on its own; among config rules the first written wins. Matching the issuer's filing is how a rule reaches a class of merchant the descriptor never names, and is what makes the provider an input to the rule tier rather than a tier that outranks it. `category` may be **any** valid `spend_detailed` value, vendored or delta, in the taxonomy's case-sensitive spelling. An invalid pattern, one matching the empty string, or an unknown category fails the load naming `spending.rules[i]` and the text. Consulted after the built-in rules and below the matcher and the pins, with provenance `rule`. Deployment-specific: lives in the user's config, never in the repository. See docs/SPENDING.md §3, *Config-supplied rules*. |
-| `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, note`; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.11. |
+| `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed> }`. `match` is compiled case-insensitively at load and tested against `counterparty`, the full `description` (memo included) and `provider_category` — the issuer's own filing of the row — each on its own; among config rules the first written wins. Matching the issuer's filing is how a rule reaches a class of merchant the descriptor never names, and is what makes the provider an input to the rule tier rather than a tier that outranks it. `category` may be **any** valid `spend_detailed` value, vendored or delta, in the taxonomy's case-sensitive spelling. An optional `asset_class` says what the capital went into and is admitted only where `category` is `investment`, validated against the exposure set (TAXONOMY.md §2) less `cash` and `other`; see docs/CASHFLOW.md §4 and §7. An invalid pattern, one matching the empty string, or an unknown category fails the load naming `spending.rules[i]` and the text. Consulted after the built-in rules and below the matcher and the pins, with provenance `rule`. Deployment-specific: lives in the user's config, never in the repository. See docs/SPENDING.md §3, *Config-supplied rules*. |
+| `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, asset_class, note` and no others — an unknown header fails the parse, and `asset_class` is optional; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.11. |
 | `spending.categorization` | object | Optional. Configures `wealthdb categorize`: the model endpoint (`model`), how much of a transaction reaches it (`context`), and the per-merchant narrative cap (`descriptor_samples`). Absent ⇒ the subcommand refuses; the deterministic tiers are unaffected and keep running on load. |
 | `spending.categorization.model` | object | Optional. LLM endpoint asked for a category per merchant signature. Same shape and same API support as `symbol_resolution.model` (`baseUrl`, `api`, `apiKey`, `name`). |
 | `spending.categorization.context` | string | Optional. `"merchant"` (default) sends merchant signatures only; `"descriptor"` adds the raw statement narratives; `"transaction"` adds date, amount, account kind and nearby-transaction signatures. The default is the most private level by decision, not by accident. Independent of the fence, which gates candidacy at every level. |
@@ -3386,7 +3386,8 @@ identifies it is *which* row it is.
 The optional `spending.pins` CSV ledger (config §5) records those
 corrections one transaction at a time. Columns: `silver_source_id,
 account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed,
-note`. **`income.pins` is the same ledger for the income family**, with
+asset_class, note` — and no others; an unknown header fails the parse.
+`asset_class` is optional. **`income.pins` is the same ledger for the income family**, with
 `income_detailed` in place of `spend_detailed` and validated against the
 income vocabulary — a pin identifies a transaction the same way
 whichever question is being answered about it, so only the value column
@@ -3397,12 +3398,28 @@ equity-transfer ledger uses. `amount` is the amount as gold stores it
 the same absolute floor the transfer matcher applies, so a figure
 copied from a two-decimal statement describes a four-decimal row.
 `spend_detailed` may be any valid value, vendored or delta, in the
-taxonomy's own spelling — the same set a config rule may place. The
+taxonomy's own spelling — the same set a config rule may place. Two
+ledger rows on one transaction key must agree on the value AND on
+`asset_class`; disagreeing on either is refused naming both lines,
+because file order would otherwise decide it in silence. The
 difference between the two is scope, not vocabulary: a pin names one
 transaction key, a rule fires on every narrative its pattern matches.
-`note` is free text — why the row is pinned, for whoever reads the
-ledger next — and is the one column the parser accepts and ignores:
-nothing carries it into gold.
+`asset_class` is optional and says what the capital went INTO, for a
+pin whose value is that family's one investing verdict — `investment`
+on the spending side, `capital_return` on the income one. It is the
+exposure dimension alone (TAXONOMY.md §2) less `cash` and `other`, and
+on any other verdict it fails the parse rather than being stored where
+nothing reads it. It exists because the cash flow statement's investing
+class is otherwise the instrument's, and a bank payment order names
+none (CASHFLOW.md §4). `note` is free text — why the row is pinned, for
+whoever reads the ledger next — and nothing carries it into gold.
+
+Those two are the only columns beyond the required ones, and the header
+is checked against that closed set: an unknown column fails the parse
+naming it. Before `asset_class` the parser ignored what it did not
+recognise, which was harmless while the only such column was
+decorative; a misspelled `asset_class` would otherwise be a silent
+no-op that still applied its verdict.
 
 A pin applies to **every** gold transaction matching (source, account,
 day, amount, currency). The key is deliberately not unique: two

@@ -427,8 +427,8 @@ func TestAnUnscopedRuleStillFiresEverywhere(t *testing.T) {
 	rules := []Rule{{Match: regexp.MustCompile(`(?i)acme`), Category: "gift"}}
 	got, ok := ConfigRuleCategory(rules, RuleRow{
 		Counterparty: "ACME LTD", Source: "anywhere", Account: "any", OccurredAt: 1})
-	if !ok || got != "gift" {
-		t.Errorf("got (%q, %v), want (gift, true)", got, ok)
+	if !ok || got.Category != "gift" {
+		t.Errorf("got (%q, %v), want (gift, true)", got.Category, ok)
 	}
 }
 
@@ -462,9 +462,9 @@ func TestConfigRuleCategory(t *testing.T) {
 	for _, tc := range cases {
 		got, ok := ConfigRuleCategory(rules, RuleRow{
 			Counterparty: tc.counterparty, Description: tc.description})
-		if got != tc.want || ok != tc.ok {
+		if got.Category != tc.want || ok != tc.ok {
 			t.Errorf("ConfigRuleCategory(%q, %q) = (%q, %v), want (%q, %v)",
-				tc.counterparty, tc.description, got, ok, tc.want, tc.ok)
+				tc.counterparty, tc.description, got.Category, ok, tc.want, tc.ok)
 		}
 	}
 	if _, ok := ConfigRuleCategory(nil, RuleRow{
@@ -577,8 +577,8 @@ func TestConfigRuleMatchesTheIssuersOwnFiling(t *testing.T) {
 		Counterparty: "EXAMPLE ASSOCIATION", Description: "",
 		ProviderCategory: "Club Membership",
 	})
-	if !ok || got != "PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS" {
-		t.Errorf("= (%q, %v), want the rule keyed on the issuer's value to fire", got, ok)
+	if !ok || got.Category != "PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS" {
+		t.Errorf("= (%q, %v), want the rule keyed on the issuer's value to fire", got.Category, ok)
 	}
 	// It is one field among three, not a special case: the same rule
 	// must not fire on a row the issuer filed differently.

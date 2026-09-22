@@ -306,6 +306,24 @@ invisible it would vanish into the residual forever; drawn as
 `Untracked accounts` it is visible as what it is, and the remedy —
 collect that account — is obvious from the chart.
 
+**The investing class has three roads, and they are ordered.** The
+trade's own exposure first (0097/0100: a feed that cannot name the
+instrument can still name what it traded), then the instrument's, then
+— beside an `investment` or `capital_return` verdict — the
+`asset_class` a config rule or a pins-ledger row carried (§7, migration
+0102). The holder's word comes last, and is read AFTER the test that
+sends a row naming an instrument with no dimension row to `other`: that
+node is how a missing dimension row stays visible, and a stated
+exposure read any earlier would hide the hole behind a plausible class.
+A stated `cash` is ignored rather than drawn, because that class's
+label is the statement's own residual node. Where none of the three
+says anything the row is `elsewhere` — which after 0102 means exactly
+that, and nothing weaker.
+
+The GROUP stays the verdict on those rows. The class is what the money
+went into and the group is what the money did, so a house bought and a
+REIT traded share a class node and separate at group grain.
+
 This ladder runs for `internal_transfer` and nothing else, so it is
 not the only road to the nodes it reaches. `mortgage_transfer` (§5)
 resolves to `financing · Mortgage` on the verdict alone, ahead of any
@@ -332,7 +350,7 @@ alone would collide a gift given with a gift received in one edge list.
 |---|---|
 | operating in | `earnings` · `yield` · `benefits` · `other_receipts` · `(uncategorized)` |
 | operating out | `consumption` · `fees` · `taxes` · `giving` · `(uncategorized)` |
-| investing | the instrument's asset class, every value but `cash`; `other` where a row names an instrument whose class is missing; `elsewhere` for the rows that name no instrument at all; all of them folded into `investments` under `--investing whole` |
+| investing | the exposure, from whichever of three roads names one — the trade's own word, then the instrument's, then the holder's `asset_class` on the rule or pin that placed the verdict; every value but `cash`. `other` where a row names an instrument whose class is missing; `elsewhere` where none of the three said anything; all of them folded into `investments` under `--investing whole` |
 | financing | `mortgage` · `loans` |
 | vehicles | `retirement` · `education` · `health` · `trusts` · `deposits` · `untracked` |
 | cash | `cash`, drawn as **Cash savings** |
@@ -637,6 +655,17 @@ is what applies one to history.
 Nothing else is configurable. Rules, pins and transfer overrides are
 the families'; a verdict written there is what cashflow reads, and the
 seven new values are placed through those surfaces.
+
+One thing those surfaces now carry that only cashflow reads: an
+optional `asset_class` on a `spending.rules[]` / `income.rules[]` entry
+and in either pins ledger, admitted only beside `investment` or
+`capital_return` and validated against the exposure set (TAXONOMY.md
+§2) less `cash` and `other`. It says what the capital went INTO, for
+the movement whose feed named no instrument — see §4. It is the one
+exception to the paragraph above, and it is deliberately not in the
+`cashflow` block: the verdict and the exposure are one statement about
+one row, and splitting them across two config surfaces would let a
+deployment carry half of it.
 
 ---
 

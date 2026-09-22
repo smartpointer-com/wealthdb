@@ -52,12 +52,24 @@ type Pin struct {
 	Amount   float64 // net_amount as gold stores it: canonical sign, so a debit is negative
 	Currency string
 	Detailed string
+	// AssetClass is what the capital went INTO, set only on a pin whose
+	// verdict is this family's one investing value. Empty everywhere
+	// else, and empty is NULL in the overlay rather than a blank string
+	// — a blank would win the resolution's COALESCE and mint a class
+	// node with no name.
+	AssetClass string
 }
 
 // requiredPinCols are the ledger CSV columns. Lookup is by header
 // name, so they may be given in any order, and a column outside this
-// list is accepted and ignored — `note`, a free-text annotation kept
-// for the ledger's own readability, is the one the format documents.
+// list is accepted only if this format knows it: `note`, a free-text
+// annotation kept for the ledger's own readability, and `asset_class`,
+// the exposure a pin may state beside an investing verdict. Anything
+// else fails the parse. Tolerating the unknown was harmless while the
+// only extra column was decorative; with a column that CHANGES the
+// answer, a misspelled header would be a silent no-op that still
+// applied its verdict, and there is no diagnostic anywhere downstream
+// that would show it.
 // The value column is the family's: `spend_detailed` in the spending
 // ledger, `income_detailed` in the income one. Everything else about
 // the format is shared, because a pin identifies a transaction the same
@@ -74,7 +86,8 @@ const pinAmountEps = 0.01
 // missing file is not an error — the ledger is optional and absence
 // means "no pins".
 func ParsePinLedger(path string) ([]Pin, error) {
-	return ParsePinLedgerAs(path, "spending", "spend_detailed", canonical.ValidSpendDetailed)
+	return ParsePinLedgerAs(path, "spending", "spend_detailed",
+		canonical.SpendDetailedInvestment, canonical.ValidSpendDetailed)
 }
 
 // ParsePinLedgerAs is ParsePinLedger for a named family: the same
@@ -82,7 +95,10 @@ func ParsePinLedger(path string) ([]Pin, error) {
 // column and validated against a different vocabulary. A spending
 // value in the income ledger is refused at config load, which is the
 // only place a person's typo can still be cheap to fix.
-func ParsePinLedgerAs(path, family, valueCol string, valid func(string) bool) ([]Pin, error) {
+// `investingValue` is the one value of this family's vocabulary whose
+// cash flow section is `investing`, and the only one an `asset_class`
+// may accompany.
+func ParsePinLedgerAs(path, family, valueCol, investingValue string, valid func(string) bool) ([]Pin, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -94,10 +110,10 @@ func ParsePinLedgerAs(path, family, valueCol string, valid func(string) bool) ([
 		return nil, fmt.Errorf("%s.pins: open %q: %w", family, path, err)
 	}
 	defer f.Close()
-	return parsePinLedger(f, family, valueCol, valid)
+	return parsePinLedger(f, family, valueCol, investingValue, valid)
 }
 
-func parsePinLedger(r io.Reader, family, valueCol string, valid func(string) bool) ([]Pin, error) {
+func parsePinLedger(r io.Reader, family, valueCol, investingValue string, valid func(string) bool) ([]Pin, error) {
 	cr := csv.NewReader(r)
 	cr.TrimLeadingSpace = true
 	cr.FieldsPerRecord = -1 // tolerate trailing/blank columns; we index by header
@@ -118,6 +134,23 @@ func parsePinLedger(r io.Reader, family, valueCol string, valid func(string) boo
 			return nil, fmt.Errorf("%s.pins: missing required column %q", family, c)
 		}
 	}
+	// And every header must be one this format knows — see
+	// requiredPinCols on why an unknown one is an error rather than
+	// ignored. A wholly empty trailing cell is not a column.
+	known := map[string]struct{}{"note": {}, "asset_class": {}, valueCol: {}}
+	for _, c := range requiredPinCols {
+		known[c] = struct{}{}
+	}
+	for _, h := range header {
+		name := strings.ToLower(strings.TrimSpace(h))
+		if name == "" {
+			continue
+		}
+		if _, ok := known[name]; !ok {
+			return nil, fmt.Errorf("%s.pins: unknown column %q; the format is %v plus %q, note and asset_class",
+				family, name, requiredPinCols, valueCol)
+		}
+	}
 	get := func(rec []string, name string) string {
 		i, ok := col[name]
 		if !ok || i >= len(rec) {
@@ -131,8 +164,9 @@ func parsePinLedger(r io.Reader, family, valueCol string, valid func(string) boo
 	// Rows that agree collapse to one — a pin already applies to every
 	// row it describes, so repeating it adds nothing.
 	type seenPin struct {
-		line     int
-		detailed string
+		line       int
+		detailed   string
+		assetClass string
 	}
 	var out []Pin
 	seen := map[string]seenPin{}
@@ -149,7 +183,7 @@ func parsePinLedger(r io.Reader, family, valueCol string, valid func(string) boo
 		if isBlankRecord(rec) {
 			continue
 		}
-		p, err := pinFromRecord(rec, get, valueCol, valid)
+		p, err := pinFromRecord(rec, get, valueCol, investingValue, valid)
 		if err != nil {
 			return nil, fmt.Errorf("%s.pins: line %d: %w", family, line, err)
 		}
@@ -160,15 +194,23 @@ func parsePinLedger(r io.Reader, family, valueCol string, valid func(string) boo
 					family,
 					line, prev.line, p.Detailed, prev.detailed)
 			}
+			// Agreeing on the verdict and disagreeing on the exposure is
+			// the same contradiction on the other axis, and file order
+			// would decide it silently.
+			if prev.assetClass != p.AssetClass {
+				return nil, fmt.Errorf("%s.pins: line %d pins the same transaction(s) as line %d to asset_class %q, not %q",
+					family,
+					line, prev.line, p.AssetClass, prev.assetClass)
+			}
 			continue
 		}
-		seen[key] = seenPin{line, p.Detailed}
+		seen[key] = seenPin{line, p.Detailed, p.AssetClass}
 		out = append(out, p)
 	}
 	return out, nil
 }
 
-func pinFromRecord(rec []string, get func([]string, string) string, valueCol string, valid func(string) bool) (Pin, error) {
+func pinFromRecord(rec []string, get func([]string, string) string, valueCol, investingValue string, valid func(string) bool) (Pin, error) {
 	p := Pin{
 		Source:   get(rec, "silver_source_id"),
 		Account:  get(rec, "account"),
@@ -198,6 +240,15 @@ func pinFromRecord(rec []string, get func([]string, string) string, valueCol str
 	if !valid(p.Detailed) {
 		return p, fmt.Errorf("%s %q is not a value of this family's taxonomy (vendored values are uppercase, the deltas lowercase)", valueCol, p.Detailed)
 	}
+	if p.AssetClass = get(rec, "asset_class"); p.AssetClass != "" {
+		if p.Detailed != investingValue {
+			return p, fmt.Errorf("asset_class is only meaningful beside %s %q, which is this family's one investing verdict; got %q",
+				valueCol, investingValue, p.Detailed)
+		}
+		if err := canonical.StatedExposure(p.AssetClass); err != nil {
+			return p, fmt.Errorf("asset_class: %w", err)
+		}
+	}
 	return p, nil
 }
 
@@ -223,8 +274,9 @@ func isBlankRecord(rec []string) bool {
 // pinnedRow is a pin resolved onto one gold transaction: the row's
 // narrative, so it gets a signature like any other, and the verdict.
 type pinnedRow struct {
-	row      candidate
-	detailed string
+	row        candidate
+	detailed   string
+	assetClass string
 }
 
 // resolvePins finds every gold transaction each pin describes and
@@ -283,7 +335,7 @@ func resolvePins(ctx context.Context, tx *sql.Tx, fam string, pins []Pin) (map[t
 			unmatched++
 		}
 		for _, row := range matches {
-			out[row.key] = pinnedRow{row: row, detailed: p.Detailed}
+			out[row.key] = pinnedRow{row: row, detailed: p.Detailed, assetClass: p.AssetClass}
 		}
 	}
 	return out, unmatched, nil

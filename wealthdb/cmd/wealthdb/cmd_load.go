@@ -145,7 +145,7 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdo
 	}
 	incomeInclude, incomeExclude := cfg.IncomeAccountScope()
 	incomePins, err := spending.ParsePinLedgerAs(cfg.IncomePins(), "income",
-		"income_detailed", canonical.ValidIncomeDetailed)
+		"income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed)
 	if err != nil {
 		return err
 	}
@@ -277,6 +277,15 @@ func printFamilySummary(stdout io.Writer, family, counterparty string, res spend
 			"`%s.accounts` keys on the account id, and such an entry scopes nothing\n",
 			family, res.UnresolvedScopeAccounts, family)
 	}
+	// The backlog, not the tally: a success count rising from zero says
+	// nothing about whether the node is honest, and the tiers this
+	// surface cannot reach keep pushing the remainder back up. Printed
+	// whenever either side is non-zero, because "0 of N stated" is the
+	// reading that matters on the first run after the column lands.
+	if res.StatedExposures > 0 || res.UnstatedInvesting > 0 {
+		fmt.Fprintf(stdout, "%s: %d investing row(s) say what the capital went into, %d still do not\n",
+			family, res.StatedExposures, res.UnstatedInvesting)
+	}
 	if res.UnmappedProviderCategories > 0 {
 		fmt.Fprintf(stdout, "%s: %d row(s) carried a provider category this build does not map\n",
 			family, res.UnmappedProviderCategories)
@@ -307,7 +316,7 @@ func compiledRules(compiled []config.CompiledSpendRule) []spending.Rule {
 	rules := make([]spending.Rule, 0, len(compiled))
 	for _, r := range compiled {
 		rules = append(rules, spending.Rule{
-			Match: r.Match, Category: r.Category,
+			Match: r.Match, Category: r.Category, AssetClass: r.AssetClass,
 			Scope: spending.RuleScope{
 				Source:    r.Scope.Source,
 				Portfolio: r.Scope.Portfolio,

@@ -30,9 +30,11 @@ import (
 // assigned_at is excluded, being wall-clock. Everything else the pass
 // writes is here, the provider column included.
 
-// frozenSnapshot is enrichmentSnapshot plus the provider column: the
-// oracle has to cover every column the pass writes, and the issuer's
-// own filing is one the idempotency check has no reason to read.
+// frozenSnapshot is enrichmentSnapshot plus every other column the
+// pass writes: the oracle's contract is to cover all of them, and a
+// column outside it is a column a refactor could move in silence. The
+// three far columns and the stated exposure were outside it until
+// migration 0102 gave the golden a reason to move anyway.
 func frozenSnapshot(t *testing.T, db *sql.DB, ctx context.Context) string {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, `
@@ -40,6 +42,10 @@ func frozenSnapshot(t *testing.T, db *sql.DB, ctx context.Context) string {
                COALESCE(merchant_signature, '(null)'), signature_version,
                COALESCE(spend_detailed, '(null)'), provenance,
                COALESCE(merchant_label, '(null)'),
+               COALESCE(far_silver_source_id, '(null)'),
+               COALESCE(far_account_external_id, '(null)'),
+               COALESCE(far_class, '(null)'),
+               COALESCE(stated_asset_class, '(null)'),
                COALESCE(provider_spend_detailed, '(null)')
           FROM spend_txn_enrichment
          ORDER BY silver_source_id, transaction_external_id`)
@@ -49,13 +55,16 @@ func frozenSnapshot(t *testing.T, db *sql.DB, ctx context.Context) string {
 	defer rows.Close()
 	var b strings.Builder
 	for rows.Next() {
-		var src, id, sig, detailed, prov, label, provider string
+		var src, id, sig, detailed, prov, label string
+		var farSrc, farAcct, farClass, exposure, provider string
 		var version int
-		if err := rows.Scan(&src, &id, &sig, &version, &detailed, &prov, &label, &provider); err != nil {
+		if err := rows.Scan(&src, &id, &sig, &version, &detailed, &prov, &label,
+			&farSrc, &farAcct, &farClass, &exposure, &provider); err != nil {
 			t.Fatalf("scan overlay: %v", err)
 		}
-		fmt.Fprintf(&b, "%s/%s sig=%q v%d cat=%s via=%s label=%s issuer=%s\n",
-			src, id, sig, version, detailed, prov, label, provider)
+		fmt.Fprintf(&b, "%s/%s sig=%q v%d cat=%s via=%s label=%s far=%s/%s farclass=%s exposure=%s issuer=%s\n",
+			src, id, sig, version, detailed, prov, label,
+			farSrc, farAcct, farClass, exposure, provider)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate overlay: %v", err)
@@ -115,7 +124,8 @@ func seedFrozenFixture(t *testing.T, db *sql.DB, ctx context.Context) Options {
 	)
 	return Options{
 		Rules: []Rule{
-			{Match: regexp.MustCompile(`(?i)EXAMPLE BROKER`), Category: canonical.SpendDetailedInvestment},
+			{Match: regexp.MustCompile(`(?i)EXAMPLE BROKER`), Category: canonical.SpendDetailedInvestment,
+				AssetClass: "private_equity"},
 		},
 		Pins: []Pin{
 			// A pin names a row the way a statement shows it: source,
@@ -160,22 +170,25 @@ func TestSpendingPassOutputIsFrozen(t *testing.T) {
 	}
 }
 
-// The golden. Captured from the pass as it stood before the income
-// family was folded in, and never edited to make a test pass.
-const frozenSpendingOverlay = `bank/T-BACKLOG sig="UNPLACEABLE COUNTERPARTY" v11 cat=(null) via=signature-only label=(null) issuer=(null)
-bank/T-CARD-BILL sig="PAYMENT TO CHASE CARD ENDING IN" v11 cat=card_spend via=rule label=Chase issuer=(null)
-bank/T-CONFIG-RULE sig="EXAMPLE BROKER SUBSCRIPTION" v11 cat=investment via=rule label=(null) issuer=(null)
-bank/T-FUND-IN sig="(null)" v11 cat=internal_transfer via=matcher label=(null) issuer=(null)
-bank/T-FUND-OUT sig="TRANSFER TO INVESTMENT" v11 cat=internal_transfer via=matcher label=(null) issuer=(null)
-bank/T-MATCH-OUT sig="AUTOPAY PAYMENT" v11 cat=internal_transfer via=matcher label=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
-bank/T-MEMO sig="ATM WITHDRAWAL MAIN STREET" v11 cat=cash_withdrawal via=rule label=(null) issuer=(null)
-bank/T-PIN-OVER-MATCH sig="LOOKS INTERNAL" v11 cat=gift via=manual label=(null) issuer=(null)
-bank/T-PIN-PAIR sig="(null)" v11 cat=internal_transfer via=matcher label=(null) issuer=(null)
-bank/T-PROVIDER sig="CORNER MARKET" v11 cat=FOOD_AND_DRINK_GROCERIES via=provider label=(null) issuer=FOOD_AND_DRINK_GROCERIES
-bank/T-PROVIDER-CATCHALL sig="SOME DEPARTMENT STORE" v11 cat=(null) via=signature-only label=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
-bank/T-RULE sig="ATM WITHDRAWAL MAIN STREET" v11 cat=cash_withdrawal via=rule label=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
-other-bank/T-MATCH-IN sig="(null)" v11 cat=internal_transfer via=matcher label=(null) issuer=(null)
-other-bank/T-PIN-OUTSIDE sig="NAMED BY HAND" v11 cat=other via=manual label=(null) issuer=(null)
+// The golden. The verdict fields were captured from the pass as it
+// stood before the income family was folded in; the three far columns
+// and the exposure were widened in when migration 0102 moved the
+// golden anyway, having been outside the oracle until then. Never
+// edited to make a test pass.
+const frozenSpendingOverlay = `bank/T-BACKLOG sig="UNPLACEABLE COUNTERPARTY" v11 cat=(null) via=signature-only label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
+bank/T-CARD-BILL sig="PAYMENT TO CHASE CARD ENDING IN" v11 cat=card_spend via=rule label=Chase far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
+bank/T-CONFIG-RULE sig="EXAMPLE BROKER SUBSCRIPTION" v11 cat=investment via=rule label=(null) far=(null)/(null) farclass=(null) exposure=private_equity issuer=(null)
+bank/T-FUND-IN sig="(null)" v11 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+bank/T-FUND-OUT sig="TRANSFER TO INVESTMENT" v11 cat=internal_transfer via=matcher label=(null) far=bank/BRK1 farclass=(null) exposure=(null) issuer=(null)
+bank/T-MATCH-OUT sig="AUTOPAY PAYMENT" v11 cat=internal_transfer via=matcher label=(null) far=other-bank/CASH2 farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
+bank/T-MEMO sig="ATM WITHDRAWAL MAIN STREET" v11 cat=cash_withdrawal via=rule label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
+bank/T-PIN-OVER-MATCH sig="LOOKS INTERNAL" v11 cat=gift via=manual label=(null) far=bank/CUST1 farclass=(null) exposure=(null) issuer=(null)
+bank/T-PIN-PAIR sig="(null)" v11 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+bank/T-PROVIDER sig="CORNER MARKET" v11 cat=FOOD_AND_DRINK_GROCERIES via=provider label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=FOOD_AND_DRINK_GROCERIES
+bank/T-PROVIDER-CATCHALL sig="SOME DEPARTMENT STORE" v11 cat=(null) via=signature-only label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
+bank/T-RULE sig="ATM WITHDRAWAL MAIN STREET" v11 cat=cash_withdrawal via=rule label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
+other-bank/T-MATCH-IN sig="(null)" v11 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+other-bank/T-PIN-OUTSIDE sig="NAMED BY HAND" v11 cat=other via=manual label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
 `
 
 // Ten population rows — every purchase and withdrawal above — plus the

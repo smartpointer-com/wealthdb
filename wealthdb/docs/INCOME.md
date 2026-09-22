@@ -216,6 +216,15 @@ so does an income rule naming `FOOD_AND_DRINK_GROCERIES`.
 
 ## 3. The tiers and the precedence lattice
 
+> One field the income surfaces carry that no income report reads: an
+> optional `asset_class` on an `income.rules[]` entry or a pins-ledger
+> row, admitted beside `capital_return` alone. It says what the
+> returned capital had been deployed INTO, and it exists so the return
+> leg of a private holding draws on the same cash-flow node its funding
+> leg does — the outflow side is the spending family's and a
+> spending-only column could never have reached this one. See
+> docs/CASHFLOW.md §4.
+
 The lattice is spending's in every tier the pass writes, and the
 provenance vocabulary is the same seven values (SPENDING.md §3). One
 step is **re-ordered**: the kind floor is read over the model, not under

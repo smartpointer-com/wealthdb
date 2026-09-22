@@ -1,6 +1,10 @@
 package canonical
 
-import "sort"
+import (
+	"errors"
+	"fmt"
+	"sort"
+)
 
 // This file carries the two-dimensional instrument taxonomy:
 // exposure (the asset class — what moves the value) and vehicle (the
@@ -63,6 +67,38 @@ func AssetClasses() []AssetClass {
 func (a AssetClass) Valid() bool {
 	_, ok := assetClassValues[a]
 	return ok
+}
+
+// StatedExposure reports whether s is an exposure a config rule or a
+// pins-ledger row may state beside an investing verdict, and why not
+// when it may not. Two values of the exposure set are refused.
+//
+// `cash` is refused for a node-name collision: the cash flow statement
+// labels it "Cash savings", which is the name the Sankey's own residual
+// node carries, and node names must be unique across one edge list. It
+// also holds class rank 1 where every exposure holds the default. A
+// deployment of capital into cash is not a deployment anyway.
+//
+// `other` is refused because the resolution reserves it: a row that
+// names an instrument whose dimension row is missing falls to `other`
+// and is visible as the gap it is. A holder who cannot name the
+// exposure leaves the row where it was, on a node that counts it,
+// rather than writing into the one that means the dimension has a hole.
+//
+// Everything else the exposure set admits is admitted here, foreign
+// exchange included: a currency position held as a position is a
+// deployment, and it collides with nothing.
+func StatedExposure(s string) error {
+	switch AssetClass(s) {
+	case AssetClassCash:
+		return errors.New("`cash` is not a deployment of capital, and its class label is the statement's own residual node")
+	case AssetClassOther:
+		return errors.New("`other` is reserved for a row whose instrument dimension is missing; leave the row uncategorised instead")
+	}
+	if !AssetClass(s).Valid() {
+		return fmt.Errorf("%q is not an exposure (docs/TAXONOMY.md §2); exposure only — a payment order states what the money bought, not how it is held", s)
+	}
+	return nil
 }
 
 // Vehicle is the wrapper dimension of the 2-D taxonomy — how an

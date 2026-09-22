@@ -90,17 +90,19 @@ func seedResolutionFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 // line is one seeded transaction plus the verdicts the enrichment pass
 // would have written for it.
 type line struct {
-	id         string
-	account    string
-	kind       string
-	amount     float64
-	instrument string
-	spend      string // spend_detailed, "" for none
-	income     string // income_detailed, "" for none
-	farAccount string // the matcher's partner, "" for none
-	farClass   string // a rule's own word, "" for none
-	want       string // "section.class.group", or "" for not a line
-	why        string
+	id          string
+	account     string
+	kind        string
+	amount      float64
+	instrument  string
+	spend       string // spend_detailed, "" for none
+	income      string // income_detailed, "" for none
+	farAccount  string // the matcher's partner, "" for none
+	farClass    string // a rule's own word, "" for none
+	spendClass  string // stated_asset_class on the spending overlay, "" for none
+	incomeClass string // stated_asset_class on the income overlay, "" for none
+	want        string // "section.class.group", or "" for not a line
+	why         string
 }
 
 // seedLines writes the transactions and both overlays, then returns the
@@ -119,24 +121,26 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
 			l.id, l.account, nullable(l.instrument), l.kind, l.amount, l.id); err != nil {
 			t.Fatalf("seed transaction %s: %v", l.id, err)
 		}
-		if l.spend != "" || l.farAccount != "" || l.farClass != "" {
+		if l.spend != "" || l.farAccount != "" || l.farClass != "" || l.spendClass != "" {
 			if _, err := db.ExecContext(ctx, `
                 INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
                         merchant_signature, signature_version, spend_detailed, provenance,
-                        far_silver_source_id, far_account_external_id, far_class, assigned_at)
-                     VALUES ('cf', ?, 'sig', 1, ?, 'rule', ?, ?, ?, 100)`,
+                        far_silver_source_id, far_account_external_id, far_class,
+                        stated_asset_class, assigned_at)
+                     VALUES ('cf', ?, 'sig', 1, ?, 'rule', ?, ?, ?, ?, 100)`,
 				l.id, nullable(l.spend),
 				nullable(map[bool]string{true: "cf", false: ""}[l.farAccount != ""]),
-				nullable(l.farAccount), nullable(l.farClass)); err != nil {
+				nullable(l.farAccount), nullable(l.farClass), nullable(l.spendClass)); err != nil {
 				t.Fatalf("seed spending overlay for %s: %v", l.id, err)
 			}
 		}
-		if l.income != "" {
+		if l.income != "" || l.incomeClass != "" {
 			if _, err := db.ExecContext(ctx, `
                 INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
-                        payer_signature, signature_version, income_detailed, provenance, assigned_at)
-                     VALUES ('cf', ?, 'sig', 1, ?, 'rule', 100)`,
-				l.id, l.income); err != nil {
+                        payer_signature, signature_version, income_detailed, provenance,
+                        stated_asset_class, assigned_at)
+                     VALUES ('cf', ?, 'sig', 1, ?, 'rule', ?, 100)`,
+				l.id, nullable(l.income), nullable(l.incomeClass)); err != nil {
 				t.Fatalf("seed income overlay for %s: %v", l.id, err)
 			}
 		}
@@ -793,4 +797,129 @@ func TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing(t *testing.T) {
 			why:   "a primary that describes its members is left alone"},
 	}
 	check(t, seedLines(t, db, ctx, lines), lines)
+}
+
+// ---- migration 0102: the holder may say what the capital went into ------
+
+// TestAStatedExposureNamesTheInvestingClass walks the whole of 0102.
+// The investing class is otherwise the instrument's, and a bank payment
+// order names none — so capital deployed into a destination the product
+// holds, in a source that carries no transactions to pair against, drew
+// as `elsewhere`: "Untracked investments", for a book gold holds.
+//
+// The GROUP is asserted alongside the class on every row, and that is
+// the point of asserting the whole triple: until 0102 the verdict
+// reached the group only while the class was still `elsewhere`, so
+// giving a row its class would have cost it its group and a house
+// purchase would have read `Real estate · Private capital`.
+func TestAStatedExposureNamesTheInvestingClass(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	lines := []line{
+		{id: "X-HOUSE", account: "CASH", kind: "withdrawal", amount: -250000,
+			spend: "investment", spendClass: "real_estate",
+			want: "investing.real_estate.investment",
+			why:  "a payment order that bought a property the product holds elsewhere"},
+		{id: "X-STAKE", account: "CASH", kind: "withdrawal", amount: -50000,
+			spend: "investment", spendClass: "private_equity",
+			want: "investing.private_equity.investment",
+			why:  "a private-markets commitment, by the same road"},
+		{id: "X-BACK", account: "CASH", kind: "deposit", amount: 9000,
+			income: "capital_return", incomeClass: "private_debt",
+			want: "investing.private_debt.capital_return",
+			why:  "the return leg, stated on the income side, keeps its own group"},
+		{id: "X-SILENT", account: "CASH", kind: "withdrawal", amount: -7000,
+			spend: "investment",
+			want:  "investing.elsewhere.investment",
+			why:   "a deployment nobody named still means what elsewhere says"},
+	}
+	check(t, seedLines(t, db, ctx, lines), lines)
+}
+
+// TestAStatedExposureYieldsToEveryRoadAboveIt pins the ordering the
+// class arm exists to express: the FEED first, the instrument second,
+// the holder last — and nothing at all once the movement stops being a
+// deployment.
+func TestAStatedExposureYieldsToEveryRoadAboveIt(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, kind, currency, net_amount, asset_class)
+             VALUES ('cf', 'X-FEED', 1728000, 'CASH', 'withdrawal', 'USD', -1000, 'metal')`); err != nil {
+		t.Fatalf("seed feed-stated row: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
+                merchant_signature, signature_version, spend_detailed, provenance,
+                stated_asset_class, assigned_at)
+             VALUES ('cf', 'X-FEED', 'sig', 1, 'investment', 'rule', 'real_estate', 100)`); err != nil {
+		t.Fatalf("seed feed-stated overlay: %v", err)
+	}
+	lines := []line{
+		// A named instrument whose dimension row is MISSING must still
+		// fall to `other`. gold's instruments.asset_class is NOT NULL,
+		// so a null on the join means the row is absent — and a stated
+		// exposure read any earlier would hide that hole behind a
+		// plausible class. This is the case that decided the term's
+		// placement (beside TestElsewhereIsForARowWithNoInstrument).
+		{id: "X-GAP", account: "CASH", kind: "withdrawal", amount: -2000,
+			instrument: "NO-SUCH", spend: "investment", spendClass: "real_estate",
+			want: "investing.other.investment",
+			why:  "a dimension gap stays visible as one"},
+		// The holder may not mint the statement's residual node: `cash`
+		// is labelled "Cash savings", which the Sankey already uses.
+		// Refused at config load AND here, so the guard is structural.
+		{id: "X-CASH", account: "CASH", kind: "withdrawal", amount: -3000,
+			spend: "investment", spendClass: "cash",
+			want: "investing.elsewhere.investment",
+			why:  "a stated `cash` is ignored rather than drawn"},
+		// The matcher's verdict replaces the rule's, and the pass
+		// clears the exposure with it; seeded here as the overlay the
+		// pass would have written, to pin the reader's half.
+		{id: "X-PAIRED", account: "CASH", kind: "withdrawal", amount: -4000,
+			spend: "internal_transfer", spendClass: "real_estate", farAccount: "BROK",
+			want: "internal", why: "an own-account move inside the pool draws nothing"},
+	}
+	got := seedLines(t, db, ctx, lines)
+	check(t, got, lines)
+	if got["X-FEED"] != "investing.metal.investment" {
+		t.Errorf("X-FEED = %s, want investing.metal.investment — the feed's own word outranks the holder's",
+			got["X-FEED"])
+	}
+}
+
+// TestTheExposureTravelsWithTheVerdictThatWon pins the one thing a flat
+// COALESCE would have got wrong. The node macro picks the VERDICT by
+// kind — income first on an inflow — so the exposure has to be picked
+// the same way, or a row carrying both overlays can show the class of
+// the family whose verdict lost.
+func TestTheExposureTravelsWithTheVerdictThatWon(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	lines := []line{
+		{id: "X-BOTH", account: "CASH", kind: "deposit", amount: 12000,
+			spend: "investment", spendClass: "real_estate",
+			income: "capital_return", incomeClass: "private_debt",
+			want: "investing.private_debt.capital_return",
+			why:  "a deposit reads income's verdict, so it must read income's exposure"},
+	}
+	check(t, seedLines(t, db, ctx, lines), lines)
+}
+
+// TestMigration0101DDLIsRerunnable pins the contract 0101's own header
+// claims and no test held it to: three macros, an INSERT OR REPLACE and
+// an UPDATE guarded on a NULL, all replayable against a database that
+// already has them.
+func TestMigration0101DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0101_cashflow_mortgage_transfer.sql")
+}
+
+// TestMigration0102DDLIsRerunnable pins the replay contract: both
+// ALTERs are IF NOT EXISTS and the macro is OR REPLACE, so applying the
+// file twice is a no-op rather than an error.
+func TestMigration0102DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0102_cashflow_stated_exposure.sql")
 }

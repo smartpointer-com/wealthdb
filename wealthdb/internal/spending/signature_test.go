@@ -194,8 +194,8 @@ func TestNormalizeIgnoresMemo(t *testing.T) {
 	// A config rule may key on the memo: it is the holder's own input.
 	rules := []Rule{{Match: regexp.MustCompile(`(?i)hypothekarzins`), Category: canonical.SpendDetailedInternalTransfer}}
 	if got, ok := ConfigRuleCategory(rules, RuleRow{Counterparty: cp,
-		Description: canonical.JoinDescriptionMemo(caption, "Hypothekarzins Q3")}); !ok || got != canonical.SpendDetailedInternalTransfer {
-		t.Errorf("ConfigRuleCategory on a memo = (%q, %v), want the rule to fire", got, ok)
+		Description: canonical.JoinDescriptionMemo(caption, "Hypothekarzins Q3")}); !ok || got.Category != canonical.SpendDetailedInternalTransfer {
+		t.Errorf("ConfigRuleCategory on a memo = (%q, %v), want the rule to fire", got.Category, ok)
 	}
 }
 

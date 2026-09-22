@@ -411,6 +411,15 @@ source, account, day, amount within a cent, currency — and applies to
 indistinguishable by design; that is a property of the data, not a
 limitation the ledger could remove.
 
+A pin may carry one more thing, and only cashflow reads it: an
+optional `asset_class`, admitted beside `investment` alone, saying what
+the capital went into. The cash flow statement's investing class is
+otherwise the instrument's, and a bank payment order names none
+(CASHFLOW.md §4). A config rule carries the same field on the same
+terms. Two ledger rows on one transaction must now agree on both
+columns, and an unrecognised header fails the parse — `note` and
+`asset_class` are the only two beyond the required set.
+
 A pin may set **any** valid value, vendored or delta — the same
 vocabulary a config rule may place. Pins are the override surface: a
 rule fires on every narrative its pattern matches, a pin names one

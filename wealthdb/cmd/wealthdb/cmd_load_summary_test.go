@@ -23,6 +23,7 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 		PinRows: 1, SignatureOnlyRows: 3,
 		UnmatchedPins: 1, UnresolvedScopeAccounts: 1,
 		UnmappedProviderCategories: 1, RekeyedVerdicts: 2, SplitVerdicts: 1,
+		StatedExposures: 3, UnstatedInvesting: 7,
 	}
 	income := spending.FamilyResult{
 		Enriched: 4, MatcherRows: 1, RuleRows: 1, ProviderRows: 0,
@@ -43,6 +44,7 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 	// Each family's own numbers, under its own name, in its own nouns.
 	for _, want := range []string{
 		"spending: 10 row(s) enriched — 1 matcher, 2 rule, 3 provider, 1 pinned, 3 unplaced",
+		"spending: 3 investing row(s) say what the capital went into, 7 still do not",
 		"income: 4 row(s) enriched — 1 matcher, 1 rule, 0 provider, 0 pinned, 2 unplaced",
 		"income: 2 pin(s) matched no transaction",
 		"`income.accounts` keys on the account id",

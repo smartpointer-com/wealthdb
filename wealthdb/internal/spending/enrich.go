@@ -190,6 +190,15 @@ type FamilyResult struct {
 	// spending side, payers on the income side — carried forward onto
 	// a new signature by a SignatureVersion bump.
 	RekeyedVerdicts int
+	// StatedExposures counts the rows on which a config rule or a pin
+	// said what the capital went into, and UnstatedInvesting the rows
+	// placed on an investing verdict that still say nothing. The second
+	// is the one to work down: a success counter rising from zero says
+	// nothing about whether the node is finally honest, and the tiers
+	// this surface cannot reach — the provider tier above all — keep
+	// pushing the backlog back up.
+	StatedExposures   int
+	UnstatedInvesting int
 	// StatedFarAccounts counts the rows whose far account came from the
 	// SOURCE naming it rather than from a pairing. It is the spending
 	// family's alone — the income overlay has no far columns — and it is
@@ -930,6 +939,19 @@ type enrichmentRow struct {
 	// rather than the row, exactly as merchantLabel does, so a tier
 	// above the rule clears it with the category it replaces.
 	farClass string
+	// statedAssetClass is what the holder said the capital went INTO,
+	// carried beside an investing verdict by a config rule or a pin
+	// (migration 0102). Like farClass and merchantLabel it describes
+	// the VERDICT rather than the row, so it travels with the verdict:
+	// written by the tier that placed one, cleared when the matcher
+	// replaces the verdict with `internal_transfer` — an exposure on an
+	// own-account move means nothing — and replaced, with a value or
+	// with nothing, by a pin above a rule.
+	//
+	// It is NOT cleared where the source merely states a far account:
+	// that road answers where the money went and never what the
+	// movement was, so the verdict it describes is still standing.
+	statedAssetClass string
 }
 
 // assignCategories applies the deterministic tiers to every reachable
@@ -1025,13 +1047,14 @@ func assignCategories(
 				if len(fam.farCols) > 0 {
 					row.farClass = farClass
 				}
-			} else if detailed, ok := ConfigRuleCategory(rules, RuleRow{
+			} else if placement, ok := ConfigRuleCategory(rules, RuleRow{
 				Counterparty: r.counterparty, Description: r.description,
 				ProviderCategory: r.providerCategory,
 				Source:           r.key.source, Portfolio: r.portfolio,
 				Account: r.account, OccurredAt: r.occurredAt,
 			}); ok {
-				row.detailed, row.provenance = detailed, ProvenanceRule
+				row.detailed, row.provenance = placement.Category, ProvenanceRule
+				row.statedAssetClass = placement.AssetClass
 			}
 		}
 		// A tier above the rule clears the label and the far class with
@@ -1048,6 +1071,7 @@ func assignCategories(
 			row.provenance = ProvenanceMatcher
 			row.merchantLabel = ""
 			row.farClass = ""
+			row.statedAssetClass = ""
 			if len(fam.farCols) > 0 {
 				row.farSource, row.farAccount = partner.Group, partner.Owner
 			}
@@ -1067,9 +1091,21 @@ func assignCategories(
 			row.provenance = ProvenanceManual
 			row.merchantLabel = ""
 			row.farClass = ""
+			row.statedAssetClass = p.assetClass
 		}
 		out = append(out, row)
 
+		// Counted off the FINISHED row, never at the tier that wrote it:
+		// the matcher clears an exposure a rule placed, and a pin may
+		// replace one with nothing, so a tier-time tally would count a
+		// word the overlay does not hold. Both surfaces refuse an
+		// exposure beside anything but this family's investing verdict,
+		// so the two arms are the two halves of one population.
+		if row.statedAssetClass != "" {
+			counts.StatedExposures++
+		} else if row.detailed == fam.investingValue {
+			counts.UnstatedInvesting++
+		}
 		switch row.provenance {
 		case ProvenanceManual:
 			counts.PinRows++
@@ -1129,7 +1165,7 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 		cols = append(cols, fam.labelCol)
 	}
 	cols = append(cols, fam.farCols...)
-	cols = append(cols, fam.providerCol, "assigned_at")
+	cols = append(cols, "stated_asset_class", fam.providerCol, "assigned_at")
 
 	head := "INSERT INTO " + fam.overlayTable + " (" + strings.Join(cols, ", ") + ") VALUES "
 	placeholders := "(" + strings.Repeat("?, ", len(cols)-1) + "?)"
@@ -1147,6 +1183,7 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 				args = append(args, nullableString(r.farSource),
 					nullableString(r.farAccount), nullableString(r.farClass))
 			}
+			args = append(args, nullableString(r.statedAssetClass))
 			return append(args, nullableString(r.providerDetailed), now)
 		})
 }

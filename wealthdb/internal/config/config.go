@@ -686,6 +686,19 @@ type SpendingRule struct {
 	Match    string             `json:"match"`
 	Category string             `json:"category"`
 	Scope    *SpendingRuleScope `json:"scope,omitempty"`
+	// AssetClass is what the capital went INTO, stated only where the
+	// rule places `investment` — the one verdict of this family whose
+	// section is `investing`. It is the EXPOSURE dimension alone
+	// (docs/TAXONOMY.md §2), not the 2-D pair `instrument_overrides`
+	// insists on: that block classifies a holding, and the cash flow
+	// statement's investing class reads one dimension.
+	//
+	// It exists because the investing class is otherwise the
+	// instrument's, and a bank payment order names none — so capital
+	// deployed into a destination the product holds in a source that
+	// carries no transactions has no road onto its own class and draws
+	// as "Untracked investments" (migration 0102).
+	AssetClass string `json:"asset_class,omitempty"`
 }
 
 // SpendingRuleScope narrows a rule to part of the ledger. Every field
@@ -718,9 +731,10 @@ type SpendingRuleScope struct {
 // resolved to the unix bounds the pass compares against. What the
 // enrichment pass consumes.
 type CompiledSpendRule struct {
-	Match    *regexp.Regexp
-	Category string
-	Scope    CompiledSpendScope
+	Match      *regexp.Regexp
+	Category   string
+	AssetClass string
+	Scope      CompiledSpendScope
 }
 
 // CompiledSpendScope is a SpendingRuleScope with its dates resolved.
@@ -1199,6 +1213,9 @@ type IncomeRule struct {
 	Match string             `json:"match"`
 	Type  string             `json:"type"`
 	Scope *SpendingRuleScope `json:"scope,omitempty"`
+	// AssetClass is SpendingRule.AssetClass for the return leg, stated
+	// only where the rule places `capital_return`.
+	AssetClass string `json:"asset_class,omitempty"`
 }
 
 // CashflowConfig is the `cashflow` block of wealthdb.cfg: one block,

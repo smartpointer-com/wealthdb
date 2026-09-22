@@ -333,6 +333,7 @@ func (c *Config) Validate() error {
 			}
 		}
 		rules, err := compileRuleList("spending.rules", "category", "spend_detailed", "docs/SPENDING.md §2",
+			canonical.SpendDetailedInvestment,
 			spendingRuleList(sp.Rules), canonical.ValidSpendDetailed)
 		if err != nil {
 			return err
@@ -353,6 +354,7 @@ func (c *Config) Validate() error {
 			return err
 		}
 		rules, err := compileRuleList("income.rules", "type", "income_detailed", "docs/INCOME.md §2",
+			canonical.IncomeDetailedCapitalReturn,
 			incomeRuleList(in.Rules), canonical.ValidIncomeDetailed)
 		if err != nil {
 			return err
@@ -494,15 +496,16 @@ func validateNestedDates(block, grain string, m map[string]map[string]string, se
 // compiler below sees one shape. The two differ only in what the value
 // field is called in the file.
 type ruleEntry struct {
-	match string
-	value string
-	scope *SpendingRuleScope
+	match      string
+	value      string
+	assetClass string
+	scope      *SpendingRuleScope
 }
 
 func spendingRuleList(rules []SpendingRule) []ruleEntry {
 	out := make([]ruleEntry, 0, len(rules))
 	for _, r := range rules {
-		out = append(out, ruleEntry{r.Match, r.Category, r.Scope})
+		out = append(out, ruleEntry{r.Match, r.Category, r.AssetClass, r.Scope})
 	}
 	return out
 }
@@ -510,7 +513,7 @@ func spendingRuleList(rules []SpendingRule) []ruleEntry {
 func incomeRuleList(rules []IncomeRule) []ruleEntry {
 	out := make([]ruleEntry, 0, len(rules))
 	for _, r := range rules {
-		out = append(out, ruleEntry{r.Match, r.Type, r.Scope})
+		out = append(out, ruleEntry{r.Match, r.Type, r.AssetClass, r.Scope})
 	}
 	return out
 }
@@ -536,7 +539,12 @@ func incomeRuleList(rules []IncomeRule) []ruleEntry {
 // model-emittable restriction belongs to the model tier, which guards
 // what the model may say; a rule is the holder's own local input, and
 // the model never sees it.
-func compileRuleList(key, valueField, valueNoun, doc string, rules []ruleEntry, valid func(string) bool) ([]CompiledSpendRule, error) {
+// `investingValue` is the one value of this family's vocabulary whose
+// cash flow section is `investing` — `investment` for spending,
+// `capital_return` for income. An `asset_class` on any other value is
+// refused rather than stored: nothing would read it, and a knob that
+// does nothing is worse than one that is absent.
+func compileRuleList(key, valueField, valueNoun, doc, investingValue string, rules []ruleEntry, valid func(string) bool) ([]CompiledSpendRule, error) {
 	if len(rules) == 0 {
 		return nil, nil
 	}
@@ -553,11 +561,20 @@ func compileRuleList(key, valueField, valueNoun, doc string, rules []ruleEntry, 
 			return nil, fmt.Errorf("config: %s[%d].%s %q is not a %s value: case-sensitive, in the taxonomy's own spelling (a vendored detailed value, an extension, or one of the deltas, %s)",
 				key, i, valueField, r.value, valueNoun, doc)
 		}
+		if r.assetClass != "" {
+			if r.value != investingValue {
+				return nil, fmt.Errorf("config: %s[%d].asset_class is only meaningful beside %s %q, which is this family's one investing verdict; got %q",
+					key, i, valueField, investingValue, r.value)
+			}
+			if err := canonical.StatedExposure(r.assetClass); err != nil {
+				return nil, fmt.Errorf("config: %s[%d].asset_class: %w", key, i, err)
+			}
+		}
 		scope, err := compileSpendScope(r.scope)
 		if err != nil {
 			return nil, fmt.Errorf("config: %s[%d].scope: %w", key, i, err)
 		}
-		out = append(out, CompiledSpendRule{Match: re, Category: r.value, Scope: scope})
+		out = append(out, CompiledSpendRule{Match: re, Category: r.value, AssetClass: r.assetClass, Scope: scope})
 	}
 	return out, nil
 }

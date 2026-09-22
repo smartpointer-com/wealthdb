@@ -1117,3 +1117,47 @@ func TestTransactionInstrumentsValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestRuleCarriesAnExposure pins `spending.rules[].asset_class` and its
+// income twin (migration 0102): an optional word for what the capital
+// went into, admitted only beside the one verdict of that family whose
+// cash flow section is `investing`. Every value is synthetic.
+func TestRuleCarriesAnExposure(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"bank","kind":"chase","path":"/tmp/b.db"}],`
+
+	cfg, err := Load(writeConfig(t, base+
+		`"spending":{"rules":[{"match":"example fund","category":"investment","asset_class":"private_equity"}]},`+
+		`"income":{"rules":[{"match":"example return","type":"capital_return","asset_class":"private_debt"}]}}`))
+	if err != nil {
+		t.Fatalf("a rule carrying an exposure must load: %v", err)
+	}
+	if got := cfg.SpendRules()[0].AssetClass; got != "private_equity" {
+		t.Errorf("spending asset_class = %q, want private_equity", got)
+	}
+	if got := cfg.IncomeRules()[0].AssetClass; got != "private_debt" {
+		t.Errorf("income asset_class = %q, want private_debt", got)
+	}
+
+	// Absent stays absent: every rule written before this existed must
+	// compile to the empty string and reach the overlay as NULL.
+	cfg, err = Load(writeConfig(t, base+`"spending":{"rules":[{"match":"example","category":"investment"}]}}`))
+	if err != nil {
+		t.Fatalf("a rule without an exposure must load: %v", err)
+	}
+	if got := cfg.SpendRules()[0].AssetClass; got != "" {
+		t.Errorf("an absent asset_class compiled to %q, want empty", got)
+	}
+
+	for name, block := range map[string]string{
+		"a non-investing verdict":        `"spending":{"rules":[{"match":"x","category":"cash_withdrawal","asset_class":"real_estate"}]}}`,
+		"not an exposure at all":         `"spending":{"rules":[{"match":"x","category":"investment","asset_class":"houses"}]}}`,
+		"a wrapper, not an exposure":     `"spending":{"rules":[{"match":"x","category":"investment","asset_class":"etf"}]}}`,
+		"the residual node's own class":  `"spending":{"rules":[{"match":"x","category":"investment","asset_class":"cash"}]}}`,
+		"the dimension's gap marker":     `"spending":{"rules":[{"match":"x","category":"investment","asset_class":"other"}]}}`,
+		"income's non-investing verdict": `"income":{"rules":[{"match":"x","type":"INCOME_WAGES","asset_class":"real_estate"}]}}`,
+	} {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+}

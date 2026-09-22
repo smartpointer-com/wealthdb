@@ -436,7 +436,7 @@ func TestIncomePassPrecedence(t *testing.T) {
 func TestIncomePinLedgerColumn(t *testing.T) {
 	const header = "silver_source_id,account,occurred_at,amount,currency,"
 	good := header + "income_detailed\nbank,CASH1,2024-01-02,900.00,USD,INCOME_WAGES\n"
-	pins, err := parsePinLedger(strings.NewReader(good), "income", "income_detailed", canonical.ValidIncomeDetailed)
+	pins, err := parsePinLedger(strings.NewReader(good), "income", "income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed)
 	if err != nil {
 		t.Fatalf("parse the income ledger: %v", err)
 	}
@@ -447,14 +447,14 @@ func TestIncomePinLedgerColumn(t *testing.T) {
 	// A spending value in the income ledger is refused where a person
 	// can still fix it cheaply.
 	bad := header + "income_detailed\nbank,CASH1,2024-01-02,900.00,USD,FOOD_AND_DRINK_GROCERIES\n"
-	if _, err := parsePinLedger(strings.NewReader(bad), "income", "income_detailed", canonical.ValidIncomeDetailed); err == nil ||
+	if _, err := parsePinLedger(strings.NewReader(bad), "income", "income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed); err == nil ||
 		!strings.Contains(err.Error(), "income.pins") {
 		t.Errorf("a spending value in the income ledger: err = %v", err)
 	}
 	// ...and the spending ledger's own column name is not accepted for
 	// it, so a file cannot be half one family's and half the other's.
 	wrongCol := header + "spend_detailed\nbank,CASH1,2024-01-02,900.00,USD,INCOME_WAGES\n"
-	if _, err := parsePinLedger(strings.NewReader(wrongCol), "income", "income_detailed", canonical.ValidIncomeDetailed); err == nil ||
+	if _, err := parsePinLedger(strings.NewReader(wrongCol), "income", "income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed); err == nil ||
 		!strings.Contains(err.Error(), "income_detailed") {
 		t.Errorf("the spending column in an income ledger: err = %v", err)
 	}

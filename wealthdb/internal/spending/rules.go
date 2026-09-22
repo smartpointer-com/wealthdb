@@ -570,6 +570,10 @@ func newNarrativeField(s string) (narrativeField, bool) {
 type Rule struct {
 	Match    *regexp.Regexp
 	Category string
+	// AssetClass is what the capital went into, set only on a rule
+	// whose Category is this family's one investing verdict. Config
+	// validates that pairing; the pass only carries it.
+	AssetClass string
 	// Scope optionally narrows where and when the rule may fire. The
 	// zero value constrains nothing, which is what a rule written
 	// without a scope means.
@@ -620,9 +624,18 @@ func (s RuleScope) Admits(source, portfolio, account string, occurredAt int64) b
 	return true
 }
 
+// RulePlacement is what a matching config rule places: the verdict,
+// and — beside an investing one — what the capital went into. A struct
+// rather than a third bare return value, because the built-in hook
+// beside it already returns four and is at the edge of readable.
+type RulePlacement struct {
+	Category   string
+	AssetClass string
+}
+
 // ConfigRuleCategory applies the config-supplied rules to a row's
 // narrative — first match wins, in the order written — and returns the
-// category the match places. It is consulted AFTER the built-in
+// RulePlacement the match makes. It is consulted AFTER the built-in
 // rules, so a built-in verdict is never overridden by a pattern that
 // happens to fire on the same row.
 //
@@ -636,7 +649,7 @@ func (s RuleScope) Admits(source, portfolio, account string, occurredAt int64) b
 // which is the holder's own local input about the holder's own rows.
 // Patterns arrive compiled case-insensitively by the config loader; a
 // nil list never fires.
-func ConfigRuleCategory(rules []Rule, row RuleRow) (string, bool) {
+func ConfigRuleCategory(rules []Rule, row RuleRow) (RulePlacement, bool) {
 	for _, r := range rules {
 		if !r.Scope.Any() && !r.Scope.Admits(row.Source, row.Portfolio, row.Account, row.OccurredAt) {
 			continue
@@ -651,10 +664,10 @@ func ConfigRuleCategory(rules []Rule, row RuleRow) (string, bool) {
 		if (row.Counterparty != "" && r.Match.MatchString(row.Counterparty)) ||
 			(row.Description != "" && r.Match.MatchString(row.Description)) ||
 			(row.ProviderCategory != "" && r.Match.MatchString(row.ProviderCategory)) {
-			return r.Category, true
+			return RulePlacement{Category: r.Category, AssetClass: r.AssetClass}, true
 		}
 	}
-	return "", false
+	return RulePlacement{}, false
 }
 
 // RuleRow is what a config rule is tested against: the narrative it
