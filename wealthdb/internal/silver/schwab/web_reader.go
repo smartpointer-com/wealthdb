@@ -340,7 +340,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 		}
 		netAmount, quantity, price := extractWebTxAmounts(payload)
 		description := extractWebTxDescription(payload)
-		txKind := webKind(kind, netAmount, description)
+		txKind := webKind(kind, netAmount, description, payload)
 		built = append(built, builtWebTx{source: source, tx: canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            ts,
@@ -691,6 +691,21 @@ func absInt64(v int64) int64 {
 // the cash impact varies: cash-in-lieu yields cash, a plain
 // split is zero, a cash merger pays out.
 //
+// "Transfer Out" is directional, and what it gets wrong is not the
+// direction but the KIND. One word covers two movements: a securities
+// delivery, which is an in-kind leg, and a CASH distribution, which is
+// money leaving the household. Mapped alike they are read alike, and
+// TxKindTransferOut is the wrong half of that pair to be read as — the
+// cash flow statement excludes an unmatched one as "an in-kind ledger leg
+// or a source's own tagging", and neither family's population admits the
+// kind, so a cash row lands beyond every tier, the matcher and the pins
+// ledger at once. It leaves the pool and nothing draws it. The payload
+// already separates the two for the dedupe below (distributionIsCash), so
+// the same fact decides the kind here, and a cash row books as the
+// withdrawal the API era books the same movement as. The SIGN is not read:
+// unlike the undirected words below this one states its direction, and
+// ApplyCanonicalSign enforces it.
+//
 // THREE OF THE TRANSFER WORDS TAKE THEIR DIRECTION FROM THE AMOUNT rather
 // than from the word, which states none. A journal is invisible to the
 // internal-transfer matcher — which admits no such kind — and excluded from
@@ -716,7 +731,7 @@ func absInt64(v int64) int64 {
 // A row with no amount, or a zero one, keeps the old answer either way: the
 // sign is the whole of the evidence, and a directionless row has no right
 // answer.
-func webKind(s string, netAmount *canonical.Decimal, description *string) canonical.TxKind {
+func webKind(s string, netAmount *canonical.Decimal, description *string, payload string) canonical.TxKind {
 	switch s {
 	case "Buy", "Buy to Open", "Buy to Close", "Purchase",
 		"Reinvest", "Reinvest Shares":
@@ -742,6 +757,13 @@ func webKind(s string, netAmount *canonical.Decimal, description *string) canoni
 		// Directional third_party_distribution rows (INTEROP §8.2);
 		// distinct from the undirected "Transfer" below, whose
 		// direction is read off the amount rather than the word.
+		// A cash distribution under this word is money out of the
+		// household rather than an in-kind leg, and books as a
+		// withdrawal so that it reaches the spending population at
+		// all (see above).
+		if distributionIsCash(payload) {
+			return canonical.TxKindWithdrawal
+		}
 		return canonical.TxKindTransferOut
 	case "Transfer In":
 		return canonical.TxKindTransferIn

@@ -143,6 +143,13 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 	if n, _, _ := extractWebTxAmounts(`{"transfer_kind":"cash","method":"wire","cash_amount":5000}`); n == nil {
 		t.Fatal("extractWebTxAmounts must read cash_amount for cash distributions")
 	}
+	// Kinded the way production kinds them: since the "Transfer Out" split
+	// a cash distribution books as a withdrawal, and a fixture holding the
+	// old kind would be testing a combination the build loop no longer
+	// produces. Pinned so it cannot drift back.
+	if got := webKind("Transfer Out", nil, nil, `{"transfer_kind":"cash"}`); got != canonical.TxKindWithdrawal {
+		t.Fatalf("a cash distribution now kinds as %q; these fixtures are stale", got)
+	}
 
 	cases := []struct {
 		name    string
@@ -152,7 +159,7 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 		{
 			name: "cash distribution supersedes a matching statement debit (no double count)",
 			in: []builtWebTx{
-				buildWebTxFromPayload("d1", dist, canonical.TxKindTransferOut, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
+				buildWebTxFromPayload("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
 				wtxAt("p1", pdf, canonical.TxKindWithdrawal, "A", 100*day, -5000, ""),
 			},
 			wantIDs: []string{"d1"},
@@ -160,7 +167,7 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 		{
 			name: "cash distribution supersedes both statement and tx-history copies",
 			in: []builtWebTx{
-				buildWebTxFromPayload("d1", dist, canonical.TxKindTransferOut, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
+				buildWebTxFromPayload("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
 				// settlement offset within the 3-day window
 				wtxAt("p1", pdf, canonical.TxKindWithdrawal, "A", 102*day, -5000, ""),
 				wtxAt("j1", js, canonical.TxKindWithdrawal, "A", 100*day, -5000, ""),
@@ -180,7 +187,7 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 		{
 			name: "non-matching debit (beyond tolerance) is kept",
 			in: []builtWebTx{
-				buildWebTxFromPayload("d1", dist, canonical.TxKindTransferOut, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
+				buildWebTxFromPayload("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
 				wtxAt("p1", pdf, canonical.TxKindWithdrawal, "A", 100*day, -9999, ""),
 			},
 			wantIDs: []string{"d1", "p1"},
@@ -332,8 +339,48 @@ func TestWebKindTransferDirections(t *testing.T) {
 		{"Unknown", nil, "Journaled Funds JOURNAL TO 00000000", canonical.TxKindJournal},
 	}
 	for _, c := range cases {
-		if got := webKind(c.raw, c.amount, &c.descr); got != c.want {
+		if got := webKind(c.raw, c.amount, &c.descr, ""); got != c.want {
 			t.Errorf("webKind(%q, %v, %q) = %q, want %q", c.raw, c.amount, c.descr, got, c.want)
 		}
+	}
+}
+
+// TestWebKindCashDistributionIsAWithdrawal pins the two movements the
+// "Transfer Out" word covers. A securities delivery is an in-kind leg and
+// stays TxKindTransferOut, which the cash flow statement rightly excludes as
+// one. A CASH distribution is money leaving the household: booked as the
+// same kind it reaches no tier, no matcher and no pin, because that kind is
+// in neither family's population — so it books as a withdrawal instead. Only
+// the payload tells the two apart, and a payload that says nothing leaves
+// the conservative answer in place.
+func TestWebKindCashDistributionIsAWithdrawal(t *testing.T) {
+	out := canonical.NewDecimalFromInt(-2500)
+	descr := ""
+	cases := []struct {
+		name    string
+		payload string
+		want    canonical.TxKind
+	}{
+		{"a cash distribution", `{"transfer_kind":"cash"}`, canonical.TxKindWithdrawal},
+		{"a securities delivery", `{"transfer_kind":"securities"}`, canonical.TxKindTransferOut},
+		{"an equity-ledger leg, which states no transfer_kind", `{"equity_transfer_ledger":true}`, canonical.TxKindTransferOut},
+		{"no payload", "", canonical.TxKindTransferOut},
+		{"a malformed payload", "{not json", canonical.TxKindTransferOut},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := webKind("Transfer Out", &out, &descr, c.payload); got != c.want {
+				t.Errorf("webKind(Transfer Out, payload=%s) = %q, want %q", c.payload, got, c.want)
+			}
+		})
+	}
+
+	// The inbound word is untouched. The distribution feed carries flows
+	// OUT, so a row arriving under "Transfer In" is an in-kind receipt
+	// whatever its payload says, and re-kinding it on the same fact would
+	// turn every inbound ACAT leg into a phantom deposit.
+	in := canonical.NewDecimalFromInt(2500)
+	if got := webKind("Transfer In", &in, &descr, `{"transfer_kind":"cash"}`); got != canonical.TxKindTransferIn {
+		t.Errorf("webKind(Transfer In, cash payload) = %q, want %q", got, canonical.TxKindTransferIn)
 	}
 }
