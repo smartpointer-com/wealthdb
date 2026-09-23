@@ -1126,13 +1126,24 @@ VALUES ('INCOME', ?, 'A value a later migration seeds', 'Example later value', '
 // "Foreign Transaction Fee" as the vendored FOREIGN_TRANSACTION_FEES,
 // which is finer than any floor, and a floor that outranked it would
 // quietly coarsen every such row.
+//
+// A fee's floor depends on its account (0103): on a bank account — a
+// cash account in no portfolio — it is a bank fee; everywhere else,
+// including the cash side of an investment mandate, an investment fee.
 func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, portfolio_external_id, first_seen_at, last_seen_at)
+        VALUES ('test-src', 'MANDATE-CASH', 'cash', 'Mandate cash', 'PF-1', 1, 1);
+
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount) VALUES
-            ('test-src', 'T-ADR',   1000, 'CASH1', 'fee',      'USD',  -1.50),
+            ('test-src', 'T-ADR',   1000, 'BRK1',  'fee',      'USD',  -1.50),
+            ('test-src', 'T-BANKFEE', 1000, 'CASH1', 'fee',    'USD',  -2.00),
+            ('test-src', 'T-MANDATEFEE', 1000, 'MANDATE-CASH', 'fee', 'USD', -9.00),
+            ('test-src', 'T-ORPHANFEE', 1000, 'NOT-IN-GOLD', 'fee', 'USD', -1.00),
             ('test-src', 'T-WHT',   1000, 'CASH1', 'tax',      'USD', -12.00),
             ('test-src', 'T-FXFEE', 1000, 'CARD1', 'fee',      'USD',  -3.00),
             ('test-src', 'T-NOCAT', 1000, 'CASH1', 'purchase', 'USD', -20.00),
@@ -1144,6 +1155,9 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
                                           merchant_signature, signature_version,
                                           spend_detailed, provenance, assigned_at) VALUES
             ('test-src', 'T-ADR',   'EXAMPLE HOLDINGS ADR', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-BANKFEE', 'ACCOUNT MAINTENANCE', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-MANDATEFEE', 'MANDATE FEE', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-ORPHANFEE', 'SOME FEE', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-WHT',   'EXAMPLE TREASURY ETF', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-FXFEE', 'FOREIGN TRANSACTION FEE', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-NOCAT',  'SOMETHING UNPLACED', 1, NULL, 'signature-only', 100),
@@ -1183,7 +1197,13 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 
 	for id, want := range map[string][2]string{
 		"T-ADR": {canonical.SpendDetailedInvestmentFees, "kind"},
-		"T-WHT": {canonical.SpendDetailedWithholdingTax, "kind"},
+		// a bank account's fee is a bank fee; a mandate's cash account,
+		// though also kind cash, sits in a portfolio and keeps the
+		// investment floor, as does a fee whose account gold lacks
+		"T-BANKFEE":    {"BANK_FEES_OTHER_BANK_FEES", "kind"},
+		"T-MANDATEFEE": {canonical.SpendDetailedInvestmentFees, "kind"},
+		"T-ORPHANFEE":  {canonical.SpendDetailedInvestmentFees, "kind"},
+		"T-WHT":        {canonical.SpendDetailedWithholdingTax, "kind"},
 		// the model's finer verdict survives the floor
 		"T-FXFEE": {"BANK_FEES_FOREIGN_TRANSACTION_FEES", "model"},
 		// interest joins them, but only when it was CHARGED: the
@@ -1211,7 +1231,7 @@ func TestSpendKindFloorLabelsResolve(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount)
-        VALUES ('test-src', 'T-ADR', 1000, 'CASH1', 'fee', 'USD', -1.50);
+        VALUES ('test-src', 'T-ADR', 1000, 'BRK1', 'fee', 'USD', -1.50);
         INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
                                           merchant_signature, signature_version,
                                           spend_detailed, provenance, assigned_at)

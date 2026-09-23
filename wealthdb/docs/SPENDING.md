@@ -314,22 +314,32 @@ inside `wealthdb load`; the fifth costs money and runs only when
         (per source; derived, pins re-stamped)     (GLOBAL, paid for)
 ```
 
-The **kind** floor (migration 0066, extended by 0067) is last, stands
-outside both stores — it reads no verdict anyone wrote — and takes the
-transaction's own kind: a row of kind `fee` that nothing else placed is
-an investment fee, one of kind `tax` is withholding, and one of kind
-`interest` is an interest charge when the amount is negative. The sign
-is tested rather than assumed there, because this macro is read at
-transaction grain too, where credited interest reaches it and is
-income. It exists because a brokerage
-books rows no narrative explains — a security-level fee or tax withheld
-at source, whose narrative is the SECURITY or, on some sources, nothing
-at all. There is no payee in them for a rule to key on. But the kind is
-not a guess: each adapter derives it from whatever evidence its own
-source gives, which is where source-specific knowledge belongs, so the
-floor reads that verdict rather than re-deriving it from prose.
+The **kind** floor (migration 0066, extended by 0067 and 0103) is last,
+stands outside both stores — it reads no verdict anyone wrote — and takes
+the transaction's own kind: a row of kind `fee` that nothing else placed
+is an investment fee (on a bank account, a bank fee — below), one of kind
+`tax` is withholding, and one of kind `interest` is an interest charge
+when the amount is negative. The sign is tested rather than assumed
+there, because this macro is read at transaction grain too, where
+credited interest reaches it and is income. It exists because a
+brokerage books rows no narrative explains — a security-level fee or tax
+withheld at source, whose narrative is the SECURITY or, on some sources,
+nothing at all. There is no payee in them for a rule to key on. But the
+kind is not a guess: each adapter derives it from whatever evidence its
+own source gives, which is where source-specific knowledge belongs, so
+the floor reads that verdict rather than re-deriving it from prose.
 
-It sits UNDER the model, and that ordering is the whole design. The
+A fee's floor reads its account as well (0103). A bank account books fees
+too — account maintenance, card and payment charges — and on an account
+that holds no investments "investment fee" is simply wrong. So a fee on a
+`cash` account that belongs to no portfolio floors to
+`BANK_FEES_OTHER_BANK_FEES`. The kind alone cannot draw the line: the
+cash side of an investment mandate is also `cash`, and its management fee
+is exactly the investment fee the floor was built for — which is why
+membership in a portfolio, not the account kind, decides. A fee whose
+account gold does not hold keeps the investment floor.
+
+The floor sits UNDER the model, and that ordering is the whole design. The
 model files a "Foreign Transaction Fee" as the vendored
 FOREIGN_TRANSACTION_FEES, finer than any floor; a floor written into
 `spend_txn_enrichment` would beat the merchant store and quietly
@@ -1704,7 +1714,7 @@ vocabulary of §3. Seven values:
 | `rule` | a built-in or configured rule |
 | `provider` | the source's own filing of the row |
 | `model` | the merchant store's verdict for the line's signature |
-| `kind` | the floor: what the transaction's own kind says a row IS, where nothing else placed it (migrations 0066, 0067) |
+| `kind` | the floor: what the transaction's own kind says a row IS, where nothing else placed it (migrations 0066, 0067, 0103) |
 | `signature-only` | no verdict: the pass reached the row, recorded its signature and could not place it |
 
 Five of them are stamped on the overlay row by the enrichment pass and
