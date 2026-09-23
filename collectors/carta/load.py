@@ -52,13 +52,12 @@ import hashlib
 import json
 import logging
 import re
-import subprocess
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, pdftotext, silver
 
 log = logging.getLogger("carta.load")
 
@@ -608,17 +607,24 @@ def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
     return n
 
 
+def _pdf_text(pdf: Path) -> str | None:
+    """A PDF's `pdftotext -layout` text, or None (logged) when it cannot be
+    extracted."""
+    try:
+        return pdftotext.layout_text(pdf, timeout=30)
+    except pdftotext.ExtractionError as exc:
+        log.warning("pdftotext failed on %s: %s", pdf.name, exc)
+        return None
+
+
 def _parse_statement_nav(pdf: Path) -> str | None:
     """Extract the LP's ending capital balance (= NAV) from a capital-account
     statement PDF, via pdftotext -layout. Returns a digit string, or None if
     the layout doesn't match."""
-    try:
-        out = subprocess.run(["pdftotext", "-layout", str(pdf), "-"],
-                             capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.warning("pdftotext failed on %s: %s", pdf.name, exc)
+    text = _pdf_text(pdf)
+    if text is None:
         return None
-    m = re.search(r"Ending balance\s*\$?\s*\(?([\d,]+)\)?", out.stdout)
+    m = re.search(r"Ending balance\s*\$?\s*\(?([\d,]+)\)?", text)
     return m.group(1).replace(",", "") if m else None
 
 
@@ -651,13 +657,8 @@ def _statement_flows_from_text(text: str) -> tuple[float | None, float | None]:
 def _parse_statement_flows(pdf: Path) -> tuple[float | None, float | None]:
     """Inception-to-date contributions + distributions from a capital-account
     statement PDF (via pdftotext -layout); see _statement_flows_from_text."""
-    try:
-        out = subprocess.run(["pdftotext", "-layout", str(pdf), "-"],
-                             capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.warning("pdftotext failed on %s: %s", pdf.name, exc)
-        return None, None
-    return _statement_flows_from_text(out)
+    text = _pdf_text(pdf)
+    return (None, None) if text is None else _statement_flows_from_text(text)
 
 
 # A notice's fields, as pdftotext -layout renders them: a label at the left
@@ -745,13 +746,8 @@ def parse_notice_text(text: str) -> dict | None:
 
 def _parse_notice(pdf: Path) -> dict | None:
     """parse_notice_text over one PDF; split for testability."""
-    try:
-        out = subprocess.run(["pdftotext", "-layout", str(pdf), "-"],
-                             capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.warning("pdftotext failed on %s: %s", pdf.name, exc)
-        return None
-    return parse_notice_text(out)
+    text = _pdf_text(pdf)
+    return None if text is None else parse_notice_text(text)
 
 
 def _period_deltas(statements) -> list[tuple]:

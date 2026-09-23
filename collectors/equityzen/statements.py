@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-import subprocess
 from pathlib import Path
+
+from collectorkit import pdftotext
 
 
 def pdf_text(path: Path) -> str:
@@ -27,12 +28,8 @@ def pdf_text(path: Path) -> str:
     failure (missing poppler, encrypted PDF, zip, …) — the caller treats an
     unparseable doc as metadata-only."""
     try:
-        out = subprocess.run(
-            ["pdftotext", "-layout", str(path), "-"],
-            capture_output=True, text=True, timeout=120,
-        )
-        return out.stdout or ""
-    except Exception:
+        return pdftotext.layout_text(path, timeout=120)
+    except pdftotext.ExtractionError:
         return ""
 
 

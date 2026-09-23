@@ -7,10 +7,12 @@ into `schema_meta`.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -86,6 +88,23 @@ def open_db(path: Path) -> sqlite3.Connection:
     # load.
     conn.execute("PRAGMA synchronous = NORMAL;")
     return conn
+
+
+@contextlib.contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """One explicit transaction on an `open_db` connection (manual control):
+    BEGIN on entry, COMMIT when the block completes, ROLLBACK and re-raise
+    when it raises — including when the COMMIT itself fails. The block must
+    not end the transaction itself (no `conn.commit()` inside); if it does,
+    the error it raised, or the failed COMMIT, is what surfaces."""
+    conn.execute("BEGIN")
+    try:
+        yield conn
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def open_db_default_isolation(path: Path) -> sqlite3.Connection:

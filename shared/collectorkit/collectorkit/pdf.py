@@ -16,6 +16,9 @@ Three extractors over the backends the collectors use:
   (``ocrmac``) where it exists, and ``rapidocr`` — a pip wheel with
   bundled models — anywhere else.
 
+Poppler's ``pdftotext -layout`` is the fourth, in a module of its own —
+``collectorkit.pdftotext`` says why.
+
 The backends are **per-collector** dependencies, not installed in
 every collector's venv. collectorkit is imported by all of them, so
 the backend imports live inside the function bodies: importing this

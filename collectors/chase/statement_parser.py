@@ -58,11 +58,12 @@ thin `pdftotext` wrappers around it.
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+
+from collectorkit import pdftotext
 
 _MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
@@ -137,15 +138,6 @@ class ParsedStatement:
 
 def _dec(s: str) -> Decimal:
     return Decimal(s.replace(",", "").replace("$", ""))
-
-
-def pdf_to_text(path: Path) -> str:
-    """One statement PDF as `pdftotext -layout` text — the column geometry
-    both layouts are parsed from. Raises CalledProcessError if pdftotext
-    (poppler) is unavailable."""
-    return subprocess.run(
-        ["pdftotext", "-layout", str(path), "-"],
-        check=True, capture_output=True, text=True).stdout
 
 
 # Headings that open a prose block rather than a table, however transactional
@@ -379,8 +371,9 @@ def segment_reconciles(seg: StatementSegment) -> bool:
 
 def parse_statement_pdf(path: Path) -> ParsedStatement:
     """Extract one statement PDF to text via `pdftotext -layout`, then parse it.
-    Raises CalledProcessError if pdftotext (poppler) is unavailable."""
-    return parse_statement_text(pdf_to_text(path))
+    Raises collectorkit.pdftotext.ExtractionError if the PDF cannot be
+    extracted (ToolMissing without poppler)."""
+    return parse_statement_text(pdftotext.layout_text(path))
 
 
 # ============================================================
@@ -708,6 +701,6 @@ def card_rows_reconcile(stmt: ParsedCardStatement) -> bool:
 
 def parse_card_statement_pdf(path: Path) -> ParsedCardStatement:
     """Extract one card statement PDF to text via `pdftotext -layout`, then
-    parse it. Raises CalledProcessError if pdftotext (poppler) is
-    unavailable."""
-    return parse_card_statement_text(pdf_to_text(path))
+    parse it. Raises collectorkit.pdftotext.ExtractionError if the PDF cannot
+    be extracted (ToolMissing without poppler)."""
+    return parse_card_statement_text(pdftotext.layout_text(path))

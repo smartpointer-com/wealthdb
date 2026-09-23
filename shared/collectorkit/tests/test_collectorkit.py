@@ -54,6 +54,36 @@ class MigrationsTest(unittest.TestCase):
         self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 1)
         conn.close()
 
+    def test_transaction_commits_a_block_that_completes(self):
+        conn = silver.open_db(self.db)
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        with silver.transaction(conn):
+            conn.execute("INSERT INTO t VALUES (1)")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM t").fetchone()[0], 1)
+        self.assertFalse(conn.in_transaction)
+        conn.close()
+
+    def test_transaction_rolls_back_a_block_that_raises(self):
+        conn = silver.open_db(self.db)
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        with self.assertRaises(ValueError):
+            with silver.transaction(conn):
+                conn.execute("INSERT INTO t VALUES (1)")
+                raise ValueError("stop")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM t").fetchone()[0], 0)
+        self.assertFalse(conn.in_transaction)
+        conn.close()
+
+    def test_transaction_surfaces_the_blocks_own_error(self):
+        # A block that ended the transaction itself and then raised: the
+        # rollback has nothing to undo and must not mask the real error.
+        conn = silver.open_db(self.db)
+        with self.assertRaises(ValueError):
+            with silver.transaction(conn):
+                conn.commit()
+                raise ValueError("the block's own error")
+        conn.close()
+
     def test_open_db_default_isolation_pragmas(self):
         # The implicit-transaction opener also gets WAL + synchronous=NORMAL
         # (foreign keys stay on); isolation_level is left at sqlite3's
@@ -615,8 +645,8 @@ COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
 # best-effort handlers that swallow exceptions at DEBUG — so the failure is
 # silent, and what it takes down is a diagnostic nobody notices is missing.
 _KIT_MODULES = frozenset({
-    "bronze", "cli", "debugcap", "envfile", "launch", "parse", "prune",
-    "session", "silver",
+    "bronze", "cli", "debugcap", "envfile", "launch", "parse", "pdftotext",
+    "prune", "session", "silver",
 })
 
 

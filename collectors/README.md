@@ -393,9 +393,17 @@ parses each bronze run into source-shaped tables. The load is
 backed by a `dump_runs` table keyed by the run timestamp from
 `bronze.parse_run_ts`). Migrations are `NNNN_*.sql` applied in order,
 each ending by inserting its own version into `schema_meta`
-(`silver_schema_version`). Silver is the **input contract to gold**: its
-columns follow the source's shape, not gold's, and are documented in the
-collector README.
+(`silver_schema_version`). `open_db` leaves transactions to the caller;
+`silver.transaction(conn)` makes a block atomic — one per bronze run, so a
+failed load leaves no half-loaded run behind. Silver is the **input
+contract to gold**: its columns follow the source's shape, not gold's, and
+are documented in the collector README.
+
+Document text comes from
+[`collectorkit.pdf`](../shared/collectorkit/collectorkit/pdf.py)
+(pypdfium, pdfplumber, OCR) or
+[`collectorkit.pdftotext`](../shared/collectorkit/collectorkit/pdftotext.py)
+(poppler's `pdftotext -layout`, for parsers that read printed columns).
 
 ### Debug artefacts, run status, and pruning bronze
 

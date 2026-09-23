@@ -44,17 +44,18 @@ increases the balance owed) and a payment or credit is NEGATIVE — which is the
 inverse of silver's. The loader converts, exactly as it does for the activity
 JSON. Balances are the printed positive amount owed, matching the roster's.
 
-The text parsing is pure and unit-tested; `parse_card_statement_pdf` is a thin
-`pdftotext` wrapper around it.
+The text parsing is pure and unit-tested; `parse_card_statement_pdf` feeds it
+a PDF's text through `collectorkit.pdftotext`.
 """
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+
+from collectorkit import pdftotext
 
 # Section heading → the `kind` its rows are stamped with. Stamping the section
 # is what keeps the statement era from collapsing to one unmapped kind: the
@@ -184,14 +185,6 @@ def _norm(line: str) -> str:
     """A line reduced to the form the layout facts are stated in: whitespace
     runs collapsed, ends trimmed."""
     return re.sub(r"\s+", " ", line).strip()
-
-
-def pdf_to_text(path: Path) -> str:
-    """`pdftotext -layout` over the whole document. -layout is what preserves
-    the column structure every pattern here depends on."""
-    out = subprocess.run(["pdftotext", "-layout", str(path), "-"],
-                         capture_output=True, check=True)
-    return out.stdout.decode("utf-8", errors="replace")
 
 
 def _closing_date(text: str) -> date | None:
@@ -363,5 +356,6 @@ def rows_reconcile(parsed: ParsedCardStatement) -> bool:
 
 
 def parse_card_statement_pdf(path: Path) -> ParsedCardStatement:
-    """Parse one card statement PDF."""
-    return parse_card_statement_text(pdf_to_text(path))
+    """Parse one card statement PDF from its `pdftotext -layout` text — the
+    layout keeps the column structure every pattern here depends on."""
+    return parse_card_statement_text(pdftotext.layout_text(path))

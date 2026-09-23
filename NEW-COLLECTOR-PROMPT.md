@@ -239,14 +239,14 @@ entries are cheap when framed this way — correct them and move on.
    time; amounts are signed per the fleet convention from day one.
 5. **Statement backfill** (conditional — build only if the measured
    history floors say the transaction export is date-capped while
-   statements reach further back). If built: parse via
-   pdftotext -layout; gate every import on beginning + Σ == ending
-   reconciliation (skip and log what doesn't reconcile — never import
-   a mis-parse); import only rows strictly older than the export seam
-   (the oldest row the transaction export reaches — the chase
-   collector's DESIGN.md documents the reference implementation);
-   attribute multi-product statements per segment by balance
-   chaining, stopping on ambiguity, never guessing.
+   statements reach further back). If built: parse the
+   `pdftotext -layout` text `collectorkit.pdftotext` extracts; gate
+   every import on beginning + Σ == ending reconciliation (skip and log
+   what doesn't reconcile — never import a mis-parse); import only rows
+   strictly older than the export seam (the oldest row the transaction
+   export reaches — the chase collector's DESIGN.md documents the
+   reference implementation); attribute multi-product statements per
+   segment by balance chaining, stopping on ambiguity, never guessing.
 6. **Gold adapter** — wealthdb/internal/silver/<name>/ modeled on the
    newest comparable adapter (contract: wealthdb/docs/DESIGN.md §6):
    the Adapter/Connection interface, a silver_sources whitelist
