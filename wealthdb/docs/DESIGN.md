@@ -2377,10 +2377,13 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   Denormalised by decision: a transaction points at no position and no lot.
 - **`transactions.instrument_hint`** (migration 0098) is the token an adapter
   resolved a trade's instrument from when that resolution found nothing — a
-  Swiss valor, a fund name, a ticker, whatever the feed states. NULL where no
-  lookup was needed or it succeeded, so `instrument_external_id IS NULL AND
-  instrument_hint IS NOT NULL` is exactly the set a `transaction_instruments`
-  entry can still close, and `wealthdb transactions -C +instrument_hint`
+  Swiss valor, a fund name, a ticker, whatever the feed states. The svb
+  statement archives resolve in the collector instead, the one place a
+  statement's arithmetic can prove the link (`collectors/svb/DESIGN.md`), so
+  there the collector states the token in the row's payload and the fidelity
+  adapter carries it. NULL where no lookup was needed or it succeeded, so
+  `instrument_external_id IS NULL AND instrument_hint IS NOT NULL` is exactly
+  the set a `transaction_instruments` entry can still close, and `wealthdb transactions -C +instrument_hint`
   (migration 0099) is how that set is read. See §13.9.
 - **Account display defaults.** `report_accounts_multi` and
   `report_accounts_history_multi` apply the conventional

@@ -573,15 +573,114 @@ func TestOutflowKindsReachSpending(t *testing.T) {
 // nothing about the movement. The Action is the movement, so it leads
 // and Description is only what is left when a row carries no action.
 func TestNarrativePrefersTheActionOverTheSecurity(t *testing.T) {
-	if got := payloadNarrative(
+	if got := parseTxPayload(
 		`{"Action": "FOREIGN TAX PAID FOO (BAR)", "Description": "FOO ADR"}`,
-	); got != "FOREIGN TAX PAID FOO (BAR)" {
+	).narrative(); got != "FOREIGN TAX PAID FOO (BAR)" {
 		t.Errorf("narrative = %q, want the Action", got)
 	}
-	if got := payloadNarrative(`{"Action": "  ", "Description": "FOO ADR"}`); got != "FOO ADR" {
+	if got := parseTxPayload(`{"Action": "  ", "Description": "FOO ADR"}`).narrative(); got != "FOO ADR" {
 		t.Errorf("narrative = %q, want the Description fallback", got)
 	}
-	if got := payloadNarrative(`not json`); got != "" {
+	if got := parseTxPayload(`not json`).narrative(); got != "" {
 		t.Errorf("narrative = %q, want empty on malformed payload", got)
+	}
+}
+
+// TestInstrumentHintIsStatedNeverDerived pins where a transaction's
+// instrument_hint comes from: the payload key a statement builder
+// writes when its statements could not prove the instrument, and only
+// on a row that has none. A keyless export row names its security in
+// Description, and that is NOT promoted to a hint — the live source's
+// output must not change because another source shares its adapter.
+func TestInstrumentHintIsStatedNeverDerived(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES
+            ('stated', 900, 'ACC1', 'BUY', NULL, 'USD', 5, NULL, -500.00,
+             '{"Action":"YOU BOUGHT EXAMPLE CO","Description":"EXAMPLE CO","InstrumentHint":"EXAMPLECO"}'),
+            ('linked', 910, 'ACC1', 'BUY', 'AAAA', 'USD', 5, NULL, -500.00,
+             '{"Action":"YOU BOUGHT EXAMPLE CO","InstrumentHint":"EXAMPLECO"}'),
+            ('export', 920, 'ACC1', 'SELL', NULL, 'USD', -5, 100.00, 500.00,
+             '{"Action":"YOU SOLD EXAMPLE CO","Description":"EXAMPLE CO","Symbol":""}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+	hints := map[string]string{}
+	for _, x := range batch.Transactions {
+		hints[x.TransactionExternalID] = x.InstrumentHint
+	}
+	want := map[string]string{"stated": "EXAMPLECO", "linked": "", "export": ""}
+	for id, h := range want {
+		if hints[id] != h {
+			t.Errorf("%s: instrument_hint = %q, want %q", id, hints[id], h)
+		}
+	}
+}
+
+// TestStatementConstructsHaveNoSymbol pins the display of keyless
+// historical rows. A row a statement builder makes from a
+// statement-level figure has no symbol — its synthetic key is not one
+// — while a keyless SECURITY row keeps the synthetic key as its symbol,
+// as it always has, and a keyed row shows its key.
+func TestStatementConstructsHaveNoSymbol(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 4, 'svb-sleeves-build');
+        INSERT INTO historical_position_snapshots(as_of_date, account_external_id, description, instrument_key, quantity, price, market_value, currency, payload) VALUES
+            (1000, 'SVM-000000', 'NET CASH POSITION', NULL, NULL, NULL, 100.00, 'USD', '{}'),
+            (1000, 'SVM-000000', 'NO POSITIONS', NULL, NULL, NULL, 0.00, 'USD', '{}'),
+            (1000, '0000000000', 'CASH BALANCE', NULL, NULL, NULL, 200.00, 'USD', '{}'),
+            (1000, '0000000001', 'MORTGAGE PRINCIPAL', NULL, NULL, NULL, -300.00, 'USD', '{}'),
+            (1000, 'SVM-000001', 'ACCOUNT VALUE (ADVISOR MARK)', NULL, NULL, NULL, 400.00, 'USD', '{}'),
+            (1000, 'SVM-000000', 'EXAMPLE COMPANY CL A', 'AAAA', 10, 5.0, 50.00, 'USD', '{}'),
+            (1000, '9990001', 'Example Growth', NULL, 5, 10.0, 50.00, 'USD', '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	byName := map[string]canonical.InstrumentChange{}
+	for {
+		batch, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, in := range batch.Instruments {
+			byName[*in.Name] = in
+		}
+		if !more {
+			break
+		}
+	}
+	for _, name := range []string{"NET CASH POSITION", "NO POSITIONS", "CASH BALANCE",
+		"MORTGAGE PRINCIPAL", "ACCOUNT VALUE (ADVISOR MARK)"} {
+		in, ok := byName[name]
+		if !ok {
+			t.Fatalf("%s: no instrument emitted", name)
+		}
+		if in.Symbol != nil {
+			t.Errorf("%s: symbol = %q, want none", name, *in.Symbol)
+		}
+		if in.InstrumentExternalID != syntheticHistoricalInstrumentKey(name) {
+			t.Errorf("%s: key = %q, want the synthetic one", name, in.InstrumentExternalID)
+		}
+	}
+	if in := byName["NET CASH POSITION"]; in.AssetClass != canonical.AssetClassCash {
+		t.Errorf("net cash class = %q, want cash", in.AssetClass)
+	}
+	if in := byName["EXAMPLE COMPANY CL A"]; in.Symbol == nil || *in.Symbol != "AAAA" {
+		t.Errorf("keyed row symbol = %v, want AAAA", in.Symbol)
+	}
+	pool := byName["Example Growth"]
+	if want := syntheticHistoricalInstrumentKey("Example Growth"); pool.Symbol == nil || *pool.Symbol != want {
+		t.Errorf("keyless security symbol = %v, want the synthetic key %q", pool.Symbol, want)
 	}
 }

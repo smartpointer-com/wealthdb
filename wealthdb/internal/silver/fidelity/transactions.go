@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
@@ -46,22 +47,19 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		}
 
 		qty := silver.DecimalPtrOrNil(qtyStr)
+		p := parseTxPayload(payload)
 		// The amount is resolved BEFORE the kind, because one kind
 		// depends on it: Fidelity's `WIRE` verb carries no direction,
 		// and the sign is the only thing that does.
 		netDec := silver.DecimalPtrOrNil(amtStr)
-		kind := kindFor(rawKind, qty, netDec, payload)
-		// The Action text is this source's narrative, and without it
-		// gold has nothing to categorise a fidelity row by: no
-		// merchant, no counterparty, no description. It is what
+		kind := kindFor(rawKind, qty, netDec, p.Action)
+		// The narrative is all gold has to categorise a fidelity row
+		// by: no merchant, no counterparty, no description. It is what
 		// separates the two kinds of fee this source books — an ADR
 		// pass-through ("FEE CHARGED <security>") from the account's
 		// own management fee ("ADVISOR FEE DEDUCTED …") — and what a
-		// rule matches a wire or a withholding on. Fidelity's own
-		// Description column is the SECURITY name, which says nothing
-		// about the movement, so it is the fallback rather than the
-		// first choice.
-		descr := payloadNarrative(payload)
+		// rule matches a wire or a withholding on.
+		descr := p.narrative()
 		tx := canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            occurredAt,
@@ -80,6 +78,11 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		if instr != "" {
 			s := instr
 			tx.InstrumentExternalID = &s
+		} else {
+			// Stated, never derived: only a row whose builder tried and
+			// failed to prove its instrument carries one, and a
+			// `transaction_instruments` entry closes it by that token.
+			tx.InstrumentHint = strings.TrimSpace(p.InstrumentHint)
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}

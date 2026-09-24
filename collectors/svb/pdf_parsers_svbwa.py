@@ -94,18 +94,21 @@ vocabulary (``_ACTIVITY_VERBS``) because the text extraction
 preserves no column gaps to split on. Each section prints its own
 ``TOTAL <section> $amount`` line, returned alongside the rows so a
 loader can reconcile what it parsed against what the statement
-states.
+states. A row names its security only by a kerned name — except an
+option leg, whose contract line beneath it rebuilds the OCC code the
+Holdings rows print.
 
 The text-level parsers (``parse_statement_period``,
 ``parse_account_blocks``, ``parse_holdings_block``,
 ``parse_activity_block``, ``parse_statement_total``,
-``classify_statement_text``) are pure functions of strings,
-exercised by unit tests against synthetic fixtures.
+``parse_statement_opening``, ``classify_statement_text``) are pure
+functions of strings, exercised by unit tests against synthetic
+fixtures.
 ``parse_svbwa_statement_pdf(path, expected_signatures=…)`` is the
 orchestration entry-point; it opens the PDF via pdfplumber and
 returns the same dict shape as the supplied-statement parser's
-``parse_supplied_statement_pdf``, plus the svb-specific
-``family`` / ``stated_total`` / per-account ``activity`` keys.
+``parse_supplied_statement_pdf``, plus the svb-specific ``family`` /
+``stated_opening`` / ``stated_total`` / per-account ``activity`` keys.
 """
 
 from __future__ import annotations
@@ -175,6 +178,11 @@ _TOTAL_VALUE_RE = re.compile(
     rf"TOTAL\s+VALUE\s+OF\s+YOUR\s+PORTFOLIO\s+(?P<amt>{_MONEY})")
 _ENDING_VALUE_RE = re.compile(
     rf"ENDING\s+VALUE\s*\([^)]*\)\s+(?P<amt>{_MONEY})")
+# The same table's opening row. Its first column is this period's and
+# its second the year-to-date one, which reads $0.00 all year for an
+# account opened that year — so both are required, and the first read.
+_BEGINNING_VALUE_RE = re.compile(
+    rf"BEGINNING\s+VALUE\s+(?P<amt>{_MONEY})\s+{_MONEY}")
 
 
 def parse_statement_total(text):
@@ -200,6 +208,18 @@ def parse_statement_total(text):
     if any(v != seen[0] for v in seen[1:]):
         return None
     return seen[0]
+
+
+def parse_statement_opening(text):
+    """Return the portfolio value the statement STATES for the start
+    of its period, or ``None`` when it prints none.
+
+    A stated $0.00 is what says the account held nothing when the
+    period opened — the one fact about an opening a statement can give
+    without the statement before it.
+    """
+    m = _BEGINNING_VALUE_RE.search(text)
+    return parse_money(m["amt"]) if m else None
 
 
 # ============================================================
@@ -857,6 +877,18 @@ _ACTIVITY_VERB_TOKENS = tuple(
 _TRAN_VALUE_RE = re.compile(rf"^TRAN\s+VALUE:\s*(?P<amt>{_MONEY})\s*$")
 _TRAN_VALUE_LOOKAHEAD = 8
 
+# An option row names the underlying on its own line — ``CALL (AAAA)
+# EXAMPLE CO`` — and prints the contract's expiry and strike on the next,
+# ``MAR 20 98 $55 (100 SHS)``, which the extraction kerns on some rows
+# (``MAR 2 0 98 $5 5 (1 00 SHS)``); it is read with the whitespace
+# removed. Together they are the contract, so the row can name the same
+# OCC code a Holdings row prints for it (:data:`_OCC_RE`).
+_OPTION_ROOT_RE = re.compile(r"^(?P<right>CALL|PUT)\s+\((?P<root>[A-Z]{1,6})\)")
+_OPTION_TERMS_RE = re.compile(
+    r"^(?P<mon>[A-Z]{3})(?P<day>\d{1,2})(?P<yy>\d{2})"
+    r"\$(?P<strike>[\d,]+(?:\.\d+)?)\(\d+SHS\)")
+_MONTH_BY_ABBREV = {name[:3]: num for name, num in _MONTH_NUMS.items()}
+
 # An UNDATED amount line inside a section — a bond sleeve's
 # "Corporate Accrued Interest Earned $50.00" and the like. It has
 # no date and no Transaction column, so it is not a movement, but
@@ -898,6 +930,10 @@ class SvbwaActivityRow:
     period. Those are part of the section's stated total but are
     not movements, so they belong in a reconciliation and not in a
     transactions table.
+
+    ``stated_key`` is the instrument key the row itself states, where
+    it states one: an option leg's OCC code, rebuilt from its contract
+    terms. Every other row names its security only by a kerned name.
     """
     date: str | None              # ISO YYYY-MM-DD
     section: str
@@ -907,6 +943,7 @@ class SvbwaActivityRow:
     quantity: float | None
     amount: float | None
     ordinal: int
+    stated_key: str | None = None
 
 
 def parse_activity_block(account_text):
@@ -967,6 +1004,8 @@ def parse_activity_block(account_text):
             row = _parse_activity_row(
                 m, section, len(rows),
                 _lookahead_tran_value(lines, i, legacy_misc))
+            if row is not None:
+                row.stated_key = _option_key(row.description, lines, i)
         elif section is None:
             continue
         else:
@@ -1129,6 +1168,30 @@ def _lookahead_tran_value(lines, idx, legacy_misc):
     return None
 
 
+def _option_key(description, lines, idx):
+    """Return the OCC code of the option the row at ``lines[idx]``
+    moved, or ``None`` when the row is not an option leg or its
+    contract line is not the next one.
+
+    A strike with a fraction yields ``None``: the Holdings rows print
+    no key :data:`_OCC_RE` accepts for one either, so there would be
+    nothing to name."""
+    root = _OPTION_ROOT_RE.match(description)
+    if not root:
+        return None
+    nxt = next((ln for ln in lines[idx + 1:idx + 3] if ln), "")
+    terms = _OPTION_TERMS_RE.match(re.sub(r"\s+", "", nxt))
+    month = _MONTH_BY_ABBREV.get(terms["mon"]) if terms else None
+    if month is None:
+        return None
+    strike = parse_money(terms["strike"])
+    if strike is None or strike != int(strike):
+        return None
+    key = (f"{root['root']}{int(terms['yy']):02d}{month:02d}"
+           f"{int(terms['day']):02d}{root['right'][0]}{int(strike)}")
+    return key if _OCC_RE.match(key) else None
+
+
 # ============================================================
 # PDF orchestration
 # ============================================================
@@ -1136,13 +1199,15 @@ def _lookahead_tran_value(lines, idx, legacy_misc):
 def parse_svbwa_statement_pdf(path, *, expected_signatures=()):
     """Open an SVB-WA statement PDF and return a structured dict
     with the same shape as the supplied-statement parser, plus the
-    svb-specific ``family`` / ``stated_total`` / ``activity`` keys::
+    svb-specific ``family`` / ``stated_opening`` / ``stated_total`` /
+    ``activity`` keys::
 
         {
             "path": "<absolute path>",
             "family": "brokerage",
             "period_start": "YYYY-MM-DD" | None,
             "period_end":   "YYYY-MM-DD" | None,
+            "stated_opening": 0.0 | None,
             "stated_total": 12345.67 | None,
             "accounts": [
                 {"account_external_id": "SVM-000000",
@@ -1217,6 +1282,7 @@ def parse_svbwa_statement_pdf(path, *, expected_signatures=()):
                     "quantity": a.quantity,
                     "amount": a.amount,
                     "ordinal": a.ordinal,
+                    "stated_key": a.stated_key,
                 }
                 for a in activity
             ],
@@ -1227,6 +1293,7 @@ def parse_svbwa_statement_pdf(path, *, expected_signatures=()):
         "family": family,
         "period_start": period[0].isoformat() if period else None,
         "period_end": period[1].isoformat() if period else None,
+        "stated_opening": parse_statement_opening(text),
         "stated_total": parse_statement_total(text),
         "accounts": accounts_out,
     }

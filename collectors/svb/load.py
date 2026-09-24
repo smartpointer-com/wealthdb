@@ -29,6 +29,10 @@ failure would otherwise read as a real zero. Closure is never inferred: an
 account can state $0 one month and a residual the next (a late dividend
 landing), so the series ends where the statements end.
 
+A trade reaches silver carrying the key of the holding its statements' own
+arithmetic proves it moved (:mod:`instrument_links`); a row the arithmetic
+cannot settle keeps none and states what it was looked up by instead.
+
 Runs on the host, not in docker: stdlib sqlite3 plus the extraction stacks and
 workbook reader pinned in requirements.txt. Idempotent and
 reproducible-from-bronze: re-running against the same bronze dir converges.
@@ -53,13 +57,14 @@ import sqlite3
 import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from itertools import repeat
 from pathlib import Path
 
 from collectorkit import cli, silver, srcfp
 
 import derived_marks
+import instrument_links
 import pdf_parsers_svbdep
 import pdf_parsers_svbwa
 
@@ -120,6 +125,14 @@ def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
         conn.executescript(sql)
 
 
+def holdings_known(parsed: dict, acct: dict) -> bool:
+    """Whether the statement says what the account held: it prints a
+    holdings table, or states a $0 total in place of one. Otherwise the
+    table was lost and the holdings are unknown, which is not the same
+    as empty."""
+    return bool(acct.get("holdings")) or parsed.get("stated_total") == 0
+
+
 def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
     """Insert one historical row per holding, or a single $0 row for a
     statement that STATES a zero portfolio total.
@@ -133,7 +146,6 @@ def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
     if not period_end:
         return 0
     as_of = ts_from_iso(period_end)
-    stated_total = parsed.get("stated_total")
     inserted = 0
     for acct in parsed.get("accounts", []):
         aid = acct.get("account_external_id")
@@ -141,7 +153,7 @@ def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
         if not aid:
             continue
         if not holdings:
-            if stated_total == 0:
+            if holdings_known(parsed, acct):
                 conn.execute(
                     "INSERT OR REPLACE INTO historical_position_snapshots ("
                     "as_of_date, account_external_id, description, instrument_key, "
@@ -346,28 +358,12 @@ def activity_id(sha: str, account: str, row: dict) -> str:
     return "svb-" + h.hexdigest()[:28]
 
 
-def insert_transactions(conn: sqlite3.Connection, parsed: dict,
-                        sha: str) -> tuple[int, int]:
-    """Insert the statement's settled activity rows. Returns
-    ``(inserted, unknown-verb count)``.
-
-    `instrument_key` stays NULL: the Activity region prints a security's
-    NAME, kerned ("EXAMPLE C ORP C O M U SD0.01"), never the symbol the
-    Holdings rows carry, so deriving an identity from it would invent
-    instruments that never reconcile with the real ones. Resolving it is
-    gold's job, and the payload is shaped to let gold do it — `Action` is the
-    row's narrative, which is the lookup key `wealthdb resolve-symbols` reads
-    for a transaction with no instrument link, and which a
-    `symbol_resolution.overrides` entry pins by exact match. The name is also
-    kept unprefixed under `Description`, and `Section` says whether that name
-    is a security at all (income / taxes / corporate actions) or a
-    counterparty account (additions and withdrawals).
-
-    `price` and `settlement_date` stay NULL too — the layout prints neither
-    column, and its single date column is the settlement date in some sections
-    and the effective date in others, so there is no second date to record.
-    """
-    inserted = unknown = 0
+def booked_activity(parsed: dict):
+    """Yield ``(account, row, kind)`` for every settled activity row the
+    statement books — the one filter both the inserts and the instrument
+    links read, so the rows linked are exactly the rows written. ``kind`` is
+    :data:`_UNKNOWN_KIND` for a row whose verb is not recognised, which is
+    reported rather than booked."""
     for acct in parsed.get("accounts", []):
         aid = acct.get("account_external_id")
         if not aid:
@@ -377,35 +373,122 @@ def insert_transactions(conn: sqlite3.Connection, parsed: dict,
                 continue
             if row.get("amount") is None or not row.get("date"):
                 continue
-            kind = activity_kind(row)
-            if kind == _UNKNOWN_KIND:
-                unknown += 1
+            yield aid, row, activity_kind(row)
+
+
+def _moves_a_position(row: dict, kind: str) -> bool:
+    """Whether the row is one the instrument links try: a booked row that
+    moves a quantity of a security — a trade, a corporate action, an in-kind
+    transfer. The core-fund sweeps are the exception. They move the account's
+    cash in and out of its money fund, name no investment, and would put the
+    one large equation in the proof for nothing a report reads."""
+    return (kind != _UNKNOWN_KIND and row.get("quantity") is not None
+            and row.get("section") != pdf_parsers_svbwa.SECTION_CORE_FUND)
+
+
+def _activity_ref(sha: str, account: str, row: dict) -> tuple:
+    return sha, account, row.get("ordinal")
+
+
+def link_statements(results: list[tuple[str, dict]]) -> instrument_links.Links:
+    """Link each position-moving row to the holding its statements prove it
+    moved (see :mod:`instrument_links`), over every parsed statement.
+
+    A statement opens empty only where it STATES a $0.00 beginning value, the
+    real-zero rule applied at the other end of the period."""
+    statements = []
+    for sha, parsed in results:
+        if not parsed.get("period_end"):
+            continue
+        start = parsed.get("period_start")
+        moves = {}
+        for aid, row, kind in booked_activity(parsed):
+            if _moves_a_position(row, kind):
+                moves.setdefault(aid, []).append(instrument_links.Movement(
+                    ref=_activity_ref(sha, aid, row),
+                    name=row.get("description") or "",
+                    quantity=row["quantity"],
+                    stated_key=row.get("stated_key")))
+        for acct in parsed.get("accounts", []):
+            aid = acct.get("account_external_id")
+            if not aid:
                 continue
-            verb = row.get("verb") or ""
-            description = row.get("description") or ""
-            payload = {
-                # `Action` is the narrative the gold adapter categorises a row
-                # by; it reads the verb and the counterparty together, exactly
-                # as the live Fidelity feed's own Action column does.
-                "Action": f"{verb} {description}".strip(),
-                "Description": description,
-                "Transaction": verb,
-                "Section": row.get("section"),
-                "AccountType": row.get("account_type"),
-            }
-            conn.execute(
-                "INSERT OR REPLACE INTO transactions ("
-                "activity_id, timestamp, account_external_id, kind, "
-                "instrument_key, quantity, price, amount, settlement_date, "
-                "currency, source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    activity_id(sha, aid, row), ts_from_iso(row["date"]), aid,
-                    kind, None, row.get("quantity"), None, row.get("amount"),
-                    None, "USD", sha,
-                    json.dumps(payload, separators=(",", ":")),
-                ),
-            )
-            inserted += 1
+            holdings = None
+            if holdings_known(parsed, acct):
+                holdings = tuple(
+                    instrument_links.Holding(h["instrument_key"],
+                                             h.get("description") or "",
+                                             h["quantity"])
+                    for h in acct.get("holdings", [])
+                    if h.get("instrument_key") and h.get("quantity") is not None)
+            statements.append(instrument_links.Statement(
+                account=aid,
+                start=date.fromisoformat(start) if start else None,
+                end=date.fromisoformat(parsed["period_end"]),
+                holdings=holdings,
+                opens_empty=parsed.get("stated_opening") == 0,
+                movements=tuple(moves.get(aid, ()))))
+    return instrument_links.link(statements)
+
+
+def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
+                        links: instrument_links.Links) -> tuple[int, int]:
+    """Insert the statement's settled activity rows. Returns
+    ``(inserted, unknown-verb count)``.
+
+    `instrument_key` is the holding key ``links`` proved the row moved. The
+    Activity region prints a security's kerned NAME, never the key the
+    Holdings rows carry, so the key comes from the statements' arithmetic —
+    see :mod:`instrument_links` — and a row the arithmetic cannot settle keeps
+    none. Such a row states what it was looked up by as `InstrumentHint`, the
+    token a `transaction_instruments` config entry closes it by.
+
+    `Action` is the row's narrative, which gold categorises the row by and
+    which `wealthdb resolve-symbols` looks a row with no instrument up by.
+    The name is also kept unprefixed under `Description`, and `Section` says
+    whether that name is a security at all (income / taxes / corporate
+    actions) or a counterparty account (additions and withdrawals).
+
+    `price` and `settlement_date` stay NULL — the layout prints neither
+    column, and its single date column is the settlement date in some sections
+    and the effective date in others, so there is no second date to record.
+    """
+    inserted = unknown = 0
+    for aid, row, kind in booked_activity(parsed):
+        if kind == _UNKNOWN_KIND:
+            unknown += 1
+            continue
+        verb = row.get("verb") or ""
+        description = row.get("description") or ""
+        payload = {
+            # `Action` is the narrative the gold adapter categorises a row
+            # by; it reads the verb and the counterparty together, exactly
+            # as the live Fidelity feed's own Action column does.
+            "Action": f"{verb} {description}".strip(),
+            "Description": description,
+            "Transaction": verb,
+            "Section": row.get("section"),
+            "AccountType": row.get("account_type"),
+        }
+        ref = _activity_ref(sha, aid, row)
+        unlinked = links.unlinked.get(ref)
+        if unlinked is not None:
+            reason, payload["InstrumentHint"] = unlinked
+            log.debug("instrument not linked: %s %s %s %s — %s",
+                      aid, row["date"], verb, payload["InstrumentHint"], reason)
+        conn.execute(
+            "INSERT OR REPLACE INTO transactions ("
+            "activity_id, timestamp, account_external_id, kind, "
+            "instrument_key, quantity, price, amount, settlement_date, "
+            "currency, source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                activity_id(sha, aid, row), ts_from_iso(row["date"]), aid,
+                kind, links.keys.get(ref), row.get("quantity"), None,
+                row.get("amount"), None, "USD", sha,
+                json.dumps(payload, separators=(",", ":")),
+            ),
+        )
+        inserted += 1
     return inserted, unknown
 
 
@@ -750,6 +833,14 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
             conns[family] = sqlite3.connect(str(path))
             silver.own_only(path)
             apply_migrations(conns[family], migrations_dir)
+        # Linked across the whole archive before anything is written: a
+        # window reaches back to the account's previous statement.
+        links = link_statements(
+            [(sha, res) for sha, res in zip(shas, results)
+             if not res.get("_error") and res.get("family") in conns])
+        log.info("instrument links: %d activity row(s) linked, %d not [%s]",
+                 len(links.keys), len(links.unlinked),
+                 ", ".join(f"{k}={v}" for k, v in sorted(links.census().items())))
         holdings = txns = unknown_verbs = 0
         census: Counter[str] = Counter()
         for pdf, sha, res in zip(pdfs, shas, results):
@@ -768,7 +859,7 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
                 census["unreadable-section"] += 1
             n = insert_statement(conn, res, sha)
             holdings += n
-            t, u = insert_transactions(conn, res, sha)
+            t, u = insert_transactions(conn, res, sha, links)
             txns += t
             unknown_verbs += u
             if n == 0:

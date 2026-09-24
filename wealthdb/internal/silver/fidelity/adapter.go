@@ -23,14 +23,12 @@
 //     PortfolioChange per silver portfolio so `wealthdb
 //     portfolios` rolls up each kind separately.
 //
-//   - Historical 529 snapshots. Fidelity's positions UI is
-//     point-in-time, so for any quarter before the toolkit first
-//     ran we parse the quarterly + year-end statement PDFs into
-//     silver's `historical_position_snapshots` table (migration
-//     0004). Statement archives exist in this silver only for
-//     account groups that expose statements, so this path covers
-//     those alone. See historical.go for
-//     the dispatch.
+//   - Historical snapshots. Fidelity's positions UI is
+//     point-in-time, so earlier periods come from statement PDFs
+//     parsed into silver's `historical_position_snapshots` table
+//     (migration 0004): fidelity-web's 529 and supplied
+//     statements, and the svb statement archives, which write this
+//     schema for this adapter to project. See historical.go.
 package fidelity
 
 import (

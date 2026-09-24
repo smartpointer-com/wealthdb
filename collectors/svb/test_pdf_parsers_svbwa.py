@@ -293,6 +293,44 @@ TRAN VALUE: $36,000.00
 Miscellaneous Footnotes
 """
 
+# Option legs in the trade blotter and the corporate-actions section.
+# Each prints its contract on the next line — kerned on the expiry — and
+# the statement opens on a stated $0.00, as an account's first does.
+_OPTION_ACTIVITY_TEXT = """\
+SVB WEALTH ADVISORY, INC.
+STATEMENT FOR THE PERIOD MARCH 1, 1998 TO MARCH 31, 1998
+EXAMPLE HOLDER - Example Property
+Account Number: SVM-000000
+For questions about your accounts: TOTAL VALUE OF YOUR PORTFOLIO $1,000.00
+BEGINNING VALUE $0.00 $0.00 Equity 100.0%
+ENDING VALUE (AS OF 03/31/98) $1,000.00 $1,000.00
+Holdings
+There were no positions in your account at the close of the statement period.
+Activity
+ACTIVITY >MISC. & CORPORATE ACTIONS
+Account
+Date Type Transaction Description Quantity Amount
+03/20/98 MARGIN EXPIRED CALL (AAAA) EXAMPLE COMPANY CL A 1 $0.00
+MAR 2 0 98 $6 0 (1 00 SHS)
+TRAN VALUE: $100.00
+TOTAL MISC. & CORPORATE ACTIONS $100.00
+PURCHASES, SALES, AND REDEMPTIONS
+Settlement Account
+Date Type Transaction Description Quantity Amount
+Securities Purchased
+03/02/98 MARGIN YOU BOUGHT PUT (AAAA) EXAMPLE COMPANY CL A 3 ($300.00)
+MAR 20 98 $45 (100 SHS)
+OPENING TRANSACTION
+03/03/98 CASH YOU BOUGHT EXAMPLE COMPANY CL A 10 ($500.00)
+Securities Sold
+03/04/98 MARGIN YOU SOLD CALL (AAAA) EXAMPLE COMPANY CL A (2) $200.00
+MAR 20 98 $55 (100 SHS)
+03/05/98 MARGIN YOU SOLD CALL (AAAA) EXAMPLE COMPANY CL A @ 1.20 (1) $120.00
+MAR 20 98 $57.50 (100 SHS)
+Total Securities Sold $320.00
+Miscellaneous Footnotes
+"""
+
 # A scanned deposit / mortgage statement: no text layer at all.
 _IMAGE_ONLY_TEXT = "\n \n\n"
 
@@ -884,6 +922,66 @@ def test_legacy_corporate_actions_tran_value_is_normalised():
 
 
 # ============================================================
+# Option legs name their contract; the statement names its opening
+# ============================================================
+
+def _option_rows():
+    block = ps.parse_account_blocks(_OPTION_ACTIVITY_TEXT)[0]
+    return ps.parse_activity_block(block.text)[0]
+
+
+def test_option_row_states_the_holdings_occ_code():
+    # The contract terms sit on the line under the row; together with
+    # the right and root they are the OCC code a Holdings row prints.
+    keys = {(r.verb, r.quantity): r.stated_key for r in _option_rows()}
+    assert keys[("YOU BOUGHT", 3.0)] == "AAAA980320P45"
+    assert keys[("YOU SOLD", -2.0)] == "AAAA980320C55"
+    for key in keys.values():
+        assert key is None or ps._OCC_RE.match(key)
+
+
+def test_option_terms_are_read_through_kerning():
+    expired = next(r for r in _option_rows() if r.verb == "EXPIRED")
+    assert expired.stated_key == "AAAA980320C60"
+    # The TRAN VALUE line beneath the terms is still the row's amount.
+    assert expired.amount == 100.0
+
+
+def test_a_row_without_contract_terms_states_no_key():
+    by_desc = {r.description: r.stated_key for r in _option_rows()}
+    # An equity row, and an option whose strike carries a fraction —
+    # no Holdings key could name that one either.
+    assert by_desc["EXAMPLE COMPANY CL A"] is None
+    assert by_desc["CALL (AAAA) EXAMPLE COMPANY CL A @ 1.20"] is None
+
+
+def test_option_key_leaves_the_row_itself_untouched():
+    # Activity ids hash the date, verb, amount and ordinal, and the
+    # narrative carries the description: the key is an addition only.
+    rows = _option_rows()
+    assert [r.ordinal for r in rows] == list(range(len(rows)))
+    bought = next(r for r in rows if r.verb == "YOU BOUGHT")
+    assert (bought.date, bought.description, bought.amount) == (
+        "1998-03-02", "PUT (AAAA) EXAMPLE COMPANY CL A", -300.0)
+    # The core-fund fixture's EXPIRED row prints no contract line.
+    rows, _ = _activity()
+    assert all(r.stated_key is None for r in rows)
+
+
+def test_stated_opening_reads_the_period_column():
+    assert ps.parse_statement_opening(_OPTION_ACTIVITY_TEXT) == 0.0
+    assert ps.parse_statement_opening(_NO_POSITIONS_TEXT) == 1000.0
+    # An account opened this year: $0.00 year to date beside a real opening.
+    opened_in_year = "BEGINNING VALUE $2,500.00 $0.00 Equity 100.0%"
+    assert ps.parse_statement_opening(opened_in_year) == 2500.0
+
+
+def test_stated_opening_none_when_absent():
+    assert ps.parse_statement_opening(_ACTIVITY_TEXT) is None
+    assert ps.parse_statement_opening("BEGINNING VALUE $0.00") is None
+
+
+# ============================================================
 # parse_svbwa_statement_pdf — orchestration + signature gate
 # ============================================================
 
@@ -937,10 +1035,19 @@ def test_pdf_activity_dicts_carry_the_loader_consumed_keys(monkeypatch):
     acct = out["accounts"][0]
     assert set(acct["activity"][0]) == {
         "date", "section", "account_type", "verb", "description",
-        "quantity", "amount", "ordinal",
+        "quantity", "amount", "ordinal", "stated_key",
     }
     assert acct["activity_totals"][ps.SECTION_ADDITIONS] == -4000.0
     assert out["stated_total"] == 7000.0
+    assert out["stated_opening"] is None
+
+
+def test_pdf_carries_the_stated_opening(monkeypatch):
+    monkeypatch.setattr(ps, "_extract_pdf_text", lambda path: _OPTION_ACTIVITY_TEXT)
+    out = ps.parse_svbwa_statement_pdf("/fake/path.pdf")
+    assert out["stated_opening"] == 0.0
+    keys = [a["stated_key"] for a in out["accounts"][0]["activity"]]
+    assert "AAAA980320P45" in keys
 
 
 def test_pdf_non_brokerage_never_reaches_the_row_parsers(monkeypatch):

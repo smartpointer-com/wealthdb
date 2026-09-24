@@ -12,21 +12,18 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-// Historical-snapshot reader for the fidelity-web silver
-// migration-0004 table `historical_position_snapshots`. Parsed
-// from quarterly + year-end 529 statement PDFs by
-// fidelity-web/pdf_parsers.py. Statement archives exist in this
-// silver only for account groups that expose statements (see fidelity-web/DESIGN.md §4.5), so the historical path
-// covers those alone.
+// Historical-snapshot reader for the silver table
+// `historical_position_snapshots` (fidelity-web migration 0004):
+// holdings parsed from statement PDFs — fidelity-web's 529 and
+// supplied statements, and the svb statement archives.
 //
 // The table's primary key is (as_of_date, account_external_id,
-// description). The cross-walked `instrument_key` column points
-// at the same identity space as the live `positions` table — no
-// bridge map needed (unlike schwab-web where the api hashValue
-// has to translate to the web suffix). When the cross-walk on
-// the silver side missed (instrument_key NULL), we synthesise a
-// stable identity from the description so gold still has an
-// instrument to hang the row on.
+// description). `instrument_key` is in the same identity space as
+// the live `positions` table — a ticker, CUSIP or OCC code — so no
+// bridge map is needed (unlike schwab-web, where the api hashValue
+// has to translate to the web suffix). A row without one gets a
+// stable identity synthesised from its description so gold still
+// has an instrument to hang it on.
 
 // hasHistoricalTable reports whether the fidelity-web silver
 // carries the migration-0004 historical_position_snapshots
@@ -207,21 +204,17 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 
 // appendHistoricalPositions emits one InstrumentChange + one
 // PositionChange per row in `historical_position_snapshots`. The
-// silver schema is positions-only (no cash-balance counterpart
-// for the 529 historical path), so we never produce
-// CashBalanceChange rows from this source. The statement PDFs
+// table is positions-only (no cash-balance counterpart), so this
+// path never produces CashBalanceChange rows. The statement PDFs
 // carry no structured type code, so the (asset_class, vehicle)
 // pair comes from the shape heuristics in classifyHistoricalPair
 // (instrument-key and description shapes); the live-positions
-// path still overwrites
-// the instrument dimension whenever the same instrument_key
-// reappears with a source-classified value.
+// path still overwrites the instrument dimension whenever the same
+// instrument_key reappears with a source-classified value.
 //
-// When the silver cross-walk to `instrument_key` missed (column
-// NULL), we synthesise a stable identity from the human-readable
-// description so gold still has an instrument and position key.
-// The fallback is "fidelity-hist:" + sha-prefix(description) and
-// is deterministic per description, so re-loads converge.
+// A row with no `instrument_key` is keyed by
+// syntheticHistoricalInstrumentKey. A row's key is also its symbol,
+// except a statement construct's (isStatementConstruct).
 func (c *Connection) appendHistoricalPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	dafAccounts, err := c.dafAccountIDs(ctx)
 	if err != nil {
@@ -268,17 +261,22 @@ SELECT as_of_date, account_external_id,
 		if _, isDAF := dafAccounts[acct]; isDAF {
 			assetClassNew, vehicle = canonical.AssetClassMultiAsset, canonical.VehicleFund
 		}
-		if instrKey == "" {
+		keyless := instrKey == ""
+		if keyless {
 			instrKey = syntheticHistoricalInstrumentKey(desc)
 		}
-		symbol := instrKey
+		var symbol *string
+		if !keyless || !isStatementConstruct(desc) {
+			s := instrKey
+			symbol = &s
+		}
 		name := desc
 		ccy := currency
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrKey,
 			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
-			Symbol:               &symbol,
+			Symbol:               symbol,
 			Name:                 &name,
 			Currency:             &ccy,
 			FirstSeenAt:          snap,
@@ -303,9 +301,10 @@ SELECT as_of_date, account_external_id,
 }
 
 // syntheticHistoricalInstrumentKey deterministically derives a
-// gold-side instrument identity from a fund description when
-// the silver cross-walk to a real ticker missed. Stable across
-// re-loads so the same statement → same gold rows.
+// gold-side instrument identity from the description of a row that
+// has no key — a fund the silver cross-walk missed, or a statement
+// construct. "fidelity-hist:" + a sha prefix, stable across re-loads
+// so the same statement → same gold rows.
 func syntheticHistoricalInstrumentKey(description string) string {
 	sum := sha256.Sum256([]byte(description))
 	return "fidelity-hist:" + hex.EncodeToString(sum[:8])

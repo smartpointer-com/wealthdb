@@ -68,11 +68,11 @@ var (
 	// Keyless 529 plan sleeves: "STATE PLAN 2099 (FIDELITY BLEND)".
 	histPlanDescRe = regexp.MustCompile(`\(FIDELITY [^)]*\)$`)
 	// Money-market sweeps ("FIDELITY GOVERNMENT MONEY MARKET",
-	// "… CASH RESERVES") plus the svb builder's "NET CASH POSITION"
-	// row — the statement's net cash/margin sleeve booked as a
-	// position (negative = margin debit). Distinct from
-	// silver.StmtMoneyMktRe by the trailing NET CASH POSITION arm.
-	histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b|^NET CASH POSITION$`)
+	// "… CASH RESERVES").
+	histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b`)
+	// The svb builder's net cash/margin sleeve, booked as a position
+	// (negative = margin debit).
+	histNetCashRe = regexp.MustCompile(`^NET CASH POSITION$`)
 	// The row an svb statement that prints no positions and states a
 	// $0 portfolio total materialises as. Value 0, so there is no
 	// exposure to classify — and it is a real observation of an empty
@@ -132,6 +132,7 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 		silver.StmtOptionDescRe.MatchString(description):
 		return canonical.AssetClassPublicEquity, canonical.VehicleOption
 	case histMoneyMktRe.MatchString(description),
+		histNetCashRe.MatchString(description),
 		silver.StmtMoneyMktKeyRe.MatchString(instrumentKey):
 		return canonical.AssetClassCash, canonical.VehicleFund
 	case histPlanKeyRe.MatchString(instrumentKey),
@@ -154,4 +155,20 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 		return silver.RefineETFExposure(description), canonical.VehicleETF
 	}
 	return canonical.AssetClassPublicEquity, canonical.VehicleStock
+}
+
+// isStatementConstruct reports whether a keyless historical row is one
+// a statement builder materialises from a statement-level figure — the
+// net cash sleeve, a stated-$0 month, an advisor mark, a deposit
+// balance, a loan's principal — rather than from a security line. It
+// has no symbol: its synthetic key is an identity the adapter made up,
+// and showing it as one would read as a ticker.
+func isStatementConstruct(description string) bool {
+	for _, re := range []*regexp.Regexp{histNetCashRe, histNoPositionsRe,
+		histAdvisorMarkRe, histCashRe, histMortgageRe} {
+		if re.MatchString(description) {
+			return true
+		}
+	}
+	return false
 }

@@ -100,6 +100,13 @@ disambiguation, and the Activity sign conventions are all load-bearing — see
 [DESIGN.md](DESIGN.md). Changing any of them shifts the gold history; do it
 deliberately, with the tests updated.
 
+So is the instrument-link proof. A row is linked to a holding only when the
+statements' quantities force it; a name only proposes the candidates. Never
+relax that to a name match to recover coverage: a plausible wrong link moves
+money between asset classes in every report, and an unlinked row is at least
+visibly untracked. Nor may a link change what a row already is — its activity
+id, description and amount are what gold's pins and categorisation key on.
+
 The signs deserve their own warning. Gold reads a wire's direction off the
 amount's sign alone, so an inverted parse reverses a large transfer instead of
 failing. Two verb families print against intuition — a withholding reversal is a

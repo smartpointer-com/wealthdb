@@ -88,11 +88,13 @@ own source id:
 { "id": "svb-mortgage", "kind": "fidelity", "path": "$XDG_DATA_HOME/wealthdb/svb/svb-mortgage.db" }
 ```
 
-`kind: "fidelity"` reuses the Fidelity gold adapter unchanged. The three ids
+`kind: "fidelity"` reuses the Fidelity gold adapter. The three ids
 are what keep each family's carry-forward self-contained — see
 [DESIGN.md](DESIGN.md). Per-account taxonomy (`tax_wrapper` /
 `management_style`) comes from `account_overrides[<id>]`, and all three need
-reloading together after a build.
+reloading together after a build. A trade the statements cannot tie to a
+holding reaches gold with an `instrument_hint`, which a
+`transaction_instruments[<id>]` entry closes.
 
 The ids above name one archive. An archive held under a different registration
 is a separate run of the same collector — its own `--data-dir`, its own

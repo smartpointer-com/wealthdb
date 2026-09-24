@@ -482,6 +482,106 @@ def test_a_core_fund_sweep_is_not_a_trade(tmp_path, monkeypatch):
     assert kinds == ["BUY", "CASH_SWEEP_IN"]
 
 
+def _linking_archive(tmp_path, monkeypatch, *, stated_opening=0.0):
+    """One statement of one account: a trade the holdings prove, a round
+    trip in a security the account never held at a statement end, a dividend
+    and a core-fund sweep. Dated 2099 so nothing can match a real row."""
+    canned = {"SVM-000000/2099-01": {
+        "family": P.FAMILY_BROKERAGE,
+        "period_start": "2099-01-01", "period_end": "2099-01-31",
+        "stated_opening": stated_opening, "stated_total": 1000.0,
+        "accounts": [{
+            "account_external_id": "SVM-000000",
+            "holdings": [{"description": "EXAMPLE COMPANY CL A",
+                          "instrument_key": "AAAA", "quantity": 10.0,
+                          "price": 100.0, "market_value": 1000.0}],
+            "activity": [
+                _activity_row(date="2099-01-05", section=P.SECTION_TRADES,
+                              verb="YOU BOUGHT", quantity=10.0,
+                              description="EXAMPLE COMPANY CL A @ 100.00",
+                              amount=-1000.0, ordinal=0),
+                _activity_row(date="2099-01-06", section=P.SECTION_TRADES,
+                              verb="YOU BOUGHT", quantity=5.0,
+                              description="OTHER EXAMPLE INC COM",
+                              amount=-500.0, ordinal=1),
+                _activity_row(date="2099-01-07", section=P.SECTION_TRADES,
+                              verb="YOU SOLD", quantity=-5.0,
+                              description="OTHER EXAMPLE INC COM",
+                              amount=510.0, ordinal=2),
+                _activity_row(date="2099-01-20", section=P.SECTION_INCOME,
+                              verb="DIVIDEND RECEIVED",
+                              description="EXAMPLE COMPANY CL A",
+                              amount=10.0, ordinal=3),
+                _activity_row(date="2099-01-21", section=P.SECTION_CORE_FUND,
+                              verb="REINVESTMENT", quantity=10.0,
+                              description="EXAMPLE GOVERNMENT MONEY MARKET",
+                              amount=-10.0, ordinal=4),
+            ],
+            "activity_totals": {}}]}}
+    bronze = _write_bronze(tmp_path, canned)
+    _patch_parsers(monkeypatch, bronze, canned)
+    db = tmp_path / "svb.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    return sqlite3.connect(str(db))
+
+
+def _links_by_verb_and_amount(conn):
+    return {(verb, amount): (key, hint) for verb, amount, key, hint in conn.execute(
+        "SELECT json_extract(payload,'$.Transaction'), amount, instrument_key, "
+        "json_extract(payload,'$.InstrumentHint') FROM transactions")}
+
+
+def test_a_trade_carries_the_key_its_holdings_prove(tmp_path, monkeypatch):
+    got = _links_by_verb_and_amount(_linking_archive(tmp_path, monkeypatch))
+    assert got[("YOU BOUGHT", -1000.0)] == ("AAAA", None)
+
+
+def test_an_unproved_trade_states_what_it_was_looked_up_by(tmp_path, monkeypatch):
+    got = _links_by_verb_and_amount(_linking_archive(tmp_path, monkeypatch))
+    assert got[("YOU BOUGHT", -500.0)] == (None, "OTHEREXAMPLEINCCOM")
+    assert got[("YOU SOLD", 510.0)] == (None, "OTHEREXAMPLEINCCOM")
+
+
+def test_rows_that_move_no_security_are_neither_linked_nor_hinted(
+        tmp_path, monkeypatch):
+    # A dividend carries no quantity to prove anything with, and a core-fund
+    # sweep moves the account's cash, not an investment.
+    got = _links_by_verb_and_amount(_linking_archive(tmp_path, monkeypatch))
+    assert got[("DIVIDEND RECEIVED", 10.0)] == (None, None)
+    assert got[("REINVESTMENT", -10.0)] == (None, None)
+
+
+def test_only_a_stated_zero_opens_an_accounts_first_window(tmp_path, monkeypatch):
+    got = _links_by_verb_and_amount(
+        _linking_archive(tmp_path, monkeypatch, stated_opening=500.0))
+    assert got[("YOU BOUGHT", -1000.0)] == (None, "EXAMPLECOMPANYCLA@100.00")
+
+
+def test_linking_leaves_the_activity_ids_alone(tmp_path, monkeypatch):
+    import hashlib
+
+    conn = _linking_archive(tmp_path, monkeypatch)
+    sha = hashlib.sha256(b"%PDF-fake\n").hexdigest()
+    row = _activity_row(date="2099-01-05", section=P.SECTION_TRADES,
+                        verb="YOU BOUGHT", quantity=10.0,
+                        description="EXAMPLE COMPANY CL A @ 100.00",
+                        amount=-1000.0, ordinal=0)
+    (key,) = conn.execute("SELECT instrument_key FROM transactions "
+                          "WHERE activity_id = ?",
+                          (B.activity_id(sha, "SVM-000000", row),)).fetchone()
+    assert key == "AAAA"
+
+
+def test_the_build_reports_its_links(tmp_path, monkeypatch, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="svb"):
+        _linking_archive(tmp_path, monkeypatch)
+    assert any("instrument links: 1 activity row(s) linked, 2 not "
+               "[no candidate=2]" in r.message for r in caplog.records)
+
+
 def test_undated_and_verbless_rows_are_not_booked(tmp_path, monkeypatch, caplog):
     import logging
 
