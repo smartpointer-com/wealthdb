@@ -122,7 +122,7 @@ wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, tr
 wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions, coverage.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a          (RO)    List snapshots gold has loaded (one silver, or all).
-wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM.
+wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM; skips hinted rows and cash-class instruments.
 wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
 wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants and payers via the configured LLM.
 wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict stores; --forget SIG removes one (RW).
@@ -791,7 +791,7 @@ Example config file:
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.9). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.9. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
-| `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a securities trade whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.9. |
+| `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.9. |
 | `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, cash balances and transactions dated on or AFTER the date, and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.10) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
@@ -2377,15 +2377,17 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   as an admitted pair, so a wrapper value cannot reach the exposure column.
   Denormalised by decision: a transaction points at no position and no lot.
 - **`transactions.instrument_hint`** (migration 0098) is the token an adapter
-  resolved a trade's instrument from when that resolution found nothing — a
+  resolved a row's instrument from when that resolution found nothing — a
   Swiss valor, a fund name, a ticker, whatever the feed states. The svb
-  statement archives resolve in the collector instead, the one place a
-  statement's arithmetic can prove the link (`collectors/svb/DESIGN.md`), so
-  there the collector states the token in the row's payload and the fidelity
-  adapter carries it. NULL where no lookup was needed or it succeeded, so
-  `instrument_external_id IS NULL AND instrument_hint IS NOT NULL` is exactly
-  the set a `transaction_instruments` entry can still close, and `wealthdb transactions -C +instrument_hint`
-  (migration 0099) is how that set is read. See §13.9.
+  statement archives resolve in the collector instead, the one place the
+  statements themselves can settle a row's link (`collectors/svb/DESIGN.md`),
+  so there the collector states the token in the row's payload and the
+  fidelity adapter carries it. NULL where no lookup was needed or it
+  succeeded, so `instrument_external_id IS NULL AND instrument_hint IS NOT
+  NULL` is exactly the set a `transaction_instruments` entry can still close,
+  and `wealthdb transactions -C +instrument_hint` (migration 0099) is how that
+  set is read. `wealthdb resolve-symbols` does not put such a row to its
+  model: the token is config's to close. See §13.9.
 - **Account display defaults.** `report_accounts_multi` and
   `report_accounts_history_multi` apply the conventional
   `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,
@@ -3352,18 +3354,20 @@ coverage canary to report rather than one to guess at. It applies
 before both override maps, so a named `account_overrides` entry still
 wins.
 
-`transaction_instruments` links a securities trade whose feed named an
-instrument nothing in the product could resolve. It is keyed by the
-TOKEN the adapter looked up and failed on, which the adapter states on
-the row (`instrument_hint`, §10.8) rather than the loader digging it
-out of a payload whose shape differs per feed — one mechanism for
-every source, and the source-blind layer stays source-blind. A row the
-adapter already resolved is never touched, a token nothing states any
-more is a silent no-op (that is what an adapter learning to resolve it
-looks like), and the trade's own coarse taxonomy pair is dropped as
-the link lands, the instrument now named answering better. It states
-the identity only, so it composes with `instrument_overrides`: pin the
-link here, pin its classification there.
+`transaction_instruments` links a row (a securities trade, or an income or
+withholding row of a security) whose feed named an instrument nothing in
+the product could resolve. It is keyed by the TOKEN the adapter looked up
+and failed on, which the adapter states on the row (`instrument_hint`,
+§10.8) rather than the loader digging it out of a payload whose shape
+differs per feed — one mechanism for every source, and the source-blind
+layer stays source-blind. A row the adapter already resolved is never
+touched, and a token nothing states any more is a silent no-op (that is
+what an adapter learning to resolve it looks like). An entry closes every
+row of its source that states the token, in any account and of any kind,
+and the row's own coarse taxonomy pair is dropped as the link lands, the
+instrument now named answering better. It states the identity only, so it
+composes with `instrument_overrides`: pin the link here, pin its
+classification there.
 
 Selectable columns: `wealthdb holdings accounts -C
 silver_source,account,account_kind,tax_wrapper,management_style,...`.

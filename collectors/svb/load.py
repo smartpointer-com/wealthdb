@@ -30,9 +30,11 @@ account can state $0 one month and a residual the next (a late dividend
 landing), so the series ends where the statements end.
 
 A trade reaches silver carrying the key of the holding its statements' own
-arithmetic proves it moved (:mod:`instrument_links`); a row the arithmetic
-cannot settle keeps none and states what it was looked up by instead. A
-cancelled trade does not reach it at all (:func:`pair_cancellations`).
+arithmetic proves it moved, and a row that names a security without moving
+it the key of the one holding its statements leave its name to
+(:mod:`instrument_links`); a row neither can settle keeps none and states
+what it was looked up by instead. A cancelled trade does not reach silver at
+all (:func:`pair_cancellations`).
 
 Runs on the host, not in docker: stdlib sqlite3 plus the extraction stacks and
 workbook reader pinned in requirements.txt. Idempotent and
@@ -379,13 +381,46 @@ def booked_activity(parsed: dict):
 
 
 def _moves_a_position(row: dict, kind: str) -> bool:
-    """Whether the row is one the instrument links try: a booked row that
-    moves a quantity of a security — a trade, a corporate action, an in-kind
-    transfer. The core-fund sweeps are the exception. They move the account's
-    cash in and out of its money fund, name no investment, and would put the
-    one large equation in the proof for nothing a report reads."""
+    """Whether the row is one the instrument links' proof tries: a booked
+    row that moves a quantity of a security — a trade, a corporate action,
+    an in-kind transfer. The core-fund sweeps are the exception. They move
+    the account's cash in and out of its money fund, name no investment,
+    and would put the one large equation in the proof for nothing a report
+    reads."""
     return (kind != _UNKNOWN_KIND and row.get("quantity") is not None
             and row.get("section") != pdf_parsers_svbwa.SECTION_CORE_FUND)
+
+
+# The brokerage verbs whose row names the security an amount came from or
+# was withheld from, and moves none of it. Every other row without a
+# quantity names a counterparty (a transfer, a wire, a journal), a rate
+# (margin interest) or the account itself (its advisory fee, a fee
+# reversal), and is never looked up. `FEE PAID` names a security for an ADR
+# pass-through fee and the account for its own charges, so it is left out
+# rather than looked up and failed on for every account-level charge.
+_NAMED_VERBS = frozenset({
+    "DIVIDEND RECEIVED", "DIVIDEND ADJUSTMENT", "INTEREST",
+    "RETURN OF CAPITAL", "DISTRIBUTION", "NON-RESIDENT TAX",
+    "FOREIGN TAX PAID", "ADJ NON-RESIDENT TAX", "IN LIEU OF FRX SHARE",
+})
+# Where they print. The deposit ledger's credits resolve to INTEREST as well,
+# and name no security.
+_NAMED_SECTIONS = frozenset({
+    pdf_parsers_svbwa.SECTION_INCOME,
+    pdf_parsers_svbwa.SECTION_TAXES_FEES,
+    pdf_parsers_svbwa.SECTION_MISC,
+})
+
+
+def _names_a_security(row: dict) -> bool:
+    """Whether the row is one the instrument links' name pass tries: a
+    booked brokerage row that names a security and moves no quantity of it
+    (`_NAMED_VERBS`, `_NAMED_SECTIONS`). A row whose name came through
+    empty names nothing to look up."""
+    return (row.get("quantity") is None
+            and row.get("verb") in _NAMED_VERBS
+            and row.get("section") in _NAMED_SECTIONS
+            and bool((row.get("description") or "").strip()))
 
 
 def _activity_ref(sha: str, account: str, row: dict) -> tuple:
@@ -439,27 +474,36 @@ def pair_cancellations(results: list[tuple[str, dict]]) -> dict[tuple, tuple]:
 def link_statements(results: list[tuple[str, dict]],
                     cancelled: dict[tuple, tuple]) -> instrument_links.Links:
     """Link each position-moving row to the holding its statements prove it
-    moved (see :mod:`instrument_links`), over every parsed statement.
-    ``cancelled`` is :func:`pair_cancellations`'s result: a cancellation
-    moved its booking's instrument, which can prove the booking made again.
+    moved, and each row that names a security without moving it to the one
+    holding its statements leave the name to (see :mod:`instrument_links`),
+    over every parsed statement. ``cancelled`` is
+    :func:`pair_cancellations`'s result: a cancellation moved its booking's
+    instrument, which can prove the booking made again.
 
     A statement opens empty only where it STATES a $0.00 beginning value, the
     real-zero rule applied at the other end of the period."""
     statements = []
     for sha, parsed in results:
+        # A statement whose period could not be read has no window, so
+        # neither pass tries its rows: they carry neither key nor hint.
         if not parsed.get("period_end"):
             continue
         start = parsed.get("period_start")
-        moves = {}
+        moves, named = defaultdict(list), defaultdict(list)
         for aid, row, kind in booked_activity(parsed):
+            ref = _activity_ref(sha, aid, row)
+            day = date.fromisoformat(row["date"])
             if _moves_a_position(row, kind):
-                ref = _activity_ref(sha, aid, row)
-                moves.setdefault(aid, []).append(instrument_links.Movement(
+                moves[aid].append(instrument_links.Movement(
                     ref=ref,
                     name=row.get("description") or "",
                     quantity=row["quantity"],
                     stated_key=row.get("stated_key"),
-                    reverses=cancelled.get(ref)))
+                    reverses=cancelled.get(ref),
+                    day=day))
+            elif _names_a_security(row):
+                named[aid].append(instrument_links.Named(
+                    ref=ref, name=row.get("description") or "", day=day))
         for acct in parsed.get("accounts", []):
             aid = acct.get("account_external_id")
             if not aid:
@@ -478,7 +522,8 @@ def link_statements(results: list[tuple[str, dict]],
                 end=date.fromisoformat(parsed["period_end"]),
                 holdings=holdings,
                 opens_empty=parsed.get("stated_opening") == 0,
-                movements=tuple(moves.get(aid, ()))))
+                movements=tuple(moves.get(aid, ())),
+                named=tuple(named.get(aid, ()))))
     return instrument_links.link(statements)
 
 
@@ -489,15 +534,14 @@ def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
     ``left_out`` — the cancellations and the bookings they cancel. Returns
     ``(inserted, unknown-verb count)``.
 
-    `instrument_key` is the holding key ``links`` proved the row moved. The
-    Activity region prints a security's kerned NAME, never the key the
-    Holdings rows carry, so the key comes from the statements' arithmetic —
-    see :mod:`instrument_links` — and a row the arithmetic cannot settle keeps
-    none. Such a row states what it was looked up by as `InstrumentHint`, the
-    token a `transaction_instruments` config entry closes it by.
+    `instrument_key` is the holding key ``links`` settled for the row
+    (:func:`link_statements`). A row looked up and not settled keeps none
+    and states what it was looked up by as `InstrumentHint`, the token a
+    `transaction_instruments` config entry closes it by; a row never
+    looked up — a transfer, a fee, a sweep — carries neither.
 
-    `Action` is the row's narrative, which gold categorises the row by and
-    which `wealthdb resolve-symbols` looks a row with no instrument up by.
+    `Action` is the row's narrative, which gold describes and categorises
+    the row by.
     The name is also kept unprefixed under `Description`, and `Section` says
     whether that name is a security at all (income / taxes / corporate
     actions) or a counterparty account (additions and withdrawals).
@@ -901,9 +945,11 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
             links.unlinked.pop(ref, None)
         log.info("cancelled trades: %d booking(s) left out with their "
                  "cancellation", len(cancelled))
-        log.info("instrument links: %d activity row(s) linked, %d not [%s]",
-                 len(links.keys), len(links.unlinked),
-                 ", ".join(f"{k}={v}" for k, v in sorted(links.census().items())))
+        for named, how in ((False, "by quantity"), (True, "by name")):
+            reasons = links.census(named=named)
+            log.info("instrument links %s: %d row(s) linked, %d not [%s]",
+                     how, links.linked(named=named), sum(reasons.values()),
+                     ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())))
         holdings = txns = unknown_verbs = 0
         census: Counter[str] = Counter()
         for pdf, sha, res in zip(pdfs, shas, results):

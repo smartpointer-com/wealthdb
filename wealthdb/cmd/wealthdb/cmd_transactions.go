@@ -180,7 +180,7 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.InstrumentExternalID) }},
 		// What the row's instrument was looked up BY, where that lookup
 		// found nothing. `instrument_id` empty beside a value here is
-		// exactly a trade a `transaction_instruments` entry can close,
+		// exactly a row a `transaction_instruments` entry can close,
 		// and this is the value such an entry is keyed by.
 		{Name: "instrument_hint", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.InstrumentHint) }},

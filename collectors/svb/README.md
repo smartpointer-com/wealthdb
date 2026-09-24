@@ -92,16 +92,17 @@ own source id:
 are what keep each family's carry-forward self-contained — see
 [DESIGN.md](DESIGN.md). Per-account taxonomy (`tax_wrapper` /
 `management_style`) comes from `account_overrides[<id>]`, and all three need
-reloading together after a build. A trade the statements cannot tie to a
-holding reaches gold with an `instrument_hint`, which a
-`transaction_instruments[<id>]` entry closes.
+reloading together after a build. A trade, or an income or withholding row
+that names a security, the statements cannot tie to a holding reaches gold
+with an `instrument_hint`, which a `transaction_instruments[<id>]` entry
+closes.
 
 The ids above name one archive. An archive held under a different registration
 is a separate run of the same collector — its own `--data-dir`, its own
 `--silver-db`, its own `signature.txt` — and so its own ids, because the
 accounts are a different holder's and must not share a carry-forward with
-these. A run whose archive has only one of the three families still creates the
-other two DBs, empty; leave them unregistered.
+these. A run whose archive holds only some of the three families writes only
+their DBs; register just those.
 
 ## Tests
 

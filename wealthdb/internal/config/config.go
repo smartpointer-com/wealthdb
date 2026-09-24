@@ -63,11 +63,12 @@ type Config struct {
 	// every position row referencing it, so config wins on
 	// overlap. See docs/DESIGN.md §13.9.
 	InstrumentOverrides map[string]map[string]InstrumentOverride `json:"instrument_overrides,omitempty"`
-	// TransactionInstruments links a securities trade whose own feed
-	// states its instrument in a way nothing else in the product can
-	// resolve — a Swiss valor for a line the instrument dimension has
-	// no valor for, a fund named before it was renamed, a ticker the
-	// symbol index never saw.
+	// TransactionInstruments links a row (a securities trade, or an
+	// income or withholding row of a security) whose own feed states its
+	// instrument in a way nothing else in the product can resolve — a
+	// Swiss valor for a line the instrument dimension has no valor for,
+	// a fund named before it was renamed, a ticker the symbol index
+	// never saw, a statement name that fits two holdings.
 	//
 	// Keyed by silver_source_id (outer) and then by the TOKEN the
 	// adapter looked up and failed on (inner) — read it from
@@ -85,7 +86,7 @@ type Config struct {
 	//
 	// It states the IDENTITY only. What the instrument IS remains
 	// `instrument_overrides`' question, and the two compose: pin the
-	// link here, pin its classification there.
+	// link here, pin its classification there. See docs/DESIGN.md §13.9.
 	TransactionInstruments map[string]map[string]string `json:"transaction_instruments,omitempty"`
 	// Supersession ends a silver source's account at a date, because
 	// something else carries it from there. An account can outlive its

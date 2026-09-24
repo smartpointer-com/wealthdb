@@ -57,7 +57,7 @@ type SourceSpec struct {
 	// adapter has classified, to the instrument dimension and to
 	// every position row referencing the instrument.
 	InstrumentOverrides map[string]InstrumentOverride
-	// TransactionInstruments links a trade the adapter could not
+	// TransactionInstruments links a row the adapter could not
 	// resolve, keyed by the token it looked up and failed on
 	// (canonical.TransactionChange.InstrumentHint).
 	TransactionInstruments map[string]string
@@ -1064,9 +1064,10 @@ func applyInstrumentOverrides(instruments []canonical.InstrumentChange, position
 	}
 }
 
-// applyTransactionInstruments links a trade whose feed named an
+// applyTransactionInstruments links a row whose feed named an
 // instrument nothing in the product could resolve, keyed by the token
-// the adapter looked up and failed on.
+// the adapter looked up and failed on — every row of the source that
+// states it, in any account and of any kind.
 //
 // One key for every source, because the adapter states the token rather
 // than the loader digging it out of a payload whose shape differs per
@@ -1076,7 +1077,7 @@ func applyInstrumentOverrides(instruments []canonical.InstrumentChange, position
 // an error, because that is what success looks like.
 //
 // The IDENTITY only. What the instrument is remains
-// `instrument_overrides`' question; the two compose. A trade's own
+// `instrument_overrides`' question; the two compose. A row's own
 // taxonomy pair is dropped as the link lands — it was the adapter's
 // answer for a row nothing could name, and the instrument now named
 // answers better and stays current as the dimension is reclassified.

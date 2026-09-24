@@ -7,6 +7,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import load as B  # noqa: E402
@@ -204,8 +206,6 @@ def test_empty_bronze_never_clobbers_existing_silver(tmp_path, monkeypatch):
     existing svb.db (regression: --bronze-dir pointed at the data-dir root
     replaced a good silver with an empty rebuild, zeroing the source out of
     gold). A nested dir tree with no PDFs in it is just as empty."""
-    import pytest
-
     conn = _build(tmp_path, monkeypatch)  # good silver from canned bronze
     conn.close()
     db = tmp_path / "svb.db"
@@ -486,7 +486,8 @@ def test_a_core_fund_sweep_is_not_a_trade(tmp_path, monkeypatch):
 def _linking_archive(tmp_path, monkeypatch, *, stated_opening=0.0):
     """One statement of one account: a trade the holdings prove, a round
     trip in a security the account never held at a statement end, a dividend
-    and a core-fund sweep. Dated 2099 so nothing can match a real row."""
+    of the held security and a core-fund sweep. Dated 2099 so nothing can
+    match a real row."""
     canned = {"SVM-000000/2099-01": {
         "family": P.FAMILY_BROKERAGE,
         "period_start": "2099-01-01", "period_end": "2099-01-31",
@@ -544,12 +545,17 @@ def test_an_unproved_trade_states_what_it_was_looked_up_by(tmp_path, monkeypatch
     assert got[("YOU SOLD", 510.0)] == (None, "OTHEREXAMPLEINCCOM")
 
 
-def test_rows_that_move_no_security_are_neither_linked_nor_hinted(
+def test_a_dividend_carries_the_key_of_the_one_holding_it_names(
         tmp_path, monkeypatch):
-    # A dividend carries no quantity to prove anything with, and a core-fund
-    # sweep moves the account's cash, not an investment.
+    # It moves no quantity to prove anything with; the one holding its name
+    # fits is the statement's own answer.
     got = _links_by_verb_and_amount(_linking_archive(tmp_path, monkeypatch))
-    assert got[("DIVIDEND RECEIVED", 10.0)] == (None, None)
+    assert got[("DIVIDEND RECEIVED", 10.0)] == ("AAAA", None)
+
+
+def test_a_core_fund_sweep_is_neither_linked_nor_hinted(tmp_path, monkeypatch):
+    # It moves the account's cash, not an investment.
+    got = _links_by_verb_and_amount(_linking_archive(tmp_path, monkeypatch))
     assert got[("REINVESTMENT", -10.0)] == (None, None)
 
 
@@ -574,13 +580,188 @@ def test_linking_leaves_the_activity_ids_alone(tmp_path, monkeypatch):
     assert key == "AAAA"
 
 
-def test_the_build_reports_its_links(tmp_path, monkeypatch, caplog):
+def test_the_build_reports_its_links_per_pass(tmp_path, monkeypatch, caplog):
     import logging
 
     with caplog.at_level(logging.INFO, logger="svb"):
         _linking_archive(tmp_path, monkeypatch)
-    assert any("instrument links: 1 activity row(s) linked, 2 not "
-               "[no candidate=2]" in r.message for r in caplog.records)
+    messages = [r.message for r in caplog.records]
+    assert ("instrument links by quantity: 1 row(s) linked, 2 not "
+            "[no candidate=2]") in messages
+    assert "instrument links by name: 1 row(s) linked, 0 not []" in messages
+
+
+def _built(tmp_path, monkeypatch, canned):
+    """Build a canned archive whose statements are distinct documents, and
+    return the brokerage silver."""
+    bronze = _write_bronze(tmp_path, canned, distinct_bytes=True)
+    _patch_parsers(monkeypatch, bronze, canned)
+    db = tmp_path / "svb.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    return sqlite3.connect(str(db))
+
+
+def _named(date, verb, section, amount, ordinal,
+           description="EXAMPLE COMPANY CL A"):
+    return _activity_row(date=date, section=section, verb=verb,
+                         description=description, amount=amount,
+                         ordinal=ordinal)
+
+
+# One statement of one account holding one security: rows that name a
+# security without moving any of it, and rows that name none.
+_NAMED_ROWS = [
+    _named("2099-01-15", "DIVIDEND RECEIVED", P.SECTION_INCOME, 10.0, 0),
+    _named("2099-01-15", "NON-RESIDENT TAX", P.SECTION_TAXES_FEES, -3.0, 1),
+    _named("2099-01-15", "IN LIEU OF FRX SHARE", P.SECTION_MISC, 4.0, 2),
+    _named("2099-01-15", "DIVIDEND RECEIVED", P.SECTION_INCOME, 20.0, 3,
+           description="OTHER EXAMPLE INC COM"),
+    _named("2099-01-15", "FOREIGN TAX PAID", P.SECTION_TAXES_FEES, -2.0, 4,
+           description="OTHER EXAMPLE INC COM"),
+    _named("2099-01-15", "FEE PAID", P.SECTION_TAXES_FEES, -1.0, 5),
+    _named("2099-01-15", "ADVISOR FEE DEDUCTED", P.SECTION_TAXES_FEES, -50.0,
+           6, description="Advisor Fee"),
+    _named("2099-01-15", "MARGIN INTEREST", P.SECTION_TAXES_FEES, -5.0, 7,
+           description="@ 3.250%"),
+    _named("2099-01-15", "TRANSFERRED TO", P.SECTION_ADDITIONS, -100.0, 8),
+]
+
+
+def _named_archive(tmp_path, monkeypatch):
+    return _built(tmp_path, monkeypatch, {"SVM-000000/2099-01": _statement(
+        "01", {"AAAA": 10.0}, _NAMED_ROWS)})
+
+
+def test_a_withholding_and_a_cash_in_lieu_land_where_the_dividend_does(
+        tmp_path, monkeypatch):
+    got = _links_by_verb_and_amount(_named_archive(tmp_path, monkeypatch))
+    assert got[("DIVIDEND RECEIVED", 10.0)] == ("AAAA", None)
+    assert got[("NON-RESIDENT TAX", -3.0)] == ("AAAA", None)
+    assert got[("IN LIEU OF FRX SHARE", 4.0)] == ("AAAA", None)
+
+
+def test_a_named_row_its_statements_cannot_settle_states_its_name(
+        tmp_path, monkeypatch):
+    got = _links_by_verb_and_amount(_named_archive(tmp_path, monkeypatch))
+    assert got[("DIVIDEND RECEIVED", 20.0)] == (None, "OTHEREXAMPLEINCCOM")
+    assert got[("FOREIGN TAX PAID", -2.0)] == (None, "OTHEREXAMPLEINCCOM")
+
+
+def test_a_row_that_names_no_security_is_never_looked_up(
+        tmp_path, monkeypatch):
+    # An account's own fees, a rate and a counterparty carry neither a key
+    # nor a hint, so a hint always means a lookup that failed. A pass-through
+    # fee is left out with them although it prints a security's name.
+    got = _links_by_verb_and_amount(_named_archive(tmp_path, monkeypatch))
+    for verb, amount in [("FEE PAID", -1.0), ("ADVISOR FEE DEDUCTED", -50.0),
+                         ("MARGIN INTEREST", -5.0),
+                         ("TRANSFERRED TO", -100.0)]:
+        assert got[(verb, amount)] == (None, None), verb
+
+
+def test_the_named_verbs_are_the_parsers_own():
+    assert B._NAMED_VERBS <= set(P._ACTIVITY_VERBS)
+    assert B._NAMED_VERBS == {
+        "DIVIDEND RECEIVED", "DIVIDEND ADJUSTMENT", "INTEREST",
+        "RETURN OF CAPITAL", "DISTRIBUTION", "NON-RESIDENT TAX",
+        "FOREIGN TAX PAID", "ADJ NON-RESIDENT TAX", "IN LIEU OF FRX SHARE"}
+
+
+@pytest.mark.parametrize("verb, section", [
+    ("DIVIDEND ADJUSTMENT", P.SECTION_INCOME),
+    ("INTEREST", P.SECTION_INCOME),
+    ("RETURN OF CAPITAL", P.SECTION_INCOME),
+    ("DISTRIBUTION", P.SECTION_INCOME),
+    ("ADJ NON-RESIDENT TAX", P.SECTION_TAXES_FEES),
+    ("IN LIEU OF FRX SHARE", P.SECTION_MISC),
+])
+def test_every_named_verb_is_looked_up(tmp_path, monkeypatch, verb, section):
+    got = _links_by_verb_and_amount(_built(tmp_path, monkeypatch, {
+        "SVM-000000/2099-01": _statement("01", {"AAAA": 10.0}, [
+            _named("2099-01-15", verb, section, 10.0, 0),
+            _named("2099-01-16", verb, section, 20.0, 1,
+                   description="OTHER EXAMPLE INC COM")])}))
+    assert got[(verb, 10.0)] == ("AAAA", None)
+    assert got[(verb, 20.0)] == (None, "OTHEREXAMPLEINCCOM")
+
+
+def test_a_named_verb_that_moves_a_quantity_stays_in_the_proof(
+        tmp_path, monkeypatch):
+    # A distribution paid in shares moves a quantity, so the arithmetic
+    # decides it: here it closes the holding together with the purchase.
+    got = _links_by_verb_and_amount(_built(tmp_path, monkeypatch, {
+        "SVM-000000/2099-01": _statement("01", {"AAAA": 110.0}, [
+            _trade("2099-01-05", "YOU BOUGHT", 100.0, -10000.0, 0),
+            _activity_row(date="2099-01-15", section=P.SECTION_MISC,
+                          verb="DISTRIBUTION", quantity=10.0,
+                          description="EXAMPLE COMPANY CL A", amount=0.5,
+                          ordinal=1)])}))
+    assert got[("DISTRIBUTION", 0.5)] == ("AAAA", None)
+    assert got[("YOU BOUGHT", -10000.0)] == ("AAAA", None)
+
+
+def test_a_named_row_with_no_name_is_never_looked_up(tmp_path, monkeypatch):
+    got = _links_by_verb_and_amount(_built(tmp_path, monkeypatch, {
+        "SVM-000000/2099-01": _statement("01", {"AAAA": 10.0}, [
+            _named("2099-01-15", "DIVIDEND RECEIVED", P.SECTION_INCOME,
+                   10.0, 0, description="")])}))
+    assert got[("DIVIDEND RECEIVED", 10.0)] == (None, None)
+
+
+def test_a_dividend_paid_after_the_sale_finds_its_security(
+        tmp_path, monkeypatch):
+    # The row's own date is what puts the sale within the pay lag.
+    got = _links_by_verb_and_amount(_built(tmp_path, monkeypatch, {
+        "SVM-000000/2099-01": _statement("01", {"AAAA": 10.0}, [
+            _trade("2099-01-05", "YOU BOUGHT", 10.0, -1000.0, 0)]),
+        "SVM-000000/2099-02": _statement("02", {}, [
+            _trade("2099-02-10", "YOU SOLD", -10.0, 1000.0, 0)]),
+        "SVM-000000/2099-03": _statement("03", {}, [
+            _named("2099-03-15", "DIVIDEND RECEIVED", P.SECTION_INCOME,
+                   10.0, 0)])}))
+    assert got[("DIVIDEND RECEIVED", 10.0)] == ("AAAA", None)
+
+
+def test_a_trades_date_reaches_the_name_pass(tmp_path, monkeypatch):
+    # Renamed from a CUSIP to a ticker in March and bought again there: the
+    # purchase's own date is what makes the ticker a recent proven key, so
+    # the dividend links to it rather than contradicting the older one.
+    got = _links_by_verb_and_amount(_built(tmp_path, monkeypatch, {
+        "SVM-000000/2099-01": _statement("01", {"000000AA0": 10.0}, [
+            _trade("2099-01-05", "YOU BOUGHT", 10.0, -1000.0, 0)]),
+        "SVM-000000/2099-02": _statement("02", {}, [
+            _trade("2099-02-10", "YOU SOLD", -10.0, 1000.0, 0)]),
+        "SVM-000000/2099-03": _statement("03", {"AAAA": 10.0}, [
+            _trade("2099-03-05", "YOU BOUGHT", 10.0, -1001.0, 0),
+            _named("2099-03-15", "DIVIDEND RECEIVED", P.SECTION_INCOME,
+                   10.0, 1)])}))
+    assert got[("DIVIDEND RECEIVED", 10.0)] == ("AAAA", None)
+
+
+def test_a_deposit_ledgers_interest_is_never_looked_up(tmp_path, monkeypatch):
+    # The ledger's credits resolve to the brokerage's INTEREST verb, but name
+    # no security.
+    canned = {"Deposit 0000000000/2099-01-31": {
+        "family": D.FAMILY_DEPOSIT,
+        "period_start": "2099-01-01", "period_end": "2099-01-31",
+        "accounts": [{
+            "account_external_id": "0000000000",
+            "holdings": [{"description": D.CASH_DESC, "instrument_key": None,
+                          "quantity": None, "price": None,
+                          "market_value": 100.0}],
+            "activity": [{"date": "2099-01-31", "section": D.SECTION_LEDGER,
+                          "account_type": "", "verb": "INTEREST",
+                          "description": "INTEREST PAID", "quantity": None,
+                          "amount": 1.0, "ordinal": 0}],
+            "activity_totals": {}}]}}
+    bronze = _write_bronze(tmp_path, canned)
+    _patch_parsers(monkeypatch, bronze, canned)
+    db = tmp_path / "svb.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    conn = sqlite3.connect(str(B.silver_paths(db)[D.FAMILY_DEPOSIT]))
+    assert _links_by_verb_and_amount(conn) == {("INTEREST", 1.0): (None, None)}
 
 
 def _trade(date, verb, quantity, amount, ordinal,
@@ -608,13 +789,7 @@ def _statement(month, holdings, activity):
 
 
 def _build_statements(tmp_path, monkeypatch, canned):
-    bronze = _write_bronze(tmp_path, canned, distinct_bytes=True)
-    _patch_parsers(monkeypatch, bronze, canned)
-    db = tmp_path / "svb.db"
-    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
-            cache_dir=None, max_workers=1)
-    conn = sqlite3.connect(str(db))
-    return conn.execute(
+    return _built(tmp_path, monkeypatch, canned).execute(
         "SELECT date(timestamp,'unixepoch'), kind, quantity, amount, "
         "instrument_key FROM transactions ORDER BY timestamp, amount").fetchall()
 
@@ -652,8 +827,8 @@ def test_a_booking_cancelled_a_statement_later_is_left_out_too(
                    ("2099-02-10", "SELL", -10.0, 1200.0, "AAAA")]
     assert any("cancelled trades: 1 booking(s) left out" in r.message
                for r in caplog.records)
-    assert any("instrument links: 2 activity row(s) linked, 0 not" in r.message
-               for r in caplog.records)
+    assert any("instrument links by quantity: 2 row(s) linked, 0 not"
+               in r.message for r in caplog.records)
 
 
 def test_a_cancellation_whose_booking_is_not_in_the_archive_is_kept(

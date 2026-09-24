@@ -1,9 +1,10 @@
-"""Tests for instrument_links — the quantity proof behind a trade's link.
+"""Tests for instrument_links — the quantity proof behind a trade's link,
+and the name pass behind a dividend's.
 
 Every fixture is synthetic: example tickers, round quantities, and
 statement periods in 2099 so no date can coincide with a real one.
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -15,26 +16,39 @@ OTHER = "OTHER EXAMPLE INC COM"
 
 
 def _st(end, *, start=None, holdings=(), moves=(), opens_empty=False,
-        account=ACCOUNT):
-    """One statement. ``holdings=None`` is a statement that lost its table."""
+        account=ACCOUNT, named=()):
+    """One statement. ``holdings=None`` is a statement that lost its table.
+    A named row is ``(ref, name)``, dated mid-period."""
+    end = date.fromisoformat(end)
     return il.Statement(
         account=account,
         start=date.fromisoformat(start) if start else None,
-        end=date.fromisoformat(end),
+        end=end,
         holdings=None if holdings is None else tuple(
             il.Holding(k, n, q) for k, n, q in holdings),
         opens_empty=opens_empty,
-        movements=tuple(il.Movement(*m) for m in moves))
+        movements=tuple(il.Movement(*m) for m in moves),
+        named=tuple(il.Named(r, n, end.replace(day=15)) for r, n in named))
 
 
-def _jan(holdings=(), moves=()):
+def _jan(holdings=(), moves=(), named=()):
     """A January statement that opens empty, as an account's first does."""
     return _st("2099-01-31", start="2099-01-01", holdings=holdings,
-               moves=moves, opens_empty=True)
+               moves=moves, opens_empty=True, named=named)
 
 
-def _feb(holdings=(), moves=(), start="2099-02-01"):
-    return _st("2099-02-28", start=start, holdings=holdings, moves=moves)
+def _feb(holdings=(), moves=(), start="2099-02-01", named=()):
+    return _st("2099-02-28", start=start, holdings=holdings, moves=moves,
+               named=named)
+
+
+def _month(month, holdings=(), moves=(), named=(), contiguous=True):
+    """A 2099 statement of the given month, contiguous with the one before
+    it unless it says otherwise (it then starts a day late)."""
+    last = {2: 28, 4: 30, 6: 30, 9: 30, 11: 30}.get(month, 31)
+    return _st(f"2099-{month:02d}-{last}",
+               start=f"2099-{month:02d}-{'01' if contiguous else '02'}",
+               holdings=holdings, moves=moves, named=named)
 
 
 def test_a_name_and_a_closing_quantity_link():
@@ -251,3 +265,326 @@ def test_fractional_quantities_close_exactly(quantities):
                           moves=[("a", "EXAMPLE INDEX ETF", a),
                                  ("b", "EXAMPLE INDEX ETF", b)])])
     assert links.keys == {"a": "BBBB", "b": "BBBB"}
+
+
+# ---- the name pass ---------------------------------------------------------
+
+CLASS_A = "EXAMPLE COMPANY CL A"
+CLASS_B = "EXAMPLE COMPANY CL B"
+ISSUER = "EXAMPLE COMPANY"
+
+
+def _day(iso):
+    return date.fromisoformat(iso)
+
+
+@pytest.mark.parametrize("printed", [
+    EXAMPLE,                       # the holding's own name
+    "EXAMPLE COMP",                # cut at the line width
+    "EXAM PLE COMPANY CL A",       # kerned
+    "EXAMPLE COMPANY CL A COM USD0.01",  # longer than the holding's
+])
+def test_a_dividend_links_to_the_one_holding_its_name_fits(printed):
+    links = il.link([_jan(holdings=[("AAAA", EXAMPLE, 10)],
+                          named=[("div", printed)])])
+    assert links.keys == {"div": "AAAA"}
+    assert links.named == {"div"}
+
+
+def test_a_name_too_short_to_be_a_prefix_finds_no_holding():
+    links = il.link([_jan(holdings=[("AAAA", "EXAMPLE CO", 10)],
+                          named=[("div", "EXA")])])
+    assert links.unlinked == {"div": (il.NO_CANDIDATE, "EXA")}
+
+
+def test_a_security_sold_inside_the_period_is_found_at_its_opening():
+    links = il.link([
+        _jan(holdings=[("AAAA", EXAMPLE, 10)]),
+        _feb(holdings=[], named=[("div", EXAMPLE)])])
+    assert links.keys == {"div": "AAAA"}
+
+
+def test_two_holdings_the_name_fits_leave_dividend_and_withholding_alike():
+    links = il.link([_jan(
+        holdings=[("AAAA", CLASS_A, 10), ("BBBB", CLASS_B, 10)],
+        named=[("div", ISSUER), ("tax", ISSUER)])])
+    assert links.keys == {}
+    assert links.unlinked == {"div": (il.SEVERAL_FIT, "EXAMPLECOMPANY"),
+                              "tax": (il.SEVERAL_FIT, "EXAMPLECOMPANY")}
+
+
+def test_a_withholding_cut_shorter_lands_on_its_dividends_key():
+    links = il.link([_jan(holdings=[("AAAA", CLASS_A, 10)],
+                          named=[("div", CLASS_A),
+                                 ("tax", "EXAMPLE COMPANY CL")])])
+    assert links.keys == {"div": "AAAA", "tax": "AAAA"}
+
+
+def test_a_key_once_held_beside_a_fitting_sibling_is_refused():
+    # Class B left the account in February; a March dividend printed under
+    # the issuer's name alone could be its late payment as well as class A's.
+    links = il.link([
+        _month(1, holdings=[("AAAA", CLASS_A, 10), ("BBBB", CLASS_B, 10)]),
+        _month(2, holdings=[("AAAA", CLASS_A, 10)]),
+        _month(3, holdings=[("AAAA", CLASS_A, 10)], named=[("div", ISSUER)])])
+    assert links.unlinked == {"div": (il.SIBLING_HELD, "EXAMPLECOMPANY")}
+
+
+def test_a_fitting_key_held_only_in_another_era_is_no_sibling():
+    # A ticker change: never held at the same statement end as the key the
+    # window holds, so it cannot be the dividend's source.
+    links = il.link([
+        _month(1, holdings=[("BBBB", ISSUER, 10)]),
+        _month(2, holdings=[]),
+        _month(3, holdings=[("AAAA", ISSUER, 10)]),
+        _month(4, holdings=[("AAAA", ISSUER, 10)], named=[("div", ISSUER)])])
+    assert links.keys == {"div": "AAAA"}
+
+
+def _bought_and_sold(key="AAAA", sale=_day("2099-02-10")):
+    """``key`` bought in January and sold on ``sale`` in February under
+    EXAMPLE's name, both proved."""
+    return [
+        _jan(holdings=[(key, EXAMPLE, 10)],
+             moves=[("buy", EXAMPLE, 10, None, None, _day("2099-01-05"))]),
+        _feb(holdings=[], moves=[("sell", EXAMPLE, -10, None, None, sale)])]
+
+
+def test_a_dividend_paid_after_the_sale_finds_the_proven_trades_key():
+    links = il.link([*_bought_and_sold(),
+                     _month(3, holdings=[], named=[("div", EXAMPLE)])])
+    assert links.keys == {"buy": "AAAA", "sell": "AAAA", "div": "AAAA"}
+
+
+def test_a_proven_trade_past_the_pay_lag_does_not_decide():
+    links = il.link([*_bought_and_sold(),
+                     _month(12, holdings=[], named=[("div", EXAMPLE)],
+                            contiguous=False)])
+    assert links.unlinked == {"div": (il.TOO_OLD, "EXAMPLECOMPANYCLA")}
+
+
+def test_two_proven_keys_the_name_fits_decide_nothing():
+    links = il.link([
+        _jan(holdings=[("AAAA", CLASS_A, 10), ("BBBB", CLASS_B, 10)],
+             moves=[("a", CLASS_A, 10, None, None, _day("2099-01-05")),
+                    ("b", CLASS_B, 10, None, None, _day("2099-01-05"))]),
+        _feb(holdings=[],
+             moves=[("sa", CLASS_A, -10, None, None, _day("2099-02-10")),
+                    ("sb", CLASS_B, -10, None, None, _day("2099-02-10"))]),
+        _month(3, holdings=[], named=[("div", ISSUER)])])
+    assert links.unlinked["div"] == (il.SEVERAL_FIT, "EXAMPLECOMPANY")
+
+
+def test_proven_trades_that_moved_only_another_key_contradict_the_holding():
+    # One security under a CUSIP until February and a ticker from March,
+    # the ticker never traded: the statements disagree with themselves.
+    links = il.link([
+        *_bought_and_sold("000000AA0"),
+        _month(3, holdings=[("AAAA", EXAMPLE, 10)], named=[("div", EXAMPLE)])])
+    assert links.unlinked["div"] == (il.NAMES_CONTRADICT, "EXAMPLECOMPANYCLA")
+
+
+def test_a_held_key_among_the_proven_ones_links_through_a_rename():
+    links = il.link([
+        *_bought_and_sold("000000AA0"),
+        _month(3, holdings=[("AAAA", EXAMPLE, 10)],
+               moves=[("rebuy", EXAMPLE, 10, None, None, _day("2099-03-05"))],
+               named=[("div", EXAMPLE)])])
+    assert links.keys["rebuy"] == "AAAA"
+    assert links.keys["div"] == "AAAA"
+
+
+def test_one_name_under_two_keys_in_two_eras_links_each_to_its_own():
+    links = il.link([
+        _jan(holdings=[("AAAA", EXAMPLE, 10)], named=[("jan", EXAMPLE)]),
+        _month(7, holdings=[("BBBB", EXAMPLE, 10)], named=[("jul", EXAMPLE)],
+               contiguous=False)])
+    assert links.keys == {"jan": "AAAA", "jul": "BBBB"}
+
+
+def test_either_known_end_of_a_window_is_enough():
+    unknown_opening = _month(3, holdings=[("AAAA", EXAMPLE, 10)],
+                             named=[("mar", EXAMPLE)], contiguous=False)
+    lost_closing = [_jan(holdings=[("AAAA", EXAMPLE, 10)]),
+                    _feb(holdings=None, named=[("feb", EXAMPLE)])]
+    links = il.link([unknown_opening, *lost_closing])
+    assert links.keys == {"mar": "AAAA", "feb": "AAAA"}
+
+
+def test_a_window_with_neither_end_known_and_no_proven_trade_finds_nothing():
+    links = il.link([_st("2099-03-31", holdings=None,
+                         named=[("div", EXAMPLE)])])
+    assert links.unlinked == {"div": (il.NO_CANDIDATE, "EXAMPLECOMPANYCLA")}
+
+
+def test_a_statement_filed_twice_keeps_the_first_copys_named_outcomes():
+    # Its second copy has no contiguous predecessor, so its window is the
+    # closing alone — narrower, and without the key that made it ambiguous.
+    feb = _feb(holdings=[("AAAA", CLASS_A, 10)], named=[("div", ISSUER)])
+    links = il.link([_jan(holdings=[("BBBB", CLASS_B, 10)]), feb, feb])
+    assert links.keys == {}
+    assert links.unlinked == {"div": (il.SEVERAL_FIT, "EXAMPLECOMPANY")}
+
+
+def test_named_rows_leave_the_proof_alone():
+    statements = [
+        _jan(holdings=[("AAAA", EXAMPLE, 100)],
+             moves=[("open", EXAMPLE, 100)]),
+        _feb(holdings=[("AAAA", EXAMPLE, 125)],
+             moves=[("in", EXAMPLE, 10), ("out", EXAMPLE, -10),
+                    ("add", EXAMPLE, 25)])]
+    alone = il.link(statements)
+    beside = il.link([statements[0],
+                      _feb(holdings=[("AAAA", EXAMPLE, 125)],
+                           moves=[("in", EXAMPLE, 10), ("out", EXAMPLE, -10),
+                                  ("add", EXAMPLE, 25)],
+                           named=[("div", EXAMPLE)])])
+    assert {k: v for k, v in beside.keys.items() if k != "div"} == alone.keys
+    assert beside.unlinked == alone.unlinked
+    assert beside.keys["div"] == "AAAA"
+
+
+def test_the_money_fund_is_a_holding_like_any_other():
+    fund = "EXAMPLE GOVERNMENT MONEY MARKET"
+    links = il.link([_jan(
+        holdings=[("XXXXX", fund, 1000), ("AAAA", EXAMPLE, 1)],
+        named=[("div", fund)])])
+    assert links.keys == {"div": "XXXXX"}
+
+
+def test_the_census_reads_each_pass_apart():
+    links = il.link([_jan(
+        holdings=[("AAAA", EXAMPLE, 10)],
+        moves=[("buy", EXAMPLE, 10), ("rt", OTHER, 5), ("rt2", OTHER, -5)],
+        named=[("div", EXAMPLE), ("odd", OTHER)])])
+    assert (links.linked(), links.linked(named=True)) == (1, 1)
+    assert links.census() == {il.NO_CANDIDATE: 2}
+    assert links.census(named=True) == {il.NO_CANDIDATE: 1}
+
+
+def test_a_withholding_cut_shorter_is_judged_on_its_own():
+    # Cut to the class boundary, it fits both classes the dividend's full
+    # name tells apart, so it is refused where the dividend links.
+    links = il.link([_jan(
+        holdings=[("AAAA", CLASS_A, 10), ("BBBB", CLASS_B, 10)],
+        named=[("div", CLASS_A), ("tax", "EXAMPLE COMPANY CL")])])
+    assert links.keys == {"div": "AAAA"}
+    assert links.unlinked == {"tax": (il.SEVERAL_FIT, "EXAMPLECOMPANYCL")}
+
+
+def test_a_sibling_counts_only_under_a_name_it_held_beside_the_key():
+    # Class B stood beside class A only under its own class's name; the
+    # issuer's bare name it carried later, alone, makes it no sibling.
+    links = il.link([
+        _month(1, holdings=[("AAAA", CLASS_A, 10), ("BBBB", CLASS_B, 10)]),
+        _month(2, holdings=[("BBBB", ISSUER, 10)]),
+        _month(4, holdings=[("AAAA", CLASS_A, 10)], named=[("div", CLASS_A)],
+               contiguous=False)])
+    assert links.keys == {"div": "AAAA"}
+
+
+def test_a_proven_key_once_held_beside_a_fitting_sibling_is_refused():
+    links = il.link([
+        _jan(holdings=[("AAAA", CLASS_A, 10), ("BBBB", CLASS_B, 10)],
+             moves=[("a", CLASS_A, 10, None, None, _day("2099-01-05")),
+                    ("b", CLASS_B, 10, None, None, _day("2099-01-05"))]),
+        _feb(holdings=[("AAAA", CLASS_A, 10)],
+             moves=[("sb", CLASS_B, -10, None, None, _day("2099-02-10"))]),
+        _month(9, holdings=[("AAAA", CLASS_A, 10)], contiguous=False),
+        _month(10, holdings=[],
+               moves=[("sa", CLASS_A, -10, None, None, _day("2099-10-10"))]),
+        _month(11, holdings=[], named=[("div", ISSUER)])])
+    assert links.keys["sa"] == "AAAA"
+    assert links.unlinked == {"div": (il.SIBLING_HELD, "EXAMPLECOMPANY")}
+
+
+def test_a_sibling_found_under_any_name_it_carried_beside_the_key():
+    # Renamed at the second end, class B still stood beside class A under
+    # a fitting name at the first.
+    links = il.link([
+        _month(1, holdings=[("AAAA", CLASS_A, 10), ("BBBB", CLASS_B, 10)]),
+        _month(2, holdings=[("AAAA", CLASS_A, 10),
+                            ("BBBB", "RENAMED HOLDING", 10)]),
+        _month(3, holdings=[("AAAA", CLASS_A, 10)]),
+        _month(4, holdings=[("AAAA", CLASS_A, 10)], named=[("div", ISSUER)])])
+    assert links.unlinked == {"div": (il.SIBLING_HELD, "EXAMPLECOMPANY")}
+
+
+def test_a_key_is_found_under_any_name_either_end_prints():
+    links = il.link([
+        _jan(holdings=[("AAAA", EXAMPLE, 10)]),
+        _feb(holdings=[("AAAA", "RENAMED EXAMPLE HOLDING", 10)],
+             named=[("div", EXAMPLE)])])
+    assert links.keys == {"div": "AAAA"}
+
+
+def test_a_key_first_seen_after_the_dividend_does_not_decide_it():
+    # Evidence that postdates the row is no pay lag, and not "too old"
+    # either: nothing was ever seen before it.
+    links = il.link([
+        _jan(holdings=[], named=[("div", EXAMPLE)]),
+        _month(2, holdings=[]),
+        _month(3, holdings=[("AAAA", EXAMPLE, 10)],
+               moves=[("buy", EXAMPLE, 10, None, None, _day("2099-03-05"))])])
+    assert links.keys == {"buy": "AAAA"}
+    assert links.unlinked == {"div": (il.NO_CANDIDATE, "EXAMPLECOMPANYCLA")}
+
+
+def test_proven_trades_past_the_pay_lag_do_not_contradict_the_holding():
+    links = il.link([
+        *_bought_and_sold("BBBB"),
+        _month(12, holdings=[("AAAA", EXAMPLE, 10)], named=[("div", EXAMPLE)],
+               contiguous=False)])
+    assert links.keys["div"] == "AAAA"
+
+
+def test_a_holding_at_a_statement_end_dates_the_proven_key():
+    # Proved in January, then held at July's end with no proven exit: July
+    # is what puts the key within the pay lag of a September dividend.
+    links = il.link([
+        _jan(holdings=[("AAAA", EXAMPLE, 10)],
+             moves=[("buy", EXAMPLE, 10, None, None, _day("2099-01-05"))]),
+        _month(7, holdings=[("AAAA", EXAMPLE, 10)], contiguous=False),
+        _month(9, holdings=[], named=[("div", EXAMPLE)], contiguous=False)])
+    assert links.keys["div"] == "AAAA"
+
+
+@pytest.mark.parametrize("lag, linked", [(183, True), (184, False)])
+def test_the_pay_lag_is_a_half_year(lag, linked):
+    sale = _day("2099-02-10")
+    paid = sale + timedelta(days=lag)
+    links = il.link([
+        *_bought_and_sold(sale=sale),
+        il.Statement(account=ACCOUNT, start=None, end=paid + timedelta(days=5),
+                     holdings=(), opens_empty=False, movements=(),
+                     named=(il.Named("div", EXAMPLE, paid),))])
+    assert ("div" in links.keys) is linked
+    if not linked:
+        assert links.unlinked["div"][0] == il.TOO_OLD
+
+
+def test_neither_end_known_leaves_the_proven_trades_to_decide():
+    links = il.link([
+        *_bought_and_sold(),
+        _st("2099-04-30", start="2099-04-02", holdings=None,
+            named=[("div", EXAMPLE)])])
+    assert links.keys["div"] == "AAAA"
+
+
+def test_a_trade_proven_in_a_later_window_names_an_earlier_dividends_key():
+    links = il.link([
+        _jan(holdings=[("AAAA", EXAMPLE, 10)]),
+        _month(2, holdings=[], named=[("div", EXAMPLE)], contiguous=False),
+        _st("2099-04-30", start="2099-04-01", opens_empty=True,
+            holdings=[("AAAA", EXAMPLE, 10)],
+            moves=[("buy", EXAMPLE, 10, None, None, _day("2099-04-05"))])])
+    assert links.keys == {"buy": "AAAA", "div": "AAAA"}
+
+
+def test_a_statement_filed_twice_keeps_a_named_link_its_first_copy_made():
+    # The first copy opens on January's holdings; the second, with no
+    # contiguous predecessor, sees an empty closing alone.
+    feb = _feb(holdings=[], named=[("div", EXAMPLE)])
+    links = il.link([_jan(holdings=[("AAAA", EXAMPLE, 10)]), feb, feb])
+    assert links.keys == {"div": "AAAA"}
+    assert links.unlinked == {}

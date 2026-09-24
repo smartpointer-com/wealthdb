@@ -80,7 +80,7 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			tx.InstrumentExternalID = &s
 		} else {
 			// Stated, never derived: only a row whose builder tried and
-			// failed to prove its instrument carries one, and a
+			// failed to settle its instrument carries one, and a
 			// `transaction_instruments` entry closes it by that token.
 			tx.InstrumentHint = strings.TrimSpace(p.InstrumentHint)
 		}

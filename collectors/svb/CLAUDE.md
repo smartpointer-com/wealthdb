@@ -100,12 +100,18 @@ disambiguation, and the Activity sign conventions are all load-bearing — see
 [DESIGN.md](DESIGN.md). Changing any of them shifts the gold history; do it
 deliberately, with the tests updated.
 
-So is the instrument-link proof. A row is linked to a holding only when the
-statements' quantities force it; a name only proposes the candidates. Never
-relax that to a name match to recover coverage: a plausible wrong link moves
-money between asset classes in every report, and an unlinked row is at least
-visibly untracked. Nor may a link change what a row already is — its activity
-id, description and amount are what gold's pins and categorisation key on.
+So is the instrument-link proof. A row that moves a quantity is linked to a
+holding only when the statements' quantities force it; a name only proposes
+the candidates. Never relax that to a name match to recover coverage: a
+plausible wrong trade link moves money between asset classes in every report,
+and an unlinked row is at least visibly untracked. The name pass for
+dividends, withholding and interest is the one place a name decides, and only
+because such a link moves no amount, section or class. Its guards — one
+answer only, the sibling veto, the proven trades' veto, the half-year horizon
+([DESIGN.md](DESIGN.md)) — must not loosen to "the closest name" or a longer
+horizon, and the pass must never reach a row that moves a quantity. Nor may a
+link change what a row already is — its activity id, description and amount
+are what gold's pins and categorisation key on.
 
 The cancelled-booking pairing is as strict: a cancellation takes a booking out
 of silver with it only for exactly the opposite quantity and amount, under the

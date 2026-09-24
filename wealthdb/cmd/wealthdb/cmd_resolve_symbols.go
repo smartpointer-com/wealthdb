@@ -413,12 +413,19 @@ func printResolutionPlan(w io.Writer, heading string, rows []resolution) {
 //
 //  1. by-id: every instruments row with name set but symbol NULL,
 //     keyed by instrument_external_id (typically an ISIN for UBS or
-//     CUSIP for Schwab). The LLM gets the name as a hint.
+//     CUSIP for Schwab). The LLM gets the name as a hint. A cash-class
+//     instrument is not asked about: a money fund or a statement's cash
+//     line has no ticker worth guessing, and an answer would print on
+//     the cash line of every positions report.
 //
 //  2. by-name: every transaction with no instrument_external_id but
 //     a non-null description (Schwab DIVIDEND_OR_INTEREST payloads
 //     where transferItems only has the cash leg; UBS PSN cash_movement
-//     rows that didn't extract an ISIN). Deduped by description.
+//     rows that didn't extract an ISIN). Deduped by description. A row
+//     carrying an instrument_hint is not asked about: its adapter
+//     already looked its instrument up and failed, and the row is a
+//     transaction_instruments entry's to close by that token rather
+//     than a model's to name.
 //
 // Currency tags both — Schwab tickets are mostly USD, European ETFs
 // USD/EUR/CHF; the model uses this to bias listing choice.
@@ -430,6 +437,7 @@ SELECT silver_source_id, instrument_external_id, name, currency
   FROM instruments
  WHERE symbol IS NULL
    AND name   IS NOT NULL
+   AND asset_class <> 'cash'
  ORDER BY silver_source_id, instrument_external_id`
 	rows, err := db.QueryContext(ctx, byIDQ)
 	if err != nil {
@@ -452,25 +460,25 @@ SELECT silver_source_id, instrument_external_id, name, currency
 		return nil, err
 	}
 
-	// by-name: transactions with no instrument link but a
-	// description. DISTINCT (silver_source_id, description) so we
-	// query once per unique label rather than once per dividend
-	// payment. The currency MIN keeps the most common one when a
-	// description spans accounts/currencies (very rare in practice).
+	// by-name: one row per (silver_source_id, description), so each
+	// unique label is asked about once rather than once per dividend
+	// payment. MIN(currency) picks one currency where a description
+	// spans several accounts or currencies (very rare in practice).
 	//
-	// Filter on instrument-related kinds only. Cash-only kinds
-	// (deposit, withdrawal, fee, tax, fx_*, journal, other) don't
-	// name a security — emitting them just bloats the prompt and
-	// increases hallucination surface area. The LLM would skip
-	// them anyway per the prompt instructions, but filtering at
-	// SQL is cheaper and more honest. NB: Schwab's adapter buckets
-	// cash-interest as 'dividend' (known gap), so 'dividend' here
-	// still includes some non-security rows — we lean on the LLM
-	// to skip those.
+	// Filter on instrument-related kinds only. The cash kinds
+	// (deposit, withdrawal, fee, tax, fx_*, journal, other) seldom
+	// name a security (a withholding or an ADR fee does), and
+	// emitting them just bloats the prompt and increases
+	// hallucination surface area. The LLM would skip them anyway per
+	// the prompt instructions, but filtering at SQL is cheaper and
+	// more honest. NB: Schwab's adapter buckets cash-interest as
+	// 'dividend' (known gap), so 'dividend' here still includes some
+	// non-security rows, which the prompt leaves the model to skip.
 	const byNameQ = `
 SELECT silver_source_id, description, MIN(currency) AS currency
   FROM transactions
  WHERE instrument_external_id IS NULL
+   AND instrument_hint IS NULL
    AND description IS NOT NULL
    AND kind IN ('dividend', 'interest', 'coupon', 'capital_gain',
                 'buy', 'sell', 'corporate_action',
@@ -1190,12 +1198,14 @@ Back-fill missing instrument ticker symbols by consulting the LLM
 configured in wealthdb.cfg's "symbol_resolution.model" block.
 Reads candidates from:
 
-  - instruments rows where symbol IS NULL but name IS NOT NULL
-    (typical: European-listed ETFs whose descriptions don't
-    carry a ticker, keyed by ISIN);
-  - transactions rows with no instrument_external_id but a
-    free-text description (typical: Schwab DIVIDEND_OR_INTEREST
-    payloads whose transferItems only have the cash leg).
+  - instruments rows where symbol IS NULL but name IS NOT NULL,
+    other than cash-class ones (typical: European-listed ETFs
+    whose descriptions don't carry a ticker, keyed by ISIN);
+  - transactions rows with no instrument_external_id and no
+    instrument_hint but a free-text description (typical: Schwab
+    DIVIDEND_OR_INTEREST payloads whose transferItems only have
+    the cash leg). A row with a hint is one its adapter looked up
+    and failed on; a transaction_instruments entry closes it.
 
 The candidates are asked about in batches of --batch, one model call
 each, and each batch's answers are stored as it completes, so a batch

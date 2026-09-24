@@ -156,7 +156,7 @@ type txPayload struct {
 	Action      string `json:"Action"`
 	Description string `json:"Description"`
 	// InstrumentHint is what a statement builder looked the row's
-	// instrument up by when its statements could not prove one (svb:
+	// instrument up by when its statements could not settle one (svb:
 	// collectors/svb/DESIGN.md). The export's rows never carry it.
 	InstrumentHint string `json:"InstrumentHint"`
 }

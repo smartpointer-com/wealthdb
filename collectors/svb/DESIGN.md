@@ -14,7 +14,7 @@ PDFs, not scraped on a schedule.
 | `pdf_parsers_svbwa.py` | Parser for the **SVB Wealth Advisory / NFS** statement family (a different statement layout from the supplied statements, whose parser is `fidelity-web/pdf_parsers_supplied.py` in the fidelity-web collector). Equity/ETP/fund, fixed-income (inline CUSIP), and **options** rows — with parens→negative for short legs — plus the no-positions/$0 closing form, the stated beginning value, and the Activity region, where an option leg's contract line rebuilds its OCC code. |
 | `statement_tokens.py` | How this bank writes a number and a date, shared by both parsers: parentheses mean negative, a two-digit year pivots the conventional way, and a separator may come through as a colon or a dot where OCR read a hyphen. The parsers each keep the SHAPE their own layout accepts; this is only what a token MEANS once one is found. |
 | `derived_marks.py` | Reads the advisor's performance workbook, which carries a month-end value per BROKERAGE account for the months no statement covers — its sheets are keyed by the `SV[MRT]-NNNNNN` serial, and only the brokerage silver DB is passed to it, so the deposit and mortgage families are out of its reach. Used only to fill an INTERIOR gap, never to extend a series, and every row it produces is marked at row level so a statement that later joins the archive takes its month back. |
-| `instrument_links.py` | Links each activity row that moves a position to the holding the statements' arithmetic proves it moved (see *Modelling decisions*). Pure functions, imported by neither parser, so it is outside the parse cache's fingerprint. |
+| `instrument_links.py` | Links each activity row that moves a position to the holding the statements' arithmetic proves it moved, and each dividend-like row, which names a security without moving it, to the one holding the account's statements leave its name to (see *Modelling decisions*). Pure functions, imported by neither parser, so it is outside the parse cache's fingerprint. |
 | `load.py` | Standalone host builder: discovers the bronze PDFs recursively, routes each to a parser by the document family its own text declares, and writes one silver DB per family (`svb.db`, `svb-deposit.db`, `svb-mortgage.db`) in the **fidelity-web silver schema** — holdings plus the statements' Activity rows as `transactions`, linked to their instruments — synthesising account/portfolio masters. Host venv, no docker: stdlib `sqlite3`, `collectorkit` (`cli`/`silver`/`srcfp`, and `pdf` for the OCR pass), and the two extraction stacks pinned in `requirements.txt`. |
 | `migrations/*.sql` | Copies of the fidelity-web silver schema migrations. fidelity-web is at 0008; svb copies 0001–0004 and deliberately stops there: 0005 (activity-id rehash) and 0006 (529 `management_style`) are data-only UPDATEs against rows svb does not have, 0007 only WIDENS the `portfolios.kind` CHECK to admit a value this build never writes (it writes the neutral `other`), and 0008 creates `parser_generations`, which only `collectorkit.silver` writes — this stdlib loader never imports it — and which the Fidelity gold adapter never reads. These DBs are read by that adapter (`kind: "fidelity"`), so any fidelity-web migration that changes a shape svb WRITES or the adapter READS must be copied here — keep those in lockstep with `collectors/fidelity-web/migrations/`. |
 
@@ -129,15 +129,42 @@ they default cleanly and the overrides set the precise values.
   - Every booked row that moves a quantity is in the equation: trades,
     reinvestments, redemptions, corporate actions, in-kind transfers. The
     core-fund sweeps are left out; they move the account's cash in and out of
-    its money fund and name no investment. Dividends, withholding and interest
-    move no quantity, so there is nothing to prove a link with and they stay
-    unlinked.
+    its money fund and name no investment. A row that moves no quantity is
+    linked by name instead (*A dividend carries the instrument its name
+    leaves one answer for*, below).
   - A row the arithmetic cannot settle keeps no key and states the name it
     was looked up by, whitespace removed, as `InstrumentHint` (an option leg,
     its OCC code). Gold stores that as `instrument_hint`, and a
-    `transaction_instruments` entry for the source closes the row. Its
-    narrative stays what `wealthdb resolve-symbols` looks a row with no
-    instrument up by.
+    `transaction_instruments` entry for the source closes the row.
+- **A dividend carries the instrument its name leaves one answer for.** A
+  dividend, its withholding, interest, a return of capital and cash in lieu of
+  a fraction name a security and move none of it, so no arithmetic can prove
+  their link, and the name decides — within the account's own statements, and
+  only where they leave one answer: one key held under a fitting name at a
+  known end of the row's window or, with none held, one key the proven trades
+  under a fitting name moved among those the account showed within the
+  half-year before the row, which is how a dividend paid after the sale finds
+  its security. Either way a key once held beside a fitting sibling (a second
+  share class, a second bond of the issuer) is refused, as is a held key the
+  recent proven trades contradict. A withholding is judged on its own name,
+  never paired with its dividend. `instrument_links.py` states the rule
+  exactly.
+  - The standard is weaker than a trade's, and acceptable only because of what
+    the link does. Gold places these rows by their kind, so a dividend's
+    instrument names where the income came from — the income report's payer,
+    the transactions report's symbol and class — and moves no amount, cash-flow
+    section or asset class. A trade's link moves money between asset classes,
+    which is why a trade is never linked by name.
+  - A row is looked up when its verb names a security and it prints in the
+    income, taxes-and-fees or corporate-actions section. A row the name cannot
+    settle states it as `InstrumentHint`, exactly as an unproved trade does.
+    Every other row is never looked up and carries neither: a transfer, a
+    wire, a journal, the account's own fees, margin interest, and `FEE PAID`,
+    which names the account for its own charges and a security only for an
+    ADR's pass-through fee. So does the deposit ledger's interest, which shares
+    the brokerage verb but prints in the ledger and names no security, and
+    every row of a statement whose period could not be read, which has no
+    window to look in.
 - **A cancelled booking never happened.** The broker corrects a booking by
   cancelling it — a `CANCELLED BUY` / `CANCELLED SELL` row printed in the
   reversed direction, sometimes a statement later — and booking the fill again.

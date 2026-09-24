@@ -587,11 +587,12 @@ func TestNarrativePrefersTheActionOverTheSecurity(t *testing.T) {
 }
 
 // TestInstrumentHintIsStatedNeverDerived pins where a transaction's
-// instrument_hint comes from: the payload key a statement builder
-// writes when its statements could not prove the instrument, and only
-// on a row that has none. A keyless export row names its security in
-// Description, and that is NOT promoted to a hint — the live source's
-// output must not change because another source shares its adapter.
+// instrument and instrument_hint come from, whatever the row's kind:
+// the row's instrument_key when it has one, else the payload key a
+// statement builder writes when its statements could not settle the
+// instrument. A keyless export row names its security in Description,
+// and that is NOT promoted to a hint — the live source's output must
+// not change because another source shares its adapter.
 func TestInstrumentHintIsStatedNeverDerived(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
@@ -602,7 +603,11 @@ func TestInstrumentHintIsStatedNeverDerived(t *testing.T) {
             ('linked', 910, 'ACC1', 'BUY', 'AAAA', 'USD', 5, NULL, -500.00,
              '{"Action":"YOU BOUGHT EXAMPLE CO","InstrumentHint":"EXAMPLECO"}'),
             ('export', 920, 'ACC1', 'SELL', NULL, 'USD', -5, 100.00, 500.00,
-             '{"Action":"YOU SOLD EXAMPLE CO","Description":"EXAMPLE CO","Symbol":""}');
+             '{"Action":"YOU SOLD EXAMPLE CO","Description":"EXAMPLE CO","Symbol":""}'),
+            ('div', 930, 'ACC1', 'DIVIDEND', 'AAAA', 'USD', NULL, NULL, 10.00,
+             '{"Action":"DIVIDEND RECEIVED EXAMPLE CO","Description":"EXAMPLE CO"}'),
+            ('tax', 940, 'ACC1', 'TAX', NULL, 'USD', NULL, NULL, -3.00,
+             '{"Action":"NON-RESIDENT TAX OTHER CO","Description":"OTHER CO","InstrumentHint":"OTHERCO"}');
     `); err != nil {
 		t.Fatal(err)
 	}
@@ -611,14 +616,22 @@ func TestInstrumentHintIsStatedNeverDerived(t *testing.T) {
 	stream, _ := conn.Transactions(context.Background(), w)
 	defer stream.Close()
 	batch, _, _ := stream.Next(context.Background())
-	hints := map[string]string{}
+	type link struct{ instrument, hint string }
+	got := map[string]link{}
 	for _, x := range batch.Transactions {
-		hints[x.TransactionExternalID] = x.InstrumentHint
+		l := link{hint: x.InstrumentHint}
+		if x.InstrumentExternalID != nil {
+			l.instrument = *x.InstrumentExternalID
+		}
+		got[x.TransactionExternalID] = l
 	}
-	want := map[string]string{"stated": "EXAMPLECO", "linked": "", "export": ""}
-	for id, h := range want {
-		if hints[id] != h {
-			t.Errorf("%s: instrument_hint = %q, want %q", id, hints[id], h)
+	want := map[string]link{
+		"stated": {hint: "EXAMPLECO"}, "linked": {instrument: "AAAA"}, "export": {},
+		"div": {instrument: "AAAA"}, "tax": {hint: "OTHERCO"},
+	}
+	for id, l := range want {
+		if got[id] != l {
+			t.Errorf("%s: got %+v, want %+v", id, got[id], l)
 		}
 	}
 }

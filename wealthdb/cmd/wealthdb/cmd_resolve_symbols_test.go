@@ -544,3 +544,47 @@ func TestCollectAnchorsSkipsIdentifierSymbols(t *testing.T) {
 		t.Errorf("anchors = %+v, want only the ticker AAAA", anchors)
 	}
 }
+
+// TestCollectCandidatesSkipsHintedRowsAndCash: a transaction whose
+// adapter looked its instrument up and failed carries the token it
+// failed on, and is config's to close by that token, not a model's to
+// name; a cash-class instrument has no ticker worth guessing. Everything
+// else stays a candidate.
+func TestCollectCandidatesSkipsHintedRowsAndCash(t *testing.T) {
+	_, goldPath := resolveSymbolsFixture(t, "http://unused", 0, nil)
+	db, err := sql.Open("duckdb", goldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, row := range [][2]string{{"EX00000001", "public_equity"}, {"EX00000002", "cash"}} {
+		if _, err := db.Exec(`INSERT INTO instruments (silver_source_id, instrument_external_id,
+                asset_class, name, first_seen_at, last_seen_at)
+            VALUES ('schwab-test', ?, ?, 'EXAMPLE', 0, 0)`, row[0], row[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, row := range []struct{ description, hint any }{
+		{"DIVIDEND RECEIVED EXAMPLE COMPANY", nil},
+		{"DIVIDEND RECEIVED OTHER EXAMPLE INC", "OTHEREXAMPLEINC"},
+	} {
+		if _, err := db.Exec(`INSERT INTO transactions (silver_source_id, transaction_external_id,
+                occurred_at, account_external_id, kind, currency, net_amount, description, instrument_hint)
+            VALUES ('schwab-test', ?, 0, 'ACCT1', 'dividend', 'USD', 10, ?, ?)`,
+			fmt.Sprintf("T%d", i), row.description, row.hint); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cands, err := collectCandidates(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range cands {
+		got = append(got, c.LookupKind+":"+c.LookupValue)
+	}
+	want := []string{"instrument_external_id:EX00000001", "name:DIVIDEND RECEIVED EXAMPLE COMPANY"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("candidates = %v, want %v", got, want)
+	}
+}
