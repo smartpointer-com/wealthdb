@@ -138,6 +138,20 @@ they default cleanly and the overrides set the precise values.
     `transaction_instruments` entry for the source closes the row. Its
     narrative stays what `wealthdb resolve-symbols` looks a row with no
     instrument up by.
+- **A cancelled booking never happened.** The broker corrects a booking by
+  cancelling it — a `CANCELLED BUY` / `CANCELLED SELL` row printed in the
+  reversed direction, sometimes a statement later — and booking the fill again.
+  The cancellation and the booking it cancels (the latest earlier one of the
+  same trade in the same account, under the same name, for exactly the opposite
+  quantity and amount) both stay out of `transactions`, so the cash flow reads
+  as if the cancelled booking had never been made. Positions are unaffected
+  either way, since they come from the holdings tables, and the reconciliation
+  still counts both rows, since the section totals do. In the instrument links
+  a cancellation moved its booking's instrument: on one statement the two drop
+  out of the proof together, and a statement later it carries the key its
+  booking was proved to, which is what proves the fill booked again. A
+  cancellation whose booking the archive does not hold is booked as printed,
+  source-signed, and reported.
 - **A data row outranks a boilerplate prefix, but not a label.** Holdings rows
   are separated from the surrounding prose by a list of line prefixes, and two
   of those are short enough to match the opening of a security's description

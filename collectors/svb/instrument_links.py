@@ -30,6 +30,12 @@ be another security bought and sold inside the period, and two keys
 with the same change cannot be told apart, so neither is linked. A row
 that states its key cannot go unassigned, but its key must still close.
 
+A **reversal** (a cancelled trade) moved the instrument of the row it
+reverses. Beside that row in one window the two add nothing to any
+key, so both leave the proof. In a later window it states the key an
+earlier window linked its row to, even one the window never held, and
+its printed name becomes a name of that key there.
+
 Everything the proof cannot settle stays unlinked, with the reason and
 the token it was looked up by, for gold's ``instrument_hint``.
 """
@@ -37,7 +43,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 # Why a row stayed unlinked. Census keys and log text, in the order the
@@ -74,11 +80,13 @@ class Holding:
 @dataclass(frozen=True)
 class Movement:
     """One activity row that changed a position. ``ref`` is the caller's
-    identity for the row and comes back in :class:`Links`."""
+    identity for the row and comes back in :class:`Links`; ``reverses`` is
+    the ``ref`` of the row a reversal cancels."""
     ref: object
     name: str
     quantity: float
     stated_key: str | None = None
+    reverses: object = None
 
 
 @dataclass(frozen=True)
@@ -98,7 +106,8 @@ class Statement:
 class Links:
     """The outcome per movement ``ref``: the key it was linked to, or the
     reason it was not and the token it was looked up by — its stated key,
-    else its name as :func:`squash` compares it."""
+    else its name as :func:`squash` compares it. A reversal that left the
+    proof beside the row it reverses has no outcome, nor has that row."""
     keys: dict[object, str] = field(default_factory=dict)
     unlinked: dict[object, tuple[str, str]] = field(default_factory=dict)
 
@@ -151,7 +160,7 @@ def _compatible(row_name: str, held: str) -> bool:
 
 
 def _link_window(st: Statement, opening, links: Links) -> None:
-    moves = st.movements
+    moves, inherited = _without_reversed_pairs(st.movements, links)
     if not moves:
         return
     if opening is None or st.holdings is None:
@@ -161,6 +170,9 @@ def _link_window(st: Statement, opening, links: Links) -> None:
     (open_qty, open_names), (close_qty, close_names) = opening, _positions(st.holdings)
     change = {k: close_qty[k] - open_qty[k] for k in open_qty.keys() | close_qty.keys()}
     names = {k: open_names[k] | close_names[k] for k in change}
+    for m in inherited:
+        change.setdefault(m.stated_key, 0)
+        names.setdefault(m.stated_key, set()).add(squash(m.name))
     cand = []
     for m in moves:
         if m.stated_key is not None:
@@ -185,6 +197,22 @@ def _link_window(st: Statement, opening, links: Links) -> None:
     for i, c in enumerate(cand):
         if not c:
             _unlink(links, moves[i], NO_CANDIDATE)
+
+
+def _without_reversed_pairs(moves, links: Links):
+    """The window's movements as the proof takes them, and the reversals
+    among them that inherited their row's key from an earlier window."""
+    here = {m.ref for m in moves}
+    reversed_here = {m.reverses for m in moves if m.reverses in here}
+    kept, inherited = [], []
+    for m in moves:
+        if m.ref in reversed_here or m.reverses in reversed_here:
+            continue
+        if m.reverses in links.keys:
+            m = replace(m, stated_key=links.keys[m.reverses])
+            inherited.append(m)
+        kept.append(m)
+    return kept, inherited
 
 
 def _unlink(links: Links, m: Movement, reason: str) -> None:

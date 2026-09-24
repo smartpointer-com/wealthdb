@@ -2,6 +2,7 @@
 transactions pass, and its real-zero (never inferred, never terminal) policy.
 The PDF parser is mocked, so no real statements are needed and all data is
 synthetic."""
+import calendar
 import sqlite3
 import sys
 from pathlib import Path
@@ -580,6 +581,94 @@ def test_the_build_reports_its_links(tmp_path, monkeypatch, caplog):
         _linking_archive(tmp_path, monkeypatch)
     assert any("instrument links: 1 activity row(s) linked, 2 not "
                "[no candidate=2]" in r.message for r in caplog.records)
+
+
+def _trade(date, verb, quantity, amount, ordinal,
+           description="EXAMPLE COMPANY CL A"):
+    return _activity_row(date=date, section=P.SECTION_TRADES, verb=verb,
+                         quantity=quantity, description=description,
+                         amount=amount, ordinal=ordinal)
+
+
+def _statement(month, holdings, activity):
+    """A 2099 statement of SVM-000000 that opens where the last one closed."""
+    return {
+        "family": P.FAMILY_BROKERAGE,
+        "period_start": f"2099-{month}-01",
+        "period_end": f"2099-{month}-{calendar.monthrange(2099, int(month))[1]}",
+        "stated_opening": 0.0 if month == "01" else None,
+        "stated_total": sum(q * 100.0 for q in holdings.values()),
+        "accounts": [{
+            "account_external_id": "SVM-000000",
+            "holdings": [{"description": "EXAMPLE COMPANY CL A",
+                          "instrument_key": k, "quantity": q, "price": 100.0,
+                          "market_value": q * 100.0}
+                         for k, q in holdings.items()],
+            "activity": activity, "activity_totals": {}}]}
+
+
+def _build_statements(tmp_path, monkeypatch, canned):
+    bronze = _write_bronze(tmp_path, canned, distinct_bytes=True)
+    _patch_parsers(monkeypatch, bronze, canned)
+    db = tmp_path / "svb.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    conn = sqlite3.connect(str(db))
+    return conn.execute(
+        "SELECT date(timestamp,'unixepoch'), kind, quantity, amount, "
+        "instrument_key FROM transactions ORDER BY timestamp, amount").fetchall()
+
+
+def test_a_corrected_booking_leaves_only_the_fill_booked_again(
+        tmp_path, monkeypatch):
+    # Booked, cancelled and booked again on one statement: the account
+    # bought once, so silver holds one purchase, which the holdings prove.
+    got = _build_statements(tmp_path, monkeypatch, {"SVM-000000/2099-01": _statement(
+        "01", {"AAAA": 10.0}, [
+            _trade("2099-01-05", "YOU BOUGHT", 10.0, -1000.0, 0),
+            _trade("2099-01-05", "CANCELLED BUY", -10.0, 1000.0, 1),
+            _trade("2099-01-05", "YOU BOUGHT", 10.0, -1004.0, 2)])})
+    assert got == [("2099-01-05", "BUY", 10.0, -1004.0, "AAAA")]
+
+
+def test_a_booking_cancelled_a_statement_later_is_left_out_too(
+        tmp_path, monkeypatch, caplog):
+    # Sold in February, cancelled and sold again on March's statement, whose
+    # holdings no longer carry the security.
+    import logging
+
+    canned = {
+        "SVM-000000/2099-01": _statement("01", {"AAAA": 10.0}, [
+            _trade("2099-01-05", "YOU BOUGHT", 10.0, -1000.0, 0)]),
+        "SVM-000000/2099-02": _statement("02", {}, [
+            _trade("2099-02-10", "YOU SOLD", -10.0, 1200.0, 0)]),
+        "SVM-000000/2099-03": _statement("03", {}, [
+            _trade("2099-02-10", "CANCELLED SELL", 10.0, -1200.0, 0),
+            _trade("2099-02-10", "YOU SOLD", -10.0, 1200.0, 1)]),
+    }
+    with caplog.at_level(logging.INFO, logger="svb"):
+        got = _build_statements(tmp_path, monkeypatch, canned)
+    assert got == [("2099-01-05", "BUY", 10.0, -1000.0, "AAAA"),
+                   ("2099-02-10", "SELL", -10.0, 1200.0, "AAAA")]
+    assert any("cancelled trades: 1 booking(s) left out" in r.message
+               for r in caplog.records)
+    assert any("instrument links: 2 activity row(s) linked, 0 not" in r.message
+               for r in caplog.records)
+
+
+def test_a_cancellation_whose_booking_is_not_in_the_archive_is_kept(
+        tmp_path, monkeypatch, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="svb"):
+        got = _build_statements(tmp_path, monkeypatch, {
+            "SVM-000000/2099-01": _statement("01", {}, [
+                _trade("2099-01-05", "CANCELLED SELL", 10.0, -1200.0, 0),
+                # A booking the other way is not the one cancelled.
+                _trade("2099-01-06", "YOU BOUGHT", 10.0, -1200.0, 1),
+                _trade("2099-01-07", "YOU SOLD", -10.0, 1200.0, 2)])})
+    assert [kind for _, kind, *_ in got] == ["ADJUSTMENT", "BUY", "SELL"]
+    assert any("cancels no booking" in r.message for r in caplog.records)
 
 
 def test_undated_and_verbless_rows_are_not_booked(tmp_path, monkeypatch, caplog):

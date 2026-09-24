@@ -192,6 +192,41 @@ def test_a_stated_code_is_linked_though_its_rows_cancel():
     assert set(links.keys) == {"open", "in", "out"}
 
 
+def test_a_reversal_leaves_the_proof_with_the_row_it_reverses():
+    # A booking, its cancellation and the fill booked again: by the
+    # quantities alone either buy could be the one that stands.
+    links = il.link([_jan(
+        holdings=[("AAAA", EXAMPLE, 100)],
+        moves=[("buy", EXAMPLE, 100), ("cancel", EXAMPLE, -100, None, "buy"),
+               ("rebuy", EXAMPLE, 100)])])
+    assert links.keys == {"rebuy": "AAAA"}
+    assert links.unlinked == {}
+
+
+def test_a_later_reversal_carries_its_rows_key_into_a_window_without_it():
+    # Sold in February and held by no statement after; the sale is
+    # cancelled and booked again in March, whose holdings never name it.
+    links = il.link([
+        _jan(holdings=[("AAAA", EXAMPLE, 100)], moves=[("buy", EXAMPLE, 100)]),
+        _feb(holdings=[], moves=[("sell", EXAMPLE, -100)]),
+        _st("2099-03-31", start="2099-03-01", holdings=[],
+            moves=[("cancel", "EXAM PLE COMPANY", 100, None, "sell"),
+                   ("resell", "EXAMPLE COMPANY CL A @ 12.00", -100)])])
+    assert links.keys == {"buy": "AAAA", "sell": "AAAA", "cancel": "AAAA",
+                          "resell": "AAAA"}
+
+
+def test_a_reversal_of_an_unlinked_row_proves_nothing():
+    links = il.link([
+        _st("2099-01-31", start="2099-01-01",
+            holdings=[("AAAA", EXAMPLE, 100)], moves=[("buy", EXAMPLE, 100)]),
+        _feb(holdings=[("AAAA", EXAMPLE, 100)],
+             moves=[("cancel", EXAMPLE, -100, None, "buy"),
+                    ("rebuy", EXAMPLE, 100)])])
+    assert links.keys == {}
+    assert links.unlinked["rebuy"] == (il.NOT_FORCED, "EXAMPLECOMPANYCLA")
+
+
 def test_a_search_over_budget_links_nothing(monkeypatch):
     monkeypatch.setattr(il, "_MAX_NODES", 1)
     links = il.link([_jan(

@@ -107,6 +107,11 @@ money between asset classes in every report, and an unlinked row is at least
 visibly untracked. Nor may a link change what a row already is — its activity
 id, description and amount are what gold's pins and categorisation key on.
 
+The cancelled-booking pairing is as strict: a cancellation takes a booking out
+of silver with it only for exactly the opposite quantity and amount, under the
+same name in the same account. A looser match silently drops a real trade from
+the cash flow.
+
 The signs deserve their own warning. Gold reads a wire's direction off the
 amount's sign alone, so an inverted parse reverses a large transfer instead of
 failing. Two verb families print against intuition — a withholding reversal is a

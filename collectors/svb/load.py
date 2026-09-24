@@ -31,7 +31,8 @@ landing), so the series ends where the statements end.
 
 A trade reaches silver carrying the key of the holding its statements' own
 arithmetic proves it moved (:mod:`instrument_links`); a row the arithmetic
-cannot settle keeps none and states what it was looked up by instead.
+cannot settle keeps none and states what it was looked up by instead. A
+cancelled trade does not reach it at all (:func:`pair_cancellations`).
 
 Runs on the host, not in docker: stdlib sqlite3 plus the extraction stacks and
 workbook reader pinned in requirements.txt. Idempotent and
@@ -55,7 +56,7 @@ import logging
 import os
 import sqlite3
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date, datetime, timezone
 from itertools import repeat
@@ -262,7 +263,8 @@ _KIND_BY_VERB = {
     "REDEEMED": "REDEMPTION",
     # Trade cancellations print in the reversed direction — a cancelled buy is
     # a credit — so they stay source-signed rather than taking BUY/SELL's
-    # pinned one.
+    # pinned one. Only one whose booking the archive does not hold is booked
+    # at all; see pair_cancellations.
     "CANCELLED BUY": "ADJUSTMENT",
     "CANCELLED SELL": "ADJUSTMENT",
     # A brokerage statement's checking sub-section. The number stays in the
@@ -390,9 +392,56 @@ def _activity_ref(sha: str, account: str, row: dict) -> tuple:
     return sha, account, row.get("ordinal")
 
 
-def link_statements(results: list[tuple[str, dict]]) -> instrument_links.Links:
+# The trade kind each cancellation verb reverses.
+_CANCELS = {"CANCELLED BUY": "BUY", "CANCELLED SELL": "SELL"}
+
+
+def pair_cancellations(results: list[tuple[str, dict]]) -> dict[tuple, tuple]:
+    """Map each cancellation's ref to the ref of the booking it cancels.
+
+    The broker corrects a booking by cancelling it and booking the fill again,
+    so the pair is no trade and neither reaches silver: the cash flow reads as
+    if the cancelled booking had never been made. Positions come from the
+    holdings tables and are unaffected, and :func:`reconcile_activity` still
+    counts both rows, as the statement's section totals do.
+
+    The booking cancelled is the latest earlier one of the same trade in the
+    same account under the same name, for exactly the opposite quantity and
+    amount — possibly on an earlier statement. A cancellation that finds none
+    is booked as printed and reported, rather than dropped unexplained."""
+    open_bookings = defaultdict(list)
+    pairs, seen = {}, set()
+    for sha, parsed in sorted(results, key=lambda r: r[1].get("period_end") or ""):
+        for aid, row, kind in booked_activity(parsed):
+            ref = _activity_ref(sha, aid, row)
+            # A byte-identical statement filed twice repeats its refs.
+            if row.get("quantity") is None or ref in seen:
+                continue
+            seen.add(ref)
+            name = instrument_links.squash(row.get("description"))
+            quantity, amount = row["quantity"], row["amount"]
+            reverses = _CANCELS.get(row.get("verb") or "")
+            if reverses is None:
+                open_bookings[aid].append(((kind, name, quantity, amount), ref))
+                continue
+            wanted = (reverses, name, -quantity, -amount)
+            candidates = open_bookings[aid]
+            for pos in range(len(candidates) - 1, -1, -1):
+                if candidates[pos][0] == wanted:
+                    pairs[ref] = candidates.pop(pos)[1]
+                    break
+            else:
+                log.warning("%s %s %s %s cancels no booking the archive holds",
+                            aid, row["date"], row["verb"], name)
+    return pairs
+
+
+def link_statements(results: list[tuple[str, dict]],
+                    cancelled: dict[tuple, tuple]) -> instrument_links.Links:
     """Link each position-moving row to the holding its statements prove it
     moved (see :mod:`instrument_links`), over every parsed statement.
+    ``cancelled`` is :func:`pair_cancellations`'s result: a cancellation
+    moved its booking's instrument, which can prove the booking made again.
 
     A statement opens empty only where it STATES a $0.00 beginning value, the
     real-zero rule applied at the other end of the period."""
@@ -404,11 +453,13 @@ def link_statements(results: list[tuple[str, dict]]) -> instrument_links.Links:
         moves = {}
         for aid, row, kind in booked_activity(parsed):
             if _moves_a_position(row, kind):
+                ref = _activity_ref(sha, aid, row)
                 moves.setdefault(aid, []).append(instrument_links.Movement(
-                    ref=_activity_ref(sha, aid, row),
+                    ref=ref,
                     name=row.get("description") or "",
                     quantity=row["quantity"],
-                    stated_key=row.get("stated_key")))
+                    stated_key=row.get("stated_key"),
+                    reverses=cancelled.get(ref)))
         for acct in parsed.get("accounts", []):
             aid = acct.get("account_external_id")
             if not aid:
@@ -432,8 +483,10 @@ def link_statements(results: list[tuple[str, dict]]) -> instrument_links.Links:
 
 
 def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
-                        links: instrument_links.Links) -> tuple[int, int]:
-    """Insert the statement's settled activity rows. Returns
+                        links: instrument_links.Links,
+                        left_out: set[tuple]) -> tuple[int, int]:
+    """Insert the statement's settled activity rows, except the refs in
+    ``left_out`` — the cancellations and the bookings they cancel. Returns
     ``(inserted, unknown-verb count)``.
 
     `instrument_key` is the holding key ``links`` proved the row moved. The
@@ -458,6 +511,9 @@ def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
         if kind == _UNKNOWN_KIND:
             unknown += 1
             continue
+        ref = _activity_ref(sha, aid, row)
+        if ref in left_out:
+            continue
         verb = row.get("verb") or ""
         description = row.get("description") or ""
         payload = {
@@ -470,7 +526,6 @@ def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
             "Section": row.get("section"),
             "AccountType": row.get("account_type"),
         }
-        ref = _activity_ref(sha, aid, row)
         unlinked = links.unlinked.get(ref)
         if unlinked is not None:
             reason, payload["InstrumentHint"] = unlinked
@@ -833,11 +888,19 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
             conns[family] = sqlite3.connect(str(path))
             silver.own_only(path)
             apply_migrations(conns[family], migrations_dir)
-        # Linked across the whole archive before anything is written: a
-        # window reaches back to the account's previous statement.
-        links = link_statements(
-            [(sha, res) for sha, res in zip(shas, results)
-             if not res.get("_error") and res.get("family") in conns])
+        # Paired and linked across the whole archive before anything is
+        # written: a cancellation, like a window, reaches back to the
+        # account's earlier statements.
+        loaded = [(sha, res) for sha, res in zip(shas, results)
+                  if not res.get("_error") and res.get("family") in conns]
+        cancelled = pair_cancellations(loaded)
+        left_out = set(cancelled) | set(cancelled.values())
+        links = link_statements(loaded, cancelled)
+        for ref in left_out:  # not written, so not counted
+            links.keys.pop(ref, None)
+            links.unlinked.pop(ref, None)
+        log.info("cancelled trades: %d booking(s) left out with their "
+                 "cancellation", len(cancelled))
         log.info("instrument links: %d activity row(s) linked, %d not [%s]",
                  len(links.keys), len(links.unlinked),
                  ", ".join(f"{k}={v}" for k, v in sorted(links.census().items())))
@@ -859,7 +922,7 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
                 census["unreadable-section"] += 1
             n = insert_statement(conn, res, sha)
             holdings += n
-            t, u = insert_transactions(conn, res, sha, links)
+            t, u = insert_transactions(conn, res, sha, links, left_out)
             txns += t
             unknown_verbs += u
             if n == 0:
