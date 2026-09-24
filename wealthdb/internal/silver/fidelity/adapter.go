@@ -3,7 +3,7 @@
 //
 // Single-source web-only adapter (Fidelity retired ofx.fidelity.com
 // in 2026-05; the scraper is the only path). Mirrors the
-// swissquote adapter's single-path / USD-only shape, with three
+// swissquote adapter's single-path / USD-only shape, with these
 // fidelity-specific quirks:
 //
 //   - Money-market core positions (silver flag
@@ -29,6 +29,10 @@
 //     (migration 0004): fidelity-web's 529 and supplied
 //     statements, and the svb statement archives, which write this
 //     schema for this adapter to project. See historical.go.
+//
+//   - Account kinds. Every account is brokerage, except the DAF's own
+//     kind and an account whose historical rows carry a home loan's
+//     outstanding principal, which is a mortgage (applyHeldKind).
 package fidelity
 
 import (

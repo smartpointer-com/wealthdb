@@ -36,7 +36,13 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendAccounts(ctx, w, byTime); err != nil {
+	// Read once for both account paths: they emit the same account at
+	// the same snapshot, and the fold keeps whichever comes last.
+	mortgages, err := c.mortgageAccountIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.appendAccounts(ctx, w, byTime, mortgages); err != nil {
 		return nil, err
 	}
 	if err := c.appendPositionsAndCash(ctx, w, byTime); err != nil {
@@ -47,7 +53,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		// before emitting the historical positions — gold
 		// upserts run by time-batch and historical-only dates
 		// would otherwise carry positions without accounts.
-		if err := c.appendHistoricalAccounts(ctx, w, byTime); err != nil {
+		if err := c.appendHistoricalAccounts(ctx, w, byTime, mortgages); err != nil {
 			return nil, err
 		}
 		if err := c.appendHistoricalPositions(ctx, w, byTime); err != nil {
@@ -170,7 +176,7 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 // All taxonomy columns stay nil for accounts whose portfolio has
 // no classification or no portfolio at all; the gold COALESCE
 // upsert preserves whatever a later writer / override supplies.
-func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, mortgages map[string]struct{}) error {
 	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
 	if err != nil {
 		return err
@@ -218,6 +224,7 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 			Payload:             json.RawMessage(payload),
 		}
 		applyPortfolioKindTaxonomy(portfolioKind.String, &change)
+		applyHeldKind(extID, mortgages, &change)
 		if silverMgmt != "" {
 			// Silver-side management_style (v3+) wins over the
 			// adapter-derived value: trust_managed accounts get
@@ -264,6 +271,20 @@ func applyPortfolioKindTaxonomy(kind string, change *canonical.AccountChange) {
 		change.AccountKind = canonical.AccountKindDonorAdvisedFund
 		w := canonical.TaxWrapperCharitable
 		change.TaxWrapper = &w
+	}
+}
+
+// applyHeldKind types an account by what it holds: one carrying a home
+// loan's outstanding principal (mortgageAccountIDs) is a mortgage
+// account, whatever its portfolio says, as the UBS adapter types its
+// loans. It is what lets gold read the loan's balance series as a
+// liability: the cash flow statement's interest/principal split, and
+// the returns engine, which reports it only on the accounts grain's
+// liability line and leaves it out of every coarser rollup
+// (splitLiabilities).
+func applyHeldKind(id string, mortgages map[string]struct{}, change *canonical.AccountChange) {
+	if _, ok := mortgages[id]; ok {
+		change.AccountKind = canonical.AccountKindMortgage
 	}
 }
 

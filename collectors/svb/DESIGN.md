@@ -210,7 +210,16 @@ they default cleanly and the overrides set the precise values.
   cash row per statement valued at the balance it states, and its ledger becomes
   transactions; a loan contributes one row valued at MINUS its outstanding
   principal, because the fidelity adapter passes `market_value` through
-  unchanged and a liability that arrives positive reads as an asset.
+  unchanged and a liability that arrives positive reads as an asset. That row
+  is what makes the account a mortgage in gold: the adapter types an account
+  by the loan principal it holds.
+- **A loan's row is dated the morning after its statement.** The statement
+  states the balance at the end of its date, after that day's payments;
+  gold's mortgage split reads a mortgage snapshot as the balance before the
+  day's instalments post, and splits each payment into interest and principal
+  against what the next observation retired. Dated on the statement day, a
+  payoff made that day would fall into the interval after the balance it
+  retired and draw as interest.
 - **Anything the parser turns away is retried at a finer raster before it is
   believed.** An unrecognised title, a registration that did not match, a
   statement whose account headings vanished, a section whose sums did not
@@ -252,15 +261,24 @@ they default cleanly and the overrides set the precise values.
   contributes the days that precede it.
 - **A loan is tiled against an earlier `manual` position, not overlapped.**
   Where a `manual` position covers the era before a lender's first statement,
-  its `closed_at` is set to that statement's date; `closed_at` is exclusive
-  (`acquired_at ≤ date < closed_at`), so the two meet exactly once with no gap
-  and no double count.
+  its `closed_at` is set to the date the loan's first row carries — the day
+  after that statement's date; `closed_at` is exclusive (`acquired_at ≤ date <
+  closed_at`), so the two meet exactly once with no gap and no double count.
+  That `manual` position belongs on an account of kind `mortgage` of its own,
+  so the returns engine carries it as the same liability the loan becomes, and
+  whose id is not the loan's number: a counter account two sources hold
+  resolves to neither.
 - **A loan statement's payment rows are not booked against the loan.** Where
   the paying account is itself tracked, its own ledger already books the
   outflow, so booking it again against the loan would either double-count the
   payment or invent an inflow. The principal / interest split the lender states
-  — which the paying account's ledger does not know — is kept on the loan's
-  position row instead.
+  is kept on the loan's position row. A ledger row that names the loan — by
+  its number masked to the last four digits, on a payment or a credit alike —
+  states it as its `counter_account` wherever those four digits name one loan
+  of the archive. That tells gold where the money went, not what the row was:
+  once a rule or a pin calls the row an own-account move, gold draws it under
+  `financing · Mortgage` and splits a payment against the loan's balance
+  (wealthdb `docs/CASHFLOW.md` §4).
 - **A gap the archive leaves open is filled from a sourced mark, or not at
   all.** Carry-forward alone is not enough here: gold ends an account's series
   at the first later snapshot of its source that re-covers every account seen

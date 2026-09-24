@@ -488,6 +488,10 @@ type candidate struct {
 	occurredAt int64
 }
 
+// farAccount is an account gold holds, named as the other side of a
+// movement.
+type farAccount struct{ source, account string }
+
 // loadStatedCounterAccounts reads, per transaction, the OWN account the
 // source itself named as the other side of the movement.
 //
@@ -497,39 +501,62 @@ type candidate struct {
 // — and where the product does not collect the far side at all, none of them
 // has anything to walk on. This one is the source's own
 // statement of where the money went: a counter account in the row's payload,
-// put there by the UBS adapter from whichever of its feeds stated it.
+// put there by whichever adapter or collector can read one (CASHFLOW.md §4).
 //
-// The join is what makes it safe. Only a counter account gold ALREADY HOLDS,
-// under the same silver source, resolves; every other stated account — the
-// overwhelming majority, third parties being what most payments are for —
-// returns nothing and the row is left exactly as it was. A row naming its own
-// account is refused too: a movement is not its own counterparty, and a source
-// that echoes the debited account into the field would otherwise pair a row
-// with itself.
+// The join is what makes it safe. Only a counter account gold ALREADY HOLDS
+// resolves; every other stated account — the overwhelming majority, third
+// parties being what most payments are for — returns nothing and the row is
+// left exactly as it was. The row's own source is searched first, and another
+// source's account is taken only when no account of the row's own source
+// answers and exactly one account elsewhere does: one collector can write
+// several sources (the svb collector writes a lender's loan statements to a
+// source apart from the deposit ledger that pays them), and an id two
+// sources both hold says nothing about which one was meant. A row naming its
+// own account is refused too: a movement is not its own counterparty, and a
+// source that echoes the debited account into the field would otherwise pair
+// a row with itself.
 //
 // It places no verdict. What a row IS stays the tiers' question — the
 // evidence here answers only where it went, which is the one thing a tier
 // below the matcher has never been able to say.
-func loadStatedCounterAccounts(ctx context.Context, tx querier) (map[txKey]string, error) {
+func loadStatedCounterAccounts(ctx context.Context, tx querier) (map[txKey]farAccount, error) {
 	rows, err := tx.QueryContext(ctx, `
-        SELECT t.silver_source_id, t.transaction_external_id, a.account_external_id
-          FROM transactions t
-          JOIN accounts a
-                 ON a.silver_source_id = t.silver_source_id
-                AND upper(replace(a.account_external_id, ' ', ''))
-                  = upper(replace(json_extract_string(t.payload, '$.counter_account'), ' ', ''))
-         WHERE json_extract_string(t.payload, '$.counter_account') IS NOT NULL
-           AND json_extract_string(t.payload, '$.counter_account') <> ''
-           AND a.account_external_id IS DISTINCT FROM t.account_external_id`)
+        WITH stated AS (
+            SELECT t.silver_source_id, t.transaction_external_id,
+                   upper(replace(t.account_external_id, ' ', '')) AS own,
+                   upper(replace(json_extract_string(t.payload, '$.counter_account'), ' ', '')) AS named
+              FROM transactions t
+             WHERE json_extract_string(t.payload, '$.counter_account') IS NOT NULL
+               AND json_extract_string(t.payload, '$.counter_account') <> ''
+        ),
+        held AS (
+            SELECT s.silver_source_id, s.transaction_external_id,
+                   a.silver_source_id AS far_source, a.account_external_id AS far_account,
+                   a.silver_source_id = s.silver_source_id AS same_source
+              FROM stated s
+              JOIN accounts a ON upper(replace(a.account_external_id, ' ', '')) = s.named
+             WHERE s.named <> s.own
+        ),
+        counted AS (
+            SELECT *,
+                   COUNT(*) FILTER (WHERE same_source)
+                       OVER (PARTITION BY silver_source_id, transaction_external_id) AS n_same,
+                   COUNT(*) OVER (PARTITION BY silver_source_id, transaction_external_id) AS n_all
+              FROM held
+        )
+        SELECT silver_source_id, transaction_external_id, far_source, far_account
+          FROM counted
+         WHERE (same_source AND n_same = 1)
+            OR (n_same = 0 AND n_all = 1)`)
 	if err != nil {
 		return nil, fmt.Errorf("spending: read stated counter accounts: %w", err)
 	}
 	defer rows.Close()
-	out := map[txKey]string{}
+	out := map[txKey]farAccount{}
 	for rows.Next() {
 		var k txKey
-		var far string
-		if err := rows.Scan(&k.source, &k.txID, &far); err != nil {
+		var far farAccount
+		if err := rows.Scan(&k.source, &k.txID, &far.source, &far.account); err != nil {
 			return nil, fmt.Errorf("spending: scan stated counter accounts: %w", err)
 		}
 		out[k] = far
@@ -998,7 +1025,7 @@ func assignCategories(
 	population []candidate,
 	pool map[txKey]candidate,
 	matched map[txKey]gold.TransferLeg,
-	stated map[txKey]string,
+	stated map[txKey]farAccount,
 	kinds map[string]string,
 	rules []Rule,
 	pinned map[txKey]pinnedRow,
@@ -1082,7 +1109,7 @@ func assignCategories(
 			// are different questions and this evidence answers only the
 			// first. A rule's far CLASS is a stand-in for exactly this
 			// and gives way to it, the way it gives way to a pairing.
-			row.farSource, row.farAccount = r.key.source, far
+			row.farSource, row.farAccount = far.source, far.account
 			row.farClass = ""
 			counts.StatedFarAccounts++
 		}

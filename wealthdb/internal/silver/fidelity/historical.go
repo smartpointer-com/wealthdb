@@ -101,6 +101,36 @@ SELECT DISTINCT a.account_external_id
 	return out, rows.Err()
 }
 
+// mortgageAccountIDs returns the accounts holding what the historical
+// classifier reads as a home loan's outstanding principal (vehicle
+// mortgage); applyHeldKind types them. It reads the whole silver, not
+// the load window, so an account's kind never depends on which window
+// a load happens to read. Empty on a silver with no historical table.
+func (c *Connection) mortgageAccountIDs(ctx context.Context) (map[string]struct{}, error) {
+	out := map[string]struct{}{}
+	ok, err := c.hasHistoricalTable(ctx)
+	if err != nil || !ok {
+		return out, err
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
+  FROM historical_position_snapshots`)
+	if err != nil {
+		return nil, fmt.Errorf("mortgageAccountIDs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, key, desc string
+		if err := rows.Scan(&id, &key, &desc); err != nil {
+			return nil, err
+		}
+		if _, vehicle := classifyHistoricalPair(key, desc); vehicle == canonical.VehicleMortgage {
+			out[id] = struct{}{}
+		}
+	}
+	return out, rows.Err()
+}
+
 // appendHistoricalAccounts projects the per-account master rows
 // captured in the live `accounts` table backwards onto each
 // historical as_of_date. Without this, `wealthdb accounts
@@ -113,7 +143,7 @@ SELECT DISTINCT a.account_external_id
 // upsert pulls FirstSeenAt back to the historical date so the
 // account's first-seen timestamp reflects the statement, not
 // the toolkit-first-ran date.
-func (c *Connection) appendHistoricalAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *Connection) appendHistoricalAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, mortgages map[string]struct{}) error {
 	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
 	if err != nil {
 		return err
@@ -179,6 +209,7 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 				Payload:             json.RawMessage(r.payload),
 			}
 			applyPortfolioKindTaxonomy(r.portfolioKind.String, &change)
+			applyHeldKind(r.extID, mortgages, &change)
 			if r.silverMgmt != "" {
 				s := canonical.ManagementStyle(r.silverMgmt)
 				change.ManagementStyle = &s

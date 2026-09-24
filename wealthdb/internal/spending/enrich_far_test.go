@@ -307,7 +307,8 @@ func reportShape(t *testing.T, db *sql.DB, ctx context.Context) []string {
 }
 
 // seedCounterAccount stamps a stated counter account into a seeded row's
-// payload, which is where the UBS adapter puts the one its source named.
+// payload, which is where an adapter or collector puts the one its source
+// named.
 func seedCounterAccount(t *testing.T, db *sql.DB, ctx context.Context, source, id, counter string) {
 	t.Helper()
 	if _, err := db.ExecContext(ctx, `
@@ -339,6 +340,56 @@ func TestASourceStatedCounterAccountIsTheFarAccount(t *testing.T) {
 
 	if src, acct, class := farOf(t, db, ctx, "bank", "T-STATED"); src != "bank" || acct != "BRK1" || class != "" {
 		t.Errorf("stated far = (%q, %q, %q), want (bank, BRK1, \"\")", src, acct, class)
+	}
+}
+
+// TestAStatedCounterAccountResolvesInAnotherSourceOnlyWhenUnique pins the
+// cross-source arm of the stated road. One collector can write several
+// sources — a deposit ledger in one, the loan it pays in another — so an
+// account the row's own source does not hold is looked for elsewhere, and
+// taken only when exactly one account anywhere answers. The row's own
+// source wins wherever it holds the id, and a row never names itself,
+// even where another source happens to hold its id.
+func TestAStatedCounterAccountResolvesInAnotherSourceOnlyWhenUnique(t *testing.T) {
+	db, ctx := openGold(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
+                                    high_watermark, first_loaded_at, last_loaded_at)
+             VALUES ('third-bank', 'chase', '/tmp/third.db', -1, 0, 0);
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, first_seen_at, last_seen_at)
+             VALUES ('other-bank', 'BRK1',    'brokerage', 'Same id elsewhere', 1, 1),
+                    ('other-bank', 'SHARED9', 'cash',      'Twice held',        1, 1),
+                    ('third-bank', 'SHARED9', 'cash',      'Twice held',        1, 1),
+                    ('other-bank', 'CASH1',   'cash',      'Own id elsewhere',  1, 1);
+    `); err != nil {
+		t.Fatalf("seed accounts: %v", err)
+	}
+	seedTxns(t, db, ctx,
+		txn{source: "bank", id: "T-ELSEWHERE", account: "CASH1", kind: "withdrawal",
+			occurredAt: day(10), amount: -100, description: "TRANSFER"},
+		txn{source: "bank", id: "T-OWN-SOURCE", account: "CASH1", kind: "withdrawal",
+			occurredAt: day(11), amount: -200, description: "TRANSFER"},
+		txn{source: "bank", id: "T-AMBIGUOUS", account: "CASH1", kind: "withdrawal",
+			occurredAt: day(12), amount: -300, description: "TRANSFER"},
+		txn{source: "bank", id: "T-ITSELF", account: "CASH1", kind: "withdrawal",
+			occurredAt: day(13), amount: -400, description: "TRANSFER"},
+	)
+	seedCounterAccount(t, db, ctx, "bank", "T-ELSEWHERE", "CUST2")
+	seedCounterAccount(t, db, ctx, "bank", "T-OWN-SOURCE", "BRK1")
+	seedCounterAccount(t, db, ctx, "bank", "T-AMBIGUOUS", "SHARED9")
+	seedCounterAccount(t, db, ctx, "bank", "T-ITSELF", "CASH1")
+	runPass(t, db, ctx, Options{})
+
+	for id, want := range map[string][2]string{
+		"T-ELSEWHERE":  {"other-bank", "CUST2"},
+		"T-OWN-SOURCE": {"bank", "BRK1"},
+		"T-AMBIGUOUS":  {"", ""},
+		"T-ITSELF":     {"", ""},
+	} {
+		if src, acct, _ := farOf(t, db, ctx, "bank", id); src != want[0] || acct != want[1] {
+			t.Errorf("%s: far = (%q, %q), want (%q, %q)", id, src, acct, want[0], want[1])
+		}
 	}
 }
 

@@ -96,9 +96,10 @@ inside an account's own coverage, the carry-forward (a statement with neither a
 holdings table nor a stated total is skipped so the account carries its last
 real value forward), the real-zero rule (a `$0` month comes only from a stated
 `$0`, and a zero is never treated as a closure), the option-leg PK
-disambiguation, and the Activity sign conventions are all load-bearing — see
-[DESIGN.md](DESIGN.md). Changing any of them shifts the gold history; do it
-deliberately, with the tests updated.
+disambiguation, the loan row dated the morning after its statement (gold's
+interest/principal split reads it that way), and the Activity sign conventions
+are all load-bearing — see [DESIGN.md](DESIGN.md). Changing any of them shifts
+the gold history; do it deliberately, with the tests updated.
 
 So is the instrument-link proof. A row that moves a quantity is linked to a
 holding only when the statements' quantities force it; a name only proposes

@@ -18,7 +18,7 @@ front:
 - **Almost no collector work.** The resolution reads neither bronze nor
   silver. The one exception is the far account: the counter account a
   bank states on its own row is a fact only a collector can carry, so
-  the adapters able to state one do (§4).
+  the adapters and collectors able to state one do (§4).
 - **No new tier and no model.** The precedence lattice is untouched,
   `categorize` gains nothing, and the backlog is the two families'.
 - **No new store.** Nothing is bought from a model, so `reload -a`
@@ -46,7 +46,7 @@ in, what went out, and what was left.
 | `operating_in` | the income verdicts, plus the reimbursements income excludes | + (net of reversals) |
 | `operating_out` | the spending verdicts, plus moves into a charitable or custodial vehicle | − (net of refunds) |
 | `investing` | buys and sells; private capital called and returned; capital deployed to or returned from a destination the product does not track | net |
-| `financing` | what the mortgage rule places, a matched move to a mortgage account, `mortgage_transfer`, `loan_proceeds`, `debt_repayment` | net |
+| `financing` | what the mortgage rule places, an own-account move to a mortgage account (matched or stated), `mortgage_transfer`, `loan_proceeds`, `debt_repayment` | net |
 | `vehicles` | moves to or from a retirement plan, an education or health account, a non-grantor trust, or an untracked account of the household's own | net |
 | `cash` | the residual: the four summed, seen from the pool's side | computed |
 
@@ -223,10 +223,10 @@ says, because a section that reads direction cannot admit them.
 | kind | section | note |
 |---|---|---|
 | `dividend` `coupon` `staking` `capital_gain` `reward` `interest` (+) | operating in | by resolved income type |
-| `deposit` | by verdict | matched → by the far account; `capital_return` → investing; `loan_proceeds` → financing; a `*_transfer` delta → vehicles; `reimbursement` → operating in (income excludes it, cashflow keeps it — it is cash that arrived); otherwise operating in |
+| `deposit` | by verdict | an own-account move with a far account, matched or stated → by the far account; `capital_return` → investing; `loan_proceeds` → financing; a `*_transfer` delta → vehicles; `reimbursement` → operating in (income excludes it, cashflow keeps it — it is cash that arrived); otherwise operating in |
 | `distribution` | investing | floors to `capital_return`; a rule or a pin promoting it to an income type moves it to operating in, as the holder's word should |
 | `purchase` `refund` `fee` `tax` `interest` (−) | operating out | by resolved spend category |
-| `withdrawal` | by verdict | matched → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles (`deposit_transfer` → `vehicles · Bank deposits`), except `mortgage_transfer` → `financing · Mortgage`; a rule-placed `internal_transfer` with no far account → `vehicles · Untracked accounts`; otherwise operating out |
+| `withdrawal` | by verdict | an own-account move with a far account, matched or stated → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles (`deposit_transfer` → `vehicles · Bank deposits`), except `mortgage_transfer` → `financing · Mortgage`; a rule-placed `internal_transfer` with no far account → `vehicles · Untracked accounts`; otherwise operating out |
 | `card_payment` | matched → by the far account; otherwise **excluded, counted** | an unpaired card bill is in neither family's population, so no tier ever saw it. It also has a known false shape: a cross-currency pair no road joins — the amount pass partitions by currency, and a card ledger mints its own ids, so no shared reference reaches it either — whose bank leg the provider tier already files as card spend. Counting it as a receipt would print a phantom inflow and double the bill |
 | `buy` `sell` | investing | by the instrument's asset class; a `cash`-class instrument is pool-internal |
 | `contribution` `distribution` | investing | private capital, by the vehicle's asset class |
@@ -267,11 +267,14 @@ The **source's** road is the bank stating the counter account outright.
 Where the product does not collect the far side at all — a wire to an
 account of the holder's own whose transactions no feed reports — there
 is one row, the matcher needs two, and only the narrative knows. The
-UBS adapter reads it from whichever of its feeds states it and puts it
-in the row's payload; the pass resolves it against the accounts gold
-already holds, and takes it only when it names one of them. A third
-party's account resolves to nothing, which is the common case and the
-right answer.
+UBS adapter reads it from whichever of its feeds states it, and the svb
+collector from a deposit-ledger row's reference to a loan, and each puts
+it in the row's payload; the pass resolves it against the accounts gold
+already holds, and takes it only when it names one of them — in the
+row's own source first, and in another source only when no account of
+its own answers and exactly one account elsewhere does. A third party's
+account resolves to nothing, which is the common case and the right
+answer.
 
 That road answers **where the money went and nothing else**. What the
 movement WAS stays the tiers' question: a stated counter account places

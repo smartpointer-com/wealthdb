@@ -477,6 +477,56 @@ func TestHistoricalDAFPoolClassification(t *testing.T) {
 	}
 }
 
+// TestAnAccountHoldingAMortgageIsAMortgage pins the one account kind
+// this adapter reads off holdings: an account whose historical rows
+// carry a home loan's outstanding principal is typed `mortgage` on
+// every emission, back-projected ones included, while an account
+// holding a deposit balance beside it stays brokerage.
+func TestAnAccountHoldingAMortgageIsAMortgage(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (3000, 4, 'svb-sleeves-build');
+        INSERT INTO portfolios(snapshot_at, portfolio_external_id, kind, payload) VALUES
+            (3000, 'SVB-Sleeves', 'other', '{}');
+        INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, payload) VALUES
+            (3000, '0000000002', 'SVB-Sleeves', NULL, '{}'),
+            (3000, '0000000000', 'SVB-Sleeves', NULL, '{}');
+        INSERT INTO historical_position_snapshots(as_of_date, account_external_id, description, instrument_key, quantity, price, market_value, currency, payload) VALUES
+            (1000, '0000000002', 'MORTGAGE PRINCIPAL', NULL, NULL, NULL, -900000.00, 'USD', '{}'),
+            (2000, '0000000002', 'MORTGAGE PRINCIPAL', NULL, NULL, NULL, -1.00, 'USD', '{}'),
+            (3000, '0000000002', 'MORTGAGE PRINCIPAL', NULL, NULL, NULL, 0.00, 'USD', '{}'),
+            (3000, '0000000000', 'CASH BALANCE', NULL, NULL, NULL, 1500.00, 'USD', '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	kinds := map[string]map[canonical.AccountKind]int{}
+	for {
+		batch, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range batch.Accounts {
+			if kinds[a.AccountExternalID] == nil {
+				kinds[a.AccountExternalID] = map[canonical.AccountKind]int{}
+			}
+			kinds[a.AccountExternalID][a.AccountKind]++
+		}
+		if !more {
+			break
+		}
+	}
+	if got := kinds["0000000002"]; len(got) != 1 || got[canonical.AccountKindMortgage] < 3 {
+		t.Errorf("loan account kinds = %v, want mortgage on every emission", got)
+	}
+	if got := kinds["0000000000"]; len(got) != 1 || got[canonical.AccountKindBrokerage] == 0 {
+		t.Errorf("deposit account kinds = %v, want brokerage only", got)
+	}
+}
+
 // TestOutflowKindsReachSpending pins the two actions that decide
 // whether a managed account's real outflows are visible at all.
 //

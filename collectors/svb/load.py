@@ -56,6 +56,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 from collections import Counter, defaultdict
@@ -136,6 +137,17 @@ def holdings_known(parsed: dict, acct: dict) -> bool:
     return bool(acct.get("holdings")) or parsed.get("stated_total") == 0
 
 
+# A loan statement states the balance at the END of its statement date,
+# after that day's payments have posted. Gold's mortgage split reads a
+# mortgage snapshot as the balance BEFORE the day's instalments post — it
+# splits each payment into interest and principal against the balance the
+# next observation retired (wealthdb docs/CASHFLOW.md) — so a loan's row is
+# dated the day after its statement date, the first morning that balance
+# holds. Without it, a payoff made on a statement date falls into the
+# interval after the balance it retired and draws as interest.
+_LOAN_ROW_DELAY = 86_400
+
+
 def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
     """Insert one historical row per holding, or a single $0 row for a
     statement that STATES a zero portfolio total.
@@ -143,12 +155,15 @@ def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
     Accounts with holdings overwrite any prior row at the same (as_of,
     account, description). An account with no holdings and no stated zero is
     skipped, so it carries its last real value forward — a parse that lost the
-    table must not read as a real unwind.
+    table must not read as a real unwind. A loan's row is dated the day after
+    its statement date (:data:`_LOAN_ROW_DELAY`).
     """
     period_end = parsed.get("period_end")
     if not period_end:
         return 0
     as_of = ts_from_iso(period_end)
+    if parsed.get("family") == pdf_parsers_svbdep.FAMILY_MORTGAGE:
+        as_of += _LOAN_ROW_DELAY
     inserted = 0
     for acct in parsed.get("accounts", []):
         aid = acct.get("account_external_id")
@@ -527,9 +542,39 @@ def link_statements(results: list[tuple[str, dict]],
     return instrument_links.link(statements)
 
 
+# The deposit ledger names a loan by its number, masked to the last four
+# digits and prefixed ML ("… TO ML XXXXXX1234", "… ML*1234 …"), on payments
+# to it and credits from it alike. The mask is required, and an amount's
+# decimals never pass for the four digits.
+_LOAN_REFERENCE_RE = re.compile(r"\bML\s*[*X][\s*X]*(\d{4})\b(?![.,]\d)")
+
+
+def loans_by_suffix(results: list[tuple[str, dict]]) -> dict[str, str]:
+    """The loan numbers of the statements the parser accepted, by the last
+    four digits a ledger row names them by, where those four digits name one
+    loan and no other."""
+    by_suffix = defaultdict(set)
+    for _sha, parsed in results:
+        if parsed.get("family") != pdf_parsers_svbdep.FAMILY_MORTGAGE:
+            continue
+        for acct in parsed.get("accounts", []):
+            if acct.get("_error"):
+                continue  # refused: never reaches silver, so names no loan
+            loan = acct.get("account_external_id") or ""
+            if len(loan) >= 4:
+                by_suffix[loan[-4:]].add(loan)
+    for suffix, loans in sorted(by_suffix.items()):
+        if len(loans) > 1:
+            log.warning("loan suffix %s names %d loans; no ledger row states "
+                        "any of them", suffix, len(loans))
+    return {suffix: next(iter(loans)) for suffix, loans in by_suffix.items()
+            if len(loans) == 1}
+
+
 def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
                         links: instrument_links.Links,
-                        left_out: set[tuple]) -> tuple[int, int]:
+                        left_out: set[tuple],
+                        loans: dict[str, str]) -> tuple[int, int]:
     """Insert the statement's settled activity rows, except the refs in
     ``left_out`` — the cancellations and the bookings they cancel. Returns
     ``(inserted, unknown-verb count)``.
@@ -541,10 +586,15 @@ def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
     looked up — a transfer, a fee, a sweep — carries neither.
 
     `Action` is the row's narrative, which gold describes and categorises
-    the row by.
-    The name is also kept unprefixed under `Description`, and `Section` says
-    whether that name is a security at all (income / taxes / corporate
-    actions) or a counterparty account (additions and withdrawals).
+    the row by. The name is also kept unprefixed under `Description`, and
+    `Section` says whether that name is a security at all (income / taxes /
+    corporate actions) or a counterparty account (additions and withdrawals).
+
+    A deposit-ledger row naming one of the archive's loans (``loans``, from
+    :func:`loans_by_suffix`) states it as `counter_account`, which gold
+    resolves to the loan's account. It says where the money went, not what
+    the row was: the split against the loan's balance applies once a rule or
+    a pin calls the row an own-account move.
 
     `price` and `settlement_date` stay NULL — the layout prints neither
     column, and its single date column is the settlement date in some sections
@@ -570,6 +620,10 @@ def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
             "Section": row.get("section"),
             "AccountType": row.get("account_type"),
         }
+        if row.get("section") == pdf_parsers_svbdep.SECTION_LEDGER:
+            m = _LOAN_REFERENCE_RE.search(description)
+            if m and m[1] in loans:
+                payload["counter_account"] = loans[m[1]]
         unlinked = links.unlinked.get(ref)
         if unlinked is not None:
             reason, payload["InstrumentHint"] = unlinked
@@ -940,6 +994,7 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
         cancelled = pair_cancellations(loaded)
         left_out = set(cancelled) | set(cancelled.values())
         links = link_statements(loaded, cancelled)
+        loans = loans_by_suffix(loaded)
         for ref in left_out:  # not written, so not counted
             links.keys.pop(ref, None)
             links.unlinked.pop(ref, None)
@@ -968,7 +1023,7 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
                 census["unreadable-section"] += 1
             n = insert_statement(conn, res, sha)
             holdings += n
-            t, u = insert_transactions(conn, res, sha, links, left_out)
+            t, u = insert_transactions(conn, res, sha, links, left_out, loans)
             txns += t
             unknown_verbs += u
             if n == 0:

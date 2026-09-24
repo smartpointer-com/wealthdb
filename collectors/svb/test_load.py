@@ -925,6 +925,123 @@ def test_mortgage_principal_is_carried_negative(tmp_path, monkeypatch):
     assert row == (D.LOAN_DESC, -900000.0)
 
 
+def _loan_and_ledger(tmp_path, monkeypatch, ledger_descriptions,
+                     loans=("0000000002",), refused=(),
+                     section=D.SECTION_LEDGER):
+    """A deposit statement whose activity rows, in ``section``, carry the
+    given descriptions, and one mortgage statement per loan number, dated
+    2099; the parser refuses the loans in ``refused``. Returns the deposit
+    and mortgage silvers."""
+    canned = {"Deposit 0000000000/2099-02-28": {
+        "family": D.FAMILY_DEPOSIT,
+        "period_start": "2099-02-01", "period_end": "2099-02-28",
+        "accounts": [{
+            "account_external_id": "0000000000",
+            "holdings": [{"description": D.CASH_DESC, "instrument_key": None,
+                          "quantity": None, "price": None,
+                          "market_value": 100.0}],
+            "activity": [{"date": "2099-02-14", "section": section,
+                          "account_type": "", "verb": "WITHDRAWAL",
+                          "description": d, "quantity": None,
+                          "amount": -10.0 - i, "ordinal": i}
+                         for i, d in enumerate(ledger_descriptions)],
+            "activity_totals": {}}]}}
+    for loan in (*loans, *refused):
+        account = {"account_external_id": loan,
+                   "holdings": [{"description": D.LOAN_DESC,
+                                 "instrument_key": None, "quantity": None,
+                                 "price": None, "market_value": -1000.0}],
+                   "activity": [], "activity_totals": {}}
+        if loan in refused:
+            account.update(holdings=[],
+                           _error="unreadable: outstanding principal")
+        canned[f"Mortgage {loan}/2099-02-14"] = {
+            "family": D.FAMILY_MORTGAGE,
+            "period_start": "2099-02-14", "period_end": "2099-02-14",
+            "accounts": [account]}
+    bronze = _write_bronze(tmp_path, canned, distinct_bytes=True)
+    _patch_parsers(monkeypatch, bronze, canned)
+    db = tmp_path / "svb.db"
+    B.build(db, bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=None, max_workers=1)
+    paths = B.silver_paths(db)
+    return (sqlite3.connect(str(paths[D.FAMILY_DEPOSIT])),
+            sqlite3.connect(str(paths[D.FAMILY_MORTGAGE])))
+
+
+def _counter_accounts(conn):
+    return {d: c for d, c in conn.execute(
+        "SELECT json_extract(payload,'$.Description'), "
+        "json_extract(payload,'$.counter_account') FROM transactions")}
+
+
+def test_a_loans_row_is_dated_the_morning_after_its_statement(
+        tmp_path, monkeypatch):
+    # The statement's balance is the end of its date, after that day's
+    # payments; gold's mortgage split reads a loan's row as the balance
+    # before the day's instalments, so the loan's row is the next day's.
+    deposit, mortgage = _loan_and_ledger(tmp_path, monkeypatch, [])
+    (loan_day,) = mortgage.execute(
+        "SELECT date(as_of_date, 'unixepoch') FROM "
+        "historical_position_snapshots").fetchone()
+    (cash_day,) = deposit.execute(
+        "SELECT date(as_of_date, 'unixepoch') FROM "
+        "historical_position_snapshots").fetchone()
+    assert (loan_day, cash_day) == ("2099-02-15", "2099-02-28")
+
+
+def test_a_ledger_row_naming_the_archives_loan_states_it(tmp_path, monkeypatch):
+    deposit, _ = _loan_and_ledger(tmp_path, monkeypatch, [
+        "IB TFR TO MLXXXXXX0002 #", "PAYMENT TO LOAN : ML XXXXXX0002",
+        "ML*0002 PO EXCESS FUNDS", "IB TFR TO MLXXXXXX0007 #",
+        "EXAMPLE PAYEE 0002"])
+    assert _counter_accounts(deposit) == {
+        "IB TFR TO MLXXXXXX0002 #": "0000000002",
+        "PAYMENT TO LOAN : ML XXXXXX0002": "0000000002",
+        "ML*0002 PO EXCESS FUNDS": "0000000002",
+        "IB TFR TO MLXXXXXX0007 #": None,   # no such loan in the archive
+        "EXAMPLE PAYEE 0002": None,         # no loan reference at all
+    }
+
+
+def test_four_digits_two_loans_share_name_neither(tmp_path, monkeypatch):
+    deposit, _ = _loan_and_ledger(
+        tmp_path, monkeypatch, ["IB TFR TO MLXXXXXX0002 #"],
+        loans=("0000000002", "1000000002"))
+    assert _counter_accounts(deposit) == {"IB TFR TO MLXXXXXX0002 #": None}
+
+
+def test_a_refused_loan_statement_takes_no_share_of_its_digits(
+        tmp_path, monkeypatch):
+    # A refused statement never reaches silver, so a misread loan number on
+    # it must not make the real loan's four digits ambiguous.
+    deposit, mortgage = _loan_and_ledger(
+        tmp_path, monkeypatch, ["IB TFR TO MLXXXXXX0002 #"],
+        refused=("1000000002",))
+    assert mortgage.execute(
+        "SELECT DISTINCT account_external_id FROM "
+        "historical_position_snapshots").fetchall() == [("0000000002",)]
+    assert _counter_accounts(deposit) == {
+        "IB TFR TO MLXXXXXX0002 #": "0000000002"}
+
+
+def test_only_a_standalone_masked_loan_reference_names_a_loan(
+        tmp_path, monkeypatch):
+    # A prefix glued to ML, a fifth digit, an unmasked number, an amount's
+    # decimals, and the deposit account's own digits all name nothing.
+    deposit, _ = _loan_and_ledger(tmp_path, monkeypatch, [
+        "XML 0002", "AML*0002", "ML*00021", "ML 0002", "ML X 0002.50",
+        "ML*0000"])
+    assert set(_counter_accounts(deposit).values()) == {None}
+
+
+def test_a_loan_reference_outside_the_deposit_ledger_names_nothing(
+        tmp_path, monkeypatch):
+    deposit, _ = _loan_and_ledger(tmp_path, monkeypatch, ["ML*0002"],
+                                  section=P.SECTION_ADDITIONS)
+    assert _counter_accounts(deposit) == {"ML*0002": None}
+
+
 def test_a_refused_section_reaches_silver_as_nothing(tmp_path, monkeypatch):
     conn = _build_all(tmp_path, monkeypatch)[D.FAMILY_DEPOSIT]
     for table in ("historical_position_snapshots", "transactions"):
