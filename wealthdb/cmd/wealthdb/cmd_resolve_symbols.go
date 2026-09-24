@@ -24,6 +24,12 @@ func init() {
 	register("resolve-symbols", cmdResolveSymbols)
 }
 
+// defaultResolveBatch is how many candidates one model call carries
+// (see splitBatches). A symbol answer is a short row, and each batch
+// sends only its own sources' anchors, so a local model answers a
+// batch this size well inside the per-call ceiling.
+const defaultResolveBatch = 100
+
 // candidate is one row presented to the LLM for resolution.
 // LookupKind / LookupValue together identify the row in
 // symbol_resolutions's PK space. HintName is the instrument label
@@ -78,6 +84,12 @@ var tickerShapeRe = regexp.MustCompile(`^[A-Z0-9.\-]{1,12}$`)
 // tickers don't look like this.
 var isinShapeRe = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{9}[0-9]$`)
 
+// cusipShapeRe matches the nine plain alphanumerics of a CUSIP. A
+// narrative that prints one ("DIVIDEND RECEIVED 000000AA0") invites the
+// model to copy it out in place of a ticker, and no listed ticker has
+// that shape.
+var cusipShapeRe = regexp.MustCompile(`^[A-Z0-9]{9}$`)
+
 // cmdResolveSymbols collects rows from gold that the silver
 // adapters couldn't ticker-resolve, calls the configured LLM
 // endpoint with a CSV-shaped prompt, validates the response, and
@@ -91,7 +103,8 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	fs.BoolVar(dryRun, "dry-run", false, "show resolution plan without writing to gold")
 	maxAttempts := fs.Int("max-attempts", 3, "max LLM round-trips when responses include hallucinated rows")
 	noCurrency := fs.Bool("no-currency", false, "drop the currency hint from the prompt (experiment / ablation)")
-	maxAnchors := fs.Int("max-anchors", 30, "max anchor examples to include in the prompt")
+	maxAnchors := fs.Int("max-anchors", 30, "max anchor examples per silver source to include in the prompt")
+	batch := fs.Int("batch", defaultResolveBatch, "candidates per model call")
 	showPrompt := fs.Bool("show-prompt", false, "print the LLM prompt to stderr before sending (debugging)")
 	overridesOnly := fs.Bool("overrides-only", false, "apply cfg.symbol_resolution.overrides and exit; skip the LLM round-trip entirely")
 	fs.Usage = func() {
@@ -106,6 +119,10 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	if fs.NArg() != 0 {
 		fs.Usage()
 		return errs.Newf(2, "resolve-symbols: unexpected positional argument %q", fs.Arg(0))
+	}
+	if *batch < 1 {
+		fs.Usage()
+		return errs.Newf(2, "resolve-symbols: --batch must be at least 1, got %d", *batch)
 	}
 
 	cfg, err := config.Load(g.ConfigPath)
@@ -209,6 +226,7 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	if err != nil {
 		return err
 	}
+	candidates = withoutOverridden(candidates, overrides)
 	if len(candidates) == 0 {
 		fmt.Fprintln(stdout, "resolve-symbols: nothing to resolve")
 		return nil
@@ -218,12 +236,12 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 		return err
 	}
 
-	candKey := candidateKeyset(candidates)
 	stats := summariseStats(candidates)
+	batches := splitBatches(candidates, *batch)
 
-	fmt.Fprintf(stdout, "resolve-symbols: %d candidates (%s; by-kind %s), %d anchors, model %s\n",
+	fmt.Fprintf(stdout, "resolve-symbols: %d candidates (%s; by-kind %s), %d anchors, %d batch(es) of up to %d, model %s\n",
 		stats.Total, formatPerSource(stats.PerSource),
-		formatPerKind(stats.PerKind), len(anchors), modelCfg.Name)
+		formatPerKind(stats.PerKind), len(anchors), len(batches), *batch, modelCfg.Name)
 
 	// Everything the run reads is read; release the handle before the
 	// model round-trips. DuckDB is one read-write handle OR many
@@ -235,13 +253,41 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	}
 	dbOpen = false
 
-	valid, attempts, totalInvalid, err := resolveWithLLM(ctx, modelCfg, candidates, anchors,
-		candKey, configuredSources, *maxAttempts, *noCurrency, *showPrompt, stdout, stderr)
-	if err != nil {
-		return err
+	// Each batch is stored as it completes, so a later batch failing —
+	// a wedged serve, the per-call ceiling — never costs the answers
+	// already paid for.
+	var valid []resolution
+	var attempts, totalInvalid int
+	stored := map[string]int{}
+	persisted, total := 0, 0
+	for i, b := range batches {
+		got, n, invalid, err := resolveWithLLM(ctx, modelCfg, b, anchorsFor(anchors, b),
+			candidateKeyset(b), configuredSources, *maxAttempts, *noCurrency, *showPrompt, stdout, stderr)
+		attempts += n
+		totalInvalid += invalid
+		valid = append(valid, got...)
+		if !*dryRun && len(got) > 0 {
+			perSource, t, serr := storeResolutions(ctx, cfg.GoldDB, got, modelCfg.Name, stdout)
+			if serr != nil {
+				return serr
+			}
+			for src, c := range perSource {
+				stored[src] += c
+			}
+			persisted += len(got)
+			total = t
+		}
+		if err != nil {
+			if !*dryRun {
+				fmt.Fprintf(stdout, "resolve-symbols: stopped in batch %d of %d; the %d resolution(s) answered so far are stored\n",
+					i+1, len(batches), persisted)
+			}
+			return err
+		}
+		fmt.Fprintf(stdout, "resolve-symbols: batch %d/%d: %d of %d resolved\n", i+1, len(batches), len(got), len(b))
 	}
 
-	// Sort for stable output / persistence order.
+	// Sort for stable output.
 	sort.Slice(valid, func(i, j int) bool {
 		if valid[i].SilverSourceID != valid[j].SilverSourceID {
 			return valid[i].SilverSourceID < valid[j].SilverSourceID
@@ -264,12 +310,52 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 		fmt.Fprintln(stdout, "resolve-symbols: no valid resolutions to persist")
 		return nil
 	}
+	fmt.Fprintln(stdout, "resolve-symbols: persisted to gold:")
+	for _, s := range sortedKeys(stored) {
+		fmt.Fprintf(stdout, "  %s: %d rows upserted\n", s, stored[s])
+	}
+	fmt.Fprintf(stdout, "resolve-symbols: total symbol_resolutions rows in gold now %d\n", total)
+	return nil
+}
 
-	return storeResolutions(ctx, cfg.GoldDB, valid, modelCfg.Name, stdout)
+// withoutOverridden drops the candidates whose key a config override
+// decides, as a pinned symbol or as a suppression. That word is final:
+// the model's answer is stored after the overrides are synced, so asking
+// about such a key would overwrite the pin or undo the suppression.
+func withoutOverridden(cands []candidate, overrides []config.SymbolOverride) []candidate {
+	decided := make(map[string]bool, len(overrides))
+	for _, o := range overrides {
+		decided[candKey(o.SilverSourceID, o.LookupKind, o.LookupValue)] = true
+	}
+	out := make([]candidate, 0, len(cands))
+	for _, c := range cands {
+		if !decided[candKey(c.SilverSourceID, c.LookupKind, c.LookupValue)] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// anchorsFor keeps the anchors of the silver sources a batch asks
+// about. Anchors teach the model a broker's own ticker conventions, so
+// another broker's are no help to a batch, only prompt it pays for.
+func anchorsFor(anchors []anchor, batch []candidate) []anchor {
+	sources := map[string]bool{}
+	for _, c := range batch {
+		sources[c.SilverSourceID] = true
+	}
+	var out []anchor
+	for _, a := range anchors {
+		if sources[a.SilverSourceID] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // storeResolutions re-takes the gold handle and upserts what the model
-// answered, then reports what landed.
+// answered for one batch. It returns the rows upserted per source and
+// the table's row count after the upsert.
 //
 // The re-open is retried on the bounded backoff, because it can lose a
 // race it did not have to run before the handle was released for the
@@ -285,7 +371,7 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 // The re-open does not stamp binary_versions: this is the same command
 // continuing, and its first open already recorded which binary wrote
 // the file.
-func storeResolutions(ctx context.Context, goldPath string, valid []resolution, modelName string, stdout io.Writer) error {
+func storeResolutions(ctx context.Context, goldPath string, valid []resolution, modelName string, stdout io.Writer) (map[string]int, int, error) {
 	var perSource map[string]int
 	var total int
 	err := retryFlush(ctx, func() error {
@@ -305,16 +391,11 @@ func storeResolutions(ctx context.Context, goldPath string, valid []resolution, 
 		printResolutionPlan(stdout,
 			fmt.Sprintf("--- %d resolution(s) the model answered but gold would not accept ---", len(valid)),
 			valid)
-		return errs.Wrap(errs.ExitOpenFailed,
+		return nil, 0, errs.Wrap(errs.ExitOpenFailed,
 			fmt.Errorf("resolve-symbols: could not store the resolutions above; re-run once nothing else "+
 				"holds %q open, or carry them into cfg.symbol_resolution.overrides: %w", goldPath, err))
 	}
-	fmt.Fprintln(stdout, "resolve-symbols: persisted to gold:")
-	for _, s := range sortedKeys(perSource) {
-		fmt.Fprintf(stdout, "  %s: %d rows upserted\n", s, perSource[s])
-	}
-	fmt.Fprintf(stdout, "resolve-symbols: total symbol_resolutions rows in gold now %d\n", total)
-	return nil
+	return perSource, total, nil
 }
 
 // printResolutionPlan renders resolutions one per line under a
@@ -419,49 +500,40 @@ SELECT silver_source_id, description, MIN(currency) AS currency
 }
 
 // collectAnchors samples up to maxAnchors already-resolved
-// instruments per silver source. Used as in-context examples in
-// the prompt so the model learns the broker-specific ticker
-// conventions in this portfolio (UBS Xetra tickers, Schwab US
-// tickers, Swissquote SIX tickers) rather than guessing globally.
-// We sample uniformly via TABLESAMPLE so the same anchors don't
-// keep getting picked — but DuckDB's TABLESAMPLE doesn't accept
-// row counts, only percentages, so we just take a slice by
-// row_number for determinism.
+// instruments per silver source, earliest first so the choice is
+// deterministic. Used as in-context examples in the prompt so the
+// model learns the broker-specific ticker conventions in this
+// portfolio (UBS Xetra tickers, Schwab US tickers, Swissquote SIX
+// tickers) rather than guessing globally. Only an instrument whose
+// symbol has a ticker's shape (symbolProblem) can serve as one.
 func collectAnchors(ctx context.Context, db *sql.DB, maxAnchors int) ([]anchor, error) {
 	if maxAnchors <= 0 {
 		return nil, nil
 	}
-	// Up to maxAnchors per source. Prefer rows where every field
-	// is populated (symbol, name, currency) — fully-described
-	// examples are the highest-signal ones for the model.
 	const q = `
-WITH ranked AS (
-    SELECT silver_source_id, instrument_external_id, name, symbol, currency,
-           ROW_NUMBER() OVER (
-               PARTITION BY silver_source_id
-               ORDER BY first_seen_at, instrument_external_id
-           ) AS rn
-      FROM instruments
-     WHERE symbol IS NOT NULL
-       AND name   IS NOT NULL
-)
 SELECT silver_source_id, instrument_external_id, name, symbol, currency
-  FROM ranked
- WHERE rn <= ?
- ORDER BY silver_source_id, rn`
-	rows, err := db.QueryContext(ctx, q, maxAnchors)
+  FROM instruments
+ WHERE symbol IS NOT NULL
+   AND name   IS NOT NULL
+ ORDER BY silver_source_id, first_seen_at, instrument_external_id`
+	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("collectAnchors: %w", err)
 	}
 	defer rows.Close()
 	var out []anchor
+	perSource := map[string]int{}
 	for rows.Next() {
 		var a anchor
 		var ccy sql.NullString
 		if err := rows.Scan(&a.SilverSourceID, &a.InstrumentExternalID, &a.Name, &a.Symbol, &ccy); err != nil {
 			return nil, fmt.Errorf("scan anchor: %w", err)
 		}
+		if perSource[a.SilverSourceID] >= maxAnchors || symbolProblem(a.Symbol) != "" {
+			continue
+		}
 		a.Currency = ccy.String
+		perSource[a.SilverSourceID]++
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -932,16 +1004,12 @@ func parseAndValidate(body string, candKeyset map[string]bool, configuredSources
 			invalid = append(invalid, invalidRow{Raw: row, Reason: fmt.Sprintf("lookup_value %q not in input set for (%s,%s)", value, source, kind)})
 			continue
 		}
-		if !tickerShapeRe.MatchString(symbol) {
-			invalid = append(invalid, invalidRow{Raw: row, Reason: fmt.Sprintf("symbol %q does not look ticker-shaped", symbol)})
-			continue
-		}
 		if symbol == value {
 			invalid = append(invalid, invalidRow{Raw: row, Reason: fmt.Sprintf("symbol %q equals lookup_value (model echoed input)", symbol)})
 			continue
 		}
-		if isinShapeRe.MatchString(symbol) {
-			invalid = append(invalid, invalidRow{Raw: row, Reason: fmt.Sprintf("symbol %q is ISIN-shaped (not a real ticker)", symbol)})
+		if problem := symbolProblem(symbol); problem != "" {
+			invalid = append(invalid, invalidRow{Raw: row, Reason: problem})
 			continue
 		}
 		valid = append(valid, resolution{
@@ -952,6 +1020,22 @@ func parseAndValidate(body string, candKeyset map[string]bool, configuredSources
 		})
 	}
 	return valid, invalid
+}
+
+// symbolProblem says why symbol does not have a ticker's shape, or ""
+// when it does. An answer must pass it to be stored, and an existing
+// instrument's symbol to serve as an anchor: an anchor showing an
+// identifier as a symbol teaches the model to answer with identifiers.
+func symbolProblem(symbol string) string {
+	switch {
+	case !tickerShapeRe.MatchString(symbol):
+		return fmt.Sprintf("symbol %q does not look ticker-shaped", symbol)
+	case isinShapeRe.MatchString(symbol):
+		return fmt.Sprintf("symbol %q is ISIN-shaped (not a real ticker)", symbol)
+	case cusipShapeRe.MatchString(symbol):
+		return fmt.Sprintf("symbol %q is CUSIP-shaped (not a real ticker)", symbol)
+	}
+	return ""
 }
 
 // ---- persistence -----------------------------------------------------------
@@ -1100,7 +1184,7 @@ ON CONFLICT (silver_source_id, lookup_kind, lookup_value) DO UPDATE SET
 
 // resolveSymbolsUsage is the long-form help text printed by -h.
 func resolveSymbolsUsage() string {
-	return `usage: wealthdb resolve-symbols [-n | --dry-run] [--max-attempts N] [--no-currency] [--max-anchors N] [--show-prompt] [--overrides-only]
+	return `usage: wealthdb resolve-symbols [-n | --dry-run] [--batch N] [--max-attempts N] [--no-currency] [--max-anchors N] [--show-prompt] [--overrides-only]
 
 Back-fill missing instrument ticker symbols by consulting the LLM
 configured in wealthdb.cfg's "symbol_resolution.model" block.
@@ -1113,6 +1197,10 @@ Reads candidates from:
     free-text description (typical: Schwab DIVIDEND_OR_INTEREST
     payloads whose transferItems only have the cash leg).
 
+The candidates are asked about in batches of --batch, one model call
+each, and each batch's answers are stored as it completes, so a batch
+that fails costs only itself.
+
 Resolved tickers are upserted into the symbol_resolutions side
 table; the base instruments and transactions tables are not
 touched. The read path in 'positions' and 'transactions' picks
@@ -1120,7 +1208,8 @@ them up via LEFT JOIN + COALESCE, so re-running the command with
 better data simply overwrites stale resolutions.
 
 cfg.symbol_resolution.overrides are synced to symbol_resolutions
-on every invocation (whether or not the LLM runs). Use
+on every invocation (whether or not the LLM runs), and a key they
+name is never sent to the LLM, so its answer cannot displace them. Use
 --overrides-only to apply cfg overrides without making an LLM call
 — useful for fast correction of bad LLM resolutions.
 
@@ -1131,11 +1220,14 @@ report as narrative data, not as a summary safe to paste.
 
 Flags:
   -n, --dry-run         print the resolution plan, don't write
+      --batch N         candidates per model call (default 100)
       --max-attempts N  retry the LLM up to N times when responses
                         contain hallucinated rows (default 3)
       --no-currency     drop the currency hint column from the prompt
                         (experiment / ablation)
-      --max-anchors N   cap the in-context anchor examples (default 30)
+      --max-anchors N   cap the in-context anchor examples per silver
+                        source (default 30); a batch sees only its own
+                        sources' anchors
       --show-prompt     print the full LLM prompt to stderr (debugging)
       --overrides-only  apply cfg.symbol_resolution.overrides and exit; skip the
                         LLM round-trip entirely`

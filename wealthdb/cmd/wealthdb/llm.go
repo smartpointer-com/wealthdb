@@ -64,6 +64,22 @@ type invalidRow struct {
 	Reason string
 }
 
+// splitBatches cuts a model pass's candidates into consecutive runs of
+// at most size, one model call each. A backlog sent whole in a single
+// call dies on callLLM's five-minute ceiling: no local model answers a
+// prompt that size inside it, and none should be asked to.
+func splitBatches[T any](items []T, size int) [][]T {
+	if size < 1 {
+		size = 1
+	}
+	var out [][]T
+	for start := 0; start < len(items); start += size {
+		end := min(start+size, len(items))
+		out = append(out, items[start:end])
+	}
+	return out
+}
+
 // openAIRequest mirrors the chat-completions JSON body. Only the
 // fields we actually set; the server tolerates extras.
 type openAIRequest struct {

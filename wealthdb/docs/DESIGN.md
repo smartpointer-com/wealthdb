@@ -395,8 +395,9 @@ a write.
 
 `categorize` and `resolve-symbols` hold the mutex end to end but
 release the DuckDB handle across their model calls, so readers are
-not shut out for the length of a run. Re-taking the handle to
-store what the model answered can lose the race against a reader
+not shut out for the length of a run. Both send their candidates
+in batches and store each batch's answers as it completes. Re-taking
+the handle to store them can lose the race against a reader
 that got in meanwhile, so that store is retried on a short bounded
 backoff, and a final failure prints the unstored answers in the
 `--dry-run` plan format rather than discarding what was paid for.

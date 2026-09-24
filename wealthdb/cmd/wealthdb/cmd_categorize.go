@@ -83,24 +83,19 @@ func init() {
 // the row was booked, not whom it paid; it is counted with the
 // uninformative.
 
-// Flag defaults. --max-attempts and --max-anchors mirror
+// Flag defaults. --max-attempts, --max-anchors and --batch mirror
 // resolve-symbols so the two LLM commands behave the same way under
-// the same flags. --batch is this command's own: a merchant backlog
-// runs to thousands of signatures where a symbol backlog runs to
-// dozens, and the precedent has never needed to cut its set.
+// the same flags; the batch default is this command's own, because a
+// merchant prompt carries the whole taxonomy.
 const (
 	defaultCategorizeMaxAttempts = 3
 	defaultCategorizeMaxAnchors  = 30
 
 	// defaultCategorizeBatch is how many merchant signatures one model
-	// call carries. A backlog sent whole in a single call dies on the
-	// transport's five-minute ceiling: no local model produces a CSV that
-	// size inside it, and none should be asked to. At forty, a model
-	// served locally answers in well under a minute — the taxonomy and
-	// anchor blocks dominate the prompt and are paid once per batch
-	// regardless of its size, while the answer is forty short rows — so
-	// the ceiling goes back to being a guard against a wedged serve
-	// rather than something an ordinary call can reach.
+	// call carries (see splitBatches). At forty, a model served locally
+	// answers in well under a minute — the taxonomy and anchor blocks
+	// dominate the prompt and are paid once per batch regardless of its
+	// size, while the answer is forty short rows.
 	defaultCategorizeBatch = 40
 )
 
@@ -466,6 +461,10 @@ func runCategorizeFamily(
 		len(anchors), level, modelCfg.Name)
 	printNeverSent(stdout, skipped)
 
+	// Candidates arrive sorted by signature, so a batch is an
+	// alphabetical slice — which is fine, because every batch carries
+	// the whole taxonomy and its own anchors, and nothing in a batch
+	// depends on the candidates outside it.
 	batches := splitBatches(candidates, opts.batch)
 	printCategorizeBatchPlan(stdout, fam, batches, opts.batch, anchors, level, opts.maxAttempts, opts.dryRun)
 
@@ -1058,26 +1057,6 @@ func uncategorisedCandidates(cands []merchantCandidate, valid []categorization) 
 }
 
 // ---- batching ----------------------------------------------------------------
-
-// splitBatches cuts the candidate set into consecutive runs of at most
-// size. Candidates arrive sorted by signature, so a batch is an
-// alphabetical slice — which is fine, because every batch carries the
-// whole taxonomy and its own anchors, and nothing in a batch depends
-// on the candidates outside it.
-func splitBatches(cands []merchantCandidate, size int) [][]merchantCandidate {
-	if size < 1 {
-		size = 1
-	}
-	var out [][]merchantCandidate
-	for start := 0; start < len(cands); start += size {
-		end := start + size
-		if end > len(cands) {
-			end = len(cands)
-		}
-		out = append(out, cands[start:end])
-	}
-	return out
-}
 
 // batchOutcome is what one batch produced, handed to the sink as the
 // batch completes so its verdicts can be stored before the next batch

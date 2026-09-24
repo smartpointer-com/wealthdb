@@ -4,6 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -199,6 +205,15 @@ ubs,instrument_external_id,IE0000000040,XDEW`
 		}
 	})
 
+	t.Run("rejects CUSIP-shaped symbol", func(t *testing.T) {
+		// Model copies a CUSIP out of the narrative instead of naming a ticker.
+		body := `ubs,instrument_external_id,IE0000000040,00000A000`
+		_, invalid := parseAndValidate(body, candKeys, sources)
+		if len(invalid) != 1 || !strings.Contains(invalid[0].Reason, "CUSIP-shaped") {
+			t.Errorf("want 1 invalid (CUSIP-shaped symbol), got %v", invalid)
+		}
+	})
+
 	t.Run("tolerates code fences", func(t *testing.T) {
 		body := "```csv\nschwab,name,ISHARES TREASURY FLOATNGRATE BD ETF,TFLO\n```"
 		valid, invalid := parseAndValidate(body, candKeys, sources)
@@ -303,7 +318,7 @@ func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
 		Symbol:         "EXGF",
 	}}
 	var out bytes.Buffer
-	storeErr := storeResolutions(context.Background(), goldPath, rows, "test-model", &out)
+	_, _, storeErr := storeResolutions(context.Background(), goldPath, rows, "test-model", &out)
 	reader.Close()
 
 	if storeErr != nil {
@@ -326,5 +341,206 @@ func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
 	}
 	if symbol != "EXGF" {
 		t.Errorf("stored symbol = %q, want EXGF", symbol)
+	}
+}
+
+func TestAnchorsForKeepsTheBatchSources(t *testing.T) {
+	anchors := []anchor{
+		{SilverSourceID: "a", InstrumentExternalID: "1"},
+		{SilverSourceID: "b", InstrumentExternalID: "2"},
+		{SilverSourceID: "a", InstrumentExternalID: "3"},
+	}
+	got := anchorsFor(anchors, []candidate{{SilverSourceID: "a"}, {SilverSourceID: "a"}})
+	if len(got) != 2 || got[0].InstrumentExternalID != "1" || got[1].InstrumentExternalID != "3" {
+		t.Errorf("anchors for a batch of source a = %+v, want a's two in order", got)
+	}
+	if got := anchorsFor(anchors, []candidate{{SilverSourceID: "c"}}); len(got) != 0 {
+		t.Errorf("anchors for a source with none = %+v, want none", got)
+	}
+}
+
+// standInModel serves chat completions that answer every candidate the
+// prompt carries with a ticker made of its lookup value's last character,
+// recording the candidate rows of each call it receives.
+func standInModel(t *testing.T) (*httptest.Server, *[][][]string) {
+	t.Helper()
+	var calls [][][]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_, block, _ := strings.Cut(req.Messages[len(req.Messages)-1].Content,
+			"Unresolved rows that need a ticker (same INPUT shape as above):\n")
+		block, _, _ = strings.Cut(block, "\n\n")
+		rows, err := csv.NewReader(strings.NewReader(block)).ReadAll()
+		if err != nil {
+			t.Errorf("read prompt candidates: %v", err)
+		}
+		calls = append(calls, rows)
+		var answer strings.Builder
+		for _, row := range rows {
+			fmt.Fprintf(&answer, "%s,%s,%s,TK%s\n", row[0], row[1], row[2], row[2][len(row[2])-1:])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": answer.String()}}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// resolveSymbolsFixture initialises a gold holding n symbol-less
+// instruments of the test source, EX00000001 onwards, with the config
+// pointed at the stand-in model and carrying the given overrides.
+func resolveSymbolsFixture(t *testing.T, modelURL string, n int, overrides []any) (cfgPath, goldPath string) {
+	t.Helper()
+	cfgPath = setupCLITest(t)
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg["symbol_resolution"] = map[string]any{
+		"model":     map[string]any{"baseUrl": modelURL + "/v1", "api": "openai-completions", "name": "stand-in"},
+		"overrides": overrides,
+	}
+	raw, _ = json.Marshal(cfg)
+	if err := os.WriteFile(cfgPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := run(t, "-c", cfgPath, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	goldPath = goldPathFromCfg(cfgPath)
+	db, err := sql.Open("duckdb", goldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for i := 1; i <= n; i++ {
+		if _, err := db.Exec(`INSERT INTO instruments (silver_source_id, instrument_external_id,
+                asset_class, name, first_seen_at, last_seen_at)
+            VALUES ('schwab-test', ?, 'public_equity', ?, 0, 0)`,
+			fmt.Sprintf("EX0000000%d", i), fmt.Sprintf("EXAMPLE FUND %d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return cfgPath, goldPath
+}
+
+// storedSymbols reads symbol_resolutions back as lookup value → symbol
+// and model name.
+func storedSymbols(t *testing.T, goldPath string) map[string][2]string {
+	t.Helper()
+	db, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT lookup_value, symbol, model_name FROM symbol_resolutions`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string][2]string{}
+	for rows.Next() {
+		var value, symbol, model string
+		if err := rows.Scan(&value, &symbol, &model); err != nil {
+			t.Fatal(err)
+		}
+		out[value] = [2]string{symbol, model}
+	}
+	return out
+}
+
+// TestResolveSymbolsAsksOneBatchPerCallAndStoresEach: five candidates at
+// --batch 2 are three calls, none asked about another batch's rows, and
+// every answer lands in gold.
+func TestResolveSymbolsAsksOneBatchPerCallAndStoresEach(t *testing.T) {
+	srv, calls := standInModel(t)
+	cfgPath, goldPath := resolveSymbolsFixture(t, srv.URL, 5, nil)
+
+	out, errOut, code := run(t, "-c", cfgPath, "resolve-symbols", "--batch", "2")
+	if code != 0 {
+		t.Fatalf("resolve-symbols exit %d:\n%s\n%s", code, out, errOut)
+	}
+	if len(*calls) != 3 {
+		t.Errorf("model calls = %d, want 3 (5 candidates in batches of 2)", len(*calls))
+	}
+	for i, rows := range *calls {
+		if len(rows) > 2 {
+			t.Errorf("call %d carried %d candidates, want at most one batch of 2", i+1, len(rows))
+		}
+	}
+	if got := storedSymbols(t, goldPath); len(got) != 5 {
+		t.Errorf("stored resolutions = %v, want all 5\n%s", got, out)
+	}
+}
+
+// TestResolveSymbolsLeavesConfigDecidedKeysAlone: a key the config pins
+// and a key it suppresses are never put to the model, so the model's
+// answers, stored after the overrides are synced, cannot displace them.
+func TestResolveSymbolsLeavesConfigDecidedKeysAlone(t *testing.T) {
+	srv, calls := standInModel(t)
+	cfgPath, goldPath := resolveSymbolsFixture(t, srv.URL, 3, []any{
+		map[string]any{"silver_source_id": "schwab-test", "lookup_kind": "instrument_external_id",
+			"lookup_value": "EX00000001", "symbol": "PINNED"},
+		map[string]any{"silver_source_id": "schwab-test", "lookup_kind": "instrument_external_id",
+			"lookup_value": "EX00000002", "delete": true},
+	})
+
+	out, errOut, code := run(t, "-c", cfgPath, "resolve-symbols")
+	if code != 0 {
+		t.Fatalf("resolve-symbols exit %d:\n%s\n%s", code, out, errOut)
+	}
+	var asked []string
+	for _, rows := range *calls {
+		for _, row := range rows {
+			asked = append(asked, row[2])
+		}
+	}
+	if len(asked) != 1 || asked[0] != "EX00000003" {
+		t.Errorf("the model was asked about %v, want only the undecided EX00000003", asked)
+	}
+	got := storedSymbols(t, goldPath)
+	if got["EX00000001"] != [2]string{"PINNED", manualOverrideModelName} {
+		t.Errorf("pinned key = %v, want the config's PINNED", got["EX00000001"])
+	}
+	if _, ok := got["EX00000002"]; ok {
+		t.Errorf("suppressed key came back as %v", got["EX00000002"])
+	}
+	if got["EX00000003"][0] != "TK3" {
+		t.Errorf("undecided key = %v, want the model's TK3", got["EX00000003"])
+	}
+}
+
+// TestCollectAnchorsSkipsIdentifierSymbols: an instrument whose symbol
+// is a CUSIP or an ISIN is not an example of a ticker, and showing it to
+// the model as one teaches it to answer with identifiers. A ticker that
+// is also the instrument's key is a fine example.
+func TestCollectAnchorsSkipsIdentifierSymbols(t *testing.T) {
+	_, goldPath := resolveSymbolsFixture(t, "http://unused", 0, nil)
+	db, err := sql.Open("duckdb", goldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, row := range [][2]string{{"AAAA", "AAAA"}, {"00000A000", "00000A000"}, {"XX0000000009", "XX0000000009"}} {
+		if _, err := db.Exec(`INSERT INTO instruments (silver_source_id, instrument_external_id,
+                asset_class, symbol, name, first_seen_at, last_seen_at)
+            VALUES ('schwab-test', ?, 'public_equity', ?, 'EXAMPLE', 0, 0)`, row[0], row[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	anchors, err := collectAnchors(context.Background(), db, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(anchors) != 1 || anchors[0].Symbol != "AAAA" {
+		t.Errorf("anchors = %+v, want only the ticker AAAA", anchors)
 	}
 }

@@ -555,7 +555,7 @@ func TestPrintCategorizeBatchPlan(t *testing.T) {
 	if strings.Contains(out.String(), "dry run:") {
 		t.Error("a real run's plan must not carry the dry-run line")
 	}
-	if len(splitBatches(nil, 2)) != 0 {
+	if len(splitBatches[merchantCandidate](nil, 2)) != 0 {
 		t.Error("no candidates, no batches")
 	}
 	if got := formatBatchSizes(splitBatches(make([]merchantCandidate, 2010), 40)); got != "50 × 40, 1 × 10" {
