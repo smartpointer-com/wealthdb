@@ -414,6 +414,82 @@ def test_single_account_layout_survives_the_ocr_losses():
         "2021-09-02", "2021-09-07", "2021-09-30"]
 
 
+# Two tokens of page-edge furniture ahead of a ledger line, as the
+# recogniser reads them onto a row near the page's edge.
+_FURNITURE = "- 4 "
+_SAVINGS_INTEREST_ROW = "01-31 Interest Credited Deposit $20.00 $4,020.00"
+
+
+def test_an_interest_row_behind_two_tokens_of_furniture_is_read():
+    # Lost, the row leaves the ledger short of the stated ending balance
+    # by its own amount and the whole section is refused.
+    text = _COMBINED_TEXT.replace(_SAVINGS_INTEREST_ROW,
+                                  _FURNITURE + _SAVINGS_INTEREST_ROW)
+    savings = ps.parse_deposit_statement(text)[0][1]
+    assert savings.error is None
+    assert [(r.date, r.amount, r.bucket) for r in savings.rows] == [
+        ("2023-01-15", -1000.0, "withdrawals"),
+        ("2023-01-31", 20.0, "interest")]
+    assert savings.rows[-1].description == "Interest Credited Deposit"
+
+
+def test_every_ledger_anchor_reads_through_two_tokens_of_furniture():
+    text = _COMBINED_TEXT
+    for line in ("(+) Deposits $2,000.00",
+                 "(+) Interest Paid $20.00 Annual Percentage Yield",
+                 "(-) Withdrawals $1,400.00",
+                 "(-) Service Charges $10.00",
+                 "TRANSACTION DETAIL: Savings Account",
+                 "ACCOUNT SUMMARY",
+                 "CHECKS OUTSTANDING"):
+        text = text.replace(line, _FURNITURE + line)
+    checking, savings = ps.parse_deposit_statement(text)[0]
+    assert (checking.error, savings.error) == (None, None)
+    assert (checking.deposits, checking.withdrawals, checking.charges,
+            savings.interest) == (2000.0, 1400.0, 10.0, 20.0)
+    assert len(checking.rows) == 4 and len(savings.rows) == 2
+
+
+def test_a_closed_ledger_stays_closed_behind_furniture():
+    # A worksheet line past the ledger's end has a row's shape; read as a
+    # row it would break the running balance.
+    text = _COMBINED_TEXT.replace(
+        "CHECKS OUTSTANDING\n",
+        _FURNITURE + "CHECKS OUTSTANDING\n"
+        "01-20 EXAMPLE CHECK OUTSTANDING $-5.00 $1,595.00\n")
+    checking = ps.parse_deposit_statement(text)[0][0]
+    assert checking.error is None
+    assert len(checking.rows) == 4
+
+
+def test_a_row_opening_on_a_dated_description_keeps_its_own_date():
+    m = ps._LEDGER_ROW_RE.match("01-31 02-15 EXAMPLE TRANSFER $-5.00 $5.00")
+    assert m and m["date"] == "01-31"
+
+
+def test_prose_is_not_a_row_however_it_ends():
+    # Three words ahead of a date are a sentence, not furniture, even when
+    # the line ends in a figure and a balance.
+    prose = "Rates changed on 01-31 Interest Credited Deposit $20.00 $4,020.00"
+    assert ps._LEDGER_ROW_RE.match(prose) is None
+    for prefix in ("", "4 ", "- 4 "):
+        m = ps._LEDGER_ROW_RE.match(prefix + _SAVINGS_INTEREST_ROW)
+        assert m and m["date"] == "01-31", prefix
+    # Inside a ledger it is skipped like any other text, so the section
+    # still reads exactly its own rows.
+    text = _COMBINED_TEXT.replace(_SAVINGS_INTEREST_ROW,
+                                  _SAVINGS_INTEREST_ROW + "\n" + prose)
+    savings = ps.parse_deposit_statement(text)[0][1]
+    assert savings.error is None
+    assert len(savings.rows) == 2
+
+
+def test_prose_is_not_a_summary_figure():
+    line = "Your rate on (+) Interest Paid $20.00"
+    assert all(pattern.match(line) is None
+               for _key, pattern in ps._SUMMARY_LINES)
+
+
 def test_a_summary_that_does_not_close_is_refused():
     text = _COMBINED_TEXT.replace("(-) Withdrawals $1,400.00",
                                   "(-) Withdrawals $1,400.09")

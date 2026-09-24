@@ -56,14 +56,14 @@ Three forms live here, told apart by their page-1 title:
   is not, and a statement whose wording drifted refuses rather
   than booking its interest as capital.
 
-  Those checks are also what lets the row and summary patterns be
+  Those checks are also what lets the ledger and summary patterns be
   LIBERAL about what OCR does to a character. A ``-`` read as
-  ``:``, a lost closing paren, a stray glyph from the margin landing
-  at the head of a row — each is accepted, because a line that is
-  not really a row cannot carry the exact running balance the one
-  above it implies. Strictness belongs in the arithmetic, where it
-  can tell right from wrong, not in the pattern, where it can only
-  tell familiar from unfamiliar.
+  ``:``, a lost closing paren, a token or two of page-edge furniture
+  at the head of a line — each is accepted, because a line misread
+  as a row, a summary figure, or the ledger's start or end fails one
+  of the four checks above. Strictness belongs in the arithmetic,
+  where it can tell right from wrong, not in the pattern, where it
+  can only tell familiar from unfamiliar.
 
 * **Mortgage statement** — ``Mortgage Loan Statement``, one loan.
   Prints ``Outstanding Principal``, an interest rate, a
@@ -206,14 +206,30 @@ _BEGIN_END_RE = re.compile(
     rf"(?P<begin>{_MONEY})\s+Ending\s+Balance\s+as\s+of\s+"
     rf"(?P<end>{_SHORT_DATE})\s+(?P<ending>{_MONEY})")
 # The sign marker is "(+)" or "(-)", whose closing paren OCR
-# sometimes drops; the check below is what makes tolerating that safe.
+# sometimes drops.
 _PLUS = r"\(\s*\+\s*\)?"
 _MINUS = r"\(\s*-\s*\)?"
+# Page-edge furniture — a stray mark, a digit, half a routing number, a
+# form code — that the recogniser reads onto the head of a line. Up to
+# two such tokens are skipped. The skip is lazy, taking as few tokens as
+# let the rest of the pattern match, so a ledger row whose description
+# opens on a date keeps its own; and it is bounded, because a longer run
+# is prose: three words ahead of a date are a sentence, not a margin.
+# Every anchor that opens, closes, dates or totals a ledger takes it,
+# safely for the reason the module docstring gives. The beginning-and-
+# ending balance line is searched anywhere on its line instead: its two
+# labelled dates and two figures cannot occur in prose.
+_NOISE = r"(?:\S+\s+){0,2}?"
 _SUMMARY_LINES = (
-    ("deposits", re.compile(rf"^{_PLUS}\s*Deposits\s+(?P<amt>{_MONEY})")),
-    ("interest", re.compile(rf"^{_PLUS}\s*Interest\s+Paid\s+(?P<amt>{_MONEY})")),
-    ("withdrawals", re.compile(rf"^{_MINUS}\s*Withdrawals\s+(?P<amt>{_MONEY})")),
-    ("charges", re.compile(rf"^{_MINUS}\s*Service\s+Charges\s+(?P<amt>{_MONEY})")),
+    ("deposits",
+     re.compile(rf"^{_NOISE}{_PLUS}\s*Deposits\s+(?P<amt>{_MONEY})")),
+    ("interest",
+     re.compile(rf"^{_NOISE}{_PLUS}\s*Interest\s+Paid\s+(?P<amt>{_MONEY})")),
+    ("withdrawals",
+     re.compile(rf"^{_NOISE}{_MINUS}\s*Withdrawals\s+(?P<amt>{_MONEY})")),
+    ("charges",
+     re.compile(rf"^{_NOISE}{_MINUS}\s*Service\s+Charges\s+"
+                rf"(?P<amt>{_MONEY})")),
 )
 
 # How the ledger spells those same four buckets in a row's own
@@ -238,15 +254,10 @@ _VERB_BY_BUCKET = {
     "charges": "FEE PAID",
 }
 
-# A run from the page margin — half a routing number, a form code —
-# lands at the head of a line often enough that every ledger anchor
-# tolerates one leading token. Nothing is accepted on the strength of
-# a match alone, so a looser anchor costs nothing.
-_NOISE = r"(?:\S+\s+)?"
-
 # A ledger row: MM-DD, a description, the signed amount, the running
-# balance. Continuation lines carrying the rest of a description have
-# no leading date and are skipped. So are the ledger's own
+# balance, behind at most the furniture `_NOISE` skips. Continuation
+# lines carrying the rest of a description have no leading date and
+# are skipped. So are the ledger's own
 # Beginning/Ending Balance rows, which repeat the summary rather than
 # moving money: they print one money column, not the amount-and-balance
 # pair this asks for, and so never match. The row anchor takes the
@@ -509,7 +520,9 @@ _OUTSTANDING_RE = re.compile(
     rf"Outstanding\s+Principal\s+(?P<amt>{_MONEY})")
 _LOAN_NUMBER_RE = re.compile(
     r"(?:Account\s+Number|MORTGAGE\s+LOAN\s+NO\.?)\s*:?\s*(?P<acct>\d{10})\b")
-# The principal / interest split, last month and year to date.
+# The principal / interest split, last month and year to date. Anchored
+# exactly, unlike the deposit ledger's lines: no sum checks these two
+# figures, so a looser anchor would be a guess nothing catches.
 _BREAKDOWN_RE = re.compile(
     rf"^(?P<label>Principal|Interest)\s+(?P<month>{_MONEY})\s+(?P<ytd>{_MONEY})\s*$")
 
