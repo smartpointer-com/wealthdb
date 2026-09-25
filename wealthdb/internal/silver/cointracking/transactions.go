@@ -10,56 +10,25 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-// Transactions projects every silver transactions row in the
-// window into one or two canonical TransactionChange records:
+// Transactions projects every silver transactions row in the window into
+// one or two canonical records (docs/adapters/cointracking.md §7):
 //
-//	Trade where one side is the portfolio's base currency
-//	  → 1 row (kind=buy or kind=sell). Instrument = the non-base
-//	    side; Quantity = signed amount; NetAmount = signed base-
-//	    currency cash flow.
+//   - a Trade with the portfolio's base currency on one side is one buy or
+//     sell of the non-base side, its net amount the base-currency cash flow;
+//   - a Trade with no base-currency side is a sell and a buy whose ±V
+//     base-currency net amounts cancel;
+//   - every other CT type is one row by kindmap.go, in the currency of the
+//     asset that moved, carrying instrument and quantity for a non-base
+//     asset.
 //
-//	Trade where neither side is the base currency (crypto-to-
-//	crypto or fiat-to-fiat-without-base)
-//	  → 2 rows (kind=sell of sell-leg + kind=buy of buy-leg).
-//	    NetAmount on both legs = ±V where V is the per-trade
-//	    base-currency value, computed via the sell-side price
-//	    lookup with a buy-side fallback. The two NetAmounts
-//	    cancel so base-currency balance derived from SUM is
-//	    unaffected by the trade.
-//
-//	Non-Trade types (Deposit, Withdrawal, Other Fee, Staking,
-//	Reward / Bonus, Income, Income/Expense (non taxable),
-//	Airdrop, Gift / Tip, Gift, Donation, Spend, Lost, Stolen)
-//	  → 1 row per the CT-type-to-canonical-TxKind mapping in
-//	    kindmap.go. Currency = the asset that actually moved
-//	    (not the portfolio's base ccy), NetAmount = ±amount in
-//	    that currency, signed by direction. For non-base assets
-//	    the row also carries Instrument=ticker + Quantity=
-//	    ±amount so position-side rollups keyed on Instrument
-//	    work too; base-currency cash events leave Instrument /
-//	    Quantity NULL (cash-flow-only).
-//
-//	    Setting Currency to the asset (e.g. ETH for a staking
-//	    row) lets the gold layer compute value_USD by joining
-//	    NetAmount against the asset's USD price on the event
-//	    date. The Instrument==Currency overlap is excluded from
-//	    the standard balance-derivation formula (see invariant
-//	    below) so this doesn't double-count.
-//
-// Closing-balance invariant — for any asset C held in a portfolio:
+// The rows keep the closing-balance invariant against silver's replayed
+// positions_daily, for any asset C:
 //
 //	balance(C) = SUM(Quantity  WHERE Instrument = C)
 //	           + SUM(NetAmount WHERE Currency   = C)
 //
-// holds across all emitted rows. The portfolios' positions_daily
-// in silver is the reference; gold transactions reconstruct the
-// same numbers via the formula above.
-//
-// Fees on Trade rows are NOT emitted as separate fee transactions
-// — CT internalises the fee into the buy/sell amounts already, so
-// a separate fee row would double-count. The "Other Fee" CT type
-// (standalone fees not attached to a trade) is the only path that
-// produces a fee row.
+// A trade's fee is already inside its amounts, so only the standalone
+// "Other Fee" type produces a fee row.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil

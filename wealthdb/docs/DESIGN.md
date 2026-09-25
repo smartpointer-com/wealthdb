@@ -570,19 +570,8 @@ flag.
 | `-x`, `--currency` | `default_currency` | ISO 4217 output currency; historic FX at each line's `occurred_at`. |
 | `-p`, `--privacy` | off | Redact account IDs, counterparties, and amounts. |
 
-**The window default is trailing-twelve-months, not since-inception.**
-The returns window defaults to inception because a return is a
-cumulative fact about the whole history; a spending report is read
-against recent habit, and a window reaching back past the day a
-source's card ledger begins covers a cash-only population — a `total`
-over it would silently answer a different question.
-
-**No row-filter flags**, deliberately, matching `holdings positions`
-and `transactions`: filtering by merchant, category or account belongs
-to `-f json` plus a downstream filter, to SQL, or to the dashboard. A
-filter flag on a report whose numbers are shares of a bucket would also
-have to decide whether the denominator moves with the filter, and every
-answer to that is wrong for some reader.
+The window defaults to the trailing twelve months rather than inception,
+and there are no row-filter flags; docs/SPENDING.md §7 argues both.
 
 **Privacy classes** (§4.6) are the substantive per-column decision here:
 

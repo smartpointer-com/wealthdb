@@ -146,52 +146,17 @@ var statementSectionKinds = map[string]canonical.TxKind{
 	"STMT_INTEREST": canonical.TxKindInterest,
 }
 
-// cardTxKind maps a row's direction and spend category to the canonical
-// taxonomy, and reports whether the direction was recognised. An unrecognised
-// direction keeps the raw string in the payload and falls back to the sign
-// silver already normalised — purchase when negative, card_payment otherwise
-// — rather than to the `other` that docs/DESIGN.md §6.8 makes the fleet
-// default for an unrecognised kind (chase does exactly that). The departure
-// is deliberate, and it costs the drift signal `other` would raise, which is
-// why the raw string is kept in the payload. Downstream reads the kind, not
-// the sign:
-// `other` is in neither the spending population nor the matcher pool, so a
-// spend row kinded it would leave the spending base and misstate what was
-// spent, and a balance-reducing one would never be offered to the matcher as
-// a bill.
-//
-// Two vocabularies share the `kind` column, one per era: the activity JSON's
-// DEBIT/CREDIT direction, read together with the spend category, and a
-// statement section (`STMT_*`) for the rows older than the structured horizon.
-//
-// The category is what separates the two credits Amex issues, and it separates
-// them the same way chase's does: the provider leaves a BILL PAYMENT
-// uncategorised, while a statement credit or a merchant refund carries a
-// category like any other row. So:
-//
-//   - CREDIT with no category → `card_payment`. This is the monthly bill, and
-//     kinding it as such is what lets the internal-transfer matcher pair it
-//     with the withdrawal on the cash account that paid it, replacing the
-//     `card_spend` placeholder with the purchases this card itemises.
-//   - CREDIT with a category → `refund`. It nets against the spend it reverses
-//     inside the spending base. The reversal of a FEE reads the same way: the
-//     direction is settled before the category, so it stays a credit rather
-//     than becoming a second, sign-forced `fee`.
-//   - DEBIT categorised under fees → `fee`. Interest is billed into the same
-//     bucket and is not separated here: only the statement states it as its own
-//     figure, and guessing it from a descriptor would be a worse answer than a
-//     fee. `statement_balances.interest` carries the period's own figure.
-//   - DEBIT otherwise → `purchase`.
-//
-// The uncategorised-credit rule inherits chase's cost, stated there in full: an
-// uncategorised merchant refund would be kinded `card_payment` and leave the
-// spending base. The converse mapping would mis-state every monthly bill
-// instead, which is the larger and more frequent error.
-//
-// TxKindReward has no producer here. Amex marks the rows that EARN cash back,
-// on the purchases themselves, and a redemption arrives as an ordinary
-// categorised credit; there is no reward transaction to map, so the kind is
-// left unproduced rather than guessed at.
+// cardTxKind maps a row's direction and spend category — or, before the
+// structured horizon, its statement section (`STMT_*`) — to the canonical
+// kind, and reports whether the direction was recognised. The category is
+// what separates the two credits Amex issues: an uncategorised CREDIT is the
+// monthly bill (`card_payment`), a categorised one a refund; a DEBIT under
+// fees is a `fee`, any other a `purchase`. An unrecognised direction keeps
+// the raw string in the payload and falls back to the sign silver already
+// normalised, rather than to `other`, which reaches neither the spending base
+// nor the matcher. No reward kind is produced: Amex marks the purchases that
+// earn cash back, and a redemption is an ordinary categorised credit.
+// docs/adapters/amex.md §5 argues each rule and the cost it accepts.
 func cardTxKind(rawKind, category string, amt canonical.Decimal) (canonical.TxKind, bool) {
 	norm := strings.ToUpper(strings.TrimSpace(rawKind))
 	if k, ok := statementSectionKinds[norm]; ok {

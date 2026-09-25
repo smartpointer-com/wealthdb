@@ -1224,53 +1224,20 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 
 // ---- phase 4: the signature-version re-key ---------------------------------
 
-// rekeyStore carries paid-for verdicts across a normalisation change,
-// for whichever family's store it is given.
-//
-// A verdict store is keyed by signature alone, and a model verdict in
-// it cost real money. When Normalize starts producing a different
-// string for the same counterparty — a SignatureVersion bump — every
-// one of those verdicts would otherwise be orphaned behind a key
-// nothing will ever compute again, and the model tier would buy the
-// same answers a second time.
-//
-// Everything below is written in the merchant's words because that is
-// the case it was designed against; it holds word for word for a payer,
-// the signature being one key whichever direction the money moved.
+// rekeyStore carries paid-for verdicts across a normalisation change (a
+// SignatureVersion bump), for whichever family's store it is given, so the
+// model tier does not buy the same answers twice.
 //
 // A verdict is carried forward when all five hold: the row's signature
-// actually moved, EVERY row that carried the old signature now carries
-// the same new one, the store holds a verdict at the OLD signature,
-// that verdict predates the current SignatureVersion, and the NEW
-// signature has no verdict yet.
-//
-// The one-to-one condition is what keeps a carry from spreading an
-// artefact. A refinement of a genuine merchant's signature — a store
-// number dropped, a processor prefix stripped — moves all of its rows
-// together, and a verdict about that merchant is as true at the new
-// key as at the old. When the old signature's rows SPLIT across
-// several new keys, the old key never was a merchant: it was a shape
-// several creditors shared (the direct-debit notice version 2 strips
-// covers a card issuer and a telecom alike; the e-bill marker version
-// 4 strips, a utility and an insurer), and the verdict bought at it
-// describes the shape, not any creditor now visible. Carried by old
-// key alone it would file the telecom under whatever the model made
-// of the notice. Such a verdict is left where it is, unreachable, and
-// counted, so those merchants show up in the backlog and are re-asked.
-// A partial move — some rows stay at the old key while others leave —
-// is a split too: the rows that stayed keep the verdict at the key it
-// was bought at, and the rows that left get nothing.
-//
-// The last condition (no verdict at the new key yet) is what makes
-// this safe to run every pass: an existing verdict at the new key is
-// never overwritten, so a real re-categorisation is not undone by a
-// stale copy. model_name is preserved verbatim — a carried verdict
-// must still say which model produced the answer, not claim to be new
-// work.
-//
-// Ordering is deterministic (the rows arrive sorted), so when two old
-// signatures collapse onto one new signature the first wins and the
-// result does not depend on map iteration.
+// actually moved, EVERY row that carried the old signature now carries the
+// same new one, the store holds a verdict at the OLD signature, that verdict
+// predates the current SignatureVersion, and the NEW signature has no
+// verdict yet. An old key whose rows split across several new keys was a
+// shape several creditors shared, not a merchant, so its verdict stays
+// behind and is counted; an existing verdict at a new key is never
+// overwritten; model_name is preserved verbatim. docs/SPENDING.md §4 argues
+// each condition. The rows arrive sorted, so when two old signatures
+// collapse onto one new one the first wins, whatever the map order.
 func rekeyStore(
 	ctx context.Context,
 	tx *sql.Tx,

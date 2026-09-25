@@ -434,20 +434,12 @@ coding against:
   `CreateDeviceIdentityVerificationChallenge.v1` rather than the untrusted
   path's `ReadDeviceIdentityRegistrationChallenge.v1`.
 
-> **Superseded by §L — the contract this section originally drew, kept for
-> the record:** `login --check` therefore has a precise contract, and it is
-> firstcitizens' one: submit the form and read the outcome — **exit 0 when
-> the logon lands authenticated with no challenge (device still trusted),
-> non-zero when a challenge appears**. It sends no passcode, so it fires no
-> MFA. It cannot be a bare "is the session alive" probe, because between
-> runs the honest answer to that is always dead.
-
-What ships instead reads the profile's own `device-id` cookie and reports
-that — **exit 0 when the device is registered, 1 when it is not** — with no
-navigation and no call to the source (§L). It answers "will `download` run
-unattended", not "will the next sign-in succeed": only a sign-in sees a
-trust the provider revoked server-side, and spending one to ask whether a
-sign-in can be spent is self-defeating on this source.
+`login --check` therefore reads the profile's own `device-id` cookie and
+reports that — **exit 0 when the device is registered, 1 when it is not** —
+with no navigation and no call to the source (§L). It answers "will
+`download` run unattended", not "will the next sign-in succeed": only a
+sign-in sees a trust the provider revoked server-side, and spending one to
+ask whether a sign-in can be spent is self-defeating on this source.
 
 ### §H — Odds and ends the second capture added
 

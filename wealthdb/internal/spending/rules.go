@@ -224,51 +224,22 @@ var cashWithdrawalRule = spendRule{
 // is, because provenance in gold is the tier, not the rule.
 var builtinRules = []spendRule{
 	{
-		// A card payment leaving a cash account is one of two things,
-		// and which one is decided ABOVE this rule, by the matcher.
+		// A card bill leaving a cash account that the matcher did not pair
+		// with the card's own leg — a card no collector exists for, or a
+		// bill older than the card's ledger — is the only trace of that
+		// spending, so it is kept in the base as `card_spend`
+		// (docs/SPENDING.md §2). Collecting the card flips the verdict on
+		// the next pass, since the matcher outranks this rule.
 		//
-		// When the card is collected, the bill pairs with the card's
-		// own `card_payment` leg and the matcher marks both legs
-		// `internal_transfer`: the purchases are itemised on the card,
-		// so the bill is an own-account move. The matcher outranks this
-		// rule, so that verdict stands whatever the narrative says.
+		// Three pattern sets: the generic phrases for paying a card, the
+		// issuer descriptors of cardIssuers — a match on one also labels
+		// the line with the issuer's name — and cardIssuerShapes, the
+		// masked card numbers a phrase cannot spell. None names a retailer.
 		//
-		// When it is NOT — a card no collector exists for, or the deep
-		// era, where a card payment is dated before the card's own
-		// ledger begins — the bill has no counter-leg and is the only
-		// trace of that spending. This rule places `card_spend`: a
-		// placeholder primary, kept IN the spending base and shown as
-		// its own line, so the money is counted as what it is — generic
-		// spend on a card wealthdb does not itemise — rather than
-		// deleted as an own-account move. Collecting the card flips the
-		// verdict on the next pass, since the leg then pairs.
-		//
-		// Three pattern sets: the generic phrases that name the ACT of
-		// paying a card, the descriptor phrases of cardIssuers, the issuer
-		// formats a deposit-account export prints, and cardIssuerShapes,
-		// the masked
-		// card numbers a phrase cannot spell. None names a retailer — see
-		// the table's comment for why a store card is left alone.
-		//
-		// The issuer table also LABELS the bill: a match on a named
-		// issuer's descriptor carries that issuer's name out of
-		// RuleCategory, and the enrichment pass stores it as the line's
-		// merchant label, which is what lets a report group card spend by
-		// the card it went to. A match on a generic phrase, on the bare
-		// masked-card descriptor or on a shape names no issuer and labels
-		// nothing.
-		//
-		// A row the cash-withdrawal rule matches is not one of these,
-		// whatever else it carries. Cash taken at a machine is booked
-		// against the card that opened the drawer, so the counterparty
-		// is the masked card number this rule reads as a card bill —
-		// and the money is cash out, not spend on a card. The refusal
-		// is what stops rule order from deciding it: the later rule
-		// places the row from its own narrative, or, where only the
-		// bank's booking type names the machine, the provider tier
-		// does (§3). Cash is never card spend, and it will not become
-		// so when the card is collected either — a withdrawal is not
-		// on the card statement.
+		// A row the cash-withdrawal rule matches is refused whatever else
+		// it carries: cash taken at a machine is booked against the card
+		// that opened the drawer, so its counterparty is the masked number
+		// this rule reads as a bill, and it is cash out, never card spend.
 		refusedBy: &cashWithdrawalRule,
 		detailed:  canonical.SpendDetailedCardSpend,
 		tokens:    []string{"AUTOPAY", "AUTOPMT", "EPAY", "CARDMEMBER"},

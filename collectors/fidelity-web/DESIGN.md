@@ -1024,29 +1024,8 @@ the rendered HTML; silver scrapes from there.
 
 ## 10. Implementation status
 
-| Step | Status |
-| --- | --- |
-| Container scaffolding + design docs | done |
-| `download.py` — IUA gate, MFA, trust-device, profile dir, one-shot login → walk → logout | done |
-| `download.py` — positions Overview + DividendView (consolidated CSVs) | done |
-| `download.py` — activity preset 'Past 90 days' (page-level pill → radio → Apply Recent → networkidle) | done |
-| `download.py` — activity Custom-range backfill (Custom tab, ISO date inputs, retention-clamped, bisected into `MAX_ACTIVITY_WINDOW_DAYS` windows) | done |
-| `download.py` — documents: statements + tax forms via the Enterprise Document Center (rail-link type switch, year filter, row click → `financial-documents/download` JSON → base64 PDF; content-hash dedup) | done — see §8.5 |
-| `download.py` — `--explore`: shadow-/iframe-piercing DOM inventory for doc-center UI-drift debugging | done |
-| `download.py` — `--debug` gate on walk-phase captures (off by default; `--explore` implies it) | done |
-| `download.py` — balances + performance HTML capture (no structured export available on either surface) | done |
-| `prune.py` — delete debug captures + non-complete dumps from bronze (`--dry-run` plan mode, in-flight age guard) | done |
-| `migrations/0001_initial.sql` + `load.py` (positions, transactions, portfolios, accounts, documents; validation pass) | done |
-| `migrations/0002_*.sql` (currency + asset_class + is_core_position; drop cosmetic `*_present` flags) | done |
-| Statement-PDF parser (529 historical reconstruction) | done — `pdf_parsers.py` + migration 0004 populate `historical_position_snapshots` |
-| Per-account `account_registration` | deferred — see §11.5 |
-| `migrations/0003_*.sql` (`accounts.management_style` derived from `portfolios.kind`: 529 → `automated` (via 0006; 0003 first wrote `self_directed`), trust_managed → `discretionary`) | done — see §4.4 / §11.6 |
-| `migrations/0006_*.sql` (correct 529 `management_style` → `automated`) | done — see §4.4 |
-| `download.py` — Donor-Advised Fund phase (SSO hop → JSON REST API → CSV exports + PDF documents; rides modes `all`/`positions`) | done — see §12 |
-| `migrations/0007_*.sql` + `load._load_daf` (DAF bronze → shared silver tables; `portfolios.kind='daf'`) | done — see §12.3 |
-| `wealthdb` DAF taxonomy (`donor_advised_fund` kind + `charitable` wrapper, gold migration 0036, adapter mapping) | done — see §12.3 |
-| `pdf_parsers_daf.py` + `load._load_daf_historical` (Giving Account statement PDFs → `historical_position_snapshots`, reconciliation-gated) | done — see §12.3 |
-| `wealthdb` Fidelity adapter | sibling component (`wealthdb/`) |
+Everything above is built; the deferred per-account registration and the
+other open items are in §11.
 
 ## 11. Open questions
 

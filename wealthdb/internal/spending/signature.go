@@ -53,149 +53,11 @@ import (
 // produces. It exists so a change to the normalisation rules can be
 // TOLD APART from a change in the data: the merchant store keys
 // verdicts by signature, and a re-normalisation that silently re-keyed
-// them would orphan work that was paid for. Bump it whenever Normalize
-// starts producing a different string for the same input; the
-// enrichment pass then carries the older-version verdicts forward onto
-// the new keys (see RunDeterministicPass).
-//
-// History:
-//   - 1: the original reduction.
-//   - 2: leading Swiss direct-debit mandate boilerplate — DIRECT DEBIT,
-//     <CODE> OBJECTION TO <BANK>, WITHIN <N> DAYS — is stripped, so a
-//     signature that used to be the notice itself now starts at the
-//     creditor (stripDirectDebitBoilerplate).
-//   - 3: the counterparty no longer wins unconditionally. When it
-//     reduces to no word at all, or is a truncation of the
-//     description, the signature is built from the description
-//     instead (see Normalize). On the UBS adapter the counterparty is
-//     silver's promoted first narrative segment, so after the version
-//     2 strip a direct debit's signature was the bare mandate code and
-//     an ordinary transfer's was the bank's own name, with the
-//     creditor sitting in the description; both are keyed by the
-//     creditor now.
-//   - 4: three reductions land together. An e-bill rail marker is
-//     never a merchant: when the counterparty is one — EBILL-RECHNUNG,
-//     EBILL INVOICE or E-BILL, the whole field — the signature is
-//     built from the description's segments after the marker, less
-//     the payment-order boilerplate the statement prints around the
-//     creditor (ebillCreditor). On the UBS adapter's statement era the
-//     marker is the first narrative segment and so the promoted
-//     counterparty; keyed on it, every e-bill would share one signature
-//     per spelling of the marker, and each is keyed by its creditor
-//     instead. And a memo — the payer's own free text, which gold
-//     stores at the description's end after
-//     canonical.DescriptionMemoSeparator — is cut off before the
-//     description is reduced, so a payment is keyed the same whatever
-//     was written on it. The cut itself moves no version 3 key; the
-//     adapter change that introduced the memo does move the keys of
-//     rows whose description had carried the message, several old keys
-//     onto one, and the bump is what lets the carry run
-//     (docs/SPENDING.md §4). And a phone number is never part of a
-//     merchant: a phone-shaped run — spaced digit groups, two or more
-//     consecutive all-digit tokens carrying minPhoneDigits digits or
-//     more between them with at least one group of minPhoneGroupDigits
-//     or more, read once the reference numbers are gone; a number as a
-//     statement spaces it — is dropped from either field
-//     (dropPhoneRuns), and a description that is the counterparty
-//     followed by one leaves the counterparty standing (Normalize,
-//     rule 4). Version 3's digit test wanted four digits in one token
-//     and let a spaced number's groups through one by one.
-//   - 5: the memo fold covers the separator's edge shapes
-//     (canonical.JoinDescriptionMemo). Version 4 folded each
-//     separator a narrative carried, but three shapes outlived that
-//     fold and were read back as a memo boundary; two of them move
-//     keys. Two ADJACENT separators overlap, so the second survived a
-//     single pass: the stored description was split there and
-//     everything behind the survivor was dropped as the payer's
-//     words, where the whole narrative is keyed now. And a narrative
-//     OPENING on the bare separator read as all memo and no narrative
-//     at all, so the description contributed nothing and the
-//     counterparty decided the key alone; it is a narrative again.
-//     The third — a narrative CLOSING on the bare separator — only
-//     moves where the memo boundary falls, and the memo is dropped
-//     from the key either way. Rows that shared one cut-down key move
-//     onto keys of their own, which is the split case
-//     (docs/SPENDING.md §4); every other narrative is keyed exactly
-//     as version 4 keys it.
-//   - 6: the memo cut reads the memo-only prefix before it looks for
-//     the separator anywhere else (canonical.SplitDescriptionMemo).
-//     A description that is all memo — no narrative at all — and
-//     whose memo carried the separator in the payer's own words was
-//     cut INSIDE the memo, so part of what the payer wrote became the
-//     narrative and was keyed; the whole memo is memo now and such a
-//     row falls back to the counterparty, or to no signature. The
-//     lone-dash narrative is folded with it
-//     (canonical.JoinDescriptionMemo): the separator's leading space
-//     turned it into the memo-only prefix, so its description was read
-//     as all memo and the counterparty decided the key alone; it is a
-//     narrative again. Rows that shared one cut-down key move onto
-//     keys of their own, which is the split case (docs/SPENDING.md
-//     §4); every other narrative is keyed exactly as version 5 keys
-//     it.
-//   - 7: Normalize is unchanged; what moves is what the UBS adapter
-//     gives it. Where the MT940 feed and the account-statement export
-//     both recorded one booking, the MT940 row won and reached gold
-//     with the bank's bare code as its whole narrative and no payee
-//     at all — a key that is a code, refused at candidacy and
-//     placeable by no tier. The adapter now folds the export's record
-//     of the same entry onto that row (internal/silver/ubs/merge.go),
-//     so those rows are keyed on the payee the export names. Each such
-//     row leaves a code key that other rows may still share — a
-//     code-only booking with no counterpart in the export keeps it —
-//     so this is the split case (docs/SPENDING.md §4): a verdict at a
-//     code key stays where it is and the rows that moved are back in
-//     the backlog under a key that names someone. Every other
-//     narrative is keyed exactly as version 6 keys it.
-//   - 8: Normalize is again unchanged; again what moves is what the
-//     UBS adapter gives it. Three eras record that cash ledger over
-//     overlapping periods with disjoint id schemes, so a booking the
-//     statement archive printed and the export or the MT940 feed also
-//     carried reached gold as TWO rows keyed independently. The
-//     adapter now folds them to one, keeping the machine-readable
-//     record and carrying the statement's narrative onto whatever
-//     column the survivor left empty or as a bare code
-//     (internal/silver/ubs/web_overlay.go). A survivor that gains a
-//     payee that way is keyed on it instead of on the code it had.
-//     Rows that shared one code key may move onto keys of their own,
-//     which is the split case (docs/SPENDING.md §4). Every other
-//     narrative is keyed exactly as version 7 keys it.
-//   - 9: the bank's filing stops entering the key, on two counts.
-//     Normalize reads a narrative down to its head — the structured
-//     field tag off the front, the address and the payment's reason
-//     off the end — so one merchant is one key however its town is
-//     spelled and whichever field slot the payee was written into,
-//     and a model stops reading an address as part of a name. And the
-//     UBS adapter no longer promotes a booking type into the
-//     counterparty column (internal/silver/ubs/text.go): a row the
-//     bank filed without a payee was keyed on how it was booked, which
-//     filed every such row under one merchant and buried the payee the
-//     MT940 feed carries for the same booking. Those rows move onto
-//     the payee, and the key they leave is shared by whatever rows had
-//     no payee anywhere — the split case (docs/SPENDING.md §4). A
-//     narrative with no field tag, no segment separator and a payee in
-//     its counterparty is keyed exactly as version 8 keys it.
-//   - 10: a narrative that is NOTHING but the structured field tag
-//     yields no signature at all. Version 9 read such a narrative down
-//     to its head, found the head empty, and fell back to the whole
-//     line — which is the tag, so the bank's booking code became the
-//     key and then the merchant name. A code names no one: these rows
-//     are refused at candidacy now and reach a verdict through the
-//     tiers that read something other than a payee, the transaction's
-//     own kind among them. Rows that shared a code key lose it; every
-//     other narrative is keyed exactly as version 9 keys it.
-//   - 11: Normalize is unchanged; what moves is again what the UBS
-//     adapter gives it. A charge for one of the bank's own services —
-//     custody, advice, a safe box, the service-price close, an
-//     interest calculation — carried an account or security REFERENCE
-//     in its payee column, and a bare booking code on the feed that
-//     writes no payee at all. So one relationship's fees keyed as many
-//     merchants as it had referenced accounts, none of them a party.
-//     The adapter now names the bank on those, so they key as the
-//     bank — or, where the narrative itself leads with the bank's name
-//     and its product, on that head, which names the same merchant.
-//     A depositary's pass-through and a third-party charge keep their
-//     own keys, being collected on someone else's behalf. Every other
-//     narrative is keyed exactly as version 10 keys it.
+// them would orphan work that was paid for. Bump it whenever Normalize —
+// or an adapter feeding it — starts producing a different string for the
+// same input; the enrichment pass then carries the older-version
+// verdicts forward onto the new keys (see RunDeterministicPass). What
+// each version changed is listed in docs/SPENDING.md §4.
 const SignatureVersion = 11
 
 // maxSignatureLen bounds a signature, at a whole-token boundary.
@@ -219,73 +81,30 @@ var leadingProcessorTokens = map[string]bool{
 	"TST": true, // Toast
 }
 
-// Normalize reduces a transaction's narrative to a merchant signature:
-// the key that groups every visit to one merchant into a single thing
-// worth categorising once.
+// Normalize reduces a transaction's narrative to a merchant signature: the
+// key that groups every visit to one merchant into a single thing worth
+// categorising once. docs/SPENDING.md §4 argues each rule below.
 //
-// Both fields are reduced, and which one becomes the signature is
-// decided on the reduced forms, in this order:
+// Both fields are reduced (reduce, then dropPhoneRuns), the description only
+// up to its memo separator (canonical.SplitDescriptionMemo), and the
+// signature is chosen on the reduced forms, in this order:
 //
-//  1. The counterparty is an e-bill rail marker (isEbillMarker): the
-//     description's segments after the marker, less the payment-order
-//     boilerplate around the creditor (ebillCreditor). The marker
-//     names the rail the bill came in on, never the creditor, and it
-//     has words in it, so no later step would refuse it.
-//  2. The description reduces to nothing: the counterparty, whatever
-//     it holds. A bare code is kept over an empty signature, which
-//     would drop the row out of every store.
-//  3. The counterparty reduces to nothing, or to no word at all (the
-//     Uninformative test): the description. An adapter's counterparty
-//     is silver's promoted field, and a promotion that cut the
-//     narrative at its first separator can hold nothing but the bank's
-//     own notice — the Swiss direct-debit mandate, `<CODE> OBJECTION
-//     TO <BANK>` — while the creditor sits in the description.
-//  4. The description begins with the counterparty's tokens and
-//     carries more: the description, because the counterparty is then
-//     a truncation of it — `UBS SWITZERLAND AG` cut from `UBS
-//     SWITZERLAND AG; C/O UBS CARD CENTER` — and the tail is what
-//     tells one creditor from another. Not when what follows the
-//     counterparty's tokens — the counterparty read with its own runs
-//     gone — is a phone-shaped run (phoneRunEnd): a name with its
-//     number behind it is the whole name, not a truncation of one, so
-//     the counterparty stands whatever else the description carries —
-//     `<counterparty>; <phone>; <more>` keys on the counterparty
-//     alone. The shape that needs this is the person-to-person contact
-//     line, the payee, the number and the rail's reference, which then
-//     keys as it does where the statement era prints the same lines
-//     behind a booking type, and as it does when the payee carries the
-//     number in both fields; a merchant's line with the number in
-//     front of its address keys on the name by the same rule, and with
-//     the number behind its address on the name and the address, the
-//     number gone. A number printed unbroken is a reference number to
-//     isReferenceNumber, dropped before the precedence is read, so it
-//     is no run and the description is read as a truncation like any
-//     other.
-//  5. Otherwise the counterparty: it is the merchant field proper, and
-//     adapters are contractually bound not to reformat it.
+//  1. the counterparty is an e-bill rail marker (isEbillMarker): the
+//     creditor from the description's segments (ebillCreditor);
+//  2. the description reduces to nothing: the counterparty, whatever it
+//     holds;
+//  3. the counterparty holds no word (Uninformative): the narrative's head
+//     (narrativeHead) when a field tag structures the narrative and the head
+//     carries a word, nothing when the tag is all there is, and otherwise
+//     the description;
+//  4. the head begins with the counterparty's tokens and carries more, so
+//     the counterparty is a truncation of it: the head — unless a
+//     phone-shaped run follows the counterparty's tokens (phoneRunEnd),
+//     which makes the counterparty the whole name;
+//  5. otherwise the counterparty, the merchant field proper.
 //
-// An empty result means the row carries no narrative at all, or
-// nothing but a rail marker or a number; the caller records the row
-// with a NULL signature rather than inventing one.
-//
-// The description is read only up to its memo separator
-// (canonical.DescriptionMemoSeparator): what follows is the payer's
-// own words about the row, not the payee's identity, and it must not
-// key the row — on the shape where the description wins (rule 3, the
-// UBS web caption) every message would otherwise become its own
-// merchant.
-//
-// The reduction of a field, in order: fold to upper-case ASCII, turn
-// every non-alphanumeric run into a single space, strip leading
-// direct-debit mandate boilerplate, drop a leading processor token,
-// drop reference-number-shaped tokens and then drop every phone-shaped
-// run of what is left (dropPhoneRuns); the field chosen is then capped
-// in length. Rule 4 reads where a run stood in the description before
-// its runs are dropped, against a counterparty whose runs are gone
-// already. The e-bill path reduces the description segment by segment
-// instead (ebillCreditor): reference numbers and phone runs are
-// dropped as above, and the segment filters replace the field-level
-// strips. It is deterministic and allocation-cheap; SignatureVersion
+// An empty result means no narrative at all, or nothing but a rail marker, a
+// field tag or a number; the caller records a NULL signature. SignatureVersion
 // stamps whichever revision of these rules produced a given key.
 func Normalize(counterparty, description string) string {
 	description, _ = canonical.SplitDescriptionMemo(description)
@@ -651,49 +470,22 @@ func isEbillMarker(tokens []string) bool {
 	return false
 }
 
-// ebillCreditor builds the signature tokens for a row whose
-// counterparty is an e-bill marker, from the description alone. On
-// the UBS adapter's statement era the marker is the first narrative
-// segment, and the description is composed as (synthetic values,
+// ebillCreditor builds the signature tokens for a row whose counterparty is
+// an e-bill rail marker, from the description alone (docs/SPENDING.md §4). On
+// the UBS statement era the description is composed as (synthetic values,
 // exact structure)
 //
 //	PAYNET ORDER; EBILL-RECHNUNG; EXAMPLE TELECOM AG; CH EXAMPLETOWN 9999; QRR; 0000…; 1 times E-Banking domestic
 //
-// — the booking type, the marker, the creditor, its postal address,
-// then the payment order's own boilerplate. The marker is the
-// promoted counterparty, so under the ordinary precedence every
-// e-bill on the adapter would share one signature per spelling of
-// it, and a utility and an insurer would be one merchant with one
-// verdict.
-//
-// The segments up to and including the marker are dropped, so the
-// creditor leads. After that, segment by segment: the payment-order
-// boilerplate lines (isPaymentOrderBoilerplate) go, and so does the
-// line after a page footer when it has no word in it — the footer is
-// two lines, `Form without signature Page …` and then the form id, a
-// counter and the statement date, and the break can fall anywhere in
-// the narrative, between the marker and the creditor included, where
-// the salad would otherwise land in the creditor's slot; a bare
-// reference number, or a phone number, goes through the ordinary
-// digit stripping; and a segment with no word in it — a lone country
-// code — goes too,
-// EXCEPT in the creditor's own slot, the first segment kept: the bank
-// prints the creditor there, and a name can be an abbreviation the
-// word test refuses. Nothing else is stripped: a postal address
-// stays, because a creditor named with nothing but an address is
-// still that creditor, and the fence knows an address from an IBAN.
-//
-// A description without the marker is taken whole, booking type
-// first. That is a fallback rather than a designed key — it would
-// lead with the booking type, not the creditor — and it is
-// unreachable under the adapter contract, where the counterparty is
-// the description's first segment (after the booking type in the
-// statement era): a marker counterparty means a marker segment.
-//
-// A marker with nothing behind it yields nothing. Unlike the
-// direct-debit code, the marker carries no creditor identity worth
-// keeping as a key, and it has words in it, so as a signature it
-// would reach the model and become the one fake merchant this strip
+// The segments up to and including the marker are dropped, so the creditor
+// leads. After that, segment by segment: the payment-order boilerplate goes
+// (isPaymentOrderBoilerplate), so does the wordless second line of a page
+// footer wherever the break falls, and so does any other segment with no
+// word in it — except the creditor's own slot, the first segment kept, since
+// a name can be an abbreviation the word test refuses. The postal address
+// stays. A description without the marker is taken whole, a fallback the
+// adapter contract never reaches; a marker with nothing behind it yields
+// nothing, since as a key it would become the one fake merchant this strip
 // exists to remove.
 func ebillCreditor(description string) []string {
 	segments := strings.Split(description, ";")

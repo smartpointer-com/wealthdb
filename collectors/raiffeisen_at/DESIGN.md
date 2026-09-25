@@ -687,8 +687,8 @@ of a download still in flight.
    `RAIFFEISEN_AT_PASSWORD` / `RAIFFEISEN_AT_REGION` — §B), env only,
    never argv.
 
-3. **login + download — one folded verb (chase's shape, §F). Built;
-   awaiting live validation.** pushTAN fires every login, so login and
+3. **login + download — one folded verb (chase's shape, §F). Built and
+   validated live.** pushTAN fires every login, so login and
    the fetch run in one browser lifetime; `login` on its own is a no-op
    (the wrapper's `login` folds into `download`, chase-style), and
    `login --check` is a read-only session probe (DEAD between runs by
@@ -759,11 +759,6 @@ of a download still in flight.
      nudge, never as the auth signal. Fleet lesson (again): on a
      bounce-through-SSO SPA, authenticate on a token/data probe, never
      on the app URL.
-   - **Still not fully live-validated**: the corrected flow has not yet
-     completed a real login end-to-end. The next live `download` is the
-     acceptance test — the RDS form drive, the region-prefix fill, the
-     pushTAN wait, and the Bearer harvest are proven only once it lands
-     (§H probes fold into it).
 
 4. **load — built (`load.py` + `migrations/0001`), validated on the real
    bronze.** bronze → SQLite silver, idempotent (snapshot gate +
@@ -846,7 +841,7 @@ category) want a look when it first lands.
   `RAIFFEISEN_AT_PASSWORD` (the PIN), and `RAIFFEISEN_AT_REGION` (the
   Mandant code, §B) — single-quote values containing `$`, `!`, or
   backticks; the file is created by hand, never by tooling. (In place.)
-- **The acceptance test is a live `download`** (user present):
+- **A live `download`** (user present):
   `wealthdb-collect raiffeisen_at download --dry-run` first (logs in,
   enumerates the roster, fetches nothing), then a real
   `download --lookback all`. It needs no TTY — the pushTAN is a phone

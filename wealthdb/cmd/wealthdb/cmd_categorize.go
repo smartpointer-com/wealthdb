@@ -25,63 +25,20 @@ func init() {
 	register("categorize", cmdCategorize)
 }
 
-// The model tier, for both families.
+// The model tier, for both families: the long tail of counterparties whose
+// category follows from nothing but their name, asked of a model once per
+// merchant (or payer) signature and stored globally, so a signature met on
+// several accounts is paid for once. Spending asks who was paid and what
+// they sell; income asks what kind of income a receipt is, so its kind floor
+// outranks the store and only `deposit` is a candidate.
 //
-// Everything the deterministic pass could decide it has already
-// decided by the time this runs — the matcher has paired the
-// own-account moves, the built-in rules have placed the card payments
-// and the ATM withdrawals, the provider map has translated whatever
-// the source published, and on the income side the kind floor has
-// answered every admitted kind but one. What is left is the long tail
-// of counterparties whose category follows from nothing but their
-// NAME, and a model is the only thing that knows what a name like
-// "Blue Harbour Hardware" sells or who a name like "Blue Harbour
-// Payroll" is.
-//
-// The two families ask DIFFERENT QUESTIONS, and it is worth stating
-// because the rest of this file is one loop over both. Spending asks
-// who was paid and what they sell; the nature of the row is the data's.
-// Income asks what KIND of income a receipt is, which is a claim about
-// the transaction — so the data answers it wherever it can, the floor
-// outranks the store (migration 0073), and candidacy is restricted to
-// `deposit`, the one admitted kind with no floor.
-//
-// A verdict is bought PER SIGNATURE and stored globally, so a merchant
-// met on several accounts, at several sources, is paid for once and
-// answered once, and so is a payer paying into several accounts. That
-// is the whole reason the enrichment pass records a signature even for
-// rows it cannot categorise: the signature is the unit of work here.
-//
-// WHAT NEVER LEAVES THE MACHINE is decided in two independent places,
-// and neither can be turned off by the other. The context level
-// (<family>.categorization.context) decides how much of a candidate is
-// described; the fence decides whether a signature is a candidate AT
-// ALL, at every level. A wire, a P2P payment, a standing order —
-// anything whose narrative carries a person rather than a merchant —
-// is fenced out of candidacy and is therefore never described at any
-// level. So, by default, is a signature that IS a bare person's name on
-// a non-card account (spending.PersonShaped), which no rail token,
-// IBAN or masked number would have caught and which is the shape an
-// inbound credit transfer arrives in.
-//
-// The fence is read over the ROW (spending.RowTransferShaped): the
-// signature, the provider's own filing of it and the narrative half of
-// the description. A reduction can drop a rail the row still carries —
-// a mobile person-to-person rail leads the narrative and names no
-// payee, so a reduction that prefers the counterparty leaves the
-// payee's name alone as the key — and a key read on its own would
-// admit exactly the shape the fence exists to stop.
-//
-// A third gate, spending.Uninformative, is about waste rather than
-// privacy: a signature with no word in it — a bare bank code, a
-// two-digit number — carries nothing to name, so a model can only echo
-// it back and the gauntlet can only reject the echo. It is refused at
-// candidacy beside the fence, counted beside the fenced count, and
-// never costs a round-trip. spending.FilingOnly is the same refusal
-// for a signature that is nothing but the provider's own booking type
-// — the bank filed the row and wrote nothing else — which names how
-// the row was booked, not whom it paid; it is counted with the
-// uninformative.
+// What may leave the machine is decided in two independent places: the
+// context level (<family>.categorization.context) sets how much of a
+// candidate is described, and the candidacy fences decide whether a
+// signature is a candidate at all — a transfer-shaped row
+// (spending.RowTransferShaped), a bare person's name (spending.PersonShaped),
+// or a key with nothing to name (spending.Uninformative, FilingOnly).
+// docs/SPENDING.md §5–§6 and docs/INCOME.md argue both.
 
 // Flag defaults. --max-attempts, --max-anchors and --batch mirror
 // resolve-symbols so the two LLM commands behave the same way under

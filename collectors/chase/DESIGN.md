@@ -18,8 +18,7 @@ sections and §4 say so and supersede them.
   transaction export, card statements. Card **management** (payments,
   autopay, limits, disputes, lock/unlock, anything that mutates state at
   the provider) is out of scope in code and docs, as is any other product
-  the same login may expose. See the §4 scope note for the decision and
-  its superseded history.
+  the same login may expose. See the §4 scope note for the decision.
 - **Conduit accounts.** The cash accounts are conduits — cash passes
   through them on its way to and from other sources. Their transactions
   matter for cross-source money-flow tracking; their own return rows are
@@ -780,34 +779,12 @@ surface) remains out of scope entirely.
 The driver is the **spending** surface: cards carry the consumption
 ledger that deposit accounts only hint at, plus revolving-credit
 liabilities for net worth and statement-balance payments for money-flow
-reconciliation. The build cost is the one the superseded note priced —
-separate card-activity / card-statement endpoints to capture, a
-liability `account_kind` and revolving-credit shape in the adapter, and
+reconciliation. Card *reads* are in scope; card *management* is not, and
+never will be without a fresh written opt-in. Cards cost separate
+card-activity / card-statement endpoints to capture, a liability
+`account_kind` and revolving-credit shape in the adapter, and they have
 **no conduit-returns rationale** (a card is not a conduit, so the
 `AccountsGrainHidden` policy above must not be extended to it).
-
-**Superseded 2026-09-04 — the original deposit-only decision, kept for
-the record:**
-
-> Decision: **deposit-only** — the collector covers the deposit accounts
-> (checking, and savings if present); any credit-card or other products the
-> same login may expose are out of scope in code and docs, exactly like the
-> investment surface. This is the smallest build and the conduit-returns
-> reasoning above applies as-is. CLAUDE.md keeps card
-> surfaces out of scope for both reads and writes (card *management* stays
-> forbidden regardless).
->
-> **Recorded future expansion (not planned):** covering cards would add
-> real value — liabilities for net worth, card spend + statement-balance
-> payments for money-flow — but is a materially larger build: separate
-> card-activity / card-statement endpoints in Phase 2, a liability
-> `account_kind` and revolving-credit shape in Phases 3–4, and no
-> conduit-returns rationale (a card is not a conduit). Adding it later is a
-> deliberate scope expansion, not a default.
-
-The amendment takes the "deliberate scope expansion" path that note
-describes — half of it. Card *reads* moved into scope; card *management*
-did not, and never will without a fresh written opt-in.
 
 ## 5. Status & operation
 

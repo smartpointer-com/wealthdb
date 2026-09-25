@@ -3,68 +3,33 @@ package canonical
 import "strings"
 
 // The two-level category vocabulary behind gold's `spend_categories`
-// dimension: the `spend_detailed` column of the spending overlay and
-// the `income_detailed` column of the income one. The primary is the
-// coarse bucket a report groups by; the detailed value is what the
-// enrichment pass assigns to a transaction, to a merchant or to a
-// payer.
+// dimension: the `spend_detailed` column of the spending overlay and the
+// `income_detailed` column of the income one. The primary is the coarse
+// bucket a report groups by; the detailed value is what the enrichment pass
+// assigns to a transaction, a merchant or a payer.
 //
-// TWO FAMILIES, ONE TABLE. Every row carries a Family — `spending`,
-// `income`, or `both` for the deltas that mean the same thing read
-// from either side. Every predicate and accessor below is derived from
-// that column rather than from a restated list, so a value added here
-// is admitted or refused everywhere at once, and a spending rule
-// cannot start accepting an income value because the income side grew.
+// Every row carries a Family — `spending`, `income`, or `both` for a value
+// that means the same read from either side — and every predicate and
+// accessor below derives from that column rather than a restated list, so a
+// value added here is admitted or refused everywhere at once.
 //
-// PROVENANCE. The vendored pairs are Plaid's Personal Finance
-// Category taxonomy (transactions-personal-finance-category-taxonomy.csv,
-// retrieved 2026-09-04: 16 primaries, 104 detailed pairs). They are
-// vendored rather than fetched so a taxonomy revision arrives as a
-// reviewable diff instead of silently re-labelling history. Values and
-// descriptions are copied verbatim — only trailing whitespace is
-// trimmed — so a refreshed CSV diffs cleanly against this table.
+// Three classes of value share the table:
 //
-// Thirteen of the sixteen primaries are kept. Twelve outflow primaries
-// (80 detailed values) are vendored into the spending family, INCOME
-// (7 values) into the income family. The three dropped describe movements neither
-// family books as its own: TRANSFER_IN and TRANSFER_OUT are the
-// own-account move the matcher already names `internal_transfer`, and
-// LOAN_PAYMENTS is the load-bearing drop — a mortgage payment is an
-// own-account move to a tracked AccountKindMortgage (docs/SPENDING.md
-// §2), and an instalment to a lender the product does not track is the
-// `debt_repayment` delta rather than a merchant category.
-// The interest-versus-principal split of such an instalment is the
-// statement's, not this vocabulary's: it needs the lender's own
-// balance, which no category can carry (docs/CASHFLOW.md §5).
+//   - VENDORED pairs, copied verbatim from Plaid's Personal Finance Category
+//     taxonomy (transactions-personal-finance-category-taxonomy.csv,
+//     retrieved 2026-09-04), so a revision arrives as a reviewable diff. The
+//     transfer and loan-payment primaries are left out: those movements are
+//     the matcher's and the deltas' to name.
+//   - DELTAS, ours, lower-case and primary-level: movements decided from
+//     structure a counterparty's name cannot reveal — whose account the
+//     money went to, whether an arriving sum was earned or borrowed. A model
+//     may never emit one.
+//   - EXTENSIONS, ours but shaped like a vendored row under an existing
+//     primary: an ordinary judgement the vendored vocabulary has no word for
+//     yet, which a model may emit and a refreshed CSV supersedes.
 //
-// Seventeen delta values are ours rather than Plaid's and are
-// primary-level (primary == detailed, so they group as their own
-// bucket): `internal_transfer`, `cash_withdrawal`, `card_spend`,
-// `gift`, `investment`, `other`, `debt_repayment`, `capital_return`,
-// `loan_proceeds`, `reimbursement`, `inheritance`, `cash_deposit`,
-// `deposit_transfer` and
-// the four vehicle crossings — `retirement_transfer`,
-// `education_transfer`, `health_transfer` and `trust_transfer`. They
-// keep the repo's lowercase enum idiom, which also marks them at a
-// glance as not-from-Plaid. Nine of them — `internal_transfer`,
-// `gift`, `other`, the five crossings and `mortgage_transfer` — are
-// one row read from either side, which is what FamilyBoth means.
-//
-// EXTENSIONS are the third class, and they differ from the deltas in
-// the one way that matters: a model MAY emit them. A delta is decided
-// from structure a counterparty's name cannot reveal — whose account
-// the money went to, whether a card is itemised, whether an arriving
-// sum was earned or borrowed — so the gauntlet refuses one. An
-// extension is the opposite: an ordinary judgement about a merchant or
-// a payer for which the vendored vocabulary simply has no word yet. It
-// is therefore shaped like a vendored row, `<PRIMARY>_<DETAIL>` under
-// an existing primary, so that when the taxonomy does catch up the
-// refreshed CSV supersedes ours as a clean diff rather than sitting
-// beside it.
-//
-// The policy each delta encodes — what is and is not spending, what is
-// and is not income, which tier places it — is docs/SPENDING.md §2 and
-// docs/INCOME.md §2; it is not restated here.
+// The policy each value encodes — what is and is not spending or income,
+// and which tier places it — is docs/SPENDING.md §2 and docs/INCOME.md §2.
 
 // Family says which vocabulary a row belongs to. The two families ask
 // different questions of the same counterparty — what was bought, and
@@ -400,54 +365,14 @@ var deltaCategories = []SpendCategory{
 		"The same crossing for a bank's own deposit product the collector does not list as an account — a call deposit, a fixed-term deposit, a notice account: money paid in, or the principal coming back. Earmarked for nothing and taxed like the funding account; it is here because the far leg does not exist in the product, not because the money went anywhere. Interest the product pays is NOT this — it is income, and it arrives on its own row", FamilyBoth},
 }
 
-// extensionSpendCategories are detailed values of OURS that sit under
-// a vendored primary and that the model tier MAY emit.
-//
-// A household's software subscriptions have no home in the vendored
-// vocabulary: it has ELECTRONICS for physical goods, ONLINE
-// MARKETPLACES for retail and INTERNET AND CABLE for an ISP, and none
-// of those is a password manager, a mailbox, an office suite or a
-// model subscription. Left to itself every tier files them somewhere
-// false — the model reaches for "other general services", and an
-// issuer's own MCC has been seen calling one "other general
-// merchandise", which is a physical-goods bucket for something that
-// was never a good.
-//
-// Under GENERAL_SERVICES rather than as a primary of its own, which is
-// the one real choice here. A delta earns its own primary because it
-// is not a merchant category at all and must not fold into a
-// plausible-looking one; digital services IS a merchant category, so
-// it belongs beside EDUCATION, INSURANCE and STORAGE, and rolls up
-// with them. It also means that if the vendored taxonomy adds this
-// value it lands in the same place and the diff is a supersession.
-//
-// The other two came with brokerage accounts (migration 0064). Holding
-// investments costs money in two ways the vendored vocabulary cannot
-// name, and both arrive in volume: a fee charged for holding or
-// managing the assets, and tax withheld at source before the income is
-// ever received.
-//
-// BANK_FEES has ATM_FEES, FOREIGN_TRANSACTION_FEES, INSUFFICIENT_FUNDS,
-// INTEREST_CHARGE and OVERDRAFT_FEES — every one of them a fee for
-// BANKING. A custodian's ADR depositary charge, a platform's quarterly
-// fee and an investment manager's bill are fees for INVESTING, and
-// filing them under `OTHER_BANK_FEES` buries the cost of being
-// invested inside the cost of having an account. They sit under
-// BANK_FEES all the same, because that is the primary for "what a
-// financial institution charged", and an extension earns its keep by
-// landing where a vendored value would.
-//
-// Withholding is a tax and belongs beside TAX_PAYMENT, but is not the
-// same thing: TAX_PAYMENT is assessed and then paid, while withholding
-// is deducted before the money arrives. A report that cannot tell them
-// apart cannot answer "what was paid in tax that was never seen" — and
-// it is the spending side that carries it, because income is booked
-// gross, as the source recorded it arriving (docs/INCOME.md §5).
-//
-// Both are ordinary judgements about what a row IS, so the model tier
-// may emit them — and usefully can, since the signature on a
-// withheld-tax row typically reads `NRA TAX <security>`, which names
-// the answer.
+// extensionSpendCategories are detailed values of OURS that sit under a
+// vendored primary and that the model tier MAY emit: ordinary judgements
+// about what a row is, for which the vendored vocabulary has no word yet —
+// digital services under GENERAL_SERVICES, and the two costs of holding
+// investments, a fee for investing under BANK_FEES and tax withheld at
+// source beside TAX_PAYMENT. Each lands where a vendored value would, so a
+// taxonomy that catches up supersedes it as a clean diff. docs/SPENDING.md §2
+// argues each placement.
 var extensionSpendCategories = []SpendCategory{
 	{"GENERAL_SERVICES", SpendDetailedDigitalServices,
 		"Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device", FamilySpending},

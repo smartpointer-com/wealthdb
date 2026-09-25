@@ -1291,6 +1291,26 @@ removes a verdict outright, and forgetting an artefact's key *before*
 a bump is the clean way to keep it from carrying anywhere, one-to-one
 move or not.
 
+Each version moved some keys and left every other narrative keyed as
+before:
+
+| version | what moved |
+|---|---|
+| 1 | the original reduction |
+| 2 | Swiss direct-debit mandate boilerplate stripped: a notice is keyed by its creditor |
+| 3 | an empty or truncated counterparty yields to the description |
+| 4 | an e-bill rail marker is never the merchant; the payer's memo is cut; phone-number runs are dropped |
+| 5 | the memo fold covers the separator's edge shapes (adjacent separators, a narrative opening on one) |
+| 6 | a description that is all memo stays memo, and the lone-dash narrative is a narrative again |
+| 7 | UBS: the export's record of a booking folds onto the MT940 row, which is keyed on the payee instead of a code |
+| 8 | UBS: a booking two eras both recorded folds to one row, carrying the statement's narrative |
+| 9 | a narrative is read down to its head, without field tag, address or reason; UBS no longer promotes a booking type to payee |
+| 10 | a narrative that is only a field tag yields no signature |
+| 11 | UBS: a charge for the bank's own service names the bank |
+
+A bump for an adapter change moves no Normalize rule; it is what lets
+the carry run for the rows whose input changed.
+
 Version 3 corrects version 2 on the UBS adapter, whose counterparty is
 the promoted first segment: there the strip left the bare mandate code
 as the whole signature, one code per creditor; a code is

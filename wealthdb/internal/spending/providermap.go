@@ -6,49 +6,18 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
-// The provider-category tier.
+// The provider-category tier: the provider's own filing of a row, carried
+// into gold verbatim as `transactions.provider_category`, translated into
+// the taxonomy by a map per silver KIND (the vocabulary belongs to the
+// provider's product, not to a login).
 //
-// Providers already file the rows they publish, and that filing is
-// carried into gold verbatim as `transactions.provider_category`: a
-// card issuer's spend category ("Groceries", "Travel"), a bank's
-// booking type ("ATM WITHDRAWAL", "NTRF"). It is free, it arrives with
-// the row, and it is right often enough to be worth reading — but it
-// is the PROVIDER's vocabulary, not the taxonomy the reports group by,
-// so it has to be translated.
-//
-// The maps are per silver KIND rather than per source, because the
-// vocabulary belongs to the provider's product: two logins at the same
-// issuer publish the same words, and a second source of the same kind
-// should not need its own table.
-//
-// Two shapes of vocabulary, and the shape decides what a value the map
-// does not hold MEANS:
-//
-//   - a CATEGORICAL vocabulary (a card issuer's) files every row under
-//     a spend category. The map is narrower than what the issuer can
-//     publish — seasonal categories, product-specific ones, categories
-//     that appear the first time a certain merchant type is used — so
-//     a value it does not hold is one this build has not reviewed:
-//     DRIFT, counted, and the row falls through to the model tier. It
-//     is never guessed into a plausible neighbour: a wrong category is
-//     invisible in a report, while an uncategorised row is visible as
-//     backlog and an unmapped-value count is visible as drift.
-//   - a BOOKING-TYPE vocabulary (a bank's) names how the entry was
-//     booked. Most values name a payment rail — a payment order, a
-//     direct debit, a credit — and a rail says nothing about what the
-//     money bought; only the types whose meaning is the movement
-//     itself translate. A value the map does not hold is the normal
-//     case, not drift: it is not counted, and the row falls through
-//     exactly as an unmapped categorical value does.
-//
-// A translation may be a delta as well as a vendored value. The
-// provider's own word can name the MOVEMENT rather than a merchant's
-// line of business — cash out of an ATM, a conversion between the
-// holder's own currency accounts, a bill paid to a card — and then the
-// delta is the only honest verdict (docs/SPENDING.md §3). The
-// vendored-only restriction is the model tier's alone: a provider
-// verdict is per transaction, placed from the provider's structured
-// filing of that row, and outranked by every tier above it.
+// A CATEGORICAL vocabulary (a card issuer's) files every row, so a value the
+// map does not hold is unreviewed DRIFT: counted, never guessed into a
+// neighbour, and the row falls through to the model tier. A BOOKING-TYPE
+// vocabulary (a bank's) mostly names a rail, so an unmapped value is the
+// normal case and is not counted. A translation may be a delta where the
+// provider's word names the movement rather than a merchant — cash out of an
+// ATM, a bill paid to a card. docs/SPENDING.md §3 argues both shapes.
 
 // ProvenanceProvider tags an enrichment row placed by this tier.
 const ProvenanceProvider = "provider"

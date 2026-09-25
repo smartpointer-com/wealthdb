@@ -623,75 +623,29 @@ func assertedPairHolds(d, c TransferLeg, creditUsed bool, maxDays int64, opts Tr
 
 // matchSharedReferences pairs the legs a source stamped with one reference:
 // two rows the bank itself says are the two halves of one movement
-// (TransferLeg.Ref).
+// (TransferLeg.Ref). A reference is an identity, not a guess, so the phase
+// spends neither the tolerance nor the window — which is also what lets it
+// pair a currency conversion, whose two figures differ by the rate.
 //
-// It spends neither the amount tolerance nor the day window, and that is the
-// point rather than a loosening. A window and a tolerance are how a GUESS is
-// bounded — they decide how far apart two rows may sit before calling them
-// one movement stops being credible. A reference is not a guess, so there is
-// no credibility to bound: the two legs are one movement or the reference is
-// wrong, and no distance between them changes which. What replaces the band
-// is a uniqueness test, below, and the caller's obligation to offer a
-// reference its source mints per movement.
+// A reference pairs only when all of these hold, and pairs NOTHING
+// otherwise, because a false pair deletes a real spending line
+// (docs/SPENDING.md §3, "The reference road"):
 //
-// Spending no tolerance is also the only way the phase reaches the movements
-// it exists for. An FX conversion between two of one holder's own accounts is
-// booked as a debit in one currency and a credit in another, and the two
-// figures differ by the rate; the amount pass partitions by native currency
-// precisely so that a report's display currency cannot change what counts as
-// spending, and therefore cannot see such a pair at all. Identity is
-// currency-blind, so this phase can.
+//   - both legs are in the same group: a reference is an identity only
+//     within one source's id space, so under CrossGroupOnly the phase does
+//     nothing;
+//   - they sit on different accounts: one account's two rows under one
+//     reference are the bank's own bookkeeping;
+//   - the reference names exactly one debit and one credit among the legs
+//     offered;
+//   - the credit is not zero;
+//   - the legs sit within referenceMatchMaxDays of each other.
 //
-// Four conditions, and a reference that fails any of them pairs NOTHING
-// rather than pairing its best guess:
-//
-//   - The two legs are in the SAME group. A reference is an identity only
-//     within one source's id space; two banks can mint the same string, and a
-//     cross-source pair on a bare reference would be a coincidence dressed as
-//     a fact. Under CrossGroupOnly — which forbids same-group pairing
-//     outright — this phase therefore does nothing at all, which is why the
-//     returns engine is unaffected whether or not it ever fills Ref.
-//   - The legs are on DIFFERENT accounts. One account's two rows under one
-//     reference are a bank's bookkeeping — a charge booked beside the payment
-//     it belongs to, a correction beside the entry it corrects — not money
-//     crossing between accounts. A genuine round trip on one account is still
-//     the amount pass's to find, under AllowSameOwner.
-//   - The reference is carried by EXACTLY ONE DEBIT AND ONE CREDIT among the
-//     legs offered. Anything else means the reference does not name one
-//     movement in this pool: three legs under one reference cannot say which
-//     two are the pair, and two legs in the same direction are not a movement
-//     at all. Both refuse rather than guess, because the cost of guessing is
-//     not a wrong label — a false pair withdraws both legs, and the spending
-//     line the debit represented is simply gone.
-//   - The credit's amount is not zero. A zero is not half of a movement, and
-//     with no amount test at all this phase is the only one that has to say
-//     so: the amount pass refuses it by construction, since a zero can close
-//     no gap. Only the credit is tested because only a credit can be zero —
-//     the sign split puts every non-negative leg on that side.
-//   - The two legs sit within referenceMatchMaxDays of each other. This is not
-//     the amount pass's window in a longer coat; it is a staleness test on the
-//     reference SPACE. A source that mints references per movement resolves a
-//     pair within days, because that is how long a booking takes to settle; a
-//     "pair" resolving across a span no settlement takes is a source that has
-//     run out of reference and started again, and the two rows under it are
-//     two movements. The bound is deliberately far past any real lag, so it
-//     refuses nothing a bank books as one movement and costs a decade-wide
-//     collision its whole blast radius.
-//
-// Two things it deliberately does NOT ask. A pair the holder has unmatched is
-// still refused (Overrides.blocks): a person saying these two rows are not
-// one movement outranks the clerk's reference, which is the one claim about a
-// pair that beats an identity. But the partner RAIL a leg demands is not
-// consulted, unlike the amount pass. That demand exists because amount and
-// date alone let a card's receipt pair with any debit of the right size, and
-// the narrative is the only thing that refuses it; against a reference the
-// source stamped on both rows, a narrative regex is the weaker witness, and
-// enforcing it would refuse true pairs whose bank-side half names nothing.
-//
-// The pass is deterministic and order-independent: the census is taken over
-// the whole pool before anything is claimed, and the claiming walks the
-// debits in the caller-independent order MatchTransferLegs has already sorted
-// them into.
+// A pair the holder unmatched stays refused. The partner rail and the names a
+// leg demands are not consulted: against a reference the source stamped on
+// both rows, a narrative is the weaker witness. The census is taken over the
+// whole pool before anything is claimed, so the result does not depend on
+// order.
 func matchSharedReferences(debits, credits []TransferLeg, used, claimed []bool, opts TransferMatchOpts, claim func(di, ci int, by TransferMatchPhase)) {
 	if opts.CrossGroupOnly {
 		return
