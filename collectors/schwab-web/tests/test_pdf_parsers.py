@@ -1388,6 +1388,32 @@ class TestParseTransactionsLegacy:
         assert rows[0].category == "Interest"
         assert rows[0].amount == -4321.00
 
+    def test_moneylink_deposit_is_a_deposit(self):
+        # An inbound MoneyLink booked under its own phrase rather
+        # than "MoneyLink Txn". Left unmapped it fell through as
+        # kind=Unknown, and the far side of the movement sat
+        # unpaired in the bank that sent it.
+        text = self._wrap(
+            "Cash, Bank Sweep, and Money Market Funds Activity\n"
+            "06/15 06/15 MoneyLink Deposit SYNTHETIC HOLDER 60,000.00\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2021)
+        assert len(rows) == 1
+        assert rows[0].category == "Deposit"
+        assert rows[0].amount == 60000.00
+
+    def test_moneylink_return_takes_its_side_from_the_sign(self):
+        # A returned MoneyLink is a transfer whose direction only
+        # the amount states, like the undirected "MoneyLink Txn".
+        text = self._wrap(
+            "Cash, Bank Sweep, and Money Market Funds Activity\n"
+            "01/03 01/03 MoneyLink Return Tfr SYNTHETIC-BANK, N/A (2,000.00)\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2023)
+        assert len(rows) == 1
+        assert rows[0].category == "Transfer"
+        assert rows[0].amount == -2000.00
+
     def test_auto_transfer_categorised(self):
         # Bank-sweep transfer rows ("Auto TransferX,Z BANK
         # CREDIT FROM BROKERAGE ...") were also slipping past

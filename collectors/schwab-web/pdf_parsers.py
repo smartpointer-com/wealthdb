@@ -873,6 +873,8 @@ _LEGACY_TX_KIND_PHRASES: list[tuple[str, str]] = [
     ("Forward Split",           "Split"),
     ("Funds Received",          "Deposit"),
     ("Funds Paid",              "Withdrawal"),
+    ("MoneyLink Deposit",       "Deposit"),
+    ("MoneyLink Return",        "Transfer"),
     ("MoneyLink Txn",           "Transfer"),
     ("Auto Transfer",           "Transfer"),
     ("Journal",                 "Journal"),
