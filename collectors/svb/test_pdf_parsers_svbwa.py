@@ -423,6 +423,7 @@ TOTAL MISC. & CORPORATE ACTIONS ($200.00)
     amounts = sorted(r.amount for r in rows if r.section == ps.SECTION_MISC)
     assert amounts == [-3000.0, 2800.0], "a TRAN VALUE was lost to the lookahead"
     assert sum(amounts) == totals[ps.SECTION_MISC] == -200.0
+    assert {r.verb for r in rows if r.section == ps.SECTION_MISC} == {"REVERSE SPLIT"}
 
 
 def test_a_paid_check_is_part_of_its_section():
@@ -823,6 +824,11 @@ def test_activity_sign_per_verb():
     ("DIVIDEND CHARGED EXAMPLE ADR", "DIVIDEND CHARGED", "EXAMPLE ADR"),
     ("REVERSE DIV CHARGE EXAMPLE ADR", "REVERSE DIV CHARGE", "EXAMPLE ADR"),
     ("ADJUST EXERCISE EXAMPLE ADS", "ADJUST EXERCISE", "EXAMPLE ADS"),
+    # the corporate actions: the reverse split does not stop at the
+    # dividend-charge reversal that shares its first word
+    ("NAME CHANGED EXAMPLE CO COM N/C TO", "NAME CHANGED", "EXAMPLE CO COM N/C TO"),
+    ("CONVERSION EXAMPLE FUND INSTL SHR", "CONVERSION", "EXAMPLE FUND INSTL SHR"),
+    ("REVERSE SPLIT EXAMPLE CO SPON ADS EACH", "REVERSE SPLIT", "EXAMPLE CO SPON ADS EACH"),
     # a verbless row keeps all its text for the loader to report
     ("EXAMPLE PARTNERS L P", "", "EXAMPLE PARTNERS L P"),
 ])

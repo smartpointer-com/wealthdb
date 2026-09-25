@@ -289,6 +289,14 @@ _KIND_BY_VERB = {
     "DIRECT DEBIT": "DIRECT_DEBIT",
     "DIRECT DEPOSIT": "DIRECT_DEPOSIT",
     "MERGER": "MERGER",
+    # A security renamed, converted into another share class, or
+    # consolidated: the old line delivered and the new one received, each
+    # at the value the statement prints. A reverse split can also pay
+    # cash — a capital returned alongside the consolidation — which books
+    # under the same verb from the cash section.
+    "NAME CHANGED": "NAME_CHANGE",
+    "CONVERSION": "CONVERSION",
+    "REVERSE SPLIT": "REVERSE_SPLIT",
     "TENDERED": "TENDER",
     "EXPIRED": "EXPIRATION",
     "IN LIEU OF FRX SHARE": "CASH_IN_LIEU",

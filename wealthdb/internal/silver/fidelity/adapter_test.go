@@ -823,3 +823,14 @@ func TestStatementConstructsHaveNoSymbol(t *testing.T) {
 		t.Errorf("keyless security symbol = %v, want the synthetic key %q", pool.Symbol, want)
 	}
 }
+
+// TestCorporateActionKinds: a rename, a share-class conversion and a
+// consolidation book as corporate actions, source-signed like a merger.
+func TestCorporateActionKinds(t *testing.T) {
+	for _, raw := range []string{"MERGER", "NAME_CHANGE", "CONVERSION", "REVERSE_SPLIT",
+		"TENDER", "EXPIRATION", "CASH_IN_LIEU", "RETURN_OF_CAPITAL"} {
+		if got := kindFor(raw, nil, nil, ""); got != canonical.TxKindCorporateAction {
+			t.Errorf("kindFor(%q) = %q, want corporate_action", raw, got)
+		}
+	}
+}

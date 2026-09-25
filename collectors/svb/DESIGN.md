@@ -332,11 +332,13 @@ they default cleanly and the overrides set the precise values.
   on them is on the monthly statements in a legible form.
 - An Activity row whose Transaction column is blank, or holds a verb the parser
   does not know, is reported by statement name and left unbooked rather than
-  booked under a guessed kind. The corporate actions the vocabulary does not
-  name (a name change, a reverse split, a share-class conversion) stay in that
-  report, as do blank-verb rows printed for information only, such as a
-  bill's accrued discount; the positions a corporate action changes come from
-  the holdings tables either way.
+  booked under a guessed kind. Blank-verb rows printed for information only,
+  such as a bill's accrued discount, stay in that report. A name change, a
+  reverse split and a share-class conversion are in the vocabulary: each books
+  its delivered and received legs at the value the statement prints, and a
+  reverse split's cash — a capital returned with the consolidation — books
+  from the cash section under the same verb. The positions a corporate action
+  changes come from the holdings tables either way.
 
 ## Rebuild
 

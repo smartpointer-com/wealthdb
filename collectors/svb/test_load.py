@@ -428,6 +428,10 @@ def test_transaction_kind_map_covers_every_verb():
     assert B._KIND_BY_VERB["DIVIDEND CHARGED"] == "ADJUSTMENT"
     assert B._KIND_BY_VERB["CANCELLED BUY"] == "ADJUSTMENT"
     assert B._KIND_BY_VERB["CANCELLED SELL"] == "ADJUSTMENT"
+    # The corporate actions name kinds the adapter reads as one.
+    assert B._KIND_BY_VERB["NAME CHANGED"] == "NAME_CHANGE"
+    assert B._KIND_BY_VERB["CONVERSION"] == "CONVERSION"
+    assert B._KIND_BY_VERB["REVERSE SPLIT"] == "REVERSE_SPLIT"
 
 
 def test_core_fund_rows_book_as_sweeps(tmp_path, monkeypatch):

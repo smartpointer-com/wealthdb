@@ -126,7 +126,7 @@ func kindFor(raw string, quantity, amount *canonical.Decimal, action string) can
 	case "CASH_SWEEP_IN", "CASH_SWEEP_OUT":
 		// Cash ↔ money-market fund movements. Source-signed.
 		return canonical.TxKindOther
-	case "MERGER", "NAME_CHANGE", "REVERSE_SPLIT", "TENDER",
+	case "MERGER", "NAME_CHANGE", "REVERSE_SPLIT", "CONVERSION", "TENDER",
 		"EXPIRATION", "CASH_IN_LIEU", "RETURN_OF_CAPITAL":
 		return canonical.TxKindCorporateAction
 	case "ADJUSTMENT":
