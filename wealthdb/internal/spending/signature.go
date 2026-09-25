@@ -43,6 +43,7 @@ package spending
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -968,6 +969,42 @@ func Uninformative(s string) bool {
 // that carries more than the filing (`credit; Ref 7`) is not either.
 func FilingOnly(signature, providerCategory string) bool {
 	return signature != "" && signature == Normalize("", providerCategory)
+}
+
+// arrivalMechanismTokens name how money arrived, never who sent it: a
+// cheque paid in by phone or at a remote scanner, a wire received.
+var arrivalMechanismTokens = map[string]bool{
+	"MOBILE": true, "REMOTE": true, "ONLINE": true, "DEPOSIT": true,
+	"WIRED": true, "FUNDS": true, "RECEIVED": true,
+}
+
+// nachaVerificationEntry is the company entry description NACHA mandates
+// on an account-verification micro-deposit. It marks the row whoever sends
+// it.
+const nachaVerificationEntry = "ACCTVERIFY"
+
+// MechanismOnly reports whether a signature names how money moved and no
+// party: every token an arrival mechanism or a number (`MOBILE DEPOSIT`,
+// `REMOTE ONLINE DEPOSIT 1`, `WIRED FUNDS RECEIVED`), or the verification
+// literal anywhere. Such a signature holds words, so Uninformative passes
+// it, but a model asked about it can only return a catch-all. It is a
+// further refusal at candidacy, counted with Uninformative; a rule or a pin
+// still places the rows.
+func MechanismOnly(s string) bool {
+	tokens := tokenize(s)
+	if slices.Contains(tokens, nachaVerificationEntry) {
+		return true
+	}
+	mechanism := false
+	for _, tok := range tokens {
+		switch {
+		case arrivalMechanismTokens[tok]:
+			mechanism = true
+		case !allDigits(tok):
+			return false
+		}
+	}
+	return mechanism
 }
 
 // hasWord reports whether any of the tokenize'd tokens is a word.

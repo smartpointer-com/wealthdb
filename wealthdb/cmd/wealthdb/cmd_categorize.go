@@ -649,8 +649,10 @@ SELECT c.` + fam.signatureColumn + `,
 		// a signature that is nothing but the bank's own booking type
 		// — the bank filed the row and wrote nothing else — which
 		// names how the row was booked, not whom it paid, and would
-		// buy one verdict for every row filed that way.
-		if spending.Uninformative(sig) || spending.FilingOnly(sig, providerCategory) {
+		// buy one verdict for every row filed that way; nor one that
+		// names only how the money arrived.
+		if spending.Uninformative(sig) || spending.FilingOnly(sig, providerCategory) ||
+			spending.MechanismOnly(sig) {
 			uninformativeSigs[sig] = true
 			continue
 		}

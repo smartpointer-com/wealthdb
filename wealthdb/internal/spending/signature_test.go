@@ -1018,3 +1018,26 @@ func TestATagWithAPayeeBehindItStillKeysOnThePayee(t *testing.T) {
 		t.Errorf("Normalize(tag + payee) = %q, want the payee without the tag", got)
 	}
 }
+
+// A signature that names only how the money arrived gives a model nothing
+// to name; one that names a party beside the mechanism does.
+func TestMechanismOnly(t *testing.T) {
+	for _, tc := range []struct {
+		sig  string
+		want bool
+	}{
+		{"MOBILE DEPOSIT", true},
+		{"DEPOSIT MOBILE DEPOSIT", true},
+		{"REMOTE ONLINE DEPOSIT 1", true},
+		{"WIRED FUNDS RECEIVED", true},
+		{"EXAMPLE CORP ACCTVERIFY", true}, // the verification literal alone decides
+		{"EXAMPLE FUNDS INC", false},
+		{"ONLINE MARKET EXAMPLE", false},
+		{"1234", false}, // no mechanism, only a number: Uninformative's case
+		{"", false},
+	} {
+		if got := MechanismOnly(tc.sig); got != tc.want {
+			t.Errorf("MechanismOnly(%q) = %v, want %v", tc.sig, got, tc.want)
+		}
+	}
+}
