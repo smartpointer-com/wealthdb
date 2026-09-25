@@ -257,7 +257,8 @@ _VERB_BY_BUCKET = {
 # A ledger row: MM-DD, a description, the signed amount, the running
 # balance, behind at most the furniture `_NOISE` skips. Continuation
 # lines carrying the rest of a description have no leading date and
-# are skipped. So are the ledger's own
+# are never rows (`_PAYEE_LINE_RE` says which of them join the row
+# above). Nor are the ledger's own
 # Beginning/Ending Balance rows, which repeat the summary rather than
 # moving money: they print one money column, not the amount-and-balance
 # pair this asks for, and so never match. The row anchor takes the
@@ -271,6 +272,25 @@ _LEDGER_START_RE = re.compile(rf"^{_NOISE}TRANSACTION\s+DETAIL\b")
 # The reconciliation worksheet printed under the ledger, and the
 # statement's legend, both of which are past the last row.
 _LEDGER_END_RE = re.compile(rf"^{_NOISE}(?:CHECKS OUTSTANDING|ACCOUNT SUMMARY)\b")
+
+# The line a wire or a person-to-person transfer prints under its row,
+# naming who the money went to or came from: the beneficiary (`Ben:`),
+# the originator (`Org:`, which the recognition sometimes reads `0rg:`),
+# the transfer's `ID:`, or the rest of a BENEFICIARY label the row line
+# broke off (`…BENEFIC` above, `IARY…` / `iciary Name: …` here). A card
+# purchase's address and terminal stamp print there too, but name no
+# payee, and each stamp is unique — joined to the description they would
+# give every purchase a merchant of its own.
+_PAYEE_LINE_RE = re.compile(r"^(?:(?:Ben|[O0]rg|ID)\s*:|i?ciary\b|I?ARY|iary)")
+# A payee label on the row line itself, whose name the page may wrap.
+_PAYEE_LABEL_RE = re.compile(r"\b(?:Ben|[O0]rg|ID)\s*:")
+# A wrapped payee name continues on one short, unlabelled line. The
+# ledger's own balance rows, page furniture and a card's terminal stamp
+# are never that line.
+_PAYEE_TAIL_MAX = 30
+_NOT_A_TAIL_RE = re.compile(
+    r"^(?:(?:Beginning|Ending)\s+Balance|Page\s+\d|Date\s+Description|Seq#)|\$")
+_HAS_WORD_RE = re.compile(r"[A-Za-z]{2}")
 
 # A section whose arithmetic misses by more than this is not trusted.
 CENT = 0.005
@@ -469,6 +489,13 @@ def _parse_ledger(lines, period_end, beginning_balance, ending_balance):
     without one there is no ledger to check — and a silently empty one
     would pass both checks on any month whose movements net flat, which
     is a dormant account: real rows would vanish with no signal at all.
+    A row dated past the period's end is from the year before, which
+    is how a January statement prints a period that opens in December.
+
+    A row's payee, where the statement prints one under it, joins its
+    description (`_PAYEE_LINE_RE`); the bucket is read off the row line
+    alone, before it does, so a payee's name can never move a row into
+    another bucket.
     """
     if not period_end:
         return [], "statement period unreadable"
@@ -476,6 +503,9 @@ def _parse_ledger(lines, period_end, beginning_balance, ending_balance):
     rows = []
     running = beginning_balance
     in_ledger = False
+    # What the last row can still gain: "payee" until the first worded
+    # line under it, "tail" once a payee name may wrap, None after that.
+    pending = None
     for line in lines:
         if _LEDGER_START_RE.match(line):
             in_ledger = True
@@ -487,11 +517,15 @@ def _parse_ledger(lines, period_end, beginning_balance, ending_balance):
             continue
         m = _LEDGER_ROW_RE.match(line)
         if not m:
+            if pending and rows:
+                pending = _join_payee(rows[-1], " ".join(line.split()), pending)
             continue
         amount, balance = parse_money(m["amount"]), parse_money(m["balance"])
         if amount is None or balance is None:
             continue
         when = iso_from_short_date(m["date"], year=year)
+        if when is not None and when > period_end:
+            when = iso_from_short_date(m["date"], year=year - 1)
         if when is None:
             continue
         if abs(round(running + amount - balance, 2)) >= CENT:
@@ -506,10 +540,28 @@ def _parse_ledger(lines, period_end, beginning_balance, ending_balance):
             bucket=_ledger_bucket(description, amount),
             ordinal=len(rows),
         ))
+        pending = "tail" if _PAYEE_LABEL_RE.search(description) else "payee"
     if abs(round(running - ending_balance, 2)) >= CENT:
         return rows, (f"ledger ends at {running:.2f}, "
                       f"stated ending balance {ending_balance:.2f}")
     return rows, None
+
+
+def _join_payee(row, text, pending):
+    """Join a line under a ledger row to the row's description if it
+    names the row's payee (or wraps a name that does), and return what
+    the row can still gain from the line after it. A line with no word
+    in it — page furniture such as a sort code — neither joins nor ends
+    anything."""
+    if not _HAS_WORD_RE.search(text):
+        return pending
+    if pending == "payee" and _PAYEE_LINE_RE.match(text):
+        row.description = f"{row.description} {text}"
+        return "tail"
+    if (pending == "tail" and len(text) <= _PAYEE_TAIL_MAX
+            and not _NOT_A_TAIL_RE.search(text)):
+        row.description = f"{row.description} {text}"
+    return None
 
 
 # ============================================================

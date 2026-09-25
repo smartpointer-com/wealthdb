@@ -257,6 +257,18 @@ they default cleanly and the overrides set the precise values.
   failing any of those is named in the build output and contributes no rows at
   all, so the account carries its last real value forward rather than taking a
   plausible wrong number.
+- **A deposit row names its payee where the statement prints one.** A wire
+  prints its beneficiary (`Ben:`) or originator (`Org:`), and a
+  person-to-person transfer its `ID:`, on the line under the row; a long
+  BENEFICIARY label wraps there too. That line joins the row's description,
+  and so does one short line a wrapped name continues on. A card purchase's
+  address and terminal stamp print in the same place and do not join: each
+  stamp is unique, and joined it would make every purchase a merchant of its
+  own. The row's bucket is read before its payee joins, so a name that
+  reads like a charge or like interest cannot move a row between buckets.
+- **A row dated past its statement's period is from the year before.** Rows
+  print `MM-DD` and take the period's year, so a January statement whose
+  period opens in December would otherwise date that day a year late.
 - **A deposit row's KIND comes from the summary, not from its wording alone.**
   The ledger has no transaction column, so what a row IS would otherwise be a
   guess from its description — and guessing wrong books interest as capital

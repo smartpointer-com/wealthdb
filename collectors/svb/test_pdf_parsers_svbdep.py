@@ -397,9 +397,87 @@ def test_a_charge_the_ledger_stops_naming_is_refused():
     assert "ledger withdrawals total 1410.00" in checking.error
 
 
-def test_a_wrapped_description_is_not_a_row():
+def test_a_payee_line_joins_the_row_above_it_and_is_no_row_itself():
     checking = ps.parse_deposit_statement(_COMBINED_TEXT)[0][0]
-    assert not any("ID:" in r.description for r in checking.rows)
+    assert [r.description for r in checking.rows] == [
+        "EXAMPLE PAYER ACH CREDIT ID: 0000000000",
+        "EXAMPLE PAYEE TRANSFER",
+        "Service Charge",
+        "Interest Credited Deposit",
+    ]
+
+
+def _single_with(replacements):
+    text = _SINGLE_TEXT
+    for old, new in replacements:
+        assert old in text
+        text = text.replace(old, new)
+    return ps.parse_deposit_statement(text)[0][0]
+
+
+def test_a_wires_payee_joins_through_page_furniture_and_a_wrapped_name():
+    checking = _single_with([
+        ("09-02 EXAMPLE DEPOSIT $900.00 $1,400.00",
+         "09-02 Wire Ref# 20990000000000 Org: EXAMPLE $900.00 $1,400.00\n"
+         "PARTNERS LLC"),
+        ("09:07 EXAMPLE WITHDRAWAL $-400.00 $1,000.00",
+         "09:07 WIRE REF2099000000000000 BENEFIC $-400.00 $1,000.00\n"
+         "0000\n"
+         "IARYExample Holder"),
+    ])
+    assert checking.error is None
+    assert [r.description for r in checking.rows[:2]] == [
+        "Wire Ref# 20990000000000 Org: EXAMPLE PARTNERS LLC",
+        "WIRE REF2099000000000000 BENEFIC IARYExample Holder",
+    ]
+
+
+def test_a_card_rows_address_and_terminal_stamp_do_not_join():
+    # Each stamp is unique; joined, every purchase would be a merchant of
+    # its own.
+    checking = _single_with([
+        ("09:07 EXAMPLE WITHDRAWAL $-400.00 $1,000.00",
+         "09:07 POS PURCHASE EXAMPLE STORE $-400.00 $1,000.00\n"
+         "*EXAMPLE CITY CA US\n"
+         "Seq#000001 Date 9/07/21 Time 10:00"),
+    ])
+    assert checking.rows[1].description == "POS PURCHASE EXAMPLE STORE"
+
+
+def test_a_payee_never_moves_a_row_into_another_bucket():
+    # The bucket is read off the row line before the payee joins, so a
+    # payee whose name reads like a charge leaves the split closing.
+    checking = _single_with([
+        ("09:07 EXAMPLE WITHDRAWAL $-400.00 $1,000.00",
+         "09:07 Wire Ref# EXAMPLE1 $-400.00 $1,000.00\n"
+         "Ben: Example Service Charge Partners"),
+    ])
+    assert checking.error is None
+    assert checking.rows[1].bucket == "withdrawals"
+    assert checking.rows[1].description.endswith("Service Charge Partners")
+
+
+def test_the_ledgers_own_lines_never_join_a_row():
+    checking = _single_with([
+        ("09-30 EXAMPLE WITHDRAWAL $-300.00 $700.00",
+         "09-30 Wire Ref# EXAMPLE2 Org: $-300.00 $700.00"),
+    ])
+    # The label on the row line could wrap a name, but the next line is
+    # the ledger's closing balance.
+    assert checking.rows[-1].description == "Wire Ref# EXAMPLE2 Org:"
+
+
+def test_a_row_dated_past_the_period_end_is_from_the_year_before():
+    # A January statement whose period opens on the last day of December
+    # prints that day's rows MM-DD like the rest.
+    checking = _single_with([
+        ("Statement from 09-01-21 to 09-30-21", "Statement from 12-31-21 to 01-31-22"),
+        ("09-02 EXAMPLE DEPOSIT", "12-31 EXAMPLE DEPOSIT"),
+        ("09:07 EXAMPLE WITHDRAWAL", "01:07 EXAMPLE WITHDRAWAL"),
+        ("09-30 EXAMPLE WITHDRAWAL", "01-30 EXAMPLE WITHDRAWAL"),
+    ])
+    assert [r.date for r in checking.rows] == [
+        "2021-12-31", "2022-01-07", "2022-01-30"]
 
 
 def test_single_account_layout_survives_the_ocr_losses():
