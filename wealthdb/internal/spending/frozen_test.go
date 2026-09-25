@@ -175,20 +175,20 @@ func TestSpendingPassOutputIsFrozen(t *testing.T) {
 // and the exposure were widened in when migration 0102 moved the
 // golden anyway, having been outside the oracle until then. Never
 // edited to make a test pass.
-const frozenSpendingOverlay = `bank/T-BACKLOG sig="UNPLACEABLE COUNTERPARTY" v11 cat=(null) via=signature-only label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
-bank/T-CARD-BILL sig="PAYMENT TO CHASE CARD ENDING IN" v11 cat=card_spend via=rule label=Chase far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
-bank/T-CONFIG-RULE sig="EXAMPLE BROKER SUBSCRIPTION" v11 cat=investment via=rule label=(null) far=(null)/(null) farclass=(null) exposure=private_equity issuer=(null)
-bank/T-FUND-IN sig="(null)" v11 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
-bank/T-FUND-OUT sig="TRANSFER TO INVESTMENT" v11 cat=internal_transfer via=matcher label=(null) far=bank/BRK1 farclass=(null) exposure=(null) issuer=(null)
-bank/T-MATCH-OUT sig="AUTOPAY PAYMENT" v11 cat=internal_transfer via=matcher label=(null) far=other-bank/CASH2 farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
-bank/T-MEMO sig="ATM WITHDRAWAL MAIN STREET" v11 cat=cash_withdrawal via=rule label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
-bank/T-PIN-OVER-MATCH sig="LOOKS INTERNAL" v11 cat=gift via=manual label=(null) far=bank/CUST1 farclass=(null) exposure=(null) issuer=(null)
-bank/T-PIN-PAIR sig="(null)" v11 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
-bank/T-PROVIDER sig="CORNER MARKET" v11 cat=FOOD_AND_DRINK_GROCERIES via=provider label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=FOOD_AND_DRINK_GROCERIES
-bank/T-PROVIDER-CATCHALL sig="SOME DEPARTMENT STORE" v11 cat=(null) via=signature-only label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
-bank/T-RULE sig="ATM WITHDRAWAL MAIN STREET" v11 cat=cash_withdrawal via=rule label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
-other-bank/T-MATCH-IN sig="(null)" v11 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
-other-bank/T-PIN-OUTSIDE sig="NAMED BY HAND" v11 cat=other via=manual label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
+const frozenSpendingOverlay = `bank/T-BACKLOG sig="UNPLACEABLE COUNTERPARTY" v12 cat=(null) via=signature-only label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
+bank/T-CARD-BILL sig="PAYMENT TO CHASE CARD ENDING IN" v12 cat=card_spend via=rule label=Chase far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
+bank/T-CONFIG-RULE sig="EXAMPLE BROKER SUBSCRIPTION" v12 cat=investment via=rule label=(null) far=(null)/(null) farclass=(null) exposure=private_equity issuer=(null)
+bank/T-FUND-IN sig="(null)" v12 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+bank/T-FUND-OUT sig="TRANSFER TO INVESTMENT" v12 cat=internal_transfer via=matcher label=(null) far=bank/BRK1 farclass=(null) exposure=(null) issuer=(null)
+bank/T-MATCH-OUT sig="AUTOPAY PAYMENT" v12 cat=internal_transfer via=matcher label=(null) far=other-bank/CASH2 farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
+bank/T-MEMO sig="ATM WITHDRAWAL MAIN STREET" v12 cat=cash_withdrawal via=rule label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
+bank/T-PIN-OVER-MATCH sig="LOOKS INTERNAL" v12 cat=gift via=manual label=(null) far=bank/CUST1 farclass=(null) exposure=(null) issuer=(null)
+bank/T-PIN-PAIR sig="(null)" v12 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+bank/T-PROVIDER sig="CORNER MARKET" v12 cat=FOOD_AND_DRINK_GROCERIES via=provider label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=FOOD_AND_DRINK_GROCERIES
+bank/T-PROVIDER-CATCHALL sig="SOME DEPARTMENT STORE" v12 cat=(null) via=signature-only label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
+bank/T-RULE sig="ATM WITHDRAWAL MAIN STREET" v12 cat=cash_withdrawal via=rule label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE
+other-bank/T-MATCH-IN sig="(null)" v12 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+other-bank/T-PIN-OUTSIDE sig="NAMED BY HAND" v12 cat=other via=manual label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
 `
 
 // Ten population rows — every purchase and withdrawal above — plus the

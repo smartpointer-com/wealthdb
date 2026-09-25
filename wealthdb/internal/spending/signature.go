@@ -59,7 +59,7 @@ import (
 // same input; the enrichment pass then carries the older-version
 // verdicts forward onto the new keys (see RunDeterministicPass). What
 // each version changed is listed in docs/SPENDING.md §4.
-const SignatureVersion = 11
+const SignatureVersion = 12
 
 // maxSignatureLen bounds a signature, at a whole-token boundary.
 // Narratives run long — a full address, a terminal id, a

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
@@ -54,7 +55,12 @@ SELECT account_external_id, occurred_at, transaction_type,
 			Kind:              kind,
 			Currency:          currency,
 			NetAmount:         canonical.ApplyCanonicalSign(kind, &netDec),
-			Payload:           json.RawMessage(payload),
+			Description:       silver.StrPtrIfNonEmpty(narrative(txType, payload)),
+			// The bank's own booking type, as UBS's rows carry theirs: a
+			// row whose narrative is nothing more is filing-only, and a
+			// rule can read it.
+			ProviderCategory: silver.StrPtrIfNonEmpty(txType),
+			Payload:          json.RawMessage(payload),
 		}
 
 		if isin.Valid && isin.String != "" {
@@ -80,6 +86,19 @@ SELECT account_external_id, occurred_at, transaction_type,
 		out.Transactions = append(out.Transactions, tx)
 	}
 	return silver.NewTransactionStream(out), rows.Err()
+}
+
+// narrative is the row's narrative for gold: the booking type, which is
+// the movement ("Custody Fees", "Dividend", "Payment"), then the
+// security's name where the row names one — the fidelity adapter's
+// action-then-security reading. The export carries nothing else a reader
+// could use.
+func narrative(txType, payload string) string {
+	var p struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal([]byte(payload), &p)
+	return strings.TrimSpace(strings.TrimSpace(txType) + " " + strings.TrimSpace(p.Name))
 }
 
 // extractTradeFields pulls quantity and unit_price from the

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
@@ -33,7 +34,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	// gold adapter classifies that from the same silver in one place.
 	const q = `
 SELECT transaction_external_id, occurred_at, account_external_id,
-       kind, currency,
+       type, kind, currency,
        CAST(amount_chf AS VARCHAR),
        COALESCE(json_extract(payload, '$.description'), ''),
        payload,
@@ -49,11 +50,11 @@ SELECT transaction_external_id, occurred_at, account_external_id,
 	out := canonical.TransactionBatch{}
 	for rows.Next() {
 		var (
-			txID, acct, rawKind, currency, desc, payload string
-			occurredAt                                   int64
-			amtStr, instID                               sql.NullString
+			txID, acct, rawType, rawKind, currency, desc, payload string
+			occurredAt                                            int64
+			amtStr, instID                                        sql.NullString
 		)
-		if err := rows.Scan(&txID, &occurredAt, &acct, &rawKind, &currency,
+		if err := rows.Scan(&txID, &occurredAt, &acct, &rawType, &rawKind, &currency,
 			&amtStr, &desc, &payload, &instID); err != nil {
 			return nil, fmt.Errorf("viac Transactions scan: %w", err)
 		}
@@ -68,10 +69,17 @@ SELECT transaction_external_id, occurred_at, account_external_id,
 			NetAmount:             canonical.ApplyCanonicalSign(kind, netDec),
 			Payload:               json.RawMessage(payload),
 		}
-		if desc != "" {
-			d := desc
-			tx.Description = &d
+		// A fee, an interest credit or a contribution carries no
+		// description, and its type is then the whole narrative. The
+		// type is VIAC's own booking type, carried verbatim as the
+		// provider category, so a row whose narrative is nothing more
+		// is filing-only.
+		narrative := desc
+		if narrative == "" {
+			narrative = humaniseType(rawType)
 		}
+		tx.Description = silver.StrPtrIfNonEmpty(narrative)
+		tx.ProviderCategory = silver.StrPtrIfNonEmpty(rawType)
 		// What was traded, where silver could say. A row silver left
 		// unresolved carries nothing, which is what an untracked
 		// destination is supposed to look like.
@@ -88,4 +96,14 @@ SELECT transaction_external_id, occurred_at, account_external_id,
 		out.Transactions = append(out.Transactions, tx)
 	}
 	return silver.NewTransactionStream(out), rows.Err()
+}
+
+// humaniseType reads VIAC's type as words: `FEE_CHARGE` is "Fee charge".
+func humaniseType(t string) string {
+	words := strings.Fields(strings.ToLower(strings.ReplaceAll(t, "_", " ")))
+	if len(words) == 0 {
+		return ""
+	}
+	words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
+	return strings.Join(words, " ")
 }

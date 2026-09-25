@@ -1307,6 +1307,7 @@ before:
 | 9 | a narrative is read down to its head, without field tag, address or reason; UBS no longer promotes a booking type to payee |
 | 10 | a narrative that is only a field tag yields no signature |
 | 11 | UBS: a charge for the bank's own service names the bank |
+| 12 | Schwab's web feeds lead the narrative with the movement, the security after it; swissquote and viac project one where none reached gold |
 
 A bump for an adapter change moves no Normalize rule; it is what lets
 the carry run for the rows whose input changed.

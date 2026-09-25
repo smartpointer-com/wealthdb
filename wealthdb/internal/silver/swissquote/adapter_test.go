@@ -486,3 +486,40 @@ func TestSyntheticIDStable(t *testing.T) {
 		t.Errorf("differing amount should give different ID")
 	}
 }
+
+// The export states a movement and, where one is involved, a security —
+// nothing else a reader could use. Both reach gold: the booking type
+// leads the narrative and is the provider category, so a row whose
+// narrative is nothing more reads as the bank's own filing.
+func TestTransactionsCarryANarrative(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO transactions(account_external_id, occurred_at, transaction_type, isin, symbol, currency, net_amount, payload) VALUES
+            ('1234567', 1700, 'Dividend', 'IE00BJK9H753', 'IUSQ', 'USD', 25.00,
+             '{"name":"iShares Core MSCI World"}'),
+            ('1234567', 1900, 'Custody Fees', NULL, NULL, 'CHF', -30.00, '{"name":""}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	want := map[string]string{
+		"Dividend":     "Dividend iShares Core MSCI World",
+		"Custody Fees": "Custody Fees",
+	}
+	for _, tx := range batch.Transactions {
+		if tx.ProviderCategory == nil {
+			t.Fatalf("%s carries no provider category", tx.TransactionExternalID)
+		}
+		wantDesc := want[*tx.ProviderCategory]
+		if tx.Description == nil || *tx.Description != wantDesc {
+			t.Errorf("%s description = %v, want %q", *tx.ProviderCategory, tx.Description, wantDesc)
+		}
+	}
+}
+

@@ -358,7 +358,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			NetAmount:   canonical.ApplyCanonicalSign(txKind, netAmount),
 			Quantity:    quantity,
 			Price:       price,
-			Description: description,
+			Description: webNarrative(payload, description),
 			Payload:     json.RawMessage(payload),
 		}})
 	}
@@ -893,6 +893,38 @@ func extractWebTxDescription(payload string) *string {
 		}
 	}
 	return nil
+}
+
+// webNarrative is the row's narrative for gold: the movement, then the
+// security it concerns — the fidelity adapter's action-then-security
+// reading. The security alone cannot tell a dividend from the withholding
+// taken from it, or an ADR's pass-through fee from either: all three name
+// the same security. The movement is the transaction history's `Action`
+// ("NRA Tax Adj", "ADR Mgmt Fee"), or on a statement row its `action` or
+// `category`; the statement's catch-all category, `Unknown`, says nothing
+// and is left out.
+func webNarrative(payload string, security *string) *string {
+	var p struct {
+		Action   string `json:"Action"`
+		Lower    string `json:"action"`
+		Category string `json:"category"`
+	}
+	_ = json.Unmarshal([]byte(payload), &p)
+	movement := ""
+	for _, s := range []string{p.Action, p.Lower, p.Category} {
+		if s = strings.TrimSpace(s); s != "" && !strings.EqualFold(s, "Unknown") {
+			movement = s
+			break
+		}
+	}
+	sec := ""
+	if security != nil {
+		sec = *security
+	}
+	if movement != "" && strings.HasPrefix(strings.ToUpper(sec), strings.ToUpper(movement)) {
+		movement = "" // the narrative already leads with it
+	}
+	return silver.StrPtrIfNonEmpty(strings.TrimSpace(movement + " " + sec))
 }
 
 // extractWebTxSecurityName is the 1099-B feed's only statement of what

@@ -187,3 +187,36 @@ func TestDedupeCrossFeedExternalFlows(t *testing.T) {
 		})
 	}
 }
+
+// The security alone cannot tell a dividend from the withholding taken
+// from it, or an ADR's fee from either. The narrative leads with the
+// movement each feed states, then the security; the statement's
+// catch-all category says nothing and is left out.
+func TestWebNarrativeLeadsWithTheMovement(t *testing.T) {
+	sec := "EXAMPLE FUND ETF"
+	for _, tc := range []struct {
+		payload string
+		want    string
+	}{
+		{`{"Action":"NRA Tax Adj","Description":"EXAMPLE FUND ETF"}`, "NRA Tax Adj EXAMPLE FUND ETF"},
+		{`{"action":null,"category":"Fee","description":"EXAMPLE FUND ETF"}`, "Fee EXAMPLE FUND ETF"},
+		{`{"action":"Reinvest","category":"Dividend","description":"EXAMPLE FUND ETF"}`, "Reinvest EXAMPLE FUND ETF"},
+		{`{"category":"Unknown","description":"EXAMPLE FUND ETF"}`, "EXAMPLE FUND ETF"},
+	} {
+		got := webNarrative(tc.payload, &sec)
+		if got == nil || *got != tc.want {
+			t.Errorf("webNarrative(%s) = %v, want %q", tc.payload, got, tc.want)
+		}
+	}
+	if got := webNarrative(`{"Action":"Journal"}`, nil); got == nil || *got != "Journal" {
+		t.Errorf("a movement with no security = %v, want %q", got, "Journal")
+	}
+	if got := webNarrative(`{}`, nil); got != nil {
+		t.Errorf("nothing stated = %q, want nil", *got)
+	}
+	lead := "Journaled Funds to account ...000"
+	if got := webNarrative(`{"Action":"Journaled Funds"}`, &lead); got == nil || *got != lead {
+		t.Errorf("a narrative already led by its movement = %v, want it unchanged", got)
+	}
+}
+

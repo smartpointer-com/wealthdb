@@ -138,11 +138,11 @@ func TestNormalizeFallsBackToDescription(t *testing.T) {
 // TestSignatureVersion pins the stamp: a change that moves keys
 // without bumping it would carry nothing and orphan everything. A
 // change to Normalize is the usual cause; an adapter that changes what
-// it hands Normalize moves keys just as surely (versions 4, 7, 8, 9
-// and 11), so the stamp is not a version number for this file alone.
+// it hands Normalize moves keys just as surely (versions 4, 7, 8, 9,
+// 11 and 12), so the stamp is not a version number for this file alone.
 func TestSignatureVersion(t *testing.T) {
-	if SignatureVersion != 11 {
-		t.Errorf("SignatureVersion = %d, want 11", SignatureVersion)
+	if SignatureVersion != 12 {
+		t.Errorf("SignatureVersion = %d, want 12", SignatureVersion)
 	}
 }
 

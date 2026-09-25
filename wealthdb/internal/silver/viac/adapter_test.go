@@ -454,3 +454,46 @@ func TestTransactionsCarryTheInstrumentTheyNamed(t *testing.T) {
 		t.Errorf("an unresolved trade hinted %q, want the name it failed on", u.InstrumentHint)
 	}
 }
+
+// A fee, an interest credit or a contribution carries no description;
+// its type is then the narrative. Every row carries the type as its
+// provider category, so a row whose narrative is nothing more reads as
+// VIAC's own filing.
+func TestTransactionsCarryANarrative(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 2, '/x/1');
+        INSERT INTO transactions(transaction_external_id, snapshot_at, occurred_at, account_external_id, type, kind, amount_chf, currency, payload) VALUES
+            ('tx1', 1000, 900, 'P3A1', 'FEE_CHARGE', 'fee', -4.00, 'CHF', '{}'),
+            ('tx2', 1000, 950, 'P3A1', 'DIVIDEND', 'dividend', 12.00, 'CHF', '{"description":"Example Equity Index"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	for _, tc := range []struct{ id, desc, category string }{
+		{"tx1", "Fee charge", "FEE_CHARGE"},
+		{"tx2", "Example Equity Index", "DIVIDEND"},
+	} {
+		var got *canonical.TransactionChange
+		for i := range batch.Transactions {
+			if batch.Transactions[i].TransactionExternalID == tc.id {
+				got = &batch.Transactions[i]
+			}
+		}
+		if got == nil {
+			t.Fatalf("missing %s", tc.id)
+		}
+		if got.Description == nil || *got.Description != tc.desc {
+			t.Errorf("%s description = %v, want %q", tc.id, got.Description, tc.desc)
+		}
+		if got.ProviderCategory == nil || *got.ProviderCategory != tc.category {
+			t.Errorf("%s provider category = %v, want %q", tc.id, got.ProviderCategory, tc.category)
+		}
+	}
+}
+
