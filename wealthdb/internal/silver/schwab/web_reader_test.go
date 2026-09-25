@@ -220,3 +220,35 @@ func TestWebNarrativeLeadsWithTheMovement(t *testing.T) {
 	}
 }
 
+// TestWebSignedKeepsAMinusOnAnInflow: the web feeds print most figures
+// as magnitudes, so the kind orients them — but a minus printed on an
+// inflow is a correction and keeps its sign.
+func TestWebSignedKeepsAMinusOnAnInflow(t *testing.T) {
+	dec := func(s string) *canonical.Decimal {
+		d, err := canonical.NewDecimalFromString(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &d
+	}
+	for _, c := range []struct {
+		kind   canonical.TxKind
+		amount string
+		want   string
+		why    string
+	}{
+		{canonical.TxKindDividend, "-3.00", "-3", "a clawed-back dividend nets against the dividend"},
+		{canonical.TxKindDividend, "3.00", "3", "a dividend stays an inflow"},
+		{canonical.TxKindBuy, "600.50", "-600.5", "a reinvestment printed as a magnitude is money out"},
+		{canonical.TxKindTransferOut, "100.00", "-100", "a distribution's market value is money out"},
+		{canonical.TxKindWithdrawal, "-50.00", "-50", "an outflow printed negative stays negative"},
+	} {
+		got := webSigned(c.kind, dec(c.amount))
+		if got == nil || got.String() != c.want {
+			t.Errorf("webSigned(%s, %s) = %v, want %s: %s", c.kind, c.amount, got, c.want, c.why)
+		}
+	}
+	if webSigned(canonical.TxKindDividend, nil) != nil {
+		t.Error("a row with no figure gained one")
+	}
+}

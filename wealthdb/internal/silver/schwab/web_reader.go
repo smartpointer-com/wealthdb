@@ -355,7 +355,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			// the canonical TransactionChange.Currency field is
 			// NOT NULL.
 			Currency:    "USD",
-			NetAmount:   canonical.ApplyCanonicalSign(txKind, netAmount),
+			NetAmount:   webSigned(txKind, netAmount),
 			Quantity:    quantity,
 			Price:       price,
 			Description: webNarrative(payload, description),
@@ -871,6 +871,21 @@ func extractWebTxAmounts(payload string) (netAmount, quantity, price *canonical.
 	quantity = pickWebAmount(p.Quantity, p.QuantityStr)
 	price = pickWebAmount(p.Price, p.PriceStr)
 	return
+}
+
+// webSigned orients a web row's figure by its kind. The web feeds print
+// most figures as magnitudes and leave the direction to the section or
+// the word — a reinvestment, a distribution's market value — so the
+// kind's canonical sign is applied. A minus printed on an inflow is the
+// exception and is kept: the statements print one only on a correction
+// (a dividend clawed back), which the canonical sign would book as a
+// second dividend.
+func webSigned(kind canonical.TxKind, amount *canonical.Decimal) *canonical.Decimal {
+	signed := canonical.ApplyCanonicalSign(kind, amount)
+	if amount != nil && amount.IsNegative() && signed != nil && signed.IsPositive() {
+		return amount
+	}
+	return signed
 }
 
 // extractWebTxDescription pulls the security name out of the

@@ -545,3 +545,25 @@ func TestTransactionsEndToEnd(t *testing.T) {
 		t.Errorf("TX2 netAmount = %v, want 50", tx.NetAmount)
 	}
 }
+
+// TestADividendClawbackKeepsItsSign: the API signs netAmount from the
+// account's side, so a negative dividend is Schwab taking one back.
+// Forced to the dividend's canonical sign it would book as a second
+// dividend instead of netting against the first.
+func TestADividendClawbackKeepsItsSign(t *testing.T) {
+	for _, c := range []struct {
+		kind, payload, want string
+	}{
+		{"DIVIDEND_OR_INTEREST", `{"netAmount":-7.25,"description":"EXAMPLE EQUAL WEIGHT ETF"}`, "-7.25"},
+		{"DIVIDEND_OR_INTEREST", `{"netAmount":7.25,"description":"EXAMPLE EQUAL WEIGHT ETF"}`, "7.25"},
+		{"WIRE_OUT", `{"netAmount":-1000.00}`, "-1000"},
+	} {
+		tx, err := buildTransaction("A1", 1000, "ACC", c.kind, c.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tx.NetAmount == nil || tx.NetAmount.String() != c.want {
+			t.Errorf("%s %s: net_amount = %v, want %s", c.kind, c.payload, tx.NetAmount, c.want)
+		}
+	}
+}

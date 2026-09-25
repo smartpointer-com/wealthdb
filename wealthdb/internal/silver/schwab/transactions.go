@@ -270,13 +270,18 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 
 	kind := kindFor(silverKind, netAmount, tp.Description)
 
+	// netAmount is kept as signed, never forced to the kind's canonical
+	// sign. The API signs it from the account's side (a buy negative, a
+	// sale positive), so a row that disagrees with its kind is a
+	// correction — a dividend clawed back — and forcing the sign would
+	// book it as a second dividend (canonical/sign.go).
 	tx := canonical.TransactionChange{
 		TransactionExternalID: activityID,
 		OccurredAt:            occurredAt,
 		AccountExternalID:     extID,
 		Kind:                  kind,
 		Currency:              "USD", // Schwab retail is USD-only.
-		NetAmount:             canonical.ApplyCanonicalSign(kind, tp.NetAmount),
+		NetAmount:             tp.NetAmount,
 		Description:           silver.StrPtrIfNonEmpty(tp.Description),
 		Payload:               json.RawMessage(payload),
 	}

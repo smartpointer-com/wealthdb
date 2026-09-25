@@ -137,6 +137,14 @@ Per the global fallback rule (DESIGN.md §6.8): any new Schwab
 `kind` value an adapter version doesn't recognise lands as `other`
 with the original string preserved in payload.
 
+The API signs `netAmount` from the account's side, and the adapter
+keeps that sign on every kind. A row signed against its kind is a
+correction, such as a dividend clawed back, and nets against the
+booking it corrects. The web feeds print most figures as magnitudes,
+so there the kind orients the figure; only a minus printed on an
+inflow kind is kept, because the statements print one only on such a
+correction.
+
 ## 6. Change number
 
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
