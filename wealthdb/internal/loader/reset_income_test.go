@@ -2,6 +2,7 @@ package loader
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
@@ -12,15 +13,12 @@ import (
 // and are re-asserted by the next pass; both verdict stores are global,
 // were paid for, and must survive.
 func TestResetClearsBothOverlays(t *testing.T) {
-	db, err := gold.Open(":memory:", gold.ModeReadWrite)
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	defer db.Close()
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path,
             high_watermark, first_loaded_at, last_loaded_at)

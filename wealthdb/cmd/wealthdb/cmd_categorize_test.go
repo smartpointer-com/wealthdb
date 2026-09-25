@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -585,20 +586,17 @@ func TestCategorizePromptForbidsTheDeltas(t *testing.T) {
 
 // ---- candidate collection ----------------------------------------------------
 
-// openCategorizeGold builds a migrated in-memory gold with one card
+// openCategorizeGold builds a fresh migrated gold with one card
 // source, so the candidate queries run against the real macros rather
 // than a hand-rolled stand-in.
 func openCategorizeGold(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	db, err := gold.Open(":memory:", gold.ModeReadWrite)
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate gold: %v", err)
-	}
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
                                     high_watermark, first_loaded_at, last_loaded_at)

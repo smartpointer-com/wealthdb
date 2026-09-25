@@ -83,8 +83,8 @@ func TestAnAccountThatHeldPaperOnlyOnceStillCounts(t *testing.T) {
 	_, db := newFixtureSilver(t)
 	seedSafekeeping(t, db, 9, sbpPortfolio, sbpHolder)
 	seedSafekeeping(t, db, 9, sbpPortfolio, sbpQuiet)
-	seedHolding(t, db, 1, sbpHolder, "XX0000000001")   // long ago
-	seedHolding(t, db, 9, sbpQuiet, "XX0000000002") // and today
+	seedHolding(t, db, 1, sbpHolder, "XX0000000001") // long ago
+	seedHolding(t, db, 9, sbpQuiet, "XX0000000002")  // and today
 
 	if got, ok := safekeepingMap(t, db)[sbpPortfolio]; ok {
 		t.Errorf("portfolio maps to %q, want the ambiguity left unresolved", got)

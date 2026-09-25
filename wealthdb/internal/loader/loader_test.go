@@ -72,15 +72,11 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
-	g, err := gold.Open(":memory:", gold.ModeReadWrite)
+	g, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
-		t.Fatalf("gold.Open: %v", err)
+		t.Fatalf("gold.OpenFresh: %v", err)
 	}
 	t.Cleanup(func() { g.Close() })
-
-	if err := gold.Migrate(context.Background(), g); err != nil {
-		t.Fatalf("gold.Migrate: %v", err)
-	}
 
 	silverPath := filepath.Join(t.TempDir(), "schwab.db")
 	s, err := sql.Open("sqlite", "file:"+silverPath)

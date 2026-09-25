@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,22 +13,18 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
-// openMigrated returns a freshly opened, freshly migrated
-// in-memory DuckDB. A silver_sources row is seeded so subsequent
-// inserts can satisfy the foreign key.
+// openMigrated returns a fresh copy of the migrated gold image, opened
+// read-write. A silver_sources row is seeded so subsequent inserts can
+// satisfy the foreign key.
 func openMigrated(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	db, err := Open(":memory:", ModeReadWrite)
+	db, err := OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("OpenFresh: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
 	ctx := context.Background()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources(
             silver_source_id, silver_kind, silver_path,

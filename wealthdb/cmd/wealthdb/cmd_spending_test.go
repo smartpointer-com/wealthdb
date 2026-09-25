@@ -261,14 +261,11 @@ func setupSpendingGold(t *testing.T) string {
 	dir := t.TempDir()
 	goldPath := filepath.Join(dir, "wealthdb.db")
 
-	db, err := gold.Open(goldPath, gold.ModeReadWrite)
+	db, err := gold.OpenFresh(goldPath)
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path,

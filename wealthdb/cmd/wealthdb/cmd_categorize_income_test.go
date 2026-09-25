@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -377,15 +378,12 @@ func TestIncomeVerdictsPersistToThePayerStore(t *testing.T) {
 // Every name is invented.
 func openIncomeCategorizeGold(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	db, err := gold.Open(":memory:", gold.ModeReadWrite)
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path,
             high_watermark, first_loaded_at, last_loaded_at)

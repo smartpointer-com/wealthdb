@@ -3,6 +3,7 @@ package spending
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -26,15 +27,12 @@ import (
 // matcher cannot pair across two.
 func openUBSGold(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	db, err := gold.Open(":memory:", gold.ModeReadWrite)
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate gold: %v", err)
-	}
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
                                     high_watermark, first_loaded_at, last_loaded_at)

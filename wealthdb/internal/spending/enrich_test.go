@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 // day turns a day offset into the Unix-seconds timestamp gold stores.
 func day(n int64) int64 { return n * gold.SecondsPerDay }
 
-// openGold returns a migrated in-memory gold holding two sources: a
+// openGold returns a fresh migrated gold holding two sources: a
 // `chase` one with a cash, a card, a brokerage and a custody account,
 // and a second source with a cash and a custody account. `chase` is
 // the silver kind with a provider-category map, so a fixture can
@@ -30,15 +31,12 @@ func day(n int64) int64 { return n * gold.SecondsPerDay }
 // change rather than a list compiled into a macro.
 func openGold(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	db, err := gold.Open(":memory:", gold.ModeReadWrite)
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate gold: %v", err)
-	}
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
                                     high_watermark, first_loaded_at, last_loaded_at)

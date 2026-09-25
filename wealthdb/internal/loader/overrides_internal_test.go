@@ -6,6 +6,7 @@ package loader
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -347,14 +348,11 @@ func TestSupersessionClosingRunsPositionsAndCashOnSeparateClocks(t *testing.T) {
 // leaving the archive unloadable short of a reset.
 func TestSupersessionClosingRewritesTheRowsTheLastLoadWrote(t *testing.T) {
 	ctx := context.Background()
-	g, err := gold.Open(":memory:", gold.ModeReadWrite)
+	g, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
-		t.Fatalf("gold.Open: %v", err)
+		t.Fatalf("gold.OpenFresh: %v", err)
 	}
 	t.Cleanup(func() { g.Close() })
-	if err := gold.Migrate(ctx, g); err != nil {
-		t.Fatalf("gold.Migrate: %v", err)
-	}
 
 	const (
 		sourceID   = "stub-source"
@@ -424,14 +422,11 @@ func TestSupersessionClosingRewritesTheRowsTheLastLoadWrote(t *testing.T) {
 // feature exists to prevent, arrived at silently.
 func TestSupersessionClosingSurvivesAWindowPastTheHandover(t *testing.T) {
 	ctx := context.Background()
-	g, err := gold.Open(":memory:", gold.ModeReadWrite)
+	g, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
-		t.Fatalf("gold.Open: %v", err)
+		t.Fatalf("gold.OpenFresh: %v", err)
 	}
 	t.Cleanup(func() { g.Close() })
-	if err := gold.Migrate(ctx, g); err != nil {
-		t.Fatalf("gold.Migrate: %v", err)
-	}
 
 	const (
 		sourceID = "stub-source"

@@ -22,14 +22,11 @@ func setupCashflowGold(t *testing.T) string {
 	dir := t.TempDir()
 	goldPath := filepath.Join(dir, "wealthdb.db")
 
-	db, err := gold.Open(goldPath, gold.ModeReadWrite)
+	db, err := gold.OpenFresh(goldPath)
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	at := func(m time.Month, d int) int64 {
 		return time.Date(2026, m, d, 12, 0, 0, 0, time.UTC).Unix()
 	}

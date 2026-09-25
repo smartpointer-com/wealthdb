@@ -15,20 +15,17 @@ import (
 
 // ---- persistCategorizations --------------------------------------------------
 
-// openMerchantStore is a migrated in-memory gold, which is all the
+// openMerchantStore is a fresh migrated gold, which is all the
 // merchant store needs: it is keyed by signature alone and joins to
 // nothing.
 func openMerchantStore(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	db, err := gold.Open(":memory:", gold.ModeReadWrite)
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate gold: %v", err)
-	}
 	return db, ctx
 }
 

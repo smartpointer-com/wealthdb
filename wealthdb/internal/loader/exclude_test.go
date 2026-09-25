@@ -3,6 +3,7 @@ package loader
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -23,14 +24,11 @@ import (
 func excludeFixture(t *testing.T) (context.Context, *sql.Tx, func(string) int) {
 	t.Helper()
 	ctx := context.Background()
-	db, err := gold.Open(":memory:", gold.ModeReadWrite)
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
-		t.Fatalf("gold.Open: %v", err)
+		t.Fatalf("gold.OpenFresh: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("gold.Migrate: %v", err)
-	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)

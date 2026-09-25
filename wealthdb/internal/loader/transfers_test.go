@@ -2,6 +2,7 @@ package loader
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -109,9 +110,9 @@ func TestTransferEntryToChange(t *testing.T) {
 
 func TestApplyTransferLedger(t *testing.T) {
 	ctx := context.Background()
-	db, err := gold.Open(":memory:", gold.ModeReadWrite)
+	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
-		t.Fatalf("gold.Open: %v", err)
+		t.Fatalf("gold.OpenFresh: %v", err)
 	}
 	defer db.Close()
 
