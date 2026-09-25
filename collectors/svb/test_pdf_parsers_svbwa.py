@@ -476,6 +476,20 @@ def test_a_cusip_keyed_row_is_not_refused_for_width():
         "EXAMPLE CO COM EXCO 1 2 3 $4.00 $5.00 $6.00") is None
 
 
+def test_a_cusip_on_a_row_with_no_income_column_is_the_key():
+    """No income column leaves the row one figure short, so an all-digit
+    CUSIP fills the width exactly. It is followed by the undecorated
+    quantity, never by a dollar price, which is what tells it from one."""
+    row = ps._parse_security_row(
+        "EXAMPLE CO LTD SPONSORED ADR 000000109 7 $3.125 $21.88")
+    assert row.instrument_key == "000000109"
+    assert row.description == "EXAMPLE CO LTD SPONSORED ADR"
+    assert (row.quantity, row.price, row.market_value) == (7, 3.125, 21.88)
+    # A plain four-figure row keeps its symbol.
+    row = ps._parse_security_row("EXAMPLE CORP XMPL 40 $25.00 $1,000.00 $12.00")
+    assert row.instrument_key == "XMPL" and row.quantity == 40
+
+
 def test_a_security_named_like_boilerplate_is_still_a_holding():
     """Two boilerplate prefixes are short enough to collide with a real
     security's name. What they exist to catch — a credit rating, a bond's

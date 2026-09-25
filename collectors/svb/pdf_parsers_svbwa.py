@@ -542,6 +542,13 @@ def _parse_security_row(line):
             if _CUSIP_RE.match(tokens[run_start + offset]):
                 tail -= offset + 1
                 break
+    # A row with no income column is one figure short, so a leading all-digit
+    # CUSIP fills the width exactly and would read as the quantity. The
+    # figures after it tell: a quantity is followed by a dollar price, and
+    # here the CUSIP is followed by the undecorated quantity.
+    elif (tail == 4 and _CUSIP_RE.match(tokens[-4])
+          and not tokens[-3].startswith("$") and tokens[-2].startswith("$")):
+        tail = 3
     # Data rows carry 3 (qty, price, mv) or 4 (… + eai) numerics.
     if tail < 3 or tail > 4:
         return None
