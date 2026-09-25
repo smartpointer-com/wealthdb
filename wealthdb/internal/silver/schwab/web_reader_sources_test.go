@@ -328,13 +328,20 @@ func TestWebKindTransferDirections(t *testing.T) {
 		{"Journaled Shares", &out, "", canonical.TxKindJournal},
 
 		// The statement parser's catch-all. A funds journal inside it
-		// is cash and takes its direction from the sign; everything
-		// else in the bucket stays TxKindOther — including the SHARE
-		// journal whose narrative begins with the same word.
+		// is cash and takes its direction from the sign, and the other
+		// cash shapes are read by their names; everything else in the
+		// bucket stays TxKindOther — including the SHARE journal whose
+		// narrative begins with the same word.
 		{"Unknown", &out, "Journaled Funds JOURNAL TO 00000000", canonical.TxKindWithdrawal},
 		{"Unknown", &in, "Journaled Funds JOURNAL FRM 00000000", canonical.TxKindDeposit},
 		{"Unknown", &out, "Journaled Shares EXAMPLE FUND: XMPL", canonical.TxKindOther},
-		{"Unknown", &out, "Short Sale CALL EXAMPLE INC", canonical.TxKindOther},
+		{"Unknown", &in, "Short Sale CALL EXAMPLE INC", canonical.TxKindSell},
+		{"Unknown", &out, "Cover Short CALL EXAMPLE INC", canonical.TxKindBuy},
+		{"Unknown", &out, "ADR Pass Thru Fee EXAMPLE HLDGS F", canonical.TxKindFee},
+		{"Unknown", &in, "Frgn Tax Reclaim EXAMPLE AG F: XMPL", canonical.TxKindTax},
+		{"Unknown", &in, "LT Cap Gain EXAMPLE ETF: XMPL", canonical.TxKindDividend},
+		{"Unknown", &zero, "Expired CALL EXAMPLE INC", canonical.TxKindOther},
+		{"Unknown", &in, "Account Transfer EXAMPLE FUND: XMPL", canonical.TxKindOther},
 		{"Unknown", &out, "A note mentioning Journaled Funds midway", canonical.TxKindOther},
 		{"Unknown", nil, "Journaled Funds JOURNAL TO 00000000", canonical.TxKindJournal},
 	}

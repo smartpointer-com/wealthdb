@@ -143,7 +143,12 @@ correction, such as a dividend clawed back, and nets against the
 booking it corrects. The web feeds print most figures as magnitudes,
 so there the kind orients the figure; only a minus printed on an
 inflow kind is kept, because the statements print one only on such a
-correction.
+correction. The statement parser's `Unknown` bucket is the exception:
+its rows carry the figure as printed, and the cash shapes read out of it
+by name (a short sale and its cover, a pass-through or borrow fee, a
+withholding or its reclaim, a fund's capital-gain payout) keep that sign.
+Anything else the bucket carries (a share journal, an in-kind
+transfer, a corporate action, an expiry) stays `other`.
 
 ## 6. Change number
 

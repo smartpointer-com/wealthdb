@@ -1485,6 +1485,20 @@ class TestParseTransactionsLegacy:
         assert "Transaction Detail" not in rows[0].description
         assert "EXAMPLE CHECK" in rows[0].description
 
+    def test_description_stops_at_the_margin_disclosures(self):
+        text = self._wrap(
+            "10/15 10/15 ADR Pass Thru Fee EXAMPLE HLDGS FSPONSORED ADR (1.50)\n"
+            "1 ADR REPS\n"
+            "Margin interest charged to your Account during the statement "
+            "period is included in this section of the statement.\n"
+            "10/29 10/29 Margin Interest INTEREST 09/30THRU 10/29 (0.25)\n"
+            "The opening margin loan balance on 10/01 was $0.00.\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2021)
+        assert len(rows) == 2
+        assert rows[0].description.endswith("1 ADR REPS")
+        assert "opening margin" not in rows[1].description
+
     def test_description_capped_at_max_chars(self):
         # Belt-and-suspenders: if a row picks up several short
         # continuation lines that AREN'T row-stop markers (no

@@ -823,6 +823,9 @@ _LEGACY_TX_ROW_STOP_RE = re.compile(
     # in its description, which then reads as a different payee.
     r"|The\s+total\s+(?:deposits|withdrawals)\s+activity\b"
     r"|Transaction\s+Detail\b"
+    # The margin disclosures a sub-section closes with, likewise.
+    r"|Margin\s+interest\s+charged\s+to\s+your\s+Account\b"
+    r"|The\s+opening\s+margin\s+loan\s+balance\b"
     r"|Latest\s+Price\b"
     r"|©"  # copyright line
     r")"

@@ -243,13 +243,19 @@ func TestWebSignedKeepsAMinusOnAnInflow(t *testing.T) {
 		{canonical.TxKindTransferOut, "100.00", "-100", "a distribution's market value is money out"},
 		{canonical.TxKindWithdrawal, "-50.00", "-50", "an outflow printed negative stays negative"},
 	} {
-		got := webSigned(c.kind, dec(c.amount))
+		got := webSigned("Dividend", c.kind, dec(c.amount))
 		if got == nil || got.String() != c.want {
 			t.Errorf("webSigned(%s, %s) = %v, want %s: %s", c.kind, c.amount, got, c.want, c.why)
 		}
 	}
-	if webSigned(canonical.TxKindDividend, nil) != nil {
+	if webSigned("Dividend", canonical.TxKindDividend, nil) != nil {
 		t.Error("a row with no figure gained one")
+	}
+	// The statement parser's catch-all prints its own sign, and a shape
+	// read out of it keeps that sign: a withholding reclaimed is a tax
+	// row with a credit.
+	if got := webSigned("Unknown", canonical.TxKindTax, dec("14.50")); got == nil || got.String() != "14.5" {
+		t.Errorf("a reclaimed withholding = %v, want 14.5", got)
 	}
 }
 

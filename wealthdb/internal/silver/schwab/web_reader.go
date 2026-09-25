@@ -364,7 +364,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			// the canonical TransactionChange.Currency field is
 			// NOT NULL.
 			Currency:    "USD",
-			NetAmount:   webSigned(txKind, netAmount),
+			NetAmount:   webSigned(kind, txKind, netAmount),
 			Quantity:    quantity,
 			Price:       price,
 			Description: webNarrative(payload, description),
@@ -799,29 +799,57 @@ func webKind(s string, netAmount *canonical.Decimal, description *string, payloa
 	case "Unknown":
 		// The statement parser's catch-all, and it is heterogeneous on
 		// purpose: option legs, ADR fees, corporate actions, share
-		// journals. One shape inside it is plainly cash and nothing
-		// else — a funds journal between two of the holder's accounts,
-		// which the statement narrates as a direction and a partner
-		// account. Read only that, by name: remapping the catch-all
-		// wholesale would re-kind everything else in it.
+		// journals. The shapes in it that are plainly cash are read by
+		// the name the statement gives them (catchAllShapes); remapping
+		// the catch-all wholesale would re-kind everything else in it.
 		//
-		// Such a journal is NOT automatically internal. "The holder's
-		// accounts" is a wider set than the household: the partner can be an account
-		// outside the household. Making the row directional is what lets the
-		// household boundary decide — kept as an unsigned catch-all it could
-		// decide nothing, and a move out of the household would draw as no
-		// movement at all.
-		if description != nil && fundsJournalDescription.MatchString(*description) {
+		// One of them is a funds journal between two of the holder's
+		// accounts, which the statement narrates as a direction and a
+		// partner account. Such a journal is NOT automatically
+		// internal: the partner can be an account outside the
+		// household. Making the row directional is what lets the
+		// household boundary decide — kept as an unsigned catch-all
+		// it could decide nothing, and a move out of the household
+		// would draw as no movement at all.
+		if description == nil {
+			break
+		}
+		if fundsJournalDescription.MatchString(*description) {
 			return webTransferSide(netAmount)
+		}
+		for _, shape := range catchAllShapes {
+			if shape.name.MatchString(*description) {
+				return shape.kind
+			}
 		}
 	}
 	return canonical.TxKindOther
 }
 
-// fundsJournalDescription names the one cash shape inside the statement
+// fundsJournalDescription names the funds journal inside the statement
 // parser's "Unknown" bucket. Anchored, because the word has to lead: a
 // narrative merely mentioning a journal is not one.
 var fundsJournalDescription = regexp.MustCompile(`^Journaled Funds\b`)
+
+// catchAllShapes are the other cash shapes of the statement parser's
+// "Unknown" bucket, by the name the statement prints first. A short sale
+// is cash raised by selling what the account does not hold (a stock, or
+// an option written) and a cover the cash spent closing it; the rest are
+// a pass-through or borrow fee, a withholding or its reclaim, and a
+// fund's capital-gain payout or a dividend's correction. Anchored like
+// the journal above. Whatever else the bucket carries — a share
+// journal, an in-kind transfer, a corporate action, an expiry — moves
+// no cash of its own and stays TxKindOther.
+var catchAllShapes = []struct {
+	name *regexp.Regexp
+	kind canonical.TxKind
+}{
+	{regexp.MustCompile(`^Short Sale\b`), canonical.TxKindSell},
+	{regexp.MustCompile(`^Cover Short\b`), canonical.TxKindBuy},
+	{regexp.MustCompile(`^(?:ADR Pass Thru Fee|Service Fee)\b`), canonical.TxKindFee},
+	{regexp.MustCompile(`^(?:Foreign Tax Paid|Frgn Tax Reclaim|NRA Withholding)\b`), canonical.TxKindTax},
+	{regexp.MustCompile(`^(?:Adjust Dividend|LT Cap Gain|Short Term Cap Gn)\b`), canonical.TxKindDividend},
+}
 
 // webTransferSide reads an external transfer's direction off its amount, and
 // refuses to guess one for a row that carries none.
@@ -901,7 +929,15 @@ func extractWebTxAmounts(payload string) (netAmount, quantity, price *canonical.
 // exception and is kept: the statements print one only on a correction
 // (a dividend clawed back), which the canonical sign would book as a
 // second dividend.
-func webSigned(kind canonical.TxKind, amount *canonical.Decimal) *canonical.Decimal {
+//
+// The statement parser's "Unknown" bucket keeps its sign whole. Its rows
+// carry the figure as printed, a debit in parentheses, and the kind a
+// shape in it is read as does not state a direction the row lacks: a
+// withholding reclaimed is a tax row with a credit.
+func webSigned(silverKind string, kind canonical.TxKind, amount *canonical.Decimal) *canonical.Decimal {
+	if silverKind == "Unknown" {
+		return amount
+	}
 	signed := canonical.ApplyCanonicalSign(kind, amount)
 	if amount != nil && amount.IsNegative() && signed != nil && signed.IsPositive() {
 		return amount
