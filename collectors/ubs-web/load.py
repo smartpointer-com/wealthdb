@@ -1026,17 +1026,26 @@ def _export_row_fingerprint(row: dict) -> str:
     """The movement fields that distinguish two rows sharing a
     transaction number. Raw cell text, not parsed values, so a
     formatting change in how an amount is rendered cannot move an id."""
+    return "|".join((_export_movement_fingerprint(row), row["description1"]))
+
+
+def _export_movement_fingerprint(row: dict) -> str:
+    """`_export_row_fingerprint` without the name the row is booked
+    under. The bank restates a security's name on rows it has already
+    exported (a company renamed, a share class retitled), so the same
+    movement can come back under a different Description1; this is what
+    still recognises it."""
     return "|".join((
         row["booking_date_raw"], row["value_date_raw"],
         row["debit_raw"], row["credit_raw"],
-        row["description_kind"] or "", row["description1"],
+        row["description_kind"] or "",
     ))
 
 
 def _bare_number_holders(conn: sqlite3.Connection,
-                         rows: list[dict]) -> dict[tuple[str, str], str]:
-    """(account, transaction no.) -> the fingerprint of the row silver
-    ALREADY holds under the bare number, for the groups this dump
+                         rows: list[dict]) -> dict[tuple[str, str], dict]:
+    """(account, transaction no.) -> the movement fields of the row
+    silver ALREADY holds under the bare number, for the groups this dump
     touches.
 
     Which row of a group keeps the bank's bare number cannot be decided
@@ -1058,7 +1067,7 @@ def _bare_number_holders(conn: sqlite3.Connection,
     keys = {(r["account_external_id"], r["txn_no"]) for r in rows}
     if not keys:
         return {}
-    held: dict[tuple[str, str], str] = {}
+    held: dict[tuple[str, str], dict] = {}
     accounts = sorted({a for a, _ in keys})
     numbers = sorted({n for _, n in keys})
     q = ("SELECT account_external_id, transaction_external_id, payload"
@@ -1075,7 +1084,7 @@ def _bare_number_holders(conn: sqlite3.Connection,
             continue
         if not isinstance(cells, dict) or "payment_advice_pdf" in str(payload):
             continue
-        held[key] = _export_row_fingerprint({
+        held[key] = {
             "booking_date_raw": (cells.get("Booking date") or "").strip(),
             "value_date_raw": ((cells.get("Value date") or "").strip()
                                or (cells.get("Trade date") or "").strip()),
@@ -1083,12 +1092,12 @@ def _bare_number_holders(conn: sqlite3.Connection,
             "credit_raw": (cells.get("Credit") or "").strip(),
             "description_kind": (cells.get("Description2") or "").strip() or None,
             "description1": (cells.get("Description1") or "").strip(),
-        })
+        }
     return held
 
 
 def _assign_export_txn_ids(rows: list[dict],
-                           held: dict[tuple[str, str], str] | None = None) -> list[str]:
+                           held: dict[tuple[str, str], dict] | None = None) -> list[str]:
     """Return one id per row, positionally aligned with `rows`.
 
     A transaction number used once is its row's id unchanged, which is
@@ -1109,8 +1118,20 @@ def _assign_export_txn_ids(rows: list[dict],
         # picks one, and then the largest movement takes it: the advice
         # pass is keyed by the number and an advice names a payment
         # rather than the fee beside it.
-        incumbent = [i for i in members
-                     if _export_row_fingerprint(rows[i]) == held.get(key)]
+        holder = held.get(key)
+        incumbent = [i for i in members if holder is not None
+                     and _export_row_fingerprint(rows[i])
+                     == _export_row_fingerprint(holder)]
+        if not incumbent and holder is not None:
+            # The holder may have come back under a restated name. The
+            # one member whose movement is the holder's IS the holder;
+            # suffixed, it would be stored a second time beside itself.
+            # Two such members cannot be told apart, so neither claims.
+            restated = [i for i in members
+                        if _export_movement_fingerprint(rows[i])
+                        == _export_movement_fingerprint(holder)]
+            if len(restated) == 1:
+                incumbent = restated
         if incumbent:
             primary = incumbent[0]
         elif key in held:

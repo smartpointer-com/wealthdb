@@ -1140,6 +1140,48 @@ def test_a_partial_window_does_not_re_auction_the_bare_number(tmp_path):
     assert state() == full
 
 
+def test_a_restated_name_keeps_the_movement_under_its_number(tmp_path):
+    """The bank restates a security's name on rows it has already
+    exported. The movement that comes back under the new name is the
+    one silver holds, not a second one: it keeps the bare number and
+    takes the new name, rather than landing again under a suffix."""
+    conn = _fresh_db(tmp_path)
+    old = _txn_row("06-15", "", "500.00", "1500.00", "AW00000KE0000000",
+                   "Reg.shs Example Old Name AG (XMPL)", "Dividend")
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path / "r0", [old]))
+    new = _txn_row("06-15", "", "500.00", "1500.00", "AW00000KE0000000",
+                   "Reg.shs Example New Name AG (XMPL)", "Dividend")
+    loader._load_transactions(conn, 2000, _seed_txn_bronze(tmp_path / "r1", [new]))
+
+    rows = conn.execute(
+        "SELECT transaction_external_id, json_extract(payload, '$.Description1')"
+        "  FROM transactions").fetchall()
+    assert len(rows) == 1, rows
+    assert rows[0][0] == "AW00000KE0000000"
+    assert "New Name" in rows[0][1]
+
+
+def test_a_restated_name_two_members_could_claim_takes_no_number(tmp_path):
+    """Where two rows of the dump match the holder's movement, neither
+    can be shown to be the holder, so neither takes its number."""
+    conn = _fresh_db(tmp_path)
+    held = _txn_row("05-05", "-43.21", "", "100.00", "ZD00000TI0000008",
+                    "Example Charge", "")
+    loader._load_transactions(conn, 1000, _seed_txn_bronze(tmp_path / "r0", [held]))
+    twin_a = _txn_row("05-05", "-43.21", "", "100.00", "ZD00000TI0000008",
+                      "Example Charge A", "")
+    twin_b = _txn_row("05-05", "-43.21", "", "100.00", "ZD00000TI0000008",
+                      "Example Charge B", "")
+    loader._load_transactions(
+        conn, 2000, _seed_txn_bronze(tmp_path / "r1", [twin_a, twin_b]))
+
+    rows = {r[0]: r[1] for r in conn.execute(
+        "SELECT transaction_external_id, json_extract(payload, '$.Description1')"
+        "  FROM transactions")}
+    assert rows["ZD00000TI0000008"] == "Example Charge", "the holder was restated"
+    assert len(rows) == 3, rows
+
+
 def test_a_group_nobody_holds_yet_gives_the_number_to_the_payment(tmp_path):
     """The advice pass is keyed by UBS's number and an advice names a
     payment rather than the fee beside it, so an unclaimed group hands

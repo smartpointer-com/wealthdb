@@ -248,7 +248,11 @@ silver-side facts that make a clean date-splice possible:
   leaves the number untouched and suffixes every member it does carry;
   and only a group no row holds yet picks, where the largest movement
   takes it — the advice pass is keyed by the bare number, and an advice
-  names the payment rather than the fee beside it. The suffix is
+  names the payment rather than the fee beside it. The holder is
+  recognised by its movement even when the bank has since restated the
+  security's name on it: the one member matching the holder's dates,
+  amounts and kind in everything but Description1 keeps the number and
+  takes the new name, rather than landing again beside itself. The suffix is
   content-derived rather than positional — bar the ordinal separating
   two rows identical in every movement field — so a dump covering a
   different slice of the same group converges on the same rows.
