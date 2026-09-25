@@ -1030,6 +1030,10 @@ func TestMechanismOnly(t *testing.T) {
 		{"DEPOSIT MOBILE DEPOSIT", true},
 		{"REMOTE ONLINE DEPOSIT 1", true},
 		{"WIRED FUNDS RECEIVED", true},
+		{"MOBILE CHECK DEPOSIT", true},
+		{"CHECK", true}, // a cheque whose serial the reduction dropped
+		{"CHECK 1234", true},
+		{"CHECK INTO CASH", false},
 		{"EXAMPLE CORP ACCTVERIFY", true}, // the verification literal alone decides
 		{"EXAMPLE FUNDS INC", false},
 		{"ONLINE MARKET EXAMPLE", false},

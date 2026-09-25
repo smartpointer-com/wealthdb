@@ -1438,7 +1438,7 @@ rather than privacy:
 | `PersonShaped` | a signature that IS a bare person's name, on a non-card account, unless `fence_person_names` is off |
 | `Uninformative` | a signature with no word in it — nothing to name |
 | `FilingOnly` | a signature that is nothing but the provider's own booking type — how the row was booked, not whom it paid |
-| `MechanismOnly` | a signature that names only how money arrived (`MOBILE DEPOSIT`, `WIRED FUNDS RECEIVED`), or carries the NACHA verification literal `ACCTVERIFY` |
+| `MechanismOnly` | a signature that names only how money moved (`MOBILE DEPOSIT`, `WIRED FUNDS RECEIVED`, a bare `CHECK`), or carries the NACHA verification literal `ACCTVERIFY` |
 
 ### The fence gates candidacy
 
@@ -1620,8 +1620,9 @@ names how the bank booked the row, not whom it paid: one such key
 covers every row the bank filed that way, and a verdict bought at it
 would cover them all. A narrative that carries more than the filing
 (`credit; Ref 7`) is not refused. So is `spending.MechanismOnly`, a
-signature that names how the money arrived and no party — `MOBILE
-DEPOSIT`, `REMOTE ONLINE DEPOSIT`, `WIRED FUNDS RECEIVED` — or carries
+signature that names how the money moved and no party — `MOBILE
+DEPOSIT`, `REMOTE ONLINE DEPOSIT`, `WIRED FUNDS RECEIVED`, a cheque
+printed as `CHECK` and its serial — or carries
 `ACCTVERIFY`, the entry description NACHA mandates on a verification
 micro-deposit whoever sends it. Both counts print with the plan — "N
 signature(s) fenced as transfer-shaped and never sent", "N

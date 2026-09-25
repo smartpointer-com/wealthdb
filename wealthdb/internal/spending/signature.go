@@ -971,11 +971,13 @@ func FilingOnly(signature, providerCategory string) bool {
 	return signature != "" && signature == Normalize("", providerCategory)
 }
 
-// arrivalMechanismTokens name how money arrived, never who sent it: a
-// cheque paid in by phone or at a remote scanner, a wire received.
-var arrivalMechanismTokens = map[string]bool{
+// mechanismTokens name how money moved, never who sent or received it:
+// a cheque paid in by phone or at a remote scanner, a wire received, a
+// cheque written. A bank that prints `CHECK 1234` and nothing else has
+// named the paper, not the payee.
+var mechanismTokens = map[string]bool{
 	"MOBILE": true, "REMOTE": true, "ONLINE": true, "DEPOSIT": true,
-	"WIRED": true, "FUNDS": true, "RECEIVED": true,
+	"WIRED": true, "FUNDS": true, "RECEIVED": true, "CHECK": true,
 }
 
 // nachaVerificationEntry is the company entry description NACHA mandates
@@ -984,8 +986,8 @@ var arrivalMechanismTokens = map[string]bool{
 const nachaVerificationEntry = "ACCTVERIFY"
 
 // MechanismOnly reports whether a signature names how money moved and no
-// party: every token an arrival mechanism or a number (`MOBILE DEPOSIT`,
-// `REMOTE ONLINE DEPOSIT 1`, `WIRED FUNDS RECEIVED`), or the verification
+// party: every token a mechanism or a number (`MOBILE DEPOSIT`,
+// `REMOTE ONLINE DEPOSIT 1`, `WIRED FUNDS RECEIVED`, `CHECK`), or the verification
 // literal anywhere. Such a signature holds words, so Uninformative passes
 // it, but a model asked about it can only return a catch-all. It is a
 // further refusal at candidacy, counted with Uninformative; a rule or a pin
@@ -998,7 +1000,7 @@ func MechanismOnly(s string) bool {
 	mechanism := false
 	for _, tok := range tokens {
 		switch {
-		case arrivalMechanismTokens[tok]:
+		case mechanismTokens[tok]:
 			mechanism = true
 		case !allDigits(tok):
 			return false
