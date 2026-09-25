@@ -45,10 +45,10 @@ import contextlib
 import logging
 import os
 import sys
-import time
 from pathlib import Path
 
 from collectorkit import cli, debugcap, envfile, launch
+from collectorkit.launch import pump, wait_for
 
 import auth_dialog
 import mdsui
@@ -150,32 +150,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-@contextlib.contextmanager
-def _camoufox(profile_dir: Path):
-    """Open a persistent Camoufox context on the profile dir (headed under
-    the entrypoint's Xvfb — the container exposes VNC only for vnc-login).
-    Yields (context, page)."""
-    from camoufox.sync_api import Camoufox
-    launch.prepare_profile_dir(profile_dir)
-    cam = Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        humanize=True,
-        geoip=True,
-        firefox_user_prefs=launch.firefox_prefs(),
-    )
-    context = cam.__enter__()
-    try:
-        page = context.pages[0] if context.pages else context.new_page()
-        yield context, page
-    finally:
-        with contextlib.suppress(Exception):
-            cam.__exit__(None, None, None)
-
-
 class _AuthWatch:
     """Watch the context's responses: flip `ok` on a signed-in `/svc/` call,
     and stash the `challenge-options` body (the factor menu) the CLI 2FA
@@ -216,21 +190,6 @@ class _AuthWatch:
             pass
 
 
-def _pump(page, ms: int = 500) -> None:
-    """Advance the Playwright sync event loop so `.on()` handlers fire.
-
-    A bare time.sleep() does NOT deliver Playwright events in the sync API —
-    callbacks run only while the main thread is inside a Playwright call. The
-    approval navigation can make wait_for_timeout raise (context destroyed);
-    fall back to another Playwright call (wait_for_load_state), never a bare
-    sleep, so events keep being delivered."""
-    try:
-        page.wait_for_timeout(ms)
-    except Exception:
-        with contextlib.suppress(Exception):
-            page.wait_for_load_state(timeout=ms)
-
-
 # The authenticated app shell renders a brand bar + primary nav (a sign-out
 # button, the Accounts menu) that the sign-in / challenge pages never do. A
 # live DOM poll for these is the robust auth signal: the pinned camoufox drops
@@ -256,16 +215,6 @@ def _session_authed(page, watch: "_AuthWatch") -> bool:
     """The one definition of "signed in": the response watcher saw the
     authenticated call OR the live DOM shows the app shell."""
     return watch.ok or _authenticated_live(page)
-
-
-def _wait_for(predicate, page, timeout_s: int) -> bool:
-    """Poll `predicate()` while pumping the event loop, until true or timeout."""
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        _pump(page)
-    return False
 
 
 
@@ -301,13 +250,13 @@ def run_check(profile_dir: Path) -> int:
     """Load the dashboard on the persisted profile and watch for an
     authenticated `/svc/` call. Exit 0 if the session is alive, 1 otherwise
     (dead between runs is expected — §F)."""
-    with _camoufox(profile_dir) as (ctx, page):
+    with launch.persistent_camoufox(profile_dir) as (ctx, page):
         watch = _AuthWatch().attach(ctx)
         try:
             page.goto(START_URL, wait_until="domcontentloaded", timeout=45_000)
         except Exception as exc:
             log.warning("check navigation failed: %r", exc)
-        if _wait_for(lambda: _session_authed(page, watch), page, 20):
+        if wait_for(lambda: _session_authed(page, watch), page, 20):
             log.info("session ALIVE")
             return 0
     log.info("session DEAD — a fresh login is required (expected between runs)")
@@ -321,7 +270,7 @@ def _prefill(page, username: str, password: str) -> bool:
     for _ in range(10):
         if _maybe_prefill_login(page, username, password, prefilled):
             return True
-        _pump(page, 1000)
+        pump(page, 1000)
     return False
 
 
@@ -415,8 +364,8 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
     # Wait for either the challenge menu or an already-authenticated session
     # (a recently-trusted device may skip the challenge and land signed in —
     # detected via the live DOM check, not just the response event).
-    _wait_for(lambda: _session_authed(page, watch)
-              or watch.challenge_options is not None, page, 60)
+    wait_for(lambda: _session_authed(page, watch)
+             or watch.challenge_options is not None, page, 60)
     if _session_authed(page, watch):
         return 0
     if watch.challenge_options is None:
@@ -447,8 +396,8 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
     # Selecting a method reveals a "Next" button; the challenge is only sent
     # once it is clicked (#next-content, from the captured DOM). No-op if a
     # build sends on selection.
-    _wait_for(lambda: _first_in_frames(page, "#next-content") is not None,
-              page, 8)
+    wait_for(lambda: _first_in_frames(page, "#next-content") is not None,
+             page, 8)
     _click_next(page)
     _capture(page, args, "after-next")
 
@@ -456,7 +405,7 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
         # Push is sent when the method is selected. Confirm the invocation
         # fired (so a "click" that didn't register isn't mistaken for a sent
         # push) before waiting on the approval.
-        if not _wait_for(lambda: watch.invoked or watch.ok, page, 20):
+        if not wait_for(lambda: watch.invoked or watch.ok, page, 20):
             _capture(page, args, "push-not-sent")
             log.error("selected the app-approval method but Chase sent no "
                       "push — the control didn't register the click. Retry "
@@ -470,8 +419,8 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
         # navigation, so if it isn't confirmed within a short window, fall back
         # to a keypress — by then the page has settled and the shared wait
         # below sees it — rather than sit out the full MFA timeout.
-        if not _wait_for(lambda: _session_authed(page, watch),
-                         page, PUSH_AUTODETECT_S):
+        if not wait_for(lambda: _session_authed(page, watch),
+                        page, PUSH_AUTODETECT_S):
             log.info("if you've approved the notification, press Enter to "
                      "continue…")
             with contextlib.suppress(EOFError):
@@ -490,9 +439,9 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
             _capture(page, args, "after-phone")
         # The code is sent (invocation fired) before the field renders; wait
         # for that signal or the field itself.
-        if not _wait_for(lambda: watch.invoked
-                         or _locate(page, OTP_INPUT_SELECTOR) is not None,
-                         page, 30):
+        if not wait_for(lambda: watch.invoked
+                        or _locate(page, OTP_INPUT_SELECTOR) is not None,
+                        page, 30):
             _capture(page, args, "code-not-sent")
             log.error("no code was sent — the method/number control didn't "
                       "register. Retry with vnc-login. (DOM captured with "
@@ -506,8 +455,8 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
                       "Retry with vnc-login. (DOM captured with --debug.)")
             return 1
 
-    if not _wait_for(lambda: _session_authed(page, watch),
-                     page, args.mfa_timeout):
+    if not wait_for(lambda: _session_authed(page, watch),
+                    page, args.mfa_timeout):
         _capture(page, args, "after-2fa-not-authenticated")
         log.error("2FA submitted but no authenticated session appeared. "
                   "Retry with vnc-login. (DOM captured with --debug.)")
@@ -523,8 +472,8 @@ def _select_phone(page, last4: str) -> bool:
             or _deep_click_text(page, last4, exact=False)
             or _activate(page, f"mds-list-item[label*='{last4}']")):
         return False
-    _wait_for(lambda: _first_in_frames(page, "#next-content") is not None,
-              page, 8)
+    wait_for(lambda: _first_in_frames(page, "#next-content") is not None,
+             page, 8)
     _click_next(page)
     return True
 
@@ -540,7 +489,7 @@ def run_login_and_scrape(args: argparse.Namespace) -> int:
 
     since, until = cli.resolve_standard(args, verb="download", log=log)
 
-    with _camoufox(args.profile_dir) as (ctx, page):
+    with launch.persistent_camoufox(args.profile_dir) as (ctx, page):
         watch = _AuthWatch().attach(ctx)
         page.goto(START_URL, wait_until="domcontentloaded", timeout=45_000)
         if username and password and _prefill(page, username, password):
@@ -561,8 +510,8 @@ def run_login_and_scrape(args: argparse.Namespace) -> int:
         else:
             log.info("Complete Sign In + 2FA in the browser over VNC "
                      "(waiting up to %ds). Any factor works.", args.mfa_timeout)
-            if not _wait_for(lambda: _session_authed(page, watch),
-                             page, args.mfa_timeout):
+            if not wait_for(lambda: _session_authed(page, watch),
+                            page, args.mfa_timeout):
                 log.error("timed out waiting for an authenticated session")
                 return 1
         log.info("authenticated — starting scrape")

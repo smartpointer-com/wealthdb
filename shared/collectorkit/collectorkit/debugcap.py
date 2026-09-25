@@ -12,6 +12,7 @@ one helper per kind rather than one shape for all:
     buffered response bodies for one-off *login*-flow diagnosis, landing in
     a debug dir outside bronze (there is no bronze run to house them), under
     the screenshots' NEVER-commit contract.
+  * :func:`tee_debug_log` — the run's full DEBUG log, beside the captures.
 
 The contract, identical for both:
 
@@ -53,6 +54,7 @@ import os
 import re
 import time
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 # The subdir every collector's `prune` already nominates as debug artefacts.
@@ -882,3 +884,36 @@ class BodyCapture:
             self._log.info("captured %d response bodies to %s",
                            written, self._out_dir)
         return written
+
+
+def tee_debug_log(debug_dir: Path | None, console_level: int, *,
+                  log: logging.Logger) -> logging.Handler | None:
+    """Write the whole run's log, at DEBUG, to ``<debug_dir>/<ts>-run.log``
+    beside the captures, while the console keeps `console_level`. A capture
+    dir without the log that led up to it shows where a run failed but not
+    why. Returns the handler, or None when there is no dir or it cannot be
+    opened — a debug aid never takes down the run."""
+    if debug_dir is None:
+        return None
+    try:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        handler = logging.FileHandler(debug_dir / f"{stamp}-run.log",
+                                      encoding="utf-8")
+    except OSError as e:
+        log.warning("could not open the debug log file: %s", e)
+        return None
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    # Pin existing (console) handlers to their current verbosity, then open
+    # the root to DEBUG so the file sees everything.
+    for h in root.handlers:
+        if h.level == logging.NOTSET:
+            h.setLevel(console_level)
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+    log.info("full debug log: %s", handler.baseFilename)
+    return handler
+

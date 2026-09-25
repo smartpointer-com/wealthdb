@@ -196,14 +196,6 @@ def test_the_dashboard_route_allows_the_rest_probe():
         _Page("https://global.americanexpress.com/dashboard")) is False
 
 
-def test_a_page_whose_url_raises_is_treated_as_unknown():
-    class _Broken:
-        @property
-        def url(self):
-            raise RuntimeError("navigating")
-    assert login._url(_Broken()) == ""
-
-
 # ============================================================
 # Challenge screen: reading the delivery options
 # ============================================================

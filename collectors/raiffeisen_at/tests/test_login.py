@@ -130,11 +130,3 @@ def test_probe_authenticated_requires_a_bearer():
     w = login._Watch()
     assert w.bearer is None
     assert login._probe_authenticated(context=None, watch=w) is False
-
-
-def test_url_guard_survives_raising_page():
-    class Boom:
-        @property
-        def url(self):
-            raise RuntimeError("mid-navigation")
-    assert login._url(Boom()) == ""

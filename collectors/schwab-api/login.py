@@ -263,37 +263,6 @@ def ts_slug() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def tee_debug_log(screenshot_dir: Path | None,
-                  console_level: int) -> logging.Handler | None:
-    """Mirror the full DEBUG-level log into the debug dir, so a capture
-    bundle always includes at least everything the terminal showed —
-    a run whose only record was scrollback is a run that cannot be
-    diagnosed later. Console verbosity is unchanged. Returns the
-    attached handler, or None when there is nowhere to write."""
-    if screenshot_dir is None:
-        return None
-    try:
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(
-            screenshot_dir / f"{ts_slug()}-run.log", encoding="utf-8")
-    except OSError as e:
-        log.warning("could not open the debug log file: %s", e)
-        return None
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    root = logging.getLogger()
-    # Pin existing (console) handlers to their current verbosity, then
-    # open the root to DEBUG so the file sees everything.
-    for h in root.handlers:
-        if h.level == logging.NOTSET:
-            h.setLevel(console_level)
-    root.setLevel(logging.DEBUG)
-    root.addHandler(handler)
-    log.info("full debug log: %s", handler.baseFilename)
-    return handler
-
-
 @contextlib.contextmanager
 def open_camoufox_context(profile_dir: Path, trace: bool):
     """Open Camoufox (stealth-patched Firefox) with a persistent profile,
@@ -421,17 +390,8 @@ def prefill_login(page, login_id: str | None, password: str | None,
 
 
 def _prompt_for_mfa_code() -> str:
-    sys.stderr.write("\n" + "=" * 60 + "\n")
-    sys.stderr.write("Schwab 2FA: enter your code, then press Enter.\n> ")
-    sys.stderr.flush()
-    try:
-        code = sys.stdin.readline()
-    except KeyboardInterrupt:
-        sys.stderr.write("\n")
-        raise
-    sys.stderr.write("=" * 60 + "\n")
-    sys.stderr.flush()
-    return code.strip()
+    return cli.prompt_on_stderr(
+        "Schwab 2FA: enter your code, then press Enter.")
 
 
 class LoginFlowError(RuntimeError):
@@ -1131,7 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
         level=console_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    tee_debug_log(args.screenshot_dir, console_level)
+    debugcap.tee_debug_log(args.screenshot_dir, console_level, log=log)
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §4).")
     if args.capture_bodies and args.screenshot_dir is None:

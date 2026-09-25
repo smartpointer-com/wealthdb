@@ -45,6 +45,8 @@ import sys
 from dataclasses import dataclass
 from typing import Callable
 
+from collectorkit.cli import ChallengeError, choose_one, read_code
+
 # Factor codes as they appear in challengeMethodsDisplay.showAll.
 FACTOR_INAPP = "INAPP"          # push to a registered mobile app; poll to complete
 FACTOR_OTP_SMS = "OTP_SMS"      # one-time code by text
@@ -77,11 +79,6 @@ OTP_CODE_LEN = 8
 # The factors this dialog can actually drive today. CALL_US is a dead end
 # (human phone call); the rest map to a captured completion path.
 SUPPORTED_FACTORS = (FACTOR_INAPP, FACTOR_OTP_SMS, FACTOR_OTP_VOICE)
-
-
-class ChallengeError(RuntimeError):
-    """The challenge cannot be driven from here (no usable factor, or the
-    human gave up / provided no usable input)."""
 
 
 @dataclass(frozen=True)
@@ -153,23 +150,6 @@ def parse_challenge_options(body: dict) -> ChallengeMenu:
     )
 
 
-def _read_choice(prompt: str, n: int, *, input_fn: Callable[[str], str],
-                 output_fn: Callable[[str], None], max_attempts: int = 3) -> int:
-    """Read a 1..n menu choice, re-prompting on junk. Returns the 0-based
-    index. Raises ChallengeError after `max_attempts` bad entries or on
-    EOF (a piped, non-interactive stdin). No implicit default — a login
-    destination is always chosen explicitly."""
-    for _ in range(max_attempts):
-        try:
-            raw = input_fn(prompt).strip()
-        except EOFError:
-            raise ChallengeError("no input on stdin for the 2FA prompt")
-        if raw.isdigit() and 1 <= int(raw) <= n:
-            return int(raw) - 1
-        output_fn(f"  Please enter a number between 1 and {n}.")
-    raise ChallengeError(f"no valid selection after {max_attempts} attempts")
-
-
 def choose_factor(menu: ChallengeMenu, *,
                   input_fn: Callable[[str], str] = input,
                   output_fn: Callable[[str], None] = print) -> str:
@@ -184,16 +164,10 @@ def choose_factor(menu: ChallengeMenu, *,
             "no automatable 2FA factor offered "
             f"(Chase showed: {', '.join(menu.factors) or 'nothing'})"
         )
-    if len(offerable) == 1:
-        only = offerable[0]
-        output_fn(f"2FA: {FACTOR_LABELS[only]}")
-        return only
-    output_fn("Chase needs a second factor. Choose how to receive it:")
-    for i, f in enumerate(offerable, 1):
-        output_fn(f"  {i}. {FACTOR_LABELS[f]}")
-    idx = _read_choice(f"Enter 1-{len(offerable)}: ", len(offerable),
-                       input_fn=input_fn, output_fn=output_fn)
-    return offerable[idx]
+    return choose_one(
+        offerable, FACTOR_LABELS.__getitem__,
+        heading="Chase needs a second factor. Choose how to receive it:",
+        single="2FA:", input_fn=input_fn, output_fn=output_fn)
 
 
 def choose_target(targets: tuple[Target, ...], title: str, *,
@@ -205,15 +179,8 @@ def choose_target(targets: tuple[Target, ...], title: str, *,
     the list is empty."""
     if not targets:
         raise ChallengeError("no destination available for the chosen factor")
-    if len(targets) == 1:
-        output_fn(f"{title} {targets[0].label}")
-        return targets[0]
-    output_fn(title)
-    for i, t in enumerate(targets, 1):
-        output_fn(f"  {i}. {t.label}")
-    idx = _read_choice(f"Enter 1-{len(targets)}: ", len(targets),
-                       input_fn=input_fn, output_fn=output_fn)
-    return targets[idx]
+    return choose_one(targets, lambda t: t.label, heading=title, single=title,
+                      input_fn=input_fn, output_fn=output_fn)
 
 
 def choose_phone(menu: ChallengeMenu, *,
@@ -234,26 +201,12 @@ def read_otp(*,
 
     Chase texts/reads out an all-digit code, so the prompt asks for exactly
     that — no anti-phishing prefix is shown (the `oneTimePasswordPrefixText`
-    the API returns does not appear in the message the code arrives in).
-    Spaces / dashes in the entry are stripped. A code of unexpected length is
-    warned about (Chase uses 8 digits) but still returned — Chase's verify
-    call makes the final ruling, so a length-policy change can't wedge login;
-    only empty / non-numeric input is rejected and re-prompted. Never logs the
-    code. Raises ChallengeError on repeated empty/invalid input or EOF."""
-    for _ in range(max_attempts):
-        try:
-            raw = input_fn("Code: ")
-        except EOFError:
-            raise ChallengeError("no input on stdin for the OTP code")
-        code = raw.replace(" ", "").replace("-", "").strip()
-        if not code.isdigit():
-            output_fn("  The code is all digits — try again.")
-            continue
-        if len(code) != OTP_CODE_LEN:
-            output_fn(f"  (Note: Chase codes are usually {OTP_CODE_LEN} digits; "
-                      "sending it as entered.)")
-        return code
-    raise ChallengeError(f"no valid code after {max_attempts} attempts")
+    the API returns does not appear in the message the code arrives in). A
+    code of unexpected length is warned about (Chase uses 8 digits) but
+    still returned — Chase's verify call makes the final ruling, so a
+    length-policy change can't wedge login."""
+    return read_code(digits=OTP_CODE_LEN, input_fn=input_fn,
+                     output_fn=output_fn, max_attempts=max_attempts)
 
 
 def build_invocation(menu: ChallengeMenu, factor: str, target: Target) -> dict:

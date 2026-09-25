@@ -50,6 +50,7 @@ import time
 from pathlib import Path
 
 from collectorkit import cli, debugcap, envfile, launch
+from collectorkit.launch import page_url, pump, wait_for
 
 import elba_client as elba
 # explore's frame-aware prefill does not apply here — the Verfüger value is
@@ -80,30 +81,13 @@ def camoufox(profile_dir: Path, fresh: bool = False):
     profile carries the saved-user identity (which skips form entry on a warm
     run, but never the pushTAN — §F). `fresh` wipes it so the next login is
     the cold blank-form path. Yields (context, page)."""
-    from camoufox.sync_api import Camoufox
     if fresh and profile_dir.exists():
         log.warning("--fresh: wiping profile dir %s — the next login is the "
                     "cold blank-form path (region + Verfüger + PIN)",
                     profile_dir)
         shutil.rmtree(profile_dir)
-    launch.prepare_profile_dir(profile_dir)
-    cam = Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        humanize=True,
-        geoip=True,
-        firefox_user_prefs=launch.firefox_prefs(),
-    )
-    context = cam.__enter__()
-    try:
-        page = context.pages[0] if context.pages else context.new_page()
+    with launch.persistent_camoufox(profile_dir) as (context, page):
         yield context, page
-    finally:
-        with contextlib.suppress(Exception):
-            cam.__exit__(None, None, None)
 
 
 class _Watch:
@@ -154,36 +138,6 @@ class _Watch:
                 self.bearer = auth.split(" ", 1)[1]
         except Exception:            # pragma: no cover — defensive
             pass
-
-
-def _pump(page, ms: int = 500) -> None:
-    """Advance the Playwright sync event loop so `.on()` handlers fire and the
-    SPA makes progress — a bare time.sleep() delivers no events in the sync
-    API. Falls back to another Playwright call if a navigation destroys the
-    timer context (the pinned-camoufox lesson)."""
-    try:
-        page.wait_for_timeout(ms)
-    except Exception:
-        with contextlib.suppress(Exception):
-            page.wait_for_load_state(timeout=ms)
-
-
-def _wait_for(predicate, page, timeout_s: float) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        _pump(page)
-    return False
-
-
-def _url(page) -> str:
-    """`page.url`, guarded — the property can raise mid-navigation on the
-    pinned Camoufox."""
-    try:
-        return page.url or ""
-    except Exception:
-        return ""
 
 
 # --- REST over the browser context ---------------------------------------
@@ -275,7 +229,7 @@ def _read_vergleichswert(page) -> str | None:
                 txt = (loc.nth(i).inner_text() or "").strip()
                 if elba.looks_like_vergleichswert(txt):
                     return txt
-        _pump(page, 500)
+        pump(page, 500)
     return None
 
 
@@ -297,8 +251,8 @@ def _select_region(page, option_index: int) -> bool:
     (resolved from the region code via elba.resolve_mandant)."""
     with contextlib.suppress(Exception):
         page.locator(elba.SEL_REGION_SELECT).first.click(timeout=5000)
-    if not _wait_for(lambda: page.locator(elba.SEL_REGION_OPTION).count() > 0,
-                     page, 8):
+    if not wait_for(lambda: page.locator(elba.SEL_REGION_OPTION).count() > 0,
+                    page, 8):
         return False
     with contextlib.suppress(Exception):
         opts = page.locator(elba.SEL_REGION_OPTION)
@@ -319,7 +273,7 @@ def _fill_verfueger(page, full_id: str, kennung: str) -> bool:
         field.click(timeout=4000)
         field.fill("")
         field.fill(full_id)
-    _pump(page, 800)                      # let the canonicalising lookup settle
+    pump(page, 800)                      # let the canonicalising lookup settle
     with contextlib.suppress(Exception):
         got = field.input_value()
         if got and got.startswith(kennung):
@@ -412,9 +366,9 @@ def _drive_to_pushtan(context, page, watch: "_Watch", args) -> bool:
     # sso login app, so it is NEVER treated as authed here (the shared-URL
     # trap that broke the first live run — DESIGN.md §A); a genuinely-live
     # session is caught by the Bearer probe instead.
-    if not _wait_for(lambda: _form_present(page) or _profile_card_present(page)
-                     or _probe_authenticated(context, watch),
-                     page, OUTCOME_TIMEOUT_S):
+    if not wait_for(lambda: _form_present(page) or _profile_card_present(page)
+                    or _probe_authenticated(context, watch),
+                    page, OUTCOME_TIMEOUT_S):
         _capture(page, args, "no-login-screen")
         log.error("neither the login form nor a saved-user card appeared. "
                   "Retry with vnc-login. (DOM captured with --debug.)")
@@ -459,9 +413,9 @@ def authenticate(context, page, watch: "_Watch", *, args, cli_mfa: bool,
         # displayText; fall back to reading it off the screen (the pinned
         # Camoufox can drop the pushtan response event — it did on the first
         # live login).
-        _wait_for(lambda: watch.pushtan_display is not None
-                  or elba.is_pushtan_url(_url(page))
-                  or _probe_authenticated(context, watch), page, 30)
+        wait_for(lambda: watch.pushtan_display is not None
+                 or elba.is_pushtan_url(page_url(page))
+                 or _probe_authenticated(context, watch), page, 30)
         code = watch.pushtan_display or _read_vergleichswert(page)
         if code:
             log.info("pushTAN sent — approve the sign-in in the Raiffeisen "
@@ -497,7 +451,7 @@ def _wait_for_auth(context, page, watch: "_Watch", timeout_s: int) -> bool:
     while time.monotonic() < deadline:
         if _probe_authenticated(context, watch):
             return True
-        if elba.is_authed_route(_url(page)):
+        if elba.is_authed_route(page_url(page)):
             now = time.monotonic()
             on_route_since = on_route_since or now
             if not reloaded and watch.bearer is None and now - on_route_since > 12:
@@ -506,7 +460,7 @@ def _wait_for_auth(context, page, watch: "_Watch", timeout_s: int) -> bool:
                 with contextlib.suppress(Exception):
                     page.reload(wait_until="domcontentloaded", timeout=30_000)
                 reloaded = True
-        _pump(page)
+        pump(page)
     return False
 
 
@@ -536,7 +490,7 @@ def run_check(args: argparse.Namespace) -> int:
         with contextlib.suppress(Exception):
             page.goto(elba.START_URL, wait_until="domcontentloaded",
                       timeout=45_000)
-        if _wait_for(lambda: _probe_authenticated(context, watch), page, 20):
+        if wait_for(lambda: _probe_authenticated(context, watch), page, 20):
             log.info("session ALIVE")
             return 0
     log.info("session DEAD — a fresh login is required (expected between runs)")

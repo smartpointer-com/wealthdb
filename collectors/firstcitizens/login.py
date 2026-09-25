@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 
 from collectorkit import cli, debugcap, envfile, launch, session
+from collectorkit.launch import page_url, pump, wait_for
 
 import auth_dialog
 import q2client
@@ -80,30 +81,13 @@ def camoufox(profile_dir: Path, fresh: bool = False):
     (DESIGN.md §3). `fresh` wipes it first, so the next logon is treated as an
     unrecognised device and the full Secure Access Code (2FA) challenge fires.
     Yields (context, page)."""
-    from camoufox.sync_api import Camoufox
     if fresh and profile_dir.exists():
         log.warning("--fresh: wiping profile dir %s — the next login will "
                     "hit the full 2FA challenge (untrusted device)",
                     profile_dir)
         shutil.rmtree(profile_dir)
-    launch.prepare_profile_dir(profile_dir)
-    cam = Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        humanize=True,
-        geoip=True,
-        firefox_user_prefs=launch.firefox_prefs(),
-    )
-    context = cam.__enter__()
-    try:
-        page = context.pages[0] if context.pages else context.new_page()
+    with launch.persistent_camoufox(profile_dir) as (context, page):
         yield context, page
-    finally:
-        with contextlib.suppress(Exception):
-            cam.__exit__(None, None, None)
 
 
 class _LogonWatch:
@@ -145,27 +129,6 @@ class _LogonWatch:
         return q2client.classify_logon(self.status, self.body or {})
 
 
-def _pump(page, ms: int = 500) -> None:
-    """Advance the Playwright sync event loop so `.on()` handlers fire and the
-    SPA makes progress — a bare time.sleep() delivers no events in the sync
-    API. Falls back to another Playwright call if a navigation destroys the
-    timer context (the pinned-camoufox lesson)."""
-    try:
-        page.wait_for_timeout(ms)
-    except Exception:
-        with contextlib.suppress(Exception):
-            page.wait_for_load_state(timeout=ms)
-
-
-def _wait_for(predicate, page, timeout_s: float) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        _pump(page)
-    return False
-
-
 # --- login-form driving ---------------------------------------------------
 
 def _reveal_login_form(page) -> None:
@@ -187,7 +150,7 @@ def _prefill(page, username: str, password: str) -> bool:
     for _ in range(12):
         if _maybe_prefill_login(page, username, password, prefilled):
             return True
-        _pump(page, 1000)
+        pump(page, 1000)
     return False
 
 
@@ -247,15 +210,6 @@ def _probe_authenticated(context) -> bool:
     return False
 
 
-def _url(page) -> str:
-    """`page.url`, guarded — the property can raise mid-navigation on the
-    pinned Camoufox."""
-    try:
-        return page.url or ""
-    except Exception:
-        return ""
-
-
 def _authed_cheap(page, watch: "_LogonWatch") -> bool:
     """The event-free, no-network half of the signed-in signal: a captured
     logonUser said authenticated, or the SPA route reached the landing page.
@@ -263,7 +217,7 @@ def _authed_cheap(page, watch: "_LogonWatch") -> bool:
     o = watch.outcome()
     if o is not None and o.authenticated:
         return True
-    return q2client.is_authed_url(_url(page))
+    return q2client.is_authed_url(page_url(page))
 
 
 def _is_authed(context, page, watch: "_LogonWatch") -> bool:
@@ -277,7 +231,7 @@ def _is_mfa(page, watch: "_LogonWatch") -> bool:
     o = watch.outcome()
     if o is not None and o.needs_2fa:
         return True
-    return q2client.is_mfa_url(_url(page))
+    return q2client.is_mfa_url(page_url(page))
 
 
 # --- terminal 2FA: drive the Q2 Secure Access Code screens ----------------
@@ -369,8 +323,8 @@ def _register_device(page) -> None:
     """Click "Register Device" so this device is trusted on future runs. The
     step is optional — a failure here still leaves an authenticated session —
     so it is best-effort."""
-    _wait_for(lambda: q2client.URL_MARK_MFA_REGISTER in _url(page)
-              or page.locator(q2client.SEL_MFA_REGISTER).count(), page, 20)
+    wait_for(lambda: q2client.URL_MARK_MFA_REGISTER in page_url(page)
+             or page.locator(q2client.SEL_MFA_REGISTER).count(), page, 20)
     with contextlib.suppress(Exception):
         reg = page.locator(q2client.SEL_MFA_REGISTER).first
         if reg.count() and _click_q2btn(reg):
@@ -385,8 +339,8 @@ def _drive_mfa_cli(page, watch: "_LogonWatch", args) -> bool:
     submitted; the caller confirms the authenticated session."""
     # Wait for the delivery screen, then read the targets from the buttons
     # themselves (not the possibly-dropped logonUser response event).
-    if not _wait_for(lambda: page.locator(q2client.SEL_MFA_TARGET).count() > 0
-                     or q2client.URL_MARK_MFA_ENTER in _url(page), page, 30):
+    if not wait_for(lambda: page.locator(q2client.SEL_MFA_TARGET).count() > 0
+                    or q2client.URL_MARK_MFA_ENTER in page_url(page), page, 30):
         _capture(page, args, "mfa-no-targets")
         log.error("the 2FA delivery screen did not appear. Retry with "
                   "vnc-login. (DOM captured with --debug.)")
@@ -403,9 +357,9 @@ def _drive_mfa_cli(page, watch: "_LogonWatch", args) -> bool:
             return False
         picked = target.display or target.kind
     # else: a single target auto-sends and jumps straight to code entry.
-    if not _wait_for(lambda: q2client.URL_MARK_MFA_ENTER in _url(page)
-                     or page.locator(f"{q2client.SEL_MFA_CODE} input").count(),
-                     page, 30):
+    if not wait_for(lambda: q2client.URL_MARK_MFA_ENTER in page_url(page)
+                    or page.locator(f"{q2client.SEL_MFA_CODE} input").count(),
+                    page, 30):
         _capture(page, args, "mfa-no-code-field")
         log.error("the code-entry screen did not appear. Retry with "
                   "vnc-login. (DOM captured with --debug.)")
@@ -458,12 +412,12 @@ def authenticate(context, page, watch: "_LogonWatch", *, two_factor: str,
         if _is_mfa(page, watch):
             state = "mfa"
             break
-        if now - last_probe >= 3 and "/login" not in _url(page):
+        if now - last_probe >= 3 and "/login" not in page_url(page):
             last_probe = now
             if _probe_authenticated(context):
                 state = "authed"
                 break
-        _pump(page)
+        pump(page)
 
     if state is None:
         log.error("no login outcome after submit (neither signed in nor a "
@@ -493,7 +447,7 @@ def authenticate(context, page, watch: "_LogonWatch", *, two_factor: str,
                  "browser over VNC (up to %ds). It registers this device for "
                  "next time.", mfa_timeout)
 
-    if not _wait_for(lambda: _is_authed(context, page, watch), page, mfa_timeout):
+    if not wait_for(lambda: _is_authed(context, page, watch), page, mfa_timeout):
         log.error("2FA submitted but no authenticated session appeared")
         return False
     log.info("2FA complete — session authenticated")
@@ -599,12 +553,12 @@ def run_check(args: argparse.Namespace) -> int:
                 return 1
             # Off the login flow only — probing /accounts mid-login poisons
             # the challenge (see authenticate).
-            if time.monotonic() - last_probe >= 3 and "/login" not in _url(page):
+            if time.monotonic() - last_probe >= 3 and "/login" not in page_url(page):
                 last_probe = time.monotonic()
                 if _probe_authenticated(context):
                     log.info("device TRUSTED — logon skipped 2FA")
                     return 0
-            _pump(page)
+            pump(page)
         log.info("session state UNKNOWN — no outcome within %ds",
                  OUTCOME_TIMEOUT_S)
         return 1

@@ -57,6 +57,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from collectorkit import cli, debugcap, envfile, launch
+from collectorkit.launch import page_url, pump, wait_for
 
 import amexclient
 import auth_dialog
@@ -105,7 +106,6 @@ def camoufox(profile_dir: Path, fresh: bool = False):
     lesson — so a run that forces the untrusted path can be undone, and a
     mistaken --fresh does not cost a real passcode permanently. Yields
     (context, page)."""
-    from camoufox.sync_api import Camoufox
     if fresh and profile_dir.exists():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         aside = profile_dir.with_name(f"{profile_dir.name}.pre-fresh-{stamp}")
@@ -113,29 +113,8 @@ def camoufox(profile_dir: Path, fresh: bool = False):
         log.warning("--fresh: moved the profile to %s — the next login is "
                     "an unrecognised device and will fire a real passcode. "
                     "Move it back to undo.", aside)
-    launch.prepare_profile_dir(profile_dir)
-    cam = Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        humanize=True,
-        # geoip resolves the egress IP from a public lookup service at
-        # launch, so opening this context is NOT a network-free act. That is
-        # deliberate for a sign-in — the fingerprint should match where the
-        # traffic comes from — and it is why `login --check` reads the
-        # profile's cookie jar instead of coming through here.
-        geoip=True,
-        firefox_user_prefs=launch.firefox_prefs(),
-    )
-    context = cam.__enter__()
-    try:
-        page = context.pages[0] if context.pages else context.new_page()
+    with launch.persistent_camoufox(profile_dir) as (context, page):
         yield context, page
-    finally:
-        with contextlib.suppress(Exception):
-            cam.__exit__(None, None, None)
 
 
 class _LogonWatch:
@@ -187,41 +166,11 @@ class _LogonWatch:
         self.body = None
 
 
-def _pump(page, ms: int = 500) -> None:
-    """Advance the Playwright sync event loop so `.on()` handlers fire and
-    the page makes progress — a bare time.sleep() delivers no events in the
-    sync API. Falls back to another Playwright call if a navigation destroys
-    the timer context (the pinned-camoufox lesson)."""
-    try:
-        page.wait_for_timeout(ms)
-    except Exception:
-        with contextlib.suppress(Exception):
-            page.wait_for_load_state(timeout=ms)
-
-
-def _wait_for(predicate, page, timeout_s: float) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        _pump(page)
-    return False
-
-
-def _url(page) -> str:
-    """`page.url`, guarded — the property can raise mid-navigation on the
-    pinned Camoufox."""
-    try:
-        return page.url or ""
-    except Exception:
-        return ""
-
-
 def _on_login_flow(page) -> bool:
     """True while the page is still on a sign-in / challenge route. The REST
     probe is gated on this being False: an authenticated request fired
     mid-challenge invalidates the challenge server-side."""
-    url = _url(page)
+    url = page_url(page)
     return ("/login" in url or "/logon" in url
             or url.rstrip("/") == amexclient.WWW_ORIGIN)
 
@@ -323,7 +272,7 @@ def describe_screen(page) -> str:
     """
     parts = []
     with contextlib.suppress(Exception):
-        parts.append("path=" + urlparse(_url(page)).path)
+        parts.append("path=" + urlparse(page_url(page)).path)
     with contextlib.suppress(Exception):
         parts.append(f"title={page.title()[:60]!r}")
     controls: list[str] = []
@@ -434,8 +383,8 @@ def register_device(page, timeout_s: float = 20) -> None:
     reports what was actually on screen rather than just that it happened
     (§M): either the control has drifted, or the provider did not offer it,
     and the two want different responses."""
-    _wait_for(lambda: page.locator(amexclient.SEL_REGISTER_DEVICE).count() > 0,
-              page, timeout_s)
+    wait_for(lambda: page.locator(amexclient.SEL_REGISTER_DEVICE).count() > 0,
+             page, timeout_s)
     with contextlib.suppress(Exception):
         btn = page.locator(amexclient.SEL_REGISTER_DEVICE).first
         if btn.count():
@@ -457,7 +406,7 @@ def _drive_challenge_cli(page, watch: "_LogonWatch", args) -> bool:
     submitted; the caller confirms the authenticated session."""
     # Wait for the passcode UI — but stop early on a captcha, which no
     # terminal can answer (DESIGN.md §K).
-    ready = _wait_for(
+    ready = wait_for(
         lambda: page.locator(amexclient.SEL_CHALLENGE_OPTION).count() > 0
         or len(_otp_boxes(page)) == amexclient.OTP_DIGITS
         or looks_like_captcha(page), page, 30)
@@ -493,8 +442,8 @@ def _drive_challenge_cli(page, watch: "_LogonWatch", args) -> bool:
         picked = target.kind
     # else: the code-entry screen is already up (a single destination
     # auto-sends), which the wait above also accepts.
-    if not _wait_for(lambda: len(_otp_boxes(page)) == amexclient.OTP_DIGITS,
-                     page, 30):
+    if not wait_for(lambda: len(_otp_boxes(page)) == amexclient.OTP_DIGITS,
+                    page, 30):
         _capture(page, args, "challenge-no-code-boxes")
         log.error("the passcode entry screen did not appear. Retry with "
                   "vnc-login. (DOM captured with --debug.)")
@@ -558,7 +507,7 @@ def authenticate(context, page, watch: "_LogonWatch", *, two_factor: str,
             if probe_authenticated(context):
                 state = "authed"
                 break
-        _pump(page)
+        pump(page)
 
     if failure is not None:
         if failure.status_code is None:
@@ -607,10 +556,10 @@ def authenticate(context, page, watch: "_LogonWatch", *, two_factor: str,
                  "in the browser over VNC (up to %ds), including \"Add This "
                  "Device\" so later runs skip it.", mfa_timeout)
 
-    if not _wait_for(lambda: _authed_cheap(watch)
-                     or (not _on_login_flow(page)
+    if not wait_for(lambda: _authed_cheap(watch)
+                    or (not _on_login_flow(page)
                          and probe_authenticated(context)),
-                     page, mfa_timeout):
+                    page, mfa_timeout):
         log.error("passcode submitted but no authenticated session appeared")
         return False
     log.info("2FA complete — session authenticated")
@@ -686,7 +635,7 @@ def _prefill(page, username: str, password: str) -> bool:
         if _maybe_prefill_login(page, username, password, prefilled,
                                 overwrite=True):
             return True
-        _pump(page, 1000)
+        pump(page, 1000)
     return False
 
 

@@ -23,6 +23,7 @@ import argparse
 import sys
 from typing import Callable
 
+from collectorkit.cli import ChallengeError, choose_one, read_code
 from q2client import AccessCodeTarget
 
 # Human labels per target kind, for the picker.
@@ -38,28 +39,6 @@ KIND_LABELS = {
 # a real login. Only empty / non-numeric input is rejected.
 
 
-class ChallengeError(RuntimeError):
-    """The challenge cannot be driven from here (no usable target, or the
-    human gave up / provided no usable input)."""
-
-
-def _read_choice(prompt: str, n: int, *, input_fn: Callable[[str], str],
-                 output_fn: Callable[[str], None], max_attempts: int = 3) -> int:
-    """Read a 1..n menu choice, re-prompting on junk. Returns the 0-based
-    index. Raises ChallengeError after `max_attempts` bad entries or on EOF
-    (a piped, non-interactive stdin). No implicit default — a login
-    destination is always chosen explicitly."""
-    for _ in range(max_attempts):
-        try:
-            raw = input_fn(prompt).strip()
-        except EOFError:
-            raise ChallengeError("no input on stdin for the 2FA prompt")
-        if raw.isdigit() and 1 <= int(raw) <= n:
-            return int(raw) - 1
-        output_fn(f"  Please enter a number between 1 and {n}.")
-    raise ChallengeError(f"no valid selection after {max_attempts} attempts")
-
-
 def choose_target(targets: tuple[AccessCodeTarget, ...], *,
                   input_fn: Callable[[str], str] = input,
                   output_fn: Callable[[str], None] = print) -> AccessCodeTarget:
@@ -72,40 +51,22 @@ def choose_target(targets: tuple[AccessCodeTarget, ...], *,
     usable = tuple(t for t in targets if t.value)
     if not usable:
         raise ChallengeError("no usable 2FA target offered")
-    if len(usable) == 1:
-        output_fn(f"2FA: {usable[0].display or KIND_LABELS.get(usable[0].kind)}")
-        return usable[0]
-    output_fn("First Citizens needs a second factor. Choose how to receive it:")
-    for i, t in enumerate(usable, 1):
-        label = t.display or KIND_LABELS.get(t.kind, KIND_LABELS["other"])
-        output_fn(f"  {i}. {label}")
-    idx = _read_choice(f"Enter 1-{len(usable)}: ", len(usable),
-                       input_fn=input_fn, output_fn=output_fn)
-    return usable[idx]
+    return choose_one(
+        usable, lambda t: t.display or KIND_LABELS.get(t.kind, KIND_LABELS["other"]),
+        heading="First Citizens needs a second factor. "
+                "Choose how to receive it:",
+        single="2FA:", input_fn=input_fn, output_fn=output_fn)
 
 
 def read_otp(*,
              input_fn: Callable[[str], str] = input,
              output_fn: Callable[[str], None] = print,
              max_attempts: int = 3) -> str:
-    """Read the one-time code from stdin.
-
-    First Citizens texts / reads out an all-digit code. Spaces and dashes in
-    the entry are stripped; only empty / non-numeric input is rejected and
-    re-prompted. No length is asserted (the validate call is the final
-    ruling). Never logs the code. Raises ChallengeError on repeated
-    empty/invalid input or EOF."""
-    for _ in range(max_attempts):
-        try:
-            raw = input_fn("Code: ")
-        except EOFError:
-            raise ChallengeError("no input on stdin for the OTP code")
-        code = raw.replace(" ", "").replace("-", "").strip()
-        if not code.isdigit():
-            output_fn("  The code is all digits — try again.")
-            continue
-        return code
-    raise ChallengeError(f"no valid code after {max_attempts} attempts")
+    """Read the one-time code from stdin. No length is asserted: the code
+    never reached the read-only captures, and the validate call is the
+    final ruling."""
+    return read_code(input_fn=input_fn, output_fn=output_fn,
+                     max_attempts=max_attempts)
 
 
 # --- demo -----------------------------------------------------------------

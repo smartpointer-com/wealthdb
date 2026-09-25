@@ -1,12 +1,16 @@
-"""Unit tests for the collectorkit.cli shared date-window contract.
+"""Unit tests for collectorkit.cli: the shared date-window contract and
+the second-factor dialog a sign-in reads from the person at the terminal.
 
-Focused on the full-download escape hatch — the accept-only ``--lookback``
-that collectors which always fetch their complete history expose so
-a fleet orchestrator can hand every collector the same flag. Stdlib
-unittest, matching the rest of the collectorkit suite."""
+The window tests focus on the full-download escape hatch — the accept-only
+``--lookback`` that collectors which always fetch their complete history
+expose so a fleet orchestrator can hand every collector the same flag. The
+dialog is driven by scripted input. Stdlib unittest, matching the rest of
+the collectorkit suite."""
 import argparse
+import io
 import logging
 import unittest
+from unittest import mock
 
 from collectorkit import cli
 
@@ -142,6 +146,90 @@ class ResolveStandardTest(unittest.TestCase):
     def test_non_download_verb_is_noop(self):
         ns = _standard("load").parse_args(["--force"])
         self.assertEqual(cli.resolve_standard(ns, verb="load"), (None, None))
+
+
+class _Script:
+    """A scripted stdin: returns each answer in turn, then EOF."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.prompts = []
+
+    def __call__(self, prompt):
+        self.prompts.append(prompt)
+        if not self.answers:
+            raise EOFError
+        return self.answers.pop(0)
+
+
+class ChallengeDialogTest(unittest.TestCase):
+    def setUp(self):
+        self.out = []
+
+    def test_a_choice_is_explicit_and_re_prompted(self):
+        script = _Script("", "9", "2")
+        self.assertEqual(cli.read_choice("Enter 1-3: ", 3, input_fn=script,
+                                         output_fn=self.out.append), 1)
+        self.assertEqual(len(self.out), 2)
+
+    def test_a_choice_gives_up_on_eof_and_on_junk(self):
+        with self.assertRaises(cli.ChallengeError):
+            cli.read_choice("?", 2, input_fn=_Script(), output_fn=self.out.append)
+        with self.assertRaises(cli.ChallengeError):
+            cli.read_choice("?", 2, input_fn=_Script("x", "y", "z"),
+                            output_fn=self.out.append)
+
+    def test_a_lone_option_is_announced_not_asked(self):
+        script = _Script()
+        got = cli.choose_one(["sms"], str.upper, heading="Pick:",
+                             single="2FA:", input_fn=script,
+                             output_fn=self.out.append)
+        self.assertEqual(got, "sms")
+        self.assertEqual(self.out, ["2FA: SMS"])
+        self.assertEqual(script.prompts, [])
+
+    def test_several_options_are_listed_and_picked(self):
+        got = cli.choose_one(["sms", "voice"], str.upper, heading="Pick:",
+                             single="2FA:", input_fn=_Script("2"),
+                             output_fn=self.out.append)
+        self.assertEqual(got, "voice")
+        self.assertEqual(self.out, ["Pick:", "  1. SMS", "  2. VOICE"])
+
+    def test_a_code_is_stripped_of_what_people_type(self):
+        self.assertEqual(cli.read_code(input_fn=_Script(" 12-34 56 "),
+                                       output_fn=self.out.append), "123456")
+
+    def test_a_non_numeric_code_is_re_prompted(self):
+        self.assertEqual(cli.read_code(input_fn=_Script("abc", "42"),
+                                       output_fn=self.out.append), "42")
+
+    def test_an_exact_length_re_prompts_a_short_code(self):
+        got = cli.read_code(digits=6, exact=True,
+                            input_fn=_Script("12345", "123456"),
+                            output_fn=self.out.append)
+        self.assertEqual(got, "123456")
+        self.assertIn("6 digits", self.out[0])
+
+    def test_a_usual_length_only_warns(self):
+        # A provider's length change must not wedge a login.
+        got = cli.read_code(digits=8, input_fn=_Script("123456"),
+                            output_fn=self.out.append)
+        self.assertEqual(got, "123456")
+        self.assertEqual(len(self.out), 1)
+
+    def test_a_code_gives_up_on_eof(self):
+        with self.assertRaises(cli.ChallengeError):
+            cli.read_code(input_fn=_Script(), output_fn=self.out.append)
+
+    def test_the_stderr_prompt_frames_the_question_and_strips_the_answer(self):
+        err = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(" 123456 \n")), \
+                mock.patch("sys.stderr", err):
+            self.assertEqual(cli.prompt_on_stderr("Example 2FA: code?"),
+                             "123456")
+        self.assertIn("Example 2FA: code?\n> ", err.getvalue())
+        self.assertNotIn("123456", err.getvalue())
+
 
 
 if __name__ == "__main__":

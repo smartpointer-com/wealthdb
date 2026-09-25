@@ -1206,5 +1206,44 @@ class RedactHeadersTest(unittest.TestCase):
         self.assertEqual(debugcap.redact_headers("not a mapping"), {})
 
 
+class TeeDebugLogTest(unittest.TestCase):
+    def test_the_run_log_lands_beside_the_captures_at_debug(self):
+        import tempfile
+        root = logging.getLogger()
+        level, levels = root.level, [(h, h.level) for h in root.handlers]
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                handler = debugcap.tee_debug_log(Path(tmp) / "debug",
+                                                 logging.INFO, log=log)
+                logging.getLogger("test.tee").debug("a debug line")
+                handler.flush()
+                (run_log,) = (Path(tmp) / "debug").glob("*-run.log")
+                self.assertIn("a debug line", run_log.read_text())
+            finally:
+                root.removeHandler(handler)
+                handler.close()
+                root.setLevel(level)
+                for h, lvl in levels:
+                    h.setLevel(lvl)
+
+    def test_no_dir_means_no_log(self):
+        self.assertIsNone(debugcap.tee_debug_log(None, logging.INFO, log=log))
+
+    def test_an_unwritable_dir_warns_and_the_run_goes_on(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked = Path(tmp) / "blocked"
+            blocked.mkdir()
+            blocked.chmod(0o500)
+            try:
+                with self.assertLogs(log, level="WARNING") as seen:
+                    self.assertIsNone(debugcap.tee_debug_log(
+                        blocked / "sub", logging.INFO, log=log))
+                self.assertIn("debug log", seen.output[0])
+            finally:
+                blocked.chmod(0o700)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,8 +21,10 @@ from collectorkit import launch
 
 # tests/ -> collectorkit/ -> shared/ -> repo root
 COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
-# The shared explore harness launches Camoufox for most collectors.
-KIT_EXPLORE = Path(__file__).resolve().parents[1] / "collectorkit" / "explore.py"
+# collectorkit's own launch sites: the explore harness's Camoufox, and the
+# persistent sign-in browser most logins open through.
+KIT = Path(__file__).resolve().parents[1] / "collectorkit"
+KIT_LAUNCH_SITES = (KIT / "explore.py", KIT / "launch.py")
 
 
 class FirefoxPrefsTest(unittest.TestCase):
@@ -184,13 +186,17 @@ class FirefoxUserJsTest(unittest.TestCase):
 
 
 def _hardened_call(node: ast.Call, kwarg: str, helper: str) -> bool:
-    """True when `node` passes `kwarg=launch.<helper>(...)`."""
+    """True when `node` passes `kwarg=launch.<helper>(...)` — or, inside
+    launch.py itself, the bare `<helper>(...)`."""
     for kw in node.keywords:
         if kw.arg != kwarg:
             continue
         v = kw.value
-        return (isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute)
-                and v.func.attr == helper
+        if not isinstance(v, ast.Call):
+            return False
+        if isinstance(v.func, ast.Name):
+            return v.func.id == helper
+        return (isinstance(v.func, ast.Attribute) and v.func.attr == helper
                 and isinstance(v.func.value, ast.Name)
                 and v.func.value.id == "launch")
     return False
@@ -217,7 +223,7 @@ def _launch_sites():
     (path, lineno, engine, node). Cached: the scan parses the whole
     first-party tree, and several guards below share the one result."""
     sites = []
-    for path in [*_collector_py_files(skip_tests=True), KIT_EXPLORE]:
+    for path in [*_collector_py_files(skip_tests=True), *KIT_LAUNCH_SITES]:
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -259,7 +265,7 @@ class LaunchSitesHardenedTest(unittest.TestCase):
         # would make the test above vacuously pass.
         sites = list(_launch_sites())
         engines = [e for _, _, e, _ in sites]
-        self.assertGreaterEqual(engines.count("firefox"), 14)
+        self.assertGreaterEqual(engines.count("firefox"), 12)
         self.assertGreaterEqual(engines.count("chromium"), 5)
 
     def test_no_collector_redefines_the_pref_set(self):
@@ -493,13 +499,14 @@ class PersistentProfileStartupCacheTest(unittest.TestCase):
             len(list(_persistent_profile_files())), 12)
 
     def test_each_persistent_profile_redirects_startup_cache(self):
-        # explore.prepare_profile is the shared harness's route to
-        # launch.prepare_profile_dir, pinned in the explore suite.
+        # explore.prepare_profile and launch.persistent_camoufox are shared
+        # routes to launch.prepare_profile_dir, each pinned in its own suite.
         missing = []
         for path, text in _persistent_profile_files():
             if ("launch.prepare_profile_dir" not in text
                     and "launch.redirect_startup_cache" not in text
-                    and "explore.prepare_profile(" not in text):
+                    and "explore.prepare_profile(" not in text
+                    and "launch.persistent_camoufox(" not in text):
                 missing.append(str(path.relative_to(COLLECTORS.parent)))
         self.assertEqual(
             missing, [],
@@ -512,6 +519,83 @@ class PersistentProfileStartupCacheTest(unittest.TestCase):
         # must not be dragged through the persistent-profile prep.
         files = {p for p, _t in _persistent_profile_files()}
         self.assertNotIn(COLLECTORS / "angellist" / "download.py", files)
+
+
+class _Page:
+    def __init__(self, *, url="https://www.example.com/", fail_timeout=False):
+        self._url = url
+        self.fail_timeout = fail_timeout
+        self.waits = []
+
+    @property
+    def url(self):
+        if self._url is None:
+            raise RuntimeError("navigating")
+        return self._url
+
+    def wait_for_timeout(self, ms):
+        if self.fail_timeout:
+            raise RuntimeError("context destroyed")
+        self.waits.append(("timeout", ms))
+
+    def wait_for_load_state(self, timeout):
+        self.waits.append(("load", timeout))
+
+
+class PageDrivingTest(unittest.TestCase):
+    def test_pump_falls_back_to_another_playwright_call(self):
+        # Never a bare sleep: only a Playwright call delivers events.
+        page = _Page(fail_timeout=True)
+        launch.pump(page, 250)
+        self.assertEqual(page.waits, [("load", 250)])
+
+    def test_wait_for_pumps_until_the_predicate_holds(self):
+        page, calls = _Page(), []
+        self.assertTrue(launch.wait_for(
+            lambda: calls.append(1) or len(calls) > 2, page, 5))
+        self.assertEqual(len(page.waits), 2)
+
+    def test_wait_for_gives_up_at_the_deadline(self):
+        self.assertFalse(launch.wait_for(lambda: False, _Page(), 0))
+
+    def test_page_url_survives_a_navigation(self):
+        self.assertEqual(launch.page_url(_Page(url=None)), "")
+        self.assertEqual(launch.page_url(_Page()), "https://www.example.com/")
+
+
+class PersistentCamoufoxTest(unittest.TestCase):
+    def test_yields_the_restored_page_and_closes_quietly(self):
+        import sys
+        import types
+        restored = object()
+
+        class _Context:
+            pages = [restored]
+
+        class _Cam:
+            seen = {}
+
+            def __init__(self, **kwargs):
+                _Cam.seen = kwargs
+
+            def __enter__(self):
+                return _Context()
+
+            def __exit__(self, *exc):
+                raise RuntimeError("Target closed")   # window already gone
+
+        camoufox = types.ModuleType("camoufox")
+        camoufox.sync_api = types.SimpleNamespace(Camoufox=_Cam)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(sys.modules, {"camoufox": camoufox,
+                                              "camoufox.sync_api": camoufox.sync_api}), \
+                mock.patch.object(launch, "prepare_profile_dir") as prep:
+            with launch.persistent_camoufox(Path(tmp)) as (context, page):
+                self.assertIs(page, restored)
+        prep.assert_called_once()
+        self.assertEqual(_Cam.seen["firefox_user_prefs"], launch.firefox_prefs())
+        self.assertTrue(_Cam.seen["humanize"] and _Cam.seen["geoip"])
+
 
 
 if __name__ == "__main__":

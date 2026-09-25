@@ -88,19 +88,8 @@ VERIFY_BTN_SELECTOR = "#verify-challenge-btn, button[type='submit']"
 def prompt_for_2fa() -> str:
     """Print a prompt to stderr (visible under output redirect) and read one
     line from stdin. Strips whitespace."""
-    sys.stderr.write("\n" + "=" * 60 + "\n")
-    sys.stderr.write(
-        "Carta 2FA: enter your authentication code, then press Enter.\n> "
-    )
-    sys.stderr.flush()
-    try:
-        line = sys.stdin.readline()
-    except KeyboardInterrupt:
-        sys.stderr.write("\n")
-        raise
-    sys.stderr.write("=" * 60 + "\n")
-    sys.stderr.flush()
-    return line.strip()
+    return cli.prompt_on_stderr(
+        "Carta 2FA: enter your authentication code, then press Enter.")
 
 
 def page_summary(page) -> str:

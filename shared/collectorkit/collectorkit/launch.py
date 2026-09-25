@@ -52,13 +52,18 @@ application state, not an HTTP cache.
 
 The pref helpers return fresh copies, so a caller may mutate the result
 without affecting the next call.
+
+`persistent_camoufox` is the hardened launch most sign-ins open, and
+`pump` / `wait_for` / `page_url` drive the page it yields.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 
 log = logging.getLogger("collectorkit.launch")
@@ -284,3 +289,77 @@ def prepare_profile_dir(profile_dir: Path, mode: int = PROFILE_DIR_MODE,
         log.warning("could not relocate startupCache out of %s: %s",
                     profile_dir, exc)
     return profile_dir
+
+
+# ---- the sign-in browser -----------------------------------------------------
+
+
+@contextlib.contextmanager
+def persistent_camoufox(profile_dir: Path):
+    """Headed Camoufox on a persistent profile, as the fleet's sign-ins run
+    it — humanized cursor, geoip-matched fingerprint, hardened prefs — under
+    the entrypoint's Xvfb. Yields (context, page): the profile's restored
+    page, or a new one. The close swallows the error a browser whose window
+    is already gone raises.
+
+    geoip resolves the egress IP from a public lookup service at launch, so
+    opening this context is NOT a network-free act. That is deliberate for a
+    sign-in — the fingerprint should match where the traffic comes from —
+    and why a `login --check` that must stay offline cannot come through
+    here."""
+    from camoufox.sync_api import Camoufox
+
+    prepare_profile_dir(profile_dir)
+    cam = Camoufox(
+        persistent_context=True,
+        user_data_dir=str(profile_dir),
+        os="macos",
+        window=(1280, 800),
+        headless=False,
+        humanize=True,
+        geoip=True,
+        firefox_user_prefs=firefox_prefs(),
+    )
+    context = cam.__enter__()
+    try:
+        page = context.pages[0] if context.pages else context.new_page()
+        yield context, page
+    finally:
+        with contextlib.suppress(Exception):
+            cam.__exit__(None, None, None)
+
+
+def pump(page, ms: int = 500) -> None:
+    """Advance the Playwright sync event loop so `.on()` handlers fire.
+
+    A bare time.sleep() does NOT deliver Playwright events in the sync API —
+    callbacks run only while the main thread is inside a Playwright call. A
+    navigation can make wait_for_timeout raise (context destroyed); the
+    fallback is another Playwright call, never a bare sleep, so events keep
+    being delivered."""
+    try:
+        page.wait_for_timeout(ms)
+    except Exception:
+        with contextlib.suppress(Exception):
+            page.wait_for_load_state(timeout=ms)
+
+
+def wait_for(predicate, page, timeout_s: float) -> bool:
+    """Poll `predicate()` while pumping the event loop, until true or
+    `timeout_s` passes."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        pump(page)
+    return False
+
+
+def page_url(page) -> str:
+    """`page.url`, guarded — the property can raise mid-navigation on the
+    pinned Camoufox."""
+    try:
+        return page.url or ""
+    except Exception:
+        return ""
+

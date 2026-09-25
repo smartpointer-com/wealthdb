@@ -24,6 +24,7 @@ import sys
 from typing import Callable
 
 from amexclient import OTP_DIGITS, ChallengeTarget
+from collectorkit.cli import ChallengeError, choose_one, read_code
 
 # Fallback wording when an option's own label is empty. The label normally
 # carries the masked destination and is preferred.
@@ -33,29 +34,6 @@ KIND_LABELS = {
     "voice": "Call me with a code",
     "other": "Send me a code",
 }
-
-
-class ChallengeError(RuntimeError):
-    """The challenge cannot be driven from here (no usable option, or the
-    human gave up / provided no usable input)."""
-
-
-def _read_choice(prompt: str, n: int, *, input_fn: Callable[[str], str],
-                 output_fn: Callable[[str], None],
-                 max_attempts: int = 3) -> int:
-    """Read a 1..n menu choice, re-prompting on junk. Returns the 0-based
-    index. Raises ChallengeError after `max_attempts` bad entries or on EOF
-    (a piped, non-interactive stdin). No implicit default — a login
-    destination is always chosen explicitly."""
-    for _ in range(max_attempts):
-        try:
-            raw = input_fn(prompt).strip()
-        except EOFError:
-            raise ChallengeError("no input on stdin for the 2FA prompt")
-        if raw.isdigit() and 1 <= int(raw) <= n:
-            return int(raw) - 1
-        output_fn(f"  Please enter a number between 1 and {n}.")
-    raise ChallengeError(f"no valid selection after {max_attempts} attempts")
 
 
 def choose_target(targets: tuple[ChallengeTarget, ...], *,
@@ -69,18 +47,11 @@ def choose_target(targets: tuple[ChallengeTarget, ...], *,
     usable = tuple(t for t in targets if t.value)
     if not usable:
         raise ChallengeError("no usable passcode delivery option offered")
-    if len(usable) == 1:
-        only = usable[0]
-        output_fn(f"2FA: {only.display or KIND_LABELS.get(only.kind)}")
-        return usable[0]
-    output_fn("American Express needs a one-time passcode. "
-              "Choose how to receive it:")
-    for i, t in enumerate(usable, 1):
-        label = t.display or KIND_LABELS.get(t.kind, KIND_LABELS["other"])
-        output_fn(f"  {i}. {label}")
-    idx = _read_choice(f"Enter 1-{len(usable)}: ", len(usable),
-                       input_fn=input_fn, output_fn=output_fn)
-    return usable[idx]
+    return choose_one(
+        usable, lambda t: t.display or KIND_LABELS.get(t.kind, KIND_LABELS["other"]),
+        heading="American Express needs a one-time passcode. "
+                "Choose how to receive it:",
+        single="2FA:", input_fn=input_fn, output_fn=output_fn)
 
 
 def read_otp(*,
@@ -89,28 +60,14 @@ def read_otp(*,
              max_attempts: int = 3) -> str:
     """Read the one-time passcode from stdin.
 
-    Spaces and dashes are stripped; non-numeric input is re-prompted. The
-    length IS asserted here, unusually for the fleet, because the entry
+    The length IS asserted here, unusually for the fleet, because the entry
     control settles it rather than a guess at provider policy: there are
     exactly six single-digit boxes on the page, so a code of another length
     cannot be typed in at all, and catching that here gives a clear message
-    instead of a half-filled form and a server-side rejection. Never logs
-    the code. Raises ChallengeError on repeated invalid input or EOF."""
-    for _ in range(max_attempts):
-        try:
-            raw = input_fn(f"Code ({OTP_DIGITS} digits): ")
-        except EOFError:
-            raise ChallengeError("no input on stdin for the passcode")
-        code = raw.replace(" ", "").replace("-", "").strip()
-        if not code.isdigit():
-            output_fn("  The code is all digits — try again.")
-            continue
-        if len(code) != OTP_DIGITS:
-            output_fn(f"  The code is {OTP_DIGITS} digits "
-                      f"(got {len(code)}) — try again.")
-            continue
-        return code
-    raise ChallengeError(f"no valid code after {max_attempts} attempts")
+    instead of a half-filled form and a server-side rejection."""
+    return read_code(prompt=f"Code ({OTP_DIGITS} digits): ", digits=OTP_DIGITS,
+                     exact=True, input_fn=input_fn, output_fn=output_fn,
+                     max_attempts=max_attempts)
 
 
 # --- demo -----------------------------------------------------------------

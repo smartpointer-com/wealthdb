@@ -82,20 +82,8 @@ UNAUTH_MARKER = "text=You need to be logged in"
 def prompt_for_2fa() -> str:
     """Print a prompt to stderr (visible under output redirect) and
     read one line from stdin. Strips whitespace."""
-    sys.stderr.write("\n" + "=" * 60 + "\n")
-    sys.stderr.write(
-        "CoinTracking 2FA: enter your authenticator code, "
-        "then press Enter.\n> "
-    )
-    sys.stderr.flush()
-    try:
-        line = sys.stdin.readline()
-    except KeyboardInterrupt:
-        sys.stderr.write("\n")
-        raise
-    sys.stderr.write("=" * 60 + "\n")
-    sys.stderr.flush()
-    return line.strip()
+    return cli.prompt_on_stderr(
+        "CoinTracking 2FA: enter your authenticator code, then press Enter.")
 
 
 def is_dashboard(page) -> bool:

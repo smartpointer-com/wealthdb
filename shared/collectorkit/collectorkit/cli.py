@@ -1,5 +1,6 @@
-"""Shared CLI helpers: logging format, common flags, and the unified
-date-window contract every collector exposes.
+"""Shared CLI helpers: logging format, common flags, the unified
+date-window contract every collector exposes, and the second-factor
+dialog a sign-in reads from the person at the terminal.
 
 There is exactly ONE window flag, `--lookback`, and it takes either a
 named preset (`4w`, `1y`, `all`, …) or an ISO date (`2020-01-01`). It
@@ -15,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -300,3 +302,100 @@ def resolve_standard(args: argparse.Namespace, *, verb: str,
     if log is not None:
         warn_lookback_ignored(args.lookback, log, what=what)
     return None, None
+
+
+# ---- the person at the terminal --------------------------------------------
+#
+# A sign-in's second factor is read from a person, the same way everywhere:
+# an explicit choice (never a default), a code stripped of the spaces and
+# dashes people type, EOF on a piped stdin read as no answer rather than an
+# empty one, and the code never logged.
+
+
+class ChallengeError(RuntimeError):
+    """A second-factor challenge cannot be driven from here: nothing usable
+    was offered, or the person gave up or gave no usable input."""
+
+
+def read_choice(prompt: str, n: int, *, input_fn=input, output_fn=print,
+                max_attempts: int = 3) -> int:
+    """Read a 1..n menu choice, re-prompting on junk, and return its 0-based
+    index. There is no default: a login destination is always chosen
+    explicitly. Raises ChallengeError after `max_attempts` bad entries or
+    on EOF (a piped, non-interactive stdin)."""
+    for _ in range(max_attempts):
+        try:
+            raw = input_fn(prompt).strip()
+        except EOFError:
+            raise ChallengeError("no input on stdin for the 2FA prompt")
+        if raw.isdigit() and 1 <= int(raw) <= n:
+            return int(raw) - 1
+        output_fn(f"  Please enter a number between 1 and {n}.")
+    raise ChallengeError(f"no valid selection after {max_attempts} attempts")
+
+
+def choose_one(items, label, *, heading: str, single: str, input_fn=input,
+               output_fn=print):
+    """Let the person pick one of `items`, each shown as `label(item)`.
+
+    A lone item is chosen without asking and announced as
+    ``f"{single} {label}"``; several are listed under `heading`. The caller
+    rejects an empty list with its own reason."""
+    if len(items) == 1:
+        output_fn(f"{single} {label(items[0])}")
+        return items[0]
+    output_fn(heading)
+    for i, item in enumerate(items, 1):
+        output_fn(f"  {i}. {label(item)}")
+    return items[read_choice(f"Enter 1-{len(items)}: ", len(items),
+                             input_fn=input_fn, output_fn=output_fn)]
+
+
+def read_code(*, prompt: str = "Code: ", digits: int | None = None,
+              exact: bool = False, input_fn=input, output_fn=print,
+              max_attempts: int = 3) -> str:
+    """Read an all-digit one-time code, spaces and dashes stripped.
+
+    Non-numeric input is re-prompted. A known length, `digits`, is checked
+    two ways. With `exact`, a code of another length is re-prompted — for
+    an entry control that cannot take one, where a clear message beats a
+    half-filled form. Without it the person is told and the code is sent
+    as entered, so a provider's length change cannot wedge a login; the
+    provider's own check is the final ruling. Never logs the code. Raises
+    ChallengeError on repeated invalid input or EOF."""
+    for _ in range(max_attempts):
+        try:
+            raw = input_fn(prompt)
+        except EOFError:
+            raise ChallengeError("no input on stdin for the one-time code")
+        code = raw.replace(" ", "").replace("-", "").strip()
+        if not code.isdigit():
+            output_fn("  The code is all digits — try again.")
+            continue
+        if digits and len(code) != digits:
+            if exact:
+                output_fn(f"  The code is {digits} digits "
+                          f"(got {len(code)}) — try again.")
+                continue
+            output_fn(f"  (Note: the code is usually {digits} digits; "
+                      "sending it as entered.)")
+        return code
+    raise ChallengeError(f"no valid code after {max_attempts} attempts")
+
+
+def prompt_on_stderr(message: str) -> str:
+    """Read one line from stdin behind a prompt framed on stderr, so it
+    stands out in a busy log, and return it stripped. A Ctrl-C ends the
+    prompt's line before propagating."""
+    sys.stderr.write("\n" + "=" * 60 + "\n")
+    sys.stderr.write(message + "\n> ")
+    sys.stderr.flush()
+    try:
+        line = sys.stdin.readline()
+    except KeyboardInterrupt:
+        sys.stderr.write("\n")
+        raise
+    sys.stderr.write("=" * 60 + "\n")
+    sys.stderr.flush()
+    return line.strip()
+

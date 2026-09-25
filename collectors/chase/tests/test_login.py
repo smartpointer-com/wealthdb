@@ -97,42 +97,6 @@ def test_the_preflight_does_not_hide_the_real_response():
     assert watch.ok
 
 
-class _StubPage:
-    """Stands in for a Playwright page; wait_for_timeout is the event pump."""
-
-    def __init__(self):
-        self.pumps = 0
-
-    def wait_for_timeout(self, ms):
-        self.pumps += 1
-
-
-def test_wait_for_returns_true_immediately():
-    p = _StubPage()
-    assert login._wait_for(lambda: True, p, 5) is True
-    assert p.pumps == 0                    # true on first check, no pump
-
-
-def test_wait_for_pumps_between_checks():
-    # The waiter MUST pump the event loop between checks — the sync-Playwright
-    # bug that made login miss the completion. Predicate flips true on the
-    # 3rd check, so it pumps at least twice first.
-    p = _StubPage()
-    calls = {"n": 0}
-
-    def pred():
-        calls["n"] += 1
-        return calls["n"] >= 3
-
-    assert login._wait_for(pred, p, 5) is True
-    assert p.pumps >= 2
-
-
-def test_wait_for_times_out():
-    p = _StubPage()
-    assert login._wait_for(lambda: False, p, 0) is False
-
-
 def test_parse_args_defaults():
     a = login.parse_args([])
     assert a.profile_dir == Path("/secrets/chase-profile")
