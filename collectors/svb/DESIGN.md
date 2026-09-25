@@ -184,17 +184,19 @@ they default cleanly and the overrides set the precise values.
   `DIVIDEND ADJUSTMENT`, `ADJ NON-RESIDENT TAX`, `ADJ FOREIGN TAX PAID`,
   `REVERSE DIV CHARGE`, often a statement later and under the original date —
   and usually booking it again, and refunds a fee charged in error as an
-  `ADJUSTMENT` reading `FEE REVERSAL`. The reversal's kind is one the cash
-  flow statement never draws, so left in, the corrected row would count
-  twice. The reversal and the booking it undoes (the latest one in the same
-  account for exactly the opposite amount, on or before it: under the verb it
-  names and the same security, or for a fee refund any fee) therefore both
-  stay out of `transactions`, exactly as a cancelled trade does. A verbless
+  `ADJUSTMENT` reading `FEE REVERSAL`. The reversal and the booking it
+  undoes (the latest one in the same account for exactly the opposite
+  amount, on or before it: under the verb it names and the same security,
+  or for a fee refund any fee) both stay out of `transactions`, exactly as
+  a cancelled trade does, so the ledger reads as if the corrected booking
+  had never been made. A verbless
   Other Activity row exactly opposite a booking of the same account and
   printed date is such a reversal too: it is how the statements credit back
   a withholding they reclassify. A reversal that finds nothing — most are
   partial refunds of a withholding or a fee — is booked as printed,
-  source-signed, and counted in the build output.
+  source-signed, and counted in the build output. Gold books one that
+  corrects a withholding, a fee or a dividend as that kind, so it nets
+  inside the kind's category; any other stays `other`.
 - **A data row outranks a boilerplate prefix, but not a label.** Holdings rows
   are separated from the surrounding prose by a list of line prefixes, and two
   of those are short enough to match the opening of a security's description

@@ -60,13 +60,20 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		// own management fee ("ADVISOR FEE DEDUCTED …") — and what a
 		// rule matches a wire or a withholding on.
 		descr := p.narrative()
+		// The source sign is kept on every kind, never forced to the
+		// kind's canonical one. Fidelity signs each amount from the
+		// account's side, so a row that disagrees with its kind is a
+		// correction: a cancelled sale booked against the sale, a
+		// dividend clawed back, a fee or a withholding refunded.
+		// Forcing the canonical sign would turn each into a second
+		// booking of what it undoes (canonical/sign.go).
 		tx := canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            occurredAt,
 			AccountExternalID:     acct,
 			Kind:                  kind,
 			Currency:              currency,
-			NetAmount:             canonical.ApplyCanonicalSign(kind, netDec),
+			NetAmount:             netDec,
 			Quantity:              qty,
 			Price:                 silver.DecimalPtrOrNil(priceStr),
 			Payload:               json.RawMessage(payload),

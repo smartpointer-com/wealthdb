@@ -231,16 +231,16 @@ def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
 # to be a verb that adapter's kindFor() understands. These are the SVB
 # Transaction-column verbs translated into it.
 #
-# The reversals are deliberately NOT the obvious kind, because the canonical
-# sign for the obvious kind is pinned and would invert the row:
+# The reversals are deliberately NOT the obvious kind: each prints in the
+# reverse of that kind's direction, so it is a correction, not a booking.
 #   * ADJ NON-RESIDENT TAX / ADJ FOREIGN TAX PAID are withholding REVERSALS
-#     and always a credit; TAX pins the sign negative, which would book a
-#     refund as a charge.
-#   * DIVIDEND ADJUSTMENT is a dividend CLAWBACK and is always a debit;
-#     DIVIDEND pins the sign positive.
-# These map to ADJUSTMENT, which the adapter keeps source-signed; so do the two
-# trade cancellations, for the reason given at their entries below. A reversal
-# that finds the booking it undoes leaves silver together with it
+#     and always a credit.
+#   * DIVIDEND ADJUSTMENT is a dividend CLAWBACK and is always a debit.
+# These map to ADJUSTMENT, and so do the two trade cancellations below. The
+# adapter keeps every amount source-signed and books an ADJUSTMENT as the
+# kind its Action says it corrects — a withholding, a fee, a dividend — so it
+# nets there; one that names no such kind stays `other`. A reversal that
+# finds the booking it undoes leaves silver together with it
 # (pair_reversals), so ADJUSTMENT is what an unpaired one reaches gold as.
 _KIND_BY_VERB = {
     "DIVIDEND RECEIVED": "DIVIDEND",
@@ -259,8 +259,8 @@ _KIND_BY_VERB = {
     "FOREIGN TAX PAID": "TAX",
     "ADJ NON-RESIDENT TAX": "ADJUSTMENT",
     "ADJ FOREIGN TAX PAID": "ADJUSTMENT",
-    # A dividend charged back to the account, and that charge undone. Signed
-    # as printed: DIVIDEND's pinned sign would invert the charge.
+    # A dividend charged back to the account, and that charge undone, signed
+    # as printed.
     "DIVIDEND CHARGED": "ADJUSTMENT",
     "REVERSE DIV CHARGE": "ADJUSTMENT",
     # Small corrections of an option exercise and of a money-fund
@@ -299,9 +299,9 @@ _KIND_BY_VERB = {
     "SOLD": "SELL",
     "REDEEMED": "REDEMPTION",
     # Trade cancellations print in the reversed direction — a cancelled buy is
-    # a credit — so they stay source-signed rather than taking BUY/SELL's
-    # pinned one. Only one whose booking the archive does not hold is booked
-    # at all; see pair_cancellations.
+    # a credit — and are corrections like the reversals above. Only one whose
+    # booking the archive does not hold is booked at all; see
+    # pair_cancellations.
     "CANCELLED BUY": "ADJUSTMENT",
     "CANCELLED SELL": "ADJUSTMENT",
     # A brokerage statement's checking sub-section. The number stays in the

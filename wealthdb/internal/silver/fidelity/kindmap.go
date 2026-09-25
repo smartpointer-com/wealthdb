@@ -19,11 +19,10 @@ import (
 //
 // Fidelity's signed `amount` already follows the single-entry
 // convention from the account's perspective (positive = cash in,
-// negative = cash out), so for kinds where the canonical sign
-// helper would normally flip values, we let the source sign
-// pass through unchanged on the source-dependent kinds and rely
-// on ApplyCanonicalSign to enforce direction on the fixed-sign
-// ones.
+// negative = cash out), and the adapter keeps it on every kind
+// (transactions.go). A row signed against its kind is therefore a
+// correction, never a sign to repair: the kind says what was
+// corrected and the sign nets it against the booking it corrects.
 //
 // The two CASH_SWEEP_* kinds are core-position shuffles (cash
 // ↔ money-market fund); we route them as TxKindOther so the
@@ -78,10 +77,9 @@ func kindFor(raw string, quantity, amount *canonical.Decimal, action string) can
 		// A wire, in whichever direction the amount says. Fidelity's
 		// verb does not carry one — `WIRE TRANSFER TO BANK` and its
 		// inbound sibling both reduce to `WIRE` — so the SIGN is the
-		// only signal, and it must be read: TxKindWithdrawal has a
-		// fixed direction, and ApplyCanonicalSign forces it, so
-		// classifying an inbound wire as one would store a credit as
-		// a debit rather than merely mislabel it.
+		// only signal, and it must be read: an inbound wire read as a
+		// TxKindWithdrawal would be a credit in the spending
+		// population, netting against the household's spend.
 		//
 		// Outbound has to reach the spending population, where the
 		// internal-transfer matcher gets first refusal: a wire to an
@@ -132,7 +130,7 @@ func kindFor(raw string, quantity, amount *canonical.Decimal, action string) can
 		"EXPIRATION", "CASH_IN_LIEU", "RETURN_OF_CAPITAL":
 		return canonical.TxKindCorporateAction
 	case "ADJUSTMENT":
-		return canonical.TxKindOther
+		return adjustmentKind(action)
 	// Donor-Advised Fund event kinds (fidelity-web DESIGN.md §12).
 	// From the giving account's perspective a GRANT / Gift4Giving
 	// GIFT is cash irrevocably out (external flow), a CONTRIBUTION
@@ -145,6 +143,37 @@ func kindFor(raw string, quantity, amount *canonical.Decimal, action string) can
 		return canonical.TxKindDeposit
 	case "EXCHANGE":
 		return canonical.TxKindOther
+	}
+	return canonical.TxKindOther
+}
+
+// adjustmentKind reads what an ADJUSTMENT corrects off its Action.
+//
+// The statements and the activity feed file every correction under
+// the one verb: a withholding refunded in part (`ADJ FOREIGN TAX
+// PAID`, `ADJ NON-RESIDENT TAX`), an ADR fee or an advisory fee given
+// back (`ADJUST FEE CHARGED`, `ADJUSTMENT FEE REVERSAL`), a dividend
+// clawed back (`DIVIDEND ADJUSTMENT`). One can undo part of a booking
+// or all of it; the svb statement builders drop one that undoes a whole
+// booking together with it (collectors/svb/DESIGN.md). Booked as the kind it
+// corrects, source-signed, it nets inside that kind's category, so
+// the withholding, fees and dividends read what was actually paid. As
+// `other` it would reach no cash flow at all.
+//
+// Anything else stays TxKindOther: an adjustment whose Action names
+// only a security, or a kind other than those three, says nothing
+// about which kind it corrects.
+func adjustmentKind(action string) canonical.TxKind {
+	a := strings.ToUpper(strings.TrimSpace(action))
+	switch {
+	case strings.HasPrefix(a, "ADJ FOREIGN TAX PAID"),
+		strings.HasPrefix(a, "ADJ NON-RESIDENT TAX"):
+		return canonical.TxKindTax
+	case strings.HasPrefix(a, "ADJUST FEE CHARGED"),
+		strings.HasPrefix(a, "ADJUSTMENT FEE REVERSAL"):
+		return canonical.TxKindFee
+	case strings.HasPrefix(a, "DIVIDEND ADJUSTMENT"):
+		return canonical.TxKindDividend
 	}
 	return canonical.TxKindOther
 }

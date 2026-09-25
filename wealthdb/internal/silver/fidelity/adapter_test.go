@@ -578,10 +578,9 @@ func TestOutflowKindsReachSpending(t *testing.T) {
 		"adv":  canonical.TxKindFee,
 		"wire": canonical.TxKindWithdrawal,
 		// Fidelity's verb carries no direction — both wires reduce to
-		// `WIRE` — so the SIGN decides. It has to: TxKindWithdrawal
-		// has a fixed direction and ApplyCanonicalSign forces it, so
-		// calling an inbound wire one would store a credit as a debit
-		// rather than merely mislabel it.
+		// `WIRE` — so the SIGN decides. It has to: an inbound wire
+		// read as a withdrawal would be a credit in the spending
+		// population, netting against the spend.
 		"wirein": canonical.TxKindDeposit,
 		// The ACH verbs name only the direction the ORIGINATING bank
 		// saw, and a reversal books under the verb of the leg it
@@ -614,6 +613,83 @@ func TestOutflowKindsReachSpending(t *testing.T) {
 		}
 		if *got[id].Description != want {
 			t.Errorf("%s description = %q, want %q", id, *got[id].Description, want)
+		}
+	}
+}
+
+// TestACorrectionNetsAgainstWhatItCorrects: Fidelity signs every
+// amount from the account's side, so a row signed against its kind is
+// a correction and keeps its sign. Forced to the kind's canonical
+// sign, a cancelled sale would book as a second sale, a clawed-back
+// dividend as a second dividend and a refunded fee as a second fee.
+// An ADJUSTMENT books as the kind it corrects where its Action names
+// one, and stays `other` where it does not.
+func TestACorrectionNetsAgainstWhatItCorrects(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES
+            ('sold',    900, 'ACC1', 'SELL',       'XYZ', 'USD', -10, 50, 500.00,
+             '{"Action": "YOU SOLD EXAMPLE CORP COM (XYZ) (Cash)"}'),
+            ('cancel',  901, 'ACC1', 'SELL',       'XYZ', 'USD', 10, 50, -500.00,
+             '{"Action": "SELL CANCEL CANCELLED TRADE AS OF 01-02-24 EXAMPLE CORP COM (XYZ) (Cash)"}'),
+            ('divadj',  902, 'ACC1', 'DIVIDEND',   'XYZ', 'USD', 0, 0, -12.00,
+             '{"Action": "DIVIDEND ADJUSTMENT as of Jan-02-2024 EXAMPLE CORP COM (XYZ) (Cash)"}'),
+            ('feeback', 903, 'ACC1', 'FEE',        'XYZ', 'USD', 0, 0, 7.00,
+             '{"Action": "FEE CHARGED EXAMPLE CORP SPON ADR (XYZ) (Cash)"}'),
+            ('ftax',    904, 'ACC1', 'ADJUSTMENT', 'XYZ', 'USD', 0, 0, 3.00,
+             '{"Action": "ADJ FOREIGN TAX PAID TAX RCLM EXAMPLE CORP SPON ADR (XYZ) (Cash)"}'),
+            ('nrtax',   905, 'ACC1', 'ADJUSTMENT', 'XYZ', 'USD', 0, 0, 4.00,
+             '{"Action": "ADJ NON-RESIDENT TAX EXAMPLE CORP COM"}'),
+            ('adrfee',  906, 'ACC1', 'ADJUSTMENT', 'XYZ', 'USD', 0, 0, 6.00,
+             '{"Action": "ADJUST FEE CHARGED as of Jan-02-2024 EXAMPLE CORP SPON ADR (XYZ) (Cash)"}'),
+            ('advfee',  907, 'ACC1', 'ADJUSTMENT', NULL,  'USD', 0, 0, 100.00,
+             '{"Action": "ADJUSTMENT FEE REVERSAL-EXAMPLE FEE"}'),
+            ('divcut',  908, 'ACC1', 'ADJUSTMENT', 'XYZ', 'USD', 0, 0, -2.00,
+             '{"Action": "DIVIDEND ADJUSTMENT EXAMPLE CORP COM"}'),
+            ('exer',    909, 'ACC1', 'ADJUSTMENT', 'XYZ', 'USD', 0, 0, -5.00,
+             '{"Action": "ADJUST EXERCISE EXAMPLE CORP SPON ADS (XYZ) (Cash)"}'),
+            ('bare',    910, 'ACC1', 'ADJUSTMENT', 'XYZ', 'USD', 0, 0, 1.00,
+             '{"Action": "ADJUSTMENT EXAMPLE CORP ADR EACH REPR 1 ORD"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	got := map[string]canonical.TransactionChange{}
+	for _, tx := range batch.Transactions {
+		got[tx.TransactionExternalID] = tx
+	}
+	for id, want := range map[string]struct {
+		kind canonical.TxKind
+		net  string
+	}{
+		"sold":    {canonical.TxKindSell, "500"},
+		"cancel":  {canonical.TxKindSell, "-500"},
+		"divadj":  {canonical.TxKindDividend, "-12"},
+		"feeback": {canonical.TxKindFee, "7"},
+		"ftax":    {canonical.TxKindTax, "3"},
+		"nrtax":   {canonical.TxKindTax, "4"},
+		"adrfee":  {canonical.TxKindFee, "6"},
+		"advfee":  {canonical.TxKindFee, "100"},
+		"divcut":  {canonical.TxKindDividend, "-2"},
+		"exer":    {canonical.TxKindOther, "-5"},
+		"bare":    {canonical.TxKindOther, "1"},
+	} {
+		tx, ok := got[id]
+		if !ok {
+			t.Errorf("%s missing", id)
+			continue
+		}
+		if tx.Kind != want.kind {
+			t.Errorf("%s kind = %q, want %q", id, tx.Kind, want.kind)
+		}
+		if tx.NetAmount == nil || tx.NetAmount.String() != want.net {
+			t.Errorf("%s net_amount = %v, want %s", id, tx.NetAmount, want.net)
 		}
 	}
 }

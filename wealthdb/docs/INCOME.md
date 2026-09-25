@@ -115,9 +115,10 @@ interest credited and interest charged — and the sign is the only thing
 that tells them apart, with spending having claimed the negative half in
 migration 0041. `deposit` takes both signs like every other income kind:
 its canonical sign is positive and `ApplyCanonicalSign` forces it, so the
-only route to a negative one is an adapter deliberately bypassing that
-helper on a reversal marker (`canonical/sign.go`), which makes a negative
-`deposit` a reversal by construction.
+only route to a negative one is an adapter that keeps a source sign it
+knows marks a reversal (`canonical/sign.go`; the Fidelity adapter keeps
+every sign, since its sources sign each row from the account's side),
+which makes a negative `deposit` a reversal by construction.
 
 ---
 

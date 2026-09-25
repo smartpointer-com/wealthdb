@@ -416,12 +416,12 @@ def test_transactions_written_with_source_sign(tmp_path, monkeypatch):
 
 
 def test_transaction_kind_map_covers_every_verb():
-    """Every verb the parser can return has a gold-readable kind, and the four
-    verbs whose obvious kind would invert them stay source-signed."""
+    """Every verb the parser can return has a gold-readable kind, and the
+    corrections map to ADJUSTMENT rather than the kind they correct."""
     for verb in P._ACTIVITY_VERBS:
         assert verb in B._KIND_BY_VERB, verb
-    # Each of these prints in the reverse of its obvious kind's direction, and
-    # that kind's canonical sign is pinned — taking it would flip the row.
+    # Each of these prints in the reverse of its obvious kind's direction;
+    # the adapter reads an ADJUSTMENT's Action to book what it corrects.
     assert B._KIND_BY_VERB["ADJ NON-RESIDENT TAX"] == "ADJUSTMENT"
     assert B._KIND_BY_VERB["ADJ FOREIGN TAX PAID"] == "ADJUSTMENT"
     assert B._KIND_BY_VERB["DIVIDEND ADJUSTMENT"] == "ADJUSTMENT"
