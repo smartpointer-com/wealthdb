@@ -355,7 +355,7 @@ lives in `positions`; the ledgers key by stable source id.
 |---|---|---|
 | `offerings` | deal_external_id (immutable, upserted) | Identity + entry terms, fixed at purchase: `kind` (`spv` ← `ASSET_COMPANY` / `private_fund` ← `ASSET_MULTI_COMPANY_FUND`), `asset_class`, `company_*`, `fund_*`, `parent_deal_name`, `ticker_symbol`, `flavor`, `date_start`, `deal_share_price`, **`basis`** (`investmentSize`), **`purchase_price`** (`pricePostSplit`), **`shares_original`** (`sharesPostSplit`), `currency`, `last_seen_at`, `payload`. Company/fund names are PII. |
 | `positions` | (deal_external_id, event_seq) | **EVENT-SOURCED valuation history** — one row per capital *event* (changes only, not a per-date portfolio snapshot): `event_seq 0` = the original investment, then each disposition (tender) in date order, then a terminal `exit` event when `EXITED`. Per row: `as_of_date`, `event_type`, `status`, `is_open`, `shares_held`, `cost_basis_remaining`, `price_per_share`, `market_value` (= `shares_held × price_per_share`), `distributions_cumulative`, `total_value`. **Closed-deal prices only** (entry + tender prices), so the mark steps on real transactions; for **funds**, each parsed capital-account statement is injected as a `statement` revaluation event (NAV); un-tendered SPVs carry cost. **Reconstruct holdings as of any date D**: each position's latest event with `as_of_date ≤ D` (`MAX(event_seq)`), keep `is_open=1` (drops exited). Full query inline in `migrations/0001_initial.sql`. |
-| `cash_flows` | cash_flow_external_id | One row per purchase / distribution (CLOSED transactions): `deal_external_id`, `flow_date`, `kind` (`purchase` / `distribution`), `method` (e.g. `ACH`), `amount`, `execution_fee` (informative), `currency`, `description`, `payload`. From `primaryTransaction` + `primaryTransaction.distributedTransactions`. |
+| `cash_flows` | cash_flow_external_id | One row per purchase / distribution (CLOSED transactions): `deal_external_id`, `flow_date`, `kind` (`purchase` / `distribution`), `method` (e.g. `ACH`), `amount`, `execution_fee` (gold books it as its own leg), `currency`, `description`, `payload`. From `primaryTransaction` + `primaryTransaction.distributedTransactions`. |
 | `tax_documents` | document_external_id | Per-offering document metadata + archive: `document_type`, `download_url`, and once `download` fetches the blob (by default; `--no-documents` skips it), `local_path` + `content_hash` + `retrieved_at`. |
 | `capital_account_statements` | document_external_id | Parsed quarterly partner's Statement of Capital Account: `period_end`, `beginning_balance`, `contributions`, `withdrawals`, `transfers`, `profit_loss`, `carried_interest`, **`ending_nav`** (Net Ending Capital Account Balance = the fund's fair-value NAV). Funds only in practice (SPVs issue no capital-account statements). |
 | `k1_documents` | document_external_id | Parsed Schedule K-1 (Form 1065): `tax_year`, `is_final`, and Item L tax-basis capital account (`beginning_capital`, `current_year_income`, `withdrawals_distributions`, **`ending_capital`**). Part III box amounts are not extracted (form-grid; see statements.py). |
@@ -473,6 +473,11 @@ values. The only gold-schema change is migration `0015`, which widens the
     `withdrawal` (−). Funds routinely reinvest, so a payout is not a sale.
   - A **$0 distribution** (an exit with no proceeds, e.g. a defunct SPV) keeps the
     $0 `sell`/`distribution` leg and omits the meaningless $0 `withdrawal`.
+  - An **execution fee** is its own `fee` leg, linked to the investment leg
+    by `payload.fee_for` with a `fee_role`. On a purchase it is charged on
+    top, so the `deposit` carries amount + fee; on a distribution it is
+    deducted from the proceeds, so the `withdrawal` carries amount − fee.
+    Either way the bank leg matches the cash that crossed, to the cent.
     Every leg links to the offering's instrument. EquityZen is funded
     upfront, so there are no capital calls beyond the initial purchase.
 - `classmap.go` — `offerings.kind` → `asset_class`.

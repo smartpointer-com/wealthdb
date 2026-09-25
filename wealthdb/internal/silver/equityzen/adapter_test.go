@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -525,10 +526,10 @@ func TestAFundPurchaseFeeLinksToTheContribution(t *testing.T) {
 	t.Fatal("no fee leg emitted for the fund purchase")
 }
 
-func TestADistributionFeeIsLeftAlone(t *testing.T) {
-	// Deliberate: the purchase direction is proven by the funding bank leg,
-	// and no such witness exists for a distribution's fee. Until the deal's
-	// statement settles it, the distribution legs do not move.
+func TestADistributionFeeIsDeductedFromTheProceeds(t *testing.T) {
+	// EquityZen deducts a distribution's fee from the proceeds: the bank
+	// credit is amount − fee, to the cent. The withdrawal carries what
+	// reached the bank, and the fee is a disposal cost on the proceeds.
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	if _, err := db.Exec(
@@ -547,10 +548,40 @@ func TestADistributionFeeIsLeftAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	byID := map[string]canonical.TransactionChange{}
+	sum := canonical.NewDecimalFromInt(0)
 	for _, tx := range batch.Transactions {
-		if tx.TransactionExternalID == "cf-d1-dist:fee" {
-			t.Fatal("a distribution fee was booked; the direction is not settled yet")
+		if strings.HasPrefix(tx.TransactionExternalID, "cf-d1-dist:") {
+			byID[tx.TransactionExternalID] = tx
+			sum = sum.Add(*tx.NetAmount)
 		}
+	}
+	if !sum.IsZero() {
+		t.Errorf("distribution nets to %s, want 0.00", sum.StringFixed(2))
+	}
+	proceeds := byID["cf-d1-dist:sell"]
+	if proceeds.NetAmount == nil {
+		t.Fatal("missing the proceeds leg")
+	}
+	gross := proceeds.NetAmount.StringFixed(2)
+	for id, want := range map[string]string{
+		"cf-d1-dist:withdrawal": proceeds.NetAmount.Sub(canonical.NewDecimalFromInt(40)).Neg().StringFixed(2),
+		"cf-d1-dist:fee":        "-40.00",
+	} {
+		tx, ok := byID[id]
+		if !ok {
+			t.Fatalf("missing %s (proceeds %s)", id, gross)
+		}
+		if tx.NetAmount.StringFixed(2) != want {
+			t.Errorf("%s net = %s, want %s", id, tx.NetAmount.StringFixed(2), want)
+		}
+	}
+	var got map[string]string
+	if err := json.Unmarshal(byID["cf-d1-dist:fee"].Payload, &got); err != nil {
+		t.Fatalf("fee payload: %v", err)
+	}
+	if got["fee_role"] != "disposal" || got["fee_for"] != "cf-d1-dist:sell" {
+		t.Errorf("fee payload = %v, want a disposal cost on cf-d1-dist:sell", got)
 	}
 }
 

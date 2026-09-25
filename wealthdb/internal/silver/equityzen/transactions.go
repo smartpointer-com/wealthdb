@@ -54,12 +54,13 @@ SELECT c.cash_flow_external_id, c.deal_external_id,
 // one is correct is jurisdiction-dependent, so the ledger records the fee as
 // a fact and leaves the choice to whatever reads it.
 //
-// A distribution's fee is NOT treated yet: for a purchase the direction is
-// proven by the funding bank leg (debit == amount + fee, to the cent), and a
-// distribution has no such witness whenever its cash lands in an account
-// loaded positions-only. Until the deal's own statement
-// settles whether such a fee is deducted from proceeds or charged on top, the
-// distribution legs stay as they were.
+// A distribution's fee runs the other way: it is DEDUCTED from the
+// proceeds, and the bank credit is `amount − execution_fee` to the cent. The
+// proceeds leg keeps `amount`, the withdrawal carries what reached the bank,
+// and the fee is its own leg, a disposal cost linked to the proceeds.
+//
+//	distribution with a fee  sell/distribution (+ amount)
+//	                         + withdrawal (− amount−fee) + fee (− fee)
 //
 // A $0 distribution (an exit with no proceeds, e.g. a bankruptcy) emits the
 // sell/distribution leg at $0 and omits the meaningless $0 withdrawal — still
@@ -141,7 +142,25 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 			emitLeg(canonical.TxKindDeposit, &funded, false, nil)
 			emit(invest, withLot)
 			charged := canonical.NewDecimalFromFloat(feeAmt)
-			emitLeg(canonical.TxKindFee, &charged, false, feePayload(cfID, invest))
+			emitLeg(canonical.TxKindFee, &charged, false,
+				feePayload(cfID, invest, "acquisition"))
+		}
+
+		// emitDistribution writes a payout: the proceeds leg, then the sweep
+		// to the external bank, net of a fee deducted on the way.
+		emitDistribution := func(proceeds canonical.TxKind, withLot bool) {
+			emit(proceeds, withLot)
+			switch {
+			case isZero:
+			case feeAmt <= 0 || feeAmt >= amount.Float64:
+				emit(canonical.TxKindWithdrawal, false)
+			default:
+				paid := canonical.NewDecimalFromFloat(amount.Float64 - feeAmt)
+				emitLeg(canonical.TxKindWithdrawal, &paid, false, nil)
+				charged := canonical.NewDecimalFromFloat(feeAmt)
+				emitLeg(canonical.TxKindFee, &charged, false,
+					feePayload(cfID, proceeds, "disposal"))
+			}
 		}
 
 		switch {
@@ -150,15 +169,9 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		case cfKind == "purchase":
 			emitPurchase(canonical.TxKindContribution, false) // cash in, capital contributed
 		case cfKind == "distribution" && offKind == "spv":
-			emit(canonical.TxKindSell, true) // proceeds from realizing the underlying
-			if !isZero {
-				emit(canonical.TxKindWithdrawal, false) // swept to the external bank
-			}
+			emitDistribution(canonical.TxKindSell, true) // realizes the underlying
 		default: // distribution on a fund (or unknown kind)
-			emit(canonical.TxKindDistribution, false)
-			if !isZero {
-				emit(canonical.TxKindWithdrawal, false)
-			}
+			emitDistribution(canonical.TxKindDistribution, false)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -186,11 +199,11 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 // cost may join the basis, a disposal cost may reduce proceeds, and whether
 // either does is a question of jurisdiction and year. Recording the role and
 // leaving the decision out is what keeps both answers derivable.
-func feePayload(cfID string, invest canonical.TxKind) json.RawMessage {
+func feePayload(cfID string, leg canonical.TxKind, role string) json.RawMessage {
 	b, _ := json.Marshal(map[string]string{
 		"fee_type": "execution_fee",
-		"fee_role": "acquisition",
-		"fee_for":  cfID + ":" + string(invest),
+		"fee_role": role,
+		"fee_for":  cfID + ":" + string(leg),
 	})
 	return b
 }
