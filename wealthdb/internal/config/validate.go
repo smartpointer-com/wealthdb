@@ -40,22 +40,47 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: default_currency %q is not a 3-letter ISO 4217 code", c.DefaultCurrency)
 	}
 
+	seenIDs, err := c.validateSources()
+	if err != nil {
+		return err
+	}
+	for _, check := range []func(map[string]bool) error{
+		c.validateSymbolResolution,
+		c.validatePortfolioOverrides,
+		c.validateAccountOverrides,
+		c.validateInstrumentOverrides,
+		c.validateTransactionInstruments,
+		c.validateReturns,
+		c.validateSpending,
+		c.validateIncome,
+		c.validateCashflow,
+	} {
+		if err := check(seenIDs); err != nil {
+			return err
+		}
+	}
+	return c.validateWeb()
+}
+
+// validateSources checks every silver_sources entry and returns the set of
+// declared source ids the later sections check references against.
+func (c *Config) validateSources() (map[string]bool, error) {
 	known := silver.Kinds() // empty during tests that don't blank-import adapters; we tolerate that
 	seenIDs := make(map[string]bool, len(c.SilverSources))
 	for i, s := range c.SilverSources {
 		if !IDPattern.MatchString(s.ID) {
-			return fmt.Errorf("config: silver_sources[%d].id %q must match %s", i, s.ID, IDPattern.String())
+			return nil, fmt.Errorf("config: silver_sources[%d].id %q must match %s", i, s.ID, IDPattern.String())
 		}
 		if seenIDs[s.ID] {
-			return fmt.Errorf("config: duplicate silver_sources[].id %q", s.ID)
+			return nil, fmt.Errorf("config: duplicate silver_sources[].id %q", s.ID)
 		}
 		seenIDs[s.ID] = true
 
 		if s.Kind == "" {
-			return fmt.Errorf("config: silver_sources[%d].kind is required", i)
+			return nil, fmt.Errorf("config: silver_sources[%d].kind is required", i)
 		}
 		if len(known) > 0 && !slices.Contains(known, s.Kind) && s.Kind != "auto" {
-			return fmt.Errorf("config: silver_sources[%d].kind %q not registered (known: %v)", i, s.Kind, known)
+			return nil, fmt.Errorf("config: silver_sources[%d].kind %q not registered (known: %v)", i, s.Kind, known)
 		}
 
 		// A taxable wrapper the deployment states for the source. Any
@@ -64,7 +89,7 @@ func (c *Config) Validate() error {
 		// accounts really are, and a jurisdiction may spell that in a
 		// wrapper the vocabulary already has for another purpose.
 		if s.TaxableWrapper != "" && !canonical.TaxWrapper(s.TaxableWrapper).Valid() {
-			return fmt.Errorf("config: silver_sources[%d].taxable_wrapper %q is not a known tax wrapper",
+			return nil, fmt.Errorf("config: silver_sources[%d].taxable_wrapper %q is not a known tax wrapper",
 				i, s.TaxableWrapper)
 		}
 
@@ -73,35 +98,38 @@ func (c *Config) Validate() error {
 		hasSubs := len(s.Subsources) > 0
 		switch {
 		case !hasPath && !hasSubs:
-			return fmt.Errorf("config: silver_sources[%d]: one of `path` or `subsources` is required", i)
+			return nil, fmt.Errorf("config: silver_sources[%d]: one of `path` or `subsources` is required", i)
 		case hasPath && hasSubs:
-			return fmt.Errorf("config: silver_sources[%d]: `path` and `subsources` are mutually exclusive", i)
+			return nil, fmt.Errorf("config: silver_sources[%d]: `path` and `subsources` are mutually exclusive", i)
 		}
 		for j, sub := range s.Subsources {
 			if sub.Kind == "" {
-				return fmt.Errorf("config: silver_sources[%d].subsources[%d].kind is required", i, j)
+				return nil, fmt.Errorf("config: silver_sources[%d].subsources[%d].kind is required", i, j)
 			}
 			if sub.Path == "" {
-				return fmt.Errorf("config: silver_sources[%d].subsources[%d].path is required", i, j)
+				return nil, fmt.Errorf("config: silver_sources[%d].subsources[%d].path is required", i, j)
 			}
 		}
 		for j, rel := range s.Relationships {
 			if rel.Label == "" {
-				return fmt.Errorf("config: silver_sources[%d].relationships[%d].label is required", i, j)
+				return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d].label is required", i, j)
 			}
 			if rel.WebID == "" && rel.PSNID == "" {
-				return fmt.Errorf("config: silver_sources[%d].relationships[%d]: at least one of web_id or psn_id must be set", i, j)
+				return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d]: at least one of web_id or psn_id must be set", i, j)
 			}
 		}
 	}
+	return seenIDs, nil
+}
 
-	// symbol_resolution.overrides: every source must be declared,
-	// every kind must be one of the two discriminator values used
-	// by the symbol_resolutions table, every lookup_value must be
-	// non-empty, every symbol must look ticker-shaped (unless the
-	// entry is a `delete: true` suppression). Also reject duplicate
-	// (source, kind, value) tuples so the downstream UPSERT loop
-	// can't surprise us with last-write-wins.
+// validateSymbolResolution checks symbol_resolution.overrides: every source
+// must be declared, every kind must be one of the two discriminator values
+// used by the symbol_resolutions table, every lookup_value must be
+// non-empty, every symbol must look ticker-shaped (unless the entry is a
+// `delete: true` suppression). Also reject duplicate (source, kind, value)
+// tuples so the downstream UPSERT loop can't surprise us with
+// last-write-wins.
+func (c *Config) validateSymbolResolution(seenIDs map[string]bool) error {
 	if c.SymbolResolution != nil {
 		seenOverrideKey := map[string]bool{}
 		for i, o := range c.SymbolResolution.Overrides {
@@ -131,10 +159,13 @@ func (c *Config) Validate() error {
 			seenOverrideKey[k] = true
 		}
 	}
+	return nil
+}
 
-	// portfolio_overrides: same shape rules as account_overrides
-	// but keyed by portfolio_external_id. tax_wrapper is the only
-	// dimension wired through today.
+// validatePortfolioOverrides checks portfolio_overrides: same shape rules as
+// account_overrides but keyed by portfolio_external_id. tax_wrapper is the
+// only dimension wired through today.
+func (c *Config) validatePortfolioOverrides(seenIDs map[string]bool) error {
 	for sourceID, perPortfolio := range c.PortfolioOverrides {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: portfolio_overrides[%q]: no silver_sources[].id matches", sourceID)
@@ -157,12 +188,15 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	return nil
+}
 
-	// account_overrides: every outer key must name a declared
-	// silver source (catches typos early); every inner key must be
-	// non-empty (an empty account_external_id can't match anything
-	// and is almost always user error); typed fields validate
-	// against the canonical enums.
+// validateAccountOverrides checks account_overrides: every outer key must
+// name a declared silver source (catches typos early); every inner key must
+// be non-empty (an empty account_external_id can't match anything and is
+// almost always user error); typed fields validate against the canonical
+// enums.
+func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 	for sourceID, perAccount := range c.AccountOverrides {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: account_overrides[%q]: no silver_sources[].id matches", sourceID)
@@ -192,9 +226,14 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	// instrument_overrides: same shape rules as account_overrides but
-	// keyed by instrument_external_id. Both asset_class (the exposure)
-	// and vehicle are required and must form an admitted taxonomy pair.
+	return nil
+}
+
+// validateInstrumentOverrides checks instrument_overrides: same shape rules
+// as account_overrides but keyed by instrument_external_id. Both asset_class
+// (the exposure) and vehicle are required and must form an admitted taxonomy
+// pair.
+func (c *Config) validateInstrumentOverrides(seenIDs map[string]bool) error {
 	for sourceID, perInstrument := range c.InstrumentOverrides {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: instrument_overrides[%q]: no silver_sources[].id matches", sourceID)
@@ -217,12 +256,15 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	return nil
+}
 
-	// transaction_instruments: the source must be declared, the lookup
-	// token must be non-empty, and so must the instrument it names. The
-	// instrument id cannot be checked against gold here (no DB access
-	// at config load) — the same known gap the families above carry —
-	// so a typo'd id resolves to a dimension row that is not there.
+// validateTransactionInstruments checks transaction_instruments: the source
+// must be declared, the lookup token must be non-empty, and so must the
+// instrument it names. The instrument id cannot be checked against gold here
+// (no DB access at config load) — the same known gap the families above
+// carry — so a typo'd id resolves to a dimension row that is not there.
+func (c *Config) validateTransactionInstruments(seenIDs map[string]bool) error {
 	for sourceID, byToken := range c.TransactionInstruments {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: transaction_instruments[%q]: no silver_sources[].id matches", sourceID)
@@ -236,7 +278,13 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	return nil
+}
 
+// validateReturns checks the returns blocks: inception_overrides,
+// supersession, returns_exclude / returns_hide, returns_policy_overrides and
+// returns_transfer_matching.
+func (c *Config) validateReturns(seenIDs map[string]bool) error {
 	// inception_overrides: source ids must name a declared silver
 	// source (catches typos early); portfolio/account ids must be
 	// non-empty; every value must parse as YYYY-MM-DD. Portfolio /
@@ -316,13 +364,16 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	return nil
+}
 
-	// spending: the account-scope overrides get the same treatment as
-	// returns_exclude — declared source, non-empty ids — plus the one
-	// check that shape cannot express: an account listed on both sides
-	// has no defensible answer, and each family's scope table is keyed
-	// so it could hold only one of them. Reject it here rather than let
-	// a primary-key violation surface mid-load.
+// validateSpending checks spending: the account-scope overrides get the same
+// treatment as returns_exclude — declared source, non-empty ids — plus the
+// one check that shape cannot express: an account listed on both sides has
+// no defensible answer, and each family's scope table is keyed so it could
+// hold only one of them. Reject it here rather than let a primary-key
+// violation surface mid-load.
+func (c *Config) validateSpending(seenIDs map[string]bool) error {
 	if sp := c.Spending; sp != nil {
 		if err := validateAccountScope("spending.accounts", sp.Accounts, seenIDs); err != nil {
 			return err
@@ -346,12 +397,15 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	return nil
+}
 
-	// income: the inflow family's half, validated by the same checks
-	// against its own vocabulary. The blocks spending has and this one
-	// does not — the matcher knobs and the transfer-override ledger —
-	// are absent by decision, not by omission, and a config naming them
-	// under `income` fails at unmarshal as an unknown field.
+// validateIncome checks income: the inflow family's half, validated by the
+// same checks against its own vocabulary. The blocks spending has and this
+// one does not — the matcher knobs and the transfer-override ledger — are
+// absent by decision, not by omission, and a config naming them under
+// `income` fails at unmarshal as an unknown field.
+func (c *Config) validateIncome(seenIDs map[string]bool) error {
 	if in := c.Income; in != nil {
 		if err := validateAccountScope("income.accounts", in.Accounts, seenIDs); err != nil {
 			return err
@@ -367,13 +421,16 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	return nil
+}
 
-	// cashflow: the pool's exclusions get the account-scope treatment
-	// the two families' do, and the wrapper overrides are checked
-	// against the same two vocabularies gold's stamped table restates
-	// as CHECK constraints. Both are rejected here rather than at the
-	// stamp, because a boundary that fails mid-load leaves the table
-	// half-written and the statement silently redrawn.
+// validateCashflow checks cashflow: the pool's exclusions get the
+// account-scope treatment the two families' do, and the wrapper overrides
+// are checked against the same two vocabularies gold's stamped table
+// restates as CHECK constraints. Both are rejected here rather than at the
+// stamp, because a boundary that fails mid-load leaves the table
+// half-written and the statement silently redrawn.
+func (c *Config) validateCashflow(seenIDs map[string]bool) error {
 	if cf := c.Cashflow; cf != nil {
 		if cf.Accounts != nil {
 			if err := validateAccountScope("cashflow.accounts",
@@ -391,14 +448,16 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	return nil
+}
 
-	// web: optional dockerized BI server. Only the port needs a
-	// shape check; an absent block or zero port means "use the
-	// default" (DefaultWebPort), resolved at read time.
+// validateWeb checks web: optional dockerized BI server. Only the port needs
+// a shape check; an absent block or zero port means "use the default"
+// (DefaultWebPort), resolved at read time.
+func (c *Config) validateWeb() error {
 	if c.Web != nil && c.Web.Port != 0 && (c.Web.Port < 1 || c.Web.Port > 65535) {
 		return fmt.Errorf("config: web.port %d is out of range (1-65535)", c.Web.Port)
 	}
-
 	return nil
 }
 
