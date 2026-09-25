@@ -275,3 +275,43 @@ func TestTransactions(t *testing.T) {
 }
 
 func unixKey(u int64) string { return time.Unix(u, 0).UTC().Format(time.RFC3339) }
+
+// The bank's own filing reaches gold as the provider category, as found;
+// its catch-all says nothing and is dropped.
+func TestTransactionsCarryTheBanksFiling(t *testing.T) {
+	path, db := newFixture(t)
+	seed(t, db)
+	for id, payload := range map[string]string{
+		"t2": `{"pfmData":{"classificationDesc":"Restaurants"}}`,
+		"t3": `{"pfmData":{"classificationDesc":"Uncategorized"}}`,
+	} {
+		if _, err := db.Exec(`UPDATE transactions SET payload = ? WHERE fitid = ?`, payload, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn := openConn(t, path)
+	ctx := context.Background()
+	stream, err := conn.Transactions(ctx, fullWindow(t, conn))
+	if err != nil {
+		t.Fatalf("Transactions: %v", err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	for _, tx := range batch.Transactions {
+		var want string
+		if tx.TransactionExternalID == "t2" {
+			want = "Restaurants"
+		}
+		got := ""
+		if tx.ProviderCategory != nil {
+			got = *tx.ProviderCategory
+		}
+		if got != want {
+			t.Errorf("%s provider category = %q, want %q", tx.TransactionExternalID, got, want)
+		}
+	}
+}
+

@@ -25,7 +25,9 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	}
 	const q = `
 SELECT fitid, posted_at, account_external_id, amount,
-       COALESCE(description, ''), payload
+       COALESCE(description, ''),
+       COALESCE(json_extract(payload, '$.pfmData.classificationDesc'), ''),
+       payload
   FROM transactions
  WHERE posted_at BETWEEN ? AND ?
  ORDER BY posted_at, fitid`
@@ -38,11 +40,11 @@ SELECT fitid, posted_at, account_external_id, amount,
 	var out canonical.TransactionBatch
 	for rows.Next() {
 		var (
-			fitid, id, desc, payload string
-			posted                   int64
-			amtFloat                 float64
+			fitid, id, desc, class, payload string
+			posted                          int64
+			amtFloat                        float64
 		)
-		if err := rows.Scan(&fitid, &posted, &id, &amtFloat, &desc, &payload); err != nil {
+		if err := rows.Scan(&fitid, &posted, &id, &amtFloat, &desc, &class, &payload); err != nil {
 			return nil, err
 		}
 		// The collector rounds money to cents before storing, so the
@@ -57,6 +59,7 @@ SELECT fitid, posted_at, account_external_id, amount,
 			GrossAmount:           &amt,
 			NetAmount:             &amt,
 			Description:           silver.StrPtrIfNonEmpty(desc),
+			ProviderCategory:      providerCategory(class),
 			Payload:               json.RawMessage(payload),
 		})
 	}
@@ -64,6 +67,19 @@ SELECT fitid, posted_at, account_external_id, amount,
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil
+}
+
+// providerCategory is the bank's own filing of the row: the personal-finance
+// classification its app shows ("Transfer", "Interest Income", "Federal
+// Tax"). It is carried as found and translated nowhere — the bank files by
+// guess, and a rule the holder wrote outranks it — so it is what a rule and
+// the transfer fence can read. `Uncategorized` says nothing and is dropped.
+func providerCategory(class string) *string {
+	class = strings.TrimSpace(class)
+	if strings.EqualFold(class, "Uncategorized") {
+		return nil
+	}
+	return silver.StrPtrIfNonEmpty(class)
 }
 
 // txKind maps a First Citizens deposit transaction to a canonical TxKind.
