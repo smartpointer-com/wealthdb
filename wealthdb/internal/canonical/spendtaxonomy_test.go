@@ -26,11 +26,11 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 		{"vendoredSpendCategories", len(vendoredSpendCategories), 80},
 		{"vendoredIncomeCategories", len(vendoredIncomeCategories), 7},
 		{"extensionSpendCategories", len(extensionSpendCategories), 3},
-		{"extensionIncomeCategories", len(extensionIncomeCategories), 9},
+		{"extensionIncomeCategories", len(extensionIncomeCategories), 10},
 		{"deltaCategories", len(deltaCategories), 18},
-		{"SpendCategories", len(SpendCategories), 117},
+		{"SpendCategories", len(SpendCategories), 118},
 		{"modelSpendCategories", len(modelSpendCategories), 83},
-		{"modelIncomeCategories", len(modelIncomeCategories), 16},
+		{"modelIncomeCategories", len(modelIncomeCategories), 17},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %d, want %d", tc.name, tc.got, tc.want)
@@ -45,8 +45,8 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 	if got := len(spendDetailedValues); got != 96 {
 		t.Errorf("spending vocabulary = %d values, want 96", got)
 	}
-	if got := len(incomeDetailedValues); got != 30 {
-		t.Errorf("income vocabulary = %d values, want 30", got)
+	if got := len(incomeDetailedValues); got != 31 {
+		t.Errorf("income vocabulary = %d values, want 31", got)
 	}
 
 	primaries := map[string]struct{}{}
@@ -129,7 +129,7 @@ func TestEveryCategoryCarriesAFamily(t *testing.T) {
 		{"vendoredSpendCategories", vendoredSpendCategories, FamilySpending, 80},
 		{"vendoredIncomeCategories", vendoredIncomeCategories, FamilyIncome, 7},
 		{"extensionSpendCategories", extensionSpendCategories, FamilySpending, 3},
-		{"extensionIncomeCategories", extensionIncomeCategories, FamilyIncome, 9},
+		{"extensionIncomeCategories", extensionIncomeCategories, FamilyIncome, 10},
 	} {
 		n := 0
 		for _, c := range tc.cats {
@@ -445,8 +445,8 @@ func TestSpendPredicatesRefuseTheIncomeVocabulary(t *testing.T) {
 			t.Errorf("CatchAllSpendDetailed(%q) = true: the provider tier declines on spending catch-alls only", c.Detailed)
 		}
 	}
-	if n != 21 {
-		t.Errorf("checked %d income-only values, want 21", n)
+	if n != 22 {
+		t.Errorf("checked %d income-only values, want 22", n)
 	}
 }
 
@@ -499,7 +499,7 @@ func TestIncomeAccessorsAreCopiesOfTheirFamily(t *testing.T) {
 		want int
 	}{
 		{"VendoredIncomeCategories", VendoredIncomeCategories(), 7},
-		{"ModelIncomeCategories", ModelIncomeCategories(), 16},
+		{"ModelIncomeCategories", ModelIncomeCategories(), 17},
 		{"DeltaIncomeCategories", DeltaIncomeCategories(), 14},
 	} {
 		if len(tc.got) != tc.want {
@@ -675,6 +675,7 @@ func TestIncomeLabels(t *testing.T) {
 		IncomeDetailedDistributions:          "Distributions",
 		IncomeDetailedCapitalReturn:          "Capital return",
 		IncomeDetailedInsurancePayout:        "Insurance payout",
+		IncomeDetailedEnergyFeedIn:           "Energy feed-in",
 		IncomeDetailedLoanProceeds:           "Loan proceeds",
 		IncomeDetailedReimbursement:          "Reimbursement",
 		IncomeDetailedInheritance:            "Inheritance",

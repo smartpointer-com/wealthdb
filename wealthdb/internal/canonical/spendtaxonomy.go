@@ -175,6 +175,7 @@ const (
 	IncomeDetailedRewards                = "INCOME_REWARDS"
 	IncomeDetailedDistributions          = "INCOME_DISTRIBUTIONS"
 	IncomeDetailedInsurancePayout        = "INCOME_INSURANCE_PAYOUT"
+	IncomeDetailedEnergyFeedIn           = "INCOME_ENERGY_FEED_IN"
 )
 
 // vendoredSpendCategories is the outflow half of the Plaid subset, in
@@ -425,11 +426,13 @@ var extensionIncomeCategories = []SpendCategory{
 	{"INCOME", IncomeDetailedSelfEmployment,
 		"Freelance, contractor and sole-trader earnings — client invoices, a business's own takings, an owner's draw from their company; not a salary, tips or gig-platform earnings, which are wages", FamilyIncome},
 	{"INCOME", IncomeDetailedGovernmentBenefits,
-		"State transfers other than a pension or an unemployment benefit — child and family allowances, parental-leave pay, disability and housing benefits, stimulus payments", FamilyIncome},
+		"State transfers other than a pension or an unemployment benefit — child and family allowances, parental-leave pay, disability and housing benefits, stimulus payments; not a tax refund, which is INCOME_TAX_REFUND whichever tax office pays it and in whatever language", FamilyIncome},
 	{"INCOME", IncomeDetailedRent,
 		"Rent received from a tenant, directly or through a letting agent or a property manager; not a tenancy deposit returned and not the proceeds of selling the property", FamilyIncome},
 	{"INCOME", IncomeDetailedRoyalties,
 		"Royalties and creator payouts — book, music, software-licence and patent royalties, and a platform's share of what a creator's work earned", FamilyIncome},
+	{"INCOME", IncomeDetailedEnergyFeedIn,
+		"What a grid operator or an energy retailer pays for electricity the household's own generation fed into the grid — a solar feed-in tariff or a net-metering credit paid out; income from an asset the household owns, not a refund of a utility bill, which is a reimbursement", FamilyIncome},
 	{"INCOME", IncomeDetailedAlimonyAndChildSupport,
 		"Maintenance received from a former partner or a parent — alimony, spousal maintenance, child support; not a cash gift and not family support given freely", FamilyIncome},
 	{"INCOME", IncomeDetailedInsurancePayout,
@@ -584,7 +587,8 @@ var spendLabelAcronyms = map[string]string{"Atm": "ATM", "Tv": "TV"}
 // and replaced by those purchases the day the card is collected.
 // "Uncategorized card spend" says both halves.
 var spendLabelOverrides = map[string]string{
-	SpendDetailedCardSpend: "Uncategorized card spend",
+	SpendDetailedCardSpend:     "Uncategorized card spend",
+	IncomeDetailedEnergyFeedIn: "Energy feed-in",
 }
 
 // SpendLabel is a detailed value's display name: the vendored value with

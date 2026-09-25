@@ -136,12 +136,12 @@ diffs cleanly — `INCOME_WAGES`, `INCOME_INTEREST_EARNED`,
 primaries stay dropped: `TRANSFER_IN` is the own-account move the matcher
 already names, and the two outflow families are spending's.
 
-**Nine extensions**, ours, in the vendored shape under `INCOME` so the
+**Ten extensions**, ours, in the vendored shape under `INCOME` so the
 model may emit them and a future Plaid value supersedes one as a clean
 diff: `INCOME_SELF_EMPLOYMENT`, `INCOME_GOVERNMENT_BENEFITS`,
 `INCOME_RENT`, `INCOME_ROYALTIES`, `INCOME_ALIMONY_AND_CHILD_SUPPORT`,
 `INCOME_STAKING`, `INCOME_REWARDS`, `INCOME_DISTRIBUTIONS`,
-`INCOME_INSURANCE_PAYOUT`. The bar each
+`INCOME_INSURANCE_PAYOUT`, `INCOME_ENERGY_FEED_IN`. The bar each
 clears is the bar an extension always clears — common, distinct on a
 statement or a tax return, and absent from the vendored vocabulary — and
 it is applied to households in general rather than to one, because the
@@ -154,6 +154,15 @@ the premiums it answers — different amounts, different dates, often
 different years. Netting the payout out would count the outflow and drop the
 inflow. `reimbursement` keeps the cases where the outflow IS identifiable: a
 utility credit against a bill, a merchant reversing its own charge.
+
+`INCOME_ENERGY_FEED_IN` is what a grid operator or an energy retailer pays
+for electricity the household's own generation fed into the grid. It is
+income from an asset the household owns, earned without its labour, so the
+cash flow statement files it under yield beside rent and royalties.
+
+`INCOME_GOVERNMENT_BENEFITS` excludes tax refunds by name: a refund is not a
+state transfer whichever tax office pays it, in whatever language it is
+written.
 
 **Fourteen deltas**, ours, primary-level and lowercase, decided from
 structure a payer's name cannot reveal:
@@ -470,6 +479,13 @@ wealthdb categorizations [spending | income] [-f FORMAT] [-d VALUE] [--forget SI
   whole-block rather than per-field: a half-inherited endpoint is a
   configuration nobody wrote down, and the failure would be a quiet
   widening of what leaves the machine.
+- **One payer can fold under several signatures**, and each is asked
+  about on its own. A payer's narrative varies from booking to booking —
+  a period, a reference, a department — so a tax office or an employer
+  reaches the store as several keys, and the verdicts can disagree. A
+  config rule keyed on the narrative places every one of those keys at
+  once and outranks the model; it is the fix, where a pin per signature
+  is only a patch.
 
 ---
 
