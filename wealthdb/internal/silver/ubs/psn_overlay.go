@@ -44,14 +44,34 @@ func (r *psnReader) taxPairByISIN(ctx context.Context) (map[string]taxPair, erro
 //
 // PSN's safekeeping_accounts payload carries PrtflId in the same
 // 16-char BBBBAAAAAAAANN form ubs-web's historical
-// portfolio_external_id uses, so they join directly. Only
-// portfolios with EXACTLY ONE safekeeping account are included:
-// the mapping has to be unambiguous to retroactively attribute a
-// PDF security (which knows only its portfolio) to a single
-// account. Portfolios with multiple safekeeping accounts are
-// omitted — the caller leaves those on the overlay account.
+// portfolio_external_id uses, so they join directly. The mapping has
+// to be unambiguous to retroactively attribute a PDF security — which
+// knows only its portfolio — to a single account, so a portfolio is
+// included only when exactly one of its safekeeping accounts can be
+// the one that held it. Where more than one can, the portfolio is
+// omitted and the caller leaves its securities on the overlay.
 //
-// Built from the latest snapshot (the portfolio↔safekeeping
+// Counting the accounts is the wrong question, though, because a
+// safekeeping account need not hold securities: UBS opens one per
+// service line, and some of those lines hold nothing a Statement of
+// assets would print. PSN's `holdings` tells them apart — it reports a
+// position against the account that owns it — so the candidates are
+// narrowed to the accounts PSN has ever reported a holding for. When
+// that narrowing would leave nothing (PSN carries no holdings yet, or
+// none for this portfolio) it is not applied, so a portfolio whose one
+// account is quiet maps exactly as it did before.
+//
+// Opening dates are deliberately NOT used to narrow this. The roster
+// dates every opening, which makes them look like the discriminator,
+// but they answer only half the question: PSN states a closing STATUS
+// (`AcctClsgSts`) rather than a closing date, and a portfolio element's
+// `PrtflElmtEndDt` stays open-ended until the element actually ends. A
+// rule that can see an account appear but never disappear resolves the
+// span before a second account opens and leaves the span after it
+// ambiguous — one continuous series cut in two, with a seam on a date
+// where nothing happened to the holding.
+//
+// Built from the latest roster snapshot (the portfolio↔safekeeping
 // relationship is long-lived; we apply today's structure
 // retroactively to the historical PDFs).
 func (r *psnReader) safekeepingByPortfolio(ctx context.Context) (map[string]string, error) {
@@ -67,17 +87,20 @@ func (r *psnReader) safekeepingByPortfolio(ctx context.Context) (map[string]stri
 	if !latest.Valid {
 		return nil, nil
 	}
+	holdsSecurities, err := r.safekeepingAccountsWithHoldings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	const q = `
 SELECT account_external_id, payload
   FROM safekeeping_accounts
- WHERE snapshot_at = ?`
+ WHERE snapshot_at = ?
+ ORDER BY account_external_id`
 	rows, err := r.db.QueryContext(ctx, q, latest.Int64)
 	if err != nil {
 		return nil, fmt.Errorf("psn safekeepingByPortfolio: %w", err)
 	}
 	defer rows.Close()
-	// accountsPerPortfolio counts safekeeping accounts seen per
-	// portfolio so we can drop the ambiguous (1:many) ones.
 	accountsPerPortfolio := map[string][]string{}
 	for rows.Next() {
 		var acctID, payload string
@@ -99,11 +122,56 @@ SELECT account_external_id, payload
 	}
 	out := make(map[string]string, len(accountsPerPortfolio))
 	for portfolio, accts := range accountsPerPortfolio {
+		if witnessed := filterHoldsSecurities(accts, holdsSecurities); len(witnessed) > 0 {
+			accts = witnessed
+		}
 		if len(accts) == 1 {
 			out[portfolio] = accts[0]
 		}
 	}
 	return out, nil
+}
+
+// filterHoldsSecurities keeps the accounts PSN has reported a holding
+// for, in the order given. An empty result means the question cannot
+// be answered from holdings, which the caller treats as no narrowing
+// rather than as no candidates.
+func filterHoldsSecurities(accts []string, holdsSecurities map[string]bool) []string {
+	var out []string
+	for _, a := range accts {
+		if holdsSecurities[a] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// safekeepingAccountsWithHoldings is the set of safekeeping accounts
+// PSN has ever reported a securities position against, over every
+// snapshot rather than the latest one: an account that held paper only
+// in its early years is still an account that holds securities.
+//
+// `holdings` is the only witness that answers this. The roster's
+// account-type text describes the service, not what is in the account,
+// and `pending_securities` is no witness at all: PSN emits one
+// statement per safekeeping account per day whether or not anything is
+// pending, so every account appears in it.
+func (r *psnReader) safekeepingAccountsWithHoldings(ctx context.Context) (map[string]bool, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT safekeeping_external_id FROM holdings`)
+	if err != nil {
+		return nil, fmt.Errorf("psn safekeepingAccountsWithHoldings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }
 
 // holdingsSnapshotRange returns the snapshot_at of PSN's earliest and

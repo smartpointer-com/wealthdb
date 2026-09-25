@@ -111,13 +111,14 @@ func (r *webReader) snapshotsHistorical(
 // balances table is the richer source (opening + closing per
 // month vs quarter-end only), so we use it exclusively for cash.
 // safekeepingByPortfolio maps a portfolio_external_id to the PSN
-// safekeeping account that holds its securities (1:1 portfolios
-// only — see psnReader.safekeepingByPortfolio). When a portfolio
-// is present, its historical securities attach to that real
-// safekeeping account_external_id, giving account-by-account
+// safekeeping account that holds its securities, where exactly one
+// of them can be (see psnReader.safekeepingByPortfolio). When a
+// portfolio is present, its historical securities attach to that
+// real safekeeping account_external_id, giving account-by-account
 // continuity across the web→PSN cutover. When absent (PSN not
-// configured, or an ambiguous 1:many portfolio) the security
-// falls back to the synthetic per-portfolio overlay account.
+// configured, or a portfolio whose securities two accounts could
+// equally hold) the security falls back to the synthetic
+// per-portfolio overlay account.
 func (r *webReader) appendHistoricalSecurities(
 	ctx context.Context,
 	w canonical.Window,
