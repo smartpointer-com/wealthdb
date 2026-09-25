@@ -29,6 +29,8 @@ from collectorkit import debugcap  # noqa: E402
 log = logging.getLogger("test.debugcap")
 
 COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
+# The shared half of every explore harness, scanned with the collectors'.
+KIT_EXPLORE = Path(__file__).resolve().parents[1] / "collectorkit" / "explore.py"
 
 # Stated as literals, never imported from the module: a name removed from
 # debugcap._SECRET_PARAMS has to fail a test, and a test that reads the set
@@ -300,15 +302,15 @@ class ScrubDomTest(unittest.TestCase):
 class CollectorRedactionTest(unittest.TestCase):
     """Every collector masks credentials through the shared redactor.
 
-    The explore harnesses are copy-adapted per source by design, so a
-    security primitive inlined in one of them is inlined in all of them —
-    and a fix reaches only the copy it was typed into. Credential masking
-    is that kind of primitive: the literal-substring version each harness
-    once carried wrote a percent-encoded password to a debug capture in
-    cleartext."""
+    A security primitive inlined in one collector tends to be inlined in
+    all of them, and a fix then reaches only the copy it was typed into.
+    Credential masking is that kind of primitive: the literal-substring
+    version each explore harness once carried wrote a percent-encoded
+    password to a debug capture in cleartext. The harnesses' recording
+    half now lives in collectorkit.explore, scanned here with them."""
 
     def _collector_sources(self):
-        return sorted(COLLECTORS.glob("*/*.py"))
+        return sorted(COLLECTORS.glob("*/*.py")) + [KIT_EXPLORE]
 
     def test_no_collector_inlines_its_own_credential_masker(self):
         for path in self._collector_sources():
@@ -380,14 +382,18 @@ class CollectorRedactionTest(unittest.TestCase):
         # this guard exists to prevent — a fix reaches only the copy it
         # was typed into, and the exemption that names the copy outlives
         # the reason for it.
+        # A harness that records through explore.Session gets the scrub the
+        # session queues at construction — the shared route, scanned here
+        # with the rest.
         scanned = 0
-        for path in sorted(COLLECTORS.glob("*/explore.py")):
+        for path in sorted(COLLECTORS.glob("*/explore.py")) + [KIT_EXPLORE]:
             text = path.read_text(encoding="utf-8")
             if "record_har_path" not in text:
                 continue
             scanned += 1
-            self.assertIn(
-                "debugcap.redact_har(", text,
+            self.assertTrue(
+                "debugcap.redact_har(" in text
+                or ("explore.Session" in text and path != KIT_EXPLORE),
                 f"{path} records a HAR without "
                 f"collectorkit.debugcap.redact_har() — the file holds the "
                 f"login POST body and the cookie jar")

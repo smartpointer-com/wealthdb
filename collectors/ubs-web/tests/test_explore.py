@@ -1,21 +1,22 @@
 """Tests for explore.py, the hand-driven discovery recorder.
 
 The harness issues no navigation and no clicks of its own, so there is no
-route policy to pin here. What is worth pinning is everything that decides
-what reaches disk: the redactor that keeps the contract number out of the
-logs, the DOM-dedup fingerprint that decides whether a screen is written,
-the download naming that keeps two files from colliding, the host test that
-selects which frames are captured, and the CLI defaults that keep artefacts
-out of bronze.
+route policy to pin here. What is worth pinning is what this collector
+decides about what reaches disk: that the contract number is masked in the
+DOM captures, the host test that selects which frames are captured, and
+the CLI defaults that keep artefacts out of bronze. The shared recording
+machinery (collectorkit.explore) is tested in collectorkit.
 """
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
 
 import explore
 from collectorkit import debugcap
+from collectorkit import explore as kit
 
 
 # --------------------------------------------------------------------
@@ -25,28 +26,6 @@ from collectorkit import debugcap
 # collectorkit's SecretRedactorTest owns the redactor's contract — every
 # wire spelling, longest-secret-first, the falsy identity. What belongs
 # here is only that this collector's own artefacts route through it.
-
-
-# --------------------------------------------------------------------
-# DOM dedup — a screen is written once, not every tick
-# --------------------------------------------------------------------
-
-def test_skeleton_ignores_text_and_attribute_values():
-    a = '<div id="root"><span class="a">CHF 1.00</span></div>'
-    b = '<div id="root"><span class="b">CHF 999.00</span></div>'
-    assert explore.dom_skeleton(a) == explore.dom_skeleton(b)
-
-
-def test_skeleton_tracks_element_ids():
-    a = '<div id="cards"></div>'
-    b = '<div id="accounts"></div>'
-    assert explore.dom_skeleton(a) != explore.dom_skeleton(b)
-
-
-def test_skeleton_tracks_structure():
-    a = "<div><span></span></div>"
-    b = "<div><span></span><span></span></div>"
-    assert explore.dom_skeleton(a) != explore.dom_skeleton(b)
 
 
 # --------------------------------------------------------------------
@@ -72,32 +51,6 @@ def test_ubs_frames_are_captured(url):
 ])
 def test_other_frames_are_not_captured(url):
     assert not explore.is_ubs_host(url)
-
-
-# --------------------------------------------------------------------
-# Download naming
-# --------------------------------------------------------------------
-
-def test_download_names_are_sequenced_so_repeats_do_not_collide():
-    # UBS reuses one suggested name across accounts and periods.
-    first = explore.safe_download_name("statement.pdf", 1)
-    second = explore.safe_download_name("statement.pdf", 2)
-    assert first != second
-    assert first.endswith("statement.pdf")
-
-
-def test_download_name_strips_path_separators():
-    name = explore.safe_download_name("../../etc/passwd", 3)
-    assert "/" not in name and ".." not in name
-
-
-def test_download_name_survives_a_missing_suggestion():
-    assert explore.safe_download_name(None, 7).startswith("07-")
-    assert explore.safe_download_name("", 8).startswith("08-")
-
-
-def test_download_name_is_length_capped():
-    assert len(explore.safe_download_name("x" * 500, 1)) < 140
 
 
 # --------------------------------------------------------------------
@@ -130,7 +83,7 @@ def test_env_file_falls_back_to_the_bank_level_file(monkeypatch, tmp_path):
 def test_artefacts_default_to_the_debug_mount_not_bronze():
     args = explore.parse_args([])
     assert args.debug_dir is None          # resolved to a stamped /debug subdir
-    assert explore.DEFAULT_DEBUG_ROOT == Path("/debug")
+    assert kit.DEFAULT_DEBUG_ROOT == Path("/debug")
 
 
 def test_the_single_opened_url_is_the_login_entry_point():
@@ -242,9 +195,14 @@ def test_dom_capture_redacts_the_contract_number(tmp_path):
     class _Ctx:
         pages = [_Page()]
 
-    seq, _ = explore.capture_dom_snapshot(_Ctx(), tmp_path, 0, "", redact)
-    assert seq == 1
-    body = (tmp_path / "001" / "frame0.html").read_text()
-    urls = (tmp_path / "001" / "url.txt").read_text()
+    with contextlib.ExitStack() as stack:
+        recording = kit.Session(stack, tmp_path, redact=redact, log=explore.log,
+                                dom_interval=1, observe=explore.UBS_HOST_RE,
+                                label="UBS")
+        recording.context = _Ctx()
+        recording.snapshot_dom()
+    assert recording.screens == 1
+    body = (tmp_path / "dom" / "001" / "frame0.html").read_text()
+    urls = (tmp_path / "dom" / "001" / "url.txt").read_text()
     assert contract not in body and "<redacted>" in body
     assert contract not in urls and "<redacted>" in urls

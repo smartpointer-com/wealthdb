@@ -157,7 +157,7 @@ host (override with `CHASE_DEBUG_DIR`):
 | Artefact | What it holds |
 | --- | --- |
 | `network.har` | every request + response; flushed only on a clean close |
-| `network.jsonl` | crash-safe, line-flushed request/response log (text bodies ≤ 200 KB, incl. OFX/QFX) |
+| `network.jsonl` | crash-safe, line-flushed request/response log (text bodies ≤ 4 MB, incl. OFX/QFX) |
 | `clicks.jsonl` | one JSON object per click, plus lifecycle + login-form/OTP-field events |
 | `downloads/` | files fetched in-session (statement PDFs, CSV/QFX/OFX exports) |
 | `trace-chunks/`, `trace.zip` | opt-in `--trace` Playwright trace |

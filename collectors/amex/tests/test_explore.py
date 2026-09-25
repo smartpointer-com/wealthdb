@@ -1,8 +1,8 @@
 """Unit tests for the browserless half of explore.py: argument parsing,
 the americanexpress.com origin gate, the click-recorder-JS ↔ Python
-contract, the env-file sourcing contract, the post-close HAR scrub, what a
-whole session leaves on disk, and the login pre-fill logic — all driven
-against stub Playwright objects, so no browser is needed.
+contract, the post-close HAR scrub, what a whole session leaves on disk,
+and the login pre-fill logic — all driven against stub Playwright
+objects, so no browser is needed.
 
 Synthetic values only (no real credentials or account data).
 """
@@ -68,25 +68,6 @@ def test_no_password_flag_exists():
 
 
 # ============================================================
-# DOM-snapshot skeleton (structure-only dedup)
-# ============================================================
-
-def test_dom_skeleton_ignores_text_and_values():
-    # Same structure, different text / dynamic attribute values → same
-    # skeleton, so a screen is snapshotted once, not every tick.
-    a = explore._dom_skeleton('<div id="opt"><span>Get a text</span></div>')
-    b = explore._dom_skeleton('<div id="opt"><span>Confirm 12:03</span></div>')
-    assert a == b
-
-
-def test_dom_skeleton_differs_on_structure():
-    # A new screen (different tags / ids) → different skeleton → new snapshot.
-    a = explore._dom_skeleton('<li id="sms">')
-    b = explore._dom_skeleton('<input id="otp" inputmode="numeric">')
-    assert a != b
-
-
-# ============================================================
 # The americanexpress.com origin gate
 # ============================================================
 
@@ -138,16 +119,6 @@ def test_the_click_recorder_never_logs_a_form_value():
 # ============================================================
 # What reaches the network log, and what the HAR keeps
 # ============================================================
-
-def test_the_network_log_masks_by_name_as_well_as_by_value():
-    # Masking by credential VALUE alone leaves every runtime-issued secret
-    # standing — a bearer, a CSRF token, an api key, a token in a query
-    # string. Both handlers therefore also mask by parameter and header NAME.
-    source = Path(explore.__file__).read_text()
-    assert '"url": request.url' not in source
-    assert '"url": response.url' not in source
-    assert source.count("debugcap.redact_headers(") >= 2   # both handlers
-    assert source.count("debugcap.redact_url(") >= 2
 
 
 def _har(**request_extra) -> dict:
@@ -351,17 +322,6 @@ def test_an_error_mid_session_still_leaves_the_har_scrubbed(tmp_path,
     for secret in ("SYNTHETICKEY", "SYNTHETICJAR", "SYNTHETICBEARER",
                    "SYNTHETICREDIRECT", "p@ss+word", "p%40ss%2Bword"):
         assert secret not in blob, secret
-
-
-# ============================================================
-# Env-file sourcing contract
-# ============================================================
-
-def test_absent_env_file_is_skipped_silently(tmp_path):
-    # explore sources /secrets/amex.env when present and proceeds
-    # without it otherwise (pre-fill then simply disables itself).
-    assert explore.envfile.source_env_file(
-        tmp_path / "amex.env") is False
 
 
 # ============================================================

@@ -66,7 +66,7 @@ One run records, under `/debug/<UTC-ts>/` (host:
 | Artefact | Purpose |
 | --- | --- |
 | `network.har` | The primary endpoint map — every request + response. Flushed on the context close and rewritten through the redactor on the same unwind, error included: Playwright records it raw, so it is never crash-safe and secret-free at once. |
-| `network.jsonl` | Crash-safe line-flushed twin of the HAR; text bodies ≤ 200 KB captured inline, OFX/QFX content types included. |
+| `network.jsonl` | Crash-safe line-flushed twin of the HAR; text bodies ≤ 4 MB captured inline, OFX/QFX content types included. |
 | `clicks.jsonl` | Click log via an injected `document.addEventListener` (VNC clicks bypass the Playwright API), plus lifecycle, login-form and OTP-field events. |
 | `dom/<NNN>/` | **Every distinct screen's full DOM** (all firstcitizens.com frames) + a screenshot, deduped by DOM structure — the record selectors are pinned from. |
 | `downloads/` | Every file the session fetches (statement PDFs, exports), sequence-prefixed against reused filenames. |

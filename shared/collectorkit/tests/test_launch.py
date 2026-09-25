@@ -21,6 +21,8 @@ from collectorkit import launch
 
 # tests/ -> collectorkit/ -> shared/ -> repo root
 COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
+# The shared explore harness launches Camoufox for most collectors.
+KIT_EXPLORE = Path(__file__).resolve().parents[1] / "collectorkit" / "explore.py"
 
 
 class FirefoxPrefsTest(unittest.TestCase):
@@ -215,7 +217,7 @@ def _launch_sites():
     (path, lineno, engine, node). Cached: the scan parses the whole
     first-party tree, and several guards below share the one result."""
     sites = []
-    for path in _collector_py_files(skip_tests=True):
+    for path in [*_collector_py_files(skip_tests=True), KIT_EXPLORE]:
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -491,10 +493,13 @@ class PersistentProfileStartupCacheTest(unittest.TestCase):
             len(list(_persistent_profile_files())), 12)
 
     def test_each_persistent_profile_redirects_startup_cache(self):
+        # explore.prepare_profile is the shared harness's route to
+        # launch.prepare_profile_dir, pinned in the explore suite.
         missing = []
         for path, text in _persistent_profile_files():
             if ("launch.prepare_profile_dir" not in text
-                    and "launch.redirect_startup_cache" not in text):
+                    and "launch.redirect_startup_cache" not in text
+                    and "explore.prepare_profile(" not in text):
                 missing.append(str(path.relative_to(COLLECTORS.parent)))
         self.assertEqual(
             missing, [],

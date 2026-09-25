@@ -1,7 +1,7 @@
 """Unit tests for the browserless half of explore.py: argument parsing,
 the raiffeisen.at origin gate, the click-recorder-JS ↔ Python contract,
-the env-file sourcing contract, and the login pre-fill logic — the
-latter driven against stub Playwright objects, so no browser is needed.
+and the login pre-fill logic — the latter driven against stub Playwright
+objects, so no browser is needed.
 
 Synthetic values only (no real credentials or account data).
 """
@@ -65,25 +65,6 @@ def test_no_password_flag_exists():
 
 
 # ============================================================
-# DOM-snapshot skeleton (structure-only dedup)
-# ============================================================
-
-def test_dom_skeleton_ignores_text_and_values():
-    # Same structure, different text / dynamic attribute values → same
-    # skeleton, so a screen is snapshotted once, not every tick.
-    a = explore._dom_skeleton('<div id="opt"><span>pushTAN senden</span></div>')
-    b = explore._dom_skeleton('<div id="opt"><span>Warten 12:03</span></div>')
-    assert a == b
-
-
-def test_dom_skeleton_differs_on_structure():
-    # A new screen (different tags / ids) → different skeleton → new snapshot.
-    a = explore._dom_skeleton('<li id="pushtan">')
-    b = explore._dom_skeleton('<input id="tan" inputmode="numeric">')
-    assert a != b
-
-
-# ============================================================
 # The raiffeisen.at origin gate
 # ============================================================
 
@@ -134,17 +115,6 @@ def test_user_selector_carries_the_german_hooks():
     for hook in ("verfueger", "benutzer"):
         assert hook in explore.USER_SELECTOR
         assert hook in explore.CLICK_RECORDER_JS
-
-
-# ============================================================
-# Env-file sourcing contract
-# ============================================================
-
-def test_absent_env_file_is_skipped_silently(tmp_path):
-    # explore sources /secrets/raiffeisen_at.env when present and proceeds
-    # without it otherwise (pre-fill then simply disables itself).
-    assert explore.envfile.source_env_file(
-        tmp_path / "raiffeisen_at.env") is False
 
 
 # ============================================================

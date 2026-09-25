@@ -1,8 +1,7 @@
 """Unit tests for the browserless half of explore.py: argument parsing,
 the firstcitizens.com origin gate, the click-recorder-JS ↔ Python
-contract, the env-file sourcing contract, and the login pre-fill logic —
-the latter driven against stub Playwright objects, so no browser is
-needed.
+contract, and the login pre-fill logic — the latter driven against stub
+Playwright objects, so no browser is needed.
 
 Synthetic values only (no real credentials or account data).
 """
@@ -66,25 +65,6 @@ def test_no_password_flag_exists():
 
 
 # ============================================================
-# DOM-snapshot skeleton (structure-only dedup)
-# ============================================================
-
-def test_dom_skeleton_ignores_text_and_values():
-    # Same structure, different text / dynamic attribute values → same
-    # skeleton, so a screen is snapshotted once, not every tick.
-    a = explore._dom_skeleton('<div id="opt"><span>Get a text</span></div>')
-    b = explore._dom_skeleton('<div id="opt"><span>Confirm 12:03</span></div>')
-    assert a == b
-
-
-def test_dom_skeleton_differs_on_structure():
-    # A new screen (different tags / ids) → different skeleton → new snapshot.
-    a = explore._dom_skeleton('<li id="sms">')
-    b = explore._dom_skeleton('<input id="otp" inputmode="numeric">')
-    assert a != b
-
-
-# ============================================================
 # The firstcitizens.com origin gate
 # ============================================================
 
@@ -122,17 +102,6 @@ def test_js_mirrors_the_python_host_gate():
 def test_js_redacts_password_values():
     assert "<redacted>" in explore.CLICK_RECORDER_JS
     assert "type === 'password'" in explore.CLICK_RECORDER_JS
-
-
-# ============================================================
-# Env-file sourcing contract
-# ============================================================
-
-def test_absent_env_file_is_skipped_silently(tmp_path):
-    # explore sources /secrets/firstcitizens.env when present and proceeds
-    # without it otherwise (pre-fill then simply disables itself).
-    assert explore.envfile.source_env_file(
-        tmp_path / "firstcitizens.env") is False
 
 
 # ============================================================

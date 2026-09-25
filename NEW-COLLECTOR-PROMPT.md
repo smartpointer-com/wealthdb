@@ -77,8 +77,9 @@ the template should read this whole file plus the docs it names.
 
 Every build copies the newest validated sibling of its archetype and
 diverges only where a capture proves the new source differs — including
-the explore harness, which is deliberately copy-adapted per collector,
-never extracted into a shared library. Pick the archetype from the
+the site half of its explore harness (entry URL, host gate, detector
+script, login-form fill); the recording half is `collectorkit.explore`,
+shared by every harness. Pick the archetype from the
 Auth/Runtime columns of the roster table in
 [collectors/README.md](collectors/README.md), newest sibling first
 (date candidates with `git log --diff-filter=A -- collectors/<name>`
@@ -122,9 +123,9 @@ conventions, collectorkit), NEW-COLLECTOR-PROMPT.md (the build
 playbook — its "Fleet lessons" bind this build), and the docs + source
 of the template collectors: <newest validated sibling(s) of the same
 archetype — read their CLAUDE.md and DESIGN.md "Observed" sections>.
-Copy the newest sibling's shape, including its explore harness
-(copy-and-adapt is the tracked convention — do not extract a shared
-library), and diverge only where a capture proves this source differs.
+Copy the newest sibling's shape, including the site half of its explore
+harness (the recording is collectorkit.explore's), and diverge only
+where a capture proves this source differs.
 
 ## What is already known (user-provided — do not re-derive, do verify)
 
@@ -163,18 +164,17 @@ entries are cheap when framed this way — correct them and move on.
 
 ## Phases
 
-1. **Scaffold** — adapt the template sibling's harness: explore.py
-   with DOM-snapshot-per-distinct-screen capture AND response-body
-   capture (network + click logs alone pin no selectors and leave
-   every JSON shape a guess) — every DOM serialisation goes through
-   `debugcap.scrub_dom(..., redact)`, which the collectorkit suite
-   enforces on any module that serialises a page, and every capture path
-   through a `debugcap.secret_redactor(username, password)` masker, which
-   that suite only enforces in `explore.py`, so a capture written from a
-   `login.py` or a `download.py` is the author's to route. Neither
-   masker reaches a file the browser writes itself, so a recorded HAR is
-   cleaned after the context close with `debugcap.redact_har()`, and the
-   collectorkit suite fails a harness that records one without it. A
+1. **Scaffold** — adapt the template sibling's harness: an explore.py
+   that gives `collectorkit.explore.Session` the site's host gate,
+   detector script and login-form fill. The session already captures a
+   DOM snapshot per distinct screen AND response bodies (network +
+   click logs alone pin no selectors and leave every JSON shape a
+   guess), routes every capture through the harness's
+   `debugcap.secret_redactor(username, password)` and every DOM through
+   `debugcap.scrub_dom`, and cleans the recorded HAR after the context
+   close. A capture written from a `login.py` or a `download.py` is the
+   author's to route through the same two maskers; the collectorkit
+   suite enforces `scrub_dom` on any module that serialises a page. A
    Playwright trace cannot be rewritten at all and holds the credential
    verbatim. Dockerfile on the matching
    shared base image (Camoufox for unknown or hostile bot defense — it

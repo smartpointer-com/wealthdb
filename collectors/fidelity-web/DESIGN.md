@@ -1144,19 +1144,18 @@ captures. The retail phases auto-exclude the DAF by account-id length
 (§1.2/§3.1; it has no brokerage-side surfaces); the DAF phase enters
 it via the charitable API.
 
-`explore.py` is the discovery harness — copy-adapted from the firstcitizens
-sibling (the tracked convention: per-collector copies, no shared
-library). It opens the standard signin on the shared
-`/secrets/fidelity-web-profile` (so Akamai + device trust carry over
-and the session costs at most a 2FA code), pre-fills the known login
-form (§8.2; fill gated to fidelity.com hosts), and records the
-VNC-driven session: crash-safe `network.jsonl` with text response
-bodies, `clicks.jsonl`, browser downloads, and structure-deduped DOM
-snapshots for every fidelity.com / fidelitycharitable.org|com frame.
-Distinct from `download --explore`, which only adds DOM inventories
-along the scripted walk. Allow/forbid surface: CLAUDE.md §1a —
-Grant / Contribute / Exchange are the DAF's money-movement controls
-and are never clicked, in discovery or ever.
+`explore.py` is the discovery harness — the site half of it, over the
+shared recorder in collectorkit.explore. It opens the standard signin
+on the shared `/secrets/fidelity-web-profile` (so Akamai + device
+trust carry over and the session costs at most a 2FA code), pre-fills
+the known login form (§8.2; fill gated to fidelity.com hosts), and
+records the VNC-driven session: crash-safe `network.jsonl` with text
+response bodies, `clicks.jsonl`, browser downloads, and
+structure-deduped DOM snapshots for every fidelity.com /
+fidelitycharitable.org|com frame. Distinct from `download --explore`,
+which only adds DOM inventories along the scripted walk. Allow/forbid
+surface: CLAUDE.md §1a — Grant / Contribute / Exchange are the DAF's
+money-movement controls and are never clicked, in discovery or ever.
 
 ### 12.1 Surface map
 

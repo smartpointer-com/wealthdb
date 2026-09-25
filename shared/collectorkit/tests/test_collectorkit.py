@@ -645,8 +645,8 @@ COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
 # best-effort handlers that swallow exceptions at DEBUG — so the failure is
 # silent, and what it takes down is a diagnostic nobody notices is missing.
 _KIT_MODULES = frozenset({
-    "bronze", "cli", "debugcap", "envfile", "launch", "parse", "pdftotext",
-    "prune", "session", "silver",
+    "bronze", "cli", "debugcap", "envfile", "explore", "launch", "parse",
+    "pdftotext", "prune", "session", "silver",
 })
 
 
