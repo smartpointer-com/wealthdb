@@ -1000,3 +1000,91 @@ func TestCoverageIsInTheAccountsOwnCurrency(t *testing.T) {
 		}
 	}
 }
+
+// seedBrokerageBalances writes a balance series on the fixture's
+// brokerage account, one USD snapshot per given day.
+func seedBrokerageBalances(t *testing.T, db *sql.DB, ctx context.Context, amount float64, days ...int64) {
+	t.Helper()
+	for _, day := range days {
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id,
+                                       currency, balance_kind, amount)
+                 VALUES ('cf', ?, 'BROK', 'USD', 'current', CAST(? AS DECIMAL(28,4)))`,
+			day*86400, amount); err != nil {
+			t.Fatalf("seed brokerage balance: %v", err)
+		}
+	}
+}
+
+func coverageRow(t *testing.T, rows []CashflowCoverageRow, account string) CashflowCoverageRow {
+	t.Helper()
+	for _, r := range rows {
+		if r.Account == account && r.Currency == "USD" {
+			return r
+		}
+	}
+	t.Fatalf("no coverage row for %s: %+v", account, rows)
+	return CashflowCoverageRow{}
+}
+
+// TestCoverageReadsAnInKindTransferAsUnsigned: securities delivered into
+// an account are valued and paid for by nobody, so they move no cash and
+// cannot open a gap against the account's cash balance.
+func TestCoverageReadsAnInKindTransferAsUnsigned(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	seedBrokerageBalances(t, db, ctx, 5000, 1, 40)
+	seedLines(t, db, ctx, []line{
+		{id: "IK-IN", account: "BROK", kind: "transfer_in", amount: 20000, instrument: "EQ"},
+	})
+
+	rows, err := CashflowCoverage(ctx, db, 172800, 3500000, "total")
+	if err != nil {
+		t.Fatalf("CashflowCoverage: %v", err)
+	}
+	r := coverageRow(t, rows, "Brokerage")
+	if r.Ledger == nil || *r.Ledger != "0" {
+		t.Errorf("ledger = %v, want 0: an in-kind delivery moves no cash", r.Ledger)
+	}
+	if r.UnsignedVolume == nil || *r.UnsignedVolume != "20000" {
+		t.Errorf("unsigned volume = %v, want the delivery's 20000", r.UnsignedVolume)
+	}
+	if r.Gap == nil || *r.Gap != "0" {
+		t.Errorf("gap = %v, want 0", r.Gap)
+	}
+}
+
+// TestCoverageFlagsASeriesThatEndedBeforeThePeriod: a balance series that
+// stopped before the period carries one stale balance across it, which
+// measures nothing, so the row says so instead of naming every
+// transaction a gap.
+func TestCoverageFlagsASeriesThatEndedBeforeThePeriod(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	seedBrokerageBalances(t, db, ctx, 5000, 1)
+	seedLines(t, db, ctx, []line{
+		{id: "END-DIV", account: "BROK", kind: "dividend", amount: 300, instrument: "EQ"},
+	})
+
+	rows, err := CashflowCoverage(ctx, db, 172800, 3500000, "total")
+	if err != nil {
+		t.Fatalf("CashflowCoverage: %v", err)
+	}
+	r := coverageRow(t, rows, "Brokerage")
+	if r.Status != "ended" {
+		t.Errorf("status = %q, want ended", r.Status)
+	}
+	if r.Measured != nil || r.Gap != nil {
+		t.Errorf("an ended series reports a delta: measured %v, gap %v", r.Measured, r.Gap)
+	}
+}
+
+// TestMigration0105DDLIsRerunnable: the coverage macro re-issues cleanly.
+func TestMigration0105DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0105_coverage_in_kind_and_ended.sql")
+	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {
+		t.Fatalf("the replayed coverage report: %v", err)
+	}
+}
+

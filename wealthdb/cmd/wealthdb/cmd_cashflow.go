@@ -534,10 +534,12 @@ Views (coarsest → finest):
                 imply against the delta its own balances show, in the
                 ACCOUNT'S currency. 'status' is the column to read first:
                 'measured' is a real disagreement, 'obscured' means the
-                account carries more unsigned FX than the gap so nothing
-                can be concluded, 'opening' means the balance series
-                began mid-period, 'unmeasurable' means no balances at
-                all. Sort by gap where status is 'measured'.
+                account carries more unsigned volume (FX, in-kind
+                transfers) than the gap so nothing can be concluded,
+                'opening' means the balance series
+                began mid-period, 'ended' that it stopped before the
+                period, 'unmeasurable' means no balances at all. Sort by
+                gap where status is 'measured'.
 
 Window (positional, optional; default: the trailing twelve months):
   YYYY / YYYY-MM / YYYY-MM-DD   that calendar period

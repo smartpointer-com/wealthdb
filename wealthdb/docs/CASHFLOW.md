@@ -827,17 +827,20 @@ each is a way that query is wrong.
    refused rather than ignored.
 2. **It publishes its own blind spot.** Gold pins no canonical sign for
    six kinds — the FX family, corporate actions, the two catch-alls — so
-   their amounts cannot be summed into a cash delta. Dropping them
-   quietly makes an account that converts currencies look like an
-   account with an enormous hole. The volume that had to be dropped is
-   the `unsigned` column, and a gap no larger than it reads **obscured**:
-   not clean, not damning, not answerable from what the adapters signed.
+   their amounts cannot be summed into a cash delta, and an in-kind
+   transfer (`transfer_in` / `transfer_out` carrying an instrument) is
+   valued securities that moved no cash at all. Dropping them quietly
+   makes an account that converts currencies, or received a portfolio in
+   kind, look like an account with an enormous hole. The volume that had
+   to be dropped is the `unsigned` column, and a gap no larger than it
+   reads **obscured**: not clean, not damning, not answerable from what
+   the adapters signed.
 3. **It reports what it cannot measure.** An account with no balance
    history never enters a join-based version's output at all — absent
-   reads as fine. Those rows are here as **unmeasurable**, and an
-   account whose balance series begins inside the period reads
-   **opening**, because the difference across that boundary is not a
-   delta.
+   reads as fine. Those rows are here as **unmeasurable**. An account
+   whose balance series begins inside the period reads **opening**, and
+   one whose series stopped before the period reads **ended**: either
+   way the difference across the period is not a delta.
 
 Read `status` first and sort by `gap` within `measured`. That ordering
 puts at the top whichever account's balances moved most without flows
