@@ -18,8 +18,10 @@ the empty `extract_tables()` output during probing). They are
 visually-aligned text columns. We extract the page text and walk
 it line-by-line, anchoring on identifiable markers:
 
-  - "Statement of assets as of <DDMMYYYY>" in the label → as_of_date
-  - "Portfolio number 230-AAAAAAAA-NN" in body → portfolio number
+  - "Statement of assets as of <DDMMYYYY>" in the label → as_of_date,
+    or the document's own "As of <D Month YYYY>" header where there is
+    no listing row to carry a label
+  - "Portfolio number BBB-AAAAAAAA-NN" in body → portfolio number
   - "Valued in <CCY>" header → portfolio base currency
   - "Valor <num> - ISIN <code>" line → securities position anchor
   - IBAN-shaped line → cash position anchor
@@ -82,6 +84,61 @@ def parse_label_statement_of_assets(label: str) -> dict | None:
     }
 
 
+# The same three facts, printed by the document itself on page 1:
+#
+#   Statement of assets
+#   As of 7 March 2024
+#   Portfolio 999-1234567-42, valued in Swiss Franc (CHF)
+#
+# A statement UBS delivered by hand rather than through the e-banking
+# archive carries no listing row, so there is no label to read it from —
+# see `statement_of_assets_body_meta`.
+_BODY_STMT_OF_ASSETS_TITLE_RE = re.compile(r"^\s*Statement of assets\s*$", re.M)
+_BODY_STMT_OF_ASSETS_ASOF_RE = re.compile(
+    r"^\s*As of\s+(?P<day>\d{1,2})\s+(?P<month>[A-Z][a-z]+)\s+(?P<year>\d{4})\s*$",
+    re.M,
+)
+_BODY_STMT_OF_ASSETS_PORTFOLIO_RE = re.compile(
+    r"^\s*Portfolio\s+(?P<acct_no>\d{3,4}-\d+)-(?P<portfolio_no>\d+)\b", re.M
+)
+
+_MONTH_NAMES = {
+    name: n for n, name in enumerate(
+        ("January", "February", "March", "April", "May", "June", "July",
+         "August", "September", "October", "November", "December"), start=1)
+}
+
+
+def statement_of_assets_body_meta(full_text: str) -> dict | None:
+    """The same metadata `parse_label_statement_of_assets` reads, taken
+    from the document's own first page instead of its listing row.
+
+    Returns None unless all three anchors are present, so a PDF that is
+    not a Statement of assets — or one whose text extraction failed —
+    is declined rather than half-identified. Measured against the whole
+    archive, the two roads agree on every document that has both; the
+    header's `As of` line is the one the label states, not the
+    `valued as of` note some year-end statements print a day or two
+    earlier.
+    """
+    if not _BODY_STMT_OF_ASSETS_TITLE_RE.search(full_text):
+        return None
+    as_of_m = _BODY_STMT_OF_ASSETS_ASOF_RE.search(full_text)
+    portfolio_m = _BODY_STMT_OF_ASSETS_PORTFOLIO_RE.search(full_text)
+    if not as_of_m or not portfolio_m:
+        return None
+    month = _MONTH_NAMES.get(as_of_m["month"])
+    if month is None:
+        return None
+    as_of = date(int(as_of_m["year"]), month, int(as_of_m["day"]))
+    return {
+        "as_of_date": _to_unix(as_of),
+        "as_of_str": as_of.isoformat(),
+        "account_number_prefix": portfolio_m["acct_no"],
+        "portfolio_number": portfolio_m["portfolio_no"],
+    }
+
+
 def parse_label_account_statement(label: str) -> dict | None:
     """Extract issue date and account suffix from the listing
     label of an Account-Statement PDF."""
@@ -94,6 +151,15 @@ def parse_label_account_statement(label: str) -> dict | None:
         "issued_str": issued.isoformat(),
         "account_suffix": m["acct_suffix"],        # e.g. '40X' or 'IUN'
     }
+
+
+def psn_portfolio_external_id(meta: dict) -> str:
+    """The 16-char PSN-aligned portfolio id named by either kind of
+    statement-of-assets metadata — the listing label's or the document's
+    own. One assembly, one length guard, whichever road read the parts."""
+    branch, base = meta["account_number_prefix"].split("-", 1)
+    return _assemble_psn_portfolio(branch, base, meta["portfolio_number"],
+                                   meta["account_number_prefix"])
 
 
 def _to_unix(d: date) -> int:
@@ -186,16 +252,23 @@ _OVERVIEW_PRECIOUS_METALS_RE = re.compile(
 )
 
 
+def statement_of_assets_text(pdf_path: Path) -> str:
+    """The text a Statement-of-assets walk reads, laid out as the walker
+    expects it. Separate from the walk so a caller that only needs to know
+    WHICH document this is can ask without parsing its positions."""
+    with pdfplumber.open(pdf_path) as pdf:
+        return "\n".join(
+            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages
+        )
+
+
 def parse_statement_of_assets(pdf_path: Path, doc_token: str,
                               label: str) -> list[dict]:
     """Walk a Statement-of-assets PDF and emit one row per detected
     position. Each row is a dict ready for INSERT into the
     `historical_position_snapshots` table."""
-    with pdfplumber.open(pdf_path) as pdf:
-        full_text = "\n".join(
-            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages
-        )
-    return parse_statement_of_assets_text(full_text, doc_token, label)
+    return parse_statement_of_assets_text(
+        statement_of_assets_text(pdf_path), doc_token, label)
 
 
 def parse_statement_of_assets_text(full_text: str, doc_token: str,
@@ -203,7 +276,11 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
     """Pure-text variant of parse_statement_of_assets — same row
     shape, but takes already-extracted PDF text so the regex /
     line-walk layer can be exercised without a real PDF on disk."""
-    label_meta = parse_label_statement_of_assets(label)
+    # The listing row first, so every document the archive served is read
+    # exactly as it always was; the document's own header only answers for
+    # one delivered by hand, which has no listing row at all.
+    label_meta = (parse_label_statement_of_assets(label)
+                  or statement_of_assets_body_meta(full_text))
     if label_meta is None:
         return []
 
@@ -214,9 +291,7 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
     # zfill(4) below restores it so the value joins to PSN's
     # `portfolios.portfolio_external_id` directly.
     branch, base = label_meta["account_number_prefix"].split("-", 1)
-    psn_portfolio = _assemble_psn_portfolio(
-        branch, base, label_meta["portfolio_number"],
-        label_meta["account_number_prefix"])
+    psn_portfolio = psn_portfolio_external_id(label_meta)
 
     base_ccy = None
     m = _BASE_CCY_RE.search(full_text)

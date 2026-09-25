@@ -20,7 +20,7 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import load as loader  # noqa: E402
-from collectorkit import silver  # noqa: E402
+from collectorkit import bronze, silver  # noqa: E402
 
 REL = "1234 00000001"   # synthetic "<4-digit branch> <8-digit base>"
 
@@ -425,7 +425,7 @@ def test_a_moved_parser_re_derives_without_a_new_dump(tmp_path, monkeypatch):
     monkeypatch.setattr(loader, "_load_historical_from_pdfs", _fake_walk)
 
     # The parsers have moved: the archive is re-derived.
-    loader._rederive_documents_if_parsers_moved(conn, [dump], {})
+    loader._derive_documents_without_a_new_dump(conn, [dump], {})
     assert walked == [dump]
 
     # And having moved once, they have not moved twice: an unchanged
@@ -433,7 +433,7 @@ def test_a_moved_parser_re_derives_without_a_new_dump(tmp_path, monkeypatch):
     silver.stamp_generation(conn, loader.DOCUMENT_GENERATION_SCOPE,
                             loader._document_generation())
     walked.clear()
-    loader._rederive_documents_if_parsers_moved(conn, [dump], {})
+    loader._derive_documents_without_a_new_dump(conn, [dump], {})
     assert walked == []
     conn.close()
 
@@ -446,7 +446,7 @@ def test_the_re_derive_needs_an_archive_to_walk(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loader, "_load_historical_from_pdfs",
                         lambda *a: pytest.fail("walked a dump with no archive"))
-    loader._rederive_documents_if_parsers_moved(conn, [dump], {})
+    loader._derive_documents_without_a_new_dump(conn, [dump], {})
     conn.close()
 
 
@@ -1175,3 +1175,149 @@ def test_a_holder_this_window_cannot_see_keeps_its_number(tmp_path):
         "SELECT transaction_external_id, amount_debit FROM transactions")}
     assert rows["ZD00000TI0000001"] == -9000.00, "the absent holder lost its number"
     assert len(rows) == 2, rows
+
+
+# ============================================================
+# Documents the bank delivers by hand
+# ============================================================
+#
+# UBS produces some statements only on request: they never appear in the
+# e-banking archive, so `download` cannot reach them and no listing row
+# describes them. They are placed in `<bronze>/supplied-documents/` and
+# identified from their own text. Every identifier below is synthetic per
+# CLAUDE.md §4.
+
+_SUPPLIED_HEADER = "\n".join([
+    "UBS Switzerland AG",
+    "Statement of assets",
+    "As of 7 March 2024",
+    "Portfolio 999-00000000-06, valued in Swiss Franc (CHF)",
+])
+
+
+def _supplied_dir(tmp_path: Path, *names: str) -> Path:
+    """A supplied-documents dir holding `names`. The bytes differ per name
+    so each file has its own content hash; the text they stand for is
+    supplied by the monkeypatched extractor, not by these bytes."""
+    d = tmp_path / loader.SUPPLIED_DOCUMENTS_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        (d / n).write_bytes(f"%PDF-1.4 {n}".encode())
+    return d
+
+
+def _texts(monkeypatch, mapping: dict[str, str]) -> None:
+    """Stand in for pdfplumber: map each file NAME to the text it yields."""
+    monkeypatch.setattr("pdf_parsers.statement_of_assets_text",
+                        lambda path: mapping[Path(path).name])
+
+
+def test_a_supplied_statement_is_indexed_from_its_own_text(
+        tmp_path, monkeypatch):
+    conn = _fresh_db(tmp_path)
+    d = _supplied_dir(tmp_path, "whatever-it-was-called.pdf")
+    _texts(monkeypatch, {"whatever-it-was-called.pdf": _SUPPLIED_HEADER})
+
+    assert loader._load_supplied_documents(conn, d) == 1
+
+    row = conn.execute("SELECT * FROM documents").fetchone()
+    assert row["doc_token"].startswith(loader.SUPPLIED_DOC_TOKEN_PREFIX)
+    assert row["doc_type"] == loader.SUPPLIED_STMT_OF_ASSETS_DOC_TYPE
+    assert row["portfolio_external_id"] == "0999000000000006"
+    # 2024-03-07, the date the document states — not the file's name,
+    # which says nothing, and not the day it was placed.
+    assert row["doc_date"] == 1709769600
+    assert row["label"] == ""
+    conn.close()
+
+
+def test_a_supplied_pdf_the_loader_cannot_identify_is_not_indexed(
+        tmp_path, monkeypatch, caplog):
+    """Loud, and with no row: a document catalogued under no type would
+    sit in the archive looking ingested while nothing could ever parse it."""
+    conn = _fresh_db(tmp_path)
+    d = _supplied_dir(tmp_path, "mystery.pdf")
+    _texts(monkeypatch, {"mystery.pdf": "Tax Report\nFor the year 2024"})
+
+    with caplog.at_level("WARNING"):
+        assert loader._load_supplied_documents(conn, d) == 0
+
+    assert "mystery.pdf" in caplog.text
+    assert conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"] == 0
+    conn.close()
+
+
+def test_a_supplied_statement_the_archive_already_holds_is_not_doubled(
+        tmp_path, monkeypatch):
+    """The same document from both roads is one document. Were it two,
+    its positions would be derived twice under two tokens."""
+    conn = _fresh_db(tmp_path)
+    d = _supplied_dir(tmp_path, "q1.pdf")
+    _texts(monkeypatch, {"q1.pdf": _SUPPLIED_HEADER})
+    sha = bronze.sha256_file(d / "q1.pdf")[0]
+    conn.execute(
+        "INSERT INTO documents (doc_token, content_sha256, file_path, "
+        "size_bytes, snapshot_at, label) "
+        "VALUES ('scraped-token', ?, 'documents/x.pdf', 1, 1700000000, ?)",
+        (sha, "Statement of assets as of 07032024 ..."))
+
+    assert loader._load_supplied_documents(conn, d) == 0
+
+    tokens = [r["doc_token"] for r in conn.execute(
+        "SELECT doc_token FROM documents")]
+    assert tokens == ["scraped-token"]
+    conn.close()
+
+
+def test_re_indexing_a_supplied_document_is_a_no_op(tmp_path, monkeypatch):
+    conn = _fresh_db(tmp_path)
+    d = _supplied_dir(tmp_path, "q1.pdf")
+    _texts(monkeypatch, {"q1.pdf": _SUPPLIED_HEADER})
+
+    assert loader._load_supplied_documents(conn, d) == 1
+    assert loader._load_supplied_documents(conn, d) == 0
+    assert conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"] == 1
+    conn.close()
+
+
+def test_no_supplied_directory_is_the_ordinary_case(tmp_path):
+    conn = _fresh_db(tmp_path)
+    assert loader._load_supplied_documents(conn, tmp_path / "absent") == 0
+    conn.close()
+
+
+def test_a_supplied_statement_enters_the_archive_walk(tmp_path):
+    """Indexing it is half the job; the walk has to list it too."""
+    assert _archive_walk_saw(tmp_path, loader.SUPPLIED_STMT_OF_ASSETS_DOC_TYPE)
+
+
+def test_a_new_supplied_document_derives_without_a_new_dump(
+        tmp_path, monkeypatch):
+    """The archive walk sits behind the already-loaded skip, so on a night
+    when every dump is loaded a newly placed document would be indexed and
+    then never read."""
+    conn = _fresh_db(tmp_path)
+    dump = tmp_path / "20260101T000000Z"
+    (dump / "documents").mkdir(parents=True)
+    silver.stamp_generation(conn, loader.DOCUMENT_GENERATION_SCOPE,
+                            loader._document_generation())
+    conn.commit()
+
+    walked: list[Path] = []
+    monkeypatch.setattr(loader, "_load_historical_from_pdfs",
+                        lambda _c, _t, d, _cache: walked.append(d) or (0, 0, 0, 0))
+
+    # Nothing new: the parsers have not moved and nothing was supplied.
+    loader._derive_documents_without_a_new_dump(conn, [dump], {})
+    assert walked == []
+
+    loader._derive_documents_without_a_new_dump(conn, [dump], {}, supplied=1)
+    assert walked == [dump]
+    conn.close()
+
+
+def test_the_supplied_directory_is_not_a_bronze_dump(tmp_path):
+    """It sits beside the run dirs, and must never be walked as one."""
+    (tmp_path / loader.SUPPLIED_DOCUMENTS_DIRNAME).mkdir()
+    (tmp_path / "20260101T000000Z").mkdir()
+    assert [d.name for d in loader.scan_bronze(tmp_path)] == ["20260101T000000Z"]

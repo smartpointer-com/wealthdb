@@ -420,6 +420,56 @@ re-download and each document gains a stable cross-run identity
 loader is filename-agnostic — it catalogs whatever `*.pdf` the manifest
 lists — so older token-named dumps keep loading unchanged.
 
+A document the archive never listed has no manifest entry and so no
+label; §3.7a covers how one is taken in.
+
+### 3.7a Documents the bank delivers by hand
+
+Not every document UBS produces reaches the e-banking archive. A
+statement the bank runs on request — a Statement of assets for a
+month-end it never published one for, say — is delivered directly and
+appears in no listing, so `download` cannot reach it and no listing row
+describes it.
+
+Those PDFs are placed in `<bronze-dir>/supplied-documents/` and indexed
+by the same `documents` table as the scraped archive, which is what
+carries them into the historical walk (§3.8) with no second pipeline.
+Four properties make that safe:
+
+- **The directory is not a run dir.** Its name is not a UTC-timestamp
+  slug, so `scan_bronze` never walks it as a dump and `prune` cannot
+  delete it — the one deletion path that takes a whole directory accepts
+  only `<bronze>/<run-slug>`. It sits INSIDE the bronze tree all the
+  same, which is what keeps silver reproducible from bronze alone: a
+  directory reachable only through a CLI flag would be dropped by every
+  `--force` rebuild and every flag-less nightly load.
+- **The document identifies itself.** Its type, its as-of date and its
+  portfolio are read from the text it prints on its own first page
+  (`Statement of assets` / `As of <D Month YYYY>` /
+  `Portfolio BBB-AAAAAAAA-NN, valued in …`), never from a filename, which
+  a hand-placed file makes no promises about. Measured across the whole
+  archive, those anchors give the same answer as the listing label on
+  every document that has both; the header's `As of` line is what the
+  label states, not the `valued as of` note some year-end statements
+  print a day or two earlier. A PDF whose body does not carry all three
+  anchors is named in a warning and left out of `documents` entirely,
+  rather than catalogued under no type where it would look ingested and
+  never be parsed.
+- **Its identity is its content.** `doc_token` is `supplied:<sha256>`,
+  so re-running collides on the primary key and changes nothing.
+- **It cannot double a document the archive already served.** The same
+  bytes collide on `documents.content_sha256`, which is UNIQUE; the same
+  statement re-rendered to different bytes still collapses on the
+  historical tables' own key, which carries `(as_of_date, portfolio,
+  account, ISIN)`.
+
+Because the pass runs before the dump loop, a `--force` rebuild picks the
+supplied documents up with no special handling. On a night when every
+dump is already loaded, the archive walk would otherwise sit behind the
+already-loaded skip and never read a newly placed document, so indexing
+one is a second reason — beside a moved parser — for the loader to derive
+the archive without a new dump.
+
 ### 3.7b Portfolio securities transactions
 
 Web-only, and a different surface from §3.6's splice. The cash

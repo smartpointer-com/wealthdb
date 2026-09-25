@@ -113,7 +113,7 @@ names and roles are the same:
 | [`explore.py`](explore.py) | Discovery harness. Launches headed Chromium on the container's Xvfb display and serves it over VNC, so a session can be driven by hand while everything it produces is recorded: the network (requests, responses and bodies, line-flushed so a crash keeps the log), the clicks, one DOM snapshot plus screenshot per structurally distinct screen, and every file downloaded. Artefacts land under `--debug-dir`, never bronze. The harness itself never navigates and never clicks — it opens the login page and records from there, so the read-only surface in [CLAUDE.md](CLAUDE.md) §1 binds whoever drives. An existing session is reused and saved back on exit, so a sign-in here is not paid for twice. |
 | [`cards.py`](cards.py) | The credit-card surface, read from the SPA's own REST API rather than scraped (see [DESIGN.md §5](DESIGN.md)): the roster, each card account's paged ledger, its billing periods with their reconciling totals, and each period's statement PDF. Read-only and enforced — an allow-list of read endpoints gates every request, including the paging cursor the ledger hands back, so a link the API advertises is never followed for being advertised. Driven by `download.py`; not a verb of its own. |
 | [`card_parsers.py`](card_parsers.py) | Bronze → silver for the card surface: pure functions from the captured JSON to the rows `load.py` writes, with no database handle, so each is testable against a synthetic payload. Holds the three readings that are easy to get wrong — the row key is minted from row content, because the API's `_id` is re-minted at every login and `transactionNr` was never a key, a `RESERVED` row is unposted activity rather than a transaction, and `merchantName` is the category while `details` is the merchant. |
-| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
+| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive — the scraped one plus any bank-delivered PDFs under `supplied-documents/` — and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
 
 ### Why both CSV and MT940?
 
@@ -183,6 +183,8 @@ below `WINDOW_MIN_DAYS = 1`.
 
 ```
 <bronze-dir>/
+├── supplied-documents/                                            bank-delivered PDFs; no run, no manifest
+│   └── <anything>.pdf                                             identified from the text it prints
 └── 20260518T220332Z/                                              one run = one UTC-timestamped dir
     ├── run.json                                                   manifest (status, accounts, windows, file inventory)
     ├── transactions/
@@ -199,6 +201,15 @@ below `WINDOW_MIN_DAYS = 1`.
         └── statements/
             └── <sha256>.pdf                                       content-addressed by the PDF bytes
 ```
+
+`supplied-documents/` holds the documents UBS produces only on request:
+they appear in no e-banking listing, so `download` cannot reach them and
+no manifest describes them. Each is identified from its own text rather
+than its filename, keyed by its content hash, and skipped if the scraped
+archive already holds the same bytes. The directory is not a run slug, so
+`load` never walks it as a dump and `prune` never deletes it; it lives
+inside the bronze tree so that `load --force` still rebuilds silver from
+bronze alone. See [DESIGN.md](DESIGN.md) §3.7a.
 
 The `<sha256-prefix>` collapses the opaque UBS account-id token to
 16 hex chars. UBS account-ids all share a ~34-char per-customer

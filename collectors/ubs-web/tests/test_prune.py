@@ -310,6 +310,21 @@ def test_non_run_entries_never_touched(tmp_path):
     assert (tmp_path / "ubs-web.db").exists()
 
 
+def test_the_supplied_documents_dir_survives_a_prune(tmp_path):
+    """Bank-delivered PDFs live at the bronze root, beside the run dirs.
+    They are load inputs with no dump to belong to, and nothing regenerates
+    them — so the one deletion path that takes a whole directory must never
+    see this one."""
+    make_dump(tmp_path, OLD_TS)
+    supplied = tmp_path / "supplied-documents"
+    supplied.mkdir()
+    (supplied / "statement.pdf").write_bytes(b"%PDF-1.4")
+    run_main(tmp_path)
+    assert (supplied / "statement.pdf").exists()
+    with pytest.raises(SystemExit):
+        prune.validate_target(supplied, tmp_path)
+
+
 def test_missing_bronze_dir_exits(tmp_path):
     with pytest.raises(SystemExit):
         prune.main(["--bronze-dir", str(tmp_path / "nope")])

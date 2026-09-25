@@ -22,6 +22,7 @@ from pdf_parsers import (
     parse_maturity_notice_text,
     parse_payment_advice_text,
     parse_statement_of_assets_text,
+    statement_of_assets_body_meta,
 )
 
 
@@ -410,6 +411,91 @@ class TestBundledOrderReachesTheLoaderSplit:
         rows = self._rows()
         assert [r["multi_leg_index"] for r in rows] == [1, 2]
         assert all(r["multi_parent_debit"] == 300.00 for r in rows)
+
+
+# ---- A statement that arrives without its listing row -------------
+
+class TestStatementOfAssetsBodyMetadata:
+    """UBS serves most Statements of assets through the e-banking
+    archive, where a listing row carries the as-of date and the
+    portfolio. A statement the bank produces on request is delivered by
+    hand and has no listing row at all — the document's own first page
+    is then the only place those two facts are written."""
+
+    HEADER = "\n".join([
+        "UBS Switzerland AG",
+        "Statement of assets",
+        "As of 7 March 2024",
+        "Portfolio 999-00000000-06, valued in Swiss Franc (CHF)",
+    ])
+
+    def test_the_document_names_its_own_date_and_portfolio(self):
+        meta = statement_of_assets_body_meta(self.HEADER)
+        assert meta is not None
+        assert meta["as_of_str"] == "2024-03-07"
+        assert meta["account_number_prefix"] == "999-00000000"
+        assert meta["portfolio_number"] == "06"
+
+    @pytest.mark.parametrize("drop", [
+        "Statement of assets",
+        "As of 7 March 2024",
+        "Portfolio 999-00000000-06, valued in Swiss Franc (CHF)",
+    ])
+    def test_all_three_anchors_or_none(self, drop):
+        """Half an identification is worse than none: it would file a
+        document under a date or a portfolio it never stated."""
+        text = "\n".join(l for l in self.HEADER.splitlines() if l != drop)
+        assert statement_of_assets_body_meta(text) is None
+
+    def test_a_document_of_another_kind_is_declined(self):
+        assert statement_of_assets_body_meta(
+            "Account Statement\nAs of 7 March 2024\n"
+            "Portfolio 999-00000000-06, valued in Swiss Franc (CHF)") is None
+
+    def test_the_valued_as_of_note_does_not_win(self):
+        """Year-end statements print a note dating the VALUATION a day
+        or two before the statement. The listing label states the
+        header's date, so the header is what the body must read — or
+        the same document would land on two different dates depending
+        on which road read it."""
+        text = ("Statement of assets\n"
+                "As of 31 December 2024\n"
+                "Portfolio 999-00000000-06, valued in Swiss Franc (CHF)\n"
+                "Important notes\n"
+                "- Statement of assets valued as of 30.12.2024\n")
+        meta = statement_of_assets_body_meta(text)
+        assert meta["as_of_str"] == "2024-12-31"
+
+    def test_a_statement_with_no_label_is_walked_from_its_body(self):
+        """End to end: the positions walk needs no label when the
+        document identifies itself."""
+        text = "\n".join([
+            self.HEADER,
+            "Valued in CHF",
+            "Detailed positions",
+            "100 Reg.shs Placeholder Equity AG CHF 10.000000 12.50 25.00% 1 250 5.00",
+            "Valor 111 - ISIN XX0000000011",
+            "Additional information Abbreviations",
+        ])
+        rows = parse_statement_of_assets_text(text, "<doc-token>", "")
+        assert [r["instrument_isin"] for r in rows] == ["XX0000000011"]
+        assert rows[0]["portfolio_external_id"] == "0999000000000006"
+
+    def test_a_listing_label_still_wins_where_there_is_one(self):
+        """The body is a fallback, not a second opinion: every document
+        the archive served must be read exactly as it always was."""
+        label = ("\u200d Statement of assets as of 31032026 "
+                 "02.04.2026 02 April 2026 P. Placeholder 999-00000000-05 300 KB")
+        text = "\n".join([
+            self.HEADER,
+            "Valued in CHF",
+            "Detailed positions",
+            "100 Reg.shs Placeholder Equity AG CHF 10.000000 12.50 25.00% 1 250 5.00",
+            "Valor 111 - ISIN XX0000000011",
+            "Additional information Abbreviations",
+        ])
+        rows = parse_statement_of_assets_text(text, "<doc-token>", label)
+        assert rows[0]["portfolio_external_id"] == "0999000000000005"
 
 
 # ---- Issue 2: portfolio_external_id length must be 16 -------------

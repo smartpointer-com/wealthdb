@@ -59,6 +59,26 @@ log = logging.getLogger("ubs-web.load")
 # them. See `_purge_stale_document_rows`.
 DOCUMENT_GENERATION_SCOPE = "documents"
 
+# Bank-delivered PDFs — documents the e-banking archive never listed, so
+# `download` cannot reach them and they arrive by hand. They live in their
+# own directory at the bronze root rather than outside the tree, which is
+# what keeps silver reproducible from bronze alone: sourced from elsewhere,
+# every `--force` rebuild would silently drop them. The name is not a run-dir
+# slug, so `scan_bronze` does not walk it and `prune` cannot delete it.
+SUPPLIED_DOCUMENTS_DIRNAME = "supplied-documents"
+
+# What a supplied document's `doc_token` is built from — the content hash,
+# since there is no UBS token to record. The prefix keeps the two origins
+# legible in the table and lets the supplied rows be found without a join.
+SUPPLIED_DOC_TOKEN_PREFIX = "supplied:"
+
+# The `doc_type` a supplied Statement of assets is indexed under: the title
+# the document prints on its own first page. Scraped statements of assets
+# carry no doc_type at all — DOC_LABEL_RE needs letters where their listing
+# label has digits — so this admits the supplied ones to the archive walk
+# without changing the road any scraped document travels.
+SUPPLIED_STMT_OF_ASSETS_DOC_TYPE = "Statement of assets"
+
 # The tables the PDF passes own. Each `historical_*` table is written by
 # exactly one of them and holds nothing else; `transactions` is shared with
 # the live CSV export, whose ids are UBS's own transaction numbers, so the
@@ -162,8 +182,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--bronze-dir", type=Path, default=Path("/data"),
                    help="Directory containing UTC-timestamped bronze dump dirs "
                         "(default: %(default)s).")
+    p.add_argument("--supplied-documents-dir", type=Path, default=None,
+                   help="Directory of bank-delivered PDFs to ingest beside "
+                        "the scraped archive (default: "
+                        f"<bronze-dir>/{SUPPLIED_DOCUMENTS_DIRNAME}). Absent "
+                        "or empty is the normal case.")
     cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.supplied_documents_dir is None:
+        args.supplied_documents_dir = args.bronze_dir / SUPPLIED_DOCUMENTS_DIRNAME
+    return args
 
 
 # ============================================================
@@ -1541,6 +1569,96 @@ def _load_documents(conn: sqlite3.Connection, snapshot_at: int,
     return inserted
 
 
+def _supplied_document_meta(pdf: Path) -> tuple[str, int, str] | None:
+    """Identify a bank-delivered PDF from its own text.
+
+    Returns (doc_type, doc_date, portfolio_external_id), or None when the
+    document is not one this loader knows how to read. Only the Statement
+    of assets is recognised today; a type joins it once its own text
+    carries enough to identify it.
+
+    Reading the PDF rather than a filename is the whole point: a hand-placed
+    file can be called anything, and a name is not evidence of what is
+    inside it.
+    """
+    from pdf_parsers import (  # noqa: PLC0415 — pdfplumber is slow to import
+        psn_portfolio_external_id, statement_of_assets_body_meta,
+        statement_of_assets_text,
+    )
+    meta = statement_of_assets_body_meta(statement_of_assets_text(pdf))
+    if meta is None:
+        return None
+    return (SUPPLIED_STMT_OF_ASSETS_DOC_TYPE, meta["as_of_date"],
+            psn_portfolio_external_id(meta))
+
+
+def _load_supplied_documents(conn: sqlite3.Connection,
+                             supplied_dir: Path) -> int:
+    """Index every recognised PDF in `supplied_dir` into the documents
+    table. Returns how many rows were NEW.
+
+    Identity is the content hash, so a re-run changes nothing and a
+    statement delivered by hand and later published through the archive
+    stays one document rather than two deriving the same positions.
+
+    An unrecognised PDF is named in a warning and left out of the table
+    entirely, rather than catalogued with no type — a row nothing can parse
+    would sit there looking ingested.
+
+    `snapshot_at` records when the copy was placed, there being no dump that
+    captured it.
+    """
+    if not supplied_dir.is_dir():
+        # The default (<bronze-dir>/supplied-documents) simply not existing
+        # is the normal case, so this is not worth a line on every run.
+        log.debug("supplied documents: %s is not a directory", supplied_dir)
+        return 0
+    pdfs = sorted(p for p in supplied_dir.glob("*.pdf") if p.is_file())
+    if not pdfs:
+        return 0
+    inserted = 0
+    for pdf in pdfs:
+        sha = bronze.sha256_file(pdf)[0]
+        token = SUPPLIED_DOC_TOKEN_PREFIX + sha
+        if conn.execute("SELECT 1 FROM documents WHERE content_sha256 = ?",
+                        (sha,)).fetchone():
+            # Indexed by an earlier run, or served by the scraped archive
+            # under its own token. Caught on the hash before the PDF is
+            # opened, so a steady-state load reads no document twice.
+            log.debug("supplied document %s already in silver; skipping",
+                      pdf.name)
+            continue
+        meta = _supplied_document_meta(pdf)
+        if meta is None:
+            log.warning("supplied documents: %s is not a document this "
+                        "loader recognises; not indexed", pdf.name)
+            continue
+        doc_type, doc_date, portfolio = meta
+        try:
+            conn.execute(
+                "INSERT INTO documents ("
+                "doc_token, content_sha256, file_path, size_bytes, "
+                "snapshot_at, doc_type, doc_date, account_external_id, "
+                "portfolio_external_id, label"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    token, sha, str(pdf.resolve()), pdf.stat().st_size,
+                    int(pdf.stat().st_mtime), doc_type, doc_date, None,
+                    portfolio, "",
+                ),
+            )
+            inserted += 1
+        except sqlite3.IntegrityError:
+            # The hash check above covers the ordinary case; this catches a
+            # token collision, which only a hash collision could produce.
+            log.debug("supplied document %s collided on insert; skipping",
+                      pdf.name)
+    if inserted:
+        log.info("supplied documents: indexed %d new of %d in %s",
+                 inserted, len(pdfs), supplied_dir)
+    return inserted
+
+
 # ----------------------------------------------------------------
 # Historical snapshots from PDF documents
 # ----------------------------------------------------------------
@@ -1560,7 +1678,11 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
     if not path.is_file():
         return token, "skip", path.name, None, None
     try:
-        if "Statement of assets" in (label or ""):
+        # The listing label names the type for a scraped document; a
+        # supplied one has none and is indexed under the title it prints
+        # on itself. Either way the parser reads the same document.
+        if ("Statement of assets" in (label or "")
+                or doc_type == SUPPLIED_STMT_OF_ASSETS_DOC_TYPE):
             rows = parse_statement_of_assets(path, token, label)
             return token, "positions", path.name, rows, None
         if doc_type == "Maturity notice":
@@ -1623,10 +1745,11 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
         "SELECT doc_token, file_path, label, doc_type, content_sha256 "
         "FROM documents "
         "WHERE label LIKE '%Statement of assets%' "
+        "   OR doc_type = ? "
         "   OR doc_type = 'Account Statement' "
         "   OR doc_type = 'Maturity notice' "
         f"   OR LOWER(doc_type) IN ({advice_slots})",
-        advice_types,
+        (SUPPLIED_STMT_OF_ASSETS_DOC_TYPE, *advice_types),
     )
     work = cur.fetchall()
     if not work:
@@ -2147,10 +2270,12 @@ def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
 # Main
 # ============================================================
 
-def _rederive_documents_if_parsers_moved(
-        conn: sqlite3.Connection, dumps: list[Path], parse_cache: dict) -> None:
-    """Re-derive the document-backed slice when the PARSERS have changed
-    but no new dump has arrived to carry the change.
+def _derive_documents_without_a_new_dump(
+        conn: sqlite3.Connection, dumps: list[Path], parse_cache: dict,
+        *, supplied: int = 0) -> None:
+    """Derive the document-backed slice when no new dump has arrived to
+    carry the work — because the PARSERS have changed, or because a
+    supplied document was indexed this run.
 
     The archive walk lives inside the per-dump load, because a dump is
     what indexes its own PDFs. What the walk DERIVES, though, is the
@@ -2162,19 +2287,27 @@ def _rederive_documents_if_parsers_moved(
     then the same bronze produced different silver depending on when it
     was loaded.
 
+    A supplied document reaches the table the same way and needs the same
+    push: it is indexed before the dump loop, and on a night when every
+    dump is already loaded nothing downstream would read it.
+
     Runs against the newest dump that has an archive directory. Which
     dump is immaterial to what is derived — the file paths come from the
     `documents` table, which spans every dump — and the newest is the
     right stamp for rows written now.
     """
-    if not silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
-                                   _document_generation()):
+    stale = silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
+                                    _document_generation())
+    if not stale and not supplied:
         return
     newest = next((d for d in reversed(dumps) if (d / "documents").is_dir()), None)
     if newest is None:
         return
-    log.info("the document parsers have changed and no new dump carries the "
-             "change; re-deriving the archive against %s", newest.name)
+    log.info("%s and no new dump carries the change; deriving the archive "
+             "against %s",
+             "the document parsers have changed" if stale
+             else f"{supplied} supplied document(s) were indexed",
+             newest.name)
     try:
         conn.execute("BEGIN")
         pos, cash, mort, txn = _load_historical_from_pdfs(
@@ -2207,6 +2340,19 @@ def main(argv: list[str]) -> int:
     log.info("found %d bronze dump dir(s) under %s",
              len(dumps), args.bronze_dir)
 
+    # Before the dump loop, so the archive walk inside it already sees the
+    # supplied rows — which is what makes a `--force` rebuild pick them up
+    # with no special handling. Its own transaction: an index of files on
+    # disk should survive a dump that fails to load.
+    try:
+        conn.execute("BEGIN")
+        n_supplied = _load_supplied_documents(conn, args.supplied_documents_dir)
+        conn.execute("COMMIT")
+    except Exception:  # noqa: BLE001 — log + rollback, as the dump loop does
+        conn.execute("ROLLBACK")
+        log.exception("indexing the supplied documents failed")
+        n_supplied = 0
+
     n_loaded = n_skipped = 0
     # Shared across dumps: parse each archived document once, replay the
     # cached rows for the later dumps that re-list it.
@@ -2225,7 +2371,8 @@ def main(argv: list[str]) -> int:
             conn.execute("ROLLBACK")
             log.exception("load failed for %s; skipped", dump_dir.name)
     if not n_loaded:
-        _rederive_documents_if_parsers_moved(conn, dumps, parse_cache)
+        _derive_documents_without_a_new_dump(conn, dumps, parse_cache,
+                                             supplied=n_supplied)
     conn.close()
     log.info("done: %d dumps loaded, %d already-loaded skipped",
              n_loaded, n_skipped)
