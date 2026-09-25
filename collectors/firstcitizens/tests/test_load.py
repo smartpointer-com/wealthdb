@@ -118,6 +118,27 @@ def test_history_rows_skip_a_memo_posted_item():
     assert [r["fitid"] for r in rows] == ["H1"]
 
 
+def test_a_movement_back_under_a_new_id_is_stored_once(tmp_path):
+    """A movement in the open statement cycle can return under a fresh
+    transactionId on every run; the host transaction number says it is
+    the same one, and the first id keeps it."""
+    conn = _load(tmp_path)
+    def moved(tid):
+        row = _tx(tid, "5/5/2098", "500.00", True, "1000.00", "Transfer To 0000")
+        row["transactionType"] = "History"
+        row["hostTranNumber"] = "DDA000000000000000000000000000001"
+        return row
+    other = _tx("T9", "5/5/2098", "500.00", True, "500.00", "Transfer To 0000")
+    other["hostTranNumber"] = "DDA000000000000000000000000000002"
+    for tid in ("T1", "T2", "T3"):
+        for tx in load.history_rows(ACCT_ID, [moved(tid)]):
+            load._insert_transaction(conn, ACCT_ID, tx)
+    for tx in load.history_rows(ACCT_ID, [other]):
+        load._insert_transaction(conn, ACCT_ID, tx)
+    ids = sorted(r[0] for r in conn.execute("SELECT fitid FROM transactions"))
+    assert ids == ["T1", "T9"]
+
+
 # ============================================================
 # Roster projection
 # ============================================================

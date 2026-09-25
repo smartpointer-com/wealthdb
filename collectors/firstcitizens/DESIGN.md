@@ -216,6 +216,11 @@ skipped 2FA entirely. So:
   `transactionId`, so silver keyed on that id would hold both copies for
   good. Only the posted history is the ledger; a memo-posted item joins
   it on the run after it clears.
+- **The `transactionId` is not always stable.** A movement in the open
+  statement cycle can come back under a fresh id on every run. The core
+  banking system's `hostTranNumber` does not move, so a row whose host
+  number, posting date and amount match a stored row under another id is
+  that movement again, and the id first seen keeps it.
 - Statements are still downloaded as **documents** (PDFs belong in
   bronze), but they are **not** a transaction source here.
 

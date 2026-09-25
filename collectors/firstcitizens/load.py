@@ -4,7 +4,9 @@
 Parses each bronze run dir (see download.py for the layout) into the silver
 schema (migrations/): the account roster, the transaction ledger, and the
 statement inventory. Idempotent — an already-loaded dump is skipped, and
-transactions INSERT OR IGNORE on their stable id, so re-running converges.
+transactions INSERT OR IGNORE on their id — and a movement that comes back
+under a new id is recognised by the bank's host transaction number — so
+re-running converges.
 
 Unlike chase, there is **no export join and no statement-PDF backfill**. The
 `accountHistory` JSON (`history/<acct>.json`) is the authoritative ledger:
@@ -265,7 +267,31 @@ def _insert_account(conn, snapshot_at: int, acct: dict) -> None:
          payload))
 
 
+def _held_under_another_id(conn, account_external_id: str, tx: dict) -> bool:
+    """Whether silver already holds this movement under a different
+    `transactionId`.
+
+    The id is not as stable as it looks: a movement the account has not
+    yet closed a statement cycle on can come back under a fresh
+    `transactionId` on every run, which INSERT OR IGNORE on the id then
+    stores once per run. The core banking system's own `hostTranNumber`
+    stays put, so a row carrying one is the same movement as a stored row
+    with the same number, posting date and amount, and the id first seen
+    keeps it. A row without the number is keyed on its id alone."""
+    host = str(tx["payload"].get("hostTranNumber") or "").strip()
+    if not host:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM transactions WHERE account_external_id = ?"
+        " AND posted_at = ? AND amount = ? AND fitid <> ?"
+        " AND json_extract(payload, '$.hostTranNumber') = ? LIMIT 1",
+        (account_external_id, tx["posted_at"], tx["amount"], tx["fitid"],
+         host)).fetchone() is not None
+
+
 def _insert_transaction(conn, account_external_id: str, tx: dict) -> None:
+    if _held_under_another_id(conn, account_external_id, tx):
+        return
     conn.execute(
         "INSERT OR IGNORE INTO transactions (fitid, posted_at, "
         "account_external_id, amount, kind, description, check_number, "
