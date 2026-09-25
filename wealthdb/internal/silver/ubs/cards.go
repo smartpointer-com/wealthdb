@@ -341,30 +341,8 @@ func (r *webReader) cardRange(ctx context.Context) (int64, int64, error) {
 	if err != nil || !ok {
 		return -1, -1, err
 	}
-	var (
-		txMin, txMax   sql.NullInt64
-		invMin, invMax sql.NullInt64
-	)
-	if err := r.db.QueryRowContext(ctx,
+	return r.span(ctx, "cardRange", []string{
 		`SELECT MIN(value_date), MAX(value_date) FROM card_transactions`,
-	).Scan(&txMin, &txMax); err != nil {
-		return -1, -1, fmt.Errorf("cardRange transactions: %w", err)
-	}
-	if err := r.db.QueryRowContext(ctx,
 		`SELECT MIN(period_end), MAX(period_end) FROM card_invoices`,
-	).Scan(&invMin, &invMax); err != nil {
-		return -1, -1, fmt.Errorf("cardRange invoices: %w", err)
-	}
-	lo, hi := int64(-1), int64(-1)
-	for _, n := range []sql.NullInt64{txMin, invMin} {
-		if n.Valid && (lo < 0 || n.Int64 < lo) {
-			lo = n.Int64
-		}
-	}
-	for _, n := range []sql.NullInt64{txMax, invMax} {
-		if n.Valid && n.Int64 > hi {
-			hi = n.Int64
-		}
-	}
-	return lo, hi, nil
+	})
 }

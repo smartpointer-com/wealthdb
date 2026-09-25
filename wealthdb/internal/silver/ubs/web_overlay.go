@@ -2,7 +2,6 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -130,33 +129,22 @@ type webTxTextKey struct {
 // transfer's two legs share the reference and are two bookings.
 func (r *webReader) buildSeamBankRefs(ctx context.Context, psn *psnReader) (map[webTxTextKey]bool, error) {
 	out := map[webTxTextKey]bool{}
-	if psn == nil || psn.db == nil {
-		return out, nil
-	}
-	rows, err := psn.db.QueryContext(ctx, `
-SELECT account_external_id, payload FROM events WHERE kind = 'cash_movement'`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs-psn buildSeamBankRefs: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var acct, payload string
-		if err := rows.Scan(&acct, &payload); err != nil {
-			return nil, fmt.Errorf("ubs-psn buildSeamBankRefs scan: %w", err)
-		}
+	err := psn.eachCashMovement(ctx, "ubs-psn buildSeamBankRefs", func(row psnCashRow) error {
 		var m cashMovementPayload
-		if err := json.Unmarshal([]byte(payload), &m); err != nil {
-			continue
+		if err := json.Unmarshal([]byte(row.payload), &m); err != nil || m.BankRef == "" {
+			return nil
 		}
-		if m.BankRef == "" {
-			continue
-		}
+		acct := row.account
 		if m.Account != "" {
 			acct = m.Account
 		}
 		out[webTxTextKey{account: acct, txnNo: m.BankRef}] = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // transactionTextByKey returns the narrative columns every web
@@ -174,13 +162,6 @@ func (r *webReader) transactionTextByKey(ctx context.Context) (map[webTxTextKey]
 	if r == nil {
 		return nil, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT transaction_external_id, account_external_id, counterparty, description_kind, payload
-  FROM transactions`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs-web transactionTextByKey: %w", err)
-	}
-	defer rows.Close()
 	// The key is the BANK's number, so the several rows a collector
 	// suffix splits one number into all answer to it: a cross-border
 	// payment and the correspondent's charge, a deposit product's whole
@@ -191,25 +172,22 @@ SELECT transaction_external_id, account_external_id, counterparty, description_k
 	// order is a fold that changes under a silver rewrite.
 	out := map[webTxTextKey]webTxText{}
 	won := map[webTxTextKey]string{}
-	for rows.Next() {
-		var (
-			txID, acct, payload   string
-			counterparty, kindStr sql.NullString
-		)
-		if err := rows.Scan(&txID, &acct, &counterparty, &kindStr, &payload); err != nil {
-			return nil, fmt.Errorf("ubs-web transactionTextByKey scan: %w", err)
-		}
-		key := webTxTextKey{account: acct, txnNo: webTxNumber(txID)}
+	err := r.eachWebTx(ctx, "ubs-web transactionTextByKey", "", nil, func(row webTxRow) error {
+		key := webTxTextKey{account: row.account, txnNo: webTxNumber(row.txID)}
 		if held, taken := won[key]; taken {
-			if held == key.txnNo || (txID != key.txnNo && txID > held) {
-				continue
+			if held == key.txnNo || (row.txID != key.txnNo && row.txID > held) {
+				return nil
 			}
 		}
-		p, pdfBackfill := decodeWebTxEra(payload)
-		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
-		out[key], won[key] = text, txID
+		p, pdfBackfill := decodeWebTxEra(row.payload)
+		text, _, _ := projectWebTxText(row.counterparty.String, row.descKind.String, p, pdfBackfill)
+		out[key], won[key] = text, row.txID
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // --- the era fold ---------------------------------------------------------
@@ -348,7 +326,7 @@ type webTxOutcome struct {
 // contents, never on which slice of time a load happens to cover. The
 // per-relationship hard cut IS applied, because a row the cut suppresses is
 // not in the ledger and must not consume a match.
-func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cutoff map[string]int64, accountToRel map[string]string) (*eraFold, error) {
+func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut) (*eraFold, error) {
 	out := &eraFold{
 		drop: map[string]bool{},
 		web:  map[string]webTxText{},
@@ -364,55 +342,34 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cutoff map
 	}
 	statements := map[bookingKey][]statementRow{}
 	exports := map[bookingKey][]string{}
-
-	rows, err := r.db.QueryContext(ctx, `
-SELECT transaction_external_id, account_external_id, value_date,
-       currency_iso, amount_debit, amount_credit, counterparty,
-       description_kind, payload
-  FROM transactions`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs-web buildEraFold: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			txID, acct, ccy, payload string
-			valueDate                int64
-			debit, credit            sql.NullFloat64
-			counterparty, kindStr    sql.NullString
-		)
-		if err := rows.Scan(&txID, &acct, &valueDate, &ccy, &debit, &credit,
-			&counterparty, &kindStr, &payload); err != nil {
-			return nil, fmt.Errorf("ubs-web buildEraFold scan: %w", err)
+	err := r.eachWebTx(ctx, "ubs-web buildEraFold", "", nil, func(row webTxRow) error {
+		if cut.excludes(row.account, row.valueDate) {
+			return nil
 		}
-		// Emitted-universe filter: mirror the transaction loop's hard cut
-		// at the per-relationship PSN cutover.
-		if rel, ok := accountToRel[acct]; ok {
-			if cut := cutoff[rel]; cut > 0 && valueDate >= cut {
-				continue
-			}
-		}
-		_, _, net := webProjectedNet(kindStr.String, isStatementEraID(txID), debit, credit)
+		// Classified by the same hint the transaction pass uses, so the
+		// key carries the amount the row is emitted with.
+		hint := webKindHint(row.descKind, row.counterparty)
+		_, _, net := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
 		amount, ok := bookingCents(net)
 		if !ok {
-			continue
+			return nil
 		}
 		k := bookingKey{
-			account:  acct,
-			day:      utcDay(valueDate),
+			account:  row.account,
+			day:      utcDay(row.valueDate),
 			amount:   amount,
-			currency: bookingCurrency(ccy),
+			currency: bookingCurrency(row.currency),
 		}
-		emitted := txID + "@" + acct
-		if !isStatementEraID(txID) {
-			exports[k] = append(exports[k], emitted)
-			continue
+		if !isStatementEraID(row.txID) {
+			exports[k] = append(exports[k], row.emittedID())
+			return nil
 		}
-		p, pdfBackfill := decodeWebTxEra(payload)
-		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
-		statements[k] = append(statements[k], statementRow{key: emitted, text: text})
-	}
-	if err := rows.Err(); err != nil {
+		p, pdfBackfill := decodeWebTxEra(row.payload)
+		text, _, _ := projectWebTxText(row.counterparty.String, row.descKind.String, p, pdfBackfill)
+		statements[k] = append(statements[k], statementRow{key: row.emittedID(), text: text})
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	if len(statements) == 0 {
@@ -420,54 +377,36 @@ SELECT transaction_external_id, account_external_id, value_date,
 	}
 
 	feed := map[bookingKey][]string{}
-	if psn != nil {
-		prows, err := psn.db.QueryContext(ctx, `
-SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
-  FROM events
- WHERE kind = 'cash_movement'`)
+	err = psn.eachCashMovement(ctx, "ubs-psn buildEraFold", func(row psnCashRow) error {
+		// The feed row is projected by the very builder the PSN
+		// transaction stream emits from, so the account, currency and
+		// signed amount the key carries are the ones gold would hold —
+		// MT940's positive-figure-plus-direction convention resolved
+		// exactly once, in the one place that owns it.
+		var ccy *string
+		if row.currency.Valid {
+			c := row.currency.String
+			ccy = &c
+		}
+		tx, err := buildTransaction(row.eventID, row.at, row.account, "cash_movement", ccy, row.payload, nil)
 		if err != nil {
-			return nil, fmt.Errorf("ubs-psn buildEraFold: %w", err)
+			return nil
 		}
-		defer prows.Close()
-		for prows.Next() {
-			var (
-				eventID, acct string
-				ccy           sql.NullString
-				ts            int64
-				payload       string
-			)
-			if err := prows.Scan(&eventID, &ts, &acct, &ccy, &payload); err != nil {
-				return nil, fmt.Errorf("ubs-psn buildEraFold scan: %w", err)
-			}
-			// The feed row is projected by the very builder the PSN
-			// transaction stream emits from, so the account, currency and
-			// signed amount the key carries are the ones gold would hold —
-			// MT940's positive-figure-plus-direction convention resolved
-			// exactly once, in the one place that owns it.
-			var ccyPtr *string
-			if ccy.Valid {
-				c := ccy.String
-				ccyPtr = &c
-			}
-			tx, err := buildTransaction(eventID, ts, acct, "cash_movement", ccyPtr, payload, nil)
-			if err != nil {
-				continue
-			}
-			amount, ok := bookingCents(tx.NetAmount)
-			if !ok {
-				continue
-			}
-			k := bookingKey{
-				account:  tx.AccountExternalID,
-				day:      utcDay(tx.OccurredAt),
-				amount:   amount,
-				currency: bookingCurrency(tx.Currency),
-			}
-			feed[k] = append(feed[k], eventID)
+		amount, ok := bookingCents(tx.NetAmount)
+		if !ok {
+			return nil
 		}
-		if err := prows.Err(); err != nil {
-			return nil, err
+		k := bookingKey{
+			account:  tx.AccountExternalID,
+			day:      utcDay(tx.OccurredAt),
+			amount:   amount,
+			currency: bookingCurrency(tx.Currency),
 		}
+		feed[k] = append(feed[k], row.eventID)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	for k, ss := range statements {

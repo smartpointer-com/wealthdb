@@ -101,6 +101,28 @@ func TestNormalizeValor(t *testing.T) {
 	}
 }
 
+// A valor the index holds resolves to its instrument; a well-formed one it
+// does not hold becomes the hint a config link closes; anything else says
+// nothing.
+func TestResolveValor(t *testing.T) {
+	index := map[string]string{"1234567": "XS0000000001"}
+	for _, tc := range []struct{ in, wantID, wantHint string }{
+		{"0001234567", "XS0000000001", ""},
+		{"7654321", "", "7654321"},
+		{"12A4567", "", ""},
+		{"", "", ""},
+	} {
+		id, hint := resolveValor(index, tc.in)
+		got := ""
+		if id != nil {
+			got = *id
+		}
+		if got != tc.wantID || hint != tc.wantHint {
+			t.Errorf("resolveValor(%q) = (%q, %q), want (%q, %q)", tc.in, got, hint, tc.wantID, tc.wantHint)
+		}
+	}
+}
+
 // A row whose instrument cannot be identified can still say what KIND
 // of thing it traded, and the statement's booking type is where UBS
 // says it. Both empty is the honest answer where nothing does.

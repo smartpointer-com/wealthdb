@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,23 +69,15 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	}
 	// Historical (PDF) snapshots extend OldestSnapshotAt back —
 	// PDFs cover dates that pre-date the first live web dump.
-	ok, err := r.hasHistoricalTables(ctx)
+	histLo, histHi, err := r.historicalRange(ctx)
 	if err != nil {
 		return canonical.Status{}, err
 	}
-	if ok {
-		histLo, histHi, err := r.historicalRange(ctx)
-		if err != nil {
-			return canonical.Status{}, err
-		}
-		if histLo >= 0 {
-			if out.OldestSnapshotAt == -1 || histLo < out.OldestSnapshotAt {
-				out.OldestSnapshotAt = histLo
-			}
-		}
-		if histHi >= 0 && histHi > out.LatestSnapshotAt {
-			out.LatestSnapshotAt = histHi
-		}
+	if histLo >= 0 && (out.OldestSnapshotAt == -1 || histLo < out.OldestSnapshotAt) {
+		out.OldestSnapshotAt = histLo
+	}
+	if histHi > out.LatestSnapshotAt {
+		out.LatestSnapshotAt = histHi
 	}
 	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
 	return out, nil
@@ -109,84 +102,53 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 // advances. This means re-running with no new dump_run is a
 // no-op even when historical data is present.
 func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	var (
-		snapMin, snapMax sql.NullInt64
-		txMin, txMax     sql.NullInt64
-	)
-	if err := r.db.QueryRowContext(ctx, `
-        SELECT MIN(snapshot_at), MAX(snapshot_at)
-          FROM dump_runs WHERE snapshot_at > ?`, since).Scan(&snapMin, &snapMax); err != nil {
-		return canonical.Window{}, fmt.Errorf("ubs-web ChangeWindow snapshots: %w", err)
+	lo, hi, err := r.span(ctx, "ubs-web ChangeWindow", []string{
+		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?`,
+		`SELECT MIN(value_date), MAX(value_date) FROM transactions WHERE value_date > ?`,
+	}, since)
+	if err != nil || lo < 0 {
+		return canonical.Window{NewChangeNumber: since}, err
 	}
-	if err := r.db.QueryRowContext(ctx, `
-        SELECT MIN(value_date), MAX(value_date)
-          FROM transactions WHERE value_date > ?`, since).Scan(&txMin, &txMax); err != nil {
-		return canonical.Window{}, fmt.Errorf("ubs-web ChangeWindow transactions: %w", err)
-	}
-	w := canonical.Window{NewChangeNumber: since}
-	merge := func(n sql.NullInt64) {
-		if !n.Valid {
-			return
-		}
-		w.HasChanges = true
-		if w.NewChangeNumber < n.Int64 {
-			w.NewChangeNumber = n.Int64
-		}
-	}
-	mins, maxs := []sql.NullInt64{snapMin, txMin}, []sql.NullInt64{snapMax, txMax}
-	startSet := false
-	for _, m := range mins {
-		if m.Valid && (!startSet || m.Int64 < w.Start) {
-			w.Start = m.Int64
-			startSet = true
-		}
-	}
-	for _, m := range maxs {
-		if m.Valid && m.Int64 > w.End {
-			w.End = m.Int64
-		}
-	}
-	merge(snapMax)
-	merge(txMax)
-
-	if w.HasChanges {
-		ok, err := r.hasHistoricalTables(ctx)
+	w := canonical.Window{HasChanges: true, Start: lo, End: hi, NewChangeNumber: max(since, hi)}
+	// Cards emit at their own dates — a billing period ends on a date no
+	// dump run need share — so the window has to reach them or gold's
+	// delete-then-reinsert would leave duplicates behind. The managed
+	// portfolios' trades are the same case, reaching years back past the
+	// oldest live dump.
+	for _, extra := range []func(context.Context) (int64, int64, error){
+		r.historicalRange, r.cardRange, r.portfolioTxnRange,
+	} {
+		lo, hi, err := extra(ctx)
 		if err != nil {
 			return canonical.Window{}, err
 		}
-		if ok {
-			histLo, histHi, err := r.historicalRange(ctx)
-			if err != nil {
-				return canonical.Window{}, err
-			}
-			if histLo >= 0 && histLo < w.Start {
-				w.Start = histLo
-			}
-			if histHi > w.End {
-				w.End = histHi
-			}
+		if lo >= 0 && lo < w.Start {
+			w.Start = lo
 		}
-		// Cards emit at their own dates — a billing period ends on a
-		// date no dump run need share — so the window has to reach them
-		// or gold's delete-then-reinsert would leave duplicates behind.
-		// The managed portfolios' trades are the same case, reaching
-		// years back past the oldest live dump.
-		for _, span := range []func(context.Context) (int64, int64, error){
-			r.cardRange, r.portfolioTxnRange,
-		} {
-			lo, hi, err := span(ctx)
-			if err != nil {
-				return canonical.Window{}, err
-			}
-			if lo >= 0 && lo < w.Start {
-				w.Start = lo
-			}
-			if hi > w.End {
-				w.End = hi
-			}
+		if hi > w.End {
+			w.End = hi
 		}
 	}
 	return w, nil
+}
+
+// span runs MIN/MAX queries, each with the same args, and returns the
+// widest range they report, or (-1, -1) when every one is empty.
+func (r *webReader) span(ctx context.Context, what string, queries []string, args ...any) (lo, hi int64, err error) {
+	lo, hi = -1, -1
+	for _, q := range queries {
+		var a, b sql.NullInt64
+		if err := r.db.QueryRowContext(ctx, q, args...).Scan(&a, &b); err != nil {
+			return -1, -1, fmt.Errorf("%s: %w", what, err)
+		}
+		if a.Valid && (lo < 0 || a.Int64 < lo) {
+			lo = a.Int64
+		}
+		if b.Valid && b.Int64 > hi {
+			hi = b.Int64
+		}
+	}
+	return lo, hi, nil
 }
 
 // snapshotsForOverlap emits dimensions (portfolios, accounts,
@@ -387,32 +349,91 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), webTxOutcome{}, nil
 	}
-	cutoff, err := buildPSNStartByWebRel(ctx, psn, rels)
+	pass, err := r.newWebTxPass(ctx, psn, rels)
 	if err != nil {
 		return nil, webTxOutcome{}, err
 	}
-	accountToRel, err := r.buildAccountToRelMap(ctx)
+	out := canonical.TransactionBatch{}
+	// Per (cash account, currency, settlement day), how many securities
+	// settlements this pass EMITS. The portfolio pass folds its own
+	// copy of a trade against it, and only an emitted row may be
+	// counted: a booking this pass dropped is one gold will not hold,
+	// and folding against it would lose the trade from both rails.
+	settled := map[settledDayKey]int{}
+	summaries, folded := 0, 0
+	err = r.eachWebTx(ctx, "ubs-web Transactions", "WHERE value_date BETWEEN ? AND ?", []any{w.Start, w.End}, func(row webTxRow) error {
+		switch {
+		case pass.cut.excludes(row.account, row.valueDate):
+			return nil
+		case pass.foldedAway(row):
+			folded++
+			return nil
+		}
+		tx, ok := pass.project(row)
+		if !ok {
+			summaries++
+			return nil
+		}
+		out.Transactions = append(out.Transactions, tx)
+		if tx.Kind == canonical.TxKindBuy || tx.Kind == canonical.TxKindSell {
+			settled[newSettledDayKey(row.account, row.currency, row.valueDate)]++
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, webTxOutcome{}, err
 	}
-	ownIBANs, err := r.buildOwnIBANSet(ctx)
-	if err != nil {
-		return nil, webTxOutcome{}, err
+	if summaries > 0 {
+		log.Printf("ubs adapter: dropped %d period-close row(s) — a zero-amount summary or service-price line, not a booking", summaries)
 	}
-	// The valor index, built once per read: a statement-era trade names
-	// its instrument in free text and carries no id, and this is what
-	// turns the valor beside that text into the instrument gold holds.
-	valorToISIN, err := buildValorIndex(ctx, psn, r)
-	if err != nil {
-		return nil, webTxOutcome{}, err
+	if folded > 0 {
+		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
 	}
-	mt940Start, err := r.mt940FeedStart(ctx)
-	if err != nil {
-		return nil, webTxOutcome{}, err
+	return silver.NewTransactionStream(out), webTxOutcome{
+		hints:   psnHints{veto: pass.psnVeto, carry: pass.fold.psn},
+		settled: settled,
+	}, nil
+}
+
+// webTxPass is what the web cash pass resolves once per read, before it
+// walks the rows: the cut, the indexes a row is resolved against, and
+// the folds and veto that decide which rows are emitted and how.
+type webTxPass struct {
+	cut      psnCut
+	ownIBANs map[string]bool
+	// valorToISIN turns the valor beside a statement-era trade's free
+	// text into the instrument gold holds; such a trade carries no id.
+	valorToISIN      map[string]string
+	mt940Start       int64
+	mortgageAccounts map[string]string
+	fold             *eraFold
+	seam             map[webTxTextKey]bool
+	offsetVeto       map[string]bool
+	psnVeto          map[string]bool
+}
+
+func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []silver.RelationshipPair) (*webTxPass, error) {
+	var (
+		p   webTxPass
+		err error
+	)
+	if p.cut.startByRel, err = buildPSNStartByWebRel(ctx, psn, rels); err != nil {
+		return nil, err
 	}
-	mortgageAccounts, err := r.buildMortgageAccountIndex(ctx)
-	if err != nil {
-		return nil, webTxOutcome{}, err
+	if p.cut.relOfAccount, err = r.buildAccountToRelMap(ctx); err != nil {
+		return nil, err
+	}
+	if p.ownIBANs, err = r.buildOwnIBANSet(ctx); err != nil {
+		return nil, err
+	}
+	if p.valorToISIN, err = buildValorIndex(ctx, psn, r); err != nil {
+		return nil, err
+	}
+	if p.mt940Start, err = r.mt940FeedStart(ctx); err != nil {
+		return nil, err
+	}
+	if p.mortgageAccounts, err = r.buildMortgageAccountIndex(ctx); err != nil {
+		return nil, err
 	}
 	// Both folds run BEFORE the offset veto, and their verdicts reach it
 	// together: a web row either fold suppresses is not in the ledger, so
@@ -422,301 +443,250 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	// counterpart needed, demoting one leg of a pair while the other keeps
 	// its flow kind — the one-sided phantom flow the veto exists to
 	// prevent.
-	fold, err := r.buildEraFold(ctx, psn, cutoff, accountToRel)
-	if err != nil {
-		return nil, webTxOutcome{}, err
+	if p.fold, err = r.buildEraFold(ctx, psn, p.cut); err != nil {
+		return nil, err
 	}
-	seam, err := r.buildSeamBankRefs(ctx, psn)
-	if err != nil {
-		return nil, webTxOutcome{}, err
+	if p.seam, err = r.buildSeamBankRefs(ctx, psn); err != nil {
+		return nil, err
 	}
-	suppressed := make(map[string]bool, len(fold.drop)+len(seam))
-	for k := range fold.drop {
+	suppressed := make(map[string]bool, len(p.fold.drop)+len(p.seam))
+	for k := range p.fold.drop {
 		suppressed[k] = true
 	}
-	for k := range seam {
+	for k := range p.seam {
 		suppressed[k.txnNo+"@"+k.account] = true
 	}
-	offsetVeto, psnVeto, err := r.buildSameDayOffsetVeto(ctx, psn, cutoff, accountToRel, suppressed)
-	if err != nil {
-		return nil, webTxOutcome{}, err
+	if p.offsetVeto, p.psnVeto, err = r.buildSameDayOffsetVeto(ctx, psn, p.cut, suppressed); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// foldedAway reports whether another feed's record of the row's booking
+// is the one gold keeps. The era fold (buildEraFold) drops a statement
+// reconstruction of a booking the export or the MT940 feed also records;
+// the seam (buildSeamBankRefs) drops a web row the MT940 feed's first
+// statements reach back over, where the cut excludes neither copy. Both
+// are counted so the drop is visible on the load summary.
+func (p *webTxPass) foldedAway(row webTxRow) bool {
+	return p.fold.drop[row.emittedID()] ||
+		p.seam[webTxTextKey{account: row.account, txnNo: webTxNumber(row.txID)}]
+}
+
+// project turns one web row into the transaction gold holds, or reports
+// false for a statement's period summary, which is not a booking.
+func (p *webTxPass) project(row webTxRow) (canonical.TransactionChange, bool) {
+	hint := webKindHint(row.descKind, row.counterparty)
+	kind, net, netAmount := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
+	netPtr := net
+
+	// A statement's period summary is not a booking. The "Turnover
+	// total" line a statement prints before its closing balance carries
+	// no date, so the collector's parser attaches it to the booking that
+	// precedes it — at a period close the zero-amount service-price or
+	// interest line — and that row reaches silver with the totals as its
+	// only narrative and an amount of zero. The same line under a real
+	// fee or interest amount is a booking and is kept (bookingLines;
+	// docs/adapters/ubs.md §7). The CSV feed prints the same close as a
+	// zero-amount service-price row with no booking type.
+	//
+	// decodeWebTxEra reads an undecodable payload as a PDF backfill,
+	// which routes the row through pdfCashIsExternal (INTERNAL on the
+	// zero value) rather than letting it skip the gate and keep its
+	// deposit/withdrawal kind.
+	pl, pdfBackfill := decodeWebTxEra(row.payload)
+	if net.IsZero() && (pdfBackfill && isStatementSummary(pl) || !pdfBackfill && isServicePriceClose(hint)) {
+		return canonical.TransactionChange{}, false
+	}
+	statedMortgage := p.resolveCounterAccount(&pl)
+	returnsInternal := p.returnsInternal(row, kind, pl, pdfBackfill)
+
+	// The verdict is stamped here, before the sign is pinned: a
+	// payload that cannot carry it degrades to the older demotion,
+	// and the sign must then be read off the kind the row ENDS with.
+	rowPayload := withBankRef(withCounterAccount(
+		withResolvedMortgage(json.RawMessage(row.payload), statedMortgage, pl.CounterAccount),
+		pl.CounterAccount), webBankRef(row.txID))
+	counterCcy, counterAmt := counterLegFromNarrative(pl)
+	rowPayload = withCounterLeg(rowPayload, counterCcy, counterAmt)
+	if returnsInternal {
+		rowPayload, kind = markReturnsInternal(rowPayload, kind)
+	}
+	if !webReversal(row.descKind.String, isStatementEraID(row.txID), row.debit, row.credit) {
+		netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
 	}
 
-	const q = `
-SELECT transaction_external_id, value_date, account_external_id,
-       currency_iso, amount_debit, amount_credit, counterparty, description_kind, payload
-  FROM transactions
- WHERE value_date BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
+	// The narrative columns, the instrument id and the payer's message
+	// all fall out of one projection (projectWebTxText, which carries
+	// the per-column contract); the era text fold (merge.go) reads the
+	// same projection, so one booking's text is the same string
+	// whichever side of the seam it reaches gold from. The kind is
+	// already classified above and no text read here can move it.
+	text, instrumentID, message := projectWebTxText(row.counterparty.String, row.descKind.String, pl, pdfBackfill)
+	// The statement era's own road to the instrument. An id the export
+	// era stated in Description1 outranks a looked-up one, and nothing
+	// is added beside a resolved id — the instrument's own row answers
+	// the taxonomy.
+	var (
+		assetClass canonical.AssetClass
+		vehicle    canonical.Vehicle
+		instrHint  string
+	)
+	if instrumentID == nil {
+		instrumentID, instrHint = resolveValor(p.valorToISIN, pl.SecurityValor)
+		// An unidentified security is not an unknown ASSET CLASS: what
+		// a trade says it traded, where the booking type says it, draws
+		// it in its real class rather than as an untracked destination.
+		// Trades only — a cash movement whose narrative happens to
+		// carry one of these tokens traded no security.
+		if instrumentID == nil && (kind == canonical.TxKindBuy || kind == canonical.TxKindSell) {
+			assetClass, vehicle = unlinkedSecurityTaxonomy(
+				pl.BookingType, strings.Join(pl.Continuation, " ")+" "+text.description)
+		}
+	}
+	description := silver.StrPtrIfNonEmpty(text.description)
+	payee := silver.StrPtrIfNonEmpty(text.counterparty)
+	category := silver.StrPtrIfNonEmpty(text.providerCategory)
+	// This export row kept a booking whose statement copy the era fold
+	// dropped. Per column and only downward (richerText), the statement's
+	// reading fills what this row left empty or as a bare code; the
+	// amount, the value date, the kind and the id stay this row's.
+	if alt, ok := p.fold.web[row.emittedID()]; ok {
+		description = richerText(description, alt.description)
+		payee = richerText(payee, alt.counterparty)
+		category = richerText(category, alt.providerCategory)
+	}
+	return canonical.TransactionChange{
+		TransactionExternalID: row.emittedID(),
+		OccurredAt:            row.valueDate,
+		AccountExternalID:     row.account,
+		InstrumentExternalID:  instrumentID,
+		AssetClass:            assetClass,
+		Vehicle:               vehicle,
+		InstrumentHint:        instrHint,
+		Kind:                  kind,
+		Currency:              row.currency,
+		NetAmount:             netAmount,
+		Description:           description,
+		Memo:                  silver.StrPtrIfNonEmpty(message),
+		Counterparty:          payee,
+		// The bank's own booking type, verbatim (a `;Reversal` suffix
+		// included) — the closest thing a bank statement has to a
+		// provider category, and what the spending provider tier
+		// translates. The payer's message never enters it.
+		ProviderCategory: category,
+		Payload:          rowPayload,
+	}, true
+}
+
+// resolveCounterAccount fills the row's counter account from whichever
+// era stated it, and returns the mortgage stamp it replaced, if any.
+//
+// The statement parser fills the field; the export feed states the same
+// fact in free text (counterAccountFromNarrative), and deriving it here
+// lets one field answer for both eras, downstream and in the payload.
+//
+// A mortgage payment names its mortgage rather than an IBAN. The export
+// era states it in a field the composed description drops; the statement
+// era fills the counter account with the stamp's own text — the
+// mortgage's name, not the id silver holds it under. Either way the stamp
+// runs through the mortgage index and the id replaces the name. Only a
+// mortgage silver already holds resolves.
+func (p *webTxPass) resolveCounterAccount(pl *webTxPayload) (statedMortgage string) {
+	if pl.CounterAccount == "" {
+		pl.CounterAccount = counterAccountFromNarrative(*pl)
+	}
+	if k := mortgageRefFromNarrative(pl.CounterAccount); k != "" {
+		if id := p.mortgageAccounts[k]; id != "" {
+			statedMortgage, pl.CounterAccount = pl.CounterAccount, id
+		}
+	} else if pl.CounterAccount == "" {
+		if k := mortgageRefFromNarrative(pl.Description2); k != "" {
+			pl.CounterAccount = p.mortgageAccounts[k]
+		}
+	}
+	return statedMortgage
+}
+
+// returnsInternal classifies a deposit or withdrawal as INTERNAL (conduit
+// churn) rather than EXTERNAL (owner capital crossing the boundary).
+// A row is internal when:
+//
+//  1. the same-day offset veto (buildSameDayOffsetVeto) found its mirror
+//     on another own account, in either feed;
+//  2. its counter account is one the relationship owns, whatever the
+//     era — demote-only, so a KNOWN own counter can take a row out of
+//     the flow series but never put one in; or
+//  3. it is a PDF backfill that pdfCashIsExternal does not promote
+//     (default INTERNAL; its doc carries the conduit model).
+//
+// The verdict travels as its OWN flag rather than a rewritten kind.
+// "Is this owner capital crossing the boundary?" (returns) and "is this
+// a spending row?" (the spending population selects on kind) are two
+// questions: a card purchase is not owner capital, and it is spending.
+func (p *webTxPass) returnsInternal(row webTxRow, kind canonical.TxKind, pl webTxPayload, pdfBackfill bool) bool {
+	if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
+		return false
+	}
+	railEra := p.mt940Start > 0 && row.valueDate >= p.mt940Start
+	return p.offsetVeto[row.emittedID()] ||
+		p.ownIBANs[normalizeIBAN(pl.CounterAccount)] ||
+		pdfBackfill && !pdfCashIsExternal(pl, p.ownIBANs, kind == canonical.TxKindWithdrawal, railEra)
+}
+
+// webTxRow is one row of the web silver's transactions table, as every
+// pass over it reads the row.
+type webTxRow struct {
+	txID, account, currency, payload string
+	valueDate                        int64
+	debit, credit                    sql.NullFloat64
+	counterparty, descKind           sql.NullString
+}
+
+// emittedID is the id the row reaches gold under. Web silver keys a
+// transaction by (number, account), so each leg of an FX trade or other
+// multi-leg event is its own row; gold keys by the id alone, so the
+// account is folded in. The bank's "Transaction no." stays in the
+// payload for queries that reassemble a trade.
+func (row webTxRow) emittedID() string { return row.txID + "@" + row.account }
+
+// eachWebTx calls fn on each row of the web transactions table that
+// `where` (a WHERE clause over it, or "") selects.
+func (r *webReader) eachWebTx(ctx context.Context, what, where string, args []any, fn func(webTxRow) error) error {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT transaction_external_id, value_date, account_external_id, currency_iso,
+       amount_debit, amount_credit, counterparty, description_kind, payload
+  FROM transactions `+where, args...)
 	if err != nil {
-		return nil, webTxOutcome{}, fmt.Errorf("ubs-web Transactions: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	defer rows.Close()
-
-	out := canonical.TransactionBatch{}
-	// Per (cash account, currency, settlement day), how many securities
-	// settlements this pass EMITS. The portfolio pass folds its own
-	// copy of a trade against it, and only an emitted row may be
-	// counted: a booking this pass dropped is one gold will not hold,
-	// and folding against it would lose the trade from both rails.
-	settled := map[settledDayKey]int{}
-	summaries, folded := 0, 0
 	for rows.Next() {
-		var (
-			txID, accountID, ccy, payload string
-			valueDate                     int64
-			debit, credit                 sql.NullFloat64
-			counterparty, kindStr         sql.NullString
-		)
-		if err := rows.Scan(&txID, &valueDate, &accountID, &ccy, &debit, &credit, &counterparty, &kindStr, &payload); err != nil {
-			return nil, webTxOutcome{}, fmt.Errorf("ubs-web Transactions scan: %w", err)
+		var row webTxRow
+		if err := rows.Scan(&row.txID, &row.valueDate, &row.account, &row.currency,
+			&row.debit, &row.credit, &row.counterparty, &row.descKind, &row.payload); err != nil {
+			return fmt.Errorf("%s scan: %w", what, err)
 		}
-		// Hard cut at PSN_start per relationship.
-		if rel, ok := accountToRel[accountID]; ok {
-			if cut := cutoff[rel]; cut > 0 && valueDate >= cut {
-				continue
-			}
-		}
-		emittedKey := txID + "@" + accountID
-		// The era fold (buildEraFold): this statement reconstruction
-		// describes a booking the export or the MT940 feed also records, and
-		// the machine-readable record keeps it. Counted so the drop is
-		// visible on the load summary.
-		if fold.drop[emittedKey] {
-			folded++
-			continue
-		}
-		// The seam (buildSeamBankRefs): the MT940 feed's first
-		// statements reach back over the days before the cut, so a
-		// booking in that window is held by both feeds and excluded by
-		// neither window. The MT940 row keeps it, as it does on every
-		// day after the cut.
-		if seam[webTxTextKey{account: accountID, txnNo: webTxNumber(txID)}] {
-			folded++
-			continue
-		}
-
-		hint := webKindHint(kindStr, counterparty)
-		kind, net, netAmount := webProjectedNet(hint, isStatementEraID(txID), debit, credit)
-		netPtr := net
-
-		// A statement's period summary is not a booking. The "Turnover
-		// total" line a statement prints before its closing balance
-		// carries no date, so the collector's parser attaches it to the
-		// booking that precedes it — at a period close the zero-amount
-		// service-price or interest line — and that row reaches silver
-		// with the totals as its only narrative and an amount of zero.
-		// Dropped here and counted so the drop is visible. The same line
-		// under a real fee or interest amount is a booking and is kept;
-		// its narrative is composed without the line (bookingLines) and
-		// its counterparty is the bank, the booking being one of its own
-		// charges (projectWebTxText; docs/adapters/ubs.md §7).
-		// A payload that does not decode is treated as a PDF backfill
-		// whatever its fields say: that routes the row through
-		// pdfCashIsExternal, which on the zero value classifies it
-		// INTERNAL, rather than letting an undecodable row skip the
-		// gate and keep its deposit/withdrawal kind. The flag's other
-		// uses stay on the same side: the summary drop needs a summary
-		// line the zero payload does not carry, and the booking type
-		// travels whole instead of being split into memo + type.
-		// The CSV feed prints the same close as a zero-amount service-price
-		// row with no booking type; it is the same period marker, dropped
-		// and counted the same way.
-		p, pdfBackfill := decodeWebTxEra(payload)
-		if net.IsZero() && (pdfBackfill && isStatementSummary(p) || !pdfBackfill && isServicePriceClose(hint)) {
-			summaries++
-			continue
-		}
-		// Classify each deposit/withdrawal as EXTERNAL (boundary-crossing
-		// owner capital) or INTERNAL (conduit churn). Two layers:
-		//
-		//  1. The same-day offset veto (buildSameDayOffsetVeto) catches
-		//     any leg — either feed — whose mirror books on another own
-		//     account the same value day.
-		//  2. PDF-backfill rows additionally pass pdfCashIsExternal
-		//     (default INTERNAL; counter-IBAN + era-gated rail bookings —
-		//     its doc carries the conduit model and the engine-policy
-		//     interplay).
-		//
-		// The verdict is carried as its OWN flag, not by rewriting the
-		// kind. Demoting the row to TxKindOther conflates two questions
-		// a single column cannot answer at once: "is this owner capital
-		// crossing the boundary?" (returns) and "is this a spending
-		// row?" (the spending population selects on kind). A card
-		// purchase is not owner capital under any reading, and it is
-		// still spending — so the flag lets returns skip the row while
-		// it stays in the spending base.
-		// The counter account, from whichever era stated it. The
-		// statement parser fills the field; the export feed states the
-		// same fact in free text, and deriving it here is what lets one
-		// field answer for both eras — downstream, and in the payload
-		// gold keeps.
-		if p.CounterAccount == "" {
-			p.CounterAccount = counterAccountFromNarrative(p)
-		}
-		// A mortgage payment names its mortgage rather than an IBAN, and
-		// the export era states that name in a field the composed
-		// description drops. Resolving it here is the same bargain the
-		// IBAN above strikes: the adapter knows which of its feeds said
-		// what, and gold reads one field. Only a mortgage silver already
-		// holds resolves — a stamp for anything else finds nothing.
-		//
-		// The STATEMENT era needs the same resolution for the opposite
-		// reason. Its parser fills the field, but with the stamp's own
-		// text — the mortgage's name, not the id silver holds it under —
-		// so the field looked answered and joined to nothing. A stamp is
-		// therefore run through the index whether it arrived in the
-		// counter account or only in the narrative, and the id replaces
-		// the name in both.
-		statedMortgage := ""
-		if k := mortgageRefFromNarrative(p.CounterAccount); k != "" {
-			if id := mortgageAccounts[k]; id != "" {
-				statedMortgage, p.CounterAccount = p.CounterAccount, id
-			}
-		} else if p.CounterAccount == "" {
-			if k := mortgageRefFromNarrative(p.Description2); k != "" {
-				p.CounterAccount = mortgageAccounts[k]
-			}
-		}
-		returnsInternal := false
-		if kind == canonical.TxKindDeposit || kind == canonical.TxKindWithdrawal {
-			railEra := mt940Start > 0 && valueDate >= mt940Start
-			switch {
-			case offsetVeto[txID+"@"+accountID]:
-				returnsInternal = true
-			// A counter account the relationship OWNS, whatever the era.
-			// pdfCashIsExternal already applies this rule to the
-			// statement era (its rule 2) and is the whole reason the
-			// own-IBAN set is built; the export era never consulted it,
-			// so a wire between two of the holder's own accounts counted
-			// as owner capital leaving the bank. Demote-only, which is
-			// the direction that model insists on: a KNOWN own counter
-			// can only take a row out of the flow series, never put one
-			// in.
-			case ownIBANs[normalizeIBAN(p.CounterAccount)]:
-				returnsInternal = true
-			case pdfBackfill && !pdfCashIsExternal(p, ownIBANs, kind == canonical.TxKindWithdrawal, railEra):
-				returnsInternal = true
-			}
-		}
-
-		// The verdict is stamped here, before the sign is pinned: a
-		// payload that cannot carry it degrades to the older demotion,
-		// and the sign must then be read off the kind the row ENDS with.
-		rowPayload := withBankRef(withCounterAccount(
-			withResolvedMortgage(json.RawMessage(payload), statedMortgage, p.CounterAccount),
-			p.CounterAccount), webBankRef(txID))
-		counterCcy, counterAmt := counterLegFromNarrative(p)
-		rowPayload = withCounterLeg(rowPayload, counterCcy, counterAmt)
-		if returnsInternal {
-			rowPayload, kind = markReturnsInternal(rowPayload, kind)
-		}
-		if !webReversal(kindStr.String, isStatementEraID(txID), debit, credit) {
-			netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
-		}
-
-		// The three narrative columns, the instrument id and the
-		// payer's message all fall out of one projection
-		// (projectWebTxText, which carries the per-column contract):
-		// the ISIN goes on instrument_external_id so the gold-side
-		// instruments join works for dividend / coupon / fee rows tied
-		// to a security, and the message travels as the row's memo
-		// rather than as narrative. The era text fold (merge.go) reads
-		// the same projection, so one booking's text is the same string
-		// whichever side of the seam it reaches gold from. The kind is
-		// already classified from the raw column above and no text read
-		// here can move it.
-		text, instrumentID, message := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
-		// The statement era's own road to the instrument. The export era
-		// already resolved one from Description1's ISIN above, and keeps
-		// it: a stated identifier outranks a looked-up one. Nothing is
-		// added beside a resolved id — the instrument's own row answers
-		// the taxonomy, and a copy here would only go stale against it.
-		var (
-			assetClass canonical.AssetClass
-			vehicle    canonical.Vehicle
-			instrHint  string
-		)
-		if instrumentID == nil {
-			if valor := normalizeValor(p.SecurityValor); valor != "" {
-				if isin, ok := valorToISIN[valor]; ok {
-					id := isin
-					instrumentID = &id
-				} else {
-					// The valor is well-formed and names no instrument
-					// gold holds. Stated so a config link can close it.
-					instrHint = valor
-				}
-			}
-			// Whether or not a valor was there to try: what the row
-			// says it TRADED, where the booking type says it. An
-			// unidentified security is not an unknown ASSET CLASS, and
-			// the statement draws it in its real class rather than as
-			// an untracked destination. Trades only — a cash movement
-			// whose narrative happens to carry one of these tokens
-			// traded no security.
-			if instrumentID == nil && (kind == canonical.TxKindBuy || kind == canonical.TxKindSell) {
-				assetClass, vehicle = unlinkedSecurityTaxonomy(
-					p.BookingType, strings.Join(p.Continuation, " ")+" "+text.description)
-			}
-		}
-		description := silver.StrPtrIfNonEmpty(text.description)
-		payee := silver.StrPtrIfNonEmpty(text.counterparty)
-		category := silver.StrPtrIfNonEmpty(text.providerCategory)
-		// This export row kept a booking whose statement copy the era fold
-		// dropped. Per column and only downward (richerText), the statement's
-		// reading fills what this row left empty or as a bare code, so the
-		// fold loses nothing the printed record said. Nothing else moves:
-		// the amount, the value date, the kind and the id are this row's.
-		if alt, ok := fold.web[emittedKey]; ok {
-			description = richerText(description, alt.description)
-			payee = richerText(payee, alt.counterparty)
-			category = richerText(category, alt.providerCategory)
-		}
-
-		out.Transactions = append(out.Transactions, canonical.TransactionChange{
-			// Web silver's transactions PK is the compound
-			// (transaction_external_id, account_external_id) so
-			// that FX trades and other multi-leg events appear as
-			// separate rows per leg. Gold's transactions PK is
-			// (silver_source_id, transaction_external_id), so we
-			// synthesize a per-leg ID here. The natural
-			// "Transaction no." remains in the payload for
-			// downstream queries that want to reassemble the trade.
-			TransactionExternalID: emittedKey,
-			OccurredAt:            valueDate,
-			AccountExternalID:     accountID,
-			InstrumentExternalID:  instrumentID,
-			AssetClass:            assetClass,
-			Vehicle:               vehicle,
-			InstrumentHint:        instrHint,
-			Kind:                  kind,
-			Currency:              ccy,
-			NetAmount:             netAmount,
-			Description:           description,
-			Memo:                  silver.StrPtrIfNonEmpty(message),
-			Counterparty:          payee,
-			// The bank's own booking type, verbatim (a `;Reversal`
-			// suffix included) — the closest thing a bank statement has
-			// to a provider category, and what the spending provider
-			// tier translates. The payer's message never enters it.
-			ProviderCategory: category,
-			Payload:          rowPayload,
-		})
-		if kind == canonical.TxKindBuy || kind == canonical.TxKindSell {
-			settled[newSettledDayKey(accountID, ccy, valueDate)]++
+		if err := fn(row); err != nil {
+			return err
 		}
 	}
-	if summaries > 0 {
-		log.Printf("ubs adapter: dropped %d period-close row(s) — a zero-amount summary or service-price line, not a booking", summaries)
-	}
-	if folded > 0 {
-		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
-	}
-	return silver.NewTransactionStream(out), webTxOutcome{
-		hints:   psnHints{veto: psnVeto, carry: fold.psn},
-		settled: settled,
-	}, rows.Err()
+	return rows.Err()
+}
+
+// psnCut is the hard cut at each banking relationship's PSN start: a
+// web row on or after it is PSN's to carry. Every pass that reasons
+// about the emitted rows applies it, so none counts a row nothing emits.
+type psnCut struct {
+	startByRel   map[string]int64  // web relationship → PSN start (buildPSNStartByWebRel)
+	relOfAccount map[string]string // web account → web relationship
+}
+
+// excludes reports whether a web row on account at `at` falls on PSN's
+// side of the cut. A relationship with no PSN start cuts nothing.
+func (c psnCut) excludes(account string, at int64) bool {
+	cut := c.startByRel[c.relOfAccount[account]]
+	return cut > 0 && at >= cut
 }
 
 // counterAccountInNarrative finds the counter account the EXPORT feed states
@@ -1281,45 +1251,42 @@ type offsetLeg struct {
 // it. Every fold that drops a web row belongs in this set; one that is left
 // out silently consumes matches on behalf of a row nothing emits.
 //
-// Matching is 1:1 greedy and deterministic, in two global phases: first every
-// bank-linked twin (shared Transaction no. — UBS stamps both sides of an
-// inter-account transfer with one number; FX legs share it too but differ in
-// currency, so they never pair here), then loose same-day offsets among the
-// remaining legs. The twin phase is global so a twin-less leg that merely
-// sorts earlier can never steal another leg's bank-linked twin.
-func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cutoff map[string]int64, accountToRel map[string]string, suppressed map[string]bool) (webVeto, psnVeto map[string]bool, err error) {
-	type groupKey struct {
-		day int64
-		ccy string
-	}
-	groups := map[groupKey][]offsetLeg{}
-
-	rows, err := r.db.QueryContext(ctx, `
-SELECT transaction_external_id, value_date, account_external_id,
-       currency_iso, amount_debit, amount_credit, description_kind,
-       counterparty, payload
-  FROM transactions`)
+// Matching is 1:1 and deterministic: first the currency conversions
+// (vetoConversions), then, per value day and currency, every bank-linked
+// twin (a shared Transaction no. — UBS stamps both sides of an
+// inter-account transfer with one number) and the loose offsets among the
+// legs left (pairSameDayOffsets).
+func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cut psnCut, suppressed map[string]bool) (webVeto, psnVeto map[string]bool, err error) {
+	legs, err := r.webOffsetLegs(ctx, cut, suppressed)
 	if err != nil {
-		return nil, nil, fmt.Errorf("buildSameDayOffsetVeto (web): %w", err)
+		return nil, nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			txID, acct, ccy       string
-			valueDate             int64
-			debit, credit         sql.NullFloat64
-			kindStr, counterparty sql.NullString
-			payload               string
-		)
-		if err := rows.Scan(&txID, &valueDate, &acct, &ccy, &debit, &credit, &kindStr, &counterparty, &payload); err != nil {
-			return nil, nil, fmt.Errorf("buildSameDayOffsetVeto scan (web): %w", err)
+	psnLegs, err := psn.offsetLegs(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	legs = append(legs, psnLegs...)
+
+	webVeto, psnVeto = map[string]bool{}, map[string]bool{}
+	record := func(l offsetLeg) {
+		if l.psnLeg {
+			psnVeto[l.vetoKey] = true
+		} else {
+			webVeto[l.vetoKey] = true
 		}
-		// Emitted-universe filter: mirror the transaction loop's hard cut at
-		// the per-relationship PSN cutover.
-		if rel, ok := accountToRel[acct]; ok {
-			if cut := cutoff[rel]; cut > 0 && valueDate >= cut {
-				continue
-			}
+	}
+	consumed := vetoConversions(slices.Clone(legs), record)
+	pairSameDayOffsets(legs, consumed, record)
+	return webVeto, psnVeto, nil
+}
+
+// webOffsetLegs reads the web half of the offset veto's universe: every
+// deposit/withdrawal row the transaction pass emits.
+func (r *webReader) webOffsetLegs(ctx context.Context, cut psnCut, suppressed map[string]bool) ([]offsetLeg, error) {
+	var legs []offsetLeg
+	err := r.eachWebTx(ctx, "buildSameDayOffsetVeto (web)", "", nil, func(row webTxRow) error {
+		if cut.excludes(row.account, row.valueDate) {
+			return nil
 		}
 		// A web row either fold suppressed is likewise not in the ledger:
 		// its booking is represented by the row that kept it, and letting
@@ -1332,159 +1299,123 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// on the emitted id whole. A dump that leaves every member of a
 		// transaction-number group suffixed would otherwise suppress a
 		// row in the emit loop and leave it standing here.
-		if suppressed[txID+"@"+acct] || suppressed[webTxNumber(txID)+"@"+acct] {
-			continue
+		if suppressed[row.emittedID()] || suppressed[webTxNumber(row.txID)+"@"+row.account] {
+			return nil
 		}
 		// The amount the row will REACH GOLD with, not the raw column
-		// difference. The two web eras write the amount columns to
-		// different conventions — the export signs its Debit cell, the
-		// statement prints the figure as printed — and the only thing
-		// they state identically is WHICH column carries it. Differencing
-		// the raw columns therefore read every export-era withdrawal as a
-		// positive figure and filed it beside the deposits, where it
-		// could mirror nothing: no export leg could veto against a
-		// statement or a PSN one, which is most of what this probe exists
-		// to catch. `bookingKey` names the same rule for the era fold —
-		// take the adapter's own projection, because only the projection
-		// resolves the conventions — and this is that rule applied here.
-		hint := webKindHint(kindStr, counterparty)
-		kind, _, netAmount := webProjectedNet(hint, isStatementEraID(txID), debit, credit)
-		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
-			continue
+		// difference: the two web eras write the amount columns to
+		// different conventions, and only the adapter's own projection
+		// resolves them (the rule `bookingKey` names for the era fold).
+		// Differencing the raw columns read every export-era withdrawal
+		// as a positive figure, where it could mirror nothing.
+		hint := webKindHint(row.descKind, row.counterparty)
+		kind, _, netAmount := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
+		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal || netAmount == nil {
+			return nil
 		}
-		if netAmount == nil {
-			continue
-		}
-		amt := netAmount.InexactFloat64()
 		statedCcy, statedAmt := "", ""
-		if decoded, ok := decodeWebTxPayload(payload); ok {
+		if decoded, ok := decodeWebTxPayload(row.payload); ok {
 			statedCcy, statedAmt = counterLegFromNarrative(decoded)
 		}
-		k := groupKey{day: valueDate / 86400, ccy: ccy}
-		groups[k] = append(groups[k], offsetLeg{
-			vetoKey: txID + "@" + acct, txID: txID, acct: acct, amt: amt,
-			day: k.day, ccy: ccy, statedCcy: statedCcy, statedAmt: statedAmt,
+		legs = append(legs, offsetLeg{
+			vetoKey: row.emittedID(), txID: row.txID, acct: row.account,
+			amt: netAmount.InexactFloat64(), day: row.valueDate / 86400, ccy: row.currency,
+			statedCcy: statedCcy, statedAmt: statedAmt,
 		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
-	}
+		return nil
+	})
+	return legs, err
+}
 
-	if psn != nil {
-		prows, err := psn.db.QueryContext(ctx, `
-SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
-  FROM events
- WHERE kind = 'cash_movement'`)
-		if err != nil {
-			return nil, nil, fmt.Errorf("buildSameDayOffsetVeto (psn): %w", err)
+// offsetLegs reads the PSN half of the offset veto's universe: every
+// deposit/withdrawal cash movement.
+func (r *psnReader) offsetLegs(ctx context.Context) ([]offsetLeg, error) {
+	var legs []offsetLeg
+	err := r.eachCashMovement(ctx, "buildSameDayOffsetVeto (psn)", func(row psnCashRow) error {
+		var p cashMovementPayload
+		if err := json.Unmarshal([]byte(row.payload), &p); err != nil || p.Amount == nil {
+			return nil
 		}
-		defer prows.Close()
-		for prows.Next() {
-			var (
-				eventID, acct string
-				ccy           sql.NullString
-				ts            int64
-				payload       string
-			)
-			if err := prows.Scan(&eventID, &ts, &acct, &ccy, &payload); err != nil {
-				return nil, nil, fmt.Errorf("buildSameDayOffsetVeto scan (psn): %w", err)
-			}
-			var p cashMovementPayload
-			if err := json.Unmarshal([]byte(payload), &p); err != nil || p.Amount == nil {
-				continue
-			}
-			kind := cashMovementKind(p.Narrative, p.CreditDebit, p.TxnType)
-			if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
-				continue
-			}
-			amt, _ := p.Amount.Float64()
-			if p.CreditDebit == "D" && amt > 0 {
-				amt = -amt
-			}
-			if p.Account != "" {
-				acct = p.Account
-			}
-			c := ccy.String
-			if p.Funds != "" {
-				c = p.Funds
-			}
-			k := groupKey{day: ts / 86400, ccy: c}
-			groups[k] = append(groups[k], offsetLeg{
-				vetoKey: eventID, psnLeg: true, txID: eventID, acct: acct, amt: amt,
-				day: k.day, ccy: c,
-			})
+		kind := cashMovementKind(p.Narrative, p.CreditDebit, p.TxnType)
+		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
+			return nil
 		}
-		if err := prows.Err(); err != nil {
-			return nil, nil, err
+		amt, _ := p.Amount.Float64()
+		if p.CreditDebit == "D" && amt > 0 {
+			amt = -amt
 		}
-	}
+		acct, ccy := row.account, row.currency.String
+		if p.Account != "" {
+			acct = p.Account
+		}
+		if p.Funds != "" {
+			ccy = p.Funds
+		}
+		legs = append(legs, offsetLeg{
+			vetoKey: row.eventID, psnLeg: true, txID: row.eventID, acct: acct,
+			amt: amt, day: row.at / 86400, ccy: ccy,
+		})
+		return nil
+	})
+	return legs, err
+}
 
-	webVeto, psnVeto = map[string]bool{}, map[string]bool{}
-	record := func(l offsetLeg) {
-		if l.psnLeg {
-			psnVeto[l.vetoKey] = true
-		} else {
-			webVeto[l.vetoKey] = true
+// pairSameDayOffsets matches the legs the conversion phase left, per
+// value day and currency: greedily, first every bank-linked twin, then
+// loose equal-and-opposite offsets. The twin phase covers the whole
+// bucket before the loose one starts, so a twin-less leg that merely
+// sorts earlier can never steal another leg's twin.
+func pairSameDayOffsets(legs []offsetLeg, consumed map[string]bool, record func(offsetLeg)) {
+	type groupKey struct {
+		day int64
+		ccy string
+	}
+	groups := map[groupKey][]offsetLeg{}
+	for _, l := range legs {
+		if !consumed[l.vetoKey] {
+			k := groupKey{day: l.day, ccy: l.ccy}
+			groups[k] = append(groups[k], l)
 		}
 	}
-	var allLegs []offsetLeg
-	for _, legs := range groups {
-		allLegs = append(allLegs, legs...)
+	less := func(s []offsetLeg) func(i, j int) bool {
+		return func(i, j int) bool {
+			if s[i].acct != s[j].acct {
+				return s[i].acct < s[j].acct
+			}
+			return s[i].txID < s[j].txID
+		}
 	}
-	consumed := vetoConversions(allLegs, record)
-	for _, legs := range groups {
+	for _, group := range groups {
 		var debits, credits []offsetLeg
-		for _, l := range legs {
-			if consumed[l.vetoKey] {
-				continue
-			}
+		for _, l := range group {
 			if l.amt < 0 {
 				debits = append(debits, l)
 			} else if l.amt > 0 {
 				credits = append(credits, l)
 			}
 		}
-		less := func(s []offsetLeg) func(i, j int) bool {
-			return func(i, j int) bool {
-				if s[i].acct != s[j].acct {
-					return s[i].acct < s[j].acct
-				}
-				return s[i].txID < s[j].txID
-			}
-		}
 		sort.Slice(debits, less(debits))
 		sort.Slice(credits, less(credits))
-		matchOf := make([]int, len(debits))
-		for i := range matchOf {
-			matchOf[i] = -1
-		}
 		used := make([]bool, len(credits))
-		for pass := 0; pass < 2; pass++ {
+		matched := make([]bool, len(debits))
+		for _, twinsOnly := range []bool{true, false} {
 			for di, d := range debits {
-				if matchOf[di] >= 0 {
+				if matched[di] {
 					continue
 				}
-				for i, c := range credits {
-					if used[i] || c.acct == d.acct || math.Abs(d.amt+c.amt) > offsetVetoEps {
+				for ci, c := range credits {
+					if used[ci] || c.acct == d.acct || math.Abs(d.amt+c.amt) > offsetVetoEps ||
+						twinsOnly && c.txID != d.txID {
 						continue
 					}
-					if pass == 0 && c.txID != d.txID {
-						continue // twin phase: shared Transaction no. only
-					}
-					matchOf[di], used[i] = i, true
+					matched[di], used[ci] = true, true
+					record(d)
+					record(c)
 					break
 				}
 			}
 		}
-		for di, ci := range matchOf {
-			if ci < 0 {
-				continue
-			}
-			record(debits[di])
-			record(credits[ci])
-		}
 	}
-	return webVeto, psnVeto, nil
 }
 
 // vetoConversions demotes both legs of an own-account move that CONVERTED
@@ -1804,145 +1735,33 @@ func webKindHint(descKind, counterparty sql.NullString) string {
 // summed by kind. Whether a row IS a reversal is webReversal's
 // question, not this one's: the two eras state it differently, and this
 // function sees neither the amounts nor the era.
+//
+// The match is case-insensitive on the whole (trimmed) string. The
+// MT940 CSV feed and the PDF Account-Statement backfill spell the same
+// concept differently ("Dividend" vs "DIVIDEND"), so an upper-cased
+// EXACT match classifies both, and exact (not prefix) matching keeps
+// the two vocabularies from colliding: MT940's multi-token forms
+// ("UCCDD…; order") never equal a bare PDF booking type ("ORDER").
 func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
-	// Strip a `;Reversal` suffix if present and recurse on the base, so
-	// a reversal flavour the bank invents later needs no entry of its
-	// own.
+	// Strip a `;Reversal` suffix and classify the base, so a reversal
+	// flavour the bank invents later needs no entry of its own.
 	if base, ok := stripReversalSuffix(descKind); ok {
 		return webKind(base, hasDebit, hasCredit)
 	}
-	// Match case-insensitively on the whole (trimmed) string. The
-	// MT940 CSV feed and the PDF Account-Statement backfill spell the
-	// same concept differently ("Dividend" vs "DIVIDEND",
-	// "e-banking payment order" vs "E-BANKING PAYMENT ORDER"), so an
-	// upper-cased EXACT-string match classifies both. Exact (not
-	// prefix/substring) matching keeps the two vocabularies from
-	// colliding: MT940's distinctive multi-token forms ("UCCDD…;
-	// order") never equal a bare PDF booking type ("ORDER"), so each
-	// feed's rows resolve independently.
-	switch strings.ToUpper(strings.TrimSpace(descKind)) {
-	// ---- Income / cost: NOT capital flows; excluded from returns.
-	case "DIVIDEND", "REVERSAL DIVIDEND":
-		return canonical.TxKindDividend
-	case "COUPON":
-		return canonical.TxKindCoupon
-	case "INTEREST",
-		"INTEREST CALCULATION BALANCE",
-		"CALL DEPOSIT INTEREST PAYMENT",
-		"FIXED TERM DEPOSIT INTEREST PAYMENT":
-		return canonical.TxKindInterest
-	case "FEE", "FEES",
-		"CUSTODY PRICE",
-		"ADR/GDR HANDLING FEES",
-		"THIRD-PARTY CHARGES",
-		"RENTAL FEE SAFE BOX",
-		"BALANCE CLOSING OF SERVICE PRICES",
-		"ADVICE", "UBS ADVICE",
-		// The discretionary mandate's periodic management charge,
-		// billed to the mandate's own cash account at each period
-		// end. It names the PRODUCT the charge is for, the way
-		// "Custody Price" and "UBS Advice" do, and like them carries
-		// no instrument, quantity or price — the booking type is the
-		// only thing that says what it is. `CAN` cancels a charge
-		// already billed and `REC` re-bills the corrected figure;
-		// both are the same charge and take the same kind, and the
-		// cancellation's inflow survives because the statement era
-		// prints it as a negative debit, which webReversal reads.
-		"UBS MANAGE", "CAN UBS MANAGE", "REC UBS MANAGE":
-		return canonical.TxKindFee
-	// ---- Currency conversion between the holder's own accounts —
-	// an internal reshuffle, not a capital flow. Spot, forward and
-	// swap legs all reallocate cash across the holder's single-
-	// currency accounts; none is external capital. The MT940 feed
-	// names the instrument ("Purchase/Sale FX Spot/Forward", "…from
-	// FX Swap"), the older PDF backfill only says "FOREX". All map
-	// to non-flow fx kinds so they never enter net_flow — without
-	// the explicit enumeration the multi-token MT940 forms would
-	// fall through to the direction switch below and be mis-booked
-	// as deposits / withdrawals.
-	case "FOREX PURCHASE", "FOREX SALE",
-		"PURCHASE FX SPOT", "SALE FX SPOT":
-		return canonical.TxKindFx
-	case "PURCHASE FX FORWARD", "SALE FX FORWARD":
-		return canonical.TxKindFxForward
-	case "PURCHASE FROM FX SWAP", "SALE FROM FX SWAP":
-		return canonical.TxKindFxSwap
-	// ---- Securities settlements: reallocate between cash and
-	// instruments; excluded from flows. Side by cash direction.
-	case "BUY", "SECURITIES PURCHASE":
-		return canonical.TxKindBuy
-	case "SELL", "SECURITIES SALE":
-		return canonical.TxKindSell
-	case "SHARE", "MUTUAL FUNDS", "INVESTMENT FUNDS",
-		"UBS INVESTMENT FUNDS", "STRUCTURED PRODUCTS",
-		"PURCHASE", "SALE",
-		"PRECIOUS METAL BUY", "PRECIOUS METAL SELL",
-		"BUY PM SPOT W/O VAT", "SELL PM SPOT W/O VAT",
-		"SUBSCRIPTION RIGHT",
-		// Private-market vehicles settle the same way, under their
-		// own vocabulary. A capital call buys fund units and a
-		// distribution sells them, both against the cash account that
-		// sits in the same portfolio as the units — so neither is
-		// capital crossing the household's boundary. Left to the
-		// direction fallback they would be deposits and withdrawals,
-		// which the returns policy counts as external capital and never
-		// nets: a call reads as capital leaving while the fund's NAV
-		// rises to meet it, a distribution as capital arriving while it
-		// falls — both legs of one internal move, each booked as though
-		// the other did not exist.
-		"CAPITAL CALL", "ISSUE WITHOUT RIGHTS",
-		"PURCHASE FROM ISSUE WITH PREPAYMENT",
-		"CASH SETTLEMENT", "CASH DISTRIBUTION":
-		return securitiesSide(hasDebit, hasCredit)
-	// ---- Mobile payments: money moving across the relationship
-	// boundary, like a card payment or a payment order. The statement
-	// era books the outflows as PAYMENT / DEBIT UBS TWINT and the
-	// inflows — a payment received, an outbound payment reversed — as
-	// CREDIT / REVERSAL UBS TWINT; the CSV feed spells the same types
-	// in mixed case, which the fold above covers. Named here rather
-	// than left to the direction fallback so the kind follows the
-	// booking type: the silver row carries an unsigned figure in a
-	// debit or a credit column (a trailing-minus figure on the
-	// statement stays negative), and ApplyCanonicalSign orients the
-	// net amount by the kind, so a reversal keeps its inflow whichever
-	// column printed it.
-	case "PAYMENT UBS TWINT", "DEBIT UBS TWINT":
-		return canonical.TxKindWithdrawal
-	case "CREDIT UBS TWINT", "REVERSAL UBS TWINT":
-		return canonical.TxKindDeposit
-	// ---- The statement's bare payment order. It is a PAYMENT, not a
-	// securities order, and it sat among the settlements above for long
-	// enough to be worth saying why it does not belong there.
-	//
-	// Every other member of that case names an instrument type — a share,
-	// a fund, a structured product — or spells a buy or a sell outright.
-	// This one names neither, and the rows carrying it say so in every
-	// column the bank fills: no quantity, no price, no instrument, and a
-	// narrative that names the party paid rather than anything bought.
-	// What it pays is usually another account of the same relationship,
-	// frequently in another currency, and the receiving side books the
-	// mirror as a plain credit. The statement era abbreviates to this bare
-	// form what the export feed spells out as "payment order",
-	// "e-banking payment order", "special payment order" — all of which
-	// this classifier already leaves to the direction fallback.
-	//
-	// Named explicitly rather than dropped through to that fallback so the
-	// vocabulary still records the type: the case is the list of booking
-	// types the adapter knows, and a type deleted from it is a type the
-	// adapter has forgotten. The kind is the fallback's, arrived at by the
-	// same rule for the same reason.
-	case "ORDER":
-		switch {
-		case hasCredit && !hasDebit:
-			return canonical.TxKindDeposit
-		case hasDebit && !hasCredit:
-			return canonical.TxKindWithdrawal
-		}
-		return canonical.TxKindOther
+	bookingType := strings.ToUpper(strings.TrimSpace(descKind))
+	if kind, ok := webKindByType[bookingType]; ok {
+		return kind
 	}
-	// No description_kind hint → use direction. Credit-only
-	// without instrument context = deposit; debit-only =
-	// withdrawal. Everything else stays "other".
+	if webSecuritiesTypes[bookingType] {
+		return securitiesSide(hasDebit, hasCredit)
+	}
+	// Everything else, the bare payment order ("ORDER") among it, is
+	// classified by direction: credit-only is a deposit, debit-only a
+	// withdrawal, anything else stays "other". A payment order names
+	// neither an instrument nor a side — no quantity, no price, a
+	// narrative naming the party paid — and what it pays is often
+	// another account of the same relationship, whose mirror books as
+	// a plain credit.
 	switch {
 	case hasCredit && !hasDebit:
 		return canonical.TxKindDeposit
@@ -1950,6 +1769,93 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		return canonical.TxKindWithdrawal
 	}
 	return canonical.TxKindOther
+}
+
+// webKindByType maps the booking types whose kind does not depend on
+// the direction, upper-cased.
+var webKindByType = map[string]canonical.TxKind{
+	// Income / cost: NOT capital flows; excluded from returns.
+	"DIVIDEND":                            canonical.TxKindDividend,
+	"REVERSAL DIVIDEND":                   canonical.TxKindDividend,
+	"COUPON":                              canonical.TxKindCoupon,
+	"INTEREST":                            canonical.TxKindInterest,
+	"INTEREST CALCULATION BALANCE":        canonical.TxKindInterest,
+	"CALL DEPOSIT INTEREST PAYMENT":       canonical.TxKindInterest,
+	"FIXED TERM DEPOSIT INTEREST PAYMENT": canonical.TxKindInterest,
+	"FEE":                                 canonical.TxKindFee,
+	"FEES":                                canonical.TxKindFee,
+	"CUSTODY PRICE":                       canonical.TxKindFee,
+	"ADR/GDR HANDLING FEES":               canonical.TxKindFee,
+	"THIRD-PARTY CHARGES":                 canonical.TxKindFee,
+	"RENTAL FEE SAFE BOX":                 canonical.TxKindFee,
+	"BALANCE CLOSING OF SERVICE PRICES":   canonical.TxKindFee,
+	"ADVICE":                              canonical.TxKindFee,
+	"UBS ADVICE":                          canonical.TxKindFee,
+	// The discretionary mandate's periodic management charge. Like
+	// "Custody Price" it names the product charged for and carries no
+	// instrument, quantity or price. `CAN` cancels a charge already
+	// billed and `REC` re-bills the corrected figure; the
+	// cancellation's inflow survives because the statement era prints
+	// it as a negative debit, which webReversal reads.
+	"UBS MANAGE":     canonical.TxKindFee,
+	"CAN UBS MANAGE": canonical.TxKindFee,
+	"REC UBS MANAGE": canonical.TxKindFee,
+	// Currency conversion between the holder's own accounts — an
+	// internal reshuffle, not a capital flow. The MT940 feed names the
+	// instrument, the older PDF backfill only says "FOREX". Enumerated
+	// so the multi-token MT940 forms do not fall through to the
+	// direction fallback and book as deposits / withdrawals.
+	"FOREX PURCHASE":        canonical.TxKindFx,
+	"FOREX SALE":            canonical.TxKindFx,
+	"PURCHASE FX SPOT":      canonical.TxKindFx,
+	"SALE FX SPOT":          canonical.TxKindFx,
+	"PURCHASE FX FORWARD":   canonical.TxKindFxForward,
+	"SALE FX FORWARD":       canonical.TxKindFxForward,
+	"PURCHASE FROM FX SWAP": canonical.TxKindFxSwap,
+	"SALE FROM FX SWAP":     canonical.TxKindFxSwap,
+	"BUY":                   canonical.TxKindBuy,
+	"SECURITIES PURCHASE":   canonical.TxKindBuy,
+	"SELL":                  canonical.TxKindSell,
+	"SECURITIES SALE":       canonical.TxKindSell,
+	// Mobile payments cross the relationship boundary like a card
+	// payment. Named so the kind follows the booking type: the silver
+	// row carries an unsigned figure in either column, and
+	// ApplyCanonicalSign orients the amount by the kind, so a reversal
+	// keeps its inflow whichever column printed it.
+	"PAYMENT UBS TWINT":  canonical.TxKindWithdrawal,
+	"DEBIT UBS TWINT":    canonical.TxKindWithdrawal,
+	"CREDIT UBS TWINT":   canonical.TxKindDeposit,
+	"REVERSAL UBS TWINT": canonical.TxKindDeposit,
+}
+
+// webSecuritiesTypes are the booking types that settle a securities
+// trade, whose side (buy or sell) follows the cash direction. They
+// reallocate between cash and instruments and are excluded from flows.
+//
+// Private-market vehicles settle the same way under their own
+// vocabulary: a capital call buys fund units and a distribution sells
+// them, both against the cash account in the same portfolio as the
+// units. Left to the direction fallback they would be deposits and
+// withdrawals, which returns count as external capital — each leg of
+// one internal move booked as though the other did not exist.
+var webSecuritiesTypes = map[string]bool{
+	"SHARE":                               true,
+	"MUTUAL FUNDS":                        true,
+	"INVESTMENT FUNDS":                    true,
+	"UBS INVESTMENT FUNDS":                true,
+	"STRUCTURED PRODUCTS":                 true,
+	"PURCHASE":                            true,
+	"SALE":                                true,
+	"PRECIOUS METAL BUY":                  true,
+	"PRECIOUS METAL SELL":                 true,
+	"BUY PM SPOT W/O VAT":                 true,
+	"SELL PM SPOT W/O VAT":                true,
+	"SUBSCRIPTION RIGHT":                  true,
+	"CAPITAL CALL":                        true,
+	"ISSUE WITHOUT RIGHTS":                true,
+	"PURCHASE FROM ISSUE WITH PREPAYMENT": true,
+	"CASH SETTLEMENT":                     true,
+	"CASH DISTRIBUTION":                   true,
 }
 
 // securitiesSide maps a securities-settlement row to buy (cash out /
@@ -2417,7 +2323,7 @@ func tickerFromDescription(desc string) *string {
 func (r *webReader) appendWebMortgages(ctx context.Context,
 	w canonical.Window,
 	byTime map[int64]*canonical.SnapshotBatch) error {
-	ok, err := r.hasMortgagesTable(ctx)
+	ok, err := r.hasTable(ctx, "mortgages")
 	if err != nil {
 		return err
 	}
@@ -2494,7 +2400,7 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 // The returned templates have SnapshotAt = 0; the caller stamps
 // the right time per batch.
 func (r *webReader) latestMortgagePositions(ctx context.Context, asOf int64) ([]canonical.PositionChange, error) {
-	ok, err := r.hasMortgagesTable(ctx)
+	ok, err := r.hasTable(ctx, "mortgages")
 	if err != nil {
 		return nil, err
 	}
@@ -2544,14 +2450,6 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
 		})
 	}
 	return out, rows.Err()
-}
-
-// hasMortgagesTable returns true if the connected silver carries
-// the `mortgages` table (added by migration 0004). Older silvers
-// loaded before that migration just return false and the caller
-// skips the projection.
-func (r *webReader) hasMortgagesTable(ctx context.Context) (bool, error) {
-	return r.hasTable(ctx, "mortgages")
 }
 
 // hasTable reports whether the silver database carries a table. Older silvers

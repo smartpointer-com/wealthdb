@@ -359,3 +359,32 @@ func TestHistoricalPreciousMetalsDedup(t *testing.T) {
 		t.Errorf("non-metal security in the overlay portfolio was wrongly suppressed")
 	}
 }
+
+// The historical span reaches every table's dates — a cash period's start
+// as well as its end — and is empty both on a silver that predates the
+// tables and on one whose tables hold nothing, so neither widens a window.
+func TestHistoricalRangeSpansEveryTable(t *testing.T) {
+	ctx := context.Background()
+	r := newWebFixture(t)
+	if lo, hi, err := r.historicalRange(ctx); err != nil || lo != -1 || hi != -1 {
+		t.Fatalf("empty tables: (%d, %d, %v), want (-1, -1, nil)", lo, hi, err)
+	}
+	for _, q := range []string{
+		`INSERT INTO historical_position_snapshots (as_of_date) VALUES (200), (300)`,
+		`INSERT INTO historical_cash_balances (period_start, period_end) VALUES (100, 250)`,
+		`INSERT INTO historical_mortgages (as_of_date) VALUES (400)`,
+	} {
+		if _, err := r.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if lo, hi, err := r.historicalRange(ctx); err != nil || lo != 100 || hi != 400 {
+		t.Errorf("span = (%d, %d, %v), want (100, 400, nil)", lo, hi, err)
+	}
+	if _, err := r.db.Exec(`DROP TABLE historical_cash_balances`); err != nil {
+		t.Fatal(err)
+	}
+	if lo, hi, err := r.historicalRange(ctx); err != nil || lo != -1 || hi != -1 {
+		t.Errorf("pre-migration silver: (%d, %d, %v), want (-1, -1, nil)", lo, hi, err)
+	}
+}

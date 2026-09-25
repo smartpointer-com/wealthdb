@@ -518,16 +518,8 @@ SELECT transaction_external_id, safekeeping_account_external_id, value_date,
 			tx.InstrumentExternalID = &id
 		default:
 			// The valor identifies the security where the export
-			// states no ISIN; a resolved one outranks it, so this is
-			// only ever the fallback. A valor naming no instrument
-			// gold holds is stated as the hint a config link closes.
-			if v := normalizeValor(valor.String); v != "" {
-				if id, ok := valorToISIN[v]; ok {
-					tx.InstrumentExternalID = &id
-				} else {
-					tx.InstrumentHint = v
-				}
-			}
+			// states no ISIN; a stated ISIN outranks it.
+			tx.InstrumentExternalID, tx.InstrumentHint = resolveValor(valorToISIN, valor.String)
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}
@@ -559,14 +551,7 @@ func (r *webReader) portfolioTxnRange(ctx context.Context) (int64, int64, error)
 	if err != nil || !ok {
 		return -1, -1, err
 	}
-	var lo, hi sql.NullInt64
-	if err := r.db.QueryRowContext(ctx,
+	return r.span(ctx, "portfolioTxnRange", []string{
 		`SELECT MIN(value_date), MAX(value_date) FROM portfolio_transactions`,
-	).Scan(&lo, &hi); err != nil {
-		return -1, -1, fmt.Errorf("portfolioTxnRange: %w", err)
-	}
-	if !lo.Valid || !hi.Valid {
-		return -1, -1, nil
-	}
-	return lo.Int64, hi.Int64, nil
+	})
 }

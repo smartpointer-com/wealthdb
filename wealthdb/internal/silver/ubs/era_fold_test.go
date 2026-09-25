@@ -103,6 +103,33 @@ func TestEraFoldExportKeepsTheBooking(t *testing.T) {
 	})
 }
 
+// TestEraFoldKeysOnTheEmittedAmount: an export row whose booking type
+// column holds no type is classified by the type its narrative leads
+// with, and that kind can sign the amount differently from the bare
+// direction. The fold keys on the amount the row is EMITTED with, or a
+// statement copy of the same booking finds no match and both reach gold.
+func TestEraFoldKeysOnTheEmittedAmount(t *testing.T) {
+	const day = 405 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedWebTextRow(t, r, foldStmtD, day, nil, 30.0, "EXAMPLE BANK", "CUSTODY PRICE",
+		statementPayload("CUSTODY PRICE", "EXAMPLE BANK"))
+	seedWebTextRow(t, r, "E4", day, nil, 30.0, "Custody Price; EXAMPLE PERIOD", "",
+		exportPayload("Custody Price; EXAMPLE PERIOD", "", ""))
+
+	got := drainTx(t, emitWebStream(t, r))
+	if _, ok := got[foldStmtD+"@"+textAcct]; ok {
+		t.Error("statement reconstruction emitted alongside the export's record of the same booking")
+	}
+	if _, ok := got["E4@"+textAcct]; !ok {
+		t.Fatal("the export's row must keep the booking")
+	}
+	if n := countOnDay(got, day); n != 1 {
+		t.Errorf("rows on the booking's value day = %d, want 1", n)
+	}
+}
+
 // TestEraFoldFeedKeepsTheBooking: the same across the silver seam — a
 // statement reconstruction whose booking the MT940 feed also carries projects
 // once, as the feed's event.

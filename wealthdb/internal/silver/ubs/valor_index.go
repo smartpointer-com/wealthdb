@@ -162,3 +162,18 @@ func normalizeValor(v string) string {
 	}
 	return strings.TrimLeft(v, "0")
 }
+
+// resolveValor looks a stated valor up in the index: the instrument gold
+// holds under it or, for a well-formed valor naming none, the valor
+// itself as the hint a config link closes. Both are empty when no valor
+// is stated.
+func resolveValor(index map[string]string, raw string) (id *string, hint string) {
+	v := normalizeValor(raw)
+	if v == "" {
+		return nil, ""
+	}
+	if isin, ok := index[v]; ok {
+		return &isin, ""
+	}
+	return nil, v
+}

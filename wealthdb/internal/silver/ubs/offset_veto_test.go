@@ -617,3 +617,27 @@ func TestASeamDroppedRowDoesNotConsumeAVetoMatch(t *testing.T) {
 			internal[psnID], internal["T2@"+vetoAcctB])
 	}
 }
+
+// The cut belongs to a relationship: a row on its account is PSN's from
+// the relationship's PSN start on, and a relationship with no start — or
+// an account no relationship claims — cuts nothing.
+func TestPSNCutExcludesFromTheRelationshipsStart(t *testing.T) {
+	cut := psnCut{
+		startByRel:   map[string]int64{"rel-a": 1000},
+		relOfAccount: map[string]string{"acct-a": "rel-a", "acct-b": "rel-b"},
+	}
+	for _, tc := range []struct {
+		account string
+		at      int64
+		want    bool
+	}{
+		{"acct-a", 999, false},
+		{"acct-a", 1000, true},
+		{"acct-b", 5000, false},
+		{"acct-x", 5000, false},
+	} {
+		if got := cut.excludes(tc.account, tc.at); got != tc.want {
+			t.Errorf("excludes(%q, %d) = %v, want %v", tc.account, tc.at, got, tc.want)
+		}
+	}
+}

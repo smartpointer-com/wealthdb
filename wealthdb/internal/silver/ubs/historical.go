@@ -154,11 +154,9 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 	}
 	defer rows.Close()
 
-	// Track which (snapshot, portfolio) accounts and portfolios
-	// we've already emitted to avoid one PortfolioChange /
-	// AccountChange per holding.
-	accountEmitted := map[[2]int64]bool{}
-	portfolioEmitted := map[[2]int64]bool{}
+	// One PortfolioChange and one AccountChange per (snapshot,
+	// portfolio), not one per holding.
+	emitted := map[snapshotKey]bool{}
 
 	for rows.Next() {
 		var (
@@ -183,22 +181,11 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		// Drop the year-end precious-metals detail line when its
 		// synthetic overview sibling is present for the same
 		// (as_of, portfolio) — see the function's opening comment.
-		if looksLikeISIN(isin) && pmOverview[pmKey{asOf, portID}] &&
+		if looksLikeISIN(isin) && pmOverview[snapshotKey{asOf, portID}] &&
 			isPreciousMetalsLine(descr.String, payload) {
 			continue
 		}
 		batch := getBatch(asOf)
-
-		portKey := [2]int64{asOf, int64(strHash(portID))}
-		if !portfolioEmitted[portKey] {
-			portfolioEmitted[portKey] = true
-			batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
-				PortfolioExternalID: portID,
-				BaseCurrency:        silver.StrPtrIfNonEmpty(mvCcy),
-				FirstSeenAt:         asOf,
-				LastSeenAt:          asOf,
-			})
-		}
 
 		// Prefer the real PSN safekeeping account so this security's
 		// history is continuous with the PSN-era holdings on the
@@ -208,8 +195,14 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		if !mapped {
 			accountID = overlayAccountID(portID)
 		}
-		if !accountEmitted[portKey] {
-			accountEmitted[portKey] = true
+		if portKey := (snapshotKey{asOf, portID}); !emitted[portKey] {
+			emitted[portKey] = true
+			batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
+				PortfolioExternalID: portID,
+				BaseCurrency:        silver.StrPtrIfNonEmpty(mvCcy),
+				FirstSeenAt:         asOf,
+				LastSeenAt:          asOf,
+			})
 			pid := portID
 			ac := canonical.AccountChange{
 				AccountExternalID:   accountID,
@@ -294,11 +287,10 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 	return rows.Err()
 }
 
-// pmKey identifies a (snapshot, portfolio) that carries a synthetic
-// overview precious-metals row.
-type pmKey struct {
-	asOf int64
-	port string
+// snapshotKey is one account or portfolio at one snapshot time.
+type snapshotKey struct {
+	at int64
+	id string
 }
 
 // preciousMetalsOverviewKeys returns the (as_of_date, portfolio)
@@ -307,7 +299,7 @@ type pmKey struct {
 // year-end gold-bar detail line for those portfolios.
 func (r *webReader) preciousMetalsOverviewKeys(
 	ctx context.Context, w canonical.Window,
-) (map[pmKey]bool, error) {
+) (map[snapshotKey]bool, error) {
 	const q = `
 SELECT DISTINCT as_of_date, portfolio_external_id
   FROM historical_position_snapshots
@@ -318,14 +310,14 @@ SELECT DISTINCT as_of_date, portfolio_external_id
 		return nil, fmt.Errorf("preciousMetalsOverviewKeys: %w", err)
 	}
 	defer rows.Close()
-	set := map[pmKey]bool{}
+	set := map[snapshotKey]bool{}
 	for rows.Next() {
 		var asOf int64
 		var port string
 		if err := rows.Scan(&asOf, &port); err != nil {
 			return nil, err
 		}
-		set[pmKey{asOf, port}] = true
+		set[snapshotKey{asOf, port}] = true
 	}
 	return set, rows.Err()
 }
@@ -378,11 +370,9 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 	}
 	defer rows.Close()
 
-	// One AccountChange per (period_end, account) is enough —
-	// re-emitting at each period is harmless via the per-column
-	// upsert, but we cap it to one per batch to keep the volume
-	// down.
-	accountEmitted := map[[2]int64]bool{}
+	// One AccountChange per (snapshot, account), however many
+	// balances the snapshot carries.
+	accountEmitted := map[snapshotKey]bool{}
 
 	for rows.Next() {
 		var (
@@ -395,51 +385,41 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 			&open, &close, &payload); err != nil {
 			return err
 		}
-
-		emitAccount := func(snap int64) {
-			key := [2]int64{snap, int64(strHash(acctID))}
-			if accountEmitted[key] {
-				return
-			}
-			accountEmitted[key] = true
-			c := ccy
-			batch := getBatch(snap)
-			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-				AccountExternalID: acctID,
-				AccountKind:       canonical.AccountKindCash,
-				BaseCurrency:      &c,
-				FirstSeenAt:       snap,
-				LastSeenAt:        snap,
-			})
-		}
-
 		// Same PSN cutover as historical securities: once the IBAN
 		// is covered by PSN, PSN's daily cash rows own the (source,
 		// snapshot_at, account, kind) key; drop the historical row
 		// for that period. Accounts with no PSN counterpart pass
 		// through.
 		cut := accountCutoff[acctID]
-		if open.Valid && periodStart >= w.Start && periodStart <= w.End &&
-			(cut == 0 || periodStart < cut) {
-			emitAccount(periodStart)
-			getBatch(periodStart).CashBalances = append(getBatch(periodStart).CashBalances, canonical.CashBalanceChange{
-				SnapshotAt:        periodStart,
+		for _, b := range []struct {
+			at      int64
+			balance sql.NullFloat64
+			kind    canonical.BalanceKind
+		}{
+			{periodStart, open, canonical.BalanceKindOpening},
+			{periodEnd, close, canonical.BalanceKindClosing},
+		} {
+			if !b.balance.Valid || b.at < w.Start || b.at > w.End || (cut > 0 && b.at >= cut) {
+				continue
+			}
+			batch := getBatch(b.at)
+			if key := (snapshotKey{b.at, acctID}); !accountEmitted[key] {
+				accountEmitted[key] = true
+				c := ccy
+				batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+					AccountExternalID: acctID,
+					AccountKind:       canonical.AccountKindCash,
+					BaseCurrency:      &c,
+					FirstSeenAt:       b.at,
+					LastSeenAt:        b.at,
+				})
+			}
+			batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
+				SnapshotAt:        b.at,
 				AccountExternalID: acctID,
 				Currency:          ccy,
-				BalanceKind:       canonical.BalanceKindOpening,
-				Amount:            canonical.NewDecimalFromFloat(open.Float64),
-				Payload:           json.RawMessage(payload),
-			})
-		}
-		if close.Valid && periodEnd >= w.Start && periodEnd <= w.End &&
-			(cut == 0 || periodEnd < cut) {
-			emitAccount(periodEnd)
-			getBatch(periodEnd).CashBalances = append(getBatch(periodEnd).CashBalances, canonical.CashBalanceChange{
-				SnapshotAt:        periodEnd,
-				AccountExternalID: acctID,
-				Currency:          ccy,
-				BalanceKind:       canonical.BalanceKindClosing,
-				Amount:            canonical.NewDecimalFromFloat(close.Float64),
+				BalanceKind:       b.kind,
+				Amount:            canonical.NewDecimalFromFloat(b.balance.Float64),
 				Payload:           json.RawMessage(payload),
 			})
 		}
@@ -473,12 +453,9 @@ func (r *webReader) appendHistoricalMortgages(
 	w canonical.Window,
 	byTime map[int64]*canonical.SnapshotBatch,
 ) error {
-	ok, err := r.hasHistoricalMortgagesTable(ctx)
-	if err != nil {
+	ok, err := r.hasTable(ctx, "historical_mortgages")
+	if err != nil || !ok {
 		return err
-	}
-	if !ok {
-		return nil
 	}
 	const q = `
 SELECT as_of_date, account_external_id, currency_iso,
@@ -559,106 +536,28 @@ SELECT as_of_date, account_external_id, currency_iso,
 	return rows.Err()
 }
 
-// hasHistoricalMortgagesTable returns true if the silver carries
-// the migration-0005 historical_mortgages table. Older silvers
-// loaded before that migration just return false; the projection
-// is skipped silently.
-func (r *webReader) hasHistoricalMortgagesTable(ctx context.Context) (bool, error) {
-	var n int
-	err := r.db.QueryRowContext(ctx, `
-        SELECT COUNT(*) FROM sqlite_master
-         WHERE type = 'table' AND name = 'historical_mortgages'`).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("hasHistoricalMortgagesTable: %w", err)
-	}
-	return n > 0, nil
-}
-
-// historicalRange returns MIN/MAX as_of_date across the historical
-// tables. Both values are -1 when the silver carries no historical
-// rows. Used by ChangeWindow to extend Start backwards so the
-// loader's window-DELETE covers existing historical rows before
-// the re-INSERT.
+// historicalRange returns the span of dates the historical tables cover, or
+// (-1, -1) when the silver predates them (migration 0002; mortgages 0005)
+// or they hold no rows. ChangeWindow widens Start by it so the loader's
+// window-DELETE covers existing historical rows before the re-INSERT.
 func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
-	var (
-		posMin, posMax   sql.NullInt64
-		cashMin, cashMax sql.NullInt64
-		mortMin, mortMax sql.NullInt64
-	)
-	if err := r.db.QueryRowContext(ctx,
+	queries := []string{
 		`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`,
-	).Scan(&posMin, &posMax); err != nil {
-		return -1, -1, fmt.Errorf("historicalRange positions: %w", err)
-	}
-	if err := r.db.QueryRowContext(ctx,
 		`SELECT MIN(period_start), MAX(period_end) FROM historical_cash_balances`,
-	).Scan(&cashMin, &cashMax); err != nil {
-		return -1, -1, fmt.Errorf("historicalRange cash: %w", err)
 	}
-	ok, err := r.hasHistoricalMortgagesTable(ctx)
+	for _, table := range []string{"historical_position_snapshots", "historical_cash_balances"} {
+		if ok, err := r.hasTable(ctx, table); err != nil || !ok {
+			return -1, -1, err
+		}
+	}
+	ok, err := r.hasTable(ctx, "historical_mortgages")
 	if err != nil {
 		return -1, -1, err
 	}
 	if ok {
-		if err := r.db.QueryRowContext(ctx,
-			`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_mortgages`,
-		).Scan(&mortMin, &mortMax); err != nil {
-			return -1, -1, fmt.Errorf("historicalRange mortgages: %w", err)
-		}
+		queries = append(queries, `SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_mortgages`)
 	}
-	lo, hi := int64(-1), int64(-1)
-	merge := func(n sql.NullInt64) {
-		if !n.Valid {
-			return
-		}
-		if lo == -1 || n.Int64 < lo {
-			lo = n.Int64
-		}
-		if hi == -1 || n.Int64 > hi {
-			hi = n.Int64
-		}
-	}
-	merge(posMin)
-	merge(posMax)
-	merge(cashMin)
-	merge(cashMax)
-	merge(mortMin)
-	merge(mortMax)
-	return lo, hi, nil
-}
-
-// hasHistoricalTables reports whether the ubs-web silver carries
-// the migration-0002 historical tables. Older silvers (rebuilt
-// against migration 0001 only) won't have them, and the adapter
-// must still load — falling back to the live-only stream.
-func (r *webReader) hasHistoricalTables(ctx context.Context) (bool, error) {
-	var n int
-	err := r.db.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM sqlite_master
- WHERE type = 'table'
-   AND name IN ('historical_position_snapshots', 'historical_cash_balances')`).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("hasHistoricalTables: %w", err)
-	}
-	return n == 2, nil
-}
-
-// strHash is FNV-1a 64-bit. Used to compress string keys into the
-// dedup maps so we can index on (int64, int64) tuples rather than
-// allocating a `map[struct{ts int64; s string}]` per call. The
-// hash collision risk for ~thousands of account / portfolio IDs
-// is negligible.
-func strHash(s string) uint64 {
-	const (
-		offset64 uint64 = 14695981039346656037
-		prime64  uint64 = 1099511628211
-	)
-	h := offset64
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= prime64
-	}
-	return h
+	return r.span(ctx, "historicalRange", queries)
 }
 
 func bookValueFromUnitsCost(units, cost sql.NullFloat64) *canonical.Decimal {
