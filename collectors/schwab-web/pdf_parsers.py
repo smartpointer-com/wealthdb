@@ -816,6 +816,13 @@ _LEGACY_TX_ROW_STOP_RE = re.compile(
     r"|Ending\s+Balance\b"
     r"|Bank\s+Sweep:"
     r"|Total\s+Cash\s+Transaction\s+Detail\b"
+    # The sub-section's closing summary ("The total deposits activity
+    # for the statement period was $…") and the next sub-section's
+    # banner when it runs on past the header pattern. Left to absorb
+    # them, the last row of a sub-section carries the period's totals
+    # in its description, which then reads as a different payee.
+    r"|The\s+total\s+(?:deposits|withdrawals)\s+activity\b"
+    r"|Transaction\s+Detail\b"
     r"|Latest\s+Price\b"
     r"|©"  # copyright line
     r")"

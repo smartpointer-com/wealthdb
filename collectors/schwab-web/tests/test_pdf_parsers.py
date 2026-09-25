@@ -1468,6 +1468,23 @@ class TestParseTransactionsLegacy:
         # The legitimate "BANK INT 111621-121521" content stays.
         assert "BANK INT" in rows[0].description
 
+    def test_description_stops_at_the_sub_section_summary(self):
+        # The last row of a sub-section sat right above its closing
+        # summary and the next banner, and absorbed both: the period's
+        # totals then travelled in the row's description, where they
+        # read as part of the payee.
+        text = self._wrap(
+            "07/21 07/21 Deposit Funds Received EXAMPLE CHECK 321.00\n"
+            "The total deposits activity for the statement period was $321.00. "
+            "The total withdrawals activity for the statement period was $0.00.\n"
+            "Transaction Detail - Purchases & Sales (continued)\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2022)
+        assert len(rows) == 1
+        assert "total" not in rows[0].description.lower()
+        assert "Transaction Detail" not in rows[0].description
+        assert "EXAMPLE CHECK" in rows[0].description
+
     def test_description_capped_at_max_chars(self):
         # Belt-and-suspenders: if a row picks up several short
         # continuation lines that AREN'T row-stop markers (no
