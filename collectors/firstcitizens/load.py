@@ -159,13 +159,23 @@ def _hash_fitid(account_external_id: str, posted_at: int, amount: float,
     return "syn_" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]
 
 
+# `transactionType` of an item the bank has memo-posted but not yet posted to
+# history. It comes back under a new `transactionId` as a `History` row once
+# it posts, so kept, it would stay in silver beside its posted copy for good.
+MEMO_POSTED = "memo"
+
+
 def history_rows(account_external_id: str, transactions: list) -> list[dict]:
     """Project the `accountHistory` `transactions` list into silver ledger
     rows. A row missing a parseable posted date or amount is skipped (mirrors
-    chase's malformed-row handling); everything else is preserved in `payload`."""
+    chase's malformed-row handling), and so is a memo-posted item, which the
+    posted history books again once it clears; everything else is preserved in
+    `payload`."""
     out = []
     for row in transactions:
         if not isinstance(row, dict):
+            continue
+        if str(row.get("transactionType") or "").strip().lower() == MEMO_POSTED:
             continue
         posted_at = parse_posted_date(_first(row, "postedDate", "date",
                                              "effectiveDate"))

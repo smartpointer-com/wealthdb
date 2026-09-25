@@ -210,6 +210,12 @@ skipped 2FA entirely. So:
   and needs no export join at all. The CSV/QFX exports are captured as
   provenance only (a flat export can omit a pending/edge row the JSON
   keeps), never the source of record.
+- **A memo-posted item is not loaded.** The JSON also returns items the
+  bank has memo-posted that day (`transactionType` `Memo`, no running
+  balance). Once one clears it comes back as a `History` row under a new
+  `transactionId`, so silver keyed on that id would hold both copies for
+  good. Only the posted history is the ledger; a memo-posted item joins
+  it on the run after it clears.
 - Statements are still downloaded as **documents** (PDFs belong in
   bronze), but they are **not** a transaction source here.
 

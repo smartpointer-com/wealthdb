@@ -107,6 +107,17 @@ def test_history_rows_skip_malformed_and_synthesize_id():
     assert again[0]["fitid"] == rows[0]["fitid"]
 
 
+def test_history_rows_skip_a_memo_posted_item():
+    """A memo-posted item posts again under a new transactionId, so only the
+    posted copy is the ledger's."""
+    memo = _tx("M1", "3/3/2098", "300.00", False, "", "EXAMPLE PAYMENT ***")
+    memo["transactionType"] = "Memo"
+    posted = _tx("H1", "3/3/2098", "300.00", False, "1300.00", "Example Payment")
+    posted["transactionType"] = "History"
+    rows = load.history_rows(ACCT_ID, [memo, posted])
+    assert [r["fitid"] for r in rows] == ["H1"]
+
+
 # ============================================================
 # Roster projection
 # ============================================================
