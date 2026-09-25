@@ -947,6 +947,41 @@ def test_a_row_the_scraped_feed_already_has_is_skipped(migrated):
         "SELECT COUNT(*) FROM transactions WHERE amount = -4321.0").fetchone()[0] == 1
 
 
+def test_a_row_the_feed_reached_later_leaves_silver(migrated):
+    # A run before the scraped feed covered the date derived the fee from
+    # the statement. Once the feed carries it, the derivation goes.
+    load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+    migrated.execute(
+        "INSERT INTO transactions (activity_id, timestamp, "
+        "account_external_id, kind, amount, currency, source_sha256, payload) "
+        "VALUES ('scraped-3', ?, '100000001', 'FEE', -4321.0, 'USD', "
+        "'sha', '{}')",
+        (load.ts_from_iso("2026-01-11"),),
+    )
+    n, dup = load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+    assert (n, dup) == (2, 1)
+    assert [r[0] for r in migrated.execute(
+        "SELECT activity_id FROM transactions WHERE amount = -4321.0")] == [
+        "scraped-3"]
+
+
+def test_a_fee_the_feed_debits_days_later_is_the_same_fee(migrated):
+    # The statement dates a fee when it is assessed and the feed when the
+    # cash leaves, days later — past the window a payment gets.
+    migrated.execute(
+        "INSERT INTO transactions (activity_id, timestamp, "
+        "account_external_id, kind, amount, currency, source_sha256, payload) "
+        "VALUES ('scraped-4', ?, '100000001', 'FEE', -4321.0, 'USD', "
+        "'sha', '{}')",
+        (load.ts_from_iso("2026-01-20"),),           # nine days after
+    )
+    n, dup = load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+    assert (n, dup) == (2, 1)
+
+
 def test_the_redemption_that_funds_a_fee_is_not_mistaken_for_it(migrated):
     # The feed books the core redemption that RAISES the cash (+4321)
     # and not the fee that spends it (-4321). Matching on the absolute

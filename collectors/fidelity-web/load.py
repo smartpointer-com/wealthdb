@@ -2224,6 +2224,13 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
 # payments of the same amount on one account to collide.
 _ACTIVITY_MATCH_WINDOW = 3 * 86400
 
+# A fee is the exception. The statement dates it when it is assessed and the
+# feed when the cash is debited, and on a managed account the debit can trail
+# it by more than a week. Two different fees of one signed amount, to the cent, on
+# one account inside two weeks are rare enough that the one-to-one claim
+# settles them.
+_FEE_MATCH_WINDOW = 14 * 86400
+
 
 class _FeedClaims:
     """One-to-one bookkeeping for the statement-to-feed match, held for
@@ -2258,13 +2265,14 @@ class _FeedClaims:
         return feed_id in self._taken
 
 
-def _unclaimed_feed_match(conn, account_external_id, amount, ts, claims):
+def _unclaimed_feed_match(conn, account_external_id, amount, ts, claims,
+                          window=_ACTIVITY_MATCH_WINDOW):
     """The SCRAPED feed row that already carries this payment, or None.
 
     The statement and the feed number their rows differently and
     cannot be joined on an id, so the match is the only thing both
     agree on: one account, the same signed amount to the cent, within
-    `_ACTIVITY_MATCH_WINDOW`. Signed, not absolute — a core
+    `window` (`_ACTIVITY_MATCH_WINDOW`, or `_FEE_MATCH_WINDOW` for a fee). Signed, not absolute — a core
     redemption of +450.00 raises the cash that the -450.00 fee then
     spends, and those two must not cancel each other out.
 
@@ -2289,7 +2297,7 @@ def _unclaimed_feed_match(conn, account_external_id, amount, ts, claims):
         "  AND ABS(amount - ?) < 0.005 "
         "  AND ABS(timestamp - ?) <= ? "
         "ORDER BY ABS(timestamp - ?), activity_id",
-        (account_external_id, amount, ts, _ACTIVITY_MATCH_WINDOW, ts),
+        (account_external_id, amount, ts, window, ts),
     ):
         if claims.is_taken(feed_id):
             log.info(
@@ -2347,8 +2355,10 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
             # the first made rather than reaching for a second feed row.
             absorbed_by = claims.claimed_for(activity_id)
             if absorbed_by is None:
+                window = (_FEE_MATCH_WINDOW if row.get("section") == "FEE"
+                          else _ACTIVITY_MATCH_WINDOW)
                 absorbed_by = _unclaimed_feed_match(
-                    conn, aid, amount, ts, claims)
+                    conn, aid, amount, ts, claims, window)
                 if absorbed_by is not None:
                     claims.claim(activity_id, absorbed_by)
                     # The description stays out of the line: on a wire it
@@ -2361,6 +2371,10 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
                         amount, absorbed_by, pdf_path.name,
                     )
             if absorbed_by is not None:
+                # A run before the feed reached this date derived the row;
+                # the feed carries it now, so that derivation goes.
+                conn.execute("DELETE FROM transactions WHERE activity_id = ?",
+                             (activity_id,))
                 skipped += 1
                 continue
             conn.execute(
