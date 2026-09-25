@@ -251,7 +251,8 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 // api hashValue so the row lands under the same gold account as
 // the api transactions for that account.
 //
-// `apiStartByHash` maps api hashValue → MIN(timestamp). A web tx
+// `apiStartByHash` maps api hashValue → where that account's api
+// history begins (apiCoverageStart). A web tx
 // is emitted only when:
 //
 //  1. its account bridges to an api hashValue; AND
@@ -288,6 +289,11 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 	defer rows.Close()
 
 	var built []builtWebTx
+	// The last day the tx-history JSON export reaches per account,
+	// counted BEFORE the api cutoff drops its rows: the export runs
+	// past the cutoff, and its span is what the splice below defers
+	// to (spliceNonExternalToJSON).
+	jsonThrough := map[string]int64{}
 	for rows.Next() {
 		var (
 			activityID, suffix, kind, payload, source string
@@ -300,6 +306,9 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 		hash, ok := bridge[suffix]
 		if !ok {
 			continue
+		}
+		if source == sourceTxHistoryJSON {
+			jsonThrough[hash] = max(jsonThrough[hash], ts/86400)
 		}
 		if cutoff, ok := apiStartByHash[hash]; ok && ts >= cutoff {
 			continue
@@ -377,7 +386,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 	//      1:1 so net_flow isn't double-counted.
 	// Securities distributions are new data (no other feed records them) and
 	// pass straight through as TxKindTransferOut external flows.
-	built = spliceNonExternalToJSON(built)
+	built = spliceNonExternalToJSON(built, jsonThrough)
 	built = supersedeStatementCashWithDistributions(built)
 	built = supersedeSalesWith1099B(built)
 	out := canonical.TransactionBatch{Transactions: dedupeCrossFeedExternalFlows(built)}
@@ -392,13 +401,19 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 // backfill the ~2-year JSON export can't reach. Mirrors the api-over-web
 // transaction splice in merge.go, one level down.
 //
+// The span ends where the export does, which `through` states per account
+// (an epoch day): the api cutoff drops the export's later rows from `built`,
+// and a span measured on what is left ends at the last trade before the
+// cutoff — one day short of that trade's statement copy, which is dated by
+// settlement and would survive as a second booking of it.
+//
 // External flows are deliberately untouched here — they move net_flow, so they
 // use the no-loss 1:1 cross-feed dedup in dedupeCrossFeedExternalFlows, which
 // keeps feed-unique legs rather than dropping them. Caveat: an internal gap in
 // the JSON export drops the PDF rows inside it too; acceptable because
 // non-external rows don't affect net_flow or holdings and the transaction report
 // stays single-sourced within the JSON span.
-func spliceNonExternalToJSON(built []builtWebTx) []builtWebTx {
+func spliceNonExternalToJSON(built []builtWebTx, through map[string]int64) []builtWebTx {
 	type span struct{ lo, hi int64 }
 	jrange := map[string]*span{}
 	for i := range built {
@@ -416,6 +431,12 @@ func spliceNonExternalToJSON(built []builtWebTx) []builtWebTx {
 			}
 		} else {
 			jrange[b.tx.AccountExternalID] = &span{lo: day, hi: day}
+		}
+	}
+
+	for account, day := range through {
+		if s := jrange[account]; s != nil {
+			s.hi = max(s.hi, day)
 		}
 	}
 

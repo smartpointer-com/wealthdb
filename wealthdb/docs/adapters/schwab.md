@@ -228,8 +228,16 @@ Schwab's real `activityId`; web uses a synthetic SHA-256 prefix).
 Any cross-source per-row match would be heuristic and risk
 double-counting. Inside the api window, api wins (real
 `activity_id`, no parser approximation); web emits only
-timestamps strictly less than `MIN(api.timestamp)` for that
-account.
+timestamps strictly before the account's api coverage start, and
+api only those from it on.
+
+The coverage start is the account's first api row, unless that row
+is a stray: the api can return one trade from months before its
+history proper, then fall silent. A leading api row followed by more
+than 30 days of api silence, during which the web books the account
+as active, is set aside, and the history starts at the next row. The
+web's activity is the evidence; a quiet account keeps its first row
+as its start.
 
 ### 7.3. PDF sha256 churn
 

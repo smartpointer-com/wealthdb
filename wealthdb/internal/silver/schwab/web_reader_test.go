@@ -54,7 +54,7 @@ func TestSpliceNonExternalToJSON(t *testing.T) {
 		wtx("pA-extin", pdf, canonical.TxKindWithdrawal, "A", 150, -1000), // external in span → kept (dedup handles it)
 		wtx("pB", pdf, canonical.TxKindBuy, "B", 150, -100),               // account B has no JSON → kept
 	}
-	got := builtIDs(spliceNonExternalToJSON(in))
+	got := builtIDs(spliceNonExternalToJSON(in, nil))
 	wantKept := []string{"jA-lo", "jA-hi", "pA-before", "pA-after", "pA-extin", "pB"}
 	for _, id := range wantKept {
 		if !got[id] {
@@ -250,5 +250,24 @@ func TestWebSignedKeepsAMinusOnAnInflow(t *testing.T) {
 	}
 	if webSigned(canonical.TxKindDividend, nil) != nil {
 		t.Error("a row with no figure gained one")
+	}
+}
+
+// TestSpliceSpanReachesPastTheAPICutoff: the api cutoff drops the JSON
+// export's later rows, so the span has to be told where the export ends.
+// A trade's statement copy, dated by settlement a day after its JSON
+// copy, then falls inside the span instead of just past it.
+func TestSpliceSpanReachesPastTheAPICutoff(t *testing.T) {
+	const pdf, js = sourceStatementPDF, sourceTxHistoryJSON
+	in := []builtWebTx{
+		wtx("j-trade", js, canonical.TxKindBuy, "A", 100, -500),
+		wtx("p-settle", pdf, canonical.TxKindBuy, "A", 101, -500),
+	}
+	if got := builtIDs(spliceNonExternalToJSON(in, nil)); !got["p-settle"] {
+		t.Fatalf("without the export's end the settle-dated copy is past the span and kept: %v", got)
+	}
+	got := builtIDs(spliceNonExternalToJSON(in, map[string]int64{"A": 120}))
+	if got["p-settle"] || !got["j-trade"] {
+		t.Errorf("with the export reaching day 120 the statement copy should go: %v", got)
 	}
 }

@@ -245,7 +245,7 @@ func TestSecuritiesTransferIsExternalNetFlow(t *testing.T) {
 		buildWebTxFromPayload("sec1", dist, kind, "A", 100*day, payload),
 	}
 	// Run the same stage tail transactionsBeforeAPIStart runs.
-	built := spliceNonExternalToJSON(in)
+	built := spliceNonExternalToJSON(in, nil)
 	built = supersedeStatementCashWithDistributions(built)
 	built = supersedeSalesWith1099B(built)
 	out := dedupeCrossFeedExternalFlows(built)

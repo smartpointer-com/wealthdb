@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -28,10 +29,11 @@ import (
 //	    times) so they coexist under the gold PK.
 //
 //	Transactions
-//	  - Hard cut at per-account api-coverage-start. Web emits
-//	    only timestamps strictly below that cutoff. api emits
-//	    unfiltered above. INTEROP §2 documents why a per-row
-//	    merge across the boundary isn't safe.
+//	  - Hard cut at per-account api-coverage-start
+//	    (apiCoverageStart). Web emits only timestamps strictly
+//	    below that cutoff, api only those at or above it.
+//	    INTEROP §2 documents why a per-row merge across the
+//	    boundary isn't safe.
 //
 // Account identity: web stores the 3-to-5-digit account suffix;
 // api stores Schwab's opaque hashValue. The orchestrator builds
@@ -51,8 +53,9 @@ type Connection struct {
 	bridgeBuilt bool
 	bridgeErr   error
 
-	// apiStartByHash caches per-api-account MIN(timestamp) for
-	// the transactions splice. Same lazy-build pattern as bridge.
+	// apiStartByHash caches where each api account's history
+	// begins (apiCoverageStart) for the transactions splice. Same
+	// lazy-build pattern as bridge.
 	apiStartByHash map[string]int64
 	apiStartBuilt  bool
 	apiStartErr    error
@@ -302,10 +305,37 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		if err != nil {
 			return nil, fmt.Errorf("schwab api Transactions: %w", err)
 		}
-		streams = append(streams, s)
+		streams = append(streams, &apiFromCoverageStart{inner: s, start: apiStart})
 	}
 	return silver.NewConcatTransactionStream(streams), nil
 }
+
+// apiFromCoverageStart drops the api rows dated before their account's
+// coverage start: the strays apiCoverageStart set aside, whose period
+// the web side books. Where an account has no strays its start is its
+// first row, so nothing is dropped.
+type apiFromCoverageStart struct {
+	inner silver.TransactionStream
+	start map[string]int64
+}
+
+func (s *apiFromCoverageStart) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
+	batch, more, err := s.inner.Next(ctx)
+	if err != nil {
+		return batch, more, err
+	}
+	kept := batch.Transactions[:0]
+	for _, tx := range batch.Transactions {
+		if start, ok := s.start[tx.AccountExternalID]; ok && tx.OccurredAt < start {
+			continue
+		}
+		kept = append(kept, tx)
+	}
+	batch.Transactions = kept
+	return batch, more, nil
+}
+
+func (s *apiFromCoverageStart) Close() error { return s.inner.Close() }
 
 // ensureBridge builds the web suffix → api hashValue map on first
 // use and caches the result. Returns the cached value on
@@ -529,45 +559,114 @@ func digitsOnly(s string) string {
 	return b.String()
 }
 
-// ensureAPIStart caches the per-account-hash MIN(timestamp) from
-// api.transactions. Web transactions newer than this cutoff are
-// dropped (the api side covers them); web transactions older
-// than this cutoff are the backfill.
+// ensureAPIStart caches, per api account hash, where the api history
+// begins (apiCoverageStart). Web transactions from that instant on are
+// dropped (the api side covers them); web transactions before it are
+// the backfill, and api rows before it are dropped in their favour.
 //
-// Accounts with no api transactions at all (cutoff absent from
-// the map) get NO web-side filter — web rows pass through
-// unfiltered.
+// Accounts with no api transactions at all (start absent from the
+// map) get NO web-side filter — web rows pass through unfiltered.
 func (c *Connection) ensureAPIStart(ctx context.Context) (map[string]int64, error) {
 	if c.apiStartBuilt {
 		return c.apiStartByHash, c.apiStartErr
 	}
 	c.apiStartBuilt = true
+	c.apiStartByHash = map[string]int64{}
 	if c.api == nil {
-		c.apiStartByHash = map[string]int64{}
 		return c.apiStartByHash, nil
 	}
-	const q = `
-SELECT account_external_id, MIN(timestamp)
-  FROM transactions
- GROUP BY account_external_id`
-	rows, err := c.api.db.QueryContext(ctx, q)
+	apiTimes, err := accountTimestamps(ctx, c.api.db, nil)
 	if err != nil {
 		c.apiStartErr = fmt.Errorf("schwab apiStartByHash: %w", err)
 		return nil, c.apiStartErr
 	}
-	defer rows.Close()
-	c.apiStartByHash = map[string]int64{}
-	for rows.Next() {
-		var hash string
-		var minTs sql.NullInt64
-		if err := rows.Scan(&hash, &minTs); err != nil {
+	webTimes := map[string][]int64{}
+	if c.web != nil {
+		bridge, err := c.ensureBridge(ctx)
+		if err != nil {
 			c.apiStartErr = err
 			return nil, err
 		}
-		if minTs.Valid {
-			c.apiStartByHash[hash] = minTs.Int64
+		if webTimes, err = accountTimestamps(ctx, c.web.db, bridge); err != nil {
+			c.apiStartErr = fmt.Errorf("schwab apiStartByHash: %w", err)
+			return nil, c.apiStartErr
 		}
 	}
-	c.apiStartErr = rows.Err()
-	return c.apiStartByHash, c.apiStartErr
+	for hash, times := range apiTimes {
+		c.apiStartByHash[hash] = apiCoverageStart(times, webTimes[hash])
+	}
+	return c.apiStartByHash, nil
+}
+
+// accountTimestamps reads every transaction timestamp of a silver,
+// ascending per account. With a bridge the web suffixes are translated
+// to api hashes and an unbridged account is skipped.
+func accountTimestamps(ctx context.Context, db *sql.DB, bridge map[string]string) (map[string][]int64, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT account_external_id, timestamp
+  FROM transactions
+ ORDER BY account_external_id, timestamp`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]int64{}
+	for rows.Next() {
+		var account string
+		var ts int64
+		if err := rows.Scan(&account, &ts); err != nil {
+			return nil, err
+		}
+		if bridge != nil {
+			hash, ok := bridge[account]
+			if !ok {
+				continue
+			}
+			account = hash
+		}
+		out[account] = append(out[account], ts)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Several web suffixes can bridge to one hash; each arrived sorted
+	// on its own.
+	for account := range out {
+		slices.Sort(out[account])
+	}
+	return out, nil
+}
+
+// apiStrayGap is how long an api account can fall silent after its
+// first rows before those rows are suspected of predating its history.
+const apiStrayGap = 30 * 86400
+
+// apiCoverageStart returns where an api account's history begins,
+// given its api and web transaction timestamps, both ascending.
+//
+// Normally that is its first row. The api can also return a row from
+// well before its history proper — one trade from months earlier, then
+// silence until the account's rows begin in earnest — and taken as the
+// start, that stray hides every web row in between, which the api does
+// not have. So a leading row followed by more than apiStrayGap of api
+// silence, during which the web books the account as active, is a
+// stray, and the history starts at the next row. The web's activity is
+// the evidence: an account that was simply quiet shows none, and keeps
+// its first row as its start. The evidence stops at the start of the
+// next row's day, because the web stamps a row at midnight: its copy of
+// that very row would otherwise count as activity in the silence.
+func apiCoverageStart(api, web []int64) int64 {
+	i := 0
+	for i+1 < len(api) && api[i+1]-api[i] > apiStrayGap &&
+		anyBetween(web, api[i], api[i+1]-api[i+1]%86400) {
+		i++
+	}
+	return api[i]
+}
+
+// anyBetween reports whether a sorted slice holds a value strictly
+// between lo and hi.
+func anyBetween(sorted []int64, lo, hi int64) bool {
+	j, _ := slices.BinarySearch(sorted, lo+1)
+	return j < len(sorted) && sorted[j] < hi
 }

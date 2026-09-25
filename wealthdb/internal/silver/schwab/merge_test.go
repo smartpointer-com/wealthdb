@@ -4,8 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // newBridgeSeedDB creates a fresh on-disk SQLite under t.TempDir()
@@ -166,5 +170,62 @@ func TestBuildAccountBridge(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAPICoverageStart: the api history starts at its first row unless
+// that row is a stray — followed by more than apiStrayGap of api silence
+// while the web books the account as active.
+func TestAPICoverageStart(t *testing.T) {
+	const day = int64(86400)
+	cases := []struct {
+		name     string
+		api, web []int64
+		want     int64
+	}{
+		{"a continuous history starts at its first row",
+			[]int64{10 * day, 11 * day, 12 * day}, []int64{5 * day, 9 * day}, 10 * day},
+		{"a stray before a silence the web fills is set aside",
+			[]int64{10 * day, 200 * day, 201 * day}, []int64{10 * day, 50 * day, 120 * day}, 200 * day},
+		{"a quiet account keeps its first row",
+			[]int64{10 * day, 200 * day}, []int64{5 * day, 205 * day}, 10 * day},
+		{"a web row on the stray's own day is not evidence",
+			[]int64{10*day + 3600, 200 * day}, []int64{10 * day}, 10*day + 3600},
+		{"a silence of exactly the gap is not one",
+			[]int64{10 * day, 10*day + apiStrayGap}, []int64{20 * day}, 10 * day},
+		{"two strays in a row are both set aside",
+			[]int64{10 * day, 100 * day, 300 * day, 301 * day}, []int64{50 * day, 200 * day}, 300 * day},
+		{"a web row on the next api row's day is its twin, not evidence",
+			[]int64{10 * day, 200*day + 50000}, []int64{200 * day}, 10 * day},
+		{"a lone api row is its own start",
+			[]int64{10 * day}, []int64{50 * day}, 10 * day},
+	}
+	for _, c := range cases {
+		if got := apiCoverageStart(c.api, c.web); got != c.want {
+			t.Errorf("%s: start = %d, want %d", c.name, got/day, c.want/day)
+		}
+	}
+}
+
+// TestAPIFromCoverageStartDropsTheStrays: the api rows before an
+// account's coverage start leave, every other row stays.
+func TestAPIFromCoverageStartDropsTheStrays(t *testing.T) {
+	mk := func(id, acct string, at int64) canonical.TransactionChange {
+		return canonical.TransactionChange{TransactionExternalID: id, AccountExternalID: acct, OccurredAt: at}
+	}
+	inner := silver.NewTransactionStream(canonical.TransactionBatch{Transactions: []canonical.TransactionChange{
+		mk("stray", "A", 10), mk("kept", "A", 200), mk("other", "B", 5), mk("unmapped", "C", 1),
+	}})
+	s := &apiFromCoverageStart{inner: inner, start: map[string]int64{"A": 200, "B": 5}}
+	batch, _, err := s.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tx := range batch.Transactions {
+		got = append(got, tx.TransactionExternalID)
+	}
+	if want := []string{"kept", "other", "unmapped"}; !slices.Equal(got, want) {
+		t.Errorf("kept %v, want %v", got, want)
 	}
 }
