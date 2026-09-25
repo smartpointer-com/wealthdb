@@ -2,8 +2,10 @@
 Unit tests for load.py's cash-flow ledger (migration 0003).
 
 Covers the inception-to-date statement parsing, the per-period differencing,
-and the cap-table cash-flow synthesis (exercises + exit). In-memory SQLite +
-a tmp_path bronze edir. Synthetic data only — no real holdings or figures.
+the cap-table cash-flow synthesis (exercises + exit), and the fund ledger:
+notices, the pre-coverage residue, and a supplied file that itemises it.
+In-memory SQLite + a tmp_path bronze edir. Synthetic data only — no real
+holdings or figures.
 """
 from __future__ import annotations
 
@@ -312,7 +314,7 @@ def test_fund_notices_win_and_the_remainder_is_one_residue_row(migrated, tmp_pat
     docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 46250.0)}, _two_call_notices())
 
-    assert load._fund_cash_flows(migrated, 42, docs, 1_700_000_000) == 4
+    assert load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path) == 4
     assert _ledger(migrated) == [
         ("call:42:notice:n1", "capital_call", "06/15/2098", 61250.0),
         ("call:42:notice:n2", "capital_call", "09/16/2098", 93750.0),
@@ -338,7 +340,7 @@ def test_fund_falls_back_to_statement_differencing_without_notices(migrated,
     _stub_parsers(monkeypatch,
                   {"s1": (281250.0, 0.0), "s2": (358750.0, 46250.0)}, {})
 
-    assert load._fund_cash_flows(migrated, 42, docs, 1_700_000_000) == 3
+    assert load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path) == 3
     assert _ledger(migrated) == [
         ("call:42:s1", "capital_call", "12/31/2098", 281250.0),
         ("call:42:s2", "capital_call", "12/31/2099", 77500.0),
@@ -359,7 +361,7 @@ def test_fund_ledger_is_rebuilt_not_accumulated(migrated, tmp_path, monkeypatch)
     docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
     _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
 
-    load._fund_cash_flows(migrated, 42, docs, 1_700_000_000)
+    load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
     ids = [r[0] for r in _ledger(migrated)]
     assert "call:42:s1" not in ids                 # the superseded shape is gone
     assert "exercise:42:c1" in ids                 # another kind is untouched
@@ -375,9 +377,120 @@ def test_fund_warns_when_the_two_sources_leave_capital_unaccounted(
     _stub_parsers(monkeypatch, {"s1": (406250.0, 0.0)}, _two_call_notices())
 
     with caplog.at_level("WARNING"):
-        load._fund_cash_flows(migrated, 42, docs, 1_700_000_000)
+        load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
     assert "accounted for by neither" in caplog.text
     residue = migrated.execute(
         "SELECT amount FROM cash_flows WHERE cash_flow_external_id = "
         "'call:42:pre:n1'").fetchone()[0]
     assert residue == 156250.0                     # the fund's figure, not 251250
+
+
+# ============================================================
+# a supplied file itemises the lump before Carta's coverage
+# ============================================================
+
+def _supplied(tmp_path: Path, *rows: str) -> None:
+    """The fund's supplied `<eid>-transactions.csv` in the bronze root."""
+    (tmp_path / "42-transactions.csv").write_text(
+        "# calls made before the platform's coverage\n" + "\n".join(rows) + "\n")
+
+
+def test_supplied_calls_itemise_the_residue_before_the_earliest_notice(
+        migrated, tmp_path, monkeypatch):
+    # The earliest notice says 156250 was called before it and dates none of
+    # it. The holder's own records do: each supplied call lands at its own
+    # date, and a residue fully accounted for leaves no row behind.
+    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
+    _supplied(tmp_path,
+              "2097-03-01,capital_call,90000,,first call",
+              "2097-11-15,capital_call,66250,,")
+
+    assert load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path) == 4
+    assert _ledger(migrated) == [
+        ("call:42:notice:n1", "capital_call", "06/15/2098", 61250.0),
+        ("call:42:notice:n2", "capital_call", "09/16/2098", 93750.0),
+        ("call:42:supplied:0", "capital_call", "2097-03-01", 90000.0),
+        ("call:42:supplied:1", "capital_call", "2097-11-15", 66250.0),
+    ]
+    descs = dict(migrated.execute(
+        "SELECT cash_flow_external_id, description FROM cash_flows").fetchall())
+    assert descs["call:42:supplied:0"] == "first call"
+    assert descs["call:42:supplied:1"] == "fund capital call"
+
+
+def test_the_residue_keeps_what_the_supplied_calls_leave(migrated, tmp_path,
+                                                         monkeypatch):
+    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
+    _supplied(tmp_path, "2097-03-01,capital_call,90000,,")
+
+    load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
+    ledger = {r[0]: r[3] for r in _ledger(migrated)}
+    assert ledger["call:42:supplied:0"] == 90000.0
+    assert ledger["call:42:pre:n1"] == 66250.0
+
+
+def test_a_supplied_call_after_the_lump_is_not_part_of_it(migrated, tmp_path,
+                                                          monkeypatch, caplog):
+    # The lump is everything before the earliest notice; a later call is the
+    # notices' to state, and counting it would double what they already do.
+    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
+    _supplied(tmp_path, "2098-07-01,capital_call,40000,,")
+
+    with caplog.at_level("WARNING"):
+        load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
+    assert "not dated on or before" in caplog.text
+    ledger = {r[0]: r[3] for r in _ledger(migrated)}
+    assert "call:42:supplied:0" not in ledger
+    assert ledger["call:42:pre:n1"] == 156250.0
+
+
+def test_supplied_calls_beyond_the_lump_are_kept_and_the_excess_logged(
+        migrated, tmp_path, monkeypatch, caplog):
+    # The supplied rows are dated and the lump is not, so they stand; the
+    # fund's own figure is what says something is off, and the log says so.
+    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
+    _supplied(tmp_path, "2097-03-01,capital_call,210000,,")
+
+    with caplog.at_level("WARNING"):
+        load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
+    assert "exceed what the fund reports" in caplog.text
+    ledger = {r[0]: r[3] for r in _ledger(migrated)}
+    assert ledger["call:42:supplied:0"] == 210000.0
+    assert "call:42:pre:n1" not in ledger
+
+
+def test_supplied_calls_itemise_the_first_statement_without_notices(
+        migrated, tmp_path, monkeypatch):
+    # Without notices the first statement's inception-to-date figure is the
+    # lump; later statements' deltas are per period and stay as they are.
+    rows = [_STMT_ROW, {"id": "s2", "document_type": "Capital account statement",
+                        "document_date": "12/31/2099"}]
+    docs = _fund_docs(tmp_path, rows)
+    _stub_parsers(monkeypatch,
+                  {"s1": (281250.0, 0.0), "s2": (358750.0, 0.0)}, {})
+    _supplied(tmp_path, "2097-03-01,capital_call,210000,,")
+
+    load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
+    assert _ledger(migrated) == [
+        ("call:42:s1", "capital_call", "12/31/2098", 71250.0),
+        ("call:42:s2", "capital_call", "12/31/2099", 77500.0),
+        ("call:42:supplied:0", "capital_call", "2097-03-01", 210000.0),
+    ]
+
+
+def test_a_fund_ignores_a_supplied_row_it_cannot_pair(migrated, tmp_path,
+                                                      monkeypatch, caplog):
+    # A fund's ledger holds calls and distributions; a company's kinds in its
+    # file would reach gold as unpaired legs.
+    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
+    _supplied(tmp_path, "2097-03-01,deposit,90000,,")
+
+    with caplog.at_level("WARNING"):
+        load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
+    assert "not a capital_call or distribution with an amount" in caplog.text
+    assert not [r for r in _ledger(migrated) if ":supplied:" in r[0]]

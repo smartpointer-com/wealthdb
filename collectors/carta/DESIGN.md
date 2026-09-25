@@ -476,19 +476,32 @@ carries the nature + direction), reconstructed from data we *do* have:
   side-loaded `<entity_external_id>-transactions.csv` supplies the exit legs
   (for example a sale plus the withdrawals it splits into, as canonical kinds
   the gold emits 1:1), which then replace the $0 exit.
-- **`capital_call`** / **`distribution`** — from the capital-account statements.
-  Each statement reports inception-to-date figures; differencing consecutive
-  statements (by date) yields the per-period flow, so the running total
-  reconciles to the fund's contributed-capital basis (the first statement lumps
-  anything before the earliest available one). The per-period statement columns
-  mis-align under pdftotext when `—` placeholders are present, so the
-  inception-to-date column — which reads cleanly as the line's last amount — is
-  differenced instead.
+- **`capital_call`** / **`distribution`** — from the fund's notices where it
+  issues them, else from the capital-account statements. A notice states the
+  day the money was due and the amount to the cent, so it is the ledger for its
+  kind. A statement reports only inception-to-date figures; differencing
+  consecutive statements (by date) places a flow no more precisely than the
+  period it fell in, so it is the fallback for a fund that shares no notices.
+  The per-period statement columns mis-align under pdftotext when `—`
+  placeholders are present, so the inception-to-date column — which reads
+  cleanly as the line's last amount — is differenced instead.
+
+  Either way the fund reports what preceded Carta's coverage only as a lump:
+  the earliest notice's running total less its own amount, or the first
+  statement's inception-to-date figure. The notice lump is emitted as one
+  residue row dated at that notice — a bound, not an event, and its
+  description says so. A side-loaded `<entity_external_id>-transactions.csv`
+  can itemise the lump: rows of kind `capital_call`
+  or `distribution` dated on or before it are emitted at their own dates, and
+  the lump keeps only what they leave. A row dated after the lump is skipped,
+  and rows that exceed it are kept with a warning, since they are dated and the
+  lump is not.
 
 The gold adapter (§6.1) pairs each auto-derived event into a balanced
-double-entry on the custody account, so each event nets to exactly 0;
-side-loaded explicit legs are emitted 1:1 (the CSV supplies both halves, so
-they too net to 0).
+double-entry on the custody account, so each event nets to exactly 0; a
+company's side-loaded explicit legs are emitted 1:1 (the CSV supplies both
+halves, so they too net to 0), and a fund's side-loaded calls and
+distributions are paired like its own.
 
 ### Why SQLite, not DuckDB
 

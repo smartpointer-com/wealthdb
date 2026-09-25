@@ -28,7 +28,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	times, err := c.snapshotTimesInWindow(ctx, w)
+	ledger, err := c.loadFundLedger(ctx)
+	if err != nil {
+		return nil, err
+	}
+	times, err := c.snapshotTimesInWindow(ctx, w, ledger.carryDates())
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +52,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	var lastHeld canonical.SnapshotBatch
 	prevHeld := false
 	for _, t := range times {
-		batch, err := c.buildBatch(ctx, t, meta, acct)
+		batch, err := c.buildBatch(ctx, t, meta, acct, ledger)
 		if err != nil {
 			return nil, err
 		}
@@ -141,16 +145,16 @@ func normCcy(c string) string {
 }
 
 // snapshotTimesInWindow are the event dates on which any position changes —
-// the union of the position-bearing content tables (dump_runs is the download
-// time, not a holding event, so it is intentionally excluded).
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
+// the union of the position-bearing content tables and the days a fund's
+// carried value changes (dump_runs is the download time, not a holding event,
+// so it is intentionally excluded).
+func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, carry []int64) ([]int64, error) {
 	const q = `
 SELECT DISTINCT snapshot_at FROM (
     SELECT snapshot_at FROM entities     WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM securities   WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM fund_metrics WHERE snapshot_at BETWEEN ? AND ?
-)
-ORDER BY snapshot_at`
+)`
 	rows, err := c.db.QueryContext(ctx, q,
 		w.Start, w.End, w.Start, w.End, w.Start, w.End)
 	if err != nil {
@@ -158,14 +162,26 @@ ORDER BY snapshot_at`
 	}
 	defer rows.Close()
 	var out []int64
+	seen := make(map[int64]bool)
 	for rows.Next() {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
 			return nil, err
 		}
+		seen[t] = true
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, t := range carry {
+		if t >= w.Start && t <= w.End && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
 }
 
 // entInfo is the stable per-entity metadata (name + fund flag + raw payload)
@@ -203,11 +219,12 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 }
 
 // buildBatch materialises the full portfolio as of date t: one position per
-// held company (cap-table lots aggregated, or the fund's capital account),
+// held company (cap-table lots aggregated, or the fund's capital account, or
+// before the fund's first NAV its called capital),
 // plus the single Carta account and one instrument per held company (so gold's
 // FK from positions is satisfied and the account's seen-range merges across
 // batches).
-func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string) (canonical.SnapshotBatch, error) {
+func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string, ledger fundLedger) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	active := make(map[int64]string)                   // entity id -> holdings currency
 	classesNew := make(map[int64]canonical.AssetClass) // entity id -> exposure (asset_class)
@@ -217,6 +234,9 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 		return batch, err
 	}
 	if err := c.appendFundAt(ctx, t, acct, &batch, active, classesNew, vehicles); err != nil {
+		return batch, err
+	}
+	if err := appendFundCarryAt(t, acct, ledger, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
 	if len(active) == 0 {

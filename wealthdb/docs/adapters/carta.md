@@ -138,6 +138,14 @@ see §6):
 - `commitment` / `called_capital` / `distributions` / `vintage_year` ride
   in the payload.
 
+Before a fund's first NAV — its first statement can follow its first call
+by years — the interest has no valuation of its own. Leaving it out would
+book each call as a loss in the period it was paid and the first NAV as a
+gain, so from the first call until the first NAV the position is carried at
+the capital paid in less any capital paid back (`market_value` =
+`book_value`), with `valuation_basis: called_capital` in its payload. Each
+fund cash event before the first NAV is a snapshot day.
+
 So an as-of query sees the held cap-table equity valued at its basis and the
 fund at the right quarter's NAV; after a cap-table exit, only the
 surviving positions remain.
@@ -205,14 +213,16 @@ instrument; the buy / sell legs carry the share lot + price.
 | `exit`         | `sell` (+, with lot) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
 | `distribution` | `distribution` (+) + `withdrawal` (−) |
 
-A side-loaded `<account_id>-transactions.csv` (collector DESIGN.md §5.2) instead
-names canonical kinds directly (`sell` / `withdrawal` / `deposit` / `buy` /
-`contribution`), which the adapter emits **1:1** — the CSV supplies both halves
-of an exit (a sale plus the withdrawals it splits into), so they
-net to 0 without auto-pairing and override the synthesized $0 exit.
+A company's side-loaded `<account_id>-transactions.csv` (collector DESIGN.md
+§5.2) instead names canonical kinds directly (`sell` / `withdrawal` /
+`deposit` / `buy` / `contribution`), which the adapter emits **1:1** — the CSV
+supplies both halves of an exit (a sale plus the withdrawals it splits
+into), so they net to 0 without auto-pairing and override the
+synthesized $0 exit. A fund's side-loaded file can itemise calls made before
+Carta's coverage; they reach silver as `capital_call` / `distribution` rows
+and pair like the fund's own.
 
-`Status` reports the `cash_flows` date range as the transaction extrema; the
-load window (the content-table span) already covers them.
+`Status` reports the `cash_flows` date range as the transaction extrema.
 
 **Vesting schedules** (`vesting_schedules` / `vesting_events`),
 **documents**, **cap_calls**, and the `capital_events` audit timeline stay
@@ -225,11 +235,12 @@ figures in the fund position payload.
 `ChangeWindow` triggers on any `dump_run` past the watermark (a new download),
 and `NewChangeNumber` is `MAX(dump_runs.snapshot_at)`, so an idle reload is a
 no-op. The window itself spans the **event-dated content** (MIN/MAX
-`snapshot_at` across `entities` / `securities` / `fund_metrics`), **not** the
-download time: the reconstructed deltas sit years before the download (an
-exercise, an acquisition, a quarterly NAV) and must fall in-window to reach
-gold. `Status` reports the same content span as the observable range, with
-`LatestChangeNumber` = the newest dump.
+`snapshot_at` across `entities` / `securities` / `fund_metrics`) and every
+`cash_flows` date, **not** the download time: the reconstructed deltas can
+sit years before the download (an exercise, an acquisition, a quarterly NAV) and
+must fall in-window to reach gold, and a fund's calls can precede its first
+statement. `Status` reports the content span widened by the fund carry days
+as the observable range, with `LatestChangeNumber` = the newest dump.
 
 ## Open questions / future work
 

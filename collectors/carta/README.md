@@ -145,7 +145,7 @@ writes, which `load` never reads. (The `explore` diagnostics — HAR,
 Playwright trace, click log — are separate: they go to `/debug`, outside
 bronze, and prune never sees them.) A complete
 dump's inputs (`entities/`, the document PDFs, `bootstrap/`, the manifest),
-the side-loaded `<eid>-valuations.csv` / `<eid>-transactions.csv` overrides,
+the side-loaded `<eid>-valuations.csv` / `<eid>-transactions.csv` files,
 and the silver DB — all at the bronze root, not under a run dir — are never
 touched, so silver stays reproducible; deleting a non-complete dump surfaces
 on the next `load --force` rebuild. Runs host-side (a pure file walk needs no

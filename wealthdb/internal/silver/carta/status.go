@@ -22,8 +22,9 @@ SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
 )`
 
 // Status reports the observable snapshot + transaction ranges. The snapshot
-// range spans the event-dated content; the transaction range is the cash-flow
-// ledger (transactions.go). LatestChangeNumber is the newest dump (the
+// range spans the event-dated content and the days a fund's carried value
+// changes (fundcarry.go); the transaction range is the cash-flow ledger
+// (transactions.go). LatestChangeNumber is the newest dump (the
 // live-time signal, one row per ingested bronze run, so an idle reload is a
 // no-op).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
@@ -48,6 +49,18 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	if newS.Valid {
 		s.LatestSnapshotAt = newS.Int64
 	}
+	ledger, err := c.loadFundLedger(ctx)
+	if err != nil {
+		return s, err
+	}
+	for _, t := range ledger.carryDates() {
+		if s.OldestSnapshotAt == -1 || t < s.OldestSnapshotAt {
+			s.OldestSnapshotAt = t
+		}
+		if t > s.LatestSnapshotAt {
+			s.LatestSnapshotAt = t
+		}
+	}
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
 	}
@@ -62,9 +75,9 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 
 // transactionExtrema is the MIN/MAX cash-flow date — the transaction ledger
 // (transactions.go). flow_date is mixed-format TEXT, so it is parsed in Go
-// (flowDateUnix) rather than via strftime. These dates are a subset of the
-// content span (each cash event coincides with a securities / fund_metrics
-// delta), so the load window already covers them.
+// (flowDateUnix) rather than via strftime. A fund's calls can precede its
+// first statement, so these dates can fall outside the content span, and
+// ChangeWindow widens the window to cover them.
 func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int64, ok bool, err error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT flow_date FROM cash_flows WHERE flow_date IS NOT NULL`)
@@ -93,8 +106,9 @@ func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int
 }
 
 // ChangeWindow triggers on any dump_run past `since` (a new download), but the
-// window spans the full event-dated content range so every reconstructed
-// delta is re-emitted and reaches gold. NewChangeNumber is
+// window spans the full event-dated content range and every cash-flow date, so
+// every reconstructed delta and every ledger row is re-emitted and reaches
+// gold. NewChangeNumber is
 // MAX(dump_runs.snapshot_at) so an idle reload (no new dump) is a no-op.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
@@ -119,6 +133,14 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 		w.Start = start.Int64
 		w.End = end.Int64
 		w.HasChanges = true
+		oldest, latest, ok, err := c.transactionExtrema(ctx)
+		if err != nil {
+			return w, err
+		}
+		if ok {
+			w.Start = min(w.Start, oldest)
+			w.End = max(w.End, latest)
+		}
 	}
 	if newCN.Valid {
 		w.NewChangeNumber = newCN.Int64

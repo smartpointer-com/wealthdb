@@ -55,8 +55,8 @@ func unixDate(t *testing.T, s string) int64 {
 //   - entity 200 (fund): a capital-account NAV, plus a `capital_call` and a
 //     `distribution` cash flow.
 //
-// The entities / securities / fund_metrics snapshot dates span the cash-flow
-// dates, so the load window covers them.
+// The fund's call falls on its NAV date, so the fixture carries no fund at
+// called capital (fundcarry_test.go covers that).
 func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
 	d0101 := unixDate(t, "2023-01-01")

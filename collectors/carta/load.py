@@ -25,9 +25,11 @@ Bronze → silver mapping (schema in migrations/):
                                   per-date FMV, the single source of truth for
                                   held-share value when present (DESIGN.md §5.1)
   <entity_external_id>-transactions.csv
-                               -> explicit exit transactions (bronze root,
-                                  optional): the final sale + bank/escrow
-                                  withdrawals, overriding the $0 exit (§5.2)
+                               -> supplied transactions (bronze root,
+                                  optional): for a company the exit legs
+                                  (a sale + its withdrawals), overriding the
+                                  $0 exit; for a fund the capital calls made
+                                  before Carta's coverage (§5.2)
   entities/<e>/exercises/grant_*_er_*.xlsx
                                -> FMV at last exercise (fallback held-share value)
   entities/<e>/fund-admin/partner-metrics.json
@@ -270,10 +272,15 @@ def _read_transactions_csv(path: Path) -> list[dict]:
     """Read a side-loaded transactions CSV (named
     `<entity_external_id>-transactions.csv` in the bronze root): rows of
     `date,kind,amount,shares,description`, '#' /
-    blank lines ignored. `kind` is a canonical transaction kind the gold emits
-    1:1 (sell | withdrawal | deposit | buy | contribution); `amount` is a
-    positive magnitude (USD). These explicit legs override the auto-derived $0
-    exit for the entity (e.g. a sale plus the withdrawals it splits into). Returns the parsed rows in file order; empty if absent."""
+    blank lines ignored; `amount` is a positive magnitude (USD).
+
+    For a company, `kind` is a canonical transaction kind the gold emits 1:1
+    (sell | withdrawal | deposit | buy | contribution), and the rows override
+    the auto-derived $0 exit (e.g. a sale plus the withdrawals it splits
+    into). For a fund, `kind` is `capital_call` or `distribution`,
+    and the rows itemise what the fund reports only as a lump before Carta's
+    coverage (_fund_cash_flows). Returns the parsed rows in file order; empty
+    if absent."""
     if not path.is_file():
         return []
     out: list[dict] = []
@@ -880,7 +887,8 @@ def _captable_cash_flows(conn, eid, edir: Path, snap: int,
     return n
 
 
-def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int) -> int:
+def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int,
+                     bronze_root: Path) -> int:
     """Fund cash flows: `capital_call` (deposit+contribution in gold) and
     `distribution` (distribution+withdrawal).
 
@@ -898,10 +906,26 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int) -> int:
     everything called before Carta shared anything, which is not itemised
     anywhere. The residue is dated at the earliest notice, the last day on
     which it is KNOWN to have been fully called; it is a bound, not an event,
-    and its description says so.
+    and its description says so. Without notices the first statement's figure
+    is the same kind of lump.
+
+    A supplied `<eid>-transactions.csv` itemises that lump from the holder's
+    own records: each `capital_call` / `distribution` row dated on or before
+    the lump is emitted at its own date, and the lump keeps only what the
+    rows do not account for. A row dated after the lump cannot be part of it
+    and is skipped with a warning. Where the fund reports no lump for a kind
+    at all, the supplied rows are that kind's whole ledger.
     """
     idx = _read_json(docs_dir / "index.json")
     rows = idx.get("results") if isinstance(idx, dict) else None
+    supplied = []
+    path = bronze_root / f"{eid}-transactions.csv"
+    for i, tx in enumerate(_read_transactions_csv(path)):
+        if tx["kind"] not in ("capital_call", "distribution") or not tx["amount"]:
+            log.warning("fund %s: supplied row %d is not a capital_call or "
+                        "distribution with an amount; skipped", eid, i)
+            continue
+        supplied.append({**tx, "row": i})
     stmts, notices = [], []
     for row in rows or []:
         dtype = row.get("document_type") or ""
@@ -944,10 +968,21 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int) -> int:
         desc = "fund capital call" if kind == "capital_call" else "fund distribution"
         mine = sorted((x for x in notices if x["kind"] == kind),
                       key=lambda x: _flow_sort_key(x["date"]))
+        mine_supplied = [tx for tx in supplied if tx["kind"] == kind]
         if not mine:
-            # No notices for this kind: the statements are all there is.
-            for docid, date, k, amount in deltas:
-                if k == kind:
+            # No notices for this kind: the statements are all there is, and
+            # the first one's figure lumps everything before it.
+            periods = [(docid, date, amount) for docid, date, k, amount in deltas
+                       if k == kind]
+            if periods:
+                docid, date, amount = periods[0]
+                itemised, rest = _itemise(eid, kind, amount, date, mine_supplied)
+                periods[0] = (docid, date, rest)
+            else:
+                itemised = mine_supplied
+            n += _insert_supplied(conn, eid, snap, prefix, desc, itemised)
+            for docid, date, amount in periods:
+                if amount > 0.01:
                     n += _insert_cash_flow(conn, f"{prefix}:{eid}:{docid}", eid,
                                            snap, kind, date, amount, None, None, desc)
             continue
@@ -970,6 +1005,9 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int) -> int:
                             "accounted for by neither",
                             kind, residue, stated, residue - stated)
             residue = stated
+        residue_date = mine[0].get("issued") or mine[0]["date"]
+        itemised, residue = _itemise(eid, kind, residue, residue_date, mine_supplied)
+        n += _insert_supplied(conn, eid, snap, prefix, desc, itemised)
         if residue > 0.01:
             # Dated at the notice, not at its due date: the notice is what
             # STATES the residue was already called, and dating it on the due
@@ -977,9 +1015,44 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int) -> int:
             # the very lump this exists to take apart.
             n += _insert_cash_flow(
                 conn, f"{prefix}:{eid}:pre:{mine[0]['docid']}", eid, snap, kind,
-                mine[0].get("issued") or mine[0]["date"], residue, None, None,
+                residue_date, residue, None, None,
                 f"{desc} before Carta's coverage (not itemised; dated at the "
                 "earliest notice, the last day it is known to have been called)")
+    return n
+
+
+def _itemise(eid, kind: str, lump: float, lump_date: str,
+             supplied: list[dict]) -> tuple[list[dict], float]:
+    """Split a lump the fund reports without dates into the supplied rows that
+    itemise it and what they leave. Rows dated after the lump are not part of
+    it and are dropped; rows that together exceed it are kept — the holder's
+    records are dated, the lump is not — and the excess is logged."""
+    bound = _date_ts(lump_date)
+    rows, rest = [], lump
+    for tx in supplied:
+        at = _date_ts(tx["flow_date"])
+        if at is None or bound is None or at > bound:
+            log.warning("fund %s: supplied %s of %s is not dated on or before "
+                        "the lump it would itemise (%s); skipped",
+                        eid, kind, tx["flow_date"], lump_date)
+            continue
+        rows.append(tx)
+        rest -= tx["amount"]
+    rest = round(rest, 2)
+    if rest < -0.01:
+        log.warning("fund %s: the supplied %s rows exceed what the fund reports "
+                    "before %s by %.2f", eid, kind, lump_date, -rest)
+    return rows, max(rest, 0.0)
+
+
+def _insert_supplied(conn, eid, snap: int, prefix: str, desc: str,
+                     rows: list[dict]) -> int:
+    """Write the supplied rows that itemise a fund lump, keyed by file row."""
+    n = 0
+    for tx in rows:
+        n += _insert_cash_flow(conn, f"{prefix}:{eid}:supplied:{tx['row']}", eid,
+                               snap, tx["kind"], tx["flow_date"], tx["amount"],
+                               None, None, tx["description"] or desc)
     return n
 
 
@@ -1018,7 +1091,7 @@ def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
             continue
         eid = meta.get("corporation_id")
         if meta.get("is_fund_investment"):
-            n += _fund_cash_flows(conn, eid, docs_dir, snap)
+            n += _fund_cash_flows(conn, eid, docs_dir, snap, bronze_root)
         else:
             n += _captable_cash_flows(conn, eid, edir, snap, bronze_root)
     return n
