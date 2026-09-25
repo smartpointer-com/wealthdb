@@ -559,3 +559,137 @@ func TestADescribedLegDoesNotPairWithItsOwnAccount(t *testing.T) {
 		t.Error("the hub's own two legs were fused into a round trip")
 	}
 }
+
+// Two legs of one account pair only as a round trip: the same signature on
+// both, or a reversal on either. Two unrelated movements that merely share an
+// account and a size — a payment out, a transfer in — must not delete each
+// other.
+func TestSameAccountLegsPairOnlyAsARoundTrip(t *testing.T) {
+	on := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, AllowSameOwner: true}
+	pair := func(dSig, cSig string, rev bool) []TransferMatchPair {
+		d := leg("bank", "checking", "out", 100, -500)
+		c := leg("bank", "checking", "in", 101, 500)
+		d.Signature, c.Signature, c.Reversal = dSig, cSig, rev
+		return MatchTransferLegs([]TransferLeg{d, c}, on)
+	}
+	if got := pair("EXAMPLE PLAN CONTRIBUTION", "EXAMPLE BANK TRANSFER", false); len(got) != 0 {
+		t.Errorf("unrelated same-account legs paired: %+v", got)
+	}
+	if got := pair("EXAMPLE TRANSFER", "EXAMPLE TRANSFER", false); len(got) != 1 {
+		t.Errorf("a movement out and back under one signature did not pair: %+v", got)
+	}
+	if got := pair("EXAMPLE WIRE", "CANCELLED WIRE", true); len(got) != 1 {
+		t.Errorf("an entry and its reversal did not pair: %+v", got)
+	}
+}
+
+// namedLeg is a matcher input whose narrative names other accounts.
+func namedLeg(group, owner, id string, day int64, amt float64, names ...string) TransferLeg {
+	l := leg(group, owner, id, day, amt)
+	l.Names = names
+	return l
+}
+
+// A debit whose narrative names where the money went takes that credit ahead
+// of an earlier, silent debit a day nearer to it, which is left to the credit
+// that is really its own.
+func TestANamedPairIsClaimedBeforeANearerSilentOne(t *testing.T) {
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
+	got := MatchTransferLegs([]TransferLeg{
+		leg("bank", "checking", "silent", 100, -1000),
+		namedLeg("bank", "checking", "named", 102, -1000, "exchange"),
+		leg("exchange", "wallet", "deposit", 100, 1000),
+		leg("broker", "cash", "in", 103, 1000),
+	}, opts)
+	want := map[string]string{"named": "deposit", "silent": "in"}
+	if len(got) != 2 {
+		t.Fatalf("pairs = %+v, want two", got)
+	}
+	for _, p := range got {
+		if want[p.Debit.ID] != p.Credit.ID {
+			t.Errorf("%s paired with %s, want %s", p.Debit.ID, p.Credit.ID, want[p.Debit.ID])
+		}
+	}
+	if got[0].By != MatchedByName || got[1].By != MatchedByAmount {
+		t.Errorf("phases = %s, %s; want named, then amount", got[0].By, got[1].By)
+	}
+}
+
+// A leg that names its other side pairs with nothing else, however well
+// amount and day agree, and a name for a whole group admits any account in it
+// while a name for one account admits that account alone.
+func TestANamedLegPairsOnlyWithWhatItNames(t *testing.T) {
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
+	if got := MatchTransferLegs([]TransferLeg{
+		namedLeg("bank", "checking", "out", 100, -1000, "exchange"),
+		leg("broker", "cash", "in", 100, 1000),
+	}, opts); len(got) != 0 {
+		t.Errorf("a leg naming the exchange paired with the broker: %+v", got)
+	}
+	if got := MatchTransferLegs([]TransferLeg{
+		namedLeg("bank", "checking", "out", 100, -1000, NamedAccount("exchange", "wallet-a")),
+		leg("exchange", "wallet-b", "in", 100, 1000),
+	}, opts); len(got) != 0 {
+		t.Errorf("a leg naming one wallet paired with another: %+v", got)
+	}
+	if got := MatchTransferLegs([]TransferLeg{
+		namedLeg("bank", "checking", "out", 100, -1000, "exchange"),
+		leg("exchange", "wallet-b", "in", 100, 1000),
+	}, opts); len(got) != 1 {
+		t.Errorf("a leg naming the exchange did not pair with one of its wallets: %+v", got)
+	}
+}
+
+// A run of identical named transfers between two accounts pairs every leg: a
+// debit whose nearest credit is also the only one another debit can reach
+// moves to its other candidate rather than stranding both.
+func TestNamedPairsStrandNoLegANearerChoiceWouldStrand(t *testing.T) {
+	opts := TransferMatchOpts{WindowDays: 3, TolerancePct: 0.5}
+	got := MatchTransferLegs([]TransferLeg{
+		namedLeg("bank", "checking", "first", 105, -1000, "exchange"),
+		namedLeg("bank", "checking", "second", 108, -1000, "exchange"),
+		leg("exchange", "wallet", "early", 103, 1000),
+		leg("exchange", "wallet", "late", 106, 1000),
+	}, opts)
+	pairs := map[string]string{}
+	for _, p := range got {
+		pairs[p.Debit.ID] = p.Credit.ID
+	}
+	if pairs["first"] != "early" || pairs["second"] != "late" {
+		t.Errorf("pairs = %v, want first→early and second→late", pairs)
+	}
+}
+
+// Where both narratives name each other, that pair is claimed before a credit
+// that names only a group can be taken by a silent debit of that group.
+func TestMutuallyNamedPairsOutrankOneSidedOnes(t *testing.T) {
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
+	got := MatchTransferLegs([]TransferLeg{
+		leg("bank", "savings", "internal", 100, -5000),
+		namedLeg("bank", "checking", "to-broker", 101, -5000, "broker"),
+		namedLeg("broker", "cash", "from-bank", 100, 5000, "bank"),
+		leg("bank", "checking", "from-savings", 100, 5000),
+	}, opts)
+	pairs := map[string]string{}
+	for _, p := range got {
+		pairs[p.Debit.ID] = p.Credit.ID
+	}
+	if pairs["to-broker"] != "from-bank" || pairs["internal"] != "from-savings" {
+		t.Errorf("pairs = %v, want to-broker→from-bank and internal→from-savings", pairs)
+	}
+}
+
+// On an exact tie of amount and day, a leg of the debit's own source wins
+// over another source's: moves inside one institution are the commoner kind.
+func TestATieGoesToTheDebitsOwnSource(t *testing.T) {
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
+	// The other source sorts first, so a first-found tie-break would take it.
+	got := MatchTransferLegs([]TransferLeg{
+		leg("savings-bank", "account-a", "journal-out", 100, -1000),
+		leg("brokerage", "cash", "deposit", 100, 1000),
+		leg("savings-bank", "account-b", "journal-in", 100, 1000),
+	}, opts)
+	if len(got) != 1 || got[0].Credit.ID != "journal-in" {
+		t.Errorf("pairs = %+v, want journal-out→journal-in", got)
+	}
+}

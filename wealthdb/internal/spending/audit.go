@@ -99,8 +99,8 @@ func (p Pair) RemovedFromSpending() bool {
 // MatchedPairs re-runs the internal-transfer matcher over gold's
 // matcher pool and returns the pairs it found together with every leg
 // it left unpaired. Both results are sorted for stable output.
-func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct float64, rules []gold.TransferOverrideRule) ([]Pair, []Leg, error) {
-	legs, narratives, _, err := loadMatcherPool(ctx, db)
+func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct float64, names []CounterpartyName, rules []gold.TransferOverrideRule) ([]Pair, []Leg, error) {
+	legs, narratives, _, err := loadMatcherPool(ctx, db, names)
 	if err != nil {
 		return nil, nil, err
 	}

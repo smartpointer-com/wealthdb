@@ -113,7 +113,7 @@ func collectSpendCanaries(ctx context.Context, db *sql.DB, cfg *config.Config) (
 	if err != nil {
 		return nil, err
 	}
-	pairs, unmatched, err := spending.MatchedPairs(ctx, db, m.Window(), m.Tolerance(), overrideRules)
+	pairs, unmatched, err := spending.MatchedPairs(ctx, db, m.Window(), m.Tolerance(), matchNames(m), overrideRules)
 	if err != nil {
 		return nil, fmt.Errorf("categorize: matcher audit: %w", err)
 	}

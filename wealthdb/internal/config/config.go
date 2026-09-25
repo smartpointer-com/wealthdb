@@ -763,10 +763,11 @@ type SpendingAccounts struct {
 }
 
 // SpendingTransferMatching are the internal-transfer matcher's knobs
-// for its AMOUNT pass — the phase that infers a pair from two figures
-// landing near each other. The phases that assert one outright, from
-// the override ledger or from a reference the source stamped on both
-// legs, are not banded and these do not reach them.
+// for its banded passes — the phases that infer a pair from two figures
+// landing near each other, first among the pairs a narrative names. The
+// phases that assert one outright, from the override ledger or from a
+// reference the source stamped on both legs, are not banded and these do
+// not reach them.
 //
 // Pointer fields distinguish "not set" (use the default) from an
 // explicit value.
@@ -781,7 +782,25 @@ type SpendingTransferMatching struct {
 	// larger leg (an absolute floor of 0.01 always applies, so 0 means
 	// exact-to-a-cent). Covers a transfer fee deducted in transit.
 	TolerancePct *float64 `json:"tolerance_pct,omitempty"`
+	// Names say which narratives name which account as the other side of a
+	// movement (docs/SPENDING.md §3). A pair one of whose legs names the
+	// other's account is claimed ahead of the plain amount pass. Absent
+	// leaves the matcher pairing on amount and day alone.
+	Names []SpendingMatchName `json:"names,omitempty"`
 }
+
+// SpendingMatchName is one spending.internal_transfer_matching.names entry:
+// a leg whose narrative matches Match names Source as its other side — or,
+// with Account set, that one account of it.
+type SpendingMatchName struct {
+	Source  string `json:"source"`
+	Account string `json:"account,omitempty"`
+	Match   string `json:"match"`
+	re      *regexp.Regexp
+}
+
+// Pattern is Match compiled; nil until Validate has run.
+func (n SpendingMatchName) Pattern() *regexp.Regexp { return n.re }
 
 // Defaults for the spending matcher's knobs, deliberately equal to
 // DefaultTransferMatchWindowDays / DefaultTransferMatchTolerancePct.

@@ -191,7 +191,7 @@ func TestTheMatcherPoolCarriesTheReferenceToEveryCaller(t *testing.T) {
 	stampMovementReference(t, db, ctx, "bank", "T-REF-OUT", "TXNO-6")
 	stampMovementReference(t, db, ctx, "bank", "T-REF-IN", "TXNO-6")
 
-	legs, _, _, err := loadMatcherPool(ctx, db)
+	legs, _, _, err := loadMatcherPool(ctx, db, nil)
 	if err != nil {
 		t.Fatalf("loadMatcherPool: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestTheMatcherPoolCarriesTheReferenceToEveryCaller(t *testing.T) {
 			t.Errorf("leg %s reached the matcher with Ref %q, want TXNO-6", l.ID, l.Ref)
 		}
 	}
-	pairs, _, err := MatchedPairs(ctx, db, 5, 0.5, nil)
+	pairs, _, err := MatchedPairs(ctx, db, 5, 0.5, nil, nil)
 	if err != nil {
 		t.Fatalf("MatchedPairs: %v", err)
 	}

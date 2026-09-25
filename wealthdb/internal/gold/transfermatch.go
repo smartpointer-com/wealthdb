@@ -12,9 +12,10 @@ import (
 // sending account, a credit on the receiving one — and nothing in the data
 // links the halves — except where the source itself does, by stamping one
 // reference on both. This file holds the algorithm that re-pairs them: a
-// deterministic 1:1 matcher in four phases, asserting first what the holder
+// deterministic 1:1 matcher in five phases, asserting first what the holder
 // stated, then what the source stamped and what it described, and only then
-// guessing from same-currency amounts inside a day window and a tolerance. It
+// guessing from same-currency amounts inside a day window and a tolerance —
+// first among the pairs a narrative names, then among the rest. It
 // knows nothing about returns, spending, or accounts; it takes legs and hands
 // back pairs. Callers own what a leg IS, which legs are offered, and what a
 // pair MEANS:
@@ -115,6 +116,45 @@ type TransferLeg struct {
 	// is then the only link there is.
 	CounterCcy string
 	CounterAmt float64
+
+	// Signature and Reversal decide whether two legs of the SAME account
+	// may pair, under AllowSameOwner: only when their signatures agree — the
+	// same movement booked out and back, like a transfer that bounced — or
+	// when either leg is a Reversal, marked so by the words a bank uses for
+	// undoing an entry. Signature is the caller's normalised narrative, and
+	// the matcher only ever compares it for equality.
+	//
+	// Without this, one account's debit and credit of equal size inside the
+	// window pair on amount alone, and on a busy account that is usually two
+	// unrelated movements — a payment out and a transfer in — which the pair
+	// then deletes together. A caller that fills neither leaves every
+	// same-account pair open, which is where AllowSameOwner stood before.
+	Signature string
+	Reversal  bool
+
+	// Names are the accounts this leg's own narrative names as the other
+	// side of its movement — "EXAMPLE BANK", "EXAMPLE BROKERAGE", an exchange's
+	// name — each a whole group (any of its accounts) or one account
+	// (NamedAccount). Empty for most legs. A pair whose either leg names
+	// the other's account is claimed ahead of the plain amount pass (see
+	// MatchTransferLegs), so a debit whose narrative names where the money
+	// went is not left stranded because an earlier, silent debit of the same
+	// size took that credit for being a day nearer.
+	Names []string
+}
+
+// NamedAccount is the TransferLeg.Names entry for one account of a group.
+// A bare group name stands for every account in it.
+func NamedAccount(group, owner string) string { return group + "\x00" + owner }
+
+// names reports whether l's narrative names the account other sits on.
+func (l TransferLeg) names(other TransferLeg) bool {
+	for _, n := range l.Names {
+		if n == other.Group || n == NamedAccount(other.Group, other.Owner) {
+			return true
+		}
+	}
+	return false
 }
 
 // TransferMatchOpts are the matcher's knobs. The zero value pairs only
@@ -150,13 +190,15 @@ type TransferMatchOpts struct {
 	// AllowSameOwner permits pairing two legs of the SAME account: a
 	// withdrawal and a deposit that undo each other — a transfer bounced
 	// back, a reversal booked as its own line — net to zero, and a caller
-	// reading a pair as "not spending" wants that round trip out. It is off
-	// by default because for the returns engine an in-and-out on one account
-	// is two boundary flows, not one transfer, and a same-account pair would
-	// net capital that really did leave and return. Meaningless under
-	// CrossGroupOnly, which forbids the whole group first. When it is on and
-	// a debit finds equally good partners on its own account and on another,
-	// the other account's leg wins the tie (see MatchTransferLegs).
+	// reading a pair as "not spending" wants that round trip out. The legs'
+	// Signature and Reversal say which same-account pairs are such a round
+	// trip. It is off by default because for the returns engine an
+	// in-and-out on one account is two boundary flows, not one transfer, and
+	// a same-account pair would net capital that really did leave and
+	// return. Meaningless under CrossGroupOnly, which forbids the whole
+	// group first. When it is on and a debit finds equally good partners on
+	// its own account and on another, the other account's leg wins the tie
+	// (see MatchTransferLegs).
 	AllowSameOwner bool
 }
 
@@ -168,8 +210,8 @@ type TransferMatchPair struct {
 	By            TransferMatchPhase
 }
 
-// TransferMatchPhase names which of MatchTransferLegs' four phases asserted a
-// pair, and therefore how strong the claim behind it is.
+// TransferMatchPhase names which of MatchTransferLegs' phases asserted a pair,
+// and therefore how strong the claim behind it is.
 //
 // It is carried because an audit of the matcher cannot be read without it. A
 // reader checking a pair has always asked one question — do these two legs
@@ -185,6 +227,9 @@ const (
 	MatchedByReference TransferMatchPhase = "reference"
 	// MatchedByStatedCounter is the source describing one leg on the other.
 	MatchedByStatedCounter TransferMatchPhase = "stated-counter"
+	// MatchedByName is the banded pass over the pairs one leg's narrative
+	// names the other's account for (TransferLeg.Names).
+	MatchedByName TransferMatchPhase = "named"
 	// MatchedByAmount is the greedy banded pass: everything the data says
 	// when nothing has said it outright.
 	MatchedByAmount TransferMatchPhase = "amount"
@@ -228,7 +273,7 @@ const referenceMatchMaxDays = 90
 
 // MatchTransferLegs pairs debit legs with the credit legs they funded.
 //
-// Pairing runs in four phases over one pool, each withdrawing the legs it
+// Pairing runs in five phases over one pool, each withdrawing the legs it
 // claims before the next one looks. The order is the order of how much the
 // evidence is worth:
 //
@@ -242,10 +287,16 @@ const referenceMatchMaxDays = 90
 //     description (matchStatedCounters). Weaker than a reference, because a
 //     description has to be matched rather than merely read, and guarded
 //     accordingly.
-//  4. AMOUNT pairs — the greedy banded pass below, which is everything the
-//     data says when nothing has said it outright.
+//  4. NAMED pairs — the banded pass below, over only the pairs one leg's
+//     narrative names the other's account for (TransferLeg.Names): those
+//     both legs name first, then those one leg names. Amount and window
+//     still have to agree; the name decides between candidates they cannot
+//     tell apart, which is the busy week when several transfers of one round
+//     size cross the same accounts.
+//  5. AMOUNT pairs — the same banded pass over everything left, which is
+//     everything the data says when nothing has said it outright.
 //
-// An amount pair must agree on native currency, sit within opts.WindowDays of
+// A banded pair must agree on native currency, sit within opts.WindowDays of
 // each other, and differ in amount by no more than the tolerance. Matching on
 // NATIVE amounts is deliberate: converted amounts drift with the FX of each
 // leg's day, so the same movement would pair differently per output currency.
@@ -256,21 +307,22 @@ const referenceMatchMaxDays = 90
 // whose two legs no tolerance can ever bring together.
 //
 // The result is deterministic. Legs are sorted by (day, group, owner, id) —
-// the slice is sorted IN PLACE — and each debit in that order takes the
-// eligible credit with the smallest amount gap, then the nearest day, then —
-// only reachable under AllowSameOwner — a leg on ANOTHER account over one on
-// the debit's own, earliest on ties. Ranking amount before day is what keeps
-// an exact-amount partner from losing to a nearer-day coincidence, the main
-// false-pair pressure at loose tolerances; ranking the other account before
-// the debit's own keeps a same-account coincidence (a payroll credit landing
-// the day a transfer of the same size leaves) from stealing the partner that
-// is really on the far side. Pairing is greedy and one-to-one: a credit
-// claimed by an earlier debit is out of the pool for every later one, and the
-// matcher never backtracks to a globally better assignment.
+// the slice is sorted IN PLACE — and each debit in that order ranks the
+// eligible credits by the smallest amount gap, then the nearest day, then a
+// leg of its own source, then another source's, and — only reachable under
+// AllowSameOwner — one on its own account last, earliest on ties. Ranking
+// amount before day is what keeps an exact-amount partner from losing to a
+// nearer-day coincidence, the main false-pair pressure at loose tolerances;
+// ranking the own account last keeps a same-account coincidence (a payroll
+// credit landing the day a transfer of the same size leaves) from stealing
+// the partner that is really on the far side. The amount phase is greedy and
+// one-to-one: a credit claimed by an earlier debit is out of the pool for
+// every later one, and it never backtracks. The named phase does, but only
+// for a debit left with no free candidate (banded.maximal).
 //
-// Returned pairs follow the phases, and within each phase the debit order.
-// Legs that found no partner are simply absent — the caller keeps whatever
-// meaning an unmatched leg has for it.
+// Returned pairs follow the phases, and within each banded phase the debit
+// order. Legs that found no partner are simply absent — the caller keeps
+// whatever meaning an unmatched leg has for it.
 func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMatchPair {
 	if len(legs) < 2 {
 		return nil
@@ -300,12 +352,6 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 		return nil
 	}
 
-	// Per-currency credit index, preserving the global sorted order, so each
-	// debit scans only its currency's day band instead of every credit.
-	type ccyPart struct {
-		idx  []int   // indices into credits, day-ascending
-		days []int64 // credits[idx[k]].Day, for the band search
-	}
 	parts := map[string]*ccyPart{}
 	for i, c := range credits {
 		cp := parts[c.Ccy]
@@ -320,7 +366,7 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 	used := make([]bool, len(credits))
 	// claimed marks a debit taken by one of the three phases that assert a
 	// pair outright. All three share it, and the pool is compacted ONCE
-	// afterwards, so the amount pass below sees a debit slice holding only
+	// afterwards, so the banded passes below see a debit slice holding only
 	// what none of them spoke for.
 	claimed := make([]bool, len(debits))
 	var out []TransferMatchPair
@@ -340,52 +386,187 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 		}
 		debits = kept
 	}
-	window := int64(opts.WindowDays)
-	for _, d := range debits {
-		cp := parts[d.Ccy]
-		if cp == nil {
-			continue // no credit in this currency: nothing this debit can fund
+	band := banded{credits: credits, used: used, parts: parts, opts: opts, namedByDescription: namedByDescription}
+	mutual, debits := band.maximal(debits, namedByBoth)
+	oneSided, debits := band.maximal(debits, namedByEither)
+	amount := band.greedy(debits)
+	out = append(out, mutual...)
+	out = append(out, oneSided...)
+	return append(out, amount...)
+}
+
+// namedByBoth and namedByEither select the pairs the two named sub-phases
+// admit: each leg naming the other's account, then one leg naming the
+// other's. The pair two narratives agree on is the stronger claim, and is
+// claimed before a one-sided name can hand its credit to a silent debit.
+func namedByBoth(d, c TransferLeg) bool   { return d.names(c) && c.names(d) }
+func namedByEither(d, c TransferLeg) bool { return d.names(c) || c.names(d) }
+
+// banded is the pool the banded phases share: the credits with their
+// per-currency day index, the claims made so far, and the legs the
+// stated-counter phase placed elsewhere.
+type banded struct {
+	credits []TransferLeg
+	used    []bool
+	parts   map[string]*ccyPart
+	opts    TransferMatchOpts
+	// namedByDescription holds the legs whose other half the source places
+	// on another account, which therefore never pair on their own.
+	namedByDescription map[string]bool
+}
+
+// ccyPart indexes one currency's credits in the global sorted order, so each
+// debit scans only its currency's day band instead of every credit.
+type ccyPart struct {
+	idx  []int   // indices into credits, day-ascending
+	days []int64 // credits[idx[k]].Day, for the band search
+}
+
+// maximal pairs the debits with the credits admit selects, as many as there
+// are pairs to make: each debit takes its best free candidate, and only a
+// debit left with none frees a credit an earlier debit holds, by moving that
+// debit to another of its own (an augmenting path). So one debit's nearest choice
+// never strands a later debit that had no other — the shape of a run of
+// identical transfers between two accounts, where the nearest day is not the
+// right partner as often as not. Returns the pairs in debit order and the
+// debits left.
+func (b banded) maximal(debits []TransferLeg, admit func(d, c TransferLeg) bool) ([]TransferMatchPair, []TransferLeg) {
+	cands := make([][]int, len(debits))
+	for di, d := range debits {
+		cands[di] = b.candidates(d, admit)
+	}
+	holder := map[int]int{} // credit index → debit index holding it
+	var augment func(di int, seen map[int]bool) bool
+	augment = func(di int, seen map[int]bool) bool {
+		// A free credit first, so a debit never displaces another it does
+		// not have to: the pairs stay what the greedy order would make
+		// wherever that strands no one.
+		for _, ci := range cands[di] {
+			if _, held := holder[ci]; !held && !seen[ci] {
+				seen[ci] = true
+				holder[ci] = di
+				return true
+			}
 		}
-		lo := sort.Search(len(cp.days), func(k int) bool { return cp.days[k] >= d.Day-window })
-		best, bestGap, bestDist, bestSame := -1, 0.0, int64(0), false
-		for k := lo; k < len(cp.idx) && cp.days[k] <= d.Day+window; k++ {
-			i := cp.idx[k]
-			c := credits[i]
-			if used[i] || !pairableLegs(d, c, opts) {
+		for _, ci := range cands[di] {
+			if seen[ci] {
 				continue
 			}
-			same := c.Group == d.Group && c.Owner == d.Owner
-			if same && (namedByDescription[LegRef{d.Group, d.Owner, d.ID}.key()] ||
-				namedByDescription[LegRef{c.Group, c.Owner, c.ID}.key()]) {
-				continue // the source places this leg's other half elsewhere
-			}
-			dist := c.Day - d.Day
-			if dist < 0 {
-				dist = -dist
-			}
-			eps := transferMatchMinEps
-			if r := opts.TolerancePct / 100 * math.Max(math.Abs(d.Amt), c.Amt); r > eps {
-				eps = r
-			}
-			if opts.ToleranceMaxAbs > 0 && eps > opts.ToleranceMaxAbs {
-				eps = opts.ToleranceMaxAbs
-			}
-			gap := math.Abs(d.Amt + c.Amt)
-			if gap > eps {
-				continue
-			}
-			if best < 0 || gap < bestGap || (gap == bestGap && dist < bestDist) ||
-				(gap == bestGap && dist == bestDist && bestSame && !same) {
-				best, bestGap, bestDist, bestSame = i, gap, dist, same
+			seen[ci] = true
+			if augment(holder[ci], seen) {
+				holder[ci] = di
+				return true
 			}
 		}
-		if best < 0 {
+		return false
+	}
+	for di := range debits {
+		if len(cands[di]) > 0 {
+			augment(di, map[int]bool{})
+		}
+	}
+	credit := make(map[int]int, len(holder)) // debit index → credit index
+	for ci, di := range holder {
+		credit[di] = ci
+	}
+	var out []TransferMatchPair
+	var left []TransferLeg
+	for di, d := range debits {
+		ci, ok := credit[di]
+		if !ok {
+			left = append(left, d)
 			continue
 		}
-		used[best] = true
-		out = append(out, TransferMatchPair{Debit: d, Credit: credits[best], By: MatchedByAmount})
+		b.used[ci] = true
+		out = append(out, TransferMatchPair{Debit: d, Credit: b.credits[ci], By: MatchedByName})
+	}
+	return out, left
+}
+
+// greedy is the amount phase: each debit in order takes its best free credit
+// and keeps it.
+func (b banded) greedy(debits []TransferLeg) []TransferMatchPair {
+	var out []TransferMatchPair
+	for _, d := range debits {
+		cands := b.candidates(d, nil)
+		if len(cands) == 0 {
+			continue
+		}
+		b.used[cands[0]] = true
+		out = append(out, TransferMatchPair{Debit: d, Credit: b.credits[cands[0]], By: MatchedByAmount})
 	}
 	return out
+}
+
+// candidates are the free credits d may pair with in a banded phase —
+// same currency, inside the window and the tolerance, pairable, and admitted
+// by admit when one is given — best first: the smallest amount gap, then the
+// nearest day, then an account of d's own source, then one of another source,
+// and d's own account last.
+func (b banded) candidates(d TransferLeg, admit func(d, c TransferLeg) bool) []int {
+	cp := b.parts[d.Ccy]
+	if cp == nil {
+		return nil // no credit in this currency: nothing this debit can fund
+	}
+	type cand struct {
+		i        int
+		gap      float64
+		dist     int64
+		affinity int // 0 own source, 1 another source, 2 own account
+	}
+	var out []cand
+	window := int64(b.opts.WindowDays)
+	lo := sort.Search(len(cp.days), func(k int) bool { return cp.days[k] >= d.Day-window })
+	for k := lo; k < len(cp.idx) && cp.days[k] <= d.Day+window; k++ {
+		i := cp.idx[k]
+		c := b.credits[i]
+		if b.used[i] || !pairableLegs(d, c, b.opts) || (admit != nil && !admit(d, c)) {
+			continue
+		}
+		same := c.Group == d.Group && c.Owner == d.Owner
+		if same && (b.namedByDescription[LegRef{d.Group, d.Owner, d.ID}.key()] ||
+			b.namedByDescription[LegRef{c.Group, c.Owner, c.ID}.key()]) {
+			continue // the source places this leg's other half elsewhere
+		}
+		dist := c.Day - d.Day
+		if dist < 0 {
+			dist = -dist
+		}
+		eps := transferMatchMinEps
+		if r := b.opts.TolerancePct / 100 * math.Max(math.Abs(d.Amt), c.Amt); r > eps {
+			eps = r
+		}
+		if b.opts.ToleranceMaxAbs > 0 && eps > b.opts.ToleranceMaxAbs {
+			eps = b.opts.ToleranceMaxAbs
+		}
+		gap := math.Abs(d.Amt + c.Amt)
+		if gap > eps {
+			continue
+		}
+		affinity := 1
+		switch {
+		case same:
+			affinity = 2
+		case c.Group == d.Group:
+			affinity = 0
+		}
+		out = append(out, cand{i, gap, dist, affinity})
+	}
+	sort.SliceStable(out, func(x, y int) bool {
+		a, b := out[x], out[y]
+		if a.gap != b.gap {
+			return a.gap < b.gap
+		}
+		if a.dist != b.dist {
+			return a.dist < b.dist
+		}
+		return a.affinity < b.affinity
+	})
+	idx := make([]int, len(out))
+	for k, c := range out {
+		idx[k] = c.i
+	}
+	return idx
 }
 
 // matchForcedPairs asserts the holder's manual pairs and withdraws their legs
@@ -686,14 +867,15 @@ func matchStatedCounters(debits, credits []TransferLeg, used, claimed []bool, op
 }
 
 // pairableLegs reports whether two legs may pair at all, before amount and day
-// are considered: the rail each leg demands of its partner, then under
+// are considered: the rail each leg demands of its partner and the account it
+// names (namesCompatible), then under
 // CrossGroupOnly never two legs of the same group, and two legs of the same
-// account only under AllowSameOwner.
+// account only under AllowSameOwner and only as a round trip (sameOwnerRoundTrip).
 func pairableLegs(d, c TransferLeg, opts TransferMatchOpts) bool {
 	if opts.Overrides.blocks(d, c) {
 		return false
 	}
-	if !railsCompatible(d, c) {
+	if !railsCompatible(d, c) || !namesCompatible(d, c) {
 		return false
 	}
 	if c.Group != d.Group {
@@ -702,7 +884,24 @@ func pairableLegs(d, c TransferLeg, opts TransferMatchOpts) bool {
 	if opts.CrossGroupOnly {
 		return false
 	}
-	return opts.AllowSameOwner || c.Owner != d.Owner
+	if c.Owner != d.Owner {
+		return true
+	}
+	return opts.AllowSameOwner && sameOwnerRoundTrip(d, c)
+}
+
+// sameOwnerRoundTrip reports whether two legs of one account read as one
+// movement out and back: the same signature on both, or a reversal on either.
+func sameOwnerRoundTrip(d, c TransferLeg) bool {
+	return d.Signature == c.Signature || d.Reversal || c.Reversal
+}
+
+// namesCompatible holds a leg that names its other side to that side, in both
+// directions: a debit whose narrative says the money went to one account is
+// not the funding half of a credit on another, however well amount and day
+// agree. A leg that names nothing constrains nothing.
+func namesCompatible(d, c TransferLeg) bool {
+	return (len(d.Names) == 0 || d.names(c)) && (len(c.Names) == 0 || c.names(d))
 }
 
 // railsCompatible enforces the partner rail a leg demands, in both

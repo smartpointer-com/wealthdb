@@ -493,7 +493,7 @@ bank), same-**account** pairing is allowed too (`AllowSameOwner`),
 whether or not spending is scoped to it, and amounts and currencies
 are **native**.
 
-The core pairs in **four phases**, each withdrawing the legs it claims
+The core pairs in **five phases**, each withdrawing the legs it claims
 before the next one looks, in the order of what the evidence is worth:
 
 1. **the override ledger** — the holder naming two rows as one movement;
@@ -502,12 +502,15 @@ before the next one looks, in the order of what the evidence is worth:
 3. **a described counter leg** — the source writing, on one row, the
    currency and figure the other row holds (*The reference road*,
    below);
-4. **amounts** — the greedy banded pass, which is everything the data
+4. **a named counterparty** — one leg's narrative naming the other's
+   account (*Named counterparties*, below);
+5. **amounts** — the greedy banded pass, which is everything the data
    says when nothing has said it outright.
 
-Only the fourth is banded. `window_days` and `tolerance_pct` bound a
+The last two are banded. `window_days` and `tolerance_pct` bound a
 guess; the first three read what the holder or the source said, so
-there is no band to draw around them.
+there is no band to draw around them. A name decides only between
+candidates amount and day already admit.
 
 Same-account pairing is the one knob the returns caller leaves off. A
 withdrawal and a deposit of the same amount on the same account within
@@ -515,14 +518,44 @@ the window is a round trip that nets to zero — a transfer bounced
 back, a reversal booked as its own line — and left unpaired its
 outgoing half counts as spending; the returns engine reads the same
 two rows as two boundary flows, not one movement, and pairing them
-would net capital that really did leave and return. Two things bound
-the new false-pair surface. The kind set below excludes `purchase` and
-`refund`, so a card purchase and its refund never reach the matcher
-and cannot pair through it. And when a withdrawal finds equally good
-partners on its own account and on another — a payroll credit landing
-the day a transfer of the same size leaves — the far side wins the tie,
-so the own-account coincidence cannot steal the partner that is really
-on the other end.
+would net capital that really did leave and return. The pair is made
+only when the two rows SAY they are one movement out and back: the
+same merchant signature on both, or a reversal's wording on either (a
+refunded fee, a cancelled wire, a `STORNO`). A payment out and a
+transfer in that merely share an account and a size are two movements,
+and paired they would delete each other. The kind set below excludes
+`purchase` and `refund`, so a card purchase and its refund never reach
+the matcher at all. When a withdrawal finds equally good partners on
+its own account and on another, the far side wins the tie; among
+other accounts, one at the withdrawal's own source wins over another
+source's, since moves inside one institution are the commoner kind.
+
+### Named counterparties
+
+A bank's narrative often names where the money went — "EXAMPLE
+BROKERAGE MONEYLINK", "EXAMPLE BANK EXT TRNSFR", an exchange's
+banking partner — while the receiving row is silent. When several
+transfers of one round size cross the same accounts in a week, amount
+and day cannot tell them apart, and a greedy pass hands each debit the
+nearest credit: an earlier, silent debit takes the credit a later one
+named, and both are stranded or crossed.
+
+`spending.internal_transfer_matching.names` says which narratives name
+which account: each entry is a `source`, optionally one `account` of
+it, and a `match` regular expression. A leg whose narrative matches
+names that account as its other side; a name for the leg's own source
+or account is its own institution speaking and names nothing. Then:
+
+- a leg that names an account pairs with nothing else, however well
+  amount and day agree;
+- pairs whose legs name each other are claimed first, then pairs one
+  leg names, then everything else on amount alone;
+- the named phases pair as many legs as they can — a debit takes its
+  best free candidate, and one left with none moves an earlier debit to
+  that debit's other candidate — so a run of identical transfers
+  between two accounts leaves no leg stranded.
+
+With no names configured the matcher pairs on amount and day alone.
 
 Two further bounds close what those leave open, because amount and day
 proximity alone are only ever a coincidence of size, never evidence
@@ -2085,13 +2118,14 @@ tidies the store — by then the rows have moved on.
   matcher: one matching core, one banding, so the same movement is not
   internal in one report and external in the other.
 - **The spending matcher pairs legs on the same account**
-  (`AllowSameOwner`); the returns matcher does not. Otherwise
+  (`AllowSameOwner`) when they are a round trip — one signature, or a
+  reversal's wording; the returns matcher does not. Otherwise
   a same-day, equal-and-opposite withdrawal and deposit on one account
   — a round trip netting to zero — counts as spending. The knob
   defaults off in the shared core so returns is byte-identical; the
-  false-pair surface it opens is bounded by the eligible-kind set
-  (`purchase` / `refund` never reach the matcher) and by a tie-break
-  that prefers a partner on another account.
+  false-pair surface it opens is bounded by the round-trip test, the
+  eligible-kind set (`purchase` / `refund` never reach the matcher)
+  and a tie-break that prefers a partner on another account.
 - **The catch-all kinds (`other`, `journal`) are excluded from the
   population.** The UBS adapter deliberately demotes internal conduit
   legs to `other`, and `journal` is a bookkeeping entry; neither kind

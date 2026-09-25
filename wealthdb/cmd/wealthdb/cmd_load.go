@@ -158,6 +158,7 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdo
 		Exclude:           exclude,
 		MatchWindowDays:   m.Window(),
 		MatchTolerancePct: m.Tolerance(),
+		MatchNames:        matchNames(m),
 		Rules:             compiledRules(cfg.SpendRules()),
 		TransferOverrides: overrides,
 		Pins:              pins,
@@ -227,9 +228,9 @@ func printCashflowSummary(stdout io.Writer, res spending.CashflowResult) {
 	fmt.Fprintf(stdout, "cashflow: household boundary stamped — %d wrapper(s), %d overridden, "+
 		"%d account(s) out of the pool; %d own-account move(s) carry a far account "+
 		"(%d stated by the source itself); the matcher asserted %d pair(s) on a shared "+
-		"reference and %d on a described counter leg\n",
+		"reference and %d on a described counter leg, and paired %d a narrative named\n",
 		res.WrapperRows, res.WrapperOverrides, res.ScopeRows, res.FarAccounts,
-		res.StatedFarAccounts, res.ReferencePairs, res.StatedCounterPairs)
+		res.StatedFarAccounts, res.ReferencePairs, res.StatedCounterPairs, res.NamedPairs)
 	// Said only when there is something to say. A handful of refused
 	// references is the ordinary shape of a bank that books a charge under
 	// the reference of the payment it belongs to; a number that grows with
@@ -327,6 +328,18 @@ func compiledRules(compiled []config.CompiledSpendRule) []spending.Rule {
 		})
 	}
 	return rules
+}
+
+// matchNames converts the config's matcher names to the pass's.
+func matchNames(m *config.SpendingTransferMatching) []spending.CounterpartyName {
+	if m == nil {
+		return nil
+	}
+	out := make([]spending.CounterpartyName, 0, len(m.Names))
+	for _, n := range m.Names {
+		out = append(out, spending.CounterpartyName{Source: n.Source, Account: n.Account, Pattern: n.Pattern()})
+	}
+	return out
 }
 
 // buildSourceSpec assembles a loader.SourceSpec for one configured

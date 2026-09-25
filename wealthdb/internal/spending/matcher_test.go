@@ -1,6 +1,12 @@
 package spending
 
-import "testing"
+import (
+	"reflect"
+	"regexp"
+	"testing"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+)
 
 // legRail classifies the card-bill rail. What matters is the ASYMMETRY: the
 // receipt side is unmistakable and demands a card payment opposite it, while
@@ -43,5 +49,51 @@ func TestLegRail(t *testing.T) {
 					tc.counterparty, tc.description, rail, partner, tc.rail, tc.partner)
 			}
 		})
+	}
+}
+
+func TestReversalWording(t *testing.T) {
+	for _, s := range []string{
+		"Insufficient Funds Fee Refund", "CANCELLED ONLINE WIRE", "CANC.MORT.MAT.; 000000",
+		"STORNO VOM 01.01", "RETURNED ITEM", "Rückbuchung Lastschrift", "REVERSAL OF CHARGE",
+	} {
+		if !reversalRe.MatchString(s) {
+			t.Errorf("%q is a reversal", s)
+		}
+	}
+	for _, s := range []string{
+		"RETURN OF CAPITAL EXAMPLE FUND", "CANCER RESEARCH DONATION", "EXAMPLE TRANSFER",
+	} {
+		if reversalRe.MatchString(s) {
+			t.Errorf("%q is not a reversal", s)
+		}
+	}
+}
+
+// A narrative names the accounts a configured pattern points at, except the
+// leg's own source or its own account, which is its institution speaking and
+// names no other side. Another account of its own source stays named.
+func TestLegNames(t *testing.T) {
+	names := []CounterpartyName{
+		{Source: "bank", Pattern: regexp.MustCompile(`(?i)example bank`)},
+		{Source: "exchange", Account: "wallet-a", Pattern: regexp.MustCompile(`(?i)example exchange`)},
+		{Source: "broker", Account: "cash-2", Pattern: regexp.MustCompile(`(?i)to 000002`)},
+	}
+	cases := []struct {
+		group, owner, text string
+		want               []string
+	}{
+		{"broker", "cash-1", "TRANSFER FROM EXAMPLE BANK", []string{"bank"}},
+		{"bank", "checking", "EXAMPLE BANK ONLINE TRANSFER", nil},
+		{"bank", "checking", "PAYMENT EXAMPLE EXCHANGE", []string{gold.NamedAccount("exchange", "wallet-a")}},
+		{"exchange", "wallet-a", "EXAMPLE EXCHANGE DEPOSIT", nil},
+		{"broker", "cash-1", "JOURNAL TO 000002", []string{gold.NamedAccount("broker", "cash-2")}},
+		{"broker", "cash-2", "JOURNAL TO 000002", nil},
+	}
+	for _, c := range cases {
+		got := legNames(names, c.group, c.owner, "", c.text)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s/%s %q: names %v, want %v", c.group, c.owner, c.text, got, c.want)
+		}
 	}
 }

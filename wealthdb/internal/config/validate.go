@@ -331,6 +331,9 @@ func (c *Config) Validate() error {
 			if err := validateMatchKnobs("spending.internal_transfer_matching", m.WindowDays, m.TolerancePct); err != nil {
 				return err
 			}
+			if err := validateMatchNames(m.Names, seenIDs); err != nil {
+				return err
+			}
 		}
 		rules, err := compileRuleList("spending.rules", "category", "spend_detailed", "docs/SPENDING.md §2",
 			canonical.SpendDetailedInvestment,
@@ -621,11 +624,33 @@ func compileSpendScope(sc *SpendingRuleScope) (CompiledSpendScope, error) {
 // There is no income twin — one matcher runs, and income reads its
 // verdicts.
 //
-// Both knobs bound the matcher's AMOUNT pass, which is the only phase
-// that guesses. A pair the holder stated in the override ledger, or one
-// the source asserted by stamping a reference on both legs, spends
-// neither: neither is a guess, so there is no band to widen or narrow
-// around it.
+// Both knobs bound the matcher's banded passes — the named pass and the
+// amount pass — which are the phases that guess. A pair the holder stated
+// in the override ledger, or one the source asserted by stamping a
+// reference on both legs, spends neither: neither is a guess, so there is
+// no band to widen or narrow around it.
+// validateMatchNames compiles each spending matcher name and checks that it
+// names a declared source: a name for a source that does not exist would
+// silently name nothing.
+func validateMatchNames(names []SpendingMatchName, seenIDs map[string]bool) error {
+	for i := range names {
+		n := &names[i]
+		at := fmt.Sprintf("spending.internal_transfer_matching.names[%d]", i)
+		if !seenIDs[n.Source] {
+			return fmt.Errorf("config: %s: source %q is not a declared silver source", at, n.Source)
+		}
+		if strings.TrimSpace(n.Match) == "" {
+			return fmt.Errorf("config: %s: match is empty", at)
+		}
+		re, err := regexp.Compile(n.Match)
+		if err != nil {
+			return fmt.Errorf("config: %s: match %q: %w", at, n.Match, err)
+		}
+		n.re = re
+	}
+	return nil
+}
+
 func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) error {
 	if windowDays != nil && (*windowDays < 0 || *windowDays > 30) {
 		return fmt.Errorf("config: %s.window_days %d out of range [0, 30]", block, *windowDays)

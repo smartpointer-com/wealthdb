@@ -90,6 +90,10 @@ type CashflowResult struct {
 	// read, so a number that grows
 	// out of proportion to the references is the shape to look at.
 	StatedCounterPairs int
+	// NamedPairs is how many were paired because one leg's narrative
+	// named the other's account (spending.internal_transfer_matching.names)
+	// — still on amount and day, but ahead of every pair those alone make.
+	NamedPairs int
 	// AmbiguousReferences is how many (source, reference) groups were
 	// REFUSED because the source had stamped the same reference on
 	// MORE than two rows — so it named something, and what it named

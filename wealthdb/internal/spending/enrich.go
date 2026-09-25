@@ -66,6 +66,9 @@ type Options struct {
 	// matcher's knobs, already defaulted by the caller.
 	MatchWindowDays   int
 	MatchTolerancePct float64
+	// MatchNames say which narratives name which account as the other side
+	// of a movement (CounterpartyName).
+	MatchNames []CounterpartyName
 
 	// Rules are the config's compiled `spending.rules`: narratives
 	// that name the holder's own destinations at institutions gold does
@@ -257,7 +260,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	// read its verdicts. A movement is own-account or it is not, and two
 	// matchers with two bandings would call the same wire internal on
 	// one side and external on the other.
-	legs, poolNarratives, ambiguousRefs, err := loadMatcherPool(ctx, tx)
+	legs, poolNarratives, ambiguousRefs, err := loadMatcherPool(ctx, tx, opts.MatchNames)
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +273,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	matched := matchedPartners(pairs)
 	res.Cashflow.ReferencePairs = countPairsBy(pairs, gold.MatchedByReference)
 	res.Cashflow.StatedCounterPairs = countPairsBy(pairs, gold.MatchedByStatedCounter)
+	res.Cashflow.NamedPairs = countPairsBy(pairs, gold.MatchedByName)
 	res.Cashflow.AmbiguousReferences = ambiguousRefs
 
 	// Read once and shared, for the matcher's reason: where a movement
@@ -768,7 +772,7 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 // which reads spend_txn_categories() directly and so can name the leg
 // for what it is. Nothing leaks and nothing is orphaned: the next
 // pass deletes every derived row before re-asserting.
-func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[txKey]candidate, int, error) {
+func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName) ([]gold.TransferLeg, map[txKey]candidate, int, error) {
 	refs, ambiguous, err := loadMovementReferences(ctx, tx)
 	if err != nil {
 		return nil, nil, 0, err
@@ -809,6 +813,9 @@ func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[t
 		leg.Day = gold.EpochDay(occurredAt)
 		leg.Amt = amount.Float64
 		leg.Rail, leg.RailPartner = legRail(row.counterparty, row.description)
+		leg.Signature = Normalize(row.counterparty, row.description)
+		leg.Reversal = reversalRe.MatchString(row.counterparty + " " + row.description)
+		leg.Names = legNames(names, leg.Group, leg.Owner, row.counterparty, row.description)
 		row.key = txKey{leg.Group, leg.ID}
 		leg.Ref = refs[row.key]
 		if c, ok := counters[row.key]; ok {

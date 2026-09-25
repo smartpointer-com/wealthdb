@@ -1161,3 +1161,36 @@ func TestRuleCarriesAnExposure(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadSpendingMatchNames(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"bank","kind":"chase","path":"/tmp/b.db"}],`
+	c, err := Load(writeConfig(t, base+`"spending":{"internal_transfer_matching":{"names":[
+        {"source":"bank","match":"(?i)example bank"},
+        {"source":"bank","account":"CARD1","match":"(?i)example card"}]}}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	names := c.SpendMatching().Names
+	if len(names) != 2 || names[1].Account != "CARD1" {
+		t.Fatalf("names = %+v", names)
+	}
+	for _, n := range names {
+		if n.Pattern() == nil {
+			t.Errorf("%q not compiled", n.Match)
+		}
+	}
+	if !names[0].Pattern().MatchString("TRANSFER TO EXAMPLE BANK") {
+		t.Error("compiled pattern does not match")
+	}
+
+	cases := map[string]string{
+		"undeclared source": `"spending":{"internal_transfer_matching":{"names":[{"source":"other","match":"x"}]}}}`,
+		"empty match":       `"spending":{"internal_transfer_matching":{"names":[{"source":"bank","match":" "}]}}}`,
+		"bad pattern":       `"spending":{"internal_transfer_matching":{"names":[{"source":"bank","match":"("}]}}}`,
+	}
+	for name, block := range cases {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+}

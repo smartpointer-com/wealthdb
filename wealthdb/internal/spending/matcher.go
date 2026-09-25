@@ -24,17 +24,21 @@ import (
 //     silver classifier's business; for spending the commonest
 //     own-account move of all — cash account to card, inside one bank
 //     — is exactly a same-source pair.
-//   - same-ACCOUNT pairing is ALLOWED too (AllowSameOwner=true). A
-//     withdrawal and a deposit of the same amount on the same account
-//     within the window is a round trip — a transfer bounced back, a
-//     reversal booked as its own line — and it nets to zero. Left
-//     unpaired, the withdrawal half counts as spending. The returns
-//     engine leaves this off because for it an in-and-out on one
+//   - same-ACCOUNT pairing is ALLOWED too (AllowSameOwner=true), for
+//     a round trip only: a withdrawal and a deposit of the same amount
+//     on the same account within the window whose narratives say they
+//     are one movement out and back — the same merchant signature on
+//     both, or a reversal's wording on either (reversalRe). It nets to
+//     zero; left unpaired, the withdrawal half counts as spending. Two
+//     same-size movements that merely share an account — a payment out
+//     and a transfer in on the same day — are NOT a round trip, and
+//     paired they would delete each other. The returns engine leaves
+//     same-account pairing off because for it an in-and-out on one
 //     account is two boundary flows, not one movement. The kind set
-//     below is what keeps this safe: `purchase` and `refund` are not
-//     in it, so a card purchase and its refund never reach the matcher
-//     and cannot pair through this knob — a refund is the merchant's
-//     money coming back, not the holder's money going round.
+//     below keeps this safe too: `purchase` and `refund` are not in it,
+//     so a card purchase and its refund never reach the matcher — a
+//     refund is the merchant's money coming back, not the holder's
+//     money going round.
 //   - the pool spans EVERY account in gold — every kind, in or out of
 //     the spending scope (migration 0044). The spending BASE stays
 //     the scoped ones; the matcher must not, because a leg it cannot see
@@ -62,6 +66,10 @@ import (
 //     a reference, because a description has to be matched rather than
 //     read, and guarded to match; it reaches the conversion whose two
 //     legs share no reference at all.
+//   - so are the accounts a leg's narrative NAMES as its other side
+//     (TransferLeg.Names, from spending.internal_transfer_matching.names
+//     by way of legNames): a leg that names one pairs with nothing else,
+//     and named pairs are claimed before the plain amount pass.
 //
 // That last one is what reaches a cross-currency own-transfer, and it
 // is worth stating why it can. MatchTransferLegs partitions candidates
@@ -97,6 +105,38 @@ const ProvenanceMatcher = "matcher"
 type txKey struct {
 	source string
 	txID   string
+}
+
+// CounterpartyName says which narratives name an account as the other side of
+// a movement: a leg whose narrative matches Pattern names Source — or, with
+// Account set, that one account of it (gold.TransferLeg.Names). The entries
+// come from the spending.internal_transfer_matching.names block of
+// wealthdb.cfg.
+type CounterpartyName struct {
+	Source  string
+	Account string
+	Pattern *regexp.Regexp
+}
+
+// legNames lists the accounts a leg's narrative names as its other side. A
+// name for the leg's own source, or its own account, is its own institution
+// speaking — "the capital call Carta recorded" on a Carta row — and names no
+// other side, so it is left out.
+func legNames(names []CounterpartyName, group, owner, counterparty, description string) []string {
+	var out []string
+	text := counterparty + " " + description
+	for _, n := range names {
+		if !n.Pattern.MatchString(text) {
+			continue
+		}
+		switch {
+		case n.Account == "" && n.Source != group:
+			out = append(out, n.Source)
+		case n.Account != "" && (n.Source != group || n.Account != owner):
+			out = append(out, gold.NamedAccount(n.Source, n.Account))
+		}
+	}
+	return out
 }
 
 // matchTransferPairs is the call into the shared core, in one place so
@@ -181,6 +221,13 @@ var cardPaymentRe = regexp.MustCompile(`(?i)\b(` +
 	`|card\s+online\s+payment` +
 	`|american\s+express\s+ach\s+pmt` +
 	`)`)
+
+// reversalRe matches the wording a bank uses for undoing an entry of its own
+// — a refunded fee, a cancelled wire or booking, a reversal, a returned item —
+// in the languages the collected banks write in. It lets a leg pair with an
+// entry of its own account whose narrative is unlike its own (see
+// gold.TransferLeg.Reversal).
+var reversalRe = regexp.MustCompile(`(?i)\b(refund|reversal|reversed|cancel+ed|canc\b|storno|returned|r(ü|ue|u)ckbuchung)`)
 
 // legRail classifies a matcher leg's narrative as a payment rail and says what
 // rail, if any, its partner must carry. Both are empty for the vast majority

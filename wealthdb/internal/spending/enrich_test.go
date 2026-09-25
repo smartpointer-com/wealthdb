@@ -800,7 +800,7 @@ func TestPassExcludesASameAccountRoundTrip(t *testing.T) {
 
 	// Same pool, same knobs, AllowSameOwner off: no pair. This is the
 	// returns caller's setting, and it is why that engine is unchanged.
-	legs, _, _, err := loadMatcherPool(ctx, db)
+	legs, _, _, err := loadMatcherPool(ctx, db, nil)
 	if err != nil {
 		t.Fatalf("loadMatcherPool: %v", err)
 	}
