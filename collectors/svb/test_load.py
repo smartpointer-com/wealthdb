@@ -423,7 +423,9 @@ def test_transaction_kind_map_covers_every_verb():
     # Each of these prints in the reverse of its obvious kind's direction, and
     # that kind's canonical sign is pinned — taking it would flip the row.
     assert B._KIND_BY_VERB["ADJ NON-RESIDENT TAX"] == "ADJUSTMENT"
+    assert B._KIND_BY_VERB["ADJ FOREIGN TAX PAID"] == "ADJUSTMENT"
     assert B._KIND_BY_VERB["DIVIDEND ADJUSTMENT"] == "ADJUSTMENT"
+    assert B._KIND_BY_VERB["DIVIDEND CHARGED"] == "ADJUSTMENT"
     assert B._KIND_BY_VERB["CANCELLED BUY"] == "ADJUSTMENT"
     assert B._KIND_BY_VERB["CANCELLED SELL"] == "ADJUSTMENT"
 
@@ -663,9 +665,10 @@ def test_a_row_that_names_no_security_is_never_looked_up(
 def test_the_named_verbs_are_the_parsers_own():
     assert B._NAMED_VERBS <= set(P._ACTIVITY_VERBS)
     assert B._NAMED_VERBS == {
-        "DIVIDEND RECEIVED", "DIVIDEND ADJUSTMENT", "INTEREST",
-        "RETURN OF CAPITAL", "DISTRIBUTION", "NON-RESIDENT TAX",
-        "FOREIGN TAX PAID", "ADJ NON-RESIDENT TAX", "IN LIEU OF FRX SHARE"}
+        "DIVIDEND RECEIVED", "DIVIDEND ADJUSTMENT", "INTEREST", "MUNI EXEMPT INT",
+        "RETURN OF CAPITAL", "DISTRIBUTION", "LONG CAP GAIN", "SHORT CAP GAIN",
+        "NON-RESIDENT TAX", "FOREIGN TAX PAID", "ADJ NON-RESIDENT TAX",
+        "ADJ FOREIGN TAX PAID", "IN LIEU OF FRX SHARE"}
 
 
 @pytest.mark.parametrize("verb, section", [
@@ -844,6 +847,128 @@ def test_a_cancellation_whose_booking_is_not_in_the_archive_is_kept(
                 _trade("2099-01-07", "YOU SOLD", -10.0, 1200.0, 2)])})
     assert [kind for _, kind, *_ in got] == ["ADJUSTMENT", "BUY", "SELL"]
     assert any("cancels no booking" in r.message for r in caplog.records)
+
+
+def _cash(date, section, verb, description, amount, ordinal):
+    return _activity_row(date=date, section=section, verb=verb,
+                         description=description, amount=amount,
+                         ordinal=ordinal)
+
+
+def _book(tmp_path, monkeypatch, canned):
+    return _built(tmp_path, monkeypatch, canned).execute(
+        "SELECT date(timestamp,'unixepoch'), kind, amount, "
+        "json_extract(payload,'$.Transaction') FROM transactions "
+        "ORDER BY timestamp, kind, amount").fetchall()
+
+
+def test_a_reversed_dividend_and_its_withholding_count_once(
+        tmp_path, monkeypatch, caplog):
+    # January books the dividend and its withholding; February's statement
+    # reverses both under their original date and books them again. The
+    # account was paid once, so silver holds one dividend and one tax.
+    import logging
+
+    inc, tax = P.SECTION_INCOME, P.SECTION_TAXES_FEES
+    canned = {
+        "SVM-000000/2099-01": _statement("01", {}, [
+            _cash("2099-01-15", inc, "DIVIDEND RECEIVED", "EXAMPLE ADR", 64.0, 0),
+            _cash("2099-01-15", tax, "FOREIGN TAX PAID", "EXAMPLE ADR", -9.6, 1)]),
+        "SVM-000000/2099-02": _statement("02", {}, [
+            _cash("2099-01-15", inc, "DIVIDEND ADJUSTMENT", "EXAMPLE ADR", -64.0, 0),
+            _cash("2099-01-15", inc, "DIVIDEND RECEIVED", "EXAMPLE ADR", 64.0, 1),
+            _cash("2099-01-15", tax, "ADJ FOREIGN TAX PAID", "EXAMPLE ADR", 9.6, 2),
+            _cash("2099-01-15", tax, "FOREIGN TAX PAID", "EXAMPLE ADR", -9.6, 3)]),
+    }
+    with caplog.at_level(logging.INFO, logger="svb"):
+        got = _book(tmp_path, monkeypatch, canned)
+    assert got == [("2099-01-15", "DIVIDEND", 64.0, "DIVIDEND RECEIVED"),
+                   ("2099-01-15", "TAX", -9.6, "FOREIGN TAX PAID")]
+    assert any("reversed bookings: 2 left out" in r.message for r in caplog.records)
+
+
+def test_a_reversal_pairs_only_with_the_booking_it_names(tmp_path, monkeypatch,
+                                                         caplog):
+    # Another security's dividend, or the same amount under another verb, is
+    # not the booking reversed; a reversal that finds none is booked as
+    # printed and said so.
+    import logging
+
+    inc = P.SECTION_INCOME
+    with caplog.at_level(logging.INFO, logger="svb"):
+        got = _book(tmp_path, monkeypatch, {
+            "SVM-000000/2099-01": _statement("01", {}, [
+                _cash("2099-01-15", inc, "DIVIDEND RECEIVED", "OTHER ADR", 64.0, 0),
+                _cash("2099-01-15", inc, "INTEREST", "EXAMPLE ADR", 64.0, 1),
+                _cash("2099-01-16", inc, "DIVIDEND ADJUSTMENT", "EXAMPLE ADR",
+                      -64.0, 2)])})
+    assert [kind for _, kind, *_ in got] == ["DIVIDEND", "INTEREST", "ADJUSTMENT"]
+    assert any("undoing no single booking: 1" in r.message for r in caplog.records)
+
+
+def test_a_verbless_other_activity_row_reverses_the_booking_of_its_date(
+        tmp_path, monkeypatch, caplog):
+    # A withholding the broker reclassifies: booked in March, credited back
+    # two statements later as a verbless Other Activity row printed under
+    # the original date and another name, and booked again later still.
+    # One tax.
+    import logging
+
+    tax, other = P.SECTION_TAXES_FEES, P.SECTION_OTHER
+    canned = {
+        "SVM-000000/2099-03": _statement("03", {}, [
+            _cash("2099-03-10", tax, "NON-RESIDENT TAX", "EXAMPLE PARTNERS WHT",
+                  -37.0, 0)]),
+        "SVM-000000/2099-05": _statement("05", {}, [
+            _cash("2099-03-10", other, "", "EXAMPLE PARTNERS L P", 37.0, 0)]),
+        "SVM-000000/2099-09": _statement("09", {}, [
+            _cash("2099-03-10", tax, "NON-RESIDENT TAX", "EXAMPLE PARTNERS L P",
+                  -37.0, 0)]),
+    }
+    with caplog.at_level(logging.WARNING, logger="svb"):
+        got = _book(tmp_path, monkeypatch, canned)
+    assert got == [("2099-03-10", "TAX", -37.0, "NON-RESIDENT TAX")]
+    # Explained, so not reported as a row with no verb.
+    assert not any("no recognised transaction verb" in r.message
+                   for r in caplog.records)
+
+
+def test_a_fee_refunded_in_full_leaves_with_its_refund(tmp_path, monkeypatch,
+                                                       caplog):
+    # The refund prints in its own wording, naming neither the fee's
+    # security nor its label, so only the amount finds the fee. A partial
+    # refund undoes no fee and is booked as printed.
+    import logging
+
+    tax = P.SECTION_TAXES_FEES
+    with caplog.at_level(logging.WARNING, logger="svb"):
+        got = _book(tmp_path, monkeypatch, {
+            "SVM-000000/2099-05": _statement("05", {}, [
+                _cash("2099-05-03", tax, "FEE PAID", "FEE CHARGE ADVISOR FEE",
+                      -600.0, 0),
+                _cash("2099-05-04", tax, "FEE PAID", "FEE CHARGE ADVISOR FEE",
+                      -900.0, 1)]),
+            "SVM-000000/2099-08": _statement("08", {}, [
+                _cash("2099-08-02", tax, "ADJUSTMENT",
+                      "FEE REVERSAL-EXAMPLE ADVR FEE", 600.0, 0),
+                _cash("2099-08-02", tax, "ADJUSTMENT",
+                      "FEE REVERSAL-EXAMPLE ERR-FEE", 300.0, 1)])})
+    assert got == [("2099-05-04", "FEE", -900.0, "FEE PAID"),
+                   ("2099-08-02", "ADJUSTMENT", 300.0, "ADJUSTMENT")]
+    # A fee refund that finds nothing is a partial refund, not an anomaly.
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_the_statements_income_verbs_book_as_income(tmp_path, monkeypatch):
+    inc = P.SECTION_INCOME
+    got = _book(tmp_path, monkeypatch, {
+        "SVM-000000/2099-01": _statement("01", {}, [
+            _cash("2099-01-02", inc, "MUNI EXEMPT INT", "EXAMPLE ST GO BDS", 1500.0, 0),
+            _cash("2099-01-03", inc, "LONG CAP GAIN", "EXAMPLE GLOBAL FUND", 900.0, 1),
+            _cash("2099-01-03", inc, "SHORT CAP GAIN", "EXAMPLE GLOBAL FUND", 90.0, 2)])})
+    assert got == [("2099-01-02", "INTEREST", 1500.0, "MUNI EXEMPT INT"),
+                   ("2099-01-03", "DISTRIBUTION", 90.0, "SHORT CAP GAIN"),
+                   ("2099-01-03", "DISTRIBUTION", 900.0, "LONG CAP GAIN")]
 
 
 def test_undated_and_verbless_rows_are_not_booked(tmp_path, monkeypatch, caplog):

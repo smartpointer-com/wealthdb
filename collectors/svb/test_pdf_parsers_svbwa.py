@@ -21,6 +21,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pdf_parsers_svbwa as ps  # noqa: E402
@@ -793,6 +795,26 @@ def test_activity_sign_per_verb():
         "JOURNALED": 700.0,             # the cash leg, after the margin leg
         "YOU BOUGHT": -4000.0,
     }
+
+
+@pytest.mark.parametrize("text, verb, rest", [
+    ("MUNI EXEMPT INT EXAMPLE ST GO BDS", "MUNI EXEMPT INT", "EXAMPLE ST GO BDS"),
+    ("LONG CAP GAIN EXAMPLE GLOBAL FUND", "LONG CAP GAIN", "EXAMPLE GLOBAL FUND"),
+    ("SHORT CAP GAIN EXAMPLE GLOBAL FUND", "SHORT CAP GAIN", "EXAMPLE GLOBAL FUND"),
+    # the reversal wins over the withholding it reverses: longest verb first
+    ("ADJ FOREIGN TAX PAID EXAMPLE ADR", "ADJ FOREIGN TAX PAID", "EXAMPLE ADR"),
+    ("FOREIGN TAX PAID EXAMPLE ADR", "FOREIGN TAX PAID", "EXAMPLE ADR"),
+    ("ADJ REINVESTMENT EXAMPLE MONEY MARKET", "ADJ REINVESTMENT", "EXAMPLE MONEY MARKET"),
+    ("REINVESTMENT EXAMPLE MONEY MARKET", "REINVESTMENT", "EXAMPLE MONEY MARKET"),
+    ("DIVIDEND CHARGED EXAMPLE ADR", "DIVIDEND CHARGED", "EXAMPLE ADR"),
+    ("REVERSE DIV CHARGE EXAMPLE ADR", "REVERSE DIV CHARGE", "EXAMPLE ADR"),
+    ("ADJUST EXERCISE EXAMPLE ADS", "ADJUST EXERCISE", "EXAMPLE ADS"),
+    # a verbless row keeps all its text for the loader to report
+    ("EXAMPLE PARTNERS L P", "", "EXAMPLE PARTNERS L P"),
+])
+def test_split_activity_verb(text, verb, rest):
+    got_verb, got_rest = ps._split_activity_verb(text.split())
+    assert (got_verb, " ".join(got_rest)) == (verb, rest)
 
 
 def test_activity_sections_reconcile_to_stated_totals():

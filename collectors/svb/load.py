@@ -34,7 +34,8 @@ arithmetic proves it moved, and a row that names a security without moving
 it the key of the one holding its statements leave its name to
 (:mod:`instrument_links`); a row neither can settle keeps none and states
 what it was looked up by instead. A cancelled trade does not reach silver at
-all (:func:`pair_cancellations`).
+all (:func:`pair_cancellations`), nor does a reversed dividend, withholding
+or charge (:func:`pair_reversals`).
 
 Runs on the host, not in docker: stdlib sqlite3 plus the extraction stacks and
 workbook reader pinned in requirements.txt. Idempotent and
@@ -64,6 +65,7 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import date, datetime, timezone
 from itertools import repeat
 from pathlib import Path
+from typing import NamedTuple
 
 from collectorkit import cli, silver, srcfp
 
@@ -229,14 +231,17 @@ def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
 # to be a verb that adapter's kindFor() understands. These are the SVB
 # Transaction-column verbs translated into it.
 #
-# Four translations are deliberately NOT the obvious one, because the canonical
+# The reversals are deliberately NOT the obvious kind, because the canonical
 # sign for the obvious kind is pinned and would invert the row:
-#   * ADJ NON-RESIDENT TAX is a withholding REVERSAL and is always a credit;
-#     TAX pins the sign negative, which would book a refund as a charge.
+#   * ADJ NON-RESIDENT TAX / ADJ FOREIGN TAX PAID are withholding REVERSALS
+#     and always a credit; TAX pins the sign negative, which would book a
+#     refund as a charge.
 #   * DIVIDEND ADJUSTMENT is a dividend CLAWBACK and is always a debit;
 #     DIVIDEND pins the sign positive.
 # These map to ADJUSTMENT, which the adapter keeps source-signed; so do the two
-# trade cancellations, for the reason given at their entries below.
+# trade cancellations, for the reason given at their entries below. A reversal
+# that finds the booking it undoes leaves silver together with it
+# (pair_reversals), so ADJUSTMENT is what an unpaired one reaches gold as.
 _KIND_BY_VERB = {
     "DIVIDEND RECEIVED": "DIVIDEND",
     "DIVIDEND ADJUSTMENT": "ADJUSTMENT",
@@ -244,9 +249,24 @@ _KIND_BY_VERB = {
     "MARGIN INTEREST": "INTEREST",
     "RETURN OF CAPITAL": "RETURN_OF_CAPITAL",
     "DISTRIBUTION": "DISTRIBUTION",
+    # A pooled fund's capital-gain payout is a pure-cash distribution; the
+    # adapter reads a DISTRIBUTION without a quantity as dividend income.
+    "LONG CAP GAIN": "DISTRIBUTION",
+    "SHORT CAP GAIN": "DISTRIBUTION",
+    # A municipal bond's coupon, tax-exempt but interest all the same.
+    "MUNI EXEMPT INT": "INTEREST",
     "NON-RESIDENT TAX": "TAX",
     "FOREIGN TAX PAID": "TAX",
     "ADJ NON-RESIDENT TAX": "ADJUSTMENT",
+    "ADJ FOREIGN TAX PAID": "ADJUSTMENT",
+    # A dividend charged back to the account, and that charge undone. Signed
+    # as printed: DIVIDEND's pinned sign would invert the charge.
+    "DIVIDEND CHARGED": "ADJUSTMENT",
+    "REVERSE DIV CHARGE": "ADJUSTMENT",
+    # Small corrections of an option exercise and of a money-fund
+    # reinvestment, signed as printed.
+    "ADJUST EXERCISE": "ADJUSTMENT",
+    "ADJ REINVESTMENT": "ADJUSTMENT",
     "FEE PAID": "FEE",
     "ADVISOR FEE DEDUCTED": "ADVISOR",
     "ADJUSTMENT": "ADJUSTMENT",
@@ -414,9 +434,10 @@ def _moves_a_position(row: dict, kind: str) -> bool:
 # pass-through fee and the account for its own charges, so it is left out
 # rather than looked up and failed on for every account-level charge.
 _NAMED_VERBS = frozenset({
-    "DIVIDEND RECEIVED", "DIVIDEND ADJUSTMENT", "INTEREST",
-    "RETURN OF CAPITAL", "DISTRIBUTION", "NON-RESIDENT TAX",
-    "FOREIGN TAX PAID", "ADJ NON-RESIDENT TAX", "IN LIEU OF FRX SHARE",
+    "DIVIDEND RECEIVED", "DIVIDEND ADJUSTMENT", "INTEREST", "MUNI EXEMPT INT",
+    "RETURN OF CAPITAL", "DISTRIBUTION", "LONG CAP GAIN", "SHORT CAP GAIN",
+    "NON-RESIDENT TAX", "FOREIGN TAX PAID", "ADJ NON-RESIDENT TAX",
+    "ADJ FOREIGN TAX PAID", "IN LIEU OF FRX SHARE",
 })
 # Where they print. The deposit ledger's credits resolve to INTEREST as well,
 # and name no security.
@@ -483,6 +504,98 @@ def pair_cancellations(results: list[tuple[str, dict]]) -> dict[tuple, tuple]:
             else:
                 log.warning("%s %s %s %s cancels no booking the archive holds",
                             aid, row["date"], row["verb"], name)
+    return pairs
+
+
+class _Reversal(NamedTuple):
+    """What a reversal row can undo: a booking under one of ``verbs`` (any
+    verb when None), naming the same security when ``same_name``, dated the
+    same day when ``same_day`` and otherwise on or before the reversal."""
+    verbs: frozenset[str] | None
+    same_name: bool
+    same_day: bool
+
+
+# The cash booking each reversal verb undoes. A fee refund is printed as an
+# ADJUSTMENT in its own wording, naming neither the security nor the charge,
+# so only its amount can find the fee it refunds.
+_REVERSES = {
+    "DIVIDEND ADJUSTMENT": _Reversal(frozenset({"DIVIDEND RECEIVED"}), True, False),
+    "ADJ NON-RESIDENT TAX": _Reversal(frozenset({"NON-RESIDENT TAX"}), True, False),
+    "ADJ FOREIGN TAX PAID": _Reversal(frozenset({"FOREIGN TAX PAID"}), True, False),
+    "REVERSE DIV CHARGE": _Reversal(frozenset({"DIVIDEND CHARGED"}), True, False),
+}
+_FEE_REFUND = _Reversal(frozenset({"FEE PAID", "ADVISOR FEE DEDUCTED"}), False, False)
+_FEE_REFUND_RE = re.compile(r"^FEE REVERSAL\b")
+_VERBLESS_OTHER = _Reversal(None, False, True)
+
+
+def _reversal(row: dict, kind: str) -> _Reversal | None:
+    """What the row reverses, or None for a row that reverses nothing."""
+    verb = row.get("verb") or ""
+    if verb in _REVERSES:
+        return _REVERSES[verb]
+    if verb == "ADJUSTMENT" and _FEE_REFUND_RE.match(row.get("description") or ""):
+        return _FEE_REFUND
+    if kind == _UNKNOWN_KIND and row.get("section") == pdf_parsers_svbwa.SECTION_OTHER:
+        return _VERBLESS_OTHER
+    return None
+
+
+def pair_reversals(results: list[tuple[str, dict]]) -> dict[tuple, tuple]:
+    """Map each reversal's ref to the ref of the cash booking it undoes.
+
+    The broker corrects a dividend, a withholding, a charge or a fee by
+    reversing it and, for all but the fee, usually booking it again — often
+    on a later statement, dated as the original. Both the booking and its
+    reversal stand in the ledger, and the reversal's kind is one the cash
+    flow statement never draws, so left in, the corrected row counts twice. A
+    reversal and the booking it undoes therefore leave silver together,
+    exactly as a cancelled trade and its booking do
+    (:func:`pair_cancellations`).
+
+    The booking undone is the latest one in the same account for exactly the
+    opposite amount that the reversal can undo (:func:`_reversal`): under
+    the verb it names and the same security, on or before its date; for a
+    fee refund, any fee on or before it; for a verbless Other Activity row —
+    how the statements credit back a withholding they reclassify — any
+    booking of the same printed date. A reversal that finds nothing is
+    booked as printed and counted: most are partial refunds of a withholding
+    or a fee, which undo no single booking."""
+    open_bookings = defaultdict(list)
+    pairs, seen = {}, set()
+    unpaired = 0
+    for sha, parsed in sorted(results, key=lambda r: r[1].get("period_end") or ""):
+        for aid, row, kind in booked_activity(parsed):
+            ref = _activity_ref(sha, aid, row)
+            # A byte-identical statement filed twice repeats its refs.
+            if row.get("quantity") is not None or ref in seen:
+                continue
+            seen.add(ref)
+            verb, day, amount = row.get("verb") or "", row["date"], row["amount"]
+            name = instrument_links.squash(row.get("description"))
+            rev = _reversal(row, kind)
+            if rev is None:
+                if kind != _UNKNOWN_KIND:
+                    open_bookings[aid].append((verb, name, day, amount, ref))
+                continue
+            candidates = open_bookings[aid]
+            for pos in range(len(candidates) - 1, -1, -1):
+                b_verb, b_name, b_day, b_amount, _ = candidates[pos]
+                if (abs(b_amount + amount) >= 0.005
+                        or (rev.verbs is not None and b_verb not in rev.verbs)
+                        or (rev.same_name and b_name != name)
+                        or (b_day != day if rev.same_day else b_day > day)):
+                    continue
+                pairs[ref] = candidates.pop(pos)[4]
+                break
+            else:
+                if rev.verbs is not None:
+                    unpaired += 1
+                    log.debug("%s %s %s %s reverses no booking the archive holds",
+                              aid, day, verb, name)
+    log.info("reversals booked as printed, undoing no single booking: %d",
+             unpaired)
     return pairs
 
 
@@ -576,8 +689,8 @@ def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
                         left_out: set[tuple],
                         loans: dict[str, str]) -> tuple[int, int]:
     """Insert the statement's settled activity rows, except the refs in
-    ``left_out`` — the cancellations and the bookings they cancel. Returns
-    ``(inserted, unknown-verb count)``.
+    ``left_out`` — the cancellations and reversals and the bookings they
+    undo. Returns ``(inserted, unknown-verb count)``.
 
     `instrument_key` is the holding key ``links`` settled for the row
     (:func:`link_statements`). A row looked up and not settled keeps none
@@ -602,11 +715,11 @@ def insert_transactions(conn: sqlite3.Connection, parsed: dict, sha: str,
     """
     inserted = unknown = 0
     for aid, row, kind in booked_activity(parsed):
-        if kind == _UNKNOWN_KIND:
-            unknown += 1
-            continue
         ref = _activity_ref(sha, aid, row)
         if ref in left_out:
+            continue
+        if kind == _UNKNOWN_KIND:
+            unknown += 1
             continue
         verb = row.get("verb") or ""
         description = row.get("description") or ""
@@ -992,7 +1105,9 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
         loaded = [(sha, res) for sha, res in zip(shas, results)
                   if not res.get("_error") and res.get("family") in conns]
         cancelled = pair_cancellations(loaded)
-        left_out = set(cancelled) | set(cancelled.values())
+        reversed_ = pair_reversals(loaded)
+        left_out = (set(cancelled) | set(cancelled.values())
+                    | set(reversed_) | set(reversed_.values()))
         links = link_statements(loaded, cancelled)
         loans = loans_by_suffix(loaded)
         for ref in left_out:  # not written, so not counted
@@ -1000,6 +1115,8 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
             links.unlinked.pop(ref, None)
         log.info("cancelled trades: %d booking(s) left out with their "
                  "cancellation", len(cancelled))
+        log.info("reversed bookings: %d left out with their reversal",
+                 len(reversed_))
         for named, how in ((False, "by quantity"), (True, "by name")):
             reasons = links.census(named=named)
             log.info("instrument links %s: %d row(s) linked, %d not [%s]",
