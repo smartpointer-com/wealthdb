@@ -88,6 +88,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from collectorkit import bronze, cli, silver, srcfp
+from collectorkit.money import parse_money
 
 import statement_parser
 
@@ -199,25 +200,6 @@ def parse_csv_date(raw: str) -> int | None:
         except ValueError:
             continue
     return None
-
-
-def parse_money(raw) -> float | None:
-    """Parse a signed money string. Handles thousands separators, a leading
-    currency symbol, and parenthesised negatives; returns None on blank."""
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    if not s:
-        return None
-    neg = s.startswith("(") and s.endswith(")")
-    s = s.strip("()").replace(",", "").replace("$", "").strip()
-    if not s:
-        return None
-    try:
-        val = float(s)
-    except ValueError:
-        return None
-    return -val if neg else val
 
 
 # ============================================================

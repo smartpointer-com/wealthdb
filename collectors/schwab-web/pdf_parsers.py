@@ -37,6 +37,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime
 
+from collectorkit import statement_period
 from collectorkit.pdf import extract_text_pdfium as _extract_pdf_text
 from numparse import parse_amount
 
@@ -60,22 +61,9 @@ _PERIOD_RE = re.compile(
 )
 # 2017-2019: "Statement Period: December 1, 2019 to December 31, 2019"
 # (two full dates separated by " to ").
-_PERIOD_RE_LONG = re.compile(
-    r"(?P<m1>January|February|March|April|May|June|July|August|"
-    r"September|October|November|December)\s+"
-    r"(?P<d1>\d{1,2}),\s*"
-    r"(?P<y1>\d{4})\s+to\s+"
-    r"(?P<m2>January|February|March|April|May|June|July|August|"
-    r"September|October|November|December)\s+"
-    r"(?P<d2>\d{1,2}),\s*"
-    r"(?P<y2>\d{4})"
-)
+_PERIOD_RE_LONG = statement_period.month_range_pattern(r"\s+to\s+")
 
-_MONTH_NUMS = {
-    "January": 1, "February": 2, "March": 3, "April": 4,
-    "May": 5, "June": 6, "July": 7, "August": 8,
-    "September": 9, "October": 10, "November": 11, "December": 12,
-}
+_MONTH_NUMS = statement_period.MONTH_NUMS
 
 
 # ============================================================
@@ -337,16 +325,7 @@ def parse_statement_period(text: str) -> tuple[date, date] | None:
         d1 = int(m.group("d1"))
         d2 = int(m.group("d2"))
         return date(year, m1, d1), date(year, m2, d2)
-    m = _PERIOD_RE_LONG.search(text)
-    if m:
-        y1 = int(m.group("y1"))
-        y2 = int(m.group("y2"))
-        m1 = _MONTH_NUMS[m.group("m1")]
-        m2 = _MONTH_NUMS[m.group("m2")]
-        d1 = int(m.group("d1"))
-        d2 = int(m.group("d2"))
-        return date(y1, m1, d1), date(y2, m2, d2)
-    return None
+    return statement_period.read_month_range(text, _PERIOD_RE_LONG, strict=True)
 
 
 # ============================================================
@@ -2464,30 +2443,11 @@ def parse_distribution_pdf(path) -> list[dict]:
 # CLI for standalone use
 # ============================================================
 
-def _main(argv: list[str]) -> int:
-    import argparse
-    import json
-    p = argparse.ArgumentParser(
-        description="Extract transactions from one or more Schwab "
-                    "brokerage statement PDFs and emit JSON.",
-    )
-    p.add_argument("pdf", nargs="+", help="One or more PDF paths.")
-    p.add_argument(
-        "--json-out", default="-",
-        help="Output path for the JSON array (default: stdout).",
-    )
-    args = p.parse_args(argv)
-
-    out = [parse_statement_pdf(pp) for pp in args.pdf]
-    blob = json.dumps(out, indent=2, ensure_ascii=False, default=str)
-    if args.json_out == "-":
-        print(blob)
-    else:
-        with open(args.json_out, "w", encoding="utf-8") as fh:
-            fh.write(blob)
-    return 0
-
-
 if __name__ == "__main__":
     import sys
-    sys.exit(_main(sys.argv[1:]))
+
+    from collectorkit import parser_cli
+    sys.exit(parser_cli.dump_json(
+        sys.argv[1:], parse_statement_pdf,
+        description="Extract transactions from one or more Schwab "
+                    "brokerage statement PDFs and emit JSON."))

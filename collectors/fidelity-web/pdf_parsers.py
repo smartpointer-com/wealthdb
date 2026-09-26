@@ -308,30 +308,12 @@ def parse_statement_pdf(path):
 # CLI for standalone use
 # ============================================================
 
-def _main(argv):
-    import argparse
-    import json as _json
-    p = argparse.ArgumentParser(
-        description="Extract per-account Holdings rows from one "
-                    "or more Fidelity 529 statement PDFs and emit "
-                    "JSON.",
-    )
-    p.add_argument("pdf", nargs="+", help="One or more PDF paths.")
-    p.add_argument(
-        "--json-out", default="-",
-        help="Output path for the JSON array (default: stdout).",
-    )
-    args = p.parse_args(argv)
-    out = [parse_statement_pdf(pp) for pp in args.pdf]
-    blob = _json.dumps(out, indent=2, ensure_ascii=False, default=str)
-    if args.json_out == "-":
-        print(blob)
-    else:
-        with open(args.json_out, "w", encoding="utf-8") as fh:
-            fh.write(blob)
-    return 0
-
-
 if __name__ == "__main__":
     import sys
-    raise SystemExit(_main(sys.argv[1:]))
+
+    from collectorkit import parser_cli
+    raise SystemExit(parser_cli.dump_json(
+        sys.argv[1:], parse_statement_pdf,
+        description="Extract per-account Holdings rows from one "
+                    "or more Fidelity 529 statement PDFs and emit "
+                    "JSON."))

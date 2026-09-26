@@ -404,6 +404,22 @@ Document text comes from
 (pypdfium, pdfplumber, OCR) or
 [`collectorkit.pdftotext`](../shared/collectorkit/collectorkit/pdftotext.py)
 (poppler's `pdftotext -layout`, for parsers that read printed columns).
+Readings more than one source shares live beside them:
+[`collectorkit.money`](../shared/collectorkit/collectorkit/money.py) for an
+amount in its display form (`$1,234.56`, `(12.50)`),
+[`collectorkit.statement_period`](../shared/collectorkit/collectorkit/statement_period.py)
+for a period printed as two month-name dates, and
+[`collectorkit.parser_cli`](../shared/collectorkit/collectorkit/parser_cli.py)
+for the command line a statement parser offers on its own
+(`python pdf_parsers.py FILE.pdf [--json-out PATH]`, one JSON array of what
+each file yields). A source that prints money or dates another way keeps
+its own reader beside its parser.
+
+A parser's fingerprint (`collectorkit.srcfp`) covers every collectorkit
+module it imports and the package `__init__`, so a code change to one of
+them re-parses the documents of every collector whose parser imports it.
+A shared helper therefore gets a module of its own and is never
+re-exported from `__init__`.
 
 ### Debug artefacts, run status, and pruning bronze
 

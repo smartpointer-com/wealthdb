@@ -115,8 +115,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
 
+from collectorkit import statement_period
 from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
 
 from statement_tokens import iso_from_short_date, parse_money
@@ -128,36 +128,15 @@ from statement_tokens import iso_from_short_date, parse_money
 
 # Upper-case month names joined by the word "TO". Periods may span
 # a quarter, e.g. "JANUARY 1, 2021 TO MARCH 31, 2021".
-_PERIOD_RE = re.compile(
-    r"STATEMENT\s+FOR\s+THE\s+PERIOD\s+"
-    r"(?P<m1>JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|"
-    r"SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s+"
-    r"(?P<d1>\d{1,2}),\s*(?P<y1>\d{4})\s+TO\s+"
-    r"(?P<m2>JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|"
-    r"SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s+"
-    r"(?P<d2>\d{1,2}),\s*(?P<y2>\d{4})",
-    re.IGNORECASE,
-)
-
-_MONTH_NUMS = {
-    "JANUARY": 1, "FEBRUARY": 2, "MARCH": 3, "APRIL": 4,
-    "MAY": 5, "JUNE": 6, "JULY": 7, "AUGUST": 8,
-    "SEPTEMBER": 9, "OCTOBER": 10, "NOVEMBER": 11, "DECEMBER": 12,
-}
+_PERIOD_RE = statement_period.month_range_pattern(
+    r"\s+TO\s+", prefix=r"STATEMENT\s+FOR\s+THE\s+PERIOD\s+",
+    flags=re.IGNORECASE)
 
 
 def parse_statement_period(text):
     """Return ``(start_date, end_date)`` from the page-1 ``STATEMENT
     FOR THE PERIOD … TO …`` header, or ``None`` if absent."""
-    m = _PERIOD_RE.search(text)
-    if not m:
-        return None
-    try:
-        start = date(int(m["y1"]), _MONTH_NUMS[m["m1"].upper()], int(m["d1"]))
-        end = date(int(m["y2"]), _MONTH_NUMS[m["m2"].upper()], int(m["d2"]))
-    except (KeyError, ValueError):
-        return None
-    return start, end
+    return statement_period.read_month_range(text, _PERIOD_RE)
 
 
 # ============================================================
@@ -905,7 +884,8 @@ _OPTION_ROOT_RE = re.compile(r"^(?P<right>CALL|PUT)\s+\((?P<root>[A-Z]{1,6})\)")
 _OPTION_TERMS_RE = re.compile(
     r"^(?P<mon>[A-Z]{3})(?P<day>\d{1,2})(?P<yy>\d{2})"
     r"\$(?P<strike>[\d,]+(?:\.\d+)?)\(\d+SHS\)")
-_MONTH_BY_ABBREV = {name[:3]: num for name, num in _MONTH_NUMS.items()}
+_MONTH_BY_ABBREV = {name[:3].upper(): num
+                    for name, num in statement_period.MONTH_NUMS.items()}
 
 # An UNDATED amount line inside a section — a bond sleeve's
 # "Corporate Accrued Interest Earned $50.00" and the like. It has
@@ -1321,39 +1301,18 @@ def parse_svbwa_statement_pdf(path, *, expected_signatures=()):
 # CLI for standalone use
 # ============================================================
 
-def _main(argv):
-    import argparse
-    import json as _json
-    p = argparse.ArgumentParser(
+if __name__ == "__main__":
+    import sys
+
+    from collectorkit import parser_cli
+    raise SystemExit(parser_cli.dump_json(
+        sys.argv[1:], parse_svbwa_statement_pdf,
         description="Extract per-account Holdings rows from one or "
                     "more SVB Wealth Advisory / NFS statement PDFs "
                     "and emit JSON.",
-    )
-    p.add_argument("pdf", nargs="+", help="One or more PDF paths.")
-    p.add_argument(
-        "--signature", action="append", default=None,
-        help="Optional page-1 substring guard; repeat to accept "
-             "any one of several registrations.",
-    )
-    p.add_argument(
-        "--json-out", default="-",
-        help="Output path for the JSON array (default: stdout).",
-    )
-    args = p.parse_args(argv)
-    out = [
-        parse_svbwa_statement_pdf(
-            pp, expected_signatures=tuple(args.signature or ()))
-        for pp in args.pdf
-    ]
-    blob = _json.dumps(out, indent=2, ensure_ascii=False, default=str)
-    if args.json_out == "-":
-        print(blob)
-    else:
-        with open(args.json_out, "w", encoding="utf-8") as fh:
-            fh.write(blob)
-    return 0
-
-
-if __name__ == "__main__":
-    import sys
-    raise SystemExit(_main(sys.argv[1:]))
+        add_arguments=lambda p: p.add_argument(
+            "--signature", action="append", default=None,
+            help="Optional page-1 substring guard; repeat to accept "
+                 "any one of several registrations."),
+        parse_kwargs=lambda args: {
+            "expected_signatures": tuple(args.signature or ())}))

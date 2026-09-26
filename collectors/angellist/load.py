@@ -45,6 +45,7 @@ import sys
 from pathlib import Path
 
 from collectorkit import bronze, cli, silver
+from collectorkit.money import parse_money_cents
 
 import statements
 
@@ -67,23 +68,6 @@ def money(m):
     if not isinstance(m, dict):
         return None, None
     return m.get("fractional"), m.get("currency")
-
-
-def parse_money_cents(s):
-    """Parse a K-1 CSV money cell ('$-7,994', '(1,234)', '1234.56') to minor
-    units (cents). Empty / non-numeric -> None."""
-    s = (s or "").strip()
-    if not s:
-        return None
-    neg = s.startswith("(") and s.endswith(")")
-    s = s.strip("()").replace("$", "").replace(",", "").strip()
-    if not s or s in ("-", "."):
-        return None
-    try:
-        val = float(s)
-    except ValueError:
-        return None
-    return int(round((-val if neg else val) * 100))
 
 
 def _year_end(year) -> int:

@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 
 from collectorkit import pdftotext
+from collectorkit.money import parse_money_cents as _cents
 
 
 def pdf_text(path: Path) -> str:
@@ -31,21 +32,6 @@ def pdf_text(path: Path) -> str:
         return pdftotext.layout_text(path, timeout=120)
     except pdftotext.ExtractionError:
         return ""
-
-
-def _cents(s: str):
-    """'145,761' / '(273)' / '1,234.56' -> minor units (cents); None if not
-    numeric. Parenthesised values are negative."""
-    s = (s or "").strip()
-    neg = s.startswith("(") and s.endswith(")")
-    s = s.strip("()").replace("$", "").replace(",", "").strip()
-    if not s or s in ("-", "—"):
-        return None
-    try:
-        val = float(s)
-    except ValueError:
-        return None
-    return int(round((-val if neg else val) * 100))
 
 
 _NUM = r"\(?[\d,]+(?:\.\d+)?\)?"

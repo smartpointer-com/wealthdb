@@ -43,7 +43,7 @@ from dataclasses import dataclass
 
 from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
 
-from pdf_common import _MONTH_NUMS
+from collectorkit.statement_period import MONTH_NUMS as _MONTH_NUMS
 
 # Coarse manual epoch for load.py's parse-cache namespace; automatic
 # invalidation rides the source fingerprint (see
