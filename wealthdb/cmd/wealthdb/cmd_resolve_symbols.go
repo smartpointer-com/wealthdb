@@ -97,91 +97,26 @@ var cusipShapeRe = regexp.MustCompile(`^[A-Z0-9]{9}$`)
 // read path in gold/positions.go and gold/transactions.go picks
 // the new tickers up via LEFT JOIN + COALESCE.
 func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb resolve-symbols", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	dryRun := fs.Bool("n", false, "show resolution plan without writing to gold")
-	fs.BoolVar(dryRun, "dry-run", false, "show resolution plan without writing to gold")
-	maxAttempts := fs.Int("max-attempts", 3, "max LLM round-trips when responses include hallucinated rows")
-	noCurrency := fs.Bool("no-currency", false, "drop the currency hint from the prompt (experiment / ablation)")
-	maxAnchors := fs.Int("max-anchors", 30, "max anchor examples per silver source to include in the prompt")
-	batch := fs.Int("batch", defaultResolveBatch, "candidates per model call")
-	showPrompt := fs.Bool("show-prompt", false, "print the LLM prompt to stderr before sending (debugging)")
-	overridesOnly := fs.Bool("overrides-only", false, "apply cfg.symbol_resolution.overrides and exit; skip the LLM round-trip entirely")
-	fs.Usage = func() {
-		fmt.Fprintln(stderr, resolveSymbolsUsage())
+	opts, err := parseResolveSymbolsFlags(subargs, stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "resolve-symbols: bad flags")
+	if err != nil {
+		return err
 	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return errs.Newf(2, "resolve-symbols: unexpected positional argument %q", fs.Arg(0))
-	}
-	if *batch < 1 {
-		fs.Usage()
-		return errs.Newf(2, "resolve-symbols: --batch must be at least 1, got %d", *batch)
-	}
-
 	cfg, err := config.Load(g.ConfigPath)
 	if err != nil {
 		return err
 	}
-	// LLM config is only needed when we'll actually call the LLM.
-	// --overrides-only is a fast cfg→DB sync path with no model
-	// dependency.
-	const modelKey = "symbol_resolution.model"
-	var modelCfg *config.ModelConfig
-	if cfg.SymbolResolution != nil {
-		modelCfg = cfg.SymbolResolution.Model
-	}
-	if !*overridesOnly {
-		if modelCfg == nil {
-			return errs.Newf(2, "resolve-symbols: %s is not set; add a `%s` block to %s (or use --overrides-only)",
-				modelKey, modelKey, g.ConfigPath)
-		}
-		if err := validateModelConfig(modelKey, modelCfg); err != nil {
-			return errs.Newf(2, "resolve-symbols: %s", err.Error())
-		}
-	}
-
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
+	modelCfg, err := resolveModel(cfg, g.ConfigPath, opts)
 	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
+		return err
 	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", cfg.GoldDB)
-	}
-	if !*dryRun && dec.Mode != pathmode.ModeReadWrite {
-		return errs.Newf(errs.ExitRWNeeded,
-			"'resolve-symbols' requires write access to the gold database, but '%s' is read-only (detected: %s). "+
-				"Pass --dry-run if you only want to see the plan.", cfg.GoldDB, dec.Reason)
-	}
-	// Dry-run takes no write locks so a parallel `wealthdb
-	// transactions` / `positions` call can read the DB while the
-	// LLM is responding. --overrides-only writes (the sync step),
-	// so it always opens RW.
-	openMode := gold.ModeReadWrite
-	if *dryRun && !*overridesOnly {
-		openMode = gold.ModeReadOnly
-	}
-	if openMode == gold.ModeReadWrite {
-		// Every write path takes the gold write mutex for the whole
-		// command, so a rebuild-and-swap cannot land between the
-		// override sync and the resolutions this run persists.
-		lock, err := lockGoldForWrite(cfg.GoldDB, "resolve-symbols")
-		if err != nil {
-			return err
-		}
-		defer lock.unlock()
-	}
-	db, err := gold.Open(cfg.GoldDB, openMode)
+	db, release, err := openGoldForResolve(cfg.GoldDB, g.ForceReadOnly, opts)
 	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
+		return err
 	}
+	defer release()
 	// Released before the model round-trips (see below) and re-taken
 	// to persist. dbOpen keeps the deferred close correct on the
 	// paths that return early.
@@ -192,33 +127,18 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 		}
 	}()
 
-	configuredSources := make(map[string]bool, len(cfg.SilverSources))
-	for _, s := range cfg.SilverSources {
-		configuredSources[s.ID] = true
-	}
-
-	// Always sync cfg.symbol_resolution.overrides first — manual
-	// overrides are the source of truth and must win over any
-	// LLM-derived row for the same key, whether we're about to run
-	// the LLM or just doing --overrides-only.
+	// The cfg overrides are the source of truth and must win over any
+	// LLM-derived row for the same key, so they are synced first,
+	// whether or not the model runs.
 	var overrides []config.SymbolOverride
 	if cfg.SymbolResolution != nil {
 		overrides = cfg.SymbolResolution.Overrides
 	}
-	purged, upserted, suppressed, err := syncSymbolOverrides(ctx, db, overrides)
-	if err != nil {
-		return fmt.Errorf("resolve-symbols: sync overrides: %w", err)
+	if err := syncOverridesStep(ctx, db, overrides, opts.dryRun, stdout); err != nil {
+		return err
 	}
-	if purged+upserted+suppressed > 0 {
-		fmt.Fprintf(stdout, "resolve-symbols: synced cfg overrides — %d upserted, %d suppressed (delete:true), %d stale manual-override rows purged\n",
-			upserted, suppressed, purged)
-	}
-
-	if *overridesOnly {
-		var total int
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM symbol_resolutions`).Scan(&total); err == nil {
-			fmt.Fprintf(stdout, "resolve-symbols: overrides-only mode; total symbol_resolutions rows now %d\n", total)
-		}
+	if opts.overridesOnly {
+		printOverridesOnlyTotal(ctx, db, opts.dryRun, stdout)
 		return nil
 	}
 
@@ -231,63 +151,234 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 		fmt.Fprintln(stdout, "resolve-symbols: nothing to resolve")
 		return nil
 	}
-	anchors, err := collectAnchors(ctx, db, *maxAnchors)
+	anchors, err := collectAnchors(ctx, db, opts.maxAnchors)
 	if err != nil {
 		return err
 	}
-
 	stats := summariseStats(candidates)
-	batches := splitBatches(candidates, *batch)
-
+	batches := splitBatches(candidates, opts.batch)
 	fmt.Fprintf(stdout, "resolve-symbols: %d candidates (%s; by-kind %s), %d anchors, %d batch(es) of up to %d, model %s\n",
 		stats.Total, formatPerSource(stats.PerSource),
-		formatPerKind(stats.PerKind), len(anchors), len(batches), *batch, modelCfg.Name)
+		formatPerKind(stats.PerKind), len(anchors), len(batches), opts.batch, modelCfg.Name)
 
 	// Everything the run reads is read; release the handle before the
 	// model round-trips. DuckDB is one read-write handle OR many
 	// read-only ones, so holding it across the whole LLM pass would
 	// lock every reader out of gold for its duration. The write mutex
-	// above still excludes other writers.
+	// still excludes other writers.
 	if err := db.Close(); err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("resolve-symbols: close gold before the model pass: %w", err))
 	}
 	dbOpen = false
 
-	// Each batch is stored as it completes, so a later batch failing —
-	// a wedged serve, the per-call ceiling — never costs the answers
-	// already paid for.
-	var valid []resolution
-	var attempts, totalInvalid int
-	stored := map[string]int{}
-	persisted, total := 0, 0
+	configuredSources := make(map[string]bool, len(cfg.SilverSources))
+	for _, s := range cfg.SilverSources {
+		configuredSources[s.ID] = true
+	}
+	tally, err := runResolveBatches(ctx, resolveRun{
+		model: modelCfg, goldPath: cfg.GoldDB, sources: configuredSources, opts: opts,
+	}, batches, anchors, stdout, stderr)
+	if err != nil {
+		return err
+	}
+	sortResolutions(tally.valid)
+	printSummary(stdout, stats, tally.valid, unresolvedCandidates(candidates, tally.valid),
+		tally.attempts, tally.invalid)
+	printResolveOutcome(stdout, opts.dryRun, tally)
+	return nil
+}
+
+// resolveSymbolsOpts are the command's flags.
+type resolveSymbolsOpts struct {
+	dryRun, overridesOnly, noCurrency, showPrompt bool
+	maxAttempts, maxAnchors, batch                int
+}
+
+// parseResolveSymbolsFlags reads the flags, returning flag.ErrHelp for
+// -h and an exit-2 error for anything it cannot use.
+func parseResolveSymbolsFlags(subargs []string, stderr io.Writer) (resolveSymbolsOpts, error) {
+	var o resolveSymbolsOpts
+	fs := flag.NewFlagSet("wealthdb resolve-symbols", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.BoolVar(&o.dryRun, "n", false, "show resolution plan without writing to gold")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "show resolution plan without writing to gold")
+	fs.IntVar(&o.maxAttempts, "max-attempts", 3, "max LLM round-trips when responses include hallucinated rows")
+	fs.BoolVar(&o.noCurrency, "no-currency", false, "drop the currency hint from the prompt (experiment / ablation)")
+	fs.IntVar(&o.maxAnchors, "max-anchors", 30, "max anchor examples per silver source to include in the prompt")
+	fs.IntVar(&o.batch, "batch", defaultResolveBatch, "candidates per model call")
+	fs.BoolVar(&o.showPrompt, "show-prompt", false, "print the LLM prompt to stderr before sending (debugging)")
+	fs.BoolVar(&o.overridesOnly, "overrides-only", false, "apply cfg.symbol_resolution.overrides and exit; skip the LLM round-trip entirely")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, resolveSymbolsUsage())
+	}
+	if err := fs.Parse(subargs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return o, err
+		}
+		return o, errs.Newf(2, "resolve-symbols: bad flags")
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return o, errs.Newf(2, "resolve-symbols: unexpected positional argument %q", fs.Arg(0))
+	}
+	if o.batch < 1 {
+		fs.Usage()
+		return o, errs.Newf(2, "resolve-symbols: --batch must be at least 1, got %d", o.batch)
+	}
+	return o, nil
+}
+
+// resolveModel returns the model the run asks, validated. The model is
+// only needed when the run asks it: --overrides-only is a cfg→DB sync
+// with no model dependency, and gets nil.
+func resolveModel(cfg *config.Config, cfgPath string, opts resolveSymbolsOpts) (*config.ModelConfig, error) {
+	if opts.overridesOnly {
+		return nil, nil
+	}
+	const modelKey = "symbol_resolution.model"
+	var modelCfg *config.ModelConfig
+	if cfg.SymbolResolution != nil {
+		modelCfg = cfg.SymbolResolution.Model
+	}
+	if modelCfg == nil {
+		return nil, errs.Newf(2, "resolve-symbols: %s is not set; add a `%s` block to %s (or use --overrides-only)",
+			modelKey, modelKey, cfgPath)
+	}
+	if err := validateModelConfig(modelKey, modelCfg); err != nil {
+		return nil, errs.Newf(2, "resolve-symbols: %s", err.Error())
+	}
+	return modelCfg, nil
+}
+
+// openGoldForResolve opens gold for the run and returns what releases it
+// afterwards. A dry run reads only: it opens read-only and takes no lock,
+// so a parallel `wealthdb transactions` / `positions` call can read the DB
+// while the model is answering. Every other run writes, so it needs a
+// writable gold and holds the gold write mutex for the whole command —
+// a rebuild-and-swap cannot then land between the override sync and the
+// resolutions the run persists.
+func openGoldForResolve(goldPath string, forceReadOnly bool, opts resolveSymbolsOpts) (*sql.DB, func(), error) {
+	dec, err := pathmode.Detect(goldPath, forceReadOnly, false)
+	if err != nil {
+		return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)
+	}
+	if !dec.DBExists {
+		return nil, nil, errs.Newf(errs.ExitMissingDB,
+			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", goldPath)
+	}
+	if opts.dryRun {
+		db, err := gold.Open(goldPath, gold.ModeReadOnly)
+		if err != nil {
+			return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)
+		}
+		return db, func() {}, nil
+	}
+	if dec.Mode != pathmode.ModeReadWrite {
+		return nil, nil, errs.Newf(errs.ExitRWNeeded,
+			"'resolve-symbols' requires write access to the gold database, but '%s' is read-only (detected: %s). "+
+				"Pass --dry-run if you only want to see the plan.", goldPath, dec.Reason)
+	}
+	lock, err := lockGoldForWrite(goldPath, "resolve-symbols")
+	if err != nil {
+		return nil, nil, err
+	}
+	db, err := gold.Open(goldPath, gold.ModeReadWrite)
+	if err != nil {
+		lock.unlock()
+		return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)
+	}
+	return db, lock.unlock, nil
+}
+
+// syncOverridesStep syncs the cfg overrides into symbol_resolutions, or
+// on a dry run reports what the sync would do, and prints the counts when
+// there is anything to report.
+func syncOverridesStep(ctx context.Context, db *sql.DB, overrides []config.SymbolOverride, dryRun bool, stdout io.Writer) error {
+	sync, lead := syncSymbolOverrides, "synced cfg overrides"
+	if dryRun {
+		sync, lead = planSymbolOverrides, "dry-run; the sync would apply cfg overrides"
+	}
+	purged, upserted, suppressed, err := sync(ctx, db, overrides)
+	if err != nil {
+		return fmt.Errorf("resolve-symbols: sync overrides: %w", err)
+	}
+	if purged+upserted+suppressed > 0 {
+		fmt.Fprintf(stdout, "resolve-symbols: %s — %d upserted, %d suppressed (delete:true), %d stale manual-override rows purged\n",
+			lead, upserted, suppressed, purged)
+	}
+	return nil
+}
+
+// printOverridesOnlyTotal ends an --overrides-only run. The row count is
+// best-effort: a query error drops the line rather than failing a run
+// whose work is already done.
+func printOverridesOnlyTotal(ctx context.Context, db *sql.DB, dryRun bool, stdout io.Writer) {
+	if dryRun {
+		fmt.Fprintln(stdout, "resolve-symbols: overrides-only mode; nothing written (dry-run)")
+		return
+	}
+	var total int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM symbol_resolutions`).Scan(&total); err == nil {
+		fmt.Fprintf(stdout, "resolve-symbols: overrides-only mode; total symbol_resolutions rows now %d\n", total)
+	}
+}
+
+// resolveRun is what every batch of one run shares.
+type resolveRun struct {
+	model    *config.ModelConfig
+	goldPath string
+	sources  map[string]bool
+	opts     resolveSymbolsOpts
+}
+
+// batchTally accumulates the batches of one run.
+type batchTally struct {
+	valid             []resolution
+	attempts, invalid int
+	stored            map[string]int // per source, rows upserted
+	persisted, total  int            // rows stored by this run; table size after the last store
+}
+
+// runResolveBatches asks the model batch by batch. Each batch is stored
+// as it completes (unless dry-run), so a later batch failing — a wedged
+// serve, the per-call ceiling — never costs the answers already paid
+// for: a failed batch's partial answers are stored before its error is
+// returned, and a store failure wins over the model's error.
+func runResolveBatches(ctx context.Context, run resolveRun, batches [][]candidate, anchors []anchor, stdout, stderr io.Writer) (batchTally, error) {
+	t := batchTally{stored: map[string]int{}}
 	for i, b := range batches {
-		got, n, invalid, err := resolveWithLLM(ctx, modelCfg, b, anchorsFor(anchors, b),
-			candidateKeyset(b), configuredSources, *maxAttempts, *noCurrency, *showPrompt, stdout, stderr)
-		attempts += n
-		totalInvalid += invalid
-		valid = append(valid, got...)
-		if !*dryRun && len(got) > 0 {
-			perSource, t, serr := storeResolutions(ctx, cfg.GoldDB, got, modelCfg.Name, stdout)
+		got, n, invalid, err := resolveWithLLM(ctx, run.model, b, anchorsFor(anchors, b),
+			candidateKeyset(b), run.sources, run.opts.maxAttempts, run.opts.noCurrency,
+			run.opts.showPrompt, stdout, stderr)
+		t.attempts += n
+		t.invalid += invalid
+		t.valid = append(t.valid, got...)
+		if !run.opts.dryRun && len(got) > 0 {
+			perSource, total, serr := storeResolutions(ctx, run.goldPath, got, run.model.Name, stdout)
 			if serr != nil {
-				return serr
+				return t, serr
 			}
 			for src, c := range perSource {
-				stored[src] += c
+				t.stored[src] += c
 			}
-			persisted += len(got)
-			total = t
+			t.persisted += len(got)
+			t.total = total
 		}
 		if err != nil {
-			if !*dryRun {
+			if !run.opts.dryRun {
 				fmt.Fprintf(stdout, "resolve-symbols: stopped in batch %d of %d; the %d resolution(s) answered so far are stored\n",
-					i+1, len(batches), persisted)
+					i+1, len(batches), t.persisted)
 			}
-			return err
+			return t, err
 		}
 		fmt.Fprintf(stdout, "resolve-symbols: batch %d/%d: %d of %d resolved\n", i+1, len(batches), len(got), len(b))
 	}
+	return t, nil
+}
 
-	// Sort for stable output.
+// sortResolutions orders resolutions by source, kind and value, for
+// stable output.
+func sortResolutions(valid []resolution) {
 	sort.Slice(valid, func(i, j int) bool {
 		if valid[i].SilverSourceID != valid[j].SilverSourceID {
 			return valid[i].SilverSourceID < valid[j].SilverSourceID
@@ -297,25 +388,24 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 		}
 		return valid[i].LookupValue < valid[j].LookupValue
 	})
+}
 
-	unresolved := unresolvedCandidates(candidates, valid)
-	printSummary(stdout, stats, valid, unresolved, attempts, totalInvalid)
-
-	if *dryRun {
-		printResolutionPlan(stdout, "--- dry-run plan (no rows written) ---", valid)
-		return nil
+// printResolveOutcome ends a model run: the plan on a dry run, what was
+// persisted otherwise.
+func printResolveOutcome(w io.Writer, dryRun bool, t batchTally) {
+	if dryRun {
+		printResolutionPlan(w, "--- dry-run plan (no rows written) ---", t.valid)
+		return
 	}
-
-	if len(valid) == 0 {
-		fmt.Fprintln(stdout, "resolve-symbols: no valid resolutions to persist")
-		return nil
+	if len(t.valid) == 0 {
+		fmt.Fprintln(w, "resolve-symbols: no valid resolutions to persist")
+		return
 	}
-	fmt.Fprintln(stdout, "resolve-symbols: persisted to gold:")
-	for _, s := range sortedKeys(stored) {
-		fmt.Fprintf(stdout, "  %s: %d rows upserted\n", s, stored[s])
+	fmt.Fprintln(w, "resolve-symbols: persisted to gold:")
+	for _, s := range sortedKeys(t.stored) {
+		fmt.Fprintf(w, "  %s: %d rows upserted\n", s, t.stored[s])
 	}
-	fmt.Fprintf(stdout, "resolve-symbols: total symbol_resolutions rows in gold now %d\n", total)
-	return nil
+	fmt.Fprintf(w, "resolve-symbols: total symbol_resolutions rows in gold now %d\n", t.total)
 }
 
 // withoutOverridden drops the candidates whose key a config override
@@ -1146,6 +1236,25 @@ ON CONFLICT (silver_source_id, lookup_kind, lookup_value) DO UPDATE SET
 	return purged, upserted, suppressed, nil
 }
 
+// planSymbolOverrides is syncSymbolOverrides without the writes: the
+// counts it would report, read off gold as it stands, for a dry run that
+// holds gold read-only.
+func planSymbolOverrides(ctx context.Context, db *sql.DB, overrides []config.SymbolOverride) (purged, upserted, suppressed int, err error) {
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM symbol_resolutions WHERE model_name = ?`, manualOverrideModelName,
+	).Scan(&purged); err != nil {
+		return 0, 0, 0, fmt.Errorf("count manual-override rows: %w", err)
+	}
+	for _, o := range overrides {
+		if o.Delete {
+			suppressed++
+		} else {
+			upserted++
+		}
+	}
+	return purged, upserted, suppressed, nil
+}
+
 // persistResolutions upserts the validated rows into the
 // symbol_resolutions table. Returns a per-source count of rows
 // INSERTed (NB: ON CONFLICT DO UPDATE doesn't distinguish insert
@@ -1221,7 +1330,9 @@ cfg.symbol_resolution.overrides are synced to symbol_resolutions
 on every invocation (whether or not the LLM runs), and a key they
 name is never sent to the LLM, so its answer cannot displace them. Use
 --overrides-only to apply cfg overrides without making an LLM call
-— useful for fast correction of bad LLM resolutions.
+— useful for fast correction of bad LLM resolutions. A dry run writes
+nothing at all: it opens gold read-only, takes no lock, and reports
+what the override sync would do instead of doing it.
 
 The run report ends by listing every candidate still unresolved, one
 per line, and a candidate's lookup value can be a free-text
@@ -1229,7 +1340,8 @@ transaction description. The listing has no -p to mask it: treat the
 report as narrative data, not as a summary safe to paste.
 
 Flags:
-  -n, --dry-run         print the resolution plan, don't write
+  -n, --dry-run         print the resolution plan and what the override
+                        sync would do; write nothing
       --batch N         candidates per model call (default 100)
       --max-attempts N  retry the LLM up to N times when responses
                         contain hallucinated rows (default 3)
