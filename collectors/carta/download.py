@@ -434,16 +434,12 @@ def _document_class(doc: dict) -> str | None:
       * anything else / an absent type → unclassified → fetch-verify (the safe
         default: always fetched, a byte-identical copy still deduped).
     """
-    dtype = (doc.get("document_type") or "").lower()
-    if not dtype:
-        return None
-    if any(k in dtype for k in _TAX_KEYWORDS):
-        return docdedup.CLASS_TAX
-    if any(k in dtype for k in _STATEMENT_KEYWORDS):
-        return docdedup.CLASS_MUTABLE
-    if any(k in dtype for k in _LINK_KEYWORDS):
-        return docdedup.CLASS_IMMUTABLE
-    return None
+    return docdedup.classify(
+        (doc.get("document_type") or "").lower(),
+        ((docdedup.CLASS_TAX, _TAX_KEYWORDS),
+         (docdedup.CLASS_MUTABLE, _STATEMENT_KEYWORDS),
+         (docdedup.CLASS_IMMUTABLE, _LINK_KEYWORDS)),
+        substring=True)
 
 
 def extract_carta(run_dir: Path, manifest):

@@ -87,7 +87,7 @@ from pathlib import Path
 
 import httpx
 
-from collectorkit import bronze, cli, debugcap, docdedup
+from collectorkit import bronze, cli, debugcap, docdedup, parse
 from viac_client import BASE_URL, ViacClient
 
 log = logging.getLogger("viac.download")
@@ -183,17 +183,14 @@ def _document_class(doc: dict) -> str | None:
     The safe classes trigger on ``type`` as well as ``subType`` so a
     not-yet-catalogued tax/report subtype still fetch-verifies.
     """
-    dtype = doc.get("type")
-    subtype = doc.get("subType")
-    if dtype == "TAX":
-        return docdedup.CLASS_TAX
-    if dtype == "REPORT" or subtype in _REPORT_SUBTYPES:
-        return docdedup.CLASS_MUTABLE
-    if subtype in _FUSION_SUBTYPES:
-        return docdedup.CLASS_MUTABLE
-    if subtype in _LINK_SUBTYPES:
-        return docdedup.CLASS_IMMUTABLE
-    return None
+    return (
+        docdedup.classify(doc.get("type"),
+                          ((docdedup.CLASS_TAX, {"TAX"}),
+                           (docdedup.CLASS_MUTABLE, {"REPORT"})))
+        or docdedup.classify(doc.get("subType"),
+                             ((docdedup.CLASS_MUTABLE,
+                               _REPORT_SUBTYPES | _FUSION_SUBTYPES),
+                              (docdedup.CLASS_IMMUTABLE, _LINK_SUBTYPES))))
 
 
 def extract_viac(run_dir, manifest):
@@ -395,13 +392,7 @@ def _doc_date(doc: dict) -> date | None:
     VIAC's timestamps come back as `YYYY-MM-DDTHH:MM:SS.ffffff` with
     no timezone suffix; we only need the date portion so the first
     10 chars are enough."""
-    ts = doc.get("timestamp")
-    if not isinstance(ts, str) or len(ts) < 10:
-        return None
-    try:
-        return date.fromisoformat(ts[:10])
-    except ValueError:
-        return None
+    return parse.iso_date(doc.get("timestamp"))
 
 
 def should_download_pdf(doc: dict, with_tx: bool,

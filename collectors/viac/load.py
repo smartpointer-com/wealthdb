@@ -27,7 +27,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from collectorkit import bronze, cli, parse, silver, srcfp
+from collectorkit import bronze, cli, documents, parse, silver, srcfp
+from collectorkit.silver import canonical_json
 
 import pdf_parsers
 
@@ -131,10 +132,6 @@ def iso_datetime_to_epoch(s: str | None) -> int | None:
     except (ValueError, TypeError):
         return None
 
-
-def canonical_json(obj: Any) -> str:
-    """Stable JSON serialisation for `payload` columns."""
-    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def parse_account_id(account_external_id: str) -> tuple[str, str]:
@@ -764,7 +761,9 @@ def load_documents_phase(
 ) -> None:
     """Read documents/index.json + the PDFs on disk, content-dedup,
     upsert `documents`. PDFs themselves stay on disk; this is just
-    the index."""
+    the index. A document indexed but not on disk was skipped via
+    `--no-transaction-documents` or failed to fetch; the next dump that
+    downloads it catches up."""
     index_path = run_dir / "documents" / "index.json"
     if not index_path.is_file():
         logger.info("  documents phase: no index.json — skipping")
@@ -776,62 +775,25 @@ def load_documents_phase(
             type(index).__name__,
         )
         return
-    inserted = 0
-    refreshed = 0
-    missing = 0
-    for d in index:
-        doc_id = d.get("documentNumber")
-        if not doc_id:
-            continue
-        pdf_path = run_dir / "documents" / f"{doc_id}.pdf"
-        if not pdf_path.is_file():
-            # Indexed but not downloaded — either skipped via
-            # `--no-transaction-documents` or a fetch failure.
-            # The next dump that does download it will catch up.
-            missing += 1
-            continue
-        sha, size = bronze.sha256_file(pdf_path)
-        bronze_path = pdf_path.relative_to(run_dir.parent).as_posix()
-        ts = iso_datetime_to_epoch(d.get("timestamp"))
-        row = conn.execute(
-            "SELECT 1 FROM documents WHERE content_sha256 = ?",
-            (sha,),
-        ).fetchone()
-        if row is None:
-            conn.execute(
-                """
-                INSERT INTO documents (
-                    content_sha256, viac_doc_id,
-                    doc_type, doc_subtype,
-                    mime_type, language, product, timestamp,
-                    file_size, bronze_path,
-                    first_seen_at, last_seen_at, payload
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    sha, doc_id,
-                    d.get("type") or "UNKNOWN", d.get("subType"),
-                    d.get("mimeType"), d.get("language"), d.get("product"), ts,
-                    size, bronze_path,
-                    snapshot_at, snapshot_at, canonical_json(d),
-                ),
-            )
-            inserted += 1
-        else:
-            conn.execute(
-                """
-                UPDATE documents SET
-                    last_seen_at = MAX(last_seen_at, ?),
-                    bronze_path = ?,
-                    payload = ?
-                WHERE content_sha256 = ?
-                """,
-                (snapshot_at, bronze_path, canonical_json(d), sha),
-            )
-            refreshed += 1
+
+    def columns(d: dict, doc_id, file_size: int) -> dict:
+        return {
+            "viac_doc_id": doc_id,
+            "doc_type": d.get("type") or "UNKNOWN",
+            "doc_subtype": d.get("subType"),
+            "mime_type": d.get("mimeType"),
+            "language": d.get("language"),
+            "product": d.get("product"),
+            "timestamp": iso_datetime_to_epoch(d.get("timestamp")),
+            "file_size": file_size,
+        }
+
+    n = documents.index_documents(
+        conn, snapshot_at, run_dir, index,
+        id_of=lambda d: d.get("documentNumber") or None, columns_of=columns)
     logger.info(
         "  documents phase: %d new, %d existing refreshed, %d indexed-but-not-on-disk",
-        inserted, refreshed, missing,
+        n.inserted, n.refreshed, n.missing,
     )
 
 
@@ -921,34 +883,9 @@ def list_pending_dumps(
     conn: sqlite3.Connection, bronze_dir: Path,
 ) -> list[Path]:
     """Return run dirs under bronze_dir that haven't been loaded
-    yet, in chronological order."""
-    if not bronze_dir.is_dir():
-        return []
-    loaded = {
-        row["snapshot_at"]
-        for row in conn.execute("SELECT snapshot_at FROM dump_runs")
-    }
-    pending: list[Path] = []
-    for d in bronze.iter_run_dirs(bronze_dir):
-        snapshot_at = ts_from_run_dir(d.name)
-        if snapshot_at in loaded:
-            continue
-        run_json_path = d / "run.json"
-        if not run_json_path.is_file():
-            logger.info("skipping %s — no run.json (still writing?)", d.name)
-            continue
-        # download.py stamps run.json with a status ("in-progress" at
-        # run-dir creation, "complete"/"dry-run" at the end), so its
-        # presence alone does not prove the walk finished. Skip a
-        # crashed/aborted walk ("in-progress") or a --dry-run shell
-        # ("dry-run"); a statusless manifest predates the lifecycle and
-        # stays loadable.
-        status = bronze.run_status(run_json_path)
-        if status in ("in-progress", "dry-run"):
-            logger.info("skipping %s — run.json status=%s", d.name, status)
-            continue
-        pending.append(d)
-    return pending
+    yet, in chronological order, leaving out a dump whose walk never
+    completed (bronze.pending_run_dirs)."""
+    return bronze.pending_run_dirs(conn, bronze_dir, log=logger)
 
 
 def do_load(args: argparse.Namespace) -> int:

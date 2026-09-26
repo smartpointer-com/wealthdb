@@ -5,7 +5,18 @@ epoch (UTC). Sources hand us dates in their own formats — this module
 covers the formats two or more collectors share."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+
+
+def iso_date(value) -> date | None:
+    """The date a ``YYYY-MM-DD…`` string starts with, or None when the
+    value is not such a string. A trailing time is ignored."""
+    if not isinstance(value, str) or len(value) < 10:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
 
 
 def iso_date_to_epoch(s: str | None) -> int | None:

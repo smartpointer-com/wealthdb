@@ -125,6 +125,25 @@ _BASE_BUCKETS = ("total", "fetched", "linked", "verified", "changed",
                  "errors", "other")
 
 
+def classify(value, table, *, substring: bool = False) -> str | None:
+    """The class of the first ``(doc_class, names)`` row of `table` that
+    names `value`, or None — unclassified, so fetch-verify.
+
+    A collector's class table is its mode policy: which of its document
+    kinds are tax, which are parsed and restatement-prone, which are
+    executed-once and safe to link. Rows are tried in order, so a kind two
+    rows name gets the first. With `substring` a row names `value` when one
+    of its names occurs in it (the caller folds case first); otherwise the
+    value must be one of the names. An empty value is unclassified.
+    """
+    if not value:
+        return None
+    for doc_class, names in table:
+        if any(n in value for n in names) if substring else value in names:
+            return doc_class
+    return None
+
+
 def empty_audit(*extra_buckets: str) -> dict:
     """A zeroed manifest audit block: ``total`` + one counter per outcome bucket,
     plus any collector-specific ``extra_buckets`` (e.g. ``"no_blob"`` for a

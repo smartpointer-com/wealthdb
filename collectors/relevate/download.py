@@ -80,7 +80,7 @@ except ModuleNotFoundError:  # pragma: no cover
         """Fallback so ``except RequestException`` still resolves when the real
         ``requests`` is absent (the HTTP paths are never entered then)."""
 
-from collectorkit import cli, debugcap, docdedup, session as ck_session
+from collectorkit import cli, debugcap, docdedup, parse, session as ck_session
 
 # doc_kind_from_filename is the SAME fileName -> kind derivation load.py parses
 # on, so the download-avoidance mode is chosen off the exact label load reads
@@ -637,13 +637,7 @@ def _doc_create_date(entry: dict) -> date | None:
 
     Relevate's createDate format is `YYYY-MM-DDTHH:MM:SS` with no
     timezone suffix; the first 10 chars are the date portion."""
-    s = entry.get("createDate")
-    if not isinstance(s, str) or len(s) < 10:
-        return None
-    try:
-        return date.fromisoformat(s[:10])
-    except ValueError:
-        return None
+    return parse.iso_date(entry.get("createDate"))
 
 
 # --- doc_kind -> docdedup class (download-avoidance mode selection) ---------
@@ -697,13 +691,11 @@ def _document_class(entry: dict) -> str | None:
     the engine fetch-verifies it (the safe default: always fetched, a
     byte-identical copy still deduped).
     """
-    kind = doc_kind_from_filename(entry.get("fileName"))
-    if kind in _FETCH_VERIFY_KINDS:
-        return docdedup.CLASS_TAX if kind == "leaving_statement" \
-            else docdedup.CLASS_MUTABLE
-    if kind in _LINK_KINDS:
-        return docdedup.CLASS_IMMUTABLE
-    return None
+    return docdedup.classify(
+        doc_kind_from_filename(entry.get("fileName")),
+        ((docdedup.CLASS_TAX, {"leaving_statement"}),
+         (docdedup.CLASS_MUTABLE, _FETCH_VERIFY_KINDS),
+         (docdedup.CLASS_IMMUTABLE, _LINK_KINDS)))
 
 
 def extract_relevate(run_dir: Path, manifest: dict | None):

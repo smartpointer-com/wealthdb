@@ -13,6 +13,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .silver import loaded_snapshots
+
 # Single implementation lives in silver; re-exported here so
 # download-side callers get it without touching the silver module.
 from .silver import canonical_json  # noqa: F401
@@ -81,6 +83,39 @@ def run_status(run_json_path: Path) -> str | None:
     except (OSError, ValueError):
         return None
     return meta.get("status") if isinstance(meta, dict) else None
+
+
+# Statuses a run.json carries while its dump is not one to load: the walk is
+# still running (or crashed mid-walk), or it was a dry run.
+INCOMPLETE_RUN_STATUSES = ("in-progress", "dry-run")
+
+
+def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
+    """The run dirs under `bronze_dir` that silver has not loaded, oldest
+    first.
+
+    A run dir without a ``run.json`` is still being written, and one whose
+    status is in :data:`INCOMPLETE_RUN_STATUSES` never finished; both are
+    skipped with a line on `log`. A statusless or unreadable manifest stays
+    loadable (see :func:`run_status`).
+    """
+    if not Path(bronze_dir).is_dir():
+        return []
+    loaded = loaded_snapshots(conn)
+    pending: list[Path] = []
+    for d in iter_run_dirs(bronze_dir):
+        if parse_run_ts(d.name) in loaded:
+            continue
+        run_json = d / "run.json"
+        if not run_json.is_file():
+            log.info("skipping %s — no run.json (still writing?)", d.name)
+            continue
+        status = run_status(run_json)
+        if status in INCOMPLETE_RUN_STATUSES:
+            log.info("skipping %s — run.json status=%s", d.name, status)
+            continue
+        pending.append(d)
+    return pending
 
 
 def short_token(value: str, length: int = 16) -> str:

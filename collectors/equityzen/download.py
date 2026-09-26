@@ -217,14 +217,11 @@ def _document_class(doc: dict) -> str | None:
     unclassified → the helper fetch-verifies it (the safe default: always
     fetched, a byte-identical copy still deduped).
     """
-    dtype = doc.get("documentType")
-    if dtype == "K1":
-        return docdedup.CLASS_TAX
-    if dtype in _FETCH_VERIFY_TYPES:
-        return docdedup.CLASS_MUTABLE
-    if dtype in _LINK_TYPES:
-        return docdedup.CLASS_IMMUTABLE
-    return None
+    return docdedup.classify(
+        doc.get("documentType"),
+        ((docdedup.CLASS_TAX, {"K1"}),
+         (docdedup.CLASS_MUTABLE, _FETCH_VERIFY_TYPES),
+         (docdedup.CLASS_IMMUTABLE, _LINK_TYPES)))
 
 
 def extract_equityzen(run_dir, manifest):

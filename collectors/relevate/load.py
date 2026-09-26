@@ -27,7 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from collectorkit import bronze, cli, parse, silver, srcfp
+from collectorkit import bronze, cli, documents, parse, silver, srcfp
+from collectorkit.silver import canonical_json
 
 import pdf_parsers
 from pdf_parsers import parse_credit_note, parse_quarterly_report
@@ -76,12 +77,6 @@ open_db = silver.open_db
 # ============================================================
 # Helpers
 # ============================================================
-
-def canonical_json(obj: Any) -> str:
-    """Stable JSON serialisation for `payload` columns. Sorted keys
-    so two equivalent payloads compare equal byte-for-byte (useful
-    for any later content-dedup pass)."""
-    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 # Relevate's API serves fileNames in German on every observed
@@ -334,98 +329,51 @@ def load_documents_phase(
 ) -> None:
     """Read documents/index.json + the PDFs on disk, content-dedup,
     upsert `documents`. PDFs themselves stay on disk; this is just
-    the index."""
+    the index.
+
+    The provider's document id is the IDENTITY and content_sha256 the
+    version: new content under an id silver already holds is a
+    RESTATEMENT — Relevate re-issued the document — and the row it
+    supersedes gives way to it. Without that, the insert collided with
+    UNIQUE(relevate_doc_id) and took the whole DUMP down with it: the
+    transaction rolls back, its `dump_runs` row with it, so the dump
+    stays pending and every later dump plus both PDF passes never run.
+    One row per document id is also what the ids derived from it need:
+    `credit_note:<doc id>` transaction ids and `historical_*.document_id`
+    would both be ambiguous with two. A missing PDF can be an
+    .unexpected.<ext> path; only PDFs that landed correctly are indexed."""
     index_path = run_dir / "documents" / "index.json"
     if not index_path.is_file():
         logger.info("  documents phase: no index — skipping")
         return
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    docs = index.get("documents") or []
-    inserted = 0
-    restated = 0
-    refreshed = 0
-    missing = 0
-    for d in docs:
-        doc_id = d.get("id")
-        if doc_id is None:
-            continue
-        pdf_path = run_dir / "documents" / f"{doc_id}.pdf"
-        if not pdf_path.is_file():
-            # Could be an .unexpected.<ext> path; the documents
-            # phase only catalogs PDFs that landed correctly.
-            missing += 1
-            continue
-        sha, size = bronze.sha256_file(pdf_path)
-        # Store the path relative to the bronze ROOT (not the
-        # run dir): the run-ts dirname is the first segment.
-        # Consumers join with their own bronze root, so the same
-        # silver row resolves both inside the container (root =
-        # /data) and on the host (root = $XDG_DATA_HOME/wealthdb/relevate).
-        bronze_path = pdf_path.relative_to(run_dir.parent).as_posix()
+
+    def columns(d: dict, doc_id, file_size: int) -> dict:
         file_name = d.get("fileName") or ""
-        # The provider's document id is the IDENTITY; content_sha256 is
-        # the version. Content already held is refreshed in place below.
-        # New content under a document id silver already holds is a
-        # RESTATEMENT — Relevate re-issued the document — and the row it
-        # supersedes gives way to it.
-        #
-        # Without that, the insert below collided with
-        # UNIQUE(relevate_doc_id) and took the whole DUMP down with it:
-        # the transaction rolls back, its `dump_runs` row with it, so the
-        # dump stays pending and every later dump plus both PDF passes
-        # never run — on that load and on every load after it.
-        #
-        # One row per document id is also what the ids derived from it
-        # need: `credit_note:<doc id>` transaction ids and
-        # `historical_*.document_id` would both be ambiguous with two.
-        row = conn.execute(
-            "SELECT 1 FROM documents WHERE content_sha256 = ?",
-            (sha,),
-        ).fetchone()
-        if row is None:
-            restated += conn.execute(
-                "DELETE FROM documents WHERE relevate_doc_id = ?",
-                (doc_id,),
-            ).rowcount
-            conn.execute(
-                """
-                INSERT INTO documents (
-                    content_sha256, relevate_doc_id, relevate_external_id,
-                    file_name, file_size, doc_kind,
-                    document_type_code, category_code, document_year,
-                    create_date, valid_till,
-                    foundation_id, contract_id, owner_id,
-                    bronze_path,
-                    first_seen_at, last_seen_at, payload
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    sha, doc_id, d.get("externalId"),
-                    file_name, size, doc_kind_from_filename(file_name),
-                    d.get("documentType"), d.get("category"), d.get("documentYear"),
-                    d.get("createDate"), d.get("validTill"),
-                    d.get("foundationId"), d.get("contractId"), d.get("ownerId"),
-                    bronze_path,
-                    snapshot_at, snapshot_at, canonical_json(d),
-                ),
-            )
-            inserted += 1
-        else:
-            conn.execute(
-                """
-                UPDATE documents SET
-                    last_seen_at = MAX(last_seen_at, ?),
-                    bronze_path = ?,
-                    payload = ?
-                WHERE content_sha256 = ?
-                """,
-                (snapshot_at, bronze_path, canonical_json(d), sha),
-            )
-            refreshed += 1
+        return {
+            "relevate_doc_id": doc_id,
+            "relevate_external_id": d.get("externalId"),
+            "file_name": file_name,
+            "file_size": file_size,
+            "doc_kind": doc_kind_from_filename(file_name),
+            "document_type_code": d.get("documentType"),
+            "category_code": d.get("category"),
+            "document_year": d.get("documentYear"),
+            "create_date": d.get("createDate"),
+            "valid_till": d.get("validTill"),
+            "foundation_id": d.get("foundationId"),
+            "contract_id": d.get("contractId"),
+            "owner_id": d.get("ownerId"),
+        }
+
+    n = documents.index_documents(
+        conn, snapshot_at, run_dir, index.get("documents") or [],
+        id_of=lambda d: d.get("id"), columns_of=columns,
+        supersede_on="relevate_doc_id")
     logger.info(
         "  documents phase: %d new (%d superseding a restated document), "
         "%d existing refreshed, %d missing-on-disk",
-        inserted, restated, refreshed, missing,
+        n.inserted, n.restated, n.refreshed, n.missing,
     )
 
 
@@ -492,43 +440,9 @@ def list_pending_dumps(
     conn: sqlite3.Connection, bronze_dir: Path,
 ) -> list[Path]:
     """Return run dirs under bronze_dir that haven't been loaded yet,
-    in chronological order."""
-    if not bronze_dir.is_dir():
-        return []
-    loaded = {
-        row["snapshot_at"]
-        for row in conn.execute("SELECT snapshot_at FROM dump_runs")
-    }
-    pending: list[Path] = []
-    for d in bronze.iter_run_dirs(bronze_dir):
-        snapshot_at = bronze.parse_run_ts(d.name)
-        if snapshot_at in loaded:
-            continue
-        # Skip in-flight dumps that don't have a final run.json yet.
-        run_json = d / "run.json"
-        if not run_json.is_file():
-            logger.info("skipping %s — no run.json (still writing?)", d.name)
-            continue
-        # run.json is written incrementally from run-dir creation (born
-        # status="in-progress"), so its mere presence does NOT mean the
-        # dump finished. Skip a dump the walk never completed — a
-        # crashed walk left "in-progress", a --dry-run shell left
-        # "dry-run" — so a partial capture never lands in silver. A
-        # statusless manifest stays loadable.
-        try:
-            status = json.loads(
-                run_json.read_text(encoding="utf-8")).get("status")
-        except (OSError, json.JSONDecodeError):
-            # Unreadable/corrupt here is not proof of incompleteness;
-            # fall through and let load_one_dump surface any real error.
-            status = None
-        if status in ("in-progress", "dry-run"):
-            logger.info(
-                "skipping %s — run.json status=%r (not a complete dump)",
-                d.name, status)
-            continue
-        pending.append(d)
-    return pending
+    in chronological order, leaving out a dump whose walk never
+    completed (bronze.pending_run_dirs)."""
+    return bronze.pending_run_dirs(conn, bronze_dir, log=logger)
 
 
 def load_historical_snapshots(
