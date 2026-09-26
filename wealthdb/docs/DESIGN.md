@@ -2915,6 +2915,12 @@ Argv after `wealthdb-test` is handed to `go test` as-is. Verbose
 output, `-run`, `-race`, `-count`, `-bench`, etc. all work
 unchanged. Exit code is `go test`'s exit code.
 
+The `cmd/wealthdb` tests run in parallel (`t.Parallel`): each builds its
+gold under its own `t.TempDir()` and talks to the command through
+`Run`'s readers and writers, never the process's own. The exceptions
+stay serial on purpose — a test that sets an environment variable, and
+one that times a persist into a reader's wall-clock window.
+
 #### Wrapper shape
 
 `./wealthdb-test` is a thin alias over `./wealthdb-go`, which owns the

@@ -81,6 +81,7 @@ func goldPathFromCfg(cfgPath string) string {
 // confirms `compact` shrinks the file while every core row count and
 // the schema version are byte-for-byte identical.
 func TestCompactShrinksAndPreservesRows(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -120,6 +121,7 @@ func TestCompactShrinksAndPreservesRows(t *testing.T) {
 // TestCompactDryRunChangesNothing confirms --dry-run reports sizes but
 // leaves the live file untouched.
 func TestCompactDryRunChangesNothing(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -163,6 +165,7 @@ func TestCompactDryRunChangesNothing(t *testing.T) {
 // `reload -a --in-place`, and produces a smaller file when the
 // in-place DB carries accumulated dead space.
 func TestReloadFreshEqualsInPlace(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	silverPath := filepath.Join(dir, "schwab.db")
 	sdb, err := sql.Open("sqlite", "file:"+silverPath)
@@ -230,6 +233,7 @@ func TestReloadFreshEqualsInPlace(t *testing.T) {
 // errors mid-flight never swaps: the live gold DB keeps its data and
 // no stray rebuild file is left behind.
 func TestReloadFreshFailedBuildLeavesLiveUntouched(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")

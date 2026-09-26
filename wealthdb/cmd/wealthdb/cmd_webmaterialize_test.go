@@ -15,6 +15,7 @@ import (
 // carries the full grain/granularity matrix in the currencies the fixture's
 // FX rates can resolve (no EUR rate is seeded, so EUR partitions are empty).
 func TestWebMaterializeCLIEndToEnd(t *testing.T) {
+	t.Parallel()
 	cfg := setupReturnsGold(t)
 
 	so, se, code := run(t, "-c", cfg, "web-materialize")
@@ -65,6 +66,7 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 // listing while `wealthdb web-materialize` still dispatches (the web-config
 // precedent).
 func TestWebMaterializeHiddenButDispatched(t *testing.T) {
+	t.Parallel()
 	_, se, code := run(t, "help")
 	if code != 0 {
 		t.Fatalf("help exit=%d", code)
@@ -83,6 +85,7 @@ func TestWebMaterializeHiddenButDispatched(t *testing.T) {
 }
 
 func TestWebMaterializeRequiresWritableGold(t *testing.T) {
+	t.Parallel()
 	cfg := setupReturnsGold(t)
 	_, se, code := run(t, "-r", "-c", cfg, "web-materialize")
 	if code == 0 {
@@ -94,6 +97,7 @@ func TestWebMaterializeRequiresWritableGold(t *testing.T) {
 }
 
 func TestWebMaterializeMissingDB(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "wealthdb.cfg")
 	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": []}`,

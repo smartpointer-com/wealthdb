@@ -17,6 +17,7 @@ import (
 )
 
 func TestStripThinkingBlocks(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -59,6 +60,7 @@ func TestStripThinkingBlocks(t *testing.T) {
 }
 
 func TestStripCodeFences(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -76,6 +78,7 @@ func TestStripCodeFences(t *testing.T) {
 }
 
 func TestTickerShapeRe(t *testing.T) {
+	t.Parallel()
 	goodTickers := []string{"AAPL", "BRK.B", "XDEW", "TFLO", "005930", "9988", "BRK-B", "DBK.DE"}
 	for _, s := range goodTickers {
 		if !tickerShapeRe.MatchString(s) {
@@ -97,6 +100,7 @@ func TestTickerShapeRe(t *testing.T) {
 }
 
 func TestIsinShapeRe(t *testing.T) {
+	t.Parallel()
 	isins := []string{"US0000000030", "IE0000000040", "CH0000000020", "DE0000000050"}
 	for _, s := range isins {
 		if !isinShapeRe.MatchString(s) {
@@ -117,6 +121,7 @@ func TestIsinShapeRe(t *testing.T) {
 }
 
 func TestParseAndValidate(t *testing.T) {
+	t.Parallel()
 	sources := map[string]bool{"schwab": true, "ubs": true}
 	candKeys := map[string]bool{
 		candKey("schwab", "name", "ISHARES TREASURY FLOATNGRATE BD ETF"): true,
@@ -235,6 +240,7 @@ ubs,instrument_external_id,IE0000000040,XDEW`
 }
 
 func TestStratifiedSample(t *testing.T) {
+	t.Parallel()
 	items := []candidate{
 		{SilverSourceID: "schwab", LookupKind: "name", LookupValue: "S1"},
 		{SilverSourceID: "schwab", LookupKind: "name", LookupValue: "S2"},
@@ -259,6 +265,7 @@ func TestStratifiedSample(t *testing.T) {
 }
 
 func TestStratifiedSampleSmallerThanMax(t *testing.T) {
+	t.Parallel()
 	items := []candidate{
 		{SilverSourceID: "schwab", LookupKind: "name", LookupValue: "S1"},
 		{SilverSourceID: "ubs", LookupKind: "name", LookupValue: "U1"},
@@ -270,6 +277,7 @@ func TestStratifiedSampleSmallerThanMax(t *testing.T) {
 }
 
 func TestUnresolvedCandidates(t *testing.T) {
+	t.Parallel()
 	cands := []candidate{
 		{SilverSourceID: "schwab", LookupKind: "name", LookupValue: "FOO"},
 		{SilverSourceID: "schwab", LookupKind: "name", LookupValue: "BAR"},
@@ -300,6 +308,7 @@ func TestUnresolvedCandidates(t *testing.T) {
 // gold, or, when the reader outlasts the whole backoff, on stdout in
 // the plan format that can be re-applied.
 func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -345,6 +354,7 @@ func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
 }
 
 func TestAnchorsForKeepsTheBatchSources(t *testing.T) {
+	t.Parallel()
 	anchors := []anchor{
 		{SilverSourceID: "a", InstrumentExternalID: "1"},
 		{SilverSourceID: "b", InstrumentExternalID: "2"},
@@ -461,6 +471,7 @@ func storedSymbols(t *testing.T, goldPath string) map[string][2]string {
 // --batch 2 are three calls, none asked about another batch's rows, and
 // every answer lands in gold.
 func TestResolveSymbolsAsksOneBatchPerCallAndStoresEach(t *testing.T) {
+	t.Parallel()
 	srv, calls := standInModel(t)
 	cfgPath, goldPath := resolveSymbolsFixture(t, srv.URL, 5, nil)
 
@@ -485,6 +496,7 @@ func TestResolveSymbolsAsksOneBatchPerCallAndStoresEach(t *testing.T) {
 // and a key it suppresses are never put to the model, so the model's
 // answers, stored after the overrides are synced, cannot displace them.
 func TestResolveSymbolsLeavesConfigDecidedKeysAlone(t *testing.T) {
+	t.Parallel()
 	srv, calls := standInModel(t)
 	cfgPath, goldPath := resolveSymbolsFixture(t, srv.URL, 3, []any{
 		map[string]any{"silver_source_id": "schwab-test", "lookup_kind": "instrument_external_id",
@@ -523,6 +535,7 @@ func TestResolveSymbolsLeavesConfigDecidedKeysAlone(t *testing.T) {
 // the model as one teaches it to answer with identifiers. A ticker that
 // is also the instrument's key is a fine example.
 func TestCollectAnchorsSkipsIdentifierSymbols(t *testing.T) {
+	t.Parallel()
 	_, goldPath := resolveSymbolsFixture(t, "http://unused", 0, nil)
 	db, err := sql.Open("duckdb", goldPath)
 	if err != nil {
@@ -551,6 +564,7 @@ func TestCollectAnchorsSkipsIdentifierSymbols(t *testing.T) {
 // name; a cash-class instrument has no ticker worth guessing. Everything
 // else stays a candidate.
 func TestCollectCandidatesSkipsHintedRowsAndCash(t *testing.T) {
+	t.Parallel()
 	_, goldPath := resolveSymbolsFixture(t, "http://unused", 0, nil)
 	db, err := sql.Open("duckdb", goldPath)
 	if err != nil {

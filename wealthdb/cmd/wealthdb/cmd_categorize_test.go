@@ -35,6 +35,7 @@ func testCandidateSet() map[string]bool {
 }
 
 func TestParseAndValidateCategorizationsHappyPath(t *testing.T) {
+	t.Parallel()
 	body := `BLUE HARBOUR CAFE,Blue Harbour Cafe,FOOD_AND_DRINK_COFFEE
 NORTHWIND HARDWARE,Northwind Hardware,HOME_IMPROVEMENT_HARDWARE`
 	valid, invalid := parseAndValidateCategorizations(spendingCategorizeFamily, body, testCandidateSet())
@@ -59,6 +60,7 @@ NORTHWIND HARDWARE,Northwind Hardware,HOME_IMPROVEMENT_HARDWARE`
 // this test changing; the explicit check on `investment` pins that the
 // list is non-empty and really comes from the taxonomy.
 func TestParseAndValidateCategorizationsRejectsDeltas(t *testing.T) {
+	t.Parallel()
 	var deltas []string
 	for _, c := range canonical.DeltaSpendCategories() {
 		deltas = append(deltas, c.Detailed)
@@ -84,6 +86,7 @@ func TestParseAndValidateCategorizationsRejectsDeltas(t *testing.T) {
 }
 
 func TestParseAndValidateCategorizationsGauntlet(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, body, wantReason string
 	}{
@@ -144,6 +147,7 @@ func TestParseAndValidateCategorizationsGauntlet(t *testing.T) {
 // whispered category is folded to the taxonomy's casing, and a garbage
 // line does not abort the rows around it.
 func TestParseAndValidateCategorizationsTolerances(t *testing.T) {
+	t.Parallel()
 	body := "```csv\nBLUE HARBOUR CAFE,Blue Harbour Cafe,food_and_drink_coffee\n" +
 		"this is not csv at all\n" +
 		"NORTHWIND HARDWARE,Northwind Hardware,home_improvement_hardware\n```"
@@ -160,6 +164,7 @@ func TestParseAndValidateCategorizationsTolerances(t *testing.T) {
 }
 
 func TestIsDeltaSpendCategory(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{"internal_transfer", "CASH_WITHDRAWAL", " other ", "investment", "Investment"} {
 		if !spendingCategorizeFamily.isDelta(s) {
 			t.Errorf("%q should be recognised as a delta", s)
@@ -204,6 +209,7 @@ func twoCandidates() []merchantCandidate {
 }
 
 func TestCategorizeWithLLMRetriesWithFeedback(t *testing.T) {
+	t.Parallel()
 	llm := &scriptedLLM{responses: []string{
 		// A good row and a delta the gauntlet must refuse.
 		"BLUE HARBOUR CAFE,Blue Harbour Cafe,FOOD_AND_DRINK_COFFEE\n" +
@@ -253,6 +259,7 @@ func TestCategorizeWithLLMRetriesWithFeedback(t *testing.T) {
 }
 
 func TestCategorizeWithLLMStopsAtMaxAttempts(t *testing.T) {
+	t.Parallel()
 	llm := &scriptedLLM{responses: []string{
 		"BLUE HARBOUR CAFE,Blue Harbour Cafe,FOOD_AND_DRINK_COFFEE\n" +
 			"NORTHWIND HARDWARE,Northwind Hardware,NOT_A_CATEGORY",
@@ -275,6 +282,7 @@ func TestCategorizeWithLLMStopsAtMaxAttempts(t *testing.T) {
 }
 
 func TestCategorizeWithLLMPropagatesCallErrors(t *testing.T) {
+	t.Parallel()
 	llm := &scriptedLLM{err: errors.New("connection refused")}
 	var out, errOut bytes.Buffer
 	if _, _, _, err := categorizeWithLLM(context.Background(), llm.call, spendingCategorizeFamily,
@@ -342,6 +350,7 @@ func answerEverything(prompts *[]string) llmCall {
 // later batch's anchors are the verdicts accepted before it, newest
 // first and capped.
 func TestCategorizeWithLLMBatchesInOrder(t *testing.T) {
+	t.Parallel()
 	batches := splitBatches(fiveCandidates(), 2)
 	if len(batches) != 3 {
 		t.Fatalf("batches = %d, want 3", len(batches))
@@ -405,6 +414,7 @@ func TestCategorizeWithLLMBatchesInOrder(t *testing.T) {
 // costs its own batch a round-trip with feedback, and no other batch
 // is asked again.
 func TestCategorizeWithLLMRetriesOnlyTheFailingBatch(t *testing.T) {
+	t.Parallel()
 	llm := &scriptedLLM{responses: []string{
 		"ASHGROVE BAKERY,Ashgrove Bakery,FOOD_AND_DRINK_COFFEE\n" +
 			"BLUE HARBOUR CAFE,Blue Harbour Cafe,FOOD_AND_DRINK_COFFEE",
@@ -448,6 +458,7 @@ func TestCategorizeWithLLMRetriesOnlyTheFailingBatch(t *testing.T) {
 // before the next batch is asked, whether the later one merely runs
 // out of attempts or the endpoint dies under it.
 func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
+	t.Parallel()
 	batch1 := "ASHGROVE BAKERY,Ashgrove Bakery,FOOD_AND_DRINK_COFFEE\n" +
 		"BLUE HARBOUR CAFE,Blue Harbour Cafe,FOOD_AND_DRINK_COFFEE"
 	badBatch2 := "CEDAR POINT PHARMACY,Cedar Point Pharmacy,MEDICAL_PHARMACIES_AND_SUPPLEMENTS\n" +
@@ -509,6 +520,7 @@ func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
 // prompts would bury the one worth reading, so only the first batch's
 // is printed; later ones report their size.
 func TestCategorizeShowPromptPrintsTheFirstBatchInFull(t *testing.T) {
+	t.Parallel()
 	var prompts []string
 	var out, errOut bytes.Buffer
 	if _, _, _, err := categorizeWithLLM(context.Background(), answerEverything(&prompts), spendingCategorizeFamily,
@@ -532,6 +544,7 @@ func TestCategorizeShowPromptPrintsTheFirstBatchInFull(t *testing.T) {
 }
 
 func TestPrintCategorizeBatchPlan(t *testing.T) {
+	t.Parallel()
 	batches := splitBatches(fiveCandidates(), 2)
 	anchors := []merchantAnchor{{Signature: "NORTHWIND HARDWARE", Name: "Northwind Hardware", Detailed: "HOME_IMPROVEMENT_HARDWARE"}}
 	first := buildCategorizeUserPrompt(spendingCategorizeFamily, batches[0], anchors, config.SpendContextMerchant, nil)
@@ -568,6 +581,7 @@ func TestPrintCategorizeBatchPlan(t *testing.T) {
 // no-deltas contract: the gauntlet rejects them, and the prompt has to
 // have said so, or every run pays for a wasted round-trip.
 func TestCategorizePromptForbidsTheDeltas(t *testing.T) {
+	t.Parallel()
 	p := buildCategorizeUserPrompt(spendingCategorizeFamily, twoCandidates(), nil, config.SpendContextMerchant, nil)
 	for _, d := range canonical.DeltaSpendCategories() {
 		if !strings.Contains(p, d.Detailed) {
@@ -672,6 +686,7 @@ func seedBacklogGold(t *testing.T) (*sql.DB, context.Context) {
 }
 
 func TestCollectMerchantCandidatesBacklogOnly(t *testing.T) {
+	t.Parallel()
 	db, ctx := seedBacklogGold(t)
 
 	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogUnplaced, true, "spending.categorization")
@@ -695,6 +710,7 @@ func TestCollectMerchantCandidatesBacklogOnly(t *testing.T) {
 }
 
 func TestCollectMerchantCandidatesAll(t *testing.T) {
+	t.Parallel()
 	db, ctx := seedBacklogGold(t)
 
 	cands, skipped, err := collectMerchantCandidates(ctx, db, spendingCategorizeFamily, config.SpendContextMerchant, 3, backlogAll, true, "spending.categorization")
@@ -720,6 +736,7 @@ func TestCollectMerchantCandidatesAll(t *testing.T) {
 // carries a person's name where a merchant would be, and it must be
 // out of the set at the widest setting exactly as at the narrowest.
 func TestCollectMerchantCandidatesFenceHoldsAtEveryContext(t *testing.T) {
+	t.Parallel()
 	db, ctx := seedBacklogGold(t)
 
 	var first []string
@@ -761,6 +778,7 @@ func TestCollectMerchantCandidatesFenceHoldsAtEveryContext(t *testing.T) {
 // collectMerchantCandidates, every level fails here on the candidate
 // set and on the count, so the test is not vacuous.
 func TestCollectMerchantCandidatesSkipsUninformativeAtEveryContext(t *testing.T) {
+	t.Parallel()
 	db, ctx := openCategorizeGold(t)
 	seedSpendTxn(t, db, ctx, "T-REAL", "CARD1", "purchase", 10, -12.50, "Blue Harbour Cafe", "")
 	seedSpendTxn(t, db, ctx, "T-CODE-1", "CASH1", "withdrawal", 10, -20, "ZV01", "")
@@ -800,6 +818,7 @@ func TestCollectMerchantCandidatesSkipsUninformativeAtEveryContext(t *testing.T)
 // TestPrintNeverSent pins the plan lines the two gates print: one
 // per gate, only when it fired, in the wording the operator greps for.
 func TestPrintNeverSent(t *testing.T) {
+	t.Parallel()
 	var quiet bytes.Buffer
 	printNeverSent(&quiet, skippedSignatures{})
 	if quiet.Len() != 0 {
@@ -818,6 +837,7 @@ func TestPrintNeverSent(t *testing.T) {
 // TestCollectMerchantCandidatesContextDepth pins what each level
 // actually adds, since that is the whole difference between them.
 func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
+	t.Parallel()
 	db, ctx := openCategorizeGold(t)
 	seedSpendTxn(t, db, ctx, "T1", "CARD1", "purchase", 10, -12.50, "Blue Harbour Cafe", "")
 	seedSpendTxn(t, db, ctx, "T2", "CARD1", "purchase", 10, -60, "Orchard Lane Market", "")
@@ -868,6 +888,7 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 // narrative and not in the key. Candidacy is unaffected — that stays
 // identical across levels — but the narrative itself must not be sent.
 func TestCollectMerchantCandidatesFencesTheRawNarrative(t *testing.T) {
+	t.Parallel()
 	const long = "Northwind Hardware Supply Depot International Trading Company Wire"
 	db, ctx := openCategorizeGold(t)
 	seedSpendTxn(t, db, ctx, "T1", "CARD1", "purchase", 10, -40, long, "")
@@ -896,6 +917,7 @@ func TestCollectMerchantCandidatesFencesTheRawNarrative(t *testing.T) {
 // in-context examples: an anchor carrying a delta would teach the model
 // exactly the vocabulary the gauntlet then rejects.
 func TestCollectMerchantAnchorsExcludesDeltasAndCandidates(t *testing.T) {
+	t.Parallel()
 	db, ctx := openCategorizeGold(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
@@ -928,6 +950,7 @@ func TestCollectMerchantAnchorsExcludesDeltasAndCandidates(t *testing.T) {
 // survives indefinitely; without this filter it would be emitted
 // verbatim into every prompt, long after no transaction carries it.
 func TestCollectMerchantAnchorsFencesTransferShaped(t *testing.T) {
+	t.Parallel()
 	db, ctx := openCategorizeGold(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
@@ -969,6 +992,7 @@ func TestCollectMerchantAnchorsFencesTransferShaped(t *testing.T) {
 // the one the merchant store answers; the untouched merchant, the
 // fenced narrative and the bare code are the remainder.
 func TestCollectSourceRatesCountsResolvedCategories(t *testing.T) {
+	t.Parallel()
 	db, ctx := seedBacklogGold(t)
 
 	rates, err := collectSourceRates(ctx, db)
@@ -986,6 +1010,7 @@ func TestCollectSourceRatesCountsResolvedCategories(t *testing.T) {
 // ---- summary counters --------------------------------------------------------
 
 func TestPrintCategorizeSummaryCounters(t *testing.T) {
+	t.Parallel()
 	candidates := []merchantCandidate{
 		{Signature: "BLUE HARBOUR CAFE", Txns: 4, PerSource: map[string]int{"bank": 4}},
 		{Signature: "NORTHWIND HARDWARE", Txns: 2, PerSource: map[string]int{"bank": 2}},
@@ -1051,6 +1076,7 @@ func TestPrintCategorizeSummaryCounters(t *testing.T) {
 // counted rather than shown. With splitPairsBySpending returning every
 // pair and a zero count, both halves fail, so the test is not vacuous.
 func TestSplitPairsBySpending(t *testing.T) {
+	t.Parallel()
 	in := func(id string) spending.Leg { return spending.Leg{TxID: id, InPopulation: true} }
 	out := func(id string) spending.Leg { return spending.Leg{TxID: id} }
 	pairs := []spending.Pair{
@@ -1081,6 +1107,7 @@ func TestSplitPairsBySpending(t *testing.T) {
 // is nothing to count, so a run with no out-of-population pairs does
 // not read as if something were withheld.
 func TestPrintSpendCanariesCountsPairsOutsideSpending(t *testing.T) {
+	t.Parallel()
 	pair := spending.Pair{
 		Debit:  spending.Leg{Source: "bank", TxID: "T-OUT", Account: "CASH1", Day: 20, Amount: -400, Currency: "USD", Signature: "AUTOPAY", InPopulation: true},
 		Credit: spending.Leg{Source: "bank", TxID: "T-IN", Account: "CARD1", Day: 20, Amount: 400, Currency: "USD", Signature: "CARD PAYMENT"},
@@ -1108,6 +1135,7 @@ func TestPrintSpendCanariesCountsPairsOutsideSpending(t *testing.T) {
 }
 
 func TestStratifiedMerchantSample(t *testing.T) {
+	t.Parallel()
 	items := []merchantCandidate{
 		{Signature: "A1", PerSource: map[string]int{"bank": 3}},
 		{Signature: "A2", PerSource: map[string]int{"bank": 3}},
@@ -1131,6 +1159,7 @@ func TestStratifiedMerchantSample(t *testing.T) {
 }
 
 func TestDominantSource(t *testing.T) {
+	t.Parallel()
 	c := merchantCandidate{PerSource: map[string]int{"bank": 2, "other-bank": 5}}
 	if got := c.DominantSource(); got != "other-bank" {
 		t.Errorf("DominantSource = %q, want other-bank", got)
@@ -1217,6 +1246,7 @@ func ghostEnrichmentRows(t *testing.T, goldPath string) int {
 // label the plan it produces instead of quietly planning against a
 // different world.
 func TestCategorizeDryRunIsReadOnlyAndSaysSo(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	enableCategorization(t, cfg)
 	if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
@@ -1264,6 +1294,7 @@ func TestCategorizeDryRunIsReadOnlyAndSaysSo(t *testing.T) {
 }
 
 func TestCategorizeRefusesWithoutAModel(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -1327,6 +1358,7 @@ func storedSignatures(t *testing.T, cfg string) []string {
 }
 
 func TestCategorizationsDump(t *testing.T) {
+	t.Parallel()
 	cfg := seedTwoMerchantVerdicts(t)
 
 	so, se, code := run(t, "-c", cfg, "categorizations")
@@ -1369,6 +1401,7 @@ func TestCategorizationsDump(t *testing.T) {
 // reported with its name and category; an absent one is reported and
 // is not an error; every other row is untouched.
 func TestCategorizationsForget(t *testing.T) {
+	t.Parallel()
 	cfg := seedTwoMerchantVerdicts(t)
 	so, se, code := run(t, "-c", cfg, "categorizations",
 		"--forget", "BLUE HARBOUR CAFE", "--forget", "NO SUCH MERCHANT")
@@ -1398,6 +1431,7 @@ func TestCategorizationsForget(t *testing.T) {
 // would remove and writes nothing, on a read-only gold too; a real
 // removal against a read-only gold is refused with the dry run named.
 func TestCategorizationsForgetDryRunAndReadOnly(t *testing.T) {
+	t.Parallel()
 	cfg := seedTwoMerchantVerdicts(t)
 	both := []string{"BLUE HARBOUR CAFE", "NORTHWIND HARDWARE"}
 
@@ -1439,6 +1473,7 @@ func TestCategorizationsForgetDryRunAndReadOnly(t *testing.T) {
 // signature cleared the transfer fence, and which is what names a
 // verdict to --forget — stays legible.
 func TestCategorizationsDumpPrivacy(t *testing.T) {
+	t.Parallel()
 	cfg := seedTwoMerchantVerdicts(t)
 
 	for _, format := range []string{"table", "csv", "csv_plain", "json"} {
@@ -1470,6 +1505,7 @@ func TestCategorizationsDumpPrivacy(t *testing.T) {
 // TestCategorizationsForgetFlagMisuse: the dump's flags and the
 // removal's do not mix, and a removal needs a signature.
 func TestCategorizationsForgetFlagMisuse(t *testing.T) {
+	t.Parallel()
 	cfg := seedTwoMerchantVerdicts(t)
 	for _, args := range [][]string{
 		{"--forget", "BLUE HARBOUR CAFE", "-d", "FOOD_AND_DRINK_COFFEE"},
@@ -1492,6 +1528,7 @@ func TestCategorizationsForgetFlagMisuse(t *testing.T) {
 // nothing forever, so it is refused at the flag, before config or
 // gold are touched.
 func TestCategorizeBatchMustBePositive(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	for _, v := range []string{"0", "-3"} {
 		_, se, code := run(t, "-c", cfg, "categorize", "-n", "--batch", v)
@@ -1509,6 +1546,7 @@ func TestCategorizeBatchMustBePositive(t *testing.T) {
 // plan must already be on stdout by then — that is what lets an
 // operator learn what a run costs without waiting on a timeout.
 func TestCategorizeDryRunPrintsThePlanBeforeAnyCall(t *testing.T) {
+	t.Parallel()
 	cfg := setupSpendingGold(t)
 	enableCategorization(t, cfg)
 	so, se, code := run(t, "-c", cfg, "categorize", "-n")
@@ -1548,6 +1586,7 @@ func TestCategorizeDryRunPrintsThePlanBeforeAnyCall(t *testing.T) {
 // this machine has nothing to withhold from it, so the arm is a default
 // rather than a law.
 func TestPersonShapeFenceIsCardExemptAndOptional(t *testing.T) {
+	t.Parallel()
 	// Two words, no digit, no legal form, no trade word. A person; and
 	// on a card statement, indistinguishable from a small shop.
 	const key = "EXAMPLE SAMPLE"
@@ -1640,6 +1679,7 @@ func TestPersonShapeFenceIsCardExemptAndOptional(t *testing.T) {
 // beside an ordinary merchant on the same day and source, which is
 // also what makes the neighbour list non-trivial.
 func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
+	t.Parallel()
 	const (
 		payee     = "EXAMPLE, PERSON"
 		narrative = "DEBIT UBS TWINT; EXAMPLE, PERSON; TWINT-EXAMPLE"
@@ -1731,6 +1771,7 @@ func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 // decision — the taxonomy has no word for it and one was chosen on
 // purpose — and re-asking would undo deliberate work.
 func TestRefineBacklogAsksOnlyWhereTheModelGaveUp(t *testing.T) {
+	t.Parallel()
 	db, ctx := openCategorizeGold(t)
 	const catchAll = "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE"
 	seedSpendTxn(t, db, ctx, "T-MODEL", "CARD1", "purchase", 10, -10, "Model Shop", "")

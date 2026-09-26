@@ -13,6 +13,7 @@ import (
 // check runs both ways — a listed command that nothing serves is the
 // same defect seen from the other side.
 func TestUsageListsEverySubcommand(t *testing.T) {
+	t.Parallel()
 	listed := map[string]commandHelp{}
 	for _, c := range commandHelps {
 		if _, dup := listed[c.name]; dup {
@@ -50,6 +51,7 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 // listing blank — an empty column reads as a rendering fault, and the
 // listing is the only place many of these commands are documented.
 func TestEveryListedCommandSaysWhatItDoes(t *testing.T) {
+	t.Parallel()
 	for _, c := range commandHelps {
 		if c.name == "" {
 			t.Error("an entry carries no name")
@@ -67,6 +69,7 @@ func TestEveryListedCommandSaysWhatItDoes(t *testing.T) {
 // <view>` answers for each grain `holdings` dispatches, since a view
 // is not a subcommand and would otherwise report as unknown.
 func TestHelpViewsCoverEveryHoldingsView(t *testing.T) {
+	t.Parallel()
 	for view := range holdingsViews {
 		if _, ok := viewHelp[view]; !ok {
 			t.Errorf("holdings view %q has no blurb for 'wealthdb help %s'", view, view)
@@ -96,6 +99,7 @@ func runUsage(t *testing.T, args ...string) string {
 // lists that had drifted apart on membership, and `help` printing
 // both of them one after the other.
 func TestTheThreeHelpPathsPrintTheSameThing(t *testing.T) {
+	t.Parallel()
 	bare := runUsage(t)
 	for _, args := range [][]string{{"--help"}, {"-help"}, {"help"}} {
 		if got := runUsage(t, args...); got != bare {
@@ -109,6 +113,7 @@ func TestTheThreeHelpPathsPrintTheSameThing(t *testing.T) {
 // the rendered listing exactly once, which is what the second copy
 // of the list used to break.
 func TestUsageNamesEveryCommandOnce(t *testing.T) {
+	t.Parallel()
 	out := runUsage(t)
 	for _, c := range commandHelps {
 		n := 0
@@ -129,6 +134,7 @@ func TestUsageNamesEveryCommandOnce(t *testing.T) {
 // listing advertises but this binary does not serve is answered with
 // the wrapper that does, rather than reported as unknown.
 func TestAHostSideCommandSaysWhichSideRunsIt(t *testing.T) {
+	t.Parallel()
 	var host string
 	for _, c := range commandHelps {
 		if c.hostSide {
@@ -152,6 +158,7 @@ func TestAHostSideCommandSaysWhichSideRunsIt(t *testing.T) {
 // the holdings views, which are reached through `holdings` and would
 // otherwise read as unknown.
 func TestHelpForOneCommandNamesIt(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"load", "categorize", "resolutions", "web", "positions", "global"} {
 		out := runUsage(t, "help", name)
 		if strings.Contains(out, "unknown subcommand") {
@@ -171,6 +178,7 @@ func TestHelpForOneCommandNamesIt(t *testing.T) {
 // invocation is a command missing rather than a question asked and
 // stays a usage error.
 func TestAskingForHelpSucceeds(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	for _, args := range [][]string{{"--help"}, {"-help"}, {"help"}} {
 		if code := Run(args, strings.NewReader(""), &stdout, &stderr); code != 0 {

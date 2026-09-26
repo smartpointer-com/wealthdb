@@ -52,6 +52,7 @@ func readVerdict(t *testing.T, db *sql.DB, ctx context.Context, sig string) stor
 // a second answer for the same merchant, and the count returned is the
 // table's, not the write's.
 func TestPersistCategorizationsUpsertsBySignature(t *testing.T) {
+	t.Parallel()
 	db, ctx := openMerchantStore(t)
 
 	total, err := persistCategorizations(ctx, db, spendingCategorizeFamily, []categorization{
@@ -91,6 +92,7 @@ func TestPersistCategorizationsUpsertsBySignature(t *testing.T) {
 // gold is one read-write handle or many read-only ones, so a concurrent
 // reader is enough to refuse the reopen.
 func TestPersistCategorizationsWritesNothingWhenGoldRefuses(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "gold.db")
 	db, err := gold.Open(path, gold.ModeReadWrite)
 	if err != nil {
@@ -165,6 +167,7 @@ func acceptedBatch(sigs ...string) batchOutcome {
 // deferred to the end of the run: a run that dies partway keeps every
 // batch that finished.
 func TestVerdictStoreWritesEachBatchAsItCompletes(t *testing.T) {
+	t.Parallel()
 	s, writes, warn := recordingStore(func(int) error { return nil })
 	for _, o := range []batchOutcome{acceptedBatch("A", "B"), acceptedBatch("C")} {
 		if err := s.accept(o); err != nil {
@@ -195,6 +198,7 @@ func TestVerdictStoreWritesEachBatchAsItCompletes(t *testing.T) {
 // store failure, and the batch it came from does not count as completed
 // until it actually reaches gold.
 func TestVerdictStoreHoldsVerdictsAFailedWriteWouldLose(t *testing.T) {
+	t.Parallel()
 	s, writes, warn := recordingStore(func(attempt int) error {
 		if attempt == 1 {
 			return errors.New("gold is locked")
@@ -231,6 +235,7 @@ func TestVerdictStoreHoldsVerdictsAFailedWriteWouldLose(t *testing.T) {
 // a batch the gauntlet rejected outright has nothing to write, so it must
 // not open gold — but it is still a batch the run finished.
 func TestVerdictStoreCompletesABatchThatAcceptedNothing(t *testing.T) {
+	t.Parallel()
 	s, writes, _ := recordingStore(func(int) error {
 		t.Error("an empty batch must not open gold")
 		return nil
@@ -247,6 +252,7 @@ func TestVerdictStoreCompletesABatchThatAcceptedNothing(t *testing.T) {
 // path: retryFlush is what turns a held batch into a stored one when no
 // further batch follows.
 func TestVerdictStoreRetriedFlushWritesWhatTheRunHeld(t *testing.T) {
+	t.Parallel()
 	s, writes, _ := recordingStore(func(attempt int) error {
 		if attempt < 3 {
 			return errors.New("gold is locked")

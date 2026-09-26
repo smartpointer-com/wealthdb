@@ -17,6 +17,7 @@ import (
 // one override ledger, and read under income's block it is a remark
 // about the family it is not about.
 func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
+	t.Parallel()
 	var out strings.Builder
 	spend := spending.FamilyResult{
 		Enriched: 10, MatcherRows: 1, RuleRows: 2, ProviderRows: 3,
@@ -101,6 +102,7 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 // household's investing, its contributions absent rather than wrong.
 // No reconciliation downstream can see a crossing that never happened.
 func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
+	t.Parallel()
 	var out strings.Builder
 	printPassSummary(&out, &spending.Result{Cashflow: spending.CashflowResult{
 		ScopeRows: 2, UnresolvedScopeAccounts: 1,

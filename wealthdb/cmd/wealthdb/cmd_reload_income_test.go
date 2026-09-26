@@ -13,6 +13,7 @@ import (
 // A store left out of the carry list is lost silently, so the carry is
 // pinned per store rather than once.
 func TestReloadFreshCarriesThePayerStore(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")

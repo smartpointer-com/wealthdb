@@ -95,6 +95,7 @@ func run(t *testing.T, args ...string) (stdout, stderr string, exit int) {
 }
 
 func TestUnknownSubcommand(t *testing.T) {
+	t.Parallel()
 	_, se, code := run(t, "nope")
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
@@ -105,6 +106,7 @@ func TestUnknownSubcommand(t *testing.T) {
 }
 
 func TestNoArgsShowsUsage(t *testing.T) {
+	t.Parallel()
 	_, se, code := run(t)
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
@@ -115,6 +117,7 @@ func TestNoArgsShowsUsage(t *testing.T) {
 }
 
 func TestInitLoadPositionsEndToEnd(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 
 	// init
@@ -153,6 +156,7 @@ func TestInitLoadPositionsEndToEnd(t *testing.T) {
 }
 
 func TestInitFailsOnExistingDB(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatalf("first init failed: code=%d", code)
@@ -167,6 +171,7 @@ func TestInitFailsOnExistingDB(t *testing.T) {
 }
 
 func TestPositionsFailsBeforeInit(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	_, se, code := run(t, "-c", cfg, "holdings", "positions")
 	if code != 3 {
@@ -178,6 +183,7 @@ func TestPositionsFailsBeforeInit(t *testing.T) {
 }
 
 func TestLoadAllNoSources(t *testing.T) {
+	t.Parallel()
 	// Config with empty silver_sources array
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "wealthdb.cfg")
@@ -196,6 +202,7 @@ func TestLoadAllNoSources(t *testing.T) {
 }
 
 func TestPositionsColumnsFlag(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -249,6 +256,7 @@ func TestPositionsColumnsFlag(t *testing.T) {
 }
 
 func TestPositionsCurrencyConversion(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -309,6 +317,7 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 // total_value_<CCY> when output and base match), and the default
 // column set includes all the right names.
 func TestAccountsBasicRollup(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -343,6 +352,7 @@ func TestAccountsBasicRollup(t *testing.T) {
 // so the sentinel row carries its value; non-zero output proves
 // the orphan-aggregation path works.
 func TestPortfoliosBasic(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -369,6 +379,7 @@ func TestPortfoliosBasic(t *testing.T) {
 // TestAccountsAllColumnsAndBadColumn exercises the `all` preset
 // and the unknown-column error path.
 func TestAccountsAllColumnsAndBadColumn(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -399,6 +410,7 @@ func TestAccountsAllColumnsAndBadColumn(t *testing.T) {
 }
 
 func TestResetClearsSource(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -445,6 +457,7 @@ func TestResetClearsSource(t *testing.T) {
 // halves; positions are present after, just as if reset+load were
 // invoked separately.
 func TestReloadIsResetThenLoad(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -471,6 +484,7 @@ func TestReloadIsResetThenLoad(t *testing.T) {
 // TestReloadAll covers the -a path. Empty config + -a should error
 // (mirrors load -a) rather than silently succeed.
 func TestReloadAllNoSources(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	cfg := tmp + "/wealthdb.cfg"
 	body := `{"gold_db":"` + tmp + `/g.db","default_currency":"USD","silver_sources":[]}`
@@ -490,6 +504,7 @@ func TestReloadAllNoSources(t *testing.T) {
 }
 
 func TestResetMissingDB(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	_, se, code := run(t, "-c", cfg, "reset", "schwab-test")
 	if code != 3 {
@@ -501,6 +516,7 @@ func TestResetMissingDB(t *testing.T) {
 }
 
 func TestSnapshotsListsLoadedTimes(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -524,6 +540,7 @@ func TestSnapshotsListsLoadedTimes(t *testing.T) {
 }
 
 func TestSnapshotsAll(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -541,6 +558,7 @@ func TestSnapshotsAll(t *testing.T) {
 }
 
 func TestStatusOverviewAndDetailed(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -596,6 +614,7 @@ func TestStatusOverviewAndDetailed(t *testing.T) {
 }
 
 func TestPositionsCSVAndJSON(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -640,6 +659,7 @@ func TestPositionsCSVAndJSON(t *testing.T) {
 }
 
 func TestConfigWizardWritesFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "wealthdb.cfg")
 	silverPath := filepath.Join(dir, "silver.db")
@@ -697,6 +717,7 @@ func TestConfigWizardWritesFile(t *testing.T) {
 }
 
 func TestHelp(t *testing.T) {
+	t.Parallel()
 	_, se, code := run(t, "help")
 	if code != 0 {
 		t.Errorf("help exit = %d, want 0", code)
@@ -711,6 +732,7 @@ func TestHelp(t *testing.T) {
 // TestHoldingsDispatch covers the `holdings` parent command: routing
 // to a view, the no-view and unknown-view error paths, and `-h`.
 func TestHoldingsDispatch(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")

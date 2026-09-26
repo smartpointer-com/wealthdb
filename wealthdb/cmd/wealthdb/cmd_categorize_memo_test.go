@@ -17,6 +17,7 @@ import (
 // prompt. Candidacy is unaffected: the signature never held the memo.
 // Every value is synthetic.
 func TestCollectMerchantCandidatesDropsTheMemo(t *testing.T) {
+	t.Parallel()
 	const narrative = "Blue Harbour Cafe; Harbour Road 3"
 	db, ctx := openCategorizeGold(t)
 	if _, err := db.ExecContext(ctx, `
@@ -53,6 +54,7 @@ func TestCollectMerchantCandidatesDropsTheMemo(t *testing.T) {
 // the filing (`credit; Ref 7`) is still a candidate. Every value is
 // synthetic.
 func TestCollectMerchantCandidatesRefusesBareFiling(t *testing.T) {
+	t.Parallel()
 	db, ctx := openCategorizeGold(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,

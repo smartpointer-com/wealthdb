@@ -115,6 +115,7 @@ func nullIfEmpty(s string) any {
 
 // TestIncomeCLIEndToEnd drives the three views against seeded gold.
 func TestIncomeCLIEndToEnd(t *testing.T) {
+	t.Parallel()
 	cfg := setupIncomeGold(t)
 	window := []string{"2026-05-01", "2026-06-30"}
 	income := func(args ...string) (string, string, int) {
@@ -241,6 +242,7 @@ func TestIncomeCLIEndToEnd(t *testing.T) {
 // reorderFlagsFirst alone passes with the call site deleted, which is
 // the defect it was written to catch.
 func TestIncomeFlagReordering(t *testing.T) {
+	t.Parallel()
 	cfg := setupIncomeGold(t)
 
 	// The flag AFTER the window, which is what needs the reordering,
@@ -279,6 +281,7 @@ func TestIncomeFlagReordering(t *testing.T) {
 // TestIncomeColumnHeaders pins the default column sets and the money
 // headers' currency suffix.
 func TestIncomeColumnHeaders(t *testing.T) {
+	t.Parallel()
 	summary, err := resolveIncomeSummaryColumns("default", "CHF", "monthly")
 	if err != nil {
 		t.Fatalf("summary columns: %v", err)
@@ -328,6 +331,7 @@ func TestIncomeColumnHeaders(t *testing.T) {
 // A column that can hold a person's name must not be legible; taxonomy
 // must be.
 func TestIncomeTransactionPrivacyClasses(t *testing.T) {
+	t.Parallel()
 	all, err := resolveIncomeTransactionColumns("all", "USD")
 	if err != nil {
 		t.Fatalf("columns: %v", err)

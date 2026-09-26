@@ -181,6 +181,7 @@ func writeTwoFamilyConfig(t *testing.T, dir, goldPath string) *config.Config {
 //     closes it so readers can use gold, and gold is a real file here
 //     rather than :memory: precisely so that close is real.
 func TestCategorizeRunsBothFamiliesEndToEnd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	goldPath := filepath.Join(dir, "gold.db")
 	ctx := context.Background()
@@ -305,6 +306,7 @@ func quoteJSON(s string) string {
 // Driven through the whole loop with a real config file, because the
 // config is the input under test.
 func TestPersonFenceReachesCandidacyFromConfig(t *testing.T) {
+	t.Parallel()
 	// A bare person's name on a bank account: fenced when the option is
 	// on, a candidate when it is off, and nothing else about it changes.
 	const bare = "EXAMPLE SAMPLE"
@@ -411,7 +413,8 @@ func TestPersonFenceReachesCandidacyFromConfig(t *testing.T) {
 // sink's re-open fails, the family's retryFlush retries into the window
 // where it succeeds, and income's first prompt then finds the verdict
 // already committed. With the flush moved after the loop it finds an
-// empty store.
+// empty store. The window is wall-clock, so the test does not run in
+// parallel with the rest of the package.
 func TestCategorizeFlushesOneFamilyBeforeTheNextSpends(t *testing.T) {
 	dir := t.TempDir()
 	goldPath := filepath.Join(dir, "gold.db")

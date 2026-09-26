@@ -14,6 +14,7 @@ import (
 // through another adapter must not. The orphan-account sentinel
 // row carries no name at all and stays legible for every source.
 func TestPortfolioNamePrivacyMatchesKind(t *testing.T) {
+	t.Parallel()
 	kinds := map[string]string{"ct": "cointracking", "cointracking": "ubs"}
 	f := portfolioNamePrivacy(func(id string) string { return kinds[id] })
 
@@ -37,6 +38,7 @@ func TestPortfolioNamePrivacyMatchesKind(t *testing.T) {
 }
 
 func TestRedactAccountID(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -99,6 +101,7 @@ func TestRedactAccountID(t *testing.T) {
 // every output format, since a narrative is not row identity that
 // a csv/json consumer needs back.
 func TestFreeTextRedactsEveryShape(t *testing.T) {
+	t.Parallel()
 	// Synthetic narratives in the shapes a statement actually
 	// produces: a P2P payee, a cheque, a wire — plus the single
 	// alphanumeric tokens a shape rule does mask, and the
@@ -143,6 +146,7 @@ func TestFreeTextRedactsEveryShape(t *testing.T) {
 // rendering path a `-p` run actually takes, so the pin covers the
 // column wiring and not just the dispatcher.
 func TestFreeTextColumnRedactsInTable(t *testing.T) {
+	t.Parallel()
 	type row struct{ narrative string }
 	cols := []columnSpec[row]{
 		{Name: "description", Privacy: PrivacyFreeText,
@@ -164,6 +168,7 @@ func TestFreeTextColumnRedactsInTable(t *testing.T) {
 // pass that masks structured bank identifiers wherever they appear,
 // independent of a column's PrivacyClass. Synthetic ids only.
 func TestScrubSensitiveIDs(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -202,6 +207,7 @@ func TestScrubSensitiveIDs(t *testing.T) {
 // PrivacyNone column (e.g. position_key) under privacy mode — the
 // case the per-column applyPrivacy pass alone misses.
 func TestScrubReachesPrivacyNoneColumn(t *testing.T) {
+	t.Parallel()
 	type row struct{ key string }
 	cols := []columnSpec[row]{
 		// PrivacyNone, mirroring position_key / symbol.

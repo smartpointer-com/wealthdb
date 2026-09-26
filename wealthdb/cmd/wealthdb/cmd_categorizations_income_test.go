@@ -33,6 +33,7 @@ func seedBothStores(t *testing.T, goldPath string) {
 // dump: absent lists both stores with a family column, a name lists
 // that one alone.
 func TestCategorizationsNamesOneFamily(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -76,6 +77,7 @@ func TestCategorizationsNamesOneFamily(t *testing.T) {
 // retire one wrong verdict without destroying the other, which was paid
 // for separately.
 func TestCategorizationsForgetSpansBothStores(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")

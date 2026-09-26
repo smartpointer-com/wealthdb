@@ -8,6 +8,7 @@ import (
 )
 
 func TestFormatWatermark(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   int64
 		want string
@@ -31,6 +32,7 @@ func TestFormatWatermark(t *testing.T) {
 // green, which is exactly the shape the load summary's missing test
 // had.
 func TestStatusVerbosePrintsBothFamilies(t *testing.T) {
+	t.Parallel()
 	var out strings.Builder
 	printStatusVerbose(&out, &gold.SourceStatus{
 		OtherAssetClassCount:     1,

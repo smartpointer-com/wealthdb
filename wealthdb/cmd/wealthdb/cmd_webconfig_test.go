@@ -19,6 +19,7 @@ func webTestCfg(t *testing.T, body string) string {
 }
 
 func TestWebConfigEmitsShellEnv(t *testing.T) {
+	t.Parallel()
 	cfg := webTestCfg(t, `{
 		"gold_db": "/Users/Shared/x/wealthdb.db",
 		"default_currency": "USD",
@@ -43,6 +44,7 @@ func TestWebConfigEmitsShellEnv(t *testing.T) {
 }
 
 func TestWebConfigDefaultsWhenOmitted(t *testing.T) {
+	t.Parallel()
 	cfg := webTestCfg(t, `{
 		"gold_db": "/tmp/g.db",
 		"default_currency": "USD",
@@ -63,6 +65,7 @@ func TestWebConfigDefaultsWhenOmitted(t *testing.T) {
 }
 
 func TestWebConfigQuotesGoldPath(t *testing.T) {
+	t.Parallel()
 	// A path containing a single quote must survive `eval` in the
 	// host wrapper.
 	cfg := webTestCfg(t, `{

@@ -6,6 +6,7 @@ import (
 )
 
 func TestParseColumnsDelta(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in      string
 		adds    []string
@@ -41,6 +42,7 @@ func TestParseColumnsDelta(t *testing.T) {
 }
 
 func TestApplyColumnsDelta(t *testing.T) {
+	t.Parallel()
 	base := []string{"a", "b", "c", "d"}
 	cases := []struct {
 		name    string

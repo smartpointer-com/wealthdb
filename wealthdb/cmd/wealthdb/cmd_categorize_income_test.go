@@ -17,6 +17,7 @@ import (
 // may not say on the income side. The loop is the spending one; only
 // the predicates change, so this is what proves they were changed.
 func TestIncomeGauntletUsesTheIncomeVocabulary(t *testing.T) {
+	t.Parallel()
 	cands := map[string]bool{"SIG": true}
 	accept := func(value string) bool {
 		valid, _ := parseAndValidateCategorizations(incomeCategorizeFamily,
@@ -58,6 +59,7 @@ func TestIncomeGauntletUsesTheIncomeVocabulary(t *testing.T) {
 // TestIncomePromptSpeaksOfPayers pins the conversation's nouns and its
 // forbidden list.
 func TestIncomePromptSpeaksOfPayers(t *testing.T) {
+	t.Parallel()
 	sys := incomeCategorizeFamily.systemPrompt()
 	for _, want := range []string{"payer signatures", "RECEIVED", "income"} {
 		if !strings.Contains(sys, want) {
@@ -136,6 +138,7 @@ func TestIncomePromptSpeaksOfPayers(t *testing.T) {
 // the RESOLVED value being NULL, so a row the kind floor placed is
 // never a candidate.
 func TestCollectPayerCandidatesBacklogOnly(t *testing.T) {
+	t.Parallel()
 	db, ctx := openIncomeCategorizeGold(t)
 	cands, skipped, err := collectMerchantCandidates(ctx, db, incomeCategorizeFamily,
 		config.SpendContextMerchant, 3, backlogUnplaced, true, "spending.categorization")
@@ -187,6 +190,7 @@ func TestCollectPayerCandidatesBacklogOnly(t *testing.T) {
 // The two halves are asserted together on purpose. A gate that
 // excluded everything would pass the first assertion alone.
 func TestCollectPayerCandidatesAllStaysWithinTheFloorlessKind(t *testing.T) {
+	t.Parallel()
 	db, ctx := openIncomeCategorizeGold(t)
 	// A verdict already bought for the deposit, so the default backlog
 	// excludes it and only --all can reach it.
@@ -254,6 +258,7 @@ func TestCollectPayerCandidatesAllStaysWithinTheFloorlessKind(t *testing.T) {
 // every dividend booked within a day of a deposit: the holdings list,
 // arriving as context for the one row the model is allowed to place.
 func TestIncomeKindGateHoldsAtEveryPlaceASignatureLeaves(t *testing.T) {
+	t.Parallel()
 	db, ctx := openIncomeCategorizeGold(t)
 	// A dividend on the same day as the deposits, so it is a genuine
 	// neighbour candidate and the assertion is not vacuous.
@@ -298,6 +303,7 @@ func TestIncomeKindGateHoldsAtEveryPlaceASignatureLeaves(t *testing.T) {
 // family selector that both commands resolve through — the arg alone,
 // with no command run.
 func TestCategorizeRunsBothFamiliesWhenNoneIsNamed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		arg   string
 		want  []string
@@ -330,6 +336,7 @@ func TestCategorizeRunsBothFamiliesWhenNoneIsNamed(t *testing.T) {
 // TestIncomeVerdictsPersistToThePayerStore pins the upsert target and
 // that the two stores stay separate.
 func TestIncomeVerdictsPersistToThePayerStore(t *testing.T) {
+	t.Parallel()
 	db, ctx := openIncomeCategorizeGold(t)
 	rows := []categorization{
 		{Signature: "BLUE HARBOUR PAYROLL", MerchantName: "Example Letting Agent", Detailed: "INCOME_RENT"},

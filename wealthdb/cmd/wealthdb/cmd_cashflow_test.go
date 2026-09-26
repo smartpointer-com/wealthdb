@@ -123,6 +123,7 @@ func setupCashflowGold(t *testing.T) string {
 // internal/gold/cashflow_reports_test.go; what the CLI owns of it is
 // the -x refusal, below.
 func TestCashflowCLIEndToEnd(t *testing.T) {
+	t.Parallel()
 	cfg := setupCashflowGold(t)
 	window := []string{"2026-05-01", "2026-06-30"}
 	cf := func(args ...string) (string, string, int) {
@@ -335,6 +336,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 // whose columns cannot be guessed from the families' idiom, so it is
 // also the one a help text must not omit.
 func TestCashflowUsageNamesEveryView(t *testing.T) {
+	t.Parallel()
 	usage := cashflowUsage()
 	for _, want := range []string{
 		"summary", "flows", "sankey", "transactions",
@@ -369,6 +371,7 @@ func TestCashflowUsageNamesEveryView(t *testing.T) {
 // dispatch listing prints against the views the command actually
 // routes. The listing is where a caller learns a view exists at all.
 func TestCashflowHelpEntryNamesEveryView(t *testing.T) {
+	t.Parallel()
 	var entry commandHelp
 	for _, c := range commandHelps {
 		if c.name == "cashflow" {
@@ -389,6 +392,7 @@ func TestCashflowHelpEntryNamesEveryView(t *testing.T) {
 // shows a row from every side: the cashflow trio beside the spending
 // and income ones.
 func TestTransactionsCarriesTheCashflowColumns(t *testing.T) {
+	t.Parallel()
 	cfg := setupCashflowGold(t)
 	so, se, code := run(t, "-c", cfg, "transactions", "2026-05-01", "2026-06-30",
 		"-C", "+cashflow_section,+cashflow_class,+cashflow_group,+spend_detailed")

@@ -8,6 +8,7 @@ import (
 )
 
 func TestVersion(t *testing.T) {
+	t.Parallel()
 	so, _, code := run(t, "version")
 	if code != 0 {
 		t.Errorf("exit = %d, want 0", code)
@@ -22,6 +23,7 @@ func TestVersion(t *testing.T) {
 }
 
 func TestVersionRejectsArgs(t *testing.T) {
+	t.Parallel()
 	_, se, code := run(t, "version", "extra")
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)

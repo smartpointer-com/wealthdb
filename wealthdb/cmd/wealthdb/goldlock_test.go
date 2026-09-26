@@ -21,6 +21,7 @@ import (
 // it is the only file that explains why a command that touched
 // nothing refused to run.
 func TestGoldWriteLockExcludesASecondWriter(t *testing.T) {
+	t.Parallel()
 	goldPath := filepath.Join(t.TempDir(), "wealthdb.db")
 	sidecar := goldPath + goldWriteLockSuffix
 
@@ -59,6 +60,7 @@ func TestGoldWriteLockExcludesASecondWriter(t *testing.T) {
 // be a worse regression than the race it prevents, because a model
 // run can hold the mutex for an hour.
 func TestGoldWriteLockLetsReadersThrough(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -101,6 +103,7 @@ func TestGoldWriteLockLetsReadersThrough(t *testing.T) {
 // would be replaced along with it, and the next command would take a
 // lock on a file nothing else can see.
 func TestGoldWriteLockSidecarSurvivesTheSwap(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")

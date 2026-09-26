@@ -13,6 +13,7 @@ import (
 // empty for a row the enrichment pass never reached. They are opt-in —
 // most of a ledger is investment rows, where all three are blank.
 func TestTransactionSpendColumns(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"merchant", "spend_primary", "spend_detailed"} {
 		for _, c := range defaultTransactionColumns {
 			if c == name {
@@ -58,6 +59,7 @@ func TestTransactionSpendColumns(t *testing.T) {
 // masks whole), and `merchant` goes with it, being a name taken off
 // such a narrative; the taxonomy columns beside them stay legible.
 func TestTransactionPrivacyClasses(t *testing.T) {
+	t.Parallel()
 	cols, err := resolveTransactionColumns("all", "USD")
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
@@ -98,6 +100,7 @@ func TestTransactionPrivacyClasses(t *testing.T) {
 // back to the statement narrative, which must mask. A single class on
 // the column could only get one of the two right.
 func TestTransactionNamePrivacyFollowsFallback(t *testing.T) {
+	t.Parallel()
 	cols, err := resolveTransactionColumns("name,description", "USD")
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
@@ -131,6 +134,7 @@ func TestTransactionNamePrivacyFollowsFallback(t *testing.T) {
 // to `wealthdb transactions`: the income columns are in the registry,
 // off by default, and carry the privacy classes their contents need.
 func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
+	t.Parallel()
 	all, err := resolveTransactionColumns("all", "USD")
 	if err != nil {
 		t.Fatalf("columns: %v", err)
@@ -178,6 +182,7 @@ func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
 // the holder's own account, and printing it beside a masked account in
 // a redacted readout would undo the masking around it.
 func TestTransactionCheckNumberColumn(t *testing.T) {
+	t.Parallel()
 	for _, c := range defaultTransactionColumns {
 		if c == "check_no" {
 			t.Error("check_no is in the default column set; it is opt-in like the other identifiers")

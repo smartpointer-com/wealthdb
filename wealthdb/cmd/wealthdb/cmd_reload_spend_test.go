@@ -110,6 +110,7 @@ func merchantRow(t *testing.T, goldPath string) map[string]string {
 // derives its column list from the schema, and a comparison naming
 // only a couple of columns would pass while the rest went missing.
 func TestReloadFreshCarriesMerchantStore(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -154,6 +155,7 @@ func TestReloadFreshCarriesMerchantStore(t *testing.T) {
 // path needs no carry-across: it resets and re-loads the live file,
 // which Reset leaves the merchant store alone in.
 func TestReloadInPlaceKeepsMerchantStore(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -183,6 +185,7 @@ func TestReloadInPlaceKeepsMerchantStore(t *testing.T) {
 // untouched — including the enrichment rows, which compaction has no
 // reason to drop because it never re-projects anything.
 func TestCompactPreservesSpendOverlay(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -212,6 +215,7 @@ func TestCompactPreservesSpendOverlay(t *testing.T) {
 // gold with stale verdicts and no error to say so. Each path is
 // exercised for the one line the pass always prints.
 func TestSpendingPassRunsOnEveryLoadPath(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -260,6 +264,7 @@ func dropMerchantColumn(t *testing.T, goldPath, column string) {
 // naming no file, no command and no way forward. The refusal has to
 // come first and name the column.
 func TestReloadFreshNamesTheColumnTheLiveFileLacks(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")
@@ -297,6 +302,7 @@ func TestReloadFreshNamesTheColumnTheLiveFileLacks(t *testing.T) {
 // a file predating the store entirely are different states, and one
 // line for both reads as the schema being absent when it is not.
 func TestReloadFreshDistinguishesAnEmptyStoreFromNoStore(t *testing.T) {
+	t.Parallel()
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
 		t.Fatal("init failed")

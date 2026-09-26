@@ -53,6 +53,7 @@ func runDPCases(t *testing.T, cases []dpCase) {
 // builds the first of the NEXT month and steps back a second, so
 // month 12 has to roll the year and February has to follow the leap.
 func TestParseDateAbsoluteForms(t *testing.T) {
+	t.Parallel()
 	runDPCases(t, []dpCase{
 		{"2025", false, dpAt(2025, time.January, 1, 0, 0, 0)},
 		{"2025", true, dpAt(2025, time.December, 31, 23, 59, 59)},
@@ -74,6 +75,7 @@ func TestParseDateAbsoluteForms(t *testing.T) {
 // which is right for these commands, whose windows are day-grained,
 // but is not what a reader would assume from the input.
 func TestParseDateDiscardsTheTimeOfDay(t *testing.T) {
+	t.Parallel()
 	runDPCases(t, []dpCase{
 		{"2025-06-15 14:30:00", false, dpAt(2025, time.June, 15, 0, 0, 0)},
 		{"2025-06-15 14:30:00", true, dpAt(2025, time.June, 15, 23, 59, 59)},
@@ -86,6 +88,7 @@ func TestParseDateDiscardsTheTimeOfDay(t *testing.T) {
 // month and a whole year — rather than collapsing to the day they land
 // on, which is what makes them useful as a bare window argument.
 func TestParseDateRelativeForms(t *testing.T) {
+	t.Parallel()
 	runDPCases(t, []dpCase{
 		{"today", false, dpAt(2026, time.June, 15, 0, 0, 0)},
 		{"today", true, dpAt(2026, time.June, 15, 23, 59, 59)},
@@ -106,6 +109,7 @@ func TestParseDateRelativeForms(t *testing.T) {
 // the past, so "+1 year" meant a year BACK. An unsigned offset still
 // reads as the past, which is what makes "2 weeks" a usable window.
 func TestParseDateSignedOffsets(t *testing.T) {
+	t.Parallel()
 	runDPCases(t, []dpCase{
 		{"1 year", false, dpAt(2025, time.January, 1, 0, 0, 0)},
 		{"-1 year", false, dpAt(2025, time.January, 1, 0, 0, 0)},
@@ -128,6 +132,7 @@ func TestParseDateSignedOffsets(t *testing.T) {
 // up, and the fix is to widen the documented vocabulary rather than to
 // drop the case.
 func TestParseDateRejectsWhatItCannotRead(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{
 		"",
 		"   ",
@@ -146,6 +151,7 @@ func TestParseDateRejectsWhatItCannotRead(t *testing.T) {
 // today through end-of-day, and anything else is its period's END —
 // an as-of date has to include the day it names.
 func TestParseAsOf(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		in   string
 		want time.Time
@@ -178,6 +184,7 @@ func TestParseAsOf(t *testing.T) {
 // whole period the argument names, which is why the same string is
 // parsed twice rather than once and reused.
 func TestParseDateRangeArity(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		args     []string
 		from, to time.Time
@@ -225,6 +232,7 @@ func TestParseDateRangeArity(t *testing.T) {
 // TestParseDateRangeRejectsAnImpossibleWindow pins the two ways a
 // window is refused: inverted, and more bounds than a range has.
 func TestParseDateRangeRejectsAnImpossibleWindow(t *testing.T) {
+	t.Parallel()
 	if _, _, err := parseDateRange([]string{"2025-06-30", "2025-01-01"}, dpNow); err == nil {
 		t.Error("an inverted range returned no error")
 	}

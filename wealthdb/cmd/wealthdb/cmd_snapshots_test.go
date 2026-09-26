@@ -10,6 +10,7 @@ import (
 const daySecs = 24 * 60 * 60
 
 func TestPrintSnapshotDates(t *testing.T) {
+	t.Parallel()
 	d0 := int64(1750000000) // 2025-06-15
 	d1 := d0 + daySecs      // 2025-06-16
 	d2 := d1 + daySecs      // 2025-06-17
@@ -55,6 +56,7 @@ func TestPrintSnapshotDates(t *testing.T) {
 // The id column pads to the fleet-wide widest id so dates align
 // across sources in -a mode.
 func TestPrintSnapshotDatesPadsID(t *testing.T) {
+	t.Parallel()
 	var sb strings.Builder
 	printSnapshotDates(&sb, 10, "short", []int64{1750000000}, false)
 	want := "short       " + formatDate(1750000000) + "\n"

@@ -22,6 +22,7 @@ import (
 // 23:59:59, both UTC. This is the one place the spending window
 // deliberately differs from the returns window (since-inception).
 func TestParseSpendingWindowDefault(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.June, 15, 9, 30, 0, 0, time.UTC)
 	from, to, err := parseTrailingYearWindow(nil, now)
 	if err != nil {
@@ -41,6 +42,7 @@ func TestParseSpendingWindowDefault(t *testing.T) {
 // delegates to the shared range parser rather than to a second
 // spelling of it.
 func TestParseSpendingWindowPositional(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.June, 15, 9, 30, 0, 0, time.UTC)
 	for _, args := range [][]string{{"2025"}, {"2025-03"}, {"2025-01-01", "2025-06-30"}, {"2025-01-01", "-"}} {
 		gotFrom, gotTo, err := parseTrailingYearWindow(args, now)
@@ -62,6 +64,7 @@ func TestParseSpendingWindowPositional(t *testing.T) {
 // flag is declared, so a flag may follow the positional window without
 // its value being read as a date.
 func TestSpendingFlagReordering(t *testing.T) {
+	t.Parallel()
 	args := []string{"2026-05", "--period", "total", "--level", "detailed", "-f", "csv", "-x", "CHF"}
 	got := reorderFlagsFirst(args, reportValueFlags)
 	want := []string{"--period", "total", "--level", "detailed", "-f", "csv", "-x", "CHF", "2026-05"}
@@ -73,6 +76,7 @@ func TestSpendingFlagReordering(t *testing.T) {
 // TestSpendingPeriodLabels pins the bucket labels against the returns
 // family's shapes, plus the NULL bucket `--period total` emits.
 func TestSpendingPeriodLabels(t *testing.T) {
+	t.Parallel()
 	apr := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC).Unix()
 	cases := []struct{ period, want string }{
 		{"daily", "2026-04-01"},
@@ -100,6 +104,7 @@ func TestSpendingPeriodLabels(t *testing.T) {
 // three views: every amount column carries the -x/--currency choice,
 // and the share column reads as a percentage.
 func TestSpendingColumnHeaders(t *testing.T) {
+	t.Parallel()
 	summary, err := resolveSpendSummaryColumns("all", "CHF", "monthly")
 	if err != nil {
 		t.Fatalf("summary columns: %v", err)
@@ -151,6 +156,7 @@ func headersOf[T any](cols []columnSpec[T]) []string {
 // fence that would now refuse it. Only the taxonomy columns and the
 // tier that decided are legible under -p.
 func TestSpendingTransactionPrivacyClasses(t *testing.T) {
+	t.Parallel()
 	cols, err := resolveSpendTransactionColumns("all", "USD")
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
@@ -206,6 +212,7 @@ const spendTestCounterparty = "SAMPLE PAYEE ZZ"
 //   - the category, the provenance and the account nickname are what
 //     stays legible, so a redacted listing still reads.
 func TestSpendingPrivacyRedacts(t *testing.T) {
+	t.Parallel()
 	cols, err := resolveSpendTransactionColumns(
 		"account_id,merchant,merchant_signature,counterparty,description,value", "USD")
 	if err != nil {
@@ -402,6 +409,7 @@ func nameSpendingSignature(t *testing.T, cfg, signature, name, detailed string) 
 }
 
 func TestSpendingCLIEndToEnd(t *testing.T) {
+	t.Parallel()
 	cfg := setupSpendingGold(t)
 	// The store names the ATM signature, whose line the rule tier
 	// resolves to cash_withdrawal: the transactions case asserts that
@@ -660,6 +668,7 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 // issuer view reaches the CLI through — and that they are two vocabularies
 // side by side, never one silently standing in for the other.
 func TestSpendingTransactionsCarriesBothClassifications(t *testing.T) {
+	t.Parallel()
 	cfg := setupSpendingGold(t)
 	// Stamp an issuer view that DISAGREES with ours, which is the case a
 	// column quietly rendering the wrong one would hide.

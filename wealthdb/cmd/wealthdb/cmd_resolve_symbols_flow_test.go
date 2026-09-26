@@ -15,6 +15,7 @@ import (
 // the persisted block, and each early exit.
 
 func TestResolveSymbolsReportsEveryStage(t *testing.T) {
+	t.Parallel()
 	srv, _ := standInModel(t)
 	cfgPath, _ := resolveSymbolsFixture(t, srv.URL, 3, []any{
 		map[string]any{"silver_source_id": "schwab-test", "lookup_kind": "instrument_external_id",
@@ -50,6 +51,7 @@ resolve-symbols: total symbol_resolutions rows in gold now 4
 }
 
 func TestResolveSymbolsOverridesOnly(t *testing.T) {
+	t.Parallel()
 	cfgPath, goldPath := resolveSymbolsFixture(t, "http://127.0.0.1:1", 2, []any{
 		map[string]any{"silver_source_id": "schwab-test", "lookup_kind": "instrument_external_id",
 			"lookup_value": "EX00000001", "symbol": "PINNED"},
@@ -70,6 +72,7 @@ resolve-symbols: overrides-only mode; total symbol_resolutions rows now 1
 }
 
 func TestResolveSymbolsNothingToResolve(t *testing.T) {
+	t.Parallel()
 	cfgPath, _ := resolveSymbolsFixture(t, "http://127.0.0.1:1", 0, nil)
 	out, errOut, code := run(t, "-c", cfgPath, "resolve-symbols")
 	if code != 0 || out != "resolve-symbols: nothing to resolve\n" {
@@ -81,6 +84,7 @@ func TestResolveSymbolsNothingToResolve(t *testing.T) {
 // takes no lock, so it cannot sync the overrides — it says what the sync
 // would do, asks the model, prints the plan, and leaves gold as it was.
 func TestResolveSymbolsDryRunWritesNothing(t *testing.T) {
+	t.Parallel()
 	srv, calls := standInModel(t)
 	cfgPath, goldPath := resolveSymbolsFixture(t, srv.URL, 2, []any{
 		map[string]any{"silver_source_id": "schwab-test", "lookup_kind": "instrument_external_id",
@@ -107,6 +111,7 @@ func TestResolveSymbolsDryRunWritesNothing(t *testing.T) {
 }
 
 func TestResolveSymbolsDryRunOverridesOnlyWritesNothing(t *testing.T) {
+	t.Parallel()
 	cfgPath, goldPath := resolveSymbolsFixture(t, "http://127.0.0.1:1", 1, []any{
 		map[string]any{"silver_source_id": "schwab-test", "lookup_kind": "instrument_external_id",
 			"lookup_value": "EX00000001", "symbol": "PINNED"},
@@ -127,6 +132,7 @@ resolve-symbols: overrides-only mode; nothing written (dry-run)
 }
 
 func TestResolveSymbolsFlagErrors(t *testing.T) {
+	t.Parallel()
 	cfgPath, _ := resolveSymbolsFixture(t, "http://127.0.0.1:1", 1, nil)
 	for _, c := range []struct {
 		args []string
@@ -150,6 +156,7 @@ func TestResolveSymbolsFlagErrors(t *testing.T) {
 // TestResolveSymbolsNeedsAModelUnlessOverridesOnly: the model block is
 // required for a model pass and not for the config-only sync.
 func TestResolveSymbolsNeedsAModelUnlessOverridesOnly(t *testing.T) {
+	t.Parallel()
 	cfgPath, _ := resolveSymbolsFixture(t, "http://127.0.0.1:1", 1, nil)
 	var cfg map[string]any
 	raw, err := os.ReadFile(cfgPath)
@@ -177,6 +184,7 @@ func TestResolveSymbolsNeedsAModelUnlessOverridesOnly(t *testing.T) {
 // TestResolveSymbolsStopsAtAFailedBatchKeepingTheOthers: a model call that
 // fails ends the run, and the batches answered before it are stored.
 func TestResolveSymbolsStopsAtAFailedBatchKeepingTheOthers(t *testing.T) {
+	t.Parallel()
 	good, _ := standInModel(t)
 	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

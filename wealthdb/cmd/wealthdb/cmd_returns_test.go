@@ -110,6 +110,7 @@ func setupReturnsGold(t *testing.T) string {
 func strp(s string) *string { return &s }
 
 func TestReturnsCLIEndToEnd(t *testing.T) {
+	t.Parallel()
 	cfg := setupReturnsGold(t)
 
 	t.Run("accounts both total", func(t *testing.T) {
