@@ -244,7 +244,7 @@ func TestWrapperSidesRefusesAnIncoherentRow(t *testing.T) {
 	db, ctx := openMigrated(t)
 	for _, tc := range []struct{ name, values string }{
 		{"unknown side", `('other', 'pool', NULL)`},
-		{"unknown class", `('other', 'vehicle', 'untracked')`},
+		{"unknown class", `('other', 'vehicle', 'unpaired')`},
 		{"a vehicle with no class", `('other', 'vehicle', NULL)`},
 		{"a household with a class", `('other', 'household', 'retirement')`},
 		{"a giving side with a class", `('other', 'giving', 'trusts')`},

@@ -107,6 +107,7 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 		WrapperRows: 23, WrapperOverrides: 1, FarAccounts: 17, StatedFarAccounts: 5,
 		ReferencePairs: 3, StatedCounterPairs: 4, NamedPairs: 6, AmbiguousReferences: 2,
 		PooledAccountsWithoutWrapper: 4,
+		DeclaredAccounts:             3, DeclaredPooled: 2, UnusedDeclarations: 1,
 	}})
 	got := out.String()
 	for _, want := range []string{
@@ -117,6 +118,7 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 		"cashflow: 2 source reference(s) named more than one movement",
 		"cashflow: 4 pooled account(s) have no tax wrapper",
 		"`cashflow.accounts` keys on the account id",
+		"cashflow: 3 declared account(s), 2 inside the household pool; 1 named by no rule-placed row",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the load summary is missing %q:\n%s", want, got)
@@ -137,7 +139,7 @@ func TestLoadPrintsTheCashflowBoundary(t *testing.T) {
 
 	// The pass that ENDS the migrated-but-unloaded state says so, once.
 	// Before it the pool is every account and every matched own-account
-	// move resolves to `vehicles · Untracked accounts`, which reads as a
+	// move resolves to `vehicles · Unpaired transfers`, which reads as a
 	// finding and is not one — so the load that fixes it is the place a
 	// reader learns that any earlier report was wrong.
 	var first strings.Builder

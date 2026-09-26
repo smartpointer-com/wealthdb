@@ -95,7 +95,7 @@ func TestDefaultWrapperSideOfUnknown(t *testing.T) {
 }
 
 // TestParseWrapperDestination pins the config vocabulary against the
-// pairs gold stores, and that `untracked` is refused: it is where a
+// pairs gold stores, and that `unpaired` is refused: it is where a
 // crossing goes when there is no far account to read a wrapper off, so
 // no wrapper can be moved to it.
 func TestParseWrapperDestination(t *testing.T) {
@@ -117,7 +117,7 @@ func TestParseWrapperDestination(t *testing.T) {
 				tc.in, side, class, ok, tc.side, tc.class)
 		}
 	}
-	for _, bad := range []string{"untracked", "vehicle", "Retirement", "", "cash"} {
+	for _, bad := range []string{"unpaired", "vehicle", "Retirement", "", "cash"} {
 		if _, _, ok := ParseWrapperDestination(bad); ok {
 			t.Errorf("ParseWrapperDestination(%q) was accepted", bad)
 		}
@@ -134,7 +134,7 @@ func TestParseWrapperDestination(t *testing.T) {
 
 // TestVehicleTransferDetailed pins each pool to the delta that stands
 // for a crossing the product cannot see the far side of, and that
-// `untracked` has none: nothing places a row there, only the absence
+// `unpaired` has none: nothing places a row there, only the absence
 // of a far account puts one there.
 func TestVehicleTransferDetailed(t *testing.T) {
 	for _, tc := range []struct {
@@ -160,8 +160,8 @@ func TestVehicleTransferDetailed(t *testing.T) {
 			t.Errorf("%q is not an income value", tc.detailed)
 		}
 	}
-	if _, ok := VehicleTransferDetailed(ClassUntracked); ok {
-		t.Error("untracked has a transfer delta; no rule can place one there")
+	if _, ok := VehicleTransferDetailed(ClassUnpaired); ok {
+		t.Error("unpaired has a transfer delta; no rule can place one there")
 	}
 }
 
@@ -224,7 +224,7 @@ func TestCashflowSectionAndClassVocabulary(t *testing.T) {
 			t.Errorf("%q is not a vehicle class", c)
 		}
 	}
-	for _, c := range []CashflowClass{ClassUntracked, ClassYield, ClassCash, ""} {
+	for _, c := range []CashflowClass{ClassUnpaired, ClassYield, ClassCash, ""} {
 		if c.ValidVehicleClass() {
 			t.Errorf("%q was accepted as a vehicle class", c)
 		}
@@ -239,7 +239,7 @@ func TestWrapperSideValid(t *testing.T) {
 			t.Errorf("side %q is not valid", s)
 		}
 	}
-	for _, s := range []WrapperSide{"", "untracked", "Household"} {
+	for _, s := range []WrapperSide{"", "unpaired", "Household"} {
 		if s.Valid() {
 			t.Errorf("side %q was accepted", s)
 		}

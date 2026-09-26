@@ -48,6 +48,7 @@ func (c *Config) Validate() error {
 		c.validateSymbolResolution,
 		c.validatePortfolioOverrides,
 		c.validateAccountOverrides,
+		c.validateDeclaredAccounts,
 		c.validateInstrumentOverrides,
 		c.validateTransactionInstruments,
 		c.validateReturns,
@@ -73,6 +74,9 @@ func (c *Config) validateSources() (map[string]bool, error) {
 		}
 		if seenIDs[s.ID] {
 			return nil, fmt.Errorf("config: duplicate silver_sources[].id %q", s.ID)
+		}
+		if s.ID == canonical.DeclaredSourceID {
+			return nil, fmt.Errorf("config: silver_sources[%d].id %q is reserved for `declared_accounts`", i, s.ID)
 		}
 		seenIDs[s.ID] = true
 
@@ -196,6 +200,42 @@ func (c *Config) validatePortfolioOverrides(seenIDs map[string]bool) error {
 // be non-empty (an empty account_external_id can't match anything and is
 // almost always user error); typed fields validate against the canonical
 // enums.
+// validateDeclaredAccounts checks declared_accounts: every id is a
+// well-formed key, and the kind and the wrapper — the two fields the
+// statement reads — are both present and both in their enums. The
+// currency is checked only for shape, like default_currency.
+func (c *Config) validateDeclaredAccounts(map[string]bool) error {
+	for _, id := range slices.Sorted(maps.Keys(c.DeclaredAccounts)) {
+		d := c.DeclaredAccounts[id]
+		if !IDPattern.MatchString(id) {
+			return fmt.Errorf("config: declared_accounts[%q]: id must match %s", id, IDPattern.String())
+		}
+		if d.AccountKind == "" {
+			return fmt.Errorf("config: declared_accounts[%q]: account_kind is required", id)
+		}
+		if !canonical.AccountKind(d.AccountKind).Valid() {
+			return fmt.Errorf("config: declared_accounts[%q]: invalid account_kind %q", id, d.AccountKind)
+		}
+		if d.TaxWrapper == "" {
+			return fmt.Errorf("config: declared_accounts[%q]: tax_wrapper is required — it is what places a move to the account", id)
+		}
+		if !canonical.TaxWrapper(d.TaxWrapper).Valid() {
+			return fmt.Errorf("config: declared_accounts[%q]: invalid tax_wrapper %q", id, d.TaxWrapper)
+		}
+		if d.Currency != "" && !IsLikelyISO4217(d.Currency) {
+			return fmt.Errorf("config: declared_accounts[%q]: currency %q is not a 3-letter ISO 4217 code", id, d.Currency)
+		}
+	}
+	return nil
+}
+
+// declares reports whether an id names a declared account, for the
+// rules that point at one.
+func (c *Config) declares(id string) bool {
+	_, ok := c.DeclaredAccounts[id]
+	return ok
+}
+
 func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 	for sourceID, perAccount := range c.AccountOverrides {
 		if !seenIDs[sourceID] {
@@ -388,7 +428,7 @@ func (c *Config) validateSpending(seenIDs map[string]bool) error {
 		}
 		rules, err := compileRuleList("spending.rules", "category", "spend_detailed", "docs/SPENDING.md §2",
 			canonical.SpendDetailedInvestment,
-			spendingRuleList(sp.Rules), canonical.ValidSpendDetailed)
+			spendingRuleList(sp.Rules), canonical.ValidSpendDetailed, c.declares)
 		if err != nil {
 			return err
 		}
@@ -412,7 +452,7 @@ func (c *Config) validateIncome(seenIDs map[string]bool) error {
 		}
 		rules, err := compileRuleList("income.rules", "type", "income_detailed", "docs/INCOME.md §2",
 			canonical.IncomeDetailedCapitalReturn,
-			incomeRuleList(in.Rules), canonical.ValidIncomeDetailed)
+			incomeRuleList(in.Rules), canonical.ValidIncomeDetailed, c.declares)
 		if err != nil {
 			return err
 		}
@@ -561,13 +601,14 @@ type ruleEntry struct {
 	match      string
 	value      string
 	assetClass string
+	far        string
 	scope      *SpendingRuleScope
 }
 
 func spendingRuleList(rules []SpendingRule) []ruleEntry {
 	out := make([]ruleEntry, 0, len(rules))
 	for _, r := range rules {
-		out = append(out, ruleEntry{r.Match, r.Category, r.AssetClass, r.Scope})
+		out = append(out, ruleEntry{r.Match, r.Category, r.AssetClass, r.Far, r.Scope})
 	}
 	return out
 }
@@ -575,7 +616,7 @@ func spendingRuleList(rules []SpendingRule) []ruleEntry {
 func incomeRuleList(rules []IncomeRule) []ruleEntry {
 	out := make([]ruleEntry, 0, len(rules))
 	for _, r := range rules {
-		out = append(out, ruleEntry{r.Match, r.Type, r.AssetClass, r.Scope})
+		out = append(out, ruleEntry{r.Match, r.Type, r.AssetClass, r.Far, r.Scope})
 	}
 	return out
 }
@@ -605,8 +646,11 @@ func incomeRuleList(rules []IncomeRule) []ruleEntry {
 // cash flow section is `investing` — `investment` for spending,
 // `capital_return` for income. An `asset_class` on any other value is
 // refused rather than stored: nothing would read it, and a knob that
-// does nothing is worse than one that is absent.
-func compileRuleList(key, valueField, valueNoun, doc, investingValue string, rules []ruleEntry, valid func(string) bool) ([]CompiledSpendRule, error) {
+// does nothing is worse than one that is absent. A `far` is refused on
+// the same terms beside anything but `internal_transfer`, and where it
+// names no declared account: a far side that exists nowhere would be
+// stamped and read by nothing.
+func compileRuleList(key, valueField, valueNoun, doc, investingValue string, rules []ruleEntry, valid, declares func(string) bool) ([]CompiledSpendRule, error) {
 	if len(rules) == 0 {
 		return nil, nil
 	}
@@ -632,11 +676,20 @@ func compileRuleList(key, valueField, valueNoun, doc, investingValue string, rul
 				return nil, fmt.Errorf("config: %s[%d].asset_class: %w", key, i, err)
 			}
 		}
+		if r.far != "" {
+			if r.value != canonical.SpendDetailedInternalTransfer {
+				return nil, fmt.Errorf("config: %s[%d].far is only meaningful beside %s %q, the one verdict with a far side; got %q",
+					key, i, valueField, canonical.SpendDetailedInternalTransfer, r.value)
+			}
+			if !declares(r.far) {
+				return nil, fmt.Errorf("config: %s[%d].far %q names no declared_accounts entry", key, i, r.far)
+			}
+		}
 		scope, err := compileSpendScope(r.scope)
 		if err != nil {
 			return nil, fmt.Errorf("config: %s[%d].scope: %w", key, i, err)
 		}
-		out = append(out, CompiledSpendRule{Match: re, Category: r.value, AssetClass: r.assetClass, Scope: scope})
+		out = append(out, CompiledSpendRule{Match: re, Category: r.value, AssetClass: r.assetClass, Far: r.far, Scope: scope})
 	}
 	return out, nil
 }

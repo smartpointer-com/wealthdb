@@ -94,7 +94,7 @@ type SourceStatus struct {
 	// rather than wrong.
 	CashflowPooledNoWrapperCount int
 	// CashflowNoFarAccountCount is own-account moves that landed in
-	// `vehicles · Untracked accounts` because nothing said where they
+	// `vehicles · Unpaired transfers` because nothing said where they
 	// went — a rule placed the verdict and no pairing exists. They are
 	// the household's own money at an institution the product does not
 	// collect, and they are also exactly the rows collecting that
@@ -310,7 +310,7 @@ func cashflowDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
 	}
 	if err := db.QueryRowContext(ctx, `
         SELECT COUNT(*) FROM cashflow_lines_base(?, ?)
-         WHERE silver_source_id = ? AND class = 'untracked' AND NOT far_known`,
+         WHERE silver_source_id = ? AND class = 'unpaired' AND NOT far_known`,
 		int64(0), MaxEpoch, s.SilverSourceID,
 	).Scan(&s.CashflowNoFarAccountCount); err != nil {
 		return fmt.Errorf("StatusForSource(%s) cashflow moves with no far account: %w", s.SilverSourceID, err)

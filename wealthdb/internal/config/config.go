@@ -6,13 +6,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"time"
 
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
@@ -42,6 +45,18 @@ type Config struct {
 	// the adapter has stamped its own values, so config wins on
 	// overlap. See docs/DESIGN.md §13.9.
 	AccountOverrides map[string]map[string]AccountOverride `json:"account_overrides,omitempty"`
+	// DeclaredAccounts are the holder's own accounts at institutions the
+	// product does not collect, keyed by an id the holder chooses. A
+	// declaration is what lets a rule say where an own-account move
+	// went (SpendingRule.Far) when the far side is nowhere in gold: the
+	// load writes each one as an account row under the reserved source
+	// canonical.DeclaredSourceID, and the cash flow statement then reads
+	// the declared wrapper the way it reads a collected account's — a
+	// household wrapper makes the move pool-internal, a vehicle wrapper
+	// draws it as a crossing. Absent ⇒ no such accounts; a move to an
+	// untracked account is then income or spending, which is what the
+	// closed world the statement assumes says of it.
+	DeclaredAccounts map[string]DeclaredAccount `json:"declared_accounts,omitempty"`
 	// PortfolioOverrides is the portfolio-grain counterpart of
 	// AccountOverrides. Keyed by silver_source_id (outer) and then
 	// portfolio_external_id (inner). The override applies to every
@@ -407,6 +422,20 @@ type AccountOverride struct {
 	Exclude bool `json:"exclude,omitempty"`
 }
 
+// DeclaredAccount is one `declared_accounts` entry: an account the
+// holder states rather than the product observes. The kind and the
+// wrapper are required because they are the whole point — the wrapper
+// is what places a move to the account, and nothing else about it is
+// ever read — and both are validated against the canonical enums. A
+// declaration is unfalsifiable by the product's own instruments, which
+// is why it carries no balance and the load prints what it stamped.
+type DeclaredAccount struct {
+	AccountKind string `json:"account_kind"`
+	TaxWrapper  string `json:"tax_wrapper"`
+	Nickname    string `json:"nickname,omitempty"`
+	Currency    string `json:"currency,omitempty"`
+}
+
 // PortfolioOverride is one per-portfolio override entry. Applies
 // to every account in gold whose `portfolio_external_id` matches.
 // All fields are optional; the canonical-enum-typed ones are
@@ -687,6 +716,14 @@ type SpendingRule struct {
 	Match    string             `json:"match"`
 	Category string             `json:"category"`
 	Scope    *SpendingRuleScope `json:"scope,omitempty"`
+	// Far names a `declared_accounts` entry as the other side of the
+	// move the rule places, admitted beside `internal_transfer` alone:
+	// only an own-account move HAS a far side. It is what makes a rule
+	// say where the money went rather than only that it stayed the
+	// holder's; the cash flow statement then places the move by the
+	// declared account's wrapper instead of drawing it as a move to a
+	// destination nothing identifies (docs/CASHFLOW.md §4).
+	Far string `json:"far,omitempty"`
 	// AssetClass is what the capital went INTO, stated only where the
 	// rule places `investment` — the one verdict of this family whose
 	// section is `investing`. It is the EXPOSURE dimension alone
@@ -735,6 +772,7 @@ type CompiledSpendRule struct {
 	Match      *regexp.Regexp
 	Category   string
 	AssetClass string
+	Far        string
 	Scope      CompiledSpendScope
 }
 
@@ -962,6 +1000,42 @@ func (c *Config) SpendAccountScope() (include, exclude map[string][]string) {
 		return nil, nil
 	}
 	return c.Spending.Accounts.Include, c.Spending.Accounts.Exclude
+}
+
+// DeclaredAccountChanges is `declared_accounts` as the account rows
+// the load stamps, sorted by id, every one under
+// canonical.DeclaredSourceID. Both seen-at columns carry `now`: a
+// declaration is a statement, not an observation, so config always
+// wins on a re-stamp.
+func (c *Config) DeclaredAccountChanges(now int64) []canonical.AccountChange {
+	out := make([]canonical.AccountChange, 0, len(c.DeclaredAccounts))
+	for _, id := range slices.Sorted(maps.Keys(c.DeclaredAccounts)) {
+		d := c.DeclaredAccounts[id]
+		wrapper := canonical.TaxWrapper(d.TaxWrapper)
+		name := id
+		if d.Nickname != "" {
+			name = d.Nickname
+		}
+		row := canonical.AccountChange{
+			SilverSourceID:    canonical.DeclaredSourceID,
+			AccountExternalID: id,
+			AccountKind:       canonical.AccountKind(d.AccountKind),
+			DisplayName:       &name,
+			TaxWrapper:        &wrapper,
+			FirstSeenAt:       now,
+			LastSeenAt:        now,
+		}
+		if d.Nickname != "" {
+			n := d.Nickname
+			row.Nickname = &n
+		}
+		if d.Currency != "" {
+			ccy := d.Currency
+			row.BaseCurrency = &ccy
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // SpendRules returns the compiled `spending.rules`, or nil when none
@@ -1233,6 +1307,11 @@ type IncomeRule struct {
 	Match string             `json:"match"`
 	Type  string             `json:"type"`
 	Scope *SpendingRuleScope `json:"scope,omitempty"`
+	// Far is SpendingRule.Far for the inbound leg: the declared account
+	// the money came FROM. The income overlay has no far columns, so
+	// the spending pass carries it onto its own overlay for the row
+	// (docs/CASHFLOW.md §4).
+	Far string `json:"far,omitempty"`
 	// AssetClass is SpendingRule.AssetClass for the return leg, stated
 	// only where the rule places `capital_return`.
 	AssetClass string `json:"asset_class,omitempty"`
@@ -1249,7 +1328,7 @@ type IncomeRule struct {
 type CashflowConfig struct {
 	// Accounts is the cash pool's only gate. An account listed here is
 	// treated exactly like an account the product does not hold: a move
-	// to it is a crossing into `vehicles · Untracked accounts` rather
+	// to it is a crossing into `vehicles · Unpaired transfers` rather
 	// than an invisible internal step, and the balance memo does not
 	// count it. That equivalence is what keeps an exclusion from
 	// growing the residual forever.

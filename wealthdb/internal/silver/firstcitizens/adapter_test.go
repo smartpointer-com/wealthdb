@@ -314,4 +314,3 @@ func TestTransactionsCarryTheBanksFiling(t *testing.T) {
 		}
 	}
 }
-

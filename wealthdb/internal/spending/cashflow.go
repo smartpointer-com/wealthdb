@@ -54,7 +54,7 @@ type CashflowResult struct {
 	// incomplete, it is wrong in a way that looks like a finding: the
 	// pool is every account, no enrichment row carries a far account,
 	// and every matched own-account move therefore resolves to
-	// `vehicles · Untracked accounts`. A reader who opens the
+	// `vehicles · Unpaired transfers`. A reader who opens the
 	// dashboard in that window sees one enormous node and has no way
 	// to tell it from a data problem, so the load that ends the state
 	// says that it did.
@@ -106,6 +106,18 @@ type CashflowResult struct {
 	// references per day or per batch, and that no pair drawn from
 	// them should be trusted.
 	AmbiguousReferences int
+	// DeclaredAccounts is how many accounts the deployment declared
+	// rather than collected (config `declared_accounts`), and
+	// DeclaredPooled how many of them the boundary places inside the
+	// household pool — a move to one of those draws nothing, and a
+	// declaration is unfalsifiable by the product's own instruments, so
+	// this is the one place the number is ever printed.
+	// UnusedDeclarations is how many no rule-placed row reached: a
+	// declaration nothing points at is a rule that never fired or was
+	// never written.
+	DeclaredAccounts   int
+	DeclaredPooled     int
+	UnusedDeclarations int
 	// PooledAccountsWithoutWrapper is the boundary's coverage gap:
 	// accounts in the pool whose tax wrapper is unset.
 	//
@@ -196,6 +208,29 @@ func stampWrapperSides(ctx context.Context, tx *sql.Tx, overrides map[string]str
 			return fmt.Errorf("cashflow: stamp wrapper %q: %w", b.Wrapper, err)
 		}
 		out.WrapperRows++
+	}
+	return nil
+}
+
+// countDeclaredAccounts reads the declarations off the accounts
+// dimension and the pool macro, and the ones no far column names off
+// the spending overlay, so each number says what the statement will
+// draw rather than what the config meant.
+func countDeclaredAccounts(ctx context.Context, tx *sql.Tx, out *CashflowResult) error {
+	if err := tx.QueryRowContext(ctx, `
+        SELECT COUNT(*),
+               COUNT(*) FILTER (WHERE p.account_external_id IS NOT NULL),
+               COUNT(*) FILTER (WHERE NOT EXISTS (
+                   SELECT 1 FROM spend_txn_enrichment e
+                    WHERE e.far_silver_source_id    = a.silver_source_id
+                      AND e.far_account_external_id = a.account_external_id))
+          FROM accounts a
+          LEFT JOIN cashflow_pool_accounts() p
+                 ON p.silver_source_id    = a.silver_source_id
+                AND p.account_external_id = a.account_external_id
+         WHERE a.silver_source_id = ?`, canonical.DeclaredSourceID).
+		Scan(&out.DeclaredAccounts, &out.DeclaredPooled, &out.UnusedDeclarations); err != nil {
+		return fmt.Errorf("cashflow: count declared accounts: %w", err)
 	}
 	return nil
 }

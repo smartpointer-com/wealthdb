@@ -266,7 +266,11 @@ but the narrative can say what it was.
   NOT gated; a rule is the holder's own instrument, and saying
   something the data does not is its whole purpose.
 - **Config rules** — `income.rules[]`, the holder's own, with the value
-  field named `type`. Same shape as `spending.rules`, scope included.
+  field named `type`. Same shape as `spending.rules`, scope and `far`
+  included; the far account an income rule names is written onto the
+  spending overlay, the one overlay with far columns, so the inbound
+  leg of a move to a declared account places as its outbound leg does
+  (CASHFLOW.md §4).
 - **Provider tier** — a bank's booking type says "salary", "dividend",
   "interest"; the provider maps gained an income side. Per (silver kind,
   account kind), as on the spending side. One booking type can mean

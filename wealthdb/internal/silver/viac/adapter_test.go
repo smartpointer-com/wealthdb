@@ -496,4 +496,3 @@ func TestTransactionsCarryANarrative(t *testing.T) {
 		}
 	}
 }
-

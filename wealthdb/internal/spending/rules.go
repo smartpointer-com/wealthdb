@@ -541,6 +541,11 @@ func newNarrativeField(s string) (narrativeField, bool) {
 type Rule struct {
 	Match    *regexp.Regexp
 	Category string
+	// Far names the declared account (canonical.DeclaredSourceID) on the
+	// other side of the move a rule places, set only beside
+	// internal_transfer. Config validates that pairing; the pass only
+	// carries it onto the row's far columns.
+	Far string
 	// AssetClass is what the capital went into, set only on a rule
 	// whose Category is this family's one investing verdict. Config
 	// validates that pairing; the pass only carries it.
@@ -602,6 +607,7 @@ func (s RuleScope) Admits(source, portfolio, account string, occurredAt int64) b
 type RulePlacement struct {
 	Category   string
 	AssetClass string
+	Far        string
 }
 
 // ConfigRuleCategory applies the config-supplied rules to a row's
@@ -635,7 +641,7 @@ func ConfigRuleCategory(rules []Rule, row RuleRow) (RulePlacement, bool) {
 		if (row.Counterparty != "" && r.Match.MatchString(row.Counterparty)) ||
 			(row.Description != "" && r.Match.MatchString(row.Description)) ||
 			(row.ProviderCategory != "" && r.Match.MatchString(row.ProviderCategory)) {
-			return RulePlacement{Category: r.Category, AssetClass: r.AssetClass}, true
+			return RulePlacement{Category: r.Category, AssetClass: r.AssetClass, Far: r.Far}, true
 		}
 	}
 	return RulePlacement{}, false

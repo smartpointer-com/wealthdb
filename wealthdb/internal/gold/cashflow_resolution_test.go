@@ -381,14 +381,14 @@ func TestTheBoundaryTableInBothDirections(t *testing.T) {
 		"a mortgage drawdown is an inflow and the same class as servicing it")
 	add("W-POOL", "SAVE", "internal", "internal",
 		"a wire between two pooled accounts is cash becoming cash")
-	add("W-FENCED", "FENCED", "vehicles.untracked.untracked", "vehicles.untracked.untracked",
-		"an account the pool excludes is treated exactly like one the product does not hold")
+	add("W-FENCED", "FENCED", "vehicles.unpaired.out_of_pool", "vehicles.unpaired.out_of_pool",
+		"an account the pool excludes is a setting, named as one at group grain")
 
 	// No far account at all: a rule placed the verdict.
 	lines = append(lines,
 		line{id: "W-RULE", account: "CASH", kind: "withdrawal", amount: -900,
-			spend: "internal_transfer", want: "vehicles.untracked.untracked",
-			why: "money at an institution the product does not collect, visible rather than lost to the residual"},
+			spend: "internal_transfer", want: "vehicles.unpaired.unnamed",
+			why: "no far account at all: a finding, visible rather than lost to the residual"},
 		line{id: "W-RULE-MORT", account: "CASH", kind: "withdrawal", amount: -1800,
 			spend: "internal_transfer", farClass: "mortgage", want: "financing.mortgage.mortgage",
 			why: "the mortgage rule's own word, for the lender the product does not track"},
@@ -646,7 +646,7 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 		// trade even inside the private-markets class.
 		"L-BUY":       "Private markets / Trades",
 		"L-MORT":      "Mortgage / Mortgage",
-		"L-UNTRACKED": "Untracked accounts / Untracked accounts",
+		"L-UNTRACKED": "Unpaired transfers / No far account",
 		"L-DAF":       "Giving / To giving vehicles",
 		"L-PLAN":      "Education savings / Education savings",
 		"L-IRA":       "Retirement savings / Retirement savings",

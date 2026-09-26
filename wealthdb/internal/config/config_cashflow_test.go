@@ -82,9 +82,9 @@ func TestCashflowWrapperValidation(t *testing.T) {
 	}{
 		{"unknown wrapper", `"cashflow": {"wrappers": {"pillar_4": "retirement"}}`, "pillar_4"},
 		{"unknown destination", `"cashflow": {"wrappers": {"hsa": "medical"}}`, "medical"},
-		// `untracked` is where a crossing goes when there is no far
+		// `unpaired` is where a crossing goes when there is no far
 		// account to read a wrapper off, so no wrapper can be sent there.
-		{"untracked is not a destination", `"cashflow": {"wrappers": {"hsa": "untracked"}}`, "untracked"},
+		{"unpaired is not a destination", `"cashflow": {"wrappers": {"hsa": "unpaired"}}`, "unpaired"},
 		{"a side is not a destination", `"cashflow": {"wrappers": {"hsa": "vehicle"}}`, "vehicle"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

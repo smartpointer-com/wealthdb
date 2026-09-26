@@ -47,7 +47,7 @@ in, what went out, and what was left.
 | `operating_out` | the spending verdicts, plus moves into a charitable or custodial vehicle | − (net of refunds) |
 | `investing` | buys and sells; private capital called and returned; capital deployed to or returned from a destination the product does not track | net |
 | `financing` | what the mortgage rule places, an own-account move to a mortgage account (matched or stated), `mortgage_transfer`, `loan_proceeds`, `debt_repayment` | net |
-| `vehicles` | moves to or from a retirement plan, an education or health account, a non-grantor trust, or an untracked account of the household's own | net |
+| `vehicles` | moves to or from a retirement plan, an education or health account, a non-grantor trust, or a bank's own deposit product; and the own-account moves nothing paired | net |
 | `cash` | the residual: the four summed, seen from the pool's side | computed |
 
 `summary` prints four statement sections — operating is the signed
@@ -226,7 +226,7 @@ says, because a section that reads direction cannot admit them.
 | `deposit` | by verdict | an own-account move with a far account, matched or stated → by the far account; `capital_return` → investing; `loan_proceeds` → financing; a `*_transfer` delta → vehicles; `reimbursement` → operating in (income excludes it, cashflow keeps it — it is cash that arrived); otherwise operating in |
 | `distribution` | investing | floors to `capital_return`; a rule or a pin promoting it to an income type moves it to operating in, as the holder's word should |
 | `purchase` `refund` `fee` `tax` `interest` (−) | operating out | by resolved spend category |
-| `withdrawal` | by verdict | an own-account move with a far account, matched or stated → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles (`deposit_transfer` → `vehicles · Bank deposits`), except `mortgage_transfer` → `financing · Mortgage`; a rule-placed `internal_transfer` with no far account → `vehicles · Untracked accounts`; otherwise operating out |
+| `withdrawal` | by verdict | an own-account move with a far account, matched or stated → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles (`deposit_transfer` → `vehicles · Bank deposits`), except `mortgage_transfer` → `financing · Mortgage`; a rule-placed `internal_transfer` with no far account → `vehicles · Unpaired transfers`; otherwise operating out |
 | `card_payment` | matched → by the far account; otherwise **excluded, counted** | an unpaired card bill is in neither family's population, so no tier ever saw it. It also has a known false shape: a cross-currency pair no road joins — the amount pass partitions by currency, and a card ledger mints its own ids, so no shared reference reaches it either — whose bank leg the provider tier already files as card spend. Counting it as a receipt would print a phantom inflow and double the bill |
 | `buy` `sell` | investing | by the instrument's asset class; a `cash`-class instrument is pool-internal |
 | `contribution` `distribution` | investing | private capital, by the vehicle's asset class |
@@ -304,15 +304,43 @@ moved:
 4. the far account is **in the pool** → invisible.
 5. anything else — the far account is outside the pool, or there is no
    far account because a rule placed the verdict — → `vehicles ·
-   Untracked accounts`, unless the rule recorded a class of its own
-   (the mortgage rule records `mortgage`).
+   Unpaired transfers`, unless the rule recorded a class of its own
+   (the mortgage rule records `mortgage`). At group grain the node
+   splits by what is missing: **No far account** (`unnamed`) where
+   nothing paired the row, and **Fenced-out account** (`out_of_pool`)
+   where the far account is one gold holds that the `cashflow.accounts`
+   scope excluded from the pool.
 
 Step 5 closes a hole the rule tier opens. A config rule exists
 precisely to place a wire to the holder's own account at a bank the
 product does not track, and that money **leaves the pool**. Drawn as
 invisible it would vanish into the residual forever; drawn as
-`Untracked accounts` it is visible as what it is, and the remedy —
-collect that account — is obvious from the chart.
+`Unpaired transfers` it is visible as what it is. Under the closed
+world the statement assumes (§4 above) the node is a finding, not a
+residual: a row there is either a counter-leg gold should hold and does
+not — an account not yet collected, a pair the matcher missed — or a
+declaration not yet written. The remedy is obvious from the chart:
+collect that account, **declare** it, or find the missing leg. A
+fenced-out row is the exception — a setting, named as one so a reader
+need not open the config to tell it from the finding.
+
+**A declared account is a far account the holder states.**
+`declared_accounts` in the config names an account the household owns
+at an institution the product does not collect, with the kind and the
+wrapper it would carry if it were collected; the load writes it into
+the accounts dimension under the reserved source `declared`, and a
+rule's `far` names it as the other side of the move the rule places.
+From there the ladder above reads it like any collected far account:
+a household wrapper puts it in the pool and the move is invisible
+(step 4), a retirement wrapper draws the move as `vehicles ·
+Retirement savings` (step 1). The statement assumes a closed world —
+an account it does not hold is outside the household unless declared,
+so a move to one is income or spending — and a declaration is how the
+holder opens it, one account at a time. Nothing the product measures
+can contradict a declaration, which is why the load prints how many
+sit inside the pool. The inbound leg is the income family's verdict,
+but its far account is written onto the spending overlay, the one
+overlay with far columns, so both directions place alike.
 
 **The investing class has three roads, and they are ordered.** The
 trade's own exposure first (0097/0100: a feed that cannot name the
@@ -360,7 +388,7 @@ alone would collide a gift given with a gift received in one edge list.
 | operating out | `consumption` · `fees` · `taxes` · `giving` · `(uncategorized)` |
 | investing | the exposure, from whichever of three roads names one — the trade's own word, then the instrument's, then the holder's `asset_class` on the rule or pin that placed the verdict; every value but `cash`. `other` where a row names an instrument whose class is missing; `elsewhere` where none of the three said anything; all of them folded into `investments` under `--investing whole` |
 | financing | `mortgage` · `loans` |
-| vehicles | `retirement` · `education` · `health` · `trusts` · `deposits` · `untracked` |
+| vehicles | `retirement` · `education` · `health` · `trusts` · `deposits` · `unpaired` (grouped `unnamed` · `out_of_pool`) |
 | cash | `cash`, drawn as **Cash savings** |
 
 **Four lifts and no new tier.** Yield is lifted out of income, and
@@ -490,7 +518,7 @@ than inventing a repayment. It is the second, quieter cost of not
 holding the mortgage — the first being that the narrative rule which
 places the payment fires on the words a feed prints (`MORTGAGE`,
 `HYPOTHEK`, `HYPOTHEKARZINS`), so a feed that stops carrying them drops
-its mortgage rows into `vehicles · Untracked accounts`, with nothing in
+its mortgage rows into `vehicles · Unpaired transfers`, with nothing in
 the statement to say that is what happened — which is what
 `mortgage_transfer` (below) answers: a pin reaches `financing ·
 Mortgage` on the verdict alone. A rule sees one row's text
@@ -531,7 +559,7 @@ section. It exists because that node had only two roads in, and both
 read the far side — a far account of kind `mortgage`, or `far_class`,
 which only the built-in tier may write. A servicer whose narrative is
 its own legal entity cannot go in a tracked built-in, so an instalment
-to one had no road at all and fell to `vehicles · Untracked accounts`.
+to one had no road at all and fell to `vehicles · Unpaired transfers`.
 `debt_repayment` stays the value for every other untracked lender: a
 mortgage is split into interest and principal and a car loan is not.
 A servicer with no balance series in gold has no principal to
@@ -544,7 +572,7 @@ deposit, a notice account. The bank books every movement of one on the
 account that FUNDS it and never lists the product beside it, so the
 collector has no account to collect and the move reaches the resolution
 with a single leg. Nothing can pair it, and drawn by the far-account
-test it fell to `vehicles · Untracked accounts` — the node for a
+test it fell to `vehicles · Unpaired transfers` — the node for a
 destination nothing identifies, where this one is identified on every
 row.
 
@@ -557,7 +585,7 @@ family, so both legs carry it.
 Two things it deliberately does not change. The move stays a **line**:
 the money left the measured pool, so the statement has to say so, and
 drawing it as internal netting would make the statement stop tying to
-the balances it is drawn from. `deposits` is `untracked` made specific,
+the balances it is drawn from. `deposits` is `unpaired` made specific,
 not made invisible. And the **interest** a deposit pays is untouched —
 it is income, it arrives on its own row, and it is the one movement of
 a deposit that is not a transfer.
@@ -988,9 +1016,9 @@ it is wrong in a way that reads like a finding:
   household and the pool is **every account**, vehicles included;
 - no enrichment row carries a far account, so the far-account ladder
   (§4) falls to its last arm and **every matched own-account move**
-  resolves to `vehicles · Untracked accounts`.
+  resolves to `vehicles · Unpaired transfers`.
 
-The dashboard then shows one enormous `Untracked accounts` node that
+The dashboard then shows one enormous `Unpaired transfers` node that
 looks like a data problem and is not. `wealthdb load -a` ends the
 state, and the load that does prints a line saying so — once, because
 after it the counters alone tell the story.
@@ -1007,9 +1035,9 @@ each naming a way the statement can be quietly wrong:
   actions, unmatched transfers, unpaired card payments and the
   catch-alls;
 - **no tax wrapper** on pooled accounts — the boundary's coverage gap;
-- **no far account** — rule-placed moves landing in `Untracked
-  accounts`, which are also the ones collecting that account would
-  resolve.
+- **no far account** — rule-placed moves landing in `Unpaired
+  transfers · No far account`, which are also the ones collecting or
+  declaring that account would resolve.
 
 ---
 

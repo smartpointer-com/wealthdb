@@ -151,9 +151,21 @@ var spendingFamily = family{
 type familyInput struct {
 	include, exclude map[string][]string
 	rules            []Rule
-	pins             []Pin
-	kinds            map[string]string
-	matched          map[txKey]gold.TransferLeg
+	// farRules are the OTHER family's rules that name a far account,
+	// handed to the family that owns the far columns: an inbound leg
+	// an income rule places to a declared account is that family's
+	// verdict, but where it came from is written on the spending
+	// overlay, which is the one overlay a far account has a column on.
+	// Empty for the family without far columns.
+	farRules []Rule
+	// otherPins are the other family's pins, for the same reason: a row
+	// that family pinned is that family's whole answer, and a far
+	// account written beside it would name a move the pin says is
+	// something else.
+	otherPins []Pin
+	pins      []Pin
+	kinds     map[string]string
+	matched   map[txKey]gold.TransferLeg
 	// stated is the far account the SOURCE named, for the rows the
 	// matcher could not pair. Read once for both families, as `matched`
 	// is and for the same reason.

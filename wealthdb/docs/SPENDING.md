@@ -868,6 +868,16 @@ same thing again), while a generic word wants both.
 An inverted range is a config error rather than a rule that silently
 never fires — a scope that can admit nothing is a typo every time.
 
+**Naming the far side.** A rule placing `internal_transfer` may carry
+`far`, the id of a `declared_accounts` entry: the holder's own account
+at an institution the product does not collect, declared with the
+kind and wrapper it would carry if it were. The row's far columns then
+hold the declaration, and the cash flow statement places the move by
+that wrapper instead of drawing it as a move to a destination nothing
+identifies (CASHFLOW.md §4). `far` is refused beside any other
+category — only an own-account move has a far side — and where it
+names no declaration.
+
 It exists for three populations neither the matcher nor the model can
 ever reach. One is own-money movement whose receiving side is booked
 nowhere in gold: a wire to the holder's own account at a bank the

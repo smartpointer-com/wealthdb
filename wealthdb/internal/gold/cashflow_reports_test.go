@@ -1087,4 +1087,3 @@ func TestMigration0105DDLIsRerunnable(t *testing.T) {
 		t.Fatalf("the replayed coverage report: %v", err)
 	}
 }
-

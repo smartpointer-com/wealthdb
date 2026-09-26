@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
@@ -109,11 +110,33 @@ load semantics.`)
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "load: warning: could not stamp FX priorities: %s\n", err.Error())
 	}
+	if err := syncDeclaredAccounts(ctx, db, cfg, "load", stdout); err != nil {
+		fmt.Fprintf(stderr, "load: %s\n", err.Error())
+		firstErr = errors.Join(firstErr, err)
+	}
 	if err := runEnrichmentPass(ctx, db, cfg, stdout); err != nil {
 		fmt.Fprintf(stderr, "load: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}
 	return firstErr
+}
+
+// syncDeclaredAccounts stamps the config's declared accounts into the
+// accounts dimension, after the per-source loads and before the
+// enrichment pass that reads them. It is an error rather than a
+// warning, like the pass itself: a rule naming a declaration the
+// dimension does not hold would place its rows onto a far account the
+// statement cannot resolve, which is the hole the declarations exist
+// to close.
+func syncDeclaredAccounts(ctx context.Context, db *sql.DB, cfg *config.Config, verb string, stdout io.Writer) error {
+	n, err := gold.SyncDeclaredAccounts(ctx, db, cfg.DeclaredAccountChanges(time.Now().Unix()))
+	if err != nil {
+		return fmt.Errorf("declared accounts: %w", err)
+	}
+	if n > 0 {
+		fmt.Fprintf(stdout, "%s: %d declared account(s) stamped\n", verb, n)
+	}
+	return nil
 }
 
 // runEnrichmentPass re-asserts every deterministic verdict in gold
@@ -243,17 +266,29 @@ func printCashflowSummary(stdout io.Writer, res spending.CashflowResult) {
 	// Said once, on the pass that ends the state, because the state
 	// itself is unreadable from the outside: with no boundary stamped
 	// and no far account written, every matched own-account move
-	// resolves to `vehicles · Untracked accounts` and the dashboard
+	// resolves to `vehicles · Unpaired transfers` and the dashboard
 	// shows one enormous node that looks exactly like a finding.
 	if res.FirstPass {
 		fmt.Fprintf(stdout, "cashflow: this was the FIRST pass to stamp the boundary — "+
-			"until now the statement drew every own-account move as `Untracked accounts`, "+
+			"until now the statement drew every own-account move as `Unpaired transfers`, "+
 			"and any cash flow report read before this run was wrong\n")
 	}
 	if res.PooledAccountsWithoutWrapper > 0 {
 		fmt.Fprintf(stdout, "cashflow: %d pooled account(s) have no tax wrapper — each reads as the household's, "+
 			"so a vehicle among them contributes no crossing at all\n",
 			res.PooledAccountsWithoutWrapper)
+	}
+	// A declaration is unfalsifiable by anything the product measures,
+	// so the load is where the count is printed, and the pooled half is
+	// the one that matters: those are the accounts a move to which
+	// draws nothing, on the holder's word alone.
+	if res.DeclaredAccounts > 0 {
+		fmt.Fprintf(stdout, "cashflow: %d declared account(s), %d inside the household pool",
+			res.DeclaredAccounts, res.DeclaredPooled)
+		if res.UnusedDeclarations > 0 {
+			fmt.Fprintf(stdout, "; %d named by no rule-placed row", res.UnusedDeclarations)
+		}
+		fmt.Fprintln(stdout)
 	}
 	if res.UnresolvedScopeAccounts > 0 {
 		fmt.Fprintf(stdout, "cashflow: %d account scope id(s) matched no account — "+
@@ -317,7 +352,7 @@ func compiledRules(compiled []config.CompiledSpendRule) []spending.Rule {
 	rules := make([]spending.Rule, 0, len(compiled))
 	for _, r := range compiled {
 		rules = append(rules, spending.Rule{
-			Match: r.Match, Category: r.Category, AssetClass: r.AssetClass,
+			Match: r.Match, Category: r.Category, AssetClass: r.AssetClass, Far: r.Far,
 			Scope: spending.RuleScope{
 				Source:    r.Scope.Source,
 				Portfolio: r.Scope.Portfolio,

@@ -163,6 +163,10 @@ func reloadFreshAndSwap(
 		if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 			fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
 		}
+		if err := syncDeclaredAccounts(ctx, db, cfg, "reload", stdout); err != nil {
+			fmt.Fprintf(stderr, "reload: %s\n", err.Error())
+			firstErr = errors.Join(firstErr, err)
+		}
 		// Carry the paid-for stores over from the outgoing file. A hard
 		// error: those verdicts were bought from a model and have no
 		// config backup to re-stamp them from. Both spending families
@@ -487,6 +491,10 @@ func reloadInPlace(
 	}
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
+	}
+	if err := syncDeclaredAccounts(ctx, db, cfg, "reload", stdout); err != nil {
+		fmt.Fprintf(stderr, "reload: %s\n", err.Error())
+		firstErr = errors.Join(firstErr, err)
 	}
 	if err := runEnrichmentPass(ctx, db, cfg, stdout); err != nil {
 		fmt.Fprintf(stderr, "reload: %s\n", err.Error())

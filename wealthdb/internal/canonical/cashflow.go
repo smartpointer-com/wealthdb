@@ -119,7 +119,7 @@ const (
 	ClassLoans    CashflowClass = "loans"
 
 	// The vehicle classes. The first four are the wrapper boundary's
-	// own (DefaultWrapperSide); `untracked` is where an own-account
+	// own (DefaultWrapperSide); `unpaired` is where an own-account
 	// move goes whose far account is outside the pool or unknown.
 	ClassRetirement CashflowClass = "retirement"
 	ClassEducation  CashflowClass = "education"
@@ -132,14 +132,20 @@ const (
 	// measured pool, so the move is a LINE and not internal netting —
 	// the pool's balance really fell and the statement has to say why.
 	//
-	// It is `untracked` made specific. Both are own-account moves whose
+	// It is `unpaired` made specific. Both are own-account moves whose
 	// far side the product does not hold; the difference is that the
-	// narrative names this one, so drawing it as `Untracked accounts`
+	// narrative names this one, so drawing it as `Unpaired transfers`
 	// throws away a fact the row states outright. Splitting it off is
-	// what lets the untracked node mean what it says: destinations
-	// nothing identifies.
-	ClassDeposits  CashflowClass = "deposits"
-	ClassUntracked CashflowClass = "untracked"
+	// what lets the unpaired node mean what it says.
+	ClassDeposits CashflowClass = "deposits"
+	// ClassUnpaired is the own-account move nothing placed: a rule or a
+	// pin said the money stayed the household's, and no far account —
+	// paired, stated or declared — says where. Under the closed world
+	// the statement assumes, such a row is a finding: a counter-leg gold
+	// should hold, or a declaration not yet written. Its group grain
+	// says which is missing — `unnamed`, no far account at all, or
+	// `out_of_pool`, a far account gold holds that the scope fenced out.
+	ClassUnpaired CashflowClass = "unpaired"
 
 	// ClassCash is the residual's one class, as it is its one node. It
 	// draws as `Cash savings`: the section is the other four summed and
@@ -165,7 +171,7 @@ var cashflowClassValues = []CashflowClass{
 	ClassInvestments, ClassElsewhere,
 	ClassMortgage, ClassLoans,
 	ClassRetirement, ClassEducation, ClassHealth, ClassTrusts,
-	ClassDeposits, ClassUntracked,
+	ClassDeposits, ClassUnpaired,
 	ClassCash,
 }
 
@@ -177,7 +183,7 @@ func CashflowClasses() []CashflowClass {
 
 // vehicleClassValues are the four pools a tax wrapper can name. The
 // stamped wrapper table's `class` column holds one of these or NULL,
-// and `untracked` is deliberately absent: no wrapper puts a crossing
+// and `unpaired` is deliberately absent: no wrapper puts a crossing
 // there, only the absence of a far account does.
 var vehicleClassValues = map[CashflowClass]struct{}{
 	ClassRetirement: {}, ClassEducation: {}, ClassHealth: {}, ClassTrusts: {},
@@ -358,7 +364,7 @@ var WrapperDestinations = []string{
 
 // ParseWrapperDestination turns a configured destination into the
 // (side, class) pair gold stores, reporting whether the word names one
-// at all. `untracked` is refused with every other unknown word: it is
+// at all. `unpaired` is refused with every other unknown word: it is
 // where a crossing goes when there is no far account to read a wrapper
 // off, so a wrapper cannot be moved to it.
 func ParseWrapperDestination(s string) (WrapperSide, CashflowClass, bool) {
@@ -392,7 +398,7 @@ func ParseWrapperDestination(s string) (WrapperSide, CashflowClass, bool) {
 // the verdict is the only thing that can name it.
 //
 // Reported per class rather than as a lookup table so that a class
-// without a delta — `untracked`, which no rule can place — is a
+// without a delta — `unpaired`, which no rule can place — is a
 // compile-time-visible absence rather than a missing map entry.
 func VehicleTransferDetailed(c CashflowClass) (string, bool) {
 	switch c {

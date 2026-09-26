@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 )
 
@@ -285,7 +286,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 
 	if err := enrichFamily(ctx, tx, spendingFamily, familyInput{
 		include: opts.Include, exclude: opts.Exclude,
-		rules: opts.Rules, pins: opts.Pins,
+		rules: opts.Rules, farRules: rulesWithFar(opts.Income.Rules), otherPins: opts.Income.Pins, pins: opts.Pins,
 		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
 	}, &res.FamilyResult); err != nil {
 		return nil, err
@@ -309,6 +310,9 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	// columns live: the boundary block is where a reader looks to learn
 	// whether the pass knows enough to resolve an own-account move.
 	res.Cashflow.StatedFarAccounts = res.FamilyResult.StatedFarAccounts
+	if err := countDeclaredAccounts(ctx, tx, &res.Cashflow); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("spending: commit: %w", err)
@@ -346,6 +350,13 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 		return err
 	}
 	out.UnmatchedPins = unmatched
+	// The other family's pins are resolved only to be stepped around;
+	// what they say is that family's to write, and a pin describing
+	// nothing is that family's to count.
+	otherPinned, _, err := resolvePins(ctx, tx, fam.name, in.otherPins)
+	if err != nil {
+		return err
+	}
 
 	oldSignatures, err := loadExistingSignatures(ctx, tx, fam)
 	if err != nil {
@@ -360,7 +371,7 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 		return err
 	}
 
-	rows := assignCategories(fam, population, in.pool, in.matched, in.stated, in.kinds, in.rules, pinned, out)
+	rows := assignCategories(fam, population, in.pool, in.matched, in.stated, in.kinds, in.rules, in.farRules, pinned, otherPinned, out)
 	if err := insertEnrichment(ctx, tx, fam, rows, in.now); err != nil {
 		return err
 	}
@@ -781,12 +792,20 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName) 
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	// The scope facts ride along with the narrative: a far rule is
+	// tested against a pool row exactly as against a population row
+	// (farRuleReaches), and a rule scoped to an account, a portfolio or
+	// a date range would otherwise admit nothing it reaches here.
 	rows, err := tx.QueryContext(ctx, `
-        SELECT silver_source_id, account_external_id, transaction_external_id,
-               occurred_at, currency, CAST(net_amount AS DOUBLE),
-               COALESCE(counterparty, ''), COALESCE(description, '')
-          FROM spend_matcher_pool(?, ?)
-         ORDER BY silver_source_id, transaction_external_id`, int64(0), gold.MaxEpoch)
+        SELECT p.silver_source_id, p.account_external_id, p.transaction_external_id,
+               p.occurred_at, p.currency, CAST(p.net_amount AS DOUBLE),
+               COALESCE(p.counterparty, ''), COALESCE(p.description, ''),
+               COALESCE(a.portfolio_external_id, '')
+          FROM spend_matcher_pool(?, ?) p
+          LEFT JOIN accounts a
+            ON a.silver_source_id = p.silver_source_id
+           AND a.account_external_id = p.account_external_id
+         ORDER BY p.silver_source_id, p.transaction_external_id`, int64(0), gold.MaxEpoch)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("spending: read matcher pool: %w", err)
 	}
@@ -802,9 +821,10 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName) 
 			row        candidate
 		)
 		if err := rows.Scan(&leg.Group, &leg.Owner, &leg.ID, &occurredAt,
-			&leg.Ccy, &amount, &row.counterparty, &row.description); err != nil {
+			&leg.Ccy, &amount, &row.counterparty, &row.description, &row.portfolio); err != nil {
 			return nil, nil, 0, fmt.Errorf("spending: scan matcher pool: %w", err)
 		}
+		row.account, row.occurredAt = leg.Owner, occurredAt
 		if !amount.Valid {
 			// A leg with no amount cannot be oriented, so it can neither
 			// fund nor be funded.
@@ -1022,10 +1042,35 @@ type enrichmentRow struct {
 //     about one transaction, written for exactly the row where every
 //     tier below has nothing to go on — or got it wrong.
 //
+// farRuleReaches reports whether one of the far-naming rules fires on
+// a row, so the loop that emits such rows outside the population emits
+// only those: every other pool row is some other tier's, or nobody's.
+func farRuleReaches(farRules []Rule, r candidate) bool {
+	_, ok := ConfigRuleCategory(farRules, RuleRow{
+		Counterparty: r.counterparty, Description: r.description,
+		ProviderCategory: r.providerCategory,
+		Source:           r.key.source, Portfolio: r.portfolio,
+		Account: r.account, OccurredAt: r.occurredAt,
+	})
+	return ok
+}
+
+// rulesWithFar is the subset of a rule list that names a far account.
+func rulesWithFar(rules []Rule) []Rule {
+	var out []Rule
+	for _, r := range rules {
+		if r.Far != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // Rows outside a family's population get a verdict only when the
-// matcher paired them or a pin named them; nothing else has any
-// business categorising a row the family does not chart. On the income
-// side only the pin route exists, the matcher's legs being the spending
+// matcher paired them, a pin named them, or the other family's rule
+// said where they went; nothing else has any business categorising a
+// row the family does not chart. On the income side only the pin route
+// exists, the matcher's legs and the far accounts being the spending
 // pass's to emit.
 func assignCategories(
 	fam family,
@@ -1034,8 +1079,8 @@ func assignCategories(
 	matched map[txKey]gold.TransferLeg,
 	stated map[txKey]farAccount,
 	kinds map[string]string,
-	rules []Rule,
-	pinned map[txKey]pinnedRow,
+	rules, farRules []Rule,
+	pinned, otherPinned map[txKey]pinnedRow,
 	counts *FamilyResult,
 ) []enrichmentRow {
 	out := make([]enrichmentRow, 0, len(population)+len(matched)+len(pinned))
@@ -1089,7 +1134,21 @@ func assignCategories(
 			}); ok {
 				row.detailed, row.provenance = placement.Category, ProvenanceRule
 				row.statedAssetClass = placement.AssetClass
+				if placement.Far != "" && len(fam.farCols) > 0 {
+					row.farSource, row.farAccount = canonical.DeclaredSourceID, placement.Far
+				}
 			}
+		} else if placement, ok := ConfigRuleCategory(farRules, RuleRow{
+			Counterparty: r.counterparty, Description: r.description,
+			ProviderCategory: r.providerCategory,
+			Source:           r.key.source, Portfolio: r.portfolio,
+			Account: r.account, OccurredAt: r.occurredAt,
+		}); ok {
+			// The other family's word on a row outside this population:
+			// the verdict is that family's to place on its own overlay,
+			// and only where the money went is written here.
+			row.detailed, row.provenance = placement.Category, ProvenanceRule
+			row.farSource, row.farAccount = canonical.DeclaredSourceID, placement.Far
 		}
 		// A tier above the rule clears the label and the far class with
 		// the verdict it replaces. The label says which issuer a card
@@ -1168,6 +1227,24 @@ func assignCategories(
 		for _, key := range sortedTxKeys(matched) {
 			if r, ok := pool[key]; ok {
 				emit(r, false)
+			}
+		}
+		// The legs the other family's far-naming rules reach — an
+		// inbound move from a declared account — for the same reason:
+		// the far account has a column on this overlay alone. A row
+		// either family pinned is left alone: this family's pin loop
+		// writes its own, and the other family's pin is the whole answer
+		// for a row a rule would otherwise call an own-account move.
+		if len(farRules) > 0 {
+			for _, key := range sortedTxKeys(pool) {
+				_, mine := pinned[key]
+				_, theirs := otherPinned[key]
+				if mine || theirs {
+					continue
+				}
+				if r := pool[key]; farRuleReaches(farRules, r) {
+					emit(r, false)
+				}
 			}
 		}
 	}

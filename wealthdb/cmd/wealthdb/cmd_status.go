@@ -304,7 +304,7 @@ func printStatusVerbose(stdout io.Writer, st *gold.SourceStatus) {
 		st.CashflowExcludedByKindCount)
 	fmt.Fprintf(stdout, "    no tax wrapper:          %d pooled accounts (each reads as the household's)\n",
 		st.CashflowPooledNoWrapperCount)
-	fmt.Fprintf(stdout, "    no far account:          %d own-account moves (in 'Untracked accounts')\n",
+	fmt.Fprintf(stdout, "    no far account:          %d own-account moves (in 'Unpaired transfers')\n",
 		st.CashflowNoFarAccountCount)
 	if len(st.PerKindActivity) > 0 {
 		fmt.Fprintln(stdout, "  per account kind (latest snapshot / latest transaction):")
