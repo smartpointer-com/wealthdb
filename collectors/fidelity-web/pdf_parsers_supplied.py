@@ -559,7 +559,6 @@ def _parse_core_account_row(line, all_lines, idx, signature=None):
     if len(left_tokens) < 4 or len(right_tokens) < 1:
         return None, 0
     qty_str, price_str, mv_str = left_tokens[-3], left_tokens[-2], left_tokens[-1]
-    eai_str = right_tokens[0]
     desc_tokens = left_tokens[: len(left_tokens) - 3]
     desc = " ".join(desc_tokens).strip()
     ticker = _extract_ticker(desc)

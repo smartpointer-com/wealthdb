@@ -241,7 +241,7 @@ def group_ocr_lines(runs, line_tolerance=OCR_LINE_TOLERANCE) -> list[str]:
 # Caching the factory, not the module, keeps each engine's import
 # inside the body it belongs to: nothing is imported until a document
 # actually needs OCR.
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _vision_reader():
     """Apple's Vision framework, through ocrmac."""
     from ocrmac.ocrmac import text_from_image
@@ -257,7 +257,7 @@ def _vision_reader():
     return read
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _rapidocr_reader():
     """RapidOCR (PaddleOCR's models on onnxruntime). Returns a
     four-point polygon per run in PIXELS from the top left, so the
@@ -276,7 +276,7 @@ def _rapidocr_reader():
         return [
             run for run in (
                 _run_from_polygon(text, polygon, page_width, page_height)
-                for text, polygon in zip(result.txts, result.boxes))
+                for text, polygon in zip(result.txts, result.boxes, strict=False))
             if run is not None
         ]
     return read

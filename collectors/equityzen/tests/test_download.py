@@ -283,7 +283,7 @@ def test_unknown_type_is_fetch_verified(tmp_path):
 def test_unknown_type_changed_keeps_fresh(tmp_path):
     # An unclassified type whose bytes differ from the prior keeps the fresh
     # bytes — never links to a stale copy.
-    prior = _prior_run(tmp_path, OTHER_SLUG, BODY)
+    _prior_run(tmp_path, OTHER_SLUG, BODY)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
     skip = docdedup.SkipSet.derive(tmp_path, download.extract_equityzen,

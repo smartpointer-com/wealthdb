@@ -125,7 +125,7 @@ def _sql_str_list(values: tuple[str, ...]) -> str:
 # The trailing bound `?` parameter is the snapshot_at stamped on
 # newly-written rows. The two `{…}` slots are filled once, at import,
 # from BUY_TYPES / SELL_TYPES — the SQL body carries no other braces.
-REPLAY_SQL_TEMPLATE = """
+REPLAY_SQL_TEMPLATE = f"""
 WITH deltas AS (
     SELECT
         portfolio_external_id,
@@ -136,7 +136,7 @@ WITH deltas AS (
     FROM transactions
     WHERE buy_amount IS NOT NULL
       AND buy_currency IS NOT NULL
-      AND type IN ({buy_types})
+      AND type IN ({_sql_str_list(BUY_TYPES)})
     UNION ALL
     SELECT
         portfolio_external_id,
@@ -147,7 +147,7 @@ WITH deltas AS (
     FROM transactions
     WHERE sell_amount IS NOT NULL
       AND sell_currency IS NOT NULL
-      AND type IN ({sell_types})
+      AND type IN ({_sql_str_list(SELL_TYPES)})
 ),
 daily_deltas AS (
     SELECT
@@ -172,10 +172,7 @@ SELECT
     ) AS amount,
     ? AS snapshot_at
 FROM daily_deltas
-""".format(
-    buy_types=_sql_str_list(BUY_TYPES),
-    sell_types=_sql_str_list(SELL_TYPES),
-)
+"""
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -395,13 +392,14 @@ def ingest_transactions(
         has_trade_id = "Trade ID" in cols
         has_tx_id = "Tx-ID" in cols
         tx_id_expr = (
-            f"COALESCE(NULLIF(\"Trade ID\", ''), "
+            "COALESCE(NULLIF(\"Trade ID\", ''), "
             if has_trade_id else "COALESCE("
         )
         tx_id_expr += (
-            f"NULLIF(\"Tx-ID\", ''), 'synth')"
+            "NULLIF(\"Tx-ID\", ''), 'synth')"
             if has_tx_id else "'synth')"
         )
+        lpn_expr = "NULLIF(\"LPN\", '')" if "LPN" in cols else "NULL"
 
         n_before = conn.execute(
             "SELECT COUNT(*) FROM transactions").fetchone()[0]
@@ -433,7 +431,7 @@ def ingest_transactions(
                 TRY_CAST(NULLIF("Fee", '') AS DECIMAL(38, 18)),
                 NULLIF("Cur._2", ''),
                 NULLIF("Comment", ''),
-                {("NULLIF(\"LPN\", '')" if "LPN" in cols else "NULL")} AS lpn,
+                {lpn_expr} AS lpn,
                 NULL AS payload
             FROM raw
         """)
@@ -1043,7 +1041,7 @@ def backfill_first_day_gaps(
 
     Returns number of rows backfilled."""
     fetched_at = int(time.time())
-    result = conn.execute(f"""
+    conn.execute(f"""
         WITH gaps AS (
             SELECT DISTINCT
                 pd.instrument_external_id AS instr,

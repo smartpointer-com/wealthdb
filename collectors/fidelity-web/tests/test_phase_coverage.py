@@ -22,6 +22,7 @@ Three separable guarantees, one per group below:
 
 from __future__ import annotations
 
+import itertools
 import sys
 from datetime import date
 from pathlib import Path
@@ -143,7 +144,7 @@ def test_windows_are_never_wider_than_the_pages_own_default():
     for start, end in windows:
         assert (end - start).days + 1 <= download.MAX_ACTIVITY_WINDOW_DAYS
     # contiguous, no overlap and no hole
-    for (_, prev_end), (next_start, _) in zip(windows, windows[1:]):
+    for (_, prev_end), (next_start, _) in itertools.pairwise(windows):
         assert (next_start - prev_end).days == 1
 
 

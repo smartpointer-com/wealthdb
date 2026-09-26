@@ -312,7 +312,7 @@ def _split_segments(lines: list[str]) -> list[list[str]]:
              if "*start*global product" in ln.lower()]
     if not marks:
         return [lines]
-    return [lines[a:b] for a, b in zip(marks, marks[1:] + [len(lines)])]
+    return [lines[a:b] for a, b in zip(marks, marks[1:] + [len(lines)], strict=True)]
 
 
 def _parse_segment(lines: list[str], start: date | None,

@@ -595,7 +595,7 @@ def secret_redactor(*secrets: str, placeholder: str = REDACTED):
     return redact
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def env_redactor(user_env: str, pass_env: str):
     """The run's credential mask, built once from the environment.
 

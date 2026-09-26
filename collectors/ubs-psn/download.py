@@ -230,7 +230,7 @@ def connect(args: argparse.Namespace) -> paramiko.SSHClient:
     try:
         pkey = paramiko.RSAKey.from_private_key_file(str(args.key))
     except paramiko.SSHException as e:
-        raise SystemExit(f"Could not load RSA private key {args.key}: {e}")
+        raise SystemExit(f"Could not load RSA private key {args.key}: {e}") from e
 
     allowed = load_trusted_fingerprints()
     client = paramiko.SSHClient()
@@ -322,7 +322,7 @@ def validate_zip(path: Path) -> None:
     except zipfile.BadZipFile as e:
         raise SystemExit(
             f"Corrupt zip fetched: {path} ({e}). The run dir is kept; "
-            f"re-fetch the batch with --recover.")
+            f"re-fetch the batch with --recover.") from e
     if bad is not None:
         raise SystemExit(
             f"Corrupt zip fetched: {path} (CRC mismatch in {bad!r}). The "

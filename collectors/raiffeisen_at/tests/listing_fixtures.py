@@ -177,7 +177,7 @@ def render(postings: list[Posting], *, opening: int = 100_000,
                   f"             Summe Haben               {money(credits)}", ""]
         pages.append(lines)
     if page_numbers:
-        for page, number in zip(pages, page_numbers):
+        for page, number in zip(pages, page_numbers, strict=True):
             page[0] = page[0].rsplit("Seite", 1)[0] + f"Seite {number}"
     return "\f".join("\n".join(page) for page in pages) + "\f"
 

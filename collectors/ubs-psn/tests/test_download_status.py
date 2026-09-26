@@ -98,7 +98,7 @@ def _fake_client(files=None, on_get=None):
         try:
             d = files[remote]
         except KeyError:
-            raise FileNotFoundError(remote)
+            raise FileNotFoundError(remote) from None
         return [_FakeAttr(name, _entry_size(v)) for name, v in d.items()]
 
     def _get(remote, local):
@@ -106,7 +106,7 @@ def _fake_client(files=None, on_get=None):
         try:
             v = files[rdir][name]
         except KeyError:
-            raise FileNotFoundError(remote)
+            raise FileNotFoundError(remote) from None
         if on_get is not None:
             on_get(remote, Path(local))
         Path(local).write_bytes(_entry_bytes(v))

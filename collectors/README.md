@@ -576,7 +576,8 @@ the `.venv` for host ones. At minimum they cover **bronze → silver**: a
 [CLAUDE.md](../CLAUDE.md) §4) and assertions that `load.py` projects the
 expected silver rows; pure-stdlib `unittest` works too. `make test` /
 `make test-collectors` runs the whole suite, and tests must pass before
-any commit.
+any commit. `make lint` runs ruff over every collector with the rules in
+the root `ruff.toml`; it has to be clean too.
 
 ### The gold adapter
 

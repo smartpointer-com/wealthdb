@@ -13,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import login  # noqa: E402
-import elba_client as elba  # noqa: E402
 
 
 # ============================================================

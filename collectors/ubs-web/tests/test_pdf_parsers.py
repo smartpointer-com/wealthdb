@@ -444,7 +444,7 @@ class TestStatementOfAssetsBodyMetadata:
     def test_all_three_anchors_or_none(self, drop):
         """Half an identification is worse than none: it would file a
         document under a date or a portfolio it never stated."""
-        text = "\n".join(l for l in self.HEADER.splitlines() if l != drop)
+        text = "\n".join(ln for ln in self.HEADER.splitlines() if ln != drop)
         assert statement_of_assets_body_meta(text) is None
 
     def test_a_document_of_another_kind_is_declined(self):
@@ -1014,7 +1014,7 @@ _ADV_TWO_COLUMN_TEXT = (
 _ADV_SAFE_BOX_TEXT = (
     "aUBS UBS Switzerland AG\n"
     "UBS safe deposit box\n"
-    f"Herr Box no. 000-00-000\n"
+    "Herr Box no. 000-00-000\n"
     "A. Example u/o Client no. 000-000000\n"
     "B. Example\n"
     "Account no. 000-000000.001\n"

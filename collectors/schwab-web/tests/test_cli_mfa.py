@@ -82,14 +82,14 @@ def _wire(monkeypatch, outcomes, submit_results=None,
 
     submits_it = iter(submit_results or ["clicked"] * 4)
 
-    def submit_mfa(p, l, c):
+    def submit_mfa(_page, _locator, c):
         calls["submitted_codes"].append(c)
         return next(submits_it)
 
     monkeypatch.setattr(login, "_submit_mfa_code", submit_mfa)
     outcomes_it = iter(outcomes)
     monkeypatch.setattr(login, "_verify_mfa_outcome",
-                        lambda p, l: next(outcomes_it))
+                        lambda _page, _code_input: next(outcomes_it))
     monkeypatch.setattr(login, "_visible_error_text_anywhere", lambda p: "")
     monkeypatch.setattr(login.time, "sleep", lambda s: None)
     return calls

@@ -209,9 +209,9 @@ def test_ids_ignore_the_statement_print_day_and_count_identical_postings():
     later = _parse([Posting(D(2024, 1, 2), -1_000, druck=D(2024, 1, 31)),
                     Posting(D(2024, 1, 2), -1_000, druck=D(2024, 1, 31))]).postings
     assert lp.occurrences(early) == [0, 1]
-    ids = [lp.txn_id("X", p, n) for p, n in zip(early, lp.occurrences(early))]
+    ids = [lp.txn_id("X", p, n) for p, n in zip(early, lp.occurrences(early), strict=True)]
     assert len(set(ids)) == 2 and all(i.startswith("doc_") for i in ids)
-    assert ids == [lp.txn_id("X", p, n) for p, n in zip(later, lp.occurrences(later))]
+    assert ids == [lp.txn_id("X", p, n) for p, n in zip(later, lp.occurrences(later), strict=True)]
 
 
 def test_ids_ignore_the_parsed_text():

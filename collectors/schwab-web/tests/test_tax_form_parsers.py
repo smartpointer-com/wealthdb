@@ -97,7 +97,7 @@ class TestParse1099bXml:
     def setup_method(self):
         self.result = tf.parse_1099b_xml(_make_1099b_xml("2021"))
         self.lots = self.result["lots"]
-        self.by_name = {l["security_name"]: l for l in self.lots}
+        self.by_name = {lot["security_name"]: lot for lot in self.lots}
 
     def test_tax_year_and_lot_count(self):
         assert self.result["tax_year"] == 2021
@@ -219,7 +219,7 @@ class TestParse1099bCsv:
     def setup_method(self):
         self.result = tf.parse_1099b_csv(_make_1099b_csv())
         self.lots = self.result["lots"]
-        self.by_name = {l["security_name"]: l for l in self.lots}
+        self.by_name = {lot["security_name"]: lot for lot in self.lots}
 
     def test_finds_b_section_only(self):
         # The DIV section above must not leak into the lot list.
@@ -267,9 +267,9 @@ class TestXmlCsvAgree:
         xml = tf.parse_1099b_xml(_make_1099b_xml("2021"))
         csv = tf.parse_1099b_csv(_make_1099b_csv())
         assert xml["tax_year"] == csv["tax_year"]
-        x = {l["security_name"]: l for l in xml["lots"]}
+        x = {lot["security_name"]: lot for lot in xml["lots"]}
         for name in ("SYNTH ALPHA CORP", "SYNTH BETA INC", "SYNTH GAMMA LLC"):
-            c = next(l for l in csv["lots"] if l["security_name"] == name)
+            c = next(lot for lot in csv["lots"] if lot["security_name"] == name)
             for field in ("date_sold", "acquired_date", "quantity",
                           "proceeds", "cost_basis", "term", "noncovered"):
                 assert c[field] == x[name][field], (name, field)

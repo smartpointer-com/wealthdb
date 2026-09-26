@@ -79,6 +79,7 @@ import argparse
 import csv as csvmod
 import hashlib
 import io
+import itertools
 import json
 import logging
 import re
@@ -1692,7 +1693,7 @@ def _derive_card_account_balances(conn, account_external_id: str,
     anchors = [a for a in _card_balance_anchors(conn, account_external_id)
                if a[0] >= seam]
     landed = discarded = 0
-    for (lo, opening), (hi, closing) in zip(anchors, anchors[1:]):
+    for (lo, opening), (hi, closing) in itertools.pairwise(anchors):
         rows, end = _roll_forward(
             _posted_ledger(conn, account_external_id, lo, hi), opening)
         if end != _cents(closing):

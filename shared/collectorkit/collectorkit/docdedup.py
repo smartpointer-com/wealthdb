@@ -61,7 +61,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 from collectorkit import bronze, prune
 
@@ -242,7 +242,7 @@ class SkipSet:
     first, matching dedup's oldest-sorts-first rule.
     """
 
-    def __init__(self, index: dict[tuple, "deque[Path]"]):
+    def __init__(self, index: dict[tuple, deque[Path]]):
         self._index = index
 
     @classmethod
@@ -250,7 +250,7 @@ class SkipSet:
                extract: Callable[[Path, dict | None], Iterable[DocRef]],
                *, freshness_days: float | None = 35,
                now: date | None = None,
-               exclude_run: Path | None = None) -> "SkipSet":
+               exclude_run: Path | None = None) -> SkipSet:
         """Build the skip index from the COMPLETE prior runs under
         ``bronze_root``.
 
@@ -282,7 +282,7 @@ class SkipSet:
         fresh_delta = (timedelta(days=freshness_days)
                        if freshness_days is not None else None)
 
-        index: dict[tuple, "deque[Path]"] = {}
+        index: dict[tuple, deque[Path]] = {}
         for run_dir in bronze.iter_run_dirs(bronze_root):
             if exclude is not None and run_dir.resolve() == exclude:
                 continue

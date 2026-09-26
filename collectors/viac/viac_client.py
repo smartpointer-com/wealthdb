@@ -101,7 +101,7 @@ class ViacClient:
         self.csrf_cookie_name = csrf_cookie_name
         self.csrf_header_name = csrf_header_name
 
-    def __enter__(self) -> "ViacClient":
+    def __enter__(self) -> ViacClient:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -175,7 +175,7 @@ class ViacClient:
         session.save_state(path, state)
 
     @classmethod
-    def from_state(cls, path: Path) -> "ViacClient":
+    def from_state(cls, path: Path) -> ViacClient:
         state = json.loads(path.read_text())
         jar = httpx.Cookies()
         for c in state["cookies"]:

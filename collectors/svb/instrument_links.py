@@ -187,7 +187,7 @@ def link(statements) -> Links:
     windows = []
     for sts in by_account.values():
         sts.sort(key=lambda s: (s.end, s.start or s.end))
-        for prev, st in zip([None] + sts[:-1], sts):
+        for prev, st in zip([None] + sts[:-1], sts, strict=True):
             opening = _opening(prev, st)
             _link_window(st, opening, links)
             windows.append((st, opening))

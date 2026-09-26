@@ -209,7 +209,7 @@ def probe_authenticated(context) -> bool:
     return False
 
 
-def _authed_cheap(watch: "_LogonWatch") -> bool:
+def _authed_cheap(watch: _LogonWatch) -> bool:
     """The event-free, no-network half of the signed-in signal: a captured
     logon response said authenticated. Checked every poll tick; the REST
     probe is throttled and gated separately."""
@@ -346,7 +346,7 @@ def enter_otp(page, code: str) -> bool:
                 boxes[0].click(timeout=4000)
                 boxes[0].fill(code, timeout=3000)
             else:
-                for box, digit in zip(boxes, code):
+                for box, digit in zip(boxes, code, strict=False):
                     box.click(timeout=4000)
                     box.fill(digit, timeout=3000)
         except Exception as exc:
@@ -399,7 +399,7 @@ def register_device(page, timeout_s: float = 20) -> None:
                 "this sign-in.")
 
 
-def _drive_challenge_cli(page, watch: "_LogonWatch", args) -> bool:
+def _drive_challenge_cli(page, watch: _LogonWatch, args) -> bool:
     """Drive the passcode challenge from the terminal: pick the delivery
     option (read from the on-screen buttons), send the code, read it from
     stdin, submit it, and register the device. Returns True once the code is
@@ -467,7 +467,7 @@ def _drive_challenge_cli(page, watch: "_LogonWatch", args) -> bool:
 
 # --- the shared authenticate() -------------------------------------------
 
-def authenticate(context, page, watch: "_LogonWatch", *, two_factor: str,
+def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
                  mfa_timeout: int = 600, args=None) -> bool:
     """Take a submitted login to an authenticated session.
 

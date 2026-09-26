@@ -287,7 +287,7 @@ def test_unknown_type_is_fetch_verified(tmp_path):
 
 
 def test_unknown_type_changed_keeps_fresh(tmp_path):
-    prior = _prior_run(tmp_path, OTHER_ID, BODY)
+    _prior_run(tmp_path, OTHER_ID, BODY)
     run = _new_run(tmp_path)
     status, _ = _process(run, _skip(tmp_path, run), OTHER_ID,
                          "Some brand-new type", BODY2)

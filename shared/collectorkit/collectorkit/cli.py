@@ -327,7 +327,7 @@ def read_choice(prompt: str, n: int, *, input_fn=input, output_fn=print,
         try:
             raw = input_fn(prompt).strip()
         except EOFError:
-            raise ChallengeError("no input on stdin for the 2FA prompt")
+            raise ChallengeError("no input on stdin for the 2FA prompt") from None
         if raw.isdigit() and 1 <= int(raw) <= n:
             return int(raw) - 1
         output_fn(f"  Please enter a number between 1 and {n}.")
@@ -367,7 +367,7 @@ def read_code(*, prompt: str = "Code: ", digits: int | None = None,
         try:
             raw = input_fn(prompt)
         except EOFError:
-            raise ChallengeError("no input on stdin for the one-time code")
+            raise ChallengeError("no input on stdin for the one-time code") from None
         code = raw.replace(" ", "").replace("-", "").strip()
         if not code.isdigit():
             output_fn("  The code is all digits — try again.")

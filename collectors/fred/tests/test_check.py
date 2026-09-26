@@ -62,7 +62,7 @@ def test_rejected_key_returns_nonzero(monkeypatch):
     # case a presence-only check would miss.
     for code in (400, 403):
         monkeypatch.setattr(download, "fetch_observations",
-                            lambda *a, **k: (_ for _ in ()).throw(_http_error(code)))
+                            lambda *a, code=code, **k: (_ for _ in ()).throw(_http_error(code)))
         assert download._check_credential("https://example.invalid", "BAD") == 1
 
 

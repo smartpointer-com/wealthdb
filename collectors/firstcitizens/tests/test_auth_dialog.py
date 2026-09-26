@@ -29,7 +29,7 @@ def _io(inputs):
         try:
             return next(it)
         except StopIteration:
-            raise EOFError
+            raise EOFError from None
     return input_fn, out
 
 

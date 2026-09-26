@@ -404,7 +404,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path, force: bool) -> dict:
         if force:
             conn.execute("DELETE FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,))
 
-        for did, (stage, node, body) in nodes.items():
+        for did, (_stage, node, _body) in nodes.items():
             conn.execute(
                 "INSERT OR REPLACE INTO offerings(deal_external_id, kind, "
                 "asset_class, company_external_id, company_name, "

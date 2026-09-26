@@ -2921,6 +2921,11 @@ gold under its own `t.TempDir()` and talks to the command through
 stay serial on purpose — a test that sets an environment variable, and
 one that times a persist into a reader's wall-clock window.
 
+`make lint` runs `gofmt -l` and `go vet ./...` through `./wealthdb-go`
+on the same toolchain (gofmt as `go run cmd/gofmt`, the wrapper's
+entrypoint being `go`). It reads the mounted source, so it needs the
+image to exist but never rebuilds it.
+
 #### Wrapper shape
 
 `./wealthdb-test` is a thin alias over `./wealthdb-go`, which owns the

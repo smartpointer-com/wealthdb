@@ -333,7 +333,7 @@ def _do_login(page, username: str, password: str, totp_supplied: str | None,
             "The TOTP step never appeared after submitting credentials — "
             "EquityZen rejected the password, or a bot-challenge intervened. "
             "Check EQUITYZEN_PASSWORD in the env file."
-        )
+        ) from None
 
     code = _read_totp(totp_supplied)
     log.info("submitting the authenticator code")

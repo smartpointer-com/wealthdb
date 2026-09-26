@@ -89,9 +89,9 @@ import json
 import logging
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 from collectorkit import bronze, cli
 

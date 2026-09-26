@@ -383,7 +383,6 @@ def test_recompress_compresses_data_leaves_run_json(tmp_path):
     """The recompress sweep converts the six data artefacts to .json.zst
     inside a complete dump and leaves run.json byte-identical (it is
     excluded from the patterns), and silver reloads to the same rows."""
-    from collectorkit import compress
     from collectorkit import recompress as rc_engine
     import recompress as rc_mod  # the collector's thin wrapper
 

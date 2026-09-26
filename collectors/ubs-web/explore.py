@@ -183,10 +183,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     explore.add_args(
         p, url=ubs.LOGIN_ENTRY_URL, env_file=None, dom_snapshots=True,
-        env_help=("Bash-sourced env file supplying %s for the login-form "
-                  "pre-fill. Defaults to the ubs-web env file under "
-                  "/secrets, falling back to the bank-level one. Skipped "
-                  "silently when absent." % CONTRACT_ENV))
+        env_help=(f"Bash-sourced env file supplying {CONTRACT_ENV} for the "
+                  "login-form pre-fill. Defaults to the ubs-web env file "
+                  "under /secrets, falling back to the bank-level one. "
+                  "Skipped silently when absent."))
     p.add_argument(
         "--no-save-state", action="store_true",
         help=("Do not write the session back to --state-path on exit. The "

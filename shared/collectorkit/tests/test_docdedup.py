@@ -23,7 +23,6 @@ figures.
 from __future__ import annotations
 
 import json
-import os
 from datetime import date
 from pathlib import Path
 
@@ -226,10 +225,14 @@ def test_link_miss_calls_fetch(tmp_path):
 def test_is_pdf_reads_the_magic_number_not_the_extension(tmp_path):
     # What every adopter passes as `usable`. A url envelope and an error page
     # are both named .pdf and are neither.
-    real = tmp_path / "real.pdf"; real.write_bytes(b"%PDF-1.4 body")
-    envelope = tmp_path / "envelope.pdf"; envelope.write_bytes(b'{"url": "https://cdn/x"}')
-    html = tmp_path / "error.pdf"; html.write_bytes(b"<!DOCTYPE html><h1>404</h1>")
-    empty = tmp_path / "empty.pdf"; empty.write_bytes(b"")
+    real = tmp_path / "real.pdf"
+    real.write_bytes(b"%PDF-1.4 body")
+    envelope = tmp_path / "envelope.pdf"
+    envelope.write_bytes(b'{"url": "https://cdn/x"}')
+    html = tmp_path / "error.pdf"
+    html.write_bytes(b"<!DOCTYPE html><h1>404</h1>")
+    empty = tmp_path / "empty.pdf"
+    empty.write_bytes(b"")
     assert docdedup.is_pdf(real)
     assert not docdedup.is_pdf(envelope)
     assert not docdedup.is_pdf(html)

@@ -2,7 +2,6 @@
 first-existing-candidate resolver adopted by viac / schwab-web /
 fidelity-web. Synthetic fixtures only."""
 import os
-from pathlib import Path
 
 from collectorkit import envfile
 

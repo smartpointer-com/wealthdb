@@ -1058,7 +1058,7 @@ check("it sums one column per reporting currency",
 check("each column carries its own currency predicate, so no row filter is needed",
       all(a[1][0] == "sum-where"
           and a[1][2] == ["=", ["field", "currency", {"base-type": "type/Text"}], ccy]
-          for a, ccy in zip(AGGS, ("USD", "CHF", "EUR"))))
+          for a, ccy in zip(AGGS, ("USD", "CHF", "EUR"), strict=True)))
 check("the ranking is by the USD column (aggregation 0)",
       MERCH.get("order-by") == [["desc", ["aggregation", 0]]]
       and AGGS[0][2]["display-name"] == "USD")
@@ -1193,7 +1193,7 @@ for _n in ("Savings rate", "Savings rate (privacy)"):
     _q = _cf_sql.get(_n) or _cf_twin_sql.get(_n, "")
     check(f"'{_n}' sums the two operating halves signed",
           "THEN 1 ELSE -1 END" not in _q, _q[:240])
-    check(f"...and divides by what came in",
+    check("...and divides by what came in",
           "section = 'operating_in'" in _q and "nullif" in _q, _q[:240])
 # The twin's scalars must read the same way round as the base tiles they
 # stand in for: gold stores an outflow negative and the base

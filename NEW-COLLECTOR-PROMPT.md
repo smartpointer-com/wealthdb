@@ -301,7 +301,8 @@ entries are cheap when framed this way — correct them and move on.
   and placeholders only, format-valid and obviously fake. Sweep
   source, fixtures, docstrings, docs AND the drafted commit message
   before git add — and mind grep's exit codes in && chains.
-- Tests green (make test-<name>) before every commit; a refactor pass
+- Tests green (make test-<name>) and make lint clean before every
+  commit; a refactor pass
   (dead code, stale comments, comments encoding disproven theories)
   before milestone commits; squash to milestone commits with tight
   WHAT-level messages carrying no user data; never git push.

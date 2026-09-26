@@ -130,6 +130,7 @@ the root, no `cd`-ing into subdirectories:
 make            # show the target list
 make all        # build everything (gold engine + web + all collectors)
 make test       # test everything
+make lint       # gofmt + go vet (gold engine), ruff (Python)
 make build-<name> / make test-<name>   # one component (e.g. make build-schwab-web)
 make install    # symlink wealthdb + wealthdb-collect into ~/.local/bin
 make update     # bring deps forward (host venvs, Go modules, base images)

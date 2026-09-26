@@ -2347,7 +2347,7 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
             occ = occurrence.get(identity, 0)
             occurrence[identity] = occ + 1
             activity_id = "stmt_" + hashlib.sha256(
-                f"{identity}|#{occ}".encode("utf-8")).hexdigest()[:28]
+                f"{identity}|#{occ}".encode()).hexdigest()[:28]
             # Keyed on the STATEMENT row's own id, not the feed row's:
             # the year-end statement repeats the whole year, so this
             # payment may be offered again later in the pass and hashes

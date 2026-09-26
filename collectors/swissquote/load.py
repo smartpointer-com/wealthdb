@@ -204,7 +204,7 @@ def parse_transactions_csv(path: Path) -> list[dict]:
                     f"{path}: row has {len(raw)} fields, expected "
                     f"{len(EXPECTED_CSV_HEADER)}: {raw}"
                 )
-            d = dict(zip(EXPECTED_CSV_HEADER, raw))
+            d = dict(zip(EXPECTED_CSV_HEADER, raw, strict=True))
             rows.append(d)
     return rows
 

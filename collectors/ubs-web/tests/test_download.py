@@ -13,6 +13,7 @@ to hold them.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import sys
 import types
@@ -434,7 +435,7 @@ def test_split_windows_tile_the_period_without_gap_or_overlap(tmp_path,
     windows = sorted((s, u) for s, u, _c in calls)
     assert windows[0][0] == since
     assert windows[-1][1] == until
-    for (_s1, u1), (s2, _u2) in zip(windows, windows[1:]):
+    for (_s1, u1), (s2, _u2) in itertools.pairwise(windows):
         assert s2 == u1 + timedelta(days=1), \
             f"windows are not contiguous at {u1} -> {s2}"
     # Every transaction lands in exactly one exported window.

@@ -353,7 +353,7 @@ def _oracle_load(path, override_vars, base_env):
     """Independent verbatim copy of the pre-refactor hand-rolled parser.
     Returns the resulting env mapping (does not touch os.environ)."""
     env = dict(base_env)
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         for lineno, raw in enumerate(fh, 1):
             line = raw.strip()
             if not line or line.startswith("#"):

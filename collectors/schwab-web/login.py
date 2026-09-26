@@ -755,7 +755,7 @@ def _wait_for_post_auth(page, context, timeout_s: float,
         if urls != last_state:
             log.info("waiting for /app/... — pages=%s", urls)
             last_state = urls
-        for p, u in zip(pages, urls):
+        for p, u in zip(pages, urls, strict=True):
             if schwab.is_post_auth_url(u):
                 return p
         for p in pages:

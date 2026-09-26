@@ -1020,7 +1020,7 @@ def parse_statements(pdfs: list[Path], shas: list[str], *,
         else:
             outputs = [_parse_statement(p, signatures) for p in paths]
         fresh = dict(cached)
-        for i, out in zip(misses, outputs):
+        for i, out in zip(misses, outputs, strict=True):
             parsed[i] = out
             if not out.get("_error"):
                 fresh[_cache_key(shas[i], logic_fp, signatures)] = out
@@ -1110,7 +1110,7 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
         # Paired and linked across the whole archive before anything is
         # written: a cancellation, like a window, reaches back to the
         # account's earlier statements.
-        loaded = [(sha, res) for sha, res in zip(shas, results)
+        loaded = [(sha, res) for sha, res in zip(shas, results, strict=True)
                   if not res.get("_error") and res.get("family") in conns]
         cancelled = pair_cancellations(loaded)
         reversed_ = pair_reversals(loaded)
@@ -1132,7 +1132,7 @@ def build(silver_db: Path, bronze_dir: Path, *, signatures: tuple[str, ...],
                      ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())))
         holdings = txns = unknown_verbs = 0
         census: Counter[str] = Counter()
-        for pdf, sha, res in zip(pdfs, shas, results):
+        for pdf, sha, res in zip(pdfs, shas, results, strict=True):
             if res.get("_error"):
                 log.warning("skip %s: %s", pdf.name, res["_error"])
                 census[res["_error"]] += 1

@@ -1011,12 +1011,10 @@ def question_defs(db_id, mid):
                 ["=", _f("granularity", "type/Text"), granularity]]
 
     # Spending cards: `value` carries gold's canonical sign (spend
-    # negative, refunds positive), so every card charts
-    # `net_spend` — the negation — and a month's outflow reads as a
-    # positive bar. The long-format model means a card that runs without
-    # a currency filter sums USD + CHF + EUR, hence the standalone note.
-    net_spend = {"net_spend": ["*", _dec("value"), -1]}
-    spend_sum = [["sum", ["expression", "net_spend"]]]
+    # negative, refunds positive), so every card charts its negation,
+    # `net_spend`, and a month's outflow reads as a positive bar. The
+    # long-format model means a card that runs without a currency filter
+    # sums USD + CHF + EUR, hence the standalone note.
 
     def ccy_spend(ccy):
         """Net spend in ONE reporting currency, as a named column.
@@ -2080,7 +2078,7 @@ def view_tags(table, spec):
 def _cl(tags, name):
     """The optional filter clause for tag `name`; empty when the tag is
     absent (field id not yet synced)."""
-    return "\n     [[AND {{%s}}]]" % name if name in tags else ""
+    return "\n     [[AND {{" + name + "}}]]" if name in tags else ""
 
 
 # ---- spending: the shared pieces of the money and privacy cards -------
@@ -3903,7 +3901,7 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
         icon = "🔓" if privacy else "🔒"
         link = f"{icon} [{label}](/dashboard/{dash_ids[sibling]})"
 
-        def tile_mappings(card, tcol):
+        def tile_mappings(card, tcol, param_ids=param_ids):
             """The pickers this dashboard's tiles answer to, restricted to
             the pickers the dashboard actually carries: the Spending twin
             has no Account picker (dashboard_parameters drops it), and a
@@ -3912,7 +3910,7 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
             return [m for m in _tile_mappings(card, tcol)
                     if m["parameter_id"] in param_ids]
 
-        def _tile_mappings(card, tcol):
+        def _tile_mappings(card, tcol, mode=mode, tparam=tparam, name=name):
             if not mode:
                 return []
             # Native cards take the pickers as template tags, with the

@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field, asdict
-from datetime import date, datetime
+from datetime import date
 
 from collectorkit import statement_period
 from collectorkit.pdf import extract_text_pdfium as _extract_pdf_text
@@ -2057,12 +2057,12 @@ def _parse_cash_summary_legacy(text: str) -> dict | None:
         # Try every known label; take the first that matches
         # (longest-label-first so "Ending Cash" wins over a
         # hypothetical "Cash" prefix).
-        for label, field in _LEGACY_CASH_LABELS:
+        for label, attr in _LEGACY_CASH_LABELS:
             if line.startswith(label):
                 rest = line[len(label):].lstrip("*").lstrip()
                 m = _LEGACY_CASH_VALUE_RE.search(rest)
                 if m:
-                    captured[field] = _parse_number(m.group(1))
+                    captured[attr] = _parse_number(m.group(1))
                 break
         if "closing_balance" in captured:
             break  # Ending Cash row reached; we're done.

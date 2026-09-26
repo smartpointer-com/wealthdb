@@ -752,7 +752,8 @@ def _new_layer(docs: list[_Doc], views: dict[str, stitch.LiveView]):
             lst = doc.listing
             left: dict[date, Counter] = {}
             for posting, n in zip(lst.postings,
-                                  listing_parser.occurrences(lst.postings)):
+                                  listing_parser.occurrences(lst.postings),
+                                  strict=True):
                 day = posting.butag
                 if day not in owned:
                     continue

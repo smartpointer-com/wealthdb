@@ -134,7 +134,8 @@ Hold every change to the bar a senior engineer would.
 - **Comprehensive unit tests, and they must pass.** New behaviour
   ships with tests that cover it; run the relevant `make test-<x>`
   (and the full `make test` before a milestone commit) and keep it
-  green. Ad-hoc verification is additive, never a substitute.
+  green, and `make lint` clean. Ad-hoc verification is additive,
+  never a substitute.
 - **Comments and docs describe behaviour, not an operator.**
   Narrate what the code does and why; describe a choice's *effect*,
   not the person making it. Don't lean on a stand-in like "the
@@ -150,6 +151,8 @@ The repo-root `Makefile` is the top-level entry — run it from the
 root, no `cd`-ing into subdirectories:
 
 - `make all` / `make test` — build or test everything.
+- `make lint` — gofmt and `go vet` over the gold engine, ruff over
+  every Python module (rules in the root `ruff.toml`).
 - `make build-<name>` / `make test-<name>` — one component (the
   gold engine is `wealthdb`; e.g. `make test-wealthdb`).
 - `make update` — bring deps forward (host venvs, Go modules, base

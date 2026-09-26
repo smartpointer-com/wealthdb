@@ -81,7 +81,7 @@ def parse_yymmdd(s: str) -> int:
     and 70-99 -> 1970-1999. PSN doesn't ship data older than the contract,
     so this is safe.
     """
-    yy = int(s[0:2]); mm = int(s[2:4]); dd = int(s[4:6])
+    yy, mm, dd = int(s[0:2]), int(s[2:4]), int(s[4:6])
     yyyy = 2000 + yy if yy < 70 else 1900 + yy
     return int(datetime(yyyy, mm, dd, tzinfo=timezone.utc).timestamp())
 
@@ -1123,15 +1123,15 @@ def _parse_35b(val: str) -> tuple[str | None, str | None]:
     """
     if not val:
         return None, None
-    lines = [l.strip() for l in val.splitlines() if l.strip()]
+    lines = [ln.strip() for ln in val.splitlines() if ln.strip()]
     isin = None
-    for l in lines:
-        m = _ISIN_RE.match(l)
+    for ln in lines:
+        m = _ISIN_RE.match(ln)
         if m:
             isin = m.group(1)
             break
-    name_lines = [l for l in lines
-                  if not l.startswith("ISIN") and not l.startswith("/")]
+    name_lines = [ln for ln in lines
+                  if not ln.startswith("ISIN") and not ln.startswith("/")]
     name = " ".join(name_lines) if name_lines else None
     return isin, name
 
@@ -1152,7 +1152,9 @@ def load_mt515(conn, snapshot_at, relationship_id, mt_text):
     if not fields:
         return 0
     by_q = _by_qualifier(fields)
-    g = lambda tag, qual: by_q.get(tag, {}).get(qual)
+
+    def g(tag, qual):
+        return by_q.get(tag, {}).get(qual)
 
     seme = g("20C", "SEME")
     if not seme:

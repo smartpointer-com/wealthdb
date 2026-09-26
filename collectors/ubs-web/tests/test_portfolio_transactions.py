@@ -21,7 +21,6 @@ HERE = Path(__file__).resolve().parent
 COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
-import landmarks as ubs  # noqa: E402
 import load as loader  # noqa: E402
 from collectorkit import silver  # noqa: E402
 

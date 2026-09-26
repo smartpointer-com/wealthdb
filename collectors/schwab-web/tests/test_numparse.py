@@ -171,7 +171,7 @@ _TABLE = [
 def test_hardcoded_shapes():
     cols = ("money", "to_float", "number", "clean")
     for row in _TABLE:
-        inp, expected = row[0], dict(zip(cols, row[1:]))
+        inp, expected = row[0], dict(zip(cols, row[1:], strict=True))
         for name in cols:
             got = parse_amount(inp, **_CFG[name])
             assert _byte_same(got, expected[name]), (

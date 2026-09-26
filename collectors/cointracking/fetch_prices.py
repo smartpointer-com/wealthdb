@@ -39,7 +39,7 @@ from collectorkit import cli, silver
 from binance import BinanceClient, get_api_key
 from frankfurter import FrankfurterClient
 from load import (
-    MIGRATIONS_DIR, apply_migrations, fetch_coin_prices, fetch_fx_rates,
+    apply_migrations, fetch_coin_prices, fetch_fx_rates,
     backfill_first_day_gaps,
 )
 

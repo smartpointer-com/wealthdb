@@ -11,6 +11,7 @@
 #   make build-collectors build every collector
 #   make test-collectors  test every collector
 #   make test-collectorkit test the shared collectorkit library
+#   make lint             gofmt + go vet over the gold engine, ruff over the Python
 #   make build-<name>     build one collector   (e.g. make build-schwab-web)
 #   make test-<name>      test one collector    (e.g. make test-schwab-web)
 #   make install          symlink wealthdb + wealthdb-collect into ~/.local/bin
@@ -54,7 +55,8 @@ PYTHON := $(or \
         test-wrappers \
         clean cleanall clean-wealthdb cleanall-wealthdb \
         clean-collectors cleanall-collectors base-images \
-        update update-venvs update-wealthdb update-bases
+        update update-venvs update-wealthdb update-bases \
+        lint lint-go lint-python cleanall-lint
 
 # ---- aggregates --------------------------------------------------------
 
@@ -118,7 +120,7 @@ base-images:
 # clean    = build artefacts (pycache, pytest cache, Go build cache)
 # cleanall = clean + the heavy outputs (docker images, venvs)
 clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit
-cleanall: cleanall-wealthdb cleanall-web cleanall-collectors cleanall-collectorkit
+cleanall: cleanall-wealthdb cleanall-web cleanall-collectors cleanall-collectorkit cleanall-lint
 
 clean-collectors:    $(addprefix clean-,$(COLLECTORS))
 cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
@@ -159,6 +161,43 @@ clean-collectorkit:
 cleanall-collectorkit: clean-collectorkit
 	@echo "==> cleanall collectorkit"
 	@rm -rf $(CK_VENV) $(CK_DIR)/collectorkit.egg-info
+
+cleanall-lint:
+	@echo "==> cleanall lint (ruff venv)"
+	@rm -rf $(LINT_VENV)
+
+# ---- lint ----------------------------------------------------------------
+# gofmt and go vet run on the image's toolchain like every other Go command
+# (gofmt as `go run cmd/gofmt`, since the wrapper's entrypoint is `go`).
+# They read the bind-mounted source, so the image only has to exist — it is
+# built when missing, never rebuilt here, and linting never touches the
+# image the nightly runs.
+#
+# ruff comes from a venv of its own, pinned in shared/lint/requirements.txt
+# and refreshed by update-venvs; the rule set is /ruff.toml, which covers
+# every Python module in the tree.
+LINT_DIR  := shared/lint
+LINT_VENV := $(LINT_DIR)/.venv
+
+lint: lint-go lint-python
+
+lint-go:
+	@echo "==> lint wealthdb (gofmt, go vet)"
+	@docker image inspect wealthdb:latest >/dev/null 2>&1 || $(WEALTHDB) build
+	@out="$$($(WEALTHDB_GO) run cmd/gofmt -l .)" || exit 1; \
+	if [ -n "$$out" ]; then \
+		echo "    gofmt: not formatted:" >&2; echo "$$out" | sed 's/^/      /' >&2; exit 1; \
+	fi
+	@$(WEALTHDB_GO) vet ./...
+
+lint-python:
+	@echo "==> lint python (ruff)"
+	@if [ ! -x $(LINT_VENV)/bin/ruff ]; then \
+		rm -rf $(LINT_VENV); \
+		$(PYTHON) -m venv $(LINT_VENV) && \
+		$(LINT_VENV)/bin/pip install -q -r $(LINT_DIR)/requirements.txt || exit 1; \
+	fi
+	@$(LINT_VENV)/bin/ruff check --quiet .
 
 # ---- wealthdb gold engine ---------------------------------------------
 
@@ -318,6 +357,11 @@ update-venvs:
 		$(CK_VENV)/bin/python -m pip install --upgrade pip setuptools wheel; \
 		$(CK_VENV)/bin/python -m pip install --upgrade -e $(CK_DIR) $(CK_TEST_DEPS); \
 	fi
+	@if [ -x $(LINT_VENV)/bin/python ]; then \
+		echo "==> update $(LINT_VENV)"; \
+		$(LINT_VENV)/bin/python -m pip install --upgrade pip; \
+		$(LINT_VENV)/bin/python -m pip install --upgrade -r $(LINT_DIR)/requirements.txt; \
+	fi
 
 # The module graph is refreshed by the IMAGE's Go toolchain, never the
 # host's: build first so the pinned toolchain exists, resolve against it,
@@ -362,6 +406,8 @@ help:
 	@echo "  make build-collectors   build every collector"
 	@echo "  make test-collectors    test every collector"
 	@echo "  make test-collectorkit  run the shared collectorkit test suite"
+	@echo "  make lint               gofmt + go vet (engine), ruff (Python)"
+	@echo "  make lint-go / lint-python"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"
 	@echo "  make test-<name>        test one collector  (e.g. test-schwab-web)"
 	@echo ""

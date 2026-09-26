@@ -585,7 +585,7 @@ def phase_coverage(run_json, requested_window=None):
         if isinstance(result, list) and not entries:
             if name == "activity" and requested_window and all(requested_window):
                 complete = False
-                gaps.append("%s..%s" % requested_window)
+                gaps.append("{}..{}".format(*requested_window))
             elif name != "activity":
                 complete = False
                 gaps.append("no attempt recorded")
@@ -1769,8 +1769,8 @@ def _activity_csv_for_window(page, since_date, until_date,
             # derived from its content — but this window is NOT
             # covered, and saying otherwise is how a hole hides.
             result["error"] = (
-                "export held %s..%s, outside the requested window"
-                % (first.isoformat(), last.isoformat())
+                f"export held {first.isoformat()}..{last.isoformat()}, "
+                "outside the requested window"
             )
             log.error(
                 "activity window %s..%s never came back with its own "

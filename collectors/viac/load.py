@@ -594,7 +594,7 @@ REPORT_SUBTYPES = ("INVESTMENT_REPORTING", "MANUAL_INVESTMENT_REPORTING")
 
 
 def _upsert_report_instrument(
-    conn: sqlite3.Connection, pos: "pdf_parsers.ReportPosition", seen_at: int,
+    conn: sqlite3.Connection, pos: pdf_parsers.ReportPosition, seen_at: int,
 ) -> None:
     """Upsert an instrument observed in a historical report. Prefers
     existing (live-load) metadata — only fills nulls, lowers

@@ -1,0 +1,13 @@
+# Lint rules for every Python module in the repository, run by `make lint`
+# (ruff comes from shared/lint/requirements.txt).
+#
+# The floor is Python 3.10: the host venvs are built from whatever
+# python3.10+ the machine offers, while the Docker images run newer, so
+# syntax newer than 3.10 would break a host-venv collector.
+target-version = "py310"
+
+[lint]
+# ruff's defaults (pyflakes, and the pycodestyle errors that are not
+# layout), bugbear's likely-bug patterns, and pyupgrade's modern syntax.
+# Formatting and line length are left to each module's existing style.
+select = ["E4", "E7", "E9", "F", "B", "UP"]

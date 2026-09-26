@@ -396,14 +396,16 @@ def main(argv: list[str]) -> int:
             clicked = False
             try:
                 if tab.count() and tab.is_visible():
-                    tab.click(); clicked = True
+                    tab.click()
+                    clicked = True
             except Exception:
                 pass
             cap = wait_capture(page, "getBuyerInvestments",
                                match=lambda v, s=stage: v.get("stage") == s,
                                wait_ms=(timeout_ms if clicked else 5000))
             if cap is None:
-                log.info("stage %-7s: no tab / no data", stage); continue
+                log.info("stage %-7s: no tab / no data", stage)
+                continue
             stage_bodies[stage] = cap["body"]
             ids = _deal_ids_from(cap["body"])
             log.info("stage %-7s: %d investment(s)", stage, len(ids))
@@ -467,10 +469,11 @@ def main(argv: list[str]) -> int:
         offerings_meta = []
         document_blobs = _empty_doc_counts()
         for did in deal_ids:
-            slug = _slug(did); n = _deal_numeric(did)
+            slug, n = _slug(did), _deal_numeric(did)
             if not n:
                 log.warning("offering %s: deal id did not decode; skipping detail", slug)
-                offerings_meta.append({"slug": slug, "detail": False}); continue
+                offerings_meta.append({"slug": slug, "detail": False})
+                continue
             log.info("fetching offering %s (deal #%s)", slug, n)
             page.goto(f"{BASE}/portfolio/{n}/", wait_until="domcontentloaded")
             cap = wait_capture(page, "getMyInvestmentDetails",
@@ -484,7 +487,8 @@ def main(argv: list[str]) -> int:
                 # the same surrogate the bronze dirs use, so the capture
                 # names line up with offerings/<slug>/.
                 capture(page, f"20-offering-{slug}-nodetail")
-                offerings_meta.append({"slug": slug, "detail": False}); continue
+                offerings_meta.append({"slug": slug, "detail": False})
+                continue
             bronze.atomic_write_json(run / "offerings" / slug / "detail.json", cap["body"])
             doc_counts = _empty_doc_counts()
             if args.documents:

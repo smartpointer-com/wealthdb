@@ -39,7 +39,6 @@ import signal
 import tempfile
 import threading
 import time
-from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import landmarks as schwab
@@ -1143,7 +1142,7 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
     # Export click (observed live: a wedged wire-details overlay cost a
     # run every export after the first account) — clear the field first.
     _dismiss_open_modal(page)
-    for fmt_label, radio_id, ext in schwab.TX_EXPORT_FORMATS:
+    for _fmt_label, radio_id, ext in schwab.TX_EXPORT_FORMATS:
         # Open the Export modal. The main-page Export button has
         # the same text as the modal's Export button, so scope by
         # visibility: when the modal is closed, only one Export
@@ -1154,7 +1153,7 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
             break
         # Wait for the modal.
         modal = page.locator(
-            f'[role="dialog"][aria-labelledby="export-modal-modal-title"]'
+            '[role="dialog"][aria-labelledby="export-modal-modal-title"]'
         )
         try:
             modal.wait_for(state="visible", timeout=10_000)
@@ -1487,7 +1486,7 @@ def _scrape_more_details(page, account_suffix: str,
                             _capture_dialog_html(page, screenshot_dir)
                             raise _WalkStalled(
                                 f"modal overlay wedged ({click_fails} "
-                                f"consecutive More clicks intercepted)")
+                                f"consecutive More clicks intercepted)") from e
                         continue
                     click_fails = 0
                     try:
@@ -1553,7 +1552,7 @@ def _click_visible_export_button(page, in_modal: bool) -> bool:
     """
     if in_modal:
         modal = page.locator(
-            f'[role="dialog"][aria-labelledby="export-modal-modal-title"]'
+            '[role="dialog"][aria-labelledby="export-modal-modal-title"]'
         )
         btn = modal.get_by_role("button", name="Export", exact=True).first
     else:

@@ -95,9 +95,10 @@ def test_catalog_selects_only_statement_pdfs(tmp_path):
 
 def test_parse_key_ignores_path_and_render_noise(tmp_path, monkeypatch):
     monkeypatch.setattr(pdf_parsers, "parse_statement_pdf", _stub_parse)
-    f1 = tmp_path / "a.pdf"; f1.write_bytes(b"JAN|noise-1")
-    f2 = tmp_path / "b.pdf"; f2.write_bytes(b"JAN|noise-2-longer")
-    f3 = tmp_path / "c.pdf"; f3.write_bytes(b"FEB|noise")
+    f1, f2, f3 = tmp_path / "a.pdf", tmp_path / "b.pdf", tmp_path / "c.pdf"
+    f1.write_bytes(b"JAN|noise-1")
+    f2.write_bytes(b"JAN|noise-2-longer")
+    f3.write_bytes(b"FEB|noise")
     assert dedup.parse_key(f1, 2024) == dedup.parse_key(f2, 2024)  # same content
     assert dedup.parse_key(f1, 2024) != dedup.parse_key(f3, 2024)  # differs
 

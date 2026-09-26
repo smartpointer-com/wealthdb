@@ -23,7 +23,6 @@ import json
 import logging
 import sqlite3
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -480,7 +479,7 @@ def load_historical_snapshots(
     n_cash = 0
     conn.execute("BEGIN")
     try:
-        for doc_id, bronze_path, content_sha256, file_name in rows:
+        for doc_id, bronze_path, content_sha256, _file_name in rows:
             pdf_abs = bronze_root / bronze_path
             if not pdf_abs.is_file():
                 logger.warning(
@@ -598,7 +597,7 @@ def load_credit_note_transactions(
     parsed_ok = 0
     conn.execute("BEGIN")
     try:
-        for doc_id, bronze_path, content_sha256 in rows:
+        for doc_id, bronze_path, _content_sha256 in rows:
             pdf_abs = bronze_root / bronze_path
             if not pdf_abs.is_file():
                 logger.warning(

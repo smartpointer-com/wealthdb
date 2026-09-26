@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from collectorkit import bronze, dedup
+from collectorkit import dedup
 
 OLD_A = "20260101T010000Z"
 OLD_B = "20260102T010000Z"
@@ -158,7 +158,7 @@ def test_non_complete_dumps_skipped(tmp_path, status):
 def test_fresh_dump_skipped_by_quiescence(tmp_path):
     slug = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     a = _run(tmp_path, OLD_A, {"documents/x.pdf": BIG})
-    b = _run(tmp_path, slug, {"documents/x.pdf": BIG})
+    _run(tmp_path, slug, {"documents/x.pdf": BIG})
     _backdate(a)                              # a stale, b fresh
     _, n = _sweep(tmp_path)
     assert n == 0
@@ -186,7 +186,7 @@ def test_symlinked_intermediate_dir_not_followed(tmp_path):
     external = tmp_path / "external"
     external.mkdir()
     (external / "x.pdf").write_bytes(BIG)
-    a = _run(tmp_path, OLD_A, {"documents/x.pdf": BIG})
+    _run(tmp_path, OLD_A, {"documents/x.pdf": BIG})
     b = _run(tmp_path, OLD_B, {})
     # b/documents/sub -> external (a symlinked dir the walk must not enter)
     (b / "documents" / "sub").symlink_to(external, target_is_directory=True)

@@ -955,7 +955,7 @@ def _stmt_find_header(rows: list[dict]) -> dict | None:
                ("Date", "Information", "Value", "Debits", "Credits",
                 "Balance")):
             def centre(label: str) -> float | None:
-                for w in r["words"]:
+                for w in r["words"]:  # noqa: B023
                     if w["text"] == label:
                         return (w["x0"] + w["x1"]) / 2
                 return None
@@ -1280,30 +1280,30 @@ def parse_account_statement_transactions_pages(
         def emit(amount_debit, amount_credit, cparty, caccount, cont,
                  is_internal, balance, extra=None):
             row = {
-                "booking_date": booking,
-                "value_date": value,
+                "booking_date": booking,  # noqa: B023
+                "value_date": value,  # noqa: B023
                 "account_external_id": iban,
                 "currency_iso": currency,
                 "amount_debit": amount_debit,
                 "amount_credit": amount_credit,
-                "description_kind": raw_kind,
+                "description_kind": raw_kind,  # noqa: B023
                 "counterparty": cparty,
                 "counter_account": caccount,
                 "running_balance": balance,
-                "post_closing": mv["post_closing"],
-                "occurrence": idx,
+                "post_closing": mv["post_closing"],  # noqa: B023
+                "occurrence": idx,  # noqa: B023
                 "reconciled": reconciled,
                 "source_doc_token": doc_token,
             }
             sec_caption, sec_valor = _stmt_security(cont)
             payload = {
-                "booking_type": raw_kind,
+                "booking_type": raw_kind,  # noqa: B023
                 "internal_transfer": is_internal,
                 "running_balance": balance,
-                "value_date": mv["value_dmy"],
+                "value_date": mv["value_dmy"],  # noqa: B023
                 "counter_account": caccount,
                 "continuation": cont,
-                "post_closing": mv["post_closing"],
+                "post_closing": mv["post_closing"],  # noqa: B023
                 "source": "account_statement_pdf",
             }
             # Promoted beside `counter_account` and for the same reason:

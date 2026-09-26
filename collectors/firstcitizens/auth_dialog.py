@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 from collectorkit.cli import ChallengeError, choose_one, read_code
 from q2client import AccessCodeTarget

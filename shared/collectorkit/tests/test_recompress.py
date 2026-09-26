@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from collectorkit import bronze, compress, prune, recompress
+from collectorkit import compress, prune, recompress
 
 zstandard = pytest.importorskip("zstandard")
 

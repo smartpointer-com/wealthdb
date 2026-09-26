@@ -30,7 +30,7 @@ import logging
 import re
 import shutil
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import landmarks as sq  # local module

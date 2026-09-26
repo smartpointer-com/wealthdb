@@ -120,7 +120,8 @@ def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> None:
     if not cap_path.is_file():
         log.warning("%s: no captures.jsonl, skipping", run_dir.name)
         return
-    captures = [json.loads(l) for l in cap_path.read_text().splitlines() if l.strip()]
+    captures = [json.loads(line) for line in cap_path.read_text().splitlines()
+                if line.strip()]
     ops = _by_op(captures)
 
     acct_slug = None
@@ -410,7 +411,7 @@ def _parse_k1_csv(conn, path, year, doc_id, name_to_vehicle) -> int:
              parse_money_cents(cell(r, "dist")), parse_money_cents(cell(r, "cashdist")),
              parse_money_cents(cell(r, "end")), endpct,
              name_to_vehicle.get(company.strip().lower()) if company else None,
-             doc_id, json.dumps(dict(zip(h, r)), separators=(",", ":"))))
+             doc_id, json.dumps(dict(zip(h, r, strict=False)), separators=(",", ":"))))
         n += 1
     return n
 
@@ -540,7 +541,7 @@ def _pair_k1_to_positions(conn):
                     s += 10**18
                 scored.append((s, fund, p["pid"]))
     fund_to_pid, taken = {}, set()
-    for s, fund, pid in sorted(scored, key=lambda t: (t[0], t[1], t[2])):
+    for _score, fund, pid in sorted(scored, key=lambda t: (t[0], t[1], t[2])):
         if fund in fund_to_pid or pid in taken:
             continue
         fund_to_pid[fund] = pid

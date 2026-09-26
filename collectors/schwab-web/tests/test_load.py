@@ -77,7 +77,7 @@ def _make_bronze_run(root: Path, run_ts: str, accounts: list[dict]) -> Path:
             pdf_path = run_dir / "statements" / acct["suffix"] / doc["filename"]
             # Per-filename content keeps sha256s distinct.
             content = (
-                f"%PDF-1.4 stub for {doc['filename']}\n".encode("utf-8")
+                f"%PDF-1.4 stub for {doc['filename']}\n".encode()
             )
             sha = _write_pdf(pdf_path, content)
             stmts.append({
@@ -1455,7 +1455,7 @@ class TestSha256ChurnTransactionIdempotency:
         # directly to confirm INSERT OR IGNORE holds.
         ldk = load._logical_doc_key("NNN", load.parse_doc_date("01/31/2026"),
                                     filename)
-        for idx, tx in enumerate(self.PARSED_TWO_TX["transactions"]):
+        for tx in self.PARSED_TWO_TX["transactions"]:
             load._insert_statement_transactions(
                 migrated, "NNN", [tx], "any-sha256", ldk,
             )

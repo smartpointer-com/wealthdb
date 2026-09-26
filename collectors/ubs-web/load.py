@@ -42,8 +42,9 @@ import os
 import re
 import sqlite3
 import sys
+from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from collectorkit import bronze, cli, silver, srcfp
@@ -450,7 +451,7 @@ def _read_positions_base_currency(csv_path: Path) -> str | None:
 RELATIONSHIP_PREFIX_RE = re.compile(r"^\d{4}\s+\d{8}$")
 
 
-def _iter_positions_rows(csv_path: Path) -> "iter[dict]":
+def _iter_positions_rows(csv_path: Path) -> Iterator[dict]:
     """Yield meaningful holding rows from a positions.csv.
 
     Skips:
@@ -873,7 +874,7 @@ def portfolio_txn_id(account: str, row: dict) -> str:
         "Description 1", "Description 2", "Valor", "ISIN",
         "Number/Amt.", "Order no.",
     ))
-    digest = hashlib.sha256(f"{account}|{parts}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{account}|{parts}".encode()).hexdigest()
     return f"ptx:{digest[:16]}"
 
 
@@ -978,7 +979,7 @@ def _load_transactions(conn: sqlite3.Connection, snapshot_at: int,
     for csv_path in sorted(txn_dir.glob("cash_*.csv")):
         rows.extend(_parse_transactions_csv(csv_path))
     ids = _assign_export_txn_ids(rows, _bare_number_holders(conn, rows))
-    for txn_id, row in zip(ids, rows):
+    for txn_id, row in zip(ids, rows, strict=True):
         _upsert_export_transaction(conn, snapshot_at, txn_id, row)
     return len(rows)
 
@@ -1072,8 +1073,8 @@ def _bare_number_holders(conn: sqlite3.Connection,
     numbers = sorted({n for _, n in keys})
     q = ("SELECT account_external_id, transaction_external_id, payload"
          "  FROM transactions"
-         " WHERE account_external_id IN (%s) AND transaction_external_id IN (%s)"
-         % (",".join("?" * len(accounts)), ",".join("?" * len(numbers))))
+         f" WHERE account_external_id IN ({','.join('?' * len(accounts))})"
+         f" AND transaction_external_id IN ({','.join('?' * len(numbers))})")
     for account, _txn_no, payload in conn.execute(q, (*accounts, *numbers)):
         key = (account, _txn_no)
         if key not in keys:
@@ -1248,7 +1249,7 @@ def _parse_transactions_csv(csv_path: Path) -> list[dict]:
             # description1's first semi-line is usually the counterparty
             "counterparty": (description1.split(";", 1)[0] or None),
             "description_kind": _cell(raw, idx, "Description2") or None,
-            "payload": normalize_payload({h: c for h, c in zip(header, raw)}),
+            "payload": normalize_payload(dict(zip(header, raw, strict=False))),
             # Raw cells, kept only to fingerprint a row against its
             # siblings when UBS gives several of them one number.
             "booking_date_raw": _cell(raw, idx, "Booking date"),

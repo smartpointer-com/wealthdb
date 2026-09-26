@@ -301,7 +301,7 @@ def test_security_fusion_is_fetch_verified(tmp_path):
 
 
 def test_security_fusion_changed_keeps_fresh(tmp_path):
-    prior = _prior_run(tmp_path, FUSION_ID, BODY)
+    _prior_run(tmp_path, FUSION_ID, BODY)
     run = tmp_path / CUR
     run.mkdir()
     calls: list = []

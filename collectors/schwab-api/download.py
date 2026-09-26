@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -384,7 +383,7 @@ def _request_json(what: str, call, max_retries: int = MAX_TRANSIENT_RETRIES, *,
                     f"Schwab API {what} failed after {max_retries} attempt(s) "
                     f"({type(e).__name__}: {e}). Schwab was slow or "
                     f"unreachable — retry, or raise --read-timeout."
-                )
+                ) from e
             delay = RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
             log.warning(
                 "Schwab API %s: %s (attempt %d/%d); retrying in %.0fs",
@@ -567,7 +566,7 @@ def run(args: argparse.Namespace) -> int:
     except ImportError:
         raise SystemExit(
             "schwab-py is not installed. Run: pip install -r requirements.txt"
-        )
+        ) from None
 
     if not args.token_path.is_file():
         raise SystemExit(
@@ -607,7 +606,7 @@ def run(args: argparse.Namespace) -> int:
         log.info("Listing account hashes ...")
         account_numbers = fetch_account_numbers(client, trace=trace)
     except oauth_errors as e:
-        raise SystemExit(explain_token_failure(args.token_path, e))
+        raise SystemExit(explain_token_failure(args.token_path, e)) from e
     log.info("Schwab returned %d linked account(s)", len(account_numbers))
 
     if args.dry_run:

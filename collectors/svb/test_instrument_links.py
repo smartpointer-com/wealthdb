@@ -341,7 +341,10 @@ def test_a_fitting_key_held_only_in_another_era_is_no_sibling():
     assert links.keys == {"div": "AAAA"}
 
 
-def _bought_and_sold(key="AAAA", sale=_day("2099-02-10")):
+_FEBRUARY_SALE = _day("2099-02-10")
+
+
+def _bought_and_sold(key="AAAA", sale=_FEBRUARY_SALE):
     """``key`` bought in January and sold on ``sale`` in February under
     EXAMPLE's name, both proved."""
     return [

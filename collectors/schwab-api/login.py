@@ -862,7 +862,7 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
     try:
         from schwab import auth as schwab_auth
     except ImportError:
-        raise SystemExit("schwab-py is not installed.")
+        raise SystemExit("schwab-py is not installed.") from None
 
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
                                    "--client-id")
@@ -1017,12 +1017,12 @@ def _attempt_cli_mfa(page, args: argparse.Namespace) -> None:
     try:
         code_loc.fill(code)
     except Exception as e:
-        raise LoginFlowError(f"could not fill the 2FA code input: {e}")
+        raise LoginFlowError(f"could not fill the 2FA code input: {e}") from e
     if not _click_first(page, lm.MFA_CONTINUE_BUTTON_CANDIDATES):
         try:
             code_loc.press("Enter")
         except Exception as e:
-            raise LoginFlowError(f"could not submit the 2FA code: {e}")
+            raise LoginFlowError(f"could not submit the 2FA code: {e}") from e
     outcome = _verify_mfa_outcome(page, args.callback_url)
     if outcome == "rejected":
         raise LoginFlowError(
@@ -1060,7 +1060,7 @@ def cmd_login_manual(args: argparse.Namespace) -> int:
     try:
         from schwab import auth as schwab_auth
     except ImportError:
-        raise SystemExit("schwab-py is not installed.")
+        raise SystemExit("schwab-py is not installed.") from None
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
                                    "--client-id")
     client_secret = envfile.resolve_credential(args.client_secret,

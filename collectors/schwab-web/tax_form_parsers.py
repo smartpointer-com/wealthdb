@@ -247,11 +247,11 @@ def parse_1099b_xml(xml_text: str) -> dict:
         ))
 
     # Fall back to (and cross-check against) the content-derived year.
-    derived = _modal_year([l["date_sold"] for l in lots])
+    derived = _modal_year([lot["date_sold"] for lot in lots])
     if tax_year is None:
         tax_year = derived
-        for l in lots:
-            l["tax_year"] = tax_year
+        for lot in lots:
+            lot["tax_year"] = tax_year
     elif derived is not None and derived != tax_year:
         log.warning("1099-B XML TAXYEAR=%s but sold-date year=%s; "
                     "keeping TAXYEAR", tax_year, derived)
@@ -339,9 +339,9 @@ def parse_1099b_csv(csv_text: str) -> dict:
             tax_year=None,
             source_format="csv",
         ))
-    tax_year = _modal_year([l["date_sold"] for l in lots])
-    for l in lots:
-        l["tax_year"] = tax_year
+    tax_year = _modal_year([lot["date_sold"] for lot in lots])
+    for lot in lots:
+        lot["tax_year"] = tax_year
     return {"tax_year": tax_year, "lots": lots}
 
 

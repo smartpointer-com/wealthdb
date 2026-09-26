@@ -210,7 +210,7 @@ def _probe_authenticated(context) -> bool:
     return False
 
 
-def _authed_cheap(page, watch: "_LogonWatch") -> bool:
+def _authed_cheap(page, watch: _LogonWatch) -> bool:
     """The event-free, no-network half of the signed-in signal: a captured
     logonUser said authenticated, or the SPA route reached the landing page.
     Checked every poll tick (the REST probe is throttled separately)."""
@@ -220,12 +220,12 @@ def _authed_cheap(page, watch: "_LogonWatch") -> bool:
     return q2client.is_authed_url(page_url(page))
 
 
-def _is_authed(context, page, watch: "_LogonWatch") -> bool:
+def _is_authed(context, page, watch: _LogonWatch) -> bool:
     """Full signed-in signal: the cheap check OR the REST probe succeeds."""
     return _authed_cheap(page, watch) or _probe_authenticated(context)
 
 
-def _is_mfa(page, watch: "_LogonWatch") -> bool:
+def _is_mfa(page, watch: _LogonWatch) -> bool:
     """2FA-challenge signal: the SPA reached a /login/mfa route, OR a captured
     logonUser said a challenge is required."""
     o = watch.outcome()
@@ -331,7 +331,7 @@ def _register_device(page) -> None:
             log.info("registered this device for future unattended runs")
 
 
-def _drive_mfa_cli(page, watch: "_LogonWatch", args) -> bool:
+def _drive_mfa_cli(page, watch: _LogonWatch, args) -> bool:
     """Drive the Q2 Secure Access Code screens from the terminal: pick the
     delivery method (read from the on-screen buttons), send the code, read it
     from stdin, submit it, and register the device. Selectors are pinned from
@@ -380,7 +380,7 @@ def _drive_mfa_cli(page, watch: "_LogonWatch", args) -> bool:
 
 # --- the shared authenticate() -------------------------------------------
 
-def authenticate(context, page, watch: "_LogonWatch", *, two_factor: str,
+def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
                  mfa_timeout: int = 600, args=None) -> bool:
     """Take a submitted login to an authenticated session.
 

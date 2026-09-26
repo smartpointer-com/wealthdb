@@ -477,7 +477,7 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
             print(file=sys.stdout)
             print(f"UBS Access App login challenge — contract {contract_number[:2]}…",
                   file=sys.stdout)
-            print(f"Open UBS Access App on your phone and scan the QR below.",
+            print("Open UBS Access App on your phone and scan the QR below.",
                   file=sys.stdout)
             print(f"Waiting up to {mfa_timeout}s for approval.",
                   file=sys.stdout)

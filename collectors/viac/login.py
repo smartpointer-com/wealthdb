@@ -34,10 +34,8 @@ authorisation per CLAUDE.md §2.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path

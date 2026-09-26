@@ -28,7 +28,7 @@ import logging
 import re
 import sys
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
@@ -138,11 +138,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "rendered documents are skipped.")
     p.add_argument("--only", choices=sorted(PASSES), default=None,
                    metavar="PASS",
-                   help=("Run one pass and skip the rest (%s). The dump it "
-                         "writes is a partial one and is marked as such, so "
-                         "`load` and `prune` treat it as the fragment it is; "
-                         "it is for working on a single surface without "
-                         "paying for the whole walk." % ", ".join(sorted(PASSES))))
+                   help=(f"Run one pass and skip the rest ({', '.join(sorted(PASSES))}). "
+                         "The dump it writes is a partial one and is marked as "
+                         "such, so `load` and `prune` treat it as the fragment "
+                         "it is; it is for working on a single surface without "
+                         "paying for the whole walk."))
     p.add_argument("--dry-run", action="store_true",
                    help="Validate session and selectors; do not export "
                         "anything. Use to confirm the UI hasn't shifted "
@@ -252,7 +252,7 @@ def enumerate_accounts(page, screenshot_dir: Path | None) -> list[dict]:
         raise SystemExit(
             f"Could not find any cash-account links on the homepage. "
             f"UBS may have redesigned the tile widget. ({e})"
-        )
+        ) from e
     maybe_screenshot(page, screenshot_dir, "home-rendered")
 
     # Cash accounts only: the card area is a separate family of surfaces
@@ -630,7 +630,7 @@ def _click_custom_radio(page, screenshot_dir: Path | None,
         maybe_screenshot(page, screenshot_dir, screenshot_label)
         raise SystemExit(
             "Could not click the 'Custom' radio in the Period popover."
-        )
+        ) from None
     page.wait_for_timeout(200)
 
 
@@ -661,7 +661,7 @@ def _fill_custom_dates(page, since: date, until: date,
         maybe_screenshot(page, screenshot_dir, screenshot_label)
         raise SystemExit(
             "Could not find the date inputs in the Period popover."
-        )
+        ) from None
     n = inputs.count()
     if n < 2:
         maybe_screenshot(page, screenshot_dir, screenshot_label)
@@ -940,7 +940,7 @@ def harvest_documents(page, since: date, until: date, run_dir: Path,
         raise SystemExit(
             "Documents page filter buttons did not appear. Session "
             "may have expired, or UBS may have redesigned the page."
-        )
+        ) from None
     maybe_screenshot(page, screenshot_dir, "docs-rendered")
     if debug:
         debugcap.capture_page(page, run_dir, "30-documents", log=log,
@@ -1795,7 +1795,8 @@ def main(argv: list[str]) -> int:
                               else " and statement PDFs"))
                     txn_results = accounts  # echo discovery only
                 else:
-                    run = lambda name: args.only in (None, name)
+                    def run(name):
+                        return args.only in (None, name)
                     if run("positions"):
                         positions_meta = export_positions(
                             page, run_dir, args.screenshot_dir,

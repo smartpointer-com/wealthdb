@@ -286,7 +286,8 @@ def main(argv: list[str]) -> int:
             run_dir.mkdir(parents=True, exist_ok=True)
             debug_dir = run_dir
 
-    import tempfile, shutil
+    import tempfile
+    import shutil
     from camoufox.sync_api import Camoufox
 
     # Every captured venture/graphql exchange, in arrival order.

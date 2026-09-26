@@ -278,7 +278,7 @@ class Session:
 
     @classmethod
     def from_args(cls, stack: contextlib.ExitStack,
-                  args: argparse.Namespace, **kwargs) -> "Session":
+                  args: argparse.Namespace, **kwargs) -> Session:
         """A session laid out by the shared flags: ``--debug-dir`` (else a
         timestamped dir under /debug), ``--trace``, ``--chunk-interval``
         and, where the harness has it, ``--dom-interval``."""

@@ -435,7 +435,7 @@ class _DistributingBox(_Element):
     def fill(self, value, timeout=None):
         self.fills.append(value)
         if len(value) == amexclient.OTP_DIGITS and self.index == 0:
-            for box, digit in zip(self.group, value):
+            for box, digit in zip(self.group, value, strict=True):
                 box.value = digit
         else:
             self.value = value

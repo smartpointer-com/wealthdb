@@ -142,7 +142,7 @@ class _Watch:
 
 # --- REST over the browser context ---------------------------------------
 
-def api_headers(watch: "_Watch") -> dict:
+def api_headers(watch: _Watch) -> dict:
     """Headers for an authenticated data call: the harvested OIDC Bearer
     (elba data API) plus a JSON Accept. Bearer-less if not yet seen (the
     caller then relies on the session cookies the context shares)."""
@@ -152,14 +152,14 @@ def api_headers(watch: "_Watch") -> dict:
     return h
 
 
-def api_get_json(context, watch: "_Watch", url: str) -> tuple[int, object]:
+def api_get_json(context, watch: _Watch, url: str) -> tuple[int, object]:
     """GET `url` over the browser context (shares cookies) with the Bearer;
     return (status, parsed-json-or-None)."""
     resp = context.request.get(url, headers=api_headers(watch))
     return _resp_json(resp)
 
 
-def api_post_json(context, watch: "_Watch", url: str,
+def api_post_json(context, watch: _Watch, url: str,
                   data: dict) -> tuple[int, object]:
     """POST JSON `data` over the browser context with the Bearer; return
     (status, parsed-json-or-None)."""
@@ -176,7 +176,7 @@ def _resp_json(resp) -> tuple[int, object]:
     return resp.status, body
 
 
-def _probe_authenticated(context, watch: "_Watch") -> bool:
+def _probe_authenticated(context, watch: _Watch) -> bool:
     """The definitive signed-in signal: a `GET produkte` with the harvested
     Bearer returns 200 with a JSON array. It requires the Bearer (produkte
     401s on cookies alone — the live 2026-08-15 failure), so this is only
@@ -305,7 +305,7 @@ def _submit(page) -> bool:
     return False
 
 
-def _drive_login_form(context, page, watch: "_Watch", args) -> bool:
+def _drive_login_form(context, page, watch: _Watch, args) -> bool:
     """Fill and submit the cold blank-form login: resolve the region to its
     dropdown option + Verfüger prefix (via config/mandanten), select it, fill
     the prefixed Verfüger and PIN, and submit. Returns True once submitted."""
@@ -356,7 +356,7 @@ def _drive_login_form(context, page, watch: "_Watch", args) -> bool:
     return True
 
 
-def _drive_to_pushtan(context, page, watch: "_Watch", args) -> bool:
+def _drive_to_pushtan(context, page, watch: _Watch, args) -> bool:
     """Front half of a cli login: reach the login screen, then either drive
     the blank form (cold) or click the saved-user card (warm). Returns True
     once the login is submitted / the card is clicked (pushTAN follows)."""
@@ -390,7 +390,7 @@ def _drive_to_pushtan(context, page, watch: "_Watch", args) -> bool:
 
 # --- the shared authenticate() -------------------------------------------
 
-def authenticate(context, page, watch: "_Watch", *, args, cli_mfa: bool,
+def authenticate(context, page, watch: _Watch, *, args, cli_mfa: bool,
                  pushtan_timeout: int = PUSHTAN_TIMEOUT_S) -> bool:
     """Take a login to an authenticated session (DESIGN.md §A/§F).
 
@@ -438,7 +438,7 @@ def authenticate(context, page, watch: "_Watch", *, args, cli_mfa: bool,
     return True
 
 
-def _wait_for_auth(context, page, watch: "_Watch", timeout_s: int) -> bool:
+def _wait_for_auth(context, page, watch: _Watch, timeout_s: int) -> bool:
     """Poll for a working Bearer (the `produkte` probe) until success or
     timeout, pumping the event loop each tick. If the SPA reaches a real
     in-app route (login completed) but no Bearer has been harvested, reload

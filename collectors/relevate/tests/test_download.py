@@ -331,7 +331,7 @@ def test_parsed_report_restated_is_kept(tmp_path):
 def test_credit_note_corrected_is_kept(tmp_path):
     # A credit note is parsed into transactions; a re-issue under a stable id is
     # fetched and its NEW bytes kept, never linked to stale.
-    prior = _prior_run(tmp_path, DOC_ID_CREDIT, BODY, CREDIT_NAME)
+    _prior_run(tmp_path, DOC_ID_CREDIT, BODY, CREDIT_NAME)
     run = bronze.run_dir(tmp_path, CUR)
     run.mkdir()
     skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,

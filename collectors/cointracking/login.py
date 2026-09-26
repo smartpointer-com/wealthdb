@@ -137,7 +137,7 @@ def login(page, username: str, password: str) -> None:
         page.wait_for_selector(
             CODE_2FA_SELECTOR, state="visible", timeout=20_000,
         )
-    except Exception:
+    except Exception as exc:
         if is_dashboard(page):
             log.info("device-trust cookie valid; bypassed 2FA")
             return
@@ -145,7 +145,7 @@ def login(page, username: str, password: str) -> None:
             f"timed out waiting for 2FA prompt. Current URL: "
             f"{page.url}. The login schema may have changed; "
             f"re-run explore."
-        )
+        ) from exc
 
     code = prompt_for_2fa()
     if not code:
@@ -194,7 +194,7 @@ def login(page, username: str, password: str) -> None:
 
     try:
         page.wait_for_url("**/dashboard*", timeout=30_000)
-    except Exception:
+    except Exception as exc:
         # Dump the current page so we can see exactly what went
         # wrong (cointracking sometimes re-renders with a visible
         # error: "Invalid 2FA code", "Session expired", etc.).
@@ -206,7 +206,7 @@ def login(page, username: str, password: str) -> None:
             f"did not land on /dashboard after 2FA submit. "
             f"Current URL: {page.url}. Page body (first 2000 chars):"
             f"\n{body}"
-        )
+        ) from exc
 
     log.info("login successful — landed on %s", page.url)
 

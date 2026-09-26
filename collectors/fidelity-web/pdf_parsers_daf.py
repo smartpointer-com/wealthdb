@@ -111,8 +111,8 @@ def parse_ending_value(text):
     for line in text.splitlines():
         m = _ENDING_VALUE_RE.match(line.strip())
         if m:
-            as_of = "%04d-%02d-%02d" % (
-                int(m["year"]), _MONTH_NUMS[m["month"]], int(m["day"]))
+            as_of = (f"{int(m['year']):04d}-{_MONTH_NUMS[m['month']]:02d}-"
+                     f"{int(m['day']):02d}")
             return as_of, _parse_amount(m["amount"])
     return None, None
 
@@ -123,10 +123,10 @@ def parse_pool_rows(text):
     PoolRow; the totals are the table's own Total Value line (None
     when absent). Wrapped pool names are re-joined: a letters-only
     line directly after a parsed row extends that row's description."""
-    lines = [l.strip() for l in text.splitlines()]
+    lines = [ln.strip() for ln in text.splitlines()]
     try:
-        start = next(i for i, l in enumerate(lines)
-                     if l.startswith(_HOLDINGS_HEADER))
+        start = next(i for i, ln in enumerate(lines)
+                     if ln.startswith(_HOLDINGS_HEADER))
     except StopIteration:
         return [], None, None
     rows = []

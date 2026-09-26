@@ -53,14 +53,14 @@ from pathlib import Path
 
 from collectorkit import cli, silver, srcfp
 
+import pdf_parsers as pp
+import tax_form_parsers as tf
+from numparse import parse_amount
+
 # Re-export for backward compatibility with existing tests that call
 # load.apply_migrations(...) / load._current_schema_version(...) directly.
 apply_migrations = silver.apply_migrations
 _current_schema_version = silver.current_schema_version
-
-import pdf_parsers as pp
-import tax_form_parsers as tf
-from numparse import parse_amount
 
 # `parser_generations` (migration 0005) records which generation of the
 # document parsers produced the rows in hand. A stale one implies
@@ -222,7 +222,7 @@ class _ParsePoolManager:
             self._pool.shutdown(wait=False, cancel_futures=True)
             self._pool = None
 
-    def __enter__(self) -> "_ParsePoolManager":
+    def __enter__(self) -> _ParsePoolManager:
         return self
 
     def __exit__(self, *exc) -> bool:
@@ -231,7 +231,7 @@ class _ParsePoolManager:
 
 
 def _parse_statements(parse_jobs: list[dict],
-                      pool: "_ParsePoolManager | None",
+                      pool: _ParsePoolManager | None,
                       workers: int | None) -> list[dict]:
     """Parse every collected statement PDF, returning results aligned
     positionally with `parse_jobs`.
@@ -571,7 +571,7 @@ def _account_nickname(label: str | None, suffix: str) -> str | None:
 def load_run(conn: sqlite3.Connection, run_dir: Path,
              reparse: bool = False,
              workers: int | None = None,
-             pool: "_ParsePoolManager | None" = None,
+             pool: _ParsePoolManager | None = None,
              seen_logical_docs: set[tuple] | None = None) -> dict:
     """Load one bronze-run dir. Returns a stats dict for logging.
 
@@ -848,7 +848,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         # INTEROP.md §1 for the api↔web bridge it feeds).
         numbers_by_acct: dict[str, set[str]] = {}
 
-        for job, parsed in zip(parse_jobs, parsed_results):
+        for job, parsed in zip(parse_jobs, parsed_results, strict=True):
             if parsed.get("_error"):
                 log.warning(
                     "PDF parse failed for %s: %s",

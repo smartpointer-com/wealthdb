@@ -166,12 +166,12 @@ def login(page, email: str, password: str) -> None:
     try:
         page.wait_for_selector(f"{USER_SELECTOR}, {PWD_SELECTOR}",
                                state="visible", timeout=30_000)
-    except Exception:
+    except Exception as exc:
         raise RuntimeError(
             f"login form did not appear. {page_summary(page)}. Carta may "
             f"be showing a Cloudflare interactive challenge or the markup "
             f"changed — re-run `./carta explore` to re-map."
-        )
+        ) from exc
 
     if page.locator(PWD_SELECTOR).count() == 0:
         # Two-step flow: the email screen precedes the password screen.
@@ -181,11 +181,11 @@ def login(page, email: str, password: str) -> None:
         try:
             page.wait_for_selector(PWD_SELECTOR, state="visible",
                                    timeout=25_000)
-        except Exception:
+        except Exception as exc:
             raise RuntimeError(
                 f"password step did not appear after the email submit. "
                 f"{page_summary(page)}"
-            )
+            ) from exc
     elif page.locator(USER_SELECTOR).count() > 0:
         # Single-step form: both fields on one screen.
         page.locator(USER_SELECTOR).first.fill(email, timeout=10_000)
@@ -200,14 +200,14 @@ def login(page, email: str, password: str) -> None:
         page.wait_for_selector(
             CODE_2FA_SELECTOR, state="visible", timeout=25_000,
         )
-    except Exception:
+    except Exception as exc:
         if is_authenticated(page):
             log.info("device-trust cookie valid; 2FA bypassed")
             return
         raise RuntimeError(
             f"timed out waiting for the 2FA prompt. Wrong credentials, or "
             f"the login schema changed. {page_summary(page)}"
-        )
+        ) from exc
 
     code = prompt_for_2fa()
     if not code:
@@ -252,11 +252,11 @@ def login(page, email: str, password: str) -> None:
             "() => !location.host.includes('login.app.carta.com')",
             timeout=45_000,
         )
-    except Exception:
+    except Exception as exc:
         raise RuntimeError(
             f"did not leave the login host after 2FA (likely an invalid "
             f"code). {page_summary(page)}"
-        )
+        ) from exc
 
     log.info("login successful — landed on %s", page.url.split("?")[0])
 

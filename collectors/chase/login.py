@@ -211,7 +211,7 @@ def _authenticated_live(page) -> bool:
     return False
 
 
-def _session_authed(page, watch: "_AuthWatch") -> bool:
+def _session_authed(page, watch: _AuthWatch) -> bool:
     """The one definition of "signed in": the response watcher saw the
     authenticated call OR the live DOM shows the app shell."""
     return watch.ok or _authenticated_live(page)
@@ -357,7 +357,7 @@ def _submit_otp(page) -> bool:
             or _click_role(page, "button", "Verify"))
 
 
-def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
+def _cli_two_factor(page, watch: _AuthWatch, args) -> int:
     """Drive the fraud challenge from the terminal. Returns 0 on an
     authenticated session, non-zero (with a captured DOM + a pointer to
     vnc-login) when a challenge control can't be driven."""
