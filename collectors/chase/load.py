@@ -47,7 +47,9 @@ their own, `load_card_statements`, because a card statement is a different
 document (one card, no product segments, its own period line and sign
 convention) read for two things on two gates: its period balances, which load
 for EVERY era into `statement_balances`, and its transactions, which stay
-below the account's export seam like the deposit pass's.
+below the account's export seam like the deposit pass's. Above the seam a
+statement is read for one thing only: the payee of an export-era cheque,
+which the export reduces to `CHECK <n>` (`annotate_export_cheques`).
 
 The card period balances then anchor `derive_card_balances`, which
 reconstructs the running balance neither card export carries. It rolls the
@@ -1059,8 +1061,13 @@ def _chain_segments(conn, account_external_id: str, parsed_stmts: list) -> list:
     return chosen
 
 
+# How far past a day the statement covering it can be dated: a statement
+# period spans at most ~5 weeks, and the file is named for its end.
+_STATEMENT_SPAN = 45 * 86400
+
+
 def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
-                                deepest_seam: int) -> dict:
+                                wanted) -> dict:
     """Parse the deposit statement PDFs in the bronze tree into
     {period_end: parsed}, RELATIONSHIP-WIDE.
 
@@ -1078,10 +1085,9 @@ def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
     keeping the first copy parsed. One sha is one document however many
     account directories it sits in, so the hash set is pool-wide.
 
-    `deepest_seam` is the LATEST seam over the deposit accounts: a statement
-    period spans at most ~5 weeks, so a filename date this far past it can
-    only cover days some export already owns for every account, and the PDF
-    is skipped unparsed."""
+    `wanted(name_date)` says which statements are worth parsing, by the
+    period-end date in the file's name (None when the name carries none,
+    which is always parsed): a PDF it turns down is skipped unparsed."""
     pool: dict = {}
     seen: set[str] = set()
     cards_seen: set[str] = set()
@@ -1095,9 +1101,8 @@ def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
                 continue
             for pdf in sorted(acct_dir.glob("*.pdf")):
                 name_date = _statement_date_from_name(pdf.name)
-                if name_date is not None and \
-                        name_date >= deepest_seam + 45 * 86400:
-                    continue            # whole period is export-owned
+                if name_date is not None and not wanted(name_date):
+                    continue
                 sha, _ = bronze.sha256_file(pdf)
                 if sha in seen:
                     continue
@@ -1208,8 +1213,13 @@ def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path) -> i
         log.info("statements: no deposit export loaded yet — nothing to "
                  "anchor the statement chain to; skipping")
         return 0
-    pool = _deposit_statements_in_tree(bronze_dir, card_ids,
-                                       max(deposit_seams.values()))
+    # The LATEST seam over the deposit accounts: a statement period spans at
+    # most ~5 weeks, so a filename date this far past it can only cover days
+    # some export already owns for every account.
+    deepest_seam = max(deposit_seams.values())
+    pool = _deposit_statements_in_tree(
+        bronze_dir, card_ids,
+        lambda name_date: name_date < deepest_seam + _STATEMENT_SPAN)
     imported = skipped = 0
     for ext_id, seam in sorted(deposit_seams.items()):
         # Per account: the statements whose period OPENED before its seam —
@@ -1230,6 +1240,91 @@ def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path) -> i
         log.info("statements: imported %d tx before the export seam "
                  "(%d segment(s) skipped)", imported, skipped)
     return imported
+
+
+# ============================================================
+# Export cheques — the payee the statement prints
+# ============================================================
+#
+# Both exports reduce a cheque to `CHECK <n>`. One the payee converted to an
+# electronic debit prints on the statement as `Check # <n> <payee> Payment
+# Arc ID: …`, so the statement names who was paid where the export does not,
+# and the narrative is what categorises a row. The statement pass imports
+# rows only below the export seam, so this pass reads the statements covering
+# export-era cheques for that alone: a deposit export row whose narrative is
+# a bare cheque takes the narrative of the one statement row with its number
+# and amount, when that row names more than the cheque. A paper cheque, which
+# the statement prints without a payee, keeps the export's narrative.
+#
+# The row's id carries no text (`deposit_content_key`), so the rewrite
+# re-keys nothing, and a re-load never overwrites it (`_insert_transaction`
+# ignores an id already present). `payload.description_basis` marks a
+# narrative read off the statement, and `payload.cheque_statement_read` a row
+# whose covering statement has been read, so each is read once; a row no
+# statement covers yet is tried again on the next load.
+
+_BARE_CHEQUE_RE = re.compile(r"^\s*CHECK\s*#?\s*(\d+)\s*$", re.I)
+_STATEMENT_CHEQUE_RE = re.compile(r"^\s*Check\s*#\s*\d+\s*", re.I)
+
+
+def _names_a_payee(description: str | None) -> bool:
+    """Whether a statement cheque row's narrative says more than the cheque
+    it is: text with a letter in it once the `Check # <n>` opener is gone."""
+    rest = _STATEMENT_CHEQUE_RE.sub("", description or "", count=1)
+    return any(ch.isalpha() for ch in rest)
+
+
+def annotate_export_cheques(conn: sqlite3.Connection, bronze_dir: Path) -> int:
+    """Give each export-era cheque the payee its statement prints, and
+    return how many rows took one. Cheap when there is nothing to do: the
+    statements are opened only for rows still owed a read."""
+    card_ids = card_account_ids_in_tree(bronze_dir)
+    todo = []
+    for fitid, acct, posted, amount, check, desc, payload in conn.execute(
+            "SELECT fitid, account_external_id, posted_at, amount, "
+            "check_number, description, payload FROM transactions "
+            f"WHERE {_EXPORT_SOURCES_SQL} AND upper(description) LIKE 'CHECK%'",
+            EXPORT_SOURCES):
+        m = _BARE_CHEQUE_RE.match(desc or "")
+        if acct in card_ids or not m:
+            continue
+        body = _payload_dict(payload)
+        if body.get("cheque_statement_read"):
+            continue
+        todo.append((fitid, posted, amount, (check or m.group(1)).strip(), body))
+    if not todo:
+        return 0
+    days = [posted for _, posted, *_ in todo]
+    pool = _deposit_statements_in_tree(
+        bronze_dir, card_ids,
+        lambda name_date: any(d <= name_date <= d + _STATEMENT_SPAN
+                              for d in days))
+    named = 0
+    for fitid, posted, amount, number, body in todo:
+        covering = [p for p in pool.values()
+                    if _epoch_day(p.period_start) <= posted
+                    <= _epoch_day(p.period_end)]
+        if not covering:
+            continue                    # its statement is not out yet
+        matches = [t for p in covering for seg in p.segments
+                   for t in seg.transactions
+                   if (t.check_number or "").strip() == number
+                   and _cents(t.amount) == _cents(amount)]
+        body["cheque_statement_read"] = True
+        description = None
+        if len(matches) == 1 and _names_a_payee(matches[0].description):
+            description = " ".join(matches[0].description.split())
+            body["description_basis"] = "statement_pdf"
+            named += 1
+        conn.execute(
+            "UPDATE transactions SET description = COALESCE(?, description), "
+            "payload = ? WHERE fitid = ?",
+            (description, silver.canonical_json(body), fitid))
+    conn.commit()
+    if named:
+        log.info("statements: %d export cheque(s) took the payee their "
+                 "statement prints", named)
+    return named
 
 
 # ============================================================
@@ -2123,6 +2218,10 @@ def main(argv: list[str]) -> int:
                 silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
                                         STATEMENT_GENERATION)
             _set_post_passes_pending(conn, False)
+        # On every load, not only when the passes above are owed: a cheque
+        # can reach the export before the statement that names its payee
+        # does, and the pass reads nothing once every cheque is settled.
+        annotate_export_cheques(conn, args.bronze_dir)
         log.info("done: %d run(s) ingested into %s", loaded, db_path)
     finally:
         conn.close()

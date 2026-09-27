@@ -507,6 +507,17 @@ rows.
   stamped at all, so the next load tries again rather than committing the
   shortfall. That settles after one retry, which has nothing better to
   compare against, and warns each time.
+- The export reduces a cheque to `CHECK <n>`, while the statement prints one
+  the payee converted to an electronic debit as `Check # <n> <payee> Payment
+  Arc ID: …` — the only place its payee appears. `annotate_export_cheques`
+  runs on every load and reads, for each deposit export row whose narrative
+  is a bare cheque, the statements that can cover its date; the one
+  statement row with its number and amount gives the export row its
+  narrative when it names more than the cheque (`payload.description_basis
+  = "statement_pdf"`). A paper cheque, printed without a payee, keeps
+  `CHECK <n>`. The export row's id carries no text, so nothing re-keys, and
+  `payload.cheque_statement_read` keeps each statement from being read
+  again; a cheque no statement covers yet is tried on the next load.
 
 ### §F — Session persistence (answered: not persistent)
 

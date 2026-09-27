@@ -2598,3 +2598,102 @@ def test_a_short_re_derivation_is_not_stamped_so_the_next_load_retries(tmp_path)
         (load.STATEMENT_GENERATION_SCOPE,)).fetchone()[0] == \
         load.STATEMENT_GENERATION
     conn.close()
+
+
+# ============================================================
+# Export cheques — the payee the statement prints
+# ============================================================
+
+def _seed_export_cheque(conn, posted, amount, number, fitid="FCHK"):
+    load._insert_transaction(conn, EXT, {
+        "fitid": fitid, "posted_at": posted, "amount": amount, "kind": None,
+        "description": f"CHECK {number}", "check_number": number,
+        "balance": None, "source": "qfx", "payload": {"memo": None}})
+    conn.commit()
+
+
+def _statement_tree(tmp_path, *names):
+    run = tmp_path / "20980801T000000Z"
+    (run / "statements" / EXT).mkdir(parents=True)
+    (run / "accounts.json").write_text(json.dumps(
+        [{"account_external_id": EXT, "product": "dda"}]))
+    for name in names:
+        (run / "statements" / EXT / name).write_bytes(b"%PDF " + name.encode())
+    return tmp_path
+
+
+def _cheque_statement(monkeypatch, rows, calls):
+    def fake_parse(path):
+        calls.append(path.name)
+        return _multi(date(2098, 3, 19), date(2098, 4, 17), [sp.StatementSegment(
+            beginning_balance=Decimal("900.00"), ending_balance=Decimal("100.00"),
+            transactions=[sp.StatementTxn(d, Decimal(a), desc, check_number=n)
+                          for d, a, desc, n in rows])])
+    monkeypatch.setattr(load.statement_parser, "parse_statement_pdf", fake_parse)
+
+
+def _cheque_row(conn):
+    desc, payload = conn.execute(
+        "SELECT description, payload FROM transactions WHERE fitid = 'FCHK'"
+    ).fetchone()
+    return desc, json.loads(payload)
+
+
+def test_an_export_cheque_takes_the_payee_its_statement_prints(tmp_path, monkeypatch):
+    conn = _conn()
+    _seed_export_cheque(conn, _epoch(2098, 4, 3), -800.0, "2002")
+    tree = _statement_tree(tmp_path, "2098-04-17.pdf", "2098-09-17.pdf")
+    calls = []
+    _cheque_statement(monkeypatch, [
+        (date(2098, 4, 3), "-800.00",
+         "Check # 2002 Acme Tax Office Payment Arc ID: 12345", "2002"),
+        (date(2098, 4, 3), "-50.00", "", "2001"),
+    ], calls)
+    assert load.annotate_export_cheques(conn, tree) == 1
+    desc, payload = _cheque_row(conn)
+    assert desc == "Check # 2002 Acme Tax Office Payment Arc ID: 12345"
+    assert payload["description_basis"] == "statement_pdf"
+    assert payload["cheque_statement_read"] is True
+    assert payload["memo"] is None                  # the export's payload stays
+    # Only the statement that can cover the cheque is opened, and only once.
+    assert calls == ["2098-04-17.pdf"]
+    assert load.annotate_export_cheques(conn, tree) == 0
+    assert calls == ["2098-04-17.pdf"]
+
+
+def test_a_paper_cheque_keeps_the_export_narrative(tmp_path, monkeypatch):
+    # The Checks Paid section prints a paper cheque's number with no payee.
+    conn = _conn()
+    _seed_export_cheque(conn, _epoch(2098, 4, 3), -800.0, "2002")
+    tree = _statement_tree(tmp_path, "2098-04-17.pdf")
+    calls = []
+    _cheque_statement(monkeypatch, [(date(2098, 4, 3), "-800.00", "", "2002")], calls)
+    assert load.annotate_export_cheques(conn, tree) == 0
+    desc, payload = _cheque_row(conn)
+    assert desc == "CHECK 2002"
+    assert "description_basis" not in payload
+    assert payload["cheque_statement_read"] is True  # read; not read again
+    load.annotate_export_cheques(conn, tree)
+    assert calls == ["2098-04-17.pdf"]
+
+
+def test_a_cheque_the_statement_does_not_match_keeps_its_narrative(tmp_path, monkeypatch):
+    conn = _conn()
+    _seed_export_cheque(conn, _epoch(2098, 4, 3), -800.0, "2002")
+    tree = _statement_tree(tmp_path, "2098-04-17.pdf")
+    _cheque_statement(monkeypatch, [
+        (date(2098, 4, 3), "-801.00", "Check # 2002 Acme Tax Office Payment", "2002"),
+    ], [])
+    assert load.annotate_export_cheques(conn, tree) == 0
+    assert _cheque_row(conn)[0] == "CHECK 2002"
+
+
+def test_a_cheque_no_statement_covers_yet_is_tried_again(tmp_path, monkeypatch):
+    conn = _conn()
+    _seed_export_cheque(conn, _epoch(2098, 4, 25), -800.0, "2002")
+    tree = _statement_tree(tmp_path, "2098-04-17.pdf")   # ends before the cheque
+    calls = []
+    _cheque_statement(monkeypatch, [], calls)
+    assert load.annotate_export_cheques(conn, tree) == 0
+    assert calls == []                  # named for a period ending too early
+    assert "cheque_statement_read" not in _cheque_row(conn)[1]
