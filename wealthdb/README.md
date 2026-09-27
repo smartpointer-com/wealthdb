@@ -51,19 +51,20 @@ legal, or tax advice.
 
 ## Overview
 
-A personal-portfolio gold-layer CLI. Reads the per-source silver
-SQLite databases produced by the sibling
-[collectors](../collectors/) — one per bank, pension, and crypto
-source — and projects them into a canonical cross-bank DuckDB
-schema queryable through the `wealthdb` CLI.
+The gold engine of the suite. It reads the silver SQLite databases the
+[collectors](../collectors/) produce, one per source. It projects them
+into one canonical DuckDB schema. It reads that schema back as the
+suite's reports: holdings as of any date, time- and money-weighted
+returns, spending, income and the household's cash flow statement. The
+repo-root [README](../README.md) describes what each report answers.
 
 CLI only; the optional Metabase BI server lives in
 [../web/](../web/). Single Docker image; no host-side Go toolchain
 required.
 
-## Status
+## Subcommands
 
-All planned v1 functionality is in. The CLI ships with:
+Loading, querying and maintaining the gold store:
 
 | Subcommand | Purpose |
 | --- | --- |
@@ -165,6 +166,11 @@ and read-only sharing pattern.
   package layout.
 - **[docs/RETURNS-NOTES.md](docs/RETURNS-NOTES.md)** — TWR / MWR
   method and rationale.
+- **[docs/SPENDING.md](docs/SPENDING.md)**,
+  **[docs/INCOME.md](docs/INCOME.md)**,
+  **[docs/CASHFLOW.md](docs/CASHFLOW.md)** — the enrichment engine's
+  three readings: how a transaction gets its category, its payer, and
+  its place in the cash flow statement.
 - **[docs/TAXONOMY.md](docs/TAXONOMY.md)** — the 2-D
   `asset_class` × `vehicle` taxonomy.
 - **[docs/adapters/](docs/adapters/)** — per-source adapter design,

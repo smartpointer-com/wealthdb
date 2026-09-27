@@ -1,9 +1,20 @@
 # wealthdb
 
-A personal wealth-management data suite. It pulls holdings,
-transactions, and documents from every configured bank and pension
-provider, normalises them into one canonical store, and answers
-"what is held, anywhere, as of when?" from a single CLI.
+A personal-finance and investment-performance data suite.
+
+It collects holdings, transactions and documents from banks,
+brokerages, pension providers and private-market platforms. It
+consolidates them into one local database. From that database,
+one CLI and an optional set of dashboards answer:
+
+- what was held, anywhere, as of any date;
+- what each account, each portfolio and the whole returned;
+- what came in and what went out, typed and categorised;
+- where the cash went, as a cash flow statement with the household's
+  own internal moves taken out.
+
+All data stays on the local machine. The collectors download, the
+engine consolidates, the reports read. No service sits in between.
 
 ## ⚠️ Security & liability disclaimer
 
@@ -52,15 +63,58 @@ software is not affiliated with, endorsed by, or sponsored by any
 financial institution; nothing in this repository is financial,
 legal, or tax advice.
 
-## Why wealthdb
+## What it does
 
-An AI agent becomes genuinely useful when it can answer questions
-over a complete financial picture — and genuinely dangerous when
-the way to get there is handing it banking credentials. A fully
-privileged e-banking login in the hands of a probabilistic,
-prompt-injectable system is a standing invitation for irreversible
-damage. wealthdb exists to make that trade unnecessary; its
-layered security model is the main reason it was built:
+wealthdb gives one private, complete view of a household's money,
+across every account it collects, and answers the questions a household
+asks of it.
+
+**Net worth and allocation, as of any day.** What is held, where, and
+what it is worth, in one currency at that day's rates. Holdings are
+classified by what they are exposed to and how they are held, so the
+answer can be "a third listed equity, a fifth real estate, a tenth of
+it inside retirement plans" rather than a list of tickers.
+
+**Investment performance.** Time-weighted and money-weighted returns
+for each account, each portfolio, each provider and the whole, over any
+period. Money moved between the household's own accounts is not counted
+as gain or loss, and every figure carries its own caveats.
+
+**Income and spending.** What arrived — wages, interest, dividends,
+rent — and what left, grouped by category, across all cards and
+accounts. The household's own transfers are taken out, so a move from
+checking to savings never looks like spending.
+
+**Cash flow.** A cash flow statement for the household: what came in,
+what went out, what was invested or sold, what went into or came out of
+retirement plans and trusts, and what was left. As a table, and as a
+Sankey diagram.
+
+A few of the questions it answers, and the commands behind them:
+
+```sh
+wealthdb holdings global -d 2024-12-31 -x CHF        # net worth at the end of 2024, in CHF
+wealthdb returns portfolios 2025                     # how each portfolio did in 2025
+wealthdb spending categories 2025 --period annual    # last year's spending by category
+wealthdb income summary 2025-01 2025-03 -C +withheld # Q1 income, with the tax withheld beside it
+wealthdb cashflow sankey 2025                        # the year's cash flow as a diagram
+```
+
+Everything is available from the command line, in tables, CSV or JSON,
+and from a set of local dashboards (`wealthdb web`): net worth,
+allocation, returns, spending, income and cash flow. A privacy mode
+shows percentages instead of amounts, for a screen others may see.
+`wealthdb help` lists every command with its flags; the topic documents
+under [Documentation](#documentation) cover each feature in depth.
+
+## Use with AI agents
+
+The same reports are safe to put in front of an AI agent. An agent is
+genuinely useful when it can answer questions over a complete financial
+picture. It is genuinely dangerous when the way to get there is handing
+it banking credentials: a fully privileged e-banking login in the hands
+of a probabilistic, prompt-injectable system is a standing invitation
+for irreversible damage. wealthdb keeps the two apart:
 
 1. **Credentials are handled only by static, reviewable code.**
    The collectors are deterministic scripts — auditable line by
@@ -78,141 +132,136 @@ layered security model is the main reason it was built:
    DB, so the surface exposed to an agent is consolidated,
    local, read-only queries — and nothing else.
 
-The result is a clean separation: an agent can answer "what is
-held, anywhere, as of when?" while no agent is ever given write
-access to the financial data — let alone the banking credentials
-that produced it.
+The result is a clean separation. An agent runs the same reports a
+person does, through `wealthdb --read-only`, with `-p` when amounts
+should stay out of a transcript. No agent is ever given write access
+to the financial data, let alone the banking credentials that produced
+it.
 
-The suite is a **monorepo** of two parts:
+## Data sources
 
-- **`wealthdb/`** — the **gold** engine: a Go CLI that reads the
-  per-source silver databases and projects them into a canonical
-  cross-bank DuckDB schema. This is the query surface.
-- **`collectors/`** — **bronze + silver** collectors, one per
-  source. Each logs in, downloads raw artefacts (bronze), and
-  parses them into a source-shaped silver SQLite (silver).
+There is one collector per provider. All of them use the same `login`,
+`download` and `load` verbs. [collectors/README.md](collectors/README.md)
+has the full table.
 
-See **[DESIGN.md](DESIGN.md)** for the bronze → silver
-→ gold model and how the pieces fit.
+- **Banks** — [UBS](collectors/ubs-web/) (netbanking and the
+  [PSN feed](collectors/ubs-psn/)), [Swissquote](collectors/swissquote/),
+  [Raiffeisen Austria](collectors/raiffeisen_at/),
+  [Chase](collectors/chase/), [First Citizens](collectors/firstcitizens/);
+  [American Express](collectors/amex/) cards.
+- **Brokerages** — [Schwab](collectors/schwab-api/) (the Trader API and
+  the [client web](collectors/schwab-web/)), [Fidelity](collectors/fidelity-web/).
+- **Pensions** — [VIAC](collectors/viac/) (pillar 3a and vested
+  benefits), [Relevate](collectors/relevate/) (pillar 2).
+- **Crypto** — [CoinTracking](collectors/cointracking/).
+- **Private markets** — [AngelList](collectors/angellist/),
+  [Carta](collectors/carta/), [EquityZen](collectors/equityzen/).
+- **Archives and reference** — [SVB](collectors/svb/) statement
+  archives (load-only), [`manual`](collectors/manual/) for holdings
+  with no portal — property, private loans, escrow claims — and
+  [FRED](collectors/fred/) for historic FX.
 
-## Component map
+## Adding a data source
 
-| Component | Role | Runtime | Source |
-| --- | --- | --- | --- |
-| [`wealthdb/`](wealthdb/) | Gold engine + `wealthdb` CLI | Go (Docker) | reads all silvers |
-| [`web/`](web/) | Optional Metabase BI server (`wealthdb web`) | Docker (Metabase) | reads a read-only gold snapshot |
-| [`collectors/`](collectors/) | One bronze+silver collector per source — banks, brokerages, pensions, crypto, reference data | Docker or Python venv | **see [collectors/README.md](collectors/README.md)** for the full list |
+wealthdb is designed to be extensible. Adding a bank, brokerage or
+pension provider means writing one collector and its adapter. The
+rest of the suite is untouched.
 
-Each component has its own `README.md` (usage), `DESIGN.md`
-(internals), and `CLAUDE.md` (agent guidance) at its root.
+- Every collector is a self-contained program with the same four
+  verbs: `login`, `download`, `load` and `prune`. It owns its raw
+  downloads (bronze) and its parsed, source-shaped SQLite (silver).
+  It never touches gold.
+- The gold engine reads that silver through an adapter: one Go
+  package that implements one interface and yields canonical records.
+  An adapter never sees the gold schema.
+- The shared [`collectorkit`](shared/collectorkit/) library supplies
+  the common parts: the CLI, credential files, browser sessions and
+  two-factor prompts, bronze and silver plumbing, and statement
+  parsers. A new collector adds only what is specific to its source.
 
-## Data flow
+[NEW-COLLECTOR-PROMPT.md](NEW-COLLECTOR-PROMPT.md) is the playbook
+for building a collector with an AI coding agent. It has a kickoff
+prompt template, a phased build plan, the protocol for the person who
+drives the live banking sessions, and the lessons from the existing
+fleet. Almost every collector in this repository was built that way.
+The agent never sees a credential; the person answers the login and
+two-factor prompts.
+
+## How it is built
+
+Three parts, in one repository:
+
+| Part | What it is | Runs as |
+| --- | --- | --- |
+| [`collectors/`](collectors/) | One program per source. Each logs in, downloads the raw files (bronze) and parses them into a source-shaped SQLite database (silver). | Docker, or a Python venv |
+| [`wealthdb/`](wealthdb/) | The gold engine. It reads every silver database into one canonical DuckDB store and serves the reports. | Go, in Docker |
+| [`web/`](web/) | The optional dashboards: Metabase over a read-only snapshot of gold. | Docker |
 
 ```
 collectors/<source>/         wealthdb/
-  download.py  → bronze         load  ─┐
-  load.py      → silver  ─────────────┼─→ gold (DuckDB)  →  wealthdb holdings positions
-  (one SQLite per source)             │                     wealthdb transactions
-                                      │                     wealthdb holdings accounts ...
-  silver DBs live under $XDG_DATA_HOME/wealthdb/<source>/, read-only to gold
+  download  → bronze            load  ─┐
+  load      → silver  ────────────────┼─→ gold (DuckDB)  →  wealthdb holdings | returns
+  (one SQLite per source)             │                     wealthdb spending | income | cashflow
+                                      │                     wealthdb transactions
+                                      │                     wealthdb web  (Metabase, over a snapshot)
 ```
 
-A collector owns its bronze (raw downloads) and silver (parsed,
-source-shaped SQLite). The gold engine reads every silver and
-merges them into one canonical schema. Sources only meet at gold.
+Sources only meet at gold. A collector never reads another collector's
+data and never touches gold; the engine reads silver and never writes
+it. Every part has its own `README.md` (usage), `DESIGN.md` (internals)
+and `CLAUDE.md` (rules for coding agents). [DESIGN.md](DESIGN.md)
+describes the bronze → silver → gold model.
 
-## Build & run
+## Getting started
 
-The repo-root `Makefile` orchestrates the whole suite — run it from
-the root, no `cd`-ing into subdirectories:
+Needs `git`, `make`, Docker and Python 3.10 or newer, on macOS or
+Linux. No Go toolchain: the engine builds inside its container.
 
 ```sh
-make            # show the target list
-make all        # build everything (gold engine + web + all collectors)
-make test       # test everything
-make lint       # gofmt + go vet (gold engine), ruff (Python)
-make build-<name> / make test-<name>   # one component (e.g. make build-schwab-web)
-make install    # symlink wealthdb + wealthdb-collect into ~/.local/bin, install the git hooks
-make hooks      # just the git hooks: a commit runs make lint on what it stages
-make update     # bring deps forward (host venvs, Go modules, base images)
+git clone <this repo> && cd wealthdb
+make all                          # build the engine, the dashboards and every collector
+make install                      # put wealthdb and wealthdb-collect on PATH (~/.local/bin)
+
+wealthdb-collect list             # the collectors
+wealthdb-collect viac login       # sign in to one source; answer its MFA prompt in the terminal
+wealthdb-collect viac download    # fetch the raw data (bronze)
+wealthdb-collect viac load        # parse it into the source's database (silver)
+
+wealthdb config                   # setup wizard: gold path, currency, the sources to read
+wealthdb init                     # create the gold database
+wealthdb load -a                  # consolidate every source (gold)
+wealthdb holdings global          # the first report
+wealthdb web start                # the dashboards (optional; see web/README.md)
 ```
 
-Each component also builds independently if you prefer, as shown below.
-
-**Gold engine** (Go; Docker or host toolchain):
-
-```sh
-cd wealthdb
-./wealthdb build            # build the wealthdb:latest image
-./wealthdb config           # first-time setup wizard
-./wealthdb load -a          # merge every configured silver into gold
-./wealthdb holdings positions        # query
-```
-
-**Collectors** — every collector ships a wrapper exposing the same
-`login` / `download` / `load` verbs, whether it runs in Docker (the
-web/REST ones) or on a host venv. Drive the whole fleet through the
-`wealthdb-collect` dispatcher:
-
-```sh
-make install                          # symlink wealthdb + wealthdb-collect into ~/.local/bin (BINDIR)
-
-wealthdb-collect list                 # the available collectors
-wealthdb-collect viac login           # mint/refresh session (prompts for MFA)
-wealthdb-collect viac download        # bronze dump
-wealthdb-collect viac load            # bronze → silver
-wealthdb-collect schwab-api download  # host-venv collectors look identical
-# without installing, the per-collector wrapper works too:
-collectors/viac/viac download
-```
-
-Docker collectors need their image built first (`make build-<name>`);
-host-venv collectors need their `.venv` (`make build-<name>`).
-
-The secrets / bronze / silver directories are never hard-coded —
-override them per command or fleet-wide (precedence: **CLI flag >
-`${PREFIX}_*` env > `WEALTHDB_*` env > default**):
-
-| location | flag | env var(s) | default |
-|---|---|---|---|
-| secrets | `--secrets-dir` | `${PREFIX}_SECRETS_DIR`, `WEALTHDB_SECRETS_DIR` | `~/.secrets` |
-| bronze  | `--data-dir`    | `${PREFIX}_DATA_DIR`, `WEALTHDB_DATA_ROOT/<name>` | `$XDG_DATA_HOME/wealthdb/<name>` |
-| silver  | `--silver-db`   | `${PREFIX}_SILVER_DB` | `<data-dir>/<name>.db` |
-
-`$XDG_DATA_HOME` follows the XDG Base Directory spec: when unset it
-falls back to `~/.local/share`, so the out-of-the-box data root is
-`~/.local/share/wealthdb`. The gold engine's `gold_db` and silver-source
-paths default the same way.
-
-```sh
-wealthdb-collect viac load --data-dir /mnt/bronze/viac --silver-db /mnt/silver/viac.db
-WEALTHDB_DATA_ROOT=/mnt/bronze wealthdb-collect schwab-api download
-```
-
-Every collector accepts the same single window flag, `--lookback`,
-taking either a preset (`1w`, `4w`, `3m`, `6m`, `1y`, `2y`, `5y`,
-`all`) or an ISO date (`2020-01-01`). It names where to start; the
-window runs from there to today and covers everything the source
-offers in it. Without it, downloads default to a 90-day window. The
-uniform flag is what lets a single orchestration script — a cron job,
-a shell loop — drive the whole fleet through `wealthdb-collect` and
-forward one `--lookback` to every collector.
+Credentials go in `~/.secrets/<source>.env`; each collector's README
+names the variables. Data lands under `$XDG_DATA_HOME/wealthdb`, which
+defaults to `~/.local/share/wealthdb`. `make` alone lists every build
+and test target. [collectors/README.md](collectors/README.md) has the
+flags all collectors share — data locations, the `--lookback` window —
+and [wealthdb/README.md](wealthdb/README.md) the engine's subcommands.
 
 ## Documentation
 
 - **[DESIGN.md](DESIGN.md)** — suite-wide pipeline,
   layer ownership, canonical model.
+- **[wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md)** — the gold
+  engine: schema, configuration, adapter contract, load semantics,
+  every subcommand.
+- **[RETURNS-NOTES.md](wealthdb/docs/RETURNS-NOTES.md)** — the returns
+  method and its conventions; **[SPENDING.md](wealthdb/docs/SPENDING.md)**,
+  **[INCOME.md](wealthdb/docs/INCOME.md)** and
+  **[CASHFLOW.md](wealthdb/docs/CASHFLOW.md)** — the three readings of
+  the enrichment engine; **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
+  the `asset_class` × `vehicle` classification.
 - **[CLAUDE.md](CLAUDE.md)** — agent ground rules shared across
   every component (security, PII, read-only access).
-- **[NEW-COLLECTOR-PROMPT.md](NEW-COLLECTOR-PROMPT.md)** — how to
-  build a collector for a new source with a coding agent: the phased
-  playbook, the user protocol, and a kickoff-prompt template. The
-  recommended flow: an authoring agent drafts the kickoff from the
-  template by interview + repo recon, the user reviews it, and a
-  fresh agent session builds from it.
-- **[wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md)** — deep
-  gold-engine design (schema, plugin contract, load semantics).
-- Per-component `README.md` / `DESIGN.md` under each directory.
+- **[NEW-COLLECTOR-PROMPT.md](NEW-COLLECTOR-PROMPT.md)** — the
+  playbook for building a collector with a coding agent.
+- **[collectors/README.md](collectors/README.md)**,
+  **[wealthdb/README.md](wealthdb/README.md)**,
+  **[web/README.md](web/README.md)** — usage of each part; the
+  `DESIGN.md` beside each covers its internals.
 
 ## License
 
