@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import logging
+import re
 import os
 import sys
 import time
@@ -168,61 +169,100 @@ def _dump_html(page, screenshot_dir: Path | None, name: str) -> None:
         log.warning("HTML dump %s failed: %s", path, e)
 
 
-def _log_feedback_poll(
-    screenshot_dir: Path | None, name: str, *,
-    status: int | str, ok: bool, elapsed: float, body: str,
-) -> None:
-    """Append one SmartL3 feedback long-poll result to a debug file.
+# A run of hex long enough to be an id rather than a word. Session-scoped
+# ids (the MFA page's urlId, document tokens) are what make a captured URL
+# unsafe to paste into a bug report; the PATH is what diagnoses a moved
+# endpoint, so the shape is kept and the ids are not.
+_HEX_ID_RE = re.compile(r"[0-9a-f]{8,}", re.I)
 
-    Records status, how early it returned, and the response body so we can
-    confirm the approved-vs-keep-alive response shape against the timing
-    heuristic the wait loop uses. Best-effort; only when a debug dir is set.
-    The body is auth-status only and lands in the supplied debug dir,
-    never in the repo."""
+
+def url_shape(url: str) -> str:
+    """A URL reduced to its shape: credential params masked, ids elided."""
+    return _HEX_ID_RE.sub("<id>", debugcap.redact_url(url))
+
+
+def sample_api_calls(page) -> list:
+    """This document's XHR/fetch calls, with how long each took.
+
+    Read out of `performance.getEntriesByType('resource')` rather than off a
+    Playwright response event: sync-Playwright callbacks only fire inside a
+    Playwright call, and the wait loop below sleeps between its polls, so an
+    event listener could miss what the page did in between. The timing
+    buffer has no such gap — but it IS per-document, so this is sampled
+    while the MFA page is still open, not once at the end.
+
+    The DURATION is the point, not just the URL: a server-held long poll
+    lasts seconds to tens of seconds, a status check milliseconds, and that
+    is what says which call the page is waiting on.
+
+    Best-effort: a page mid-navigation just yields nothing.
+    """
+    try:
+        return page.evaluate(
+            "() => performance.getEntriesByType('resource')"
+            "  .filter(e => e.initiatorType === 'xmlhttprequest'"
+            "            || e.initiatorType === 'fetch')"
+            "  .map(e => [e.name, Math.round(e.duration)])"
+        ) or []
+    except Exception:  # noqa: BLE001 - diagnostics never break a login
+        return []
+
+
+def merge_api_sample(seen: dict, sample) -> dict:
+    """Fold one sample into `seen`, keyed by URL shape.
+
+    The timing buffer accumulates within a document and resets on
+    navigation, so the highest count any single sample reported is the
+    per-document peak — and the longest duration ever seen is the one that
+    matters. Both are taken as maxima rather than summed, which would
+    multiply the same entries by the number of samples.
+    """
+    counts: dict = {}
+    longest: dict = {}
+    for name, ms in sample or []:
+        shape = url_shape(str(name))
+        counts[shape] = counts.get(shape, 0) + 1
+        longest[shape] = max(longest.get(shape, 0), int(ms or 0))
+    for shape, n in counts.items():
+        row = seen.setdefault(shape, {"calls": 0, "ms": 0})
+        row["calls"] = max(row["calls"], n)
+        row["ms"] = max(row["ms"], longest[shape])
+    return seen
+
+
+def report_api_calls(seen: dict, screenshot_dir: Path | None) -> None:
+    """Log what the MFA page called, longest call first, and save it.
+
+    This exists because the approval fast-path hangs off one endpoint whose
+    path has already moved once, and when it 404s there is nothing to go on:
+    the page's own calls were never recorded. They are now — id-masked, so a
+    line can be pasted into a report, and ordered by duration, because the
+    call the page is WAITING on is the one to poll.
+    """
+    if not seen:
+        return
+    rows = sorted(seen.items(), key=lambda kv: (-kv[1]["ms"], kv[0]))
+    lines = [f'{row["ms"]:>7}ms  x{row["calls"]:<3} {shape}'
+             for shape, row in rows]
+    log.info("MFA page issued %d distinct API call shape(s), "
+             "longest-held first:", len(rows))
+    for line in lines:
+        log.info("    %s", line)
     if not screenshot_dir:
         return
     try:
         screenshot_dir.mkdir(parents=True, exist_ok=True)
-        path = screenshot_dir / f"{name}_smartl3_feedback.log"
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(
-                f"+{elapsed:7.1f}s  status={status} ok={ok}  "
-                f"{len(body)}B  {body[:400]!r}\n"
-            )
-    except Exception:  # noqa: BLE001 - logging must never break login
-        pass
+        (screenshot_dir / "mfa_api_calls.txt").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not save the API-call list: %s", e)
 
 
-# Primary approval detector: long-poll the SmartL3 feedback endpoint (see
-# landmarks.smartl3_listen_url). Observed behaviour (from live logins):
-#   - Before approval, the server HOLDS each poll open ~to the timeout we ask
-#     for, then returns a keep-alive (~18-20s for a 20s request).
-#   - The instant the phone approves, the server returns immediately, and
-#     every subsequent poll then also returns immediately (the approval state
-#     is sticky).
-#   - The response BODY is identical in both cases (just a constant redirect
-#     target), so timing is the only client-side signal: a poll that returns
-#     well before the hold means approval landed. We then settle the F5
-#     session with one trigger nav — no push, since approval is already
-#     recorded (only the challenge endpoint fires a push).
-#   LISTEN_SERVER_HOLD_MS  — the `timeout` we ask the server to hold each poll.
-#   LISTEN_CLIENT_TIMEOUT_MS — our ceiling on one poll; must exceed the hold so
-#                              a normal keep-alive return isn't treated as error.
-#   LISTEN_EARLY_RETURN_SECONDS — returns faster than this count as approval.
-#       Set to half the hold: comfortably below the ~18-20s keep-alive band
-#       (so a keep-alive is never misread as approval, which would fire a stray
-#       push), yet detection stays snappy because an approval landing in the
-#       upper half is re-caught on the very next poll via the sticky state.
-LISTEN_SERVER_HOLD_MS = 20000
-LISTEN_CLIENT_TIMEOUT_MS = 28000
-LISTEN_EARLY_RETURN_SECONDS = LISTEN_SERVER_HOLD_MS / 1000 / 2
-
-# Fallback detector: if the feedback poll proves unusable here (repeated
-# errors, or an "early return" that turns out NOT to be an approval), we
-# revert to re-navigating to the trigger URL on this interval. That detects
-# approval too, but re-fires the push when approval hasn't landed yet — so the
-# interval must comfortably exceed the time to verify the code and approve, so
-# the common case still fires exactly one push.
+# How often the trigger URL is re-navigated while waiting for approval. This
+# is the only detector that does not depend on the MFA page navigating itself,
+# and it re-fires the push when approval has not landed yet — so the interval
+# must comfortably exceed the time to verify the code and approve, or a run
+# costs the phone more than one live request.
 MFA_APPROVAL_PROBE_SECONDS = 30
 
 
@@ -339,8 +379,10 @@ def check_session(args: argparse.Namespace) -> int:
                 pass
             _screenshot(page, args.screenshot_dir, f"check_{ts}_after_goto")
 
-            # Authentication signal: we land on the protected eBanking
-            # SPA path (not the F5 auth form). `is_post_auth_url`
+            # Authentication signal: asking for the protected eBanking
+            # root settles on a post-auth SPA — either that root or the
+            # Trading Platform F5 may redirect on to — rather than the
+            # auth form. `is_post_auth_url`
             # checks both halves — a bare "no /my.policy" test would
             # false-positive on F5's transient intermediates.
             log.info("Final URL: %s", page.url)
@@ -441,29 +483,36 @@ def login(args: argparse.Namespace) -> int:
 
             # Wait for approval, then for the post-auth landing URL.
             #
-            # PRIMARY detector — long-poll the SmartL3 feedback endpoint
-            # (sq.smartl3_listen_url). The server holds each poll open until
-            # the phone responds, so a poll returning materially earlier than
-            # the hold we asked for means approval landed: detected the instant
-            # it happens, and WITHOUT re-firing the push. On such an early
-            # return we navigate to the trigger URL once to settle the F5
-            # session — which does not fire a push, because approval is already
-            # recorded.
+            # DETECTOR — watch the URL. When the phone approves, the MFA
+            # SPA short-polls its own status endpoint
+            # (api/thirdlevel/smartL3/check-challenge/<urlId>, seen ~4s
+            # apart at ~80ms each) and navigates itself to the post-auth
+            # SPA, which the `is_post_auth_url` check below catches within
+            # a tick.
             #
-            # SELF-CORRECTING fallback — if the poll errors repeatedly, or an
-            # "early return" lands us back on the MFA page (i.e. it was a
-            # keep-alive, not an approval, so the timing heuristic is unsafe
-            # here), we stop trusting it and revert to re-navigating to the
-            # trigger URL every MFA_APPROVAL_PROBE_SECONDS. That is slower and
-            # may fire a second push, but always completes.
+            # BACKSTOP — the page does not always self-navigate (it stops
+            # polling when it detects automation), so the trigger URL is
+            # re-navigated every MFA_APPROVAL_PROBE_SECONDS. If approval has
+            # landed that routes straight through; if it has not, F5
+            # re-issues the push.
+            #
+            # There is no long-poll to ride any more: the held feedback
+            # channel this used to use answers 404, and what replaced it is
+            # a short poll whose verdict is in the response body. Reviving
+            # instant detection means reading that body — see landmarks.py.
             deadline = time.monotonic() + args.mfa_timeout
             last_logged_url = None
             last_heartbeat = 0.0
             last_repoke = time.monotonic()
-            use_feedback_poll = True
-            feedback_errors = 0
+            api_calls: dict = {}
+            last_api_sample = 0.0
             while time.monotonic() < deadline:
                 url = page.url
+                if time.monotonic() - last_api_sample > 1:
+                    # Sampled while the MFA document is still open: the
+                    # timing buffer is cleared by the next navigation.
+                    merge_api_sample(api_calls, sample_api_calls(page))
+                    last_api_sample = time.monotonic()
                 if url != last_logged_url:
                     log.info("waiting; current URL: %s", url)
                     last_logged_url = url
@@ -493,80 +542,12 @@ def login(args: argparse.Namespace) -> int:
                     time.sleep(0.25)
                     continue
 
-                # Fast path: SmartL3 feedback long-poll. Detects approval the
-                # instant it lands, without firing a push. A keep-alive return
-                # or an error simply falls through to the re-navigation
-                # backstop below.
-                if use_feedback_poll:
-                    listen_url = sq.smartl3_listen_url(
-                        url, timeout_ms=LISTEN_SERVER_HOLD_MS,
-                    )
-                    if listen_url is None:
-                        use_feedback_poll = False
-                    else:
-                        log.info("listening for approval (SmartL3 long-poll, "
-                                 "up to %ds)", LISTEN_SERVER_HOLD_MS // 1000)
-                        t0 = time.monotonic()
-                        resp = None
-                        try:
-                            resp = page.request.get(
-                                listen_url, timeout=LISTEN_CLIENT_TIMEOUT_MS,
-                            )
-                        except Exception as e:  # noqa: BLE001 - best-effort
-                            feedback_errors += 1
-                            log.warning("SmartL3 feedback poll failed (%d): %s",
-                                        feedback_errors, e)
-                            if feedback_errors >= 3:
-                                log.warning("disabling feedback fast-path; "
-                                            "re-navigation backstop only")
-                                use_feedback_poll = False
-                        if resp is not None:
-                            elapsed = time.monotonic() - t0
-                            feedback_errors = 0
-                            body = ""
-                            try:
-                                body = resp.text()
-                            except Exception:  # noqa: BLE001
-                                pass
-                            _log_feedback_poll(
-                                args.screenshot_dir, f"login_{ts}",
-                                status=resp.status, ok=resp.ok,
-                                elapsed=elapsed, body=body,
-                            )
-                            if resp.ok and elapsed < LISTEN_EARLY_RETURN_SECONDS:
-                                # Early return == phone responded. Settle the
-                                # F5 session via the trigger URL (no push,
-                                # since approval is already recorded).
-                                log.info("approval signalled via SmartL3 "
-                                         "feedback after %.1fs; finalizing",
-                                         elapsed)
-                                try:
-                                    page.goto(sq.LOGIN_TRIGGER_URL,
-                                              wait_until="domcontentloaded")
-                                except Exception as e:  # noqa: BLE001
-                                    log.warning("finalize navigation "
-                                                "failed: %s", e)
-                                if "sq-thirdlevel-plugin" in page.url:
-                                    # That early return was NOT an approval, so
-                                    # the timing heuristic is unreliable here
-                                    # (and this nav re-fired the push). Drop the
-                                    # fast-path; the backstop takes over.
-                                    log.warning("SmartL3 early return was not "
-                                                "an approval; disabling "
-                                                "feedback fast-path")
-                                    use_feedback_poll = False
-                                    _announce_operation_code(page)
-                                    last_repoke = time.monotonic()
-                                # Re-check from the top (post-auth -> break).
-                                continue
-                            # else keep-alive: fall through to the backstop.
-
-                # Backstop: re-navigate to the trigger URL on a fixed interval.
-                # This runs whether or not the fast-path is active, so approval
-                # is never missed even if the long-poll never observes it. If
-                # approval has landed this routes to the post-auth URL;
-                # otherwise F5 re-issues the push, so we re-print the fresh
-                # code to keep the terminal in sync with the phone.
+                # Backstop: re-navigate to the trigger URL on a fixed
+                # interval, so approval is never missed when the MFA page
+                # does not navigate itself. If approval has landed this
+                # routes to the post-auth URL; otherwise F5 re-issues the
+                # push, so the fresh code is re-printed to keep the terminal
+                # in sync with the phone.
                 if (
                     time.monotonic() - last_repoke > MFA_APPROVAL_PROBE_SECONDS
                     and "sq-thirdlevel-plugin" in url
@@ -587,6 +568,7 @@ def login(args: argparse.Namespace) -> int:
                 _screenshot(
                     page, args.screenshot_dir, f"login_{ts}_04_mfa_timeout",
                 )
+                report_api_calls(api_calls, args.screenshot_dir)
                 raise SystemExit(
                     f"Login did not complete within {args.mfa_timeout}s. "
                     f"Final URL: {page.url}. The push may not have been "
@@ -594,6 +576,7 @@ def login(args: argparse.Namespace) -> int:
                     f"have shown an unfamiliar interstitial. Re-run with "
                     f"--screenshot-dir -v to diagnose."
                 )
+            report_api_calls(api_calls, args.screenshot_dir)
             # After the wait fires, give the SPA a beat to settle —
             # F5 may issue follow-up redirects and additional cookies
             # before the session is fully bedded in.

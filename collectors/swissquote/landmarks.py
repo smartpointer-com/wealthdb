@@ -15,7 +15,6 @@ never be clicked.
 
 from __future__ import annotations
 
-import re
 
 # ============================================================
 # Hosts and entry-point URLs
@@ -28,10 +27,15 @@ HOST = "trade.swissquote.ch"
 # and serves the login + MFA pages at /my.policy, then redirects back
 # to the originally-requested URL once authenticated.
 #
+# The two authenticated SPAs. eBanking is the trigger URL's own; the
+# Trading Platform is the other app the same session opens.
+EBANKING_PATH = "/sqc-web-client-portal/"
+TRADING_PLATFORM_PATH = "/eding_trading-platform/"
+
 # There is no static "login URL" — we must request a protected resource
 # to trigger F5's interception. The eBanking SPA root works reliably
-# as the trigger and is also where auth lands.
-LOGIN_TRIGGER_URL = f"https://{HOST}/sqc-web-client-portal/"
+# as the trigger.
+LOGIN_TRIGGER_URL = f"https://{HOST}{EBANKING_PATH}"
 
 # Path fragment F5 uses for the login form. The MFA wait page lives
 # at a *different* URL (F5 transitions away from /my.policy as soon
@@ -39,17 +43,33 @@ LOGIN_TRIGGER_URL = f"https://{HOST}/sqc-web-client-portal/"
 # so "/my.policy not in url" is NOT a valid signal of "MFA done".
 F5_AUTH_PATH = "/my.policy"
 
+# Where F5 can land an authenticated session that asked for the trigger
+# URL. It does NOT always come back to the SPA it was sent to: the
+# eBanking root can redirect on to the Trading Platform, which is what
+# the account's own landing preference selects.
+POST_AUTH_PATHS = (EBANKING_PATH, TRADING_PLATFORM_PATH)
+
+
 # Positive landmark for "fully authenticated".
 def is_post_auth_url(url: str) -> bool:
-    """URL is on the post-auth eBanking SPA path, not the F5 auth form.
+    """URL is where F5 lands an authenticated session, not the auth form.
+
+    **Only meaningful for a URL reached by navigating to
+    `LOGIN_TRIGGER_URL`.** That root is F5-protected, so an
+    unauthenticated request for it is intercepted and served
+    /my.policy; settling on either post-auth SPA instead means the
+    session carried. Read on a URL that was opened DIRECTLY, this
+    predicate proves nothing — F5 serves the Trading Platform as a
+    public-looking blank SPA to an unauthenticated browser
+    (TRADING_PLATFORM_BASE_URL below), so navigate to the trigger URL
+    and test where you end up.
 
     F5 may or may not attach a `url_id=` query parameter on the
-    redirect; testing for it produced false negatives. The reliable
-    signal is just "we're on the protected SPA path and not on
-    /my.policy". Used by login.py post-MFA, by login.py --check, and
-    by download.py's session-verify.
+    redirect; testing for it produced false negatives. Used by
+    login.py post-MFA, by login.py --check, and by download.py's
+    session-verify — all three navigate to the trigger URL first.
     """
-    return F5_AUTH_PATH not in url and "/sqc-web-client-portal/" in url
+    return F5_AUTH_PATH not in url and any(p in url for p in POST_AUTH_PATHS)
 
 
 def is_profile_validation_url(url: str) -> bool:
@@ -70,7 +90,7 @@ def is_profile_validation_url(url: str) -> bool:
 # on a specific page. Reachable once F5 has issued a session cookie;
 # unlike LOGIN_TRIGGER_URL this URL does NOT trigger login interception
 # when unauthenticated (F5 serves it as a public-looking blank SPA).
-TRADING_PLATFORM_BASE_URL = f"https://{HOST}/eding_trading-platform/"
+TRADING_PLATFORM_BASE_URL = f"https://{HOST}{TRADING_PLATFORM_PATH}"
 ROUTE_PORTFOLIO_OVERVIEW = "#portfoliooverview"
 ROUTE_TRANSACTIONS = "#transactions"
 
@@ -116,36 +136,30 @@ MFA_OPERATION_CODE_SELECTOR = ".SmartL3__operation"
 # Per-push countdown text — informational, not used as a landmark.
 # The Swissquote UI says "This request is valid for 60 seconds".
 
-# SmartL3 approval feedback long-poll. The MFA wait page (an
-# sq-thirdlevel-plugin React SPA) issues a GET to this endpoint that the
-# server holds open until the phone responds to the push or the `timeout`
-# query param elapses. Polling it is how we detect approval the instant it
-# happens WITHOUT re-issuing the push — only the SmartL3 *challenge*
-# endpoint fires a new push. (Discovered by reading the public
-# sq-thirdlevel-plugin JS bundle: `${contextPath}/api/${path}`, where the
-# context root is the MFA page URL up to the '#'.)
-SMARTL3_FEEDBACK_LISTEN_PATH = "/api/thirdlevel/smartL3/feedback/listen/"
-_MFA_URL_ID_RE = re.compile(r"urlId=([0-9a-fA-F]+)")
-
-
-def smartl3_listen_url(mfa_page_url: str, *, timeout_ms: int) -> str | None:
-    """Build the SmartL3 feedback long-poll URL from the live MFA page URL.
-
-    `mfa_page_url` looks like
-        https://<host>/sq-thirdlevel-plugin/#thirdlevel/urlId=<hex>
-    The API base is the part before the '#'; the urlId comes from the
-    fragment. Returns None if no urlId is present (i.e. we're not on the
-    SmartL3 wait page), so the caller can fall back to another detector.
-    """
-    base, _, fragment = mfa_page_url.partition("#")
-    match = _MFA_URL_ID_RE.search(fragment)
-    if not match:
-        return None
-    url_id = match.group(1)
-    return (
-        f"{base.rstrip('/')}{SMARTL3_FEEDBACK_LISTEN_PATH}{url_id}"
-        f"?queryRedirectBaseUrl=true&cache=false&timeout={timeout_ms}"
-    )
+# SmartL3 approval detection. The MFA wait page (an sq-thirdlevel-plugin
+# React SPA) short-polls its own status endpoint while waiting for the phone:
+#
+#     <ctx>/api/thirdlevel/smartL3/check-challenge/<urlId>?queryRedirectBaseUrl=true
+#
+# observed ~4s apart at ~80ms each, where <ctx> is the MFA page URL up to the
+# '#'. Nothing in the page's traffic is held open, and the verdict is in the
+# RESPONSE BODY rather than in the timing.
+#
+# This used to be ridden directly: a sibling route,
+# /api/thirdlevel/smartL3/feedback/listen/<urlId>, was a genuine long poll the
+# server held until the phone answered, so an early return meant approval and
+# login could detect it instantly without re-firing the push. A capture from
+# 2026-06-12 shows the SPA itself calling that route and being answered 200.
+# By 2026-09-27 it answered 404 and the SPA had stopped calling it, so the
+# long-poll detector was removed; login now watches for the page to navigate
+# itself, with a re-navigation backstop.
+#
+# Reviving instant detection means polling check-challenge and PARSING ITS
+# BODY — which nothing here records yet. The bundle cannot be read to work out
+# the shape: every path under /sq-thirdlevel-plugin/ answers 401
+# unauthenticated, static assets included. `login.py --screenshot-dir DIR`
+# lists the page's own calls with durations, which is what identified the
+# above; a body capture would be the next step.
 
 
 # ============================================================

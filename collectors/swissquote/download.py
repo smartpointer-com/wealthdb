@@ -216,12 +216,13 @@ def _maybe_stop_trace(context, enabled: bool, trace_path: Path) -> None:
 def _verify_session(page) -> None:
     """Hit an F5-protected URL; raise unless we land at the post-auth URL.
 
-    The Trading Platform URL itself isn't a reliable login indicator
-    (F5 lets it load as a blank SPA when unauthenticated). We probe
-    the eBanking SPA root, which F5 protects properly: a valid
-    session settles inside `/sqc-web-client-portal/`; an invalid one
-    ends up at /my.policy. The `is_post_auth_url` predicate matches
-    only the former.
+    Navigating DIRECTLY to the Trading Platform proves nothing (F5 lets
+    it load as a blank SPA when unauthenticated), so the probe is always
+    the eBanking root, which F5 protects properly: a valid session
+    settles on a post-auth SPA — that root, or the Trading Platform F5
+    redirects on to when it is the account's landing app — while an
+    invalid one ends up at /my.policy. `is_post_auth_url` draws exactly
+    that line, and only for a URL reached this way.
     """
     from playwright.sync_api import TimeoutError as PWTimeout
     log.info("Verifying session via %s", sq.LOGIN_TRIGGER_URL)

@@ -26,7 +26,10 @@ navigate to or click within:
   (the `getPdfDocument` REST endpoint with the session cookie),
   not by clicking download links.
 - eBanking SPA root (`/sqc-web-client-portal/`) used by
-  `login.py --check` to test session liveness via URL transition.
+  `login.py --check` to test session liveness via URL transition. F5 may
+  redirect that request on to the Trading Platform
+  (`/eding_trading-platform/`); both count as authenticated, and neither
+  is read as such when opened directly.
 
 Permitted client-side DOM cleanup (not a write action): removing
 Pendo in-app-guide overlay nodes (`#pendo-base` / `._pendo-backdrop`
