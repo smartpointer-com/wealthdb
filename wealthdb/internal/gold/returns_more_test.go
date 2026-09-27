@@ -107,7 +107,7 @@ func TestRunReturnsPortfoliosGrain(t *testing.T) {
 	t0, t1 := dy(2024, time.January, 2), dy(2024, time.July, 2)
 	seedAcct(t, db, ctx, "ubs", "A1", canonical.AccountKindBrokerage, &pf, []snap{{t0, 1000}, {t1, 1100}}, nil)
 	seedAcct(t, db, ctx, "ubs", "A2", canonical.AccountKindBrokerage, &pf, []snap{{t0, 500}, {t1, 560}}, nil)
-	seedAcct(t, db, ctx, "ubs", "ORPH", canonical.AccountKindCash, nil, []snap{{t0, 200}, {t1, 200}}, nil)
+	seedAcct(t, db, ctx, "ubs", "ORPH", canonical.AccountKindSafekeeping, nil, []snap{{t0, 200}, {t1, 200}}, nil)
 
 	rows, err := RunReturns(ctx, db, params("portfolios", 0, t1))
 	if err != nil {

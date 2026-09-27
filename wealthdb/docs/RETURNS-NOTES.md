@@ -17,8 +17,9 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
   global) **are best-effort** — heuristic transfer netting plus synthetic
   onboarding for staggered inception. Returns are **not additive across
   grains**: `global == Σ accounts + hidden plumbing` is a *value* identity
-  (guarded by a reconciliation test; AccountsGrainHidden / returns_hide rows
-  are in global but emit no accounts-grain row), never a return identity.
+  (guarded by a reconciliation test; cash-account, AccountsGrainHidden and
+  returns_hide rows are in global but emit no accounts-grain row), never a
+  return identity.
 - **Mortgage / net-negative entities** are excluded from return rollups;
   per-entity twr/mwr = n/a + `nonpositive_base`, reported on a separate
   liability line.
@@ -346,9 +347,10 @@ every approximation is tagged. Computed set:
 inception override (DESIGN.md §5.4) rather than the data's own start.
 `accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of
 sweep sources (a single crypto wallet's return is noise; the coarser
-grains stay valid). Conduit plumbing goes further: `AccountsGrainHidden`
-sources (the deposit banks) and `returns_hide` ids emit no rows at all
-while still feeding every aggregate.
+grains stay valid). Plumbing goes further: every `cash` account, whatever
+its source, `AccountsGrainHidden` sources (the deposit banks) and
+`returns_hide` ids emit no rows at all, nor does a portfolio or source made
+only of them, while still feeding every aggregate.
 `mwr_negative_net_capital` reports XIRR as n/a because the
 window's net invested capital (opening base plus net external flow) is
 zero or below.

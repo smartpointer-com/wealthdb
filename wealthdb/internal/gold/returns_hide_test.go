@@ -2,7 +2,9 @@ package gold
 
 // Tests for the returns_hide config block: listed accounts/portfolios emit no
 // rows of their own at any grain, while their values and flows stay inside
-// every aggregate — the display mirror of returns_exclude.
+// every aggregate — the display mirror of returns_exclude. The fixtures'
+// hidden accounts are brokerage: a cash account hides whatever the config
+// says (TestCashAccountsHiddenWhateverTheSource).
 
 import (
 	"testing"
@@ -20,14 +22,14 @@ func TestReturnsHideAccount(t *testing.T) {
 
 	a, b := dy(2024, time.January, 2), dy(2024, time.December, 30)
 	pf := "PF1"
-	seedAcct(t, db, ctx, "sq", "CASHBOX", canonical.AccountKindCash, &pf,
+	seedAcct(t, db, ctx, "sq", "SLEEVE", canonical.AccountKindBrokerage, &pf,
 		[]snap{{a, 500}, {b, 500}},
 		[]txn{{dy(2024, time.June, 3), canonical.TxKindDeposit, 100}})
 	seedAcct(t, db, ctx, "sq", "BRK", canonical.AccountKindBrokerage, &pf,
 		[]snap{{a, 1000}, {b, 1100}}, nil)
 	end := eod(2024, time.December, 30)
 
-	hide := &ReturnsHide{Accounts: map[string]map[string]bool{"sq": {"CASHBOX": true}}}
+	hide := &ReturnsHide{Accounts: map[string]map[string]bool{"sq": {"SLEEVE": true}}}
 
 	p := params("accounts", 0, end)
 	p.ReturnsHide = hide
@@ -35,7 +37,7 @@ func TestReturnsHideAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReturns accounts: %v", err)
 	}
-	if _, ok := summaryFor(acctRows, "CASHBOX"); ok {
+	if _, ok := summaryFor(acctRows, "SLEEVE"); ok {
 		t.Error("hidden account must emit no accounts-grain row")
 	}
 	if _, ok := summaryFor(acctRows, "BRK"); !ok {
@@ -71,7 +73,7 @@ func TestReturnsHidePortfolio(t *testing.T) {
 
 	a, b := dy(2024, time.January, 2), dy(2024, time.December, 30)
 	pf := "PLUMB"
-	seedAcct(t, db, ctx, "sq", "CASHBOX", canonical.AccountKindCash, &pf,
+	seedAcct(t, db, ctx, "sq", "SLEEVE", canonical.AccountKindBrokerage, &pf,
 		[]snap{{a, 500}, {b, 500}}, nil)
 	seedAcct(t, db, ctx, "sq", "BRK", canonical.AccountKindBrokerage, nil,
 		[]snap{{a, 1000}, {b, 1100}}, nil)
@@ -95,7 +97,7 @@ func TestReturnsHidePortfolio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReturns accounts: %v", err)
 	}
-	if _, ok := summaryFor(acctRows, "CASHBOX"); ok {
+	if _, ok := summaryFor(acctRows, "SLEEVE"); ok {
 		t.Error("a hidden portfolio's member account must emit no row")
 	}
 

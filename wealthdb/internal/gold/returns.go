@@ -64,9 +64,9 @@ type ReturnParams struct {
 	// ReturnsHide suppresses accounts'/portfolios' own display rows at every
 	// grain while keeping their values and flows in every aggregate — the
 	// display mirror of ReturnsExclude, which removes an entity from the
-	// coarse-grain math instead. Composes with the policy-side
-	// AccountsGrainHidden mode. Nil ⇒ nothing hidden beyond policy. See
-	// entityHidden.
+	// coarse-grain math instead. Composes with the cash accounts and the
+	// policy-side AccountsGrainHidden mode, which are hidden regardless.
+	// Nil ⇒ nothing hidden beyond those. See entityHidden.
 	ReturnsHide *ReturnsHide
 	// PolicyOverrides adjusts per-source ReturnsPolicies from wealthdb.cfg's
 	// returns_policy_overrides block, keyed by silver_source_id. Nil/absent ⇒
@@ -107,11 +107,17 @@ type ReturnsHide struct {
 }
 
 // hiddenConstituent reports whether one account's own display presence is
-// suppressed: its source policy declares the accounts grain hidden
-// (AccountsGrainHidden plumbing), it is listed in returns_hide, or it belongs
-// to a listed portfolio. A nil receiver hides nothing config-side.
+// suppressed: it is a cash account, its source policy declares the accounts
+// grain hidden (AccountsGrainHidden plumbing), it is listed in returns_hide,
+// or it belongs to a listed portfolio. A nil receiver hides nothing
+// config-side.
+//
+// A cash account is plumbing whatever source it comes from: money passes
+// through it between other holdings, so a return of its own is noise — n/a
+// on a drained base, or a chained −100% on one drained and refilled.
 func (h *ReturnsHide) hiddenConstituent(a *accountData) bool {
-	if a.rpolicy.AccountsGrain == returns.AccountsGrainHidden {
+	if a.kind == string(canonical.AccountKindCash) ||
+		a.rpolicy.AccountsGrain == returns.AccountsGrainHidden {
 		return true
 	}
 	if h == nil {
@@ -309,9 +315,10 @@ func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 	var out []ReturnRow
 	for _, key := range order {
 		members := groups[key]
-		// Display-hidden plumbing (policy AccountsGrainHidden / config
-		// returns_hide): the entity emits no rows of its own — its values and
-		// flows already live inside every aggregate that contains it.
+		// Display-hidden plumbing (cash accounts / policy AccountsGrainHidden
+		// / config returns_hide): the entity emits no rows of its own — its
+		// values and flows already live inside every aggregate that contains
+		// it.
 		if entityHidden(p.Level, members, p.ReturnsHide) {
 			continue
 		}

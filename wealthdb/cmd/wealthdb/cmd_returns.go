@@ -289,8 +289,9 @@ Views (coarsest → finest):
   portfolios   one row per portfolio (+ a per-source no-portfolio bucket)
   accounts     one row per account (exact — the headline; coarse views are best-effort)
 
-Conduit plumbing (deposit-bank cash sources, config returns_hide ids) emits
-no rows of its own at any view; its balances and flows still feed every
+Plumbing (cash accounts, deposit-bank sources, config returns_hide ids)
+emits no rows of its own at any view, and neither does a portfolio or
+source made only of it; its balances and flows still feed every
 aggregate. The global view always includes everything.
 
 Window (positional, optional; default: since first snapshot → today):

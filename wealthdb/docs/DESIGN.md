@@ -925,7 +925,8 @@ silver holding positions but no transaction history).
   `accounts_grain_meaningless`, or no rows at all (plumbing — values and
   flows still enter every aggregate; the deposit-bank conduit sources
   register `hidden` as their default). Overriding to `"normal"` is how a
-  deployment re-surfaces a hidden source's rows.
+  deployment re-surfaces a hidden source's rows — all but its cash
+  accounts, which stay hidden whatever this says (§5.7).
 - **Partial semantics:** unset fields keep the registered policy's values;
   code-side knobs without a config field (onboarding scope, conduit kinds,
   inception mode, …) are never touched.
@@ -955,13 +956,18 @@ an entity from the coarse-grain math instead.
   every account is hidden, a no-portfolio bucket of hidden accounts) emits
   no row either. The global grain always shows — hidden plumbing still
   aggregates there, values and flows included.
+- **Always hidden:** every account of kind `cash`, whatever its source and
+  its policy. A cash account is plumbing — money passes through it between
+  other holdings — so a return of its own is noise: n/a on a drained base,
+  or a chained −100% on one drained and refilled. By the rule above, a
+  portfolio or source made only of cash accounts emits no row either.
 - **Policy composition:** per-source policies already hide whole conduit
   sources (`AccountsGrainHidden` — the deposit-bank collectors register it
   by default); this block covers deployment-specific ids on top. An id in
   both `returns_hide` and `returns_exclude` is excluded from the math AND
   shows nowhere.
 - **Returns only.** Holdings / net-worth views are unaffected.
-- Absent ⇒ nothing hidden beyond policy, byte-identical to before.
+- Absent ⇒ nothing hidden beyond the cash accounts and policy.
 
 ### 5.8 Cross-source transfer matching (opt-in)
 

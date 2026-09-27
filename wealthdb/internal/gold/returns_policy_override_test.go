@@ -89,21 +89,24 @@ func TestPolicyOverrideFlowRegime(t *testing.T) {
 // TestPolicyOverrideAccountsGrain pins the accounts_grain override in the
 // restoring direction: chase registers hidden plumbing by default (see
 // internal/silver/chase/policy.go), so its rows are absent everywhere — and
-// the "normal" override brings them back as fully computed returns.
+// the "normal" override brings back an account the policy hid. It cannot
+// bring back a cash account, which hides whatever the policy says.
 func TestPolicyOverrideAccountsGrain(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "chx", "chase")
 
 	a, b := dy(2024, time.January, 2), dy(2024, time.December, 30)
-	seedAcct(t, db, ctx, "chx", "CHK", canonical.AccountKindCash, nil,
+	seedAcct(t, db, ctx, "chx", "SWEEP", canonical.AccountKindBrokerage, nil,
 		[]snap{{a, 4000}, {b, 4100}}, nil)
+	seedAcct(t, db, ctx, "chx", "CHK", canonical.AccountKindCash, nil,
+		[]snap{{a, 900}, {b, 950}}, nil)
 	end := eod(2024, time.December, 30)
 
 	rows, err := RunReturns(ctx, db, params("accounts", 0, end))
 	if err != nil {
 		t.Fatalf("RunReturns: %v", err)
 	}
-	if _, ok := summaryFor(rows, "CHK"); ok {
+	if _, ok := summaryFor(rows, "SWEEP"); ok {
 		t.Fatal("hidden plumbing must emit no accounts row without the override")
 	}
 
@@ -114,15 +117,18 @@ func TestPolicyOverrideAccountsGrain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReturns: %v", err)
 	}
-	r, ok := summaryFor(rows, "CHK")
+	r, ok := summaryFor(rows, "SWEEP")
 	if !ok {
-		t.Fatal("no CHK accounts row under the normal override")
+		t.Fatal("no SWEEP accounts row under the normal override")
 	}
 	if r.TWR == nil {
 		t.Error("the normal override must restore a computed accounts-grain TWR")
 	}
 	if qualityHas(r, "accounts_grain_meaningless") {
 		t.Errorf("the normal override must not blank: %v", r.Quality)
+	}
+	if _, ok := summaryFor(rows, "CHK"); ok {
+		t.Error("a cash account must stay hidden under the normal override")
 	}
 }
 

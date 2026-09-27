@@ -123,7 +123,9 @@ func BankFlowPolicy() FlowPolicy {
 // sources — so its rows are noise at every grain (a drained-then-refunded
 // account chains a permanent −100%) and none are emitted; the balances and
 // flows still enter every aggregate, where transfer legs against tracked
-// sources cancel.
+// sources cancel. The engine hides a cash account on any source
+// (gold.hiddenConstituent); the policy says it for the whole source, so it
+// holds for an account of another kind such a source ever emits.
 func DepositBankPolicy() ReturnsPolicy {
 	p := DefaultReturnsPolicy(BankFlowPolicy())
 	p.AccountsGrain = AccountsGrainHidden
