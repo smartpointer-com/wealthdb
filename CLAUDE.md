@@ -152,7 +152,10 @@ root, no `cd`-ing into subdirectories:
 
 - `make all` / `make test` — build or test everything.
 - `make lint` — gofmt and `go vet` over the gold engine, ruff over
-  every Python module (rules in the root `ruff.toml`).
+  every Python module (rules in the root `ruff.toml`). The pre-commit
+  hook (`.githooks/`, installed by `make hooks` or `make install`)
+  runs it on the staged tree and refuses a commit it fails on or
+  rewrites.
 - `make build-<name>` / `make test-<name>` — one component (the
   gold engine is `wealthdb`; e.g. `make test-wealthdb`).
 - `make update` — bring deps forward (host venvs, Go modules, base

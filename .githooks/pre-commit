@@ -1,0 +1,44 @@
+#!/bin/sh
+# pre-commit — refuse a commit that `make lint` fails on or rewrites.
+#
+# The lint runs on exactly what is being committed: the index is
+# exported to a scratch tree, so an unstaged edit neither hides a finding
+# nor raises one. The scratch tree sits under the XDG cache dir because
+# Docker (Colima) sees only the paths it mounts, and it borrows this
+# checkout's ruff venv instead of building one per commit.
+#
+# `make lint` only checks; a lint step that ever rewrites a staged file
+# fails the hook too, since the commit would then not be what passed.
+#
+# Installed by `make hooks` (core.hooksPath); `git commit --no-verify`
+# skips it.
+set -eu
+
+repo="$(git rev-parse --show-toplevel)"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb"
+mkdir -p "$cache"
+tree="$(mktemp -d "$cache/pre-commit.XXXXXX")"
+trap 'rm -rf "$tree"' EXIT
+trap 'exit 1' INT TERM
+
+git checkout-index --all --prefix="$tree/"
+
+# Checksums of every staged file, read in the scratch tree. The list
+# comes from the index being committed; git runs a hook at the top of
+# the work tree, so a relative GIT_INDEX_FILE resolves here.
+staged_sums() {
+	git ls-files -z | (cd "$tree" && xargs -0 shasum -a 256)
+}
+before="$(staged_sums)"
+
+if ! make -s -C "$tree" lint LINT_VENV="$repo/shared/lint/.venv"; then
+	echo "pre-commit: make lint failed on the staged tree; commit refused" >&2
+	exit 1
+fi
+
+if [ "$(staged_sums)" != "$before" ]; then
+	echo "pre-commit: make lint rewrote staged files; commit refused:" >&2
+	printf '%s\n' "$before" | (cd "$tree" && shasum -a 256 -c --quiet) 2>&1 \
+		| sed 's/^/  /' >&2 || true
+	exit 1
+fi

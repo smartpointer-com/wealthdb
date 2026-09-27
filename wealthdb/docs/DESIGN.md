@@ -2924,7 +2924,9 @@ one that times a persist into a reader's wall-clock window.
 `make lint` runs `gofmt -l` and `go vet ./...` through `./wealthdb-go`
 on the same toolchain (gofmt as `go run cmd/gofmt`, the wrapper's
 entrypoint being `go`). It reads the mounted source, so it needs the
-image to exist but never rebuilds it.
+image to exist but never rebuilds it. The repo's pre-commit hook
+(`.githooks/pre-commit`, installed by `make hooks`) runs the same target
+on an export of the staged tree, so a commit is linted as committed.
 
 #### Wrapper shape
 

@@ -14,7 +14,9 @@
 #   make lint             gofmt + go vet over the gold engine, ruff over the Python
 #   make build-<name>     build one collector   (e.g. make build-schwab-web)
 #   make test-<name>      test one collector    (e.g. make test-schwab-web)
-#   make install          symlink wealthdb + wealthdb-collect into ~/.local/bin
+#   make install          symlink wealthdb + wealthdb-collect into ~/.local/bin,
+#                         and install the git hooks (make hooks)
+#   make hooks            run `make lint` before every commit (.githooks/)
 #
 # A collector with a Docker wrapper (collectors/<name>/<name>) builds via
 # `<wrapper> build` and tests with pytest inside the container; a host-venv
@@ -47,7 +49,7 @@ PYTHON := $(or \
   python3)
 
 .DEFAULT_GOAL := help
-.PHONY: all build test help install uninstall \
+.PHONY: all build test help install uninstall hooks \
         build-wealthdb test-wealthdb \
         build-web test-web clean-web cleanall-web \
         build-collectors test-collectors \
@@ -76,7 +78,7 @@ test: test-wealthdb test-web test-collectors test-collectorkit test-wrappers
 BINDIR    ?= $(HOME)/.local/bin
 REPO_ROOT := $(abspath .)
 
-install:
+install: hooks
 	@mkdir -p "$(BINDIR)"
 	@ln -sf "$(REPO_ROOT)/wealthdb/wealthdb"     "$(BINDIR)/wealthdb"
 	@ln -sf "$(REPO_ROOT)/bin/wealthdb-collect"  "$(BINDIR)/wealthdb-collect"
@@ -88,6 +90,17 @@ install:
 uninstall:
 	@rm -f "$(BINDIR)/wealthdb" "$(BINDIR)/wealthdb-collect"
 	@echo "  removed $(BINDIR)/wealthdb and $(BINDIR)/wealthdb-collect"
+	@if [ "$$(git config --get core.hooksPath)" = .githooks ]; then \
+		git config --unset core.hooksPath; \
+		echo "  removed the git hooks (core.hooksPath)"; \
+	fi
+
+# The repo's git hooks live in .githooks/, tracked, and git runs them once
+# core.hooksPath names that dir. The pre-commit hook runs `make lint` on the
+# staged tree and refuses a commit it fails on or rewrites.
+hooks:
+	@git config core.hooksPath .githooks
+	@echo "  git hooks: core.hooksPath -> .githooks (pre-commit runs make lint)"
 
 build-collectors: $(addprefix build-,$(COLLECTORS))
 test-collectors:  $(addprefix test-,$(COLLECTORS))
@@ -412,7 +425,8 @@ help:
 	@echo "  make test-<name>        test one collector  (e.g. test-schwab-web)"
 	@echo ""
 	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/.local/bin)"
-	@echo "  make uninstall          remove those symlinks"
+	@echo "  make hooks              run make lint before every commit (install runs it too)"
+	@echo "  make uninstall          remove those symlinks and the hooks"
 	@echo ""
 	@echo "  make clean              remove build artefacts (pycache, caches)"
 	@echo "  make cleanall           also remove docker images + venvs"
