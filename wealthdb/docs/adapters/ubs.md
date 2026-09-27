@@ -55,7 +55,7 @@ identifier dimensions show up in every gold row:
 | `option_contracts` | `positions` — `(foreign_exchange, option)` | Same. |
 | `money_market_contracts` | `positions` — `(cash, time_deposit)` | Same. |
 | `otc_contracts` | `positions` — `(foreign_exchange, forward)`, or `(other, other)` for a non-FX underlying | Same. |
-| `events` | `transactions` | See `kind` mapping in §5. |
+| `events` | `transactions` | See `kind` mapping in §5. Two rows the feed does not carry as events are booked from them for the accounts the statement feed never reaches: the other leg of a conversion an MT940 line describes, and the cash an MT566 confirmation paid (§7, *The accounts the feed does not speak for*). |
 | `portfolio_transactions` (web) | `transactions` | A managed portfolio's securities settlements, booked on the cash account that paid. See §11. |
 
 ## 4. `(asset_class, vehicle)` derivation for `holdings`
@@ -143,14 +143,14 @@ in `silver.events`) maps to gold's canonical `kind` taxonomy:
 
 | UBS | Gold | Adapter notes |
 | --- | --- | --- |
-| `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` / `dividend` / `buy` / `sell` / `fx` | from the MT940 `:86:` narrative, then the `:61:` type code as a floor (adapter splits — see §6); a deposit/withdrawal leg whose same-day mirror books on another own account is demoted to `other` (same-day offset veto, `buildSameDayOffsetVeto`) |
+| `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` / `dividend` / `buy` / `sell` / `fx` | from the MT940 `:86:` narrative, then the `:61:` type code as a floor (adapter splits — see §6); a deposit/withdrawal leg whose same-day mirror books on another own account carries the conduit verdict in its payload (same-day offset veto, `buildSameDayOffsetVeto`). A converted movement (`/OCMT/`) between two own accounts whose other account the feed does not speak for books its counter-leg on that account, as `mirror:<event id>` (§7, *The accounts the feed does not speak for*) |
 | `securities_movement` | `transfer_in` / `transfer_out` | sign-driven |
 | `trade_confirmation` | `buy` or `sell` | from MT515 payload `side`, which the collector reads off the order's business function (`:22H::BUSE//`). That tag carries two vocabularies: a market trade names the party the holder was (`BUYI`/`SELL`, folded to `BUY`/`SELL` at load), a fund order the operation (`SUBS` subscribes, `REDM` redeems, kept verbatim). Dated to the day the trade was struck, not the day it settled (the collector reads both of ISO's trade-date tags). Books against the settlement's cash account, resolved to its IBAN (`cashAccountIBANs`); the MT940 line for the same settlement folds away (the settlement fold, §7) |
 | `fx_confirmation` | `fx` | MT300 |
 | `fx_option_confirmation` | `fx` | MT305 (no dedicated option kind; the settlement is an FX cash effect) |
 | `loan_deposit_confirmation` | `other` | MT320/MT330/MT350 |
 | `corporate_action_notification` | `corporate_action` | MT564 |
-| `corporate_action_confirmation` | `corporate_action` | MT566 |
+| `corporate_action_confirmation` | `corporate_action` | MT566. A cash dividend (`DVCA`) or interest (`INTR`) paid into a cash account the MT940 feed does not speak for is also booked as a `dividend` / `interest` row on that account, `<event id>:cash`, from the confirmation's `CASHMOVE` block (§7, *The accounts the feed does not speak for*) |
 | `corporate_action_narrative` | `corporate_action` | MT568 (narrative; may collapse with the MT566 row) |
 | `securities_settlement_advice` | `transfer_in` / `transfer_out` | MT544–548 |
 | `precious_metal_trade` | `buy` or `sell` | MT600/MT601 |
@@ -534,6 +534,87 @@ identity rather than a signature over amounts, the same one
 the one dropped**, matching what the cut does on every later day: the
 MT940 row reaches gold and the export's text folds onto it.
 
+### The accounts the feed does not speak for
+
+The MT940 feed is delivered per account, and a relationship's delivery
+need not reach every account it holds: a current account is typically
+in scope, the cash accounts behind a managed portfolio — one per
+currency it trades in — often are not. The adapter reads which
+accounts the feed has ever carried a movement for, and from when
+(`psnCashCoverage`), and three decisions hang on it.
+
+**The hard cut is per account.** The cut at PSN start (above) yields a
+web row to the feed only where the feed holds the account's bookings at
+all: on an account the feed never reaches, the export is the record on
+every day, before the relationship's PSN start and after it. Without
+that, the cut dropped the export's rows for every account the delivery
+leaves out the moment the feed began, and every transfer into such an
+account from a covered one reached gold one-legged: an unpaired outflow
+in the cash flow statement, and owner capital leaving in the returns. Where the feed reached an account
+later than the relationship's start, the account's first statement is
+its cut instead: the export keeps the days before, the feed the days
+from it on, and the seam drops what the first statement reaches back
+over.
+
+**A conversion the feed describes gets its counter-leg.** A currency
+conversion between two own accounts is one booking on each. Where the
+feed speaks for one side alone, that side's `:86:` narrative still
+states the whole movement — the beneficiary is the holder, and the
+`/OCMT/` subfield names the currency and the figure the other account
+booked. The other account follows from that figure's currency, because
+a managed portfolio holds one cash account per currency and the paying
+account says which portfolio the conversion stayed inside
+(`portfolioCashAccounts`, the same index §11 settles trades through).
+So the adapter books the other leg itself (`conversionMirrors`): on
+that account, for the stated figure in the stated currency, on the
+same value day, in the opposite direction, under the id
+`mirror:<event id>`. The paying row is stamped with the counter
+account and the stated leg under the keys the export era already
+writes for the same facts, and the mirror carries the paying account
+as its counter account and the bank's reference for the entry, so the
+two pair by every road the cash flow statement has (docs/CASHFLOW.md
+§4) and the veto's conversion phase demotes them together for the
+returns engine — the feed row's stated leg is what `vetoConversions`
+pairs on, exactly as a statement-era `CCY amount Rate` line is.
+
+The mirror yields to any record of the booking itself. Where the feed
+speaks for the other account on that day, nothing is booked — its own
+statement carries the leg. Where the export carries the booking (an
+account outside the MT940 delivery but inside the export's), the
+export's row is the one gold holds and the mirror is withheld
+(`buildSameDayOffsetVeto`), while the feed row still names the account.
+A statement copy reconstructed from a later annual statement folds onto
+the mirror as onto any feed row (the era fold, above). A payment
+abroad in a foreign currency carries the same subfield and names the
+payee, not the holder, and books nothing; two accounts of one currency
+in one portfolio are refused rather than guessed at.
+
+**The cash a corporate action paid is booked from its confirmation.** A
+dividend reaches PSN twice: the MT566 confirmation on the custody
+account, and the MT940 line crediting the cash account. Where the feed
+speaks for the cash account, the line is the row and the confirmation
+stands beside it as a `corporate_action` marker with no amount. Where
+it does not, the confirmation is the only record, and its `CASHMOVE`
+block states what the line would have — the cash account
+(`:97A::CASH//`, in the bank's internal form, resolved through
+`cashAccountIBANs`), the amount posted (`:19B::PSTA//`), the gross and
+the tax withheld, and the payment day (`:98A::PAYD//`). The adapter
+books that leg (`corporateActionCashLegs`) as `<event id>:cash`, a
+`dividend` for `DVCA` and `interest` for `INTR`, with the gross and the
+tax in its payload. Only a cash option credited (`CAOP CASH`,
+`CRDB CRED`); a capital call confirmed as `OTHR`, an optional dividend
+taken in shares, an exchange — anything else — is left to the rails
+that already carry it. Without this, a mandate's foreign-currency
+income existed only in its balances, and reached the income statement,
+if at all, as the "other income" its later conversion into the covered
+account was read as.
+
+What the three leave: a conversion between two accounts the feed speaks
+for is two feed rows that share no reference, and the cash flow
+statement's amount join cannot cross currencies; the veto pairs them
+for returns, and the far account of each is still the matcher's
+affair (§12).
+
 ### The counter account, across both eras
 
 Two of the adapter's readers ask the same question — "does this row's
@@ -831,7 +912,8 @@ cannot make.
 
 | Silver row | Gold `kind` |
 | --- | --- |
-| amount < 0 | `purchase` |
+| amount < 0, descriptor is `TRANSFER TO ACCOUNT` | `withdrawal` |
+| amount < 0, anything else | `purchase` |
 | amount > 0, descriptor is `DIRECT DEBIT` / `DIRECT DEBIT (SWIFT)` / `TRANSFER FROM ACCOUNT` | `card_payment` |
 | amount > 0, anything else | `refund` |
 | amount == 0 | `other` |
@@ -840,7 +922,11 @@ On a card, direction *is* the classification: money off the card is
 spend, and money onto it is either the bill being settled or a merchant
 giving some back. Only the descriptor tells those two apart, and it is
 matched **whole** — a merchant whose name merely contains the words is
-still a refund.
+still a refund. The one debit that is not spend is the transfer rail's
+mirror: a credit balance the card returns to an account. It is the
+card's half of an own-account move, booked as the `withdrawal` the
+matcher pairs with the account's deposit; as a purchase it paired with
+nothing and stood in the statement as consumption.
 
 `reward` has no producer: UBS books a rewards credit as an ordinary
 credit with no descriptor that distinguishes it, so the kind is left
@@ -1052,6 +1138,14 @@ recorded the booking at all.
 
 ## 12. Open questions
 
+- **A conversion between two covered accounts.** Both legs are feed
+  rows, the `/OCMT/` subfield on the paying one states the other, and
+  the veto's conversion phase pairs them for returns — but neither row
+  names the other's account, so the cash flow statement's far account
+  for the pair rests on the matcher, whose amount join cannot cross
+  currencies. Stamping both rows with the counter account the stated
+  leg identifies (the receiving row is the one booking the stated
+  figure that day) would close it by the same road the mirror uses.
 - **MT568 vs MT566 collapsing.** Both carry corporate-action info;
   MT568 is narrative supplementing MT566. The adapter currently
   emits both as separate `corporate_action` events. Consider

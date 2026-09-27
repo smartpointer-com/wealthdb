@@ -213,6 +213,7 @@ func TestCardLedgerKindsFollowSignAndDescriptor(t *testing.T) {
 	insertCardTxn(t, r, "T-REFUND", 2100, 12.0, "EXAMPLE SHOP EXAMPLETOWN CHE", "Grocery stores")
 	insertCardTxn(t, r, "T-BILL", 2200, 250.0, "DIRECT DEBIT", "")
 	insertCardTxn(t, r, "T-BILL2", 2300, 100.0, "TRANSFER FROM ACCOUNT", "")
+	insertCardTxn(t, r, "T-RETURN", 2400, -100.0, "TRANSFER TO ACCOUNT", "")
 
 	batch, err := r.cardTransactions(context.Background(), fullWindow())
 	if err != nil {
@@ -227,6 +228,7 @@ func TestCardLedgerKindsFollowSignAndDescriptor(t *testing.T) {
 		"T-REFUND": canonical.TxKindRefund,
 		"T-BILL":   canonical.TxKindCardPayment,
 		"T-BILL2":  canonical.TxKindCardPayment,
+		"T-RETURN": canonical.TxKindWithdrawal,
 	}
 	for id, w := range want {
 		if got[id] != w {

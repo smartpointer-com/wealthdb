@@ -390,7 +390,7 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
 	}
 	return silver.NewTransactionStream(out), webTxOutcome{
-		hints:   psnHints{veto: pass.psnVeto, carry: pass.fold.psn},
+		hints:   psnHints{veto: pass.psnVeto, carry: pass.fold.psn, withheld: pass.withheld},
 		settled: settled,
 	}, nil
 }
@@ -410,6 +410,9 @@ type webTxPass struct {
 	seam             map[webTxTextKey]bool
 	offsetVeto       map[string]bool
 	psnVeto          map[string]bool
+	// withheld names the conversion mirrors the export already records
+	// (buildSameDayOffsetVeto); the PSN stream does not emit them.
+	withheld map[string]bool
 }
 
 func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []silver.RelationshipPair) (*webTxPass, error) {
@@ -421,6 +424,9 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []sil
 		return nil, err
 	}
 	if p.cut.relOfAccount, err = r.buildAccountToRelMap(ctx); err != nil {
+		return nil, err
+	}
+	if p.cut.coverage, err = psn.cashCoverage(ctx); err != nil {
 		return nil, err
 	}
 	if p.ownIBANs, err = r.buildOwnIBANSet(ctx); err != nil {
@@ -456,7 +462,7 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []sil
 	for k := range p.seam {
 		suppressed[k.txnNo+"@"+k.account] = true
 	}
-	if p.offsetVeto, p.psnVeto, err = r.buildSameDayOffsetVeto(ctx, psn, p.cut, suppressed); err != nil {
+	if p.offsetVeto, p.psnVeto, p.withheld, err = r.buildSameDayOffsetVeto(ctx, psn, p.cut, suppressed); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -675,18 +681,32 @@ SELECT transaction_external_id, value_date, account_external_id, currency_iso,
 }
 
 // psnCut is the hard cut at each banking relationship's PSN start: a
-// web row on or after it is PSN's to carry. Every pass that reasons
-// about the emitted rows applies it, so none counts a row nothing emits.
+// web row on or after it, on an account the MT940 feed speaks for, is
+// PSN's to carry. Every pass that reasons about the emitted rows
+// applies it, so none counts a row nothing emits.
 type psnCut struct {
 	startByRel   map[string]int64  // web relationship → PSN start (buildPSNStartByWebRel)
 	relOfAccount map[string]string // web account → web relationship
+	// coverage is which accounts the feed speaks for, and from when
+	// (psnCashCoverage). The feed is delivered per account, so a
+	// relationship's PSN start says nothing about an account the
+	// delivery leaves out — and the cut yields a web row to the feed
+	// only where the feed holds the account's bookings at all.
+	coverage psnCashCoverage
 }
 
 // excludes reports whether a web row on account at `at` falls on PSN's
-// side of the cut. A relationship with no PSN start cuts nothing.
+// side of the cut: on or after the relationship's PSN start, on an
+// account the feed speaks for by that day. A relationship with no PSN
+// start cuts nothing, and neither does one for an account the feed
+// never reaches — the cash accounts behind a managed portfolio, mostly
+// — because there is nothing on the other side to arbitrate against.
 func (c psnCut) excludes(account string, at int64) bool {
 	cut := c.startByRel[c.relOfAccount[account]]
-	return cut > 0 && at >= cut
+	if cut <= 0 || at < cut {
+		return false
+	}
+	return c.coverage.speaksFor(account, at)
 }
 
 // counterAccountInNarrative finds the counter account the EXPORT feed states
@@ -1224,6 +1244,20 @@ type offsetLeg struct {
 	statedAmt string
 }
 
+// offsetBooking is a leg's own booking — account, value day, currency
+// and signed figure — the identity two records of one entry share.
+type offsetBooking struct {
+	acct string
+	day  int64
+	ccy  string
+	amt  string
+}
+
+func (l offsetLeg) booking() offsetBooking {
+	return offsetBooking{acct: l.acct, day: l.day, ccy: bookingCurrency(l.ccy),
+		amt: strconv.FormatFloat(l.amt, 'f', 2, 64)}
+}
+
 // buildSameDayOffsetVeto pairs cash rows that offset each other on the same
 // value day — same currency, equal amount (within offsetVetoEps), opposite
 // direction, different own account — and returns the emitted-row keys of the
@@ -1256,16 +1290,33 @@ type offsetLeg struct {
 // twin (a shared Transaction no. — UBS stamps both sides of an
 // inter-account transfer with one number) and the loose offsets among the
 // legs left (pairSameDayOffsets).
-func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cut psnCut, suppressed map[string]bool) (webVeto, psnVeto map[string]bool, err error) {
+func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cut psnCut, suppressed map[string]bool) (webVeto, psnVeto, withheld map[string]bool, err error) {
 	legs, err := r.webOffsetLegs(ctx, cut, suppressed)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	psnLegs, err := psn.offsetLegs(ctx)
+	psnLegs, err := psn.offsetLegs(ctx, cut.coverage)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	legs = append(legs, psnLegs...)
+	// A conversion mirror stands in for a booking no feed carries. Where
+	// the export DOES carry it — the account is outside the MT940
+	// delivery but inside the export's — the export's row is the bank's
+	// own record and the mirror is withheld, here and in the PSN stream
+	// alike, so the booking is one leg in the veto's universe and one
+	// row in gold.
+	withheld = map[string]bool{}
+	exported := map[offsetBooking]bool{}
+	for _, l := range legs {
+		exported[l.booking()] = true
+	}
+	for _, l := range psnLegs {
+		if isMirrorID(l.txID) && exported[l.booking()] {
+			withheld[l.txID] = true
+			continue
+		}
+		legs = append(legs, l)
+	}
 
 	webVeto, psnVeto = map[string]bool{}, map[string]bool{}
 	record := func(l offsetLeg) {
@@ -1277,7 +1328,7 @@ func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, 
 	}
 	consumed := vetoConversions(slices.Clone(legs), record)
 	pairSameDayOffsets(legs, consumed, record)
-	return webVeto, psnVeto, nil
+	return webVeto, psnVeto, withheld, nil
 }
 
 // webOffsetLegs reads the web half of the offset veto's universe: every
@@ -1329,7 +1380,7 @@ func (r *webReader) webOffsetLegs(ctx context.Context, cut psnCut, suppressed ma
 
 // offsetLegs reads the PSN half of the offset veto's universe: every
 // deposit/withdrawal cash movement.
-func (r *psnReader) offsetLegs(ctx context.Context) ([]offsetLeg, error) {
+func (r *psnReader) offsetLegs(ctx context.Context, coverage psnCashCoverage) ([]offsetLeg, error) {
 	var legs []offsetLeg
 	err := r.eachCashMovement(ctx, "buildSameDayOffsetVeto (psn)", func(row psnCashRow) error {
 		var p cashMovementPayload
@@ -1351,13 +1402,41 @@ func (r *psnReader) offsetLegs(ctx context.Context) ([]offsetLeg, error) {
 		if p.Funds != "" {
 			ccy = p.Funds
 		}
+		// The other leg a converted movement states (`/OCMT/`), for the
+		// conversion phase — the fact the statement era writes as
+		// `CCY amount Rate`, in the feed's own spelling of it.
+		statedCcy, statedAmt := statedConversion(p.Narrative)
+		if statedAmt != "" {
+			if d, err := parseSwiftDecimal(statedAmt); err == nil {
+				statedAmt = d.String()
+			} else {
+				statedCcy, statedAmt = "", ""
+			}
+		}
 		legs = append(legs, offsetLeg{
 			vetoKey: row.eventID, psnLeg: true, txID: row.eventID, acct: acct,
 			amt: amt, day: row.at / 86400, ccy: ccy,
+			statedCcy: statedCcy, statedAmt: statedAmt,
 		})
 		return nil
 	})
-	return legs, err
+	if err != nil {
+		return nil, err
+	}
+	// The conversion mirrors, as legs of their own: the other side of a
+	// stated conversion, where no feed booked it (conversionMirrors).
+	mirrors, err := r.conversionMirrors(ctx, coverage)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range mirrors.byID {
+		amt, _ := m.tx.NetAmount.Float64()
+		legs = append(legs, offsetLeg{
+			vetoKey: m.tx.TransactionExternalID, psnLeg: true, txID: m.tx.TransactionExternalID,
+			acct: m.tx.AccountExternalID, amt: amt, day: m.tx.OccurredAt / 86400, ccy: m.tx.Currency,
+		})
+	}
+	return legs, nil
 }
 
 // pairSameDayOffsets matches the legs the conversion phase left, per

@@ -279,6 +279,9 @@ type eraFold struct {
 type psnHints struct {
 	veto  map[string]bool
 	carry map[string]webTxText
+	// withheld names the conversion mirrors the export already records
+	// (buildSameDayOffsetVeto): the PSN stream leaves them out.
+	withheld map[string]bool
 }
 
 // webTxOutcome is what the web cash pass decided that a later pass
@@ -407,6 +410,26 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 	})
 	if err != nil {
 		return nil, err
+	}
+	// A conversion mirror is the feed's record of the other account's
+	// booking (conversionMirrors), and a statement copy of that booking
+	// folds onto it like any other. Keyed as the mirror is emitted.
+	mirrors, err := psn.conversionMirrors(ctx, cut.coverage)
+	if err != nil {
+		return nil, err
+	}
+	for id, m := range mirrors.byID {
+		amount, ok := bookingCents(m.tx.NetAmount)
+		if !ok {
+			continue
+		}
+		k := bookingKey{
+			account:  m.tx.AccountExternalID,
+			day:      utcDay(m.tx.OccurredAt),
+			amount:   amount,
+			currency: bookingCurrency(m.tx.Currency),
+		}
+		feed[k] = append(feed[k], id)
 	}
 
 	for k, ss := range statements {

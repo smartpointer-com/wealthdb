@@ -30,12 +30,17 @@ import (
 //       PSN's faithful safekeeping + portfolio identity.
 //
 //   Transactions
-//     - Hard cut at PSN-start per relationship — see
-//       transactionsBeforePSNStart for why an overlap merge isn't
-//       safe here. The cut sits at the first PSN dump, whose MT940
-//       statements reach back over the days before it, so a seam fold
-//       (buildSeamBankRefs) drops the web copy of a booking the feed
-//       already holds, found by the bank's own number for the entry.
+//     - Hard cut at PSN-start per relationship, on the accounts the
+//       MT940 feed speaks for (psnCut) — see transactionsBeforePSNStart
+//       for why an overlap merge isn't safe here. The cut sits at the
+//       first PSN dump, whose MT940 statements reach back over the days
+//       before it, so a seam fold (buildSeamBankRefs) drops the web
+//       copy of a booking the feed already holds, found by the bank's
+//       own number for the entry. An account the feed is not delivered
+//       for is the web side's on every day; what the feed says about
+//       such an account from the other side of a movement is booked on
+//       it by the PSN stream (conversionMirrors,
+//       corporateActionCashLegs).
 //     - An era fold (buildEraFold) collapses a booking that two eras
 //       both recorded: a statement reconstruction whose account,
 //       value day, signed amount and currency match an export or
@@ -307,7 +312,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		}
 	}
 	if c.psn != nil {
-		s, err := c.psn.Transactions(ctx, w, hints.veto)
+		s, err := c.psn.Transactions(ctx, w, hints)
 		if err != nil {
 			return nil, fmt.Errorf("ubs psn Transactions: %w", err)
 		}

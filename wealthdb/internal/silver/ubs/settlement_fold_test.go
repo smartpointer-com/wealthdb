@@ -78,7 +78,7 @@ func seedSettlementLeg(t *testing.T, db *sql.DB, eventID, amount, creditDebit st
 func psnRows(t *testing.T, db *sql.DB) map[string]canonical.TransactionChange {
 	t.Helper()
 	stream, err := (&psnReader{db: db}).Transactions(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, nil)
+		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, psnHints{})
 	if err != nil {
 		t.Fatalf("Transactions: %v", err)
 	}

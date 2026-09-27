@@ -44,10 +44,11 @@ import (
 //
 // Nothing is lost by that. Where the MT940 feed covers both cash
 // accounts a conversion moves, both legs are already in the ledger as
-// ordinary entries. Where it does not — an account the bank sends no
-// MT940 for has its conversions on no rail at all, and its coverage
-// gap is exactly them — the list does not carry that account's
-// conversions either, so there is nothing here to emit for it.
+// ordinary entries. Where it covers one — an account the bank sends
+// no MT940 for — the covered side's statement line still states the
+// other leg, and that is where it is booked from (conversionMirrors);
+// the list does not carry that account's conversions either, so there
+// is nothing here to emit for it.
 //
 // GROSS, NOT NET. The list states a trade's VALUE; the commission is
 // not in it. Measured against the confirmations that carry both, the

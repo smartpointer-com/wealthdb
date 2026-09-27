@@ -397,9 +397,9 @@ func TestOffsetVetoInternalLegPairsItsMirror(t *testing.T) {
 }
 
 // TestOffsetVetoProbeSkipsSuppressedWebRows pins the emitted-universe filter:
-// a web row at/after its relationship's PSN cutover is not emitted and must
-// not consume a veto match either (its movement is represented by the PSN
-// feed).
+// a web row at/after its relationship's PSN cutover, on an account the MT940
+// feed speaks for, is not emitted and must not consume a veto match either
+// (its movement is represented by the PSN feed).
 func TestOffsetVetoProbeSkipsSuppressedWebRows(t *testing.T) {
 	r := newWebTxFixture(t)
 	seedRailEraAnchor(t, r)
@@ -414,8 +414,11 @@ func TestOffsetVetoProbeSkipsSuppressedWebRows(t *testing.T) {
 	seedWebTx(t, r, "T2", vetoAcctB, vetoDay1, "CHF", 25000, false)
 
 	// With no PSN reader at all the splice is degenerate and no cutover
-	// applies, so one is present (empty PSN silver + explicit override).
+	// applies, so one is present (explicit override), and the feed speaks
+	// for the credit's account from before the row: one unrelated movement
+	// of its own, too small to pair with anything.
 	_, psnDB := newFixtureSilver(t)
+	seedPSNCashAmount(t, psnDB, "COVER-B", vetoAcctB, "1", "D", "CHF", "FEE", vetoDay1-86400)
 	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
 		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{db: psnDB},
 		[]silver.RelationshipPair{{WebID: "REL1", PSNStartOverride: vetoDay1 - 86400}})
@@ -618,13 +621,16 @@ func TestASeamDroppedRowDoesNotConsumeAVetoMatch(t *testing.T) {
 	}
 }
 
-// The cut belongs to a relationship: a row on its account is PSN's from
-// the relationship's PSN start on, and a relationship with no start — or
-// an account no relationship claims — cuts nothing.
+// The cut belongs to a relationship and applies per account: a row on an
+// account the feed speaks for is PSN's from the relationship's PSN start
+// on — or from the account's first statement, where the feed reached it
+// later — and a relationship with no start, an account no relationship
+// claims, or an account the feed never reaches cuts nothing.
 func TestPSNCutExcludesFromTheRelationshipsStart(t *testing.T) {
 	cut := psnCut{
 		startByRel:   map[string]int64{"rel-a": 1000},
-		relOfAccount: map[string]string{"acct-a": "rel-a", "acct-b": "rel-b"},
+		relOfAccount: map[string]string{"acct-a": "rel-a", "acct-b": "rel-b", "acct-c": "rel-a", "acct-d": "rel-a"},
+		coverage:     psnCashCoverage{"acct-a": 900, "acct-b": 900, "acct-d": 2000},
 	}
 	for _, tc := range []struct {
 		account string
@@ -633,11 +639,52 @@ func TestPSNCutExcludesFromTheRelationshipsStart(t *testing.T) {
 	}{
 		{"acct-a", 999, false},
 		{"acct-a", 1000, true},
-		{"acct-b", 5000, false},
-		{"acct-x", 5000, false},
+		{"acct-b", 5000, false}, // its relationship has no PSN start
+		{"acct-x", 5000, false}, // no relationship claims it
+		{"acct-c", 5000, false}, // the feed never speaks for it
+		{"acct-d", 1500, false}, // the feed reached it only later...
+		{"acct-d", 2000, true},  // ...and speaks for it from then on
 	} {
 		if got := cut.excludes(tc.account, tc.at); got != tc.want {
 			t.Errorf("excludes(%q, %d) = %v, want %v", tc.account, tc.at, got, tc.want)
+		}
+	}
+}
+
+// TestAnAccountTheFeedNeverReachesKeepsItsExportRows is the other half of
+// TestOffsetVetoProbeSkipsSuppressedWebRows: the same shape, but the feed
+// has never carried a movement for the credit's account. The relationship
+// is past its PSN start, and the export row is still the only record of
+// the booking, so it is emitted — and it pairs with its own-account mirror
+// like any other emitted leg.
+func TestAnAccountTheFeedNeverReachesKeepsItsExportRows(t *testing.T) {
+	r := newWebTxFixture(t)
+	seedRailEraAnchor(t, r)
+	if _, err := r.db.Exec(`INSERT INTO accounts VALUES (1000, ?, 'cash', NULL, '{}')`, vetoAcctA); err != nil {
+		t.Fatalf("seed unmapped account: %v", err)
+	}
+	seedWebAccount(t, r, vetoAcctB)
+	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -25000, true)
+	seedWebTx(t, r, "T2", vetoAcctB, vetoDay1, "CHF", 25000, false)
+
+	_, psnDB := newFixtureSilver(t)
+	// The feed speaks for some other account of the relationship, not B.
+	seedPSNCashAmount(t, psnDB, "COVER-C", "CH0000000000000000CCC", "1", "D", "CHF", "FEE", vetoDay1-86400)
+	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
+		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{db: psnDB},
+		[]silver.RelationshipPair{{WebID: "REL1", PSNStartOverride: vetoDay1 - 86400}})
+	if err != nil {
+		t.Fatalf("transactionsBeforePSNStart: %v", err)
+	}
+	got := drainTx(t, stream)
+	credit, ok := got["T2@"+vetoAcctB]
+	if !ok {
+		t.Fatal("the export row on an account the feed never reaches was cut")
+	}
+	debit := got["T1@"+vetoAcctA]
+	for _, tx := range []canonical.TransactionChange{credit, debit} {
+		if !strings.Contains(string(tx.Payload), `"returns_flow":"internal"`) {
+			t.Errorf("%s: the two legs of one own-account move did not pair", tx.TransactionExternalID)
 		}
 	}
 }

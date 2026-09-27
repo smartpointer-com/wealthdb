@@ -217,9 +217,18 @@ SELECT period_end, account_external_id, COALESCE(currency_iso, ''),
 // (DESIGN.md §5.6). They are matched on the whole descriptor, folded and
 // space-collapsed, so a merchant whose name merely contains the words is
 // not mistaken for a settlement.
+//
+// One debit is not spend either: a credit balance the card returns to
+// the account, booked under the transfer descriptor's mirror. It is the
+// card's half of an own-account move, and a `withdrawal` — the kind the
+// matcher pairs with the account's deposit — rather than a purchase
+// nothing could pair and the statement would count as consumption.
 func cardTxKind(amount float64, merchant string) canonical.TxKind {
 	switch {
 	case amount < 0:
+		if isCardCreditReturn(merchant) {
+			return canonical.TxKindWithdrawal
+		}
 		return canonical.TxKindPurchase
 	case amount > 0:
 		if isCardSettlement(merchant) {
@@ -244,16 +253,33 @@ var cardSettlementDescriptors = []string{
 	"TRANSFER FROM ACCOUNT",
 }
 
+// cardCreditReturnDescriptors are the descriptors UBS books the return
+// of a card's credit balance to an account under: the transfer rail's
+// mirror, in the same folded form.
+var cardCreditReturnDescriptors = []string{
+	"TRANSFER TO ACCOUNT",
+}
+
 // isCardSettlement reports whether a descriptor is one of the settlement
 // rails, whole. Case, spacing and the parentheses UBS puts around a rail
 // qualifier are folded away; nothing else is, so the comparison stays an
 // equality against the whole descriptor rather than a substring search —
 // a merchant whose name merely contains the words is not a settlement.
 func isCardSettlement(descriptor string) bool {
+	return isWholeDescriptor(descriptor, cardSettlementDescriptors)
+}
+
+// isCardCreditReturn reports whether a descriptor is the return of a
+// credit balance to an account, whole, by the same comparison.
+func isCardCreditReturn(descriptor string) bool {
+	return isWholeDescriptor(descriptor, cardCreditReturnDescriptors)
+}
+
+func isWholeDescriptor(descriptor string, descriptors []string) bool {
 	folded := strings.ToUpper(descriptor)
 	folded = strings.NewReplacer("(", " ", ")", " ").Replace(folded)
 	folded = strings.Join(strings.Fields(folded), " ")
-	for _, d := range cardSettlementDescriptors {
+	for _, d := range descriptors {
 		if folded == d {
 			return true
 		}

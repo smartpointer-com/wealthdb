@@ -4,19 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-// Transactions emits PSN events. offsetVeto carries the event ids whose cash
+// Transactions emits PSN events. hints.veto carries the event ids whose cash
 // movement pairs a web-side mirror in the same-day offset veto (see
 // buildSameDayOffsetVeto); those are demoted to a non-flow kind here, exactly
 // as the web loop demotes its half — a pair must drop on both sides or the
-// survivor books a one-sided phantom external flow. Nil when the merged
-// connection has no web subsource.
-func (c *psnReader) Transactions(ctx context.Context, w canonical.Window, offsetVeto map[string]bool) (silver.TransactionStream, error) {
+// survivor books a one-sided phantom external flow. hints.withheld names the
+// conversion mirrors the export already records, which are not emitted. Both
+// are empty when the merged connection has no web subsource.
+//
+// Beside the events themselves, two rows the feed does not carry as rows are
+// booked here, on the accounts it does not speak for: the other leg of a
+// conversion one of its rows describes (conversionMirrors), and the cash a
+// corporate action paid (corporateActionCashLegs).
+func (c *psnReader) Transactions(ctx context.Context, w canonical.Window, hints psnHints) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
@@ -26,6 +33,18 @@ func (c *psnReader) Transactions(ctx context.Context, w canonical.Window, offset
 		return nil, err
 	}
 	settled, err := c.buildSettlementFold(ctx, ibans)
+	if err != nil {
+		return nil, err
+	}
+	coverage, err := c.cashCoverage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mirrors, err := c.conversionMirrors(ctx, coverage)
+	if err != nil {
+		return nil, err
+	}
+	cashLegs, err := c.corporateActionCashLegs(ctx, w, coverage, ibans)
 	if err != nil {
 		return nil, err
 	}
@@ -41,6 +60,7 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
+	mirrored := 0
 	for rows.Next() {
 		var (
 			eventID, extID, kind, payload string
@@ -63,13 +83,39 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 		// so the row keeps a truthful kind — the spending population
 		// reads the kind, and a returns-only judgement must not decide
 		// whether a row is spending (see withReturnsFlow).
-		if offsetVeto[eventID] &&
+		if hints.veto[eventID] &&
 			(tx.Kind == canonical.TxKindDeposit || tx.Kind == canonical.TxKindWithdrawal) {
 			tx.Payload, tx.Kind = markReturnsInternal(tx.Payload, tx.Kind)
 		}
+		// A conversion the row describes whose other account the feed
+		// does not speak for: the row names that account and the leg it
+		// states, and the leg itself is booked beside it — unless the
+		// export already carries it, in which case the export's row is
+		// the one gold holds and the feed row still names it.
+		if m, ok := mirrors.bySource[eventID]; ok {
+			tx.Payload = withStatedConversion(tx.Payload, m)
+			if !hints.withheld[m.tx.TransactionExternalID] {
+				mirror := m.tx
+				if hints.veto[mirror.TransactionExternalID] {
+					mirror.Payload, mirror.Kind = markReturnsInternal(mirror.Payload, mirror.Kind)
+				}
+				out.Transactions = append(out.Transactions, mirror)
+				mirrored++
+			}
+		}
 		out.Transactions = append(out.Transactions, tx)
 	}
-	return silver.NewTransactionStream(out), rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if mirrored > 0 {
+		log.Printf("ubs adapter: booked %d conversion counter-leg(s) on accounts the MT940 feed does not cover", mirrored)
+	}
+	if len(cashLegs) > 0 {
+		log.Printf("ubs adapter: booked %d corporate-action cash leg(s) on accounts the MT940 feed does not cover", len(cashLegs))
+		out.Transactions = append(out.Transactions, cashLegs...)
+	}
+	return silver.NewTransactionStream(out), nil
 }
 
 // --- per-kind payload structs ---------------------------------------------
