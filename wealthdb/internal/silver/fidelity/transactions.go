@@ -35,6 +35,7 @@ SELECT activity_id, timestamp, account_external_id, kind,
 	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
+	var windUp []windUpInLeg
 	for rows.Next() {
 		var (
 			activityID, acct, rawKind, instr, currency, payload string
@@ -92,6 +93,18 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			tx.InstrumentHint = strings.TrimSpace(p.InstrumentHint)
 		}
 		out.Transactions = append(out.Transactions, tx)
+		if l, ok := asWindUpInLeg(tx, p.Action); ok {
+			windUp = append(windUp, l)
+		}
 	}
-	return silver.NewTransactionStream(out), rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// A closed account's wind-up out-legs are printed nowhere (windup.go).
+	legs, err := c.windUpCounterLegs(ctx, windUp)
+	if err != nil {
+		return nil, err
+	}
+	out.Transactions = append(out.Transactions, legs...)
+	return silver.NewTransactionStream(out), nil
 }

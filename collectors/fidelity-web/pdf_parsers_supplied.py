@@ -50,11 +50,13 @@ Coverage scope:
   ``ACTIVITY_SECTIONS``); the income, transfer and trade blocks
   are not, nor are Income Summary / Estimated Cash Flow.
 * That limit is invisible on an account the live activity feed
-  also covers, which carries the rest. It is not invisible on a
-  CLOSED one, which the feed no longer returns: such an account's
-  ledger is whatever those three sections held, so a wind-up
-  transfer out of it is absent while the receiving account's side
-  of the same movement is present.
+  also covers, which carries the rest. For an account the feed no
+  longer returns, such as a closed one, the ledger is whatever
+  those three sections held. A closing account's wind-up belongs
+  under Exchanges Out on the statement of the month it closes,
+  but that statement no longer lists the account; the gold adapter
+  mirrors the out-leg from the receiving account's side, which
+  names it (wealthdb/internal/silver/fidelity/windup.go).
 * Assets Held Away is excluded by design.
 
 Architecture:

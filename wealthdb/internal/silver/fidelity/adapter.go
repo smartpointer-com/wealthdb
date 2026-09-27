@@ -30,6 +30,10 @@
 //     statements, and the svb statement archives, which write this
 //     schema for this adapter to project. See historical.go.
 //
+//   - Wind-up counter-legs. A closed account's out-legs are printed
+//     nowhere, and the receiving account's in-legs name it; the adapter
+//     mirrors them (windup.go).
+//
 //   - Account kinds. Every account is brokerage, except the DAF's own
 //     kind and an account whose historical rows type it by what it
 //     holds: a home loan's outstanding principal makes it a mortgage, a

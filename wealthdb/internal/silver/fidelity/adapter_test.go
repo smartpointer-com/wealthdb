@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -838,5 +839,63 @@ func TestCorporateActionKinds(t *testing.T) {
 		if got := kindFor(raw, nil, nil, ""); got != canonical.TxKindCorporateAction {
 			t.Errorf("kindFor(%q) = %q, want corporate_action", raw, got)
 		}
+	}
+}
+
+// TestAWindUpInLegGetsItsCounterLeg pins the counter-leg a closed
+// account's wind-up never printed: an in-leg naming one of the source's
+// own accounts gets that account's out-leg, mirrored; one naming an
+// account the source does not hold, or one whose sibling already books
+// its side, gets none.
+func TestAWindUpInLegGetsItsCounterLeg(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 4, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, management_style, payload) VALUES
+            (1000, '000000001', 'PORT1', NULL, NULL, '{}'),
+            (1000, '000000003', 'PORT1', NULL, NULL, '{}');
+        INSERT INTO historical_position_snapshots(as_of_date, account_external_id, description, instrument_key, quantity, price, market_value, currency, payload) VALUES
+            (800, '000000002', 'EXAMPLE CORP COM', 'XYZ', 10, 50, 500.00, 'USD', '{}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES
+            ('in',     900, '000000001', 'TRANSFER', 'XYZ', 'USD', 10, NULL, 500.00,
+             '{"Action": "TRANSFERRED FROM VS 000-000002-1 EXAMPLE CORP COM (XYZ) (Cash)"}'),
+            ('away',   900, '000000001', 'TRANSFER', 'ABC', 'USD', 5, NULL, 200.00,
+             '{"Action": "TRANSFERRED FROM VS 999-999999-1 OTHER CORP COM (ABC) (Cash)"}'),
+            ('paired', 900, '000000001', 'TRANSFER', 'DEF', 'USD', 3, NULL, 300.00,
+             '{"Action": "TRANSFERRED FROM VS 000-000003-1 THIRD CORP COM (DEF) (Cash)"}'),
+            ('out',    900, '000000003', 'TRANSFER', 'DEF', 'USD', -3, NULL, -300.00,
+             '{"Action": "TRANSFERRED TO VS 000-000001-1 THIRD CORP COM (DEF) (Cash)"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	var legs []canonical.TransactionChange
+	for _, tx := range batch.Transactions {
+		if strings.HasPrefix(tx.TransactionExternalID, "windup:") {
+			legs = append(legs, tx)
+		}
+	}
+	if len(legs) != 1 {
+		t.Fatalf("counter-legs = %d, want 1 (for the in-leg from an own account with no out-leg)", len(legs))
+	}
+	l := legs[0]
+	if l.TransactionExternalID != "windup:in" || l.AccountExternalID != "000000002" ||
+		l.OccurredAt != 900 || l.Kind != canonical.TxKindJournal {
+		t.Errorf("counter-leg = %s on %s at %d as %s, want windup:in on 000000002 at 900 as journal",
+			l.TransactionExternalID, l.AccountExternalID, l.OccurredAt, l.Kind)
+	}
+	if l.NetAmount == nil || l.NetAmount.String() != "-500" || l.Quantity == nil || l.Quantity.String() != "-10" {
+		t.Errorf("counter-leg net %v qty %v, want -500 and -10", l.NetAmount, l.Quantity)
+	}
+	if l.InstrumentExternalID == nil || *l.InstrumentExternalID != "XYZ" {
+		t.Errorf("counter-leg instrument = %v, want XYZ", l.InstrumentExternalID)
+	}
+	if l.Description == nil || *l.Description != "TRANSFERRED TO VS 000000001 EXAMPLE CORP COM (XYZ) (Cash)" {
+		t.Errorf("counter-leg description = %v", l.Description)
 	}
 }
