@@ -192,7 +192,7 @@ func recordBinaryOpenImpl(ctx context.Context, db *sql.DB) error {
 INSERT INTO binary_versions
        (opened_at, binary_commit, binary_commit_at, binary_version)
 VALUES (?, ?, ?, ?)`,
-		time.Now().Unix(), bi.Commit, bi.CommitAt, version.Version)
+		time.Now().Unix(), bi.Commit, bi.CommitAt, version.String())
 	return err
 }
 

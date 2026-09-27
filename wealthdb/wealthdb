@@ -26,9 +26,29 @@ IMAGE="wealthdb:latest"
 case "${1:-}" in
     build)
         shift
+        # The version stamp (internal/version), read from git here because
+        # the build context holds no .git: the release tag only when HEAD
+        # sits on one and the engine tree has no uncommitted change, the
+        # nearest release tag, and HEAD's hash, marked -dirty when the
+        # engine tree has changes. Outside a git checkout all three stay
+        # empty, and the binary never claims a release.
+        tag="" base="" commit=""
+        if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+            commit="$(git -C "$REPO" rev-parse --short=7 HEAD)"
+            base="$(git -C "$REPO" describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+            if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=normal -- . 2>/dev/null)" ]; then
+                commit="$commit-dirty"
+            else
+                tag="$(git -C "$REPO" describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+            fi
+        fi
         # --provenance=false: buildx's default attestation would give the
         # image a fresh digest on every build even when fully cached.
-        exec docker build --provenance=false -t "$IMAGE" "$REPO" "$@"
+        exec docker build --provenance=false \
+            --build-arg WEALTHDB_TAG="$tag" \
+            --build-arg WEALTHDB_BASE="$base" \
+            --build-arg WEALTHDB_COMMIT="$commit" \
+            -t "$IMAGE" "$REPO" "$@"
         ;;
     web)
         shift

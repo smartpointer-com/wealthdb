@@ -126,7 +126,7 @@ wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticke
 wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
 wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants and payers via the configured LLM.
 wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict stores; --forget SIG removes one (RW).
-wealthdb version                      (RO)    Print the wealthdb version.
+wealthdb version                      (RO)    Print the version: a release tag, or `<last release> nightly <commit>`.
 wealthdb help [<subcommand>]
 ```
 
@@ -2797,7 +2797,28 @@ for CGO). The Dockerfile:
 1. Copies `go.mod` / `go.sum` and runs `go mod download` in its own
    layer for cache friendliness.
 2. Copies the source.
-3. Builds the binary at `/usr/local/bin/wealthdb`.
+3. Builds the binary at `/usr/local/bin/wealthdb`, linking in the
+   version stamp (below). The Go build cache lives in a BuildKit cache
+   mount, so a build whose only change is the stamp relinks rather than
+   recompiles.
+
+The build context is `wealthdb/`, which holds no `.git`, so the binary
+cannot read its own version from git. `./wealthdb build` reads it on
+the host instead and passes it as build args, which the Dockerfile
+links into `internal/version`:
+
+- `WEALTHDB_TAG` — the release tag (`v*`) HEAD sits on, set only when
+  the engine tree (`wealthdb/`) has no uncommitted or untracked change;
+- `WEALTHDB_BASE` — the nearest release tag at or below HEAD;
+- `WEALTHDB_COMMIT` — HEAD's abbreviated hash, with `-dirty` when the
+  engine tree has changes.
+
+`wealthdb version` prints the tag alone when there is one and
+`<base> nightly <commit>` otherwise, so a build between releases never
+passes for a release. A binary built without the stamp (a plain
+`go build`, `go test`) falls back to the toolchain's own VCS stamp, and
+to `devel nightly unknown` without one. A release is therefore just a
+tag: nothing in the source names the version.
 
 Entry point is the production binary. The `./wealthdb-test`
 wrapper overrides with `--entrypoint go` to run tests in the same

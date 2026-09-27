@@ -13,12 +13,14 @@ func TestVersion(t *testing.T) {
 	if code != 0 {
 		t.Errorf("exit = %d, want 0", code)
 	}
-	want := "wealthdb " + version.Version + "\n"
+	want := "wealthdb " + version.String() + "\n"
 	if so != want {
 		t.Errorf("stdout = %q, want %q", so, want)
 	}
-	if !strings.HasPrefix(version.Version, "v") {
-		t.Errorf("version %q is not v-prefixed semver", version.Version)
+	// A test binary carries no release stamp, so it must not pass for a
+	// release.
+	if !strings.Contains(so, " nightly ") {
+		t.Errorf("stdout = %q, want a nightly version", so)
 	}
 }
 

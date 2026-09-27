@@ -17,6 +17,6 @@ func cmdVersion(_ context.Context, _ globalFlags, subargs []string, _ io.Reader,
 	if len(subargs) != 0 {
 		return errs.Newf(2, "version: unexpected argument %q", subargs[0])
 	}
-	fmt.Fprintf(stdout, "wealthdb %s\n", version.Version)
+	fmt.Fprintf(stdout, "wealthdb %s\n", version.String())
 	return nil
 }

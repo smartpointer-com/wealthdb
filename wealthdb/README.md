@@ -85,7 +85,7 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
 | `wealthdb categorize [spending\|income]` | Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in `<family>.categorization.model`. A positional selects one family; with none, both run in order. `-n` plans without writing; `--all` re-asks every signature. |
 | `wealthdb categorizations [spending\|income]` | Dump the model-derived verdict stores for inspection, with a `family` column; `--forget SIG` retires a wrong verdict so the next run re-asks it, from both stores unless a family is named. |
-| `wealthdb version` | Print the wealthdb version. |
+| `wealthdb version` | Print the wealthdb version: the release tag alone for a build of a clean release checkout, otherwise `<last release> nightly <commit>` (`-dirty` for uncommitted changes). |
 | `wealthdb help [<subcommand>]` | Help. |
 
 An adapter ships for every collected source — Swiss and US banks and
