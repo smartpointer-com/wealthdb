@@ -116,6 +116,55 @@ def iso_date_to_epoch(s: str | None) -> int | None:
     return parse.iso_date_to_epoch(s)
 
 
+# VIAC wraps a decimal in a tagged envelope — `{"__type":
+# "VIAC_DECIMAL", "__value": "12.30"}` — where the API once sent a bare
+# JSON number. Both shapes are in bronze and both have to load: bronze is
+# immutable, so a re-parse of an older run must still produce the rows it
+# produced the first time.
+VIAC_DECIMAL_TYPE = "VIAC_DECIMAL"
+
+
+def viac_decimal(value: Any) -> float | None:
+    """One VIAC decimal field as a float, from either wire shape.
+
+    Absent stays absent. An unrecognised shape RAISES rather than
+    yielding None: the envelope arrived unannounced and aborted a load,
+    which is how it was noticed at all — coercing the unknown to None
+    would instead have written a whole series of silent nulls. The
+    message names the shape only; the value is a real balance.
+
+    A float is what the column holds (REAL) and what the bare-number era
+    already stored, so the envelope's extra precision is dropped exactly
+    where it always was.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # bool is an int in Python, and never a decimal here.
+        raise ValueError("VIAC decimal was a bool")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            raise ValueError(
+                "VIAC decimal was a string that is not a number") from None
+    if isinstance(value, dict):
+        kind = value.get("__type")
+        if kind != VIAC_DECIMAL_TYPE:
+            raise ValueError(f"unknown tagged value: __type={kind!r}")
+        try:
+            return float(value["__value"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(
+                f"{VIAC_DECIMAL_TYPE} envelope carried a "
+                f"{type(value.get('__value')).__name__}, "
+                f"not a decimal string") from None
+    raise ValueError(
+        f"unsupported shape for a VIAC decimal: {type(value).__name__}")
+
+
 def iso_datetime_to_epoch(s: str | None) -> int | None:
     """Parse an ISO datetime into Unix seconds UTC. VIAC sometimes
     emits microsecond-precision timestamps without a timezone
@@ -580,7 +629,9 @@ def load_wealth_history_phase(
             """,
             (
                 snapshot_at, d,
-                w.get("value"), p.get("value"), i.get("value"),
+                viac_decimal(w.get("value")),
+                viac_decimal(p.get("value")),
+                viac_decimal(i.get("value")),
                 canonical_json({"wealth": w, "performance": p, "invested": i}),
             ),
         )

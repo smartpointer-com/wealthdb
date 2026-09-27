@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
@@ -267,3 +269,107 @@ def test_migration_backfills_the_instrument_on_rows_already_held(tmp_path):
            for r in conn.execute(
                "SELECT transaction_external_id, instrument_external_id FROM transactions")}
     assert got == {"t1": "CH0000000001", "t2": None}
+
+
+# ============================================================
+# wealth_history: VIAC's decimals arrive in two wire shapes
+# ============================================================
+
+def _wealth_summary(value_for):
+    """A summary.json carrying one date in each of the three series,
+    with each scalar rendered by `value_for`."""
+    return {
+        "dailyWealth": [{"date": "2024-01-02", "value": value_for("1500.25")}],
+        "dailyPerformance": [{"date": "2024-01-02", "value": value_for("0.125")}],
+        "dailyInvestedAmounts": [
+            {"date": "2024-01-02", "value": value_for("1400")}],
+    }
+
+
+def _bare(s):
+    return float(s)
+
+
+def _enveloped(s):
+    return {"__type": loader.VIAC_DECIMAL_TYPE, "__value": s}
+
+
+def _load_wealth(tmp_path, summary):
+    run_dir = tmp_path / "bronze" / RUN_SLUG
+    _write_json(run_dir / "wealth" / "summary.json", summary)
+    conn, _ = _fresh_db(tmp_path)
+    loader.load_wealth_history_phase(conn, 1700000000, run_dir)
+    return conn
+
+
+def test_wealth_history_reads_the_tagged_decimal_envelope(tmp_path):
+    # The shape VIAC switched to; loading it used to abort the whole dump
+    # with "type 'dict' is not supported".
+    conn = _load_wealth(tmp_path, _wealth_summary(_enveloped))
+    rows = [tuple(r) for r in conn.execute(
+        "SELECT wealth_value, performance_value, invested_amount "
+        "FROM wealth_history")]
+    assert rows == [(1500.25, 0.125, 1400.0)]
+
+
+def test_wealth_history_still_reads_a_bare_number(tmp_path):
+    # Bronze is immutable, so every older run must keep loading to the
+    # same rows it produced before the envelope existed.
+    conn = _load_wealth(tmp_path, _wealth_summary(_bare))
+    rows = [tuple(r) for r in conn.execute(
+        "SELECT wealth_value, performance_value, invested_amount "
+        "FROM wealth_history")]
+    assert rows == [(1500.25, 0.125, 1400.0)]
+
+
+def test_wealth_history_keeps_the_raw_rows_in_the_payload(tmp_path):
+    # The payload is the provenance copy: it holds the envelope as served,
+    # so the coercion is never the only record of what arrived.
+    conn = _load_wealth(tmp_path, _wealth_summary(_enveloped))
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM wealth_history").fetchone()[0])
+    assert payload["wealth"]["value"] == {
+        "__type": "VIAC_DECIMAL", "__value": "1500.25"}
+
+
+def test_a_missing_series_leaves_its_column_null(tmp_path):
+    summary = _wealth_summary(_enveloped)
+    del summary["dailyInvestedAmounts"]
+    conn = _load_wealth(tmp_path, summary)
+    assert conn.execute(
+        "SELECT invested_amount FROM wealth_history").fetchone()[0] is None
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, None),
+    (12, 12.0),
+    (12.5, 12.5),
+    ("12.5", 12.5),
+    ({"__type": "VIAC_DECIMAL", "__value": "12.5"}, 12.5),
+    ({"__type": "VIAC_DECIMAL", "__value": "-0.00000000000000000001"},
+     -1e-20),
+])
+def test_viac_decimal_accepts_every_known_shape(raw, expected):
+    assert loader.viac_decimal(raw) == expected
+
+
+@pytest.mark.parametrize("raw", [
+    True,                                              # bool is an int
+    "not a number",
+    [1],
+    {"__type": "VIAC_MONEY", "__value": "12.5"},        # a tag we don't know
+    {"__type": "VIAC_DECIMAL"},                         # no __value
+    {"__type": "VIAC_DECIMAL", "__value": {"a": 1}},    # __value not scalar
+])
+def test_an_unknown_decimal_shape_raises_rather_than_nulling(raw):
+    # Loudly, so the next wire change aborts the dump instead of writing a
+    # series of silent nulls — which is how this one was caught.
+    with pytest.raises(ValueError):
+        loader.viac_decimal(raw)
+
+
+def test_the_raised_message_never_carries_the_value():
+    secret = "1234567.89"
+    with pytest.raises(ValueError) as exc:
+        loader.viac_decimal({"__type": "VIAC_TOTAL", "__value": secret})
+    assert secret not in str(exc.value)
