@@ -101,13 +101,23 @@ SELECT DISTINCT a.account_external_id
 	return out, rows.Err()
 }
 
-// mortgageAccountIDs returns the accounts holding what the historical
-// classifier reads as a home loan's outstanding principal (vehicle
-// mortgage); applyHeldKind types them. It reads the whole silver, not
-// the load window, so an account's kind never depends on which window
-// a load happens to read. Empty on a silver with no historical table.
-func (c *Connection) mortgageAccountIDs(ctx context.Context) (map[string]struct{}, error) {
-	out := map[string]struct{}{}
+// heldKinds maps a vehicle the historical classifier reads off a row to
+// the account kind holding it makes an account: a home loan's
+// outstanding principal types a mortgage account, a deposit account's
+// balance a cash one.
+var heldKinds = map[canonical.Vehicle]canonical.AccountKind{
+	canonical.VehicleMortgage:      canonical.AccountKindMortgage,
+	canonical.VehicleDemandDeposit: canonical.AccountKindCash,
+}
+
+// heldAccountKinds returns the kind each account's historical rows type
+// it as (heldKinds); applyHeldKind applies it. A loan's principal
+// outranks a deposit balance, so the answer never depends on row order.
+// It reads the whole silver, not the load window, so an account's kind
+// never depends on which window a load happens to read. Empty on a
+// silver with no historical table.
+func (c *Connection) heldAccountKinds(ctx context.Context) (map[string]canonical.AccountKind, error) {
+	out := map[string]canonical.AccountKind{}
 	ok, err := c.hasHistoricalTable(ctx)
 	if err != nil || !ok {
 		return out, err
@@ -116,7 +126,7 @@ func (c *Connection) mortgageAccountIDs(ctx context.Context) (map[string]struct{
 SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
   FROM historical_position_snapshots`)
 	if err != nil {
-		return nil, fmt.Errorf("mortgageAccountIDs: %w", err)
+		return nil, fmt.Errorf("heldAccountKinds: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -124,8 +134,9 @@ SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
 		if err := rows.Scan(&id, &key, &desc); err != nil {
 			return nil, err
 		}
-		if _, vehicle := classifyHistoricalPair(key, desc); vehicle == canonical.VehicleMortgage {
-			out[id] = struct{}{}
+		_, vehicle := classifyHistoricalPair(key, desc)
+		if kind, ok := heldKinds[vehicle]; ok && out[id] != canonical.AccountKindMortgage {
+			out[id] = kind
 		}
 	}
 	return out, rows.Err()
@@ -143,7 +154,7 @@ SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
 // upsert pulls FirstSeenAt back to the historical date so the
 // account's first-seen timestamp reflects the statement, not
 // the toolkit-first-ran date.
-func (c *Connection) appendHistoricalAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, mortgages map[string]struct{}) error {
+func (c *Connection) appendHistoricalAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, held map[string]canonical.AccountKind) error {
 	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
 	if err != nil {
 		return err
@@ -209,7 +220,7 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 				Payload:             json.RawMessage(r.payload),
 			}
 			applyPortfolioKindTaxonomy(r.portfolioKind.String, &change)
-			applyHeldKind(r.extID, mortgages, &change)
+			applyHeldKind(r.extID, held, &change)
 			if r.silverMgmt != "" {
 				s := canonical.ManagementStyle(r.silverMgmt)
 				change.ManagementStyle = &s

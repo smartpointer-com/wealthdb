@@ -228,9 +228,11 @@ they default cleanly and the overrides set the precise values.
   cash row per statement valued at the balance it states, and its ledger becomes
   transactions; a loan contributes one row valued at MINUS its outstanding
   principal, because the fidelity adapter passes `market_value` through
-  unchanged and a liability that arrives positive reads as an asset. That row
-  is what makes the account a mortgage in gold: the adapter types an account
-  by the loan principal it holds.
+  unchanged and a liability that arrives positive reads as an asset. These rows
+  are what type the accounts in gold, where the adapter types an account by
+  what it holds: a deposit balance makes it `cash`, as every bank collector's
+  checking and savings accounts are, and a loan principal makes it
+  `mortgage`.
 - **A loan's row is dated the morning after its statement.** The statement
   states the balance at the end of its date, after that day's payments;
   gold's mortgage split reads a mortgage snapshot as the balance before the

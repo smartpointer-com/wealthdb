@@ -31,8 +31,9 @@
 //     schema for this adapter to project. See historical.go.
 //
 //   - Account kinds. Every account is brokerage, except the DAF's own
-//     kind and an account whose historical rows carry a home loan's
-//     outstanding principal, which is a mortgage (applyHeldKind).
+//     kind and an account whose historical rows type it by what it
+//     holds: a home loan's outstanding principal makes it a mortgage, a
+//     deposit account's balance a cash account (applyHeldKind).
 package fidelity
 
 import (

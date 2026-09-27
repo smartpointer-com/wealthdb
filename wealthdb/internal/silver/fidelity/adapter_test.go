@@ -477,12 +477,12 @@ func TestHistoricalDAFPoolClassification(t *testing.T) {
 	}
 }
 
-// TestAnAccountHoldingAMortgageIsAMortgage pins the one account kind
-// this adapter reads off holdings: an account whose historical rows
-// carry a home loan's outstanding principal is typed `mortgage` on
-// every emission, back-projected ones included, while an account
-// holding a deposit balance beside it stays brokerage.
-func TestAnAccountHoldingAMortgageIsAMortgage(t *testing.T) {
+// TestAnAccountIsTypedByWhatItHolds pins the account kinds this adapter
+// reads off holdings, on every emission, back-projected ones included:
+// an account whose historical rows carry a home loan's outstanding
+// principal is a `mortgage`, one carrying a deposit account's balance is
+// `cash`, and one holding a security stays `brokerage`.
+func TestAnAccountIsTypedByWhatItHolds(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
         INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (3000, 4, 'svb-sleeves-build');
@@ -490,12 +490,15 @@ func TestAnAccountHoldingAMortgageIsAMortgage(t *testing.T) {
             (3000, 'SVB-Sleeves', 'other', '{}');
         INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, payload) VALUES
             (3000, '0000000002', 'SVB-Sleeves', NULL, '{}'),
-            (3000, '0000000000', 'SVB-Sleeves', NULL, '{}');
+            (3000, '0000000000', 'SVB-Sleeves', NULL, '{}'),
+            (3000, '0000000001', 'SVB-Sleeves', NULL, '{}');
         INSERT INTO historical_position_snapshots(as_of_date, account_external_id, description, instrument_key, quantity, price, market_value, currency, payload) VALUES
             (1000, '0000000002', 'MORTGAGE PRINCIPAL', NULL, NULL, NULL, -900000.00, 'USD', '{}'),
             (2000, '0000000002', 'MORTGAGE PRINCIPAL', NULL, NULL, NULL, -1.00, 'USD', '{}'),
             (3000, '0000000002', 'MORTGAGE PRINCIPAL', NULL, NULL, NULL, 0.00, 'USD', '{}'),
-            (3000, '0000000000', 'CASH BALANCE', NULL, NULL, NULL, 1500.00, 'USD', '{}');
+            (2000, '0000000000', 'CASH BALANCE', NULL, NULL, NULL, 900.00, 'USD', '{}'),
+            (3000, '0000000000', 'CASH BALANCE', NULL, NULL, NULL, 1500.00, 'USD', '{}'),
+            (3000, '0000000001', 'ACME CORP COM', NULL, 10, 12.00, 120.00, 'USD', '{}');
     `); err != nil {
 		t.Fatal(err)
 	}
@@ -522,8 +525,11 @@ func TestAnAccountHoldingAMortgageIsAMortgage(t *testing.T) {
 	if got := kinds["0000000002"]; len(got) != 1 || got[canonical.AccountKindMortgage] < 3 {
 		t.Errorf("loan account kinds = %v, want mortgage on every emission", got)
 	}
-	if got := kinds["0000000000"]; len(got) != 1 || got[canonical.AccountKindBrokerage] == 0 {
-		t.Errorf("deposit account kinds = %v, want brokerage only", got)
+	if got := kinds["0000000000"]; len(got) != 1 || got[canonical.AccountKindCash] < 3 {
+		t.Errorf("deposit account kinds = %v, want cash on every emission", got)
+	}
+	if got := kinds["0000000001"]; len(got) != 1 || got[canonical.AccountKindBrokerage] == 0 {
+		t.Errorf("security account kinds = %v, want brokerage only", got)
 	}
 }
 
