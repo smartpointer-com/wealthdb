@@ -197,12 +197,30 @@ def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> None:
                              market=contrib_m, basis="cost", contributed=contrib_m,
                              distributions=None, is_open=True, status=status,
                              snapshot_at=snapshot_at)
-            # Current valuation event (FMV, at the portfolio data date).
-            mv = total_m if total_m is not None else contrib_m
-            put_snapshot(conn, nid, data_date, "valuation", currency,
-                         market=mv, basis="fmv" if total_m is not None else "cost",
-                         contributed=contrib_m, distributions=real_m,
-                         is_open=True, status=status, snapshot_at=snapshot_at)
+            # Current valuation event, at the portfolio data date. The portal
+            # states a value only where it has one: `totalValue` is None for
+            # a position it has not marked, and for a Realized position it is
+            # the realized value — what came OUT, not what is held. So a
+            # Realized position marks 0 and closes; a stated value marks at
+            # FMV; no stated value emits no event, and the latest dated mark
+            # (a statement, else the investment's cost) carries, rather than
+            # a re-mark to cost above a later statement. Only a position with
+            # no dated mark at all takes cost at the data date.
+            if status == "closed":
+                put_snapshot(conn, nid, data_date, "valuation", currency,
+                             market=0, basis="fmv", contributed=contrib_m,
+                             distributions=real_m, is_open=False, status=status,
+                             snapshot_at=snapshot_at)
+            elif total_m is not None:
+                put_snapshot(conn, nid, data_date, "valuation", currency,
+                             market=total_m, basis="fmv", contributed=contrib_m,
+                             distributions=real_m, is_open=True, status=status,
+                             snapshot_at=snapshot_at)
+            elif not inv_date:
+                put_snapshot(conn, nid, data_date, "valuation", currency,
+                             market=contrib_m, basis="cost", contributed=contrib_m,
+                             distributions=real_m, is_open=True, status=status,
+                             snapshot_at=snapshot_at)
 
         # --- portfolio summary + NAV time series ---
         if pdq:

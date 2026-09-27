@@ -134,8 +134,9 @@ def test_load_basic(tmp_path):
     assert dict(c.execute("SELECT vehicle_external_id, kind FROM vehicles").fetchall()) == \
         {"acme-co-s": "spv", "acme-fund-f": "fund"}
 
-    # position_snapshots: investment (at INV_DATE) + valuation (at DATA_DATE) per position
-    assert c.execute("SELECT COUNT(*) FROM position_snapshots").fetchone()[0] == 4
+    # position_snapshots: investment (at INV_DATE) per position + valuation
+    # (at DATA_DATE) where the portal states a value
+    assert c.execute("SELECT COUNT(*) FROM position_snapshots").fetchone()[0] == 3
     by = {(r[0], r[1]): r for r in c.execute(
         "SELECT position_external_id, event_type, as_of_date, market_value_minor, valuation_basis "
         "FROM position_snapshots")}
@@ -145,13 +146,49 @@ def test_load_basic(tmp_path):
     # investment event marks at cost
     assert by[("p1", "investment")][2] == INV_DATE
     assert by[("p1", "investment")][3] == 50000 and by[("p1", "investment")][4] == "cost"
-    # p2 reports no current value -> valuation falls back to cost
-    assert by[("p2", "valuation")][3] == 50000 and by[("p2", "valuation")][4] == "cost"
+    # p2 reports no current value -> no valuation event; its investment cost
+    # carries until a statement marks it (a re-mark to cost at the data date
+    # would override a later, lower statement)
+    assert ("p2", "valuation") not in by
+    assert by[("p2", "investment")][3] == 50000
 
     assert c.execute("SELECT COUNT(*) FROM portfolio_timeseries").fetchone()[0] == 1
     assert c.execute("SELECT total_investments_count FROM portfolio_summary").fetchone()[0] == 2
     assert c.execute("SELECT commitment_minor FROM commitments "
                      "WHERE commitment_external_id='oi1'").fetchone()[0] == 25000
+    c.close()
+
+
+def test_realized_position_marks_zero_and_closes(tmp_path):
+    # A Realized position's totalValue is its realized value — what came out,
+    # not what is held — so it marks 0 and closes at the data date. A
+    # written-off one (realized 0) closes the same way.
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    gone = pos_node("p3", "gone-co-s", name="Gone Co", status="closed", total=7000)
+    gone["realizedValue"], gone["unrealizedValue"] = m(7000), m(0)
+    lost = pos_node("p4", "lost-co-s", name="Lost Co", status="closed", total=0)
+    write_run(dest, "20240101T000000Z", [
+        positions_capture([gone, lost]), dashboard_capture(), commitments_capture()])
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
+    c = sqlite3.connect(db)
+    rows = {r[0]: r[1:] for r in c.execute(
+        "SELECT position_external_id, market_value_minor, is_open, status, distributions_minor "
+        "FROM position_snapshots WHERE event_type='valuation'")}
+    assert rows == {"p3": (0, 0, "closed", 7000), "p4": (0, 0, "closed", 0)}
+    c.close()
+
+
+def test_a_position_with_no_dated_mark_takes_cost(tmp_path):
+    # No investment date and no portal value: cost at the data date is the
+    # only value the position can show, so it still gets one.
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    write_run(dest, "20240101T000000Z", [
+        positions_capture([pos_node("p5", "new-co-s", inv_date=None, total=None)]),
+        dashboard_capture(), commitments_capture()])
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT event_type, as_of_date, market_value_minor, valuation_basis "
+                     "FROM position_snapshots").fetchall() == [("valuation", DATA_DATE, 50000, "cost")]
     c.close()
 
 

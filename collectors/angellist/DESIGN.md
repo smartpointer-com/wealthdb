@@ -166,9 +166,11 @@ columns carry the full node. Schema in
   (each annual Schedule K-1 capital-account statement at its tax year-end —
   the tax-basis NAV, with cumulative contributed / distributions),
   `valuation` (the current portal FMV at the portfolio **data date**, not
-  the download time). `is_open` flips to 0 at a final K-1 (exit). **Holdings
-  as-of a date** = each position's latest snapshot ≤ date, dropping the
-  is_open=0 ones. This mirrors the equityzen collector — one row per
+  the download time — emitted only where the portal states a value; a
+  Realized position's stated total is what came out, so it marks 0 and
+  closes there). `is_open` flips to 0 at a final K-1 (exit) or at a
+  Realized valuation. **Holdings as-of a date** = each position's latest
+  snapshot ≤ date, dropping the is_open=0 ones. This mirrors the equityzen collector — one row per
   position per capital event.
 - **`portfolio_summary`** — per snapshot: totals (committed/contributed/
   invested/realized/unrealized/value) + `irr`/`tvpi`/`dpi` + counts. (The
@@ -318,7 +320,17 @@ forward-fill:
 
 Consequence: `positions.market_value` summed in gold won't equal
 `portfolio_summary.totalValue` for the current date — positions without a
-reported FMV carry cost as a proxy.
+reported FMV carry their latest dated mark, the K-1's tax basis, or cost
+before the first K-1. A re-mark to cost at the data date would override a
+later, lower statement, so none is written.
+
+An exit paid in shares — an SPV distributing the listed stock it received
+into a brokerage account — is booked through gold's equity-transfer
+ledger (`wealthdb/docs/DESIGN.md` §13.10): the SPV's `transfer_out` on the
+day the shares land at the broker, at that day's value, paired with the
+broker's `transfer_in`. The returns policy admits the ledger's two kinds
+for that and nothing else produces them; the SPV's own mark follows its
+K-1s.
 
 The gold load reconstructs positions as of any past date from the
 event-sourced silver, and funding transactions (deposit / withdrawal /

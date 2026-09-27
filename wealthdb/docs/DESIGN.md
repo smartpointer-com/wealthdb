@@ -3463,6 +3463,28 @@ that source's returns policy admits exactly the two ledger kinds so
 the claim's arrival is funded rather than read as performance. The
 runbook is in `collectors/manual/DESIGN.md` §6.
 
+An exit paid in shares — a private-market vehicle distributing the listed
+stock it received, which lands in a brokerage account — is two rows, one
+per side, on the same day at the same value: a `transfer_out` against the
+vehicle's source and a `transfer_in` against the receiving account, each
+carrying the quantity and the ticker. The day is the one the shares land
+in the receiving account, whose own transfer record names it and the share
+count; the value is that day's close times the quantity. On it the vehicle
+realizes its gain from its last mark, the receiving account takes the
+shares as capital, and an aggregate holding both accounts nets the pair.
+Two dates, or each side's own figure, would leave the difference as
+capital from nowhere. Each arrival day is its own pair.
+The vehicle's own mark follows its statements, so its value catches up at
+the next one; over any window holding the whole exit the totals agree.
+The vehicle's source must admit the two ledger kinds in its returns
+policy (angellist and manual do). Cost basis is the vehicle's entry, on
+both rows, for reference:
+
+```
+angellist, lp-account, 2098-03-04, out, 500, 10000, 42000, USD, XMPL, Example Co SPV: 500 XMPL to the brokerage
+schwab,    Brokerage,  2098-03-04, in,  500, 10000, 42000, USD, XMPL, Example Co SPV: 500 XMPL received
+```
+
 ### 13.11 Spending and income pins ledgers
 
 Some rows on a cash account cannot be classified from anything gold

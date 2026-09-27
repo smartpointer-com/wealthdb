@@ -122,8 +122,14 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	if al.Flow.IsExternal(canonical.TxKindContribution) || al.Flow.IsExternal(canonical.TxKindDistribution) {
 		t.Error("angellist: contribution/distribution are INTERNAL (funding<->deals)")
 	}
-	if al.Flow.IsTransferLike(canonical.TxKindTransferIn) {
-		t.Error("angellist: no transfer-like set")
+	// The equity-transfer ledger's kinds — an exit paid in shares — are
+	// external and transfer-like, so the vehicle's out-leg counts at its own
+	// grain and nets against the receiving source's in-leg at global.
+	if !al.Flow.IsExternal(canonical.TxKindTransferOut) || !al.Flow.IsExternal(canonical.TxKindTransferIn) {
+		t.Error("angellist: the ledger's transfer kinds must be external")
+	}
+	if !al.Flow.IsTransferLike(canonical.TxKindTransferOut) || !al.Flow.IsTransferLike(canonical.TxKindTransferIn) {
+		t.Error("angellist: the ledger's transfer kinds must be transfer-like")
 	}
 
 	// The six flow-complete banks/pension all resolve the shared bank policy.
