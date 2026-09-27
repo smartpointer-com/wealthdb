@@ -18,7 +18,7 @@ ARG WEALTHDB_TAG=
 ARG WEALTHDB_BASE=
 ARG WEALTHDB_COMMIT=
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    v=github.com/ptu-gh/wealthdb/wealthdb/internal/version && \
+    v=github.com/smartpointer-com/wealthdb/wealthdb/internal/version && \
     go build -ldflags "-X $v.Tag=$WEALTHDB_TAG -X $v.Base=$WEALTHDB_BASE -X $v.Commit=$WEALTHDB_COMMIT" \
         -o /usr/local/bin/wealthdb ./cmd/wealthdb
 

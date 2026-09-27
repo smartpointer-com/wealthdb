@@ -1,8 +1,8 @@
 package angellist
 
 import (
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
 // init registers angellist's co-located ReturnsPolicy. Real funding-wallet

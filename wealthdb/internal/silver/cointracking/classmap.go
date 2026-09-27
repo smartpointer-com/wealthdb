@@ -1,6 +1,6 @@
 package cointracking
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 
 // taxonomy returns the (exposure, vehicle) pair for a cointracking
 // holding. CoinTracking only ever describes digital assets held

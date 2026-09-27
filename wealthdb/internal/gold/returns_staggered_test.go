@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // These regression tests lock the staggered-inception semantics: a constituent

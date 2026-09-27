@@ -3,7 +3,7 @@ package silver
 import (
 	"context"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // NewSnapshotStream returns a SnapshotStream that walks a

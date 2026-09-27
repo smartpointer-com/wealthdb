@@ -1,6 +1,6 @@
 package carta
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 
 // isStockVehicleType reports whether a cap-table security_type (collector
 // DESIGN.md: share / option / rsu / rsa / warrant / convertible / sar / piu /

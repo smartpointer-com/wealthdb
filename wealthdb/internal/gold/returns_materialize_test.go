@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // seedMaterializeFixture builds a two-source synthetic gold DB (a

@@ -3,7 +3,7 @@ package spending
 import (
 	"regexp"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // The internal-transfer matcher: the spending caller over gold's shared

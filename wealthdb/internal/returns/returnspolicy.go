@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // ReturnsPolicy is the per-source superset container for the returns engine. It

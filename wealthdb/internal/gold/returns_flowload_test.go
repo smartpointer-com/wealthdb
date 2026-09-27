@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestLoadFlowTransactionsMatchesTransactionsBetween pins the lean returns

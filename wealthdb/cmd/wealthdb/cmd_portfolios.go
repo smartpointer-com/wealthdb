@@ -8,9 +8,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // portfolioNamePrivacy picks the right redaction class for the

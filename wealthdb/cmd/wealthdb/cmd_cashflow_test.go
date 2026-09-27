@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // setupCashflowGold builds a gold file the cashflow CLI can be driven

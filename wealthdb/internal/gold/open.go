@@ -17,7 +17,7 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/version"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/version"
 )
 
 // ErrStaleBinary is returned from Open when the binary's VCS

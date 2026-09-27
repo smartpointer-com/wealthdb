@@ -3,7 +3,7 @@ package silver
 import (
 	"regexp"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // The security-name patterns RefineETFExposure matches, uppercase-

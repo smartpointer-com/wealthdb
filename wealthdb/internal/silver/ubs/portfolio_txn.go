@@ -9,8 +9,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // The portfolio transaction list (ubs-web collector migration 0012):

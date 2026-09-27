@@ -3,7 +3,7 @@ package silver
 import (
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestClosureMarkerBatch pins the exit-day zero snapshot: the previous held

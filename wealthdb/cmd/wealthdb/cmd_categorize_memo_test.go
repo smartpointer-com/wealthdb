@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // TestCollectMerchantCandidatesDropsTheMemo pins the memo contract at

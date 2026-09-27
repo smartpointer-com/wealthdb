@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/spending"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/spending"
 )
 
 // ---- persistCategorizations --------------------------------------------------

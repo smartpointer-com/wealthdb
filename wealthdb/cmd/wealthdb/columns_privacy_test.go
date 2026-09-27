@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // TestPortfolioNamePrivacyMatchesKind pins that the cointracking

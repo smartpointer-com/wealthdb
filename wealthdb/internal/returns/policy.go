@@ -3,7 +3,7 @@ package returns
 import (
 	"fmt"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // Regime classifies how much of an entity's return is recoverable from flows.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestCartaBoundaryFlowsCounted pins the external set end to end: the

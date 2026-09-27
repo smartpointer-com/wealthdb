@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 )
 
 // The write mutex is what stands between a rebuild-and-swap and a

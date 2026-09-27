@@ -3,7 +3,7 @@ package returns
 import (
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestReturnsPolicyForUnknownDefault pins the ReturnsPolicyFor miss-fallback. The

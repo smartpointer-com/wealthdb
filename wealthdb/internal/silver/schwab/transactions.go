@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // buildDescriptionToInstrumentKey scans silver positions and the

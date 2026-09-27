@@ -10,7 +10,7 @@ import (
 
 	_ "modernc.org/sqlite" // SQLite driver registration for all adapters.
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // OpenReadOnlySQLite opens a silver SQLite file read-only with the

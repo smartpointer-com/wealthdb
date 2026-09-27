@@ -1,6 +1,6 @@
 package angellist
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 
 // taxonomyForKind maps the silver vehicles.kind to the 2-D taxonomy
 // pair (exposure, vehicle). Both single-company SPVs/RUVs and

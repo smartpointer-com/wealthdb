@@ -1,8 +1,8 @@
 package cointracking
 
 import (
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
 // init registers cointracking's co-located ReturnsPolicy. Crypto: only FIAT

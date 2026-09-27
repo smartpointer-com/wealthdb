@@ -12,8 +12,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Defaults captures the recommended values the wizard offers as

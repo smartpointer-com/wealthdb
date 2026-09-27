@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
 // leg is a shorthand for a same-currency matcher input.

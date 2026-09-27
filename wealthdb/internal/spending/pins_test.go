@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestParsePinLedger pins the CSV contract: header-named columns in any

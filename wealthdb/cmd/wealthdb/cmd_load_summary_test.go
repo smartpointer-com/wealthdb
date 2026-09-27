@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/spending"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/spending"
 )
 
 // TestLoadPrintsBothFamilyBlocks pins what `load` says about the pass.

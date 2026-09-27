@@ -14,7 +14,7 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "cointracking"

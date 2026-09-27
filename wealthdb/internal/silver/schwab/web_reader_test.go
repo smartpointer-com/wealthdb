@@ -3,7 +3,7 @@ package schwab
 import (
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // wtx builds a parsed web transaction tagged with its sub-feed for the

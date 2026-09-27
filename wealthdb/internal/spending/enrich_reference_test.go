@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // The reference road: the far account arriving as an IDENTITY rather than as

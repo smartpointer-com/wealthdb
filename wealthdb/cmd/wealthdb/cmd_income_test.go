@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // setupIncomeGold builds a gold file the income CLI can be driven

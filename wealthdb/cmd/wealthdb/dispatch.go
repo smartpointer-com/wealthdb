@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 )
 
 // Run is the testable entry point. main is a one-liner around it.

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // A fund reports its first NAV on its first capital-account statement, which

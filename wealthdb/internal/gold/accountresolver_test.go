@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestNewAccountResolver pins the one resolution rule every

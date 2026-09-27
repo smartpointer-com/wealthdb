@@ -1,6 +1,6 @@
 package equityzen
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 
 // assetClassForKind maps the silver offerings.kind ('spv' | 'private_fund',
 // which load.py derives from EquityZen's assetClass: ASSET_COMPANY -> spv,

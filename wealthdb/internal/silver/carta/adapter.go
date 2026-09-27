@@ -46,7 +46,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "carta"

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 func seedReturnsSource(t *testing.T, db *sql.DB, ctx context.Context, id, kind string) {

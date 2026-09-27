@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // A statement's period summary is not a booking. Before its closing balance

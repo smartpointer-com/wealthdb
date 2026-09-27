@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // columnSpec describes one named output column. T is the row

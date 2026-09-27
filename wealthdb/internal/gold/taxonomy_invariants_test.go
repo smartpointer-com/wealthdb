@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestTaxonomyInvariants is the gold taxonomy-integrity +

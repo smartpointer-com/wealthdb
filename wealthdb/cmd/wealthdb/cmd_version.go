@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/version"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/version"
 )
 
 func init() {

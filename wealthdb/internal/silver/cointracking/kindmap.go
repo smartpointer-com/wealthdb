@@ -1,6 +1,6 @@
 package cointracking
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 
 // Direction discriminates inbound (asset arriving / cash inflow)
 // from outbound (asset leaving / cash outflow) for non-Trade

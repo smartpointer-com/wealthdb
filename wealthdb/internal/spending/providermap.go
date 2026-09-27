@@ -3,7 +3,7 @@ package spending
 import (
 	"strings"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // The provider-category tier: the provider's own filing of a row, carried

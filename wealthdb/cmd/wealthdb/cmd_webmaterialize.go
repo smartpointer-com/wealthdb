@@ -6,8 +6,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 func init() {

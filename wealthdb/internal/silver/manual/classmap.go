@@ -1,6 +1,6 @@
 package manual
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 
 // assetClassFor maps a manual position `kind` to its coarse canonical
 // AssetClass — the intermediate 1-D class the collector's `kind`

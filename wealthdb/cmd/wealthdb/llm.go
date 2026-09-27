@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 )
 
 // The LLM plumbing shared by every overlay command that asks a model

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // The boundary stamp: configuration turned into two tables, re-stamped

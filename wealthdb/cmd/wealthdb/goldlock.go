@@ -6,7 +6,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 )
 
 // goldWriteLockSuffix names the sidecar file the write mutex is taken

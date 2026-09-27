@@ -3,7 +3,7 @@ package schwab
 import (
 	"strings"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // kindFor maps a Schwab transaction `type` (the value silver stores

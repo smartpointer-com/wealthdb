@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // holdingsFlagSpec parameterises the shared readout-flag registration

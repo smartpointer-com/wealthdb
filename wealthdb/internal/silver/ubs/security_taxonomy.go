@@ -3,7 +3,7 @@ package ubs
 import (
 	"strings"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // What a statement trade says it TRADED, where the instrument itself

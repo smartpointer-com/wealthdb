@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestPassRuleNamesADeclaredAccount: a rule's `far` writes the declared

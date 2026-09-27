@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/version"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/version"
 )
 
 // binaryVersionRows counts the staleness ledger through a read-only

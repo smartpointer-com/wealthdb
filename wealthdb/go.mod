@@ -1,4 +1,4 @@
-module github.com/ptu-gh/wealthdb/wealthdb
+module github.com/smartpointer-com/wealthdb/wealthdb
 
 go 1.26.0
 

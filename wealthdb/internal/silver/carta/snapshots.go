@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 	"github.com/shopspring/decimal"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Snapshots reconstructs the per-day portfolio from the silver's per-lot change

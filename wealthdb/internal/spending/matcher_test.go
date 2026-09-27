@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // legRail classifies the card-bill rail. What matters is the ASYMMETRY: the

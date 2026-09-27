@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // cmdGlobal is the whole-portfolio rollup: a single row summing every

@@ -1182,9 +1182,9 @@ carry it, and both are checked by the build: the blank-import block in
 
 ```go
 import (
-    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
-    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/ubs"
-    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/swissquote"
+    _ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
+    _ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/ubs"
+    _ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/swissquote"
     // ...one blank import per backend package listed above.
 )
 ```
