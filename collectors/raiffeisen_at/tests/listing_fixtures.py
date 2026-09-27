@@ -6,7 +6,7 @@ SALDO on its last, continuation lines under each row, a totals page), and
 from, so every source they build agrees with every other by construction.
 
 Account numbers are all-zero-padded placeholders, the IBAN uses the
-placeholder letters of root CLAUDE.md §4, and amounts are round.
+placeholder letters of root AGENTS.md §4, and amounts are round.
 """
 from __future__ import annotations
 

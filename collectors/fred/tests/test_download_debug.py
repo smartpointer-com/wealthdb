@@ -4,7 +4,7 @@ The transport is stubbed — these assert what the trace records, not FRED's
 behaviour. Two properties carry the weight:
 
   * the api_key NEVER reaches the trace file. It travels in FRED's query
-    string (CLAUDE.md §2), and repo CLAUDE.md §3 forbids persisting a
+    string (AGENTS.md §2), and repo AGENTS.md §3 forbids persisting a
     credential to disk at all.
   * a request that FAILED is traced too. A trace that only shows successes
     cannot explain the run it exists for.

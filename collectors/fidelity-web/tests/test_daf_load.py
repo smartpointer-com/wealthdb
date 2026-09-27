@@ -1,7 +1,7 @@
 """Unit tests for the Donor-Advised Fund silver loader (load._load_daf).
 
 Synthetic bronze only — no real Fidelity charitable account numbers,
-pool ids, charities, or amounts (root CLAUDE.md §4). Builds a
+pool ids, charities, or amounts (root AGENTS.md §4). Builds a
 <dump>/daf/ tree matching what download.scrape_daf emits and asserts the
 rows land in the shared silver tables (portfolios kind='daf', accounts
 management_style='automated', positions from pools, transactions from

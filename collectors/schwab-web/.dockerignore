@@ -29,6 +29,7 @@ venv/
 
 # Documentation that the image doesn't need at runtime
 README.md
+AGENTS.md
 CLAUDE.md
 DESIGN.md
 

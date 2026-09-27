@@ -143,7 +143,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--screenshot-dir", type=Path, default=None,
         help="Write HTML/screenshots (and the trace, with --trace) here, "
              "plus a full DEBUG-level run.log mirror of the run's "
-             "output. NEVER commit these — see CLAUDE.md §4.",
+             "output. NEVER commit these — see AGENTS.md §4.",
     )
     p.add_argument(
         "--trace", action="store_true",
@@ -162,7 +162,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--capture-bodies", action="store_true",
         help="Debug aid: also save response bodies from the Schwab "
              "gateway / authorize hosts to --screenshot-dir (flow "
-             "diagnosis). NEVER commit these — see CLAUDE.md §4.",
+             "diagnosis). NEVER commit these — see AGENTS.md §4.",
     )
     mode = p.add_mutually_exclusive_group()
     mode.add_argument(
@@ -1093,10 +1093,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     debugcap.tee_debug_log(args.screenshot_dir, console_level, log=log)
     if args.trace and args.screenshot_dir is None:
-        raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §4).")
+        raise SystemExit("--trace requires --screenshot-dir (see AGENTS.md §4).")
     if args.capture_bodies and args.screenshot_dir is None:
         raise SystemExit("--capture-bodies requires --screenshot-dir "
-                         "(see CLAUDE.md §4).")
+                         "(see AGENTS.md §4).")
     if args.check:
         return cmd_check(args)
     source_env_files(args.env_file)

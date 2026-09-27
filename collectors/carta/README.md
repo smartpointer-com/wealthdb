@@ -155,7 +155,7 @@ activity) keeps it from removing a download that is still running.
 
 ## Read-only
 
-See [CLAUDE.md](CLAUDE.md). The Carta holder UI exposes mutation surfaces
+See [AGENTS.md](AGENTS.md). The Carta holder UI exposes mutation surfaces
 that **exercise options, sell/transfer shares, and move money** (plus
 funding + tax-withholding setup, e-sign, account settings), and possibly an
 issuer / company-admin or fund-admin console — all out of scope. This

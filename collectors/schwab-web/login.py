@@ -192,7 +192,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "bronze tree, e.g. the /debug mount), plus a full "
               "DEBUG-level run.log mirror of the run's output. Useful "
               "for debugging the login / landmark flow. NEVER commit "
-              "these — see CLAUDE.md §4."),
+              "these — see AGENTS.md §4."),
     )
     p.add_argument(
         "--trace", action="store_true",
@@ -205,7 +205,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Debug aid: also save response bodies from the Schwab "
               "gateway host to --screenshot-dir (login-flow diagnosis). "
               "Requires --screenshot-dir. NEVER commit these — see "
-              "CLAUDE.md §4."),
+              "AGENTS.md §4."),
     )
     return p.parse_args(argv)
 
@@ -899,7 +899,7 @@ def _dump_visible_form_elements(page, label: str) -> None:
     fresh MFA round to inspect the DOM manually.
 
     Tags identifiers as keys but NOT values — Schwab's MFA inputs
-    are typically empty when this fires, but be safe (CLAUDE.md
+    are typically empty when this fires, but be safe (AGENTS.md
     §4: don't leak identifiers anywhere).
     """
     try:
@@ -1315,10 +1315,10 @@ def main(argv: list[str]) -> int:
     )
     debugcap.tee_debug_log(args.screenshot_dir, console_level, log=log)
     if args.trace and args.screenshot_dir is None:
-        raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
+        raise SystemExit("--trace requires --screenshot-dir (see AGENTS.md §3).")
     if args.capture_bodies and args.screenshot_dir is None:
         raise SystemExit("--capture-bodies requires --screenshot-dir "
-                         "(see CLAUDE.md §4).")
+                         "(see AGENTS.md §4).")
     # Translate the one window flag into the Schwab preset that covers it.
     # An ISO-date --lookback expresses an exact window; tx-history can
     # honour it verbatim via its custom date-range mode, so the resolved

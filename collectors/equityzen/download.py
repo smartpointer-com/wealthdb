@@ -53,7 +53,7 @@ id is filesystem-safe):
       documents/<deal-slug>/<doc-slug>.pdf document blobs (default; --no-documents skips)
       run.json                             manifest for the silver loader
 
-Read-only (CLAUDE.md): only the read queries above are issued — never a
+Read-only (AGENTS.md): only the read queries above are issued — never a
 write mutation (no createPVR / IOI / order / reserve / sell). EquityZen is a
 live marketplace; never click an Invest / Express-Deal / Sell / Accept /
 Fund / e-sign / confirm control.

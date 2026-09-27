@@ -503,7 +503,7 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    # value-with-env-fallback (CLAUDE.md §3): --client-id VALUE else
+    # value-with-env-fallback (AGENTS.md §3): --client-id VALUE else
     # UBS_PSN_CLIENT_ID, so a direct `download.py` with the env var exported
     # works, matching fred.
     _source_env_file(args.env_file)
@@ -536,7 +536,7 @@ def main() -> int:
         log.info("SFTP session opened.")
 
         if args.dry_run:
-            # Export nothing (root CLAUDE.md §2): no run dir is minted,
+            # Export nothing (root AGENTS.md §2): no run dir is minted,
             # nothing is listed, nothing is fetched.
             log.info("Dry run: skipping downloads.")
             return 0

@@ -243,7 +243,7 @@ def export_url(account_key: str, fmt_handle: str, *,
     return f"{APP_ORIGIN}{DOCUMENTS_PATH}?{urlencode(params)}"
 
 
-# The document surface the contract allows (CLAUDE.md §1). Every document a
+# The document surface the contract allows (AGENTS.md §1). Every document a
 # payload may point at lives under it; `absolute_url` is the single choke
 # point both document fetches go through, so the gate sits here.
 SERVICING_PREFIX = "/api/servicing/"
@@ -364,7 +364,7 @@ def target_kind(label: str) -> str:
 # --- roster ---------------------------------------------------------------
 
 # The roster's own marker for a card account. Anything else the login may
-# hold is out of scope (CLAUDE.md).
+# hold is out of scope (AGENTS.md).
 CARD_PRODUCT_TYPE = "AEXP_CARD_ACCOUNT"
 
 

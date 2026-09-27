@@ -46,7 +46,7 @@ def test_fresh_with_check_is_rejected():
 
 
 def test_no_password_flag_exists():
-    # Credentials arrive via env only (root CLAUDE.md §3) — never argv.
+    # Credentials arrive via env only (root AGENTS.md §3) — never argv.
     with pytest.raises(SystemExit):
         login.parse_args(["--password", "x"])
 

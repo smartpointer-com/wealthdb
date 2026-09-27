@@ -25,7 +25,7 @@ across navigations (the chase/schwab-web lesson), so the signal is
 polled. A `GET accounts` probe backs it up only *off* the login flow — never
 mid-login, where it would poison the challenge session (DESIGN.md §4.2).
 
-Read-only (CLAUDE.md): the browser only ever touches the sign-in form and
+Read-only (AGENTS.md): the browser only ever touches the sign-in form and
 the access-code challenge; the deposit-account data is fetched over REST by
 download.py. Never a money-movement, card, or settings surface.
 """
@@ -534,7 +534,7 @@ def run_login(args: argparse.Namespace) -> int:
 def run_check(args: argparse.Namespace) -> int:
     """Probe whether the trusted-device logon still skips 2FA — submit the
     form and read the SPA outcome. No Secure Access Code is ever sent, so this
-    fires no MFA (root CLAUDE.md §2). Exit 0 = trusted (signed in), 1 = 2FA
+    fires no MFA (root AGENTS.md §2). Exit 0 = trusted (signed in), 1 = 2FA
     now required or no session."""
     with camoufox(args.profile_dir) as (context, page):
         watch = _LogonWatch().attach(context)

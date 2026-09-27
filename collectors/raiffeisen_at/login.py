@@ -35,7 +35,7 @@ Modes:
   default   fill/confirm the login, wait for the pushTAN approval, then fetch
             via download.walk() into --bronze-dir.
 
-Read-only (CLAUDE.md): the browser only completes the logon; the deposit
+Read-only (AGENTS.md): the browser only completes the logon; the deposit
 data is fetched over REST. Never a money-movement, card, or settings surface.
 """
 from __future__ import annotations

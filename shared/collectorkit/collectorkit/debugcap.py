@@ -27,7 +27,7 @@ The contract, identical for both:
     the run they are diagnosing are worse than no diagnostics.
   * **No secrets.** Bronze holds real financial data and is private, so a
     capture may contain account data — that is no worse than the artefacts
-    beside it. A credential is different: repo CLAUDE.md §3 forbids
+    beside it. A credential is different: repo AGENTS.md §3 forbids
     persisting one to disk at all. URLs are redacted (fred's API key travels
     in the query string) and response headers are whitelisted, never
     blanket-copied, because that is where cookies and bearer tokens live.
@@ -63,7 +63,7 @@ from pathlib import Path
 SCREENSHOTS_DIR = "screenshots"
 
 # Query parameters whose value is a credential. fred puts its API key in the
-# query string (collectors/fred/CLAUDE.md §2), and a captured URL would
+# query string (collectors/fred/AGENTS.md §2), and a captured URL would
 # otherwise persist it to disk.
 _SECRET_PARAMS = frozenset({
     "api_key", "apikey", "key", "token", "access_token", "refresh_token",

@@ -23,7 +23,7 @@ sign in on the standard Fidelity form, open the DAF from the account
 selector (recording the SSO hop), then tour the read-only surfaces —
 balances, investment pools/positions, grant history, contribution
 history, statements/confirmations — exercising every export control
-offered. This is read-only observation. Per CLAUDE.md, never click
+offered. This is read-only observation. Per AGENTS.md, never click
 Grant, Contribute, Exchange, or any other submit control: on a DAF,
 "recommend a grant" and "contribute" MOVE REAL MONEY, and pool
 exchanges reallocate investments.

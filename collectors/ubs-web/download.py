@@ -11,7 +11,7 @@ Reuses the Playwright session minted by login.py to export:
     their statement PDFs
 
 Files land in <bronze-dir>/<UTC-timestamp>/<artefact>. Read-only — see
-CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
+AGENTS.md §1. Per AGENTS.md §2, non-dry-run invocations must be
 explicitly authorised.
 
 Usage:
@@ -1237,7 +1237,7 @@ def _prepare_run_dir(bronze_dir: Path, dry_run: bool) -> Path | None:
     and `load` can classify.
 
     Dry-run: create NOTHING under `bronze_dir` and return ``None``. A
-    dry-run is the read-only walk (CLAUDE.md §2) and must persist nothing
+    dry-run is the read-only walk (AGENTS.md §2) and must persist nothing
     to bronze — not even a `run.json` shell, since `load`'s `scan_bronze`
     has no status guard and would otherwise ingest it as a dump run.
     """

@@ -27,7 +27,7 @@ advertises links that would move money or change a card —
 ``orders`` — so no ``_links`` href is ever followed blindly:
 :func:`refuse_path` admits only the read endpoints below, every request
 goes through it, and the one relation that is followed (``next``, the
-ledger's paging cursor) is checked like any other. CLAUDE.md §1 states
+ledger's paging cursor) is checked like any other. AGENTS.md §1 states
 the surface; this is where it is held.
 """
 

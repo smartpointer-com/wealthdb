@@ -14,7 +14,7 @@ the measured answer, the way [chase](../chase/DESIGN.md) did.
   Citizens Bank (firstcitizens.com). **Scope is deposit accounts only**
   (checking + savings); cards, lending, and any wealth-management /
   trust / brokerage surface the same login may expose are out of scope
-  in code and docs (see CLAUDE.md).
+  in code and docs (see AGENTS.md).
 - **The playbook is chase.** The Chase collector is the validated twin
   for a US retail deposit bank — one-shot browser login with
   terminal-driven 2FA, CSV+OFX-class exports joined in silver,
@@ -228,7 +228,7 @@ skipped 2FA entirely. So:
 
 1. **Scaffold** (done, committed 2026-08-13) — explore harness,
    Dockerfile on base-camoufox, wrapper via
-   `shared/wrappers/wrapper-lib.sh`, this document, CLAUDE.md.
+   `shared/wrappers/wrapper-lib.sh`, this document, AGENTS.md.
 
 2. **Runtime: Camoufox `login` + `download`, split verbs, REST data
    (Phase-2 scaffold built 2026-08-13).** The intent was a lightweight
@@ -381,6 +381,6 @@ Both ship with unit tests on synthetic fixtures.
   force the full 2FA challenge again; `--no-prefill` types the
   credentials by hand.
 - Live sessions only when the user explicitly requests one and is
-  present (CLAUDE.md §0); human-in-the-loop waits use long timeouts
+  present (AGENTS.md §0); human-in-the-loop waits use long timeouts
   (1h+); never
   fire logins in quick succession.

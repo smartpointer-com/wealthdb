@@ -129,7 +129,7 @@ explore session, no values retained):
 telemetry mutation the SPA fires automatically, **not** a financial
 write). `download.py` issues only the read queries above plus the two
 auth mutations; it must not call `createPVR` or any IOI / reserve /
-order operation. See [CLAUDE.md](CLAUDE.md).
+order operation. See [AGENTS.md](AGENTS.md).
 
 ## 3. Discovery: the `explore` harness
 
@@ -279,7 +279,7 @@ company name ever appears in a path): `$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts
 `documents/<deal-slug>/` (skipped by `--no-documents`), and a `run.json` manifest
 (slugs + counts only — no names/ids/amounts). `--dry-run` captures the list
 across all stages, logs what it would fetch, and writes nothing
-(CLAUDE.md-sanctioned read-only smoke test).
+(AGENTS.md-sanctioned read-only smoke test).
 
 #### run.json status lifecycle + prune
 
@@ -539,7 +539,7 @@ default, the tax-document PDFs (§4, §5); the gold adapter
 
 ## 8. Read-only & PII
 
-See [CLAUDE.md](CLAUDE.md). EquityZen is a **live marketplace**: the
+See [AGENTS.md](AGENTS.md). EquityZen is a **live marketplace**: the
 portal exposes order-placement, Express-Deal sell, reserve/IOI, funding,
 and e-sign surfaces — all forbidden; this collector only reads the
 buyer's own holdings + documents. The pre-IPO **company names** in the

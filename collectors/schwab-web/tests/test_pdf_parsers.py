@@ -1576,7 +1576,7 @@ class TestStatementPdfReturnShape:
 #
 # Synthetic text mimicking pypdfium2's one-row-per-line extraction of
 # the three observed layout families. Wholly invented counterparties /
-# amounts; VTI is a widely-held example ticker (CLAUDE.md §4).
+# amounts; VTI is a widely-held example ticker (AGENTS.md §4).
 
 class TestParseDistributionText:
     _SECURITIES = (

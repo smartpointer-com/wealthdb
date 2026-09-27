@@ -15,7 +15,7 @@ import (
 // in returns_compute.go) covers the whole pre-debut region at any distance from
 // debut — an account fed by month-end snapshots can be funded months before its
 // first one — so every fixture below dates the real funding well before debut, far outside
-// the ±nettingWindowDay transfer-netting window. All data synthetic (CLAUDE.md §4).
+// the ±nettingWindowDay transfer-netting window. All data synthetic (AGENTS.md §4).
 
 // netFlowOf returns the summary row's net_flow as a float for an entity.
 func netFlowOf(t *testing.T, rows []ReturnRow, entity string) float64 {

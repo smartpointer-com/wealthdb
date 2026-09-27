@@ -170,7 +170,7 @@ def _build(tmp_path, monkeypatch):
 def test_migrations_lockstep_with_fidelity_web():
     """svb.db is read by the shared Fidelity gold adapter (kind:"fidelity"), so
     these migrations MUST stay byte-identical to fidelity-web's silver schema.
-    This guard fails if either side drifts (see CLAUDE.md / DESIGN.md)."""
+    This guard fails if either side drifts (see AGENTS.md / DESIGN.md)."""
     fidelity = MIGRATIONS.parent.parent / "fidelity-web" / "migrations"
     for mig in sorted(MIGRATIONS.glob("*.sql")):
         twin = fidelity / mig.name

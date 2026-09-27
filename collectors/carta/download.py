@@ -77,7 +77,7 @@ bronze tree, never the repo):
 writes nothing. Per-endpoint failures are recorded in run.json and never
 abort the run.
 
-Read-only (CLAUDE.md): GET endpoints on the portfolio holder's own holdings only. Never
+Read-only (AGENTS.md): GET endpoints on the portfolio holder's own holdings only. Never
 the issuer/company-admin or fund-admin GP console, never an exercise / sell /
 transfer / accept action.
 """

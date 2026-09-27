@@ -213,7 +213,7 @@ layer's job.
 
 The CLI never imports or calls any Schwab write endpoints (order
 placement, replacement, cancellation, or transfers). See
-[CLAUDE.md](CLAUDE.md) §1.
+[AGENTS.md](AGENTS.md) §1.
 
 ### Prerequisites
 
@@ -329,7 +329,7 @@ the dump layer; full order history is intentionally not captured.
 - **No read-only OAuth scope exists.** The token `download.py` loads
   could place orders if the wrong code called the wrong endpoint. This
   repo's contract — enforced by code review — is that it never imports
-  or calls any write endpoint. See [CLAUDE.md](CLAUDE.md) §1.
+  or calls any write endpoint. See [AGENTS.md](AGENTS.md) §1.
 - **All amounts USD.** The Schwab API does not return a currency field
   on positions or transactions; everything is implicitly USD.
 - **Transient-fault retry, but no resume / scheduling.** A request that

@@ -66,7 +66,7 @@ product line: `3.*` is p3a, `2.*` is pvb, `1.*` is inv.
 - **Real-time / near-real-time pull.** SMS mTAN gates every
   fresh login.
 - **Strategy changes, contributions, beneficiary edits,
-  withdrawals.** See [CLAUDE.md §1](CLAUDE.md) — the contract
+  withdrawals.** See [AGENTS.md §1](AGENTS.md) — the contract
   is read-only.
 - **MFA automation.** Human-in-the-loop on every fresh login.
 - **Cross-bank semantic alignment.** `wealthdb` gold's job.
@@ -385,10 +385,10 @@ The silver-side facts the adapter reads:
 ## 8. What we do NOT do
 
 - **Mutations** — no contributions, no strategy changes, no
-  withdrawals, no beneficiary edits. See [CLAUDE.md §1](CLAUDE.md).
+  withdrawals, no beneficiary edits. See [AGENTS.md §1](AGENTS.md).
 - **MFA automation** — human-in-the-loop on every fresh login.
 - **Cron / launchd / GitHub-Actions scheduling** — see
-  [the repo-root CLAUDE.md §2](../../CLAUDE.md). Unattended runs
+  [the repo-root AGENTS.md §2](../../AGENTS.md). Unattended runs
   can't pass the mTAN gate anyway.
 - **Cross-bank semantic alignment** — gold's job.
 - **PDF body parsing for transaction documents** — silver records

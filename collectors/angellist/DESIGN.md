@@ -345,7 +345,7 @@ AngelList changes the venture SPA's GraphQL or routes.
 
 ## Read-only & PII
 
-See [CLAUDE.md](CLAUDE.md). Navigation + passive GraphQL capture only;
+See [AGENTS.md](AGENTS.md). Navigation + passive GraphQL capture only;
 never a mutate control, never the lead/admin surface. SPV/fund names,
 amounts, and the commitments wire details are PII — synthetic placeholders
 only in any tracked file; real data stays under `$XDG_DATA_HOME/wealthdb` / `~/.secrets`.

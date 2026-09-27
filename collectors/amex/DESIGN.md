@@ -18,7 +18,7 @@ the lettered sections say so and supersede them.
   expose is out of scope in code and docs: money movement in every form,
   Membership Rewards redemption, offers and enrolment, Plan It /
   pay-over-time, travel and booking, account lifecycle, profile and
-  settings, and the message center. See [CLAUDE.md](CLAUDE.md) for the
+  settings, and the message center. See [AGENTS.md](AGENTS.md) for the
   allow/forbid surface.
 - **The playbook was chase, and the shape landed there too — by a
   different route.** [`chase`](../chase/) is the fleet's other card
@@ -669,7 +669,7 @@ later changed one, the lettered section that changed it is cited.
 
 1. **Scaffold.** `explore` harness, Dockerfile on base-camoufox, wrapper via
    `shared/wrappers/wrapper-lib.sh`, host-side `prune`, this document,
-   CLAUDE.md.
+   AGENTS.md.
 2. **Explore (2026-09-06).** Two sessions; §A–§H.
 3. **download — the one verb that signs in (§L).** Camoufox for the
    logon, then REST over `page.request`; no DOM scraping of data (§A). Built
@@ -917,5 +917,5 @@ made once and kept rather than paid for again.
   passcode — where `download --fresh` moves it aside — and `--no-prefill`
   types the credentials by hand.
 - Live sessions only when the user explicitly requests one and is present
-  (CLAUDE.md §0); human-in-the-loop waits use long timeouts (1h+); never
+  (AGENTS.md §0); human-in-the-loop waits use long timeouts (1h+); never
   fire logins in quick succession.

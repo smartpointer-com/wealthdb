@@ -3,7 +3,7 @@
 The design decisions of record behind `wealthdb returns` (TWR / MWR):
 the conventions, the non-obvious choices, and what is deliberately
 deferred. [DESIGN.md §10.9](DESIGN.md) is the user-facing summary; this
-is the "why". All examples synthetic (CLAUDE.md §4).
+is the "why". All examples synthetic (AGENTS.md §4).
 
 The engine is **source-agnostic**: `internal/returns/` holds the pure
 math (period Modified-Dietz, TWR chaining, XIRR, onboarding/closure

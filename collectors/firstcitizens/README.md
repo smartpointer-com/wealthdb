@@ -48,7 +48,7 @@ A read-only collector for
 Bank retail banking portal: **deposit accounts** (checking + savings),
 their statement PDFs, and their transaction history / exports. Cards,
 lending, and any wealth-management / trust / brokerage surface the same
-login may expose are out of scope (see [CLAUDE.md](CLAUDE.md)). Like the
+login may expose are out of scope (see [AGENTS.md](AGENTS.md)). Like the
 other portal-only sources, it replays the browser flow via Camoufox —
 the US siblings ([`chase`](../chase/), [`fidelity-web`](../fidelity-web/),
 [`schwab-web`](../schwab-web/)) all measured Akamai-class bot defense

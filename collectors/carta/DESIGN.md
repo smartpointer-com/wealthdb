@@ -588,7 +588,7 @@ transactions per §6.1.
 
 ## 8. Read-only & PII
 
-See [CLAUDE.md](CLAUDE.md). The holder UI exposes mutation surfaces
+See [AGENTS.md](AGENTS.md). The holder UI exposes mutation surfaces
 (exercise options, sell/transfer shares, funding + tax-withholding setup,
 e-sign, account settings) and possibly an issuer / company-admin or
 fund-admin console — all forbidden; this toolkit only navigates, filters,

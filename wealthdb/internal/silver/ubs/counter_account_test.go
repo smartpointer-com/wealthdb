@@ -16,7 +16,7 @@ import (
 // rule's guess.
 //
 // Every value below is synthetic — IBAN-shaped placeholder letters, not
-// an account this or any deployment holds (CLAUDE.md §4).
+// an account this or any deployment holds (AGENTS.md §4).
 
 // csvPayload builds an export-era payload: no `counter_account` field,
 // the counter IBAN buried in Description3 the way the CSV writes it.

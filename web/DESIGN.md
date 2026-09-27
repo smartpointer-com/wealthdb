@@ -338,7 +338,7 @@ and refresh aborts *before* the snapshot is touched, while the previous
 snapshot keeps serving. The sidecar is an expected artefact beside the
 gold DB: the kernel drops the lock when the process ends, the empty
 file stays, and a copy or a backup may ignore it. The web container
-itself still never sees anything but the `:ro` snapshot (CLAUDE.md §1).
+itself still never sees anything but the `:ro` snapshot (AGENTS.md §1).
 
 ## Testing
 

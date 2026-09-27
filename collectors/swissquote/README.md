@@ -88,7 +88,7 @@ persisted session cookie across runs until it expires.
 | Script | Purpose |
 | --- | --- |
 | [`login.py`](login.py) | Drives headless Chromium through the F5 BIG-IP login form and the Mobile Level 3 MFA gate, scrapes and prints the on-screen Operation No. (TAN) for comparison against the phone, and persists the Playwright `storageState.json`. `--check` validates an existing state file without an MFA push. |
-| [`download.py`](download.py) | Reuses the persisted session to export transactions (CSV), positions + list of assets (XLS), account overview (PDF), and per-document PDFs from eBanking into a timestamped bronze directory. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`download.py`](download.py) | Reuses the persisted session to export transactions (CSV), positions + list of assets (XLS), account overview (PDF), and per-document PDFs from eBanking into a timestamped bronze directory. Read-only — see [AGENTS.md](AGENTS.md) §1. |
 | [`load.py`](load.py) | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (window-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. Also parses **Portfolio Performance PDFs** in bronze to reconstruct historical position snapshots (one per year-end the bank issues), tagged with `source='pp:<doc_id>'` on the silver `positions` table. |
 
 ## Container build
@@ -248,7 +248,7 @@ new MFA push, no fresh login):
 | `--username` | _(env `SWISSQUOTE_USERNAME`)_ | Swissquote login username / customer number. Falls back to env var. |
 | `--check` | off | Validate the existing state file against a live landmark URL; print whether it's still authenticated. No new login, no MFA push. |
 | `--mfa-timeout` | `300` | Seconds to wait for the Mobile Level 3 push to be approved. |
-| `--screenshot-dir` | _unset_ | If set, write a Playwright screenshot at each navigation landmark for offline debugging. Never use on a real account in tracked output — see [the repo-root CLAUDE.md](../../CLAUDE.md) §4. |
+| `--screenshot-dir` | _unset_ | If set, write a Playwright screenshot at each navigation landmark for offline debugging. Never use on a real account in tracked output — see [the repo-root AGENTS.md](../../AGENTS.md) §4. |
 | `--trace` | off | Capture a Playwright trace bundle. Requires `--screenshot-dir`; the bundle lands there alongside screenshots. Never auto-writes to the secrets dir. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
@@ -327,7 +327,7 @@ normalisation, no filtering happens at this stage. That's silver's
 job.
 
 The script must never navigate to a write surface — see
-[CLAUDE.md](CLAUDE.md) §1.
+[AGENTS.md](AGENTS.md) §1.
 
 ### Prerequisites
 

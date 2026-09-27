@@ -134,7 +134,7 @@ Schwab specifics:
   `--dry-run` returns before the run dir exists, so it leaves no shell
   and no manifest.
 - Never imports or calls write endpoints (`place_order`, etc.).
-  This is enforced by code review, documented in `CLAUDE.md`, and
+  This is enforced by code review, documented in `AGENTS.md`, and
   reinforced by registering the Schwab app with order rate-limit 0.
 
 **Bronze compression.** Each of the six data artefacts
@@ -183,7 +183,7 @@ a `load --force` rebuild must produce identical silver.
   scope. Data that would only be thrown away is not captured.
 - **A `--dry-run` mode that validates auth and lists accounts but
   doesn't fetch.** Used both for connectivity testing and by agents
-  exploring the codebase under the CLAUDE.md "don't burn live API
+  exploring the codebase under the AGENTS.md "don't burn live API
   quota" rule.
 
 ### 3.3 `load.py` — bronze → silver

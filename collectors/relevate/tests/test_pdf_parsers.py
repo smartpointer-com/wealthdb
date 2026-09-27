@@ -6,7 +6,7 @@ read. Follows the same isolation pattern as the Swissquote
 portfolio-performance parser tests.
 
 All identifiers (account, ISINs, security names) are synthetic
-per repo CLAUDE.md §4.
+per repo AGENTS.md §4.
 
 Run from the collector directory:
     python3 -m unittest discover tests

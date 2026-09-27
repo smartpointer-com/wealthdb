@@ -57,7 +57,7 @@ def test_parse_args_overrides():
 
 
 def test_no_password_flag_exists():
-    # Credentials reach the harness via env only (root CLAUDE.md §3);
+    # Credentials reach the harness via env only (root AGENTS.md §3);
     # a --password flag must never parse.
     import pytest
     with pytest.raises(SystemExit):

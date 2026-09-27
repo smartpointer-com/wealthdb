@@ -20,7 +20,7 @@ this browser" control), the on-demand statement generator (its range
 parameters, maximum range, and reach), and each account's transaction
 history plus the CSV export.
 
-This is read-only observation. Per CLAUDE.md, never click a payment /
+This is read-only observation. Per AGENTS.md, never click a payment /
 transfer / standing-order / confirm control (Überweisung, Auftrag,
 Senden, Freigeben, Zeichnen …), stay out of card management, securities,
 settings, and the message center, and keep to the retail deposit

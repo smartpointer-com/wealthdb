@@ -24,7 +24,7 @@ persistent context fires `close`) or after `--max-duration` (default
 1h) as a safety net. Artefacts land under `/debug/<UTC-ts>/` so the
 bronze + silver tree under `/data` stays clean.
 
-Read-only: this is for observation. Per CLAUDE.md, do not click any
+Read-only: this is for observation. Per AGENTS.md, do not click any
 mutate/confirm/submit control beyond the login + 2FA forms, and stay
 out of any syndicate-lead / fund-admin surface the login may expose.
 """

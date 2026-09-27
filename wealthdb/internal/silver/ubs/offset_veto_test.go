@@ -13,7 +13,7 @@ import (
 
 // newWebTxFixture builds an in-memory ubs-web silver with the accounts and
 // transactions tables the transaction stream reads. All ids synthetic /
-// IBAN-spec placeholder letters (CLAUDE.md §4).
+// IBAN-spec placeholder letters (AGENTS.md §4).
 func newWebTxFixture(t *testing.T) *webReader {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/ubs-web.db")

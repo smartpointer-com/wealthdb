@@ -51,7 +51,7 @@ roster and balances, transaction history and exports, and statement PDFs.
 Everything else the same login may expose is out of scope: money movement
 in every form, Membership Rewards redemption, offers and enrolment,
 Plan It / pay-over-time, travel and booking, account lifecycle, profile
-and settings, and the message center (see [CLAUDE.md](CLAUDE.md)). Like
+and settings, and the message center (see [AGENTS.md](AGENTS.md)). Like
 the other portal-only sources it replays the browser flow via Camoufox —
 the US siblings ([`chase`](../chase/), [`fidelity-web`](../fidelity-web/),
 [`schwab-web`](../schwab-web/)) all measured Akamai-class bot defense

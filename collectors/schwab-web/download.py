@@ -9,7 +9,7 @@ wrapper's `download` subcommand always goes through login.py
 because Schwab invalidates the persistent profile's session
 within seconds of Firefox closing.
 
-walk() drives two read-only surfaces (CLAUDE.md §1):
+walk() drives two read-only surfaces (AGENTS.md §1):
 
   Statements & Tax Forms — enumerate the accounts, apply
   the document-type chip filter, paginate the results, and fetch
@@ -782,7 +782,7 @@ def _click_modal_close_control(page) -> bool:
     Close), trying each MODAL_CLOSE_SELECTORS candidate. Returns True
     once one was clicked. Never touches OK / Continue / action buttons
     — on an unknown dialog those could confirm an action (read-only
-    contract, CLAUDE.md §1)."""
+    contract, AGENTS.md §1)."""
     for sel in schwab.MODAL_CLOSE_SELECTORS:
         try:
             btn = page.locator(sel).first
@@ -1830,7 +1830,7 @@ def _open_run_dir(dest_root: Path, run_ts: str, *, dry_run: bool):
     manifest + tx-export writes (so the session and the export surfaces
     get verified), but nothing lands under the bronze root — honouring
     the repo-wide "``download --dry-run`` persists nothing to bronze"
-    contract (root CLAUDE.md §2). The scratch tree is removed on exit,
+    contract (root AGENTS.md §2). The scratch tree is removed on exit,
     even on crash, by the context manager. Because a dry-run never
     writes under ``dest_root``, `load` simply never sees a dump to skip
     — the status guard still matters only for a crashed *real* run.
@@ -1877,7 +1877,7 @@ def walk(page, dest_root: Path, *, mode: str = "all",
     """
     run_ts = bronze.ts_slug()
     # A `--dry-run` walks the same read-only surfaces but must persist
-    # nothing under the bronze root (root CLAUDE.md §2): `_open_run_dir`
+    # nothing under the bronze root (root AGENTS.md §2): `_open_run_dir`
     # hands it a throwaway temp dir instead of `<dest_root>/<run_ts>/`,
     # so the manifest + any fired tx exports land in scratch and are
     # reclaimed on exit. A real run gets the bronze run dir as before.

@@ -3,7 +3,7 @@
 
 Part of the BYO-session path: AngelList's venture login is gated by an
 invisible Turnstile / reCAPTCHA challenge that flags any automation stack
-(see CLAUDE.md §3), so `login` starts a genuine, un-instrumented Firefox
+(see AGENTS.md §3), so `login` starts a genuine, un-instrumented Firefox
 binary under Xvfb + VNC for a by-hand sign-in and lifts the cookie jar
 afterwards. A plain binary takes no Playwright `firefox_user_prefs`; it
 reads `<profile>/user.js` at startup.

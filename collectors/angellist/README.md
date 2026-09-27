@@ -138,7 +138,7 @@ running.
 
 ## Read-only & PII
 
-See [CLAUDE.md](CLAUDE.md). The collector only navigates the venture LP
+See [AGENTS.md](AGENTS.md). The collector only navigates the venture LP
 read surfaces and captures the GraphQL the SPA fetches — it never clicks
 an invest/commit/fund/e-sign/settings control and stays off any
 lead/admin surface. The data (incl. K-1-adjacent details and, on the

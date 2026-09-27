@@ -79,7 +79,7 @@ conventions.
 
 - **No write actions.** No withdrawal requests, no beneficiary
   changes, no contact-detail edits. See
-  [CLAUDE.md §1](CLAUDE.md).
+  [AGENTS.md §1](AGENTS.md).
 - **No 2FA automation.** Every fresh login pushes an mTAN to the
   registered phone; the code is typed in on stdin. No
   TOTP-secret storage, no SMS auto-grab, no email-forwarding
@@ -87,7 +87,7 @@ conventions.
 - **No unattended scheduling.** Cron / launchd / Actions are
   out of scope — they can't survive the mTAN gate anyway, and
   they would invite session-cookie burn from parallel logins.
-  See [the repo-root CLAUDE.md §2](../../CLAUDE.md).
+  See [the repo-root AGENTS.md §2](../../AGENTS.md).
 - **No mutation surface in the CLI.** No `--password` flag
   (would leak via `ps`). Credentials reach the toolkit via env
   vars sourced from `~/.secrets/relevate.env`.
@@ -192,7 +192,7 @@ relevate/
 ├── requirements.txt     # pytest + requests + pypdf
 ├── README.md            # this file
 ├── DESIGN.md            # the design doc — read this
-├── CLAUDE.md            # ground rules for agents
+├── AGENTS.md            # ground rules for agents
 ├── .gitignore
 └── .dockerignore
 ```
@@ -275,6 +275,6 @@ untouched (UNKNOWN, never deleted).
 The repo is intended to be publishable. **Do not commit any
 identifier-shaped value, response body, or screenshot that
 contains real Relevate account data.** See
-[the repo-root CLAUDE.md §4](../../CLAUDE.md) for the full PII rules. Pre-commit:
+[the repo-root AGENTS.md §4](../../AGENTS.md) for the full PII rules. Pre-commit:
 grep the staged diff for known real values BEFORE the first
 `git add`.

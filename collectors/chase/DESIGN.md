@@ -12,7 +12,7 @@ sections and §4 say so and supersede them.
 
 - **The relationship.** A retail banking relationship at JPMorgan Chase
   (chase.com). No brokerage / investment surface is in scope, even where
-  the same login exposes one (see CLAUDE.md). Scope is the retail
+  the same login exposes one (see AGENTS.md). Scope is the retail
   **deposit accounts** (checking, and savings if present) **and the
   credit-card accounts, read-only** — card roster, card detail, card
   transaction export, card statements. Card **management** (payments,

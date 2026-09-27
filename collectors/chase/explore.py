@@ -20,7 +20,7 @@ statements/documents area (how monthly statement PDFs are listed and
 fetched), and each account's full transaction history plus every export
 format offered.
 
-This is read-only observation. Per CLAUDE.md, never click a Pay /
+This is read-only observation. Per AGENTS.md, never click a Pay /
 Transfer / Zelle / Send / Deposit / confirm control, stay out of card
 management, settings, and the secure message center, and keep to the
 retail deposit and credit-card *read* surfaces — never any investment

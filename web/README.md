@@ -85,7 +85,7 @@ web/
 ├── test_provision.py  # unit tests for provision.py's definitions (no Metabase)
 ├── README.md      # this file
 ├── DESIGN.md      # rationale: snapshot, glibc base, version pin, provisioning
-├── CLAUDE.md      # ground rules for agents
+├── AGENTS.md      # ground rules for agents
 ├── .gitignore
 └── .dockerignore
 ```
@@ -105,4 +105,4 @@ The repo is publishable. The Metabase **H2 metadata DB** can hold the
 SQL of saved questions (no raw source data), and the **snapshot** is a
 copy of gold — both live under `$XDG_DATA_HOME`, outside the repo.
 Never commit either, and don't bake real queries/dashboards into the
-image. See [CLAUDE.md](CLAUDE.md).
+image. See [AGENTS.md](AGENTS.md).

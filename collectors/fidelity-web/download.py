@@ -2776,7 +2776,7 @@ def _daf_scrape_account(page, jwt, account, since_date, daf_root, *,
     On ``dry_run`` it does the pure-read JSON enumeration (so the plan
     log carries real counts and any auth/SSO failure surfaces) but
     fetches no CSV export or PDF and writes no bronze — honouring the
-    root CLAUDE.md §2 "export nothing" dry-run contract."""
+    root AGENTS.md §2 "export nothing" dry-run contract."""
     account_nbr = str(account.get("accountNbr") or account.get("accountNumber")
                       or "")
     if not account_nbr:
@@ -2996,7 +2996,7 @@ def walk(context, page, config):
     if dry_run:
         # A dry-run is a read-only walk: reach the export surfaces,
         # enumerate account_dimensions, and log the plan — but persist
-        # NOTHING under the bronze dest (root CLAUDE.md §2 "export
+        # NOTHING under the bronze dest (root AGENTS.md §2 "export
         # nothing"). Crucially we do NOT create the run dir or write
         # run.json: even a run.json-only shell is a dump that `load`
         # would ingest, and fidelity-web's `load._load_master` reads

@@ -179,7 +179,7 @@ commit anything derived from it without stripping identifiers.
 
 ## Read-only
 
-See [CLAUDE.md](CLAUDE.md). The Chase retail UI puts money movement
+See [AGENTS.md](AGENTS.md). The Chase retail UI puts money movement
 (transfers, Zelle, wires, bill pay), card management (payments, autopay,
 limits, disputes, lock/unlock), and account settings one or two clicks
 from the account overview — all permanently out of scope. *Reading* a

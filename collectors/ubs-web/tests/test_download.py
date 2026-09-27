@@ -1,7 +1,7 @@
 """Tests for download.py's bronze-persistence discipline.
 
 The load-bearing guarantee: ``download --dry-run`` is the read-only
-walk (root CLAUDE.md §2) and must persist NOTHING under the bronze
+walk (root AGENTS.md §2) and must persist NOTHING under the bronze
 ``--bronze-dir`` — not even a ``run.json`` shell, because ``load``'s
 ``scan_bronze`` has no status guard and would ingest such a shell as a
 dump run. These tests pin that invariant plus the real-run counterpart.

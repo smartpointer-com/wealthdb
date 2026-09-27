@@ -268,7 +268,7 @@ login.py [--state-path PATH] [--check] [--max-otp-attempts N]
   the existing state file, restores the cookie jar, hits the
   landmark probe, prints `ALIVE` / `DEAD` / `MISSING` on stdout.
   Exit codes: 0 (ALIVE), 1 (MISSING), 2 (DEAD). Allowed without
-  user prompt (root CLAUDE.md §2).
+  user prompt (root AGENTS.md §2).
 - `--max-otp-attempts` — retry budget for a mistyped OTP
   (default 3). Attempts can pause indefinitely; `input()`
   blocks on stdin without a deadline. This
@@ -287,7 +287,7 @@ longer (30 d nominal).
 `login.py --check` is the canonical "is my session still alive"
 probe. The wrapper documents that running `login.py` without
 `--check` triggers a fresh mTAN — it runs only on explicit
-request (root CLAUDE.md §2).
+request (root AGENTS.md §2).
 
 ### 3.4 Custom request headers
 
@@ -495,7 +495,7 @@ investigating a specific portfolio's response shape.
 
 `--dry-run` hits only the two master listing endpoints
 (`investment-overview` + `documents`), records the work-list
-counts in the manifest, and exits. Root CLAUDE.md §2 explicitly
+counts in the manifest, and exits. Root AGENTS.md §2 explicitly
 allows running this without user prompt.
 
 ### 4.3 Idempotency + dedup

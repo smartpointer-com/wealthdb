@@ -248,7 +248,7 @@ review the plan first, and verify afterwards with `load --force`
 
 ## Read-only
 
-See [CLAUDE.md](CLAUDE.md). cointracking.info exposes mutation
+See [AGENTS.md](AGENTS.md). cointracking.info exposes mutation
 surfaces (add transactions by hand, edit address book entries,
 delete imports, change account settings). This toolkit is
 **read-only** — it only navigates, filters, and exports.

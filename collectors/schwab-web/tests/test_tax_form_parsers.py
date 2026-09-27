@@ -2,7 +2,7 @@
 
 Fully synthetic fixtures — invented security names, quantities, and
 dollar amounts. No real account data ever enters a tracked file
-(repo-root CLAUDE.md §4). The fixtures mirror the real Schwab formats:
+(repo-root AGENTS.md §4). The fixtures mirror the real Schwab formats:
 OFX-2.x XML (the preferred source) and the multi-section composite CSV
 (the fallback).
 """

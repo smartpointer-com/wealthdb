@@ -10,7 +10,7 @@ import (
 // pdfPayload builds a pre-2024 Account-Statement PDF-backfill payload with only
 // the fields pdfCashIsExternal reads, and returns it decoded the way the reader
 // decodes a row — so the JSON tag names stay pinned. All values synthetic /
-// IBAN-spec placeholder letters (CLAUDE.md §4) — no real account IDs.
+// IBAN-spec placeholder letters (AGENTS.md §4) — no real account IDs.
 func pdfPayload(t *testing.T, counter, bookingType string, internalTransfer bool) webTxPayload {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{

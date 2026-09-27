@@ -1,7 +1,7 @@
 """Tests for relevate's download.py: the dry-run contract + the docdedup
 download-avoidance wiring.
 
-Part 1 — dry-run contract. Root CLAUDE.md §2: `download --dry-run` walks the
+Part 1 — dry-run contract. Root AGENTS.md §2: `download --dry-run` walks the
 read-only export surfaces (verify the session, enumerate the overview +
 document index) but must persist NOTHING under the bronze root
 (`--bronze-dir`). A dry-run that left a run dir — even a run.json-only shell —

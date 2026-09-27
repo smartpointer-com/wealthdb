@@ -36,7 +36,7 @@ credential. A REST probe backs it up, gated to fire only once off the login
 flow — probing an authenticated endpoint mid-challenge poisons the challenge
 server-side (the firstcitizens root cause, DESIGN.md §4.2 there).
 
-Read-only (CLAUDE.md): the browser only ever touches the sign-in form and
+Read-only (AGENTS.md): the browser only ever touches the sign-in form and
 the passcode challenge; the card data is fetched over REST by download.py.
 Never a payment, rewards, offers, or settings surface.
 """

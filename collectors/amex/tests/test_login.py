@@ -60,7 +60,7 @@ def test_the_sign_in_flags_moved_to_download(argv):
 
 
 def test_no_password_flag_exists():
-    # Credentials arrive via env only (root CLAUDE.md §3) — never argv.
+    # Credentials arrive via env only (root AGENTS.md §3) — never argv.
     with pytest.raises(SystemExit):
         login.parse_args(["--password", "x"])
 

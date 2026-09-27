@@ -28,7 +28,7 @@ CLI surface (shared with the other carta subcommands):
                        0 if authenticated, 1 if not. No credentials posted,
                        no 2FA push — safe for cron healthchecks.
 
-Auth discipline (root CLAUDE.md §3): never weaken or skip 2FA, never add a
+Auth discipline (root AGENTS.md §3): never weaken or skip 2FA, never add a
 --password flag, never lower the profile dir below 0700. The fix for a
 bot-challenge is a better Camoufox profile, never an auth bypass.
 """

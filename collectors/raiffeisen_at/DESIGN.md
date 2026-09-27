@@ -17,7 +17,7 @@ complete (two capture sessions); the only residual probes are in
   is deposit accounts only** (checking [Girokonto] + savings
   [Sparkonto]); cards, financing, and any securities / wealth surface
   the same login may expose are out of scope in code and docs (see
-  CLAUDE.md). The collector is named `raiffeisen_at` because Raiffeisen
+  AGENTS.md). The collector is named `raiffeisen_at` because Raiffeisen
   operates distinct banking systems in other countries.
 - **The playbook is chase, refined by firstcitizens.** Chase is the
   original validated retail-deposit playbook (one-shot browser login
@@ -379,7 +379,7 @@ the session-holder heartbeat.
   Haben** (debit / credit interest rates, each with an effective date), and
   the **Kontoabschluss** cycle dates. It also returns an incidental
   **Karteninformationen** block (card type + limits) — captured as
-  provenance, never acted on (deposit-only; CLAUDE.md). `download` now
+  provenance, never acted on (deposit-only; AGENTS.md). `download` now
   fetches this per account into `details/<IBAN>.json`. The values are PII
   (IBAN, balances, card number, account holder) — bronze only, never
   tracked files.
@@ -675,7 +675,7 @@ of a download still in flight.
    DOM-snapshot-per-distinct-screen capture, Dockerfile on
    `wealthdb/base-camoufox`, wrapper via
    `shared/wrappers/wrapper-lib.sh`, collectorkit, this document,
-   CLAUDE.md. `make build-raiffeisen_at` / `make test-raiffeisen_at`
+   AGENTS.md. `make build-raiffeisen_at` / `make test-raiffeisen_at`
    run via the root Makefile's collector auto-discovery.
 
 2. **Explore** (live, user-triggered) — **done (two sessions,
@@ -852,7 +852,7 @@ category) want a look when it first lands.
   the profile to force the full region/Verfüger/PIN + pushTAN challenge
   (the warm profile otherwise shows just the identity card, §F).
 - Live sessions only when the user explicitly requests one and is
-  present (CLAUDE.md §0); every human-in-the-loop wait uses long
+  present (AGENTS.md §0); every human-in-the-loop wait uses long
   timeouts (1h+); never fire logins in quick succession.
 - Iterate cheap after a login: hold the session (session-holder
   pattern — watch a trigger file, `importlib.reload` bind-mounted code

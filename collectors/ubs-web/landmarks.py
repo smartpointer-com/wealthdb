@@ -8,7 +8,7 @@ so login.py and download.py can refer to selectors without caring
 which template / SPA route hosts them.
 
 UI surfaces this module references are read-only by contract — see
-CLAUDE.md §1.
+AGENTS.md §1.
 """
 
 from __future__ import annotations

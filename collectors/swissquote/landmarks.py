@@ -8,7 +8,7 @@ so login.py and download.py can refer to selectors without caring
 which SPA hosts them.
 
 UI surfaces this module references are read-only by contract — see
-CLAUDE.md §1. The Buy/Sell buttons that appear inside every position
+AGENTS.md §1. The Buy/Sell buttons that appear inside every position
 row are inside the DOM we parse; reading them is fine but they must
 never be clicked.
 """
@@ -193,7 +193,7 @@ TXN_EXPORT_MENU_CSV = 'li.Menu__item--export:has-text("CSV")'
 # so this selector matches the whole overlay subtree wherever it is
 # mounted. Removing it is pure client-side DOM cleanup — no POST, no
 # form submit, no navigation — and stays within the read-only
-# contract (CLAUDE.md §1).
+# contract (AGENTS.md §1).
 PENDO_OVERLAY_SELECTOR = '#pendo-base, ._pendo-backdrop, [class*="_pendo-"]'
 
 # ============================================================

@@ -8,7 +8,7 @@ storageState.json. Subsequent download.py runs reuse that file
 until UBS invalidates the session.
 
 The `--check` mode validates an existing state file against a live
-landmark URL without re-logging in (no QR challenge). See CLAUDE.md
+landmark URL without re-logging in (no QR challenge). See AGENTS.md
 §2: non-check invocations must be explicitly authorised.
 
 Usage:
@@ -130,7 +130,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--screenshot-dir", default=None, type=Path,
         help=("If set, write a screenshot at each navigation landmark. "
               "Useful for debugging on a headless remote host. NEVER "
-              "commit these — see CLAUDE.md §4."),
+              "commit these — see AGENTS.md §4."),
     )
     p.add_argument(
         "--trace", action="store_true",
@@ -149,7 +149,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def resolve_contract_number(args: argparse.Namespace) -> str:
     """CLI flag → env var → error. Honours --env-file.
 
-    Per CLAUDE.md §3 (secrets / value-with-env-fallback memory):
+    Per AGENTS.md §3 (secrets / value-with-env-fallback memory):
     the contract number can be passed by value on the CLI or read
     from an env var, but never as a password-style flag.
     """
@@ -702,7 +702,7 @@ def main(argv: list[str]) -> int:
         )
 
     # `--trace` is a paired flag — refuse to silently drop the
-    # trace if --screenshot-dir is missing (CLAUDE.md §3).
+    # trace if --screenshot-dir is missing (AGENTS.md §3).
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir.")
 

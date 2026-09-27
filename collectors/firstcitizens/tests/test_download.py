@@ -107,7 +107,7 @@ def test_manifest_records_ids_not_balances():
     assert m["status"] == "complete"
     assert m["account_ids"] == ["7000001"]
     assert m["formats"] == ["csv", "qfx"]
-    # The manifest must not embed balances (root CLAUDE.md §4).
+    # The manifest must not embed balances (root AGENTS.md §4).
     assert "1.00" not in repr(m)
 
 

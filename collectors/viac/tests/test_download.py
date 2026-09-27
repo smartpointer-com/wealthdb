@@ -1,6 +1,6 @@
 """Tests for download.py's dry-run contract and --debug trace (viac).
 
-Root CLAUDE.md §2: `download --dry-run` walks the export surfaces with
+Root AGENTS.md §2: `download --dry-run` walks the export surfaces with
 the existing session but must **export nothing** — it may not create a
 bronze run dir or write any artefact under `--bronze-dir`. A dry-run that
 leaves even a `run.json`-only shell is a violation: `load`/`prune` would

@@ -193,7 +193,7 @@ class ArgsTest(unittest.TestCase):
         self.assertFalse(hasattr(args, "dom_interval"))
 
     def test_no_password_flag_exists(self):
-        # Credentials reach a harness via env only (root CLAUDE.md §3).
+        # Credentials reach a harness via env only (root AGENTS.md §3).
         with self.assertRaises(SystemExit), \
                 contextlib.redirect_stderr(io.StringIO()):
             self._parse(["--password", "x"])

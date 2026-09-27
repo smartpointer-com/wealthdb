@@ -14,7 +14,7 @@ import (
 // excluded from flows) and AccountsGrain=blanked (per-wallet return rows
 // are meaningless — coins sweep between wallets on arrival — so the accounts grain
 // is blanked while portfolios/sources/global stay valid). Source id -> silver_kind
-// "cointracking" selects that policy. All data synthetic / placeholder (CLAUDE.md §4).
+// "cointracking" selects that policy. All data synthetic / placeholder (AGENTS.md §4).
 
 // TestCointrackingOnboardNoneNoPhantomInflow is the root-cause regression: two
 // exchange wallets funded by fiat Deposits sweep their coins (crypto transfer_out)

@@ -4,7 +4,7 @@ Unit tests for pdf_parsers_daf.py — text-level parsers only.
 The PDF I/O entry-point (``parse_daf_statement_pdf``) is a thin
 pdfplumber wrapper over these pure string functions, so the fixtures
 are synthetic statement text mirroring the observed layout — no real
-PDF bytes or real values (root CLAUDE.md §4).
+PDF bytes or real values (root AGENTS.md §4).
 """
 
 from __future__ import annotations

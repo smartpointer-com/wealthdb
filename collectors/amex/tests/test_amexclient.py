@@ -89,7 +89,7 @@ def test_absolute_url_leaves_an_absolute_one_alone():
 ])
 def test_a_document_url_off_the_servicing_surface_is_refused(url):
     # The document fetches carry the session jar, so where they may reach is
-    # decided by the contract (CLAUDE.md §1), not by the provider payload.
+    # decided by the contract (AGENTS.md §1), not by the provider payload.
     # The host is matched exactly: sibling americanexpress.com hosts receive
     # the domain cookies too. A refusal reads as "no document".
     assert amexclient.absolute_url(url) == ""

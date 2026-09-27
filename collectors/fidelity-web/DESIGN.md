@@ -69,11 +69,11 @@ bronze subdirectory holds documents that arrive out-of-band.
 - **Real-time / near-real-time pull.** MFA gates every truly-fresh
   login.
 - **Trade execution, money movement, account configuration.** See
-  [CLAUDE.md](CLAUDE.md) §1 — the contract is read-only.
+  [AGENTS.md](AGENTS.md) §1 — the contract is read-only.
 
 - **Akoya / FDX / Plaid / SnapTrade.** B2B-only.
 - **Prospectuses / fund supplements / disclosures.** Out of
-  document-center scope (CLAUDE.md §1).
+  document-center scope (AGENTS.md §1).
 - **Cross-bank semantic alignment.** `wealthdb` gold's job.
 
 ## 2. Bronze layout
@@ -988,7 +988,7 @@ are always kept.
 
 **Scope filter.** Only the personal Statements + Tax-forms types are
 walked; interested-party / prospectus / proxy categories are out of
-scope (per CLAUDE.md §1).
+scope (per AGENTS.md §1).
 
 **Householded statements → 529 parsing.** The Statements type returns
 **householded** combined Investment Reports (`isHouseholded:true`):
@@ -1017,7 +1017,7 @@ the rendered HTML; silver scrapes from there.
 - OFX — dead (§1.1).
 - Akoya / FDX / Plaid / SnapTrade — B2B-only.
 - Prospectuses / supplementary documents.
-- Trade / transfer / config writes — see [CLAUDE.md](CLAUDE.md) §1.
+- Trade / transfer / config writes — see [AGENTS.md](AGENTS.md) §1.
 - MFA automation — human-in-the-loop on every truly-fresh login.
 - Cross-bank semantic alignment — gold's job.
 - Third-party investment-manager data sources — out-of-band; their own future collector when needed.
@@ -1154,7 +1154,7 @@ response bodies, `clicks.jsonl`, browser downloads, and
 structure-deduped DOM snapshots for every fidelity.com /
 fidelitycharitable.org|com frame. Distinct from `download --explore`,
 which only adds DOM inventories along the scripted walk. Allow/forbid
-surface: CLAUDE.md §1a — Grant / Contribute / Exchange are the DAF's
+surface: AGENTS.md §1a — Grant / Contribute / Exchange are the DAF's
 money-movement controls and are never clicked, in discovery or ever.
 
 ### 12.1 Surface map
@@ -1260,7 +1260,7 @@ retail phases, whose export surfaces the account enumeration already
 reaches, the DAF sits behind its own SSO hop + API): the dry-run hops,
 bootstraps, reads the roster, and reads the per-account JSON counts +
 document listing — but fetches no CSV export or PDF and writes no
-bronze (root CLAUDE.md §2 "export nothing"). So a cheap
+bronze (root AGENTS.md §2 "export nothing"). So a cheap
 `download --dry-run` validates reachability + auth before a full run,
 and its plan log carries the real per-account counts.
 

@@ -132,7 +132,7 @@ def test_parse_args_check():
 
 
 def test_no_password_flag():
-    # Credentials via env only (root CLAUDE.md §3).
+    # Credentials via env only (root AGENTS.md §3).
     with pytest.raises(SystemExit):
         login.parse_args(["--password", "x"])
 

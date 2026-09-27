@@ -934,7 +934,7 @@ def do_download(args: argparse.Namespace) -> int:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     if args.dry_run:
-        # Root CLAUDE.md §2: `download --dry-run` must export NOTHING.
+        # Root AGENTS.md §2: `download --dry-run` must export NOTHING.
         # Run the read-only walk (verify the session, enumerate the
         # investment-overview + document index, log the plan/counts) but
         # point the run dir at a throwaway temp dir instead of a bronze

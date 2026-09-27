@@ -199,7 +199,7 @@ def produkte_url() -> str:
 
 # The deposit-account marker in the product roster: `type == "KONTO"`.
 # Cards, securities, loans carry other types and are out of scope
-# (CLAUDE.md). Kept as the one place the deposit rule lives.
+# (AGENTS.md). Kept as the one place the deposit rule lives.
 DEPOSIT_PRODUCT_TYPE = "KONTO"
 
 
@@ -348,7 +348,7 @@ def konto_details_url(iban: str) -> str:
     interest rates (Zinssatz Soll/Haben) and statement-cycle dates. Read-only
     (DESIGN.md §C). The response also carries an incidental card-limits block;
     it is captured as provenance but never acted on (deposit-only scope,
-    CLAUDE.md)."""
+    AGENTS.md)."""
     return f"{KONTOINFO_API}/konten/{quote(iban)}/details"
 
 # The Statement-of-Fees PDF (Entgeltaufstellung) lives at

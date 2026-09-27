@@ -13,7 +13,7 @@ scripted one would think to visit.
 The harness **never navigates and never clicks**. It opens the login entry
 point once, and every action from there is driven by hand. That is the whole
 safety model: a recorder cannot stray onto a payment form or a card-management
-control, because it issues no interaction at all. CLAUDE.md §1 lists what the
+control, because it issues no interaction at all. AGENTS.md §1 lists what the
 hand-driven walk must stay out of.
 
 It records the network and click logs, the HAR, downloads, and a DOM
@@ -38,7 +38,7 @@ Artefacts carry real financial data and unredacted account identifiers. They
 land in the ``/debug`` mount, outside bronze and outside the repo, under the
 same NEVER-commit contract as the screenshots.
 
-Per CLAUDE.md §2 this drives a live session and runs only when asked.
+Per AGENTS.md §2 this drives a live session and runs only when asked.
 
 Usage:
     explore.py [--state-path <file>] [--debug-dir <dir>] [--url <url>]
@@ -289,7 +289,7 @@ WALK = ("drive the session in the VNC window. The card surface is what this "
         "session is for: the card roster, a card's transactions, one "
         "transaction's DETAIL view, and the invoice/statement archive "
         "including one statement download. Read-only surfaces only "
-        "(CLAUDE.md §1) — never a payment form and never a card-management "
+        "(AGENTS.md §1) — never a payment form and never a card-management "
         "control. Prefer Ctrl-C: it keeps the session readable, so a "
         "sign-in made here is saved and `download` need not challenge "
         "again.")

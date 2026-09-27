@@ -73,7 +73,7 @@ Every run dir stays self-contained (a hardlink is a real in-run file),
 so load.py needs no cross-run fallback. --documents-force bypasses the
 download-avoidance index entirely.
 
-Read-only — see CLAUDE.md §1. Never invokes a write-state endpoint.
+Read-only — see AGENTS.md §1. Never invokes a write-state endpoint.
 """
 
 from __future__ import annotations
@@ -505,7 +505,7 @@ def walk(client: ViacClient, dest_root: Path, *,
     ts = bronze.ts_slug()
     bronze_dir = dest_root / ts
     if dry_run:
-        # Export-nothing dry-run (root CLAUDE.md §2): still walk every
+        # Export-nothing dry-run (root AGENTS.md §2): still walk every
         # endpoint (verify the session, enumerate the surfaces, log the
         # plan) but persist nothing under --bronze-dir — no run dir, no
         # in-progress marker, no JSON. A dry-run therefore leaves NO
@@ -682,7 +682,7 @@ def main(argv: list[str]) -> int:
     # the in-progress marker, so a prune racing the finalisation never
     # reads a half-written manifest and the run's state is legible
     # throughout. status="complete" is the forward signal load and prune
-    # key on. A --dry-run persists NOTHING under --bronze-dir (root CLAUDE.md
+    # key on. A --dry-run persists NOTHING under --bronze-dir (root AGENTS.md
     # §2 "export nothing"): the walk left no run dir, so there is no
     # in-progress marker to finalise — skip the terminal write entirely
     # rather than resurrect a "dry-run" shell that load/prune would then

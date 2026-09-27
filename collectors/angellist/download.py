@@ -42,7 +42,7 @@ Bronze layout (collectorkit.bronze conventions):
                        terminal status is the signal `prune` keys on to
                        tell a finished dump from a crashed one.
 
-Read-only (CLAUDE.md): navigation + passive capture only. We never click
+Read-only (AGENTS.md): navigation + passive capture only. We never click
 an invest/commit/fund/settings control, and stay off any lead/admin
 surface. `--dry-run` walks the navigation but writes no bronze.
 """

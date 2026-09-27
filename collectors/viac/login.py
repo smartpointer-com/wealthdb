@@ -19,16 +19,16 @@ Auth flow (see DESIGN.md §2.1 for the full table):
 
 Credentials are sourced from /secrets/viac.env (or
 ~/.secrets/viac.env outside the container); never from a CLI
-flag — see CLAUDE.md §3. The `username` field is the login
+flag — see AGENTS.md §3. The `username` field is the login
 phone number in E.164 format (`+CC<digits>`).
 
 `--check` probes existing state with one cheap GET against the
 heartbeat endpoint. No credential submit, no MFA push. Allowed
-without prior authorisation per CLAUDE.md §2.
+without prior authorisation per AGENTS.md §2.
 
 Non-`--check` invocation mints a fresh session AND sends an SMS
 to the registered phone. Only allowed with explicit
-authorisation per CLAUDE.md §2.
+authorisation per AGENTS.md §2.
 """
 
 from __future__ import annotations

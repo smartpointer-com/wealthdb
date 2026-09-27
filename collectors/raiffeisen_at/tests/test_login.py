@@ -46,7 +46,7 @@ def test_parse_args_download_flags():
 
 
 def test_no_password_flag_exists():
-    # Credentials reach the driver via env only (root CLAUDE.md §3).
+    # Credentials reach the driver via env only (root AGENTS.md §3).
     import pytest
     with pytest.raises(SystemExit):
         login.parse_args(["--password", "x"])

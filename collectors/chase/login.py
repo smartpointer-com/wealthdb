@@ -34,7 +34,7 @@ Modes:
   default   pre-fill, complete 2FA (CLI or VNC), then scrape via
             download.walk() into --bronze-dir.
 
-Read-only (CLAUDE.md): never a money-movement, card-management, or settings
+Read-only (AGENTS.md): never a money-movement, card-management, or settings
 surface. The scrape this drives covers both readable products — the deposit
 accounts and the credit cards.
 """

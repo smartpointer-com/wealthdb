@@ -8,7 +8,7 @@ storageState.json. Subsequent download.py runs reuse that file until
 Swissquote invalidates the session.
 
 The `--check` mode validates an existing state file against a live
-landmark URL without re-logging in (no MFA push). See CLAUDE.md §2:
+landmark URL without re-logging in (no MFA push). See AGENTS.md §2:
 non-check invocations must be explicitly authorised.
 
 Usage:
@@ -100,7 +100,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--screenshot-dir", default=None, type=Path,
         help="If set, write a screenshot at each navigation landmark. "
              "Useful for debugging on a headless remote host. NEVER "
-             "commit these — see CLAUDE.md §4.",
+             "commit these — see AGENTS.md §4.",
     )
     p.add_argument(
         "--trace", action="store_true",
@@ -127,7 +127,7 @@ def resolve_username(cli_value: str | None) -> str:
 def resolve_password() -> str:
     """Read password from env, else prompt interactively (echo off).
 
-    Password is never accepted as a CLI flag — CLAUDE.md §3.
+    Password is never accepted as a CLI flag — AGENTS.md §3.
     """
     env = os.environ.get("SWISSQUOTE_PASSWORD")
     if env:
@@ -294,7 +294,7 @@ def _new_context(p, *, storage_state: Path | None):
     --no-sandbox is required because the container runs as a non-root
     UID without the user-namespace privileges Chromium normally uses
     for its sandbox. Acceptable in this single-trusted-origin context
-    — see CLAUDE.md and Dockerfile commentary.
+    — see AGENTS.md and Dockerfile commentary.
     """
     browser = p.chromium.launch(
         headless=True,

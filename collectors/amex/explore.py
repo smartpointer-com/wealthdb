@@ -17,7 +17,7 @@ each card's full transaction history plus every export format offered,
 and the statements area — with the device-trust-across-a-browser-restart
 probe as a second short run on the same profile.
 
-This is read-only observation. Per CLAUDE.md, never click a Pay /
+This is read-only observation. Per AGENTS.md, never click a Pay /
 Transfer / Send & Split / confirm control, stay out of card management,
 rewards redemption, offers, Plan It, travel, profile/settings, and the
 message center, and keep to the card *read* surfaces — never any other

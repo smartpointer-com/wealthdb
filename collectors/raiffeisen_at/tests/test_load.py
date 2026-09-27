@@ -23,7 +23,7 @@ from listing_fixtures import DAY, IBAN as LEDGER_IBAN, Ledger, ledger  # noqa: E
 
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 
-# Synthetic IBAN: placeholder-letter body (root CLAUDE.md §4) with a numeric
+# Synthetic IBAN: placeholder-letter body (root AGENTS.md §4) with a numeric
 # tail so the last-4 mask has something to show. Never a real IBAN.
 IBAN = "ATkkBBBBBKKKKKKK1234"
 

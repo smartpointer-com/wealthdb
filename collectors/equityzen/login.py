@@ -48,7 +48,7 @@ CLI surface:
   --totp CODE          Supply the 6-digit code non-interactively (for
                        automation). Omit to be prompted on stdin.
 
-Auth discipline (root CLAUDE.md §3): never weaken or skip 2FA, never add a
+Auth discipline (root AGENTS.md §3): never weaken or skip 2FA, never add a
 --password flag, never lower the profile dir below 0700. The fix for a
 bot-challenge is a better stealth profile, never an auth bypass. Never log
 out at the end — that would force a fresh 2FA push next run.

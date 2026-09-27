@@ -36,7 +36,7 @@ id, both charge and post dates, the merchant category, pending rows and the
 cycle balances (DESIGN.md §D). The exports are captured as provenance and
 for the columns the JSON lacks.
 
-Read-only (CLAUDE.md): only the card accounts are touched (the roster is
+Read-only (AGENTS.md): only the card accounts are touched (the roster is
 filtered to the card product type), and every call is a read — the exports
 and document fetches return copies of already-authorized data. Never a
 payment, rewards, offers, or settings surface.

@@ -144,7 +144,7 @@ def run_main(cfg, root: Path, *extra: str) -> int:
     return prune.main(cfg, ["--bronze-dir", str(root), *extra])
 
 
-# Synthetic account suffixes only — never a real one (repo CLAUDE.md §4).
+# Synthetic account suffixes only — never a real one (repo AGENTS.md §4).
 SUFFIX_A = "111"
 SUFFIX_B = "222"
 

@@ -1,7 +1,7 @@
 """Unit tests for the Donor-Advised Fund (Fidelity Charitable) phase.
 
 All fixtures are synthesised from scratch — no real Fidelity charitable
-account numbers, fund names, charities, or amounts (root CLAUDE.md §4).
+account numbers, fund names, charities, or amounts (root AGENTS.md §4).
 The tests drive the DAF helpers with a fake Playwright page whose
 ``request`` context serves fabricated JSON / CSV / PDF bodies, so no
 live session or Camoufox import is needed (mirrors test_download_dryrun).

@@ -15,7 +15,7 @@ import "testing"
 // with byte-identical narratives — not ambiguous, IDENTICAL, which no
 // downstream tier can undo.
 //
-// Every value below is synthetic (CLAUDE.md §4).
+// Every value below is synthetic (AGENTS.md §4).
 
 const depositCaption = "Example Call Deposit; Serial no. 00000"
 

@@ -12,7 +12,7 @@ import (
 // OnboardPerEntityOnce + ConduitKinds:[cash] + Inception=first-real-snapshot),
 // which the DEFAULT-policy staggered tests never exercise (isConduit()==false,
 // perEntityGroups empty). Source id -> silver_kind "ubs" selects that policy.
-// All data synthetic / placeholder (CLAUDE.md §4).
+// All data synthetic / placeholder (AGENTS.md §4).
 
 // TestUBSConduitOnboardStepNoSameDayContamination is the regression: the
 // per-entity-once step-up must be the newly-debuting constituents' first value NET

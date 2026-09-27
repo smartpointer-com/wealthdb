@@ -154,7 +154,7 @@ class ViacClient:
     def save_state(self, path: Path) -> None:
         """Serialize cookies + CSRF metadata at chmod 0600.
 
-        CLAUDE.md §3 — the file holds the live session cookie;
+        AGENTS.md §3 — the file holds the live session cookie;
         never relax the mode."""
         cookies = []
         for c in self.cookies.jar:

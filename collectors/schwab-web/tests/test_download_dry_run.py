@@ -1,6 +1,6 @@
 """
 Regression tests for `download --dry-run` — it must persist NOTHING
-under the bronze root (root CLAUDE.md §2).
+under the bronze root (root AGENTS.md §2).
 
 Two layers:
   - `_open_run_dir`: the run-dir-target helper directly (fast, no page).

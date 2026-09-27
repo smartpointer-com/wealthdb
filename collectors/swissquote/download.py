@@ -13,7 +13,7 @@ Reuses the Playwright session minted by login.py to export:
   - run.json                   — metadata index for the dump
 
 Files land in <bronze-dir>/<UTC-timestamp>/<artefact>. Read-only — see
-CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
+AGENTS.md §1. Per AGENTS.md §2, non-dry-run invocations must be
 explicitly authorised.
 
 Usage:
@@ -415,7 +415,7 @@ def scrape_position_details(page, run_dir: Path) -> list[dict]:
     artefact load with NULL for these columns.
 
     The Buy/Sell buttons inside each row are intentionally NOT
-    interacted with; see CLAUDE.md §1.
+    interacted with; see AGENTS.md §1.
     """
     # Defensive: expand any collapsed widgets so the Positions table
     # is in the DOM. Idempotent on already-expanded widgets.

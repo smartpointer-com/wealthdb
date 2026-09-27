@@ -49,7 +49,7 @@ the Austrian Raiffeisen retail e-banking portal: **deposit accounts**
 (checking + savings), their transaction history, daily balances and
 archived statement PDFs. Cards, financing, and any securities / wealth
 surface the same login may expose are out of scope (see
-[CLAUDE.md](CLAUDE.md)). The collector is named `raiffeisen_at` because
+[AGENTS.md](AGENTS.md)). The collector is named `raiffeisen_at` because
 Raiffeisen operates distinct banking systems in other countries. Like
 the other portal-only sources it replays the browser flow via Camoufox
 from day one — the fleet's browser-scraped banks all measured

@@ -21,7 +21,7 @@ Captured, into a UTC-stamped bronze run dir (the firstcitizens layout):
       statements/<iban>/*.pdf      Kontoauszug PDFs (skipped with --no-documents)
       raw/*.json                   raw roster / listing bodies (provenance)
 
-Read-only (CLAUDE.md): only the deposit accounts (checking / savings) are
+Read-only (AGENTS.md): only the deposit accounts (checking / savings) are
 touched — the roster is filtered to `type == "KONTO"` — and the only POSTs
 are the read-only history search, the document filter, and the document
 download. Never a money-movement, card, or settings surface.

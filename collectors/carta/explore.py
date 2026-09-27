@@ -12,7 +12,7 @@ With `CARTA_USERNAME` (or `CARTA_EMAIL`) / `CARTA_PASSWORD` set (sourced
 from `/secrets/carta.env`) the login form is pre-filled; sign-in and 2FA
 are still driven by hand. `--no-prefill` skips the fill.
 
-This is read-only observation. Per CLAUDE.md, never click an Exercise /
+This is read-only observation. Per AGENTS.md, never click an Exercise /
 Sell / Transfer / Accept / wire / e-sign / confirm control, and stay out
 of any issuer / company-admin or fund-admin console the login may surface
 — this collector observes the portfolio holder's own holdings only.

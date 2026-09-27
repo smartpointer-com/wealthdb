@@ -92,4 +92,4 @@ resolved.
 | Returns method (TWR / MWR) and its rationale | [wealthdb/docs/RETURNS-NOTES.md](wealthdb/docs/RETURNS-NOTES.md) |
 | Per-source adapter design (gold side) | [wealthdb/docs/adapters/](wealthdb/docs/adapters/) |
 | A given source's bronze/silver internals | `collectors/<source>/DESIGN.md` |
-| Agent ground rules (shared) | [CLAUDE.md](CLAUDE.md) |
+| Agent ground rules (shared) | [AGENTS.md](AGENTS.md) |

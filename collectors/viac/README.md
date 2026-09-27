@@ -263,7 +263,7 @@ After a prune, the next `load --force` rebuild reflects the removal.
 
 ## Read-only
 
-See [CLAUDE.md §1](CLAUDE.md). VIAC's portal exposes mutation
+See [AGENTS.md §1](AGENTS.md). VIAC's portal exposes mutation
 surfaces (initiate a contribution, change strategy, change
 beneficiary, request a withdrawal). This toolkit is **read-only**
 and never POSTs / PUTs / DELETEs anything beyond the auth flow.

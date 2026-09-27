@@ -45,7 +45,7 @@ sanitising, the manifest) are unit-tested, and so are the browser-side steps
 whose failure would be silent rather than loud: the export form's account
 guard and the statement pass's failure accounting, against a stub page.
 
-Read-only: this only navigates, filters, and exports. Per CLAUDE.md it never
+Read-only: this only navigates, filters, and exports. Per AGENTS.md it never
 touches Pay & transfer / Zelle / settings, nor any card *management* surface
 (payments, autopay, limits, disputes, lock/unlock).
 """

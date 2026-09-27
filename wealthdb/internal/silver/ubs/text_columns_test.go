@@ -31,7 +31,7 @@ func TestTheBanksOwnChargesNameOneMerchant(t *testing.T) {
 
 // The text-column contract (description / counterparty / provider_category)
 // per UBS transaction era, pinned on synthetic silver rows. Every string here
-// is a placeholder; IBAN-shaped ids use spec placeholder letters (CLAUDE.md §4).
+// is a placeholder; IBAN-shaped ids use spec placeholder letters (AGENTS.md §4).
 
 const textAcct = vetoAcctA
 

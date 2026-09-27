@@ -113,7 +113,7 @@ NOTIFY_KIND = {NOTIFY_SMS: "sms", NOTIFY_VOICE: "voice"}
 
 # The deposit-account marker in the roster: extended.hydraProductTypeCode
 # == "D" (Deposit). Cards / loans / lines carry other codes and are out of
-# scope (CLAUDE.md). Kept as the one place the deposit rule lives.
+# scope (AGENTS.md). Kept as the one place the deposit rule lives.
 DEPOSIT_PRODUCT_TYPE_CODE = "D"
 
 # The unit-separator (0x1F) the Q2 API uses inside compound query values —
@@ -303,7 +303,7 @@ def _data_list(body: dict) -> list:
 
 def is_deposit_account(acct: dict) -> bool:
     """True for a deposit account (checking / savings), the only kind in
-    scope (CLAUDE.md). Keyed on extended.hydraProductTypeCode == 'D'."""
+    scope (AGENTS.md). Keyed on extended.hydraProductTypeCode == 'D'."""
     ext = acct.get("extended") or {}
     return str(ext.get("hydraProductTypeCode", "")).upper() == DEPOSIT_PRODUCT_TYPE_CODE
 

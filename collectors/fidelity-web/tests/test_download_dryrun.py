@@ -1,7 +1,7 @@
 """
 Regression tests for download.walk() persistence behaviour.
 
-The invariant under test (root CLAUDE.md §2 "export nothing"):
+The invariant under test (root AGENTS.md §2 "export nothing"):
 ``download --dry-run`` must persist NOTHING under the bronze dest —
 no run dir, no ``run.json``. A leftover run.json, even one carrying
 only master ``account_dimensions``, is a dump that ``load`` would

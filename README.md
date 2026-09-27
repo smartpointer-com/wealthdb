@@ -209,7 +209,7 @@ collectors/<source>/         wealthdb/
 Sources only meet at gold. A collector never reads another collector's
 data and never touches gold; the engine reads silver and never writes
 it. Every part has its own `README.md` (usage), `DESIGN.md` (internals)
-and `CLAUDE.md` (rules for coding agents). [DESIGN.md](DESIGN.md)
+and `AGENTS.md` (rules for coding agents). [DESIGN.md](DESIGN.md)
 describes the bronze → silver → gold model.
 
 ## Getting started
@@ -254,7 +254,7 @@ and [wealthdb/README.md](wealthdb/README.md) the engine's subcommands.
   **[CASHFLOW.md](wealthdb/docs/CASHFLOW.md)** — the three readings of
   the enrichment engine; **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
   the `asset_class` × `vehicle` classification.
-- **[CLAUDE.md](CLAUDE.md)** — agent ground rules shared across
+- **[AGENTS.md](AGENTS.md)** — agent ground rules shared across
   every component (security, PII, read-only access).
 - **[NEW-COLLECTOR-PROMPT.md](NEW-COLLECTOR-PROMPT.md)** — the
   playbook for building a collector with a coding agent.

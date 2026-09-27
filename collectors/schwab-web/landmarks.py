@@ -124,7 +124,7 @@ CHIP_SELECTED_ATTR = "selected"
 # "More" opens ignores Escape). Deliberately limited to dismissive
 # "X" / Close controls, never OK / Continue / action buttons: on an
 # unknown dialog those could confirm an action (read-only contract,
-# CLAUDE.md §1).
+# AGENTS.md §1).
 MODAL_CLOSE_SELECTORS = (
     '[role="dialog"]:visible button[aria-label*="close" i]',
     '[role="dialog"]:visible .sdps-modal__close',

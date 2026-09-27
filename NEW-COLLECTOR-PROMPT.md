@@ -104,7 +104,7 @@ The block below is what the authoring agent instantiates: every
 `<...>` placeholder replaced (by repo recon for the mechanical slots,
 by user interview for the knowledge slots), inapplicable parts
 deleted. Keep the structure: knowns → scope → phases → rules →
-stop-gate. The hard rules restate repo CLAUDE.md deliberately — a
+stop-gate. The hard rules restate repo AGENTS.md deliberately — a
 kickoff that binds the agent explicitly outperforms one that assumes
 the rules will be discovered.
 
@@ -116,13 +116,13 @@ checkout>. Collector name: `<name>` (kebab-case per
 collectors/README.md; add a country suffix when the brand operates
 distinct banking systems per country). Env prefix: `<NAME>_`.
 
-Read before writing anything, in this order: repo-root CLAUDE.md
+Read before writing anything, in this order: repo-root AGENTS.md
 (non-negotiable ground rules), DESIGN.md (bronze → silver → gold),
 collectors/README.md (the collector contract: anatomy, verbs, CLI
 conventions, collectorkit), NEW-COLLECTOR-PROMPT.md (the build
 playbook — its "Fleet lessons" bind this build), and the docs + source
 of the template collectors: <newest validated sibling(s) of the same
-archetype — read their CLAUDE.md and DESIGN.md "Observed" sections>.
+archetype — read their AGENTS.md and DESIGN.md "Observed" sections>.
 Copy the newest sibling's shape, including the site half of its explore
 harness (the recording is collectorkit.explore's), and diverge only
 where a capture proves this source differs.
@@ -158,7 +158,7 @@ entries are cheap when framed this way — correct them and move on.
   offers, profile/settings/2FA-method mutations, the message center,
   and any other product surface the same login may expose. Triggering
   a read-only export (generating a statement) is allowed.
-- Write collectors/<name>/CLAUDE.md (the allow/forbid surface) before
+- Write collectors/<name>/AGENTS.md (the allow/forbid surface) before
   any live session, erring wide on forbid, and a DESIGN.md skeleton
   listing the open questions the first explore must answer.
 
@@ -230,7 +230,7 @@ entries are cheap when framed this way — correct them and move on.
    idempotent (re-load is a clean no-op; --force = delete + rebuild),
    unit tests on synthetic fixtures only (synthesize values from
    scratch — never transform real ones; placeholder patterns per root
-   CLAUDE.md §4). The ledger source is whatever the capture proves
+   AGENTS.md §4). The ledger source is whatever the capture proves
    richest — the SPA's own JSON usually supersedes CSV/HTML exports;
    check before writing a parser. Key rows on the source's most
    stable identifier (immutable id, legal name — display labels
@@ -296,7 +296,7 @@ entries are cheap when framed this way — correct them and move on.
 - When a control won't click or a wait hangs, capture ground truth
   (frame DOM + shadow-skeleton dumps) before the second guess.
 - No PII in tracked files — including the account roster/composition
-  prose trap (root CLAUDE.md §4): scope is stated as account kinds,
+  prose trap (root AGENTS.md §4): scope is stated as account kinds,
   never as what the login was observed to hold. Synthetic fixtures
   and placeholders only, format-valid and obviously fake. Sweep
   source, fixtures, docstrings, docs AND the drafted commit message
@@ -306,7 +306,7 @@ entries are cheap when framed this way — correct them and move on.
   (dead code, stale comments, comments encoding disproven theories)
   before milestone commits; squash to milestone commits with tight
   WHAT-level messages carrying no user data; never git push.
-- Keep DESIGN.md and CLAUDE.md current in the same commit as each
+- Keep DESIGN.md and AGENTS.md current in the same commit as each
   change: record each live-run root cause as a fleet lesson, and
   correct the allow/forbid surface when discovery reclassifies a
   surface.
@@ -314,7 +314,7 @@ entries are cheap when framed this way — correct them and move on.
   numbered list of exactly what is needed from the user next. Leave
   genuine judgment calls to the user, stated with a default.
 
-Start with phase 1 (scaffold + CLAUDE.md + DESIGN.md skeleton), then
+Start with phase 1 (scaffold + AGENTS.md + DESIGN.md skeleton), then
 stop and ask for the first explore session to be run.
 ```
 
@@ -375,7 +375,7 @@ backfill go/no-go, anything with destructive semantics, and every
 change to the private `wealthdb.cfg` or the real gold store. The agent
 proposes with a stated default and waits. Conversely, the agent may —
 without asking — read code and captures, run `login --check`,
-`download --dry-run`, and unit tests (root [CLAUDE.md](CLAUDE.md) §2).
+`download --dry-run`, and unit tests (root [AGENTS.md](AGENTS.md) §2).
 
 **Lending a session.** The user may explicitly lend an authenticated
 session to the agent for bounded iteration ("iterate on download

@@ -947,7 +947,7 @@ def test_the_walk_writes_the_advices_after_the_statement_ledger(tmp_path):
 # to whichever row the export happened to print last.
 #
 # Every value below is synthetic: an IBAN-shaped placeholder, an
-# invented transaction number, and an impossible year (CLAUDE.md §4).
+# invented transaction number, and an impossible year (AGENTS.md §4).
 
 TXN_IBAN = "CH00 0000 0000 0000 00AA A"
 TXN_ACCT = "CH0000000000000000AAA"
@@ -1227,7 +1227,7 @@ def test_a_holder_this_window_cannot_see_keeps_its_number(tmp_path):
 # e-banking archive, so `download` cannot reach them and no listing row
 # describes them. They are placed in `<bronze>/supplied-documents/` and
 # identified from their own text. Every identifier below is synthetic per
-# CLAUDE.md §4.
+# AGENTS.md §4.
 
 _SUPPLIED_HEADER = "\n".join([
     "UBS Switzerland AG",

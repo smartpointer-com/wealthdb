@@ -61,7 +61,7 @@ never committed), sourced as a bash script — use **single quotes**
 around any value containing `$`, `!`, or backticks so `source`
 doesn't mangle it. Credentials reach a tool via env vars only,
 never a `--password` flag. Each tool's README lists its specific
-variable names. See the repo-root [CLAUDE.md](../CLAUDE.md) §3 for
+variable names. See the repo-root [AGENTS.md](../AGENTS.md) §3 for
 the full authentication policy.
 
 **Session state** (cookie jars, token bundles, browser profiles)
@@ -97,8 +97,8 @@ the browser (schwab-web, chase, raiffeisen_at, amex, fidelity-web — whose
 do that walk. On amex that sign-in is silent on a trusted device but comes
 out of a budget small enough that a handful of them draws a captcha, so
 `download --dry-run` is **not** in the run-without-asking set there
-([amex/CLAUDE.md](amex/CLAUDE.md) §0). Agents must not mint real sessions
-or run real downloads unless asked — see root [CLAUDE.md](../CLAUDE.md) §2.
+([amex/AGENTS.md](amex/AGENTS.md) §0). Agents must not mint real sessions
+or run real downloads unless asked — see root [AGENTS.md](../AGENTS.md) §2.
 
 ## Gold consumes silver — not the other way round
 
@@ -143,7 +143,7 @@ collectors/<name>/
 ├── tests/                 pytest / unittest (bronze→silver at minimum)
 ├── README.md              what this source produces + its silver columns
 ├── DESIGN.md              source-specific reverse-engineering notes (optional)
-└── CLAUDE.md              source-specific agent rules (allowed UI surface, etc.)
+└── AGENTS.md              source-specific agent rules (allowed UI surface, etc.)
 ```
 
 ### The wrapper — the `wealthdb-collect` contract
@@ -298,7 +298,7 @@ structurally cannot narrow a fetch, the collector says so at runtime
   device-trust cookie instead of calling the source (exit `0` = device
   registered, not credential alive), and `download --dry-run` still signs
   in — it skips the exports, not the sign-in — which takes it out of the
-  run-without-asking set root [CLAUDE.md](../CLAUDE.md) §2 grants.
+  run-without-asking set root [AGENTS.md](../AGENTS.md) §2 grants.
 
 ### login.py — the session
 
@@ -331,7 +331,7 @@ and a sign-in is the scarce resource: `--check` there reports device
 registration from the profile's own cookie instead. It cannot see a rotated
 password or a trust revocation made server-side; only a `download` sign-in
 can. The full authentication policy is in root
-[CLAUDE.md](../CLAUDE.md) §3.
+[AGENTS.md](../AGENTS.md) §3.
 
 #### Browser launches
 
@@ -573,7 +573,7 @@ Tests live in `tests/` (or `test_*.py`); `make test-<name>` rebuilds the
 collector and runs **pytest** — in-container for Docker collectors, in
 the `.venv` for host ones. At minimum they cover **bronze → silver**: a
 *synthetic* bronze dump (no real IDs/balances — see root
-[CLAUDE.md](../CLAUDE.md) §4) and assertions that `load.py` projects the
+[AGENTS.md](../AGENTS.md) §4) and assertions that `load.py` projects the
 expected silver rows; pure-stdlib `unittest` works too. `make test` /
 `make test-collectors` runs the whole suite, and tests must pass before
 any commit. `make lint` runs ruff over every collector with the rules in
@@ -623,5 +623,5 @@ restated here.
 | [`fred`](fred/) | FRED / US Fed H.10 (historic FX rates) | API key | host venv |
 
 Agent ground rules shared by every collector are in the repo-root
-[CLAUDE.md](../CLAUDE.md); each subdirectory's `CLAUDE.md` adds
+[AGENTS.md](../AGENTS.md); each subdirectory's `AGENTS.md` adds
 only source-specific rules.

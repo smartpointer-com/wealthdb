@@ -6,8 +6,8 @@ Two properties carry the weight:
   * a capture NEVER persists a credential.
 
 The second is not hypothetical: fred's API key travels in the query string
-(collectors/fred/CLAUDE.md §2), so an unredacted URL trace would write it to
-disk — which repo CLAUDE.md §3 forbids outright. Account data in a capture is
+(collectors/fred/AGENTS.md §2), so an unredacted URL trace would write it to
+disk — which repo AGENTS.md §3 forbids outright. Account data in a capture is
 fine; bronze is private and already full of it.
 """
 from __future__ import annotations

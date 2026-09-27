@@ -23,7 +23,7 @@ Captured, into a UTC-stamped bronze run dir (chase's layout):
       statements/<id>/<period>.pdf  statement PDFs (skipped with --no-documents)
       raw/*.json                    raw roster / listing bodies (provenance)
 
-Read-only (CLAUDE.md): only the deposit accounts (checking / savings) are
+Read-only (AGENTS.md): only the deposit accounts (checking / savings) are
 touched — the roster is filtered to `hydraProductTypeCode == "D"` — and the
 only POSTs are the read-only export and statement-PDF triggers. Never a
 money-movement, card, or settings surface.

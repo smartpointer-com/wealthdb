@@ -44,7 +44,7 @@ func TestRedactAccountID(t *testing.T) {
 	}{
 		// IBAN-shape: two-letter country prefix kept, full length
 		// preserved (so the redacted form looks like an IBAN).
-		// Zero-filled placeholder IBANs (CLAUDE.md §4), mod-97 invalid
+		// Zero-filled placeholder IBANs (AGENTS.md §4), mod-97 invalid
 		// by construction — never real account numbers.
 		{"CH0000000000000002957", "CH***************2957"},
 		{"DE00000000000000003000", "DE****************3000"},

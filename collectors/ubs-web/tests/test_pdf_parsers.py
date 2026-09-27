@@ -3,7 +3,7 @@
 Tests work at the regex / text-assembly layer using synthetic
 labels and synthetic pre-extracted text fixtures, so they don't
 require a real PDF on disk or pdfplumber's heavy lifting. All
-identifiers are placeholders per CLAUDE.md §4.
+identifiers are placeholders per AGENTS.md §4.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from pdf_parsers import (
 # synthetic `extract_words()` output at the SAME column geometry the
 # real UBS statements use (Debits right-edge ~329, Credits ~414,
 # Value date x0 ~432, Balance right-edge ~553). All amounts / dates /
-# the IBAN are synthetic placeholders per CLAUDE.md §4.
+# the IBAN are synthetic placeholders per AGENTS.md §4.
 
 # Synthetic IBAN (all-zero placeholder, valid CH-IBAN shape).
 _SYN_IBAN = "CH00 0000 0000 0000 0000 1"
@@ -591,7 +591,7 @@ class TestStatementOfAssetsSecurities:
          "n.a.") in place of the triple; the funded "Outstanding
          Shares" row carries the NAV, the n.a. commitment rows are 0.
 
-    All identifiers are synthetic placeholders per CLAUDE.md §4 —
+    All identifiers are synthetic placeholders per AGENTS.md §4 —
     the ISIN-shaped tokens use the reserved 'XX' prefix and repdigit
     bodies so they are obviously not real instruments."""
 
@@ -924,7 +924,7 @@ class TestMaturityNotice:
 # one, which sets the account block on its own lines, and the older
 # one, whose two columns extract_text merges into a single line — plus
 # the two documents that wear the same label without being payments.
-# All identifiers, amounts and addresses synthetic per CLAUDE.md §4.
+# All identifiers, amounts and addresses synthetic per AGENTS.md §4.
 
 _ADV_IBAN_FROM = "CH00 0000 0000 0000 0000 1"
 _ADV_IBAN_TO = "CH00 0000 0000 0000 0000 2"

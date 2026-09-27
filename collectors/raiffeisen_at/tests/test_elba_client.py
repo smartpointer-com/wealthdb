@@ -1,6 +1,6 @@
 """Unit tests for elba_client — the browserless Mein ELBA wire contract.
 
-Synthetic values only: placeholder-letter IBANs (root CLAUDE.md §4), made-up
+Synthetic values only: placeholder-letter IBANs (root AGENTS.md §4), made-up
 Verfüger prefixes, round balances. No real account data.
 """
 from __future__ import annotations

@@ -176,7 +176,7 @@ arm too, for a direct `docker run`.
 
 ## Read-only
 
-See [CLAUDE.md](CLAUDE.md). EquityZen is a **live marketplace**: the
+See [AGENTS.md](AGENTS.md). EquityZen is a **live marketplace**: the
 portal exposes order-placement, Express-Deal sell, reserve/IOI, funding,
 and e-sign surfaces — all out of scope. This toolkit only reads the
 buyer's own holdings + documents, and issues only read GraphQL queries
