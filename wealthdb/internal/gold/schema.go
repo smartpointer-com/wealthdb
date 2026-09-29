@@ -34,10 +34,10 @@ var migrationsFS embed.FS
 // pin that it is safe to.
 //
 // The CHECK-widening rename-swap migrations (0007-0011, 0013-0018,
-// 0033-0037, 0053) are exempt and deliberately carry no rerun test: replaying one
-// rebuilds its table from that migration's own column list, which
-// would drop columns later migrations added, so a rerun test there
-// would commit a truncated table.
+// 0033-0037, 0053, 0107) are exempt and deliberately carry no rerun
+// test: replaying one rebuilds its table from that migration's own
+// column list, which would drop columns later migrations added, so a
+// rerun test there would commit a truncated table.
 func Migrate(ctx context.Context, db *sql.DB) error {
 	current, err := currentSchemaVersion(ctx, db)
 	if err != nil {

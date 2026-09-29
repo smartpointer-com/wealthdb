@@ -241,3 +241,66 @@ func TestUBSCardValuesAreVendored(t *testing.T) {
 		}
 	}
 }
+
+// TestSyntheticVocabularyIsTheTaxonomy pins the synthetic kind's vocabulary
+// to the table the migrations seed: every spending value and every income
+// value translates to itself, from its own family's side, so a value added
+// to the taxonomy is one the kind can stamp with no edit here.
+//
+// And it pins the two consequences of the vocabulary not being categorical.
+// A catch-all the provider states is its verdict and claims the row, where
+// a card issuer's would be declined for the model tier. A value outside the
+// taxonomy is no issuer's vocabulary moving, so it is not counted as drift.
+func TestSyntheticVocabularyIsTheTaxonomy(t *testing.T) {
+	for _, c := range canonical.SpendCategories {
+		if c.Family.InFamily(canonical.FamilySpending) {
+			detailed, ok, drift := ProviderCategory("synthetic", "", c.Detailed)
+			if !ok || drift || detailed != c.Detailed {
+				t.Errorf("ProviderCategory(synthetic, %q) = (%q, %v, %v), want itself",
+					c.Detailed, detailed, ok, drift)
+			}
+		}
+		if c.Family.InFamily(canonical.FamilyIncome) {
+			detailed, ok, drift := ProviderIncomeCategory("synthetic", "", c.Detailed)
+			if !ok || drift || detailed != c.Detailed {
+				t.Errorf("ProviderIncomeCategory(synthetic, %q) = (%q, %v, %v), want itself",
+					c.Detailed, detailed, ok, drift)
+			}
+		}
+	}
+	// Each map is exactly its family: no value of the other family, and
+	// nothing the table does not hold.
+	for value, detailed := range syntheticCategories {
+		if value != detailed || !canonical.ValidSpendDetailed(value) {
+			t.Errorf("syntheticCategories[%q] = %q, want a spending value mapped to itself", value, detailed)
+		}
+	}
+	for value, detailed := range syntheticIncomeCategories {
+		if value != detailed || !canonical.ValidIncomeDetailed(value) {
+			t.Errorf("syntheticIncomeCategories[%q] = %q, want an income value mapped to itself", value, detailed)
+		}
+	}
+
+	// A catch-all claims, on both sides.
+	if !ProviderCategoryClaims("synthetic", "", "BANK_FEES_OTHER_BANK_FEES") {
+		t.Error("a catch-all the synthetic provider states did not claim the row")
+	}
+	if !ProviderIncomeCategoryClaims("synthetic", "", "INCOME_OTHER_INCOME") {
+		t.Error("the income catch-all the synthetic provider states did not claim the row")
+	}
+	// A value from the other family is not translated on this side.
+	if _, ok, _ := ProviderCategory("synthetic", "", "INCOME_WAGES"); ok {
+		t.Error("an income value translated on the spending side")
+	}
+	// An unknown value is neither translated nor drift.
+	for _, value := range []string{"NOT_A_CATEGORY", "Groceries"} {
+		if detailed, ok, drift := ProviderCategory("synthetic", "", value); ok || drift {
+			t.Errorf("ProviderCategory(synthetic, %q) = (%q, %v, %v), want no verdict and no drift",
+				value, detailed, ok, drift)
+		}
+		if detailed, ok, drift := ProviderIncomeCategory("synthetic", "", value); ok || drift {
+			t.Errorf("ProviderIncomeCategory(synthetic, %q) = (%q, %v, %v), want no verdict and no drift",
+				value, detailed, ok, drift)
+		}
+	}
+}

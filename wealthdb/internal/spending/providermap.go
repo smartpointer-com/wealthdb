@@ -48,7 +48,9 @@ type providerVocabulary struct {
 	untranslatable map[string]bool
 	// categorical marks a vocabulary in which every value is a spend
 	// category, so a value outside the table is drift worth counting.
-	// False for a booking-type vocabulary, where a miss is a rail.
+	// False for a booking-type vocabulary, where a miss is a rail, and for
+	// one whose values are verdicts rather than buckets
+	// (syntheticCategories).
 	categorical bool
 	// income is the same translation for the INCOME family, and it is
 	// a second map rather than a second lookup into the first because
@@ -57,10 +59,10 @@ type providerVocabulary struct {
 	// booking type: charged, it is a finance cost, and credited, it is
 	// interest earned. One map would have to pick.
 	//
-	// Only the bank vocabularies carry one. A card issuer files what a
-	// MERCHANT sells, and a merchant category says nothing about money
-	// arriving; the rows a card books inbound are refunds, which are
-	// spending's to net.
+	// Only the bank vocabularies carry one, and the synthetic kind's, which
+	// is the taxonomy itself. A card issuer files what a MERCHANT sells,
+	// and a merchant category says nothing about money arriving; the rows
+	// a card books inbound are refunds, which are spending's to net.
 	income map[string]string
 	// incomeUntranslatable is `untranslatable` for the income side:
 	// values reviewed and left to the model tier rather than missing.
@@ -532,6 +534,37 @@ var raiffeisenUncategorized = map[string]bool{
 	"real_estate_other": true,
 }
 
+// syntheticCategories and syntheticIncomeCategories translate the synthetic
+// kind's vocabulary, which is the taxonomy itself: its provider_category is a
+// spend_detailed value on an outflow and an income_detailed value on an
+// inflow, stamped outright. Each map is the identity over its family,
+// built from canonical.SpendCategories rather than written out, so the
+// vocabulary is exactly the table the migrations seed and cannot drift from
+// it.
+//
+// The vocabulary is NOT categorical, for two reasons. A value here is the
+// provider's verdict, not an issuer's coarse bucket: a catch-all it states —
+// BANK_FEES_OTHER_BANK_FEES — is the answer, as a booking type's catch-all
+// is, and claims the row rather than deferring it to a model tier that could
+// know no more (ProviderCategoryClaims). And a value outside the taxonomy is
+// not an issuer's vocabulary moving, so it is not drift worth counting; it
+// falls through untranslated, as a rail does.
+var (
+	syntheticCategories       = taxonomyIdentity(canonical.FamilySpending)
+	syntheticIncomeCategories = taxonomyIdentity(canonical.FamilyIncome)
+)
+
+// taxonomyIdentity maps every detailed value of one family to itself.
+func taxonomyIdentity(family canonical.Family) map[string]string {
+	out := map[string]string{}
+	for _, c := range canonical.SpendCategories {
+		if c.Family.InFamily(family) {
+			out[c.Detailed] = c.Detailed
+		}
+	}
+	return out
+}
+
 // providerVocabularies is the registry. A source with no entry
 // contributes no provider verdicts at all, which is the correct
 // default: a source that publishes no categories, or whose vocabulary
@@ -559,6 +592,8 @@ var providerVocabularies = map[string]providerVocabulary{
 		untranslatable:       raiffeisenUncategorized,
 		incomeUntranslatable: raiffeisenIncomeUncategorized,
 		categorical:          true},
+	"synthetic": {translations: syntheticCategories, income: syntheticIncomeCategories,
+		categorical: false},
 }
 
 // foldedProviderVocabularies is providerVocabularies re-keyed on the

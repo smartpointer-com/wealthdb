@@ -1207,10 +1207,12 @@ Valid plugin-emitted values start at 0.
 Each plugin chooses an encoding that is **strictly monotone** — a
 new load cycle must produce an equal-or-greater value than any
 previous load cycle on the same silver DB. The natural choice for
-all current plugins is `MAX(silver.dump_runs.snapshot_at)` (with
+a dump-driven plugin is `MAX(silver.dump_runs.snapshot_at)` (with
 `-1` returned when the silver has no `dump_runs` rows); a plugin
 is free to pick something else as long as monotonicity and the
-`-1` sentinel hold.
+`-1` sentinel hold. The synthetic kind numbers its append runs
+instead, and its window spans only the runs past the watermark
+([adapters/synthetic.md](adapters/synthetic.md) §8).
 
 What this guarantees:
 - Replays are idempotent (`ChangeNumber == watermark` ⇒ no-op).
@@ -1274,6 +1276,7 @@ to keep this document focused on gold-side architecture:
 - [adapters/cointracking.md](adapters/cointracking.md)
 - [adapters/chase.md](adapters/chase.md)
 - [adapters/amex.md](adapters/amex.md)
+- [adapters/synthetic.md](adapters/synthetic.md)
 
 (Adapters without a dedicated doc here are described inline
 where they diverge from the gold-side contract above.)
@@ -1442,7 +1445,7 @@ CREATE TABLE silver_sources (
         'schwab', 'ubs', 'swissquote', 'fidelity',
         'relevate', 'viac', 'cointracking', 'carta', 'angellist',
         'equityzen', 'manual', 'fred', 'chase', 'firstcitizens',
-        'raiffeisen_at', 'amex'
+        'raiffeisen_at', 'amex', 'synthetic'
     )),
     silver_path         TEXT    NOT NULL,            -- as observed at last load
     high_watermark      BIGINT  NOT NULL,            -- plugin's logical change number after the last load
@@ -2739,7 +2742,7 @@ wealthdb/
 ├── go.mod / go.sum
 ├── docs/
 │   ├── DESIGN.md · RETURNS-NOTES.md · SPENDING.md · TAXONOMY.md
-│   └── adapters/                   — per-bank adapter design (amex, carta, chase, cointracking, schwab, swissquote, ubs)
+│   └── adapters/                   — per-bank adapter design (amex, carta, chase, cointracking, schwab, swissquote, synthetic, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand
 ├── internal/
@@ -2747,7 +2750,7 @@ wealthdb/
 │   ├── silver/                     — adapter interface + registry, one package per source:
 │   │   │                             amex angellist carta chase cointracking equityzen
 │   │   │                             fidelity firstcitizens fred manual raiffeisen_at
-│   │   │                             relevate schwab swissquote ubs viac
+│   │   │                             relevate schwab swissquote synthetic ubs viac
 │   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   └── migrations/             — 0001…NNNN SQL, //go:embed-ed by schema.go

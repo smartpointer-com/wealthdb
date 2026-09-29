@@ -8,6 +8,7 @@ package returns_test
 // package may pull the silver adapters in alongside the package under test.
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -29,6 +30,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/relevate"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/swissquote"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/synthetic"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/ubs"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/viac"
 )
@@ -200,6 +202,34 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	}
 	if amx.AccountsGrain != returns.AccountsGrainHidden {
 		t.Error("amex: AccountsGrain must be hidden (a card emits no return row)")
+	}
+
+	// synthetic: the generic kind cannot know which institution a source
+	// models, so it registers the bank-style default — flow_complete on the
+	// shared bank sets, every other knob untouched — and a deployment states
+	// each source's own regime with returns_policy_overrides.
+	syn, _ := returns.ReturnsPolicyFor("synthetic")
+	if !syn.Flow.Known {
+		t.Error("synthetic: policy must be Known (registered)")
+	}
+	if syn.Flow.Regime != returns.RegimeFlowComplete {
+		t.Errorf("synthetic: regime %v, want flow_complete", syn.Flow.Regime)
+	}
+	for _, tk := range returns.BankExternal() {
+		if !syn.Flow.IsExternal(tk) {
+			t.Errorf("synthetic: %s must be external", tk)
+		}
+	}
+	for _, tk := range returns.BankTransferLike() {
+		if !syn.Flow.IsTransferLike(tk) {
+			t.Errorf("synthetic: %s must be transfer-like", tk)
+		}
+	}
+	if syn.Flow.IsTransferLike(canonical.TxKindDeposit) || syn.Flow.IsTransferLike(canonical.TxKindWithdrawal) {
+		t.Error("synthetic: deposit/withdrawal must never net")
+	}
+	if !reflect.DeepEqual(syn, returns.DefaultReturnsPolicy(returns.BankFlowPolicy())) {
+		t.Error("synthetic: every knob but the flow policy must keep its default")
 	}
 
 	// fred is blank-imported but registers NO policy — it must fall to the

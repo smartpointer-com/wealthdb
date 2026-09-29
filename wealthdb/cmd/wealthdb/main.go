@@ -24,6 +24,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/relevate"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/swissquote"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/synthetic"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/ubs"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/viac"
 )
