@@ -1079,6 +1079,72 @@ func TestCoverageFlagsASeriesThatEndedBeforeThePeriod(t *testing.T) {
 	}
 }
 
+// TestCoverageReadsAReconciledAccountAsMeasured: an account whose ledger is
+// exactly its balance change, with no volume a sign could not be read from,
+// is the clean case the report exists to confirm. Nothing hides its verdict,
+// so it reads measured with a gap of zero rather than obscured.
+func TestCoverageReadsAReconciledAccountAsMeasured(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	seedBrokerageBalances(t, db, ctx, 5000, 1)
+	seedBrokerageBalances(t, db, ctx, 5300, 40)
+	seedLines(t, db, ctx, []line{
+		{id: "REC-DIV", account: "BROK", kind: "dividend", amount: 300, instrument: "EQ"},
+	})
+
+	rows, err := CashflowCoverage(ctx, db, 172800, 3500000, "total")
+	if err != nil {
+		t.Fatalf("CashflowCoverage: %v", err)
+	}
+	r := coverageRow(t, rows, "Brokerage")
+	if r.UnsignedVolume == nil || *r.UnsignedVolume != "0" {
+		t.Errorf("unsigned volume = %v, want 0", r.UnsignedVolume)
+	}
+	if r.Gap == nil || *r.Gap != "0" {
+		t.Errorf("gap = %v, want 0: the dividend is the whole balance change", r.Gap)
+	}
+	if r.Status != "measured" {
+		t.Errorf("status = %q, want measured: with no unsigned volume nothing is obscured", r.Status)
+	}
+}
+
+// TestCoverageObscuresAGapTheUnsignedVolumeCovers: a gap no larger than the
+// volume no sign could be read from is not answerable, and still says so.
+func TestCoverageObscuresAGapTheUnsignedVolumeCovers(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+	seedBrokerageBalances(t, db, ctx, 5000, 1, 40)
+	seedLines(t, db, ctx, []line{
+		{id: "OBS-DIV", account: "BROK", kind: "dividend", amount: 300, instrument: "EQ"},
+		{id: "OBS-JNL", account: "BROK", kind: "journal", amount: -400},
+	})
+
+	rows, err := CashflowCoverage(ctx, db, 172800, 3500000, "total")
+	if err != nil {
+		t.Fatalf("CashflowCoverage: %v", err)
+	}
+	r := coverageRow(t, rows, "Brokerage")
+	if r.Gap == nil || *r.Gap != "300" {
+		t.Errorf("gap = %v, want 300", r.Gap)
+	}
+	if r.UnsignedVolume == nil || *r.UnsignedVolume != "400" {
+		t.Errorf("unsigned volume = %v, want the journal's 400", r.UnsignedVolume)
+	}
+	if r.Status != "obscured" {
+		t.Errorf("status = %q, want obscured: the unsigned volume covers the gap", r.Status)
+	}
+}
+
+// TestMigration0108DDLIsRerunnable: the re-issued coverage macro re-runs
+// cleanly.
+func TestMigration0108DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0108_coverage_measured_without_unsigned.sql")
+	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {
+		t.Fatalf("the replayed coverage report: %v", err)
+	}
+}
+
 // TestMigration0105DDLIsRerunnable: the coverage macro re-issues cleanly.
 func TestMigration0105DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)

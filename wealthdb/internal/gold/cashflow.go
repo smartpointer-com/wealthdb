@@ -373,9 +373,11 @@ type CashflowCoverageRow struct {
 	// balances cannot answer. Gap is Ledger minus Measured.
 	Measured *string
 	Gap      *string
-	// Status is `measured`, `obscured` (the gap is no larger than the
-	// unsigned volume, so it is not answerable), `opening` (the balance
-	// series begins inside the period) or `unmeasurable` (no balances).
+	// Status is `measured` (the gap stands, zero where the account
+	// reconciles), `obscured` (the account carries unsigned volume and
+	// the gap is no larger than it, so it is not answerable), `opening`
+	// (the balance series begins inside the period), `ended` (the series
+	// stopped before it) or `unmeasurable` (no balances).
 	Status string
 }
 

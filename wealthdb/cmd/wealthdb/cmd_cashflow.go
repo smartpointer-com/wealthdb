@@ -533,9 +533,10 @@ Views (coarsest → finest):
   coverage      per account and period: the cash delta its transactions
                 imply against the delta its own balances show, in the
                 ACCOUNT'S currency. 'status' is the column to read first:
-                'measured' is a real disagreement, 'obscured' means the
-                account carries more unsigned volume (FX, in-kind
-                transfers) than the gap so nothing can be concluded,
+                'measured' is a real gap (zero when the account
+                reconciles), 'obscured' means the account carries at
+                least as much unsigned volume (FX, in-kind transfers)
+                as the gap so nothing can be concluded,
                 'opening' means the balance series
                 began mid-period, 'ended' that it stopped before the
                 period, 'unmeasurable' means no balances at all. Sort by
