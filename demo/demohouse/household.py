@@ -6,19 +6,22 @@ the day writes its closing snapshot. The order of the generators is
 fixed, so a transaction's sequence number within its account and day,
 and with it the transaction's id, is the same in every run.
 
-Nothing here depends on the as-of date except where the run stops, so
-the first N days of a longer run are identical to a run that ends
-after N days. That is what lets an append run extend a silver file.
+With findings off, nothing here depends on the as-of date except where
+the run stops, so the first N days of a longer run are identical to a
+run that ends after N days. That is what lets an append run extend a
+silver file. A findings build stops the venture marks a fixed number of
+days before the as-of, so it is a one-off picture that cannot be
+extended.
 """
 
 import dataclasses
 import datetime as dt
-from decimal import ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 from . import dates, keyed
-from .book import Account, Book
+from .book import Account, Book, market_value, unit_price
 from .market import Market
-from .money import CENT, ZERO, D, cents, mul, q4, q8, text
+from .money import CENT, ZERO, D, cents, q4, q8, text
 from .spec import name_on
 
 ONE = Decimal(1)
@@ -61,7 +64,7 @@ class Simulation:
         self._loan_balance = ZERO
         self._loan_posting = None
         self._mortgage_payment = ZERO
-        self._fund = {"called": ZERO, "distributed": ZERO, "multiple": ONE}
+        self._fund = {"called": ZERO, "distributed": ZERO, "nav": ZERO}
         self._refunds = {}
         self.book.quiet = self._quiet
         self._build_accounts()
@@ -143,9 +146,7 @@ class Simulation:
                 for ccy, amount in (cash.items() if isinstance(cash, dict) else [(acct.currency, cash)]):
                     acct.cash[ccy] = D(amount)
                 for iid, qty in a.get("holdings", {}).items():
-                    price = self.market.price(iid)
-                    inst = self.inputs.instruments[iid]
-                    value = mul(D(qty), price) / (100 if inst.get("coupon") else 1)
+                    value = market_value(self.inputs.instruments[iid], D(qty), self.market.price(iid))
                     # Opening lots carry a cost below today's value, as
                     # holdings bought over earlier years would.
                     r = keyed.rng(self.seed, "opening-basis", a["id"], iid)
@@ -217,13 +218,12 @@ class Simulation:
         return D(self._rng(stream, *keys).randrange(1, 100)) / 100
 
     def _buy(self, aid, day, iid, amount, *, desc=None):
-        """Buy `amount` worth (instrument currency) of iid; whole units
-        where the instrument trades whole, else to four decimals."""
+        """Buy `amount` worth (instrument currency) of iid, rounded down
+        to the instrument's trading step."""
         price = self.market.price(iid)
         inst = self.inputs.instruments[iid]
-        per = price / 100 if inst.get("coupon") else price
-        step = _unit_step(inst)
-        qty = (D(amount) / per).quantize(step, rounding=ROUND_FLOOR)
+        per = unit_price(inst, price)
+        qty = _floor_to(D(amount) / per, _unit_step(inst))
         if qty <= 0:
             return None
         cost = cents(qty * per)
@@ -235,8 +235,9 @@ class Simulation:
     def _sell(self, aid, day, iid, qty, *, desc=None):
         inst = self.inputs.instruments[iid]
         price = self.market.price(iid)
-        per = price / 100 if inst.get("coupon") else price
-        qty = min(D(qty), self.book.qty(aid, iid)).quantize(_unit_step(inst), rounding=ROUND_FLOOR)
+        per = unit_price(inst, price)
+        held = self.book.qty(aid, iid)
+        qty = held if D(qty) >= held else _floor_to(D(qty), _unit_step(inst))
         if qty <= 0:
             return None
         proceeds = cents(qty * per)
@@ -252,15 +253,8 @@ class Simulation:
         for ccy, amt in acct.cash.items():
             total += self.market.to_usd(amt, ccy)
         for h in acct.holdings.values():
-            inst = self.inputs.instruments[h.instrument]
-            total += self.market.to_usd(self._holding_value(h, inst), inst["currency"])
+            total += self.market.to_usd(self.book.holding_value(h), self.inputs.instruments[h.instrument]["currency"])
         return total
-
-    def _holding_value(self, h, inst):
-        if h.qty is None:
-            return h.value
-        price = self.market.price(h.instrument)
-        return mul(h.qty, price) / (100 if inst.get("coupon") else 1)
 
     # ---- mortgage ------------------------------------------------------
 
@@ -439,8 +433,10 @@ class Simulation:
                 amount = cents(mean * keyed.lognormal_factor(r, m.get("spread", "0.4")))
                 if amount < 1:
                     amount = Decimal("1.00")
-                # The draw happens either way, so a findings build differs
-                # from the clean one only in the rows it plants.
+                # Drawn in both builds, so a findings build plants purchases
+                # on the days a clean build buys. A planted purchase replaces
+                # an ordinary one, so that day's later draws, the card's
+                # rewards and what follows from them can differ.
                 unmapped = keyed.chance(r, self.spec["findings"]["unmapped_card_share"])
                 if self.findings and unmapped:
                     desc = keyed.pick(r, self.spec["findings"]["unmapped_merchants"])
@@ -464,7 +460,9 @@ class Simulation:
         self._txn(a["account"], day, "withdrawal", -amount, desc=f'ATM WITHDRAWAL {a["branch"]}',
                   provider="cash_withdrawal")
         if keyed.chance(r, a["fee_chance"]):
-            self._txn(a["account"], day, "fee", -D(a["fee"]), desc=f'ATM FEE {a["fee_network"]}',
+            # Named without the machine token: the engine's built-in cash
+            # rule reads that word on any row and outranks the provider.
+            self._txn(a["account"], day, "fee", -D(a["fee"]), desc=f'NON-NETWORK SURCHARGE {a["fee_network"]}',
                       provider="BANK_FEES_ATM_FEES")
 
     def _travel(self, day):
@@ -519,7 +517,7 @@ class Simulation:
         bucket = [m for m in self.inputs.merchants.values() if m.get("bucket") == item["bucket"]]
         for _ in range(_poisson(r, D(item["per_day"]))):
             m = keyed.pick(r, bucket, [x["weight"] for x in bucket])
-            amount = cents(D(m["median"]) * keyed.lognormal_factor(r, m.get("spread", "0.4")))
+            amount = cents(D(m["mean"]) * keyed.lognormal_factor(r, m.get("spread", "0.4")))
             if self.book.account(w["account"]).balance(item["ccy"]) - amount < 0:
                 continue  # a card declined for want of funds books nothing
             self._spend(w["account"], day, m, amount, ccy=item["ccy"])
@@ -549,7 +547,7 @@ class Simulation:
             ref = self._ref(c["funding"], day)
             self._txn(c["funding"], day, "withdrawal", -amount, desc=f"{self._short(card.id)} AUTOPAY PAYMENT TO REWARDS CARD",
                       payload={"bank_ref": ref})
-            self._txn(card.id, day, "card_payment", amount, desc="AUTOPAY PAYMENT RECEIVED - THANK YOU",
+            self._txn(card.id, day, "card_payment", amount, desc="AUTOPAY CREDIT POSTED, THANK YOU",
                       payload={"bank_ref": ref})
             self._card_statement = ZERO
         if day.month in c["reward_months"] and day.day == 21 and self._card_spend_quarter > 0:
@@ -558,7 +556,7 @@ class Simulation:
             self._card_spend_quarter = ZERO
         fee = c["annual_fee"]
         if day.month == fee["month"] and day.day == fee["day"]:
-            self._txn(card.id, day, "fee", -D(fee["amount"]), desc="ANNUAL MEMBERSHIP FEE",
+            self._txn(card.id, day, "fee", -D(fee["amount"]), desc="YEARLY MEMBERSHIP CHARGE",
                       provider="BANK_FEES_OTHER_BANK_FEES")
         if day.day == c["close_day"]:
             self._card_statement = -card.balance()
@@ -579,7 +577,7 @@ class Simulation:
                 if self.book.account(aid).balance() >= D(b["stock_amount"]):
                     self._buy(aid, day, stock, D(b["stock_amount"]))
         rb = b["rebalance"]
-        if day.month == rb["month"] and day == _nth_weekday(day.year, rb["month"], rb["weekday"], rb["week"]):
+        if day.month == rb["month"] and day == dates.nth_weekday(day.year, rb["month"], rb["weekday"], rb["week"]):
             sold = self._sell(aid, day, rb["sell"], self.book.qty(aid, rb["sell"]) * D(rb["fraction"]))
             if sold:
                 self._buy(aid, day, rb["buy"], D(sold["net_amount"]))
@@ -587,15 +585,14 @@ class Simulation:
         if day.month == tl["month"] and day == dates.next_business(dt.date(day.year, tl["month"], tl["day"])):
             losers = []
             for iid, h in sorted(self.book.account(aid).holdings.items()):
-                inst = self.inputs.instruments[iid]
-                if inst["vehicle"] != "stock" or h.qty is None:
+                if self.inputs.instruments[iid]["vehicle"] != "stock" or h.qty is None:
                     continue
-                loss = self._holding_value(h, inst) - h.book
+                loss = self.book.holding_value(h) - h.book
                 if loss < 0:
                     losers.append((loss, iid))
             if losers:
                 _, iid = min(losers)
-                self._sell(aid, day, iid, self.book.qty(aid, iid))
+                self._sell(aid, day, iid, self.book.qty(aid, iid) * D(tl["fraction"]))
             else:
                 self._sell(aid, day, tl["fallback"], self.book.qty(aid, tl["fallback"]) * D(tl["fallback_fraction"]))
 
@@ -714,7 +711,7 @@ class Simulation:
         for iid, w in sorted(m["targets"].items()):
             inst = self.inputs.instruments[iid]
             h = acct.holdings.get(iid)
-            have = self.market.to_usd(self._holding_value(h, inst), inst["currency"]) if h else ZERO
+            have = self.market.to_usd(self.book.holding_value(h), inst["currency"]) if h else ZERO
             diff = invest * D(w) - have
             if abs(diff) > invest * D(w) * Decimal("0.03"):
                 wants[iid] = diff
@@ -722,15 +719,16 @@ class Simulation:
         for iid, diff in sorted(wants.items()):
             if diff < 0:
                 inst = self.inputs.instruments[iid]
-                per = _per_unit(self.market.price(iid), inst)
+                per = unit_price(inst, self.market.price(iid))
                 self._sell(aid, day, iid, self.market.from_usd(-diff, inst["currency"]) / per)
         needs = {}
         for iid, diff in sorted(wants.items()):
             if diff > 0:
                 ccy = self.inputs.instruments[iid]["currency"]
                 needs[ccy] = needs.get(ccy, ZERO) + self.market.from_usd(diff, ccy)
+        reserve = total * D("0.003")
         for ccy in sorted(set(acct.cash) - {"USD"}):
-            spare = acct.balance(ccy) - self.market.from_usd(total * D("0.003"), ccy)
+            spare = acct.balance(ccy) - self.market.from_usd(reserve, ccy)
             short = needs.get(ccy, ZERO) - spare
             if short > 0:
                 # Fund the currency's buys from USD, never beyond the USD held.
@@ -739,7 +737,6 @@ class Simulation:
                     self._convert(aid, day, "USD", ccy, usd)
             elif short < -self.market.from_usd(Decimal("2000"), ccy):
                 self._convert(aid, day, ccy, "USD", cents(-short))
-        reserve = total * D("0.003")
         for iid, diff in sorted(wants.items()):
             if diff > 0:
                 ccy = self.inputs.instruments[iid]["currency"]
@@ -755,13 +752,13 @@ class Simulation:
         short = need - acct.balance(ccy)
         if short <= 0:
             return
-        held = [(self._holding_value(h, self.inputs.instruments[i]), i) for i, h in acct.holdings.items()
+        held = [(self.book.holding_value(h), i) for i, h in acct.holdings.items()
                 if h.qty and self.inputs.instruments[i]["currency"] == ccy]
         _, iid = max(held)
         inst = self.inputs.instruments[iid]
-        per = _per_unit(self.market.price(iid), inst)
+        per = unit_price(inst, self.market.price(iid))
         step = _unit_step(inst)
-        qty = ((short * Decimal("1.05")) / per / step).to_integral_value(rounding="ROUND_CEILING") * step
+        qty = ((short * Decimal("1.05")) / per / step).to_integral_value(rounding=ROUND_CEILING) * step
         self._sell(aid, day, iid, qty)
 
     def _convert(self, aid, day, from_ccy, to_ccy, amount):
@@ -779,14 +776,14 @@ class Simulation:
     def _private(self, day):
         f = self.spec["private"]["fund"]
         fund = self._fund
-        for call in f["calls"]:
+        for n, call in enumerate(f["calls"], 1):
             if day == dates.parse(call["date"]):
-                n = f["calls"].index(call) + 1
                 amount = D(call["amount"])
                 self._wire(day, f["from"], f["account"], amount)
                 self._txn(f["account"], day, "contribution", -amount, instrument=f["instrument"],
                           desc=f"CAPITAL CALL {n} {self._instrument_name(f['instrument'], day)}")
                 fund["called"] += amount
+                fund["nav"] += amount  # called capital sits at cost until the next mark
                 self._mark_fund(day, f)
         for dist in f["distributions"]:
             if day == dates.parse(dist["date"]):
@@ -795,10 +792,11 @@ class Simulation:
                           desc=f"DISTRIBUTION {self._instrument_name(f['instrument'], day)}")
                 self._wire(day, f["account"], f["from"], amount)
                 fund["distributed"] += amount
+                fund["nav"] -= amount
                 self._mark_fund(day, f)
         for mark in f["marks"]:
-            if day == dates.parse(mark["date"]) and self._open_on(f["account"], day):
-                fund["multiple"] = D(mark["multiple"])
+            if day == dates.parse(mark["date"]):
+                fund["nav"] = fund["called"] * D(mark["multiple"]) - fund["distributed"]
                 self._mark_fund(day, f)
         s = self.spec["private"]["spv"]
         if day == dates.parse(s["date"]):
@@ -818,8 +816,7 @@ class Simulation:
 
     def _mark_fund(self, day, f):
         fund = self._fund
-        value = fund["called"] * fund["multiple"] - fund["distributed"]
-        self.book.set_mark(f["account"], f["instrument"], value, day,
+        self.book.set_mark(f["account"], f["instrument"], fund["nav"], day,
                            book=fund["called"] - fund["distributed"])
 
     def _spv_exit(self, day, s, ex):
@@ -962,8 +959,9 @@ class Simulation:
 
     def _quiet(self, aid, day):
         """With findings on, two feeds go quiet: the multi-currency
-        account's statement for one month, and the venture fund's marks
-        for the last weeks before as-of. Their snapshots are not written."""
+        account's statement for one month, and the venture account (fund
+        and SPV) for the last weeks before as-of. Their snapshots are not
+        written."""
         if not self.findings:
             return False
         f = self.spec["findings"]
@@ -979,7 +977,9 @@ class Simulation:
 
 
 def _unit_step(inst):
-    """The smallest quantity the instrument trades in."""
+    """The smallest quantity the instrument trades in: whole shares of a
+    foreign stock, lots of 1,000 face of a bond, satoshi-sized coin, gold
+    to the hundredth ounce, and anything else to four decimals."""
     if inst["vehicle"] == "stock" and inst["asset_class"] == "public_equity" and inst["currency"] != "USD":
         return ONE
     if inst.get("coupon"):
@@ -991,8 +991,9 @@ def _unit_step(inst):
     return Decimal("0.0001")
 
 
-def _per_unit(price, inst):
-    return price / 100 if inst.get("coupon") else price
+def _floor_to(x, step):
+    """x rounded down to a whole number of steps."""
+    return (x / step).to_integral_value(rounding=ROUND_FLOOR) * step
 
 
 def _poisson(r, lam):
@@ -1010,13 +1011,3 @@ def _poisson(r, lam):
         cdf += p
     return k
 
-
-def _nth_weekday(year, month, weekday, n):
-    d = dt.date(year, month, 1)
-    count = 0
-    while True:
-        if d.weekday() == weekday:
-            count += 1
-            if count == n:
-                return d
-        d += dt.timedelta(days=1)

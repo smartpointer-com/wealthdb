@@ -65,6 +65,23 @@ def nth_business(year, month, n):
         d += dt.timedelta(days=1)
 
 
+def nth_weekday(year, month, weekday, n):
+    """The n-th `weekday` (Monday is 0) of the month (1-based)."""
+    d = dt.date(year, month, 1)
+    count = 0
+    while True:
+        if d.weekday() == weekday:
+            count += 1
+            if count == n:
+                return d
+        d += dt.timedelta(days=1)
+
+
+def day_of(ts):
+    """The date a Unix timestamp falls on, in UTC; epoch's inverse."""
+    return dt.date(1970, 1, 1) + dt.timedelta(days=ts // DAY)
+
+
 def month_end(year, month):
     if month == 12:
         return dt.date(year, 12, 31)

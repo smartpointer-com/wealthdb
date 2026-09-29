@@ -1,5 +1,5 @@
 {
-  "comment": "Every instrument here is invented; names were checked against a web search or public business registries, and tickers against the exchanges' symbol lists, so none is a real fund, company or listed ticker. The two coins keep their real tickers because they name an asset class, not a holding. model drives the price engine (demohouse/market.py): beta and idio are annual volatilities on the named factor; yield is an annual cash payout as a share of price; withholding is the share of a payout withheld at source.",
+  "comment": "Every instrument here is invented. No name is a real fund or company and no ticker is a listed symbol, as far as web searches, public business registries and the exchanges' symbol lists show. The two coins keep their real tickers because they name an asset class, not a holding. model drives the price engine (demohouse/market.py): beta is the loading on the named factor and idio the annual volatility of the instrument's own noise; yield is an annual cash payout as a share of price; withholding is the share of a payout withheld at source.",
   "instruments": [
     {
       "id": "ortm",
@@ -10,7 +10,7 @@
       "currency": "USD",
       "price": "212.40",
       "model": {"type": "equity", "beta": "1.0", "idio": "0.02"},
-      "income": {"kind": "dividend", "yield": "0.0140", "months": [3, 6, 9, 12]}
+      "income": {"yield": "0.0140", "months": [3, 6, 9, 12]}
     },
     {
       "id": "orie",
@@ -21,7 +21,7 @@
       "currency": "USD",
       "price": "58.75",
       "model": {"type": "equity", "beta": "0.85", "idio": "0.04"},
-      "income": {"kind": "dividend", "yield": "0.0290", "months": [3, 6, 9, 12], "withholding": "0.15"}
+      "income": {"yield": "0.0290", "months": [3, 6, 9, 12], "withholding": "0.15"}
     },
     {
       "id": "ordg",
@@ -32,7 +32,7 @@
       "currency": "USD",
       "price": "74.10",
       "model": {"type": "equity", "beta": "0.9", "idio": "0.03"},
-      "income": {"kind": "dividend", "yield": "0.0210", "months": [3, 6, 9, 12]}
+      "income": {"yield": "0.0210", "months": [3, 6, 9, 12]}
     },
     {
       "id": "orab",
@@ -43,7 +43,7 @@
       "currency": "USD",
       "price": "97.20",
       "model": {"type": "bond", "idio": "0.01"},
-      "income": {"kind": "dividend", "yield": "0.0330", "months": [3, 6, 9, 12]},
+      "income": {"yield": "0.0330", "months": [3, 6, 9, 12]},
       "capital_gain": {"month": 12, "per_share": "0.42"}
     },
     {
@@ -55,7 +55,7 @@
       "currency": "USD",
       "price": "41.30",
       "model": {"type": "equity", "beta": "1.05", "idio": "0.06"},
-      "income": {"kind": "dividend", "yield": "0.0250", "months": [6, 12], "withholding": "0.15"}
+      "income": {"yield": "0.0250", "months": [6, 12], "withholding": "0.15"}
     },
     {
       "id": "pwre",
@@ -66,7 +66,7 @@
       "currency": "USD",
       "price": "33.85",
       "model": {"type": "equity", "beta": "0.8", "idio": "0.08"},
-      "income": {"kind": "dividend", "yield": "0.0360", "months": [3, 6, 9, 12]}
+      "income": {"yield": "0.0360", "months": [3, 6, 9, 12]}
     },
     {
       "id": "tvsd",
@@ -97,7 +97,7 @@
       "currency": "USD",
       "price": "48.15",
       "model": {"type": "equity", "beta": "0.95", "idio": "0.26"},
-      "income": {"kind": "dividend", "yield": "0.0240", "months": [2, 5, 8, 11]}
+      "income": {"yield": "0.0240", "months": [2, 5, 8, 11]}
     },
     {
       "id": "vlcp",
@@ -108,7 +108,7 @@
       "currency": "USD",
       "price": "131.60",
       "model": {"type": "equity", "beta": "0.7", "idio": "0.28", "alpha": "-0.03"},
-      "income": {"kind": "dividend", "yield": "0.0190", "months": [1, 4, 7, 10]}
+      "income": {"yield": "0.0190", "months": [1, 4, 7, 10]}
     },
     {
       "id": "mrfk",
@@ -119,7 +119,7 @@
       "currency": "USD",
       "price": "62.35",
       "model": {"type": "equity", "beta": "0.6", "idio": "0.25"},
-      "income": {"kind": "dividend", "yield": "0.0310", "months": [3, 6, 9, 12]}
+      "income": {"yield": "0.0310", "months": [3, 6, 9, 12]}
     },
     {
       "id": "lmxr",
@@ -172,7 +172,7 @@
       "currency": "EUR",
       "price": "46.80",
       "model": {"type": "equity", "beta": "0.9", "idio": "0.24"},
-      "income": {"kind": "dividend", "yield": "0.0330", "months": [5], "withholding": "0.15"}
+      "income": {"yield": "0.0330", "months": [5], "withholding": "0.15"}
     },
     {
       "id": "csnr",
@@ -184,7 +184,7 @@
       "currency": "EUR",
       "price": "88.20",
       "model": {"type": "equity", "beta": "1.0", "idio": "0.22"},
-      "income": {"kind": "dividend", "yield": "0.0270", "months": [6], "withholding": "0.15"}
+      "income": {"yield": "0.0270", "months": [6], "withholding": "0.15"}
     },
     {
       "id": "rtbw",
@@ -196,7 +196,7 @@
       "currency": "CHF",
       "price": "212.50",
       "model": {"type": "equity", "beta": "0.75", "idio": "0.20"},
-      "income": {"kind": "dividend", "yield": "0.0220", "months": [4], "withholding": "0.35"}
+      "income": {"yield": "0.0220", "months": [4], "withholding": "0.35"}
     },
     {
       "id": "thbr",
@@ -208,7 +208,7 @@
       "currency": "GBP",
       "price": "5.64",
       "model": {"type": "equity", "beta": "0.85", "idio": "0.27"},
-      "income": {"kind": "dividend", "yield": "0.0410", "months": [1, 7]}
+      "income": {"yield": "0.0410", "months": [1, 7]}
     },
     {
       "id": "oxmr30",

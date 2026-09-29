@@ -1109,7 +1109,7 @@ func TestCoverageReadsAReconciledAccountAsMeasured(t *testing.T) {
 }
 
 // TestCoverageObscuresAGapTheUnsignedVolumeCovers: a gap no larger than the
-// volume no sign could be read from is not answerable, and still says so.
+// volume no sign could be read from is not answerable, and reads obscured.
 func TestCoverageObscuresAGapTheUnsignedVolumeCovers(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)

@@ -23,8 +23,9 @@ import (
 // gold writer joins it to the description), and the payload is carried
 // verbatim, so the keys gold reads out of it — `bank_ref`,
 // `counter_account`, `counter_currency` / `counter_amount` — arrive as the
-// writer put them. The one field that is conditional is the cheque number,
-// which names an outgoing payment and so is kept only on an outflow.
+// writer put them. Two fields are conditional: the cheque number names an
+// outgoing payment and so is kept only on an outflow, and the instrument
+// hint is kept only when no instrument id is set.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil

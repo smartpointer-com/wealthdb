@@ -536,8 +536,9 @@ var raiffeisenUncategorized = map[string]bool{
 
 // syntheticCategories and syntheticIncomeCategories translate the synthetic
 // kind's vocabulary, which is the taxonomy itself: its provider_category is a
-// spend_detailed value on an outflow and an income_detailed value on an
-// inflow, stamped outright. Each map is the identity over its family,
+// spend_detailed value on a row the spending tier reads (a refund included,
+// though it is an inflow) and an income_detailed value on a row the income
+// tier reads, stamped outright. Each map is the identity over its family,
 // built from canonical.SpendCategories rather than written out, so the
 // vocabulary is exactly the table the migrations seed and cannot drift from
 // it.

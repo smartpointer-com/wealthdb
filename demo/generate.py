@@ -5,14 +5,19 @@
                              [--append] [--with-findings]
 
 Writes DIR/silver/<source>.db (the synthetic silver kind),
-DIR/wealthdb.cfg and DIR/overrides/*.csv. Reads only demo/household.json
-and demo/catalogue/; never the environment, a real config or a real data
-root. Refuses a DIR that holds wealthdb files without the demo marker.
+DIR/wealthdb.cfg and DIR/overrides/*.csv. Reads only demo/household.json,
+demo/catalogue/ and the kind's schema file in the engine's source tree;
+never the environment, a real config or a real data root. Writes only
+into a DIR that is new, empty, or marked as a demo root by an earlier
+build.
 
-A full build (the default) rewrites every silver file from scratch. An
-append run replays the whole history in memory and adds only the days
-after the as-of the files already reached; it refuses when the generator
-or its inputs changed since the files were written.
+A full build (the default) rewrites every silver file from scratch and
+removes DIR's gold file. A rebuild at the same as-of carries the change
+number the old gold already read, so that gold would skip it.
+
+An append run replays the whole history in memory and adds only the
+days after the as-of the files already reached. It refuses when the
+generator or its inputs changed since the files were written.
 """
 
 import argparse
@@ -22,18 +27,24 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from demohouse import config, silver, spec  # noqa: E402
+from demohouse import config, dates, silver, spec  # noqa: E402
 from demohouse.household import Simulation  # noqa: E402
 
-LIVE_LOOKING = ("wealthdb.db", "wealthdb.cfg", "silver")
+GOLD_FILES = ("wealthdb.db", "wealthdb.db.wal")
 
 
 class Refused(Exception):
     pass
 
 
+def _placeholder(path):
+    """The engine wrapper creates an empty wealthdb.cfg in the config dir
+    it is given, so a root the engine saw before any build holds one."""
+    return path.name == "wealthdb.cfg" and path.is_file() and path.stat().st_size == 0
+
+
 def check_root(root):
-    """A root is safe to write into when it is empty, new, or marked as
+    """A root is safe to write into when it is new, empty, or marked as
     a demo root by an earlier build."""
     if not root.exists():
         return
@@ -41,9 +52,10 @@ def check_root(root):
         raise Refused(f"{root} is not a directory")
     if (root / config.DEMO_MARKER).exists():
         return
-    found = [n for n in LIVE_LOOKING if (root / n).exists()]
+    found = sorted(p.name for p in root.iterdir() if p.name != ".DS_Store" and not _placeholder(p))
     if found:
-        raise Refused(f"{root} holds {', '.join(found)} but no {config.DEMO_MARKER} marker; "
+        shown = ", ".join(found[:5]) + (", ..." if len(found) > 5 else "")
+        raise Refused(f"{root} holds {shown} but no {config.DEMO_MARKER} marker; "
                       "it is not a demo root and nothing is written there")
 
 
@@ -69,24 +81,26 @@ def build(root, as_of, seed, append=False, findings=False, inputs=None):
     silver_dir.mkdir(parents=True, exist_ok=True)
     (root / config.DEMO_MARKER).write_text(
         "This directory is a wealthdb demo root written by demo/generate.py.\n")
+    if not append:
+        for name in GOLD_FILES:
+            (root / name).unlink(missing_ok=True)
     lines = []
     for src in sources:
-        rows = silver.source_rows(sim, src, as_of)
         path = silver_dir / f"{src}.db"
+        if append and prev[src] == as_of:
+            # A run cut short leaves some files appended and some not; the
+            # next run completes the rest.
+            lines.append(f"{src}: already at {as_of}")
+            continue
+        rows = silver.source_rows(sim, src, as_of)
         if append:
             n = silver.append(path, rows, meta, prev[src], as_of)
             lines.append(f"{src}: +{n} rows after {prev[src]}")
         else:
-            silver.write_full(path, rows, meta, _floor(sim), as_of)
-            n = sum(len(rows[t]) for t in ("positions", "cash_balances", "fx_rates", "transactions"))
+            n = silver.write_full(path, rows, meta, dates.epoch(sim.fx_start), as_of)
             lines.append(f"{src}: {n} rows")
     _write_config(root, inputs, sim)
     return lines
-
-
-def _floor(sim):
-    from demohouse import dates
-    return dates.epoch(sim.fx_start)
 
 
 def _write_config(root, inputs, sim):

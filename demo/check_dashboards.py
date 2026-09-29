@@ -2,7 +2,11 @@
 """Run every dashboard card of a wealthdb Metabase and report failures.
 
     python3 demo/check_dashboards.py [--base URL] [--password-file PATH]
-                                     [--email ADDR] [--workers N]
+                                     [--email ADDR] [--first-year YYYY]
+                                     [--workers N]
+
+The defaults are the demo's: its port, its admin password file under
+~/wealthdb-demo, and the year its history starts.
 
 Logs in once to mint a temporary API key, runs every dashcard of every
 dashboard in the 'wealthdb (pre-defined)' collection through the
@@ -11,12 +15,18 @@ key rather than the admin's session because Metabase remembers the last
 filter values a user ran a dashboard with and shows them to that user
 next time.
 
-Each card runs once per time window with no source picked, and once per
-source over the full history; every other picker is varied one at a time
-around its default (currency, investing grain, section, start year, as-of
-day). A run fails when Metabase reports an error. Cards that return no
-rows are listed, not failed: many card and source pairs are empty by
-nature (card balances for a source with no card). Stdlib only.
+Each card runs at its dashboard's defaults, once per time window with no
+source picked, and once per source over the full history. Five more
+pickers are varied one at a time around their defaults: currency,
+investing grain, section, start year and as-of day. The account,
+category, income type, asset class and vehicle pickers stay at their
+defaults.
+
+A run fails when Metabase reports an error. A card that returns no rows
+at its dashboard's defaults fails too. Empty runs under any other picker
+value are listed, not failed: many card and source pairs are empty by
+nature (card balances for a source with no card). Exits 1 on any
+failure. Stdlib only.
 """
 
 import argparse
@@ -27,6 +37,10 @@ import pathlib
 import sys
 import urllib.error
 import urllib.request
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from demohouse import config, spec  # noqa: E402
 
 COLLECTION = "wealthdb (pre-defined)"
 WINDOWS = ["past7days~", "past30days~", "past3months~", "past12months~"]
@@ -113,10 +127,10 @@ def run_card(base, auth, dash, dc, ptypes, values):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--base", default="http://127.0.0.1:3100")
+    ap.add_argument("--base", default=f"http://127.0.0.1:{config.WEB_PORT}")
     ap.add_argument("--email", default="admin@wealthdb.local")
     ap.add_argument("--password-file", default=str(pathlib.Path.home() / "wealthdb-demo/web/admin-password.txt"))
-    ap.add_argument("--first-year", type=int, default=2023)
+    ap.add_argument("--first-year", type=int, default=spec.load().history_start.year)
     ap.add_argument("--workers", type=int, default=3)
     a = ap.parse_args(argv)
     password = pathlib.Path(a.password_file).read_text().strip()

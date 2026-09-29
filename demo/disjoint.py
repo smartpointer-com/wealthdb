@@ -8,12 +8,13 @@ in one DuckDB session and every identifying field is intersected —
 account, portfolio and instrument ids, display names, nicknames,
 symbols, ISINs, CUSIPs, counterparties, descriptions, merchant and payer
 signatures, cheque numbers, and (date, amount) pairs of transactions.
-Text compares case- and space-insensitively. Prints counts and the
-shared values, and nothing else.
+Text compares case- and space-insensitively. Prints each field's count
+and its shared values, and nothing else; --show N prints at most N
+values per field and says how many it left out.
 
 A shared value is not by itself a leak: a round amount on a common date,
-or a word like INTEREST PAID, can occur in any two ledgers. Each one is
-for a person to read. Taxonomy labels are not compared: every gold holds
+or a word like INTEREST PAID, can occur in any two ledgers. Each one
+needs review. Taxonomy labels are not compared: every gold holds
 the same vocabulary.
 
 Runs the `duckdb` command-line tool, which must be on PATH and able to
@@ -77,11 +78,18 @@ def run(demo, live, sql):
     return json.loads(out.stdout) if out.stdout.strip() else []
 
 
+def show(rows, limit, fmt):
+    for r in rows[:limit]:
+        print(f"    {fmt(r)}")
+    if limit is not None and len(rows) > limit:
+        print(f"    ... {len(rows) - limit} more")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--demo", required=True, help="the demo's gold file")
     p.add_argument("--live", required=True, help="the gold file to compare against")
-    p.add_argument("--show", type=int, default=20, help="shared values to print per field")
+    p.add_argument("--show", type=int, default=None, help="print at most N shared values per field")
     a = p.parse_args(argv)
     if not shutil.which("duckdb"):
         print("disjoint: the duckdb command-line tool is not on PATH", file=sys.stderr)
@@ -95,12 +103,10 @@ def main(argv=None):
         rows = run(a.demo, a.live, text_query(table, column))
         shared_total += len(rows)
         print(f"{label:20} {len(rows):6} shared")
-        for r in rows[:a.show]:
-            print(f"    {r['v']}")
+        show(rows, a.show, lambda r: r["v"])
     pairs = run(a.demo, a.live, PAIR_QUERY)
     print(f"{'(date, amount)':20} {len(pairs):6} shared")
-    for r in pairs[:a.show]:
-        print(f"    {r['d']}  {r['a']}")
+    show(pairs, a.show, lambda r: f"{r['d']}  {r['a']}")
     print(f"\n{shared_total} shared identifying values, {len(pairs)} shared (date, amount) pairs")
     return 0
 

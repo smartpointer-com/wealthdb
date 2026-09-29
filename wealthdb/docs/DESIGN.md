@@ -1210,8 +1210,9 @@ previous load cycle on the same silver DB. The natural choice for
 a dump-driven plugin is `MAX(silver.dump_runs.snapshot_at)` (with
 `-1` returned when the silver has no `dump_runs` rows); a plugin
 is free to pick something else as long as monotonicity and the
-`-1` sentinel hold. The synthetic kind numbers its append runs
-instead, and its window spans only the runs past the watermark
+`-1` sentinel hold. The synthetic kind reads
+`MAX(dump_runs.change_number)`, a number its writer stamps on each run,
+and its window spans only the runs past the watermark
 ([adapters/synthetic.md](adapters/synthetic.md) §8).
 
 What this guarantees:

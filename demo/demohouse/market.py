@@ -65,10 +65,10 @@ class Market:
             raise ValueError(f"market advanced from {self.day} to {day}")
         first = self.day is None
         self.day = day
-        if day > self.fx_start or (first and day == self.fx_start):
-            self._advance_fx(day, first)
         if first:
             return
+        if day > self.fx_start:
+            self._advance_fx(day)
         self.factor_ret = {name: self._factor(name, f, day) for name, f in FACTORS.items()}
         for iid, inst in self.instruments.items():
             model = inst.get("model", {})
@@ -90,10 +90,6 @@ class Market:
 
     def price(self, instrument):
         return self.prices[instrument]
-
-    def is_listed(self, instrument, day):
-        listed = self.instruments[instrument].get("listed")
-        return not listed or day >= dates.parse(listed)
 
     def usd_per(self, ccy):
         """USD value of one unit of `ccy` on the current day."""
@@ -158,9 +154,7 @@ class Market:
             ret += alpha / n - idio * idio / (2 * n) + idio / n.sqrt() * keyed.normal(r)
         return ret
 
-    def _advance_fx(self, day, first):
-        if first:
-            return
+    def _advance_fx(self, day):
         for ccy in sorted(self._fx_log):
             r = keyed.rng(self.seed, "fx", ccy, day.isoformat())
             with localcontext() as ctx:

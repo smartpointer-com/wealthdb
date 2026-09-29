@@ -115,7 +115,10 @@ Cash balances and fx rates:
 - A cash balance's `amount` is required. An unparseable one fails the
   load with an error that names the row.
 - A `balance_kind` outside the vocabulary becomes `closing`. The raw
-  value is kept as `payload.source_balance_kind`.
+  value is kept as `payload.source_balance_kind`. When another row of
+  the same account, currency and instant is already `closing`, the
+  load fails with an error that names both kinds: gold keys a balance
+  by its kind, so the two rows cannot both land.
 - An fx rate's `mid_rate` is required, like a cash amount. `bid_rate`
   and `ask_rate` are optional.
 - The fx direction is gold's: 1 `quote_currency` = `mid_rate`
@@ -124,7 +127,7 @@ Cash balances and fx rates:
 ## 6. Instruments
 
 An instrument can change its descriptive fields over time and keep its
-id. A fund is renamed; a ticker changes. Each row of `instruments` is
+id. A fund is renamed. A ticker changes. Each row of `instruments` is
 one version. It applies from its `valid_from` until the next version's.
 
 A reference at instant `t` gets the version with the greatest
@@ -133,8 +136,8 @@ gets the earliest one. The instrument existed, and that is the oldest
 description of it.
 
 Gold keeps one row per instrument. The per-column upsert keeps the
-newest observation (DESIGN.md §8.4). So a load that reaches past a
-rename ends with the renamed version.
+newest non-NULL observation (DESIGN.md §8.4). So a load that reaches
+past a rename ends with the renamed version.
 
 The pair guard of §5 applies to every version.
 
@@ -170,23 +173,28 @@ routes `gross_amount` and `net_amount` through
 
 - `description`, `memo`, `counterparty` and `provider_category` pass
   through. An empty string is absent. The memo stays a field of its
-  own; the gold writer joins it to the description.
-- `instrument_hint` is kept only when `instrument_id` is NULL. It is the
-  token an instrument lookup failed on, so it means nothing beside a
-  known instrument.
+  own. The gold writer joins it to the description.
+- `instrument_hint` is kept only when `instrument_id` is NULL or empty.
+  It is the token an instrument lookup failed on, so it means nothing
+  beside a known instrument.
 - `check_number` is kept only on an outflow (a negative net amount).
   Gold's contract is that the field names an outgoing payment.
-- `payload` passes through verbatim. The keys gold reads from a
-  transaction payload arrive untouched: `bank_ref`, `counter_account`,
-  `counter_currency` and `counter_amount`.
+- `payload` passes through verbatim, apart from the `source_*` keys a
+  fallback adds. The keys gold reads from a transaction payload arrive
+  untouched: `bank_ref`, `counter_account`, `counter_currency` and
+  `counter_amount`.
 
-**Dimensions.** Dimensions travel only on the snapshot stream. An
-account or an instrument named by the window's transactions, and by no
-snapshot in the window, is emitted by `Snapshots` too. It goes on the
-last batch. Where the window holds transactions and no snapshot, it
-gets a batch of its own. Its seen range is the span of those
-transactions. An instrument comes in the version in effect at the
+**Dimensions.** Dimensions travel only on the snapshot stream. Every
+account and instrument named by the window's transactions is emitted by
+`Snapshots` too, whether or not a snapshot in the window also names it.
+It goes on the last batch. Where the window holds transactions and no
+snapshot, it gets a batch of its own. Its seen range is the span of
+those transactions. An instrument comes in the version in effect at the
 latest of them. The account's portfolio comes with it.
+
+Gold's upsert widens a seen range and keeps the version seen last. So
+the dimension rows gold ends with are the same however the load
+windows are cut.
 
 ## 8. Change number and the incremental window
 
@@ -219,8 +227,10 @@ runs' windows overlap, every row inside `[Start, End]` is still
 re-emitted, whichever run added it.
 
 A rewritten file whose change numbers restart lower is caught as
-silver going backwards (DESIGN.md §8.5). `wealthdb reset` clears the
-source for a fresh load.
+silver going backwards (DESIGN.md §8.5). A rewritten file whose latest
+change number equals the one gold already read looks unchanged, and
+gold does not load it. `wealthdb reset` clears the source for a fresh
+load in both cases.
 
 ## 9. Returns policy
 
@@ -251,9 +261,17 @@ two synthetic sources override independently.
 
 ## 10. Provider vocabulary
 
-The synthetic provider stamps `provider_category` with a taxonomy
-value outright. An outflow carries a `spend_detailed` value. An inflow
-carries an `income_detailed` value.
+A synthetic writer may leave `provider_category` empty. When it files
+a row, the value is a taxonomy value, and its family follows the row's
+kind, not its sign:
+
+- A kind the spending report reads carries a `spend_detailed` value:
+  `purchase`, `refund`, `withdrawal`, `fee`, `tax`, and `interest` when
+  it is negative. A refund is an inflow and still carries the value of
+  the purchase it reverses.
+- A kind the income report reads carries an `income_detailed` value:
+  `deposit`, `dividend`, `coupon`, `staking`, `capital_gain`, `reward`,
+  `distribution`, and `interest` when it is positive.
 
 The spending provider tier translates it by identity
 (`internal/spending/providermap.go`):

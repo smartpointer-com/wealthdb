@@ -1,5 +1,5 @@
 {
-  "comment": "Everyone who pays the household, all invented and checked against a web search or public business registries. category is the income taxonomy value the synthetic provider files the receipt under; provider false means the provider files nothing and a config rule places it.",
+  "comment": "Everyone who pays the household is invented. No name is a real business, as far as web searches and public business registries show. category is the income taxonomy value the synthetic provider files the receipt under. Whether the provider files a paycheck deposit into checking is set per payroll entry in household.json (provider); plan contributions are always filed.",
   "payers": [
     {
       "id": "lattivane",
@@ -15,7 +15,6 @@
       "name": "Stillcrest Health Partners",
       "descriptor": "ACH CREDIT STILLCREST HEALTH PARTNERS PAYROLL",
       "category": "INCOME_WAGES",
-      "provider": false,
       "plan_descriptor": "EMPLOYEE DEFERRAL STILLCREST HEALTH PARTNERS",
       "match_descriptor": "EMPLOYER MATCH STILLCREST HEALTH PARTNERS"
     },

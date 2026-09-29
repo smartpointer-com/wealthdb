@@ -863,8 +863,8 @@ each is a way that query is wrong.
    to be dropped is the `unsigned` column, and a gap no larger than it
    reads **obscured**: not clean, not damning, not answerable from what
    the adapters signed. An account with no unsigned volume is never
-   obscured. Its gap stands, and a gap of zero reads **measured**: the
-   account reconciles.
+   obscured. It reads **measured**, and its gap stands. A gap of zero
+   means the account reconciles.
 3. **It reports what it cannot measure.** An account with no balance
    history never enters a join-based version's output at all — absent
    reads as fine. Those rows are here as **unmeasurable**. An account

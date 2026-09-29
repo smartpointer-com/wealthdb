@@ -16,7 +16,8 @@
 
 -- Bookkeeping about the silver itself: the schema version and whatever
 -- the writer records about how the file was made (for the demo generator:
--- its version, seed, input hashes and the as-of the file has reached).
+-- a hash of its code, the seed, input hashes and the as-of the file has
+-- reached).
 CREATE TABLE meta (
     key   TEXT NOT NULL PRIMARY KEY,
     value TEXT NOT NULL

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -554,22 +555,91 @@ func TestTransactionOnlyDimensions(t *testing.T) {
 			str(bond.Name), bond.FirstSeenAt, bond.LastSeenAt, day(3), day(4))
 	}
 
-	// A dimension a snapshot already carried is not emitted a second time:
-	// acct-cash and acct-brok are named by transactions and by snapshots.
-	count := map[string]int{}
-	for _, b := range batches {
-		for _, a := range b.Accounts {
-			count[a.AccountExternalID]++
+	// A dimension the snapshots carried goes out again with its
+	// transactions' span: acct-cash is named by both.
+	var cashTail *canonical.AccountChange
+	for i := range last.Accounts {
+		if last.Accounts[i].AccountExternalID == "acct-cash" && last.Accounts[i].FirstSeenAt == day(3) &&
+			last.Accounts[i].LastSeenAt == day(4) {
+			cashTail = &last.Accounts[i]
 		}
 	}
-	if count["acct-cash"] != 2 || count["acct-brok"] != 2 {
-		t.Errorf("per-instant account emissions = %v, want one per instant", count)
+	if cashTail == nil {
+		t.Errorf("acct-cash's transaction span is missing from the last batch: %+v", last.Accounts)
+	}
+}
+
+// TestDimensionsIgnoreWindowCuts: the instrument a sale names on the day it
+// is renamed, with no snapshot of that day naming it, folds to the same gold
+// row whether the days load in one window or in two.
+func TestDimensionsIgnoreWindowCuts(t *testing.T) {
+	path, db := newFixture(t)
+	exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES
+        ('acct-brok', 'brokerage', '{}'), ('acct-cash', 'cash', '{}')`)
+	exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle, name, currency, payload)
+        VALUES ('inst-x', ?, 'public_equity', 'etf', 'Example Fund', 'USD', '{}'),
+               ('inst-x', ?, 'public_equity', 'etf', 'Example Fund (Renamed)', 'USD', '{}')`, day(1), day(3))
+	for _, d := range []int{1, 2} {
+		exec(t, db, insertPosition, day(d), "acct-brok", "inst-x", "inst-x", "public_equity", "etf",
+			"USD", "1", "10", nil, nil, nil, "{}")
+	}
+	exec(t, db, insertCash, day(3), "acct-cash", "USD", "closing", "10", "{}")
+	insertTx(t, db, txn{id: "t-sell", at: day(3), account: "acct-brok", instrument: "inst-x",
+		kind: "sell", net: "10", quantity: "-1", price: "10"})
+	conn := openConn(t, path)
+
+	fold := func(windows ...[2]int) canonical.InstrumentChange {
+		var acc canonical.InstrumentChange
+		for _, w := range windows {
+			for _, b := range collectSnapshots(t, conn, canonical.Window{
+				Start: day(w[0]), End: day(w[1]), NewChangeNumber: 1, HasChanges: true}) {
+				for _, i := range b.Instruments {
+					if acc.InstrumentExternalID == "" {
+						acc = i
+						continue
+					}
+					first := min(acc.FirstSeenAt, i.FirstSeenAt)
+					if i.LastSeenAt >= acc.LastSeenAt {
+						acc = i
+					}
+					acc.FirstSeenAt = first
+				}
+			}
+		}
+		return acc
+	}
+	one, two := fold([2]int{1, 3}), fold([2]int{1, 2}, [2]int{3, 3})
+	if str(one.Name) != str(two.Name) || one.FirstSeenAt != two.FirstSeenAt || one.LastSeenAt != two.LastSeenAt {
+		t.Errorf("one window folds to %s [%d,%d], two to %s [%d,%d]", str(one.Name), one.FirstSeenAt,
+			one.LastSeenAt, str(two.Name), two.FirstSeenAt, two.LastSeenAt)
+	}
+	if str(one.Name) != "Example Fund (Renamed)" || one.LastSeenAt != day(3) {
+		t.Errorf("inst-x folds to %s last seen %d, want the version its day-3 sale names", str(one.Name), one.LastSeenAt)
 	}
 }
 
 // TestTransactionDimensionsJoinAnExistingBatch: day 1 holds a snapshot (an fx
 // rate) and a trade whose account and instrument no snapshot of the window
 // names, so the dimensions land on that batch in the version in effect then.
+// TestTransactionPortfolioSpansItsAccounts: a portfolio emitted for the
+// window's transactions is seen over the union of its accounts' spans.
+func TestTransactionPortfolioSpansItsAccounts(t *testing.T) {
+	path, db := newFixture(t)
+	seed(t, db)
+	conn := openConn(t, path)
+	batches := collectSnapshots(t, conn, window(t, conn, -1))
+	var tail *canonical.PortfolioChange
+	for _, p := range batches[len(batches)-1].Portfolios {
+		if p.PortfolioExternalID == "pf-main" && p.FirstSeenAt != p.LastSeenAt {
+			tail = &p
+		}
+	}
+	// acct-brok's transactions run from day 1, acct-cash's to day 4.
+	if tail == nil || tail.FirstSeenAt != day(1) || tail.LastSeenAt != day(4) {
+		t.Errorf("pf-main's transaction span = %+v, want [%d,%d]", tail, day(1), day(4))
+	}
+}
+
 func TestTransactionDimensionsJoinAnExistingBatch(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
@@ -697,6 +767,26 @@ func TestSnapshotFallbacks(t *testing.T) {
 	}
 }
 
+// TestBalanceKindFallbackCollision: an unknown kind beside a closing row of
+// the same account, currency and instant, or two unknown kinds, would give
+// gold two closing rows under one key, so the load stops and names both.
+func TestBalanceKindFallbackCollision(t *testing.T) {
+	for _, kinds := range [][2]string{{"closing", "ledger"}, {"eod", "ledger"}} {
+		t.Run(kinds[0]+"+"+kinds[1], func(t *testing.T) {
+			path, db := newFixture(t)
+			exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
+			exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-cash', 'cash', '{}')`)
+			exec(t, db, insertCash, day(1), "acct-cash", "USD", kinds[0], "100", "{}")
+			exec(t, db, insertCash, day(1), "acct-cash", "USD", kinds[1], "98", "{}")
+			conn := openConn(t, path)
+			_, err := conn.Snapshots(context.Background(), window(t, conn, -1))
+			if want := fmt.Sprintf("%q and %q", kinds[0], kinds[1]); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("Snapshots error = %v, want one naming %s", err, want)
+			}
+		})
+	}
+}
+
 func TestTransactions(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
@@ -781,7 +871,8 @@ func TestTransactionsWindowed(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
 	conn := openConn(t, path)
-	for _, x := range collectTransactions(t, conn, window(t, conn, 1)) {
+	appended := collectTransactions(t, conn, window(t, conn, 1))
+	for _, x := range appended {
 		if x.OccurredAt < day(3) || x.OccurredAt > day(4) {
 			t.Errorf("%s at %d is outside the appended run's window", x.TransactionExternalID, x.OccurredAt)
 		}
@@ -789,7 +880,7 @@ func TestTransactionsWindowed(t *testing.T) {
 			t.Errorf("%s belongs to the first run", x.TransactionExternalID)
 		}
 	}
-	if n := len(collectTransactions(t, conn, window(t, conn, 1))); n != 7 {
+	if n := len(appended); n != 7 {
 		t.Errorf("appended-run transactions = %d, want 7", n)
 	}
 }
@@ -851,12 +942,41 @@ func TestRequiredValuesFailTheLoad(t *testing.T) {
 // TestDanglingReferenceFailsTheLoad: a fact naming an id its dimension table
 // does not hold is a defect in the silver, not something to load around.
 func TestDanglingReferenceFailsTheLoad(t *testing.T) {
-	path, db := newFixture(t)
-	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
-	exec(t, db, insertCash, day(1), "acct-ghost", "USD", "closing", "1", "{}")
-	conn := openConn(t, path)
-	_, err := conn.Snapshots(context.Background(), window(t, conn, -1))
-	if err == nil || !strings.Contains(err.Error(), "acct-ghost") {
-		t.Errorf("Snapshots error = %v, want one naming the missing account", err)
+	for _, tc := range []struct {
+		name, ghost string
+		setup       func(t *testing.T, db *sql.DB)
+	}{
+		{"account named by a cash balance", "acct-ghost", func(t *testing.T, db *sql.DB) {
+			exec(t, db, insertCash, day(1), "acct-ghost", "USD", "closing", "1", "{}")
+		}},
+		{"portfolio named by an account", "pf-ghost", func(t *testing.T, db *sql.DB) {
+			exec(t, db, `INSERT INTO accounts (account_id, account_kind, portfolio_id, payload)
+                VALUES ('acct-cash', 'cash', 'pf-ghost', '{}')`)
+			exec(t, db, insertCash, day(1), "acct-cash", "USD", "closing", "1", "{}")
+		}},
+		{"instrument named by a position", "inst-ghost", func(t *testing.T, db *sql.DB) {
+			exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-brok', 'brokerage', '{}')`)
+			exec(t, db, insertPosition, day(1), "acct-brok", "inst-ghost", "inst-ghost", "public_equity", "etf",
+				"USD", "1", "10", nil, nil, nil, "{}")
+		}},
+		{"account named only by a transaction", "acct-ghost", func(t *testing.T, db *sql.DB) {
+			insertTx(t, db, txn{id: "t-ghost", at: day(1), account: "acct-ghost", kind: "deposit", net: "1"})
+		}},
+		{"instrument named only by a transaction", "inst-ghost", func(t *testing.T, db *sql.DB) {
+			exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-brok', 'brokerage', '{}')`)
+			insertTx(t, db, txn{id: "t-ghost", at: day(1), account: "acct-brok", instrument: "inst-ghost",
+				kind: "dividend", net: "1"})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, db := newFixture(t)
+			exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-01')`, day(1), day(1))
+			tc.setup(t, db)
+			conn := openConn(t, path)
+			_, err := conn.Snapshots(context.Background(), window(t, conn, -1))
+			if err == nil || !strings.Contains(err.Error(), tc.ghost) {
+				t.Errorf("Snapshots error = %v, want one naming %s", err, tc.ghost)
+			}
+		})
 	}
 }

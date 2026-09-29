@@ -1,8 +1,9 @@
 """Loading the household spec and the catalogue.
 
-The generator reads these files and nothing else. Their hashes are
-recorded in every silver file, so an append run can refuse to splice a
-history made from different inputs onto the one already on disk.
+The generator reads these files and nothing else. Their hashes, and one
+of the generator's own code, are recorded in every silver file, so an
+append run can refuse to splice a history made from different inputs or
+a different generator onto the one already on disk.
 """
 
 import hashlib
@@ -13,6 +14,9 @@ from . import dates
 
 DEMO_DIR = pathlib.Path(__file__).resolve().parent.parent
 SPEC_PATH = DEMO_DIR / "household.json"
+# The silver schema the kind's adapter reads; every file is written from it.
+SCHEMA_PATH = DEMO_DIR.parent / "wealthdb" / "internal" / "silver" / "synthetic" / "testdata" / "silver_schema.sql"
+CODE_FILES = sorted([DEMO_DIR / "generate.py", *(DEMO_DIR / "demohouse").glob("*.py")]) + [SCHEMA_PATH]
 CATALOGUE_DIR = DEMO_DIR / "catalogue"
 CATALOGUE_FILES = ("instruments.json", "merchants.json", "payers.json")
 
@@ -20,7 +24,7 @@ CATALOGUE_FILES = ("instruments.json", "merchants.json", "payers.json")
 class Inputs:
     """The spec and the catalogue, indexed for the simulation."""
 
-    def __init__(self, spec, instruments, splits, merchants, payers, spec_hash, catalogue_hash):
+    def __init__(self, spec, instruments, splits, merchants, payers, spec_hash, catalogue_hash, code_hash):
         self.spec = spec
         self.instruments = instruments
         self.splits = splits
@@ -28,10 +32,22 @@ class Inputs:
         self.payers = payers
         self.spec_hash = spec_hash
         self.catalogue_hash = catalogue_hash
+        self.code_hash = code_hash
 
     @property
     def history_start(self):
         return dates.parse(self.spec["calendar"]["history_start"])
+
+
+def code_hash():
+    """A hash of the generator's own source and the schema it writes.
+    Keyed randomness keeps a history stable only for the same code, so
+    any edit to the simulation counts as a different generator and an
+    append refuses it."""
+    digest = hashlib.sha256()
+    for path in CODE_FILES:
+        digest.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
 
 
 def _read(path):
@@ -53,7 +69,7 @@ def load(spec_path=SPEC_PATH, catalogue_dir=CATALOGUE_DIR):
     payers = {p["id"]: p for p in parts["payers.json"]["payers"]}
     splits = parts["instruments.json"].get("splits", [])
     return Inputs(spec, instruments, splits, merchants, payers,
-                  hashlib.sha256(spec_raw).hexdigest(), digest.hexdigest())
+                  hashlib.sha256(spec_raw).hexdigest(), digest.hexdigest(), code_hash())
 
 
 def _instrument_versions(cat, spec):

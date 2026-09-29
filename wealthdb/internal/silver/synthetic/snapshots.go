@@ -20,12 +20,15 @@ import (
 // each of those accounts belongs to, and every instrument its positions
 // name, in the version in effect at the instant.
 //
-// Dimensions travel only on the snapshot stream, so an account or an
-// instrument that the window's transactions reference and no snapshot in the
-// window does is emitted here too, on the last batch — or on a batch of its
-// own where the window holds transactions and no snapshot. Its seen range is
-// the span of those transactions, and an instrument comes in the version in
-// effect at the latest of them.
+// Dimensions travel only on the snapshot stream, so every account, portfolio
+// and instrument the window's transactions reference is emitted here too, on
+// the last batch — or on a batch of its own where the window holds
+// transactions and no snapshot. Its seen range is the span of those
+// transactions, and an instrument comes in the version in effect at the
+// latest of them. These records go out whether or not a snapshot of the
+// window also carried the id: gold's upsert widens the seen range and keeps
+// the version seen last, so the result is the same however the load windows
+// are cut.
 //
 // A reference to an id its dimension table does not hold is an error: the
 // silver is the canonical records themselves, so a dangling id is a defect in
@@ -59,27 +62,22 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	emitted := emittedIDs{
-		accounts:    map[string]bool{},
-		portfolios:  map[string]bool{},
-		instruments: map[string]bool{},
-	}
 	batches := make([]canonical.SnapshotBatch, 0, len(byInstant))
 	for _, t := range slices.Sorted(maps.Keys(byInstant)) {
 		b := byInstant[t]
-		if err := dims.attach(b, t, emitted); err != nil {
+		if err := dims.attach(b, t); err != nil {
 			return nil, err
 		}
 		batches = append(batches, *b)
 	}
 
-	tail, err := c.transactionDimensions(ctx, w, dims, emitted)
+	tail, err := c.transactionDimensions(ctx, w, dims)
 	if err != nil {
 		return nil, err
 	}
 	switch {
 	case len(tail.Accounts)+len(tail.Portfolios)+len(tail.Instruments) == 0:
-		// The snapshots already carried every dimension referenced.
+		// The window holds no transactions that reference a dimension.
 	case len(batches) == 0:
 		batches = append(batches, tail)
 	default:
@@ -91,14 +89,8 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	return silver.NewSnapshotStream(batches), nil
 }
 
-// emittedIDs records which dimension records the snapshot batches carry, so
-// the transaction pass adds only the ones they do not.
-type emittedIDs struct {
-	accounts, portfolios, instruments map[string]bool
-}
-
 // attach adds to b the dimension records its facts reference, all seen at t.
-func (d *dimensions) attach(b *canonical.SnapshotBatch, t int64, emitted emittedIDs) error {
+func (d *dimensions) attach(b *canonical.SnapshotBatch, t int64) error {
 	accountIDs := map[string]bool{}
 	instrumentIDs := map[string]bool{}
 	for _, p := range b.Positions {
@@ -118,7 +110,6 @@ func (d *dimensions) attach(b *canonical.SnapshotBatch, t int64, emitted emitted
 			return err
 		}
 		b.Accounts = append(b.Accounts, a)
-		emitted.accounts[id] = true
 		if a.PortfolioExternalID != nil {
 			portfolioIDs[*a.PortfolioExternalID] = true
 		}
@@ -129,7 +120,6 @@ func (d *dimensions) attach(b *canonical.SnapshotBatch, t int64, emitted emitted
 			return err
 		}
 		b.Portfolios = append(b.Portfolios, p)
-		emitted.portfolios[id] = true
 	}
 	for _, id := range slices.Sorted(maps.Keys(instrumentIDs)) {
 		i, err := d.instrument(id, t, t, t)
@@ -137,7 +127,6 @@ func (d *dimensions) attach(b *canonical.SnapshotBatch, t int64, emitted emitted
 			return err
 		}
 		b.Instruments = append(b.Instruments, i)
-		emitted.instruments[id] = true
 	}
 	return nil
 }
@@ -151,9 +140,9 @@ func (s seenSpan) widen(o seenSpan) seenSpan {
 }
 
 // transactionDimensions is the batch of dimension records the window's
-// transactions reference and the snapshot batches did not emit.
+// transactions reference, each seen over the span of those transactions.
 func (c *Connection) transactionDimensions(ctx context.Context, w canonical.Window,
-	d *dimensions, emitted emittedIDs) (canonical.SnapshotBatch, error) {
+	d *dimensions) (canonical.SnapshotBatch, error) {
 	var tail canonical.SnapshotBatch
 	accounts, err := c.transactionSpans(ctx, w, "account_id")
 	if err != nil {
@@ -166,16 +155,13 @@ func (c *Connection) transactionDimensions(ctx context.Context, w canonical.Wind
 
 	portfolios := map[string]seenSpan{}
 	for _, id := range slices.Sorted(maps.Keys(accounts)) {
-		if emitted.accounts[id] {
-			continue
-		}
 		span := accounts[id]
 		a, err := d.account(id, span.first, span.last)
 		if err != nil {
 			return tail, err
 		}
 		tail.Accounts = append(tail.Accounts, a)
-		if pid := a.PortfolioExternalID; pid != nil && !emitted.portfolios[*pid] {
+		if pid := a.PortfolioExternalID; pid != nil {
 			if prev, ok := portfolios[*pid]; ok {
 				span = span.widen(prev)
 			}
@@ -191,9 +177,6 @@ func (c *Connection) transactionDimensions(ctx context.Context, w canonical.Wind
 		tail.Portfolios = append(tail.Portfolios, p)
 	}
 	for _, id := range slices.Sorted(maps.Keys(instruments)) {
-		if emitted.instruments[id] {
-			continue
-		}
 		span := instruments[id]
 		i, err := d.instrument(id, span.last, span.first, span.last)
 		if err != nil {
@@ -281,7 +264,9 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 
 // readCashBalances reads the window's cash balances. The amount is the one
 // value a balance cannot do without, so an unparseable one fails the load
-// rather than landing as zero.
+// rather than landing as zero. An unknown balance kind falls back to
+// closing, and fails the load when another row of the same account,
+// currency and instant is already closing.
 func (c *Connection) readCashBalances(ctx context.Context, w canonical.Window,
 	at func(int64) *canonical.SnapshotBatch) error {
 	rows, err := c.db.QueryContext(ctx, `
@@ -293,6 +278,12 @@ SELECT snapshot_at, account_id, currency, balance_kind, amount, payload
 		return fmt.Errorf("synthetic cash balances: %w", err)
 	}
 	defer rows.Close()
+	type cashKey struct {
+		snap         int64
+		account, ccy string
+		kind         canonical.BalanceKind
+	}
+	taken := map[cashKey]string{}
 	for rows.Next() {
 		var (
 			snap                                int64
@@ -312,6 +303,15 @@ SELECT snapshot_at, account_id, currency, balance_kind, amount, payload
 			extra.keep("balance_kind", kind)
 			bk = canonical.BalanceKindClosing
 		}
+		// The balance kind is part of gold's key, so a fallback that lands
+		// on a kind another row of the instant already holds is a defect in
+		// the silver, as a duplicate row would be.
+		key := cashKey{snap, account, ccy, bk}
+		if other, ok := taken[key]; ok {
+			return fmt.Errorf("synthetic cash balances (%d, %s, %s): balance_kind %q and %q both land on %s",
+				snap, account, ccy, other, kind, bk)
+		}
+		taken[key] = kind
 		b := at(snap)
 		b.CashBalances = append(b.CashBalances, canonical.CashBalanceChange{
 			SnapshotAt:        snap,

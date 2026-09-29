@@ -631,15 +631,15 @@ RETIRED_CARD_NAMES = ["net_worth_usd_current", "net_worth_chf_current",
 # cost flow tiles); archived on provision so a re-run cleans them up.
 RETIRED_DASHBOARD_NAMES = ["Net Worth"]
 
+# The reserved source id declared accounts carry in gold
+# (canonical.DeclaredSourceID in the engine).
+DECLARED_SOURCE = "declared"
+
 # Every dashboard has a privacy twin whose cards show shares (%) instead
 # of money (each names its own denominator — see PRIVACY_DESC). Cards
 # listed here show no monetary values (percentages, indices, source
 # names), so the twin reuses them as-is. The returns scalars and charts
 # are all percentage/index-only; only the by-source table carries money.
-# The reserved source id declared accounts carry in gold
-# (canonical.DeclaredSourceID in the engine).
-DECLARED_SOURCE = "declared"
-
 PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
                         "Return (TWR)", "Return (MWR)", "Annualized return (TWR)",
                         "Cumulative return (log scale)", "Monthly returns (TWR)",

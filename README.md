@@ -245,8 +245,8 @@ and [wealthdb/README.md](wealthdb/README.md) the engine's subcommands.
 ## Try it without a bank
 
 A demo household shows every report and dashboard before a single
-source is set up. It is invented from end to end: a generator writes
-three years of a family's banking, investing and spending into
+source is set up. It is invented from end to end. A generator writes a
+family's banking, investing and spending, from mid-2023 to today, into
 synthetic sources, and the ordinary `load` builds gold from them.
 
 ```sh
@@ -256,9 +256,10 @@ make demo-roll                    # later: add the days since the last build
 ```
 
 The demo keeps to its own directory, its own gold and its own
-dashboard container, so it runs beside a real setup without touching
-it. [demo/README.md](demo/README.md) describes the household and how to
-query it from the command line.
+dashboard container, so its data never mixes with a real setup's. It
+does share the engine and dashboard images: the demo targets build them
+from the checkout, as `make all` does. [demo/README.md](demo/README.md)
+describes the household and how to query it from the command line.
 
 ## Documentation
 

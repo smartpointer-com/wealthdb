@@ -2,8 +2,8 @@
 
 The simulation promises one thing above all: balances are the running sum
 of transactions and a holding is worth its quantity times its price. The
-rest follows downstream (holdings reconcile, cash coverage closes with no
-gap, returns see the flows that moved each value), so these tests check
+rest follows downstream (holdings reconcile, cash coverage finds no gap it
+can measure, returns see the flows that moved each value), so these tests check
 the promise on the written files rather than on the simulation's own
 bookkeeping.
 """
@@ -25,7 +25,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import generate  # noqa: E402
 from demohouse import dates, spec  # noqa: E402
-from demohouse.market import Market  # noqa: E402
+from demohouse.book import unit_price  # noqa: E402
+from demohouse.household import Simulation  # noqa: E402
 from tests import goref  # noqa: E402
 
 AS_OF = dt.date(2026, 9, 29)
@@ -33,8 +34,9 @@ SEED = "harlow-19"
 FIXED_SIGN_ZERO_OK = {"corporate_action"}
 
 
-def day_of(ts):
-    return dt.date(1970, 1, 1) + dt.timedelta(days=ts // dates.DAY)
+def ledger(root, name):
+    """The rows of one of the ledger CSVs the build writes."""
+    return list(csv.DictReader((root / "overrides" / name).read_text().splitlines()))
 
 
 class Built(unittest.TestCase):
@@ -75,10 +77,10 @@ class TestLedger(Built):
             in_kind = t["kind"] in ("transfer_in", "transfer_out") and t["instrument_id"]
             if t["kind"] == "corporate_action" or in_kind:
                 continue
-            moves[(t["account_id"], t["currency"])][day_of(t["occurred_at"])] += Decimal(t["net_amount"])
+            moves[(t["account_id"], t["currency"])][dates.day_of(t["occurred_at"])] += Decimal(t["net_amount"])
         snaps = collections.defaultdict(list)
         for _, c in self.all("cash_balances"):
-            snaps[(c["account_id"], c["currency"])].append((day_of(c["snapshot_at"]), Decimal(c["amount"])))
+            snaps[(c["account_id"], c["currency"])].append((dates.day_of(c["snapshot_at"]), Decimal(c["amount"])))
         self.assertTrue(snaps)
         for key, series in snaps.items():
             series.sort()
@@ -100,19 +102,16 @@ class TestLedger(Built):
         wanted = collections.defaultdict(list)
         for _, p in self.all("positions"):
             if p["quantity"] is not None:
-                wanted[day_of(p["snapshot_at"])].append(p)
-        fx_start = self.inputs.history_start - dt.timedelta(days=1 + self.inputs.spec["calendar"]["fx_lead_days"])
-        market = Market(SEED, list(cat.values()), fx_start, self.inputs.spec["fx"]["start_usd_per"])
-        for s in self.inputs.splits:
-            market.add_split(s["instrument"], dates.parse(s["date"]), s["ratio"])
+                wanted[dates.day_of(p["snapshot_at"])].append(p)
+        # A second market from the same seed, advanced here day by day.
+        sim = Simulation(self.inputs, SEED, AS_OF)
+        market = sim.market
         checked = 0
-        for day in dates.days(fx_start, AS_OF):
+        for day in dates.days(sim.fx_start, AS_OF):
             market.advance(day)
             for p in wanted.get(day, []):
                 inst = cat[p["instrument_id"]]
-                value = Decimal(p["quantity"]) * market.price(p["instrument_id"])
-                if inst.get("coupon"):
-                    value /= 100
+                value = unit_price(inst, market.price(p["instrument_id"])) * Decimal(p["quantity"])
                 self.assertEqual(value.quantize(Decimal("0.0001")), Decimal(p["market_value"]),
                                  f'{p["account_id"]} {p["instrument_id"]} on {day}')
                 checked += 1
@@ -155,8 +154,9 @@ class TestTransfers(Built):
         for key, legs in refs.items():
             self.assertEqual(len(legs), 2, key)
             a, b = sorted(legs, key=lambda t: Decimal(t["net_amount"]))
-            self.assertEqual(day_of(a["occurred_at"]), day_of(b["occurred_at"]), key)
-            self.assertNotEqual(a["account_id"], b["account_id"]) if a["kind"] != "fx" else None
+            self.assertEqual(dates.day_of(a["occurred_at"]), dates.day_of(b["occurred_at"]), key)
+            if a["kind"] != "fx":
+                self.assertNotEqual(a["account_id"], b["account_id"])
             if a["currency"] == b["currency"]:
                 self.assertEqual(Decimal(a["net_amount"]) + Decimal(b["net_amount"]), 0, key)
             else:
@@ -171,7 +171,7 @@ class TestTransfers(Built):
         between currencies, the pair the transfer-override ledger states."""
         names = self.config["spending"]["internal_transfer_matching"]["names"]
         stated = {(r["account" + side], r["occurred_at" + side], Decimal(r["amount" + side]))
-                  for r in csv.DictReader(open(self.root / "overrides" / "transfer_overrides.csv"))
+                  for r in ledger(self.root, "transfer_overrides.csv")
                   for side in ("", "_b")}
         by_account = collections.defaultdict(list)
         rows = list(self.all("transactions"))
@@ -186,10 +186,10 @@ class TestTransfers(Built):
                 if n["source"] == src or not re.search(n["match"], text):
                     continue
                 named += 1
-                if (t["account_id"], day_of(t["occurred_at"]).isoformat(), Decimal(t["net_amount"])) in stated:
+                if (t["account_id"], dates.day_of(t["occurred_at"]).isoformat(), Decimal(t["net_amount"])) in stated:
                     continue
                 partners = [p for p in by_account[n["account"]]
-                            if day_of(p["occurred_at"]) == day_of(t["occurred_at"])
+                            if dates.day_of(p["occurred_at"]) == dates.day_of(t["occurred_at"])
                             and p["currency"] == t["currency"]
                             and Decimal(p["net_amount"]) == -Decimal(t["net_amount"])]
                 if len(partners) > 1:
@@ -206,9 +206,9 @@ class TestTransfers(Built):
     def test_every_ledger_row_names_a_transaction_that_exists(self):
         by_key = collections.Counter()
         for src, t in self.all("transactions"):
-            by_key[(src, t["account_id"], day_of(t["occurred_at"]).isoformat(), Decimal(t["net_amount"]))] += 1
-        pins = list(csv.DictReader(open(self.root / "overrides" / "spending_pins.csv")))
-        overrides = list(csv.DictReader(open(self.root / "overrides" / "transfer_overrides.csv")))
+            by_key[(src, t["account_id"], dates.day_of(t["occurred_at"]).isoformat(), Decimal(t["net_amount"]))] += 1
+        pins = ledger(self.root, "spending_pins.csv")
+        overrides = ledger(self.root, "transfer_overrides.csv")
         self.assertTrue(pins and overrides)
         for r in pins:
             self.assertEqual(by_key[(r["silver_source_id"], r["account"], r["occurred_at"], Decimal(r["amount"]))], 1, r)
@@ -219,9 +219,38 @@ class TestTransfers(Built):
                 self.assertEqual(by_key[key], 1, r)
 
     def test_the_in_kind_exit_is_one_pair(self):
-        rows = list(csv.DictReader(open(self.root / "overrides" / "equity_transfers.csv")))
+        rows = ledger(self.root, "equity_transfers.csv")
         self.assertEqual(sorted(r["direction"] for r in rows), ["in", "out"])
         self.assertEqual(len({(r["occurred_at"], r["value"]) for r in rows}), 1)
+
+
+class TestPrivateMarkets(Built):
+    def test_the_fund_is_held_at_cost_between_marks(self):
+        """A call adds its amount and a distribution takes its amount out,
+        so no call or distribution day books a gain. A mark day values the
+        called capital at the mark's multiple, less what came back. The
+        book value is always called less distributed."""
+        f = self.inputs.spec["private"]["fund"]
+        src = next(s["id"] for s in self.inputs.spec["sources"]
+                   if any(a["id"] == f["account"] for a in s["accounts"]))
+        rows = {dates.day_of(r["snapshot_at"]): r for r in self.rows[src]["positions"]
+                if r["account_id"] == f["account"] and r["instrument_id"] == f["instrument"]}
+        value = {d: Decimal(r["market_value"]) for d, r in rows.items()}
+        events = sorted([(dates.parse(c["date"]), Decimal(c["amount"])) for c in f["calls"]] +
+                        [(dates.parse(d["date"]), -Decimal(d["amount"])) for d in f["distributions"]])
+        marks = {dates.parse(m["date"]): Decimal(m["multiple"]) for m in f["marks"]}
+        called = distributed = Decimal(0)
+        checked = 0
+        for day in sorted(set(rows) & ({d for d, _ in events} | set(marks))):
+            before = value.get(day - dt.timedelta(days=1), Decimal(0))
+            moved = sum((a for d, a in events if d == day), Decimal(0))
+            called += max(moved, Decimal(0))
+            distributed += max(-moved, Decimal(0))
+            want = called * marks[day] - distributed if day in marks else before + moved
+            self.assertEqual(value[day], want, day)
+            self.assertEqual(Decimal(rows[day]["book_value"]), called - distributed, day)
+            checked += 1
+        self.assertGreaterEqual(checked, len(f["calls"]) + len(f["marks"]) - 2)
 
 
 class TestVocabulary(Built):
@@ -290,13 +319,13 @@ class TestCalendar(Built):
             for table, col in (("positions", "snapshot_at"), ("cash_balances", "snapshot_at"),
                                ("transactions", "occurred_at")):
                 for r in self.rows[src][table]:
-                    self.assertTrue(dates.is_business(day_of(r[col])), f"{src}.{table} on {day_of(r[col])}")
+                    self.assertTrue(dates.is_business(dates.day_of(r[col])), f"{src}.{table} on {dates.day_of(r[col])}")
 
     def test_every_open_month_has_its_month_end_snapshot(self):
         for src in self.sources:
             days = collections.defaultdict(set)
             for r in self.rows[src]["cash_balances"] + self.rows[src]["positions"]:
-                days[r["account_id"]].add(day_of(r["snapshot_at"]))
+                days[r["account_id"]].add(dates.day_of(r["snapshot_at"]))
             for acct, seen in days.items():
                 first = min(seen)
                 month = dt.date(first.year, first.month, 1)
@@ -310,15 +339,15 @@ class TestCalendar(Built):
 
     def test_every_source_is_fresh_at_as_of(self):
         for src in self.sources:
-            latest = max(day_of(r["snapshot_at"]) for t in ("positions", "cash_balances", "fx_rates")
+            latest = max(dates.day_of(r["snapshot_at"]) for t in ("positions", "cash_balances", "fx_rates")
                          for r in self.rows[src][t]) if any(self.rows[src][t] for t in
                                                             ("positions", "cash_balances", "fx_rates")) else None
             self.assertIsNotNone(latest, src)
             self.assertGreaterEqual(latest, dates.prev_business(AS_OF), src)
 
     def test_fx_starts_before_any_foreign_holding(self):
-        first_fx = min(day_of(r["snapshot_at"]) for r in self.rows["fx"]["fx_rates"])
-        first_foreign = min(day_of(r["snapshot_at"]) for _, r in self.all("positions") if r["currency"] != "USD")
+        first_fx = min(dates.day_of(r["snapshot_at"]) for r in self.rows["fx"]["fx_rates"])
+        first_foreign = min(dates.day_of(r["snapshot_at"]) for _, r in self.all("positions") if r["currency"] != "USD")
         self.assertLessEqual(first_fx, first_foreign - dt.timedelta(days=30))
 
     def test_one_run_covers_every_row(self):

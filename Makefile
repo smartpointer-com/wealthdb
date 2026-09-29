@@ -253,45 +253,57 @@ cleanall-wealthdb: clean-wealthdb
 #
 # `demo` rebuilds silver and gold from scratch; `demo-roll` appends the
 # days since the last build to silver and loads only those. The generator
-# refuses a root that holds wealthdb files without its demo marker, so
-# the gold removed below can only ever be a demo's.
+# writes only into a new, empty or marked demo root, and the web targets
+# run only against a marked one.
+# AS_OF, SEED and FINDINGS are plain assignments, so only the command line
+# sets them: a variable of that name exported for another tool is ignored.
 WEALTHDB_DEMO_ROOT ?= $(HOME)/wealthdb-demo
-AS_OF    ?=
-SEED     ?= harlow-19
-FINDINGS ?=
-DEMO_ENV := WEALTHDB_DATA_ROOT="$(WEALTHDB_DEMO_ROOT)" XDG_CONFIG_HOME="$(WEALTHDB_DEMO_ROOT)"
-DEMO_ENGINE := $(DEMO_ENV) $(WEALTHDB) -c "$(WEALTHDB_DEMO_ROOT)/wealthdb.cfg"
-DEMO_WEB := $(DEMO_ENV) WEALTHDB_CONFIG="$(WEALTHDB_DEMO_ROOT)/wealthdb.cfg" \
+AS_OF    =
+SEED     = harlow-19
+FINDINGS =
+# Absolute and with a leading ~ expanded, so the generator and the engine
+# container see the same directory.
+DEMO_ROOT := $(abspath $(patsubst ~/%,$(HOME)/%,$(patsubst ~,$(HOME),$(strip $(WEALTHDB_DEMO_ROOT)))))
+DEMO_ENV := WEALTHDB_DATA_ROOT="$(DEMO_ROOT)" XDG_CONFIG_HOME="$(DEMO_ROOT)"
+DEMO_ENGINE := $(DEMO_ENV) $(WEALTHDB) -c "$(DEMO_ROOT)/wealthdb.cfg"
+DEMO_WEB := $(DEMO_ENV) WEALTHDB_CONFIG="$(DEMO_ROOT)/wealthdb.cfg" \
             WEALTHDB_WEB_CONTAINER=wealthdb-metabase-demo \
-            WEALTHDB_WEB_DATA_DIR="$(WEALTHDB_DEMO_ROOT)/web" \
-            WEALTHDB_WEB_ENV_FILE="$(WEALTHDB_DEMO_ROOT)/web.env" $(WEALTHDB) web
-DEMO_GEN_ARGS = --root "$(WEALTHDB_DEMO_ROOT)" --seed "$(SEED)" $(if $(AS_OF),--as-of $(AS_OF))
+            WEALTHDB_WEB_DATA_DIR="$(DEMO_ROOT)/web" \
+            WEALTHDB_WEB_ENV_FILE="$(DEMO_ROOT)/web.env" $(WEALTHDB) web
+DEMO_GEN_ARGS = --root "$(DEMO_ROOT)" --seed "$(SEED)" $(if $(AS_OF),--as-of $(AS_OF))
+DEMO_ROOT_SET = @test -n "$(DEMO_ROOT)" || { echo "$@: WEALTHDB_DEMO_ROOT is empty" >&2; exit 2; }
+DEMO_ROOT_MARKED = @test -f "$(DEMO_ROOT)/.wealthdb-demo" || \
+	{ echo "$@: $(DEMO_ROOT) is not a demo root; run make demo first" >&2; exit 2; }
 
 demo: build-wealthdb
-	@echo "==> generate the demo household into $(WEALTHDB_DEMO_ROOT)"
+	$(DEMO_ROOT_SET)
+	@echo "==> generate the demo household into $(DEMO_ROOT)"
 	@$(PYTHON) demo/generate.py $(DEMO_GEN_ARGS) $(if $(FINDINGS),--with-findings)
-	@test -f "$(WEALTHDB_DEMO_ROOT)/.wealthdb-demo" && \
-		rm -f "$(WEALTHDB_DEMO_ROOT)/wealthdb.db" "$(WEALTHDB_DEMO_ROOT)/wealthdb.db.wal"
 	@$(DEMO_ENGINE) init
 	@$(DEMO_ENGINE) load -a
 
-demo-roll:
+demo-roll: build-wealthdb
+	$(DEMO_ROOT_SET)
 	@echo "==> append the days since the last demo build"
 	@$(PYTHON) demo/generate.py $(DEMO_GEN_ARGS) --append
 	@$(DEMO_ENGINE) load -a
 
 # `web refresh` re-materializes returns and re-snapshots gold (restarting
 # the container when it runs); `web start` then brings it up if it does not.
-demo-web:
+demo-web: build-web
+	$(DEMO_ROOT_SET)
+	$(DEMO_ROOT_MARKED)
 	@$(DEMO_WEB) refresh
 	@$(DEMO_WEB) status | grep -q '^web: running' || $(DEMO_WEB) start
 
 demo-web-stop:
+	$(DEMO_ROOT_SET)
+	$(DEMO_ROOT_MARKED)
 	@$(DEMO_WEB) stop
 
 # The generator's own suite (stdlib unittest), then a short demo loaded
-# through the engine image in a scratch root under the cache dir — a
-# directory Docker can see, holding nothing but the demo.
+# through the engine image in scratch roots under the cache dir — a
+# directory Docker can see, holding nothing but the demo's test roots.
 DEMO_TEST_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/demo-test
 
 test-demo: build-wealthdb

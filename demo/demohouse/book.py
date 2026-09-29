@@ -3,13 +3,13 @@
 Every account keeps a ledger. A transaction changes cash, a holding, or
 both; a snapshot records each holding at quantity x price and each cash
 balance at its running sum. That one invariant is what makes the rest
-line up downstream: holdings reconcile, every account's cash coverage
-closes with no gap, and returns see a value series and the flows that
-moved it.
+line up downstream: holdings reconcile, cash coverage finds no gap
+wherever it can measure one, and returns see a value series and the
+flows that moved it.
 
 A snapshot is complete for its source: on a snapshot day every open
-account of the source is written, because gold reads a source's latest
-snapshot as its whole state.
+account of the source is written, unless the findings switch silences
+it, because gold reads a source's latest snapshot as its whole state.
 """
 
 import dataclasses
@@ -39,7 +39,6 @@ class Account:
     style: str
     currency: str
     nickname: str = None
-    category: str = None
     portfolio: str = None
     opens: dt.date = None
     cash: dict = dataclasses.field(default_factory=dict)
@@ -74,10 +73,10 @@ class Book:
         self.portfolios[source] = []
         self.instrument_versions[source] = {}
 
-    def add_portfolio(self, source, pid, display_name, currency, nickname=None):
+    def add_portfolio(self, source, pid, display_name, currency):
         self.portfolios[source].append({
             "portfolio_id": pid, "display_name": display_name,
-            "base_currency": currency, "nickname": nickname})
+            "base_currency": currency, "nickname": None})
 
     def add_account(self, acct):
         if acct.id in self.accounts:
@@ -89,8 +88,8 @@ class Book:
     def account(self, aid):
         return self.accounts[aid]
 
-    def note_instrument(self, source, instrument, day):
-        """Record the instrument's catalogue version for the source."""
+    def note_instrument(self, source, instrument):
+        """Record every catalogue version of the instrument for the source."""
         inst = self.instruments[instrument]
         for version in inst["versions"]:
             key = (instrument, version["valid_from"])
@@ -100,8 +99,8 @@ class Book:
     # ---- transactions --------------------------------------------------
 
     def txn(self, aid, day, kind, amount, ccy=None, *, desc, counterparty=None,
-            provider=None, instrument=None, qty=None, price=None, memo=None,
-            check=None, payload=None, cash=True, gross=None):
+            provider=None, instrument=None, qty=None, price=None,
+            check=None, payload=None, cash=True):
         """Book one transaction; returns its row. `amount` carries the
         canonical sign (positive raises the account's balance). With
         cash=False the row moves no cash (an in-kind transfer, a split)."""
@@ -109,13 +108,13 @@ class Book:
         if not acct.is_open(day):
             raise ValueError(f"{aid}: transaction on {day} outside its open range")
         ccy = ccy or acct.currency
-        amount = cents(amount) if amount is not None else None
+        amount = cents(amount)
         seq = acct.seq.get(day, 0) + 1
         acct.seq[day] = seq
-        if cash and amount is not None:
+        if cash:
             acct.cash[ccy] = acct.cash.get(ccy, ZERO) + amount
         if instrument:
-            self.note_instrument(acct.source, instrument, day)
+            self.note_instrument(acct.source, instrument)
         tid = f"{aid}-{day:%Y%m%d}-{seq:03d}"
         row = {
             "transaction_id": tid,
@@ -124,12 +123,12 @@ class Book:
             "instrument_id": instrument,
             "kind": kind,
             "currency": ccy,
-            "gross_amount": text(gross if gross is not None else amount) if amount is not None else None,
-            "net_amount": text(amount) if amount is not None else None,
+            "gross_amount": text(amount),
+            "net_amount": text(amount),
             "quantity": text(qty, 8) if qty is not None else None,
             "price": text(price, 8) if price is not None else None,
             "description": desc,
-            "memo": memo,
+            "memo": None,
             "counterparty": counterparty,
             "provider_category": provider,
             "check_number": check,
@@ -156,7 +155,7 @@ class Book:
             acct.holdings[instrument] = h
         h.qty = q8(h.qty + qty)
         h.book = q4(h.book + cost)
-        self.note_instrument(acct.source, instrument, day)
+        self.note_instrument(acct.source, instrument)
         return h
 
     def remove_units(self, aid, instrument, qty):
@@ -181,8 +180,14 @@ class Book:
         h.value = q4(value)
         if book is not None:
             h.book = q4(book)
-        self.note_instrument(acct.source, instrument, day)
+        self.note_instrument(acct.source, instrument)
         return h
+
+    def holding_value(self, h):
+        """A holding's value at today's price, at working precision."""
+        if h.qty is None:
+            return h.value
+        return market_value(self.instruments[h.instrument], h.qty, self.market.price(h.instrument))
 
     # ---- snapshots -----------------------------------------------------
 
@@ -201,7 +206,10 @@ class Book:
         for key in sorted(acct.holdings):
             h = acct.holdings[key]
             inst = self.instruments[h.instrument]
-            value, accrued = self._value(h, inst, day)
+            coupon = inst.get("coupon")
+            # A bond's accrued interest runs from its last coupon date.
+            accrued = q4(mul(h.qty, D(coupon["rate"]), accrual_fraction(coupon, day))) if coupon else None
+            value = q4(self.holding_value(h))
             rows["positions"].append({
                 "snapshot_at": at,
                 "account_id": acct.id,
@@ -222,17 +230,17 @@ class Book:
                 "balance_kind": "closing", "amount": text(acct.cash[ccy]),
             })
 
-    def _value(self, h, inst, day):
-        if h.qty is None:
-            return h.value, None
-        price = self.market.price(h.instrument)
-        coupon = inst.get("coupon")
-        if coupon:
-            # A bond's quantity is its face amount and its price is quoted
-            # per 100 of face; accrued interest runs from the last coupon.
-            value = q4(mul(h.qty, price) / 100)
-            return value, q4(mul(h.qty, D(coupon["rate"]), accrual_fraction(coupon, day)))
-        return q4(mul(h.qty, price)), None
+
+def unit_price(inst, price):
+    """The price of one unit of quantity. A bond's quantity is its face
+    amount and its price is quoted per 100 of face."""
+    return price / 100 if inst.get("coupon") else price
+
+
+def market_value(inst, qty, price):
+    """Quantity times price at working precision, a bond's per 100 of face."""
+    value = mul(qty, price)
+    return value / 100 if inst.get("coupon") else value
 
 
 def accrual_fraction(coupon, day):

@@ -1,9 +1,10 @@
 """Keyed randomness.
 
 Every stochastic choice draws from a generator seeded by a hash of
-(seed, stream, keys) — never from one sequential generator. A day's
-draws therefore depend only on the seed and on that day, so appending
-days at the end cannot perturb any earlier day. Python's built-in
+(seed, stream, keys) — never from one sequential generator. A draw
+therefore depends only on the seed, the stream and the draw's own keys
+(a day, an account, a month), so appending days at the end cannot
+perturb any earlier day. Python's built-in
 hash() is salted per process and is never used.
 
 Normal variates come from an inverse-CDF approximation evaluated in

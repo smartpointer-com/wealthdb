@@ -623,7 +623,7 @@ restated here.
 | [`fred`](fred/) | FRED / US Fed H.10 (historic FX rates) | API key | host venv |
 
 One silver kind has no collector. `synthetic` is written by a generator,
-not downloaded: [`demo/generate.py`](../demo/) writes the demo household
+not downloaded: [`demo/generate.py`](../demo/generate.py) writes the demo household
 in it, and tests build fixtures with it
 ([`synthetic.md`](../wealthdb/docs/adapters/synthetic.md)).
 

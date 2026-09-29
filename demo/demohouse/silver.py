@@ -16,10 +16,9 @@ builds from the same inputs are byte-identical files.
 import pathlib
 import sqlite3
 
-from . import GENERATOR_VERSION, dates
+from . import dates
+from .spec import SCHEMA_PATH
 
-SCHEMA_PATH = (pathlib.Path(__file__).resolve().parents[2]
-               / "wealthdb" / "internal" / "silver" / "synthetic" / "testdata" / "silver_schema.sql")
 SCHEMA_VERSION = "1"
 
 _TABLES = {
@@ -40,8 +39,12 @@ _TABLES = {
                      "provider_category", "check_number", "payload"),
 }
 
+# The tables of dated facts. The rest are dimensions, which an append
+# re-sends whole and the file keeps once.
+FACT_TABLES = ("positions", "cash_balances", "fx_rates", "transactions")
+
 # The meta keys an append run requires to match before it may extend a file.
-IDENTITY_KEYS = ("schema_version", "generator_version", "seed", "spec_hash", "catalogue_hash", "findings")
+IDENTITY_KEYS = ("schema_version", "generator_hash", "seed", "spec_hash", "catalogue_hash", "findings")
 
 
 class AppendRefused(Exception):
@@ -51,7 +54,7 @@ class AppendRefused(Exception):
 def identity(inputs, seed, findings):
     return {
         "schema_version": SCHEMA_VERSION,
-        "generator_version": GENERATOR_VERSION,
+        "generator_hash": inputs.code_hash,
         "seed": seed,
         "spec_hash": inputs.spec_hash,
         "catalogue_hash": inputs.catalogue_hash,
@@ -62,7 +65,7 @@ def identity(inputs, seed, findings):
 def source_rows(sim, source, as_of):
     """Every silver row of `source` dated on or before as_of, per table."""
     book = sim.book
-    end = dates.epoch(as_of) + dates.DAY - 1
+    end = _day_end(as_of)
     accounts = [a for a in book.sources[source]["accounts"] if a.opens <= as_of]
     portfolios = {a.portfolio for a in accounts if a.portfolio}
     rows = {
@@ -70,7 +73,7 @@ def source_rows(sim, source, as_of):
                        if p["portfolio_id"] in portfolios],
         "accounts": [{
             "account_id": a.id, "account_kind": a.kind, "display_name": a.display_name,
-            "base_currency": a.currency, "nickname": a.nickname, "account_category": a.category,
+            "base_currency": a.currency, "nickname": a.nickname, "account_category": None,
             "tax_wrapper": a.tax_wrapper, "management_style": a.style, "portfolio_id": a.portfolio,
             "payload": "{}"} for a in accounts],
         "instruments": [dict(v, payload="{}") for (_, valid_from), v in
@@ -86,6 +89,10 @@ def source_rows(sim, source, as_of):
     return rows
 
 
+def _day_end(day):
+    return dates.epoch(day) + dates.DAY - 1
+
+
 def _time_of(table, row):
     if table in ("positions", "cash_balances", "fx_rates"):
         return row["snapshot_at"]
@@ -95,9 +102,21 @@ def _time_of(table, row):
 
 
 def _insert(con, table, rows):
+    """Insert rows. A fact whose key is already taken fails the run; a
+    dimension row already in the file is kept as it is."""
     cols = _TABLES[table]
-    sql = f"INSERT OR IGNORE INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
+    verb = "INSERT" if table in FACT_TABLES else "INSERT OR IGNORE"
+    sql = f"{verb} INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
     con.executemany(sql, [tuple(r.get(c) for c in cols) for r in rows])
+
+
+def _insert_run(con, change_number, start, end, as_of):
+    con.execute("INSERT INTO dump_runs (change_number, window_start, window_end, as_of) VALUES (?, ?, ?, ?)",
+                (change_number, start, end, as_of.isoformat()))
+
+
+def _count(rows):
+    return sum(len(rows[t]) for t in FACT_TABLES)
 
 
 def _span(rows):
@@ -106,31 +125,36 @@ def _span(rows):
 
 
 def write_full(path, rows, meta, history_floor, as_of):
-    """A fresh file holding `rows` as one dump run."""
+    """A fresh file holding `rows` as one dump run. Returns the number of
+    fact rows written."""
     path = pathlib.Path(path)
-    if path.exists():
-        path.unlink()
+    path.unlink(missing_ok=True)
     lo, _ = _span(rows)
     start = lo if lo is not None else history_floor
-    end = dates.epoch(as_of) + dates.DAY - 1
     con = sqlite3.connect(path, isolation_level=None)
     try:
         con.execute("PRAGMA journal_mode=DELETE")
         con.executescript(SCHEMA_PATH.read_text())
         con.execute("BEGIN")
         _insert_meta(con, dict(meta, as_of=as_of.isoformat()))
-        con.execute("INSERT INTO dump_runs (change_number, window_start, window_end, as_of) VALUES (?, ?, ?, ?)",
-                    (dates.epoch(as_of), start, end, as_of.isoformat()))
+        _insert_run(con, dates.epoch(as_of), start, _day_end(as_of), as_of)
         for table in _TABLES:
             _insert(con, table, rows[table])
         con.execute("COMMIT")
     finally:
         con.close()
+    return _count(rows)
+
+
+def _read_only(path):
+    # as_uri() percent-encodes '#', '?' and '%', which a raw path in a
+    # file: URI would read as the URI's own syntax.
+    return sqlite3.connect(pathlib.Path(path).resolve().as_uri() + "?mode=ro", uri=True)
 
 
 def recorded(path):
     """The meta of an existing file, as a dict."""
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = _read_only(path)
     try:
         return dict(con.execute("SELECT key, value FROM meta").fetchall())
     finally:
@@ -143,6 +167,9 @@ def check_append(path, meta, as_of):
     if not pathlib.Path(path).exists():
         raise AppendRefused(f"{path}: no silver file to append to; run a full build first")
     have = recorded(path)
+    if have.get("findings") == "1":
+        raise AppendRefused(f"{path}: the files hold a findings build, a one-off picture that cannot be "
+                            "appended to; run a full build")
     for key in IDENTITY_KEYS:
         if have.get(key) != meta[key]:
             raise AppendRefused(
@@ -156,22 +183,22 @@ def check_append(path, meta, as_of):
 
 def append(path, rows, meta, prev_as_of, as_of):
     """Add the rows dated after prev_as_of, and the dimensions they bring."""
-    after = dates.epoch(prev_as_of) + dates.DAY
-    end = dates.epoch(as_of) + dates.DAY - 1
+    if as_of <= prev_as_of:
+        raise AppendRefused(f"{path}: already at {prev_as_of}; nothing after it to add up to {as_of}")
+    after = _day_end(prev_as_of) + 1
     new = {table: [r for r in rs if (t := _time_of(table, r)) is None or t >= after]
            for table, rs in rows.items()}
     con = sqlite3.connect(path, isolation_level=None)
     try:
         con.execute("BEGIN")
-        con.execute("INSERT INTO dump_runs (change_number, window_start, window_end, as_of) VALUES (?, ?, ?, ?)",
-                    (dates.epoch(as_of), after, end, as_of.isoformat()))
+        _insert_run(con, dates.epoch(as_of), after, _day_end(as_of), as_of)
         for table in _TABLES:
             _insert(con, table, new[table])
         con.execute("UPDATE meta SET value = ? WHERE key = 'as_of'", (as_of.isoformat(),))
         con.execute("COMMIT")
     finally:
         con.close()
-    return sum(len(v) for t, v in new.items() if t in ("positions", "cash_balances", "fx_rates", "transactions"))
+    return _count(new)
 
 
 def _insert_meta(con, meta):
@@ -180,7 +207,7 @@ def _insert_meta(con, meta):
 
 def table_rows(path):
     """Every row of every data table, for comparing two files' content."""
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = _read_only(path)
     try:
         return {t: con.execute(f"SELECT {', '.join(cols)} FROM {t} ORDER BY {', '.join(cols)}").fetchall()
                 for t, cols in _TABLES.items()}

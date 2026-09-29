@@ -1,7 +1,5 @@
 {
-  "comment": "The Harlow household: invented people, institutions and amounts. Every figure is USD unless it says otherwise. See demo/README.md for what each block drives.",
-  "spec_version": 1,
-  "household": {"surname": "Harlow", "adults": ["Sam", "Priya"], "children": 2},
+  "comment": "The Harlow household: invented people, institutions and amounts. Every figure is USD unless it says otherwise. The simulation in demohouse/household.py reads each block.",
   "calendar": {"history_start": "2023-07-01", "fx_lead_days": 30},
   "fx": {"start_usd_per": {"EUR": "1.0870", "GBP": "1.2690", "CHF": "1.1180"}},
 
@@ -58,9 +56,9 @@
   "declared": {"kids-savings": {"account_kind": "cash", "tax_wrapper": "taxable_joint", "nickname": "Kids' savings", "currency": "USD"}},
 
   "payroll": [
-    {"earner": "Sam", "payer": "lattivane", "account": "bc-chk-01", "schedule": "semi_monthly", "net_2024": "4879.17", "raise": "0.03", "provider": true,
+    {"payer": "lattivane", "account": "bc-chk-01", "schedule": "semi_monthly", "net_2024": "4879.17", "raise": "0.03", "provider": true,
      "bonus": {"month": 3, "day": 15, "net_2024": "12400.00"}},
-    {"earner": "Priya", "payer": "stillcrest", "account": "bc-chk-01", "schedule": "monthly", "net_2024": "5908.33", "raise": "0.025", "provider": false}
+    {"payer": "stillcrest", "account": "bc-chk-01", "schedule": "monthly", "net_2024": "5908.33", "raise": "0.025", "provider": false}
   ],
   "plan_contributions": [
     {"account": "tb-401k-01", "payer": "lattivane", "instrument": "tdf2050", "employee": "1254.17", "match": "501.67"},
@@ -80,7 +78,7 @@
   "mortgage": {"loan": "bc-loan-01", "funding": "bc-chk-01", "principal": "608000.00", "rate": "0.0325", "term_months": 360,
                "first_payment": "2019-08-01", "pay_day": 1},
   "sweep": {"checking": "bc-chk-01", "savings": "bc-sav-01", "days": [2, 16], "floor": "5000.00", "target": "12000.00", "ceiling": "16000.00"},
-  "declared_transfer": {"to": "kids-savings", "from": "bc-chk-01", "day": 8, "amount": "200.00", "descriptor": "ONLINE TRANSFER THIMBLEWOOD SAVINGS"},
+  "declared_transfer": {"from": "bc-chk-01", "day": 8, "amount": "200.00", "descriptor": "ONLINE TRANSFER THIMBLEWOOD SAVINGS"},
 
   "bills": [
     {"merchant": "fernhollow-kids", "account": "bc-chk-01", "day": 3, "amount": "1200.00", "months": [1, 2, 3, 4, 5, 6, 9, 10, 11, 12]},
@@ -151,7 +149,7 @@
                   "stock_every_months": [1, 4, 7, 10], "stock_amount": "1500.00",
                   "stock_rotation": ["tvsd", "qlmr", "bkwf", "vlcp", "mrfk"],
                   "rebalance": {"month": 6, "weekday": 0, "week": 2, "sell": "ortm", "fraction": "0.08", "buy": "orab"},
-                  "tax_loss": {"month": 12, "day": 12, "fallback": "ordg", "fallback_fraction": "0.05"}},
+                  "tax_loss": {"month": 12, "day": 12, "fraction": "0.5", "fallback": "ordg", "fallback_fraction": "0.05"}},
     "roth": [{"account": "qv-roth-01", "from": "bc-sav-01", "month": 1, "day": 15, "amount": "7000.00", "first_year": 2024, "split": {"ortm": "0.7", "orie": "0.3"}},
              {"account": "qv-roth-02", "from": "bc-sav-01", "month": 1, "day": 15, "amount": "7000.00", "first_year": 2024, "split": {"ortm": "0.7", "orie": "0.3"}}],
     "plan_529": {"account": "qv-529-01", "from": "bc-chk-01", "day": 10, "amount": "600.00", "instrument": "age529"},
@@ -164,7 +162,7 @@
                           "rhwc": "0.07", "csnr": "0.05", "sbmr32": "0.08", "rtbw": "0.12", "thbr": "0.08"}},
 
   "private": {
-    "fund": {"account": "ew-inv-01", "instrument": "fund-ii", "from": "bc-sav-01", "commitment": "100000.00",
+    "fund": {"account": "ew-inv-01", "instrument": "fund-ii", "from": "bc-sav-01",
              "calls": [{"date": "2025-01-15", "amount": "25000.00"}, {"date": "2025-06-16", "amount": "25000.00"},
                        {"date": "2025-11-17", "amount": "25000.00"}, {"date": "2026-04-15", "amount": "25000.00"}],
              "distributions": [{"date": "2026-03-16", "amount": "18000.00"}],
@@ -190,9 +188,9 @@
                                {"date": "2027-01-15", "value": "921000.00"}]},
 
   "one_offs": [
-    {"date": "2025-02-14", "merchant": "kitchenfield", "account": "bc-card-01", "amount": "2149.00", "note": "appliance, year 2"},
+    {"date": "2025-02-14", "merchant": "kitchenfield", "account": "bc-card-01", "amount": "2149.00"},
     {"date": "2024-02-20", "account": "bc-chk-01", "amount": "2000.00", "descriptor": "INTL WIRE TRANSFER OUT REF 7741", "pin": "gift", "note": "family support transfer"},
-    {"date": "2025-05-09", "account": "bc-chk-01", "amount": "480.00", "descriptor": "CHECK 1043", "check": "1043", "pin": "GENERAL_SERVICES_EDUCATION", "note": "tutoring, paid by cheque"}
+    {"date": "2025-05-09", "account": "bc-chk-01", "amount": "480.00", "descriptor": "PAPER CHEQUE 5317 PAID", "check": "5317", "pin": "GENERAL_SERVICES_EDUCATION", "note": "tutoring, paid by cheque"}
   ],
 
   "atm": {"account": "bc-chk-01", "branch": "BRINDLECOVE 4TH ST", "fee": "3.00", "fee_chance": "0.18", "fee_network": "QUICKCASH NETWORK"},

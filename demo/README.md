@@ -1,17 +1,17 @@
 # Demo household
 
 An invented household that shows every wealthdb report and dashboard.
-A generator simulates three years of one family's money, day by day,
-and writes it as silver sources of the `synthetic` kind. The ordinary
-`wealthdb init` and `wealthdb load -a` then build gold from those
-sources, so every enrichment runs for real: spending and income
-verdicts, transfer pairing, the cash-flow boundary, returns.
+A generator simulates one family's money day by day, from mid-2023 to
+the as-of date, and writes it as silver sources of the `synthetic`
+kind. The ordinary `wealthdb init` and `wealthdb load -a` then build
+gold from those sources, so every enrichment runs for real: spending
+and income verdicts, transfer pairing, the cash-flow boundary, returns.
 
 Nothing in it comes from real data. Every person, institution,
-merchant, company, fund and ticker is invented, and each name was
-checked against a web search or public registries so none belongs to
-a real business. The two coins keep their real tickers, because they
-name an asset class rather than a holding.
+merchant, company, fund and ticker is invented. No name belongs to a
+real business, as far as web searches and public registries show. The
+two coins keep their real tickers, because they name an asset class
+rather than a holding.
 
 ## Try it
 
@@ -23,15 +23,25 @@ make demo-web-stop        # stop the demo's dashboards
 ```
 
 `make demo` takes `WEALTHDB_DEMO_ROOT=` (default `~/wealthdb-demo`),
-`AS_OF=YYYY-MM-DD` (default today), `SEED=` and `FINDINGS=1` (below).
-The dashboards' admin password is in `web/admin-password.txt` under the
-demo root.
+`AS_OF=YYYY-MM-DD` (default today, UTC), `SEED=` and `FINDINGS=1`
+(below). `make demo-roll` takes the same root and seed as the build it
+extends. The dashboards' admin password is in `web/admin-password.txt`
+under the demo root. The demo shares the engine and dashboard images
+with a real setup: its make targets build them from the checkout, as
+`make all` does.
 
 The engine reads the demo when its data root and config dir both point
-at the demo root:
+at the demo root. The web settings point `demo web …` at the demo's
+own container, data dir and secrets file, as the make targets do:
 
 ```sh
-demo() { WEALTHDB_DATA_ROOT=~/wealthdb-demo XDG_CONFIG_HOME=~/wealthdb-demo wealthdb "$@"; }
+demo() {
+  WEALTHDB_DATA_ROOT=~/wealthdb-demo XDG_CONFIG_HOME=~/wealthdb-demo \
+  WEALTHDB_CONFIG=~/wealthdb-demo/wealthdb.cfg \
+  WEALTHDB_WEB_CONTAINER=wealthdb-metabase-demo \
+  WEALTHDB_WEB_DATA_DIR=~/wealthdb-demo/web WEALTHDB_WEB_ENV_FILE=~/wealthdb-demo/web.env \
+  wealthdb "$@"
+}
 
 demo -r status
 demo -r holdings accounts
@@ -74,31 +84,38 @@ yearly wire across currencies.
 
 ## How it is built
 
-`demo/generate.py` reads `demo/household.json` (the persona: accounts,
-amounts, schedules, dated events) and `demo/catalogue/` (merchants,
-instruments, payers). It reads nothing else: no environment, no real
+`demo/generate.py` reads `demo/household.json` (the household's accounts,
+amounts, schedules, dated events), `demo/catalogue/` (merchants,
+instruments, payers) and the `synthetic` kind's schema file in the
+engine's source tree. It reads nothing else: no environment, no real
 config, no network. The code is in `demo/demohouse/`:
 
 | Module | Does |
 | --- | --- |
-| `keyed.py` | randomness keyed by (seed, stream, day), so adding days never changes an earlier day |
+| `spec.py` | loads the spec and the catalogue, and hashes them and the generator's code |
+| `keyed.py` | randomness keyed by (seed, stream, the draw's own keys), so adding days never changes an earlier day |
 | `market.py` | four price factors (stocks, bonds, gold, crypto), instrument prices, exchange rates |
 | `book.py` | the ledger: every balance is the running sum of its transactions |
 | `household.py` | the day-by-day simulation |
 | `silver.py` | writes a full build, or appends the new days to an earlier one |
 | `config.py` | renders `wealthdb.cfg` and the ledger CSVs |
+| `dates.py`, `money.py` | the calendar and timestamps, and Decimal rounding and formats |
 
 The demo root then holds `silver/<source>.db`, `wealthdb.cfg` (every
 path in it relative to the root), `overrides/*.csv`, the gold file and
-a `.wealthdb-demo` marker. The generator refuses a root that holds
-wealthdb files without the marker, and `make demo` deletes a gold file
-only beside it.
+a `.wealthdb-demo` marker. The generator writes only into a root that
+is new, empty or marked. The web targets run only against a marked
+root.
+
+A full build also removes the root's gold file. Each run's change
+number is its as-of date. A rebuild at the same as-of carries the
+change number the old gold already read, so that gold would skip it.
+A rebuild at an earlier as-of would read as silver going backwards.
 
 **Determinism.** Two builds with the same inputs, seed and as-of are
-byte-identical. The default seed is `harlow-19`: the first of `harlow`,
-`harlow-2`, … whose simulated market lands within half a standard
-deviation of the model's median, with no instrument below half its
-starting value and the crypto account not down since it opened.
+byte-identical. The default seed is `harlow-19`, whose market looks
+ordinary: no crash, no boom, no instrument below half its starting
+value.
 
 **Appending.** `--append` replays the whole history in memory and adds
 only the rows dated after the as-of the files already reached. Each
@@ -121,7 +138,7 @@ diagnostic surfaces:
   sits in `Unpaired transfers`;
 - one month missing from the multi-currency account's statements, so
   coverage shows a gap;
-- the venture fund's marks stop 45 days before as-of, so Data
+- the venture account's snapshots stop 45 days before as-of, so Data
   Freshness shows a stale source.
 
 A findings build is a one-off picture: it cannot be appended to.
@@ -134,10 +151,15 @@ A findings build is a one-off picture: it cannot be appended to.
   source). It then loads the household's first months through the
   engine image in a scratch root under the cache dir.
 - `demo/check_dashboards.py` runs every card of every dashboard of a
-  running demo Metabase through its API: each time window, each source,
-  each currency and grain picker. It uses a temporary API key, so no
-  filter values stay behind for the admin's next visit.
+  running demo Metabase through its API. It covers each time window,
+  each source, three currencies (USD, CHF, EUR), and the investing
+  grain, section, start year and as-of pickers. It uses a temporary API
+  key, so no filter values stay behind on the admin account. Its
+  defaults are the demo's port and `~/wealthdb-demo`. Another root
+  needs `--password-file`.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
   symbols, ISINs, counterparties, descriptions, signatures, and
-  (date, amount) pairs. It prints counts and values only.
+  (date, amount) pairs. It prints counts and values only, at most N
+  values per field with `--show N`. It needs the `duckdb` command-line
+  tool on PATH.

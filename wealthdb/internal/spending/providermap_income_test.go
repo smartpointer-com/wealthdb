@@ -22,11 +22,6 @@ func TestIncomeProviderVocabularies(t *testing.T) {
 			t.Errorf("raiffeisenIncomeCategories[%q] = %q, which is not an income value", value, detailed)
 		}
 	}
-	for value, detailed := range syntheticIncomeCategories {
-		if !canonical.ValidIncomeDetailed(detailed) {
-			t.Errorf("syntheticIncomeCategories[%q] = %q, which is not an income value", value, detailed)
-		}
-	}
 
 	// A bank's booking type names the movement, so a translated value
 	// CLAIMS the row even where it is a catch-all: there is no

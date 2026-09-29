@@ -1,5 +1,5 @@
 {
-  "comment": "Every merchant here is invented and was checked against a web search or public business registries so none is a real brand. category is the spend taxonomy value the synthetic provider files the row under; provider false means the provider files nothing and a config rule places the row. descriptor is the statement text; {n} becomes a store number. median and spread shape a purchase's amount (lognormal); weight picks the merchant within its bucket.",
+  "comment": "Every merchant here is invented. No name is a real brand, as far as web searches and public business registries show. category is the spend taxonomy value the synthetic provider files the row under; provider false means the provider files nothing and a config rule places the row. descriptor is the statement text; {n} becomes a store number. mean and spread shape a purchase's amount (the mean times a mean-one lognormal jitter); weight picks the merchant within its bucket.",
   "merchants": [
     {
       "id": "bramblecourt",
@@ -101,10 +101,10 @@
       "bucket": "abroad-eur",
       "weight": 3,
       "category": "FOOD_AND_DRINK_RESTAURANT",
-      "median": "46.00",
+      "mean": "46.00",
       "spread": "0.4"
     },
-    {"id": "vaudrenne", "name": "Cafe Vaudrenne", "descriptor": "CARD CAFE VAUDRENNE", "bucket": "abroad-eur", "weight": 3, "category": "FOOD_AND_DRINK_COFFEE", "median": "12.50", "spread": "0.4"},
+    {"id": "vaudrenne", "name": "Cafe Vaudrenne", "descriptor": "CARD CAFE VAUDRENNE", "bucket": "abroad-eur", "weight": 3, "category": "FOOD_AND_DRINK_COFFEE", "mean": "12.50", "spread": "0.4"},
     {
       "id": "kranzlgrund",
       "name": "Baeckerei Kranzlgrund",
@@ -112,7 +112,7 @@
       "bucket": "abroad-eur",
       "weight": 2,
       "category": "FOOD_AND_DRINK_GROCERIES",
-      "median": "9.80",
+      "mean": "9.80",
       "spread": "0.4"
     },
     {
@@ -122,7 +122,7 @@
       "bucket": "abroad-gbp",
       "weight": 3,
       "category": "FOOD_AND_DRINK_RESTAURANT",
-      "median": "38.00",
+      "mean": "38.00",
       "spread": "0.35"
     },
     {
@@ -132,7 +132,7 @@
       "bucket": "abroad-gbp",
       "weight": 1,
       "category": "GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS",
-      "median": "24.00",
+      "mean": "24.00",
       "spread": "0.4"
     }
   ]
