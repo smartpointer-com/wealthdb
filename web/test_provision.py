@@ -1313,6 +1313,21 @@ for _name, (_sql, _cols) in sorted(_PCT_CARDS.items()):
         check(f"'{_name}'.{_col} is a fraction, not already a percentage",
               not _scaled, _sql[:300])
 
+# The declared accounts' reserved source has no feed and no snapshot, so
+# its latest snapshot reads as the epoch. Every freshness card leaves it
+# out, or the stalest source would be that non-feed every day. Checked
+# against the engine's own constant, read off disk.
+_types_go = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wealthdb",
+                              "internal", "canonical", "types.go")).read()
+check("DECLARED_SOURCE matches canonical.DeclaredSourceID",
+      f'const DeclaredSourceID = "{p.DECLARED_SOURCE}"' in _types_go)
+_declared_out = ["!=", ["field", "silver_source_id", {"base-type": "type/Text"}], p.DECLARED_SOURCE]
+_FRESH = {**{n: _QDEFS[n] for n in ("Stalest source (days)", "Source freshness")},
+          "Source freshness (privacy)": _PDEFS["Source freshness (privacy)"]}
+for _name, _tup in _FRESH.items():
+    _q = _tup[-2]["query"]
+    check(f"'{_name}' leaves the declared source out", _q.get("filter") == _declared_out, _q.get("filter"))
+
 if FAILS:
     print(f"provision tests: {FAILS} failed")
 else:

@@ -636,6 +636,10 @@ RETIRED_DASHBOARD_NAMES = ["Net Worth"]
 # listed here show no monetary values (percentages, indices, source
 # names), so the twin reuses them as-is. The returns scalars and charts
 # are all percentage/index-only; only the by-source table carries money.
+# The reserved source id declared accounts carry in gold
+# (canonical.DeclaredSourceID in the engine).
+DECLARED_SOURCE = "declared"
+
 PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
                         "Return (TWR)", "Return (MWR)", "Annualized return (TWR)",
                         "Cumulative return (log scale)", "Monthly returns (TWR)",
@@ -1127,6 +1131,12 @@ def question_defs(db_id, mid):
     month = _f("occurred_at", "type/DateTime", "month")
     days_stale = ["datetime-diff", _f("snapshot_at", "type/DateTime"),
                   ["now"], "day"]
+    # The declared accounts (config `declared_accounts`) sit under their
+    # own reserved source, which has no feed and so no snapshot: its
+    # latest snapshot reads as the epoch, and counted here it would be
+    # the stalest source every day. Freshness is about feeds, so it is
+    # left out.
+    fed_sources = ["!=", _f("silver_source_id", "type/Text"), DECLARED_SOURCE]
     twr = _f("twr", "type/Float")
     return {
         "Net worth — monthly trend (USD)": ("smartscalar",
@@ -1820,6 +1830,7 @@ def question_defs(db_id, mid):
             "date the worst feed is.",
             _mbql(db_id, mid["report_sources_latest"],
                   {"expressions": {"days_stale": days_stale},
+                   "filter": fed_sources,
                    "aggregation": [["max", ["expression", "days_stale"]]]}),
             {}),
         "Returns age (days)": ("scalar",
@@ -1841,6 +1852,7 @@ def question_defs(db_id, mid):
             "riding on it (USD).",
             _mbql(db_id, mid["report_sources_latest"],
                   {"expressions": {"days_stale": days_stale},
+                   "filter": fed_sources,
                    "fields": [_f("silver_source_id", "type/Text"),
                               _f("snapshot_at", "type/DateTime"),
                               ["expression", "days_stale"],
