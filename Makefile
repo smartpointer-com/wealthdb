@@ -17,6 +17,10 @@
 #   make install          symlink wealthdb + wealthdb-collect into ~/.local/bin,
 #                         and install the git hooks (make hooks)
 #   make hooks            run `make lint` before every commit (.githooks/)
+#   make demo             build the synthetic demo household into WEALTHDB_DEMO_ROOT
+#   make demo-roll        append the days since the last demo build, load them
+#   make demo-web         serve the demo's dashboards (own container and port)
+#   make test-demo        test the demo generator, and load a short demo through the engine
 #
 # A collector with a Docker wrapper (collectors/<name>/<name>) builds via
 # `<wrapper> build` and tests with pytest inside the container; a host-venv
@@ -58,13 +62,14 @@ PYTHON := $(or \
         clean cleanall clean-wealthdb cleanall-wealthdb \
         clean-collectors cleanall-collectors base-images \
         update update-venvs update-wealthdb update-bases \
-        lint lint-go lint-python cleanall-lint
+        lint lint-go lint-python cleanall-lint \
+        demo demo-roll demo-web demo-web-stop test-demo
 
 # ---- aggregates --------------------------------------------------------
 
 all: build-wealthdb build-web build-collectors
 build: all
-test: test-wealthdb test-web test-collectors test-collectorkit test-wrappers
+test: test-wealthdb test-web test-collectors test-collectorkit test-wrappers test-demo
 
 # ---- install -----------------------------------------------------------
 # Symlink the two top-level entry points onto PATH so they work from any
@@ -236,6 +241,63 @@ cleanall-wealthdb: clean-wealthdb
 	@docker image rm -f wealthdb:latest >/dev/null 2>&1 || true
 	@chmod -R u+w $(GO_TEST_CACHE) 2>/dev/null || true
 	@rm -rf $(GO_TEST_CACHE)
+
+# ---- demo household ----------------------------------------------------
+# A fully synthetic household, built through the real load path, for
+# trying wealthdb without a bank (demo/README.md). Everything lives under
+# WEALTHDB_DEMO_ROOT: the engine is pointed at that directory as its data
+# root and its config dir, so it sees nothing else, and the demo's
+# Metabase runs as its own container on the port its config names.
+#
+#   make demo [WEALTHDB_DEMO_ROOT=~/wealthdb-demo] [AS_OF=YYYY-MM-DD] [SEED=…] [FINDINGS=1]
+#
+# `demo` rebuilds silver and gold from scratch; `demo-roll` appends the
+# days since the last build to silver and loads only those. The generator
+# refuses a root that holds wealthdb files without its demo marker, so
+# the gold removed below can only ever be a demo's.
+WEALTHDB_DEMO_ROOT ?= $(HOME)/wealthdb-demo
+AS_OF    ?=
+SEED     ?= harlow-19
+FINDINGS ?=
+DEMO_ENV := WEALTHDB_DATA_ROOT="$(WEALTHDB_DEMO_ROOT)" XDG_CONFIG_HOME="$(WEALTHDB_DEMO_ROOT)"
+DEMO_ENGINE := $(DEMO_ENV) $(WEALTHDB) -c "$(WEALTHDB_DEMO_ROOT)/wealthdb.cfg"
+DEMO_WEB := $(DEMO_ENV) WEALTHDB_CONFIG="$(WEALTHDB_DEMO_ROOT)/wealthdb.cfg" \
+            WEALTHDB_WEB_CONTAINER=wealthdb-metabase-demo \
+            WEALTHDB_WEB_DATA_DIR="$(WEALTHDB_DEMO_ROOT)/web" \
+            WEALTHDB_WEB_ENV_FILE="$(WEALTHDB_DEMO_ROOT)/web.env" $(WEALTHDB) web
+DEMO_GEN_ARGS = --root "$(WEALTHDB_DEMO_ROOT)" --seed "$(SEED)" $(if $(AS_OF),--as-of $(AS_OF))
+
+demo: build-wealthdb
+	@echo "==> generate the demo household into $(WEALTHDB_DEMO_ROOT)"
+	@$(PYTHON) demo/generate.py $(DEMO_GEN_ARGS) $(if $(FINDINGS),--with-findings)
+	@test -f "$(WEALTHDB_DEMO_ROOT)/.wealthdb-demo" && \
+		rm -f "$(WEALTHDB_DEMO_ROOT)/wealthdb.db" "$(WEALTHDB_DEMO_ROOT)/wealthdb.db.wal"
+	@$(DEMO_ENGINE) init
+	@$(DEMO_ENGINE) load -a
+
+demo-roll:
+	@echo "==> append the days since the last demo build"
+	@$(PYTHON) demo/generate.py $(DEMO_GEN_ARGS) --append
+	@$(DEMO_ENGINE) load -a
+
+# `web refresh` re-materializes returns and re-snapshots gold (restarting
+# the container when it runs); `web start` then brings it up if it does not.
+demo-web:
+	@$(DEMO_WEB) refresh
+	@$(DEMO_WEB) status | grep -q '^web: running' || $(DEMO_WEB) start
+
+demo-web-stop:
+	@$(DEMO_WEB) stop
+
+# The generator's own suite (stdlib unittest), then a short demo loaded
+# through the engine image in a scratch root under the cache dir — a
+# directory Docker can see, holding nothing but the demo.
+DEMO_TEST_ROOT := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/demo-test
+
+test-demo: build-wealthdb
+	@echo "==> test demo (generator, then a short household through the engine)"
+	@WEALTHDB_DEMO_TEST_ROOT="$(DEMO_TEST_ROOT)" WEALTHDB_BIN="$(abspath $(WEALTHDB))" \
+		$(PYTHON) -m unittest discover -s demo/tests -t demo
 
 # ---- web (optional Metabase BI server) --------------------------------
 
@@ -431,6 +493,12 @@ help:
 	@echo "  make clean              remove build artefacts (pycache, caches)"
 	@echo "  make cleanall           also remove docker images + venvs"
 	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -collectors)"
+	@echo ""
+	@echo "  make demo               build the synthetic demo household (WEALTHDB_DEMO_ROOT,"
+	@echo "                          default ~/wealthdb-demo; AS_OF=, SEED=, FINDINGS=1)"
+	@echo "  make demo-roll          append the days since the last demo build and load them"
+	@echo "  make demo-web / demo-web-stop   the demo's dashboards, own container and port"
+	@echo "  make test-demo          test the demo generator and a short demo load"
 	@echo ""
 	@echo "  make update             refresh all tooling: pip in every host venv,"
 	@echo "                          go modules in wealthdb/, shared Docker bases"

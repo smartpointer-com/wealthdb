@@ -189,13 +189,14 @@ two-factor prompts.
 
 ## How it is built
 
-Three parts, in one repository:
+Three parts, and a demo, in one repository:
 
 | Part | What it is | Runs as |
 | --- | --- | --- |
 | [`collectors/`](collectors/) | One program per source. Each logs in, downloads the raw files (bronze) and parses them into a source-shaped SQLite database (silver). | Docker, or a Python venv |
 | [`wealthdb/`](wealthdb/) | The gold engine. It reads every silver database into one canonical DuckDB store and serves the reports. | Go, in Docker |
 | [`web/`](web/) | The optional dashboards: Metabase over a read-only snapshot of gold. | Docker |
+| [`demo/`](demo/) | An invented household, generated into synthetic silver sources, for trying wealthdb without a bank. | Python, stdlib only |
 
 ```
 collectors/<source>/         wealthdb/
@@ -240,6 +241,24 @@ defaults to `~/.local/share/wealthdb`. `make` alone lists every build
 and test target. [collectors/README.md](collectors/README.md) has the
 flags all collectors share — data locations, the `--lookback` window —
 and [wealthdb/README.md](wealthdb/README.md) the engine's subcommands.
+
+## Try it without a bank
+
+A demo household shows every report and dashboard before a single
+source is set up. It is invented from end to end: a generator writes
+three years of a family's banking, investing and spending into
+synthetic sources, and the ordinary `load` builds gold from them.
+
+```sh
+make demo                         # build the demo into ~/wealthdb-demo
+make demo-web                     # its dashboards on http://127.0.0.1:3100/
+make demo-roll                    # later: add the days since the last build
+```
+
+The demo keeps to its own directory, its own gold and its own
+dashboard container, so it runs beside a real setup without touching
+it. [demo/README.md](demo/README.md) describes the household and how to
+query it from the command line.
 
 ## Documentation
 

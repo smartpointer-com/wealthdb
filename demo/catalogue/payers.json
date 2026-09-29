@@ -1,0 +1,26 @@
+{
+  "comment": "Everyone who pays the household, all invented and checked against a web search or public business registries. category is the income taxonomy value the synthetic provider files the receipt under; provider false means the provider files nothing and a config rule places it.",
+  "payers": [
+    {
+      "id": "lattivane",
+      "name": "Lattivane Systems Inc",
+      "descriptor": "PAYROLL LATTIVANE SYSTEMS INC",
+      "category": "INCOME_WAGES",
+      "plan_descriptor": "EMPLOYEE DEFERRAL LATTIVANE SYSTEMS",
+      "match_descriptor": "EMPLOYER MATCH LATTIVANE SYSTEMS",
+      "hsa_descriptor": "HSA PAYROLL CONTRIBUTION LATTIVANE SYSTEMS"
+    },
+    {
+      "id": "stillcrest",
+      "name": "Stillcrest Health Partners",
+      "descriptor": "ACH CREDIT STILLCREST HEALTH PARTNERS PAYROLL",
+      "category": "INCOME_WAGES",
+      "provider": false,
+      "plan_descriptor": "EMPLOYEE DEFERRAL STILLCREST HEALTH PARTNERS",
+      "match_descriptor": "EMPLOYER MATCH STILLCREST HEALTH PARTNERS"
+    },
+    {"id": "kindlewater-feedin", "name": "Kindlewater Energy", "descriptor": "ACH CREDIT KINDLEWATER ENERGY SOLAR CREDIT", "category": "INCOME_ENERGY_FEED_IN"},
+    {"id": "federal-refund", "name": "Federal tax refund", "descriptor": "FEDERAL TAX REFUND", "category": "INCOME_TAX_REFUND"},
+    {"id": "family-gift", "name": "Family gift", "descriptor": "INTL WIRE IN GIFT FROM FAMILY", "category": "gift"}
+  ]
+}

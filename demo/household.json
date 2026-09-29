@@ -1,0 +1,219 @@
+{
+  "comment": "The Harlow household: invented people, institutions and amounts. Every figure is USD unless it says otherwise. See demo/README.md for what each block drives.",
+  "spec_version": 1,
+  "household": {"surname": "Harlow", "adults": ["Sam", "Priya"], "children": 2},
+  "calendar": {"history_start": "2023-07-01", "fx_lead_days": 30},
+  "fx": {"start_usd_per": {"EUR": "1.0870", "GBP": "1.2690", "CHF": "1.1180"}},
+
+  "sources": [
+    {"id": "brindlecove", "institution": "Brindlecove Credit Union", "short": "BRINDLECOVE CU", "cadence": "daily", "accounts": [
+      {"id": "bc-chk-01", "tag": "CHK", "kind": "cash", "name": "Joint checking", "nickname": "Joint checking", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "12400.00"},
+      {"id": "bc-sav-01", "tag": "SAV", "kind": "cash", "name": "Joint savings", "nickname": "Joint savings", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "100000.00"},
+      {"id": "bc-card-01", "kind": "card", "name": "Rewards card", "nickname": "Rewards card", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "-3850.12"},
+      {"id": "bc-loan-01", "kind": "mortgage", "name": "Home loan", "nickname": "Home loan", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD"}
+    ]},
+    {"id": "quayvane", "institution": "Quayvane Securities", "short": "QUAYVANE SEC", "cadence": "business", "accounts": [
+      {"id": "qv-brk-01", "tag": "BRK", "kind": "brokerage", "name": "Joint brokerage", "nickname": "Joint brokerage", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "cash": "4120.55",
+       "holdings": {"ortm": "409", "orie": "759", "ordg": "422", "pwem": "594", "pwre": "495", "orab": "251", "tvsd": "73", "qlmr": "99", "bkwf": "211", "vlcp": "63", "mrfk": "139"}},
+      {"id": "qv-roth-01", "tag": "ROTH S", "kind": "brokerage", "name": "Roth IRA - Sam", "nickname": "Sam's Roth", "wrapper": "roth_ira", "style": "self_directed", "currency": "USD", "cash": "310.20",
+       "holdings": {"ortm": "119", "orie": "172"}},
+      {"id": "qv-roth-02", "tag": "ROTH P", "kind": "brokerage", "name": "Roth IRA - Priya", "nickname": "Priya's Roth", "wrapper": "roth_ira", "style": "self_directed", "currency": "USD", "cash": "205.75",
+       "holdings": {"ortm": "99", "orie": "158"}},
+      {"id": "qv-ira-01", "kind": "brokerage", "name": "Rollover IRA", "wrapper": "traditional_ira", "style": "self_directed", "currency": "USD", "cash": "95.10",
+       "holdings": {"ortm": "226", "orab": "191"}},
+      {"id": "qv-529-01", "tag": "529", "kind": "brokerage", "name": "529 college savings", "nickname": "Kids' 529", "wrapper": "529", "style": "self_directed", "currency": "USD", "cash": "40.00",
+       "holdings": {"age529": "1135"}}
+    ]},
+    {"id": "tamberlow", "institution": "Tamberlow Retirement Services", "short": "TAMBERLOW RS", "cadence": "business", "accounts": [
+      {"id": "tb-401k-01", "kind": "brokerage", "name": "401(k) - Sam", "nickname": "Sam's 401(k)", "wrapper": "401k", "style": "automated", "currency": "USD", "cash": "0.00",
+       "holdings": {"tdf2050": "4731"}},
+      {"id": "tb-401k-02", "kind": "brokerage", "name": "401(k) - Priya", "nickname": "Priya's 401(k)", "wrapper": "401k", "style": "automated", "currency": "USD", "cash": "0.00",
+       "holdings": {"tdf2055": "2307"}},
+      {"id": "tb-hsa-01", "tag": "HSA", "kind": "brokerage", "name": "Health savings account", "nickname": "HSA", "wrapper": "hsa", "style": "automated", "currency": "USD", "cash": "250.00",
+       "holdings": {"tdf2050": "324"}}
+    ]},
+    {"id": "aubervane", "institution": "Aubervane Private Wealth", "short": "AUBERVANE PW", "cadence": "business",
+     "portfolio": {"id": "av-pf-01", "name": "Discretionary mandate", "currency": "USD"},
+     "accounts": [
+      {"id": "av-brk-01", "kind": "brokerage", "name": "Mandate account", "nickname": "Mandate", "wrapper": "taxable_joint", "style": "discretionary", "currency": "USD", "portfolio": "av-pf-01",
+       "cash": {"USD": "3200.00", "EUR": "1100.00", "CHF": "900.00", "GBP": "650.00"},
+       "holdings": {"bkwf": "392", "vlcp": "210", "oxmr30": "36000", "gold": "7.4", "note27": "196", "rhwc": "336", "csnr": "105", "sbmr32": "17000", "rtbw": "98", "thbr": "2520"}}
+    ]},
+    {"id": "emberwright", "institution": "Emberwright Ventures", "short": "EMBERWRIGHT VENTURES", "cadence": "daily", "accounts": [
+      {"id": "ew-inv-01", "tag": "INVESTOR", "kind": "custody", "name": "Investor account", "nickname": "Venture investments", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "opens": "2025-01-15"}
+    ]},
+    {"id": "tessarite", "institution": "Tessarite Digital", "short": "TESSARITE DIGITAL", "cadence": "daily", "accounts": [
+      {"id": "ts-exch-01", "tag": "EXCH", "kind": "crypto_exchange", "name": "Exchange account", "nickname": "Crypto", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "opens": "2025-07-07"}
+    ]},
+    {"id": "driftwren", "institution": "Driftwren Money", "short": "DRIFTWREN MONEY", "cadence": "daily", "accounts": [
+      {"id": "dw-mc-01", "tag": "EUR", "kind": "cash", "name": "Borderless account", "nickname": "Travel money", "wrapper": "taxable_joint", "style": "self_directed", "currency": "EUR",
+       "cash": {"EUR": "6000.00", "GBP": "900.00"}}
+    ]},
+    {"id": "homestead", "institution": "Own home", "short": "HOME", "cadence": "daily", "accounts": [
+      {"id": "hs-home-01", "kind": "other", "name": "Residence", "nickname": "Home", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD"}
+    ]},
+    {"id": "fx", "institution": "Rates", "short": "RATES", "cadence": "daily", "accounts": []}
+  ],
+
+  "declared": {"kids-savings": {"account_kind": "cash", "tax_wrapper": "taxable_joint", "nickname": "Kids' savings", "currency": "USD"}},
+
+  "payroll": [
+    {"earner": "Sam", "payer": "lattivane", "account": "bc-chk-01", "schedule": "semi_monthly", "net_2024": "4879.17", "raise": "0.03", "provider": true,
+     "bonus": {"month": 3, "day": 15, "net_2024": "12400.00"}},
+    {"earner": "Priya", "payer": "stillcrest", "account": "bc-chk-01", "schedule": "monthly", "net_2024": "5908.33", "raise": "0.025", "provider": false}
+  ],
+  "plan_contributions": [
+    {"account": "tb-401k-01", "payer": "lattivane", "instrument": "tdf2050", "employee": "1254.17", "match": "501.67"},
+    {"account": "tb-401k-02", "payer": "stillcrest", "instrument": "tdf2055", "employee": "646.15", "match": "226.93"},
+    {"account": "tb-hsa-01", "payer": "lattivane", "instrument": "tdf2050", "employee": "291.67", "match": "0.00", "hsa": true}
+  ],
+  "hsa_reimbursements": {"account": "tb-hsa-01", "to": "bc-chk-01", "instrument": "tdf2050", "months": [5, 11], "day": 20,
+                         "amounts": ["612.40", "845.10", "433.75", "710.30", "566.20", "904.85", "498.60"]},
+  "savings_interest": {"account": "bc-sav-01", "apy_by_year": {"2023": "0.043", "2024": "0.041", "2025": "0.038", "2026": "0.035"}},
+  "feed_in": {"payer": "kindlewater-feedin", "account": "bc-chk-01", "day": 12,
+              "monthly": ["22.10", "31.40", "52.80", "68.30", "81.20", "88.90", "92.40", "86.10", "70.30", "49.80", "30.20", "19.60"]},
+  "tax_refund": {"payer": "federal-refund", "account": "bc-chk-01", "month": 4, "day": 22, "amount": "2650.00"},
+  "family_gift": {"payer": "family-gift", "account": "bc-chk-01", "date": "2024-11-18", "amount": "5000.00"},
+
+  "card": {"account": "bc-card-01", "funding": "bc-chk-01", "close_day": 20, "pay_day": 5, "first_statement": "2410.37",
+           "reward_rate": "0.015", "reward_months": [1, 4, 7, 10], "annual_fee": {"month": 9, "day": 22, "amount": "95.00"}},
+  "mortgage": {"loan": "bc-loan-01", "funding": "bc-chk-01", "principal": "608000.00", "rate": "0.0325", "term_months": 360,
+               "first_payment": "2019-08-01", "pay_day": 1},
+  "sweep": {"checking": "bc-chk-01", "savings": "bc-sav-01", "days": [2, 16], "floor": "5000.00", "target": "12000.00", "ceiling": "16000.00"},
+  "declared_transfer": {"to": "kids-savings", "from": "bc-chk-01", "day": 8, "amount": "200.00", "descriptor": "ONLINE TRANSFER THIMBLEWOOD SAVINGS"},
+
+  "bills": [
+    {"merchant": "fernhollow-kids", "account": "bc-chk-01", "day": 3, "amount": "1200.00", "months": [1, 2, 3, 4, 5, 6, 9, 10, 11, 12]},
+    {"merchant": "fernhollow-camp", "account": "bc-chk-01", "day": 3, "amount": "1800.00", "months": [7]},
+    {"merchant": "corvelle-hill", "account": "bc-chk-01", "day": 2, "amount": "3400.00", "months": [9]},
+    {"merchant": "glintmoor-cleaning", "account": "bc-chk-01", "day": 14, "amount": "185.00"},
+    {"merchant": "gleanfield", "account": "bc-chk-01", "day": 15, "amount": "150.00"},
+    {"merchant": "thimbleread", "account": "bc-chk-01", "day": 15, "amount": "1500.00", "months": [12]},
+    {"merchant": "kindlewater-power", "account": "bc-chk-01", "day": 18, "amount": "205.00", "jitter": "0.08",
+     "seasonal": ["1.15", "1.05", "0.90", "0.80", "0.85", "1.20", "1.65", "1.60", "1.10", "0.80", "0.85", "1.05"]},
+    {"merchant": "tollbrook-water", "account": "bc-chk-01", "day": 24, "amount": "148.00", "months": [1, 4, 7, 10], "jitter": "0.10"},
+    {"merchant": "wrenbarrow-auto", "account": "bc-chk-01", "day": 10, "amount": "884.00", "months": [1, 7]},
+    {"merchant": "hearthguard-home", "account": "bc-chk-01", "day": 12, "amount": "2480.00", "months": [6]},
+    {"merchant": "tollbrook-treasurer", "account": "bc-chk-01", "day": 20, "amount": "4720.00", "months": [4, 10], "growth": "0.02"},
+    {"merchant": "state-revenue", "account": "bc-chk-01", "day": 15, "amount": "1150.00", "months": [4]},
+    {"merchant": "strandholm", "account": "bc-card-01", "day": 6, "amount": "84.99"},
+    {"merchant": "plovercell", "account": "bc-card-01", "day": 9, "amount": "189.40"},
+    {"merchant": "flickmoor", "account": "bc-card-01", "day": 11, "amount": "22.99"},
+    {"merchant": "tunevale", "account": "bc-card-01", "day": 13, "amount": "16.99"},
+    {"merchant": "vaultfold", "account": "bc-card-01", "day": 4, "amount": "9.99"},
+    {"merchant": "keelstrong", "account": "bc-card-01", "day": 1, "amount": "118.00"},
+    {"merchant": "minnowgate", "account": "bc-card-01", "day": 5, "amount": "140.00", "months": [1, 2, 3, 4, 5, 6, 9, 10, 11, 12]},
+    {"merchant": "pipwhistle", "account": "bc-card-01", "day": 7, "amount": "180.00", "months": [1, 2, 3, 4, 5, 6, 9, 10, 11, 12]}
+  ],
+
+  "budget": [
+    {"bucket": "groceries", "account": "bc-card-01", "per_week": "6", "annual": "16200"},
+    {"bucket": "coffee", "account": "bc-card-01", "per_week": "2.5", "annual": "900"},
+    {"bucket": "restaurants", "account": "bc-card-01", "per_week": "2", "annual": "6800",
+     "seasonal": ["0.8", "0.9", "1.0", "1.0", "1.0", "1.1", "0.6", "0.7", "1.0", "1.0", "1.1", "1.4"]},
+    {"bucket": "fuel", "account": "bc-card-01", "per_week": "1.1", "annual": "3000"},
+    {"bucket": "parking-transit", "account": "bc-card-01", "per_week": "1.5", "annual": "1300"},
+    {"bucket": "auto-service", "account": "bc-card-01", "per_week": "0.04", "annual": "480"},
+    {"bucket": "shopping", "account": "bc-card-01", "per_week": "1.6", "annual": "8600",
+     "seasonal": ["0.7", "0.7", "0.8", "0.9", "0.9", "0.9", "0.8", "1.0", "1.1", "1.0", "1.4", "2.0"]},
+    {"bucket": "home", "account": "bc-card-01", "per_week": "0.45", "annual": "2600"},
+    {"bucket": "health", "account": "bc-card-01", "per_week": "0.6", "annual": "3400"},
+    {"bucket": "personal", "account": "bc-card-01", "per_week": "0.5", "annual": "1150"},
+    {"bucket": "atm", "account": "bc-chk-01", "per_week": "0.5", "annual": "4200"}
+  ],
+  "refunds": {"chance": "0.02", "buckets": ["shopping", "home"]},
+
+  "travel": [
+    {"name": "spring-break", "start": {"month": 3, "day": 27}, "nights": 5, "bookings": [
+      {"merchant": "skyvale-air", "days_before": 50, "amount": "1120.00"},
+      {"merchant": "tallowgate", "pay": "checkout", "amount": "845.00"},
+      {"merchant": "milewright", "pay": "checkout", "amount": "318.00"}],
+     "daily": {"bucket": "restaurants", "per_day": "1.5", "amount": "62.00"}},
+    {"name": "summer-abroad", "start": {"month": 7, "day": 8}, "nights": 20, "bookings": [
+      {"merchant": "heronspan-airways", "days_before": 120, "amount": "4280.00"}],
+     "legs": {"EUR": [0, 13], "GBP": [14, 20]},
+     "abroad": [
+      {"merchant": "quai-vermeil", "ccy": "EUR", "amount": "1240.00", "leg": "EUR", "card_part": {"merchant": "quai-vermeil-card", "amount": "860.00"}},
+      {"merchant": "gasthof-birkenhang", "ccy": "EUR", "amount": "610.00", "leg": "EUR"},
+      {"bucket": "abroad-eur", "ccy": "EUR", "per_day": "2.2", "leg": "EUR"},
+      {"bucket": "abroad-gbp", "ccy": "GBP", "per_day": "2.0", "leg": "GBP"}]},
+    {"name": "thanksgiving", "start": {"month": 11, "day": 23}, "nights": 4, "bookings": [
+      {"merchant": "skyvale-air", "days_before": 44, "amount": "1480.00"}],
+     "daily": {"bucket": "restaurants", "per_day": "1", "amount": "70.00"}}
+  ],
+
+  "multicurrency": {"account": "dw-mc-01", "funding": "bc-chk-01", "wire": {"month": 6, "day": 18, "usd": "3600.00", "fee": "25.00"},
+                    "convert": {"month": 7, "day": 1, "from": "EUR", "to": "GBP", "amount": "500.00"}},
+
+  "investing": {
+    "brokerage": {"account": "qv-brk-01", "from": "bc-chk-01", "business_day": 3, "amount": "2500.00",
+                  "split": {"ortm": "0.6", "orie": "0.4"},
+                  "stock_every_months": [1, 4, 7, 10], "stock_amount": "1500.00",
+                  "stock_rotation": ["tvsd", "qlmr", "bkwf", "vlcp", "mrfk"],
+                  "rebalance": {"month": 6, "weekday": 0, "week": 2, "sell": "ortm", "fraction": "0.08", "buy": "orab"},
+                  "tax_loss": {"month": 12, "day": 12, "fallback": "ordg", "fallback_fraction": "0.05"}},
+    "roth": [{"account": "qv-roth-01", "from": "bc-sav-01", "month": 1, "day": 15, "amount": "7000.00", "first_year": 2024, "split": {"ortm": "0.7", "orie": "0.3"}},
+             {"account": "qv-roth-02", "from": "bc-sav-01", "month": 1, "day": 15, "amount": "7000.00", "first_year": 2024, "split": {"ortm": "0.7", "orie": "0.3"}}],
+    "plan_529": {"account": "qv-529-01", "from": "bc-chk-01", "day": 10, "amount": "600.00", "instrument": "age529"},
+    "reinvest": ["qv-ira-01"]
+  },
+
+  "mandate": {"account": "av-brk-01", "fee_rate": "0.0085", "fee_months": [1, 4, 7, 10],
+              "rebalance_months": [2, 5, 8, 11], "rebalance_day": 15, "cash_buffer": "0.012",
+              "targets": {"bkwf": "0.13", "vlcp": "0.12", "oxmr30": "0.18", "gold": "0.07", "note27": "0.10",
+                          "rhwc": "0.07", "csnr": "0.05", "sbmr32": "0.08", "rtbw": "0.12", "thbr": "0.08"}},
+
+  "private": {
+    "fund": {"account": "ew-inv-01", "instrument": "fund-ii", "from": "bc-sav-01", "commitment": "100000.00",
+             "calls": [{"date": "2025-01-15", "amount": "25000.00"}, {"date": "2025-06-16", "amount": "25000.00"},
+                       {"date": "2025-11-17", "amount": "25000.00"}, {"date": "2026-04-15", "amount": "25000.00"}],
+             "distributions": [{"date": "2026-03-16", "amount": "18000.00"}],
+             "marks": [{"date": "2025-03-31", "multiple": "0.97"}, {"date": "2025-06-30", "multiple": "0.95"},
+                       {"date": "2025-09-30", "multiple": "0.98"}, {"date": "2025-12-31", "multiple": "1.04"},
+                       {"date": "2026-03-31", "multiple": "1.10"}, {"date": "2026-06-30", "multiple": "1.16"},
+                       {"date": "2026-09-30", "multiple": "1.19"}, {"date": "2026-12-31", "multiple": "1.23"},
+                       {"date": "2027-03-31", "multiple": "1.27"}]},
+    "spv": {"account": "ew-inv-01", "instrument": "spv-lmnr", "from": "bc-sav-01", "date": "2025-02-10", "amount": "10000.00",
+            "markup": {"date": "2025-09-15", "multiple": "1.8"},
+            "exit": {"date": "2026-05-18", "shares": "1000", "listed": "lmxr", "to": "qv-brk-01"}}
+  },
+
+  "crypto": {"account": "ts-exch-01", "initial": {"date": "2025-07-07", "from": "bc-sav-01", "amount": "18000.00", "split": {"btc": "0.6", "eth": "0.4"}},
+             "monthly": {"from": "bc-chk-01", "day": 20, "amount": "250.00", "split": {"btc": "0.6", "eth": "0.4"}},
+             "fee_rate": "0.005", "staking": {"instrument": "eth", "apy": "0.032"},
+             "sell": {"date": "2026-02-09", "instrument": "eth", "fraction": "0.25"},
+             "withdrawal": {"date": "2026-06-22", "instrument": "btc", "qty": "0.05"}},
+
+  "homestead": {"account": "hs-home-01", "instrument": "home", "purchased": "2019-06-14", "price": "760000.00",
+                "appraisals": [{"date": "2023-01-15", "value": "845000.00"}, {"date": "2024-01-15", "value": "862000.00"},
+                               {"date": "2025-01-15", "value": "884000.00"}, {"date": "2026-01-15", "value": "905000.00"},
+                               {"date": "2027-01-15", "value": "921000.00"}]},
+
+  "one_offs": [
+    {"date": "2025-02-14", "merchant": "kitchenfield", "account": "bc-card-01", "amount": "2149.00", "note": "appliance, year 2"},
+    {"date": "2024-02-20", "account": "bc-chk-01", "amount": "2000.00", "descriptor": "INTL WIRE TRANSFER OUT REF 7741", "pin": "gift", "note": "family support transfer"},
+    {"date": "2025-05-09", "account": "bc-chk-01", "amount": "480.00", "descriptor": "CHECK 1043", "check": "1043", "pin": "GENERAL_SERVICES_EDUCATION", "note": "tutoring, paid by cheque"}
+  ],
+
+  "atm": {"account": "bc-chk-01", "branch": "BRINDLECOVE 4TH ST", "fee": "3.00", "fee_chance": "0.18", "fee_network": "QUICKCASH NETWORK"},
+
+  "findings": {
+    "unmapped_card_share": "0.02",
+    "unmapped_merchants": ["POS MARKET STALL 44", "POS DEBIT 0081 STORE", "ONLINE PURCHASE 55213"],
+    "old_brokerage": {"date": "2025-08-12", "account": "bc-chk-01", "amount": "4000.00", "descriptor": "ACH TRANSFER CRANMOOR BROKERAGE"},
+    "missing_statement": {"account": "dw-mc-01", "month": "2025-07"},
+    "stale_mark_days": 45
+  },
+
+  "config": {
+    "account_overrides": {"quayvane": {"qv-ira-01": {"nickname": "Sam's rollover IRA"}}},
+    "returns_policy_overrides": {"homestead": {"flow_regime": "nav_only"}, "tessarite": {"flow_regime": "crypto_partial"}},
+    "inception_overrides": {"sources": {"emberwright": "2025-03-31"}},
+    "spending_rules": [
+      {"match": "\\bTHIMBLEWOOD SAVINGS\\b", "category": "internal_transfer", "far": "kids-savings"},
+      {"match": "\\bCOBBLE & THREAD\\b", "category": "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES"},
+      {"match": "\\bPIPWHISTLE KIDS MUSIC\\b", "category": "GENERAL_SERVICES_EDUCATION", "scope": {"source": "brindlecove", "account": "bc-card-01"}}
+    ],
+    "income_rules": [{"match": "\\bSTILLCREST HEALTH\\b", "type": "INCOME_WAGES"}]
+  }
+}

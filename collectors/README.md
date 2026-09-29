@@ -622,6 +622,11 @@ restated here.
 | [`manual`](manual/) | Private holdings with no portal (CSV) | none — manual entry | host venv |
 | [`fred`](fred/) | FRED / US Fed H.10 (historic FX rates) | API key | host venv |
 
+One silver kind has no collector. `synthetic` is written by a generator,
+not downloaded: [`demo/generate.py`](../demo/) writes the demo household
+in it, and tests build fixtures with it
+([`synthetic.md`](../wealthdb/docs/adapters/synthetic.md)).
+
 Agent ground rules shared by every collector are in the repo-root
 [AGENTS.md](../AGENTS.md); each subdirectory's `AGENTS.md` adds
 only source-specific rules.
