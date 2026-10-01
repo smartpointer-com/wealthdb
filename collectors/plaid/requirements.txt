@@ -1,0 +1,4 @@
+# Pure-stdlib collector (urllib for the Plaid REST calls); collectorkit is
+# installed editable by `make build-plaid`. pytest is bundled so the test
+# suite runs in the venv with no extra toolchain.
+pytest>=8,<9

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# plaid — host wrapper for the wealthdb "plaid" collector.
+#
+# Host-venv collector (no Docker): runs the collector's own .py under its
+# .venv. Reads banks, brokers and card issuers through Plaid. Each
+# institution login is one Plaid Item with a local name. Subcommands:
+#   login --item NAME   Link an institution, or renew a link that exists.
+#                       Prints the URL of Plaid's sign-in page and waits
+#                       for the sign-in to finish in a browser. A name
+#                       that is linked already opens in update mode: the
+#                       same Item is renewed and no new one is made.
+#                       --require PRODUCT names the product the login must
+#                       support (default transactions; investments for a
+#                       login with brokerage accounts only).
+#   login --check       Probe the app keys and every stored Item. Reads
+#                       only; exit 0 when all of it is healthy.
+#
+# --sandbox on either form uses Plaid's test institutions, the Sandbox
+# secret, and only the Items made there. `login --help` lists every flag.
+#
+# Uniform directory override (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# > default):
+#   --secrets-dir DIR   app keys and Item tokens   (default ~/.secrets)
+# The app keys are read from PLAID_CLIENT_ID, PLAID_SECRET (Production)
+# and PLAID_SANDBOX_SECRET, auto-sourced from <secrets-dir>/plaid.env
+# (override the path with $PLAID_ENV_FILE). Each Item's access token is
+# in <secrets-dir>/plaid-token-<name>.json, written by login.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME=plaid
+ENV_PREFIX=PLAID
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+    -h|--help|help)
+        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
+        exit 0
+        ;;
+    login)
+        ;;
+    *)
+        echo "plaid: unknown command '$cmd' (expected: login)" >&2
+        exit 2
+        ;;
+esac
+
+host_resolve_dirs "$cmd" "$@"
+host_source_env_file
+py="$(host_python)"
+
+case "$cmd" in
+    login)
+        exec "$py" "$HERE/login.py" --secrets-dir "$SECRETS_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+esac
