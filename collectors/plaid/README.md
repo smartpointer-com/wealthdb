@@ -66,6 +66,9 @@ all collectors share.
   accounts and balances, holdings, the bank and card ledger, investment
   transactions, and loan and card terms. It saves Plaid's answers as
   they are.
+- **`load`** turns the runs of each linked institution into its own
+  silver database: accounts and balances, holdings, both ledgers, and
+  card and loan terms.
 - **`prune`** deletes runs that did not complete, and the traces of
   `download --debug`.
 
@@ -82,6 +85,8 @@ short name for it, such as `bank` or `broker`.
 ./plaid download --lookback all                      # first run: all history
 ./plaid download                                     # later: the last ~90 days
 ./plaid download --item broker --dry-run             # what a run would read
+./plaid load                                         # every Item into its silver
+./plaid load --item broker                           # one Item
 ./plaid prune --dry-run                              # what prune would delete
 ```
 
@@ -246,6 +251,7 @@ can be selected at <https://dashboard.plaid.com/link/data-transparency-v5>.
 
 $XDG_DATA_HOME/wealthdb/plaid/
 └── <name>/                    one tree per Item: one linked login
+    ├── <name>.db              its silver database, written by load
     └── 20261001T120000Z/      one run of download, named by its UTC time
         ├── run.json           what the run read, product by product
         ├── item.json          the link: its products and update times
@@ -259,9 +265,8 @@ $XDG_DATA_HOME/wealthdb/plaid/
 Back up the token files. Plaid shows an access token once. A lost token
 cannot be fetched again, and its Item still counts against the ten.
 
-`--data-dir` names plaid's own dir, as shown above. A tree holds the runs
-of one Item. `download` refuses a tree that holds anything else, and
-`prune` removes nothing while one does.
+`--data-dir` names plaid's own dir, as shown above, never the data root
+itself.
 
 A run reads only the products the institution was linked with. A product
 Plaid has no account for is noted in `run.json` and skipped.

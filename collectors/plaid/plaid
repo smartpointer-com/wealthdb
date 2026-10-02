@@ -20,6 +20,11 @@
 #                       --lookback bounds the ledgers (default ~90 days);
 #                       --item NAME reads one Item; --dry-run reads each
 #                       Item and its accounts and writes no run.
+#   load                Load each Item's complete runs into its own silver
+#                       database, <data-dir>/<item>/<item>.db. --item NAME
+#                       loads one Item; --silver-db PATH (or
+#                       PLAID_SILVER_DB), with one --item, writes
+#                       elsewhere; --force rebuilds from all runs.
 #   prune               Delete the --debug traces of complete runs, and
 #                       whole runs that did not complete. --dry-run prints
 #                       the plan first.
@@ -52,13 +57,22 @@ case "$cmd" in
         awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
         exit 0
         ;;
-    login|download|prune)
+    login|download|load|prune)
         ;;
     *)
-        echo "plaid: unknown command '$cmd' (expected: login|download|prune)" >&2
+        echo "plaid: unknown command '$cmd' (expected: login|download|load|prune)" >&2
         exit 2
         ;;
 esac
+
+# Silver is one database per Item, named after it, so the shared default
+# (one <data-dir>/plaid.db) never applies. Only a path given here, or in
+# PLAID_SILVER_DB, reaches load, which then needs the one --item it names.
+silver_given=0
+[[ -n "${PLAID_SILVER_DB:-}" ]] && silver_given=1
+for arg in "$@"; do
+    [[ $arg == --silver-db || $arg == --silver-db=* ]] && silver_given=1
+done
 
 host_resolve_dirs "$cmd" "$@"
 host_source_env_file
@@ -72,6 +86,13 @@ case "$cmd" in
     download)
         exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
             --secrets-dir "$SECRETS_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    load)
+        silver=()
+        [[ $silver_given == 1 ]] && silver=(--silver-db "$SILVER_DB")
+        exec "$py" "$HERE/load.py" --bronze-dir "$DATA_DIR" \
+            ${silver[@]+"${silver[@]}"} \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     prune)

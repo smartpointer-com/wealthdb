@@ -19,10 +19,11 @@ Every other file of a complete run is a load input and is never touched,
 nor is anything in an Item tree that is not a run directory. A run whose
 ``run.json`` cannot be read is left alone. A run that did not complete
 and was written within ``--min-age-hours`` (default 1) is left alone too.
-A download writes after every product, and its longest wait on Plaid is
-minutes, so a download in flight is safe. Should one be removed all the
-same, the download notices the files it lost and does not mark its run
-complete. ``--dry-run`` prints the plan and removes nothing.
+A download writes each product's files once it has read them, and its
+longest wait on Plaid is minutes. A download in flight is therefore safe.
+Should one be removed all the same, the download notices the files it
+lost and does not mark its run complete. ``--dry-run`` prints the plan
+and removes nothing.
 
 ``--bronze-dir`` is plaid's own data dir, ``<data-root>/plaid``. Every
 tree is checked before anything is removed. A tree that holds a run that
@@ -51,7 +52,7 @@ def _is_complete(run_dir, meta):
         return prune.UNKNOWN, "no plaid run.json"
     if not trees.is_own(run_dir, meta):
         return prune.UNKNOWN, "not a plaid run of this tree"
-    return prune.status_classification(meta, run_dir=run_dir)
+    return prune.status_classification(meta)
 
 
 CONFIG = prune.PruneConfig(
@@ -74,23 +75,8 @@ def main(argv=None) -> int:
     cli.configure_logging(args.verbose)
     if not args.bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {args.bronze_dir}")
-    found = trees.item_trees(args.bronze_dir)
-    if args.item:
-        missing = sorted(set(args.item) - {d.name for d in found})
-        if missing:
-            raise SystemExit(f"no Item tree under {args.bronze_dir}: "
-                             f"{', '.join(missing)}")
-    strangers = [line for tree in found for line in trees.strangers(tree)]
-    if strangers:
-        raise SystemExit(
-            f"{args.bronze_dir} holds runs that are not plaid's, so nothing "
-            f"was removed:\n  " + "\n  ".join(strangers[:5])
-            + (f"\n  ... and {len(strangers) - 5} more"
-               if len(strangers) > 5 else "")
-            + "\n--bronze-dir (the wrapper's --data-dir) must be plaid's "
-              "own data dir, <data-root>/plaid.")
-    if args.item:
-        found = [d for d in found if d.name in args.item]
+    found = trees.select(args.bronze_dir, args.item)
+    trees.check_data_dir(args.bronze_dir, "removed")
     if not found:
         print("nothing to prune")
         return 0

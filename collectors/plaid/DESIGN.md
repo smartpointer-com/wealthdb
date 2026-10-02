@@ -46,8 +46,9 @@ Each rule below was read in Plaid's documentation on 2026-10-01.
   not stop the Item.
 - **History depth is fixed at link time.** `transactions.days_requested`
   cannot change later. Every link asks for 730 days, the maximum.
-- **Consent is per product.** An Item can use only the products its link
-  named. A product added later needs update mode.
+- **Consent is per product.** A product's route adds its product to an
+  Item only where the Item's consent covers it. Otherwise the call fails,
+  and update mode collects the consent.
 - **A public token lives thirty minutes.** A session's result stays
   readable for six hours. A sign-in settled more than thirty minutes
   after it made its Item leaves an Item nothing can claim.
@@ -85,6 +86,7 @@ stands:
 ```
 <data-dir>/
 └── <name>/              one tree per Item
+    ├── <name>.db        its silver database (§6)
     └── <UTC-ts>/        one download run (§5)
 ```
 
@@ -247,7 +249,79 @@ would.
 reports exchanges through a hook that never sees a request, so no key
 or token can reach the trace.
 
-## 6. Observed
+## 6. The `load` verb
+
+`load` builds one silver database per Item, `<data-dir>/<item>/<item>.db`.
+So each Item can be a gold source of its own. The schema is
+[migrations/0001_initial.sql](migrations/0001_initial.sql). Its comments
+describe each table, and each column whose name does not say enough.
+
+**Which runs.** A run is loaded once, oldest first, and only when its
+`run.json` says `complete`. Each run loads in one transaction. A run
+older than the newest one already loaded cannot be replayed on top of
+the newer windows, so the Item's database is then rebuilt from all its
+runs. `--force` does the same on request. A rebuild writes a fresh
+database beside the old one, and puts it in place only once every run
+is in. It keeps the newest run's start as gold's change number, so gold
+takes it in on `wealthdb reload <source>`.
+
+A complete run that lacks a file it lists, or holds a file not in the
+shape `download` writes, stops its tree. So does a run whose run.json
+cannot be read. An update keeps the runs before it loaded. A rebuild
+leaves the silver as it was. It and the runs after it wait until it is
+moved out of the tree.
+
+**Which Item.** A tree that holds a run that is not plaid's means the
+data dir is a wrong one, such as the data root itself. `load` then
+loads nothing at all. Beyond that, `load` refuses, and leaves as it is:
+
+- a tree whose runs name two Items;
+- a database that holds the silver of another Item;
+- a database that is not a plaid silver at all.
+
+A tree with no run yet gets no database. One refused tree does not stop
+the others, and the exit status is then 1.
+
+**One instant per run.** Every snapshot a run stores carries the run's
+start, `dump_runs.snapshot_at`. That covers the accounts with their
+balances, the holdings and the liabilities. Gold reads a source's
+current state from its single latest snapshot time. So every fact of
+the newest run must carry that time. Each run restates every account,
+and each run that read the holdings restates every holding, quiet or
+not. Plaid's own update times are kept beside it, in `item_states`.
+
+**Which products.** A product is loaded as far as its run read it:
+
+| Status | What `load` does |
+| --- | --- |
+| `fetched` | stores the snapshot; a ledger replaces its window (below) |
+| `partial` | adds and updates the bank and card ledger's rows; removes only stale pending rows |
+| `not_linked`, `absent`, `not_ready`, `failed` | nothing; earlier rows stay |
+
+Every product's entry is kept in `run_products`, with its window and the
+history status Plaid gave. A reader tells "read, and empty" from "not
+read" there.
+
+**The ledgers.** For each account a fetched ledger covers, a run deletes
+the rows dated within its window and inserts what Plaid listed. A row
+Plaid no longer lists leaves silver with it. A pending charge that posts
+under a new id is the common case. An account the Item no longer lists
+keeps its rows: absence from one answer proves nothing about history. A
+pending row is provisional, so every read of the bank and card ledger
+replaces the covered accounts' pending rows wholesale, wherever they are
+dated. A partial read does so too: the newest rows are the ones Plaid
+holds first. Beyond that a partial ledger deletes nothing, since its
+absent rows may only be missing so far.
+
+**Values.** Money, quantities and prices are stored as decimal strings:
+the shortest decimal that reads back as the number Plaid sent. That is
+Plaid's own figure, up to 15 significant digits, without trailing zeros.
+Dates are 00:00 UTC of the day Plaid states.
+Both ledgers are negated into the fleet sign: positive is money into the
+account. Balances keep Plaid's sign: a card or a loan states what is
+owed, positive. `payload` keeps each object as Plaid sent it.
+
+## 7. Observed
 
 ### Sandbox, Hosted Link (2026-10-01)
 
@@ -329,7 +403,7 @@ Read from the `user_good` test Item at First Platypus Bank.
   `version: v2`, `original_description`, `counterparties` and
   `merchant_name`. Card spend is positive, a deposit negative.
 
-## 7. Open questions
+## 8. Open questions
 
 1. Does Plaid keep an account's id from one run to the next? A new id
    would read in gold as one account closed and another opened.

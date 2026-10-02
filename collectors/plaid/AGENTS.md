@@ -34,6 +34,8 @@ Allowed without asking:
   institution;
 - `download --dry-run`. It reads each Item and its accounts from Plaid's
   copy, two free reads, and writes no run. No sign-in happens;
+- `load` against a rehearsal data dir. It reads the runs and writes the
+  silver databases there, and talks to no one;
 - `prune` with `--dry-run`. It reads local files only.
 
 Not allowed unless explicitly asked: `login --item NAME` and `download`
@@ -63,9 +65,16 @@ Two answers are beyond update mode:
 
 ## 1. Read-only access — the whole surface
 
-Two lists in [plaidapi.py](plaidapi.py) are the collector's whole surface
-at Plaid. The client refuses anything outside them before it builds a
-request.
+The collector reads. Its only writes are these:
+
+- linking an Item, and renewing it in update mode;
+- removing an Item whose new token could not be written to disk.
+
+It never moves money and never gives another party access.
+
+Two lists in [plaidapi.py](plaidapi.py) name every route the collector
+calls and every product a link may request. The client refuses anything
+outside them before it builds a request.
 
 **Routes** (`ENDPOINTS`, `SANDBOX_ENDPOINTS`):
 
@@ -79,44 +88,65 @@ request.
 - `/investments/holdings/get`, `/investments/transactions/get`,
   `/transactions/get`, `/liabilities/get`: the data. Each reads Plaid's
   copy and never reaches the institution.
-- `/transactions/sync`: asked for one row, with no cursor, for one field:
-  how much of the ledger's history Plaid holds. Only for an Item linked
-  with transactions.
+- `/transactions/sync`: how much of the ledger's history Plaid holds.
+  Asked for one row, with no cursor. Only for an Item linked with
+  transactions.
 - `/institutions/get`, `/institutions/get_by_id`: institution metadata.
   Free; the first is the app-key probe.
-- `/item/remove`: revoke an Item. Called from one place only: `login`,
-  for an Item whose new token could not be written to disk. No verb and
-  no flag reaches it.
+- `/item/remove`: revoke an Item. A revoked Item cannot be restored.
+  Called from one place only: `login`, for an Item whose new token could
+  not be written to disk, so no access exists without a record. No verb
+  and no flag reaches it.
 - `/sandbox/public_token/create`: make a test Item. Sandbox host only.
 
 **Products** (`DATA_PRODUCTS`): `transactions`, `investments`,
-`liabilities`. A link requests these and nothing else. An Item can do
-only what its link requested, so no Item of this collector can pay or
-transfer.
+`liabilities`. A link requests data products only, never one that moves
+money. Plaid never adds Payment Initiation to an Item after its link.
+The client refuses every route that moves money.
 
-`download` reads an Item only for the products in its `/item/get`
-`products` list. Calling another product's route would add that product
-to the Item, with its billing. The first `/investments/transactions/get`
-on an Item starts Plaid's investment transactions subscription. A Trial
-plan charges for neither. After an upgrade to a paid plan, Plaid bills
-every subscription added during the Trial each month, until the Item is
-removed.
+**Reads may be added.** A read is a route that exists to get data, from
+Plaid or live from the institution. Any read may join the lists. That is
+an edit to `plaidapi.py` and to this file. A read's first call can still
+add a product, a subscription or a webhook type to an Item. That does
+not make it a write. What some reads cost or change:
 
-Forbidden — do not call, wrap or add:
+- On an Item linked without a product, that product's route tries to
+  add it, with its billing. The call fails where the Item's consent does
+  not cover the product. A subscription cannot be taken off an Item
+  again. So `download` reads an Item only for the products in its
+  `/item/get` `products` list.
+- The first `/investments/transactions/get` on an Item starts Plaid's
+  investment transactions subscription.
+- The first `/transactions/sync` on an Item turns on one more webhook
+  type. The collector's links set no webhook address, so nothing is
+  sent.
+- `/accounts/balance/get`, `/transactions/refresh` and
+  `/investments/refresh` fetch live from the institution. A paid plan
+  bills each successful call, and Plaid limits how often an Item may
+  ask.
 
-- any other product: `transfer`, `payment_initiation`, `auth`, `signal`,
-  `identity`, `assets`, `income`, and the rest;
-- any route under `/transfer`, `/payment_initiation`, `/processor`,
-  `/bank_transfer` or `/signal`;
-- `/accounts/balance/get`, `/transactions/refresh`,
-  `/investments/refresh`: each forces a live pull at the institution and
-  is billed per call on a paid plan;
-- `/item/access_token/invalidate`, `/item/webhook/update`, or any other
-  route that changes an Item;
-- a webhook receiver or a redirect address. Hosted Link needs neither.
+A read that Plaid bills per call needs the user's opt-in. The opt-in
+lives in the collector's own config file, `$XDG_CONFIG_HOME/plaid.cfg`,
+not in the env file, which holds credentials only. Without it, the
+collector never makes the call. Such a read joins the lists together
+with its opt-in setting. The lists hold no such read.
 
-A new route or product is an edit to the lists in `plaidapi.py` **and**
-to this file, and it needs the user's written opt-in first.
+A Trial plan charges for none of these. After an upgrade to a paid plan,
+Plaid bills every subscription added during the Trial. It bills each
+month, until the Item is removed.
+
+**Writes are never added.** A write is a route that exists to create,
+change or remove something. Writes include every route that:
+
+- moves money or authorises a movement, such as `/transfer/create`,
+  `/transfer/authorization/create`, `/payment_initiation/payment/create`
+  or `/wallet/transaction/execute`;
+- gives, changes or revokes another party's access, such as processor
+  tokens, OAuth tokens, partner API keys or audit copies;
+- changes or removes an Item, such as `/item/access_token/invalidate`,
+  `/item/webhook/update` or `/item/products/terminate`;
+- creates, changes or removes any other record at Plaid, such as a user,
+  a report or a verification.
 
 ## 2. Protect the credentials
 

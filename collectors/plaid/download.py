@@ -50,6 +50,8 @@ import items
 import plaidapi
 import trees
 from appkeys import make_client
+from trees import (ABSENT, FAILED, FETCHED, NOT_LINKED, NOT_READY, PARTIAL,
+                   SETTLED)
 
 log = logging.getLogger("plaid.download")
 
@@ -76,16 +78,6 @@ ABSENT_CODES = frozenset({"NO_INVESTMENT_ACCOUNTS", "NO_LIABILITY_ACCOUNTS"})
 # holds the newest rows only.
 HISTORY_COMPLETE = "HISTORICAL_UPDATE_COMPLETE"
 
-# What a product's entry in run.json says about it.
-FETCHED = "fetched"          # read in full; its files are in the run
-PARTIAL = "partial"          # read, but Plaid holds only part of the history
-NOT_LINKED = "not_linked"    # the Item was not linked with it; not asked
-ABSENT = "absent"            # Plaid says the Item has nothing for it
-NOT_READY = "not_ready"      # Plaid was still assembling it
-FAILED = "failed"            # asked, and the read did not succeed
-
-# The statuses that leave nothing to do.
-SETTLED = frozenset({FETCHED, NOT_LINKED, ABSENT})
 
 
 @dataclass(frozen=True)
@@ -104,16 +96,22 @@ class Product:
     def ledger(self) -> bool:
         return self.total is not None
 
+    @property
+    def label(self) -> str:
+        """Its name as the log writes it."""
+        return self.name.replace("_", " ")
+
 
 # In the order a run reads them.
 PRODUCTS = (
     Product("holdings", "investments", "holdings_get", "holdings"),
     Product("investment_transactions", "investments",
             "investment_transactions_get", "investment_transactions",
-            "total_investment_transactions", "investment_transaction_id"),
+            "total_investment_transactions",
+            trees.LEDGER_IDS["investment_transactions"]),
     Product("transactions", "transactions", "transactions_get",
-            "transactions", "total_transactions", "transaction_id",
-            history=True),
+            "transactions", "total_transactions",
+            trees.LEDGER_IDS["transactions"], history=True),
     Product("liabilities", "liabilities", "liabilities_get", None),
 )
 
@@ -231,7 +229,7 @@ def _read_product(client: plaidapi.Client, token: str, product: Product,
                   since, until) -> tuple[list[tuple[str, dict]], str | None]:
     """The files one product writes, as (name, answer) pairs, and for the
     bank and card ledger Plaid's word on how much history it holds."""
-    what = product.name.replace("_", " ")
+    what = product.label
     read = getattr(client, product.read)
     if not product.ledger:
         return [(f"{product.name}.json",
@@ -275,9 +273,9 @@ def _outcome(error: Exception) -> dict:
 def _read_item(client: plaidapi.Client, item: items.Item) -> tuple[dict,
                                                                    dict]:
     """The Item and its accounts. Raises ItemFailed when either cannot be
-    read, since nothing else means anything without the accounts, and
-    when Plaid reports an error on the Item. Plaid answers every read of
-    such an Item with that error, and update mode clears it."""
+    read, since nothing else means anything without the accounts. Raises
+    ItemFailed too when Plaid reports an error on the Item. Plaid answers
+    every read of such an Item with that error, and update mode clears it."""
     token = item.access_token
     try:
         state = _call(functools.partial(client.item_get, token), "the Item")
@@ -331,7 +329,7 @@ def dry_run(client: plaidapi.Client, item: items.Item, root: Path, since,
         return False
     log.info("%s: %d accounts; a run would read accounts, %s; ledgers from "
              "%s to %s", item.name, len(accounts.get("accounts") or []),
-             ", ".join(p.name.replace("_", " ") for p in _linked(state))
+             ", ".join(p.label for p in _linked(state))
              or "nothing else", since, until)
     return True
 
@@ -351,7 +349,7 @@ def download_item(client: plaidapi.Client, item: items.Item, root: Path,
     slug = bronze.ts_slug()
     run = bronze.run_dir(tree, slug)
     manifest = {
-        "status": "in-progress", "slug": slug, "item": item.name,
+        "status": trees.IN_PROGRESS, "slug": slug, "item": item.name,
         "environment": item.environment, "item_id": item.item_id,
         "api_version": plaidapi.API_VERSION,
         "since": since.isoformat(), "until": until.isoformat(),
@@ -368,10 +366,10 @@ def download_item(client: plaidapi.Client, item: items.Item, root: Path,
             state, accounts = _read_item(client, item)
         except ItemFailed as e:
             log.error("%s", e)
-            manifest.update(status="failed", reason=str(e))
+            manifest.update(status=trees.RUN_FAILED, reason=str(e))
             bronze.atomic_write_json(run / trees.RUN_FILE, manifest)
             return False
-        bronze.atomic_write_json(run / "item.json", state)
+        bronze.atomic_write_json(run / trees.ITEM_FILE, state)
         bronze.atomic_write_json(run / "accounts.json", accounts)
         manifest["products"]["accounts"] = {
             "status": FETCHED, "files": ["accounts.json"],
@@ -387,14 +385,12 @@ def download_item(client: plaidapi.Client, item: items.Item, root: Path,
             healthy = healthy and entry["status"] in SETTLED
         # A write recreates a run dir that was removed under the run, so a
         # run pruned mid-way would otherwise end complete with files gone.
-        missing = [name for name in ["item.json"] + [
-            f for e in manifest["products"].values()
-            for f in e.get("files", [])] if not (run / name).is_file()]
+        missing = trees.missing_files(run, manifest["products"])
         if missing:
             log.error("%s: %s lost %s while it was written; it stays "
                       "in-progress", item.name, run, ", ".join(missing))
             return False
-        manifest["status"] = "complete"
+        manifest["status"] = trees.COMPLETE
         bronze.atomic_write_json(run / trees.RUN_FILE, manifest)
     except OSError as e:
         log.error("%s: cannot write the run: %s. %s stays in-progress.",
@@ -430,7 +426,7 @@ def _download_product(client: plaidapi.Client, item: items.Item,
 
 def _log_product(item: items.Item, product: Product, entry: dict,
                  again: str) -> None:
-    what = product.name.replace("_", " ")
+    what = product.label
     status = entry["status"]
     if status == FETCHED:
         log.info("%s: %s: %d rows", item.name, what, entry["rows"])
