@@ -14,13 +14,24 @@
 #                       login with brokerage accounts only).
 #   login --check       Probe the app keys and every stored Item. Reads
 #                       only; exit 0 when all of it is healthy.
+#   download            Read every linked Item into bronze: accounts and
+#                       balances, holdings, both ledgers, liabilities. One
+#                       run per Item, under <data-dir>/<item>/<UTC-ts>/.
+#                       --lookback bounds the ledgers (default ~90 days);
+#                       --item NAME reads one Item; --dry-run reads each
+#                       Item and its accounts and writes no run.
+#   prune               Delete the --debug traces of complete runs, and
+#                       whole runs that did not complete. --dry-run prints
+#                       the plan first.
 #
-# --sandbox on either form uses Plaid's test institutions, the Sandbox
-# secret, and only the Items made there. `login --help` lists every flag.
+# --sandbox on login and download uses Plaid's test institutions, the
+# Sandbox secret, and only the Items made there. Sandbox downloads take a
+# --data-dir of their own. `<verb> --help` lists every flag of a verb.
 #
-# Uniform directory override (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default):
 #   --secrets-dir DIR   app keys and Item tokens   (default ~/.secrets)
+#   --data-dir    DIR   one tree per Item below it (default $XDG_DATA_HOME/wealthdb/plaid)
 # The app keys are read from PLAID_CLIENT_ID, PLAID_SECRET (Production)
 # and PLAID_SANDBOX_SECRET, auto-sourced from <secrets-dir>/plaid.env
 # (override the path with $PLAID_ENV_FILE). Each Item's access token is
@@ -41,10 +52,10 @@ case "$cmd" in
         awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
         exit 0
         ;;
-    login)
+    login|download|prune)
         ;;
     *)
-        echo "plaid: unknown command '$cmd' (expected: login)" >&2
+        echo "plaid: unknown command '$cmd' (expected: login|download|prune)" >&2
         exit 2
         ;;
 esac
@@ -56,6 +67,15 @@ py="$(host_python)"
 case "$cmd" in
     login)
         exec "$py" "$HERE/login.py" --secrets-dir "$SECRETS_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    download)
+        exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
+            --secrets-dir "$SECRETS_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    prune)
+        exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
 esac

@@ -30,7 +30,11 @@ Each rule below was read in Plaid's documentation on 2026-10-01.
   file is therefore written the moment the token exists, and is never
   rewritten by a later link.
 - **Some institutions keep one Item per login.** A second link there
-  ends the first. This is another reason a re-link is never the remedy.
+  ends the first. This is another reason a re-link is never the remedy
+  for an Item Plaid still has.
+- **A removed Item cannot be renewed.** Plaid answers `ITEM_NOT_FOUND`
+  for it, and update mode needs a token Plaid accepts. The only way back
+  is a new link: a new Item, under a new name.
 - **Consent can expire.** Several large US institutions require a new
   sign-in every twelve months. Update mode renews the consent. `/item/get`
   reports the date as `consent_expiration_time`.
@@ -47,6 +51,14 @@ Each rule below was read in Plaid's documentation on 2026-10-01.
 - **A public token lives thirty minutes.** A session's result stays
   readable for six hours. A sign-in settled more than thirty minutes
   after it made its Item leaves an Item nothing can claim.
+- **Ledger history arrives in two steps.** For a new Item, and for an
+  account added in update mode, Plaid fetches the newest 30 days first
+  and the rest later. Only `/transactions/sync` reports the step, as
+  `transactions_update_status`.
+- **The first read of investment transactions adds a subscription** to
+  the Item. A Trial plan does not charge for it. After an upgrade to a
+  paid plan, Plaid bills every subscription added during the Trial each
+  month, until the Item is removed.
 
 ## 3. Files
 
@@ -65,6 +77,21 @@ Each rule below was read in Plaid's documentation on 2026-10-01.
 - The token's own text names its environment
   (`access-<environment>-<uuid>`). A file whose record and token disagree
   is refused.
+
+Each Item has its own tree under the data dir, laid out like the data dir
+of a one-source collector, so the shared prune engine runs on it as it
+stands:
+
+```
+<data-dir>/
+└── <name>/              one tree per Item
+    └── <UTC-ts>/        one download run (§5)
+```
+
+A tree holds the runs of one Item (§5). `prune` checks every tree
+before it removes anything. A tree that holds a run that is not plaid's
+run of that tree means the data dir is a wrong one, such as the data
+root itself, and then nothing is removed.
 
 ## 4. The `login` verb
 
@@ -96,6 +123,10 @@ state.
 - A page that is still valid is shown again and waited on.
 - A page that has expired, with nothing to claim, is dropped. A new one
   starts.
+- A page's expiry is the one the pending file records, else the
+  `expiration` Plaid states for its link token. It decides only between
+  showing the page again and dropping it. Without either, `login` stops
+  at that point and changes no file.
 
 Rules that keep an Item from being lost:
 
@@ -107,8 +138,9 @@ Rules that keep an Item from being lost:
 - **A token that cannot be written is revoked.** `/item/remove` is
   called, so no access exists without a record. This is the only use of
   that route.
-- **A fault that can pass keeps everything.** A server error or a rate
-  limit never discards a pending sign-in.
+- **Only Plaid's word that the link token is gone discards a pending
+  sign-in.** That word is `INVALID_LINK_TOKEN`. Any other error, a
+  passing fault or a refusal, stops `login` and keeps the file.
 
 What ends a wait without an Item:
 
@@ -123,7 +155,99 @@ proves the app keys. It then asks `/item/get` for each Item of the
 environment. It exits 0 when the keys are accepted, one Item or more is
 stored, and every Item is free of errors.
 
-## 5. Observed
+## 5. The `download` verb
+
+`download` reads every Item of one environment, or the Items `--item`
+names. Each Item gets a new run under `<bronze-dir>/<item>/<UTC-ts>/`.
+A token file that cannot be read is reported and fails the run, and the
+other Items are still read. A run that names its Items reads only their
+files. `login --check` treats the files the same way.
+
+**Run names.** A run is named by its UTC start, to the second. Two Items
+read by one `download` can start in the same second, so a run is
+identified by its Item and its name together.
+
+**A tree holds one Item.** Every `run.json` names its tree (`item`) and
+carries the Item's `item_id` and `environment` from its first write. A
+run is written into a tree only when every run there is a run of the
+same Item. A tree that holds anything else is refused and left as it is.
+That is a data dir pointed at the wrong place, or a name used again for
+another Item.
+
+**What a run reads, in order:**
+
+1. `/item/get` → `item.json`. The Item's products and the times Plaid
+   last updated it. An `error` on the Item fails the run. Plaid answers
+   every read of such an Item with that error, and update mode
+   (`login --item NAME`) clears it.
+2. `/accounts/get` → `accounts.json`. Free. It fails the run too when it
+   cannot be read: nothing else means anything without the accounts.
+3. Each product the Item was linked with, and no other:
+   `/investments/holdings/get`, `/investments/transactions/get`,
+   `/transactions/get`, `/liabilities/get`. Asking for a product the
+   Item lacks would add the product to the Item.
+
+The two ledgers are read over the `--lookback` window and paged at 500
+rows. Each page is saved as Plaid answered it. Balances, holdings and
+liabilities are read whole.
+
+**The ledger's history.** Plaid fetches a new ledger's history in two
+steps (§2). Before the first page of the bank and card ledger, a run asks
+`/transactions/sync` for one row and records its
+`transactions_update_status`. Until that is `HISTORICAL_UPDATE_COMPLETE`
+the ledger is `partial`: the rows are what Plaid holds, and older ones
+may still be missing. The log names the command that reads the window
+again. The status is asked first, so a history that Plaid completes
+mid-read is never claimed for rows read before it.
+
+**What `run.json` records.** A run starts as `in-progress` and ends as
+`complete`, or as `failed` with a `reason` when the Item could not be
+read. A run stopped by a write error or by Ctrl-C stays `in-progress`,
+and so does a run whose files vanished while it was written, as when a
+prune with no age guard removed it.
+Each product has an entry with one status:
+
+| Status | Meaning |
+| --- | --- |
+| `fetched` | read in full; its files are listed, with the row count |
+| `partial` | the bank and card ledger, while Plaid holds part of its history |
+| `not_linked` | the Item was not linked with the product; not asked |
+| `absent` | Plaid says the Item has no account the product fits |
+| `not_ready` | Plaid was still assembling it, five minutes on |
+| `failed` | asked, and the read did not succeed |
+
+A ledger's entry also records its window, `since` and `until`. The bank
+and card ledger's entry records `history`, the status Plaid gave. A
+product's files are written only once all its pages are in, so a product
+that failed today never reads as "now empty". Only a `complete` run is
+a load input.
+
+**Waits.** A fault on Plaid's side or a rate limit is asked again twice,
+after 10 s and 30 s. `PRODUCT_NOT_READY` is asked again every 20 s for
+up to five minutes. A refused request is not asked again.
+
+**Paging.** Plaid pages by offset, so a row that arrives or leaves
+mid-read shifts the pages after it. A read starts again when a page
+states another total, when a row comes back a second time, or when the
+pages do not add up to the total. A ledger is read at most three times.
+One change shows in none of these: a row that leaves a page already
+read while another arrives in a page not read yet. The next run reads
+the window again and makes up for it.
+
+**Exit status.** 0 when every Item was read and each of its products is
+`fetched`, `absent` or `not_linked`. 1 when an Item failed, or a product
+is `failed`, `not_ready` or `partial`. 130 when the run was stopped.
+
+**`--dry-run`** reads the Item and its accounts, both free, says what a
+run would read, and writes nothing. It checks the Item's tree as a run
+would.
+
+**`--debug`** records each HTTP exchange in the run, under
+`screenshots/http-trace.jsonl`: URL, status, time and size. The client
+reports exchanges through a hook that never sees a request, so no key
+or token can reach the trace.
+
+## 6. Observed
 
 ### Sandbox, Hosted Link (2026-10-01)
 
@@ -164,7 +288,52 @@ test institution.
 - **`optional_products` all arrived.** The test institution supports all
   three data products, and the Item carried all three.
 
-## 6. Open questions
+### Sandbox, data reads (2026-10-02)
 
-1. Does `/item/get` show a renewed Item as healthy at once after update
+Read from the `user_good` test Item at First Platypus Bank.
+
+- **Windows.** A start thirty years back is accepted and returns all
+  Plaid holds. A start equal to the end is accepted and returns that
+  day's rows. An end date in the future is accepted. An end before the
+  start is refused with `INVALID_FIELD`. An offset past the end returns
+  an empty page.
+- **`/transactions/sync`**, asked for one row with no cursor, answers
+  `transactions_update_status` (`HISTORICAL_UPDATE_COMPLETE` for the
+  test Item), beside `added`, `modified`, `removed`, `has_more`,
+  `next_cursor` and `accounts`.
+- **Every page repeats** `accounts` and `item`. The investment pages also
+  repeat `securities`.
+- **`/item/get`** lists the products as `products` and `billed_products`,
+  and a `last_successful_update` for `transactions` and `investments`.
+- **Accounts** carry `type`, `subtype`, `mask`, `name`, `official_name`,
+  and `balances` with `current`, `available`, `limit` and the currency.
+  An investment account's `current` is its total value.
+- **Holdings** carry quantity, price, value, cost basis, the price date,
+  and `tax_lots`. A lot can be short, with a negative quantity.
+- **Securities.** `isin`, `cusip` and `subtype` were null on every
+  Sandbox security. `type` and `name` were always set. `ticker_symbol`
+  was null on three: the cash security, the fixed-income security and
+  one mutual fund. Cash is the security of type `cash`. Plaid's own
+  documented example gives it the ticker `USD`, so a missing ticker does
+  not mark cash. Bitcoin is a `cryptocurrency` with `is_cash_equivalent`
+  true, so that flag does not mark cash either.
+- **Investment transactions** follow the documented sign. A buy and a
+  fee are positive. A sell, a contribution, a dividend and interest are
+  negative. The rows that are not trades take three shapes:
+  - a contribution or an account fee points at the cash security, with
+    a quantity equal to its amount, sign included;
+  - interest points at the cash security, with quantity 0 and price 0;
+  - a dividend points at the security that paid it, with quantity 0 and
+    price 0.
+- **The ledger** carries `personal_finance_category` with
+  `version: v2`, `original_description`, `counterparties` and
+  `merchant_name`. Card spend is positive, a deposit negative.
+
+## 7. Open questions
+
+1. Does Plaid keep an account's id from one run to the next? A new id
+   would read in gold as one account closed and another opened.
+2. Does `/item/get` show a renewed Item as healthy at once after update
    mode?
+3. How long after a link does `/transactions/sync` report
+   `HISTORICAL_UPDATE_COMPLETE`?

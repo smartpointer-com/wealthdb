@@ -3,7 +3,13 @@ refuses to ask, and how it reads an answer. The transport is a recorder;
 nothing reaches the network."""
 from __future__ import annotations
 
+import http.client
+import io
 import json
+import re
+import urllib.error
+import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -49,7 +55,10 @@ def ok(doc):
     "/payment_initiation/payment/create",
     "/processor/token/create",
     "/item/access_token/invalidate",
+    "/item/webhook/update",
     "/accounts/balance/get",
+    "/transactions/refresh",
+    "/investments/refresh",
 ])
 def test_a_route_outside_the_list_is_refused_before_any_request(path):
     recorder = Recorder()
@@ -60,11 +69,19 @@ def test_a_route_outside_the_list_is_refused_before_any_request(path):
 
 def test_no_listed_route_moves_money_or_makes_a_payment():
     # The list is the collector's whole surface at Plaid. A route that
-    # pays, transfers or hands the account to a processor has no place
-    # in it, under any name.
+    # pays, transfers or hands access to another party has no place in
+    # it, under any name.
     for path in plaidapi.ENDPOINTS | plaidapi.SANDBOX_ENDPOINTS:
-        for word in ("transfer", "payment", "processor", "signal", "auth/"):
+        for word in ("transfer", "payment", "processor", "signal", "oauth/"):
             assert word not in path, path
+
+
+def test_the_routes_are_exactly_the_ones_agents_md_lists():
+    # A new route is an edit here and in AGENTS.md, never one alone.
+    agents = (Path(plaidapi.__file__).parent / "AGENTS.md").read_text()
+    section = agents.split("**Routes**", 1)[1].split("**Products**", 1)[0]
+    listed = set(re.findall(r"`(/[a-z_/]+)`", section))
+    assert plaidapi.ENDPOINTS | plaidapi.SANDBOX_ENDPOINTS == listed
 
 
 def test_the_sandbox_route_is_refused_on_production():
@@ -264,8 +281,74 @@ def test_no_answer_is_retried_and_then_given_up_on():
     assert len(sleeps) == 2 and sleeps[0] < sleeps[1]
 
 
+class _Answer:
+    """What urlopen hands back: a context manager with a status."""
+
+    def __init__(self, status, read):
+        self.status = status
+        self.read = read
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _cut(*args):
+    raise http.client.IncompleteRead(b"{\"par", 100)
+
+
+def test_the_transport_returns_an_error_answer_like_any_other(monkeypatch):
+    def urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 400, "Bad Request",
+                                     {}, io.BytesIO(b'{"error_code": "X"}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert plaidapi._urllib_transport(
+        "https://plaid.invalid/item/get", {}, b"{}", 1.0) == (
+        400, b'{"error_code": "X"}')
+
+
+@pytest.mark.parametrize("urlopen", [
+    lambda request, timeout: _Answer(200, _cut),
+    lambda request, timeout: (_ for _ in ()).throw(urllib.error.HTTPError(
+        request.full_url, 500, "Server Error", {},
+        type("Cut", (io.BytesIO,), {"read": _cut})())),
+    lambda request, timeout: (_ for _ in ()).throw(
+        http.client.BadStatusLine("")),
+], ids=["answer-cut-off", "error-answer-cut-off", "no-status-line"])
+def test_an_answer_that_breaks_off_is_no_answer(monkeypatch, urlopen):
+    # The client asks again after no answer; any other exception would
+    # end the whole run.
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    with pytest.raises(plaidapi.TransportError):
+        plaidapi._urllib_transport(
+            "https://plaid.invalid/item/get", {}, b"{}", 1.0)
+
+
 def test_one_lost_answer_does_not_fail_the_call():
     recorder = Recorder(plaidapi.TransportError("URLError: reset"),
                         ok({"item": {"item_id": "i"}}))
     assert client(recorder).item_get(ACCESS) == {"item": {"item_id": "i"}}
     assert len(recorder.requests) == 2
+
+
+# ---- Plaid's times -----------------------------------------------------------
+
+JAN_2 = 1_767_312_000            # 2026-01-02T00:00:00Z
+
+
+@pytest.mark.parametrize("value,seconds", [
+    ("2026-01-02T00:00:00Z", JAN_2),
+    ("2026-01-02T00:00:00.123456789Z", JAN_2),
+    ("2026-01-02T01:00:00+01:00", JAN_2),
+    ("2026-01-02T00:00:00", JAN_2),
+    (None, None), ("", None)])
+def test_a_time_is_read_with_any_fraction_and_zone(value, seconds):
+    assert plaidapi.instant(value) == seconds
+
+
+def test_a_time_plaid_does_not_write_is_an_error():
+    with pytest.raises(ValueError):
+        plaidapi.instant("02/01/2026")

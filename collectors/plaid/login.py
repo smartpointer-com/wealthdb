@@ -2,10 +2,13 @@
 """
 Link an institution through Plaid, renew a link, or probe what is linked.
 
-A link is made on Plaid's own page (Hosted Link): this prints the page's
-URL, the sign-in happens in a browser, and the script polls Plaid until
-the page has made the Item. No web server runs and no redirect address
-exists.
+A link is made on Plaid's own page (Hosted Link):
+
+* this prints the page's URL;
+* the sign-in happens in a browser;
+* this polls Plaid until the page has made the Item.
+
+No web server runs and no redirect address exists.
 
 What `--item NAME` does depends on what is stored under that name:
 
@@ -32,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import logging
 import os
@@ -39,15 +43,14 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import cli, envfile, session
+from collectorkit import cli, session
 
+import appkeys
 import items
 import plaidapi
+from appkeys import make_client
 
 log = logging.getLogger("plaid.login")
-
-# Each environment has its own secret. The client id is the same in both.
-SECRET_ENV = {"production": "PLAID_SECRET", "sandbox": "PLAID_SANDBOX_SECRET"}
 
 # How long the sign-in page stays open and this command waits for it.
 DEFAULT_WAIT_SECONDS = 3600
@@ -77,9 +80,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument(
-        "--secrets-dir", type=Path, default=Path.home() / ".secrets",
-        help="Where the Items' token files live (default ~/.secrets).")
+    appkeys.add_args(p, "login.py")
     p.add_argument(
         "--item", metavar="NAME",
         help="The local name of the Item to link, renew or check.")
@@ -87,10 +88,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--check", action="store_true",
         help="Probe the app keys and the stored Items, and change nothing. "
              "Exit 0 when Plaid accepts the keys and every Item is healthy.")
-    p.add_argument(
-        "--sandbox", action="store_true",
-        help="Use Plaid's Sandbox: test institutions, test data, the "
-             "PLAID_SANDBOX_SECRET, and only the Items made there.")
     p.add_argument(
         "--sandbox-institution", metavar="ID",
         help="Sandbox only: make the test Item at this institution id "
@@ -110,16 +107,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--mfa-timeout", type=int, default=None, metavar="SECONDS",
         help="How long the sign-in page stays valid and this command waits "
              f"for the sign-in (default {DEFAULT_WAIT_SECONDS}).")
-    p.add_argument(
-        "--env-file", type=Path, default=None,
-        help="Credentials env file, sourced before the keys are resolved "
-             "(also PLAID_ENV_FILE). The wrapper already sources "
-             "<secrets-dir>/plaid.env; this is for running login.py "
-             "directly.")
-    p.add_argument(
-        "--client-id", default=None,
-        help="Plaid client id. Falls back to PLAID_CLIENT_ID. The secrets "
-             "are read from the environment only.")
     cli.add_standard_args(p, verb="login")
     args = p.parse_args(argv)
 
@@ -154,44 +141,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return args
 
 
-def _source_env_file(explicit: Path | None) -> None:
-    """Source --env-file (or $PLAID_ENV_FILE) so its values win. A path
-    that was asked for and is absent is an error, not a fallback to
-    whatever the environment happens to hold."""
-    named = explicit or (Path(os.environ["PLAID_ENV_FILE"])
-                         if os.environ.get("PLAID_ENV_FILE") else None)
-    if named is None:
-        return
-    if not named.is_file():
-        raise SystemExit(f"--env-file does not exist: {named}")
-    try:
-        envfile.source_env_file(named, prefer_file=True)
-    except ValueError as e:
-        raise SystemExit(str(e)) from e
-
-
-def make_client(environment: str, client_id: str | None) -> plaidapi.Client:
-    """The client for one environment, from the keys in the process
-    environment."""
-    resolved_id = envfile.resolve_credential(
-        client_id, "PLAID_CLIENT_ID", "--client-id")
-    secret = os.environ.get(SECRET_ENV[environment])
-    if not secret:
-        raise SystemExit(
-            f"Missing credential: set {SECRET_ENV[environment]} in the env "
-            f"file. It is the {environment} secret from the Plaid "
-            f"Dashboard.")
-    return plaidapi.Client(resolved_id, secret, environment)
-
-
 # ---- reading a link token's sessions ---------------------------------------
 
 def _added_items(doc: dict) -> list[dict]:
     """Every Item the token's sessions made, one entry per public token.
 
-    One token collects a session per visit to its page, and a session can
-    report the same Item through the current `results` field and the older
-    `on_success` one, so the entries are keyed on the public token.
+    One token collects a session per visit to its page. A session can
+    report the same Item twice: in the current `results` field and in the
+    older `on_success` one. So the entries are keyed on the public token.
     """
     found: dict[str, dict] = {}
 
@@ -232,9 +189,9 @@ def _exit_text(exit_: dict) -> str:
 
 
 def _poll(client: plaidapi.Client, link_token: str) -> dict | None:
-    """One read of the token's sessions. A fault that can pass — no answer,
-    a server error, a rate limit — is logged and returns None, so an hour's
-    wait does not end on one bad minute."""
+    """One read of the token's sessions. A fault that can pass is logged
+    and returns None, so an hour's wait does not end on one bad minute.
+    Such a fault is no answer, a server error or a rate limit."""
     try:
         return client.link_token_get(link_token)
     except plaidapi.TransportError as e:
@@ -331,10 +288,9 @@ def _wait_for_new_item(client: plaidapi.Client, link_token: str, *,
 
 
 def _wait_for_update(client: plaidapi.Client, link_token: str, *,
-                     seconds: float) -> bool:
-    """Wait until an update-mode visit has ended, and return whether one
-    ran to its end. Raises LinkFailed when the newest visit ended in an
-    exit and none completed.
+                     seconds: float) -> None:
+    """Wait until an update-mode visit has run to its end. Raises
+    LinkFailed once a visit has ended in an exit and none has completed.
 
     A completed update reports a public token like a new link does. It
     stands for the Item that exists already, whose access token does not
@@ -350,7 +306,7 @@ def _wait_for_update(client: plaidapi.Client, link_token: str, *,
                 f"{_exit_text(_exit_of(ended[-1]))}")
         return None
 
-    return _wait(client, link_token, seconds, outcome)
+    _wait(client, link_token, seconds, outcome)
 
 
 # ---- reporting ---------------------------------------------------------------
@@ -362,13 +318,21 @@ def _report_item(client: plaidapi.Client, item: items.Item) -> bool:
         doc = client.item_get(item.access_token)
     except plaidapi.PlaidError as e:
         say(f"{item.name}: Plaid refuses the Item: {e}")
+        hint = items.remedy(item, e.error_code, e.error_type)
+        if hint:
+            say(f"  {hint}")
         return False
     except plaidapi.TransportError as e:
         say(f"{item.name}: no answer from Plaid: {e}")
         return False
     state = doc.get("item") or {}
     error = state.get("error")
-    say(f"{item.name}: {'needs a new sign-in' if error else 'ok'}")
+    if not error:
+        say(f"{item.name}: ok")
+    elif error.get("error_type") == "ITEM_ERROR":
+        say(f"{item.name}: needs a new sign-in")
+    else:
+        say(f"{item.name}: Plaid reports an error on the Item")
 
     def row(label: str, value) -> None:
         say(f"  {label:<16} {value}")
@@ -376,7 +340,10 @@ def _report_item(client: plaidapi.Client, item: items.Item) -> bool:
     if error:
         row("Plaid reports", f"{error.get('error_code')}: "
                              f"{error.get('error_message')}")
-        row("to renew it", f"login --item {item.name}")
+        hint = items.remedy(item, error.get("error_code"),
+                            error.get("error_type"))
+        if hint:
+            row("what to do", hint)
     row("institution",
         " ".join(str(v) for v in (
             state.get("institution_name") or item.institution_name,
@@ -416,9 +383,8 @@ def _claim(client: plaidapi.Client, secrets_dir: Path, name: str,
     revoked at Plaid, so no access exists that this deployment has no
     record of.
     """
-    environment = client.environment
-    known = {i.item_id: i for i in items.list_items(secrets_dir)
-             if i.environment == environment}
+    known = {i.item_id: i
+             for i in items.of_environment(secrets_dir, client.environment)}
     claimed, lost = [], []
     for entry in added:
         try:
@@ -437,7 +403,7 @@ def _claim(client: plaidapi.Client, secrets_dir: Path, name: str,
             continue
         item = items.Item(
             name=_free_name(secrets_dir, name, exchanged["item_id"]),
-            environment=environment,
+            environment=client.environment,
             access_token=exchanged["access_token"],
             item_id=exchanged["item_id"],
             institution_id=entry.get("institution_id"),
@@ -488,14 +454,14 @@ def _finish(client: plaidapi.Client, secrets_dir: Path, name: str,
             f"{item.name!r}. Token file: "
             f"{items.token_path(secrets_dir, item.name)}")
         healthy = _report_item(client, item) and healthy
-    stored = [i for i in items.list_items(secrets_dir)
-              if i.environment == client.environment]
+    stored = items.of_environment(secrets_dir, client.environment)
     institutions = [i.institution_id for i in stored if i.institution_id]
     if len(institutions) != len(set(institutions)):
         say()
         say("Two stored Items are at the same institution. Some "
             "institutions keep only the newest link of a login; "
-            "`login --check` shows which Items still answer.")
+            f"{items.command('login --check', client.environment)} shows "
+            f"which Items still answer.")
     if client.environment == "production":
         say()
         say(f"{len(stored)} production Item(s) are stored here. A Trial "
@@ -524,8 +490,8 @@ def _start(client: plaidapi.Client, secrets_dir: Path,
            args: argparse.Namespace) -> items.PendingLink:
     """Ask Plaid for a sign-in page and write the session down before its
     URL is shown. From that point the page can make an Item whether or not
-    this process is still running to hear of it, and the link token is the
-    one handle that can ask Plaid what happened."""
+    this process still runs. The link token is then the one handle that
+    can ask Plaid what happened."""
     required = args.require or DEFAULT_REQUIRED
     doc = client.link_token_for_new_item(
         required=required, country_codes=args.country_codes,
@@ -545,9 +511,18 @@ def _renew(client: plaidapi.Client, item: items.Item,
            args: argparse.Namespace) -> int:
     say(f"Item {item.name!r} is linked already. Link opens in update mode: "
         f"the sign-in renews this Item and makes no new one.")
-    doc = client.link_token_for_update(
-        access_token=item.access_token, country_codes=args.country_codes,
-        lifetime_seconds=args.mfa_timeout)
+    try:
+        doc = client.link_token_for_update(
+            access_token=item.access_token, country_codes=args.country_codes,
+            lifetime_seconds=args.mfa_timeout)
+    except plaidapi.PlaidError as e:
+        # Update mode needs a token Plaid accepts. For the two answers
+        # that say it does not, the way on is not another renewal.
+        if e.error_code not in ("ITEM_NOT_FOUND", "INVALID_ACCESS_TOKEN"):
+            raise
+        raise LinkFailed(f"Plaid reports: {e}. "
+                         f"{items.remedy(item, e.error_code, e.error_type)}"
+                         ) from e
     if not doc.get("hosted_link_url"):
         raise LinkFailed("Plaid returned no sign-in page for the renewal.")
     _announce(doc["hosted_link_url"], item.environment, args.mfa_timeout,
@@ -579,17 +554,37 @@ def _sandbox_item(client: plaidapi.Client,
              "institution_name": institution.get("name")}]
 
 
+def _with_expiry(pending: items.PendingLink, doc: dict,
+                 secrets_dir: Path) -> items.PendingLink:
+    """`pending` with the time its page stops accepting a sign-in: the one
+    its file records, else the `expiration` Plaid states for its link
+    token. Raises ItemStoreError when neither states one. The file itself
+    is left as it is."""
+    if isinstance(pending.expires_at, (int, float)) and not isinstance(
+            pending.expires_at, bool):
+        return pending
+    try:
+        stated = plaidapi.instant(doc.get("expiration"))
+    except (TypeError, ValueError):
+        stated = None
+    if stated is None:
+        raise items.ItemStoreError(
+            f"{items.pending_path(secrets_dir, pending.name)} records no "
+            f"usable expiry, and Plaid states none for its sign-in either. "
+            f"Nothing was changed. If no sign-in on that page is still under "
+            f"way, move the file out of the secrets dir and run login again.")
+    return dataclasses.replace(pending, expires_at=stated)
+
+
 def link(args: argparse.Namespace, client: plaidapi.Client) -> int:
     """`login --item NAME`: settle, renew or make the Item of that name."""
     secrets_dir, name = args.secrets_dir, args.item
     existing = items.load_item(secrets_dir, name)
     pending = items.load_pending(secrets_dir, name)
     for record in (existing, pending):
-        if record is not None and record.environment != client.environment:
-            raise SystemExit(
-                f"{name!r} belongs to the {record.environment} environment; "
-                f"{'pass' if record.environment == 'sandbox' else 'drop'} "
-                f"--sandbox.")
+        if record is not None:
+            items.require_environment(name, record.environment,
+                                      client.environment)
     if existing is not None and (args.require or args.sandbox_institution):
         raise SystemExit(
             f"Item {name!r} exists and keeps the products it was linked "
@@ -603,12 +598,16 @@ def link(args: argparse.Namespace, client: plaidapi.Client) -> int:
         try:
             doc = client.link_token_get(pending.link_token)
         except plaidapi.PlaidError as e:
-            if e.transient:
+            # Only Plaid's word that the link token is gone ends a saved
+            # sign-in. Any other error says nothing about its page.
+            if e.error_code != "INVALID_LINK_TOKEN":
                 raise
             log.info("Plaid no longer knows the saved sign-in (%s)", e)
             doc = None
-        if doc is not None and _added_items(doc):
-            return _finish(client, secrets_dir, name, _added_items(doc))
+        if doc is not None and (added := _added_items(doc)):
+            return _finish(client, secrets_dir, name, added)
+        if doc is not None and existing is None:
+            pending = _with_expiry(pending, doc, secrets_dir)
         if (doc is None or existing is not None
                 or pending.expires_at <= _time()):
             items.clear_pending(secrets_dir, name)
@@ -649,27 +648,27 @@ def check(args: argparse.Namespace, client: plaidapi.Client) -> int:
         say(f"{environment}: no answer from Plaid: {e}")
         return 1
     say(f"{environment}: Plaid accepts the app keys")
-    linked = [i for i in items.list_items(args.secrets_dir)
-              if i.environment == environment]
-    if args.item:
-        linked = [i for i in linked if i.name == args.item]
-        if not linked:
-            say(f"no {environment} Item is named {args.item!r}")
-            return 1
+    linked, unreadable = items.select(args.secrets_dir, environment,
+                                      [args.item] if args.item else None)
+    for e in unreadable:
+        say(str(e))
+    if unreadable and not linked:
+        return 1
     if not linked:
-        say(f"no {environment} Item is linked; `login --item NAME` links "
+        say(f"no {environment} Item is linked; "
+            f"{items.command('login --item NAME', environment)} links "
             f"one")
         return 1
     # Every Item is reported, including the ones after a failing one.
-    return 0 if all([_report_item(client, i) for i in linked]) else 1
+    healthy = all([_report_item(client, i) for i in linked])
+    return 0 if healthy and not unreadable else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
-    _source_env_file(args.env_file)
-    environment = "sandbox" if args.sandbox else "production"
-    client = make_client(environment, args.client_id)
+    appkeys.source_env_file(args.env_file)
+    client = make_client(appkeys.environment(args), args.client_id)
     try:
         return check(args, client) if args.check else link(args, client)
     except LinkFailed as e:

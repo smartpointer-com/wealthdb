@@ -6,23 +6,36 @@ and PLAID-SECRET headers, so a request body holds parameters only. An
 access token is a parameter and does travel in the body; no body is ever
 logged or written.
 
-Two lists make the collector read-only by construction:
+Two lists limit what the collector may ask of Plaid:
 
-* ENDPOINTS is every route the client will call. A route outside it is
+* ENDPOINTS and SANDBOX_ENDPOINTS are every route the client will call.
+  The second applies on the Sandbox host only. A route outside them is
   refused before any request is built, so adding one is a reviewed edit
   here and in AGENTS.md, never a string at a call site.
-* DATA_PRODUCTS is every product a link may request. Plaid grants an
-  Item exactly the products its link asked for, and none of these can
+* DATA_PRODUCTS is every product a link may request. None of these can
   move money.
+
+Reading a product can still change what an Item is billed for:
+
+* The first read of investment transactions starts Plaid's subscription
+  for them.
+* The read of a product the Item lacks would add that product.
+
+A Trial plan charges for neither. After an upgrade to a paid plan, Plaid
+bills each subscription monthly until the Item is removed. AGENTS.md has
+the rules that keep both in view.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 log = logging.getLogger("plaid.api")
 
@@ -52,19 +65,36 @@ CLIENT_NAME = "wealthdb"
 CLIENT_USER_ID = "wealthdb"
 
 ENDPOINTS = frozenset({
+    "/accounts/get",
     "/institutions/get",
     "/institutions/get_by_id",
+    "/investments/holdings/get",
+    "/investments/transactions/get",
     "/item/get",
     "/item/public_token/exchange",
     "/item/remove",
+    "/liabilities/get",
     "/link/token/create",
     "/link/token/get",
+    "/transactions/get",
+    "/transactions/sync",
 })
 
 # Routes that exist on the Sandbox host only. They make test Items.
 SANDBOX_ENDPOINTS = frozenset({
     "/sandbox/public_token/create",
 })
+
+# The most rows Plaid returns for one page of a paged read.
+PAGE_SIZE = 500
+
+# How long a request waits for Plaid's answer, in seconds.
+TIMEOUT = 60.0
+
+# Plaid assembles an Item's investment history after the link. A first
+# read before that is done waits for it: up to one to two minutes, Plaid
+# says.
+SLOW_TIMEOUT = 300.0
 
 _ATTEMPTS = 3
 _BACKOFF_SECONDS = 1.5
@@ -87,7 +117,6 @@ class PlaidError(Exception):
         self.error_type = error.get("error_type")
         self.error_code = error.get("error_code")
         self.error_message = error.get("error_message")
-        self.display_message = error.get("display_message")
         self.request_id = error.get("request_id")
         super().__init__(self._describe())
 
@@ -104,6 +133,26 @@ class PlaidError(Exception):
         return f"{self.path}: {code}: {text}{tail}"
 
 
+_INSTANT_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?"
+    r"(Z|[+-]\d{2}:?\d{2})?$")
+
+
+def instant(value) -> int | None:
+    """An ISO 8601 time Plaid states, in whole Unix seconds. Plaid writes
+    up to nine fractional digits, which the standard parser of the oldest
+    supported Python refuses, so the fraction is dropped first."""
+    if not value:
+        return None
+    m = _INSTANT_RE.match(value)
+    if not m:
+        raise ValueError(f"not a time Plaid writes: {value!r}")
+    zone = m.group(3) or "Z"
+    zone = "+00:00" if zone == "Z" else zone[:3] + ":" + zone[-2:]
+    return int(datetime.fromisoformat(f"{m.group(1)}T{m.group(2)}{zone}")
+               .timestamp())
+
+
 def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float):
     """POST `body` and return (status, raw answer). An HTTP error status is
     an answer like any other; only the absence of one raises."""
@@ -113,31 +162,41 @@ def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as e:
-        return e.code, e.read()
-    except OSError as e:
-        # URLError, TimeoutError and the socket and TLS errors.
+        try:
+            return e.code, e.read()
+        except (OSError, http.client.HTTPException) as cut:
+            raise TransportError(f"{type(cut).__name__}: {cut}") from cut
+    except (OSError, http.client.HTTPException) as e:
+        # URLError, TimeoutError, the socket and TLS errors, and an answer
+        # cut off part-way (IncompleteRead) or never begun (BadStatusLine).
         raise TransportError(f"{type(e).__name__}: {e}") from e
 
 
 class Client:
-    """The app keys of one environment, and the calls made with them."""
+    """The app keys of one environment, and the calls made with them.
+
+    `on_exchange`, when set, is called once per HTTP attempt with the URL,
+    the status (None when no answer came), the time taken in milliseconds,
+    the size of the answer and the transport error, if any. It sees
+    nothing of the request, so it cannot leak a key or a token.
+    """
 
     def __init__(self, client_id: str, secret: str, environment: str, *,
-                 transport=_urllib_transport, sleep=time.sleep,
-                 timeout: float = 60.0):
+                 transport=_urllib_transport, sleep=time.sleep):
         if environment not in HOSTS:
             raise ValueError(f"unknown Plaid environment: {environment!r}")
         self.environment = environment
+        self.on_exchange = None
         self._client_id = client_id
         self._secret = secret
         self._transport = transport
         self._sleep = sleep
-        self._timeout = timeout
 
     def __repr__(self) -> str:
         return f"Client(environment={self.environment!r})"
 
-    def post(self, path: str, payload: dict) -> dict:
+    def post(self, path: str, payload: dict, *,
+             timeout: float = TIMEOUT) -> dict:
         """Call one allowed route and return the decoded answer."""
         if path not in ENDPOINTS and not (
                 self.environment == "sandbox" and path in SANDBOX_ENDPOINTS):
@@ -155,11 +214,13 @@ class Client:
         body = json.dumps(payload).encode("utf-8")
         url = HOSTS[self.environment] + path
         for attempt in range(1, _ATTEMPTS + 1):
+            started = time.monotonic()
             try:
-                status, raw = self._transport(url, headers, body,
-                                              self._timeout)
+                status, raw = self._transport(url, headers, body, timeout)
+                self._observe(url, started, status=status, size=len(raw))
                 break
             except TransportError as e:
+                self._observe(url, started, error=str(e))
                 if attempt == _ATTEMPTS:
                     raise
                 log.warning("%s: no answer (%s); trying again", path, e)
@@ -174,6 +235,12 @@ class Client:
         if not 200 <= status < 300:
             raise PlaidError(path, status, doc)
         return doc
+
+    def _observe(self, url: str, started: float, *, status=None, size=None,
+                 error=None) -> None:
+        if self.on_exchange is not None:
+            self.on_exchange(url, status, (time.monotonic() - started) * 1000,
+                             size, error)
 
     # ---- links -----------------------------------------------------------
 
@@ -200,9 +267,9 @@ class Client:
 
         `required` is the one product the login must support: Plaid offers
         only institutions that have it, and refuses a login with no account
-        it fits. The other data products ride along as optional, so the
-        user consents to them and Plaid fetches them where it can, and
-        neither their absence nor a failed first fetch stops the Item from
+        it fits. The other data products ride along as optional. The
+        consent screen covers them, and Plaid fetches them where it can.
+        Neither their absence nor a failed first fetch stops the Item from
         being made.
         """
         if required not in DATA_PRODUCTS:
@@ -243,6 +310,68 @@ class Client:
         """Revoke an Item's access token at Plaid. Never frees a Trial
         slot; the one use is an Item whose token could not be stored."""
         return self.post("/item/remove", {"access_token": access_token})
+
+    # ---- data --------------------------------------------------------------
+    #
+    # Each read below returns the copy Plaid holds for the Item, which Plaid
+    # refreshes on its own schedule. None asks Plaid to refresh it; the
+    # routes that would are not in ENDPOINTS.
+
+    def accounts_get(self, access_token: str) -> dict:
+        """The Item's accounts, with the balances of Plaid's last update."""
+        return self.post("/accounts/get", {"access_token": access_token})
+
+    def holdings_get(self, access_token: str) -> dict:
+        """Holdings and securities of the Item's investment accounts."""
+        return self.post("/investments/holdings/get",
+                         {"access_token": access_token})
+
+    def investment_transactions_get(self, access_token: str, *, start, end,
+                                    offset: int) -> dict:
+        """One page of investment transactions dated `start` to `end`."""
+        return self.post("/investments/transactions/get", {
+            "access_token": access_token,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "options": {"count": PAGE_SIZE, "offset": offset},
+        }, timeout=SLOW_TIMEOUT)
+
+    def transactions_get(self, access_token: str, *, start, end,
+                         offset: int) -> dict:
+        """One page of the bank and card ledger dated `start` to `end`.
+
+        Asks for the institution's own description beside Plaid's cleaned
+        name, and for version 2 of Plaid's category taxonomy, so every Item
+        files its rows in one vocabulary whatever the account's default.
+        """
+        return self.post("/transactions/get", {
+            "access_token": access_token,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "options": {
+                "count": PAGE_SIZE,
+                "offset": offset,
+                "include_original_description": True,
+                "personal_finance_category_version": "v2",
+            },
+        })
+
+    def liabilities_get(self, access_token: str) -> dict:
+        """Card, mortgage and student-loan terms of the Item's accounts."""
+        return self.post("/liabilities/get", {"access_token": access_token})
+
+    def ledger_history_status(self, access_token: str) -> str | None:
+        """How far Plaid has got assembling the Item's bank and card
+        ledger: NOT_READY, INITIAL_UPDATE_COMPLETE (the newest 30 days),
+        HISTORICAL_UPDATE_COMPLETE, or TRANSACTIONS_UPDATE_STATUS_UNKNOWN.
+        Plaid states it only on its sync route. This asks that route for
+        one row, with no cursor, and keeps only the status."""
+        doc = self.post("/transactions/sync", {
+            "access_token": access_token,
+            "count": 1,
+            "options": {"personal_finance_category_version": "v2"},
+        })
+        return doc.get("transactions_update_status")
 
     # ---- institutions ----------------------------------------------------
 

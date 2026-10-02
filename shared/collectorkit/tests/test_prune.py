@@ -26,6 +26,7 @@ adds coverage for the variation the helper exists to absorb:
     files AND dirs reclaimed, fresh ones protected, --dry-run inert,
     missing/absent dir a no-op, bronze untouched when the flag is absent,
     and a --debug-dir overlapping bronze refused before anything is deleted
+  * a parser built without --debug-dir refuses the flag
 """
 
 from __future__ import annotations
@@ -783,6 +784,21 @@ def test_no_debug_dir_flag_never_touches_a_cache(tmp_path):
     run_main(CFG, root)
     assert (dbg / TRACE_BUNDLE / "trace.network").exists()
     assert (dbg / SCREENSHOT).exists()
+
+
+def test_a_parser_without_the_debug_dir_flag_refuses_it(capsys):
+    # A collector that writes no debug output outside its runs builds the
+    # parser without the flag: --help does not offer it, and argparse
+    # refuses it like any unknown flag.
+    parser = prune.build_parser("synthetic", debug_dir=False)
+    assert parser.parse_args([]).debug_dir is None
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args(["--debug-dir", "/tmp/x"])
+    assert caught.value.code == 2
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--help"])
+    assert "--debug-dir" not in capsys.readouterr().out
+    assert "--debug-dir" in prune.build_parser("synthetic").format_help()
 
 
 def test_debug_cache_only_still_reports_freed(tmp_path, capsys):

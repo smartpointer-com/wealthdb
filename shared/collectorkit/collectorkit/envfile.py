@@ -29,6 +29,7 @@ indirection.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -50,7 +51,8 @@ def source_env_file(path: Path, prefer_file: bool = False) -> bool:
     metacharacters reaches the browser exactly as written in the
     env file rather than as a possibly-mangled inherited value.
     Returns False if the file is absent; raises ValueError on a bash
-    syntax error.
+    syntax error. The error names the file and the line numbers only:
+    bash quotes the offending line, and that line may hold a secret.
     """
     path = Path(path)
     if not path.is_file():
@@ -60,8 +62,11 @@ def source_env_file(path: Path, prefer_file: bool = False) -> bool:
         capture_output=True,
     )
     if chk.returncode != 0:
-        stderr = (chk.stderr or b"").decode("utf-8", errors="replace").rstrip()
-        raise ValueError(f"env file {path} has bash syntax errors:\n{stderr}")
+        lines = sorted({int(n) for n in
+                        re.findall(rb": line (\d+): ", chk.stderr)})
+        where = (f" at line {', '.join(map(str, lines))}" if lines else "")
+        raise ValueError(f"env file {path} is not valid bash{where}. The "
+                         f"line is not shown, since it may hold a secret.")
     quoted = shlex.quote(str(path))
     result = subprocess.run(
         ["bash", "--noprofile", "--norc", "-c",

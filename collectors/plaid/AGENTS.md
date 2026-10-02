@@ -26,18 +26,40 @@ Allowed without asking:
 
 - reading code, docs and tests; `--help`; `make build-plaid` /
   `make test-plaid`;
-- every verb with `--sandbox`, once `PLAID_SANDBOX_SECRET` is set. The
-  Sandbox has test institutions and test data only, and its Items are
-  free;
+- `login` and `download` with `--sandbox`, once `PLAID_SANDBOX_SECRET`
+  is set. The Sandbox has test institutions and test data only, and its
+  Items are free. A Sandbox download writes into a rehearsal data dir,
+  never a deployment's;
 - `login --check`. It asks Plaid two free questions and reaches no
-  institution.
+  institution;
+- `download --dry-run`. It reads each Item and its accounts from Plaid's
+  copy, two free reads, and writes no run. No sign-in happens;
+- `prune` with `--dry-run`. It reads local files only.
 
-Not allowed unless explicitly asked: `login --item NAME` without
-`--sandbox`. Hand the command to the user instead.
+Not allowed unless explicitly asked: `login --item NAME` and `download`
+without `--sandbox`. Hand the command to the user instead.
 
-Re-linking is never a fix. When an Item stops answering, the remedy is
-`login --item NAME` on the **same name**, which opens update mode on the
-same Item. Never suggest deleting a token file and linking again.
+The data root of a deployment is not a scratch area. Every verb, dry
+runs included, creates the empty data dir. Develop against a rehearsal
+root: `WEALTHDB_DATA_ROOT` names the root, and `--data-dir` names
+plaid's own dir in it (`<root>/plaid`), never the root itself. Never add
+a Plaid source to a deployment's live config.
+
+Re-linking is never a fix for an Item that Plaid still has. When an Item
+stops answering, the remedy is `login --item NAME` on the **same name**,
+which opens update mode on the same Item. Never suggest deleting a token
+file and linking again.
+
+Two answers are beyond update mode:
+
+- `ITEM_NOT_FOUND`: Plaid no longer has the Item. The only way back is a
+  new link under a new name, which uses one more Trial slot, so the
+  choice is the user's. Moving the dead token file out of the secrets
+  dir stops runs reporting the Item; that is also the user's step, never
+  an agent's.
+- `INVALID_ACCESS_TOKEN`: Plaid does not accept the stored token with
+  these app keys. The keys of the Plaid team that linked the Item, or
+  the token file's backup, fix it. A new link does not.
 
 ## 1. Read-only access — the whole surface
 
@@ -52,6 +74,14 @@ request.
 - `/item/public_token/exchange`: turn a finished sign-in into the Item's
   access token.
 - `/item/get`: the Item's state. Free.
+- `/accounts/get`: accounts and the balances of Plaid's last update.
+  Free.
+- `/investments/holdings/get`, `/investments/transactions/get`,
+  `/transactions/get`, `/liabilities/get`: the data. Each reads Plaid's
+  copy and never reaches the institution.
+- `/transactions/sync`: asked for one row, with no cursor, for one field:
+  how much of the ledger's history Plaid holds. Only for an Item linked
+  with transactions.
 - `/institutions/get`, `/institutions/get_by_id`: institution metadata.
   Free; the first is the app-key probe.
 - `/item/remove`: revoke an Item. Called from one place only: `login`,
@@ -63,6 +93,14 @@ request.
 `liabilities`. A link requests these and nothing else. An Item can do
 only what its link requested, so no Item of this collector can pay or
 transfer.
+
+`download` reads an Item only for the products in its `/item/get`
+`products` list. Calling another product's route would add that product
+to the Item, with its billing. The first `/investments/transactions/get`
+on an Item starts Plaid's investment transactions subscription. A Trial
+plan charges for neither. After an upgrade to a paid plan, Plaid bills
+every subscription added during the Trial each month, until the Item is
+removed.
 
 Forbidden — do not call, wrap or add:
 

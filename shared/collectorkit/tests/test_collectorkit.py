@@ -249,6 +249,24 @@ class BronzeTest(unittest.TestCase):
 
 
 class EnvFileTest(unittest.TestCase):
+    def test_a_syntax_error_names_the_line_and_never_shows_it(self):
+        # bash -n quotes the whole line near an unexpected token, so its
+        # text would print a secret written beside a stray character.
+        shapes = ("export CK_SECRET=SYNTHETIC-VALUE)x\n",
+                  "export CK_SECRET='SYNTHETIC-VALUE')\n",
+                  "export CK_SECRET=<SYNTHETIC-VALUE>\n")
+        with tempfile.TemporaryDirectory() as d:
+            envf = Path(d) / "bad.env"
+            for shape in shapes:
+                envf.write_text("export CK_OK=1\n" + shape)
+                with self.assertRaises(ValueError) as caught:
+                    envfile.source_env_file(envf)
+                message = str(caught.exception)
+                self.assertIn("at line 2", message)
+                self.assertIn(str(envf), message)
+                self.assertNotIn("SYNTHETIC-VALUE", message)
+                self.assertNotIn("CK_SECRET", message)
+
     def test_bash_source_handles_quoting(self):
         for k in ("CK_FOO", "CK_BAZ", "CK_DOLLAR"):
             os.environ.pop(k, None)

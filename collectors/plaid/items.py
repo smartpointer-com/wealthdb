@@ -28,12 +28,15 @@ from pathlib import Path
 
 from collectorkit import session
 
+import plaidapi
+from appkeys import SECRET_ENV
+
 log = logging.getLogger("plaid.items")
 
-ENVIRONMENTS = ("production", "sandbox")
+ENVIRONMENTS = tuple(plaidapi.HOSTS)
 
-# A name is a directory, part of two file names, and a fair gold source
-# id, so it stays inside what all three accept.
+# A name is a directory, part of several file names, and a fair gold
+# source id, so it stays inside what all three accept.
 ITEM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
 _TOKEN_PREFIX = "plaid-token-"
@@ -75,7 +78,7 @@ class PendingLink:
     required: str
     created_at: str
     # When the page stops accepting a sign-in, in Unix seconds.
-    expires_at: int = 0
+    expires_at: int
 
 
 def token_path(secrets_dir: Path, name: str) -> Path:
@@ -87,8 +90,9 @@ def pending_path(secrets_dir: Path, name: str) -> Path:
 
 
 def _read(path: Path, kind: type, prefix: str):
-    """The record in `path` as a `kind`, or ItemStoreError. Never returns a
-    partial record, and never quotes the file: it holds a credential."""
+    """The record in `path` as a `kind`, or ItemStoreError. A field the
+    file lacks reads as None. An error never quotes the file: it holds a
+    credential."""
     if path.stat().st_mode & 0o077:
         session.secure_file(path)
     try:
@@ -135,17 +139,101 @@ def save_item(secrets_dir: Path, item: Item) -> None:
     session.save_state(token_path(secrets_dir, item.name), asdict(item))
 
 
-def list_items(secrets_dir: Path) -> list[Item]:
-    """Every stored Item, by name. A file under the token prefix whose
+def _stored_names(secrets_dir: Path) -> list[str]:
+    """The name of every stored Item. A file under the token prefix whose
     name is not an Item name is some other file and is passed over."""
-    found = []
+    names = []
     for path in sorted(Path(secrets_dir).glob(f"{_TOKEN_PREFIX}*.json")):
         name = path.name[len(_TOKEN_PREFIX):-len(".json")]
         if not ITEM_NAME_RE.match(name):
             log.warning("ignoring %s: its name is not an Item name", path.name)
             continue
-        found.append(load_item(secrets_dir, name))
-    return found
+        names.append(name)
+    return names
+
+
+def list_items(secrets_dir: Path) -> list[Item]:
+    """Every stored Item, by name. Raises ItemStoreError on the first file
+    that cannot be read."""
+    return [load_item(secrets_dir, name) for name in _stored_names(secrets_dir)]
+
+
+def of_environment(secrets_dir: Path, environment: str) -> list[Item]:
+    """Every stored Item of one environment. Raises ItemStoreError on a
+    file that cannot be read, so a caller about to store a new Item never
+    misses one that exists."""
+    return [i for i in list_items(secrets_dir) if i.environment == environment]
+
+
+def command(text: str, environment: str) -> str:
+    """A command to suggest, quoted, as it runs in `environment`: a
+    Sandbox one carries --sandbox, so it never reaches Production."""
+    return f"`{text}{' --sandbox' if environment == 'sandbox' else ''}`"
+
+
+def remedy(item: Item, error_code: str | None,
+           error_type: str | None) -> str:
+    """What to do about an Item that Plaid refuses, or reports a problem
+    with. Empty when Plaid's own message is all there is to go on."""
+    if error_code == "ITEM_NOT_FOUND":
+        return (f"Plaid no longer has this Item, and update mode cannot "
+                f"renew it. The only way back is a new link under a new "
+                f"name, {command('login --item NEW-NAME', item.environment)};"
+                f" on a Trial plan it uses one more of the ten Items. Every "
+                f"run reports this Item while "
+                f"{_TOKEN_PREFIX}{item.name}.json is in the secrets dir.")
+    if error_code == "INVALID_ACCESS_TOKEN":
+        return (f"Plaid does not accept the stored token with these app "
+                f"keys. PLAID_CLIENT_ID and {SECRET_ENV[item.environment]} "
+                f"must be the keys of the Plaid team that linked the Item, "
+                f"and {_TOKEN_PREFIX}{item.name}.json must match its "
+                f"backup. A new link does not repair this.")
+    if error_type == "ITEM_ERROR":
+        return (f"{command(f'login --item {item.name}', item.environment)} "
+                f"renews the sign-in.")
+    return ""
+
+
+def require_environment(name: str, environment: str, wanted: str) -> None:
+    """Refuse a record of one environment on a run of the other: an access
+    token only works with the secret of the environment that made it."""
+    if environment != wanted:
+        raise SystemExit(
+            f"{name!r} belongs to the {environment} environment; "
+            f"{'pass' if environment == 'sandbox' else 'drop'} --sandbox.")
+
+
+def select(secrets_dir: Path, environment: str, names: list[str] | None
+           ) -> tuple[list[Item], list[ItemStoreError]]:
+    """The stored Items a run reads, and the token files it could not
+    read.
+
+    With `names`, those Items, in that order and each once; only their own
+    files are read, and one that cannot be read raises. Without, every
+    Item of the environment; a file that cannot be read is returned beside
+    the others, so one damaged file does not stop every Item's run."""
+    if names:
+        chosen: list[Item] = []
+        for name in dict.fromkeys(names):
+            item = load_item(secrets_dir, name)
+            if item is None:
+                raise SystemExit(
+                    f"no Item is named {name!r}; "
+                    f"{command(f'login --item {name}', environment)} links "
+                    f"one")
+            require_environment(name, item.environment, environment)
+            chosen.append(item)
+        return chosen, []
+    chosen, unreadable = [], []
+    for name in _stored_names(secrets_dir):
+        try:
+            item = load_item(secrets_dir, name)
+        except ItemStoreError as e:
+            unreadable.append(e)
+            continue
+        if item.environment == environment:
+            chosen.append(item)
+    return chosen, unreadable
 
 
 def load_pending(secrets_dir: Path, name: str) -> PendingLink | None:

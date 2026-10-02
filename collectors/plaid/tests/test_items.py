@@ -68,7 +68,7 @@ def test_saving_one_item_leaves_the_others_files_untouched(secrets):
     assert [i.name for i in items.list_items(secrets)] == ["one", "two"]
 
 
-def test_an_item_does_not_print_its_token(secrets):
+def test_an_item_does_not_print_its_token():
     item = an_item()
     assert item.access_token not in repr(item)
     assert item.access_token not in str(item)
@@ -184,3 +184,63 @@ def test_an_unreadable_pending_link_is_an_error(secrets):
     (secrets / "plaid-link-bank.json").write_text("{")
     with pytest.raises(items.ItemStoreError):
         items.load_pending(secrets, "bank")
+
+
+# ---- choosing Items for a run ----------------------------------------------------
+
+def test_a_run_takes_every_item_of_its_environment(secrets):
+    for name, environment, n in (("bank", "sandbox", 1),
+                                 ("broker", "sandbox", 2),
+                                 ("live", "production", 3)):
+        items.save_item(secrets, an_item(name, environment, n))
+    chosen, unreadable = items.select(secrets, "sandbox", None)
+    assert [i.name for i in chosen] == ["bank", "broker"] and not unreadable
+    chosen, unreadable = items.select(secrets, "production", [])
+    assert [i.name for i in chosen] == ["live"] and not unreadable
+
+
+def test_named_items_come_in_order_and_once(secrets):
+    items.save_item(secrets, an_item("bank", n=1))
+    items.save_item(secrets, an_item("broker", n=2))
+    chosen, _ = items.select(secrets, "sandbox", ["broker", "bank", "broker"])
+    assert [i.name for i in chosen] == ["broker", "bank"]
+
+
+def test_one_damaged_token_file_does_not_stop_the_other_items(secrets):
+    items.save_item(secrets, an_item("bank"))
+    (secrets / "plaid-token-broken.json").write_text("{")
+    chosen, unreadable = items.select(secrets, "sandbox", None)
+    assert [i.name for i in chosen] == ["bank"]
+    assert len(unreadable) == 1
+    assert "plaid-token-broken.json exists but cannot be read" in str(
+        unreadable[0])
+    # A run that names its Items reads only their files.
+    assert items.select(secrets, "sandbox", ["bank"])[1] == []
+    with pytest.raises(items.ItemStoreError):
+        items.select(secrets, "sandbox", ["broken"])
+    # Storing a new Item must see every Item, so there it stays an error.
+    with pytest.raises(items.ItemStoreError):
+        items.of_environment(secrets, "sandbox")
+
+
+def test_a_name_with_no_item_or_of_the_other_environment_is_refused(
+        secrets):
+    items.save_item(secrets, an_item("live", "production"))
+    with pytest.raises(SystemExit, match="no Item is named 'absent'"):
+        items.select(secrets, "sandbox", ["absent"])
+    with pytest.raises(SystemExit, match="production environment; drop"):
+        items.select(secrets, "sandbox", ["live"])
+
+
+@pytest.mark.parametrize("code,error_type,needle", [
+    ("ITEM_LOGIN_REQUIRED", "ITEM_ERROR", "renews the sign-in"),
+    ("ITEM_NOT_FOUND", "ITEM_ERROR", "a new link under a new name"),
+    ("INVALID_ACCESS_TOKEN", "INVALID_INPUT", "PLAID_SANDBOX_SECRET"),
+    ("INTERNAL_SERVER_ERROR", "API_ERROR", None),
+])
+def test_the_remedy_fits_the_answer(code, error_type, needle):
+    hint = items.remedy(an_item(), code, error_type)
+    if needle is None:
+        assert hint == ""
+    else:
+        assert needle in hint

@@ -676,7 +676,11 @@ def _reclaim_debug_dir(debug_dir: Path | None, min_age_s: float, *,
 # CLI
 # ---------------------------------------------------------------------------
 
-def build_parser(description: str, prog: str | None = None) -> argparse.ArgumentParser:
+def build_parser(description: str, prog: str | None = None, *,
+                 debug_dir: bool = True) -> argparse.ArgumentParser:
+    """The shared prune flags. ``debug_dir=False`` leaves out
+    ``--debug-dir``, for a collector that writes no debug output outside
+    its runs; argparse then refuses the flag like any unknown one."""
     p = argparse.ArgumentParser(
         prog=prog, description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -686,27 +690,31 @@ def build_parser(description: str, prog: str | None = None) -> argparse.Argument
         "--bronze-dir", type=Path, default=Path("/data"),
         help="Bronze tree root. Default: /data.",
     )
-    p.add_argument(
-        "--debug-dir", type=Path, default=None,
-        help=("Also reclaim the host-side debug/trace cache rooted here — "
-              "the screenshots, HTML captures and Playwright trace bundles "
-              "that --screenshot-dir/--trace write OUTSIDE the bronze tree "
-              "(the /debug mount; ~/.cache/wealthdb/debug/<collector> "
-              "by default). "
-              "Entries older than --min-age-hours are deleted; none of them "
-              "is a `load` input. Omitted, or pointed at a dir that does not "
-              "exist: nothing to reclaim."),
-    )
+    if debug_dir:
+        p.add_argument(
+            "--debug-dir", type=Path, default=None,
+            help=("Also reclaim the host-side debug/trace cache rooted "
+                  "here — the screenshots, HTML captures and Playwright "
+                  "trace bundles that --screenshot-dir/--trace write "
+                  "OUTSIDE the bronze tree (the /debug mount; "
+                  "~/.cache/wealthdb/debug/<collector> by default). "
+                  "Entries older than --min-age-hours are deleted; none of "
+                  "them is a `load` input. Omitted, or pointed at a dir "
+                  "that does not exist: nothing to reclaim."),
+        )
+    else:
+        p.set_defaults(debug_dir=None)
     p.add_argument(
         "--dry-run", action="store_true",
         help="Print the deletion plan; remove nothing.",
     )
     p.add_argument(
         "--min-age-hours", type=float, default=1.0,
-        help=("Leave non-complete dumps — and --debug-dir entries — touched "
-              "within this window alone. The guard keys on the newest mtime "
-              "in the dir, so a long download in flight is protected while "
-              "an abandoned one ages out. Default: 1."),
+        help=("Leave non-complete dumps"
+              + (" — and --debug-dir entries —" if debug_dir else "")
+              + " touched within this window alone. The guard keys on the "
+              "newest mtime in the dir, so a long download in flight is "
+              "protected while an abandoned one ages out. Default: 1."),
     )
     return p
 

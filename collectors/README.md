@@ -293,12 +293,14 @@ structurally cannot narrow a fetch, the collector says so at runtime
 - **viac** `--no-transaction-documents` opts out of only the per-event
   receipt PDFs — a narrower concept than `--no-documents`; viac's document
   centre always downloads on its date window.
-- **plaid** keeps one token file per linked institution,
+- **plaid** keeps one token file per linked login (a Plaid Item),
   `plaid-token-<item>.json`, instead of a single `<source>-token.json`.
-  One collector serves many institutions, and an access token Plaid shows
-  only once is never rewritten by a later link. Its verbs also take
-  `--sandbox`, which switches a run to Plaid's test institutions and the
-  Items made there.
+  One collector serves many Items, and an access token Plaid shows only
+  once is never rewritten by a later link. Its data dir holds one tree
+  per Item, `<data-dir>/<item>/<UTC-ts>/`, rather than run dirs at the
+  top, so `dedup` does not reach its runs. Its `login` and `download`
+  also take `--sandbox`, which switches a run to Plaid's test
+  institutions and the Items made there.
 - **amex** spends its whole verb surface out of one small sign-in budget,
   so two fleet defaults are withdrawn: `login --check` reads the profile's
   device-trust cookie instead of calling the source (exit `0` = device
@@ -627,7 +629,7 @@ restated here.
 | [`svb`](svb/) | SVB brokerage, deposit and mortgage statements (historical sideload) | none — load-only | host venv |
 | [`manual`](manual/) | Private holdings with no portal (CSV) | none — manual entry | host venv |
 | [`fred`](fred/) | FRED / US Fed H.10 (historic FX rates) | API key | host venv |
-| [`plaid`](plaid/) | Banks, brokers and card issuers through the Plaid aggregator | Plaid app keys + one access token per linked institution (sign-in on Plaid's hosted page) | host venv — `login` only; no `download` or `load` yet |
+| [`plaid`](plaid/) | Banks, brokers and card issuers through the Plaid aggregator | Plaid app keys + one access token per linked institution (sign-in on Plaid's hosted page) | host venv — `login`, `download` and `prune`; no `load` yet |
 
 One silver kind has no collector. `synthetic` is written by a generator,
 not downloaded: [`demo/generate.py`](../demo/generate.py) writes the demo household

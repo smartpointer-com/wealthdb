@@ -5,7 +5,7 @@ the code sleeps."""
 from __future__ import annotations
 
 import json
-import os
+import time
 
 import pytest
 from conftest import (
@@ -15,6 +15,7 @@ from conftest import (
     link_session,
     plaid_error,
     public_token,
+    store,
 )
 
 import items
@@ -36,16 +37,6 @@ def will_exchange(fake, n: int = 1, environment: str = "sandbox"):
     fake.exchanges[public_token(n=n)] = {
         "access_token": access_token(environment, n),
         "item_id": f"item-synthetic-{n}"}
-
-
-def store(secrets, name="bank", environment="sandbox", n=1) -> items.Item:
-    item = items.Item(
-        name=name, environment=environment,
-        access_token=access_token(environment, n),
-        item_id=f"item-synthetic-{n}", institution_id="ins_000",
-        institution_name="Synthetic Bank")
-    items.save_item(secrets, item)
-    return item
 
 
 def leave_pending(secrets, clock, name="bank", *, age=60, lifetime=3600):
@@ -396,6 +387,125 @@ def test_an_expired_session_that_made_an_item_is_still_claimed(plaid, secrets):
     assert fake.called("new_link") == []
 
 
+MISSING = object()
+
+# A saved sign-in's expiry, damaged each way a hand edit can: the key gone,
+# null, a text, a boolean.
+DAMAGED = [pytest.param(MISSING, id="missing"), pytest.param(None, id="null"),
+           pytest.param("1800003600", id="text"),
+           pytest.param(True, id="bool")]
+
+
+def damage_expiry(secrets, value=MISSING, name="bank"):
+    """Damage a saved sign-in: its file records `value` as the page's
+    expiry, or no expiry at all."""
+    path = secrets / f"plaid-link-{name}.json"
+    doc = json.loads(path.read_text())
+    if value is MISSING:
+        del doc["expires_at"]
+    else:
+        doc["expires_at"] = value
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def iso(seconds: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+
+def test_a_sign_in_without_an_expiry_still_claims_its_item(plaid, secrets):
+    # Plaid is asked first, so a damaged file never blocks the claim.
+    fake = plaid()
+    leave_pending(secrets, plaid.clock)
+    damage_expiry(secrets)
+    fake.link_docs = [linked()]
+    will_exchange(fake)
+    assert run(secrets, "--item", "bank", "--sandbox") == 0
+    assert fake.called("new_link") == []
+    assert items.load_item(secrets, "bank") is not None
+
+
+@pytest.mark.parametrize("value", DAMAGED)
+def test_a_sign_in_without_an_expiry_takes_plaids(plaid, secrets, capsys,
+                                                   value):
+    fake = plaid()
+    leave_pending(secrets, plaid.clock, age=600)
+    damage_expiry(secrets, value)
+    closed = link_session("s0", exited=True)
+    fake.link_docs = [
+        {"link_sessions": [closed],
+         "expiration": iso(plaid.clock.time() + 3000)},
+        {"link_sessions": [closed, link_session(
+            "s1", public_tokens=[public_token()])]},
+    ]
+    will_exchange(fake)
+    assert run(secrets, "--item", "bank", "--sandbox") == 0
+    assert fake.called("new_link") == []
+    assert "valid for 50 minutes" in capsys.readouterr().out
+
+
+def test_a_sign_in_whose_stated_expiry_has_passed_is_replaced(plaid, secrets):
+    fake = plaid()
+    leave_pending(secrets, plaid.clock)
+    damage_expiry(secrets)
+    fake.link_docs = [
+        {"link_sessions": [], "expiration": iso(plaid.clock.time() - 60)},
+        linked()]
+    will_exchange(fake)
+    assert run(secrets, "--item", "bank", "--sandbox") == 0
+    assert len(fake.called("new_link")) == 1
+
+
+@pytest.mark.parametrize("stated", [None, "not a time", 1800003600])
+@pytest.mark.parametrize("value", DAMAGED)
+def test_a_sign_in_with_no_expiry_anywhere_changes_nothing(
+        plaid, secrets, capsys, stated, value):
+    fake = plaid()
+    leave_pending(secrets, plaid.clock)
+    path = damage_expiry(secrets, value)
+    before = path.read_bytes()
+    fake.link_docs = [{"link_sessions": [], "expiration": stated}]
+    assert run(secrets, "--item", "bank", "--sandbox") == 1
+    assert "records no usable expiry" in capsys.readouterr().out
+    assert path.read_bytes() == before
+    assert fake.called("new_link") == []
+
+
+def test_the_files_own_expiry_comes_before_plaids(plaid, secrets, capsys):
+    fake = plaid()
+    leave_pending(secrets, plaid.clock, age=600)
+    fake.link_docs = [
+        {"link_sessions": [], "expiration": iso(plaid.clock.time() + 600)},
+        linked()]
+    will_exchange(fake)
+    assert run(secrets, "--item", "bank", "--sandbox") == 0
+    assert "valid for 50 minutes" in capsys.readouterr().out
+
+
+def test_a_sign_in_without_an_expiry_beside_its_item_is_dropped(
+        plaid, secrets):
+    fake = plaid()
+    store(secrets)
+    leave_pending(secrets, plaid.clock)
+    damage_expiry(secrets)
+    fake.link_docs = [{"link_sessions": []},
+                      {"link_sessions": [link_session("s9", minute=9)]}]
+    assert run(secrets, "--item", "bank", "--sandbox") == 0
+    assert len(fake.called("update_link")) == 1
+    assert not (secrets / "plaid-link-bank.json").exists()
+
+
+def test_a_sign_in_without_an_expiry_plaid_no_longer_knows_is_replaced(
+        plaid, secrets):
+    fake = plaid()
+    leave_pending(secrets, plaid.clock)
+    damage_expiry(secrets)
+    fake.link_docs = [plaid_error("INVALID_LINK_TOKEN"), linked()]
+    will_exchange(fake)
+    assert run(secrets, "--item", "bank", "--sandbox") == 0
+    assert len(fake.called("new_link")) == 1
+
+
 def test_a_session_plaid_no_longer_knows_is_replaced(plaid, secrets):
     fake = plaid()
     leave_pending(secrets, plaid.clock)
@@ -405,8 +515,21 @@ def test_a_session_plaid_no_longer_knows_is_replaced(plaid, secrets):
     assert len(fake.called("new_link")) == 1
 
 
-def test_a_passing_fault_does_not_discard_the_saved_session(
+def test_a_refusal_that_is_not_about_the_link_token_keeps_the_session(
         plaid, secrets, capsys):
+    fake = plaid()
+    leave_pending(secrets, plaid.clock)
+    before = (secrets / "plaid-link-bank.json").read_bytes()
+    fake.link_docs = [plaid_error(
+        "INVALID_API_KEYS", message="invalid client_id or secret provided")]
+    assert run(secrets, "--item", "bank", "--sandbox") == 1
+    assert "INVALID_API_KEYS" in capsys.readouterr().out
+    assert (secrets / "plaid-link-bank.json").read_bytes() == before
+    assert fake.called("new_link") == []
+
+
+def test_a_passing_fault_does_not_discard_the_saved_session(
+        plaid, secrets):
     fake = plaid()
     leave_pending(secrets, plaid.clock)
     fake.link_docs = [plaid_error("INTERNAL_SERVER_ERROR", status=500)]
@@ -416,7 +539,7 @@ def test_a_passing_fault_does_not_discard_the_saved_session(
 
 
 def test_an_item_claimed_by_an_earlier_run_is_not_stored_twice(
-        plaid, secrets, capsys):
+        plaid, secrets):
     # The earlier run died after writing the token and before removing
     # the session's record.
     fake = plaid()
@@ -574,18 +697,45 @@ def test_a_renewal_completed_on_a_second_visit_succeeds(plaid, secrets):
     assert run(secrets, "--item", "bank", "--sandbox") == 0
 
 
+@pytest.mark.parametrize("code,hint", [
+    ("ITEM_NOT_FOUND", "`login --item NEW-NAME --sandbox`"),
+    ("INVALID_ACCESS_TOKEN", "A new link does not repair this."),
+])
+def test_a_renewal_plaid_refuses_says_what_to_do(plaid, secrets, capsys,
+                                                 code, hint):
+    fake = plaid()
+    store(secrets)
+    fake.update_link_answer = plaid_error(code)
+    assert run(secrets, "--item", "bank", "--sandbox") == 1
+    out = capsys.readouterr().out
+    assert f"Plaid reports: /synthetic: {code}" in out and hint in out
+    assert fake.called("link_get") == []
+
+
+def test_a_renewal_plaid_refuses_for_another_reason_shows_plaids_text(
+        plaid, secrets, capsys):
+    fake = plaid()
+    store(secrets)
+    fake.update_link_answer = plaid_error("INVALID_FIELD",
+                                          message="synthetic refusal")
+    assert run(secrets, "--item", "bank", "--sandbox") == 1
+    assert ("Plaid reports: /synthetic: INVALID_FIELD: synthetic refusal"
+            in capsys.readouterr().out)
+
+
 def test_a_renewed_item_plaid_still_faults_reports_failure(
         plaid, secrets, capsys):
     fake = plaid()
     store(secrets)
     fake.link_docs = [{"link_sessions": [link_session()]}]
     fake.item_docs[access_token()] = {"item": {"error": {
-        "error_code": "ITEM_LOGIN_REQUIRED",
+        "error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED",
         "error_message": "the login details of this item have changed"}}}
     assert run(secrets, "--item", "bank", "--sandbox") == 1
     out = capsys.readouterr().out
     assert "bank: needs a new sign-in" in out
     assert "ITEM_LOGIN_REQUIRED: the login details of this item" in out
+    assert "`login --item bank --sandbox` renews the sign-in." in out
 
 
 @pytest.mark.parametrize("argv", [
@@ -732,14 +882,54 @@ def test_check_sees_only_its_own_environment(plaid, secrets, capsys):
         ("item_get", access_token("production", 2))]
 
 
-def test_check_of_one_named_item(plaid, secrets, capsys):
+def test_check_of_one_named_item(plaid, secrets):
     fake = plaid()
     store(secrets, "bank", n=1)
     store(secrets, "broker", n=2)
     assert run(secrets, "--check", "--sandbox", "--item", "broker") == 0
     assert fake.called("item_get") == [("item_get", access_token(n=2))]
-    assert run(secrets, "--check", "--sandbox", "--item", "absent") == 1
-    assert "no sandbox Item is named 'absent'" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="no Item is named 'absent'"):
+        run(secrets, "--check", "--sandbox", "--item", "absent")
+
+
+def test_check_of_an_item_of_the_other_environment(plaid, secrets):
+    fake = plaid()
+    store(secrets, "bank", environment="production")
+    with pytest.raises(SystemExit, match="production environment; drop"):
+        run(secrets, "--check", "--sandbox", "--item", "bank")
+    assert fake.called("item_get") == []
+
+
+def test_check_of_an_item_with_another_error_names_no_sign_in(
+        plaid, secrets, capsys):
+    fake = plaid()
+    store(secrets)
+    fake.item_docs[access_token()] = {"item": {"error": {
+        "error_type": "INSTITUTION_ERROR",
+        "error_code": "INSTITUTION_NO_LONGER_SUPPORTED",
+        "error_message": "synthetic institution text"}}}
+    assert run(secrets, "--check", "--sandbox") == 1
+    out = capsys.readouterr().out
+    assert "bank: Plaid reports an error on the Item" in out
+    assert "synthetic institution text" in out
+    assert "login --item" not in out
+
+
+@pytest.mark.parametrize("code,error_type,hint", [
+    ("ITEM_NOT_FOUND", "ITEM_ERROR", "update mode cannot renew it"),
+    ("INVALID_ACCESS_TOKEN", "INVALID_INPUT",
+     "PLAID_CLIENT_ID and PLAID_SANDBOX_SECRET must be the keys"),
+])
+def test_check_of_an_item_plaid_refuses_says_what_to_do(
+        plaid, secrets, capsys, code, error_type, hint):
+    fake = plaid()
+    store(secrets)
+    fake.item_docs[access_token()] = plaid_error(code, error_type=error_type)
+    assert run(secrets, "--check", "--sandbox") == 1
+    out = capsys.readouterr().out
+    assert f"bank: Plaid refuses the Item: /synthetic: {code}" in out
+    assert hint in out
+    assert "renews" not in out
 
 
 def test_check_changes_nothing(plaid, secrets):
@@ -757,6 +947,17 @@ def test_check_fails_on_a_token_file_that_cannot_be_read(
     (secrets / "plaid-token-bank.json").write_text("{")
     assert run(secrets, "--check", "--sandbox") == 1
     assert "exists but cannot be read" in capsys.readouterr().out
+
+
+def test_check_reports_the_other_items_beside_a_damaged_file(
+        plaid, secrets, capsys):
+    plaid()
+    store(secrets, "bank")
+    (secrets / "plaid-token-broken.json").write_text("{")
+    assert run(secrets, "--check", "--sandbox") == 1
+    out = capsys.readouterr().out
+    assert "plaid-token-broken.json exists but cannot be read" in out
+    assert "bank: ok" in out
 
 
 def test_check_without_an_answer_fails(plaid, secrets, capsys):
@@ -780,7 +981,7 @@ def test_check_without_an_answer_fails(plaid, secrets, capsys):
     ["--item", "bank", "--country-codes", "USA"],
     ["--item", "bank", "--password", "x"],
 ])
-def test_arguments_that_do_not_apply_are_refused(argv, capsys):
+def test_arguments_that_do_not_apply_are_refused(argv):
     with pytest.raises(SystemExit) as caught:
         login.parse_args(argv)
     assert caught.value.code == 2
@@ -799,63 +1000,3 @@ def test_country_codes_fall_back_to_the_environment(monkeypatch):
         ["--check", "--country-codes", "ca"]).country_codes == ["CA"]
     monkeypatch.delenv("PLAID_COUNTRY_CODES")
     assert login.parse_args(["--check"]).country_codes == ["US"]
-
-
-# ---- the keys ------------------------------------------------------------------------
-
-@pytest.mark.parametrize("environment,variable", [
-    ("production", "PLAID_SECRET"), ("sandbox", "PLAID_SANDBOX_SECRET")])
-def test_each_environment_reads_its_own_secret(
-        monkeypatch, environment, variable):
-    monkeypatch.setenv("PLAID_CLIENT_ID", "synthetic-id")
-    monkeypatch.setenv("PLAID_SECRET", "synthetic-production-secret")
-    monkeypatch.setenv("PLAID_SANDBOX_SECRET", "synthetic-sandbox-secret")
-    client = login.make_client(environment, None)
-    assert client.environment == environment
-    assert client._secret == f"synthetic-{environment}-secret"
-
-    monkeypatch.delenv(variable)
-    with pytest.raises(SystemExit, match=variable):
-        login.make_client(environment, None)
-
-
-def test_a_missing_client_id_is_named(monkeypatch):
-    monkeypatch.delenv("PLAID_CLIENT_ID", raising=False)
-    monkeypatch.setenv("PLAID_SECRET", "synthetic-secret")
-    with pytest.raises(SystemExit, match="PLAID_CLIENT_ID"):
-        login.make_client("production", None)
-    assert login.make_client("production", "from-flag")._client_id == (
-        "from-flag")
-
-
-def test_the_env_file_is_sourced_as_a_shell_script_and_wins(
-        tmp_path, monkeypatch):
-    # Quoting and `export` are the shell's to read, so the file goes
-    # through bash; its values win over what the process inherited.
-    # Set first, so the fixture restores each one after the file has
-    # written over it.
-    for name in ("PLAID_CLIENT_ID", "PLAID_SANDBOX_SECRET", "PLAID_PART"):
-        monkeypatch.setenv(name, "inherited")
-    monkeypatch.delenv("PLAID_ENV_FILE", raising=False)
-    env = tmp_path / "plaid.env"
-    env.write_text("export PLAID_CLIENT_ID='from $file'\n"
-                   "PLAID_PART=synthetic\n"
-                   "export PLAID_SANDBOX_SECRET=\"${PLAID_PART}-value\"\n")
-    login._source_env_file(env)
-    assert os.environ["PLAID_CLIENT_ID"] == "from $file"
-    assert os.environ["PLAID_SANDBOX_SECRET"] == "synthetic-value"
-
-
-def test_the_env_file_variable_is_honoured(tmp_path, monkeypatch):
-    env = tmp_path / "plaid.env"
-    env.write_text("PLAID_CLIENT_ID=from-variable\n")
-    monkeypatch.setenv("PLAID_ENV_FILE", str(env))
-    monkeypatch.setenv("PLAID_CLIENT_ID", "inherited")
-    login._source_env_file(None)
-    assert os.environ["PLAID_CLIENT_ID"] == "from-variable"
-
-
-def test_a_missing_env_file_is_an_error(tmp_path, monkeypatch):
-    monkeypatch.delenv("PLAID_ENV_FILE", raising=False)
-    with pytest.raises(SystemExit, match="does not exist"):
-        login._source_env_file(tmp_path / "nope.env")
