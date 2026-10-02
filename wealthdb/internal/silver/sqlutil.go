@@ -115,6 +115,17 @@ func StrPtrIfNonEmpty(s string) *string {
 	return &s
 }
 
+// CheckNumberOnOutflow returns the cheque number only when the row is money
+// leaving the account. Gold's contract (migration 0075) is that the field
+// names an outgoing payment, so a number on an inflow or a zero-amount row is
+// dropped.
+func CheckNumberOnOutflow(checkNo string, net *canonical.Decimal) *string {
+	if net == nil || !net.IsNegative() {
+		return nil
+	}
+	return StrPtrIfNonEmpty(checkNo)
+}
+
 // JoinText composes one text column out of several parts: each part is
 // trimmed, empty parts are dropped, and the rest are joined with "; " —
 // the transaction-text contract's separator (docs/adapters/ubs.md §7).
@@ -192,6 +203,13 @@ func DatePtrFromNullUnix(n sql.NullInt64) *time.Time {
 // to MAX(dump_runs.snapshot_at). Each bronze dump loaded bumps it and a
 // subsequent `wealthdb load` re-emits; an idle reload is a no-op.
 func LoadClockStatus(ctx context.Context, db *sql.DB, kind, spanExtrema string) (canonical.Status, error) {
+	return LoadClockStatusOver(ctx, db, kind, spanExtrema,
+		`SELECT MIN(posted_at), MAX(posted_at) FROM transactions`)
+}
+
+// LoadClockStatusOver is LoadClockStatus with the transaction range read by
+// ledgerExtrema, for a silver whose ledger is not one `transactions` table.
+func LoadClockStatusOver(ctx context.Context, db *sql.DB, kind, spanExtrema, ledgerExtrema string) (canonical.Status, error) {
 	s := canonical.Status{
 		OldestSnapshotAt:    -1,
 		LatestSnapshotAt:    -1,
@@ -212,8 +230,7 @@ func LoadClockStatus(ctx context.Context, db *sql.DB, kind, spanExtrema string) 
 	}
 
 	var oldT, newT sql.NullInt64
-	if err := db.QueryRowContext(ctx,
-		`SELECT MIN(posted_at), MAX(posted_at) FROM transactions`).Scan(&oldT, &newT); err != nil {
+	if err := db.QueryRowContext(ctx, ledgerExtrema).Scan(&oldT, &newT); err != nil {
 		return s, fmt.Errorf("%s Status transactions: %w", kind, err)
 	}
 	if oldT.Valid {

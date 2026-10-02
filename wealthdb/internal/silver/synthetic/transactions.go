@@ -79,7 +79,7 @@ SELECT transaction_id, occurred_at, account_id, instrument_id, asset_class, vehi
 			Memo:                  silver.StrPtrIfNonEmpty(memo.String),
 			Counterparty:          silver.StrPtrIfNonEmpty(counterparty.String),
 			ProviderCategory:      silver.StrPtrIfNonEmpty(providerCategory.String),
-			CheckNumber:           checkNumberOnOutflow(checkNumber.String, netAmount),
+			CheckNumber:           silver.CheckNumberOnOutflow(checkNumber.String, netAmount),
 			Payload:               payloadWith(payload, extra),
 		}
 		// The hint is the token an instrument lookup failed on, so it
@@ -93,15 +93,4 @@ SELECT transaction_id, occurred_at, account_id, instrument_id, asset_class, vehi
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil
-}
-
-// checkNumberOnOutflow returns the cheque number only when the row is money
-// leaving the account. Gold's contract (migration 0075) is that the field
-// names an outgoing payment, so a number on an inflow or a zero-amount row is
-// dropped rather than carried as if it were one.
-func checkNumberOnOutflow(checkNo string, net *canonical.Decimal) *string {
-	if net == nil || !net.IsNegative() {
-		return nil
-	}
-	return silver.StrPtrIfNonEmpty(checkNo)
 }

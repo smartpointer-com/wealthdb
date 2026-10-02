@@ -1118,7 +1118,7 @@ func assignCategories(
 			} else if drift {
 				counts.UnmappedProviderCategories++
 			}
-			if detailed, label, farClass, ok := fam.builtinRule(r.kind, row.signature, r.counterparty, r.description, r.providerCategory); ok {
+			if detailed, label, farClass, ok := fam.builtinRule(r.kind, row.signature, r.counterparty, r.description, r.providerCategory, row.providerDetailed); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
 				if fam.labelCol != "" {
 					row.merchantLabel = label

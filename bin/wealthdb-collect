@@ -29,7 +29,8 @@
 #   --secrets-dir <dir>   where credentials / sessions live (default ~/.secrets)
 #   --data-dir <dir>      where downloaded data is written (default $XDG_DATA_HOME/wealthdb/<source>)
 #   --silver-db <path>    the database file to build (default <data-dir>/<source>.db;
-#                         cointracking's is <data-dir>/cointracking.duckdb).
+#                         cointracking's is <data-dir>/cointracking.duckdb, and
+#                         plaid builds one per Item, <data-dir>/<item>/<item>.db).
 #                         Only load reads it (plus cointracking fetch-prices),
 #                         so passing it to another subcommand is an error
 #                         rather than a silent no-op. ${PREFIX}_SILVER_DB is

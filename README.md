@@ -13,8 +13,16 @@ one CLI and an optional set of dashboards answer:
 - where the cash went, as a cash flow statement with the household's
   own internal moves taken out.
 
-All data stays on the local machine. The collectors download, the
-engine consolidates, the reports read. No service sits in between.
+The collectors download, the engine consolidates, the reports read.
+All data stays on the local machine, and no service sits in between,
+with two exceptions:
+
+- A login linked through [Plaid](collectors/plaid/). Plaid reads that
+  institution and keeps a copy of its data.
+- The model that `wealthdb categorize` and `resolve-symbols` ask. When
+  it runs on a remote endpoint, it receives the merchant, payer and
+  instrument names it is asked about
+  ([SPENDING.md §5](wealthdb/docs/SPENDING.md#5-what-leaves-the-machine)).
 
 ## ⚠️ Security & liability disclaimer
 
@@ -31,6 +39,8 @@ collectors hold **write-capable credentials**; in both cases the
 session is fully privileged — the same login a human uses to move
 money — and no provider offers a read-only sub-scope. Nothing but
 the codebase's own discipline restricts the collectors to reading.
+Plaid is the exception: its tokens read data and cannot move money.
+Plaid's keys and tokens still expose the data of every linked login.
 If malicious code were ever introduced into this repository, its
 dependency chain, or the container images it runs, it could act on
 your accounts with your full authority and cause **irreversible
@@ -120,13 +130,19 @@ for irreversible damage. wealthdb keeps the two apart:
    The collectors are deterministic scripts — auditable line by
    line, human-triggered, with MFA challenges answered by a
    person. No agent drives a banking session, and no agent ever
-   sees a credential.
+   sees a credential. A login linked through Plaid is handled by
+   Plaid's code instead. Its sign-in starts on a page Plaid hosts,
+   and Plaid holds the access to the institution. The collector
+   keeps Plaid's keys and one token per login. A token reads data
+   and cannot pay.
 2. **The collectors only read.** Their contract is navigate,
    filter, export — no code path submits a form, places an order,
    or changes a setting, and no CLI flag can enable one.
 3. **The data lands locally.** Everything is parsed into local
    databases and consolidated into one queryable gold store;
-   nothing is sent to any third-party service.
+   nothing is sent to any third-party service. The two exceptions
+   are named at the top: Plaid, and a remote model that
+   `categorize` and `resolve-symbols` ask.
 4. **Agent access is read-only by construction.** The `wealthdb`
    CLI's `--read-only` flag forces read-only access to the gold
    DB, so the surface exposed to an agent is consolidated,
@@ -154,6 +170,8 @@ has the full table.
 - **Pensions** — [VIAC](collectors/viac/) (pillar 3a and vested
   benefits), [Relevate](collectors/relevate/) (pillar 2).
 - **Crypto** — [CoinTracking](collectors/cointracking/).
+- **Aggregators** — [Plaid](collectors/plaid/) reaches the banks,
+  brokers and card issuers it covers, one linked login at a time.
 - **Private markets** — [AngelList](collectors/angellist/),
   [Carta](collectors/carta/), [EquityZen](collectors/equityzen/).
 - **Archives and reference** — [SVB](collectors/svb/) statement

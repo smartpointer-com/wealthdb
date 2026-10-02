@@ -36,15 +36,15 @@ recent load_audit rows.
 
 -v additionally counts 'other'-bucketed rows per source (asset_
 class='other' positions, kind='other' transactions), the
-transactions an adapter kinded by the sign of the amount instead
-(raw value in payload.source_kind), and positions with no 2-D
-vehicle pair yet, so taxonomy drift in the adapters is visible. It
-also reports each enrichment family's backlog and the transactions
-its reports cannot see because their kind is 'other', the two
-row-level ways the cash flow statement can be quietly wrong, and —
-for a source holding more than one account kind — how fresh each
-kind's data is, so a card population that stops updating behind a
-current deposit population is visible.`)
+transactions an adapter kinded by the sign of the amount or by the
+source's coarser type instead (raw value in payload.source_kind),
+and positions with no 2-D vehicle pair yet, so taxonomy drift in
+the adapters is visible. It also reports each enrichment family's
+backlog and the transactions its reports cannot see because their
+kind is 'other', the two row-level ways the cash flow statement can
+be quietly wrong, and — for a source holding more than one account
+kind — how fresh each kind's data is, so a card population that
+stops updating behind a current deposit population is visible.`)
 	}
 	if err := fs.Parse(subargs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -283,7 +283,7 @@ func printStatusVerbose(stdout io.Writer, st *gold.SourceStatus) {
 	fmt.Fprintln(stdout, "  taxonomy drift (what no adapter could map):")
 	fmt.Fprintf(stdout, "    asset_class='other':     %d positions\n", st.OtherAssetClassCount)
 	fmt.Fprintf(stdout, "    kind='other':            %d transactions\n", st.OtherTxKindCount)
-	fmt.Fprintf(stdout, "    kind guessed by sign:    %d transactions (raw value in payload.source_kind)\n",
+	fmt.Fprintf(stdout, "    kind guessed:            %d transactions (raw value in payload.source_kind)\n",
 		st.GuessedTxKindCount)
 	fmt.Fprintf(stdout, "    vehicle missing (NULL):  %d positions\n", st.MissingVehicleCount)
 	fmt.Fprintln(stdout, "  spending:")

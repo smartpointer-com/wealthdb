@@ -536,6 +536,36 @@ func TestRuleRefusalReadsTheFilingOnlyToDecline(t *testing.T) {
 	}
 }
 
+// TestCardRuleYieldsOnlyToAnotherProviderFiling pins the card rule's
+// second refusal. AUTOPAY says how a bill was paid, not to whom, so the
+// rule stands down where the provider filed the row under another value,
+// a catch-all included, and fires where the provider filed nothing the
+// tier translates, or filed a card bill too. No other built-in yields:
+// cash out of a machine stays cash out.
+func TestCardRuleYieldsOnlyToAnotherProviderFiling(t *testing.T) {
+	const narrative = "EXAMPLE SERVICER AUTOPAY"
+	for _, tc := range []struct {
+		filed string
+		fires bool
+	}{
+		{"", true},
+		{canonical.SpendDetailedCardSpend, true},
+		{canonical.SpendDetailedDebtRepayment, false},
+		{"RENT_AND_UTILITIES_GAS_AND_ELECTRICITY", false},
+		{"RENT_AND_UTILITIES_OTHER_UTILITIES", false},
+	} {
+		detailed, _, _, ok := rulePlacement(builtinRules, narrative, "", "", "", tc.filed)
+		if ok != tc.fires || (ok && detailed != canonical.SpendDetailedCardSpend) {
+			t.Errorf("filed %q: fired=%v (→ %q), want fired=%v", tc.filed, ok, detailed, tc.fires)
+		}
+	}
+	detailed, _, _, ok := rulePlacement(builtinRules, "ATM EXAMPLETOWN", "", "", "",
+		"GENERAL_SERVICES_OTHER_GENERAL_SERVICES")
+	if !ok || detailed != canonical.SpendDetailedCashWithdrawal {
+		t.Errorf("an ATM row under a provider verdict = (%q, %v), want the cash rule's", detailed, ok)
+	}
+}
+
 // A bank's bill-pay line is "Online Payment <ref> To <payee>", and the payee
 // is whoever the holder addressed it to. Read as a card bill it files real
 // spending under a card, ignoring the payee written in the narrative. The

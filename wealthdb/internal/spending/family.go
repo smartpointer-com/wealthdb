@@ -74,7 +74,12 @@ type family struct {
 	// this side a narrative may only speak for the one kind the floor
 	// does not (rules.go, IncomeRuleCategory). Spending's are ungated —
 	// an outflow's kind says how money left, never what it bought.
-	builtinRule func(kind, signature, counterparty, description, providerCategory string) (detailed, label, farClass string, ok bool)
+	//
+	// `filed` is the provider's filing of the row as the provider tier
+	// translated it, whether or not it claimed the row; empty where it has
+	// no translation. A rule may stand down for it
+	// (spendRule.yieldsToProvider).
+	builtinRule func(kind, signature, counterparty, description, providerCategory, filed string) (detailed, label, farClass string, ok bool)
 
 	// providerCategory translates the source's own filing of a row,
 	// and providerClaims says whether that translation is a verdict or
@@ -210,15 +215,15 @@ var incomeFamily = family{
 // kind: a card bill is a card bill whether the adapter kinded it
 // `card_payment` or `withdrawal`, and gating them would make the rule
 // tier depend on how well each source kinds its rows.
-func spendingBuiltinRule(_, signature, counterparty, description, providerCategory string) (detailed, label, farClass string, ok bool) {
-	return rulePlacement(builtinRules, signature, counterparty, description, providerCategory)
+func spendingBuiltinRule(_, signature, counterparty, description, providerCategory, filed string) (detailed, label, farClass string, ok bool) {
+	return rulePlacement(builtinRules, signature, counterparty, description, providerCategory, filed)
 }
 
 // incomeBuiltinRule adapts IncomeRuleCategory to the same hook. It
 // places no label and no far class: the label column is the card
 // rule's alone, and the one inflow built-in names cash paid in over a
 // counter, which is not an own-account move at all.
-func incomeBuiltinRule(kind, signature, counterparty, description, providerCategory string) (detailed, label, farClass string, ok bool) {
+func incomeBuiltinRule(kind, signature, counterparty, description, providerCategory, _ string) (detailed, label, farClass string, ok bool) {
 	detailed, label, ok = IncomeRuleCategory(kind, signature, counterparty, description, providerCategory)
 	return detailed, label, "", ok
 }

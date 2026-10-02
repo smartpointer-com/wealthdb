@@ -62,6 +62,10 @@ type spendRule struct {
 	// two patterns genuinely overlap on the same row and rule order
 	// alone would give it to the wrong one.
 	refusedBy *spendRule
+	// yieldsToProvider makes the rule stand down where the provider filed
+	// the row under another value, claimed or merely recorded. The rule's
+	// patterns then say less than the provider's filing does.
+	yieldsToProvider bool
 	// farClass is the cashflow class this rule stands for when it
 	// places an own-account move it did not pair. A rule that matches a
 	// NARRATIVE fires whether or not the far account is tracked, so the
@@ -240,9 +244,18 @@ var builtinRules = []spendRule{
 		// it carries: cash taken at a machine is booked against the card
 		// that opened the drawer, so its counterparty is the masked number
 		// this rule reads as a bill, and it is cash out, never card spend.
-		refusedBy: &cashWithdrawalRule,
-		detailed:  canonical.SpendDetailedCardSpend,
-		tokens:    []string{"AUTOPAY", "AUTOPMT", "EPAY", "CARDMEMBER"},
+		//
+		// A row the provider filed under another value is left to the
+		// tiers below. AUTOPAY, EPAY and "AUTOMATIC PAYMENT" say how a bill
+		// was paid. They do not say to whom: a lender or a utility is paid
+		// that way as often as a card. A provider that filed the row under
+		// a loan or a merchant category has said to whom. Where it filed
+		// only a catch-all, the row goes on to the model, which reads the
+		// merchant name.
+		refusedBy:        &cashWithdrawalRule,
+		yieldsToProvider: true,
+		detailed:         canonical.SpendDetailedCardSpend,
+		tokens:           []string{"AUTOPAY", "AUTOPMT", "EPAY", "CARDMEMBER"},
 		// "ONLINE PAYMENT" is deliberately NOT here. A bank's bill-pay
 		// descriptor is "Online Payment <ref> To <payee>" — a payment to
 		// whoever the holder addressed it to, a landlord as readily as a
@@ -368,14 +381,16 @@ var builtinRules = []spendRule{
 // of the exception to a delta line carrying no merchant.
 //
 // The provider's own filing of the row is read for REFUSALS only
-// (spendRule.refusedBy), never to place a verdict. A booking type is
-// the bank's structured classification of the entry rather than a
+// (spendRule.refusedBy, and its translation for
+// spendRule.yieldsToProvider), never to place a verdict. A booking type
+// is the bank's structured classification of the entry rather than a
 // narrative, and a rule that placed a category from it would be the
 // provider tier wearing the rule tier's provenance and outranking it.
 // Reading it to decline a row is the opposite move: it lets the tier
-// below, which owns that filing, have the row.
+// below, which owns that filing, have the row. RuleCategory asks with no
+// translation in hand.
 func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
-	detailed, label, _, ok = rulePlacement(builtinRules, signature, counterparty, description, providerCategory)
+	detailed, label, _, ok = rulePlacement(builtinRules, signature, counterparty, description, providerCategory, "")
 	return detailed, label, ok
 }
 
@@ -388,8 +403,8 @@ func RuleCategory(signature, counterparty, description, providerCategory string)
 // delegates here rather than calling the matcher a second time: two
 // entry points running the rule table separately is exactly how a
 // label and a class would come to disagree about which rule fired.
-func rulePlacement(rules []spendRule, signature, counterparty, description, providerCategory string) (detailed, label, farClass string, ok bool) {
-	r, fields, ok := matchRuleIn(rules, signature, counterparty, description, providerCategory)
+func rulePlacement(rules []spendRule, signature, counterparty, description, providerCategory, filed string) (detailed, label, farClass string, ok bool) {
+	r, fields, ok := matchRuleIn(rules, signature, counterparty, description, providerCategory, filed)
 	if !ok {
 		return "", "", "", false
 	}
@@ -441,7 +456,7 @@ func IncomeRuleCategory(kind, signature, counterparty, description, providerCate
 	if kind != string(canonical.TxKindDeposit) {
 		return "", "", false
 	}
-	r, _, ok := matchRuleIn(builtinIncomeRules, signature, counterparty, description, providerCategory)
+	r, _, ok := matchRuleIn(builtinIncomeRules, signature, counterparty, description, providerCategory, "")
 	if !ok {
 		return "", "", false
 	}
@@ -456,7 +471,7 @@ func IncomeRuleCategory(kind, signature, counterparty, description, providerCate
 // moved from one to the other. Provenance in gold stays the tier rather
 // than the rule, which is why no exported signature returns this.
 func matchRule(signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
-	return matchRuleIn(builtinRules, signature, counterparty, description, providerCategory)
+	return matchRuleIn(builtinRules, signature, counterparty, description, providerCategory, "")
 }
 
 // matchRuleIn matches one narrative against a named rule table and
@@ -464,8 +479,9 @@ func matchRule(signature, counterparty, description, providerCategory string) (s
 // taking the table as an argument is what lets the two families share
 // the narrative-field machinery — the memo split, the refusal pass, the
 // token/phrase/shape matching — and differ only by which rules they
-// consult.
-func matchRuleIn(rules []spendRule, signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
+// consult. `filed` is the provider's filing of the row as the provider
+// tier translated it, empty where it has no translation.
+func matchRuleIn(rules []spendRule, signature, counterparty, description, providerCategory, filed string) (spendRule, []narrativeField, bool) {
 	description, _ = canonical.SplitDescriptionMemo(description)
 	fields := make([]narrativeField, 0, 3)
 	for _, s := range []string{signature, counterparty, description} {
@@ -479,6 +495,9 @@ func matchRuleIn(rules []spendRule, signature, counterparty, description, provid
 	}
 	for _, r := range rules {
 		if r.refusedBy != nil && r.refusedBy.matchesAny(refusalFields) {
+			continue
+		}
+		if r.yieldsToProvider && filed != "" && filed != r.detailed {
 			continue
 		}
 		if r.matchesAny(fields) {

@@ -46,10 +46,10 @@ type providerVocabulary struct {
 	// inflate a counter that is supposed to mean "the issuer said
 	// something this build does not understand".
 	untranslatable map[string]bool
-	// categorical marks a vocabulary in which every value is a spend
-	// category, so a value outside the table is drift worth counting.
-	// False for a booking-type vocabulary, where a miss is a rail, and for
-	// one whose values are verdicts rather than buckets
+	// categorical marks a vocabulary that files every row under one of
+	// its categories, so a value outside the table is drift worth
+	// counting. False for a booking-type vocabulary, where a miss is a
+	// rail, and for one whose values are verdicts rather than buckets
 	// (syntheticCategories).
 	categorical bool
 	// income is the same translation for the INCOME family, and it is
@@ -59,10 +59,12 @@ type providerVocabulary struct {
 	// booking type: charged, it is a finance cost, and credited, it is
 	// interest earned. One map would have to pick.
 	//
-	// Only the bank vocabularies carry one, and the synthetic kind's, which
-	// is the taxonomy itself. A card issuer files what a MERCHANT sells,
-	// and a merchant category says nothing about money arriving; the rows
-	// a card books inbound are refunds, which are spending's to net.
+	// The bank vocabularies carry one. So does Plaid's taxonomy, which
+	// files money arriving under categories of its own. So does the
+	// synthetic kind's, which is the taxonomy itself. A card issuer's does
+	// not. It files what a MERCHANT sells, and a merchant category says
+	// nothing about money arriving. The rows a card books inbound are
+	// refunds, which are spending's to net.
 	income map[string]string
 	// incomeUntranslatable is `untranslatable` for the income side:
 	// values reviewed and left to the model tier rather than missing.
@@ -555,6 +557,258 @@ var (
 	syntheticIncomeCategories = taxonomyIdentity(canonical.FamilyIncome)
 )
 
+// plaidPFCv2 is every detailed value of Plaid's personal finance category
+// taxonomy, version 2, verbatim and in Plaid's order. The collector asks
+// Plaid for version 2 on every read, so this is the whole vocabulary a
+// plaid row can carry. It is the reviewed list. Each side translates a
+// value or leaves it untranslated. Only a value outside the list is drift,
+// which is what a revision of the taxonomy looks like.
+var plaidPFCv2 = []string{
+	"INCOME_CHILD_SUPPORT",
+	"INCOME_CONTRACTOR",
+	"INCOME_DIVIDENDS",
+	"INCOME_GIG_ECONOMY",
+	"INCOME_INTEREST_EARNED",
+	"INCOME_LONG_TERM_DISABILITY",
+	"INCOME_MILITARY",
+	"INCOME_RENTAL",
+	"INCOME_RETIREMENT_PENSION",
+	"INCOME_SALARY",
+	"INCOME_TAX_REFUND",
+	"INCOME_UNEMPLOYMENT",
+	"INCOME_OTHER",
+
+	"LOAN_DISBURSEMENTS_AUTO",
+	"LOAN_DISBURSEMENTS_CASH_ADVANCES",
+	"LOAN_DISBURSEMENTS_EWA",
+	"LOAN_DISBURSEMENTS_MORTGAGE",
+	"LOAN_DISBURSEMENTS_PERSONAL",
+	"LOAN_DISBURSEMENTS_STUDENT",
+	"LOAN_DISBURSEMENTS_OTHER_DISBURSEMENT",
+
+	"LOAN_PAYMENTS_BNPL",
+	"LOAN_PAYMENTS_CAR_PAYMENT",
+	"LOAN_PAYMENTS_CASH_ADVANCES",
+	"LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+	"LOAN_PAYMENTS_EWA",
+	"LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+	"LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT",
+	"LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT",
+	"LOAN_PAYMENTS_OTHER_PAYMENT",
+
+	"TRANSFER_IN_ACCOUNT_TRANSFER",
+	"TRANSFER_IN_DEPOSIT",
+	"TRANSFER_IN_INVESTMENT_AND_RETIREMENT_FUNDS",
+	"TRANSFER_IN_SAVINGS",
+	"TRANSFER_IN_TRANSFER_IN_FROM_APPS",
+	"TRANSFER_IN_WIRE",
+	"TRANSFER_IN_OTHER_TRANSFER_IN",
+
+	"TRANSFER_OUT_ACCOUNT_TRANSFER",
+	"TRANSFER_OUT_CRYPTO",
+	"TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS",
+	"TRANSFER_OUT_SAVINGS",
+	"TRANSFER_OUT_TRANSFER_OUT_FROM_APPS",
+	"TRANSFER_OUT_WIRE",
+	"TRANSFER_OUT_WITHDRAWAL",
+	"TRANSFER_OUT_OTHER_TRANSFER_OUT",
+
+	"BANK_FEES_ATM_FEES",
+	"BANK_FEES_INSUFFICIENT_FUNDS",
+	"BANK_FEES_INTEREST_CHARGE",
+	"BANK_FEES_FOREIGN_TRANSACTION_FEES",
+	"BANK_FEES_OVERDRAFT_FEES",
+	"BANK_FEES_LATE_FEES",
+	"BANK_FEES_CASH_ADVANCE",
+	"BANK_FEES_OTHER_BANK_FEES",
+
+	"ENTERTAINMENT_CASINOS_AND_GAMBLING",
+	"ENTERTAINMENT_MUSIC_AND_AUDIO",
+	"ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS",
+	"ENTERTAINMENT_TV_AND_MOVIES",
+	"ENTERTAINMENT_VIDEO_GAMES",
+	"ENTERTAINMENT_OTHER_ENTERTAINMENT",
+
+	"FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR",
+	"FOOD_AND_DRINK_COFFEE",
+	"FOOD_AND_DRINK_FAST_FOOD",
+	"FOOD_AND_DRINK_GROCERIES",
+	"FOOD_AND_DRINK_RESTAURANT",
+	"FOOD_AND_DRINK_VENDING_MACHINES",
+	"FOOD_AND_DRINK_OTHER_FOOD_AND_DRINK",
+
+	"GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS",
+	"GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+	"GENERAL_MERCHANDISE_CONVENIENCE_STORES",
+	"GENERAL_MERCHANDISE_DEPARTMENT_STORES",
+	"GENERAL_MERCHANDISE_DISCOUNT_STORES",
+	"GENERAL_MERCHANDISE_ELECTRONICS",
+	"GENERAL_MERCHANDISE_GIFTS_AND_NOVELTIES",
+	"GENERAL_MERCHANDISE_OFFICE_SUPPLIES",
+	"GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
+	"GENERAL_MERCHANDISE_PET_SUPPLIES",
+	"GENERAL_MERCHANDISE_SPORTING_GOODS",
+	"GENERAL_MERCHANDISE_SUPERSTORES",
+	"GENERAL_MERCHANDISE_TOBACCO_AND_VAPE",
+	"GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+
+	"HOME_IMPROVEMENT_FURNITURE",
+	"HOME_IMPROVEMENT_HARDWARE",
+	"HOME_IMPROVEMENT_REPAIR_AND_MAINTENANCE",
+	"HOME_IMPROVEMENT_SECURITY",
+	"HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT",
+
+	"MEDICAL_DENTAL_CARE",
+	"MEDICAL_EYE_CARE",
+	"MEDICAL_NURSING_CARE",
+	"MEDICAL_PHARMACIES_AND_SUPPLEMENTS",
+	"MEDICAL_PRIMARY_CARE",
+	"MEDICAL_VETERINARY_SERVICES",
+	"MEDICAL_OTHER_MEDICAL",
+
+	"PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS",
+	"PERSONAL_CARE_HAIR_AND_BEAUTY",
+	"PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING",
+	"PERSONAL_CARE_OTHER_PERSONAL_CARE",
+
+	"GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING",
+	"GENERAL_SERVICES_AUTOMOTIVE",
+	"GENERAL_SERVICES_CHILDCARE",
+	"GENERAL_SERVICES_CONSULTING_AND_LEGAL",
+	"GENERAL_SERVICES_EDUCATION",
+	"GENERAL_SERVICES_INSURANCE",
+	"GENERAL_SERVICES_POSTAGE_AND_SHIPPING",
+	"GENERAL_SERVICES_STORAGE",
+	"GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+
+	"GOVERNMENT_AND_NON_PROFIT_DONATIONS",
+	"GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES",
+	"GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT",
+	"GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT",
+
+	"TRANSPORTATION_BIKES_AND_SCOOTERS",
+	"TRANSPORTATION_GAS",
+	"TRANSPORTATION_PARKING",
+	"TRANSPORTATION_PUBLIC_TRANSIT",
+	"TRANSPORTATION_TAXIS_AND_RIDE_SHARES",
+	"TRANSPORTATION_TOLLS",
+	"TRANSPORTATION_OTHER_TRANSPORTATION",
+
+	"TRAVEL_FLIGHTS",
+	"TRAVEL_LODGING",
+	"TRAVEL_RENTAL_CARS",
+	"TRAVEL_OTHER_TRAVEL",
+
+	"RENT_AND_UTILITIES_GAS_AND_ELECTRICITY",
+	"RENT_AND_UTILITIES_INTERNET_AND_CABLE",
+	"RENT_AND_UTILITIES_RENT",
+	"RENT_AND_UTILITIES_SEWAGE_AND_WASTE_MANAGEMENT",
+	"RENT_AND_UTILITIES_TELEPHONE",
+	"RENT_AND_UTILITIES_WATER",
+	"RENT_AND_UTILITIES_OTHER_UTILITIES",
+
+	"OTHER_OTHER",
+}
+
+// plaidCategories is the spending side. Every value that is a wealthdb
+// spend value already translates to itself: the taxonomy vendors Plaid's
+// version 1, and version 2 kept those spellings. The rest is below.
+//
+// Two bank fees are new in version 2, and the taxonomy has nothing finer
+// than the catch-all for them. A card bill names the movement, so it is
+// `card_spend` (the matcher outranks it when the card's own leg is in
+// gold). A mortgage instalment is `mortgage_transfer`. A student,
+// personal, cash-advance or car payment is `debt_repayment`. Each is the
+// delta for its lender. The other loan payments stay untranslated
+// (plaidUncategorized). A car payment can be a lease, which is
+// consumption, and `debt_repayment` takes it out of the base. Plaid files
+// loans and leases under one value. A config rule on the lessor's name,
+// scoped to the paying account, puts a lease back.
+var plaidCategories = plaidTranslations(canonical.ValidSpendDetailed, map[string]string{
+	"BANK_FEES_LATE_FEES":                 "BANK_FEES_OTHER_BANK_FEES",
+	"BANK_FEES_CASH_ADVANCE":              "BANK_FEES_OTHER_BANK_FEES",
+	"LOAN_PAYMENTS_CREDIT_CARD_PAYMENT":   canonical.SpendDetailedCardSpend,
+	"LOAN_PAYMENTS_MORTGAGE_PAYMENT":      canonical.DetailedMortgageTransfer,
+	"LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT":  canonical.SpendDetailedDebtRepayment,
+	"LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT": canonical.SpendDetailedDebtRepayment,
+	"LOAN_PAYMENTS_CASH_ADVANCES":         canonical.SpendDetailedDebtRepayment,
+	"LOAN_PAYMENTS_CAR_PAYMENT":           canonical.SpendDetailedDebtRepayment,
+})
+
+// plaidIncomeCategories is the income side. It translates:
+//
+//   - each vendored income value to itself;
+//   - Plaid's version 2 names to the taxonomy's;
+//   - money borrowed arriving to `loan_proceeds`, and a mortgage tranche to
+//     `mortgage_transfer`.
+//
+// Gig pay is wages, a contractor is self-employed, and military and
+// long-term disability benefits are state transfers. INCOME_OTHER is the
+// catch-all, recorded and declined.
+//
+// Version 2 widened INCOME_RETIREMENT_PENSION to payouts from plans such as
+// a 401(k). Such a payout from a plan gold does not track is still placed
+// as pension income; a config rule on the plan's name places it as
+// `retirement_transfer`.
+var plaidIncomeCategories = plaidTranslations(canonical.ValidIncomeDetailed, map[string]string{
+	"INCOME_SALARY":                         "INCOME_WAGES",
+	"INCOME_GIG_ECONOMY":                    "INCOME_WAGES",
+	"INCOME_CONTRACTOR":                     canonical.IncomeDetailedSelfEmployment,
+	"INCOME_CHILD_SUPPORT":                  canonical.IncomeDetailedAlimonyAndChildSupport,
+	"INCOME_RENTAL":                         canonical.IncomeDetailedRent,
+	"INCOME_MILITARY":                       canonical.IncomeDetailedGovernmentBenefits,
+	"INCOME_LONG_TERM_DISABILITY":           canonical.IncomeDetailedGovernmentBenefits,
+	"INCOME_OTHER":                          "INCOME_OTHER_INCOME",
+	"LOAN_DISBURSEMENTS_AUTO":               canonical.IncomeDetailedLoanProceeds,
+	"LOAN_DISBURSEMENTS_CASH_ADVANCES":      canonical.IncomeDetailedLoanProceeds,
+	"LOAN_DISBURSEMENTS_PERSONAL":           canonical.IncomeDetailedLoanProceeds,
+	"LOAN_DISBURSEMENTS_STUDENT":            canonical.IncomeDetailedLoanProceeds,
+	"LOAN_DISBURSEMENTS_OTHER_DISBURSEMENT": canonical.IncomeDetailedLoanProceeds,
+	"LOAN_DISBURSEMENTS_MORTGAGE":           canonical.DetailedMortgageTransfer,
+})
+
+// plaidUncategorized and plaidIncomeUncategorized are each side's reviewed
+// and untranslated values: the rest of plaidPFCv2. A transfer's category
+// does not say whose account the far side is, which is the matcher's to
+// find and a rule's to state. A buy-now-pay-later instalment is the only
+// trace of a purchase, and OTHER_PAYMENT can be a card bill or a loan
+// payment. An early wage advance (LOAN_DISBURSEMENTS_EWA) is usually wages
+// paid early and taken back from the next pay, and sometimes a loan. It
+// stays in the income base as a visible receipt, and its repayment
+// (LOAN_PAYMENTS_EWA) in the spending base, so the two legs offset. The
+// other direction's values arrive on refunds and reversals. OTHER_OTHER
+// stays here, never `other`, which is a verdict and would claim the row.
+var (
+	plaidUncategorized       = plaidRest(plaidCategories)
+	plaidIncomeUncategorized = plaidRest(plaidIncomeCategories)
+)
+
+// plaidTranslations is every plaidPFCv2 value that `valid` admits, to
+// itself, with `overrides` on top.
+func plaidTranslations(valid func(string) bool, overrides map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, v := range plaidPFCv2 {
+		if valid(v) {
+			out[v] = v
+		}
+	}
+	for k, v := range overrides {
+		out[k] = v
+	}
+	return out
+}
+
+// plaidRest is every plaidPFCv2 value `translated` leaves out.
+func plaidRest(translated map[string]string) map[string]bool {
+	out := map[string]bool{}
+	for _, v := range plaidPFCv2 {
+		if _, ok := translated[v]; !ok {
+			out[v] = true
+		}
+	}
+	return out
+}
+
 // taxonomyIdentity maps every detailed value of one family to itself.
 func taxonomyIdentity(family canonical.Family) map[string]string {
 	out := map[string]string{}
@@ -595,6 +849,11 @@ var providerVocabularies = map[string]providerVocabulary{
 		categorical:          true},
 	"synthetic": {translations: syntheticCategories, income: syntheticIncomeCategories,
 		categorical: false},
+	"plaid": {translations: plaidCategories,
+		income:               plaidIncomeCategories,
+		untranslatable:       plaidUncategorized,
+		incomeUntranslatable: plaidIncomeUncategorized,
+		categorical:          true},
 }
 
 // foldedProviderVocabularies is providerVocabularies re-keyed on the

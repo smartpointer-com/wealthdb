@@ -314,10 +314,11 @@ inside `wealthdb load`; the fifth costs money and runs only when
         (per source; derived, pins re-stamped)     (GLOBAL, paid for)
 ```
 
-The **kind** floor (migration 0066, extended by 0067 and 0103) is last,
-stands outside both stores — it reads no verdict anyone wrote — and takes
-the transaction's own kind: a row of kind `fee` that nothing else placed
-is an investment fee (on a bank account, a bank fee — below), one of kind
+The **kind** floor (migration 0066, extended by 0067, 0103 and 0110) is
+last, stands outside both stores — it reads no verdict anyone wrote — and
+takes the transaction's own kind: a row of kind `fee` that nothing else
+placed is an investment fee (on a bank account or a card, a bank fee —
+below), one of kind
 `tax` is withholding, and one of kind `interest` is an interest charge
 when the amount is negative. The sign is tested rather than assumed
 there, because this macro is read at transaction grain too, where
@@ -329,14 +330,15 @@ kind is not a guess: each adapter derives it from whatever evidence its
 own source gives, which is where source-specific knowledge belongs, so
 the floor reads that verdict rather than re-deriving it from prose.
 
-A fee's floor reads its account as well (0103). A bank account books fees
-too — account maintenance, card and payment charges — and on an account
-that holds no investments "investment fee" is simply wrong. So a fee on a
-`cash` account that belongs to no portfolio floors to
+A fee's floor reads its account as well (0103, 0110). A bank account
+books fees too — account maintenance, card and payment charges — and so
+does a card: an annual, late or cash-advance fee. On an account that
+holds no investments "investment fee" is simply wrong. So a fee on a card,
+or on a `cash` account that belongs to no portfolio, floors to
 `BANK_FEES_OTHER_BANK_FEES`. The kind alone cannot draw the line: the
 cash side of an investment mandate is also `cash`, and its management fee
-is exactly the investment fee the floor was built for — which is why
-membership in a portfolio, not the account kind, decides. A fee whose
+is exactly the investment fee the floor was built for — which is why,
+on a `cash` account, membership in a portfolio decides. A fee whose
 account gold does not hold keeps the investment floor.
 
 The floor sits UNDER the model, and that ordering is the whole design. The
@@ -744,7 +746,7 @@ accounts rather than from anyone's preference.
 
 | rule | verdict | why |
 |---|---|---|
-| `card_payment` | `card_spend` | A card bill with no counter-leg in gold is a bill for a card wealthdb does not itemise — a card no collector exists for, or the deep era, where a card payment is dated before the card's own ledger begins — and the bill is the only trace of that spending. So it is kept in the base as generic card spend, not deleted as an own-account move; a bill whose card *is* in gold never reaches this verdict, because the matcher outranks it. Matched on card-payment phrases and an issuer table, never on a store card that names its merchant, and refused outright on a row the `atm` rule matches — cash taken at a machine carries the same masked card number. A match on a named issuer's descriptor also LABELS the bill with that issuer, which is what the line carries as its merchant (§7). |
+| `card_payment` | `card_spend` | A card bill with no counter-leg in gold is a bill for a card wealthdb does not itemise — a card no collector exists for, or the deep era, where a card payment is dated before the card's own ledger begins — and the bill is the only trace of that spending. So it is kept in the base as generic card spend, not deleted as an own-account move; a bill whose card *is* in gold never reaches this verdict, because the matcher outranks it. Matched on card-payment phrases and an issuer table, never on a store card that names its merchant, and refused outright on a row the `atm` rule matches — cash taken at a machine carries the same masked card number — or a row the provider filed under another value. A match on a named issuer's descriptor also LABELS the bill with that issuer, which is what the line carries as its merchant (§7). |
 | `atm` | `cash_withdrawal` | The money is gone, but *what it bought* has no record anywhere. |
 | `mortgage` | `internal_transfer` | The mortgage is a tracked account; counting the payment as spend would double-count against the liability it reduces. It matches a NARRATIVE, so it fires whether or not the lender is tracked — and where no pair exists, nothing else on the row says where the money went, so it records `mortgage` as the cashflow class it stands for (`far_class`, migration 0079). That column is not the card rule's `merchant_label`: a class name there would print as the merchant of every card bill. |
 | `investment_fee` | `investment_fees` | A custodian's per-security pass-through, such as an ADR depositary charge, booked once per security per period. The narrative names the security and never a payee, so nothing else can reach it. It is a cost of INVESTING rather than of banking, which is what the extension exists to say. |
@@ -774,10 +776,24 @@ collected, because a withdrawal is not on the card statement either.
 So the card rule refuses any row the `atm` rule's own patterns match,
 and the row goes to whichever tier can place it: the `atm` rule, where
 the narrative names the machine, or the provider tier, where only the
-bank's booking type does. That refusal is the one thing a built-in
-reads the **provider's filing** for. It may never place a verdict from
-it — that would be the provider tier wearing this tier's provenance
-and outranking it — but declining a row on it is the opposite move: it
+bank's booking type does.
+
+The card rule also stands down where the provider filed the row under
+another value, whether the provider tier claims it or only records it.
+AUTOPAY, EPAY and "AUTOMATIC PAYMENT" say how a bill was paid. They do
+not say to whom. A lender or a utility is paid that way as often as a
+card. A provider that filed the row as a loan instalment or a utility
+bill has said to whom, and its verdict stands. A filing under a
+catch-all is recorded and declined, so the row goes on to the model,
+which reads the merchant name. The rules after the card rule still read
+the row, so a mortgage narrative still meets the mortgage rule. Where
+the provider filed the row as a card bill, or filed nothing the
+vocabulary translates, the card rule fires.
+
+Those two refusals are the only things a built-in reads the
+**provider's filing** for. It may never place a verdict from it — that
+would be the provider tier wearing this tier's provenance and
+outranking it — but declining a row on it is the opposite move: it
 hands the row down to the tier that owns the filing.
 
 The description is read up to its **memo separator** only (§4). What
@@ -962,9 +978,10 @@ would have to call both the same thing.
 Two shapes of vocabulary, and the shape decides what a value the map
 does not translate *means*:
 
-- A **categorical** vocabulary — a card issuer's (`chase`, `amex`) — files
-  its rows under a spend category rather than naming a payment rail.
-  **The unmapped case is the
+- A **categorical** vocabulary — a card issuer's (`chase`, `amex`), or
+  Plaid's category taxonomy (`plaid`) — files every row under one of
+  its categories rather than naming a payment rail. **The unmapped case
+  is the
   load-bearing one.** The map is the vocabulary this build translates,
   which is narrower than what an issuer can publish, so a value it does
   not hold is one nobody reviewed: it falls through to the model tier
@@ -1784,7 +1801,7 @@ vocabulary of §3. Seven values:
 | `rule` | a built-in or configured rule |
 | `provider` | the source's own filing of the row |
 | `model` | the merchant store's verdict for the line's signature |
-| `kind` | the floor: what the transaction's own kind says a row IS, where nothing else placed it (migrations 0066, 0067, 0103) |
+| `kind` | the floor: what the transaction's own kind says a row IS, where nothing else placed it (migrations 0066, 0067, 0103, 0110) |
 | `signature-only` | no verdict: the pass reached the row, recorded its signature and could not place it |
 
 Five of them are stamped on the overlay row by the enrichment pass and
@@ -2134,10 +2151,12 @@ tidies the store — by then the rows have moved on.
 - **A built-in may read the provider's filing to DECLINE a row, never
   to place one** (§3). The card-payment rule stands down where the
   booking type names a cash withdrawal, because cash taken at a machine
-  carries the masked card number the rule reads as a bill. Placing a
-  category from the filing would be the provider tier wearing the rule
-  tier's provenance and outranking it; declining on it hands the row
-  down to the tier that owns the filing.
+  carries the masked card number the rule reads as a bill. It also
+  stands down where the provider filed the row under another value,
+  because AUTOPAY says how a bill was paid, not to whom.
+  Placing a category from the filing would be the provider tier wearing
+  the rule tier's provenance and outranking it; declining on it hands
+  the row down to the tier that owns the filing.
 - **Card-rule order is a refusal, not a re-order.** The card rule
   still leads the table — its narratives are the most specific — and
   the one row type both it and the `atm` rule match is settled by the

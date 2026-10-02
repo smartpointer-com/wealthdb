@@ -112,9 +112,12 @@ SELECT fitid, posted_at, account_external_id, amount,
 			// The provider's own category, verbatim and un-normalised.
 			// Empty on payments, which the provider leaves uncategorised.
 			ProviderCategory: silver.StrPtrIfNonEmpty(category),
-			// The cheque number, on an OUTFLOW only — see
-			// checkNumberOnOutflow for why the sign decides.
-			CheckNumber: checkNumberOnOutflow(checkNo, net),
+			// The cheque number, on an OUTFLOW only. Silver's
+			// `check_number` is not self-describing. The QFX path fills it
+			// from CHECKNUM, a cheque. The deposit-export path fills it
+			// from a column headed "Check or Slip #", which on a credit is
+			// a deposit slip.
+			CheckNumber: silver.CheckNumberOnOutflow(checkNo, net),
 			Payload:     silver.PayloadWith(payload, extra),
 		})
 	}
@@ -224,20 +227,4 @@ func cardTxKind(raw string, amt canonical.Decimal) (canonical.TxKind, bool) {
 		return canonical.TxKindCardPayment, true
 	}
 	return k, true
-}
-
-// checkNumberOnOutflow returns the cheque number only when the row is
-// money LEAVING the account, and nil otherwise.
-//
-// Silver's `check_number` is not self-describing: the QFX path fills it
-// from CHECKNUM, which is a cheque, while the deposit-export path fills
-// it from a column headed "Check or Slip #", which on a credit is a
-// deposit slip. Gold's contract (migration 0075) is that the field
-// names an outgoing payment, so the sign decides. A zero-amount row is
-// not an outflow and keeps nil.
-func checkNumberOnOutflow(checkNo string, net *canonical.Decimal) *string {
-	if checkNo == "" || net == nil || !net.IsNegative() {
-		return nil
-	}
-	return silver.StrPtrIfNonEmpty(checkNo)
 }

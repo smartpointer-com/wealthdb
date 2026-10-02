@@ -204,9 +204,10 @@ mid-read is never claimed for rows read before it.
 
 **What `run.json` records.** A run starts as `in-progress` and ends as
 `complete`, or as `failed` with a `reason` when the Item could not be
-read. A run stopped by a write error or by Ctrl-C stays `in-progress`,
-and so does a run whose files vanished while it was written, as when a
-prune with no age guard removed it.
+read. A run stopped by a write error or by Ctrl-C stays `in-progress`.
+So does a run whose files vanished while it was written. A prune
+without an age guard can cause that.
+
 Each product has an entry with one status:
 
 | Status | Meaning |
@@ -252,7 +253,8 @@ or token can reach the trace.
 ## 6. The `load` verb
 
 `load` builds one silver database per Item, `<data-dir>/<item>/<item>.db`.
-So each Item can be a gold source of its own. The schema is
+So each Item can be a gold source of its own, of kind `plaid`. The
+[adapter](../../wealthdb/docs/adapters/plaid.md) maps it. The schema is
 [migrations/0001_initial.sql](migrations/0001_initial.sql). Its comments
 describe each table, and each column whose name does not say enough.
 

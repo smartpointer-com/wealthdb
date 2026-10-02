@@ -320,3 +320,60 @@ func TestRaiffeisenVocabularyIsRegistered(t *testing.T) {
 		t.Errorf("an unseen token = (ok %v, drift %v), want (false, true)", ok, drift)
 	}
 }
+
+// seedPlaidItem adds a source of silver kind `plaid` with one cash
+// account, so a test can seed rows filed under Plaid's categories.
+func seedPlaidItem(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
+                                    high_watermark, first_loaded_at, last_loaded_at)
+             VALUES ('item', 'plaid', '/tmp/item.db', -1, 0, 0);
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, first_seen_at, last_seen_at)
+             VALUES ('item', 'CHK', 'cash', 'Checking', 1, 1);
+    `); err != nil {
+		t.Fatalf("seed plaid source: %v", err)
+	}
+}
+
+// TestCardRuleStandsDownForAProviderFiling runs the card rule's second
+// refusal through the pass. A loan instalment or a utility bill paid by
+// autopay keeps the provider's verdict. A row the provider filed under a
+// catch-all is left to the model. The mortgage rule still reads its
+// narrative. A row the provider filed as a card bill, or left
+// untranslated, is the card rule's. Every value is synthetic.
+func TestCardRuleStandsDownForAProviderFiling(t *testing.T) {
+	db, ctx := openGold(t)
+	seedPlaidItem(t, db, ctx)
+	seedTxns(t, db, ctx,
+		txn{"item", "T-LOAN", "CHK", "withdrawal", day(10), -250, "",
+			"EXAMPLE LENDER AUTOPAY 000", "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT"},
+		txn{"item", "T-POWER", "CHK", "withdrawal", day(11), -90, "Example Energy",
+			"EXAMPLE ENERGY AUTOPAY", "RENT_AND_UTILITIES_GAS_AND_ELECTRICITY"},
+		txn{"item", "T-CITY", "CHK", "withdrawal", day(11), -60, "",
+			"EXAMPLE UTILITY AUTOPAY", "RENT_AND_UTILITIES_OTHER_UTILITIES"},
+		txn{"item", "T-HOME", "CHK", "withdrawal", day(12), -1500, "",
+			"EXAMPLE HOME MORTGAGE AUTOPAY", "LOAN_PAYMENTS_MORTGAGE_PAYMENT"},
+		txn{"item", "T-CARD", "CHK", "withdrawal", day(13), -400, "",
+			"EXAMPLE CARD AUTOPAY", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"},
+		txn{"item", "T-UNSURE", "CHK", "withdrawal", day(14), -300, "",
+			"EXAMPLE CARD AUTOPAY", "LOAN_PAYMENTS_OTHER_PAYMENT"},
+	)
+
+	runPass(t, db, ctx, Options{})
+
+	for _, tc := range []struct{ id, detailed, provenance string }{
+		{"T-LOAN", canonical.SpendDetailedDebtRepayment, ProvenanceProvider},
+		{"T-POWER", "RENT_AND_UTILITIES_GAS_AND_ELECTRICITY", ProvenanceProvider},
+		{"T-CITY", "", ProvenanceSignatureOnly},
+		{"T-HOME", canonical.SpendDetailedInternalTransfer, ProvenanceRule},
+		{"T-CARD", canonical.SpendDetailedCardSpend, ProvenanceRule},
+		{"T-UNSURE", canonical.SpendDetailedCardSpend, ProvenanceRule},
+	} {
+		detailed, provenance := verdictOf(t, db, ctx, "item", tc.id)
+		if detailed != tc.detailed || provenance != tc.provenance {
+			t.Errorf("%s = (%q, %q), want (%q, %q)", tc.id, detailed, provenance, tc.detailed, tc.provenance)
+		}
+	}
+}

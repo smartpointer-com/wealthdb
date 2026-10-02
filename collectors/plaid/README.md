@@ -55,9 +55,9 @@ all collectors share.
 ## What it does
 
 - **`login --item NAME`** links one institution. It prints the URL of a
-  sign-in page that Plaid hosts. You open the page in your own browser
-  and sign in at the institution. The collector waits, then stores the
-  access token.
+  sign-in page that Plaid hosts. The sign-in at the institution happens
+  on that page, in an ordinary browser. The collector waits, then stores
+  the access token.
 - **`login --item NAME`** on a name that is linked already renews that
   link. No second link is made.
 - **`login --check`** reports whether Plaid accepts the keys, and the
@@ -72,7 +72,7 @@ all collectors share.
 - **`prune`** deletes runs that did not complete, and the traces of
   `download --debug`.
 
-One login at one institution is one Plaid **Item**. `NAME` is your own
+One login at one institution is one Plaid **Item**. `NAME` is a local
 short name for it, such as `bank` or `broker`.
 
 ## Examples
@@ -95,10 +95,7 @@ from the `--lookback` date to today. Plaid holds about two years of each
 from the day of the link, and keeps every row it sees after that.
 Balances, holdings and loan terms are read whole on every run.
 
-`--require` names the one product the login must support. The default,
-`transactions`, fits a login with a bank account or a card. Use
-`investments` for a login that holds only brokerage accounts. The other
-data products are always requested as optional.
+A login that holds only brokerage accounts needs `--require investments`.
 
 The Sandbox uses Plaid's test institutions and test data. It is free and
 needs no real login. Its runs belong in a data dir of their own, never in
@@ -275,6 +272,39 @@ Plaid fetches the history of a new link in steps, over minutes or hours.
 A run made before it is done notes what was missing and exits with
 status 1. Its log names the command that reads the same window again,
 such as `./plaid download --item bank --lookback all`.
+
+## Gold
+
+Each linked login's silver database is a gold source of its own, of
+kind `plaid`. Add one entry per Item to the gold config:
+
+```json
+{"id": "broker", "kind": "plaid", "path": "<data-dir>/broker/broker.db"}
+```
+
+Reports then name the source `broker`. The
+[adapter](../../wealthdb/docs/adapters/plaid.md) says how each kind of
+account appears in gold. Loans that Plaid reports and that are not on a
+home stay in silver.
+
+An account's tax wrapper follows the subtype Plaid reports. Where that
+gives the wrong wrapper, `account_overrides` in the gold config sets it.
+The `account_id` column of `wealthdb holdings accounts -C
+account,account_id,tax_wrapper` shows each account's id:
+
+```json
+"account_overrides": {
+    "broker": {
+        "<account_id>": {"tax_wrapper": "<wrapper>"}
+    }
+}
+```
+
+The same entry takes `"exclude": true` instead, to leave an account out
+of gold.
+
+Add only an institution that no other collector reads into the same
+gold. The [adapter](../../wealthdb/docs/adapters/plaid.md) says why.
 
 ## When a link stops working
 

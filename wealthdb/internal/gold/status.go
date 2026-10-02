@@ -34,16 +34,16 @@ type SourceStatus struct {
 	OtherAssetClassCount int
 	OtherTxKindCount     int
 	// GuessedTxKindCount is the same signal for the adapters that do
-	// NOT fall to `other` on an unrecognised source kind: transactions
-	// whose payload carries a `source_kind`, which is where such an
-	// adapter parks the raw value it could not map before kinding the
-	// row by its sign instead. A row like that is a real purchase or
-	// bill everywhere downstream, so nothing else counts it, and a
-	// source that started publishing a new vocabulary would otherwise
-	// be invisible. Rows already counted as `other` are excluded — an
-	// adapter may park the raw value AND bucket the row — and so is a
-	// payload whose `source_kind` is JSON null, which carries no raw
-	// value to review.
+	// NOT fall to `other` on an unrecognised source kind. It counts the
+	// transactions whose payload carries a `source_kind`. That is where
+	// such an adapter parks the raw value it could not map. It then kinds
+	// the row another way: amex by its sign, plaid by the source's
+	// coarser type. A row like that looks ordinary everywhere downstream,
+	// so nothing else counts it. A source that started publishing a new
+	// vocabulary would otherwise be invisible. Rows already counted as
+	// `other` are excluded, since an adapter may park the raw value AND
+	// bucket the row. So is a payload whose `source_kind` is JSON null,
+	// which carries no raw value to review.
 	GuessedTxKindCount int
 	// MissingVehicleCount is positions with a NULL vehicle — an
 	// adapter that emitted an exposure but no wrapper. Should be 0.

@@ -20,6 +20,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/firstcitizens"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/fred"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/manual"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/plaid"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/raiffeisen_at"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/relevate"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"

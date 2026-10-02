@@ -1277,6 +1277,7 @@ to keep this document focused on gold-side architecture:
 - [adapters/cointracking.md](adapters/cointracking.md)
 - [adapters/chase.md](adapters/chase.md)
 - [adapters/amex.md](adapters/amex.md)
+- [adapters/plaid.md](adapters/plaid.md)
 - [adapters/synthetic.md](adapters/synthetic.md)
 
 (Adapters without a dedicated doc here are described inline
@@ -1294,13 +1295,16 @@ A few rules apply to every adapter regardless of bank:
   to gold `kind = 'other'`** with the raw source value preserved
   in `payload`, rather than failing the load. `wealthdb status -v`
   reports the count of `other` rows per silver source so taxonomy
-  drift is visible. The one adapter that departs is **amex**, which
-  kinds a row with no usable direction by the sign of its amount
-  (`purchase` / `card_payment`) and keeps the raw value in
-  `payload.source_kind`: on a card ledger `other` reaches neither the
-  spending base nor the internal-transfer matcher, so the row would
-  vanish from both rather than surface as backlog
-  ([adapters/amex.md](adapters/amex.md) §5).
+  drift is visible. Two adapters depart. **amex** kinds a row with no
+  usable direction by the sign of its amount (`purchase` /
+  `card_payment`) and keeps the raw value in `payload.source_kind`: on
+  a card ledger `other` reaches neither the spending base nor the
+  internal-transfer matcher, so the row would vanish from both rather
+  than surface as backlog ([adapters/amex.md](adapters/amex.md) §5).
+  **plaid** kinds an investment row of an unknown subtype by Plaid's
+  type where the type alone fixes it (`buy`, `sell`, `fee`), and keeps
+  the raw pair in `payload.source_kind`
+  ([adapters/plaid.md](adapters/plaid.md) §7).
 - **Unrecognised `asset_class` source codes fall through to the
   `(other, other)` pair** with the raw code preserved in `payload`.
   Same rationale.
@@ -1446,7 +1450,7 @@ CREATE TABLE silver_sources (
         'schwab', 'ubs', 'swissquote', 'fidelity',
         'relevate', 'viac', 'cointracking', 'carta', 'angellist',
         'equityzen', 'manual', 'fred', 'chase', 'firstcitizens',
-        'raiffeisen_at', 'amex', 'synthetic'
+        'raiffeisen_at', 'amex', 'synthetic', 'plaid'
     )),
     silver_path         TEXT    NOT NULL,            -- as observed at last load
     high_watermark      BIGINT  NOT NULL,            -- plugin's logical change number after the last load
@@ -2743,15 +2747,16 @@ wealthdb/
 ├── go.mod / go.sum
 ├── docs/
 │   ├── DESIGN.md · RETURNS-NOTES.md · SPENDING.md · TAXONOMY.md
-│   └── adapters/                   — per-bank adapter design (amex, carta, chase, cointracking, schwab, swissquote, synthetic, ubs)
+│   └── adapters/                   — per-bank adapter design (amex, carta, chase, cointracking, plaid, schwab, swissquote, synthetic, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand
 ├── internal/
 │   ├── canonical/                  — change types + enums (asset_class, vehicle, …); zero deps
 │   ├── silver/                     — adapter interface + registry, one package per source:
 │   │   │                             amex angellist carta chase cointracking equityzen
-│   │   │                             fidelity firstcitizens fred manual raiffeisen_at
-│   │   │                             relevate schwab swissquote synthetic ubs viac
+│   │   │                             fidelity firstcitizens fred manual plaid
+│   │   │                             raiffeisen_at relevate schwab swissquote
+│   │   │                             synthetic ubs viac
 │   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   └── migrations/             — 0001…NNNN SQL, //go:embed-ed by schema.go
@@ -3148,6 +3153,17 @@ what each would need:
 Adding any of these is a localised change: one new gold table
 (or column), one adapter `Snapshots` / `Transactions` extension,
 no impact on the load contract or other adapters.
+
+A `plaid` Item can also report loans that are not on a home, such as
+auto, student and personal loans and lines of credit. They stay in
+silver too (`accounts`, `liabilities`, `transactions`). What they lack
+is not a table but an account kind (adapters/plaid.md §3 says why).
+Projecting them needs a `loan` kind. That is engine-wide work:
+
+- a CHECK migration;
+- the returns liability split;
+- a cashflow arm;
+- a taxonomy pair.
 
 ### 13.8 Market data
 

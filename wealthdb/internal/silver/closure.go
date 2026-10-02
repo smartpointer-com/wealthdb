@@ -6,9 +6,9 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// closureMarkerPayload stamps each zero-valued closure position so the rows
-// are self-explanatory in gold queries.
-var closureMarkerPayload = json.RawMessage(`{"closure_marker": true}`)
+// ClosureMarkerPayload stamps each zero-valued closure row so the rows are
+// self-explanatory in gold queries.
+var ClosureMarkerPayload = json.RawMessage(`{"closure_marker": true}`)
 
 // ClosureMarkerBatch builds the exit-day zero snapshot for a portfolio that
 // fully empties at t — the closure mirror of a debut snapshot. An empty batch
@@ -36,7 +36,7 @@ func ClosureMarkerBatch(prev canonical.SnapshotBatch, t int64, account canonical
 			Vehicle:              p.Vehicle,
 			Currency:             p.Currency,
 			MarketValue:          &mv,
-			Payload:              closureMarkerPayload,
+			Payload:              ClosureMarkerPayload,
 		}
 		if p.Quantity != nil {
 			q := canonical.NewDecimalFromInt(0)

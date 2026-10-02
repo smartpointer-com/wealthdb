@@ -26,6 +26,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/firstcitizens"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/fred"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/manual"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/plaid"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/raiffeisen_at"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/relevate"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
@@ -230,6 +231,18 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	}
 	if !reflect.DeepEqual(syn, returns.DefaultReturnsPolicy(returns.BankFlowPolicy())) {
 		t.Error("synthetic: every knob but the flow policy must keep its default")
+	}
+
+	// plaid: one Item may be a bank, a broker or a card issuer, so it
+	// registers the same bank-style default as synthetic; the engine treats
+	// each account by its kind, and returns_policy_overrides states an Item's
+	// own regime.
+	pl, _ := returns.ReturnsPolicyFor("plaid")
+	if !pl.Flow.Known {
+		t.Error("plaid: policy must be Known (registered)")
+	}
+	if !reflect.DeepEqual(pl, returns.DefaultReturnsPolicy(returns.BankFlowPolicy())) {
+		t.Error("plaid: the bank-style default, every other knob untouched")
 	}
 
 	// fred is blank-imported but registers NO policy — it must fall to the

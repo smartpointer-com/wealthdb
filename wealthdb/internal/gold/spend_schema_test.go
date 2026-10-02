@@ -1127,16 +1127,18 @@ VALUES ('INCOME', ?, 'A value a later migration seeds', 'Example later value', '
 // which is finer than any floor, and a floor that outranked it would
 // quietly coarsen every such row.
 //
-// A fee's floor depends on its account (0103): on a bank account — a
-// cash account in no portfolio — it is a bank fee; everywhere else,
-// including the cash side of an investment mandate, an investment fee.
+// A fee's floor depends on its account (0103, 0110). On a card or on a
+// bank account it is a bank fee. A bank account here is a cash account in
+// no portfolio. Everywhere else it is an investment fee, the cash side of
+// an investment mandate included.
 func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
                               display_name, portfolio_external_id, first_seen_at, last_seen_at)
-        VALUES ('test-src', 'MANDATE-CASH', 'cash', 'Mandate cash', 'PF-1', 1, 1);
+        VALUES ('test-src', 'MANDATE-CASH', 'cash', 'Mandate cash', 'PF-1', 1, 1),
+               ('test-src', 'MANDATE-CARD', 'card', 'Mandate card', 'PF-1', 1, 1);
 
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount) VALUES
@@ -1146,6 +1148,8 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
             ('test-src', 'T-ORPHANFEE', 1000, 'NOT-IN-GOLD', 'fee', 'USD', -1.00),
             ('test-src', 'T-WHT',   1000, 'CASH1', 'tax',      'USD', -12.00),
             ('test-src', 'T-FXFEE', 1000, 'CARD1', 'fee',      'USD',  -3.00),
+            ('test-src', 'T-CARDFEE', 1000, 'CARD1', 'fee',    'USD', -100.00),
+            ('test-src', 'T-PFCARDFEE', 1000, 'MANDATE-CARD', 'fee', 'USD', -40.00),
             ('test-src', 'T-NOCAT', 1000, 'CASH1', 'purchase', 'USD', -20.00),
             ('test-src', 'T-MARGIN', 1000, 'CASH1', 'interest', 'USD',  -6.66),
             ('test-src', 'T-CREDIT', 1000, 'CASH1', 'interest', 'USD',   4.00);
@@ -1160,6 +1164,8 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
             ('test-src', 'T-ORPHANFEE', 'SOME FEE', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-WHT',   'EXAMPLE TREASURY ETF', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-FXFEE', 'FOREIGN TRANSACTION FEE', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-CARDFEE', 'ANNUAL MEMBERSHIP FEE', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-PFCARDFEE', 'LATE FEE', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-NOCAT',  'SOMETHING UNPLACED', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-MARGIN', 'MARGIN INTEREST', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-CREDIT', 'CREDITED INTEREST', 1, NULL, 'signature-only', 100);
@@ -1197,10 +1203,13 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 
 	for id, want := range map[string][2]string{
 		"T-ADR": {canonical.SpendDetailedInvestmentFees, "kind"},
-		// a bank account's fee is a bank fee; a mandate's cash account,
-		// though also kind cash, sits in a portfolio and keeps the
-		// investment floor, as does a fee whose account gold lacks
+		// a bank account's fee is a bank fee, and so is any card's, in a
+		// portfolio or not; a mandate's cash account, though also kind
+		// cash, sits in a portfolio and keeps the investment floor, as
+		// does a fee whose account gold lacks
 		"T-BANKFEE":    {"BANK_FEES_OTHER_BANK_FEES", "kind"},
+		"T-CARDFEE":    {"BANK_FEES_OTHER_BANK_FEES", "kind"},
+		"T-PFCARDFEE":  {"BANK_FEES_OTHER_BANK_FEES", "kind"},
 		"T-MANDATEFEE": {canonical.SpendDetailedInvestmentFees, "kind"},
 		"T-ORPHANFEE":  {canonical.SpendDetailedInvestmentFees, "kind"},
 		"T-WHT":        {canonical.SpendDetailedWithholdingTax, "kind"},

@@ -276,7 +276,9 @@ but the narrative can say what it was.
   account kind), as on the spending side. One booking type can mean
   different things by direction — UBS books both halves of an account's
   interest settlement under one type — which is why the two maps are
-  separate rather than one lookup.
+  separate rather than one lookup. Plaid's category taxonomy (`plaid`)
+  has an income side as well. Its translations are in
+  adapters/plaid.md §10.
 - **Model tier** — asked about the payer signatures on `deposit` rows
   the deterministic tiers left unplaced, and about nothing else (§7).
   **The fence is identical** and matters more here (§6).
