@@ -52,7 +52,7 @@ base excludes, so it cannot read a base that already excluded it.
 |---|---|
 | `income_scoped_accounts()` | every account, until an `income.accounts` entry takes one out |
 | `income_enrichment_population(f, t)` | what the pass may write a verdict for |
-| `income_lines_base(f, t)` | what a view charts: the population with its type resolved, less the four excluded deltas |
+| `income_lines_base(f, t)` | what a view charts: the population with its type resolved, less the deltas §2 keeps out of the base |
 
 There is **no income matcher pool**. The internal-transfer matcher
 already admits `deposit` on every account (migration 0044) precisely so a
@@ -129,24 +129,60 @@ SPENDING.md §2, in one table and one dimension. `spend_categories` gained
 a `family` column in migration 0069: a row is `spending`, `income`, or
 `both`.
 
-**Vendored, verbatim:** Plaid's `INCOME` primary and its seven detailed
-values, copied with descriptions untouched so a taxonomy refresh still
-diffs cleanly — `INCOME_WAGES`, `INCOME_INTEREST_EARNED`,
-`INCOME_DIVIDENDS`, `INCOME_RETIREMENT_PENSION`, `INCOME_TAX_REFUND`,
-`INCOME_UNEMPLOYMENT`, `INCOME_OTHER_INCOME`. The other three dropped
-primaries stay dropped: `TRANSFER_IN` is the own-account move the matcher
-already names, and the two outflow families are spending's.
+**Vendored, verbatim:** Plaid's `INCOME` primary, version 2, and its
+thirteen detailed values. Their descriptions are copied untouched, so a
+taxonomy refresh still diffs cleanly. Each value reads in a report as
+its label:
 
-**Ten extensions**, ours, in the vendored shape under `INCOME` so the
-model may emit them and a future Plaid value supersedes one as a clean
-diff: `INCOME_SELF_EMPLOYMENT`, `INCOME_GOVERNMENT_BENEFITS`,
-`INCOME_RENT`, `INCOME_ROYALTIES`, `INCOME_ALIMONY_AND_CHILD_SUPPORT`,
-`INCOME_STAKING`, `INCOME_REWARDS`, `INCOME_DISTRIBUTIONS`,
-`INCOME_INSURANCE_PAYOUT`, `INCOME_ENERGY_FEED_IN`. The bar each
-clears is the bar an extension always clears — common, distinct on a
-statement or a tax return, and absent from the vendored vocabulary — and
-it is applied to households in general rather than to one, because the
-product is published.
+| value | label |
+|---|---|
+| `INCOME_SALARY` | Salary |
+| `INCOME_GIG_ECONOMY` | Gig economy |
+| `INCOME_CONTRACTOR` | Contractor |
+| `INCOME_DIVIDENDS` | Dividends |
+| `INCOME_INTEREST_EARNED` | Interest earned |
+| `INCOME_RENTAL` | Rental |
+| `INCOME_RETIREMENT_PENSION` | Retirement pension |
+| `INCOME_UNEMPLOYMENT` | Unemployment |
+| `INCOME_LONG_TERM_DISABILITY` | Long-term disability |
+| `INCOME_MILITARY` | Veterans benefits |
+| `INCOME_CHILD_SUPPORT` | Child support |
+| `INCOME_TAX_REFUND` | Tax refund |
+| `INCOME_OTHER` | Other income |
+
+Plaid's five other primaries stay dropped, as on the spending side
+(SPENDING.md §2):
+
+- `TRANSFER_IN` says money arrived, not from whose account. The matcher
+  pairs an own-account move, and the other tiers place the rest.
+- `LOAN_DISBURSEMENTS` is money borrowed, which the `loan_proceeds`
+  and `mortgage_transfer` deltas name.
+- `OTHER` is Plaid's bucket for a row it could not place.
+- `TRANSFER_OUT` and `LOAN_PAYMENTS` are outflows, and spending's.
+
+**Eight extensions**, ours, in the vendored shape under `INCOME`. The
+model may emit them, and a future Plaid value supersedes one as a clean
+diff:
+
+| value | label |
+|---|---|
+| `INCOME_GOVERNMENT_BENEFITS` | Government benefits |
+| `INCOME_ROYALTIES` | Royalties |
+| `INCOME_ALIMONY` | Alimony |
+| `INCOME_STAKING` | Staking |
+| `INCOME_REWARDS` | Rewards |
+| `INCOME_DISTRIBUTIONS` | Distributions |
+| `INCOME_INSURANCE_PAYOUT` | Insurance payout |
+| `INCOME_ENERGY_FEED_IN` | Energy feed-in |
+
+Each extension clears the usual bar:
+
+- it is common;
+- it is distinct on a statement or a tax return;
+- the vendored vocabulary has no value for it.
+
+The bar is set for households in general, because the product is
+published.
 
 `INCOME_INSURANCE_PAYOUT` is the one whose placement is not obvious, since
 `reimbursement` below also describes it. It is income because **the premium
@@ -154,16 +190,52 @@ was already counted as spending** and nothing in the data links a payout to
 the premiums it answers — different amounts, different dates, often
 different years. Netting the payout out would count the outflow and drop the
 inflow. `reimbursement` keeps the cases where the outflow IS identifiable: a
-utility credit against a bill, a merchant reversing its own charge.
+utility credit against a bill, a merchant reversing its own charge. A
+recurring disability benefit is not a payout, even from an insurer. It
+is `INCOME_LONG_TERM_DISABILITY`, whoever pays it.
 
 `INCOME_ENERGY_FEED_IN` is what a grid operator or an energy retailer pays
 for electricity the household's own generation fed into the grid. It is
 income from an asset the household owns, earned without its labour, so the
-cash flow statement files it under yield beside rent and royalties.
+cash flow statement files it under yield beside rental income and
+royalties.
 
-`INCOME_GOVERNMENT_BENEFITS` excludes tax refunds by name: a refund is not a
-state transfer whichever tax office pays it, in whatever language it is
-written.
+`INCOME_GOVERNMENT_BENEFITS` covers the state transfers no other value
+names: child and family allowances, parental-leave pay, housing
+benefits, social assistance, stimulus payments. A state pension, an
+unemployment benefit, a disability benefit, a veterans benefit and
+child support an agency pays out each have a vendored value of their
+own. It excludes tax refunds by name: a refund is not a state transfer
+whichever tax office pays it, in whatever language it is written.
+
+`INCOME_ALIMONY` is the half of family maintenance that
+`INCOME_CHILD_SUPPORT` leaves out: maintenance from a former spouse or
+partner. Child support is `INCOME_CHILD_SUPPORT` whether a court ordered
+it or the parents agreed it. Maintenance a person pays is
+person-shaped, so the fence keeps most of it from the model, and a rule
+or a pin places it.
+
+**What the vendored descriptions leave out.** Plaid's texts are kept
+verbatim, so the policies they cannot carry are written here:
+
+- Tips paid through payroll are `INCOME_SALARY`. Cash tips paid into
+  an account are `cash_deposit`.
+- Military pay is `INCOME_SALARY`. `INCOME_MILITARY` is veterans'
+  benefits only.
+- Pay from a gig platform is `INCOME_GIG_ECONOMY`.
+- `INCOME_CONTRACTOR` covers freelance and contract work, a sole
+  trader's takings and an owner's draw.
+- A tenancy deposit returned and the proceeds of selling a property are
+  `capital_return`, not `INCOME_RENTAL`.
+- A disability benefit is `INCOME_LONG_TERM_DISABILITY`, whoever pays
+  it.
+- Child support that an agency pays out or advances is
+  `INCOME_CHILD_SUPPORT`.
+- A payout from a plan whose balance is the holder's own is
+  `retirement_transfer`: a 401(k), an IRA, a pillar 3a or a
+  vested-benefits account. It is a delta, so a rule or a pin places it.
+  A pension paid from a pool the holder does not own is
+  `INCOME_RETIREMENT_PENSION`, social security among them.
 
 **Fourteen deltas**, ours, primary-level and lowercase, decided from
 structure a payer's name cannot reveal:
@@ -174,7 +246,7 @@ structure a payer's name cannot reveal:
 | `capital_return` | the holder's own capital coming back | no |
 | `loan_proceeds` | money borrowed arriving; a liability incurred | no |
 | `reimbursement` | money back for money spent | no |
-| `retirement_transfer` | a payout from, or a contribution to, an untracked retirement plan | no |
+| `retirement_transfer` | a payout from, or a contribution to, an untracked retirement plan whose balance is the holder's own | no |
 | `education_transfer` | the same for an education plan or savings account | no |
 | `health_transfer` | the same for a health savings account | no |
 | `trust_transfer` | the same for a trust that is a separate taxpayer | no |
@@ -209,6 +281,12 @@ reads as — nothing placed it, and it is exactly what the next
 as `other` therefore removes it from the backlog rather than leaving it
 there.
 
+Nor is `other` the catch-all `INCOME_OTHER`, which reads "Other income".
+A catch-all is not a verdict (SPENDING.md §3). An issuer's filing under
+it is recorded and the row declined, and `--refine` re-asks a model
+verdict there. The two keep separate labels, so a chart draws them as
+two slices.
+
 Spending's `card_spend` has no mirror, deliberately. It exists because
 deleting an unpaired card bill deletes real consumption; an unpaired
 inbound wire is not deleted — it stays in the base, visible and unplaced,
@@ -219,8 +297,40 @@ SPENDING.md §2 gives: `ValidIncomeDetailed` admits everything storable,
 `ModelIncomeDetailed` refuses the deltas. Both are derived from the
 `family` column rather than restated, so a value added to `canonical` is
 admitted or refused everywhere at once. The predicates are **fenced by
-family**: a spending rule naming `INCOME_WAGES` fails at config load, and
+family**: a spending rule naming `INCOME_SALARY` fails at config load, and
 so does an income rule naming `FOOD_AND_DRINK_GROCERIES`.
+
+**Retired spellings.** Five values of an earlier vocabulary are not
+values of this one. Validity is read off the table, so an income rule
+or an income pin naming one is refused like any other unknown value.
+The error names the value to write instead
+(`canonical.RetiredDetailed`). The model gauntlet refuses one the same
+way, and the reason it sends back names the value to emit instead:
+
+| retired | write instead |
+|---|---|
+| `INCOME_WAGES` | `INCOME_SALARY`, or `INCOME_GIG_ECONOMY` for gig-platform pay |
+| `INCOME_OTHER_INCOME` | `INCOME_OTHER` |
+| `INCOME_SELF_EMPLOYMENT` | `INCOME_CONTRACTOR` |
+| `INCOME_RENT` | `INCOME_RENTAL` |
+| `INCOME_ALIMONY_AND_CHILD_SUPPORT` | `INCOME_CHILD_SUPPORT` for child support, or `INCOME_ALIMONY` for maintenance from a former partner |
+
+A pins ledger is read before gold is opened for writing, so a stale pin
+fails before anything is migrated or loaded. Migration 0111 moved each
+stored verdict to the first value in its row above. A verdict of the
+split value therefore reads `INCOME_CHILD_SUPPORT`. A config rule on the
+payer's narrative moves a payer of maintenance to `INCOME_ALIMONY`. A pin
+moves one payment. `reload -a` respells the payer store it carries
+across the same way (§9).
+
+A verdict placed under the wider meaning of a narrowed value keeps it.
+Examples:
+
+- a disability or veterans' benefit filed as `INCOME_GOVERNMENT_BENEFITS`;
+- an insurer's disability benefit filed as `INCOME_INSURANCE_PAYOUT`;
+- gig-platform pay filed as wages, which reads `INCOME_SALARY`.
+
+`categorize income --all` re-asks them.
 
 ---
 
@@ -316,7 +426,7 @@ at all: `deposit`.
 The shape this protects against is one payer, two kinds. A signature is
 shared by every row that folds to it, so an employer whose shares are
 also held would carry one verdict onto both: the salary deposit's
-`INCOME_WAGES` would re-type that employer's dividends. Under this
+`INCOME_SALARY` would re-type that employer's dividends. Under this
 ordering the dividend keeps `INCOME_DIVIDENDS` with provenance `kind`
 and the deposit keeps the store's verdict with provenance `model`.
 
@@ -467,7 +577,7 @@ wealthdb categorizations [spending | income] [-f FORMAT] [-d VALUE] [--forget SI
   `detailed` belongs to.
 - The income conversation names payers of money RECEIVED, offers
   `ModelIncomeCategories()` and forbids `DeltaIncomeCategories()` by
-  name. `--refine` re-asks `INCOME_OTHER_INCOME`, the family's catch-all.
+  name. `--refine` re-asks `INCOME_OTHER`, the family's catch-all.
 - **Candidacy is `deposit` and nothing else**, in every backlog mode.
   It is the one admitted kind with no floor, so it is the one a model
   can say anything useful about (§3, decision 13). `--all` therefore
@@ -517,7 +627,7 @@ the idiom the whole CLI already uses for it:
 `--level` defaults to **`detailed`**, the one default that differs from
 spending's. The income vocabulary has one vendored primary, so at the
 primary level every vendored type and extension folds into `INCOME`,
-beside the deltas the base keeps (§3's table) and `(uncategorized)`.
+beside the deltas the base keeps (§2's table) and `(uncategorized)`.
 That view has a use —
 what was earned or yielded against what was given — but it is not the one
 a reader opens the report for.
@@ -557,7 +667,10 @@ Everything in SPENDING.md §8 holds, with the income names:
 
 The payer store joins the merchant store in `reload -a`'s carry-across: a
 store that is not carried is lost with no backup, so the rebuild walks a
-LIST of stores rather than naming one.
+LIST of stores rather than naming one. After carrying a store, the
+rebuild respells any retired value in it to its successor (§2). So a
+carry from a file older than migration 0111 brings no retired spelling
+into the rebuilt file.
 
 `wealthdb status -v` prints an `income:` block with the backlog count.
 The catch-all-kind counter (`excluded_unmapped`) is **not** duplicated
@@ -571,8 +684,9 @@ one number answers for both.
 
 1. **Three CLI views**, `summary / types / transactions`. No `payers`
    view: payers rank on the dashboard only, as merchants do.
-2. **Plaid's `INCOME` vendored verbatim**, plus nine extensions and
-   fourteen deltas. Widened deliberately for a general audience — the
+2. **Plaid's `INCOME` vendored verbatim**, version 2, plus eight
+   extensions and fourteen deltas. Widened deliberately for a general
+   audience — the
    product is published, so the vocabulary names what a household
    commonly receives rather than what one deployment does.
 3. **Gross as booked.** `withheld` is a memo, off by default, never read

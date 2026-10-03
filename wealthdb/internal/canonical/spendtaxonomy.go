@@ -16,10 +16,11 @@ import "strings"
 // Three classes of value share the table:
 //
 //   - VENDORED pairs, copied verbatim from Plaid's Personal Finance Category
-//     taxonomy (transactions-personal-finance-category-taxonomy.csv,
-//     retrieved 2026-09-04), so a revision arrives as a reviewable diff. The
-//     transfer and loan-payment primaries are left out: those movements are
-//     the matcher's and the deltas' to name.
+//     taxonomy, version 2 (the PFCv2 columns of pfc-taxonomy-all.csv,
+//     retrieved 2026-10-03), so a revision arrives as a reviewable diff. The
+//     transfer and loan primaries are left out — those movements are the
+//     matcher's and the deltas' to name — and so is OTHER, Plaid's bucket
+//     for a row it could not place.
 //   - DELTAS, ours, lower-case and primary-level: movements decided from
 //     structure a counterparty's name cannot reveal — whose account the
 //     money went to, whether an arriving sum was earned or borrowed. A model
@@ -51,13 +52,12 @@ func (f Family) InFamily(want Family) bool { return f == want || f == FamilyBoth
 
 // SpendCategory is one (primary, detailed, description, family) row of
 // the taxonomy. Gold's `spend_categories` dimension is seeded from this
-// table — migration 0040 seeded the vendored spending rows and the
-// first three deltas, 0045/0046/0047 one delta each, 0056 and 0065 the
-// extensions, 0069 the whole income side and the family column, 0076
-// one extension, 0078 the five the cash flow statement needed — and a
-// generator-style test pins the migrated dimension to the table so they
-// cannot drift. A new value is a row here plus a new migration; an
-// applied migration is never edited.
+// table, one migration per change — 0040 seeded the vendored spending
+// rows, 0069 the income side and the family column, 0111 moved the
+// vendored rows to Plaid's version 2 — and a generator-style test pins
+// the migrated dimension to the table so they cannot drift. A new value
+// is a row here plus a new migration; an applied migration is never
+// edited.
 type SpendCategory struct {
 	Primary     string
 	Detailed    string
@@ -166,27 +166,27 @@ const (
 
 // The income extension values. See extensionIncomeCategories.
 const (
-	IncomeDetailedSelfEmployment         = "INCOME_SELF_EMPLOYMENT"
-	IncomeDetailedGovernmentBenefits     = "INCOME_GOVERNMENT_BENEFITS"
-	IncomeDetailedRent                   = "INCOME_RENT"
-	IncomeDetailedRoyalties              = "INCOME_ROYALTIES"
-	IncomeDetailedAlimonyAndChildSupport = "INCOME_ALIMONY_AND_CHILD_SUPPORT"
-	IncomeDetailedStaking                = "INCOME_STAKING"
-	IncomeDetailedRewards                = "INCOME_REWARDS"
-	IncomeDetailedDistributions          = "INCOME_DISTRIBUTIONS"
-	IncomeDetailedInsurancePayout        = "INCOME_INSURANCE_PAYOUT"
-	IncomeDetailedEnergyFeedIn           = "INCOME_ENERGY_FEED_IN"
+	IncomeDetailedGovernmentBenefits = "INCOME_GOVERNMENT_BENEFITS"
+	IncomeDetailedRoyalties          = "INCOME_ROYALTIES"
+	IncomeDetailedAlimony            = "INCOME_ALIMONY"
+	IncomeDetailedStaking            = "INCOME_STAKING"
+	IncomeDetailedRewards            = "INCOME_REWARDS"
+	IncomeDetailedDistributions      = "INCOME_DISTRIBUTIONS"
+	IncomeDetailedInsurancePayout    = "INCOME_INSURANCE_PAYOUT"
+	IncomeDetailedEnergyFeedIn       = "INCOME_ENERGY_FEED_IN"
 )
 
 // vendoredSpendCategories is the outflow half of the Plaid subset, in
 // the source CSV's order and grouped by primary as it groups them.
 var vendoredSpendCategories = []SpendCategory{
 	{"BANK_FEES", "BANK_FEES_ATM_FEES", "Fees incurred for out-of-network ATMs", FamilySpending},
-	{"BANK_FEES", "BANK_FEES_FOREIGN_TRANSACTION_FEES", "Fees incurred on non-domestic transactions", FamilySpending},
 	{"BANK_FEES", "BANK_FEES_INSUFFICIENT_FUNDS", "Fees relating to insufficient funds", FamilySpending},
-	{"BANK_FEES", "BANK_FEES_INTEREST_CHARGE", "Fees incurred for interest on purchases, including not-paid-in-full or interest on cash advances", FamilySpending},
-	{"BANK_FEES", "BANK_FEES_OVERDRAFT_FEES", "Fees incurred when an account is in overdraft", FamilySpending},
-	{"BANK_FEES", "BANK_FEES_OTHER_BANK_FEES", "Other miscellaneous bank fees", FamilySpending},
+	{"BANK_FEES", "BANK_FEES_INTEREST_CHARGE", "Fees incurred for interest on purchases (this excludes cash advance interest fee)", FamilySpending},
+	{"BANK_FEES", "BANK_FEES_FOREIGN_TRANSACTION_FEES", "Fees incurred on non-domestic transactions", FamilySpending},
+	{"BANK_FEES", "BANK_FEES_OVERDRAFT_FEES", "Penalty payment for overdrafts", FamilySpending},
+	{"BANK_FEES", "BANK_FEES_LATE_FEES", "Penalty payment for late payment", FamilySpending},
+	{"BANK_FEES", "BANK_FEES_CASH_ADVANCE", "Fees incurred for withdrawing cash using a credit card, including transaction fees and interest fees.", FamilySpending},
+	{"BANK_FEES", "BANK_FEES_OTHER_BANK_FEES", "Other miscellaneous bank fees, including annual fee", FamilySpending},
 
 	{"ENTERTAINMENT", "ENTERTAINMENT_CASINOS_AND_GAMBLING", "Gambling, casinos, and sports betting", FamilySpending},
 	{"ENTERTAINMENT", "ENTERTAINMENT_MUSIC_AND_AUDIO", "Digital and in-person music purchases, including music streaming services", FamilySpending},
@@ -195,7 +195,7 @@ var vendoredSpendCategories = []SpendCategory{
 	{"ENTERTAINMENT", "ENTERTAINMENT_VIDEO_GAMES", "Digital and in-person video game purchases", FamilySpending},
 	{"ENTERTAINMENT", "ENTERTAINMENT_OTHER_ENTERTAINMENT", "Other miscellaneous entertainment purchases, including night life and adult entertainment", FamilySpending},
 
-	{"FOOD_AND_DRINK", "FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR", "Beer, Wine & Liquor Stores", FamilySpending},
+	{"FOOD_AND_DRINK", "FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR", "Beer, wine, and liquor stores.", FamilySpending},
 	{"FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE", "Purchases at coffee shops or cafes", FamilySpending},
 	{"FOOD_AND_DRINK", "FOOD_AND_DRINK_FAST_FOOD", "Dining expenses for fast food chains", FamilySpending},
 	{"FOOD_AND_DRINK", "FOOD_AND_DRINK_GROCERIES", "Purchases for fresh produce and groceries, including farmers' markets", FamilySpending},
@@ -237,7 +237,7 @@ var vendoredSpendCategories = []SpendCategory{
 	{"PERSONAL_CARE", "PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING", "Wash and fold, and dry cleaning expenses", FamilySpending},
 	{"PERSONAL_CARE", "PERSONAL_CARE_OTHER_PERSONAL_CARE", "Other miscellaneous personal care, including mental health apps and services", FamilySpending},
 
-	{"GENERAL_SERVICES", "GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING", "Financial planning, and tax and accounting services", FamilySpending},
+	{"GENERAL_SERVICES", "GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING", "Financial planning, tax, and accounting services.", FamilySpending},
 	{"GENERAL_SERVICES", "GENERAL_SERVICES_AUTOMOTIVE", "Oil changes, car washes, repairs, and towing", FamilySpending},
 	{"GENERAL_SERVICES", "GENERAL_SERVICES_CHILDCARE", "Babysitters and daycare", FamilySpending},
 	{"GENERAL_SERVICES", "GENERAL_SERVICES_CONSULTING_AND_LEGAL", "Consulting and legal services", FamilySpending},
@@ -248,7 +248,7 @@ var vendoredSpendCategories = []SpendCategory{
 	{"GENERAL_SERVICES", "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", "Other miscellaneous services, including advertising and cloud storage", FamilySpending},
 
 	{"GOVERNMENT_AND_NON_PROFIT", "GOVERNMENT_AND_NON_PROFIT_DONATIONS", "Charitable, political, and religious donations", FamilySpending},
-	{"GOVERNMENT_AND_NON_PROFIT", "GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES", "Government departments and agencies, such as driving licences, and passport renewal", FamilySpending},
+	{"GOVERNMENT_AND_NON_PROFIT", "GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES", "Government departments and agencies, such as driving licenses, and passport renewal", FamilySpending},
 	{"GOVERNMENT_AND_NON_PROFIT", "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT", "Tax payments, including income and property taxes", FamilySpending},
 	{"GOVERNMENT_AND_NON_PROFIT", "GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT", "Other miscellaneous government and non-profit agencies", FamilySpending},
 
@@ -269,28 +269,33 @@ var vendoredSpendCategories = []SpendCategory{
 	{"RENT_AND_UTILITIES", "RENT_AND_UTILITIES_INTERNET_AND_CABLE", "Internet and cable bills", FamilySpending},
 	{"RENT_AND_UTILITIES", "RENT_AND_UTILITIES_RENT", "Rent payment", FamilySpending},
 	{"RENT_AND_UTILITIES", "RENT_AND_UTILITIES_SEWAGE_AND_WASTE_MANAGEMENT", "Sewage and garbage disposal bills", FamilySpending},
-	{"RENT_AND_UTILITIES", "RENT_AND_UTILITIES_TELEPHONE", "Cell phone bills", FamilySpending},
+	{"RENT_AND_UTILITIES", "RENT_AND_UTILITIES_TELEPHONE", "Telephone bills", FamilySpending},
 	{"RENT_AND_UTILITIES", "RENT_AND_UTILITIES_WATER", "Water bills", FamilySpending},
 	{"RENT_AND_UTILITIES", "RENT_AND_UTILITIES_OTHER_UTILITIES", "Other miscellaneous utility bills", FamilySpending},
 }
 
-// vendoredIncomeCategories is Plaid's INCOME primary, whole. It is the
-// first primary in the source CSV and was dropped by the original
-// vendoring because nothing read it yet; the seven values and their
-// descriptions are the CSV's, untouched, so a refresh diffs against
-// them as it does against the outflow rows.
+// vendoredIncomeCategories is Plaid's INCOME primary, whole: the first
+// primary in the source CSV, its thirteen values and their descriptions
+// untouched, so a refresh diffs against them as it does against the
+// outflow rows.
 var vendoredIncomeCategories = []SpendCategory{
-	{"INCOME", "INCOME_DIVIDENDS", "Dividends from investment accounts", FamilyIncome},
+	{"INCOME", "INCOME_CHILD_SUPPORT", "Child support refers to court-ordered payments made by a parent to financially support their child’s living expenses", FamilyIncome},
+	{"INCOME", "INCOME_CONTRACTOR", "Income from freelance or independent contract work.", FamilyIncome},
+	{"INCOME", "INCOME_DIVIDENDS", "Income from dividends", FamilyIncome},
+	{"INCOME", "INCOME_GIG_ECONOMY", "Money earned by working in the gig economy, for example by driving for Lyft, Uber, etc.", FamilyIncome},
 	{"INCOME", "INCOME_INTEREST_EARNED", "Income from interest on savings accounts", FamilyIncome},
-	{"INCOME", "INCOME_RETIREMENT_PENSION", "Income from pension payments", FamilyIncome},
-	{"INCOME", "INCOME_TAX_REFUND", "Income from tax refunds", FamilyIncome},
-	{"INCOME", "INCOME_UNEMPLOYMENT", "Income from unemployment benefits, including unemployment insurance and healthcare", FamilyIncome},
-	{"INCOME", "INCOME_WAGES", "Income from salaries, gig-economy work, and tips earned", FamilyIncome},
-	{"INCOME", "INCOME_OTHER_INCOME", "Other miscellaneous income, including alimony, social security, child support, and rental", FamilyIncome},
+	{"INCOME", "INCOME_LONG_TERM_DISABILITY", "Disability payments, for example from social security.", FamilyIncome},
+	{"INCOME", "INCOME_MILITARY", "Money earned from veterans benefits. Salary earned from serving in the military (through DFAS) is categorized as salary", FamilyIncome},
+	{"INCOME", "INCOME_RENTAL", "Rental income includes money earned from payments related to property rentals, lease income, and short-term rental platforms such as airbnb and VRBO.", FamilyIncome},
+	{"INCOME", "INCOME_RETIREMENT_PENSION", "Payments from the social security administration, private retirement systems, (eg. 401k) pensions, and government retirement programs", FamilyIncome},
+	{"INCOME", "INCOME_SALARY", "Income from salaries and wages", FamilyIncome},
+	{"INCOME", "INCOME_TAX_REFUND", "Government tax refund provided to the user", FamilyIncome},
+	{"INCOME", "INCOME_UNEMPLOYMENT", "Money earned from unemployment benefits", FamilyIncome},
+	{"INCOME", "INCOME_OTHER", "Other miscellaneous income", FamilyIncome},
 }
 
-// deltaCategories are the seventeen own values the vendored taxonomy
-// has no room for, both families in one table because eight of them are
+// deltaCategories are the eighteen own values the vendored taxonomy
+// has no room for, both families in one table because nine of them are
 // one value read from either side.
 //
 // The spending seven: an own-account move, cash whose eventual use is
@@ -353,7 +358,7 @@ var deltaCategories = []SpendCategory{
 		"Cash paid in at a counter or a machine; where it came from is unobservable", FamilyIncome},
 
 	{DetailedRetirementTransfer, DetailedRetirementTransfer,
-		"A move between the holder and a retirement plan the product does not track, either leg — a contribution wired out, a plan payout arriving. The row's own direction says which; the money is the holder's throughout, in a pool earmarked for a stage of life rather than for spending", FamilyBoth},
+		"A move between the holder and a retirement plan the product does not track, either leg — a contribution wired out, a plan payout arriving. The row's own direction says which; the money is the holder's throughout, in a pool earmarked for a stage of life rather than for spending. A payout from a plan whose balance is the holder's own — a 401(k), an IRA, a pillar 3a or vested-benefits account — is this; a pension paid from a pool the holder does not own, social security among them, is INCOME_RETIREMENT_PENSION", FamilyBoth},
 	{DetailedEducationTransfer, DetailedEducationTransfer,
 		"The same crossing for an education plan or savings account the product does not track — money paid in, or drawn out for the costs it was set aside for", FamilyBoth},
 	{DetailedHealthTransfer, DetailedHealthTransfer,
@@ -384,14 +389,12 @@ var extensionSpendCategories = []SpendCategory{
 }
 
 // extensionIncomeCategories are the income side's extensions, under
-// the one vendored primary it has. Plaid has no value for most of them
-// and files them under its catch-all — OTHER_INCOME's own description
-// names alimony, social security, child support and rental — so a
-// household reading its own report would see much of what it receives
-// filed as "other". The two it does not fold there it files under a
-// value that means something else, which is the sharper problem: a
-// catch-all can at least be re-asked (`--refine`), a confident wrong
-// answer cannot.
+// the one vendored primary it has. Each names income the vendored
+// vocabulary has no value for. Plaid files most of it under its
+// catch-all, INCOME_OTHER, so without the extension a household reading
+// its own report would see what it receives filed as "other"; the rest
+// it files under a neighbour that means something else, such as a fund's
+// distribution under DIVIDENDS.
 //
 // The bar each clears is the bar an extension always clears — common,
 // distinct on a statement or a tax return, and absent from the
@@ -401,19 +404,19 @@ var extensionSpendCategories = []SpendCategory{
 // who needed it a config rule.
 //
 // Left out deliberately, each because an existing value already says
-// it: a bonus or a severance payment (wages), crypto lending interest
+// it: a bonus or a severance payment (salary), crypto lending interest
 // (interest earned), a scholarship or a lottery win (other income),
-// and mining, which a config rule places at self-employment or other
-// income until it earns a value of its own.
+// and mining, which a config rule places at contractor or other income
+// until it earns a value of its own.
 //
-// SELF_EMPLOYMENT and GOVERNMENT_BENEFITS are the two the vendored
-// vocabulary comes closest to and still misses: Plaid has WAGES, which
-// a tax return does not read a contractor's invoices as, and it names
-// two state transfers — a pension and unemployment — out of the many a
-// state makes. ALIMONY_AND_CHILD_SUPPORT is person-shaped, so the
-// fence keeps it from the model and a rule or a pin places it; it is
-// an extension all the same, because what it names is a kind of
-// income rather than a structural fact about an account.
+// GOVERNMENT_BENEFITS is the state transfers the vendored vocabulary
+// does not name: it names a pension, unemployment, disability and
+// veterans' benefits, out of the many a state makes. ALIMONY is the
+// half of family maintenance the vendored CHILD_SUPPORT leaves out. It
+// is person-shaped, so the fence keeps most of it from the model and a
+// rule or a pin places it; it is an extension all the same, because
+// what it names is a kind of income rather than a structural fact
+// about an account.
 //
 // STAKING and DISTRIBUTIONS carry a policy each. Staking is kept apart
 // from interest for the reason gold keeps the `staking` kind apart
@@ -423,20 +426,16 @@ var extensionSpendCategories = []SpendCategory{
 // apart from DIVIDENDS so that the vendored value keeps Plaid's
 // meaning.
 var extensionIncomeCategories = []SpendCategory{
-	{"INCOME", IncomeDetailedSelfEmployment,
-		"Freelance, contractor and sole-trader earnings — client invoices, a business's own takings, an owner's draw from their company; not a salary, tips or gig-platform earnings, which are wages", FamilyIncome},
 	{"INCOME", IncomeDetailedGovernmentBenefits,
-		"State transfers other than a pension or an unemployment benefit — child and family allowances, parental-leave pay, disability and housing benefits, stimulus payments; not a tax refund, which is INCOME_TAX_REFUND whichever tax office pays it and in whatever language", FamilyIncome},
-	{"INCOME", IncomeDetailedRent,
-		"Rent received from a tenant, directly or through a letting agent or a property manager; not a tenancy deposit returned and not the proceeds of selling the property", FamilyIncome},
+		"State transfers no other value names — child and family allowances, parental-leave pay, housing benefits, social assistance, stimulus payments; not a state pension (INCOME_RETIREMENT_PENSION), an unemployment benefit (INCOME_UNEMPLOYMENT), a disability benefit (INCOME_LONG_TERM_DISABILITY), a veterans benefit (INCOME_MILITARY) or child support an agency pays out or advances (INCOME_CHILD_SUPPORT), and not a tax refund, which is INCOME_TAX_REFUND whichever tax office pays it and in whatever language", FamilyIncome},
 	{"INCOME", IncomeDetailedRoyalties,
 		"Royalties and creator payouts — book, music, software-licence and patent royalties, and a platform's share of what a creator's work earned", FamilyIncome},
 	{"INCOME", IncomeDetailedEnergyFeedIn,
 		"What a grid operator or an energy retailer pays for electricity the household's own generation fed into the grid — a solar feed-in tariff or a net-metering credit paid out; income from an asset the household owns, not a refund of a utility bill, which is a reimbursement", FamilyIncome},
-	{"INCOME", IncomeDetailedAlimonyAndChildSupport,
-		"Maintenance received from a former partner or a parent — alimony, spousal maintenance, child support; not a cash gift and not family support given freely", FamilyIncome},
+	{"INCOME", IncomeDetailedAlimony,
+		"Maintenance received from a former spouse or partner — alimony, spousal or separation maintenance; not child support, which is INCOME_CHILD_SUPPORT whether a court ordered it or the parents agreed it, and not a cash gift or family support given freely", FamilyIncome},
 	{"INCOME", IncomeDetailedInsurancePayout,
-		"What an insurer pays out on a policy — a claim settled, a damage or health cost covered, a premium refunded on cancellation. Income rather than a reimbursement because the premium that bought the cover was already counted as spending, and nothing links a payout back to the premiums it answers: netting the payout out would count the outflow and drop the inflow", FamilyIncome},
+		"What an insurer pays out on a policy — a claim settled, a damage or health cost covered, a premium refunded on cancellation; not a recurring disability benefit, which is INCOME_LONG_TERM_DISABILITY whoever pays it. Income rather than a reimbursement because the premium that bought the cover was already counted as spending, and nothing links a payout back to the premiums it answers: netting the payout out would count the outflow and drop the inflow", FamilyIncome},
 	{"INCOME", IncomeDetailedStaking,
 		"Proof-of-stake rewards and validator income earned by committing a crypto holding; kept apart from interest because jurisdictions tax the two differently", FamilyIncome},
 	{"INCOME", IncomeDetailedRewards,
@@ -447,9 +446,9 @@ var extensionIncomeCategories = []SpendCategory{
 
 // SpendCategories is the whole taxonomy, both families — the vendored
 // pairs, then the extensions, then the deltas. Ordered for readable
-// diffs; the seed migrations (0040, 0045-0047, 0056, 0065, 0069) were
-// generated from it and TestSpendCategoriesMatchGoTable compares the
-// two as sets, so the order carries no contract.
+// diffs; the seed migrations were generated from it and
+// TestSpendCategoriesMatchGoTable compares the two as sets, so the order
+// carries no contract.
 var SpendCategories = concatCategories(
 	vendoredSpendCategories, vendoredIncomeCategories,
 	extensionSpendCategories, extensionIncomeCategories,
@@ -535,14 +534,14 @@ func categoriesIn(family Family, cats []SpendCategory) []SpendCategory {
 // on its own is not valid unless it is also a delta, and an income value
 // is not valid here: the two families are separate vocabularies that
 // happen to share a table, so a spending rule or pin naming
-// `INCOME_WAGES` is as wrong as one naming nothing at all.
+// `INCOME_SALARY` is as wrong as one naming nothing at all.
 func ValidSpendDetailed(s string) bool {
 	_, ok := spendDetailedValues[s]
 	return ok
 }
 
-// ValidIncomeDetailed is the same for income_detailed: the seven
-// vendored INCOME values, the nine extensions, and the fourteen deltas
+// ValidIncomeDetailed is the same for income_detailed: the thirteen
+// vendored INCOME values, the eight extensions, and the fourteen deltas
 // the income side reads. Income rules and pins validate against it.
 func ValidIncomeDetailed(s string) bool {
 	_, ok := incomeDetailedValues[s]
@@ -572,30 +571,93 @@ func ModelIncomeDetailed(s string) bool {
 	return ok
 }
 
+// Retired is a detailed value an earlier taxonomy held and this one does
+// not.
+type Retired struct {
+	// Successor is the value stored verdicts moved to (migration 0111).
+	Successor string
+	// Use is what a refusal advises in its place: the successor, or each
+	// successor with the case it covers when the old value was split.
+	Use string
+}
+
+// retiredDetailed are the spellings the move to Plaid's version 2
+// retired: two vendored values Plaid renamed, and three extensions a
+// version 2 value took over. Closed: a later retirement is a new entry
+// beside a new migration.
+var retiredDetailed = map[string]Retired{
+	"INCOME_WAGES":           {"INCOME_SALARY", "INCOME_SALARY, or INCOME_GIG_ECONOMY for gig-platform pay"},
+	"INCOME_OTHER_INCOME":    {"INCOME_OTHER", "INCOME_OTHER"},
+	"INCOME_SELF_EMPLOYMENT": {"INCOME_CONTRACTOR", "INCOME_CONTRACTOR"},
+	"INCOME_RENT":            {"INCOME_RENTAL", "INCOME_RENTAL"},
+	"INCOME_ALIMONY_AND_CHILD_SUPPORT": {"INCOME_CHILD_SUPPORT",
+		"INCOME_CHILD_SUPPORT for child support, or INCOME_ALIMONY for maintenance from a former partner"},
+}
+
+// modelNotes are wealthdb's own line for a few vendored values, which
+// the model prompt prints after the value's description. A vendored
+// description stays Plaid's text, word for word, so a refresh still
+// diffs cleanly; where wealthdb draws the line somewhere that text does
+// not say, the note tells the model. A note says what a value also
+// covers, or what to skip — never to emit a value outside the model's
+// vocabulary.
+var modelNotes = map[string]string{
+	"INCOME_CONTRACTOR": "Also a sole trader's takings and an owner's draw from their own company.",
+	"INCOME_RENTAL":     "Not a returned tenancy deposit and not the proceeds of selling the property: skip those.",
+	"INCOME_RETIREMENT_PENSION": "Only a pension paid from a pool the holder does not own, such as social security or a defined-benefit plan. " +
+		"A payout from a plan whose balance is the holder's own — a 401(k), an IRA, a pillar 3a or vested-benefits account — is not income: skip it.",
+}
+
+// ModelNote is wealthdb's note on a value for the model prompt, or ""
+// for a value whose description says all of it.
+func ModelNote(detailed string) string { return modelNotes[detailed] }
+
+// RetiredDetailed reports whether s is a retired spelling, and what
+// replaced it. Validity stays derived from the table, so a retired
+// spelling is refused like any other value outside it; this only lets
+// the refusal name what to write instead.
+func RetiredDetailed(s string) (Retired, bool) {
+	r, ok := retiredDetailed[s]
+	return r, ok
+}
+
 // spendLabelAcronyms are the words the mechanical rule would sentence-case
 // wrongly. Two, and both are initialisms the vendored taxonomy spells in
 // full caps because every value is in full caps.
 var spendLabelAcronyms = map[string]string{"Atm": "ATM", "Tv": "TV"}
 
 // spendLabelOverrides are the values whose display name is not what the
-// mechanical rule reads off them. One so far: `card_spend`, which the
-// rule renders "Card spend" — true of every card purchase in the
-// product, so among the merchant categories on a chart it reads as a
-// KIND of spending rather than as the placeholder it is. The value
-// stands for a bill on a card wealthdb does not itemise (migration
-// 0046): real consumption whose purchases nobody has seen, in the base
-// and replaced by those purchases the day the card is collected.
-// "Uncategorized card spend" says both halves.
+// mechanical rule reads off them:
+//
+//   - `card_spend`, which the rule renders "Card spend" — true of every
+//     card purchase in the product, so among the merchant categories on a
+//     chart it reads as a KIND of spending rather than as the placeholder
+//     it is. The value stands for a bill on a card wealthdb does not
+//     itemise (migration 0046): real consumption whose purchases nobody
+//     has seen, in the base and replaced by those purchases the day the
+//     card is collected. "Uncategorized card spend" says both halves.
+//   - INCOME_OTHER, which the rule renders "Other" — the label of the
+//     `other` delta, a different thing: a catch-all declines a row, while
+//     `other` is a verdict that takes it out of the backlog.
+//   - INCOME_MILITARY, whose value names veterans' benefits; "Military"
+//     reads as military pay, which its own description files as salary.
+//   - BANK_FEES_CASH_ADVANCE, which "Cash advance" names as the advance
+//     itself — borrowed money, not a fee.
+//   - two hyphenated compounds the rule cannot spell.
 var spendLabelOverrides = map[string]string{
-	SpendDetailedCardSpend:     "Uncategorized card spend",
-	IncomeDetailedEnergyFeedIn: "Energy feed-in",
+	SpendDetailedCardSpend:        "Uncategorized card spend",
+	"INCOME_OTHER":                "Other income",
+	"INCOME_MILITARY":             "Veterans benefits",
+	"BANK_FEES_CASH_ADVANCE":      "Cash advance fees",
+	"INCOME_LONG_TERM_DISABILITY": "Long-term disability",
+	IncomeDetailedEnergyFeedIn:    "Energy feed-in",
 }
 
 // SpendLabel is a detailed value's display name: the vendored value with
 // its primary's prefix taken off, underscores opened out and one capital
 // at the front. `FOOD_AND_DRINK_GROCERIES` reads "Groceries";
 // `GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` reads "Other general
-// merchandise"; `INCOME_WAGES` reads "Wages"; a delta, which is its own
+// merchandise"; `INCOME_SALARY` reads "Salary"; a delta, which is its own
 // primary, reads "Internal transfer". A value the rule reads wrongly is
 // in spendLabelOverrides.
 //
@@ -612,8 +674,8 @@ var spendLabelOverrides = map[string]string{
 //
 // Nothing at run time calls this: a label is SEEDED into
 // spend_categories by whichever migration adds or corrects the row
-// (0058 seeded them all, 0062 corrected one, 0065 and 0069 carried them
-// on the rows they added), so a label can be corrected by hand without
+// (0058 seeded them all, and every row added since carries its own), so
+// a label can be corrected by hand without
 // the correction being computed away. This is the rule those seeds were
 // generated from, and TestSpendCategoryLabelsMatchGoTable holds them
 // together — which is why its only callers are tests.
@@ -667,9 +729,9 @@ func humanise(s string) string {
 
 // CatchAllSpendDetailed reports whether s is a spending primary's own
 // catch-all — the value that says only "somewhere in this primary, and
-// nothing finer". Every one spells its detail part `OTHER_...`, which
-// is the vendored taxonomy's own convention and the reason this can be
-// read off the value rather than listed.
+// nothing finer". Every one spells its detail part `OTHER` or
+// `OTHER_...`, which is the vendored taxonomy's own convention and the
+// reason this can be read off the value rather than listed.
 //
 // It exists so a tier can decline a row it can only place in a
 // catch-all. A catch-all is not a verdict: it carries no more
@@ -680,14 +742,14 @@ func humanise(s string) string {
 // is a deliberate verdict about what the row IS.
 //
 // Family-fenced like the validity predicates, so that adding the income
-// side changed no answer this gave before it existed:
-// `INCOME_OTHER_INCOME` is income's catch-all and not spending's.
+// side changed no answer this gave before it existed: `INCOME_OTHER` is
+// income's catch-all and not spending's.
 func CatchAllSpendDetailed(s string) bool {
 	return ValidSpendDetailed(s) && catchAllSpelling(s)
 }
 
 // CatchAllIncomeDetailed is the same predicate over the income
-// vocabulary, where there is exactly one: `INCOME_OTHER_INCOME`.
+// vocabulary, where there is exactly one: `INCOME_OTHER`.
 func CatchAllIncomeDetailed(s string) bool {
 	return ValidIncomeDetailed(s) && catchAllSpelling(s)
 }
@@ -697,7 +759,8 @@ func catchAllSpelling(s string) bool {
 	if !ok || primary == s {
 		return false // unknown, or a delta, which is primary-level
 	}
-	return strings.HasPrefix(s[len(primary)+1:], "OTHER_")
+	rest := s[len(primary)+1:]
+	return rest == "OTHER" || strings.HasPrefix(rest, "OTHER_")
 }
 
 // DeltaSpendCategories returns the spending family's delta rows — the
@@ -708,8 +771,8 @@ func DeltaSpendCategories() []SpendCategory {
 	return categoriesIn(FamilySpending, deltaCategories)
 }
 
-// DeltaIncomeCategories is the same for the income family. The three
-// shared deltas appear in both lists: one row, read from either side.
+// DeltaIncomeCategories is the same for the income family. The shared
+// deltas appear in both lists: one row, read from either side.
 func DeltaIncomeCategories() []SpendCategory {
 	return categoriesIn(FamilyIncome, deltaCategories)
 }

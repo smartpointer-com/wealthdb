@@ -173,7 +173,7 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 
         INSERT INTO income_payer_categories (payer_signature, payer_name, income_detailed,
                                              signature_version, assigned_at, model_name) VALUES
-            ('sig-payroll', 'Blue Harbour Payroll',       'INCOME_WAGES',        1, 100, 'test-model'),
+            ('sig-payroll', 'Blue Harbour Payroll',       'INCOME_SALARY',       1, 100, 'test-model'),
             ('sig-admin',   'Example Fund Administrator', 'INCOME_DIVIDENDS',    1, 100, 'test-model'),
             -- Disagrees with the capital_gain floor, which says
             -- INCOME_DISTRIBUTIONS. Two rows carry this signature: the
@@ -183,7 +183,7 @@ func seedIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             ('sig-gains',   'Example Gain Payer',         'INCOME_DIVIDENDS',    1, 100, 'test-model'),
             -- Disagrees with the overlay verdict pinned on T-DIST-PIN,
             -- which is read before either.
-            ('sig-fund',    'Example Fund',               'INCOME_OTHER_INCOME', 1, 100, 'test-model');
+            ('sig-fund',    'Example Fund',               'INCOME_OTHER',        1, 100, 'test-model');
     `); err != nil {
 		t.Fatalf("seed income fixture: %v", err)
 	}
@@ -429,8 +429,8 @@ func TestIncomeKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 		//
 		// The store where nothing else reaches: T-WIRE and T-DEP-NEG
 		// are deposits, so the floor is absent and the verdict stands.
-		"T-WIRE":    {"INCOME_WAGES", "model"},
-		"T-DEP-NEG": {"INCOME_WAGES", "model"},
+		"T-WIRE":    {"INCOME_SALARY", "model"},
+		"T-DEP-NEG": {"INCOME_SALARY", "model"},
 		// A floor-kind row whose signature also has a store verdict
 		// AGREEING with the floor: the value is the same either way,
 		// so the provenance is the only thing that says which placed
@@ -616,10 +616,10 @@ func TestIncomeProviderViewRecordsWithoutDeciding(t *testing.T) {
               payer_signature, signature_version, income_detailed, provenance,
               provider_income_detailed, assigned_at) VALUES
             -- the bank's booking type said something specific, and it decided
-            ('s', 'T-SPECIFIC', 'SIG-A', 1, 'INCOME_WAGES', 'provider', 'INCOME_WAGES', 1),
+            ('s', 'T-SPECIFIC', 'SIG-A', 1, 'INCOME_SALARY', 'provider', 'INCOME_SALARY', 1),
             -- it said only "somewhere in income": recorded, but the row is
             -- left for a tier that can read the payer
-            ('s', 'T-CATCHALL', 'SIG-B', 1, NULL, 'signature-only', 'INCOME_OTHER_INCOME', 1),
+            ('s', 'T-CATCHALL', 'SIG-B', 1, NULL, 'signature-only', 'INCOME_OTHER', 1),
             -- it said nothing at all: NULL, which is not the same
             ('s', 'T-SILENT', 'SIG-C', 1, NULL, 'signature-only', NULL, 1)`); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -627,9 +627,9 @@ func TestIncomeProviderViewRecordsWithoutDeciding(t *testing.T) {
 	type got struct{ ours, theirs, theirPrim, theirLabel sql.NullString }
 	str := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 	for id, want := range map[string]got{
-		"T-SPECIFIC": {ours: str("INCOME_WAGES"), theirs: str("INCOME_WAGES"),
-			theirPrim: str("INCOME"), theirLabel: str("Wages")},
-		"T-CATCHALL": {theirs: str("INCOME_OTHER_INCOME"),
+		"T-SPECIFIC": {ours: str("INCOME_SALARY"), theirs: str("INCOME_SALARY"),
+			theirPrim: str("INCOME"), theirLabel: str("Salary")},
+		"T-CATCHALL": {theirs: str("INCOME_OTHER"),
 			theirPrim: str("INCOME"), theirLabel: str("Other income")},
 		"T-SILENT": {},
 	} {
@@ -749,7 +749,7 @@ func TestMigration0073DDLIsRerunnable(t *testing.T) {
 	// store, and the payer steps untouched by the re-order.
 	for id, want := range map[string][3]string{
 		"T-DIST-PIN":   {"INCOME_INTEREST_EARNED", "manual", "Example Dividend Corp"},
-		"T-WIRE":       {"INCOME_WAGES", "model", "Blue Harbour Payroll"},
+		"T-WIRE":       {"INCOME_SALARY", "model", "Blue Harbour Payroll"},
 		"T-GAIN-STORE": {"INCOME_DISTRIBUTIONS", "kind", "Example Dividend Corp"},
 		"T-DEP-SHARED": {"INCOME_DIVIDENDS", "model", "Example Gain Payer"},
 		"T-DIVIDEND":   {"INCOME_DIVIDENDS", "kind", "Example Dividend Corp"},

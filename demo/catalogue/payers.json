@@ -5,7 +5,7 @@
       "id": "lattivane",
       "name": "Lattivane Systems Inc",
       "descriptor": "PAYROLL LATTIVANE SYSTEMS INC",
-      "category": "INCOME_WAGES",
+      "category": "INCOME_SALARY",
       "plan_descriptor": "EMPLOYEE DEFERRAL LATTIVANE SYSTEMS",
       "match_descriptor": "EMPLOYER MATCH LATTIVANE SYSTEMS",
       "hsa_descriptor": "HSA PAYROLL CONTRIBUTION LATTIVANE SYSTEMS"
@@ -14,7 +14,7 @@
       "id": "stillcrest",
       "name": "Stillcrest Health Partners",
       "descriptor": "ACH CREDIT STILLCREST HEALTH PARTNERS PAYROLL",
-      "category": "INCOME_WAGES",
+      "category": "INCOME_SALARY",
       "plan_descriptor": "EMPLOYEE DEFERRAL STILLCREST HEALTH PARTNERS",
       "match_descriptor": "EMPLOYER MATCH STILLCREST HEALTH PARTNERS"
     },

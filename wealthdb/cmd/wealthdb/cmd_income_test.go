@@ -63,7 +63,7 @@ func setupIncomeGold(t *testing.T) string {
 	}{
 		{"T-DIV", "BRK0009999", "dividend", "INST1", time.May, 5, "300", ""},
 		{"T-DIV-REV", "BRK0009999", "dividend", "INST1", time.May, 20, "-20", ""},
-		{"T-WAGES", "CASH0005678", "deposit", "", time.May, 25, "5000", "Blue Harbour Payroll"},
+		{"T-SALARY", "CASH0005678", "deposit", "", time.May, 25, "5000", "Blue Harbour Payroll"},
 		{"T-UNPLACED", "CASH0005678", "deposit", "", time.June, 3, "90", "Unknown Sender"},
 		{"T-OWN", "CASH0005678", "deposit", "", time.June, 10, "700", "Own Transfer"},
 		{"T-TAX", "BRK0009999", "tax", "", time.May, 5, "-45", ""},
@@ -85,13 +85,13 @@ func setupIncomeGold(t *testing.T) string {
 			payer_signature, signature_version, income_detailed, provenance, assigned_at)
 		VALUES ('bank', 'T-DIV',      NULL,             1, NULL,                'signature-only', 1),
 		       ('bank', 'T-DIV-REV',  NULL,             1, NULL,                'signature-only', 1),
-		       ('bank', 'T-WAGES',    'BLUE HARBOUR PAYROLL', 1, NULL,          'signature-only', 1),
+		       ('bank', 'T-SALARY',   'BLUE HARBOUR PAYROLL', 1, NULL,          'signature-only', 1),
 		       ('bank', 'T-UNPLACED', 'UNKNOWN SENDER', 1, NULL,                'signature-only', 1),
 		       ('bank', 'T-OWN',      'OWN TRANSFER',   1, 'internal_transfer', 'matcher',        1);
 
 		INSERT INTO income_payer_categories(payer_signature, payer_name, income_detailed,
 			signature_version, assigned_at, model_name)
-		VALUES ('BLUE HARBOUR PAYROLL', 'Blue Harbour Payroll', 'INCOME_WAGES', 1, 1, 'test-model');
+		VALUES ('BLUE HARBOUR PAYROLL', 'Blue Harbour Payroll', 'INCOME_SALARY', 1, 1, 'test-model');
 	`); err != nil {
 		t.Fatalf("seed the overlay: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestIncomeCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
-		// 300 dividend + 5000 wages + 90 unplaced = 5390 received;
+		// 300 dividend + 5000 salary + 90 unplaced = 5390 received;
 		// the 20 clawback is a reversal; the own-account move is neither.
 		for _, want := range []string{"5390.00", "20.00", "5370.00"} {
 			if !strings.Contains(so, want) {
@@ -164,7 +164,7 @@ func TestIncomeCLIEndToEnd(t *testing.T) {
 		}
 		// --level defaults to detailed, so the vendored values are
 		// their own rows rather than folded into INCOME.
-		for _, want := range []string{"Dividends", "Wages", "(uncategorized)"} {
+		for _, want := range []string{"Dividends", "Salary", "(uncategorized)"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("types missing %q:\n%s", want, so)
 			}
@@ -210,7 +210,7 @@ func TestIncomeCLIEndToEnd(t *testing.T) {
 		}
 		// Types and provenance stay legible: that is what makes the
 		// redacted report worth reading.
-		for _, kept := range []string{"Wages", "dividend", "model"} {
+		for _, kept := range []string{"Salary", "dividend", "model"} {
 			if !strings.Contains(so, kept) {
 				t.Errorf("-p redacted %q, which is taxonomy rather than data:\n%s", kept, so)
 			}

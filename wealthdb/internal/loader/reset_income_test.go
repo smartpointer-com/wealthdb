@@ -41,7 +41,7 @@ func TestResetClearsBothOverlays(t *testing.T) {
 
         INSERT INTO income_payer_categories(payer_signature, payer_name,
             income_detailed, signature_version, assigned_at, model_name)
-        VALUES ('SIG', 'Example Payer', 'INCOME_WAGES', 1, 1, 'm');
+        VALUES ('SIG', 'Example Payer', 'INCOME_SALARY', 1, 1, 'm');
 
         INSERT INTO income_account_scope(silver_source_id, account_external_id, mode)
         VALUES ('gone', 'ACC1', 'exclude');

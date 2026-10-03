@@ -3,25 +3,33 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestSpendCategoriesMatchGoTable is the generator-style pin between
-// the seeded spend_categories dimension (migrations 0040, 0045-0047,
-// 0056, 0065, 0069) and canonical.SpendCategories. The Go table is the
-// source those seeds were generated from; if either side is edited
-// alone — a taxonomy refresh that skips the migration, or a hand-edit
-// of the SQL — this fails rather than letting gold and the enrichment
-// pass disagree about what a valid category is.
+// the spend_categories dimension the migrations seed — 0040, and every
+// migration after it that adds, changes or retires a row — and
+// canonical.SpendCategories. The Go table is the source those seeds
+// were generated from; if either side is edited alone — a taxonomy
+// refresh that skips the migration, or a hand-edit of the SQL — this
+// fails rather than letting gold and the enrichment pass disagree about
+// what a valid category is.
 //
 // The family column is compared with the rest: it is what the two
 // vocabularies are told apart by, and a row seeded into the wrong one
 // would be admitted by the wrong rules, pins and conversation.
 func TestSpendCategoriesMatchGoTable(t *testing.T) {
 	db, ctx := openMigrated(t)
+	assertSpendCategoriesMatchGoTable(t, db, ctx)
+}
 
+// assertSpendCategoriesMatchGoTable compares db's dimension with the Go
+// table as sets: every row, and every column the table carries.
+func assertSpendCategoriesMatchGoTable(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
 	rows, err := db.QueryContext(ctx,
 		`SELECT spend_primary, spend_detailed, description, family FROM spend_categories`)
 	if err != nil {
@@ -907,6 +915,13 @@ func TestProviderViewRecordsWithoutDeciding(t *testing.T) {
 // seeded without a label at all.
 func TestSpendCategoryLabelsMatchGoTable(t *testing.T) {
 	db, ctx := openMigrated(t)
+	assertSpendCategoryLabelsMatchGoTable(t, db, ctx)
+}
+
+// assertSpendCategoryLabelsMatchGoTable reads every label in db's
+// dimension against the rule in Go.
+func assertSpendCategoryLabelsMatchGoTable(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
 	rows, err := db.QueryContext(ctx,
 		`SELECT spend_primary, spend_detailed, label, primary_label FROM spend_categories`)
 	if err != nil {
@@ -931,6 +946,9 @@ func TestSpendCategoryLabelsMatchGoTable(t *testing.T) {
 		if want := canonical.SpendPrimaryLabel(prim); primLabel.String != want {
 			t.Errorf("%s primary_label = %q, want %q", det, primLabel.String, want)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate labels: %v", err)
 	}
 	if n != len(canonical.SpendCategories) {
 		t.Errorf("labelled %d rows, want %d", n, len(canonical.SpendCategories))
@@ -967,6 +985,13 @@ func TestMigration0058DDLIsRerunnable(t *testing.T) {
 // unless it is a delta, and a delta is never one.
 func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
 	db, ctx := openMigrated(t)
+	assertSpendCategoryCatchAllMatchesGoTable(t, db, ctx)
+}
+
+// assertSpendCategoryCatchAllMatchesGoTable reads every catch-all flag
+// in db's dimension against the Go predicates.
+func assertSpendCategoryCatchAllMatchesGoTable(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
 	rows, err := db.QueryContext(ctx,
 		`SELECT spend_detailed, catch_all FROM spend_categories`)
 	if err != nil {
@@ -993,6 +1018,9 @@ func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
 			t.Errorf("%s catch_all = %v, want %v", det, flag.Bool, want)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate catch_all: %v", err)
+	}
 	if seen != len(canonical.SpendCategories) {
 		t.Errorf("checked %d rows, want %d", seen, len(canonical.SpendCategories))
 	}
@@ -1002,15 +1030,18 @@ func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
 }
 
 // TestMigration0069DDLIsRerunnable holds the income seed to the replay
-// bar and, in doing so, pins the three things that migration decides.
+// bar and, in doing so, pins what that migration decides about every
+// row: its family. A value seeded before 0069 is spending's, a value
+// seeded by it is income's, and the three deltas both families read are
+// 'both'. And a replay neither duplicates a row nor changes a family.
 //
-// The family of every row: a value seeded before 0069 is spending's, a
-// value seeded by it is income's, and the three deltas both families
-// read are 'both'. The catch-all flag, which nothing set by hand — the
-// twenty rows 0069 adds would carry none at all, 0060's UPDATE having
-// run once at version 60, and the re-issued rule is what gives them
-// one and marks income's single catch-all. And that a replay neither
-// duplicates a row nor changes a family.
+// 0111 deletes five of the rows 0069 seeds and widens the catch-all
+// rule to mark income's catch-all, INCOME_OTHER. A replay of 0069 alone
+// brings the five back and re-runs the narrower rule, which unmarks
+// INCOME_OTHER, so 0111 is replayed after it, as Migrate would
+// (gold.Migrate's REPLAY note). The assertions read what the two leave
+// together: the rows and families of the current dimension, and
+// income's one catch-all.
 //
 // What it does NOT pin is the NULL guard on the blanket family stamp:
 // this migration re-asserts its own rows a few statements later, so
@@ -1021,10 +1052,30 @@ func TestMigration0069DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 
 	rerunMigrationDDL(t, db, ctx, "0069_income_taxonomy.sql")
+	rerunMigrationDDL(t, db, ctx, "0111_spend_taxonomy_pfc_v2.sql")
 
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM spend_categories`).Scan(&n); err != nil {
-		t.Fatalf("count spend_categories: %v", err)
+	current := map[string]bool{}
+	for _, c := range canonical.SpendCategories {
+		current[c.Detailed] = true
+	}
+	all, err := db.QueryContext(ctx, `SELECT spend_detailed FROM spend_categories`)
+	if err != nil {
+		t.Fatalf("read spend_categories: %v", err)
+	}
+	defer all.Close()
+	n := 0
+	for all.Next() {
+		var det string
+		if err := all.Scan(&det); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		n++
+		if !current[det] {
+			t.Errorf("%s survived the replay; the Go table does not hold it", det)
+		}
+	}
+	if err := all.Err(); err != nil {
+		t.Fatalf("iterate spend_categories: %v", err)
 	}
 	if n != len(canonical.SpendCategories) {
 		t.Errorf("spend_categories = %d rows after re-run, want %d", n, len(canonical.SpendCategories))
@@ -1033,7 +1084,8 @@ func TestMigration0069DDLIsRerunnable(t *testing.T) {
 	for _, tc := range []struct{ detailed, family, label string }{
 		{"FOOD_AND_DRINK_GROCERIES", "spending", "Groceries"},
 		{canonical.SpendDetailedCardSpend, "spending", "Uncategorized card spend"},
-		{"INCOME_WAGES", "income", "Wages"},
+		{"INCOME_SALARY", "income", "Salary"},
+		{"INCOME_OTHER", "income", "Other income"},
 		{canonical.IncomeDetailedCapitalReturn, "income", "Capital return"},
 		{canonical.SpendDetailedInternalTransfer, "both", "Internal transfer"},
 		{canonical.SpendDetailedGift, "both", "Gift"},
@@ -1068,8 +1120,11 @@ func TestMigration0069DDLIsRerunnable(t *testing.T) {
 		}
 		catchAlls = append(catchAlls, det)
 	}
-	if len(catchAlls) != 1 || catchAlls[0] != "INCOME_OTHER_INCOME" {
-		t.Errorf("income catch-alls = %v, want [INCOME_OTHER_INCOME]", catchAlls)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate income catch-alls: %v", err)
+	}
+	if len(catchAlls) != 1 || catchAlls[0] != "INCOME_OTHER" {
+		t.Errorf("income catch-alls = %v, want [INCOME_OTHER]", catchAlls)
 	}
 }
 
@@ -1110,6 +1165,187 @@ VALUES ('INCOME', ?, 'A value a later migration seeds', 'Example later value', '
 		t.Errorf("%s family = %q after a 0069 replay, want %q: the blanket stamp must skip a row that already has one",
 			later, family, "income")
 	}
+}
+
+// TestMigration0111DDLIsRerunnable holds the move to version 2 of
+// Plaid's taxonomy to the replay bar, and pins that a replay changes
+// nothing: the seed is OR REPLACE, the renames find nothing left to
+// rename, the DELETE finds nothing left to delete, and the recompute is
+// a function of each row's own spelling. The whole dimension still
+// matches the Go table afterwards — rows, labels and catch-alls — and
+// the re-issued node macro still places a salary under earnings.
+func TestMigration0111DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+
+	rerunMigrationDDL(t, db, ctx, "0111_spend_taxonomy_pfc_v2.sql")
+
+	assertSpendCategoriesMatchGoTable(t, db, ctx)
+	assertSpendCategoryLabelsMatchGoTable(t, db, ctx)
+	assertSpendCategoryCatchAllMatchesGoTable(t, db, ctx)
+	lines := []line{{id: "R111-SALARY", account: "CASH", kind: "deposit", amount: 100,
+		income: "INCOME_SALARY", want: "operating_in.earnings.INCOME_SALARY",
+		why: "the replayed macro names the version 2 values"}}
+	check(t, seedLines(t, db, ctx, lines), lines)
+}
+
+// TestMigration0111MovesEveryStoredVerdictToItsSuccessor pins what 0111
+// does to a database that still stores the retired spellings, which a
+// replay cannot show: at the current version none are left to move. The
+// database is built at version 110, every retired spelling is stored in
+// each column that holds an income verdict — the payer store, the
+// overlay's verdict and the provider's own filing — and Migrate carries
+// it forward as the next read-write open would.
+//
+// The retired spellings are read off the version-110 dimension, as the
+// rows the Go table does not hold, rather than listed here. So a row
+// 0111 deletes with no canonical.RetiredDetailed entry fails, and so
+// does a successor on which the SQL and the Go table disagree.
+func TestMigration0111MovesEveryStoredVerdictToItsSuccessor(t *testing.T) {
+	db, ctx := openAtVersion(t, 110)
+
+	current := map[string]bool{}
+	for _, c := range canonical.SpendCategories {
+		current[c.Detailed] = true
+	}
+	rows, err := db.QueryContext(ctx, `SELECT spend_detailed FROM spend_categories ORDER BY 1`)
+	if err != nil {
+		t.Fatalf("read the version-110 dimension: %v", err)
+	}
+	successor := map[string]string{}
+	var retired []string
+	for rows.Next() {
+		var det string
+		if err := rows.Scan(&det); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if current[det] {
+			continue
+		}
+		r, ok := canonical.RetiredDetailed(det)
+		if !ok {
+			t.Errorf("0111 retires %s, and canonical.RetiredDetailed names no successor for it", det)
+			continue
+		}
+		retired = append(retired, det)
+		successor[det] = r.Successor
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the version-110 dimension: %v", err)
+	}
+	rows.Close()
+	if len(retired) == 0 {
+		t.Fatal("the version-110 dimension holds no retired spelling; there is nothing to move")
+	}
+
+	for i, old := range retired {
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO income_payer_categories (payer_signature, payer_name, income_detailed,
+                                                 signature_version, assigned_at, model_name)
+                 VALUES (?, 'Example Payer', ?, 1, 100, 'test-model')`,
+			fmt.Sprintf("sig-%d", i), old); err != nil {
+			t.Fatalf("store %s: %v", old, err)
+		}
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
+                    payer_signature, signature_version, income_detailed, provenance,
+                    provider_income_detailed, assigned_at)
+                 VALUES ('s', ?, ?, 1, ?, 'rule', ?, 100)`,
+			"T-"+old, fmt.Sprintf("sig-%d", i), old, old); err != nil {
+			t.Fatalf("overlay %s: %v", old, err)
+		}
+		// The two overlay columns apart: a verdict beside a different
+		// filing, each way round, so a rewrite that read one column to
+		// change the other would show.
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
+                    payer_signature, signature_version, income_detailed, provenance,
+                    provider_income_detailed, assigned_at) VALUES
+                ('s', ?, ?, 1, 'INCOME_DIVIDENDS', 'rule', ?, 100),
+                ('s', ?, ?, 1, ?, 'rule', 'INCOME_DIVIDENDS', 100)`,
+			"T-FILED-"+old, fmt.Sprintf("sig-f-%d", i), old,
+			"T-VERDICT-"+old, fmt.Sprintf("sig-v-%d", i), old); err != nil {
+			t.Fatalf("mixed overlay rows for %s: %v", old, err)
+		}
+	}
+	// Two rows the renames must leave alone: a current value, and a row
+	// with neither column set.
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
+                payer_signature, signature_version, income_detailed, provenance,
+                provider_income_detailed, assigned_at) VALUES
+            ('s', 'T-KEEP', 'sig-keep', 1, 'INCOME_INTEREST_EARNED', 'rule', 'INCOME_INTEREST_EARNED', 100),
+            ('s', 'T-NONE', 'sig-none', 1, NULL, 'signature-only', NULL, 100)`); err != nil {
+		t.Fatalf("seed the controls: %v", err)
+	}
+
+	verify := func(when string) {
+		t.Helper()
+		for i, old := range retired {
+			var store, verdict, filed sql.NullString
+			if err := db.QueryRowContext(ctx,
+				`SELECT income_detailed FROM income_payer_categories WHERE payer_signature = ?`,
+				fmt.Sprintf("sig-%d", i)).Scan(&store); err != nil {
+				t.Fatalf("read the store for %s: %v", old, err)
+			}
+			if err := db.QueryRowContext(ctx, `
+                SELECT income_detailed, provider_income_detailed
+                  FROM income_txn_enrichment WHERE transaction_external_id = ?`,
+				"T-"+old).Scan(&verdict, &filed); err != nil {
+				t.Fatalf("read the overlay for %s: %v", old, err)
+			}
+			for _, got := range []struct {
+				column string
+				value  sql.NullString
+			}{
+				{"income_payer_categories.income_detailed", store},
+				{"income_txn_enrichment.income_detailed", verdict},
+				{"income_txn_enrichment.provider_income_detailed", filed},
+			} {
+				if got.value.String != successor[old] {
+					t.Errorf("%s, %s holds %q where %s was stored, want %q",
+						when, got.column, got.value.String, old, successor[old])
+				}
+			}
+			for id, want := range map[string][2]string{
+				"T-FILED-" + old:   {"INCOME_DIVIDENDS", successor[old]},
+				"T-VERDICT-" + old: {successor[old], "INCOME_DIVIDENDS"},
+			} {
+				if err := db.QueryRowContext(ctx, `
+                    SELECT income_detailed, provider_income_detailed
+                      FROM income_txn_enrichment WHERE transaction_external_id = ?`,
+					id).Scan(&verdict, &filed); err != nil {
+					t.Fatalf("read %s: %v", id, err)
+				}
+				if verdict.String != want[0] || filed.String != want[1] {
+					t.Errorf("%s, %s = (%q, %q), want (%q, %q)",
+						when, id, verdict.String, filed.String, want[0], want[1])
+				}
+			}
+		}
+		for id, want := range map[string]sql.NullString{
+			"T-KEEP": {String: "INCOME_INTEREST_EARNED", Valid: true},
+			"T-NONE": {},
+		} {
+			var verdict, filed sql.NullString
+			if err := db.QueryRowContext(ctx, `
+                SELECT income_detailed, provider_income_detailed
+                  FROM income_txn_enrichment WHERE transaction_external_id = ?`,
+				id).Scan(&verdict, &filed); err != nil {
+				t.Fatalf("read %s: %v", id, err)
+			}
+			if verdict != want || filed != want {
+				t.Errorf("%s, %s = (%v, %v), want %v in both columns", when, id, verdict, filed, want)
+			}
+		}
+	}
+
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate past version 110: %v", err)
+	}
+	verify("after the migration")
+	rerunMigrationDDL(t, db, ctx, "0111_spend_taxonomy_pfc_v2.sql")
+	verify("after a replay")
 }
 
 // TestSpendKindFloorPlacesWhatNothingElseCould pins migration 0066's

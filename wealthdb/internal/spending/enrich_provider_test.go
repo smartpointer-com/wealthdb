@@ -321,8 +321,8 @@ func TestRaiffeisenVocabularyIsRegistered(t *testing.T) {
 	}
 }
 
-// seedPlaidItem adds a source of silver kind `plaid` with one cash
-// account, so a test can seed rows filed under Plaid's categories.
+// seedPlaidItem adds a source of silver kind `plaid` with a cash and a
+// card account, so a test can seed rows filed under Plaid's categories.
 func seedPlaidItem(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
 	if _, err := db.ExecContext(ctx, `
@@ -331,9 +331,48 @@ func seedPlaidItem(t *testing.T, db *sql.DB, ctx context.Context) {
              VALUES ('item', 'plaid', '/tmp/item.db', -1, 0, 0);
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
                               display_name, first_seen_at, last_seen_at)
-             VALUES ('item', 'CHK', 'cash', 'Checking', 1, 1);
+             VALUES ('item', 'CHK', 'cash', 'Checking', 1, 1),
+                    ('item', 'CRD', 'card', 'Credit card', 1, 1);
     `); err != nil {
 		t.Fatalf("seed plaid source: %v", err)
+	}
+}
+
+// TestCashRuleStandsDownForAFeeFiling runs the cash rule's yield through
+// the pass. A card's cash-advance fee and a foreign machine's charge read
+// like cash taken out, and a provider that filed either as a fee keeps
+// its verdict. A withdrawal with no filing, with a filing the tier leaves
+// untranslated, or filed under a value that is not a fee, is still the
+// cash rule's. Every value is synthetic.
+func TestCashRuleStandsDownForAFeeFiling(t *testing.T) {
+	db, ctx := openGold(t)
+	seedPlaidItem(t, db, ctx)
+	seedTxns(t, db, ctx,
+		txn{"item", "T-ADVANCE-FEE", "CRD", "fee", day(10), -12, "",
+			"CASH ADVANCE FEE", "BANK_FEES_CASH_ADVANCE"},
+		txn{"item", "T-ATM-FEE", "CHK", "fee", day(11), -3, "",
+			"ATM FEE EXAMPLETOWN", "BANK_FEES_ATM_FEES"},
+		txn{"item", "T-ADVANCE", "CRD", "withdrawal", day(12), -200, "",
+			"CASH ADVANCE EXAMPLETOWN", ""},
+		txn{"item", "T-ATM", "CHK", "withdrawal", day(13), -100, "",
+			"ATM WITHDRAWAL EXAMPLETOWN", "TRANSFER_OUT_WITHDRAWAL"},
+		txn{"item", "T-ATM-SHOP", "CHK", "withdrawal", day(14), -60, "",
+			"ATM EXAMPLE MALL", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE"},
+	)
+
+	runPass(t, db, ctx, Options{})
+
+	for _, tc := range []struct{ id, detailed, provenance string }{
+		{"T-ADVANCE-FEE", "BANK_FEES_CASH_ADVANCE", ProvenanceProvider},
+		{"T-ATM-FEE", "BANK_FEES_ATM_FEES", ProvenanceProvider},
+		{"T-ADVANCE", canonical.SpendDetailedCashWithdrawal, ProvenanceRule},
+		{"T-ATM", canonical.SpendDetailedCashWithdrawal, ProvenanceRule},
+		{"T-ATM-SHOP", canonical.SpendDetailedCashWithdrawal, ProvenanceRule},
+	} {
+		detailed, provenance := verdictOf(t, db, ctx, "item", tc.id)
+		if detailed != tc.detailed || provenance != tc.provenance {
+			t.Errorf("%s = (%q, %q), want (%q, %q)", tc.id, detailed, provenance, tc.detailed, tc.provenance)
+		}
 	}
 }
 

@@ -366,33 +366,31 @@ categories, version 2, under one key for every account kind.
   translates a value or leaves it untranslated. Only a value outside
   the list is drift. A version 1 spelling that version 2 renamed counts
   as drift too: the collector asks for version 2.
-- **Spending side.** Every value that is a wealthdb spend value
-  translates to itself. Beyond those:
-  - the two new bank fees go to the bank-fee catch-all, which declines
-    to claim the row. An unplaced fee then falls to the kind floor,
-    which files it as a bank fee on a card or a bank account;
-  - a card bill is `card_spend`;
+- **Identity.** The taxonomy vendors version 2 (SPENDING.md §2), so
+  each of its 95 vendored values translates to itself. The 82 spending
+  values do so on the spending side, and the 13 income values on the
+  income side.
+- **Loans.** Twelve loan values translate to a delta (SPENDING.md §2):
+  - a card bill, `LOAN_PAYMENTS_CREDIT_CARD_PAYMENT`, is `card_spend`;
   - a mortgage instalment is `mortgage_transfer`;
   - a student, personal, cash-advance or car payment is
-    `debt_repayment`.
+    `debt_repayment`;
+  - an auto, cash-advance, personal, student or other loan disbursed
+    is `loan_proceeds`;
+  - a mortgage tranche, `LOAN_DISBURSEMENTS_MORTGAGE`, is
+    `mortgage_transfer`.
 - **A car payment can be a lease.** Plaid files loans and leases under
   one value. A config rule on the lessor's name, scoped to the paying
   account, puts a lease back in the spending base.
-- **Income side.** The vendored income values translate to themselves.
-  Beyond those:
-  - salary and gig pay are `INCOME_WAGES`;
-  - contractor pay is `INCOME_SELF_EMPLOYMENT`;
-  - child support is `INCOME_ALIMONY_AND_CHILD_SUPPORT`;
-  - rental income is `INCOME_RENT`;
-  - military and long-term disability benefits are
-    `INCOME_GOVERNMENT_BENEFITS`;
-  - `INCOME_OTHER` is the catch-all, recorded and declined;
-  - money borrowed arriving is `loan_proceeds`, and a mortgage tranche
-    is `mortgage_transfer`.
-- **Pensions.** Version 2 widened `INCOME_RETIREMENT_PENSION` to
-  payouts from plans such as a 401(k). Such a payout from a plan gold
-  does not track is placed as pension income. A config rule on the
-  plan's name places it as `retirement_transfer`.
+- **Fees.** Late fees and cash-advance fees have values of their own,
+  so a filing under either claims the row. The built-in cash rule
+  stands down on a row filed under any bank fee, so a cash-advance fee
+  or an ATM fee stays a fee (SPENDING.md §3).
+- **Pensions.** Plaid files a payout from a plan such as a 401(k)
+  under `INCOME_RETIREMENT_PENSION`, beside pensions. The provider tier
+  places it as pension income. A payout from a plan whose balance is
+  the holder's own is `retirement_transfer` (INCOME.md §2). A config
+  rule on the plan's name places it there.
 - **Left untranslated:**
   - the transfers, whose far side is the matcher's to find;
   - buy-now-pay-later instalments;
@@ -404,8 +402,10 @@ categories, version 2, under one key for every account kind.
     income base as a visible receipt, and its repayment in the spending
     base;
   - `OTHER_OTHER`, and each side's values for the other direction.
-- A catch-all is recorded and declined, so the model reads the
-  merchant name. The investment ledger carries no category.
+- **Catch-alls.** A catch-all is recorded and declined, so the model
+  reads the merchant or the payer name. `INCOME_OTHER` is the income
+  side's one catch-all.
+- The investment ledger carries no category.
 - **The card rule.** The built-in card rule stands down where this
   vocabulary translates the row to something other than a card bill
   (SPENDING.md §3).

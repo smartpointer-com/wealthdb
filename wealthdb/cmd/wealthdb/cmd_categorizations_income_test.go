@@ -23,7 +23,7 @@ func seedBothStores(t *testing.T, goldPath string) {
                 1, 100, 'test-model');
         INSERT OR REPLACE INTO income_payer_categories (payer_signature, payer_name, income_detailed,
                                              signature_version, assigned_at, model_name)
-        VALUES ('EXAMPLE TRADING AG', 'Example Trading AG', 'INCOME_SELF_EMPLOYMENT',
+        VALUES ('EXAMPLE TRADING AG', 'Example Trading AG', 'INCOME_CONTRACTOR',
                 1, 100, 'test-model');`); err != nil {
 		t.Fatalf("seed both stores: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestCategorizationsNamesOneFamily(t *testing.T) {
 		t.Errorf("the bare dump does not carry both families:\n%s", both)
 	}
 	if !strings.Contains(both, "GENERAL_SERVICES_CONSULTING_AND_LEGAL") ||
-		!strings.Contains(both, "INCOME_SELF_EMPLOYMENT") {
+		!strings.Contains(both, "INCOME_CONTRACTOR") {
 		t.Errorf("the bare dump is missing a store's verdict:\n%s", both)
 	}
 
@@ -56,7 +56,7 @@ func TestCategorizationsNamesOneFamily(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("categorizations income exit=%d stderr=%s", code, se)
 	}
-	if !strings.Contains(only, "INCOME_SELF_EMPLOYMENT") {
+	if !strings.Contains(only, "INCOME_CONTRACTOR") {
 		t.Errorf("the income dump lost its own verdict:\n%s", only)
 	}
 	if strings.Contains(only, "GENERAL_SERVICES_CONSULTING_AND_LEGAL") {

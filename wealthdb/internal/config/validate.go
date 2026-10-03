@@ -632,7 +632,10 @@ func incomeRuleList(rules []IncomeRule) []ruleEntry {
 // anything `valid` admits — the family's own vocabulary, vendored or
 // delta, in its case-sensitive spelling — and the predicate is
 // family-fenced, so a spending rule naming an income value fails here
-// rather than writing a value the family's reports cannot show.
+// rather than writing a value the family's reports cannot show. A
+// spelling an earlier taxonomy held is refused like any other value
+// outside it, and where its successor belongs to this family the error
+// names what to write instead (canonical.RetiredDetailed).
 //
 // A consumption category is allowed on purpose: the transfer fence
 // keeps person- and IBAN-shaped narratives away from the model, and a
@@ -664,6 +667,10 @@ func compileRuleList(key, valueField, valueNoun, doc, investingValue string, rul
 			return nil, fmt.Errorf("config: %s[%d].match %q matches the empty string and would mark every row", key, i, r.match)
 		}
 		if !valid(r.value) {
+			if retired, ok := canonical.RetiredDetailed(r.value); ok && valid(retired.Successor) {
+				return nil, fmt.Errorf("config: %s[%d].%s %q is retired: use %s",
+					key, i, valueField, r.value, retired.Use)
+			}
 			return nil, fmt.Errorf("config: %s[%d].%s %q is not a %s value: case-sensitive, in the taxonomy's own spelling (a vendored detailed value, an extension, or one of the deltas, %s)",
 				key, i, valueField, r.value, valueNoun, doc)
 		}

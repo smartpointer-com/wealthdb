@@ -38,7 +38,7 @@ func TestPassRuleNamesADeclaredAccount(t *testing.T) {
 		Income: IncomeOptions{
 			Rules: []Rule{far},
 			Pins: []Pin{{Source: "bank", Account: "CASH1", Day: day(76), Amount: 500,
-				Currency: "USD", Detailed: "INCOME_OTHER_INCOME"}},
+				Currency: "USD", Detailed: "INCOME_OTHER"}},
 		},
 	})
 

@@ -84,6 +84,63 @@ func TestParsePinLedgerErrors(t *testing.T) {
 	}
 }
 
+// TestPinLedgerNamesWhatReplacedARetiredSpelling: a retired spelling is
+// refused like any other non-value, and the refusal says what to write
+// instead, both values where the old one was split. The advice is given
+// only where it is a value of the ledger's own family: in the spending
+// ledger an income spelling is wrong whatever it is, and pointing at its
+// income successor would only lead to a second refusal.
+func TestPinLedgerNamesWhatReplacedARetiredSpelling(t *testing.T) {
+	const header = "silver_source_id,account,occurred_at,amount,currency,"
+	income := func(value string) error {
+		_, err := parsePinLedger(strings.NewReader(header+"income_detailed\nbank,CASH1,2024-01-02,900.00,USD,"+value+"\n"),
+			"income", "income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed)
+		return err
+	}
+	for retired, advice := range map[string][]string{
+		"INCOME_WAGES":                     {"INCOME_SALARY", "INCOME_GIG_ECONOMY"},
+		"INCOME_OTHER_INCOME":              {"INCOME_OTHER"},
+		"INCOME_SELF_EMPLOYMENT":           {"INCOME_CONTRACTOR"},
+		"INCOME_RENT":                      {"INCOME_RENTAL"},
+		"INCOME_ALIMONY_AND_CHILD_SUPPORT": {"INCOME_CHILD_SUPPORT", "INCOME_ALIMONY"},
+	} {
+		err := income(retired)
+		if err == nil {
+			t.Errorf("%s: parsed, want a refusal", retired)
+			continue
+		}
+		// Read past the retired spelling, which can hold its successor:
+		// INCOME_OTHER_INCOME holds INCOME_OTHER.
+		before, after, found := strings.Cut(err.Error(), `"`+retired+`"`)
+		if !found || !strings.Contains(before, "income.pins: line 2") || !strings.Contains(after, "retired") {
+			t.Errorf("%s: error %q, want the line, the spelling and that it is retired", retired, err)
+			continue
+		}
+		words := map[string]bool{}
+		for _, w := range strings.FieldsFunc(after, func(r rune) bool { return strings.ContainsRune(` ,;"`, r) }) {
+			words[w] = true
+		}
+		for _, v := range advice {
+			if !words[v] {
+				t.Errorf("%s: error %q does not name %s", retired, err, v)
+			}
+		}
+		// Each value it names is one the ledger accepts.
+		for _, v := range advice {
+			if err := income(v); err != nil {
+				t.Errorf("%s: the advice names %s, which the ledger refuses: %v", retired, v, err)
+			}
+		}
+	}
+
+	// The spending ledger refuses the same spelling without the advice.
+	_, err := parsePinLedger(strings.NewReader(header+"spend_detailed\nbank,CASH1,2024-01-02,-900.00,USD,INCOME_WAGES\n"),
+		"spending", "spend_detailed", canonical.SpendDetailedInvestment, canonical.ValidSpendDetailed)
+	if err == nil || strings.Contains(err.Error(), "INCOME_SALARY") {
+		t.Errorf("a retired income spelling in the spending ledger: err = %v, want a refusal that names no income value", err)
+	}
+}
+
 // TestParsePinLedgerCollapsesAgreeingDuplicates: a pin already applies
 // to every row it describes, so repeating it adds nothing and is not
 // an error.

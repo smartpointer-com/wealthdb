@@ -254,7 +254,7 @@ func TestIncomeProviderTier(t *testing.T) {
 	runPass(t, db, ctx, Options{})
 
 	for id, want := range map[string][2]string{
-		"T-SALARY":   {"INCOME_WAGES", ProvenanceProvider},
+		"T-SALARY":   {"INCOME_SALARY", ProvenanceProvider},
 		"T-INTEREST": {"INCOME_INTEREST_EARNED", ProvenanceProvider},
 		"T-RETURN":   {canonical.IncomeDetailedCapitalReturn, ProvenanceProvider},
 		"T-CREDIT":   {"", ProvenanceSignatureOnly},
@@ -408,15 +408,15 @@ func TestIncomePassPrecedence(t *testing.T) {
 		txn{"bank", "T-PIN-PAIR", "CASH1", "withdrawal", day(14), -250, "Looks Internal", "", ""},
 	)
 	runPass(t, db, ctx, Options{Income: IncomeOptions{
-		Rules: []Rule{{Match: regexp.MustCompile(`(?i)EXAMPLE LETTING AGENT`), Category: "INCOME_RENT"}},
+		Rules: []Rule{{Match: regexp.MustCompile(`(?i)EXAMPLE LETTING AGENT`), Category: "INCOME_RENTAL"}},
 		Pins: []Pin{{Source: "swiss", Account: "CASH9", Day: day(14), Amount: 250, Currency: "USD",
 			Detailed: canonical.IncomeDetailedInheritance}},
 	}})
 
 	for id, want := range map[string][2]string{
-		"T-PROVIDER": {"INCOME_WAGES", ProvenanceProvider},
+		"T-PROVIDER": {"INCOME_SALARY", ProvenanceProvider},
 		"T-RULE":     {canonical.IncomeDetailedCashDeposit, ProvenanceRule},
-		"T-CONFIG":   {"INCOME_RENT", ProvenanceRule},
+		"T-CONFIG":   {"INCOME_RENTAL", ProvenanceRule},
 		"T-MATCH-IN": {canonical.SpendDetailedInternalTransfer, ProvenanceMatcher},
 		"T-PIN":      {canonical.IncomeDetailedInheritance, ProvenanceManual},
 	} {
@@ -435,12 +435,12 @@ func TestIncomePassPrecedence(t *testing.T) {
 // ledgers: the value column, and the vocabulary it is read against.
 func TestIncomePinLedgerColumn(t *testing.T) {
 	const header = "silver_source_id,account,occurred_at,amount,currency,"
-	good := header + "income_detailed\nbank,CASH1,2024-01-02,900.00,USD,INCOME_WAGES\n"
+	good := header + "income_detailed\nbank,CASH1,2024-01-02,900.00,USD,INCOME_SALARY\n"
 	pins, err := parsePinLedger(strings.NewReader(good), "income", "income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed)
 	if err != nil {
 		t.Fatalf("parse the income ledger: %v", err)
 	}
-	if len(pins) != 1 || pins[0].Detailed != "INCOME_WAGES" {
+	if len(pins) != 1 || pins[0].Detailed != "INCOME_SALARY" {
 		t.Fatalf("pins = %+v", pins)
 	}
 
@@ -453,7 +453,7 @@ func TestIncomePinLedgerColumn(t *testing.T) {
 	}
 	// ...and the spending ledger's own column name is not accepted for
 	// it, so a file cannot be half one family's and half the other's.
-	wrongCol := header + "spend_detailed\nbank,CASH1,2024-01-02,900.00,USD,INCOME_WAGES\n"
+	wrongCol := header + "spend_detailed\nbank,CASH1,2024-01-02,900.00,USD,INCOME_SALARY\n"
 	if _, err := parsePinLedger(strings.NewReader(wrongCol), "income", "income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed); err == nil ||
 		!strings.Contains(err.Error(), "income_detailed") {
 		t.Errorf("the spending column in an income ledger: err = %v", err)
@@ -480,7 +480,7 @@ func TestIncomeRekeysPayerVerdicts(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO income_payer_categories (payer_signature, payer_name, income_detailed,
                                              signature_version, assigned_at, model_name)
-        VALUES ('EXAMPLE PAYER OLD FOLD', 'Example Payer', 'INCOME_WAGES', ?, 1, 'test-model')`,
+        VALUES ('EXAMPLE PAYER OLD FOLD', 'Example Payer', 'INCOME_SALARY', ?, 1, 'test-model')`,
 		SignatureVersion-1); err != nil {
 		t.Fatalf("seed an older-version verdict: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestIncomeRekeysPayerVerdicts(t *testing.T) {
          WHERE payer_signature = ?`, sig).Scan(&name, &detailed); err != nil {
 		t.Fatalf("the verdict did not land on the new signature: %v", err)
 	}
-	if name != "Example Payer" || detailed != "INCOME_WAGES" {
+	if name != "Example Payer" || detailed != "INCOME_SALARY" {
 		t.Errorf("carried verdict = (%q, %q)", name, detailed)
 	}
 	// The merchant store is untouched: two stores, two questions.

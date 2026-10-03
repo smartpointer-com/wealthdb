@@ -24,7 +24,7 @@ func TestIncomeGauntletUsesTheIncomeVocabulary(t *testing.T) {
 			"SIG,Example Payer,"+value+"\n", cands)
 		return len(valid) == 1
 	}
-	for _, good := range []string{"INCOME_WAGES", "INCOME_RENT", "INCOME_STAKING", "INCOME_OTHER_INCOME"} {
+	for _, good := range []string{"INCOME_SALARY", "INCOME_RENTAL", "INCOME_STAKING", "INCOME_ALIMONY", "INCOME_OTHER"} {
 		if !accept(good) {
 			t.Errorf("the income gauntlet refused %q, which is an income type a model may emit", good)
 		}
@@ -50,9 +50,43 @@ func TestIncomeGauntletUsesTheIncomeVocabulary(t *testing.T) {
 	// ...and the spending gauntlet refuses income values, for the same
 	// reason in the other direction.
 	valid, _ := parseAndValidateCategorizations(spendingCategorizeFamily,
-		"SIG,Example Merchant,INCOME_WAGES\n", cands)
+		"SIG,Example Merchant,INCOME_SALARY\n", cands)
 	if len(valid) != 0 {
 		t.Error("the spending gauntlet accepted an income type")
+	}
+}
+
+// TestIncomeGauntletNamesWhatReplacedARetiredSpelling pins the feedback
+// a model gets when it answers in an earlier taxonomy's words. The row
+// is refused like any value outside the vocabulary, and the reason
+// names what to emit instead, which is what the next attempt's prompt
+// carries back. The case is folded before a value is judged, so a
+// whispered spelling earns the same advice.
+func TestIncomeGauntletNamesWhatReplacedARetiredSpelling(t *testing.T) {
+	t.Parallel()
+	cands := map[string]bool{"SIG": true}
+	for _, tc := range []struct{ emitted, want string }{
+		{"INCOME_WAGES", `income_detailed "INCOME_WAGES" is retired: ` +
+			`use INCOME_SALARY, or INCOME_GIG_ECONOMY for gig-platform pay`},
+		{"income_rent", `income_detailed "income_rent" is retired: use INCOME_RENTAL`},
+		{"INCOME_ALIMONY_AND_CHILD_SUPPORT", `is retired: use INCOME_CHILD_SUPPORT for child support, ` +
+			`or INCOME_ALIMONY for maintenance from a former partner`},
+	} {
+		valid, invalid := parseAndValidateCategorizations(incomeCategorizeFamily,
+			"SIG,Example Payer,"+tc.emitted+"\n", cands)
+		if len(valid) != 0 || len(invalid) != 1 {
+			t.Fatalf("%s: valid = %v, invalid = %v; want the row refused", tc.emitted, valid, invalid)
+		}
+		if !strings.Contains(invalid[0].Reason, tc.want) {
+			t.Errorf("%s: reason = %q, want it to contain %q", tc.emitted, invalid[0].Reason, tc.want)
+		}
+	}
+	// The spending model gets no such pointer: the income value that
+	// replaced the spelling is no more a spending value than it was.
+	_, invalid := parseAndValidateCategorizations(spendingCategorizeFamily,
+		"SIG,Example Merchant,INCOME_WAGES\n", cands)
+	if len(invalid) != 1 || !strings.Contains(invalid[0].Reason, "is not a value of the taxonomy") {
+		t.Errorf("spending gauntlet on a retired income spelling: invalid = %v, want the ordinary refusal", invalid)
 	}
 }
 
@@ -74,8 +108,25 @@ func TestIncomePromptSpeaksOfPayers(t *testing.T) {
 		config.SpendContextMerchant, nil)
 	// The vocabulary offered is income's, and every income delta is
 	// named as forbidden.
-	if !strings.Contains(p, "INCOME_WAGES") {
+	if !strings.Contains(p, "INCOME_SALARY") {
 		t.Errorf("the income prompt does not carry the income vocabulary:\n%s", p)
+	}
+	// wealthdb's notes ride on their value's own line, after Plaid's
+	// verbatim description: the line the model reads the value from.
+	for _, v := range []string{"INCOME_CONTRACTOR", "INCOME_RENTAL", "INCOME_RETIREMENT_PENSION"} {
+		note := canonical.ModelNote(v)
+		if note == "" {
+			t.Fatalf("%s carries no note", v)
+		}
+		var line string
+		for _, l := range strings.Split(p, "\n") {
+			if strings.HasPrefix(l, "  "+v+"\t(INCOME)\t") {
+				line = l
+			}
+		}
+		if !strings.HasSuffix(line, "\tNote: "+note) {
+			t.Errorf("the income prompt does not print %s's note on its line: %q", v, line)
+		}
 	}
 	if strings.Contains(p, "FOOD_AND_DRINK_COFFEE") {
 		t.Errorf("the income prompt carries the spending vocabulary:\n%s", p)
@@ -197,7 +248,7 @@ func TestCollectPayerCandidatesAllStaysWithinTheFloorlessKind(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO income_payer_categories(payer_signature, payer_name,
             income_detailed, signature_version, assigned_at, model_name)
-        VALUES ('BLUE HARBOUR PAYROLL', 'Blue Harbour Payroll', 'INCOME_WAGES', 1, 1, 'test-model')`); err != nil {
+        VALUES ('BLUE HARBOUR PAYROLL', 'Blue Harbour Payroll', 'INCOME_SALARY', 1, 1, 'test-model')`); err != nil {
 		t.Fatalf("seed a verdict: %v", err)
 	}
 
@@ -244,6 +295,87 @@ func TestCollectPayerCandidatesAllStaysWithinTheFloorlessKind(t *testing.T) {
 	// gate is a family's property rather than a new rule for both.
 	if len(spendingCategorizeFamily.candidateKinds) != 0 {
 		t.Error("spending grew a kind gate; a merchant is a merchant on every outflow kind")
+	}
+}
+
+// TestIncomeRefineBacklogAsksOnlyWhereTheModelGaveUp is the spending
+// side's narrow re-ask (TestRefineBacklogAsksOnlyWhereTheModelGaveUp)
+// read for income, whose one catch-all is INCOME_OTHER.
+//
+// Its detail part is OTHER with nothing after it, where every spending
+// catch-all reads OTHER_..., so it is the value a catch-all rule
+// written for the spending spelling alone would miss. A payer the model
+// could place only there must be asked about again, and one a rule or
+// a pin placed there must not: that is a considered decision, and
+// re-asking would undo it.
+func TestIncomeRefineBacklogAsksOnlyWhereTheModelGaveUp(t *testing.T) {
+	t.Parallel()
+	const catchAll = "INCOME_OTHER"
+	if !canonical.CatchAllIncomeDetailed(catchAll) {
+		t.Fatalf("fixture is wrong: %s is not income's catch-all", catchAll)
+	}
+	db, ctx := openCategorizeGold(t)
+	seedSpendTxn(t, db, ctx, "T-MODEL", "CASH1", "deposit", 10, 100, "Model Payroll", "")
+	seedSpendTxn(t, db, ctx, "T-RULE", "CASH1", "deposit", 11, 200, "Rule Payroll", "")
+	seedSpendTxn(t, db, ctx, "T-PIN", "CASH1", "deposit", 12, 300, "Pin Payroll", "")
+	seedSpendTxn(t, db, ctx, "T-PLACED", "CASH1", "deposit", 13, 400, "Placed Payroll", "")
+	// A payer the MODEL placed on a real value. Same provenance as the
+	// one that must be re-asked, so only the catch-all half of the
+	// predicate can tell them apart.
+	seedSpendTxn(t, db, ctx, "T-MODEL-OK", "CASH1", "deposit", 14, 500, "Answered Payroll", "")
+	runEnrichment(t, db, ctx)
+
+	// The model's verdicts live in the payer store and resolve as
+	// provenance `model`; the other three are stamped on the overlay.
+	for _, st := range []struct {
+		id, detailed, provenance string
+	}{
+		{"T-MODEL", "", "signature-only"},
+		{"T-RULE", catchAll, "rule"},
+		{"T-PIN", catchAll, "manual"},
+		{"T-PLACED", "INCOME_SALARY", "rule"},
+		{"T-MODEL-OK", "", "signature-only"},
+	} {
+		var d any
+		if st.detailed != "" {
+			d = st.detailed
+		}
+		if _, err := db.ExecContext(ctx, `
+            UPDATE income_txn_enrichment SET income_detailed = ?, provenance = ?
+             WHERE transaction_external_id = ?`, d, st.provenance, st.id); err != nil {
+			t.Fatalf("stage %s: %v", st.id, err)
+		}
+	}
+	sigOf := func(id string) string {
+		t.Helper()
+		var sig string
+		if err := db.QueryRowContext(ctx, `SELECT payer_signature FROM income_txn_enrichment
+             WHERE transaction_external_id = ?`, id).Scan(&sig); err != nil {
+			t.Fatalf("read signature for %s: %v", id, err)
+		}
+		return sig
+	}
+	sig, sigOK := sigOf("T-MODEL"), sigOf("T-MODEL-OK")
+	for _, v := range []struct{ sig, name, detailed string }{
+		{sig, "Model Payroll", catchAll},
+		{sigOK, "Answered Payroll", "INCOME_SALARY"},
+	} {
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO income_payer_categories (payer_signature, payer_name,
+                  income_detailed, signature_version, assigned_at, model_name)
+            VALUES (?, ?, ?, 1, 1, 'test-model')`, v.sig, v.name, v.detailed); err != nil {
+			t.Fatalf("seed store verdict for %s: %v", v.name, err)
+		}
+	}
+
+	cands, _, err := collectMerchantCandidates(ctx, db, incomeCategorizeFamily,
+		config.SpendContextMerchant, 0, backlogRefine, true, "spending.categorization")
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	got := signaturesOf(cands)
+	if len(got) != 1 || got[0] != sig {
+		t.Errorf("--refine asked about %v, want only the model's catch-all (%q)", got, sig)
 	}
 }
 
@@ -339,7 +471,7 @@ func TestIncomeVerdictsPersistToThePayerStore(t *testing.T) {
 	t.Parallel()
 	db, ctx := openIncomeCategorizeGold(t)
 	rows := []categorization{
-		{Signature: "BLUE HARBOUR PAYROLL", MerchantName: "Example Letting Agent", Detailed: "INCOME_RENT"},
+		{Signature: "BLUE HARBOUR PAYROLL", MerchantName: "Example Letting Agent", Detailed: "INCOME_RENTAL"},
 	}
 	total, err := persistCategorizations(ctx, db, incomeCategorizeFamily, rows, 100, "test-model")
 	if err != nil {
@@ -354,7 +486,7 @@ func TestIncomeVerdictsPersistToThePayerStore(t *testing.T) {
          WHERE payer_signature = 'BLUE HARBOUR PAYROLL'`).Scan(&name, &detailed); err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if name != "Example Letting Agent" || detailed != "INCOME_RENT" {
+	if name != "Example Letting Agent" || detailed != "INCOME_RENTAL" {
 		t.Errorf("stored (%q, %q)", name, detailed)
 	}
 	// The merchant store is untouched.
@@ -368,7 +500,7 @@ func TestIncomeVerdictsPersistToThePayerStore(t *testing.T) {
 	}
 
 	// An upsert replaces rather than duplicating.
-	rows[0].Detailed = "INCOME_WAGES"
+	rows[0].Detailed = "INCOME_SALARY"
 	if total, err = persistCategorizations(ctx, db, incomeCategorizeFamily, rows, 200, "test-model"); err != nil {
 		t.Fatalf("re-persist: %v", err)
 	}

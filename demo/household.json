@@ -212,6 +212,6 @@
       {"match": "\\bCOBBLE & THREAD\\b", "category": "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES"},
       {"match": "\\bPIPWHISTLE KIDS MUSIC\\b", "category": "GENERAL_SERVICES_EDUCATION", "scope": {"source": "brindlecove", "account": "bc-card-01"}}
     ],
-    "income_rules": [{"match": "\\bSTILLCREST HEALTH\\b", "type": "INCOME_WAGES"}]
+    "income_rules": [{"match": "\\bSTILLCREST HEALTH\\b", "type": "INCOME_SALARY"}]
   }
 }

@@ -226,9 +226,15 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	// lock, and a parallel `wealthdb transactions` can read the file
 	// while the model is responding.
 	openMode := gold.ModeReadWrite
+	var enrichment enrichmentLedgers
 	if *dryRun {
 		openMode = gold.ModeReadOnly
 	} else {
+		// Only a real run applies the ledgers, and it reads them before
+		// gold is opened read-write (parseEnrichmentLedgers).
+		if enrichment, err = parseEnrichmentLedgers(cfg); err != nil {
+			return err
+		}
 		// A real run holds the gold write mutex end to end. The
 		// verdicts it buys are the one thing in gold with no other
 		// source of truth, and 'compact' / 'reload -a' carry the
@@ -266,7 +272,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	if *dryRun {
 		fmt.Fprintln(stdout, "categorize: dry-run — gold opened read-only, so the deterministic pass did NOT run.")
 		fmt.Fprintln(stdout, "categorize: the candidate set below is AS OF THE LAST LOAD; a real run re-asserts it first.")
-	} else if err := runEnrichmentPass(ctx, db, cfg, stdout); err != nil {
+	} else if err := runEnrichmentPass(ctx, db, cfg, enrichment, stdout); err != nil {
 		return err
 	}
 
@@ -1289,8 +1295,14 @@ func parseAndValidateCategorizations(fam categorizeFamily, body string, candSet 
 		}
 		detailed := strings.ToUpper(category)
 		if !fam.emittable(detailed) {
-			invalid = append(invalid, invalidRow{Raw: row,
-				Reason: fmt.Sprintf("%s %q is not a value of the taxonomy", fam.valueColumn, category)})
+			reason := fmt.Sprintf("%s %q is not a value of the taxonomy", fam.valueColumn, category)
+			// A spelling an earlier taxonomy held is what a model trained
+			// on it reaches for, and naming its replacement is the
+			// feedback that gets the next attempt right.
+			if r, ok := canonical.RetiredDetailed(detailed); ok && fam.emittable(r.Successor) {
+				reason = fmt.Sprintf("%s %q is retired: use %s", fam.valueColumn, category, r.Use)
+			}
+			invalid = append(invalid, invalidRow{Raw: row, Reason: reason})
 			continue
 		}
 		valid = append(valid, categorization{Signature: signature, MerchantName: name, Detailed: detailed})
@@ -1310,7 +1322,11 @@ func buildCategorizeUserPrompt(fam categorizeFamily, candidates []merchantCandid
 	var b strings.Builder
 	b.WriteString(fam.promptPreamble())
 	for _, c := range fam.modelCategories() {
-		fmt.Fprintf(&b, "  %s\t(%s)\t%s\n", c.Detailed, c.Primary, c.Description)
+		fmt.Fprintf(&b, "  %s\t(%s)\t%s", c.Detailed, c.Primary, c.Description)
+		if note := canonical.ModelNote(c.Detailed); note != "" {
+			fmt.Fprintf(&b, "\tNote: %s", note)
+		}
+		b.WriteString("\n")
 	}
 	deltas := fam.deltaCategories()
 	names := make([]string, 0, len(deltas))

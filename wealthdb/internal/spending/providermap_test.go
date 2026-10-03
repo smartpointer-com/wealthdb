@@ -285,11 +285,11 @@ func TestSyntheticVocabularyIsTheTaxonomy(t *testing.T) {
 	if !ProviderCategoryClaims("synthetic", "", "BANK_FEES_OTHER_BANK_FEES") {
 		t.Error("a catch-all the synthetic provider states did not claim the row")
 	}
-	if !ProviderIncomeCategoryClaims("synthetic", "", "INCOME_OTHER_INCOME") {
+	if !ProviderIncomeCategoryClaims("synthetic", "", "INCOME_OTHER") {
 		t.Error("the income catch-all the synthetic provider states did not claim the row")
 	}
 	// A value from the other family is not translated on this side.
-	if _, ok, _ := ProviderCategory("synthetic", "", "INCOME_WAGES"); ok {
+	if _, ok, _ := ProviderCategory("synthetic", "", "INCOME_SALARY"); ok {
 		t.Error("an income value translated on the spending side")
 	}
 	// An unknown value is neither translated nor drift.

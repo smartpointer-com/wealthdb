@@ -27,8 +27,8 @@ func TestIncomeProviderVocabularies(t *testing.T) {
 	// CLAIMS the row even where it is a catch-all: there is no
 	// counterparty name for a later tier to read.
 	for _, tc := range []struct{ value, want string }{
-		{"SALARY PAYMENT", "INCOME_WAGES"},
-		{"salary payment", "INCOME_WAGES"}, // folded case
+		{"SALARY PAYMENT", "INCOME_SALARY"},
+		{"salary payment", "INCOME_SALARY"}, // folded case
 		{"DIVIDEND", "INCOME_DIVIDENDS"},
 		{"INTEREST CALCULATION BALANCE", "INCOME_INTEREST_EARNED"},
 		{"RETURN OF CAPITAL", canonical.IncomeDetailedCapitalReturn},
@@ -64,8 +64,8 @@ func TestIncomeProviderVocabularies(t *testing.T) {
 	// A CATEGORICAL vocabulary's catch-all is translated and then
 	// DECLINED — recorded, and left for the tier that can read a payer.
 	detailed, ok, drift := ProviderIncomeCategory("raiffeisen_at", "cash", "income_other")
-	if !ok || detailed != "INCOME_OTHER_INCOME" {
-		t.Fatalf("raiffeisen income_other = (%q, %v), want INCOME_OTHER_INCOME", detailed, ok)
+	if !ok || detailed != "INCOME_OTHER" {
+		t.Fatalf("raiffeisen income_other = (%q, %v), want INCOME_OTHER", detailed, ok)
 	}
 	if drift {
 		t.Error("a translated value counted as drift")
@@ -122,8 +122,8 @@ func TestRaiffeisenIncomeDriftOnlyOnTheUnreviewed(t *testing.T) {
 	if !ok || drift {
 		t.Errorf("income_other: (ok=%v, drift=%v), want translated and not drift", ok, drift)
 	}
-	if detailed != "INCOME_OTHER_INCOME" {
-		t.Errorf("income_other = %q, want INCOME_OTHER_INCOME", detailed)
+	if detailed != "INCOME_OTHER" {
+		t.Errorf("income_other = %q, want INCOME_OTHER", detailed)
 	}
 	if ProviderIncomeCategoryClaims("raiffeisen_at", "cash", detailed) {
 		t.Error("the vocabulary's own catch-all claimed the row")

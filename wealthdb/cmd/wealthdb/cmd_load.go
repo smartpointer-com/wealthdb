@@ -48,6 +48,11 @@ load semantics.`)
 	if err != nil {
 		return err
 	}
+	// Before gold is opened read-write (parseEnrichmentLedgers).
+	enrichment, err := parseEnrichmentLedgers(cfg)
+	if err != nil {
+		return err
+	}
 
 	// Resolve which sources to load.
 	var specs []loader.SourceSpec
@@ -114,7 +119,7 @@ load semantics.`)
 		fmt.Fprintf(stderr, "load: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}
-	if err := runEnrichmentPass(ctx, db, cfg, stdout); err != nil {
+	if err := runEnrichmentPass(ctx, db, cfg, enrichment, stdout); err != nil {
 		fmt.Fprintf(stderr, "load: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}
@@ -139,9 +144,39 @@ func syncDeclaredAccounts(ctx context.Context, db *sql.DB, cfg *config.Config, v
 	return nil
 }
 
-// runEnrichmentPass re-asserts every deterministic verdict in gold
-// — the pins ledger included, re-read from config on every call — and
-// reports what it did.
+// enrichmentLedgers are the files the enrichment pass applies beside
+// the config: both families' pins and the transfer-override ledger.
+type enrichmentLedgers struct {
+	spendPins  []spending.Pin
+	incomePins []spending.Pin
+	overrides  []gold.TransferOverrideRule
+}
+
+// parseEnrichmentLedgers reads the ledgers the pass applies. Every
+// command that runs the pass reads them before it opens gold
+// read-write, because the open applies any outstanding migration. A
+// ledger this build refuses, such as a pin naming a retired value,
+// then fails the command before anything is migrated or loaded, not
+// after the sources have landed.
+func parseEnrichmentLedgers(cfg *config.Config) (enrichmentLedgers, error) {
+	var l enrichmentLedgers
+	var err error
+	if l.spendPins, err = spending.ParsePinLedger(cfg.SpendPins()); err != nil {
+		return enrichmentLedgers{}, err
+	}
+	if l.incomePins, err = spending.ParsePinLedgerAs(cfg.IncomePins(), "income",
+		"income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed); err != nil {
+		return enrichmentLedgers{}, err
+	}
+	if l.overrides, err = gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides()); err != nil {
+		return enrichmentLedgers{}, err
+	}
+	return l, nil
+}
+
+// runEnrichmentPass re-asserts every deterministic verdict in gold,
+// the ledgers' among them, and reports what it did. The caller reads
+// the ledgers first (parseEnrichmentLedgers).
 //
 // It runs after the per-source loop rather than per source, because
 // the verdicts it reaches are not per-source facts: the withdrawal
@@ -155,23 +190,10 @@ func syncDeclaredAccounts(ctx context.Context, db *sql.DB, cfg *config.Config, v
 // rather than a warning. A missing FX rank degrades a conversion; a
 // missing enrichment pass leaves own-account moves counted as
 // spending, which is not a degraded answer but a wrong one.
-func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout io.Writer) error {
+func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, ledgers enrichmentLedgers, stdout io.Writer) error {
 	include, exclude := cfg.SpendAccountScope()
 	m := cfg.SpendMatching()
-	pins, err := spending.ParsePinLedger(cfg.SpendPins())
-	if err != nil {
-		return err
-	}
-	overrides, err := gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides())
-	if err != nil {
-		return err
-	}
 	incomeInclude, incomeExclude := cfg.IncomeAccountScope()
-	incomePins, err := spending.ParsePinLedgerAs(cfg.IncomePins(), "income",
-		"income_detailed", canonical.IncomeDetailedCapitalReturn, canonical.ValidIncomeDetailed)
-	if err != nil {
-		return err
-	}
 	// The pool inherits neither family's scope, so it reads its own
 	// block. The include half is always nil: every account is pooled
 	// until an entry takes one out.
@@ -183,13 +205,13 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdo
 		MatchTolerancePct: m.Tolerance(),
 		MatchNames:        matchNames(m),
 		Rules:             compiledRules(cfg.SpendRules()),
-		TransferOverrides: overrides,
-		Pins:              pins,
+		TransferOverrides: ledgers.overrides,
+		Pins:              ledgers.spendPins,
 		Income: spending.IncomeOptions{
 			Include: incomeInclude,
 			Exclude: incomeExclude,
 			Rules:   compiledRules(cfg.IncomeRules()),
-			Pins:    incomePins,
+			Pins:    ledgers.incomePins,
 		},
 		Cashflow: spending.CashflowOptions{
 			Exclude:  cashflowExclude,

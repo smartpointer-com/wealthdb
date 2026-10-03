@@ -29,9 +29,10 @@ credited and dividends are the other direction and are deliberately
 absent here: they are [INCOME.md](INCOME.md)'s, read by the same engine
 from the same enrichment pass. Buys and sells belong to neither: they
 are the **cashflow** feature's ([CASHFLOW.md](CASHFLOW.md)). The taxonomy carries only
-what this side may assign — it drops `TRANSFER_IN`, `TRANSFER_OUT` and
-`LOAN_PAYMENTS` as primaries, and Plaid's fourth flow primary, `INCOME`,
-is vendored for the other family (migration 0069). Investment FEES are
+what this side may assign. It drops five of Plaid's primaries:
+`TRANSFER_IN`, `TRANSFER_OUT`, `LOAN_PAYMENTS`, `LOAN_DISBURSEMENTS`
+and `OTHER` (§2). Plaid's `INCOME` primary is vendored for the other
+family (migration 0069). Investment FEES are
 not in that list: they are money leaving, they arrived with the
 brokerage accounts (§2), and they have a value of their own.
 
@@ -85,30 +86,44 @@ how many there were.
 
 ### Provenance
 
-The vocabulary is **Plaid's Personal Finance Category taxonomy**,
-vendored verbatim into `internal/canonical/spendtaxonomy.go`
-(retrieved 2026-09-04: 16 primaries, 104 detailed pairs). Values and
-descriptions are copied exactly — only trailing whitespace trimmed —
-so a refreshed CSV diffs cleanly against the table.
+The vocabulary is **Plaid's Personal Finance Category taxonomy,
+version 2**, vendored verbatim into
+`internal/canonical/spendtaxonomy.go`. The source is the PFCv2 columns
+of `pfc-taxonomy-all.csv`, retrieved 2026-10-03. Version 2 has 18
+primaries and 127 detailed values. Values and descriptions are copied
+exactly, with only trailing whitespace trimmed, so a refreshed CSV
+diffs cleanly against the table.
 
 It is vendored rather than fetched, so a taxonomy revision arrives as
 a reviewable diff instead of silently re-labelling history. Gold's
-`spend_categories` dimension is seeded from this table — migration
-0040 seeded the vendored rows and the first three deltas,
-0045 / 0046 / 0047 one delta each, 0056 and 0065 the EXTENSIONS, 0069
-the whole income side and the `family` column, 0078 the five the
-cashflow statement needed — and a
-generator-style test pins the migrated dimension to the table so they
-cannot drift. A new value
-is a row here plus a new migration; an applied migration is never
-edited.
+`spend_categories` dimension is seeded from this table, one migration
+per change. Migration 0040 seeded the vendored spending rows, 0069 the
+income side and the `family` column, and 0111 moved the vendored rows
+to version 2. A generator-style test pins the migrated dimension to
+the table, so the two cannot drift. A new value is a row here plus a
+new migration. An applied migration is never edited.
 
-The spend side is **12 primaries and 80 detailed values.** Three of
-Plaid's sixteen primaries are dropped — `TRANSFER_IN`, `TRANSFER_OUT`
-and `LOAN_PAYMENTS`. The fourth, `INCOME`, is vendored whole for the
-other family (migration 0069): one table, one dimension, and a `family`
-column telling the two vocabularies apart. See
-[INCOME.md](INCOME.md) §2.
+wealthdb vendors 13 of the 18 primaries:
+
+- The spend side is **the 12 spending primaries and their 82 detailed
+  values.**
+- `INCOME` and its 13 values are vendored for the other family. One
+  table, one dimension, and a `family` column tell the two vocabularies
+  apart. See [INCOME.md](INCOME.md) §2.
+
+It leaves out the other five, each for its own reason:
+
+- `TRANSFER_IN` and `TRANSFER_OUT` say money moved, not whose account
+  it reached. The matcher pairs an own-account move, and the crossing
+  deltas below name the rest.
+- `LOAN_PAYMENTS` and `LOAN_DISBURSEMENTS` are a debt paid down and
+  money borrowed. Deltas name both. An instalment is `debt_repayment`,
+  `card_spend` or `mortgage_transfer`. Money borrowed is the income
+  side's `loan_proceeds`, or `mortgage_transfer` for a mortgage
+  tranche.
+- `OTHER` is Plaid's bucket for a row it could not place. A row no
+  tier places stays uncategorised instead, and so stays in the model
+  tier's backlog (§3).
 
 `LOAN_PAYMENTS` is the load-bearing drop. A mortgage payment leaving a
 cash account is classified `internal_transfer` by a built-in rule,
@@ -159,7 +174,9 @@ can show how much of a period's spending is simply unattributable
 instead of hiding it inside a plausible-looking category. The built-in
 atm rule places it from a narrative that names the machine; the
 provider tier places it from a booking type that does (§3), which is
-how the rows whose narrative is nothing but a bank tag are reached.
+how the rows whose narrative is nothing but a bank tag are reached. The
+rule stands down where the provider filed the row as a bank fee or as a
+payment on a debt (§3).
 
 `investment` encodes one policy: **capital deployed is not spending.**
 It is an `internal_transfer` when the destination is an account the
@@ -236,7 +253,8 @@ managed account books.
 
 Every vendored BANK_FEES value is a fee for BANKING: ATM fees,
 foreign-transaction fees, insufficient funds, interest charges,
-overdrafts. A custodian's ADR depositary charge, a pension platform's
+overdrafts, late payments, cash advances. A custodian's ADR depositary
+charge, a pension platform's
 quarterly fee and an investment manager's bill are fees for INVESTING,
 and filing them under `OTHER_BANK_FEES` buries the cost of being
 invested inside the cost of having an account. They sit under
@@ -266,7 +284,7 @@ refreshed CSV as a clean diff instead of sitting beside it.
 
 ### Two validity predicates, and why
 
-`canonical.ValidSpendDetailed` admits everything storable — the 80
+`canonical.ValidSpendDetailed` admits everything storable — the 82
 vendored values, our extensions, *and* the thirteen deltas.
 `canonical.ModelSpendDetailed` is the stricter sibling: it admits
 what a model may emit — vendored and extension — and refuses only the
@@ -278,7 +296,7 @@ merchant ever produced, forever, across every account. An
 `internal_transfer` in that position would silently and globally
 remove a merchant from spending — the one verdict whose effect is
 invisible in a report, because the rows simply stop appearing. The
-other five are milder but no more legitimate: all six are decided
+others are milder but no more legitimate: every delta is decided
 from structure a model cannot see (a matcher that watched both legs of
 a movement; a rule that knows which accounts the product itself
 tracks and which card legs it holds; a provider whose own booking type
@@ -381,8 +399,9 @@ provider, and it reads weakest-first:
   tier above still overrules it.
 
   **A catch-all is not a verdict.** Where the issuer's value translates
-  only to a primary's own `OTHER_*` bucket, the tier records what the
-  issuer said and DECLINES the row. A catch-all carries no more than
+  only to a primary's own catch-all, its `OTHER` or `OTHER_*` value,
+  the tier records what the issuer said and DECLINES the row. A
+  catch-all carries no more than
   the primary already did, and claiming with one would pre-empt the
   model — the only tier that reads the merchant name, and the one that
   can do better: the issuer knew the row was "shopping", and the
@@ -747,7 +766,7 @@ accounts rather than from anyone's preference.
 | rule | verdict | why |
 |---|---|---|
 | `card_payment` | `card_spend` | A card bill with no counter-leg in gold is a bill for a card wealthdb does not itemise — a card no collector exists for, or the deep era, where a card payment is dated before the card's own ledger begins — and the bill is the only trace of that spending. So it is kept in the base as generic card spend, not deleted as an own-account move; a bill whose card *is* in gold never reaches this verdict, because the matcher outranks it. Matched on card-payment phrases and an issuer table, never on a store card that names its merchant, and refused outright on a row the `atm` rule matches — cash taken at a machine carries the same masked card number — or a row the provider filed under another value. A match on a named issuer's descriptor also LABELS the bill with that issuer, which is what the line carries as its merchant (§7). |
-| `atm` | `cash_withdrawal` | The money is gone, but *what it bought* has no record anywhere. |
+| `atm` | `cash_withdrawal` | The money is gone, but *what it bought* has no record anywhere. Stands down on a row the provider filed as a bank fee, since the fee for taking cash is booked in the same words as the cash. |
 | `mortgage` | `internal_transfer` | The mortgage is a tracked account; counting the payment as spend would double-count against the liability it reduces. It matches a NARRATIVE, so it fires whether or not the lender is tracked — and where no pair exists, nothing else on the row says where the money went, so it records `mortgage` as the cashflow class it stands for (`far_class`, migration 0079). That column is not the card rule's `merchant_label`: a class name there would print as the merchant of every card bill. |
 | `investment_fee` | `investment_fees` | A custodian's per-security pass-through, such as an ADR depositary charge, booked once per security per period. The narrative names the security and never a payee, so nothing else can reach it. It is a cost of INVESTING rather than of banking, which is what the extension exists to say. |
 | `wire_fee` | `other_bank_fees` | Sits on the same statements as the pass-through above and is deliberately not one: paying to move money is a banking service, and filing it as an investment fee would overstate what holding the assets costs. Not the wire itself, which no rule places — that is the matcher's to pair or nobody's to guess. |
@@ -790,7 +809,40 @@ the row, so a mortgage narrative still meets the mortgage rule. Where
 the provider filed the row as a card bill, or filed nothing the
 vocabulary translates, the card rule fires.
 
-Those two refusals are the only things a built-in reads the
+The `atm` rule stands down where the provider filed the row as
+something other than cash taken out:
+
+- as a bank fee: any value under `BANK_FEES`, claimed or only recorded;
+- as a payment on a debt: `card_spend`, `debt_repayment` or
+  `mortgage_transfer`.
+
+The fee for taking cash is booked in the words the rule reads. A card's
+cash-advance fee says CASH ADVANCE, and a foreign machine's charge says
+ATM. The repayment of a cash advance says CASH ADVANCE too. The patterns
+cannot tell these rows from the cash, and the filing can. A filing
+outside those values leaves the rule in force, a catch-all included: a
+withdrawal filed under an unrelated value says nothing about cash. The
+card rule's refusal reads the `atm` rule's patterns alone, so a row the
+`atm` rule stands down for is still no card bill.
+
+A row the `atm` rule stands down for goes on like a row it never
+matched:
+
+- The rules after it and the config rules still read it.
+- The fee rules stand down where the provider named the fee: any
+  `BANK_FEES` value except the catch-all and
+  `BANK_FEES_INVESTMENT_FEES`. "FEE CHARGED" also ends a bank's own fee
+  narratives, and a provider that named the fee knows which one it was.
+- A filing the provider tier claims is then its verdict. A row filed
+  `BANK_FEES_CASH_ADVANCE` or `BANK_FEES_ATM_FEES` stays that fee.
+- A catch-all that a categorical vocabulary only records claims
+  nothing. That row resolves to the model's verdict for its signature,
+  or else to the kind floor.
+
+One case is lost: an issuer that files the cash itself under its fee
+bucket. That row is no longer `cash_withdrawal`, and a pin restores it.
+
+These refusals are the only things a built-in reads the
 **provider's filing** for. It may never place a verdict from it — that
 would be the provider tier wearing this tier's provenance and
 outranking it — but declining a row on it is the opposite move: it
@@ -936,8 +988,9 @@ and visible; a single row belongs in the pins.
 
 A config rule is consulted after the built-ins, so an ATM
 withdrawal that happens to carry the holder's name is still
-`cash_withdrawal`, and the matcher outranks it as it outranks every
-rule: a withdrawal whose counter-leg *is* in gold is
+`cash_withdrawal`. The exception is a row the `atm` rule stands down
+for, which the config rules do read. The matcher outranks a config
+rule as it outranks every rule: a withdrawal whose counter-leg *is* in gold is
 `internal_transfer` via `matcher`, rule or no rule. Among the config
 rules the first written wins.
 
@@ -1058,11 +1111,24 @@ merchandise", `internal_transfer` reads "Internal transfer".
 
 The rule is mechanical, so a value it reads wrongly is corrected by
 hand — `canonical.spendLabelOverrides`, and the same correction seeded
-into the dimension. One so far: `card_spend` reads **"Uncategorized
-card spend"** (migration 0062). The rule read it "Card spend", which is
-true of every card purchase in the product, so among the merchant
-categories on a chart it read as a KIND of spending rather than as the
-placeholder §2 defines it to be.
+into the dimension. Six values carry one:
+
+- `card_spend` reads **"Uncategorized card spend"**. The rule reads it
+  "Card spend", which is true of every card purchase in the product.
+  Among the merchant categories on a chart it would read as a KIND of
+  spending, not as the placeholder §2 defines it to be.
+- `INCOME_OTHER` reads "Other income". The rule reads it "Other", which
+  is the label of the `other` delta. The two are different things. A
+  catch-all declines a row, while `other` is a verdict that takes the
+  row out of the backlog.
+- `INCOME_MILITARY` reads "Veterans benefits". The value names
+  veterans' benefits. "Military" reads as military pay, which is
+  salary.
+- `BANK_FEES_CASH_ADVANCE` reads "Cash advance fees". "Cash advance"
+  names the advance itself, which is borrowed money and not a fee.
+- `INCOME_LONG_TERM_DISABILITY` reads "Long-term disability", and
+  `INCOME_ENERGY_FEED_IN` reads "Energy feed-in". The rule cannot spell
+  a hyphenated compound.
 
 The label is presentation and nothing more. The value stays the join
 key, the name a rule and a pin write, and what the model gauntlet
@@ -1118,9 +1184,17 @@ point. A catch-all a rule or a pin placed is a considered decision —
 the taxonomy has no word for a portrait photographer or for household
 removals, so one was chosen deliberately after checking — and a pass
 that re-asked those would undo the work and push private individuals at
-a model. `spend_categories.catch_all` (migration 0060) is the same
-predicate as `canonical.CatchAllSpendDetailed`, as data, so the query
-and the enrichment pass share one definition of what a catch-all is.
+a model.
+
+A value is a catch-all when its detail part is `OTHER` or starts with
+`OTHER_`. The detail part is the value with its primary's prefix taken
+off, and the convention is Plaid's own.
+`GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` is one, and so is
+`INCOME_OTHER`, the income side's only catch-all. A delta never is.
+`spend_categories.catch_all` (migration 0060, recomputed by 0111) is
+the same predicate as `canonical.CatchAllSpendDetailed` and
+`CatchAllIncomeDetailed`, as data, so the query and the enrichment pass
+share one definition of what a catch-all is.
 
 ## 4. Merchant signatures
 
@@ -2009,8 +2083,9 @@ tidies the store — by then the rows have moved on.
 - **Family name `spending`; outflows only.** Income is
   [INCOME.md](INCOME.md); buys and sells are `cashflow`'s
   ([CASHFLOW.md](CASHFLOW.md)).
-- **Plaid PFC, vendored verbatim**, plus extensions and deltas. A
-  revision arrives as a diff. The dimension carries both families, told
+- **Plaid PFC version 2, vendored verbatim**, plus extensions and
+  deltas. A revision arrives as a diff. The dimension carries both
+  families, told
   apart by a `family` column (migration 0069); the two vocabularies are
   fenced from each other by predicate, so a spending rule cannot place
   an income value.
@@ -2153,7 +2228,11 @@ tidies the store — by then the rows have moved on.
   booking type names a cash withdrawal, because cash taken at a machine
   carries the masked card number the rule reads as a bill. It also
   stands down where the provider filed the row under another value,
-  because AUTOPAY says how a bill was paid, not to whom.
+  because AUTOPAY says how a bill was paid, not to whom. The `atm` rule
+  stands down where the provider filed the row as a bank fee or a
+  payment on a debt, because a fee for taking cash, and the repayment
+  of a cash advance, are booked in the same words as the cash. The fee
+  rules stand down where the provider named the fee.
   Placing a category from the filing would be the provider tier wearing
   the rule tier's provenance and outranking it; declining on it hands
   the row down to the tier that owns the filing.

@@ -1,6 +1,7 @@
 package spending
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -57,6 +58,63 @@ func TestPlaidVocabularyCoversVersion2(t *testing.T) {
 	}
 }
 
+// TestPlaidPrimariesAreVendoredWhole pins how close the taxonomy stays to
+// Plaid's. Every primary of version 2 is either vendored whole, value for
+// value, or left out whole. The five left out name a movement, which the
+// matcher and the deltas place. A vendored value Plaid does not publish,
+// or a version 2 value missing under a vendored primary, fails here.
+func TestPlaidPrimariesAreVendoredWhole(t *testing.T) {
+	leftOut := map[string]bool{"TRANSFER_IN": true, "TRANSFER_OUT": true,
+		"LOAN_PAYMENTS": true, "LOAN_DISBURSEMENTS": true, "OTHER": true}
+
+	vendored := map[string]string{} // detailed value → its primary
+	for _, c := range append(canonical.VendoredSpendCategories(), canonical.VendoredIncomeCategories()...) {
+		vendored[c.Detailed] = c.Primary
+	}
+	primaries := map[string]bool{}
+	for _, p := range vendored {
+		primaries[p] = true
+	}
+	if len(primaries) != 13 {
+		t.Errorf("the taxonomy vendors %d primaries, want 13", len(primaries))
+	}
+	for p := range leftOut {
+		if primaries[p] {
+			t.Errorf("%s is both vendored and left out", p)
+		}
+		primaries[p] = true
+	}
+
+	published := map[string]bool{}
+	for _, v := range plaidPFCv2 {
+		published[v] = true
+		var under []string
+		for p := range primaries {
+			if strings.HasPrefix(v, p+"_") {
+				under = append(under, p)
+			}
+		}
+		if len(under) != 1 {
+			t.Errorf("%q falls under %v, want exactly one of Plaid's primaries", v, under)
+			continue
+		}
+		ours, isVendored := vendored[v]
+		switch {
+		case leftOut[under[0]] && isVendored:
+			t.Errorf("%q is vendored, but its primary %s is left out", v, under[0])
+		case !leftOut[under[0]] && !isVendored:
+			t.Errorf("%q is missing from the taxonomy, but its primary %s is vendored", v, under[0])
+		case isVendored && ours != under[0]:
+			t.Errorf("%q is vendored under %s, want Plaid's %s", v, ours, under[0])
+		}
+	}
+	for v := range vendored {
+		if !published[v] {
+			t.Errorf("vendored %q is not a version 2 value", v)
+		}
+	}
+}
+
 // TestPlaidTranslationsAreVendoredOrNamedDeltas pins what each side may
 // translate into: a value the model tier also knows, or one of the deltas
 // the provider tier is licensed to place.
@@ -77,41 +135,60 @@ func TestPlaidTranslationsAreVendoredOrNamedDeltas(t *testing.T) {
 	}
 }
 
-// TestPlaidProviderTier pins every hand-decided translation of either side
-// (docs/adapters/plaid.md §10), a sample of the identities, and the values
-// left untranslated on purpose.
+// TestPlaidProviderTier pins both sides of the map (docs/adapters/plaid.md
+// §10). Every vendored value translates to itself, and claims the row
+// unless it is a catch-all. The loan values translate to the deltas,
+// every one of them listed here. The rest is left untranslated on purpose.
 func TestPlaidProviderTier(t *testing.T) {
-	pinned := map[string]bool{}
-	for _, tc := range []struct {
-		value, want string
-		claims      bool
-	}{
-		// The identities.
-		{"FOOD_AND_DRINK_GROCERIES", "FOOD_AND_DRINK_GROCERIES", true},
-		{"GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", false},
-		// The overrides, all of them.
-		{"BANK_FEES_LATE_FEES", "BANK_FEES_OTHER_BANK_FEES", false},
-		{"BANK_FEES_CASH_ADVANCE", "BANK_FEES_OTHER_BANK_FEES", false},
-		{"LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", canonical.SpendDetailedCardSpend, true},
-		{"LOAN_PAYMENTS_MORTGAGE_PAYMENT", canonical.DetailedMortgageTransfer, true},
-		{"LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT", canonical.SpendDetailedDebtRepayment, true},
-		{"LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT", canonical.SpendDetailedDebtRepayment, true},
-		{"LOAN_PAYMENTS_CASH_ADVANCES", canonical.SpendDetailedDebtRepayment, true},
-		{"LOAN_PAYMENTS_CAR_PAYMENT", canonical.SpendDetailedDebtRepayment, true},
-	} {
-		pinned[tc.value] = true
-		detailed, ok, drift := ProviderCategory("plaid", "card", tc.value)
-		if !ok || drift || detailed != tc.want {
-			t.Errorf("ProviderCategory(plaid, %q) = (%q, %v, %v), want %q", tc.value, detailed, ok, drift, tc.want)
+	// The spending identities. Every value claims but a catch-all, which
+	// is recorded and declined so the model reads the merchant.
+	for _, c := range canonical.VendoredSpendCategories() {
+		detailed, ok, drift := ProviderCategory("plaid", "card", c.Detailed)
+		if !ok || drift || detailed != c.Detailed {
+			t.Errorf("ProviderCategory(plaid, %q) = (%q, %v, %v), want itself", c.Detailed, detailed, ok, drift)
+			continue
 		}
-		if got := ProviderCategoryClaims("plaid", "card", detailed); got != tc.claims {
-			t.Errorf("%q claims = %v, want %v (a catch-all leaves the merchant to the model)", tc.value, got, tc.claims)
+		if got, want := ProviderCategoryClaims("plaid", "card", detailed), !canonical.CatchAllSpendDetailed(detailed); got != want {
+			t.Errorf("%q claims = %v, want %v", c.Detailed, got, want)
+		}
+	}
+	// A late fee and a cash-advance fee are specific fees, not
+	// catch-alls, so each claims the row as itself.
+	for _, v := range []string{"BANK_FEES_LATE_FEES", "BANK_FEES_CASH_ADVANCE"} {
+		if d, ok, _ := ProviderCategory("plaid", "card", v); !ok || d != v || !ProviderCategoryClaims("plaid", "card", d) {
+			t.Errorf("%q = (%q, %v), want itself, claimed", v, d, ok)
+		}
+	}
+	if ProviderCategoryClaims("plaid", "card", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE") {
+		t.Error("a merchandise catch-all claimed the row; the merchant name is the model's to read")
+	}
+
+	// The spending deltas, all of them: each loan payment whose value
+	// names the kind of lender.
+	deltas := map[string]string{
+		"LOAN_PAYMENTS_CREDIT_CARD_PAYMENT":   canonical.SpendDetailedCardSpend,
+		"LOAN_PAYMENTS_MORTGAGE_PAYMENT":      canonical.DetailedMortgageTransfer,
+		"LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT":  canonical.SpendDetailedDebtRepayment,
+		"LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT": canonical.SpendDetailedDebtRepayment,
+		"LOAN_PAYMENTS_CASH_ADVANCES":         canonical.SpendDetailedDebtRepayment,
+		"LOAN_PAYMENTS_CAR_PAYMENT":           canonical.SpendDetailedDebtRepayment,
+	}
+	for v, want := range deltas {
+		detailed, ok, drift := ProviderCategory("plaid", "card", v)
+		if !ok || drift || detailed != want {
+			t.Errorf("ProviderCategory(plaid, %q) = (%q, %v, %v), want %q", v, detailed, ok, drift, want)
+		}
+		if !ProviderCategoryClaims("plaid", "card", detailed) {
+			t.Errorf("%q did not claim; a delta is a verdict", v)
 		}
 	}
 	for v, detailed := range plaidCategories {
-		if v != detailed && !pinned[v] {
-			t.Errorf("the spending override %q → %q is not pinned here", v, detailed)
+		if v != detailed && deltas[v] != detailed {
+			t.Errorf("the spending translation %q → %q is neither an identity nor a delta listed here", v, detailed)
 		}
+	}
+	if want := len(canonical.VendoredSpendCategories()) + len(deltas); len(plaidCategories) != want {
+		t.Errorf("plaidCategories holds %d translations, want the %d identities and deltas", len(plaidCategories), want)
 	}
 	// Whose account a transfer reaches is the matcher's to find. A wage
 	// advance's repayment offsets the advance, which stays a receipt.
@@ -122,43 +199,45 @@ func TestPlaidProviderTier(t *testing.T) {
 		}
 	}
 
-	pinnedIncome := map[string]bool{}
-	for _, tc := range []struct {
-		value, want string
-		claims      bool
-	}{
-		// The identities.
-		{"INCOME_DIVIDENDS", "INCOME_DIVIDENDS", true},
-		{"INCOME_RETIREMENT_PENSION", "INCOME_RETIREMENT_PENSION", true},
-		// The overrides, all of them.
-		{"INCOME_SALARY", "INCOME_WAGES", true},
-		{"INCOME_GIG_ECONOMY", "INCOME_WAGES", true},
-		{"INCOME_CONTRACTOR", canonical.IncomeDetailedSelfEmployment, true},
-		{"INCOME_CHILD_SUPPORT", canonical.IncomeDetailedAlimonyAndChildSupport, true},
-		{"INCOME_RENTAL", canonical.IncomeDetailedRent, true},
-		{"INCOME_MILITARY", canonical.IncomeDetailedGovernmentBenefits, true},
-		{"INCOME_LONG_TERM_DISABILITY", canonical.IncomeDetailedGovernmentBenefits, true},
-		{"INCOME_OTHER", "INCOME_OTHER_INCOME", false},
-		{"LOAN_DISBURSEMENTS_AUTO", canonical.IncomeDetailedLoanProceeds, true},
-		{"LOAN_DISBURSEMENTS_CASH_ADVANCES", canonical.IncomeDetailedLoanProceeds, true},
-		{"LOAN_DISBURSEMENTS_PERSONAL", canonical.IncomeDetailedLoanProceeds, true},
-		{"LOAN_DISBURSEMENTS_STUDENT", canonical.IncomeDetailedLoanProceeds, true},
-		{"LOAN_DISBURSEMENTS_OTHER_DISBURSEMENT", canonical.IncomeDetailedLoanProceeds, true},
-		{"LOAN_DISBURSEMENTS_MORTGAGE", canonical.DetailedMortgageTransfer, true},
-	} {
-		pinnedIncome[tc.value] = true
-		detailed, ok, drift := ProviderIncomeCategory("plaid", "cash", tc.value)
-		if !ok || drift || detailed != tc.want {
-			t.Errorf("ProviderIncomeCategory(plaid, %q) = (%q, %v, %v), want %q", tc.value, detailed, ok, drift, tc.want)
+	// The income identities, all thirteen. INCOME_OTHER is income's one
+	// catch-all and the one value that declines, so the model reads the
+	// payer.
+	for _, c := range canonical.VendoredIncomeCategories() {
+		detailed, ok, drift := ProviderIncomeCategory("plaid", "cash", c.Detailed)
+		if !ok || drift || detailed != c.Detailed {
+			t.Errorf("ProviderIncomeCategory(plaid, %q) = (%q, %v, %v), want itself", c.Detailed, detailed, ok, drift)
+			continue
 		}
-		if got := ProviderIncomeCategoryClaims("plaid", "cash", detailed); got != tc.claims {
-			t.Errorf("%q claims = %v, want %v", tc.value, got, tc.claims)
+		if got, want := ProviderIncomeCategoryClaims("plaid", "cash", detailed), c.Detailed != "INCOME_OTHER"; got != want {
+			t.Errorf("%q claims = %v, want %v", c.Detailed, got, want)
+		}
+	}
+
+	// The income deltas, all of them: money borrowed arriving.
+	incomeDeltas := map[string]string{
+		"LOAN_DISBURSEMENTS_AUTO":               canonical.IncomeDetailedLoanProceeds,
+		"LOAN_DISBURSEMENTS_CASH_ADVANCES":      canonical.IncomeDetailedLoanProceeds,
+		"LOAN_DISBURSEMENTS_PERSONAL":           canonical.IncomeDetailedLoanProceeds,
+		"LOAN_DISBURSEMENTS_STUDENT":            canonical.IncomeDetailedLoanProceeds,
+		"LOAN_DISBURSEMENTS_OTHER_DISBURSEMENT": canonical.IncomeDetailedLoanProceeds,
+		"LOAN_DISBURSEMENTS_MORTGAGE":           canonical.DetailedMortgageTransfer,
+	}
+	for v, want := range incomeDeltas {
+		detailed, ok, drift := ProviderIncomeCategory("plaid", "cash", v)
+		if !ok || drift || detailed != want {
+			t.Errorf("ProviderIncomeCategory(plaid, %q) = (%q, %v, %v), want %q", v, detailed, ok, drift, want)
+		}
+		if !ProviderIncomeCategoryClaims("plaid", "cash", detailed) {
+			t.Errorf("%q did not claim; a delta is a verdict", v)
 		}
 	}
 	for v, detailed := range plaidIncomeCategories {
-		if v != detailed && !pinnedIncome[v] {
-			t.Errorf("the income override %q → %q is not pinned here", v, detailed)
+		if v != detailed && incomeDeltas[v] != detailed {
+			t.Errorf("the income translation %q → %q is neither an identity nor a delta listed here", v, detailed)
 		}
+	}
+	if want := len(canonical.VendoredIncomeCategories()) + len(incomeDeltas); len(plaidIncomeCategories) != want {
+		t.Errorf("plaidIncomeCategories holds %d translations, want the %d identities and deltas", len(plaidIncomeCategories), want)
 	}
 	// A transfer in may be the holder's own money, or savings interest
 	// Plaid filed as a transfer: the matcher and the kind floor know more.

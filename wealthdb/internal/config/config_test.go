@@ -1154,7 +1154,7 @@ func TestRuleCarriesAnExposure(t *testing.T) {
 		"a wrapper, not an exposure":     `"spending":{"rules":[{"match":"x","category":"investment","asset_class":"etf"}]}}`,
 		"the residual node's own class":  `"spending":{"rules":[{"match":"x","category":"investment","asset_class":"cash"}]}}`,
 		"the dimension's gap marker":     `"spending":{"rules":[{"match":"x","category":"investment","asset_class":"other"}]}}`,
-		"income's non-investing verdict": `"income":{"rules":[{"match":"x","type":"INCOME_WAGES","asset_class":"real_estate"}]}}`,
+		"income's non-investing verdict": `"income":{"rules":[{"match":"x","type":"INCOME_SALARY","asset_class":"real_estate"}]}}`,
 	} {
 		if _, err := Load(writeConfig(t, base+block)); err == nil {
 			t.Errorf("%s: Load should have failed", name)

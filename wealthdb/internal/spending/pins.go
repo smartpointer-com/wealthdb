@@ -237,7 +237,13 @@ func pinFromRecord(rec []string, get func([]string, string) string, valueCol, in
 	}
 	// Exact spelling: the vendored values are uppercase, the deltas
 	// lowercase, and the casing is what says where a value came from.
+	// A retired spelling is refused like any other non-value; the
+	// refusal names what to write instead, where that is a value of this
+	// family.
 	if !valid(p.Detailed) {
+		if r, ok := canonical.RetiredDetailed(p.Detailed); ok && valid(r.Successor) {
+			return p, fmt.Errorf("%s %q is retired: use %s", valueCol, p.Detailed, r.Use)
+		}
 		return p, fmt.Errorf("%s %q is not a value of this family's taxonomy (vendored values are uppercase, the deltas lowercase)", valueCol, p.Detailed)
 	}
 	if p.AssetClass = get(rec, "asset_class"); p.AssetClass != "" {

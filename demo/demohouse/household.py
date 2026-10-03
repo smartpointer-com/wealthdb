@@ -328,7 +328,7 @@ class Simulation:
             for desc, amount in parts:
                 if D(amount) > 0:
                     self._txn(aid, day, "deposit", D(amount), desc=desc, counterparty=payer["name"],
-                              provider="INCOME_WAGES")
+                              provider="INCOME_SALARY")
             self._buy(aid, day, c["instrument"], self.book.account(aid).balance())
 
     def _income_misc(self, day):
@@ -460,8 +460,8 @@ class Simulation:
         self._txn(a["account"], day, "withdrawal", -amount, desc=f'ATM WITHDRAWAL {a["branch"]}',
                   provider="cash_withdrawal")
         if keyed.chance(r, a["fee_chance"]):
-            # Named without the machine token: the engine's built-in cash
-            # rule reads that word on any row and outranks the provider.
+            # Filed as a bank fee, which keeps it one: the engine's built-in
+            # cash rule stands down on such a row, machine token or not.
             self._txn(a["account"], day, "fee", -D(a["fee"]), desc=f'NON-NETWORK SURCHARGE {a["fee_network"]}',
                       provider="BANK_FEES_ATM_FEES")
 

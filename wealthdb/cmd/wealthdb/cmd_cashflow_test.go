@@ -64,7 +64,7 @@ func setupCashflowGold(t *testing.T) string {
 		day                           int
 		amount                        string
 	}{
-		{"T-WAGES", "CASH0005678", "deposit", "", time.May, 5, "6000"},
+		{"T-SALARY", "CASH0005678", "deposit", "", time.May, 5, "6000"},
 		{"T-DIV", "BRK0009999", "dividend", "INST1", time.May, 8, "400"},
 		{"T-SHOP", "CASH0005678", "purchase", "", time.May, 9, "-250"},
 		{"T-TAX", "CASH0005678", "tax", "", time.May, 12, "-900"},
@@ -88,9 +88,9 @@ func setupCashflowGold(t *testing.T) string {
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO income_txn_enrichment(silver_source_id, transaction_external_id,
 			payer_signature, signature_version, income_detailed, provenance, assigned_at)
-		VALUES ('bank', 'T-WAGES', 'PAYROLL', 1, 'INCOME_WAGES', 'rule', 1),
-		       ('bank', 'T-DIV',   NULL,      1, NULL,           'signature-only', 1),
-		       ('bank', 'T-PLANDIV', NULL,    1, NULL,           'signature-only', 1);
+		VALUES ('bank', 'T-SALARY', 'PAYROLL', 1, 'INCOME_SALARY', 'rule', 1),
+		       ('bank', 'T-DIV',    NULL,      1, NULL,            'signature-only', 1),
+		       ('bank', 'T-PLANDIV', NULL,     1, NULL,            'signature-only', 1);
 
 		INSERT INTO spend_txn_enrichment(silver_source_id, transaction_external_id,
 			merchant_signature, signature_version, spend_detailed, provenance,
@@ -136,7 +136,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
-		// 6000 wages + 400 dividend in; 250 + 900 out; 3000 invested;
+		// 6000 salary + 400 dividend in; 250 + 900 out; 3000 invested;
 		// 1200 to the mortgage; 500 to the plan.
 		for _, want := range []string{"6400.00", "1150.00", "5250.00",
 			"-3000.00", "-1200.00", "-500.00", "550.00"} {
@@ -197,8 +197,8 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		}
 		// The outflow leaf is the spending PRIMARY, so a grocery
 		// purchase draws as "Food and drink" rather than as one of
-		// ninety detailed values.
-		for _, want := range []string{"Wages", "Earnings", "Food and drink", "Consumption"} {
+		// close to a hundred detailed values.
+		for _, want := range []string{"Salary", "Earnings", "Food and drink", "Consumption"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("the diagram is missing %q:\n%s", want, so)
 			}
@@ -243,7 +243,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
-		for _, want := range []string{"operating_in", "Earnings", "Wages",
+		for _, want := range []string{"operating_in", "Earnings", "Salary",
 			"investing", "Public equity", "Trades", "Corner Market",
 			"Food and drink"} {
 			if !strings.Contains(so, want) {
@@ -266,7 +266,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		if strings.Contains(so, "Corner Market") {
 			t.Errorf("a merchant name survived -p:\n%s", so)
 		}
-		for _, want := range []string{"operating_in", "Earnings", "Wages"} {
+		for _, want := range []string{"operating_in", "Earnings", "Salary"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("-p redacted the node vocabulary, which is what makes the twin readable:\n%s", so)
 			}
@@ -295,7 +295,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
-		if !strings.Contains(so, "operating_in.earnings.INCOME_WAGES") {
+		if !strings.Contains(so, "operating_in.earnings.INCOME_SALARY") {
 			t.Errorf("the node key is not the whole section.class.group:\n%s", so)
 		}
 	})
@@ -400,7 +400,7 @@ func TestTransactionsCarriesTheCashflowColumns(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%s", code, se)
 	}
 	for _, want := range []string{"cashflow_section", "cashflow_class", "cashflow_group",
-		"operating_in", "earnings", "INCOME_WAGES", "FOOD_AND_DRINK_GROCERIES"} {
+		"operating_in", "earnings", "INCOME_SALARY", "FOOD_AND_DRINK_GROCERIES"} {
 		if !strings.Contains(so, want) {
 			t.Errorf("`transactions` is missing %q:\n%s", want, so)
 		}

@@ -793,7 +793,7 @@ Example config file:
 | `cashflow.wrappers` | object | Optional. Moves a tax wrapper across the household boundary, `{"<wrapper>": "<destination>"}`, where the destination is `household` (no crossing at all), `retirement`, `education`, `health`, `trusts` or `giving`. Per WRAPPER, not per account — an account a source mis-labelled is fixed with the per-account `tax_wrapper` override, so every consumer agrees whose money it is. An unknown wrapper or destination fails the load naming the entry. Re-stamped by every enrichment pass. |
 | `income` | object | Optional. Groups the income feature's per-deployment knobs — `accounts`, `rules[]`, `pins`, `categorization` — in `spending`'s shapes. Two blocks spending has are deliberately absent: there is one internal-transfer matcher and one transfer-override ledger, and both families read them (docs/INCOME.md §1). Absent ⇒ every account counts, no rules and no pins apply, and the model tier inherits `spending.categorization`. |
 | `income.accounts` | object | Optional. The income account scope, in `spending.accounts`' shape and stamped into gold's `income_account_scope`. Its own table on purpose: an account excluded from spending because its outflows double-count something is not thereby an account whose inflows are not income. |
-| `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. Its optional `asset_class` is admitted only where `type` is `capital_return`, and its optional `far` only where `type` is `internal_transfer`; the far account of an inbound leg is written onto the spending overlay, the one overlay with far columns (docs/CASHFLOW.md §4). |
+| `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. So does a spelling the vocabulary retired, and the error names the value to write instead (docs/INCOME.md §2). Its optional `asset_class` is admitted only where `type` is `capital_return`, and its optional `far` only where `type` is `internal_transfer`; the far account of an inbound leg is written onto the spending overlay, the one overlay with far columns (docs/CASHFLOW.md §4). |
 | `income.pins` | string | Optional. Path to the income pins ledger: the spending ledger's format with an `income_detailed` column. See §13.11. |
 | `income.categorization` | object | Optional. As `spending.categorization`, `fence_person_names` included. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model, one answer to what may leave the machine. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down, and a half-inherited fence would be one that quietly turned itself off. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
@@ -2025,15 +2025,17 @@ docs/SPENDING.md §8. The invariant is pinned by
 
 `wealthdb reset -a` runs the same per silver source. A full rebuild is
 `wealthdb reload -a`: every source-derived table is rebuilt into a fresh
-compact file, which is swapped over the live path with both verdict
-stores carried across (`carryVerdictStore`, once per entry in
-`paidStores`). Two tables do not
-survive that swap — `symbol_resolutions`, which
-`wealthdb resolve-symbols` writes and no load does, and
-`report_returns`, which `web-materialize` writes (§10.9) — so the
-rebuilt file carries neither until a resolve and a materialization
-follow it. `reload -a --in-place` keeps the live file instead, forgoing
-the compaction and leaving `report_returns` alone; the per-source reset
+compact file, which is swapped over the live path. The three paid
+stores are carried across (`carryVerdictStore`, once per entry in
+`paidStores`): the merchant store, the payer store and
+`symbol_resolutions`. A carried taxonomy store has any retired spelling
+in its category column respelled to its successor
+(`canonical.RetiredDetailed`), so a carry from a file older than
+migration 0111 brings none into the rebuilt file. `report_returns` does
+not survive the swap. `web-materialize` writes it (§10.9), so the
+rebuilt file has none until a materialization follows.
+`reload -a --in-place` keeps the live file instead. It forgoes the
+compaction and leaves `report_returns` alone, but the per-source reset
 still clears `symbol_resolutions` there. Removing the gold DB and
 re-running `wealthdb init` is the manual fallback.
 
@@ -3523,7 +3525,9 @@ asset_class, note` — and no others; an unknown header fails the parse.
 `income_detailed` in place of `spend_detailed` and validated against the
 income vocabulary — a pin identifies a transaction the same way
 whichever question is being answered about it, so only the value column
-and its taxonomy differ. `account` accepts either the gold `account_external_id` or an
+and its taxonomy differ. A pin naming a spelling the vocabulary retired
+fails the parse, and the error names the value to write instead
+(docs/INCOME.md §2). `account` accepts either the gold `account_external_id` or an
 account nickname, resolved by the same `gold.NewAccountResolver` the
 equity-transfer ledger uses. `amount` is the amount as gold stores it
 — canonical sign, so a debit is negative — and matches within a cent,
@@ -3562,7 +3566,9 @@ statement, so the ledger never keys on it. Two ledger rows describing
 the same transactions must agree (a contradiction fails the parse,
 naming both lines); rows that agree collapse to one.
 
-Mechanics (`internal/spending/pins.go`): the deterministic pass
+Mechanics (`internal/spending/pins.go`): both ledgers are parsed before
+gold is opened for writing, so a stale or malformed pin fails before
+anything is migrated or loaded. The deterministic pass
 resolves the ledger against the whole of `transactions` and writes
 each match with provenance `manual`, after every other tier — a pin
 beats the matcher, the rules and the provider. Because the ledger is

@@ -62,10 +62,12 @@ type spendRule struct {
 	// two patterns genuinely overlap on the same row and rule order
 	// alone would give it to the wrong one.
 	refusedBy *spendRule
-	// yieldsToProvider makes the rule stand down where the provider filed
-	// the row under another value, claimed or merely recorded. The rule's
-	// patterns then say less than the provider's filing does.
-	yieldsToProvider bool
+	// yieldsTo makes the rule stand down for the provider filings it
+	// reports true for. A filing is the provider tier's translation of
+	// the row, claimed or merely recorded, and where the rule yields to
+	// it, its patterns say less than the filing does. Nil yields to
+	// nothing, and a row with no translation meets no yield at all.
+	yieldsTo func(filed string) bool
 	// farClass is the cashflow class this rule stands for when it
 	// places an own-account move it did not pair. A rule that matches a
 	// NARRATIVE fires whether or not the far account is tracked, so the
@@ -200,9 +202,30 @@ var cardIssuerShapes = []*regexp.Regexp{
 // spending is simply unattributable instead of hiding it inside a
 // plausible-looking category.
 //
+// It stands down where the provider filed the row as something other
+// than cash taken out: as a bank fee — any value under BANK_FEES, its
+// catch-all among them, claimed or merely recorded — or as a payment on
+// a debt. The fee for taking cash is booked in the words this rule
+// reads, such as a card's cash-advance fee or an operator's charge at a
+// foreign machine, and so is the repayment of a cash advance; the
+// patterns cannot tell either from the cash, and the filing can.
+//
+// A row it stands down for goes on like a row it never matched. The
+// later built-ins and the config rules still read it, and the fee rules
+// among them yield to a named fee (filedAsSpecificFee). A filing the
+// provider tier claims is then its verdict. A catch-all that a
+// categorical vocabulary only recorded claims nothing, so that row
+// resolves to the model's verdict for its signature, and failing that to
+// the kind floor. Any other filing leaves the rule in force, another
+// primary's catch-all included: a provider that filed a withdrawal under
+// an unrelated bucket has said nothing about cash, and the patterns
+// still say more.
+//
 // It is declared apart from the table because the card-payment rule
 // refuses every row it matches (refusedBy), so the two share one set
-// of patterns rather than restating them.
+// of patterns rather than restating them. The refusal reads those
+// patterns alone, so the card rule still refuses a row this rule
+// stands down for.
 var cashWithdrawalRule = spendRule{
 	detailed: canonical.SpendDetailedCashWithdrawal,
 	tokens:   []string{"ATM", "BANCOMAT", "GELDAUTOMAT", "BARGELDBEZUG", "CASHPOINT"},
@@ -210,6 +233,54 @@ var cashWithdrawalRule = spendRule{
 		"CASH WITHDRAWAL", "CASH ADVANCE", "WITHDRAWAL AT",
 		"CASH DISBURSEMENT",
 	},
+	yieldsTo: filedAsFeeOrDebtPayment,
+}
+
+// bankFeeValues is every value under the BANK_FEES primary, read off the
+// taxonomy rather than listed, so a fee the table gains is one the rules
+// yield to with no edit here.
+var bankFeeValues = valuesUnderPrimary("BANK_FEES")
+
+// debtPaymentValues are the deltas a provider map places for a payment
+// on a debt: a card bill, a loan instalment, a mortgage instalment.
+var debtPaymentValues = map[string]bool{
+	canonical.SpendDetailedCardSpend:     true,
+	canonical.SpendDetailedDebtRepayment: true,
+	canonical.DetailedMortgageTransfer:   true,
+}
+
+// filedAsFeeOrDebtPayment reports whether the provider filed a row as a
+// bank fee or as a payment on a debt — either way, not as cash taken out.
+func filedAsFeeOrDebtPayment(filed string) bool {
+	return bankFeeValues[filed] || debtPaymentValues[filed]
+}
+
+// filedAsSpecificFee reports whether the provider filed a row as a named
+// banking fee: a BANK_FEES value other than the catch-all, which names
+// nothing, and other than the investment-fee extension, which is the
+// judgement the fee rules exist to make. A rule that places a fee reads
+// a phrase such as "FEE CHARGED"; a provider that named the fee knows
+// which one it was.
+func filedAsSpecificFee(filed string) bool {
+	return bankFeeValues[filed] && !canonical.CatchAllSpendDetailed(filed) &&
+		filed != canonical.SpendDetailedInvestmentFees
+}
+
+// filedOtherThan yields to every filing but the rule's own verdict.
+func filedOtherThan(detailed string) func(filed string) bool {
+	return func(filed string) bool { return filed != detailed }
+}
+
+// valuesUnderPrimary is every detailed value of the taxonomy under one
+// primary.
+func valuesUnderPrimary(primary string) map[string]bool {
+	out := map[string]bool{}
+	for _, c := range canonical.SpendCategories {
+		if c.Primary == primary {
+			out[c.Detailed] = true
+		}
+	}
+	return out
 }
 
 // builtinRules are evaluated in order, first match wins, so the order
@@ -252,10 +323,10 @@ var builtinRules = []spendRule{
 		// a loan or a merchant category has said to whom. Where it filed
 		// only a catch-all, the row goes on to the model, which reads the
 		// merchant name.
-		refusedBy:        &cashWithdrawalRule,
-		yieldsToProvider: true,
-		detailed:         canonical.SpendDetailedCardSpend,
-		tokens:           []string{"AUTOPAY", "AUTOPMT", "EPAY", "CARDMEMBER"},
+		refusedBy: &cashWithdrawalRule,
+		yieldsTo:  filedOtherThan(canonical.SpendDetailedCardSpend),
+		detailed:  canonical.SpendDetailedCardSpend,
+		tokens:    []string{"AUTOPAY", "AUTOPMT", "EPAY", "CARDMEMBER"},
 		// "ONLINE PAYMENT" is deliberately NOT here. A bank's bill-pay
 		// descriptor is "Online Payment <ref> To <payee>" — a payment to
 		// whoever the holder addressed it to, a landlord as readily as a
@@ -321,8 +392,13 @@ var builtinRules = []spendRule{
 		// INVESTING rather than of banking, which is what the
 		// extension exists to say, so a report can set the whole
 		// class aside in one line.
+		//
+		// "FEE CHARGED" also ends a bank's own fee narratives, such as
+		// an overdraft fee, so like every fee rule it yields to a
+		// provider that named the fee.
 		detailed: canonical.SpendDetailedInvestmentFees,
 		phrases:  []string{"FEE CHARGED", "ADR FEE", "DEPOSITARY FEE"},
+		yieldsTo: filedAsSpecificFee,
 	},
 	{
 		// A broker's charge for SENDING a wire. It sits on the same
@@ -334,6 +410,7 @@ var builtinRules = []spendRule{
 		detailed: "BANK_FEES_OTHER_BANK_FEES",
 		phrases: []string{"WIRED FUNDS FEE", "WIRE FEE",
 			"WIRE TRANSFER FEE"},
+		yieldsTo: filedAsSpecificFee,
 	},
 	{
 		// Tax withheld at source on foreign dividend income. The
@@ -359,6 +436,7 @@ var builtinRules = []spendRule{
 		// none is listed beside it.
 		phrases: []string{"ADVISOR FEE", "ADVISORY FEE",
 			"INVESTMENT MGR FEE", "MANAGEMENT FEE"},
+		yieldsTo: filedAsSpecificFee,
 	},
 }
 
@@ -381,14 +459,13 @@ var builtinRules = []spendRule{
 // of the exception to a delta line carrying no merchant.
 //
 // The provider's own filing of the row is read for REFUSALS only
-// (spendRule.refusedBy, and its translation for
-// spendRule.yieldsToProvider), never to place a verdict. A booking type
-// is the bank's structured classification of the entry rather than a
-// narrative, and a rule that placed a category from it would be the
-// provider tier wearing the rule tier's provenance and outranking it.
-// Reading it to decline a row is the opposite move: it lets the tier
-// below, which owns that filing, have the row. RuleCategory asks with no
-// translation in hand.
+// (spendRule.refusedBy, and its translation for spendRule.yieldsTo),
+// never to place a verdict. A booking type is the bank's structured
+// classification of the entry rather than a narrative, and a rule that
+// placed a category from it would be the provider tier wearing the rule
+// tier's provenance and outranking it. Reading it to decline a row is
+// the opposite move: it lets the tier below, which owns that filing,
+// have the row. RuleCategory asks with no translation in hand.
 func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
 	detailed, label, _, ok = rulePlacement(builtinRules, signature, counterparty, description, providerCategory, "")
 	return detailed, label, ok
@@ -497,7 +574,7 @@ func matchRuleIn(rules []spendRule, signature, counterparty, description, provid
 		if r.refusedBy != nil && r.refusedBy.matchesAny(refusalFields) {
 			continue
 		}
-		if r.yieldsToProvider && filed != "" && filed != r.detailed {
+		if r.yieldsTo != nil && filed != "" && r.yieldsTo(filed) {
 			continue
 		}
 		if r.matchesAny(fields) {

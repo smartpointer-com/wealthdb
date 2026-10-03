@@ -794,8 +794,8 @@ FILTER_FIELD_COLUMNS = {
     "web_cashflow": ("occurred_at", "silver_source_id", "section"),
     # The income view. `income_label`, not `income_primary_label`: the
     # income taxonomy has ONE vendored primary, so a primary-level
-    # dropdown would offer four values and hide every distinction a
-    # reader opens the dashboard to filter by.
+    # dropdown would offer a handful of values and hide every distinction
+    # a reader opens the dashboard to filter by.
     "web_income": ("occurred_at", "silver_source_id", "account_label",
                    "income_label"),
     "web_card_balances_history": ("as_of_day", "silver_source_id",
@@ -945,9 +945,10 @@ def _donut(threshold=0, total=True):
     wedge Metabase labels "Other". Zero — the default here, not
     Metabase's — draws every slice, and is right wherever the breakout
     has few enough values to name: this taxonomy HAS a category called
-    "Other", and two legend entries by that name read as a rendering
-    fault. Set it only where the tail is genuinely too long to draw,
-    and say so on the card.
+    "Other", the `other` delta, and two legend entries by that name read
+    as a rendering fault. The income catch-all, INCOME_OTHER, reads
+    "Other income" and draws as a slice of its own. Set it only where
+    the tail is genuinely too long to draw, and say so on the card.
 
     `total` draws the figure in the hole, which is the sum of the
     slices the ring DREW rather than of the rows the query returned.
@@ -1378,11 +1379,11 @@ def question_defs(db_id, mid):
         "Spending by subcategory": spend_native("Spending by subcategory",
             "pie",
             "The detailed level of Spending by category: net spend by "
-            "detailed category. The vocabulary holds eighty-odd values, so "
-            "the ring draws the ones worth a slice and folds the long tail "
-            "into one — every category that spent is on it either way. One "
-            "whose refunds beat its purchases has no slice, and is not in "
-            "the total in the middle.",
+            "detailed category. The vocabulary holds nearly a hundred "
+            "values, so the ring draws the ones worth a slice and folds the "
+            "long tail into one — every category that spent is on it either "
+            "way. One whose refunds beat its purchases has no slice, and is "
+            "not in the total in the middle.",
             f"SELECT spend_label AS category,\n       {sp_val} AS net_spend\n"
             "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
             _donut(threshold=1.5)),
@@ -3476,8 +3477,8 @@ def dashboard_parameters(model_ids, mode, name=""):
             pickers.append(card_picker(INCOME_ACCOUNT_PARAM_ID, "Account",
                                        "account", "report_income", "display_name"))
         # Bound to the DETAILED label: the income taxonomy has one
-        # vendored primary, so a primary-level picker would offer four
-        # values and hide every distinction worth filtering by.
+        # vendored primary, so a primary-level picker would offer a
+        # handful of values and hide every distinction worth filtering by.
         #
         # `income_detailed` is the MODEL'S ALIAS for that label
         # (report_income projects `i.income_label AS income_detailed`),

@@ -146,7 +146,7 @@ income taxonomy having one vendored primary and so no subcategory level
 worth one, and no balance-history chart, nothing on this side being a
 liability. Its *type* picker binds to the DETAILED label rather than the
 primary one for the same reason the second ring is absent — a
-primary-level dropdown would offer four values and hide every
+primary-level dropdown would offer a handful of values and hide every
 distinction a reader opens the dashboard for. The **Income** twin
 redacts the way the Spending twin does: shares of the window's own net
 income or of its biggest month, the payer list ranked unnamed, the

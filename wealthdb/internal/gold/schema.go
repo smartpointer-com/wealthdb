@@ -33,6 +33,12 @@ var migrationsFS embed.FS
 // migration's pre-stamp body against an already-migrated database and
 // pin that it is safe to.
 //
+// A replay can undo a later migration. A later one may delete a row an
+// earlier seed inserts (0111 deletes five that 0069 seeds), and
+// replaying the seed brings the row back. A rerun test of such a seed
+// therefore replays the later migration after it, as Migrate would,
+// before it asserts anything about the current schema.
+//
 // The CHECK-widening rename-swap migrations (0007-0011, 0013-0018,
 // 0033-0037, 0053, 0107, 0109) are exempt and deliberately carry no rerun
 // test: replaying one rebuilds its table from that migration's own

@@ -112,8 +112,8 @@ var chaseCardCategories = map[string]string{
 // "Communications" is the one that reads oddly: Amex files phone,
 // internet and cable under it, which the taxonomy splits across
 // RENT_AND_UTILITIES. OTHER_UTILITIES is the honest parent of that
-// split, and picking TELEPHONE would assert a device the category
-// never named.
+// split. TELEPHONE names telephone bills alone, which is only the phone
+// part of a bucket that also holds internet and cable.
 var amexCardCategories = map[string]string{
 	"Business Services":      "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
 	"Communications":         "RENT_AND_UTILITIES_OTHER_UTILITIES",
@@ -425,7 +425,7 @@ var ubsCardMoneyMovement = map[string]bool{
 // not have.
 var ubsIncomeBookingTypes = map[string]string{
 	// Employment.
-	"SALARY PAYMENT": "INCOME_WAGES",
+	"SALARY PAYMENT": "INCOME_SALARY",
 	// Investment income. The `dividend` and `capital_gain` KINDS floor
 	// to the same values, so these agree with the floor rather than
 	// overruling it — but the bank did say it, and the provider tier
@@ -449,7 +449,7 @@ var ubsIncomeBookingTypes = map[string]string{
 // own inbound bucket is a catch-all and is translated as one: recorded,
 // and left for the tier that can read a payer.
 var raiffeisenIncomeCategories = map[string]string{
-	"income_other": "INCOME_OTHER_INCOME",
+	"income_other": "INCOME_OTHER",
 }
 
 // raiffeisenIncomeUncategorized is the income side's reviewed-and-left
@@ -563,6 +563,13 @@ var (
 // plaid row can carry. It is the reviewed list. Each side translates a
 // value or leaves it untranslated. Only a value outside the list is drift,
 // which is what a revision of the taxonomy looks like.
+//
+// The taxonomy vendors thirteen of Plaid's eighteen primaries whole, so
+// most of the list translates to itself. It leaves out the other five.
+// The two transfer primaries and the two loan primaries name movements,
+// and the matcher and the deltas place those. OTHER is Plaid's bucket for a
+// row it could not place, so OTHER_OTHER stays untranslated and the
+// model reads the counterparty.
 var plaidPFCv2 = []string{
 	"INCOME_CHILD_SUPPORT",
 	"INCOME_CONTRACTOR",
@@ -710,23 +717,23 @@ var plaidPFCv2 = []string{
 	"OTHER_OTHER",
 }
 
-// plaidCategories is the spending side. Every value that is a wealthdb
-// spend value already translates to itself: the taxonomy vendors Plaid's
-// version 1, and version 2 kept those spellings. The rest is below.
+// plaidCategories is the spending side. Every vendored spend value
+// translates to itself. The other translations are loan payments, which
+// the taxonomy leaves to its deltas. Each goes to the delta for the kind
+// of lender its value names:
 //
-// Two bank fees are new in version 2, and the taxonomy has nothing finer
-// than the catch-all for them. A card bill names the movement, so it is
-// `card_spend` (the matcher outranks it when the card's own leg is in
-// gold). A mortgage instalment is `mortgage_transfer`. A student,
-// personal, cash-advance or car payment is `debt_repayment`. Each is the
-// delta for its lender. The other loan payments stay untranslated
-// (plaidUncategorized). A car payment can be a lease, which is
-// consumption, and `debt_repayment` takes it out of the base. Plaid files
-// loans and leases under one value. A config rule on the lessor's name,
-// scoped to the paying account, puts a lease back.
+//   - a card bill is `card_spend`, and the matcher outranks it when the
+//     card's own leg is in gold;
+//   - a mortgage instalment is `mortgage_transfer`;
+//   - a student, personal, cash-advance or car payment is
+//     `debt_repayment`.
+//
+// A car payment can be a lease, which is consumption, and
+// `debt_repayment` takes it out of the base. Plaid files loans and leases
+// under one value. A config rule on the lessor's name, scoped to the
+// paying account, puts a lease back. The other loan payments stay
+// untranslated, for the reasons plaidUncategorized gives.
 var plaidCategories = plaidTranslations(canonical.ValidSpendDetailed, map[string]string{
-	"BANK_FEES_LATE_FEES":                 "BANK_FEES_OTHER_BANK_FEES",
-	"BANK_FEES_CASH_ADVANCE":              "BANK_FEES_OTHER_BANK_FEES",
 	"LOAN_PAYMENTS_CREDIT_CARD_PAYMENT":   canonical.SpendDetailedCardSpend,
 	"LOAN_PAYMENTS_MORTGAGE_PAYMENT":      canonical.DetailedMortgageTransfer,
 	"LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT":  canonical.SpendDetailedDebtRepayment,
@@ -735,30 +742,19 @@ var plaidCategories = plaidTranslations(canonical.ValidSpendDetailed, map[string
 	"LOAN_PAYMENTS_CAR_PAYMENT":           canonical.SpendDetailedDebtRepayment,
 })
 
-// plaidIncomeCategories is the income side. It translates:
+// plaidIncomeCategories is the income side. Every vendored income value
+// translates to itself. INCOME_OTHER is one of them, and it is the
+// income catch-all: the row is recorded and declined, so the model reads
+// the payer. The other translations are loan disbursements: money
+// borrowed arriving is `loan_proceeds`, and a mortgage tranche is
+// `mortgage_transfer`.
 //
-//   - each vendored income value to itself;
-//   - Plaid's version 2 names to the taxonomy's;
-//   - money borrowed arriving to `loan_proceeds`, and a mortgage tranche to
-//     `mortgage_transfer`.
-//
-// Gig pay is wages, a contractor is self-employed, and military and
-// long-term disability benefits are state transfers. INCOME_OTHER is the
-// catch-all, recorded and declined.
-//
-// Version 2 widened INCOME_RETIREMENT_PENSION to payouts from plans such as
-// a 401(k). Such a payout from a plan gold does not track is still placed
-// as pension income; a config rule on the plan's name places it as
-// `retirement_transfer`.
+// INCOME_RETIREMENT_PENSION's version 2 text names payouts from plans
+// such as a 401(k). So a payout from a plan gold does not track lands
+// there. A config rule on the plan's name places it as
+// `retirement_transfer`, the value for a payout from the holder's own
+// plan.
 var plaidIncomeCategories = plaidTranslations(canonical.ValidIncomeDetailed, map[string]string{
-	"INCOME_SALARY":                         "INCOME_WAGES",
-	"INCOME_GIG_ECONOMY":                    "INCOME_WAGES",
-	"INCOME_CONTRACTOR":                     canonical.IncomeDetailedSelfEmployment,
-	"INCOME_CHILD_SUPPORT":                  canonical.IncomeDetailedAlimonyAndChildSupport,
-	"INCOME_RENTAL":                         canonical.IncomeDetailedRent,
-	"INCOME_MILITARY":                       canonical.IncomeDetailedGovernmentBenefits,
-	"INCOME_LONG_TERM_DISABILITY":           canonical.IncomeDetailedGovernmentBenefits,
-	"INCOME_OTHER":                          "INCOME_OTHER_INCOME",
 	"LOAN_DISBURSEMENTS_AUTO":               canonical.IncomeDetailedLoanProceeds,
 	"LOAN_DISBURSEMENTS_CASH_ADVANCES":      canonical.IncomeDetailedLoanProceeds,
 	"LOAN_DISBURSEMENTS_PERSONAL":           canonical.IncomeDetailedLoanProceeds,
@@ -768,31 +764,36 @@ var plaidIncomeCategories = plaidTranslations(canonical.ValidIncomeDetailed, map
 })
 
 // plaidUncategorized and plaidIncomeUncategorized are each side's reviewed
-// and untranslated values: the rest of plaidPFCv2. A transfer's category
-// does not say whose account the far side is, which is the matcher's to
-// find and a rule's to state. A buy-now-pay-later instalment is the only
-// trace of a purchase, and OTHER_PAYMENT can be a card bill or a loan
-// payment. An early wage advance (LOAN_DISBURSEMENTS_EWA) is usually wages
-// paid early and taken back from the next pay, and sometimes a loan. It
-// stays in the income base as a visible receipt, and its repayment
-// (LOAN_PAYMENTS_EWA) in the spending base, so the two legs offset. The
-// other direction's values arrive on refunds and reversals. OTHER_OTHER
-// stays here, never `other`, which is a verdict and would claim the row.
+// and untranslated values: the rest of plaidPFCv2.
+//
+//   - A transfer's category does not say whose account the far side is.
+//     That is the matcher's to find and a rule's to state.
+//   - A buy-now-pay-later instalment is the only trace of a purchase.
+//   - LOAN_PAYMENTS_OTHER_PAYMENT can be a card bill or a loan payment.
+//   - An early wage advance (LOAN_DISBURSEMENTS_EWA) is usually wages paid
+//     early and taken back from the next pay, and sometimes a loan. It
+//     stays in the income base as a visible receipt, and its repayment
+//     (LOAN_PAYMENTS_EWA) in the spending base, so the two legs offset.
+//   - OTHER_OTHER stays here, never `other`, which is a verdict and would
+//     claim the row.
+//   - Each side's values for the other direction arrive on refunds and
+//     reversals.
 var (
 	plaidUncategorized       = plaidRest(plaidCategories)
 	plaidIncomeUncategorized = plaidRest(plaidIncomeCategories)
 )
 
 // plaidTranslations is every plaidPFCv2 value that `valid` admits, to
-// itself, with `overrides` on top.
-func plaidTranslations(valid func(string) bool, overrides map[string]string) map[string]string {
+// itself, plus `deltas`: values the taxonomy leaves out, each to the
+// delta that names its movement.
+func plaidTranslations(valid func(string) bool, deltas map[string]string) map[string]string {
 	out := map[string]string{}
 	for _, v := range plaidPFCv2 {
 		if valid(v) {
 			out[v] = v
 		}
 	}
-	for k, v := range overrides {
+	for k, v := range deltas {
 		out[k] = v
 	}
 	return out

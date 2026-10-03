@@ -77,8 +77,7 @@ type family struct {
 	//
 	// `filed` is the provider's filing of the row as the provider tier
 	// translated it, whether or not it claimed the row; empty where it has
-	// no translation. A rule may stand down for it
-	// (spendRule.yieldsToProvider).
+	// no translation. A rule may stand down for it (spendRule.yieldsTo).
 	builtinRule func(kind, signature, counterparty, description, providerCategory, filed string) (detailed, label, farClass string, ok bool)
 
 	// providerCategory translates the source's own filing of a row,

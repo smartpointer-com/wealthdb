@@ -6,16 +6,16 @@ import (
 )
 
 // droppedPrimaries are the Plaid primaries the taxonomy leaves behind
-// whichever family is reading: they describe movements that are the
-// matcher's or a tracked account's, not a category of spend or of
-// income. INCOME is NOT among them any more — it is the income
-// family's whole vendored vocabulary — and TestSpendTaxonomyVendoredShape
-// keeps it out of the outflow half by name.
-var droppedPrimaries = []string{"TRANSFER_IN", "TRANSFER_OUT", "LOAN_PAYMENTS"}
+// whichever family is reading: four describe movements that are the
+// matcher's or a tracked account's, and OTHER is Plaid's own shrug — none
+// is a category of spend or of income. INCOME is not among them — it is
+// the income family's whole vendored vocabulary — and
+// TestSpendTaxonomyVendoredShape keeps it out of the outflow half by name.
+var droppedPrimaries = []string{"TRANSFER_IN", "TRANSFER_OUT", "LOAN_PAYMENTS", "LOAN_DISBURSEMENTS", "OTHER"}
 
 // TestSpendTaxonomyCounts pins the size of each class of the table.
 // The numbers are the reason the file can claim to be Plaid's taxonomy
-// minus three flow primaries, split into two families: a silent
+// minus five primaries, split into two families: a silent
 // addition or deletion during a taxonomy refresh shows up here first.
 func TestSpendTaxonomyCounts(t *testing.T) {
 	for _, tc := range []struct {
@@ -23,30 +23,29 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 		got  int
 		want int
 	}{
-		{"vendoredSpendCategories", len(vendoredSpendCategories), 80},
-		{"vendoredIncomeCategories", len(vendoredIncomeCategories), 7},
+		{"vendoredSpendCategories", len(vendoredSpendCategories), 82},
+		{"vendoredIncomeCategories", len(vendoredIncomeCategories), 13},
 		{"extensionSpendCategories", len(extensionSpendCategories), 3},
-		{"extensionIncomeCategories", len(extensionIncomeCategories), 10},
+		{"extensionIncomeCategories", len(extensionIncomeCategories), 8},
 		{"deltaCategories", len(deltaCategories), 18},
-		{"SpendCategories", len(SpendCategories), 118},
-		{"modelSpendCategories", len(modelSpendCategories), 83},
-		{"modelIncomeCategories", len(modelIncomeCategories), 17},
+		{"SpendCategories", len(SpendCategories), 124},
+		{"modelSpendCategories", len(modelSpendCategories), 85},
+		{"modelIncomeCategories", len(modelIncomeCategories), 21},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %d, want %d", tc.name, tc.got, tc.want)
 		}
 	}
 
-	// The membership sets the two families' predicates answer from.
-	// Spending's 96 is the 89 it held before cashflow widened the
-	// vocabulary, plus `debt_repayment`, the four wrapper crossings,
-	// `deposit_transfer` and `mortgage_transfer`; no income-only value
-	// is ever in it.
-	if got := len(spendDetailedValues); got != 96 {
-		t.Errorf("spending vocabulary = %d values, want 96", got)
+	// The membership sets the two families' predicates answer from:
+	// spending's 98 is its 82 vendored values, 3 extensions and the 13
+	// deltas it reads, and no income-only value is ever in it; income's
+	// 35 is its 13 vendored values, 8 extensions and 14 deltas.
+	if got := len(spendDetailedValues); got != 98 {
+		t.Errorf("spending vocabulary = %d values, want 98", got)
 	}
-	if got := len(incomeDetailedValues); got != 31 {
-		t.Errorf("income vocabulary = %d values, want 31", got)
+	if got := len(incomeDetailedValues); got != 35 {
+		t.Errorf("income vocabulary = %d values, want 35", got)
 	}
 
 	primaries := map[string]struct{}{}
@@ -69,7 +68,7 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 // TestSpendTaxonomyVendoredShape holds the vendored rows of both
 // families to Plaid's own conventions — a detailed value is its primary
 // plus a suffix, and the whole vocabulary is uppercase — and confirms
-// the three dropped primaries left no residue behind, in either
+// the dropped primaries left no residue behind, in either
 // dimension. INCOME is checked the other way round: the income table is
 // nothing but INCOME rows, and the outflow table holds none.
 func TestSpendTaxonomyVendoredShape(t *testing.T) {
@@ -126,10 +125,10 @@ func TestEveryCategoryCarriesAFamily(t *testing.T) {
 		want  Family
 		count int
 	}{
-		{"vendoredSpendCategories", vendoredSpendCategories, FamilySpending, 80},
-		{"vendoredIncomeCategories", vendoredIncomeCategories, FamilyIncome, 7},
+		{"vendoredSpendCategories", vendoredSpendCategories, FamilySpending, 82},
+		{"vendoredIncomeCategories", vendoredIncomeCategories, FamilyIncome, 13},
 		{"extensionSpendCategories", extensionSpendCategories, FamilySpending, 3},
-		{"extensionIncomeCategories", extensionIncomeCategories, FamilyIncome, 10},
+		{"extensionIncomeCategories", extensionIncomeCategories, FamilyIncome, 8},
 	} {
 		n := 0
 		for _, c := range tc.cats {
@@ -262,6 +261,7 @@ func TestSpendDeltaMarkerIsExact(t *testing.T) {
 func TestValidSpendDetailed(t *testing.T) {
 	for _, s := range []string{
 		"FOOD_AND_DRINK_GROCERIES", "TRAVEL_FLIGHTS", "BANK_FEES_ATM_FEES",
+		"BANK_FEES_LATE_FEES", "BANK_FEES_CASH_ADVANCE",
 		SpendDetailedInternalTransfer, SpendDetailedCashWithdrawal,
 		SpendDetailedCardSpend, SpendDetailedGift, SpendDetailedInvestment,
 		SpendDetailedOther,
@@ -272,9 +272,9 @@ func TestValidSpendDetailed(t *testing.T) {
 	}
 	for _, s := range []string{
 		"", "FOOD_AND_DRINK", "TRAVEL", "food_and_drink_groceries",
-		"INTERNAL_TRANSFER", "INVESTMENT", "CARD_SPEND", "GIFT", "INCOME_WAGES",
+		"INTERNAL_TRANSFER", "INVESTMENT", "CARD_SPEND", "GIFT", "INCOME_SALARY",
 		"LOAN_PAYMENTS_CAR_PAYMENT", "TRANSFER_OUT_WITHDRAWAL", "groceries",
-		"INCOME", "INCOME_OTHER_INCOME", IncomeDetailedRent, IncomeDetailedStaking,
+		"OTHER_OTHER", "INCOME", "INCOME_OTHER", "INCOME_RENTAL", IncomeDetailedStaking,
 		IncomeDetailedCapitalReturn, IncomeDetailedLoanProceeds,
 		IncomeDetailedReimbursement, IncomeDetailedInheritance,
 		IncomeDetailedCashDeposit,
@@ -286,16 +286,17 @@ func TestValidSpendDetailed(t *testing.T) {
 }
 
 // TestValidIncomeDetailed is the mirror over the income vocabulary:
-// the seven vendored values, the nine extensions, and the eight
-// deltas the income side reads — the three shared ones included, since
-// a movement between tracked accounts and a cash gift mean the same
-// thing whichever way the money went. Spending-only values are refused
-// for the same reason income values are refused there.
+// the thirteen vendored values, the eight extensions, and the fourteen
+// deltas the income side reads — the shared ones included, since a
+// movement between tracked accounts and a cash gift mean the same thing
+// whichever way the money went. Spending-only values are refused for the
+// same reason income values are refused there, and so are the spellings
+// version 2 retired.
 func TestValidIncomeDetailed(t *testing.T) {
 	for _, s := range []string{
-		"INCOME_WAGES", "INCOME_DIVIDENDS", "INCOME_OTHER_INCOME",
-		IncomeDetailedRent, IncomeDetailedStaking, IncomeDetailedDistributions,
-		IncomeDetailedAlimonyAndChildSupport,
+		"INCOME_SALARY", "INCOME_DIVIDENDS", "INCOME_OTHER", "INCOME_RENTAL",
+		"INCOME_CHILD_SUPPORT", "INCOME_GIG_ECONOMY", IncomeDetailedAlimony,
+		IncomeDetailedStaking, IncomeDetailedDistributions,
 		IncomeDetailedCapitalReturn, IncomeDetailedLoanProceeds,
 		IncomeDetailedReimbursement, IncomeDetailedInheritance,
 		IncomeDetailedCashDeposit,
@@ -306,7 +307,10 @@ func TestValidIncomeDetailed(t *testing.T) {
 		}
 	}
 	for _, s := range []string{
-		"", "INCOME", "income_wages", "INCOME_RENTAL", "CAPITAL_RETURN",
+		"", "INCOME", "income_salary", "CAPITAL_RETURN",
+		"INCOME_WAGES", "INCOME_OTHER_INCOME", "INCOME_SELF_EMPLOYMENT",
+		"INCOME_RENT", "INCOME_ALIMONY_AND_CHILD_SUPPORT",
+		"LOAN_DISBURSEMENTS_PERSONAL", "OTHER_OTHER",
 		"FOOD_AND_DRINK_GROCERIES", "BANK_FEES_ATM_FEES",
 		SpendDetailedCashWithdrawal, SpendDetailedCardSpend,
 		SpendDetailedInvestment, SpendDetailedDigitalServices,
@@ -393,7 +397,7 @@ func TestModelIncomeDetailed(t *testing.T) {
 			t.Errorf("%q is vendored or an extension and must pass the model check", c.Detailed)
 		}
 	}
-	for _, s := range []string{"", "INCOME", "NOT_A_CATEGORY", "income_wages"} {
+	for _, s := range []string{"", "INCOME", "NOT_A_CATEGORY", "income_salary", "INCOME_WAGES"} {
 		if ModelIncomeDetailed(s) {
 			t.Errorf("%q must not pass the model check", s)
 		}
@@ -445,8 +449,8 @@ func TestSpendPredicatesRefuseTheIncomeVocabulary(t *testing.T) {
 			t.Errorf("CatchAllSpendDetailed(%q) = true: the provider tier declines on spending catch-alls only", c.Detailed)
 		}
 	}
-	if n != 22 {
-		t.Errorf("checked %d income-only values, want 22", n)
+	if n != 26 {
+		t.Errorf("checked %d income-only values, want 26", n)
 	}
 }
 
@@ -498,8 +502,8 @@ func TestIncomeAccessorsAreCopiesOfTheirFamily(t *testing.T) {
 		got  []SpendCategory
 		want int
 	}{
-		{"VendoredIncomeCategories", VendoredIncomeCategories(), 7},
-		{"ModelIncomeCategories", ModelIncomeCategories(), 17},
+		{"VendoredIncomeCategories", VendoredIncomeCategories(), 13},
+		{"ModelIncomeCategories", ModelIncomeCategories(), 21},
 		{"DeltaIncomeCategories", DeltaIncomeCategories(), 14},
 	} {
 		if len(tc.got) != tc.want {
@@ -576,7 +580,8 @@ func TestCatchAllSpendDetailed(t *testing.T) {
 			t.Errorf("%q must not read as a catch-all", s)
 		}
 	}
-	// The two shapes the convention takes, both admitted.
+	// The spending side's two spellings of the convention, both admitted;
+	// the fees beside a catch-all are not one.
 	for _, s := range []string{"GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", "RENT_AND_UTILITIES_OTHER_UTILITIES"} {
 		if !CatchAllSpendDetailed(s) {
 			t.Errorf("%s is a catch-all", s)
@@ -585,12 +590,19 @@ func TestCatchAllSpendDetailed(t *testing.T) {
 	if CatchAllSpendDetailed(SpendDetailedDigitalServices) {
 		t.Error("an extension that names a real category is not a catch-all")
 	}
+	for _, s := range []string{"BANK_FEES_LATE_FEES", "BANK_FEES_CASH_ADVANCE"} {
+		if CatchAllSpendDetailed(s) {
+			t.Errorf("%s names a fee, not a shrug", s)
+		}
+	}
 }
 
 // TestCatchAllIncomeDetailed is the income side's, where the vocabulary
 // has one vendored primary and therefore exactly one catch-all. It is
 // what `categorize income --refine` re-asks and what the income
-// provider tier declines on.
+// provider tier declines on. Version 2 spells it with a bare OTHER, the
+// convention's second shape: without that shape the value would claim
+// rows rather than decline them.
 func TestCatchAllIncomeDetailed(t *testing.T) {
 	var found []string
 	for _, c := range SpendCategories {
@@ -598,8 +610,8 @@ func TestCatchAllIncomeDetailed(t *testing.T) {
 			found = append(found, c.Detailed)
 		}
 	}
-	if len(found) != 1 || found[0] != "INCOME_OTHER_INCOME" {
-		t.Errorf("income catch-alls = %v, want [INCOME_OTHER_INCOME]", found)
+	if len(found) != 1 || found[0] != "INCOME_OTHER" {
+		t.Errorf("income catch-alls = %v, want [INCOME_OTHER]", found)
 	}
 	for _, d := range DeltaIncomeCategories() {
 		if CatchAllIncomeDetailed(d.Detailed) {
@@ -608,7 +620,7 @@ func TestCatchAllIncomeDetailed(t *testing.T) {
 	}
 	// A spending catch-all is not the income family's to decline on,
 	// and the reverse holds in TestSpendPredicatesRefuseTheIncomeVocabulary.
-	for _, s := range []string{"GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", "BANK_FEES_OTHER_BANK_FEES", "", "NOT_A_VALUE", "INCOME"} {
+	for _, s := range []string{"GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", "BANK_FEES_OTHER_BANK_FEES", "", "NOT_A_VALUE", "INCOME", "INCOME_OTHER_INCOME"} {
 		if CatchAllIncomeDetailed(s) {
 			t.Errorf("%q must not read as an income catch-all", s)
 		}
@@ -616,11 +628,11 @@ func TestCatchAllIncomeDetailed(t *testing.T) {
 }
 
 // TestSpendLabelOverrides pins the corrections to the mechanical rule.
-// `card_spend` is the one: the rule reads it "Card spend", which is
-// true of every card purchase in the product, so it read as a KIND of
-// spending among the merchant categories rather than as the placeholder
-// it is. Both levels take the correction — a delta is its own primary —
-// and nothing else moves with it.
+// `card_spend` reads "Card spend" by the rule, which is true of every
+// card purchase in the product, so it would read as a KIND of spending
+// among the merchant categories rather than as the placeholder it is.
+// Both levels take the correction — a delta is its own primary — and
+// nothing else moves with it.
 func TestSpendLabelOverrides(t *testing.T) {
 	const want = "Uncategorized card spend"
 	if got := SpendLabel(SpendDetailedCardSpend); got != want {
@@ -629,11 +641,27 @@ func TestSpendLabelOverrides(t *testing.T) {
 	if got := SpendPrimaryLabel(SpendDetailedCardSpend); got != want {
 		t.Errorf("SpendPrimaryLabel(%s) = %q, want %q", SpendDetailedCardSpend, got, want)
 	}
+	// The other overrides, each against the label the rule would read.
+	for _, tc := range []struct{ value, want, rule string }{
+		{"INCOME_OTHER", "Other income", "Other"},
+		{"INCOME_MILITARY", "Veterans benefits", "Military"},
+		{"BANK_FEES_CASH_ADVANCE", "Cash advance fees", "Cash advance"},
+		{"INCOME_LONG_TERM_DISABILITY", "Long-term disability", "Long term disability"},
+		{IncomeDetailedEnergyFeedIn, "Energy feed-in", "Energy feed in"},
+	} {
+		if got := SpendLabel(tc.value); got != tc.want {
+			t.Errorf("SpendLabel(%s) = %q, want %q", tc.value, got, tc.want)
+		}
+		if got := humanise(tc.value[len(primaryOf[tc.value])+1:]); got != tc.rule {
+			t.Errorf("the rule reads %s as %q, want %q: the override corrects that reading", tc.value, got, tc.rule)
+		}
+	}
 	// The rule still runs everywhere else, initialisms included.
 	for _, tc := range []struct{ value, want string }{
 		{"FOOD_AND_DRINK_GROCERIES", "Groceries"},
 		{"GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", "Other general merchandise"},
 		{"BANK_FEES_ATM_FEES", "ATM fees"},
+		{"BANK_FEES_LATE_FEES", "Late fees"},
 		{SpendDetailedInternalTransfer, "Internal transfer"},
 		{SpendDetailedOther, "Other"},
 	} {
@@ -651,44 +679,68 @@ func TestSpendLabelOverrides(t *testing.T) {
 	}
 }
 
+// TestLabelsAreUniqueWithinAFamily holds every family's labels apart. A
+// report or a picker that groups by label would otherwise merge two
+// values into one line — INCOME_OTHER's mechanical "Other" is the
+// `other` delta's label, which is why it carries an override.
+func TestLabelsAreUniqueWithinAFamily(t *testing.T) {
+	for _, family := range []Family{FamilySpending, FamilyIncome} {
+		seen := map[string]string{}
+		for _, c := range SpendCategories {
+			if !c.Family.InFamily(family) {
+				continue
+			}
+			label := SpendLabel(c.Detailed)
+			if prev, dup := seen[label]; dup {
+				t.Errorf("%s: %q and %q both read %q", family, prev, c.Detailed, label)
+			}
+			seen[label] = c.Detailed
+		}
+	}
+}
+
 // TestIncomeLabels reads every income value through the labeller, which
-// is the rule migration 0069's seed was generated from. The mechanical
-// rule takes the INCOME_ prefix off and opens the underscores out; no
-// income value needs a correction, and the one place that would show is
-// here.
+// is the rule the seed migrations were generated from. The mechanical
+// rule takes the INCOME_ prefix off and opens the underscores out; the
+// corrections are spendLabelOverrides', and every one that reaches an
+// income value shows here.
 func TestIncomeLabels(t *testing.T) {
 	want := map[string]string{
-		"INCOME_DIVIDENDS":                   "Dividends",
-		"INCOME_INTEREST_EARNED":             "Interest earned",
-		"INCOME_RETIREMENT_PENSION":          "Retirement pension",
-		"INCOME_TAX_REFUND":                  "Tax refund",
-		"INCOME_UNEMPLOYMENT":                "Unemployment",
-		"INCOME_WAGES":                       "Wages",
-		"INCOME_OTHER_INCOME":                "Other income",
-		IncomeDetailedSelfEmployment:         "Self employment",
-		IncomeDetailedGovernmentBenefits:     "Government benefits",
-		IncomeDetailedRent:                   "Rent",
-		IncomeDetailedRoyalties:              "Royalties",
-		IncomeDetailedAlimonyAndChildSupport: "Alimony and child support",
-		IncomeDetailedStaking:                "Staking",
-		IncomeDetailedRewards:                "Rewards",
-		IncomeDetailedDistributions:          "Distributions",
-		IncomeDetailedCapitalReturn:          "Capital return",
-		IncomeDetailedInsurancePayout:        "Insurance payout",
-		IncomeDetailedEnergyFeedIn:           "Energy feed-in",
-		IncomeDetailedLoanProceeds:           "Loan proceeds",
-		IncomeDetailedReimbursement:          "Reimbursement",
-		IncomeDetailedInheritance:            "Inheritance",
-		IncomeDetailedCashDeposit:            "Cash deposit",
-		SpendDetailedInternalTransfer:        "Internal transfer",
-		SpendDetailedGift:                    "Gift",
-		SpendDetailedOther:                   "Other",
-		DetailedRetirementTransfer:           "Retirement transfer",
-		DetailedEducationTransfer:            "Education transfer",
-		DetailedHealthTransfer:               "Health transfer",
-		DetailedTrustTransfer:                "Trust transfer",
-		DetailedDepositTransfer:              "Deposit transfer",
-		DetailedMortgageTransfer:             "Mortgage transfer",
+		"INCOME_CHILD_SUPPORT":           "Child support",
+		"INCOME_CONTRACTOR":              "Contractor",
+		"INCOME_DIVIDENDS":               "Dividends",
+		"INCOME_GIG_ECONOMY":             "Gig economy",
+		"INCOME_INTEREST_EARNED":         "Interest earned",
+		"INCOME_LONG_TERM_DISABILITY":    "Long-term disability",
+		"INCOME_MILITARY":                "Veterans benefits",
+		"INCOME_RENTAL":                  "Rental",
+		"INCOME_RETIREMENT_PENSION":      "Retirement pension",
+		"INCOME_SALARY":                  "Salary",
+		"INCOME_TAX_REFUND":              "Tax refund",
+		"INCOME_UNEMPLOYMENT":            "Unemployment",
+		"INCOME_OTHER":                   "Other income",
+		IncomeDetailedGovernmentBenefits: "Government benefits",
+		IncomeDetailedRoyalties:          "Royalties",
+		IncomeDetailedAlimony:            "Alimony",
+		IncomeDetailedStaking:            "Staking",
+		IncomeDetailedRewards:            "Rewards",
+		IncomeDetailedDistributions:      "Distributions",
+		IncomeDetailedCapitalReturn:      "Capital return",
+		IncomeDetailedInsurancePayout:    "Insurance payout",
+		IncomeDetailedEnergyFeedIn:       "Energy feed-in",
+		IncomeDetailedLoanProceeds:       "Loan proceeds",
+		IncomeDetailedReimbursement:      "Reimbursement",
+		IncomeDetailedInheritance:        "Inheritance",
+		IncomeDetailedCashDeposit:        "Cash deposit",
+		SpendDetailedInternalTransfer:    "Internal transfer",
+		SpendDetailedGift:                "Gift",
+		SpendDetailedOther:               "Other",
+		DetailedRetirementTransfer:       "Retirement transfer",
+		DetailedEducationTransfer:        "Education transfer",
+		DetailedHealthTransfer:           "Health transfer",
+		DetailedTrustTransfer:            "Trust transfer",
+		DetailedDepositTransfer:          "Deposit transfer",
+		DetailedMortgageTransfer:         "Mortgage transfer",
 	}
 	for _, c := range SpendCategories {
 		if !c.Family.InFamily(FamilyIncome) {
@@ -713,4 +765,70 @@ func TestIncomeLabels(t *testing.T) {
 	// The shared deltas are expected above by the labels they read on
 	// the spending side, which is the contract: one row in the
 	// dimension, one label, whichever side reads it.
+}
+
+// TestRetiredDetailed pins the spellings the move to Plaid's version 2
+// retired. Each is refused by both families — a retired spelling is not
+// a value, it is only named in the refusal — and each points at income
+// values the table holds, the stored-data successor first among them.
+func TestRetiredDetailed(t *testing.T) {
+	want := map[string]string{
+		"INCOME_WAGES":                     "INCOME_SALARY",
+		"INCOME_OTHER_INCOME":              "INCOME_OTHER",
+		"INCOME_SELF_EMPLOYMENT":           "INCOME_CONTRACTOR",
+		"INCOME_RENT":                      "INCOME_RENTAL",
+		"INCOME_ALIMONY_AND_CHILD_SUPPORT": "INCOME_CHILD_SUPPORT",
+	}
+	if len(retiredDetailed) != len(want) {
+		t.Errorf("retiredDetailed holds %d spellings, want %d", len(retiredDetailed), len(want))
+	}
+	for old, successor := range want {
+		r, ok := RetiredDetailed(old)
+		if !ok {
+			t.Errorf("RetiredDetailed(%q) = false, want true", old)
+			continue
+		}
+		if r.Successor != successor {
+			t.Errorf("%s moves to %q, want %q", old, r.Successor, successor)
+		}
+		if ValidSpendDetailed(old) || ValidIncomeDetailed(old) {
+			t.Errorf("%s is retired and must be refused by both families", old)
+		}
+		if !ModelIncomeDetailed(r.Successor) {
+			t.Errorf("%s's successor %q is not an income value a model may emit", old, r.Successor)
+		}
+		if !strings.HasPrefix(r.Use, r.Successor) {
+			t.Errorf("%s: the advice %q must lead with the successor %q", old, r.Use, r.Successor)
+		}
+		for _, w := range strings.Fields(strings.NewReplacer(",", " ").Replace(r.Use)) {
+			if strings.HasPrefix(w, "INCOME_") && !ValidIncomeDetailed(w) {
+				t.Errorf("%s: the advice names %q, which is not an income value", old, w)
+			}
+		}
+	}
+	if _, ok := RetiredDetailed("INCOME_SALARY"); ok {
+		t.Error("a current value must not read as retired")
+	}
+}
+
+// TestModelNotes holds wealthdb's notes to the values a model may emit:
+// a note on a value the model never sees would never be read.
+func TestModelNotes(t *testing.T) {
+	if len(modelNotes) == 0 {
+		t.Fatal("no model notes")
+	}
+	for v, note := range modelNotes {
+		if !ModelSpendDetailed(v) && !ModelIncomeDetailed(v) {
+			t.Errorf("note on %q, which no model may emit", v)
+		}
+		if note == "" || note != strings.TrimSpace(note) {
+			t.Errorf("note on %q is empty or untrimmed: %q", v, note)
+		}
+		if ModelNote(v) != note {
+			t.Errorf("ModelNote(%q) = %q, want %q", v, ModelNote(v), note)
+		}
+	}
+	if ModelNote("INCOME_SALARY") != "" {
+		t.Error("a value with no note must read as none")
+	}
 }

@@ -29,6 +29,39 @@ func rerunMigrationDDL(t *testing.T, db *sql.DB, ctx context.Context, file strin
 	}
 }
 
+// openAtVersion opens an in-memory gold database migrated through
+// version and no further: the database the next migration meets. Open
+// would carry it to the latest version, so the migrations are applied
+// here one by one, each in its own transaction as Migrate applies it.
+func openAtVersion(t *testing.T, version int) (*sql.DB, context.Context) {
+	t.Helper()
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("open duckdb: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+
+	ms, err := listMigrations()
+	if err != nil {
+		t.Fatalf("list migrations: %v", err)
+	}
+	reached := 0
+	for _, m := range ms {
+		if m.version > version {
+			break
+		}
+		if err := applyMigration(ctx, db, m); err != nil {
+			t.Fatalf("apply migration %04d: %v", m.version, err)
+		}
+		reached = m.version
+	}
+	if reached != version {
+		t.Fatalf("migrated through %04d; there is no migration %04d", reached, version)
+	}
+	return db, ctx
+}
+
 // latestSchemaVersion returns the version number of the highest
 // embedded migration. Used by tests to assert post-Migrate state
 // without hardcoding a version that drifts as new migrations land.

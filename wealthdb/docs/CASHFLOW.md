@@ -391,6 +391,22 @@ alone would collide a gift given with a gift received in one edge list.
 | vehicles | `retirement` · `education` · `health` · `trusts` · `deposits` · `unpaired` (grouped `unnamed` · `out_of_pool`) |
 | cash | `cash`, drawn as **Cash savings** |
 
+The operating-in classes sort the income values, vendored and
+extension alike:
+
+| class | income values |
+|---|---|
+| `earnings` | `INCOME_SALARY`, `INCOME_GIG_ECONOMY`, `INCOME_CONTRACTOR` |
+| `yield` | `INCOME_DIVIDENDS`, `INCOME_INTEREST_EARNED`, `INCOME_DISTRIBUTIONS`, `INCOME_STAKING`, `INCOME_RENTAL`, `INCOME_ROYALTIES`, `INCOME_ENERGY_FEED_IN` |
+| `benefits` | `INCOME_RETIREMENT_PENSION`, `INCOME_GOVERNMENT_BENEFITS`, `INCOME_UNEMPLOYMENT`, `INCOME_CHILD_SUPPORT`, `INCOME_ALIMONY`, `INCOME_LONG_TERM_DISABILITY`, `INCOME_MILITARY` |
+| `other_receipts` | `INCOME_TAX_REFUND`, `INCOME_REWARDS`, `INCOME_INSURANCE_PAYOUT`, `INCOME_OTHER`, and the receipt deltas: `gift`, `inheritance`, `cash_deposit`, `reimbursement`, `other` |
+
+Yield is what the household's assets produce without its labour, so
+rental income and royalties sit beside the dividends. A card credit or
+a referral bonus is a receipt, not income from wealth. The lists live
+in `cashflow_txn_nodes`, and an income value they do not name lands in
+`other_receipts`.
+
 **Four lifts and no new tier.** Yield is lifted out of income, and
 fees, taxes and giving out of spending. The families' primaries cannot
 do either: income has one vendored primary, and taxes hide inside a
@@ -416,9 +432,9 @@ vocabulary makes readable — and the two differ:
   vendored primary, so a primary-level leaf would fold every earned and
   yielded type into `INCOME` and say nothing.
 - **operating out**: the spending **primary**. That vocabulary has
-  ninety detailed values, and a diagram with ninety leaves is not a
-  diagram. The detailed value is a column away, behind `-C +detailed`
-  on the transactions view.
+  nearly a hundred detailed values, and a diagram with that many leaves
+  is not a diagram. The detailed value is a column away, behind `-C
+  +detailed` on the transactions view.
 - **taxes, fees and giving** keep the detailed value. Each of those
   three classes was lifted out of spending precisely for the
   distinction inside it — a tax assessed against one withheld at
@@ -595,8 +611,7 @@ The alternative would need a rule to carry a second field saying which
 pool it meant, which is a new shape in a config surface that today is a
 pattern and a category — and money to the retirement pool and money to
 the education pool are different decisions, read at different stages of
-a life. This is the largest widening of the shared vocabulary since it
-was vendored.
+a life.
 
 Because a rule only ever sees its own family's population, the
 contribution side is a `spending.rules` entry and the distribution side

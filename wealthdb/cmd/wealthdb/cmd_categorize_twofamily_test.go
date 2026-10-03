@@ -192,7 +192,7 @@ func TestCategorizeRunsBothFamiliesEndToEnd(t *testing.T) {
 	answers := &familyAwareAnswers{
 		value: map[string]string{
 			"spending": "HOME_IMPROVEMENT_HARDWARE",
-			"income":   "INCOME_WAGES",
+			"income":   "INCOME_SALARY",
 		},
 		seen:          map[string][]string{},
 		storeCountsAt: map[string]map[string]int{},
@@ -223,7 +223,7 @@ func TestCategorizeRunsBothFamiliesEndToEnd(t *testing.T) {
 	}
 	for _, tc := range []struct{ table, sig, want string }{
 		{"spend_merchant_categories", "NORTHWIND HARDWARE", "HOME_IMPROVEMENT_HARDWARE"},
-		{"income_payer_categories", "BLUE HARBOUR PAYROLL", "INCOME_WAGES"},
+		{"income_payer_categories", "BLUE HARBOUR PAYROLL", "INCOME_SALARY"},
 	} {
 		col := "spend_detailed"
 		key := "merchant_signature"
@@ -469,7 +469,7 @@ func TestCategorizeFlushesOneFamilyBeforeTheNextSpends(t *testing.T) {
 			spendAtIncome = countRows(t, goldPath, "spend_merchant_categories")
 			var b strings.Builder
 			for _, sig := range promptBlock(user, candidateHeaderFor(incomeCategorizeFamily)) {
-				fmt.Fprintf(&b, "%s,Example Payer,INCOME_WAGES\n", sig)
+				fmt.Fprintf(&b, "%s,Example Payer,INCOME_SALARY\n", sig)
 			}
 			return b.String(), nil
 		}

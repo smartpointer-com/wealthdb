@@ -1275,7 +1275,7 @@ type IncomeConfig struct {
 	// an account whose inflows are not income.
 	Accounts *SpendingAccounts `json:"accounts,omitempty"`
 	// Rules are the deployment's own entries in the income rule tier:
-	// an employer's name to INCOME_WAGES, a pension fund to
+	// an employer's name to INCOME_SALARY, a pension fund to
 	// INCOME_RETIREMENT_PENSION, a benefits agency to
 	// INCOME_GOVERNMENT_BENEFITS, a relative to `gift`, the holder's
 	// own untracked bank to `internal_transfer`, a private debt fund's

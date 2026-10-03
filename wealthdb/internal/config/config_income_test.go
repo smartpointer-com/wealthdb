@@ -27,7 +27,7 @@ func writeIncomeCfg(t *testing.T, body string) (*Config, error) {
 func TestIncomeBlockParses(t *testing.T) {
 	c, err := writeIncomeCfg(t, `"income": {
         "accounts": {"exclude": {"bank": ["ACC1"]}},
-        "rules": [{"match": "EXAMPLE EMPLOYER", "type": "INCOME_WAGES"}],
+        "rules": [{"match": "EXAMPLE EMPLOYER", "type": "INCOME_SALARY"}],
         "pins": "/tmp/income_pins.csv",
         "categorization": {"context": "payer", "model": {"name": "m", "baseUrl": "http://localhost:1/v1", "api": "openai"}}
     }`)
@@ -39,8 +39,8 @@ func TestIncomeBlockParses(t *testing.T) {
 		t.Errorf("income exclude = %v, want [ACC1]", got)
 	}
 	rules := c.IncomeRules()
-	if len(rules) != 1 || rules[0].Category != "INCOME_WAGES" {
-		t.Fatalf("income rules = %+v, want one INCOME_WAGES rule", rules)
+	if len(rules) != 1 || rules[0].Category != "INCOME_SALARY" {
+		t.Fatalf("income rules = %+v, want one INCOME_SALARY rule", rules)
 	}
 	if !rules[0].Match.MatchString("example employer ag") {
 		t.Error("the income rule did not compile case-insensitively")
@@ -62,7 +62,7 @@ func TestIncomeRuleTypeMustBeAnIncomeValue(t *testing.T) {
 		{"a spending value", "FOOD_AND_DRINK_GROCERIES", "income.rules[0].type"},
 		{"a spending-only delta", "cash_withdrawal", "income.rules[0].type"},
 		{"nonsense", "NOT_A_TYPE", "income.rules[0].type"},
-		{"wrong case", "income_wages", "income.rules[0].type"},
+		{"wrong case", "income_salary", "income.rules[0].type"},
 	} {
 		_, err := writeIncomeCfg(t, `"income": {"rules": [{"match": "X", "type": "`+tc.value+`"}]}`)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -71,10 +71,52 @@ func TestIncomeRuleTypeMustBeAnIncomeValue(t *testing.T) {
 	}
 	// ...and the values that ARE income's, including the deltas both
 	// families read.
-	for _, value := range []string{"INCOME_WAGES", "INCOME_RENT", "gift", "internal_transfer", "capital_return"} {
+	for _, value := range []string{"INCOME_SALARY", "INCOME_RENTAL", "INCOME_ALIMONY", "gift", "internal_transfer", "capital_return"} {
 		if _, err := writeIncomeCfg(t, `"income": {"rules": [{"match": "X", "type": "`+value+`"}]}`); err != nil {
 			t.Errorf("income rule %q rejected: %v", value, err)
 		}
+	}
+}
+
+// TestRetiredRuleTypeNamesWhatToWrite pins the refusal of a spelling an
+// earlier taxonomy held. It fails the load like any other value outside
+// the vocabulary, so a stale rule never writes a value no report shows,
+// and the error names what replaced it, so the fix is one edit.
+func TestRetiredRuleTypeNamesWhatToWrite(t *testing.T) {
+	// The whole message once, at an index past the first, so the entry
+	// can be found in a list of several.
+	_, err := writeIncomeCfg(t, `"income": {"rules": [
+        {"match": "A", "type": "INCOME_SALARY"},
+        {"match": "B", "type": "INCOME_WAGES"}]}`)
+	const want = `config: income.rules[1].type "INCOME_WAGES" is retired: ` +
+		`use INCOME_SALARY, or INCOME_GIG_ECONOMY for gig-platform pay`
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want %q", err, want)
+	}
+
+	for _, tc := range []struct{ value, want string }{
+		// A rename names the one value that replaced it.
+		{"INCOME_RENT", `"INCOME_RENT" is retired: use INCOME_RENTAL`},
+		{"INCOME_OTHER_INCOME", `"INCOME_OTHER_INCOME" is retired: use INCOME_OTHER`},
+		{"INCOME_SELF_EMPLOYMENT", `"INCOME_SELF_EMPLOYMENT" is retired: use INCOME_CONTRACTOR`},
+		// A split names each half with the case it covers: the old
+		// spelling did not say which one a payer was, and a rule must.
+		{"INCOME_ALIMONY_AND_CHILD_SUPPORT", `"INCOME_ALIMONY_AND_CHILD_SUPPORT" is retired: ` +
+			`use INCOME_CHILD_SUPPORT for child support, or INCOME_ALIMONY for maintenance from a former partner`},
+	} {
+		_, err := writeIncomeCfg(t, `"income": {"rules": [{"match": "X", "type": "`+tc.value+`"}]}`)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want one containing %q", tc.value, err, tc.want)
+		}
+	}
+
+	// The advice stays inside the family. A retired income spelling in
+	// a SPENDING rule is not a spending value under either name, so it
+	// takes the ordinary refusal rather than a pointer to an income
+	// value the rule could not use either.
+	_, err = writeIncomeCfg(t, `"spending": {"rules": [{"match": "X", "category": "INCOME_WAGES"}]}`)
+	if err == nil || !strings.Contains(err.Error(), `category "INCOME_WAGES" is not a spend_detailed value`) {
+		t.Errorf("a spending rule naming a retired income value: err = %v, want the ordinary refusal", err)
 	}
 }
 

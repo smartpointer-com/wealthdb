@@ -59,7 +59,7 @@ func seedCashflowTaxonomyFixture(t *testing.T, db *sql.DB, ctx context.Context) 
         INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
                                            payer_signature, signature_version,
                                            income_detailed, provenance, assigned_at) VALUES
-            ('cf-src', 'T-PAID',   'sig-payer', 1, 'INCOME_WAGES',        'rule', 100),
+            ('cf-src', 'T-PAID',   'sig-payer', 1, 'INCOME_SALARY',       'rule', 100),
             ('cf-src', 'T-RET-IN', 'sig-plan',  1, 'retirement_transfer', 'rule', 100),
             ('cf-src', 'T-EDU-IN', 'sig-plan',  1, 'education_transfer',  'rule', 100),
             ('cf-src', 'T-HSA-IN', 'sig-plan',  1, 'health_transfer',     'rule', 100),

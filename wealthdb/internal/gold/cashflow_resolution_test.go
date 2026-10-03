@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // The resolution's pins. Two table-driven walks, each over one of the
@@ -230,8 +233,8 @@ func TestTheKindTable(t *testing.T) {
 			spend: "BANK_FEES_INTEREST_CHARGE", want: "operating_out.fees.BANK_FEES_INTEREST_CHARGE",
 			why: "a finance charge is what an account cost"},
 		{id: "K-WAGE", account: "CASH", kind: "deposit", amount: 5000,
-			income: "INCOME_WAGES", want: "operating_in.earnings.INCOME_WAGES",
-			why: "wages are money from labour"},
+			income: "INCOME_SALARY", want: "operating_in.earnings.INCOME_SALARY",
+			why: "a salary is money from labour"},
 		{id: "K-PENSION", account: "CASH", kind: "deposit", amount: 900,
 			income: "INCOME_RETIREMENT_PENSION", want: "operating_in.benefits.INCOME_RETIREMENT_PENSION",
 			why: "a pension paid by a fund is an entitlement"},
@@ -252,9 +255,9 @@ func TestTheKindTable(t *testing.T) {
 
 		// The outflow kinds, by resolved category, with the three lifts.
 		// The outflow leaf is the PRIMARY: the spending vocabulary has
-		// ninety detailed values, and a diagram with ninety leaves is
-		// not a diagram. The detailed value is a column away, behind
-		// `-C +detailed` on the transactions view.
+		// close to a hundred detailed values, and a diagram with that
+		// many leaves is not a diagram. The detailed value is a column
+		// away, behind `-C +detailed` on the transactions view.
 		{id: "K-SHOP", account: "CARD", kind: "purchase", amount: -40,
 			spend: "FOOD_AND_DRINK_GROCERIES", want: "operating_out.consumption.FOOD_AND_DRINK",
 			why: "groceries are consumption, and the leaf is the primary they roll up to"},
@@ -336,6 +339,63 @@ func TestTheKindTable(t *testing.T) {
 			why: "an unmatched in-kind leg is counted rather than guessed at"},
 		{id: "K-XFEROUT-ALONE", account: "BROK", kind: "transfer_out", amount: -300, instrument: "EQ",
 			why: "the same on the way out"},
+	}
+	check(t, seedLines(t, db, ctx, lines), lines)
+}
+
+// TestEveryIncomeTypeHasItsInflowClass drives one receipt per income
+// type a model may emit through the node macro, and reads its class
+// against the table below. The macro names its income types one by one,
+// and a type it does not name falls to `other_receipts` without a word:
+// a new type would read as "Other receipts" on every statement, and
+// nothing would say so. A type missing from the table fails here, which
+// is the prompt to place it in both.
+func TestEveryIncomeTypeHasItsInflowClass(t *testing.T) {
+	classOf := map[string]canonical.CashflowClass{
+		// Money from labour.
+		"INCOME_SALARY":      canonical.ClassEarnings,
+		"INCOME_GIG_ECONOMY": canonical.ClassEarnings,
+		"INCOME_CONTRACTOR":  canonical.ClassEarnings,
+		// Money the household's assets produce.
+		"INCOME_DIVIDENDS":       canonical.ClassYield,
+		"INCOME_INTEREST_EARNED": canonical.ClassYield,
+		"INCOME_DISTRIBUTIONS":   canonical.ClassYield,
+		"INCOME_STAKING":         canonical.ClassYield,
+		"INCOME_RENTAL":          canonical.ClassYield,
+		"INCOME_ROYALTIES":       canonical.ClassYield,
+		"INCOME_ENERGY_FEED_IN":  canonical.ClassYield,
+		// Entitlements.
+		"INCOME_RETIREMENT_PENSION":   canonical.ClassBenefits,
+		"INCOME_GOVERNMENT_BENEFITS":  canonical.ClassBenefits,
+		"INCOME_UNEMPLOYMENT":         canonical.ClassBenefits,
+		"INCOME_LONG_TERM_DISABILITY": canonical.ClassBenefits,
+		"INCOME_MILITARY":             canonical.ClassBenefits,
+		"INCOME_CHILD_SUPPORT":        canonical.ClassBenefits,
+		"INCOME_ALIMONY":              canonical.ClassBenefits,
+		// Everything else that arrived.
+		"INCOME_TAX_REFUND":       canonical.ClassOtherReceipts,
+		"INCOME_REWARDS":          canonical.ClassOtherReceipts,
+		"INCOME_INSURANCE_PAYOUT": canonical.ClassOtherReceipts,
+		"INCOME_OTHER":            canonical.ClassOtherReceipts,
+	}
+	db, ctx := openMigrated(t)
+	seedResolutionFixture(t, db, ctx)
+
+	var lines []line
+	for _, c := range canonical.ModelIncomeCategories() {
+		class, ok := classOf[c.Detailed]
+		if !ok {
+			t.Errorf("%s has no class in this table; place it here and in cashflow_txn_nodes", c.Detailed)
+			continue
+		}
+		delete(classOf, c.Detailed)
+		lines = append(lines, line{
+			id: "I-" + c.Detailed, account: "CASH", kind: "deposit", amount: 100,
+			income: c.Detailed, want: "operating_in." + string(class) + "." + c.Detailed,
+			why: "the macro's class lists name every income type"})
+	}
+	for detailed := range classOf {
+		t.Errorf("the table places %s, which is not an income type a model may emit", detailed)
 	}
 	check(t, seedLines(t, db, ctx, lines), lines)
 }
@@ -528,11 +588,11 @@ func TestTheBaseIsThePoolsLines(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
-		{id: "B-HOUSEHOLD", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_WAGES"},
+		{id: "B-HOUSEHOLD", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_SALARY"},
 		{id: "B-VEHICLE", account: "IRA", kind: "dividend", amount: 50, instrument: "EQ",
 			income: "INCOME_DIVIDENDS"},
 		{id: "B-VEHICLE-TRADE", account: "IRA", kind: "buy", amount: -50, instrument: "EQ"},
-		{id: "B-FENCED", account: "FENCED", kind: "deposit", amount: 10, income: "INCOME_WAGES"},
+		{id: "B-FENCED", account: "FENCED", kind: "deposit", amount: 10, income: "INCOME_SALARY"},
 		{id: "B-INTERNAL", account: "CASH", kind: "withdrawal", amount: -20,
 			spend: "internal_transfer", farAccount: "SAVE"},
 		{id: "B-EXCLUDED", account: "CASH", kind: "journal", amount: 1},
@@ -605,7 +665,7 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
-		{id: "L-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_WAGES"},
+		{id: "L-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_SALARY"},
 		{id: "L-BUY", account: "BROK", kind: "buy", amount: -100, instrument: "PE"},
 		{id: "L-MORT", account: "CASH", kind: "withdrawal", amount: -100,
 			spend: "internal_transfer", farClass: "mortgage"},
@@ -640,7 +700,7 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 		got[id] = class + " / " + grp
 	}
 	for id, want := range map[string]string{
-		"L-WAGE": "Earnings / Wages",
+		"L-WAGE": "Earnings / Salary",
 		// The class says what the money was in and the group what it
 		// did, so a direct holding bought on an exchange reads as a
 		// trade even inside the private-markets class.
@@ -664,15 +724,51 @@ func TestMigration0081DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
-		{id: "R-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_WAGES"},
+		{id: "R-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_SALARY"},
 	})
 	rerunMigrationDDL(t, db, ctx, "0081_cashflow_resolution.sql")
-	// A downgrade, not a no-op: 0081 puts both macros back at their
-	// pre-0085 shape. Replay forward, exactly as Migrate would — and
-	// extend this list when another migration re-issues them.
-	rerunMigrationDDL(t, db, ctx, "0085_cashflow_resolution_fixes.sql")
+	// A downgrade, not a no-op: 0081 puts the macros back at their first
+	// shape. Replay forward, exactly as Migrate would.
+	replayLaterCashflowReissues(t, db, ctx, "0081_cashflow_resolution.sql")
 	if _, ok := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 3500000)["R-WAGE"]; !ok {
 		t.Error("the replayed base lost a line")
+	}
+	assertAtHead(t, db, ctx, "R-WAGE")
+}
+
+// replayLaterCashflowReissues replays, in version order, every migration
+// after the named one that re-creates a cashflow macro: what Migrate
+// applied after it. Read off the embedded migrations rather than
+// listed, so a later re-issue is replayed without an edit here, and a
+// rerun test of an early body asserts against the schema at head.
+func replayLaterCashflowReissues(t *testing.T, db *sql.DB, ctx context.Context, after string) {
+	t.Helper()
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("list embedded migrations: %v", err)
+	}
+	for _, e := range entries { // sorted by name, so by version
+		if e.Name() <= after {
+			continue
+		}
+		body, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
+		if err != nil {
+			t.Fatalf("read embedded migration %s: %v", e.Name(), err)
+		}
+		if strings.Contains(string(body), "MACRO cashflow_") {
+			rerunMigrationDDL(t, db, ctx, e.Name())
+		}
+	}
+}
+
+// assertAtHead checks that a seeded salary line resolves as the head
+// macros place it. A macro left at an older body names an older
+// vocabulary, and the line lands elsewhere.
+func assertAtHead(t *testing.T, db *sql.DB, ctx context.Context, id string) {
+	t.Helper()
+	const want = "operating_in.earnings.INCOME_SALARY"
+	if got := seedLines(t, db, ctx, nil)[id]; got != want {
+		t.Errorf("after the forward replay %s resolves to %q, want %q", id, got, want)
 	}
 }
 
@@ -765,22 +861,25 @@ func TestMigration0085DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	seedLines(t, db, ctx, []line{
-		{id: "R85-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_WAGES"},
+		{id: "R85-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_SALARY"},
 	})
 	rerunMigrationDDL(t, db, ctx, "0085_cashflow_resolution_fixes.sql")
+	replayLaterCashflowReissues(t, db, ctx, "0085_cashflow_resolution_fixes.sql")
 	if _, ok := macroTxnIDs(t, db, ctx, "cashflow_lines_base", 0, 3500000)["R85-WAGE"]; !ok {
 		t.Error("the replayed base lost a line")
 	}
+	assertAtHead(t, db, ctx, "R85-WAGE")
 }
 
 // TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing pins the
 // one exception to "the outflow leaves are the spending PRIMARIES".
 //
-// The rule earns its keep: ninety detailed values would make a diagram
-// nobody can read. But `GENERAL_SERVICES` is a catch-all rather than a
-// category, and the value filed under it for school fees is a bigger
-// line in most households than several primaries that do get an edge of
-// their own. So that one value is promoted, and its neighbours are not.
+// The rule earns its keep: close to a hundred detailed values would
+// make a diagram nobody can read. But `GENERAL_SERVICES` is a catch-all
+// rather than a category, and the value filed under it for school fees
+// is a bigger line in most households than several primaries that do
+// get an edge of their own. So that one value is promoted, and its
+// neighbours are not.
 func TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)

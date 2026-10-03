@@ -2,6 +2,7 @@ package spending
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -49,6 +50,9 @@ func TestRuleCategory(t *testing.T) {
 		{"ATM WITHDRAWAL MAIN STREET", canonical.SpendDetailedCashWithdrawal},
 		{"CASH WITHDRAWAL BRANCH", canonical.SpendDetailedCashWithdrawal},
 		{"BARGELDBEZUG BAHNHOFPLATZ", canonical.SpendDetailedCashWithdrawal},
+		// A cash advance with its fee waived is the advance itself. A
+		// row the provider filed as the FEE is the provider's:
+		// TestCashRuleYieldsToAFeeOrDebtPaymentFiling.
 		{"CASH ADVANCE FEE FREE", canonical.SpendDetailedCashWithdrawal},
 		{"GELDAUTOMAT EXAMPLEPLATZ", canonical.SpendDetailedCashWithdrawal},
 		{"CASHPOINT EXAMPLE HIGH STREET", canonical.SpendDetailedCashWithdrawal},
@@ -540,8 +544,8 @@ func TestRuleRefusalReadsTheFilingOnlyToDecline(t *testing.T) {
 // second refusal. AUTOPAY says how a bill was paid, not to whom, so the
 // rule stands down where the provider filed the row under another value,
 // a catch-all included, and fires where the provider filed nothing the
-// tier translates, or filed a card bill too. No other built-in yields:
-// cash out of a machine stays cash out.
+// tier translates, or filed a card bill too. The cash rule's yield is
+// narrower, and TestCashRuleYieldsToAFeeOrDebtPaymentFiling pins it.
 func TestCardRuleYieldsOnlyToAnotherProviderFiling(t *testing.T) {
 	const narrative = "EXAMPLE SERVICER AUTOPAY"
 	for _, tc := range []struct {
@@ -559,10 +563,113 @@ func TestCardRuleYieldsOnlyToAnotherProviderFiling(t *testing.T) {
 			t.Errorf("filed %q: fired=%v (→ %q), want fired=%v", tc.filed, ok, detailed, tc.fires)
 		}
 	}
-	detailed, _, _, ok := rulePlacement(builtinRules, "ATM EXAMPLETOWN", "", "", "",
-		"GENERAL_SERVICES_OTHER_GENERAL_SERVICES")
-	if !ok || detailed != canonical.SpendDetailedCashWithdrawal {
-		t.Errorf("an ATM row under a provider verdict = (%q, %v), want the cash rule's", detailed, ok)
+}
+
+// TestCashRuleYieldsToAFeeOrDebtPaymentFiling pins the cash rule's yield.
+// The fee for taking cash, and the repayment of a cash advance, are
+// booked in the words for the cash itself, so the rule stands down where
+// the provider filed the row as a bank fee — any value under BANK_FEES —
+// or as a payment on a debt, and nowhere else. A filing under another
+// value, an unrelated catch-all included, says nothing about cash, and
+// the rule fires as it does on a row with no filing at all. The cases
+// here match no later built-in, so a row the cash rule yields is placed
+// by none: the card rule still refuses it on the cash patterns. Every
+// value is synthetic.
+func TestCashRuleYieldsToAFeeOrDebtPaymentFiling(t *testing.T) {
+	const maskedPAN = "0000XXXXXXXX0000"
+	for _, tc := range []struct {
+		name                                 string
+		signature, counterparty, description string
+		filed                                string
+		fires                                bool
+	}{
+		{"a cash-advance fee filed as one", "CASH ADVANCE FEE", "", "", "BANK_FEES_CASH_ADVANCE", false},
+		{"a machine operator's fee filed as one", "ATM FEE EXAMPLETOWN", "", "", "BANK_FEES_ATM_FEES", false},
+		{"a fee filed under the fee catch-all", "ATM EXAMPLETOWN", "", "", "BANK_FEES_OTHER_BANK_FEES", false},
+		{"a fee booked against the card's masked number",
+			maskedPAN, maskedPAN, "CASH ADVANCE FEE", "BANK_FEES_CASH_ADVANCE", false},
+		{"a cash-advance repayment filed as a loan instalment",
+			"CASH ADVANCE REPAYMENT EXAMPLEAPP", "", "", canonical.SpendDetailedDebtRepayment, false},
+		{"a card bill paid at a machine, filed as a card bill",
+			"ATM PAYMENT EXAMPLE CARD", "", "", canonical.SpendDetailedCardSpend, false},
+		{"a mortgage instalment paid at a counter, filed as one",
+			"WITHDRAWAL AT COUNTER EXAMPLE SERVICER", "", "", canonical.DetailedMortgageTransfer, false},
+		{"a cash advance with no filing", "CASH ADVANCE EXAMPLETOWN", "", "", "", true},
+		{"a withdrawal with no filing", "ATM EXAMPLETOWN", "", "", "", true},
+		{"a withdrawal the provider filed as one",
+			"ATM EXAMPLETOWN", "", "", canonical.SpendDetailedCashWithdrawal, true},
+		{"a withdrawal filed under an unrelated catch-all",
+			"ATM EXAMPLETOWN", "", "", "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", true},
+		{"a withdrawal filed under an unrelated value",
+			"CASH WITHDRAWAL BRANCH", "", "", "TRAVEL_LODGING", true},
+		{"a withdrawal on the card's masked number, filed as a purchase",
+			maskedPAN, maskedPAN, "ATM WITHDRAWAL EXAMPLETOWN", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			detailed, _, _, ok := rulePlacement(builtinRules, tc.signature, tc.counterparty, tc.description, "", tc.filed)
+			if ok != tc.fires || (ok && detailed != canonical.SpendDetailedCashWithdrawal) {
+				t.Errorf("filed %q: fired=%v (→ %q), want the cash rule fired=%v", tc.filed, ok, detailed, tc.fires)
+			}
+		})
+	}
+
+	// Every value under BANK_FEES is a fee filing, read off the table, and
+	// the three debt-payment deltas are payment filings; nothing else is.
+	if cashWithdrawalRule.yieldsTo == nil {
+		t.Fatal("the cash rule yields to no filing")
+	}
+	payment := map[string]bool{
+		canonical.SpendDetailedCardSpend:     true,
+		canonical.SpendDetailedDebtRepayment: true,
+		canonical.DetailedMortgageTransfer:   true,
+	}
+	for _, c := range canonical.SpendCategories {
+		if !c.Family.InFamily(canonical.FamilySpending) {
+			continue
+		}
+		want := strings.HasPrefix(c.Detailed, "BANK_FEES_") || payment[c.Detailed]
+		if got := cashWithdrawalRule.yieldsTo(c.Detailed); got != want {
+			t.Errorf("the cash rule yields to %q = %v, want %v", c.Detailed, got, want)
+		}
+	}
+}
+
+// TestFeeRulesYieldToANamedFee pins the fee rules' yield. A rule that
+// places a fee reads a phrase such as "FEE CHARGED", which also ends a
+// bank's own fee narratives; a provider that named the fee knows which
+// one it was, so its filing stands. The fee catch-all names nothing and
+// the investment-fee extension is the rules' own judgement, so neither
+// switches a rule off. Every value is synthetic.
+func TestFeeRulesYieldToANamedFee(t *testing.T) {
+	for _, tc := range []struct {
+		name, signature, filed string
+		want                   string // "" when no built-in fires
+	}{
+		{"an ADR fee with no filing", "ADR FEE CHARGED EXAMPLECO", "", canonical.SpendDetailedInvestmentFees},
+		{"an ADR fee filed under the fee catch-all", "ADR FEE CHARGED EXAMPLECO", "BANK_FEES_OTHER_BANK_FEES", canonical.SpendDetailedInvestmentFees},
+		{"an overdraft fee filed as one", "OVERDRAFT FEE CHARGED", "BANK_FEES_OVERDRAFT_FEES", ""},
+		{"a machine fee filed as one", "ATM FEE CHARGED", "BANK_FEES_ATM_FEES", ""},
+		{"a cash-advance fee filed as one", "CASH ADVANCE FEE CHARGED", "BANK_FEES_CASH_ADVANCE", ""},
+		{"a wire fee with no filing", "WIRE FEE EXAMPLEBANK", "", "BANK_FEES_OTHER_BANK_FEES"},
+		{"a wire fee filed as an investment fee", "WIRE FEE EXAMPLEBANK", canonical.SpendDetailedInvestmentFees, "BANK_FEES_OTHER_BANK_FEES"},
+		{"a late fee the wire rule reads", "LATE WIRE FEE", "BANK_FEES_LATE_FEES", ""},
+		{"a management fee with no filing", "MANAGEMENT FEE Q1", "", canonical.SpendDetailedInvestmentFees},
+		{"a management fee filed under an unrelated value", "MANAGEMENT FEE Q1", "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", canonical.SpendDetailedInvestmentFees},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			detailed, _, _, ok := rulePlacement(builtinRules, tc.signature, "", "", "", tc.filed)
+			if got := map[bool]string{true: detailed}[ok]; got != tc.want {
+				t.Errorf("%q filed %q → %q (fired=%v), want %q", tc.signature, tc.filed, got, ok, tc.want)
+			}
+		})
+	}
+	for _, c := range canonical.SpendCategories {
+		named := strings.HasPrefix(c.Detailed, "BANK_FEES_") &&
+			!canonical.CatchAllSpendDetailed(c.Detailed) &&
+			c.Detailed != canonical.SpendDetailedInvestmentFees
+		if got := filedAsSpecificFee(c.Detailed); got != named {
+			t.Errorf("filedAsSpecificFee(%q) = %v, want %v", c.Detailed, got, named)
+		}
 	}
 }
 

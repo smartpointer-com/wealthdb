@@ -216,7 +216,7 @@ check("the primary ring folds nothing into an 'Other' wedge (a real "
       "category is called that)",
       all(_RINGS[n][1].get("pie.slice_threshold") == 0
           for n in ("Spending by category", "Spending by category (privacy)")))
-check("the detailed rings do fold their tail (eighty-odd values)",
+check("the detailed rings do fold their tail (nearly a hundred values)",
       all(_RINGS[n][1].get("pie.slice_threshold", 0) > 0
           for n in ("Spending by subcategory",
                     "Spending by subcategory (privacy)")))

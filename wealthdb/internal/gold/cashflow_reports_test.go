@@ -32,7 +32,7 @@ func seedReportFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	}
 	seedLines(t, db, ctx, []line{
 		// Operating in, three classes.
-		{id: "R-WAGE", account: "CASH", kind: "deposit", amount: 6000, income: "INCOME_WAGES"},
+		{id: "R-WAGE", account: "CASH", kind: "deposit", amount: 6000, income: "INCOME_SALARY"},
 		{id: "R-DIV", account: "BROK", kind: "dividend", amount: 900, instrument: "EQ", income: "INCOME_DIVIDENDS"},
 		{id: "R-REFUND-IN", account: "CASH", kind: "deposit", amount: 50, income: "INCOME_TAX_REFUND"},
 		// Operating out, the three lifted classes and consumption.
@@ -297,7 +297,7 @@ func TestSankeyStagesConserveThroughTheClass(t *testing.T) {
 	// A consumption class whose net is an outflow, holding one leaf
 	// whose refunds exceeded its purchases.
 	seedLines(t, db, ctx, []line{
-		{id: "S-WAGE", account: "CASH", kind: "deposit", amount: 5000, income: "INCOME_WAGES"},
+		{id: "S-WAGE", account: "CASH", kind: "deposit", amount: 5000, income: "INCOME_SALARY"},
 		{id: "S-RENT", account: "CASH", kind: "purchase", amount: -2000, spend: "RENT_AND_UTILITIES_RENT"},
 		{id: "S-SWING", account: "CARD", kind: "refund", amount: 300, spend: "TRAVEL_FLIGHTS"},
 	})
@@ -417,10 +417,10 @@ func TestCashflowTransactionsNameTheRightThing(t *testing.T) {
 	}
 	// The node and the family verdict behind it, side by side.
 	if r := got["R-WAGE"]; r.Section != "operating_in" || r.Class != "earnings" ||
-		r.ClassLabel != "Earnings" || r.GroupLabel != "Wages" {
+		r.ClassLabel != "Earnings" || r.GroupLabel != "Salary" {
 		t.Errorf("R-WAGE resolved to %+v", r)
 	}
-	if v := got["R-WAGE"].Verdict; v == nil || *v != "INCOME_WAGES" {
+	if v := got["R-WAGE"].Verdict; v == nil || *v != "INCOME_SALARY" {
 		t.Errorf("R-WAGE verdict = %v, want the family value behind the node", v)
 	}
 }
@@ -442,7 +442,7 @@ func TestTransactionsCarriesTheCashflowTrio(t *testing.T) {
 		got[r.TransactionExternalID] = r
 	}
 	for id, want := range map[string]string{
-		"R-WAGE":     "operating_in.earnings.INCOME_WAGES",
+		"R-WAGE":     "operating_in.earnings.INCOME_SALARY",
 		"R-BUY":      "investing.public_equity.trades",
 		"R-MORT":     "financing.mortgage.mortgage",
 		"R-INTERNAL": "",
@@ -729,7 +729,7 @@ func TestTheMemoSeparatesRevaluationFromError(t *testing.T) {
              VALUES ('cf', 'F-WAGE', 172800, 'CASH', 'deposit', 'EUR', CAST(50 AS DECIMAL(28,4)));
         INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
                 payer_signature, signature_version, income_detailed, provenance, assigned_at)
-             VALUES ('cf', 'F-WAGE', 'sig', 1, 'INCOME_WAGES', 'rule', 100);`); err != nil {
+             VALUES ('cf', 'F-WAGE', 'sig', 1, 'INCOME_SALARY', 'rule', 100);`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
