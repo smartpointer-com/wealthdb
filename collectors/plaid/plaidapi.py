@@ -6,12 +6,16 @@ and PLAID-SECRET headers, so a request body holds parameters only. An
 access token is a parameter and does travel in the body; no body is ever
 logged or written.
 
-Two lists limit what the collector may ask of Plaid:
+Two kinds of list limit what the collector may ask of Plaid:
 
-* ENDPOINTS and SANDBOX_ENDPOINTS are every route the client will call.
-  The second applies on the Sandbox host only. A route outside them is
-  refused before any request is built, so adding one is a reviewed edit
-  here and in AGENTS.md, never a string at a call site.
+* ENDPOINTS, SANDBOX_ENDPOINTS and BILLED_ENDPOINTS are every route the
+  client will call. The second applies on the Sandbox host only. The
+  third holds the reads Plaid bills per successful call on a paid plan.
+  On Production the client calls one of them only when the deployment
+  opts in to it (plaid.cfg, read by config.py); the Sandbox never bills.
+  A route outside the lists is refused before any request is built, so
+  adding one is a reviewed edit here and in AGENTS.md, never a string at
+  a call site.
 * DATA_PRODUCTS is every product a link may request. None of these can
   move money.
 
@@ -21,9 +25,10 @@ Reading a product can still change what an Item is billed for:
   for them.
 * The read of a product the Item lacks would add that product.
 
-A Trial plan charges for neither. After an upgrade to a paid plan, Plaid
-bills each subscription monthly until the Item is removed. AGENTS.md has
-the rules that keep both in view.
+A Trial plan charges for neither, nor for a billed read. After an upgrade
+to a paid plan, Plaid bills each subscription monthly until the Item is
+removed, and each successful billed read. AGENTS.md has the rules that
+keep all three in view.
 """
 
 from __future__ import annotations
@@ -83,6 +88,14 @@ ENDPOINTS = frozenset({
 # Routes that exist on the Sandbox host only. They make test Items.
 SANDBOX_ENDPOINTS = frozenset({
     "/sandbox/public_token/create",
+})
+
+# Reads that fetch live from the institution, which Plaid bills per
+# successful call on a paid plan. Production calls one only when the
+# client's `billed_reads` names it. Each is asked once, never again on its
+# own: a second try could be a second bill.
+BILLED_ENDPOINTS = frozenset({
+    "/investments/refresh",
 })
 
 # The most rows Plaid returns for one page of a paged read.
@@ -187,6 +200,8 @@ class Client:
             raise ValueError(f"unknown Plaid environment: {environment!r}")
         self.environment = environment
         self.on_exchange = None
+        # The billed routes this deployment opted in to, for Production.
+        self.billed_reads: frozenset = frozenset()
         self._client_id = client_id
         self._secret = secret
         self._transport = transport
@@ -198,7 +213,14 @@ class Client:
     def post(self, path: str, payload: dict, *,
              timeout: float = TIMEOUT) -> dict:
         """Call one allowed route and return the decoded answer."""
-        if path not in ENDPOINTS and not (
+        billed = path in BILLED_ENDPOINTS
+        if billed:
+            if self.environment == "production" and \
+                    path not in self.billed_reads:
+                raise ValueError(
+                    f"{path} is billed per call on a paid plan; production "
+                    f"calls it only with the opt-in in plaid.cfg")
+        elif path not in ENDPOINTS and not (
                 self.environment == "sandbox" and path in SANDBOX_ENDPOINTS):
             raise ValueError(
                 f"{path} is not a route this collector calls on "
@@ -213,7 +235,8 @@ class Client:
         }
         body = json.dumps(payload).encode("utf-8")
         url = HOSTS[self.environment] + path
-        for attempt in range(1, _ATTEMPTS + 1):
+        attempts = 1 if billed else _ATTEMPTS
+        for attempt in range(1, attempts + 1):
             started = time.monotonic()
             try:
                 status, raw = self._transport(url, headers, body, timeout)
@@ -221,7 +244,7 @@ class Client:
                 break
             except TransportError as e:
                 self._observe(url, started, error=str(e))
-                if attempt == _ATTEMPTS:
+                if attempt == attempts:
                     raise
                 log.warning("%s: no answer (%s); trying again", path, e)
                 self._sleep(_BACKOFF_SECONDS * attempt)
@@ -314,8 +337,8 @@ class Client:
     # ---- data --------------------------------------------------------------
     #
     # Each read below returns the copy Plaid holds for the Item, which Plaid
-    # refreshes on its own schedule. None asks Plaid to refresh it; the
-    # routes that would are not in ENDPOINTS.
+    # refreshes on its own schedule. Only `investments_refresh` asks Plaid
+    # to refresh it now.
 
     def accounts_get(self, access_token: str) -> dict:
         """The Item's accounts, with the balances of Plaid's last update."""
@@ -359,6 +382,16 @@ class Client:
     def liabilities_get(self, access_token: str) -> dict:
         """Card, mortgage and student-loan terms of the Item's accounts."""
         return self.post("/liabilities/get", {"access_token": access_token})
+
+    def investments_refresh(self, access_token: str) -> dict:
+        """Ask Plaid to fetch the Item's holdings and investment
+        transactions from the institution now. Plaid holds the request
+        open while it fetches: a few seconds in the Sandbox, over a minute
+        at some institutions. The answer carries only a request id. A
+        billed read: see BILLED_ENDPOINTS."""
+        return self.post("/investments/refresh",
+                         {"access_token": access_token},
+                         timeout=SLOW_TIMEOUT)
 
     def ledger_history_status(self, access_token: str) -> str | None:
         """How far Plaid has got assembling the Item's bank and card

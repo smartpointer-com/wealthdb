@@ -47,6 +47,17 @@ FAILED = "failed"            # asked, and the read did not succeed
 # The statuses that leave nothing to do.
 SETTLED = frozenset({FETCHED, NOT_LINKED, ABSENT})
 
+# What run.json's `refresh` record says of a refresh `--refresh` asked
+# for. From above: NOT_LINKED, an Item without investments, which is not
+# asked; ABSENT, Plaid's word that the Item has no investment account;
+# FAILED, Plaid's word that its fetch did not succeed.
+REFRESHED = "refreshed"      # Plaid reports a fetch since the request
+REFUSED = "refused"          # Plaid refused the request (a 4xx answer)
+UNCONFIRMED = "unconfirmed"  # Plaid reported no fetch within the wait
+
+# The refresh outcomes that leave nothing to do.
+REFRESH_SETTLED = frozenset({REFRESHED, NOT_LINKED, ABSENT})
+
 # The two ledgers, by product, with the id of a row.
 LEDGER_IDS = {"investment_transactions": "investment_transaction_id",
               "transactions": "transaction_id"}

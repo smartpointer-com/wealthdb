@@ -29,7 +29,7 @@ class Recorder:
 
     def __call__(self, url, headers, body, timeout):
         self.requests.append({"url": url, "headers": headers,
-                              "body": json.loads(body)})
+                              "body": json.loads(body), "timeout": timeout})
         answer = (self.answers.pop(0) if len(self.answers) > 1
                   else self.answers[0])
         if isinstance(answer, Exception):
@@ -58,7 +58,6 @@ def ok(doc):
     "/item/webhook/update",
     "/accounts/balance/get",
     "/transactions/refresh",
-    "/investments/refresh",
 ])
 def test_a_route_outside_the_list_is_refused_before_any_request(path):
     recorder = Recorder()
@@ -71,7 +70,8 @@ def test_no_listed_route_moves_money_or_makes_a_payment():
     # The list is the collector's whole surface at Plaid. A route that
     # pays, transfers or hands access to another party has no place in
     # it, under any name.
-    for path in plaidapi.ENDPOINTS | plaidapi.SANDBOX_ENDPOINTS:
+    for path in (plaidapi.ENDPOINTS | plaidapi.SANDBOX_ENDPOINTS
+                 | plaidapi.BILLED_ENDPOINTS):
         for word in ("transfer", "payment", "processor", "signal", "oauth/"):
             assert word not in path, path
 
@@ -81,7 +81,57 @@ def test_the_routes_are_exactly_the_ones_agents_md_lists():
     agents = (Path(plaidapi.__file__).parent / "AGENTS.md").read_text()
     section = agents.split("**Routes**", 1)[1].split("**Products**", 1)[0]
     listed = set(re.findall(r"`(/[a-z_/]+)`", section))
-    assert plaidapi.ENDPOINTS | plaidapi.SANDBOX_ENDPOINTS == listed
+    assert (plaidapi.ENDPOINTS | plaidapi.SANDBOX_ENDPOINTS
+            | plaidapi.BILLED_ENDPOINTS) == listed
+
+
+# ---- the reads Plaid bills per call -------------------------------------------
+
+REFRESH = "/investments/refresh"
+PRODUCTION_ACCESS = "access-production-00000000-0000-4000-8000-000000000001"
+
+
+def test_a_billed_read_is_refused_on_production_without_the_opt_in():
+    recorder = Recorder()
+    with pytest.raises(ValueError, match="opt-in in plaid.cfg"):
+        client(recorder, "production").investments_refresh(PRODUCTION_ACCESS)
+    assert recorder.requests == []
+
+
+def test_a_billed_read_is_asked_on_production_with_the_opt_in():
+    recorder = Recorder(ok({"request_id": "req-synthetic"}))
+    production = client(recorder, "production")
+    production.billed_reads = frozenset({REFRESH})
+    assert production.investments_refresh(PRODUCTION_ACCESS) == {
+        "request_id": "req-synthetic"}
+    [request] = recorder.requests
+    assert request["url"] == plaidapi.HOSTS["production"] + REFRESH
+    assert request["body"] == {"access_token": PRODUCTION_ACCESS}
+    # Plaid holds the request open while it fetches from the institution.
+    assert request["timeout"] == plaidapi.SLOW_TIMEOUT
+
+
+def test_the_sandbox_never_bills_and_needs_no_opt_in():
+    recorder = Recorder()
+    client(recorder).investments_refresh(ACCESS)
+    assert [r["url"] for r in recorder.requests] == [
+        plaidapi.HOSTS["sandbox"] + REFRESH]
+
+
+@pytest.mark.parametrize("environment", ["sandbox", "production"])
+@pytest.mark.parametrize("failure", [
+    plaidapi.TransportError("TimeoutError: synthetic"),
+    plaidapi.TransportError("IncompleteRead: synthetic")])
+def test_a_billed_read_is_asked_once_whatever_happens(failure, environment):
+    # Plaid may have fetched, and billed, before the answer was lost.
+    sleeps = []
+    recorder = Recorder(failure)
+    billed = client(recorder, environment, sleeps=sleeps)
+    billed.billed_reads = frozenset({REFRESH})
+    with pytest.raises(plaidapi.TransportError):
+        billed.investments_refresh(ACCESS)
+    assert len(recorder.requests) == 1
+    assert sleeps == []
 
 
 def test_the_sandbox_route_is_refused_on_production():

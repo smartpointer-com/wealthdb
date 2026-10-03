@@ -68,7 +68,8 @@ all collectors share.
 - **`download`** reads what Plaid holds for every linked institution:
   accounts and balances, holdings, the bank and card ledger, investment
   transactions, and loan and card terms. It saves Plaid's answers as
-  they are.
+  they are. With `--refresh`, it first asks Plaid to fetch investments
+  from the institution.
 - **`load`** turns the runs of each linked institution into its own
   silver database: accounts and balances, holdings, both ledgers, and
   card and loan terms.
@@ -89,6 +90,7 @@ short name for it, such as `bank` or `broker`.
 ./plaid download --lookback all                      # first run: all history
 ./plaid download                                     # later: the last ~90 days
 ./plaid download --item broker --dry-run             # what a run would read
+./plaid download --item broker --refresh             # fetch investments first
 ./plaid load                                         # every Item into its silver
 ./plaid load --item broker                           # one Item
 ./plaid prune --dry-run                              # what prune would delete
@@ -196,9 +198,22 @@ The Trial plan charges nothing. A paid plan charges per Item, by product:
 - **Whole months, read or not.** Plaid bills each subscription for every
   calendar month the Item exists, in full. That holds while nothing
   reads the Item, and while it waits for a new sign-in.
-- **The collector's calls are not billed one by one.** Each is free, or
-  covered by the Item's subscriptions. `login --check` and
-  `download --dry-run` cost nothing.
+- **The collector's calls are not billed one by one**, except a refresh.
+  Each is free, or covered by the Item's subscriptions. `login --check`
+  and `download --dry-run` cost nothing.
+- **A refresh is billed per call.** `download --refresh` asks Plaid to
+  fetch investments from the institution now, with
+  `/investments/refresh`. A paid plan bills each successful call. The
+  Trial plan and the Sandbox do not bill it. A Production run asks only
+  with this opt-in in `$XDG_CONFIG_HOME/plaid.cfg`. Without
+  `XDG_CONFIG_HOME`, that file is `~/.config/plaid.cfg`:
+
+  ```json
+  {"billed_reads": ["/investments/refresh"]}
+  ```
+
+  Plaid allows one refresh a minute, ten an hour and twenty a day for
+  each Item.
 - **Trial subscriptions carry over.** An Item keeps its Trial
   subscriptions, and Plaid charges for them from the upgrade on. The
   upgrade request must name all three products. After an upgrade, Plaid
@@ -259,6 +274,8 @@ can be selected at <https://dashboard.plaid.com/link/data-transparency-v5>.
 ├── plaid-token-<name>.json    one linked institution: its access token
 ├── plaid-link-<name>.json     a sign-in that is still open
 └── plaid-link-<name>.lock     present while a run works on that sign-in
+
+~/.config/plaid.cfg            the opt-in to a refresh; optional
 
 $XDG_DATA_HOME/wealthdb/plaid/
 └── <name>/                    one tree per Item: one linked login

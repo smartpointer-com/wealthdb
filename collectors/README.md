@@ -306,7 +306,11 @@ structurally cannot narrow a fetch, the collector says so at runtime
   settles the sign-ins a stopped `link` left open, and with none it does
   nothing, so `login → download → load` runs it safely. Its `link`,
   `login` and `download` also take `--sandbox`, which switches a run to
-  Plaid's test institutions and the Items made there.
+  Plaid's test institutions and the Items made there. Its
+  `download --refresh` asks Plaid to fetch investments from the
+  institution first. Plaid bills that per call on a paid plan, so a
+  Production run makes it only with the opt-in in the collector's own
+  `$XDG_CONFIG_HOME/plaid.cfg`.
 - **amex** spends its whole verb surface out of one small sign-in budget,
   so two fleet defaults are withdrawn: `login --check` reads the profile's
   device-trust cookie instead of calling the source (exit `0` = device

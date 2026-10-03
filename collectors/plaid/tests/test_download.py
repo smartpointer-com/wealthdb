@@ -58,6 +58,8 @@ def dl(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(download, "_monotonic", clock.monotonic)
     monkeypatch.setattr(cli, "_today_utc", lambda: TODAY)
     monkeypatch.delenv("PLAID_ENV_FILE", raising=False)
+    # plaid.cfg is the test's own, never the developer's.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     made = {}
 
     def make(environment="sandbox") -> FakePlaid:
@@ -73,6 +75,7 @@ def dl(monkeypatch, tmp_path, caplog):
     make.bronze = tmp_path / "bronze"
     make.secrets = tmp_path / "secrets"
     make.secrets.mkdir(mode=0o700)
+    make.config = tmp_path / "config" / "plaid.cfg"
     make.clock = clock
     return make
 
@@ -875,11 +878,268 @@ def test_a_damaged_token_file_fails_the_run_but_not_the_other_items(
     ["--lookback", "next-week"],
     ["--password", "x"],
     ["--dry-run", "--debug"],
+    ["--dry-run", "--refresh"],
 ])
 def test_arguments_that_do_not_apply_are_refused(argv):
     with pytest.raises(SystemExit) as caught:
         download.parse_args(["--bronze-dir", "/nonexistent", *argv])
     assert caught.value.code == 2
+
+
+# ---- --refresh ---------------------------------------------------------------------------
+
+BEFORE = "2026-01-30T05:00:00Z"
+AFTER = "2026-01-31T09:15:00Z"
+REFRESH = "/investments/refresh"
+
+
+def stamped(success=BEFORE, failure=None, *, error=None,
+            products=("investments", "liabilities", "transactions")):
+    """An /item/get answer with these investments update stamps."""
+    return {"item": {"item_id": "item-synthetic-1", "error": error,
+                     "products": list(products), "institution_id": "ins_000"},
+            "status": {"investments": {"last_successful_update": success,
+                                       "last_failed_update": failure}}}
+
+
+def opt_in(dl, doc):
+    dl.config.parent.mkdir(parents=True, exist_ok=True)
+    dl.config.write_text(doc if isinstance(doc, str) else json.dumps(doc))
+
+
+def asked(fake) -> list[str]:
+    return [call[0] for call in fake.calls]
+
+
+def test_a_refresh_waits_for_plaids_fetch_and_then_reads(dl):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    fake.item_docs[access_token()] = [stamped(), stamped(), stamped(AFTER)]
+
+    assert run(dl, "--sandbox", "--refresh") == 0
+
+    calls = asked(fake)
+    assert calls.count("refresh") == 1
+    # Asked after the Item is read, and before its accounts.
+    assert calls[:5] == ["item_get", "refresh", "item_get", "item_get",
+                         "accounts"]
+    assert dl.clock.now == 1_010.0             # one poll, 10 s on
+    run_dir, manifest = the_run(dl)
+    assert manifest["status"] == "complete"
+    assert manifest["refresh"] == {
+        "route": REFRESH, "status": "refreshed",
+        "request_id": "req-synthetic", "last_successful_update": AFTER,
+        "last_failed_update": None}
+    # item.json is the Item as it stands after the refresh.
+    assert json.loads((run_dir / "item.json").read_text()) == stamped(AFTER)
+
+
+def test_a_production_refresh_needs_the_opt_in(dl, caplog):
+    fake = dl("production")
+    store(dl.secrets, environment="production")
+    script(fake)
+    assert run(dl, "--refresh") == 1
+    assert str(dl.config) in caplog.text
+    assert '{"billed_reads": ["/investments/refresh"]}' in caplog.text
+    assert fake.calls == []
+    assert not dl.bronze.exists()
+
+
+def test_a_production_refresh_with_the_opt_in_asks_once(dl):
+    fake = dl("production")
+    store(dl.secrets, environment="production")
+    script(fake)
+    opt_in(dl, {"billed_reads": [REFRESH]})
+    fake.item_docs[access_token("production")] = [stamped(), stamped(AFTER)]
+    assert run(dl, "--refresh") == 0
+    assert asked(fake).count("refresh") == 1
+    assert fake.billed_reads == {REFRESH}
+
+
+@pytest.mark.parametrize("doc,text", [
+    ("{", "is not valid JSON"),
+    ({"billed_reads": ["/transactions/refresh"]}, "does not call"),
+    ({"billed_read": [REFRESH]}, "does not know: billed_read")])
+def test_a_plaid_cfg_that_cannot_be_used_stops_a_refresh(dl, caplog, doc,
+                                                         text):
+    fake = dl("production")
+    store(dl.secrets, environment="production")
+    opt_in(dl, doc)
+    assert run(dl, "--refresh") == 1
+    assert text in caplog.text
+    assert fake.calls == []
+
+
+def test_a_run_without_refresh_never_reads_plaid_cfg(dl):
+    fake = dl("production")
+    store(dl.secrets, environment="production")
+    script(fake)
+    opt_in(dl, "{")
+    assert run(dl) == 0
+    assert "refresh" not in asked(fake)
+    assert "refresh" not in the_run(dl)[1]
+
+
+@pytest.mark.parametrize("error,hint", [
+    (plaid_error("PRODUCT_NOT_READY", error_type="ITEM_ERROR"),
+     "still assembling the Item's investments"),
+    (plaid_error("INSTITUTION_NOT_RESPONDING", error_type="INSTITUTION_ERROR"),
+     ""),
+    (plaid_error("PRODUCTS_NOT_SUPPORTED", error_type="ITEM_ERROR"),
+     "does not support a refresh"),
+    (plaid_error("PRODUCT_NOT_SUPPORTED", error_type="ITEM_ERROR"),
+     "does not support a refresh"),
+    (plaid_error("INVALID_PRODUCT"), "not enabled for these app keys"),
+    (plaid_error("UNAUTHORIZED_ROUTE_ACCESS"),
+     "not enabled for these app keys"),
+    (plaid_error("RATE_LIMIT", status=429, error_type="RATE_LIMIT_EXCEEDED"),
+     "one refresh a minute"),
+    (plaid_error("ITEM_LOGIN_REQUIRED", error_type="ITEM_ERROR"),
+     "`link --item bank --sandbox` renews the sign-in"),
+])
+def test_a_refused_refresh_is_not_asked_again_and_the_run_reads_on(
+        dl, caplog, error, hint):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    fake.refresh_answers = [error]
+
+    assert run(dl, "--sandbox", "--refresh") == 1
+
+    calls = asked(fake)
+    assert calls.count("refresh") == 1 and calls.count("item_get") == 1
+    assert dl.clock.now == 1_000.0
+    _, manifest = the_run(dl)
+    assert manifest["status"] == "complete"
+    assert manifest["refresh"] == {
+        "route": REFRESH, "status": "refused",
+        "error_code": error.error_code, "error_message": "synthetic error",
+        "request_id": "req-synthetic"}
+    assert manifest["products"]["holdings"]["status"] == "fetched"
+    [line] = [r.message for r in caplog.records
+              if "refresh refused" in r.message]
+    assert error.error_code in line and hint in line
+    assert "  " not in line
+    if error.error_code == "PRODUCT_NOT_READY":
+        assert "renews the sign-in" not in line
+
+
+NO_ANSWER = plaidapi.TransportError("TimeoutError: synthetic")
+FAULT = plaid_error("INTERNAL_SERVER_ERROR", status=500, error_type="API_ERROR")
+
+
+@pytest.mark.parametrize("failure,noted", [
+    (NO_ANSWER, {"error": "TimeoutError: synthetic"}),
+    (FAULT, {"error_code": "INTERNAL_SERVER_ERROR",
+             "error_message": "synthetic error",
+             "request_id": "req-synthetic"})])
+def test_a_refresh_without_a_clear_answer_is_watched_not_asked_again(
+        dl, failure, noted):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    fake.refresh_answers = [failure]
+    fake.item_docs[access_token()] = [stamped(), stamped(AFTER)]
+    assert run(dl, "--sandbox", "--refresh") == 0
+    assert asked(fake).count("refresh") == 1
+    assert the_run(dl)[1]["refresh"] == {
+        "route": REFRESH, "status": "refreshed", **noted,
+        "last_successful_update": AFTER, "last_failed_update": None}
+
+
+@pytest.mark.parametrize("failure,said", [
+    (None, "Plaid accepted the request"),
+    (NO_ANSWER, "Plaid gave no answer (TimeoutError: synthetic)"),
+    (FAULT, "Plaid answered /synthetic: INTERNAL_SERVER_ERROR")])
+def test_an_unconfirmed_refresh_says_how_plaid_answered(dl, caplog, failure,
+                                                        said):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    if failure is not None:
+        fake.refresh_answers = [failure]
+    fake.item_docs[access_token()] = [stamped()]
+    assert run(dl, "--sandbox", "--refresh") == 1
+    assert said in caplog.text
+
+
+def test_a_fetch_plaid_reports_failed_is_reported(dl, caplog):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    fake.item_docs[access_token()] = [stamped(), stamped(failure=AFTER)]
+    assert run(dl, "--sandbox", "--refresh") == 1
+    _, manifest = the_run(dl)
+    assert manifest["status"] == "complete"
+    assert manifest["refresh"]["status"] == "failed"
+    assert manifest["refresh"]["last_failed_update"] == AFTER
+    assert "could not fetch from the institution" in caplog.text
+
+
+def test_a_refresh_plaid_never_confirms_is_read_on_after_the_wait(
+        dl, caplog):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    fake.item_docs[access_token()] = [stamped()]
+    assert run(dl, "--sandbox", "--refresh") == 1
+    polls = int(download.REFRESH_WAIT / download.REFRESH_POLL) + 1
+    assert asked(fake).count("item_get") == 1 + polls
+    _, manifest = the_run(dl)
+    assert manifest["refresh"]["status"] == "unconfirmed"
+    assert manifest["products"]["holdings"]["status"] == "fetched"
+    assert "reported no fetch within 120 s" in caplog.text
+
+
+def test_an_item_plaid_finds_no_investment_account_in_is_settled(dl, caplog):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    fake.refresh_answers = [plaid_error("NO_INVESTMENT_ACCOUNTS",
+                                        error_type="ITEM_ERROR")]
+    assert run(dl, "--sandbox", "--refresh") == 0
+    assert the_run(dl)[1]["refresh"]["status"] == "absent"
+    assert "refresh: none (NO_INVESTMENT_ACCOUNTS)" in caplog.text
+    assert "renews the sign-in" not in caplog.text
+
+
+def test_an_item_already_in_error_is_not_sent_a_refresh(dl, caplog):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    fake.item_docs[access_token()] = stamped(error={
+        "error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED",
+        "error_message": "the login details of this item have changed"})
+    assert run(dl, "--sandbox", "--refresh") == 1
+    assert "refresh" not in asked(fake)
+    _, manifest = the_run(dl)
+    assert manifest["status"] == "failed" and "refresh" not in manifest
+    assert "`link --item bank --sandbox` renews the sign-in" in caplog.text
+
+
+def test_an_item_without_investments_is_not_refreshed(dl):
+    fake = dl()
+    store(dl.secrets)
+    script(fake, products=("transactions",))
+    assert run(dl, "--sandbox", "--refresh") == 0
+    assert "refresh" not in asked(fake)
+    assert the_run(dl)[1]["refresh"] == {"status": "not_linked"}
+
+
+def test_an_item_that_breaks_during_the_wait_fails_its_run(dl, caplog):
+    fake = dl()
+    store(dl.secrets)
+    script(fake)
+    fake.item_docs[access_token()] = [stamped(), stamped(error={
+        "error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED",
+        "error_message": "the login details of this item have changed"})]
+    assert run(dl, "--sandbox", "--refresh") == 1
+    _, manifest = the_run(dl)
+    assert manifest["status"] == "failed"
+    assert manifest["refresh"]["status"] == "failed"
+    assert "`link --item bank --sandbox` renews the sign-in" in caplog.text
+    assert asked(fake).count("item_get") == 2
 
 
 # ---- the real client, over a scripted transport ---------------------------------------
@@ -970,6 +1230,47 @@ def test_every_data_route_is_asked_as_plaid_documents_it(dl, monkeypatch):
         "transactions-0001.json", "transactions-0002.json"]
     # No route outside the reads a run makes.
     assert {p for p, *_ in transport.requests} == set(every_route())
+
+
+def test_a_refresh_over_the_real_client_asks_once_and_watches(
+        dl, monkeypatch):
+    store(dl.secrets)
+    _, transport = real_client(monkeypatch, every_route({
+        "/item/get": [stamped(), stamped(AFTER)],
+        REFRESH: {"request_id": "req-synthetic"}}))
+
+    assert run(dl, "--sandbox", "--refresh", "--lookback",
+               "2025-01-01") == 0
+
+    token = {"access_token": access_token()}
+    assert transport.bodies(REFRESH) == [(token, plaidapi.SLOW_TIMEOUT)]
+    assert len(transport.bodies("/item/get")) == 2
+    # The reads a run makes, the refresh, and nothing else.
+    assert {p for p, *_ in transport.requests} == set(every_route()) | {
+        REFRESH}
+
+
+class OddRefresh(Transport):
+    """The real routes, except a refresh answered 200 with no JSON object:
+    an answer that says nothing of the fetch."""
+
+    def __call__(self, url, headers, body, timeout):
+        if url.endswith(REFRESH):
+            self.requests.append((REFRESH, headers, json.loads(body), timeout))
+            return 200, b"<html>synthetic</html>"
+        return super().__call__(url, headers, body, timeout)
+
+
+def test_a_refresh_answered_with_no_json_object_is_watched(dl, monkeypatch):
+    store(dl.secrets)
+    transport = OddRefresh(every_route({"/item/get": [stamped(),
+                                                      stamped(AFTER)]}))
+    client = plaidapi.Client("synthetic-id", "synthetic-secret", "sandbox",
+                             transport=transport, sleep=lambda s: None)
+    monkeypatch.setattr(download, "make_client", lambda e, c: client)
+    assert run(dl, "--sandbox", "--refresh") == 0
+    assert len(transport.bodies(REFRESH)) == 1
+    assert the_run(dl)[1]["refresh"]["status"] == "refreshed"
 
 
 def test_a_run_over_the_real_client_traces_with_debug(dl, monkeypatch):

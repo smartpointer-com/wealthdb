@@ -80,7 +80,9 @@ class FakePlaid:
 
     An answer may be an exception instance, which is raised. `link_docs`
     is consumed one per poll; the last one repeats, as a real session
-    that has reached its end keeps answering the same.
+    that has reached its end keeps answering the same. An entry of
+    `item_docs`, and `refresh_answers`, may be a list consumed the same
+    way.
     """
 
     def __init__(self, environment: str = "sandbox"):
@@ -100,11 +102,21 @@ class FakePlaid:
         self.data: dict = {}
         self.data_of: dict = {}
         self.on_exchange = None
+        self.billed_reads: frozenset = frozenset()
+        self.refresh_answers: list = [{"request_id": "req-synthetic"}]
 
     def _answer(self, value):
         if isinstance(value, BaseException):
             raise value
         return value
+
+    @staticmethod
+    def _next(script):
+        """The next answer of a script: a list is consumed in order, its
+        last entry repeating; anything else is the answer every time."""
+        if isinstance(script, list):
+            return script.pop(0) if len(script) > 1 else script[0]
+        return script
 
     def called(self, name: str) -> list[tuple]:
         return [c for c in self.calls if c[0] == name]
@@ -134,13 +146,22 @@ class FakePlaid:
 
     def item_get(self, access_token):
         self.calls.append(("item_get", access_token))
-        return self._answer(self.item_docs.get(access_token, {
+        return self._answer(self._next(self.item_docs.get(access_token, {
             "item": {"institution_id": "ins_000",
                      "institution_name": "Synthetic Bank",
                      "products": ["transactions"], "error": None,
                      "consent_expiration_time": None},
             "status": {"transactions": {
-                "last_successful_update": "2026-01-02T00:00:00Z"}}}))
+                "last_successful_update": "2026-01-02T00:00:00Z"}}})))
+
+    def investments_refresh(self, access_token):
+        # The real client's gate: Production asks only with the opt-in.
+        if (self.environment == "production"
+                and "/investments/refresh" not in self.billed_reads):
+            raise ValueError("/investments/refresh needs the opt-in in "
+                             "plaid.cfg")
+        self.calls.append(("refresh", access_token))
+        return self._answer(self._next(self.refresh_answers))
 
     def item_remove(self, access_token):
         self.calls.append(("item_remove", access_token))
@@ -232,13 +253,17 @@ def secrets(tmp_path):
 
 
 class Clock:
-    """A clock that only moves when the code under test sleeps."""
+    """A clock that only moves when the code under test sleeps. A wait
+    longer than a day fails the test, so a loop that never ends cannot
+    hang the suite."""
 
     def __init__(self):
         self.now = 1_000.0
 
     def sleep(self, seconds):
         self.now += seconds
+        if self.now > 1_000.0 + 24 * 3600:
+            raise AssertionError("the code under test waited over a day")
 
     def monotonic(self):
         return self.now

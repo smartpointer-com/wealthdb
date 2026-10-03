@@ -60,6 +60,15 @@ Each rule below was read in Plaid's documentation on 2026-10-01.
   the Item. A Trial plan does not charge for it. After an upgrade to a
   paid plan, Plaid bills every subscription added during the Trial each
   month, until the Item is removed.
+- **A refresh is billed per call** (read on 2026-10-03).
+  `/investments/refresh` fetches an Item's investments from the
+  institution now. Without it, Plaid updates them on its own one or more
+  times a day. A paid plan bills each successful call; a refused one
+  is not billed. The Trial plan includes it and bills nothing, and the
+  Sandbox never bills. Plaid allows one refresh a minute, ten an hour and
+  twenty a day per Item. The answer carries only a request id.
+  `/item/get` stamps the Item in `status.investments` each time Plaid
+  reaches the institution, whether or not anything changed.
 
 ## 3. Files
 
@@ -89,6 +98,12 @@ stands:
     ├── <name>.db        its silver database (§6)
     └── <UTC-ts>/        one download run (§5)
 ```
+
+`$XDG_CONFIG_HOME/plaid.cfg`, by default `~/.config/plaid.cfg`, holds
+settings, never a credential. It is JSON. Its one setting is the opt-in
+to the reads Plaid bills per call (§5). A missing file holds no
+settings. A file that does not parse, or names a setting or a read the
+collector does not know, stops the run that needs it.
 
 A tree holds the runs of one Item (§5). `prune` checks every tree
 before it removes anything. A tree that holds a run that is not plaid's
@@ -210,7 +225,8 @@ another Item.
 1. `/item/get` → `item.json`. The Item's products and the times Plaid
    last updated it. An `error` on the Item fails the run. Plaid answers
    every read of such an Item with that error, and update mode
-   (`link --item NAME`) clears it.
+   (`link --item NAME`) clears it. With `--refresh`, the refresh comes
+   next (below), and `item.json` is the Item as it stands after it.
 2. `/accounts/get` → `accounts.json`. Free. It fails the run too when it
    cannot be read: nothing else means anything without the accounts.
 3. Each product the Item was linked with, and no other:
@@ -230,6 +246,33 @@ the ledger is `partial`: the rows are what Plaid holds, and older ones
 may still be missing. The log names the command that reads the window
 again. The status is asked first, so a history that Plaid completes
 mid-read is never claimed for rows read before it.
+
+**A refresh.** `--refresh` asks `/investments/refresh` for each Item
+linked with investments, once per run. Plaid holds the request open
+while it fetches from the institution. At some institutions that takes
+over a minute, so the request may take five minutes before it gives up.
+The request is never sent again:
+a paid plan bills each successful one, and a request that got no answer
+may have been carried out. A 5xx answer says no more of the fetch than
+no answer does. The run then reads `/item/get` every 10 s,
+for up to two minutes, until a stamp in `status.investments` moves. Only
+then does it read the accounts and the products. `run.json` records the
+outcome under `refresh`:
+
+| Status | Meaning |
+| --- | --- |
+| `refreshed` | the success stamp moved: Plaid reached the institution |
+| `failed` | the failure stamp moved, or the Item reports an error |
+| `refused` | Plaid refused the request with a 4xx answer, a rate limit included; nothing was fetched |
+| `absent` | Plaid says the Item has no investment account; nothing to refresh |
+| `unconfirmed` | no stamp moved within the wait |
+| `not_linked` | the Item was not linked with investments; not asked |
+
+The record also holds Plaid's request id, its error when there is one,
+and the stamps after the wait. A Production run asks only when
+plaid.cfg opts in to the route (§3). Without the opt-in, the run stops
+before it asks Plaid anything. The run's instant is its start, so the
+data a refresh fetched carries an instant up to a few minutes early.
 
 **What `run.json` records.** A run starts as `in-progress` and ends as
 `complete`, or as `failed` with a `reason` when the Item could not be
@@ -256,7 +299,8 @@ a load input.
 
 **Waits.** A fault on Plaid's side or a rate limit is asked again twice,
 after 10 s and 30 s. `PRODUCT_NOT_READY` is asked again every 20 s for
-up to five minutes. A refused request is not asked again.
+up to five minutes. A refused request is not asked again, and a refresh
+is never asked again.
 
 **Paging.** Plaid pages by offset, so a row that arrives or leaves
 mid-read shifts the pages after it. A read starts again when a page
@@ -267,12 +311,14 @@ read while another arrives in a page not read yet. The next run reads
 the window again and makes up for it.
 
 **Exit status.** 0 when every Item was read and each of its products is
-`fetched`, `absent` or `not_linked`. 1 when an Item failed, or a product
-is `failed`, `not_ready` or `partial`. 130 when the run was stopped.
+`fetched`, `absent` or `not_linked`, and each refresh asked for is
+`refreshed`, `absent` or `not_linked`. 1 when an Item failed, a product is
+`failed`, `not_ready` or `partial`, or a refresh is anything else. 130
+when the run was stopped.
 
 **`--dry-run`** reads the Item and its accounts, both free, says what a
 run would read, and writes nothing. It checks the Item's tree as a run
-would.
+would. It refuses `--refresh`, which fetches from the institution.
 
 **`--debug`** records each HTTP exchange in the run, under
 `screenshots/http-trace.jsonl`: URL, status, time and size. The client
@@ -433,6 +479,16 @@ Read from the `user_good` test Item at First Platypus Bank.
 - **The ledger** carries `personal_finance_category` with
   `version: v2`, `original_description`, `counterparties` and
   `merchant_name`. Card spend is positive, a deposit negative.
+
+### Sandbox, refresh (2026-10-03)
+
+Read from the `user_good` test Item at First Platypus Bank.
+
+- **No access request is needed.** The Sandbox answers
+  `/investments/refresh` with a 200.
+- **The call blocks while Plaid fetches.** It takes a few seconds.
+- **The stamp moves.** `status.investments.last_successful_update` has
+  moved by the first `/item/get` after the 200.
 
 ## 8. Open questions
 

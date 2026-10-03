@@ -75,11 +75,11 @@ The collector reads. Its only writes are these:
 
 It never moves money and never gives another party access.
 
-Two lists in [plaidapi.py](plaidapi.py) name every route the collector
+Lists in [plaidapi.py](plaidapi.py) name every route the collector
 calls and every product a link may request. The client refuses anything
 outside them before it builds a request.
 
-**Routes** (`ENDPOINTS`, `SANDBOX_ENDPOINTS`):
+**Routes** (`ENDPOINTS`, `SANDBOX_ENDPOINTS`, `BILLED_ENDPOINTS`):
 
 - `/link/token/create`, `/link/token/get`: start a sign-in page and read
   its outcome.
@@ -101,6 +101,11 @@ outside them before it builds a request.
   Item whose new token could not be written to disk, so no access exists
   without a record. No verb and no flag reaches it.
 - `/sandbox/public_token/create`: make a test Item. Sandbox host only.
+- `/investments/refresh`: ask Plaid to fetch an Item's holdings and
+  investment transactions from the institution now. A billed read: see
+  below. Only `download --refresh` asks, and only for an Item linked with
+  investments. It asks once per Item and run, and never again on its
+  own, since a second try could be a second bill.
 
 **Products** (`DATA_PRODUCTS`): `transactions`, `investments`,
 `liabilities`. A link requests data products only, never one that moves
@@ -131,8 +136,10 @@ not make it a write. What some reads cost or change:
 A read that Plaid bills per call needs the user's opt-in. The opt-in
 lives in the collector's own config file, `$XDG_CONFIG_HOME/plaid.cfg`,
 not in the env file, which holds credentials only. Without it, the
-collector never makes the call. Such a read joins the lists together
-with its opt-in setting. The lists hold no such read.
+collector never makes the call on Production. The Sandbox never bills,
+so it needs none. Such a read joins the lists together with its opt-in
+setting. The lists hold one such read, `/investments/refresh`, opted in
+by `{"billed_reads": ["/investments/refresh"]}`.
 
 A Trial plan charges for none of these. After an upgrade to a paid plan,
 Plaid bills every subscription added during the Trial. It bills each

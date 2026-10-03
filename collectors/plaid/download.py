@@ -16,11 +16,17 @@ directory in it, named by its UTC start time:
 A tree holds the runs of one Item. A tree that holds anything else is
 refused and left as it is.
 
-Every read is of the copy Plaid keeps. None reaches the institution. An
-Item is read only for the products it was linked with: asking for another
-would add that product to the Item. The first read of an Item's
-investment transactions adds Plaid's subscription for them to the Item;
-no other read changes it.
+Without `--refresh`, every read is of the copy Plaid keeps, and none
+reaches the institution. An Item is read only for the products it was
+linked with: asking for another would add that product to the Item. The
+first read of an Item's investment transactions adds Plaid's
+subscription for them to the Item; no other read changes it.
+
+`--refresh` first asks Plaid to fetch each Item's investments from the
+institution, then waits until Plaid stamps the Item with a fetch, and only
+then reads. run.json records the outcome under `refresh`. Plaid bills a
+successful refresh on a paid plan. A Production run asks for one only
+when plaid.cfg opts in to it; the Trial plan and the Sandbox do not bill.
 
 `--lookback` bounds the two ledgers. Balances, holdings and liabilities
 are read whole on every run.
@@ -30,7 +36,8 @@ and writes nothing. Both reads are free.
 
 Usage:
     download.py --bronze-dir DIR [--item NAME ...] [--sandbox]
-                [--lookback PRESET|YYYY-MM-DD] [--dry-run] [--debug]
+                [--lookback PRESET|YYYY-MM-DD] [--refresh] [--dry-run]
+                [--debug]
 """
 
 from __future__ import annotations
@@ -46,12 +53,13 @@ from pathlib import Path
 from collectorkit import bronze, cli, debugcap
 
 import appkeys
+import config
 import items
 import plaidapi
 import trees
 from appkeys import make_client
 from trees import (ABSENT, FAILED, FETCHED, NOT_LINKED, NOT_READY, PARTIAL,
-                   SETTLED)
+                   REFRESH_SETTLED, REFRESHED, REFUSED, SETTLED, UNCONFIRMED)
 
 log = logging.getLogger("plaid.download")
 
@@ -70,6 +78,21 @@ NOT_READY_WAIT = 300.0
 
 # A ledger that changes while it is paged is read at most this many times.
 PAGING_ATTEMPTS = 3
+
+# The route `--refresh` asks for. After asking, the Item's update stamps
+# are read at this interval, for at most this long. Plaid holds the
+# request open while it fetches, so the stamps have usually moved by the
+# first read.
+REFRESH_ROUTE = "/investments/refresh"
+REFRESH_POLL = 10.0
+REFRESH_WAIT = 120.0
+
+# Answers to a refresh that come with a hint of what they mean. Plaid's
+# page for the route spells the first one in the singular.
+REFRESH_UNSUPPORTED = frozenset({"PRODUCT_NOT_SUPPORTED",
+                                 "PRODUCTS_NOT_SUPPORTED"})
+REFRESH_NOT_ENABLED = frozenset({"INVALID_PRODUCT",
+                                 "UNAUTHORIZED_ROUTE_ACCESS"})
 
 # Answers that say the Item has no account the product applies to.
 ABSENT_CODES = frozenset({"NO_INVESTMENT_ACCOUNTS", "NO_LIABILITY_ACCOUNTS"})
@@ -139,6 +162,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "the environment.")
     cli.add_standard_args(p, verb="download")
     p.add_argument(
+        "--refresh", action="store_true",
+        help="First ask Plaid to fetch each Item's investments from the "
+             "institution, and wait until it reports the fetch. Plaid bills "
+             "a successful refresh on a paid plan, so a Production run asks "
+             "only with the opt-in in plaid.cfg. The Trial plan and the "
+             "Sandbox do not bill it.")
+    p.add_argument(
         "--dry-run", action="store_true",
         help="Read each Item and its accounts, say what a run would read, "
              "and write nothing.")
@@ -151,6 +181,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = p.parse_args(argv)
     if args.dry_run and args.debug:
         p.error("--debug records into a run, and --dry-run makes none")
+    if args.dry_run and args.refresh:
+        p.error("--refresh fetches from the institution, and --dry-run "
+                "reads only Plaid's copy")
     for name in args.item or []:
         try:
             items.check_name(name)
@@ -270,18 +303,29 @@ def _outcome(error: Exception) -> dict:
 
 # ---- one Item ---------------------------------------------------------------------
 
-def _read_item(client: plaidapi.Client, item: items.Item) -> tuple[dict,
-                                                                   dict]:
+def _no_item_error(state: dict) -> None:
+    error = (state.get("item") or {}).get("error")
+    if error:
+        raise plaidapi.PlaidError("/item/get", 200, error)
+
+
+def _read_item(client: plaidapi.Client, item: items.Item, *,
+               refresh=None) -> tuple[dict, dict]:
     """The Item and its accounts. Raises ItemFailed when either cannot be
     read, since nothing else means anything without the accounts. Raises
     ItemFailed too when Plaid reports an error on the Item. Plaid answers
-    every read of such an Item with that error, and update mode clears it."""
+    every read of such an Item with that error, and update mode clears it.
+
+    `refresh`, when given, runs between the two reads. It takes the Item's
+    state and returns the state after the refresh, so the accounts read
+    after it."""
     token = item.access_token
     try:
         state = _call(functools.partial(client.item_get, token), "the Item")
-        error = (state.get("item") or {}).get("error")
-        if error:
-            raise plaidapi.PlaidError("/item/get", 200, error)
+        _no_item_error(state)
+        if refresh is not None:
+            state = refresh(state)
+            _no_item_error(state)
         accounts = _call(functools.partial(client.accounts_get, token),
                          "accounts")
     except plaidapi.PlaidError as e:
@@ -292,6 +336,108 @@ def _read_item(client: plaidapi.Client, item: items.Item) -> tuple[dict,
     except plaidapi.TransportError as e:
         raise ItemFailed(f"{item.name}: no answer from Plaid: {e}") from e
     return state, accounts
+
+
+def _stamps(state: dict) -> tuple:
+    """Plaid's last successful and last failed investments update of the
+    Item, as Plaid states them. Either may be absent."""
+    investments = (state.get("status") or {}).get("investments") or {}
+    return (investments.get("last_successful_update"),
+            investments.get("last_failed_update"))
+
+
+def _refusal_hint(item: items.Item, error: plaidapi.PlaidError) -> str:
+    if error.error_code == "PRODUCT_NOT_READY":
+        return ("Plaid is still assembling the Item's investments. A later "
+                "run can refresh them.")
+    if error.error_code in REFRESH_UNSUPPORTED:
+        return ("The institution does not support a refresh. Plaid updates "
+                "investments on its own at least once each market day.")
+    if error.error_code in REFRESH_NOT_ENABLED:
+        return ("Investments Refresh is not enabled for these app keys. The "
+                "Plaid Dashboard's Products page shows what is.")
+    if error.status == 429:
+        return ("Plaid allows one refresh a minute, ten an hour and twenty "
+                "a day for each Item.")
+    return items.remedy(item, error.error_code, error.error_type)
+
+
+def _refresh(client: plaidapi.Client, item: items.Item, manifest: dict,
+             state: dict) -> dict:
+    """Ask Plaid to fetch the Item's investments from the institution now,
+    and wait until Plaid reports a fetch. Returns the Item's state after
+    the wait, and records the outcome in the manifest under `refresh`.
+
+    The request is made once: Plaid bills each successful one on a paid
+    plan, so a fault is never answered by asking again. Plaid stamps the
+    Item each time it reaches the institution, whether or not anything
+    changed. A stamp that moves after the request is the sign that a fetch
+    ran. No webhook is set up to say so.
+    """
+    if "investments" not in ((state.get("item") or {}).get("products")
+                             or []):
+        manifest["refresh"] = {"status": NOT_LINKED}
+        log.info("%s: refresh: the Item was not linked with investments",
+                 item.name)
+        return state
+    before = _stamps(state)
+    entry = {"route": REFRESH_ROUTE, "status": UNCONFIRMED}
+    manifest["refresh"] = entry
+    log.info("%s: asking Plaid to refresh investments from the institution",
+             item.name)
+    answered = "accepted the request"
+    try:
+        entry["request_id"] = client.investments_refresh(
+            item.access_token).get("request_id")
+    except plaidapi.PlaidError as e:
+        entry.update(error_code=e.error_code, error_message=e.error_message,
+                     request_id=e.request_id)
+        if e.error_code in ABSENT_CODES:
+            entry["status"] = ABSENT
+            log.info("%s: refresh: none (%s)", item.name, e.error_code)
+            return state
+        if 400 <= e.status < 500:
+            entry["status"] = REFUSED
+            hint = _refusal_hint(item, e)
+            log.error("%s: refresh refused: %s.%s The run reads Plaid's "
+                      "stored copy.", item.name, e,
+                      f" {hint}" if hint else "")
+            return state
+        # Any other answer, such as a fault on Plaid's side, says nothing
+        # of the fetch; the stamps do.
+        answered = f"answered {e}"
+    except plaidapi.TransportError as e:
+        entry["error"] = str(e)
+        answered = f"gave no answer ({e})"
+    deadline = _monotonic() + REFRESH_WAIT
+    while True:
+        state = _call(functools.partial(client.item_get, item.access_token),
+                      "the Item")
+        success, failure = _stamps(state)
+        entry.update(last_successful_update=success,
+                     last_failed_update=failure)
+        if (state.get("item") or {}).get("error"):
+            # The run fails on the Item's error, with its remedy, as soon
+            # as this returns.
+            entry["status"] = FAILED
+            return state
+        if success != before[0]:
+            entry["status"] = REFRESHED
+            log.info("%s: refreshed: Plaid fetched from the institution "
+                     "(%s)", item.name, success)
+            return state
+        if failure != before[1]:
+            entry["status"] = FAILED
+            log.error("%s: refresh: Plaid could not fetch from the "
+                      "institution (%s). The run reads Plaid's stored copy.",
+                      item.name, failure)
+            return state
+        if _monotonic() >= deadline:
+            log.warning("%s: refresh: Plaid %s, and reported no fetch within "
+                        "%.0f s. The run reads what Plaid holds.", item.name,
+                        answered, REFRESH_WAIT)
+            return state
+        _sleep(REFRESH_POLL)
 
 
 def _linked(state: dict) -> list[Product]:
@@ -335,10 +481,11 @@ def dry_run(client: plaidapi.Client, item: items.Item, root: Path, since,
 
 
 def download_item(client: plaidapi.Client, item: items.Item, root: Path,
-                  since, until, *, debug: bool,
+                  since, until, *, debug: bool, refresh: bool = False,
                   lookback: str | None = None) -> bool:
     """Read one Item into a new run. Returns False unless the Item and
-    every product it was linked with were read in full.
+    every product it was linked with were read in full, and, with
+    `refresh`, unless Plaid reported the fetch it was asked for.
 
     A run whose Item cannot be read ends as `failed`, with the reason. A
     run stopped by a write error or by Ctrl-C stays `in-progress`. Neither
@@ -363,7 +510,10 @@ def download_item(client: plaidapi.Client, item: items.Item, root: Path,
                 "POST", url, status=status, elapsed_ms=elapsed,
                 bytes_=size, error=error))
         try:
-            state, accounts = _read_item(client, item)
+            state, accounts = _read_item(
+                client, item,
+                refresh=functools.partial(_refresh, client, item, manifest)
+                if refresh else None)
         except ItemFailed as e:
             log.error("%s", e)
             manifest.update(status=trees.RUN_FAILED, reason=str(e))
@@ -374,7 +524,8 @@ def download_item(client: plaidapi.Client, item: items.Item, root: Path,
         manifest["products"]["accounts"] = {
             "status": FETCHED, "files": ["accounts.json"],
             "rows": len(accounts.get("accounts") or [])}
-        healthy = True
+        healthy = ("refresh" not in manifest
+                   or manifest["refresh"]["status"] in REFRESH_SETTLED)
         linked = _linked(state)
         for product in PRODUCTS:
             entry = (_download_product(client, item, product, run, since,
@@ -469,7 +620,23 @@ def main(argv: list[str] | None = None) -> int:
                       items.command("link --item NAME", environment))
         return 1
     since, until = cli.resolve_lookback(args)
+    billed = frozenset()
+    if args.refresh and environment == "production":
+        try:
+            billed = config.load().billed_reads
+        except config.ConfigError as e:
+            log.error("%s", e)
+            return 1
+        if REFRESH_ROUTE not in billed:
+            log.error("--refresh asks Plaid for %s, which Plaid bills per "
+                      "successful call on a paid plan. The Trial plan and "
+                      "the Sandbox do not bill it. A production run asks for "
+                      "it only with this opt-in in %s: "
+                      '{"billed_reads": ["%s"]}', REFRESH_ROUTE,
+                      config.path(), REFRESH_ROUTE)
+            return 1
     client = make_client(environment, args.client_id)
+    client.billed_reads = billed
     healthy = not unreadable
     try:
         for item in chosen:
@@ -478,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 ok = download_item(client, item, args.bronze_dir, since,
                                    until, debug=args.debug,
+                                   refresh=args.refresh,
                                    lookback=args.lookback)
             healthy = healthy and ok
     except KeyboardInterrupt:

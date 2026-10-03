@@ -26,7 +26,10 @@
 #                       run per Item, under <data-dir>/<item>/<UTC-ts>/.
 #                       --lookback bounds the ledgers (default ~90 days);
 #                       --item NAME reads one Item; --dry-run reads each
-#                       Item and its accounts and writes no run.
+#                       Item and its accounts and writes no run;
+#                       --refresh first asks Plaid to fetch investments
+#                       from the institution (billed per call on a paid
+#                       plan; Production needs the opt-in in plaid.cfg).
 #   load                Load each Item's complete runs into its own silver
 #                       database, <data-dir>/<item>/<item>.db. --item NAME
 #                       loads one Item; --silver-db PATH (or
