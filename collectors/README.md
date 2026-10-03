@@ -300,9 +300,13 @@ structurally cannot narrow a fetch, the collector says so at runtime
   per Item, `<data-dir>/<item>/<UTC-ts>/`, rather than run dirs at the
   top, so `dedup` does not reach its runs. Its silver is one database
   per Item too, `<data-dir>/<item>/<item>.db`, so `load --silver-db`
-  needs the one `--item` it is for. Its `login` and `download` also take
-  `--sandbox`, which switches a run to Plaid's test institutions and the
-  Items made there.
+  needs the one `--item` it is for. A sign-in has a verb of its own,
+  `link --item NAME`: it makes a new Item, billed by Plaid, or renews
+  one, so no orchestrator runs it. Its `login` opens no page. It
+  settles the sign-ins a stopped `link` left open, and with none it does
+  nothing, so `login → download → load` runs it safely. Its `link`,
+  `login` and `download` also take `--sandbox`, which switches a run to
+  Plaid's test institutions and the Items made there.
 - **amex** spends its whole verb surface out of one small sign-in budget,
   so two fleet defaults are withdrawn: `login --check` reads the profile's
   device-trust cookie instead of calling the source (exit `0` = device

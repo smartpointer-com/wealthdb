@@ -15,7 +15,7 @@ with a local name and one token file.
 Root [AGENTS.md](../../AGENTS.md) §2 applies. Here a real session costs
 more than an MFA prompt:
 
-- `login --item NAME` without `--sandbox` signs in at a real institution
+- `link --item NAME` without `--sandbox` signs in at a real institution
   and makes a Production Item. On a Trial plan an Item is one of ten **for
   the life of the Plaid account**. Removing an Item does not return its
   slot.
@@ -26,20 +26,22 @@ Allowed without asking:
 
 - reading code, docs and tests; `--help`; `make build-plaid` /
   `make test-plaid`;
-- `login` and `download` with `--sandbox`, once `PLAID_SANDBOX_SECRET`
-  is set. The Sandbox has test institutions and test data only, and its
-  Items are free. A Sandbox download writes into a rehearsal data dir,
-  never a deployment's;
-- `login --check`. It asks Plaid two free questions and reaches no
-  institution;
+- `link`, `login` and `download` with `--sandbox`, once
+  `PLAID_SANDBOX_SECRET` is set. The Sandbox has test institutions and
+  test data only, and its Items are free. A Sandbox download writes into
+  a rehearsal data dir, never a deployment's;
+- `login --check`. It asks Plaid two free questions, reaches no
+  institution, and lists the sign-ins left open from local files;
 - `download --dry-run`. It reads each Item and its accounts from Plaid's
   copy, two free reads, and writes no run. No sign-in happens;
 - `load` against a rehearsal data dir. It reads the runs and writes the
   silver databases there, and talks to no one;
 - `prune` with `--dry-run`. It reads local files only.
 
-Not allowed unless explicitly asked: `login --item NAME` and `download`
-without `--sandbox`. Hand the command to the user instead.
+Not allowed unless explicitly asked, without `--sandbox`: `link`,
+`download`, and `login` without `--check`. A plain `login` opens no
+page, but it can store the Item of a sign-in left open. Hand the command
+to the user instead.
 
 The data root of a deployment is not a scratch area. Every verb, dry
 runs included, creates the empty data dir. Develop against a rehearsal
@@ -48,7 +50,7 @@ plaid's own dir in it (`<root>/plaid`), never the root itself. Never add
 a Plaid source to a deployment's live config.
 
 Re-linking is never a fix for an Item that Plaid still has. When an Item
-stops answering, the remedy is `login --item NAME` on the **same name**,
+stops answering, the remedy is `link --item NAME` on the **same name**,
 which opens update mode on the same Item. Never suggest deleting a token
 file and linking again.
 
@@ -67,7 +69,8 @@ Two answers are beyond update mode:
 
 The collector reads. Its only writes are these:
 
-- linking an Item, and renewing it in update mode;
+- linking an Item, and renewing it in update mode. `login` finishes a
+  link that a stopped `link` left open, by the same code;
 - removing an Item whose new token could not be written to disk.
 
 It never moves money and never gives another party access.
@@ -94,9 +97,9 @@ outside them before it builds a request.
 - `/institutions/get`, `/institutions/get_by_id`: institution metadata.
   Free; the first is the app-key probe.
 - `/item/remove`: revoke an Item. A revoked Item cannot be restored.
-  Called from one place only: `login`, for an Item whose new token could
-  not be written to disk, so no access exists without a record. No verb
-  and no flag reaches it.
+  Called from one place only: the code that stores a new Item, for an
+  Item whose new token could not be written to disk, so no access exists
+  without a record. No verb and no flag reaches it.
 - `/sandbox/public_token/create`: make a test Item. Sandbox host only.
 
 **Products** (`DATA_PRODUCTS`): `transactions`, `investments`,
@@ -160,8 +163,9 @@ change or remove something. Writes include every route that:
   delete, move, rewrite or "tidy" a token file. That includes Sandbox
   files this session did not create.
 - **Pending sign-ins.** `~/.secrets/plaid-link-<name>.json` holds a
-  sign-in whose outcome is not stored yet. `login` removes it once the
-  outcome is settled. Leave it alone otherwise.
+  sign-in whose outcome is not stored yet. `link` or `login` removes it
+  once the outcome is settled. `plaid-link-<name>.lock` exists while a
+  run works on that sign-in. Leave both alone otherwise.
 - **Never print or log** a secret, an access token, a public token or a
   link token. An access token travels in the request body, so no request
   body is ever logged or written. Error text carries Plaid's code, its

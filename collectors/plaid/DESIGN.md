@@ -8,7 +8,7 @@ measured.
 - **One collector, many institutions.** Plaid is an aggregator. One Plaid
   account reaches every institution Plaid covers.
 - **The unit is the Item.** An Item is one login at one institution. It
-  has a local name, chosen at `login`, and its own token file.
+  has a local name, chosen at `link`, and its own token file.
 - **Two environments.** Production reaches real institutions. The Sandbox
   reaches Plaid's test institutions. An Item belongs to the environment
   it was made in. `--sandbox` selects the Sandbox, with its own secret and
@@ -95,9 +95,14 @@ before it removes anything. A tree that holds a run that is not plaid's
 run of that tree means the data dir is a wrong one, such as the data
 root itself, and then nothing is removed.
 
-## 4. The `login` verb
+## 4. The `link` and `login` verbs
 
-`login --item NAME` does one of three things.
+`link` makes and renews links. `login` never opens a sign-in page: it
+settles what a stopped `link` left open, and `login --check` probes.
+The split keeps the fleet's `login → download → load` safe to run
+unattended.
+
+`link --item NAME` does one of three things.
 
 **A new Item.** Nothing is stored under the name.
 
@@ -127,7 +132,7 @@ state.
   starts.
 - A page's expiry is the one the pending file records, else the
   `expiration` Plaid states for its link token. It decides only between
-  showing the page again and dropping it. Without either, `login` stops
+  showing the page again and dropping it. Without either, `link` stops
   at that point and changes no file.
 
 Rules that keep an Item from being lost:
@@ -142,20 +147,44 @@ Rules that keep an Item from being lost:
   that route.
 - **Only Plaid's word that the link token is gone discards a pending
   sign-in.** That word is `INVALID_LINK_TOKEN`. Any other error, a
-  passing fault or a refusal, stops `login` and keeps the file.
+  passing fault or a refusal, stops the run and keeps the file.
+- **One run at a time works on a name's sign-in.** It holds
+  `plaid-link-<name>.lock` with `flock` while it works. Two runs would
+  both exchange one public token, and the one that lost would report
+  the Item as gone. A `link` on a name another run holds stops at
+  once. The lock's file goes when the run ends.
 
 What ends a wait without an Item:
 
 - the newest visit ended in an exit. Plaid's own message is shown;
-- time ran out. The pending file stays, so the next run resumes.
+- time ran out;
+- Ctrl-C.
+
+Plaid cannot close a page before its expiry, and a page that is still
+open can make an Item. So a stopped wait asks `/link/token/get` once
+more:
+
+- a public token is claimed, as on success;
+- with nothing to claim, the pending file goes once the page has
+  closed. A wait as long as the page's life ends with the page. A file
+  whose link token Plaid no longer knows goes too;
+- otherwise the file stays, and the time the page closes is shown.
 
 A closed browser tab does not end its session at Plaid. It cannot be
 told apart from a visit that is still under way, so it is waited on.
 
+**`login`** reads the pending files of its environment, or the one
+`--item` names. With none, it asks Plaid nothing and needs no app keys.
+For each, under the lock, one `/link/token/get` settles it by the same
+rules as a stopped wait. A file whose lock another run holds is left to
+that run. A public token lives half an hour, so an Item made on a page
+left open is claimed only if `login` or `link` runs soon after.
+
 `login --check` asks `/institutions/get` for one institution, which
 proves the app keys. It then asks `/item/get` for each Item of the
-environment. It exits 0 when the keys are accepted, one Item or more is
-stored, and every Item is free of errors.
+environment, and lists the pending files. It exits 0 when the keys are
+accepted, one Item or more is stored, and every Item is free of errors.
+A pending file does not change the exit status.
 
 ## 5. The `download` verb
 
@@ -181,7 +210,7 @@ another Item.
 1. `/item/get` → `item.json`. The Item's products and the times Plaid
    last updated it. An `error` on the Item fails the run. Plaid answers
    every read of such an Item with that error, and update mode
-   (`login --item NAME`) clears it.
+   (`link --item NAME`) clears it.
 2. `/accounts/get` → `accounts.json`. Free. It fails the run too when it
    cannot be read: nothing else means anything without the accounts.
 3. Each product the Item was linked with, and no other:

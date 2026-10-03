@@ -1,79 +1,43 @@
 #!/usr/bin/env python3
 """
-Link an institution through Plaid, renew a link, or probe what is linked.
+Settle the sign-ins `link` left open, or probe what is linked.
 
-A link is made on Plaid's own page (Hosted Link):
+`login` opens no sign-in page and makes no new link. A `link` run that
+stopped can leave a sign-in page open, and the page can still make an
+Item. `login` asks Plaid once about each sign-in left open:
 
-* this prints the page's URL;
-* the sign-in happens in a browser;
-* this polls Plaid until the page has made the Item.
+* it made an Item: the Item is claimed and its token stored;
+* it made nothing and its page has closed: its record is removed;
+* its page is still open: it is left as it is.
 
-No web server runs and no redirect address exists.
-
-What `--item NAME` does depends on what is stored under that name:
-
-* nothing: a new Item is made and its access token is stored;
-* an Item: Link opens in update mode. The sign-in renews that Item, and
-  no second one is made;
-* a sign-in that was started and never settled: it is settled first. An
-  Item it made is claimed; a page still open is waited on again.
+A sign-in that a `link` run is still waiting on is left to that run.
+With no sign-in left open, `login` does nothing and asks Plaid nothing.
 
 `--check` reads only. It asks Plaid whether it accepts the app keys, then
-asks for each stored Item's state. Both calls are free and reach no
-institution.
+asks for each stored Item's state, and lists the sign-ins left open. Its
+calls are free and reach no institution.
 
-Every call belongs to one environment. Production is the default and
-reaches real institutions; `--sandbox` reaches Plaid's test institutions
-and sees only the Items made there.
+Every call belongs to one environment. Production is the default;
+`--sandbox` sees only the Items and sign-ins made in the Sandbox.
 
 Usage:
-    login.py --item NAME [--require PRODUCT] [--sandbox] [--mfa-timeout S]
-    login.py --item NAME --sandbox-institution ID [--require PRODUCT]
+    login.py [--item NAME] [--sandbox]
     login.py --check [--item NAME] [--sandbox]
 """
 
 from __future__ import annotations
 
 import argparse
-import dataclasses
-import hashlib
-import logging
-import os
 import sys
-import time
-from pathlib import Path
 
-from collectorkit import cli, session
+from collectorkit import cli
 
 import appkeys
 import items
+import link
 import plaidapi
 from appkeys import make_client
-
-log = logging.getLogger("plaid.login")
-
-# How long the sign-in page stays open and this command waits for it.
-DEFAULT_WAIT_SECONDS = 3600
-POLL_SECONDS = 3.0
-
-DEFAULT_COUNTRY_CODES = "US"
-
-# The product a new Item must support when --require names none.
-DEFAULT_REQUIRED = "transactions"
-
-# Rebound by the tests.
-_sleep = time.sleep
-_monotonic = time.monotonic
-_time = time.time
-
-
-class LinkFailed(Exception):
-    """A sign-in ended without the outcome asked for. `str()` is the whole
-    account of it for the person at the terminal."""
-
-
-def say(text: str = "") -> None:
-    print(text, flush=True)
+from link import say
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -83,561 +47,86 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     appkeys.add_args(p, "login.py")
     p.add_argument(
         "--item", metavar="NAME",
-        help="The local name of the Item to link, renew or check.")
+        help="Settle or check only the Item of this name.")
     p.add_argument(
         "--check", action="store_true",
         help="Probe the app keys and the stored Items, and change nothing. "
              "Exit 0 when Plaid accepts the keys and every Item is healthy.")
-    p.add_argument(
-        "--sandbox-institution", metavar="ID",
-        help="Sandbox only: make the test Item at this institution id "
-             "without the browser step. Implies --sandbox.")
-    p.add_argument(
-        "--require", choices=plaidapi.DATA_PRODUCTS, default=None,
-        help="The one product the login must support. Plaid offers only "
-             "institutions that have it and refuses a login with no account "
-             "it fits, so name `investments` for a login that holds only "
-             "brokerage accounts. The other data products are requested as "
-             f"optional. Default: {DEFAULT_REQUIRED}.")
-    p.add_argument(
-        "--country-codes", default=None, metavar="CC[,CC]",
-        help="Countries whose institutions the page offers. Falls back to "
-             f"PLAID_COUNTRY_CODES, then {DEFAULT_COUNTRY_CODES}.")
-    p.add_argument(
-        "--mfa-timeout", type=int, default=None, metavar="SECONDS",
-        help="How long the sign-in page stays valid and this command waits "
-             f"for the sign-in (default {DEFAULT_WAIT_SECONDS}).")
+    link.add_country_codes(p)
     cli.add_standard_args(p, verb="login")
     args = p.parse_args(argv)
 
-    if args.sandbox_institution:
-        args.sandbox = True
-    if args.check:
-        for flag, value in (("--require", args.require),
-                            ("--mfa-timeout", args.mfa_timeout),
-                            ("--sandbox-institution",
-                             args.sandbox_institution)):
-            if value is not None:
-                p.error(f"{flag} does not apply to --check")
-    elif not args.item:
-        p.error("--item NAME is required: it names the Item to link or "
-                "renew")
     if args.item:
         try:
             items.check_name(args.item)
         except ValueError as e:
             p.error(str(e))
-    if args.mfa_timeout is None:
-        args.mfa_timeout = DEFAULT_WAIT_SECONDS
-    elif not 60 <= args.mfa_timeout <= plaidapi.MAX_LINK_LIFETIME:
-        p.error(f"--mfa-timeout takes 60 to {plaidapi.MAX_LINK_LIFETIME} "
-                f"seconds")
-    raw = (args.country_codes or os.environ.get("PLAID_COUNTRY_CODES")
-           or DEFAULT_COUNTRY_CODES)
-    args.country_codes = [c.strip().upper() for c in raw.split(",")
-                          if c.strip()]
-    if not all(len(c) == 2 and c.isalpha() for c in args.country_codes):
-        p.error(f"country codes are two letters each, not {raw!r}")
+    if args.country_codes and not args.check:
+        p.error("--country-codes applies to --check only")
+    args.country_codes = link.country_codes(p, args.country_codes)
     return args
 
 
-# ---- reading a link token's sessions ---------------------------------------
-
-def _added_items(doc: dict) -> list[dict]:
-    """Every Item the token's sessions made, one entry per public token.
-
-    One token collects a session per visit to its page. A session can
-    report the same Item twice: in the current `results` field and in the
-    older `on_success` one. So the entries are keyed on the public token.
-    """
-    found: dict[str, dict] = {}
-
-    def note(public_token, institution):
-        if public_token and public_token not in found:
-            institution = institution or {}
-            found[public_token] = {
-                "public_token": public_token,
-                "institution_id": institution.get("institution_id"),
-                "institution_name": institution.get("name"),
-            }
-
-    for link_session in doc.get("link_sessions") or []:
-        results = link_session.get("results") or {}
-        for added in results.get("item_add_results") or []:
-            note(added.get("public_token"), added.get("institution"))
-        legacy = link_session.get("on_success") or {}
-        note(legacy.get("public_token"),
-             (legacy.get("metadata") or {}).get("institution"))
-    return list(found.values())
-
-
-def _exit_of(link_session: dict) -> dict | None:
-    """The exit a session ended with, when it did not end in a link."""
-    return link_session.get("exit") or link_session.get("on_exit")
-
-
-def _exit_text(exit_: dict) -> str:
-    """Why a session ended, in Plaid's own words where it gave any."""
-    error = exit_.get("error") or {}
-    text = error.get("display_message") or error.get("error_message")
-    if text:
-        code = error.get("error_code")
-        return f"{text} ({code})" if code else text
-    status = (exit_.get("metadata") or {}).get("status")
-    return (f"the page was closed before the sign-in finished"
-            f"{f' (status: {status})' if status else ''}")
-
-
-def _poll(client: plaidapi.Client, link_token: str) -> dict | None:
-    """One read of the token's sessions. A fault that can pass is logged
-    and returns None, so an hour's wait does not end on one bad minute.
-    Such a fault is no answer, a server error or a rate limit."""
-    try:
-        return client.link_token_get(link_token)
-    except plaidapi.TransportError as e:
-        log.warning("no answer from Plaid (%s); still waiting", e)
-    except plaidapi.PlaidError as e:
-        if not e.transient:
-            raise
-        log.warning("%s; still waiting", e)
-    return None
-
-
-def _sessions(doc: dict) -> list[dict]:
-    """The token's sessions, oldest first. Plaid lists them in no fixed
-    order; `started_at` is one fixed-width UTC format, so it sorts as
-    text."""
-    return sorted(doc.get("link_sessions") or [],
-                  key=lambda s: s.get("started_at") or "")
-
-
-def _log_progress(doc: dict, seen: set, ignore: set) -> None:
-    """Log what the sign-in page has done since the last read, in Plaid's
-    own event names. They say where in the flow a person is, and carry no
-    account data, so a pasted log shows how far a failed sign-in got.
-    Sessions in `ignore` ended before this run and are not replayed."""
-    # Plaid lists a session's events newest first and stamps them to the
-    # second; reversing before the stable sort keeps events of one second
-    # in the order they happened.
-    fresh = [e for s in _sessions(doc)
-             if s.get("link_session_id") not in ignore
-             for e in reversed(s.get("events") or [])
-             if e.get("event_id") not in seen]
-    for event in sorted(fresh, key=lambda e: e.get("timestamp") or ""):
-        seen.add(event.get("event_id"))
-        detail = event.get("event_metadata") or {}
-        extra = [str(detail[k]) for k in ("view_name", "error_code",
-                                          "exit_status") if detail.get(k)]
-        log.info("sign-in page: %s%s", event.get("event_name"),
-                 f" ({', '.join(extra)})" if extra else "")
-
-
-def _minutes(seconds: float) -> str:
-    n = max(1, round(seconds / 60))
-    return f"{n} minute{'' if n == 1 else 's'}"
-
-
-def _wait(client: plaidapi.Client, link_token: str, seconds: float,
-          outcome, ignore: frozenset = frozenset()):
-    """Poll the token's sessions until `outcome(doc)` returns a result
-    other than None, and return it. Raises LinkFailed when time runs out."""
-    deadline = _monotonic() + seconds
-    seen: set = set()
-    while True:
-        doc = _poll(client, link_token)
-        if doc is not None:
-            _log_progress(doc, seen, ignore)
-            result = outcome(doc)
-            if result is not None:
-                return result
-        if _monotonic() >= deadline:
-            raise LinkFailed(
-                f"The sign-in did not finish within {_minutes(seconds)}. "
-                f"Run login again: a sign-in that finished late is picked "
-                f"up then.")
-        _sleep(POLL_SECONDS)
-
-
-def _wait_for_new_item(client: plaidapi.Client, link_token: str, *,
-                       seconds: float, ignore: set) -> list[dict]:
-    """Wait until the page has made an Item, and return what it made.
-
-    Plaid reports an Item as soon as the accounts are confirmed, before
-    the page's last screens, and it stays made if the person then leaves.
-    So a public token ends the wait whatever else its session says.
-
-    Raises LinkFailed when the newest visit ended in an exit and made
-    nothing. `ignore` names the sessions that had ended before this wait
-    began: an exit from an earlier run says nothing about a visit under
-    way now. A tab that is simply closed never ends its session, and a
-    session can be marked finished before its result is readable, so
-    neither is read as an answer.
-    """
-    def outcome(doc):
-        added = _added_items(doc)
-        if added:
-            return added
-        fresh = [s for s in _sessions(doc)
-                 if s.get("link_session_id") not in ignore]
-        if fresh and fresh[-1].get("finished_at") and _exit_of(fresh[-1]):
-            raise LinkFailed(
-                f"Plaid reports: {_exit_text(_exit_of(fresh[-1]))}")
-        return None
-
-    return _wait(client, link_token, seconds, outcome, frozenset(ignore))
-
-
-def _wait_for_update(client: plaidapi.Client, link_token: str, *,
-                     seconds: float) -> None:
-    """Wait until an update-mode visit has run to its end. Raises
-    LinkFailed once a visit has ended in an exit and none has completed.
-
-    A completed update reports a public token like a new link does. It
-    stands for the Item that exists already, whose access token does not
-    change, so it is never exchanged.
-    """
-    def outcome(doc):
-        ended = [s for s in _sessions(doc) if s.get("finished_at")]
-        if any(not _exit_of(s) for s in ended):
-            return True
-        if ended:
-            raise LinkFailed(
-                f"The renewal did not finish. Plaid reports: "
-                f"{_exit_text(_exit_of(ended[-1]))}")
-        return None
-
-    _wait(client, link_token, seconds, outcome)
-
-
-# ---- reporting ---------------------------------------------------------------
-
-def _report_item(client: plaidapi.Client, item: items.Item) -> bool:
-    """Ask Plaid for the Item's state, print it, and return whether the
-    Item is usable. This is the proof a token works: one free read."""
-    try:
-        doc = client.item_get(item.access_token)
-    except plaidapi.PlaidError as e:
-        say(f"{item.name}: Plaid refuses the Item: {e}")
-        hint = items.remedy(item, e.error_code, e.error_type)
-        if hint:
-            say(f"  {hint}")
-        return False
-    except plaidapi.TransportError as e:
-        say(f"{item.name}: no answer from Plaid: {e}")
-        return False
-    state = doc.get("item") or {}
-    error = state.get("error")
-    if not error:
-        say(f"{item.name}: ok")
-    elif error.get("error_type") == "ITEM_ERROR":
-        say(f"{item.name}: needs a new sign-in")
-    else:
-        say(f"{item.name}: Plaid reports an error on the Item")
-
-    def row(label: str, value) -> None:
-        say(f"  {label:<16} {value}")
-
-    if error:
-        row("Plaid reports", f"{error.get('error_code')}: "
-                             f"{error.get('error_message')}")
-        hint = items.remedy(item, error.get("error_code"),
-                            error.get("error_type"))
-        if hint:
-            row("what to do", hint)
-    row("institution",
-        " ".join(str(v) for v in (
-            state.get("institution_name") or item.institution_name,
-            state.get("institution_id") or item.institution_id) if v) or "-")
-    row("environment", item.environment)
-    row("products", ", ".join(state.get("products") or []) or "-")
-    row("consent expires",
-        state.get("consent_expiration_time") or "no date reported")
-    status = doc.get("status") or {}
-    for product in ("transactions", "investments"):
-        updated = (status.get(product) or {}).get("last_successful_update")
-        if updated:
-            row(product, f"updated {updated}")
-    return not error
-
-
-# ---- storing -----------------------------------------------------------------
-
-def _free_name(secrets_dir: Path, wanted: str, item_id: str) -> str:
-    """`wanted`, or the nearest name no stored Item has. A token is never
-    left unstored for want of a name, so the last resort is a name derived
-    from the item id, which is always valid."""
-    candidates = [wanted] + [f"{wanted}-{n}" for n in range(2, 100)]
-    for name in candidates:
-        if (items.ITEM_NAME_RE.match(name)
-                and not items.token_path(secrets_dir, name).exists()):
-            return name
-    return "item-" + hashlib.sha256(item_id.encode()).hexdigest()[:12]
-
-
-def _claim(client: plaidapi.Client, secrets_dir: Path, name: str,
-           added: list[dict]) -> list[items.Item]:
-    """Exchange each public token and store the Item it stands for.
-
-    An item id that is stored already was claimed by an earlier run of the
-    same sign-in and is left as it is. A token that cannot be written is
-    revoked at Plaid, so no access exists that this deployment has no
-    record of.
-    """
-    known = {i.item_id: i
-             for i in items.of_environment(secrets_dir, client.environment)}
-    claimed, lost = [], []
-    for entry in added:
-        try:
-            exchanged = client.exchange_public_token(entry["public_token"])
-        except plaidapi.PlaidError as e:
-            if e.transient:
-                raise
-            # Plaid will not exchange it: a public token lives half an
-            # hour, and a sign-in settled later than that made an Item
-            # nothing can claim any more.
-            lost.append((entry.get("institution_name") or "an institution",
-                         e))
-            continue
-        if exchanged["item_id"] in known:
-            claimed.append(known[exchanged["item_id"]])
-            continue
-        item = items.Item(
-            name=_free_name(secrets_dir, name, exchanged["item_id"]),
-            environment=client.environment,
-            access_token=exchanged["access_token"],
-            item_id=exchanged["item_id"],
-            institution_id=entry.get("institution_id"),
-            institution_name=entry.get("institution_name"),
-            linked_at=session.iso_now(),
-        )
-        try:
-            items.save_item(secrets_dir, item)
-        except OSError as e:
-            raise LinkFailed(
-                f"The new Item's token could not be written "
-                f"({type(e).__name__}: {e.strerror or e}). "
-                f"{_revoke(client, item.access_token)}") from e
-        known[item.item_id] = item
-        claimed.append(item)
-    for institution, error in lost:
-        say(f"An earlier sign-in made an Item at {institution} that can no "
-            f"longer be claimed. Plaid reports: {error}")
-        say("On a Trial plan that Item still counts. The institution lists "
-            "the access under its connected apps, where it can be revoked.")
-    if lost and not claimed:
-        # Nothing more can come of this sign-in, so its record goes: kept,
-        # it would be found and fail the same way on every later run.
-        items.clear_pending(secrets_dir, name)
-        raise LinkFailed("No Item was stored. Run login again to link "
-                         "afresh.")
-    return claimed
-
-
-def _revoke(client: plaidapi.Client, access_token: str) -> str:
-    try:
-        client.item_remove(access_token)
-    except (plaidapi.PlaidError, plaidapi.TransportError) as e:
-        return (f"Plaid did not revoke it either ({e}), so the institution "
-                f"still lists the access; revoke it there.")
-    return ("Plaid has revoked it, so no access exists without a record. "
-            "On a Trial plan the Item still counts.")
-
-
-def _finish(client: plaidapi.Client, secrets_dir: Path, name: str,
-            added: list[dict]) -> int:
-    claimed = _claim(client, secrets_dir, name, added)
-    items.clear_pending(secrets_dir, name)
-    healthy = True
-    for item in claimed:
-        say()
-        say(f"Linked {item.institution_name or 'the institution'} as "
-            f"{item.name!r}. Token file: "
-            f"{items.token_path(secrets_dir, item.name)}")
-        healthy = _report_item(client, item) and healthy
-    stored = items.of_environment(secrets_dir, client.environment)
-    institutions = [i.institution_id for i in stored if i.institution_id]
-    if len(institutions) != len(set(institutions)):
-        say()
-        say("Two stored Items are at the same institution. Some "
-            "institutions keep only the newest link of a login; "
-            f"{items.command('login --check', client.environment)} shows "
-            f"which Items still answer.")
-    if client.environment == "production":
-        say()
-        say(f"{len(stored)} production Item(s) are stored here. A Trial "
-            f"plan allows ten, and removing one does not return its slot.")
-    return 0 if healthy else 1
-
-
-# ---- the three ways a link starts ------------------------------------------
-
-def _announce(url: str, environment: str, seconds: float, *,
-              renew: bool) -> None:
-    say()
-    say("Open this page in a browser and sign in at the institution"
-        + (" again:" if renew else ":"))
-    say()
-    say(f"    {url}")
-    say()
-    if environment == "sandbox":
-        say("Sandbox: the test login is user_good / pass_good.")
-    say(f"The page stays valid for {_minutes(seconds)}. Waiting for the "
-        f"sign-in to finish.")
-    say("Ctrl-C stops the wait; running login again picks the sign-in up.")
-
-
-def _start(client: plaidapi.Client, secrets_dir: Path,
-           args: argparse.Namespace) -> items.PendingLink:
-    """Ask Plaid for a sign-in page and write the session down before its
-    URL is shown. From that point the page can make an Item whether or not
-    this process still runs. The link token is then the one handle that
-    can ask Plaid what happened."""
-    required = args.require or DEFAULT_REQUIRED
-    doc = client.link_token_for_new_item(
-        required=required, country_codes=args.country_codes,
-        lifetime_seconds=args.mfa_timeout)
-    if not doc.get("hosted_link_url"):
-        raise LinkFailed("Plaid returned no sign-in page for the link.")
-    pending = items.PendingLink(
-        name=args.item, environment=client.environment,
-        link_token=doc["link_token"], hosted_link_url=doc["hosted_link_url"],
-        required=required, created_at=session.iso_now(),
-        expires_at=int(_time()) + args.mfa_timeout)
-    items.save_pending(secrets_dir, pending)
-    return pending
-
-
-def _renew(client: plaidapi.Client, item: items.Item,
-           args: argparse.Namespace) -> int:
-    say(f"Item {item.name!r} is linked already. Link opens in update mode: "
-        f"the sign-in renews this Item and makes no new one.")
-    try:
-        doc = client.link_token_for_update(
-            access_token=item.access_token, country_codes=args.country_codes,
-            lifetime_seconds=args.mfa_timeout)
-    except plaidapi.PlaidError as e:
-        # Update mode needs a token Plaid accepts. For the two answers
-        # that say it does not, the way on is not another renewal.
-        if e.error_code not in ("ITEM_NOT_FOUND", "INVALID_ACCESS_TOKEN"):
-            raise
-        raise LinkFailed(f"Plaid reports: {e}. "
-                         f"{items.remedy(item, e.error_code, e.error_type)}"
-                         ) from e
-    if not doc.get("hosted_link_url"):
-        raise LinkFailed("Plaid returned no sign-in page for the renewal.")
-    _announce(doc["hosted_link_url"], item.environment, args.mfa_timeout,
-              renew=True)
-    _wait_for_update(client, doc["link_token"], seconds=args.mfa_timeout)
-    say()
-    return 0 if _report_item(client, item) else 1
-
-
-def _sandbox_item(client: plaidapi.Client,
-                  args: argparse.Namespace) -> list[dict]:
-    """Make a test Item at a Sandbox institution with no browser step. The
-    products follow the same rule as a real link: the required one must be
-    offered, the others are added where the institution has them."""
-    required = args.require or DEFAULT_REQUIRED
-    institution = client.institution_get_by_id(
-        args.sandbox_institution, args.country_codes)["institution"]
-    offered = institution.get("products") or []
-    if required not in offered:
-        raise LinkFailed(
-            f"{institution.get('name')} does not offer {required}; it "
-            f"offers: {', '.join(sorted(offered))}")
-    products = [required] + [p for p in plaidapi.DATA_PRODUCTS
-                             if p != required and p in offered]
-    doc = client.sandbox_public_token_create(
-        args.sandbox_institution, products)
-    return [{"public_token": doc["public_token"],
-             "institution_id": institution.get("institution_id"),
-             "institution_name": institution.get("name")}]
-
-
-def _with_expiry(pending: items.PendingLink, doc: dict,
-                 secrets_dir: Path) -> items.PendingLink:
-    """`pending` with the time its page stops accepting a sign-in: the one
-    its file records, else the `expiration` Plaid states for its link
-    token. Raises ItemStoreError when neither states one. The file itself
-    is left as it is."""
-    if isinstance(pending.expires_at, (int, float)) and not isinstance(
-            pending.expires_at, bool):
-        return pending
-    try:
-        stated = plaidapi.instant(doc.get("expiration"))
-    except (TypeError, ValueError):
-        stated = None
-    if stated is None:
-        raise items.ItemStoreError(
-            f"{items.pending_path(secrets_dir, pending.name)} records no "
-            f"usable expiry, and Plaid states none for its sign-in either. "
-            f"Nothing was changed. If no sign-in on that page is still under "
-            f"way, move the file out of the secrets dir and run login again.")
-    return dataclasses.replace(pending, expires_at=stated)
-
-
-def link(args: argparse.Namespace, client: plaidapi.Client) -> int:
-    """`login --item NAME`: settle, renew or make the Item of that name."""
-    secrets_dir, name = args.secrets_dir, args.item
-    existing = items.load_item(secrets_dir, name)
-    pending = items.load_pending(secrets_dir, name)
-    for record in (existing, pending):
-        if record is not None:
-            items.require_environment(name, record.environment,
-                                      client.environment)
-    if existing is not None and (args.require or args.sandbox_institution):
-        raise SystemExit(
-            f"Item {name!r} exists and keeps the products it was linked "
-            f"with; --require and --sandbox-institution apply to a new "
-            f"Item only.")
-
-    # A sign-in an earlier run started comes first: it may have made an
-    # Item nothing here has claimed yet.
-    ignore: set = set()
-    if pending is not None:
-        try:
-            doc = client.link_token_get(pending.link_token)
-        except plaidapi.PlaidError as e:
-            # Only Plaid's word that the link token is gone ends a saved
-            # sign-in. Any other error says nothing about its page.
-            if e.error_code != "INVALID_LINK_TOKEN":
-                raise
-            log.info("Plaid no longer knows the saved sign-in (%s)", e)
-            doc = None
-        if doc is not None and (added := _added_items(doc)):
-            return _finish(client, secrets_dir, name, added)
-        if doc is not None and existing is None:
-            pending = _with_expiry(pending, doc, secrets_dir)
-        if (doc is None or existing is not None
-                or pending.expires_at <= _time()):
-            items.clear_pending(secrets_dir, name)
-            pending = None
+def settle_all(args: argparse.Namespace, environment: str) -> int:
+    """`login`: settle every sign-in `link` left open. The client is made
+    only once there is a sign-in to ask about, so a deployment with none
+    needs no keys for this."""
+    names = [args.item] if args.item else None
+    left, unreadable = items.open_sign_ins(args.secrets_dir, environment,
+                                           names)
+    for e in unreadable:
+        say(str(e))
+    if not left:
+        if args.item:
+            say(f"No sign-in of {args.item!r} is left open. "
+                f"{items.command(f'link --item {args.item}', environment)} "
+                f"links or renews it.")
         else:
-            ignore = {s.get("link_session_id") for s in _sessions(doc)
-                      if s.get("finished_at")}
+            say(f"No {environment} sign-in is left open.")
+        return 1 if unreadable else 0
 
-    if existing is not None:
-        return _renew(client, existing, args)
-    if args.sandbox_institution:
-        return _finish(client, secrets_dir, name, _sandbox_item(client, args))
-    if pending is None:
-        pending = _start(client, secrets_dir, args)
-    seconds = min(args.mfa_timeout, max(1, pending.expires_at - _time()))
-    _announce(pending.hosted_link_url, client.environment, seconds,
-              renew=False)
-    added = _wait_for_new_item(client, pending.link_token, seconds=seconds,
-                               ignore=ignore)
-    status = _finish(client, secrets_dir, name, added)
-    # Plaid reports the Item before the page's last screens, so the page
-    # is usually still open at this point.
-    say()
-    say("The link is stored. The rest of the page can be finished or "
-        "closed.")
+    client = make_client(environment, args.client_id)
+    status = 1 if unreadable else 0
+    for found in left:
+        name = found.name
+        with items.held(args.secrets_dir, name) as mine:
+            if not mine:
+                say(f"{name}: a link run is waiting on this sign-in, and it "
+                    f"is left to that run.")
+                continue
+            try:
+                # Read again under the hold: a run that ended a moment ago
+                # may have settled it.
+                pending = items.load_pending(args.secrets_dir, name)
+                if pending is None:
+                    continue
+                settled = link.settle(
+                    client, args.secrets_dir, pending,
+                    drop=items.load_item(args.secrets_dir, name) is not None)
+            except (link.LinkFailed, items.ItemStoreError) as e:
+                say(f"{name}: {e}")
+                status = 1
+                continue
+            except (plaidapi.PlaidError, plaidapi.TransportError) as e:
+                say(f"{name}: Plaid could not say how the sign-in ended "
+                    f"({e}). Its record stays.")
+                status = 1
+                continue
+        if settled.status is not None:
+            status = max(status, settled.status)
+        elif settled.pending is None:
+            say(f"{name}: the sign-in made no Item. Its record is removed.")
+        else:
+            say(f"{name}: the sign-in page is open until "
+                f"{link.clock(settled.pending.expires_at)}. An Item made "
+                f"there is claimed by the next "
+                f"{items.command('login', environment)}.")
     return status
 
 
 def check(args: argparse.Namespace, client: plaidapi.Client) -> int:
-    """`login --check`: the app keys, then each Item, in one environment."""
+    """`login --check`: the app keys, then each Item, in one environment,
+    then the sign-ins left open."""
     environment = client.environment
     try:
         client.institutions_first(args.country_codes)
@@ -648,45 +137,41 @@ def check(args: argparse.Namespace, client: plaidapi.Client) -> int:
         say(f"{environment}: no answer from Plaid: {e}")
         return 1
     say(f"{environment}: Plaid accepts the app keys")
-    linked, unreadable = items.select(args.secrets_dir, environment,
-                                      [args.item] if args.item else None)
+    names = [args.item] if args.item else None
+    linked, unreadable = items.select(args.secrets_dir, environment, names)
     for e in unreadable:
         say(str(e))
-    if unreadable and not linked:
-        return 1
-    if not linked:
+    if not linked and not unreadable:
         say(f"no {environment} Item is linked; "
-            f"{items.command('login --item NAME', environment)} links "
-            f"one")
-        return 1
+            f"{items.command('link --item NAME', environment)} links one")
     # Every Item is reported, including the ones after a failing one.
-    healthy = all([_report_item(client, i) for i in linked])
-    return 0 if healthy and not unreadable else 1
+    healthy = all([link.report_item(client, i) for i in linked])
+    # A sign-in left open is no fault of an Item, so it is listed and
+    # leaves the exit status alone.
+    left, damaged = items.open_sign_ins(args.secrets_dir, environment, names)
+    for e in damaged:
+        say(str(e))
+    for pending in left:
+        say(f"{pending.name}: a sign-in started {pending.created_at} is left "
+            f"open; {items.command('login', environment)} settles it")
+    return 0 if linked and healthy and not unreadable else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
     appkeys.source_env_file(args.env_file)
-    client = make_client(appkeys.environment(args), args.client_id)
+    environment = appkeys.environment(args)
     try:
-        return check(args, client) if args.check else link(args, client)
-    except LinkFailed as e:
-        say()
-        say(str(e))
-        return 1
+        if args.check:
+            return check(args, make_client(environment, args.client_id))
+        return settle_all(args, environment)
     except items.ItemStoreError as e:
         say(str(e))
         return 1
-    except plaidapi.PlaidError as e:
-        say(f"Plaid reports: {e}")
-        return 1
-    except plaidapi.TransportError as e:
-        say(f"No answer from Plaid: {e}")
-        return 1
     except KeyboardInterrupt:
         say()
-        say("Stopped. Running login again picks up where this left off.")
+        say("Stopped.")
         return 130
 
 

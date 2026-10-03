@@ -2,7 +2,7 @@
 The Items one deployment has linked, and the files that hold them.
 
 An Item is one login at one institution. Each has a local name, chosen at
-`login`, and one credential file under the secrets dir:
+`link`, and one credential file under the secrets dir:
 
     plaid-token-<name>.json   the Item's access token, its ids and its
                               environment. Written once, when the Item is
@@ -10,6 +10,9 @@ An Item is one login at one institution. Each has a local name, chosen at
     plaid-link-<name>.json    a Hosted Link session that has not been
                               settled yet. Written before its URL is
                               shown, removed once the outcome is stored.
+    plaid-link-<name>.lock    held by the one run that works on that name's
+                              sign-in, so two runs never claim one Item.
+                              Removed when that run ends.
 
 One file per Item, so linking one never rewrites the token of another. A
 token cannot be fetched again: Plaid shows it once, at the exchange, and a
@@ -20,9 +23,13 @@ as "no such Item" — the caller's next step would be to link a second one.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
+import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -89,6 +96,10 @@ def pending_path(secrets_dir: Path, name: str) -> Path:
     return Path(secrets_dir) / f"{_LINK_PREFIX}{check_name(name)}.json"
 
 
+def lock_path(secrets_dir: Path, name: str) -> Path:
+    return Path(secrets_dir) / f"{_LINK_PREFIX}{check_name(name)}.lock"
+
+
 def _read(path: Path, kind: type, prefix: str):
     """The record in `path` as a `kind`, or ItemStoreError. A field the
     file lacks reads as None. An error never quotes the file: it holds a
@@ -139,12 +150,14 @@ def save_item(secrets_dir: Path, item: Item) -> None:
     session.save_state(token_path(secrets_dir, item.name), asdict(item))
 
 
-def _stored_names(secrets_dir: Path) -> list[str]:
-    """The name of every stored Item. A file under the token prefix whose
-    name is not an Item name is some other file and is passed over."""
+def _stored_names(secrets_dir: Path, prefix: str = _TOKEN_PREFIX
+                  ) -> list[str]:
+    """The name of every record under `prefix`: by default the stored
+    Items. A file under the prefix whose name is not an Item name is some
+    other file and is passed over."""
     names = []
-    for path in sorted(Path(secrets_dir).glob(f"{_TOKEN_PREFIX}*.json")):
-        name = path.name[len(_TOKEN_PREFIX):-len(".json")]
+    for path in sorted(Path(secrets_dir).glob(f"{prefix}*.json")):
+        name = path.name[len(prefix):-len(".json")]
         if not ITEM_NAME_RE.match(name):
             log.warning("ignoring %s: its name is not an Item name", path.name)
             continue
@@ -178,7 +191,7 @@ def remedy(item: Item, error_code: str | None,
     if error_code == "ITEM_NOT_FOUND":
         return (f"Plaid no longer has this Item, and update mode cannot "
                 f"renew it. The only way back is a new link under a new "
-                f"name, {command('login --item NEW-NAME', item.environment)};"
+                f"name, {command('link --item NEW-NAME', item.environment)};"
                 f" on a Trial plan it uses one more of the ten Items. Every "
                 f"run reports this Item while "
                 f"{_TOKEN_PREFIX}{item.name}.json is in the secrets dir.")
@@ -189,7 +202,7 @@ def remedy(item: Item, error_code: str | None,
                 f"and {_TOKEN_PREFIX}{item.name}.json must match its "
                 f"backup. A new link does not repair this.")
     if error_type == "ITEM_ERROR":
-        return (f"{command(f'login --item {item.name}', item.environment)} "
+        return (f"{command(f'link --item {item.name}', item.environment)} "
                 f"renews the sign-in.")
     return ""
 
@@ -219,7 +232,7 @@ def select(secrets_dir: Path, environment: str, names: list[str] | None
             if item is None:
                 raise SystemExit(
                     f"no Item is named {name!r}; "
-                    f"{command(f'login --item {name}', environment)} links "
+                    f"{command(f'link --item {name}', environment)} links "
                     f"one")
             require_environment(name, item.environment, environment)
             chosen.append(item)
@@ -253,3 +266,45 @@ def save_pending(secrets_dir: Path, pending: PendingLink) -> None:
 
 def clear_pending(secrets_dir: Path, name: str) -> None:
     pending_path(secrets_dir, name).unlink(missing_ok=True)
+
+
+def open_sign_ins(secrets_dir: Path, environment: str,
+                  names: list[str] | None = None
+                  ) -> tuple[list[PendingLink], list[ItemStoreError]]:
+    """The sign-ins of one environment that are not settled yet, and the
+    records that could not be read. With `names`, only theirs."""
+    found, unreadable = [], []
+    for name in _stored_names(secrets_dir, _LINK_PREFIX):
+        if names and name not in names:
+            continue
+        try:
+            pending = load_pending(secrets_dir, name)
+        except ItemStoreError as e:
+            unreadable.append(e)
+            continue
+        if pending is not None and pending.environment == environment:
+            found.append(pending)
+    return found, unreadable
+
+
+@contextmanager
+def held(secrets_dir: Path, name: str) -> Iterator[bool]:
+    """Hold the sign-in of `name` while this run works on it. Yields False,
+    and holds nothing, when another run holds it already. The lock's file
+    goes when the run ends. A run that crashes leaves the file, and the
+    next run takes it over: the system releases the lock of a process
+    that has ended."""
+    path = lock_path(secrets_dir, name)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            path.unlink(missing_ok=True)
+    finally:
+        os.close(fd)

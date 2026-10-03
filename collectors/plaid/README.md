@@ -54,14 +54,17 @@ all collectors share.
 
 ## What it does
 
-- **`login --item NAME`** links one institution. It prints the URL of a
+- **`link --item NAME`** links one institution. It prints the URL of a
   sign-in page that Plaid hosts. The sign-in at the institution happens
   on that page, in an ordinary browser. The collector waits, then stores
   the access token.
-- **`login --item NAME`** on a name that is linked already renews that
+- **`link --item NAME`** on a name that is linked already renews that
   link. No second link is made.
-- **`login --check`** reports whether Plaid accepts the keys, and the
-  state of every linked institution. It changes nothing.
+- **`login`** settles the sign-ins that a stopped `link` left open. It
+  never opens a sign-in page. With none left open, it does nothing.
+- **`login --check`** reports whether Plaid accepts the keys, the state
+  of every linked institution, and the sign-ins left open. It changes
+  nothing.
 - **`download`** reads what Plaid holds for every linked institution:
   accounts and balances, holdings, the bank and card ledger, investment
   transactions, and loan and card terms. It saves Plaid's answers as
@@ -79,9 +82,10 @@ short name for it, such as `bank` or `broker`.
 
 ```sh
 ./plaid login --check                                # keys and links
-./plaid login --item bank                            # link a bank or a card
-./plaid login --item broker --require investments    # link a broker
-./plaid login --item bank                            # later: renew the link
+./plaid link --item bank                             # link a bank or a card
+./plaid link --item broker --require investments     # link a broker
+./plaid link --item bank                             # later: renew the link
+./plaid login                                        # settle a stopped link
 ./plaid download --lookback all                      # first run: all history
 ./plaid download                                     # later: the last ~90 days
 ./plaid download --item broker --dry-run             # what a run would read
@@ -102,8 +106,8 @@ needs no real login. Its runs belong in a data dir of their own, never in
 a deployment's:
 
 ```sh
-./plaid login --item test-bank --sandbox             # sign in as user_good / pass_good
-./plaid login --item test-bank --sandbox-institution ins_109508   # no browser
+./plaid link --item test-bank --sandbox              # sign in as user_good / pass_good
+./plaid link --item test-bank --sandbox-institution ins_109508    # no browser
 ./plaid login --check --sandbox
 ./plaid download --sandbox --lookback 2y --data-dir ~/plaid-sandbox
 ```
@@ -185,7 +189,7 @@ The Trial plan charges nothing. A paid plan charges per Item, by product:
 
 - **One subscription per product.** Every link asks for all three data
   products. The product that `--require` names is always added. The
-  other two are added where a shared account supports them. `login`
+  other two are added where a shared account supports them. `link`
   shows the products of each new link.
 - **Investment transactions are one more subscription.** It starts with
   the first `download` of an Item that has the `investments` product.
@@ -216,7 +220,7 @@ institution on the sign-in page.
 
 ## The sign-in page
 
-`login` prints a URL and waits. The page stays valid for one hour. In
+`link` prints a URL and waits. The page stays valid for one hour. In
 the Sandbox it shows these screens:
 
 1. Plaid's consent screen.
@@ -230,12 +234,21 @@ The collector stores the link as soon as the accounts are confirmed. The
 terminal then shows the institution, its products and the date its
 consent expires.
 
-When the sign-in is closed or times out, run the same command again. It
-shows the same page while the page is still valid. A sign-in that
-finished late is picked up.
+The wait can stop without a link: Ctrl-C, an exit on the page, or the
+hour running out. `link` then asks Plaid once more how the sign-in went:
+
+- an Item that the page made is stored;
+- a page that has closed leaves nothing behind;
+- a page that is still open can still make an Item. Plaid cannot close
+  a page early, so the sign-in's record stays until the page closes.
+
+`login` settles such a record. It stores an Item that the page made,
+and removes the record once the page has closed. An orchestrator that
+runs `login`, `download` and `load` in turn settles it on its next run.
+`link` on the same name shows the same page again while it is open.
 
 Plaid states the purpose of the data on its consent screen. When no
-purpose is set for the account, `login` prints Plaid's error. A purpose
+purpose is set for the account, `link` prints Plaid's error. A purpose
 can be selected at <https://dashboard.plaid.com/link/data-transparency-v5>.
 
 ## Where things are stored
@@ -244,7 +257,8 @@ can be selected at <https://dashboard.plaid.com/link/data-transparency-v5>.
 ~/.secrets/
 ├── plaid.env                  the keys
 ├── plaid-token-<name>.json    one linked institution: its access token
-└── plaid-link-<name>.json     a sign-in that is still open
+├── plaid-link-<name>.json     a sign-in that is still open
+└── plaid-link-<name>.lock     present while a run works on that sign-in
 
 $XDG_DATA_HOME/wealthdb/plaid/
 └── <name>/                    one tree per Item: one linked login
@@ -310,7 +324,7 @@ gold. The [adapter](../../wealthdb/docs/adapters/plaid.md) says why.
 
 `login --check` and `download` show what Plaid reports, and what to do:
 
-- **A new sign-in is needed.** `login --item NAME` renews the link in
+- **A new sign-in is needed.** `link --item NAME` renews the link in
   place. It makes no new Item.
 - **Plaid no longer has the Item** (`ITEM_NOT_FOUND`). It was removed at
   Plaid, for example at <https://my.plaid.com>. Nothing renews it. A new

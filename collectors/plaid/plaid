@@ -4,16 +4,23 @@
 # Host-venv collector (no Docker): runs the collector's own .py under its
 # .venv. Reads banks, brokers and card issuers through Plaid. Each
 # institution login is one Plaid Item with a local name. Subcommands:
-#   login --item NAME   Link an institution, or renew a link that exists.
+#   link --item NAME    Link an institution, or renew a link that exists.
 #                       Prints the URL of Plaid's sign-in page and waits
 #                       for the sign-in to finish in a browser. A name
 #                       that is linked already opens in update mode: the
 #                       same Item is renewed and no new one is made.
 #                       --require PRODUCT names the product the login must
 #                       support (default transactions; investments for a
-#                       login with brokerage accounts only).
-#   login --check       Probe the app keys and every stored Item. Reads
-#                       only; exit 0 when all of it is healthy.
+#                       login with brokerage accounts only). A wait that
+#                       stops claims an Item the page made; the sign-in's
+#                       record stays only while its page is open.
+#   login               Settle the sign-ins link left open: claim an Item
+#                       one made, remove the record of a page that has
+#                       closed. Opens no page; with none left open, it
+#                       does nothing.
+#   login --check       Probe the app keys and every stored Item, and list
+#                       the sign-ins left open. Reads only; exit 0 when the
+#                       keys and every Item are healthy.
 #   download            Read every linked Item into bronze: accounts and
 #                       balances, holdings, both ledgers, liabilities. One
 #                       run per Item, under <data-dir>/<item>/<UTC-ts>/.
@@ -29,7 +36,7 @@
 #                       whole runs that did not complete. --dry-run prints
 #                       the plan first.
 #
-# --sandbox on login and download uses Plaid's test institutions, the
+# --sandbox on link, login and download uses Plaid's test institutions, the
 # Sandbox secret, and only the Items made there. Sandbox downloads take a
 # --data-dir of their own. `<verb> --help` lists every flag of a verb.
 #
@@ -57,10 +64,10 @@ case "$cmd" in
         awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
         exit 0
         ;;
-    login|download|load|prune)
+    link|login|download|load|prune)
         ;;
     *)
-        echo "plaid: unknown command '$cmd' (expected: login|download|load|prune)" >&2
+        echo "plaid: unknown command '$cmd' (expected: link|login|download|load|prune)" >&2
         exit 2
         ;;
 esac
@@ -79,8 +86,8 @@ host_source_env_file
 py="$(host_python)"
 
 case "$cmd" in
-    login)
-        exec "$py" "$HERE/login.py" --secrets-dir "$SECRETS_DIR" \
+    link|login)
+        exec "$py" "$HERE/$cmd.py" --secrets-dir "$SECRETS_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     download)

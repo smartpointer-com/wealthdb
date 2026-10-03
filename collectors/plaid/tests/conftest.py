@@ -249,14 +249,15 @@ class Clock:
 
 @pytest.fixture
 def plaid(monkeypatch):
-    """`login` wired to a FakePlaid and a clock that needs no waiting.
-    Returns a factory, so a test picks the environment."""
+    """`link` and `login` wired to a FakePlaid and a clock that needs no
+    waiting. Returns a factory, so a test picks the environment."""
+    import link
     import login
 
     clock = Clock()
-    monkeypatch.setattr(login, "_sleep", clock.sleep)
-    monkeypatch.setattr(login, "_monotonic", clock.monotonic)
-    monkeypatch.setattr(login, "_time", clock.time)
+    monkeypatch.setattr(link, "_sleep", clock.sleep)
+    monkeypatch.setattr(link, "_monotonic", clock.monotonic)
+    monkeypatch.setattr(link, "_time", clock.time)
     monkeypatch.delenv("PLAID_ENV_FILE", raising=False)
     monkeypatch.delenv("PLAID_COUNTRY_CODES", raising=False)
 
@@ -274,6 +275,7 @@ def plaid(monkeypatch):
                 f"reached for one")
         return made[environment]
 
-    monkeypatch.setattr(login, "make_client", make_client)
+    for module in (link, login):
+        monkeypatch.setattr(module, "make_client", make_client)
     make.clock = clock
     return make

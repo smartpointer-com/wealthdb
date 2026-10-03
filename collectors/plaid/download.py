@@ -466,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
     if not chosen:
         if not unreadable:
             log.error("no %s Item is linked; %s links one", environment,
-                      items.command("login --item NAME", environment))
+                      items.command("link --item NAME", environment))
         return 1
     since, until = cli.resolve_lookback(args)
     client = make_client(environment, args.client_id)

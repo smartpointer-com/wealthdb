@@ -545,11 +545,11 @@ def test_an_item_that_needs_a_new_sign_in_fails_its_run(dl, caplog):
     run_dir, manifest = the_run(dl)
     assert manifest["status"] == "failed"
     assert "ITEM_LOGIN_REQUIRED" in manifest["reason"]
-    assert ("`login --item bank --sandbox` renews the sign-in"
+    assert ("`link --item bank --sandbox` renews the sign-in"
             in manifest["reason"])
     assert files_of(run_dir) == ["run.json"]
     assert fake.called("accounts") == []
-    assert "`login --item bank --sandbox` renews the sign-in" in caplog.text
+    assert "`link --item bank --sandbox` renews the sign-in" in caplog.text
 
 
 def test_another_error_on_the_item_fails_its_run_with_plaids_text(dl):
@@ -564,7 +564,7 @@ def test_another_error_on_the_item_fails_its_run_with_plaids_text(dl):
     _, manifest = the_run(dl)
     assert manifest["status"] == "failed"
     assert "synthetic institution text" in manifest["reason"]
-    assert "login --item" not in manifest["reason"]
+    assert "link --item" not in manifest["reason"]
 
 
 def test_an_item_plaid_no_longer_has_says_so(dl, caplog):
@@ -578,7 +578,7 @@ def test_an_item_plaid_no_longer_has_says_so(dl, caplog):
     _, manifest = the_run(dl)
     reason = manifest["reason"]
     assert "Plaid no longer has this Item" in reason
-    assert "`login --item NEW-NAME --sandbox`" in reason
+    assert "`link --item NEW-NAME --sandbox`" in reason
     assert "while plaid-token-bank.json is in the secrets dir" in reason
     assert "renews" not in reason
     assert "Plaid no longer has this Item" in caplog.text
@@ -834,8 +834,8 @@ def test_an_item_of_the_other_environment_is_refused(dl, stored, argv, word):
 
 
 @pytest.mark.parametrize("environment,argv,hint", [
-    ("sandbox", ["--sandbox"], "`login --item NAME --sandbox` links one"),
-    ("production", [], "`login --item NAME` links one"),
+    ("sandbox", ["--sandbox"], "`link --item NAME --sandbox` links one"),
+    ("production", [], "`link --item NAME` links one"),
 ])
 def test_nothing_linked_fails_and_names_the_environments_command(
         dl, caplog, environment, argv, hint):
@@ -846,7 +846,7 @@ def test_nothing_linked_fails_and_names_the_environments_command(
 
 def test_an_unknown_sandbox_item_suggests_a_sandbox_link(dl):
     dl()
-    with pytest.raises(SystemExit, match="`login --item absent --sandbox`"):
+    with pytest.raises(SystemExit, match="`link --item absent --sandbox`"):
         run(dl, "--sandbox", "--item", "absent")
 
 

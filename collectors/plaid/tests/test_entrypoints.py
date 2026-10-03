@@ -17,7 +17,8 @@ WRAPPER = HERE / "plaid"
 
 
 @pytest.mark.parametrize("script,flag", [
-    ("login.py", "--check"), ("download.py", "--lookback"),
+    ("link.py", "--require"), ("login.py", "--check"),
+    ("download.py", "--lookback"),
     ("load.py", "--force"), ("prune.py", "--min-age-hours")])
 def test_each_entry_point_builds_its_help(script, flag):
     result = subprocess.run([sys.executable, str(HERE / script), "--help"],
@@ -51,7 +52,8 @@ def test_the_wrapper_prints_help_for_no_arguments(tmp_path):
     for argv in ((), ("help",), ("--help",), ("-h",)):
         result = _wrapper(tmp_path, *argv)
         assert result.returncode == 0, result.stderr
-        for verb in ("login --item NAME", "download", "load", "prune"):
+        for verb in ("link --item NAME", "login --check", "download",
+                     "load", "prune"):
             assert verb in result.stdout
         assert "<data-dir>/<item>/<item>.db" in result.stdout
     assert not (tmp_path / "data").exists()
@@ -64,15 +66,24 @@ def test_the_wrapper_refuses_a_verb_it_does_not_have(tmp_path):
     assert not (tmp_path / "data").exists()
 
 
-def test_login_without_an_item_runs_nothing(tmp_path):
+def test_link_without_an_item_runs_nothing(tmp_path):
     # No arguments must never start an action: here that means no link.
-    result = _wrapper(tmp_path, "login")
+    result = _wrapper(tmp_path, "link")
     assert result.returncode == 2
     assert "--item NAME is required" in result.stderr
     assert not (tmp_path / "secrets").exists()
 
 
-@pytest.mark.parametrize("verb", ["login", "download", "prune"])
+def test_login_with_nothing_left_open_is_a_clean_no_op(tmp_path):
+    # What an orchestrator's login -> download -> load runs first. It needs
+    # no app keys and asks Plaid nothing when no sign-in is left open.
+    result = _wrapper(tmp_path, "login")
+    assert result.returncode == 0, result.stderr
+    assert "No production sign-in is left open." in result.stdout
+    assert not (tmp_path / "secrets").exists()
+
+
+@pytest.mark.parametrize("verb", ["link", "login", "download", "prune"])
 def test_the_silver_db_flag_is_refused_where_nothing_reads_it(tmp_path,
                                                                verb):
     result = _wrapper(tmp_path, verb, "--silver-db", str(tmp_path / "x.db"))
