@@ -150,9 +150,10 @@ def load_env_file(path, override_vars, *, logger,
             if line.startswith("export "):
                 line = line[len("export "):]
             if "=" not in line:
+                # Not shown: such a line is often a value pasted on a
+                # line of its own, and the value may be a secret.
                 raise SystemExit(
-                    f"env file {path}:{lineno}: not a KEY=VALUE line: "
-                    f"{raw.rstrip()!r}"
+                    f"env file {path}:{lineno}: not a KEY=VALUE line"
                 )
             key, _, value = line.partition("=")
             key = key.strip()

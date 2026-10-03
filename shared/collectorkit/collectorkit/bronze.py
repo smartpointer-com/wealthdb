@@ -64,6 +64,16 @@ def iter_run_dirs(bronze_dir: Path):
             yield child
 
 
+def read_manifest(path: Path) -> dict | None:
+    """The JSON object in the run manifest at `path`, or ``None`` when the
+    file is absent or unreadable, or holds no JSON object."""
+    try:
+        meta = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
 def run_status(run_json_path: Path) -> str | None:
     """The ``status`` field of a bronze run's ``run.json``, or ``None`` when
     the manifest is unreadable/corrupt or carries no ``status`` key.
@@ -78,11 +88,7 @@ def run_status(run_json_path: Path) -> str | None:
     caller keeps it pending and surfaces any real error at load time rather
     than skipping it silently here.
     """
-    try:
-        meta = json.loads(run_json_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return meta.get("status") if isinstance(meta, dict) else None
+    return (read_manifest(run_json_path) or {}).get("status")
 
 
 # Statuses a run.json carries while its dump is not one to load: the walk is

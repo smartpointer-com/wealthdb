@@ -54,7 +54,6 @@ never deletes or rewrites a load input.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections import deque
@@ -291,7 +290,7 @@ class SkipSet:
             state, _reason = prune.classify(run_dir, prune.LENIENT_CLASSIFY_CFG)
             if state != prune.COMPLETE:
                 continue
-            manifest = _read_manifest(run_dir)
+            manifest = bronze.read_manifest(run_dir / "run.json")
             for ref in extract(run_dir, manifest):
                 if (fresh_delta is not None and ref.doc_date is not None
                         and (now - ref.doc_date) < fresh_delta):
@@ -330,17 +329,6 @@ class SkipSet:
 
     def __len__(self) -> int:
         return sum(len(dq) for dq in self._index.values())
-
-
-def _read_manifest(run_dir: Path, manifest_name: str = "run.json") -> dict | None:
-    """Best-effort parse of a run's manifest for the ``extract`` hook; ``None``
-    on any absence/read/parse error (the hook must tolerate that)."""
-    path = run_dir / manifest_name
-    try:
-        meta = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return meta if isinstance(meta, dict) else None
 
 
 # ---------------------------------------------------------------------------

@@ -247,6 +247,18 @@ class BronzeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             bronze.parse_run_ts("not-a-run-dir")
 
+    def test_read_manifest_is_a_json_object_or_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "run.json"
+            self.assertIsNone(bronze.read_manifest(path))  # absent
+            for raw in (b"{", b"[]", b"\xff"):
+                path.write_bytes(raw)
+                self.assertIsNone(bronze.read_manifest(path))
+            path.write_text('{"status": "complete"}')
+            self.assertEqual(bronze.read_manifest(path),
+                             {"status": "complete"})
+            self.assertEqual(bronze.run_status(path), "complete")
+
 
 class EnvFileTest(unittest.TestCase):
     def test_a_syntax_error_names_the_line_and_never_shows_it(self):
@@ -438,6 +450,15 @@ class HandRolledEnvFileEquivalenceTest(unittest.TestCase):
                     _oracle_load(p, _OVR, {})
                 with self.assertRaises(SystemExit, msg=f"helper {name}"):
                     self._run_helper(p, _OVR, {}, False)
+
+    def test_a_malformed_line_is_named_and_never_shown(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "pasted.env"
+            p.write_text("CRED_A=ok\nSYNTHETIC-VALUE\n")
+            with self.assertRaises(SystemExit) as caught:
+                self._run_helper(p, _OVR, {}, False)
+            self.assertIn(f"{p}:2", str(caught.exception))
+            self.assertNotIn("SYNTHETIC-VALUE", str(caught.exception))
 
     def test_override_semantics(self):
         # Override keys: file wins over an inherited host value.
