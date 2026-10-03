@@ -56,7 +56,8 @@ def source_env_file(explicit: Path | None) -> None:
     if named is None:
         return
     if not named.is_file():
-        raise SystemExit(f"--env-file does not exist: {named}")
+        raise SystemExit(f"{'--env-file' if explicit else 'PLAID_ENV_FILE'} "
+                         f"names no file: {named}")
     try:
         envfile.source_env_file(named, prefer_file=True)
     except ValueError as e:

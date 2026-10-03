@@ -9,26 +9,13 @@ logged or written.
 Two kinds of list limit what the collector may ask of Plaid:
 
 * ENDPOINTS, SANDBOX_ENDPOINTS and BILLED_ENDPOINTS are every route the
-  client will call. The second applies on the Sandbox host only. The
-  third holds the reads Plaid bills per successful call on a paid plan.
-  On Production the client calls one of them only when the deployment
-  opts in to it (plaid.cfg, read by config.py); the Sandbox never bills.
-  A route outside the lists is refused before any request is built, so
-  adding one is a reviewed edit here and in AGENTS.md, never a string at
-  a call site.
+  client will call. A route outside them is refused before any request
+  is built, so adding one is a reviewed edit here and in AGENTS.md, never
+  a string at a call site.
 * DATA_PRODUCTS is every product a link may request. None of these can
   move money.
 
-Reading a product can still change what an Item is billed for:
-
-* The first read of investment transactions starts Plaid's subscription
-  for them.
-* The read of a product the Item lacks would add that product.
-
-A Trial plan charges for neither, nor for a billed read. After an upgrade
-to a paid plan, Plaid bills each subscription monthly until the Item is
-removed, and each successful billed read. AGENTS.md has the rules that
-keep all three in view.
+A read can still change what an Item is billed for. AGENTS.md lists how.
 """
 
 from __future__ import annotations
@@ -92,8 +79,9 @@ SANDBOX_ENDPOINTS = frozenset({
 
 # Reads that fetch live from the institution, which Plaid bills per
 # successful call on a paid plan. Production calls one only when the
-# client's `billed_reads` names it. Each is asked once, never again on its
-# own: a second try could be a second bill.
+# client's `billed_reads` names it. download fills that from plaid.cfg.
+# The Sandbox never bills. Each is asked once, never again on its own:
+# a second try could be a second bill.
 BILLED_ENDPOINTS = frozenset({
     "/investments/refresh",
 })
@@ -104,9 +92,10 @@ PAGE_SIZE = 500
 # How long a request waits for Plaid's answer, in seconds.
 TIMEOUT = 60.0
 
-# Plaid assembles an Item's investment history after the link. A first
-# read before that is done waits for it: up to one to two minutes, Plaid
-# says.
+# For the two reads Plaid holds open while it works. A first read of
+# investment transactions waits until Plaid has assembled their history:
+# one to two minutes, Plaid says. A refresh waits while Plaid fetches from
+# the institution: over a minute at some.
 SLOW_TIMEOUT = 300.0
 
 _ATTEMPTS = 3
@@ -166,13 +155,24 @@ def instant(value) -> int | None:
                .timestamp())
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Plaid's API never redirects. Followed, a redirect would send the app
+    keys to its target, so it is an answer like any other status."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float):
     """POST `body` and return (status, raw answer). An HTTP error status is
     an answer like any other; only the absence of one raises."""
     request = urllib.request.Request(url, data=body, headers=headers,
                                      method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as e:
         try:

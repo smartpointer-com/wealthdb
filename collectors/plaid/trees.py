@@ -20,7 +20,6 @@ run.json and `load` reads it, so both use these names.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from collectorkit import bronze
@@ -79,7 +78,7 @@ def listing(lines: list[str], limit: int = 5) -> str:
 def select(data_dir: Path, names: list[str] | None) -> list[Path]:
     """The Item trees a verb works on: every one, or the ones `names`
     lists. A name with no tree is refused."""
-    found = item_trees(data_dir) if Path(data_dir).is_dir() else []
+    found = item_trees(data_dir)
     if not names:
         return found
     missing = sorted(set(names) - {d.name for d in found})
@@ -94,9 +93,7 @@ def check_data_dir(data_dir: Path, outcome: str) -> None:
     only. Every tree is checked, not only the ones a verb works on. One
     tree that is not plaid's means the dir itself is the wrong one.
     `outcome` is what then did not happen, such as `loaded`."""
-    found = [line for tree in (item_trees(data_dir)
-                               if Path(data_dir).is_dir() else [])
-             for line in strangers(tree)]
+    found = [line for tree in item_trees(data_dir) for line in strangers(tree)]
     if found:
         raise SystemExit(
             f"{data_dir} holds runs that are not plaid's, so nothing was "
@@ -114,19 +111,12 @@ def missing_files(run: Path, products: dict) -> list[str]:
 
 def item_trees(data_dir: Path) -> list[Path]:
     """The directories under `data_dir` that can be Item trees: named
-    like an Item, and not a link."""
+    like an Item, and not a link. No tree when `data_dir` is not a dir."""
+    if not Path(data_dir).is_dir():
+        return []
     return sorted(d for d in Path(data_dir).iterdir()
                   if d.is_dir() and not d.is_symlink()
                   and items.ITEM_NAME_RE.match(d.name))
-
-
-def manifest(run: Path) -> dict | None:
-    """The run's run.json, or None when it is missing or unreadable."""
-    try:
-        doc = json.loads((run / RUN_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return doc if isinstance(doc, dict) else None
 
 
 def is_own(run: Path, meta: dict | None) -> bool:
@@ -152,7 +142,7 @@ def strangers(tree: Path, item: items.Item | None = None) -> list[str]:
     It is not listed here, and `prune` keeps its run."""
     found = []
     for run in bronze.iter_run_dirs(tree):
-        meta = manifest(run)
+        meta = bronze.read_manifest(run / RUN_FILE)
         if meta is None:
             if not (run / RUN_FILE).exists() and not stopped_at_start(run):
                 found.append(f"{run}: holds files and no run.json")
@@ -173,7 +163,8 @@ def identity(tree: Path) -> tuple[str, str] | None:
     not plaid's run of this tree, or when the runs name two Items."""
     held = {(meta.get("item_id"), meta.get("environment"))
             for run in bronze.iter_run_dirs(tree)
-            if is_own(run, meta := manifest(run)) and meta.get("item_id")}
+            if is_own(run, meta := bronze.read_manifest(run / RUN_FILE))
+            and meta.get("item_id")}
     found = strangers(tree)
     if len(held) > 1:
         found.append(f"{tree}: runs of {len(held)} Items")

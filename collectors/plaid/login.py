@@ -46,24 +46,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     appkeys.add_args(p, "login.py")
     p.add_argument(
-        "--item", metavar="NAME",
+        "--item", metavar="NAME", type=items.item_name,
         help="Settle or check only the Item of this name.")
     p.add_argument(
         "--check", action="store_true",
         help="Probe the app keys and the stored Items, and change nothing. "
-             "Exit 0 when Plaid accepts the keys and every Item is healthy.")
-    link.add_country_codes(p)
+             "Exit 0 when Plaid accepts the keys, an Item is linked, and "
+             "every Item is healthy.")
+    link.add_country_codes(
+        p, "With --check: the countries the app-key probe asks about.")
     cli.add_standard_args(p, verb="login")
     args = p.parse_args(argv)
 
-    if args.item:
-        try:
-            items.check_name(args.item)
-        except ValueError as e:
-            p.error(str(e))
-    if args.country_codes and not args.check:
+    if args.check:
+        args.country_codes = link.country_codes(p, args.country_codes)
+    elif args.country_codes:
         p.error("--country-codes applies to --check only")
-    args.country_codes = link.country_codes(p, args.country_codes)
     return args
 
 
@@ -74,6 +72,7 @@ def settle_all(args: argparse.Namespace, environment: str) -> int:
     names = [args.item] if args.item else None
     left, unreadable = items.open_sign_ins(args.secrets_dir, environment,
                                            names)
+    status = 1 if unreadable else 0
     for e in unreadable:
         say(str(e))
     if not left:
@@ -83,10 +82,9 @@ def settle_all(args: argparse.Namespace, environment: str) -> int:
                 f"links or renews it.")
         else:
             say(f"No {environment} sign-in is left open.")
-        return 1 if unreadable else 0
+        return status
 
     client = make_client(environment, args.client_id)
-    status = 1 if unreadable else 0
     for found in left:
         name = found.name
         with items.held(args.secrets_dir, name) as mine:
@@ -120,7 +118,8 @@ def settle_all(args: argparse.Namespace, environment: str) -> int:
             say(f"{name}: the sign-in page is open until "
                 f"{link.clock(settled.pending.expires_at)}. An Item made "
                 f"there is claimed by the next "
-                f"{items.command('login', environment)}.")
+                f"{items.command('login', environment)}, if it runs within "
+                f"half an hour of the sign-in.")
     return status
 
 

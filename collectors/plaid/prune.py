@@ -41,6 +41,7 @@ import sys
 
 from collectorkit import cli, debugcap, prune
 
+import items
 import trees
 
 
@@ -68,15 +69,15 @@ def main(argv=None) -> int:
     # that reclaims such output does not exist here.
     parser = prune.build_parser(__doc__, debug_dir=False)
     parser.add_argument(
-        "--item", metavar="NAME", action="append",
+        "--item", metavar="NAME", action="append", type=items.item_name,
         help="Prune only this Item's runs. Repeat for more. Default: every "
              "Item tree under --bronze-dir.")
     args = parser.parse_args(argv)
     cli.configure_logging(args.verbose)
     if not args.bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {args.bronze_dir}")
-    found = trees.select(args.bronze_dir, args.item)
     trees.check_data_dir(args.bronze_dir, "removed")
+    found = trees.select(args.bronze_dir, args.item)
     if not found:
         print("nothing to prune")
         return 0

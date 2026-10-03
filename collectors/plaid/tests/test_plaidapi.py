@@ -4,11 +4,12 @@ nothing reaches the network."""
 from __future__ import annotations
 
 import http.client
+import http.server
 import io
 import json
 import re
+import threading
 import urllib.error
-import urllib.request
 from pathlib import Path
 
 import pytest
@@ -119,13 +120,10 @@ def test_the_sandbox_never_bills_and_needs_no_opt_in():
 
 
 @pytest.mark.parametrize("environment", ["sandbox", "production"])
-@pytest.mark.parametrize("failure", [
-    plaidapi.TransportError("TimeoutError: synthetic"),
-    plaidapi.TransportError("IncompleteRead: synthetic")])
-def test_a_billed_read_is_asked_once_whatever_happens(failure, environment):
+def test_a_billed_read_is_asked_once_whatever_happens(environment):
     # Plaid may have fetched, and billed, before the answer was lost.
     sleeps = []
-    recorder = Recorder(failure)
+    recorder = Recorder(plaidapi.TransportError("TimeoutError: synthetic"))
     billed = client(recorder, environment, sleeps=sleeps)
     billed.billed_reads = frozenset({REFRESH})
     with pytest.raises(plaidapi.TransportError):
@@ -354,7 +352,7 @@ def test_the_transport_returns_an_error_answer_like_any_other(monkeypatch):
         raise urllib.error.HTTPError(request.full_url, 400, "Bad Request",
                                      {}, io.BytesIO(b'{"error_code": "X"}'))
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(plaidapi._OPENER, "open", urlopen)
     assert plaidapi._urllib_transport(
         "https://plaid.invalid/item/get", {}, b"{}", 1.0) == (
         400, b'{"error_code": "X"}')
@@ -371,10 +369,46 @@ def test_the_transport_returns_an_error_answer_like_any_other(monkeypatch):
 def test_an_answer_that_breaks_off_is_no_answer(monkeypatch, urlopen):
     # The client asks again after no answer; any other exception would
     # end the whole run.
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(plaidapi._OPENER, "open", urlopen)
     with pytest.raises(plaidapi.TransportError):
         plaidapi._urllib_transport(
             "https://plaid.invalid/item/get", {}, b"{}", 1.0)
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_a_redirect_is_an_answer_and_is_not_followed(status):
+    # Followed, a redirect would carry the app keys to its target.
+    followed = []
+
+    class Redirects(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(status)
+            self.send_header("Location", "/elsewhere")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            followed.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Redirects)
+    threading.Thread(target=server.serve_forever,
+                     kwargs={"poll_interval": 0.01}, daemon=True).start()
+    try:
+        assert plaidapi._urllib_transport(
+            f"http://127.0.0.1:{server.server_port}/item/get",
+            {"PLAID-SECRET": SECRET}, b"{}", 5.0) == (status, b"")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert followed == []
 
 
 def test_one_lost_answer_does_not_fail_the_call():

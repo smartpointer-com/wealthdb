@@ -90,7 +90,7 @@ short name for it, such as `bank` or `broker`.
 ./plaid download --lookback all                      # first run: all history
 ./plaid download                                     # later: the last ~90 days
 ./plaid download --item broker --dry-run             # what a run would read
-./plaid download --item broker --refresh             # fetch investments first
+./plaid download --item broker --refresh             # fetch investments first (opt-in below)
 ./plaid load                                         # every Item into its silver
 ./plaid load --item broker                           # one Item
 ./plaid prune --dry-run                              # what prune would delete
@@ -109,7 +109,7 @@ a deployment's:
 
 ```sh
 ./plaid link --item test-bank --sandbox              # sign in as user_good / pass_good
-./plaid link --item test-bank --sandbox-institution ins_109508    # no browser
+./plaid link --item test-platypus --sandbox-institution ins_109508   # no browser
 ./plaid login --check --sandbox
 ./plaid download --sandbox --lookback 2y --data-dir ~/plaid-sandbox
 ```
@@ -258,9 +258,10 @@ hour running out. `link` then asks Plaid once more how the sign-in went:
   a page early, so the sign-in's record stays until the page closes.
 
 `login` settles such a record. It stores an Item that the page made,
-and removes the record once the page has closed. An orchestrator that
-runs `login`, `download` and `load` in turn settles it on its next run.
-`link` on the same name shows the same page again while it is open.
+and removes the record once the page has closed. Plaid lets that Item
+be stored only for half an hour after the page made it. After that,
+nothing can store it, and it still counts against the ten. `link` on
+the same name shows the same page again while it is open.
 
 Plaid states the purpose of the data on its consent screen. When no
 purpose is set for the account, `link` prints Plaid's error. A purpose

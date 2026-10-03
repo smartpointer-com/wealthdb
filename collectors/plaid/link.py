@@ -38,14 +38,13 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
-import hashlib
 import logging
 import os
 import sys
 import time
 from pathlib import Path
 
-from collectorkit import cli, session
+from collectorkit import bronze, cli, session
 
 import appkeys
 import items
@@ -82,11 +81,11 @@ def say(text: str = "") -> None:
     print(text, flush=True)
 
 
-def add_country_codes(p: argparse.ArgumentParser) -> None:
+def add_country_codes(p: argparse.ArgumentParser, what: str) -> None:
     p.add_argument(
         "--country-codes", default=None, metavar="CC[,CC]",
-        help="Countries whose institutions the page offers. Falls back to "
-             f"PLAID_COUNTRY_CODES, then {DEFAULT_COUNTRY_CODES}.")
+        help=f"{what} Falls back to PLAID_COUNTRY_CODES, then "
+             f"{DEFAULT_COUNTRY_CODES}.")
 
 
 def country_codes(p: argparse.ArgumentParser, value: str | None) -> list[str]:
@@ -103,7 +102,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     appkeys.add_args(p, "link.py")
     p.add_argument(
-        "--item", metavar="NAME",
+        "--item", metavar="NAME", type=items.item_name,
         help="The local name of the Item to link or renew.")
     p.add_argument(
         "--sandbox-institution", metavar="ID",
@@ -116,9 +115,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "it fits, so name `investments` for a login that holds only "
              "brokerage accounts. The other data products are requested as "
              f"optional. Default: {DEFAULT_REQUIRED}.")
-    add_country_codes(p)
+    add_country_codes(p, "Countries whose institutions the page offers.")
     p.add_argument(
-        "--mfa-timeout", type=int, default=None, metavar="SECONDS",
+        "--mfa-timeout", type=int, default=DEFAULT_WAIT_SECONDS,
+        metavar="SECONDS",
         help="How long the sign-in page stays valid and this command waits "
              f"for the sign-in (default {DEFAULT_WAIT_SECONDS}).")
     # `link` is the half of the fleet's `login` that signs in, and takes
@@ -131,13 +131,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     if not args.item:
         p.error("--item NAME is required: it names the Item to link or "
                 "renew")
-    try:
-        items.check_name(args.item)
-    except ValueError as e:
-        p.error(str(e))
-    if args.mfa_timeout is None:
-        args.mfa_timeout = DEFAULT_WAIT_SECONDS
-    elif not 60 <= args.mfa_timeout <= plaidapi.MAX_LINK_LIFETIME:
+    if not 60 <= args.mfa_timeout <= plaidapi.MAX_LINK_LIFETIME:
         p.error(f"--mfa-timeout takes 60 to {plaidapi.MAX_LINK_LIFETIME} "
                 f"seconds")
     args.country_codes = country_codes(p, args.country_codes)
@@ -379,7 +373,7 @@ def _free_name(secrets_dir: Path, wanted: str, item_id: str) -> str:
         if (items.ITEM_NAME_RE.match(name)
                 and not items.token_path(secrets_dir, name).exists()):
             return name
-    return "item-" + hashlib.sha256(item_id.encode()).hexdigest()[:12]
+    return "item-" + bronze.short_token(item_id, 12)
 
 
 def _claim(client: plaidapi.Client, secrets_dir: Path, name: str,
@@ -571,8 +565,8 @@ def _stopped(client: plaidapi.Client, secrets_dir: Path,
         say(f"Nothing was linked. The page stays open until "
             f"{clock(settled.pending.expires_at)}. A sign-in finished there "
             f"still makes an Item, so the sign-in's record stays. {settles} "
-            f"claims such an Item, and removes the record once the page "
-            f"has closed.")
+            f"claims such an Item within half an hour of the sign-in, and "
+            f"removes the record once the page has closed.")
     return status
 
 
@@ -698,6 +692,17 @@ def _link(args: argparse.Namespace, client: plaidapi.Client) -> int:
 
     if existing is not None:
         return _renew(client, existing, args)
+    if pending is not None and (args.sandbox_institution or (
+            args.require and args.require != pending.required)):
+        raise SystemExit(
+            f"A sign-in of {name!r} that requires {pending.required} is "
+            f"open until {clock(pending.expires_at)}, and it can still make "
+            f"an Item. --require and --sandbox-institution apply to a new "
+            f"sign-in only. Run link with them once that page has closed.")
+    # Storing a new Item reads every stored Item. A file that cannot be
+    # read stops the run here, before a sign-in makes an Item that could
+    # not be stored.
+    items.of_environment(secrets_dir, client.environment)
     if args.sandbox_institution:
         return _finish(client, secrets_dir, name, _sandbox_item(client, args))
     if pending is None:

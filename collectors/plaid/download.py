@@ -20,19 +20,10 @@ Without `--refresh`, every read is of the copy Plaid keeps, and none
 reaches the institution. An Item is read only for the products it was
 linked with: asking for another would add that product to the Item. The
 first read of an Item's investment transactions adds Plaid's
-subscription for them to the Item; no other read changes it.
-
-`--refresh` first asks Plaid to fetch each Item's investments from the
-institution, then waits until Plaid stamps the Item with a fetch, and only
-then reads. run.json records the outcome under `refresh`. Plaid bills a
-successful refresh on a paid plan. A Production run asks for one only
-when plaid.cfg opts in to it; the Trial plan and the Sandbox do not bill.
+subscription for them to the Item.
 
 `--lookback` bounds the two ledgers. Balances, holdings and liabilities
 are read whole on every run.
-
-`--dry-run` reads each Item and its accounts, says what a run would read,
-and writes nothing. Both reads are free.
 
 Usage:
     download.py --bronze-dir DIR [--item NAME ...] [--sandbox]
@@ -102,7 +93,6 @@ ABSENT_CODES = frozenset({"NO_INVESTMENT_ACCOUNTS", "NO_LIABILITY_ACCOUNTS"})
 HISTORY_COMPLETE = "HISTORICAL_UPDATE_COMPLETE"
 
 
-
 @dataclass(frozen=True)
 class Product:
     """One thing a run reads beyond the Item and its accounts."""
@@ -157,21 +147,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Plaid's own data dir. Each Item has its tree of runs in it.")
     appkeys.add_args(p, "download.py")
     p.add_argument(
-        "--item", metavar="NAME", action="append",
+        "--item", metavar="NAME", action="append", type=items.item_name,
         help="Read only this Item. Repeat for more. Default: every Item of "
              "the environment.")
     cli.add_standard_args(p, verb="download")
     p.add_argument(
         "--refresh", action="store_true",
         help="First ask Plaid to fetch each Item's investments from the "
-             "institution, and wait until it reports the fetch. Plaid bills "
-             "a successful refresh on a paid plan, so a Production run asks "
-             "only with the opt-in in plaid.cfg. The Trial plan and the "
-             "Sandbox do not bill it.")
+             "institution, and wait until it reports the fetch. run.json "
+             "records the outcome under `refresh`. Plaid bills a successful "
+             "refresh on a paid plan, so a Production run asks only with "
+             "the opt-in in plaid.cfg. The Trial plan and the Sandbox do "
+             "not bill it.")
     p.add_argument(
         "--dry-run", action="store_true",
         help="Read each Item and its accounts, say what a run would read, "
-             "and write nothing.")
+             "and write nothing. Both reads are free.")
     p.add_argument(
         "--debug", action="store_true",
         help="Record each HTTP exchange in the run, at "
@@ -184,11 +175,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     if args.dry_run and args.refresh:
         p.error("--refresh fetches from the institution, and --dry-run "
                 "reads only Plaid's copy")
-    for name in args.item or []:
-        try:
-            items.check_name(name)
-        except ValueError as e:
-            p.error(str(e))
     return args
 
 
@@ -536,8 +522,12 @@ def download_item(client: plaidapi.Client, item: items.Item, root: Path,
             healthy = healthy and entry["status"] in SETTLED
         # A write recreates a run dir that was removed under the run, so a
         # run pruned mid-way would otherwise end complete with files gone.
+        # Such a run gets its run.json back, still in-progress. Without
+        # one, its files would read as another collector's run, and load
+        # and prune would refuse the data dir.
         missing = trees.missing_files(run, manifest["products"])
         if missing:
+            bronze.atomic_write_json(run / trees.RUN_FILE, manifest)
             log.error("%s: %s lost %s while it was written; it stays "
                       "in-progress", item.name, run, ", ".join(missing))
             return False

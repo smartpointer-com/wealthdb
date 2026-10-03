@@ -39,7 +39,7 @@ Allowed without asking:
 - `prune` with `--dry-run`. It reads local files only.
 
 Not allowed unless explicitly asked, without `--sandbox`: `link`,
-`download`, and `login` without `--check`. A plain `login` opens no
+`download` without `--dry-run`, and `login` without `--check`. A plain `login` opens no
 page, but it can store the Item of a sign-in left open. Hand the command
 to the user instead.
 
@@ -137,9 +137,10 @@ A read that Plaid bills per call needs the user's opt-in. The opt-in
 lives in the collector's own config file, `$XDG_CONFIG_HOME/plaid.cfg`,
 not in the env file, which holds credentials only. Without it, the
 collector never makes the call on Production. The Sandbox never bills,
-so it needs none. Such a read joins the lists together with its opt-in
-setting. The lists hold one such read, `/investments/refresh`, opted in
-by `{"billed_reads": ["/investments/refresh"]}`.
+so it needs none. Such a read joins `BILLED_ENDPOINTS`. Its opt-in is
+its route in plaid.cfg's `billed_reads` list, so it needs no setting of
+its own. `BILLED_ENDPOINTS` holds one such read, `/investments/refresh`,
+opted in by `{"billed_reads": ["/investments/refresh"]}`.
 
 A Trial plan charges for none of these. After an upgrade to a paid plan,
 Plaid bills every subscription added during the Trial. It bills each

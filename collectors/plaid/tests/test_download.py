@@ -1,17 +1,28 @@
 """Tests for the download verb: one run per Item, only the products the
-Item was linked with, every page of the two ledgers, and a manifest that
-says what each product held. Plaid is the scripted FakePlaid, or the real
-client over a scripted transport; time moves only when the code sleeps."""
+Item was linked with, every page of the two ledgers, a manifest that says
+what each product held, and a refresh that is asked for once and then
+watched. Plaid is the scripted FakePlaid, or the real client over a
+scripted transport; time moves only when the code sleeps."""
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import date
 
 import pytest
-from conftest import Clock, FakePlaid, access_token, plaid_error, store
+from conftest import (
+    LOGIN_REQUIRED,
+    Clock,
+    FakePlaid,
+    access_token,
+    fake_plaids,
+    plaid_error,
+    store,
+)
 
 import download
 import plaidapi
+import trees
 from collectorkit import bronze, cli
 
 TODAY = date(2026, 1, 31)
@@ -51,27 +62,16 @@ def script(fake: FakePlaid, n: int = 1, products=("investments",
 @pytest.fixture
 def dl(monkeypatch, tmp_path, caplog):
     """download wired to fakes: returns a factory for the scripted Plaid,
-    with `.bronze`, `.secrets` and `.clock` on it."""
+    with `.bronze`, `.secrets`, `.config` and `.clock` on it."""
     caplog.set_level("INFO")
     clock = Clock()
     monkeypatch.setattr(download, "_sleep", clock.sleep)
     monkeypatch.setattr(download, "_monotonic", clock.monotonic)
     monkeypatch.setattr(cli, "_today_utc", lambda: TODAY)
     monkeypatch.delenv("PLAID_ENV_FILE", raising=False)
-    # plaid.cfg is the test's own, never the developer's.
+    # The test has its own config dir, so no real plaid.cfg is read.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    made = {}
-
-    def make(environment="sandbox") -> FakePlaid:
-        made[environment] = FakePlaid(environment)
-        return made[environment]
-
-    def make_client(environment, client_id):
-        if environment not in made:
-            raise AssertionError(f"no {environment} Plaid was scripted")
-        return made[environment]
-
-    monkeypatch.setattr(download, "make_client", make_client)
+    make = fake_plaids(monkeypatch, download)
     make.bronze = tmp_path / "bronze"
     make.secrets = tmp_path / "secrets"
     make.secrets.mkdir(mode=0o700)
@@ -92,6 +92,10 @@ def the_run(dl, name="bank"):
 
 def files_of(run_dir) -> list[str]:
     return sorted(p.name for p in run_dir.iterdir())
+
+
+def asked(fake) -> list[str]:
+    return [call[0] for call in fake.calls]
 
 
 # ---- a run ------------------------------------------------------------------------
@@ -266,7 +270,7 @@ def test_the_history_status_is_asked_before_the_ledger(dl):
     store(dl.secrets)
     script(fake)
     assert run(dl, "--sandbox") == 0
-    names = [c[0] for c in fake.calls]
+    names = asked(fake)
     assert names.index("history") < names.index("transactions")
     assert fake.called("history") == [("history", access_token())]
 
@@ -539,9 +543,7 @@ def test_an_item_that_needs_a_new_sign_in_fails_its_run(dl, caplog):
     fake = dl()
     store(dl.secrets)
     script(fake)
-    fake.item_docs[access_token()]["item"]["error"] = {
-        "error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED",
-        "error_message": "the login details of this item have changed"}
+    fake.item_docs[access_token()]["item"]["error"] = LOGIN_REQUIRED
 
     assert run(dl, "--sandbox") == 1
 
@@ -696,20 +698,21 @@ def test_a_run_whose_files_vanish_mid_way_is_not_complete(dl, monkeypatch,
 
     def pruned_mid_way(token):
         (run_dir,) = (dl.bronze / "bank").iterdir()
-        (run_dir / "accounts.json").unlink()
+        shutil.rmtree(run_dir)
         return read(token)
 
     monkeypatch.setattr(fake, "liabilities_get", pruned_mid_way)
     assert run(dl, "--sandbox") == 1
     _, manifest = the_run(dl)
     assert manifest["status"] == "in-progress"
-    assert "lost accounts.json while it was written" in caplog.text
+    assert trees.strangers(dl.bronze / "bank") == []
+    assert "while it was written; it stays in-progress" in caplog.text
 
 
 # ---- whose tree ----------------------------------------------------------------------
 
-def foreign_run(tree, slug="20250101T000000Z", **manifest):
-    run_dir = tree / slug
+def foreign_run(tree, **manifest):
+    run_dir = tree / "20250101T000000Z"
     run_dir.mkdir(parents=True)
     if manifest:
         (run_dir / "run.json").write_text(json.dumps(manifest))
@@ -770,7 +773,7 @@ def test_a_dry_run_reads_two_free_answers_and_writes_nothing(dl, caplog):
     assert run(dl, "--sandbox", "--dry-run") == 0
 
     assert not dl.bronze.exists() or not any(dl.bronze.rglob("*"))
-    assert {c[0] for c in fake.calls} == {"item_get", "accounts"}
+    assert set(asked(fake)) == {"item_get", "accounts"}
     assert ("bank: 2 accounts; a run would read accounts, holdings, "
             "investment transactions, transactions, liabilities; ledgers "
             "from 2025-11-02 to 2026-01-31") in caplog.text
@@ -819,10 +822,11 @@ def test_named_items_only(dl):
     assert len(fake.called("item_get")) == 1
 
 
-def test_an_unknown_item_is_refused(dl):
+def test_an_unknown_item_is_refused_with_a_sandbox_link(dl):
     dl()
     store(dl.secrets)
-    with pytest.raises(SystemExit, match="no Item is named 'absent'"):
+    with pytest.raises(SystemExit, match="no Item is named 'absent'; "
+                       "`link --item absent --sandbox` links one"):
         run(dl, "--sandbox", "--item", "absent")
 
 
@@ -847,17 +851,12 @@ def test_nothing_linked_fails_and_names_the_environments_command(
     assert f"no {environment} Item is linked; {hint}" in caplog.text
 
 
-def test_an_unknown_sandbox_item_suggests_a_sandbox_link(dl):
-    dl()
-    with pytest.raises(SystemExit, match="`link --item absent --sandbox`"):
-        run(dl, "--sandbox", "--item", "absent")
-
-
 def test_a_token_file_that_cannot_be_read_fails(dl, caplog):
     dl()
     (dl.secrets / "plaid-token-bank.json").write_text("{")
     assert run(dl, "--sandbox") == 1
     assert "exists but cannot be read" in caplog.text
+    assert "is linked" not in caplog.text
 
 
 def test_a_damaged_token_file_fails_the_run_but_not_the_other_items(
@@ -893,11 +892,12 @@ AFTER = "2026-01-31T09:15:00Z"
 REFRESH = "/investments/refresh"
 
 
-def stamped(success=BEFORE, failure=None, *, error=None,
-            products=("investments", "liabilities", "transactions")):
+def stamped(success=BEFORE, failure=None, *, error=None):
     """An /item/get answer with these investments update stamps."""
     return {"item": {"item_id": "item-synthetic-1", "error": error,
-                     "products": list(products), "institution_id": "ins_000"},
+                     "products": ["investments", "liabilities",
+                                  "transactions"],
+                     "institution_id": "ins_000"},
             "status": {"investments": {"last_successful_update": success,
                                        "last_failed_update": failure}}}
 
@@ -907,15 +907,12 @@ def opt_in(dl, doc):
     dl.config.write_text(doc if isinstance(doc, str) else json.dumps(doc))
 
 
-def asked(fake) -> list[str]:
-    return [call[0] for call in fake.calls]
-
-
 def test_a_refresh_waits_for_plaids_fetch_and_then_reads(dl):
     fake = dl()
     store(dl.secrets)
     script(fake)
     fake.item_docs[access_token()] = [stamped(), stamped(), stamped(AFTER)]
+    start = dl.clock.now
 
     assert run(dl, "--sandbox", "--refresh") == 0
 
@@ -924,7 +921,7 @@ def test_a_refresh_waits_for_plaids_fetch_and_then_reads(dl):
     # Asked after the Item is read, and before its accounts.
     assert calls[:5] == ["item_get", "refresh", "item_get", "item_get",
                          "accounts"]
-    assert dl.clock.now == 1_010.0             # one poll, 10 s on
+    assert dl.clock.now - start == download.REFRESH_POLL     # one poll
     run_dir, manifest = the_run(dl)
     assert manifest["status"] == "complete"
     assert manifest["refresh"] == {
@@ -1004,12 +1001,13 @@ def test_a_refused_refresh_is_not_asked_again_and_the_run_reads_on(
     store(dl.secrets)
     script(fake)
     fake.refresh_answers = [error]
+    start = dl.clock.now
 
     assert run(dl, "--sandbox", "--refresh") == 1
 
     calls = asked(fake)
     assert calls.count("refresh") == 1 and calls.count("item_get") == 1
-    assert dl.clock.now == 1_000.0
+    assert dl.clock.now == start
     _, manifest = the_run(dl)
     assert manifest["status"] == "complete"
     assert manifest["refresh"] == {
@@ -1108,9 +1106,7 @@ def test_an_item_already_in_error_is_not_sent_a_refresh(dl, caplog):
     fake = dl()
     store(dl.secrets)
     script(fake)
-    fake.item_docs[access_token()] = stamped(error={
-        "error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED",
-        "error_message": "the login details of this item have changed"})
+    fake.item_docs[access_token()] = stamped(error=LOGIN_REQUIRED)
     assert run(dl, "--sandbox", "--refresh") == 1
     assert "refresh" not in asked(fake)
     _, manifest = the_run(dl)
@@ -1131,9 +1127,8 @@ def test_an_item_that_breaks_during_the_wait_fails_its_run(dl, caplog):
     fake = dl()
     store(dl.secrets)
     script(fake)
-    fake.item_docs[access_token()] = [stamped(), stamped(error={
-        "error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED",
-        "error_message": "the login details of this item have changed"})]
+    fake.item_docs[access_token()] = [stamped(),
+                                      stamped(error=LOGIN_REQUIRED)]
     assert run(dl, "--sandbox", "--refresh") == 1
     _, manifest = the_run(dl)
     assert manifest["status"] == "failed"
@@ -1146,8 +1141,9 @@ def test_an_item_that_breaks_during_the_wait_fails_its_run(dl, caplog):
 
 class Transport:
     """Answers Plaid's routes from a table and keeps every request. A
-    route's answer may be a list, served one entry per request (the last
-    one repeating), or an exception, which is raised."""
+    route's answer may be a list, served one entry per request with the
+    last one repeating. An exception is raised; bytes are served as they
+    are, and anything else as JSON."""
 
     def __init__(self, answers):
         self.answers = answers
@@ -1161,6 +1157,8 @@ class Transport:
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
         if isinstance(answer, BaseException):
             raise answer
+        if isinstance(answer, bytes):
+            return 200, answer
         return 200, json.dumps(answer).encode()
 
     def bodies(self, path):
@@ -1250,24 +1248,12 @@ def test_a_refresh_over_the_real_client_asks_once_and_watches(
         REFRESH}
 
 
-class OddRefresh(Transport):
-    """The real routes, except a refresh answered 200 with no JSON object:
-    an answer that says nothing of the fetch."""
-
-    def __call__(self, url, headers, body, timeout):
-        if url.endswith(REFRESH):
-            self.requests.append((REFRESH, headers, json.loads(body), timeout))
-            return 200, b"<html>synthetic</html>"
-        return super().__call__(url, headers, body, timeout)
-
-
 def test_a_refresh_answered_with_no_json_object_is_watched(dl, monkeypatch):
+    # A 200 that says nothing of the fetch.
     store(dl.secrets)
-    transport = OddRefresh(every_route({"/item/get": [stamped(),
-                                                      stamped(AFTER)]}))
-    client = plaidapi.Client("synthetic-id", "synthetic-secret", "sandbox",
-                             transport=transport, sleep=lambda s: None)
-    monkeypatch.setattr(download, "make_client", lambda e, c: client)
+    _, transport = real_client(monkeypatch, every_route({
+        "/item/get": [stamped(), stamped(AFTER)],
+        REFRESH: b"<html>synthetic</html>"}))
     assert run(dl, "--sandbox", "--refresh") == 0
     assert len(transport.bodies(REFRESH)) == 1
     assert the_run(dl)[1]["refresh"]["status"] == "refreshed"

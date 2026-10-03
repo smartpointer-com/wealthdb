@@ -3,8 +3,9 @@
 `--help` evaluates every argparse default, so it catches a typo in one
 that an import alone would not. The wrapper runs with its data root and
 secrets dir under a temp dir. Help and an unknown verb end before
-anything is resolved or created. `prune`, `load`, and a `download` with
-no Item touch only local files, so they run for real there.
+anything is resolved or created. `prune`, `load`, a `login` with nothing
+left open and a `download` with no Item touch only local files, so they
+run for real there.
 """
 import subprocess
 import sys

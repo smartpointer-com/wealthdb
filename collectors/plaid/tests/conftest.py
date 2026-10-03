@@ -27,6 +27,11 @@ def public_token(n: int = 1) -> str:
 LINK_TOKEN = "link-sandbox-" + UUID.format(n=9)
 HOSTED_URL = "https://hosted.example.invalid/hl/synthetic"
 
+# Plaid's error on an Item whose sign-in has to be renewed.
+LOGIN_REQUIRED = {
+    "error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED",
+    "error_message": "the login details of this item have changed"}
+
 
 def link_session(session_id: str = "s1", *, finished: bool = True,
                  public_tokens=(), exit_error: dict | None = None,
@@ -57,6 +62,12 @@ def link_session(session_id: str = "s1", *, finished: bool = True,
     return doc
 
 
+def linked(n: int = 1) -> dict:
+    """A /link/token/get answer whose session made Item `n`."""
+    return {"link_sessions": [
+        link_session(f"s{n}", public_tokens=[public_token(n=n)])]}
+
+
 def plaid_error(code: str, status: int = 400,
                 message: str = "synthetic error",
                 error_type: str = "INVALID_INPUT") -> plaidapi.PlaidError:
@@ -65,14 +76,34 @@ def plaid_error(code: str, status: int = 400,
         "error_message": message, "request_id": "req-synthetic"})
 
 
-def store(secrets, name="bank", environment="sandbox", n=1) -> items.Item:
-    item = items.Item(
+def an_item(name="bank", environment="sandbox", n=1) -> items.Item:
+    return items.Item(
         name=name, environment=environment,
         access_token=access_token(environment, n),
         item_id=f"item-synthetic-{n}", institution_id="ins_000",
-        institution_name="Synthetic Bank")
-    items.save_item(secrets, item)
-    return item
+        institution_name="Synthetic Bank",
+        linked_at="2026-01-02T03:04:05+00:00")
+
+
+def store(secrets, name="bank", environment="sandbox", n=1) -> None:
+    items.save_item(secrets, an_item(name, environment, n))
+
+
+def will_exchange(fake, n: int = 1) -> None:
+    """Script the exchange of Item `n`'s public token."""
+    fake.exchanges[public_token(n=n)] = {
+        "access_token": access_token(fake.environment, n),
+        "item_id": f"item-synthetic-{n}"}
+
+
+def leave_pending(secrets, clock, name="bank", *, environment="sandbox",
+                  age=60, lifetime=3600) -> None:
+    """A sign-in a `link` run started `age` seconds ago and left open."""
+    items.save_pending(secrets, items.PendingLink(
+        name=name, environment=environment, link_token=LINK_TOKEN,
+        hosted_link_url=HOSTED_URL, required="transactions",
+        created_at="2026-01-02T03:04:05+00:00",
+        expires_at=int(clock.time()) - age + lifetime))
 
 
 class FakePlaid:
@@ -101,7 +132,6 @@ class FakePlaid:
             "expiration": "2026-01-02T04:04:05Z"}
         self.data: dict = {}
         self.data_of: dict = {}
-        self.on_exchange = None
         self.billed_reads: frozenset = frozenset()
         self.refresh_answers: list = [{"request_id": "req-synthetic"}]
 
@@ -136,9 +166,7 @@ class FakePlaid:
 
     def link_token_get(self, link_token):
         self.calls.append(("link_get", link_token))
-        doc = (self.link_docs.pop(0) if len(self.link_docs) > 1
-               else self.link_docs[0])
-        return self._answer(doc)
+        return self._answer(self._next(self.link_docs))
 
     def exchange_public_token(self, public_token):
         self.calls.append(("exchange", public_token))
@@ -200,12 +228,7 @@ class FakePlaid:
         return self.data[name]
 
     def _scripted(self, token, name):
-        script = self._script(token, name)
-        if isinstance(script, list):
-            value = script.pop(0) if len(script) > 1 else script[0]
-        else:
-            value = script
-        return self._answer(value)
+        return self._answer(self._next(self._script(token, name)))
 
     def _page(self, token, name, rows_key, total_key, offset):
         script = self._script(token, name)
@@ -272,6 +295,28 @@ class Clock:
         return 1_800_000_000 + self.now
 
 
+def fake_plaids(monkeypatch, *modules):
+    """A factory of FakePlaids, one per environment, that `make_client` in
+    each of `modules` hands out. Code that reaches for an environment the
+    test scripted no Plaid for fails the test."""
+    made = {}
+
+    def make(environment: str = "sandbox") -> FakePlaid:
+        made[environment] = FakePlaid(environment)
+        return made[environment]
+
+    def make_client(environment, client_id):
+        if environment not in made:
+            raise AssertionError(
+                f"the test scripted no {environment} Plaid, and the code "
+                f"reached for one")
+        return made[environment]
+
+    for module in modules:
+        monkeypatch.setattr(module, "make_client", make_client)
+    return make
+
+
 @pytest.fixture
 def plaid(monkeypatch):
     """`link` and `login` wired to a FakePlaid and a clock that needs no
@@ -285,22 +330,6 @@ def plaid(monkeypatch):
     monkeypatch.setattr(link, "_time", clock.time)
     monkeypatch.delenv("PLAID_ENV_FILE", raising=False)
     monkeypatch.delenv("PLAID_COUNTRY_CODES", raising=False)
-
-    made = {}
-
-    def make(environment: str = "sandbox") -> FakePlaid:
-        fake = FakePlaid(environment)
-        made[environment] = fake
-        return fake
-
-    def make_client(environment, client_id):
-        if environment not in made:
-            raise AssertionError(
-                f"the test scripted no {environment} Plaid, and the code "
-                f"reached for one")
-        return made[environment]
-
-    for module in (link, login):
-        monkeypatch.setattr(module, "make_client", make_client)
+    make = fake_plaids(monkeypatch, link, login)
     make.clock = clock
     return make

@@ -8,6 +8,7 @@ import os
 import time
 
 import pytest
+from collectorkit import prune as engine
 
 import prune
 
@@ -109,9 +110,17 @@ def test_a_run_json_that_cannot_be_read_is_kept(bronze):
     assert (run_dir / "run.json").read_text() == "{"
 
 
-def test_named_items_only(bronze):
+def test_named_items_only(bronze, capsys):
     assert prune.main(["--bronze-dir", str(bronze), "--item", "broker"]) == 0
     assert (bronze / "bank" / "20260102T000000Z").exists()
+    out = capsys.readouterr().out
+    assert "== broker" in out and "== bank" not in out
+
+
+def test_an_invalid_item_name_is_a_usage_error(bronze):
+    with pytest.raises(SystemExit) as caught:
+        prune.main(["--bronze-dir", str(bronze), "--item", "Bad Name"])
+    assert caught.value.code == 2
 
 
 def test_an_unknown_item_is_refused(bronze):
@@ -138,7 +147,8 @@ def other_collectors(root):
         age(root / tree)
 
 
-@pytest.mark.parametrize("argv", [[], ["--dry-run"], ["--item", "plaid"]])
+@pytest.mark.parametrize("argv", [[], ["--dry-run"], ["--item", "plaid"],
+                                  ["--item", "bank"]])
 def test_the_data_root_itself_is_refused_and_left_as_it_is(tmp_path, argv):
     root = tmp_path / "data"
     other_collectors(root)
@@ -200,3 +210,19 @@ def test_the_validator_refuses_a_load_input(bronze):
         prune.validate_target(
             bronze / "bank" / "20260101T000000Z" / "accounts.json",
             bronze / "bank")
+
+
+def test_the_engine_keeps_runs_that_are_not_this_trees(tmp_path):
+    # check_data_dir refuses such runs before the walk. The predicate
+    # refuses them again, for one that appears in between.
+    tree = tmp_path / "plaid" / "bank"
+    foreign = tree / "20260101T000000Z"
+    foreign.mkdir(parents=True)
+    (foreign / "export.csv").write_text("not plaid's\n")
+    other = tree / "20260102T000000Z"
+    other.mkdir()
+    (other / "run.json").write_text(json.dumps(
+        {"status": "in-progress", "item": "broker"}))
+    age(tree)
+    assert engine.run(prune.CONFIG, tree, dry_run=False, min_age_hours=0) == 0
+    assert foreign.exists() and other.exists()

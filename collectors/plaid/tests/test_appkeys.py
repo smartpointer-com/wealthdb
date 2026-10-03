@@ -63,8 +63,14 @@ def test_the_env_file_variable_is_honoured(tmp_path, monkeypatch):
 
 def test_a_missing_env_file_is_an_error(tmp_path, monkeypatch):
     monkeypatch.delenv("PLAID_ENV_FILE", raising=False)
-    with pytest.raises(SystemExit, match="does not exist"):
+    with pytest.raises(SystemExit, match="--env-file names no file"):
         appkeys.source_env_file(tmp_path / "nope.env")
+
+
+def test_a_missing_env_file_variable_is_named(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLAID_ENV_FILE", str(tmp_path / "nope.env"))
+    with pytest.raises(SystemExit, match="PLAID_ENV_FILE names no file"):
+        appkeys.source_env_file(None)
 
 
 def test_an_env_file_with_a_syntax_error_never_shows_its_line(

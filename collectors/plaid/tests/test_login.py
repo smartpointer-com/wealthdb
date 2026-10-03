@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import pytest
 from conftest import (
-    HOSTED_URL,
-    LINK_TOKEN,
     access_token,
-    link_session,
+    leave_pending,
+    linked,
     plaid_error,
-    public_token,
     store,
+    will_exchange,
 )
 
 import items
@@ -21,28 +20,6 @@ import plaidapi
 
 def run(secrets, *argv):
     return login.main(["--secrets-dir", str(secrets), *argv])
-
-
-def linked(n: int = 1) -> dict:
-    """A /link/token/get answer whose session made Item `n`."""
-    return {"link_sessions": [
-        link_session(f"s{n}", public_tokens=[public_token(n=n)])]}
-
-
-def will_exchange(fake, n: int = 1):
-    fake.exchanges[public_token(n=n)] = {
-        "access_token": access_token("sandbox", n),
-        "item_id": f"item-synthetic-{n}"}
-
-
-def leave_open(secrets, clock, name="bank", *, environment="sandbox",
-               age=60, lifetime=3600):
-    """A sign-in a `link` run started `age` seconds ago and left open."""
-    items.save_pending(secrets, items.PendingLink(
-        name=name, environment=environment, link_token=LINK_TOKEN,
-        hosted_link_url=HOSTED_URL, required="transactions",
-        created_at="2026-01-02T03:04:05+00:00",
-        expires_at=int(clock.time()) - age + lifetime))
 
 
 # ---- settling the sign-ins link left open --------------------------------------------
@@ -59,7 +36,7 @@ def test_with_nothing_left_open_login_asks_plaid_nothing(
 
 def test_login_claims_an_item_a_page_left_open_made(plaid, secrets, capsys):
     fake = plaid()
-    leave_open(secrets, plaid.clock)
+    leave_pending(secrets, plaid.clock)
     fake.link_docs = [linked()]
     will_exchange(fake)
 
@@ -74,7 +51,7 @@ def test_login_claims_an_item_a_page_left_open_made(plaid, secrets, capsys):
 
 def test_login_removes_a_sign_in_whose_page_has_closed(plaid, secrets, capsys):
     plaid()
-    leave_open(secrets, plaid.clock, age=4000)
+    leave_pending(secrets, plaid.clock, age=4000)
     assert run(secrets, "--sandbox") == 0
     assert "bank: the sign-in made no Item. Its record is removed." in (
         capsys.readouterr().out)
@@ -83,7 +60,7 @@ def test_login_removes_a_sign_in_whose_page_has_closed(plaid, secrets, capsys):
 
 def test_login_removes_a_sign_in_plaid_no_longer_knows(plaid, secrets):
     fake = plaid()
-    leave_open(secrets, plaid.clock)
+    leave_pending(secrets, plaid.clock)
     fake.link_docs = [plaid_error("INVALID_LINK_TOKEN")]
     assert run(secrets, "--sandbox") == 0
     assert list(secrets.iterdir()) == []
@@ -91,11 +68,12 @@ def test_login_removes_a_sign_in_plaid_no_longer_knows(plaid, secrets):
 
 def test_login_leaves_a_page_that_is_still_open(plaid, secrets, capsys):
     plaid()
-    leave_open(secrets, plaid.clock)
+    leave_pending(secrets, plaid.clock)
     assert run(secrets, "--sandbox") == 0
     out = capsys.readouterr().out
     assert "bank: the sign-in page is open until " in out
     assert "claimed by the next `login --sandbox`" in out
+    assert "half an hour" in out
     assert [p.name for p in secrets.iterdir()] == ["plaid-link-bank.json"]
 
 
@@ -103,7 +81,7 @@ def test_login_removes_a_sign_in_beside_an_item_of_its_name(plaid, secrets):
     # The name was renewed or linked since; the old page made nothing.
     plaid()
     store(secrets)
-    leave_open(secrets, plaid.clock)
+    leave_pending(secrets, plaid.clock)
     assert run(secrets, "--sandbox") == 0
     assert sorted(p.name for p in secrets.iterdir()) == ["plaid-token-bank.json"]
 
@@ -111,7 +89,7 @@ def test_login_removes_a_sign_in_beside_an_item_of_its_name(plaid, secrets):
 def test_login_leaves_a_sign_in_a_link_run_is_waiting_on(
         plaid, secrets, capsys):
     fake = plaid()
-    leave_open(secrets, plaid.clock)
+    leave_pending(secrets, plaid.clock)
     with items.held(secrets, "bank") as mine:
         assert mine
         assert run(secrets, "--sandbox") == 0
@@ -125,7 +103,7 @@ def test_a_sign_in_settled_just_before_the_hold_is_left_alone(
         plaid, secrets, monkeypatch):
     # A link run that ended between the listing and the hold settled it.
     fake = plaid()
-    leave_open(secrets, plaid.clock)
+    leave_pending(secrets, plaid.clock)
     real_held = items.held
 
     def held(secrets_dir, name):
@@ -139,7 +117,7 @@ def test_a_sign_in_settled_just_before_the_hold_is_left_alone(
 
 def test_login_settles_only_its_own_environment(plaid, secrets, capsys):
     fake = plaid()
-    leave_open(secrets, plaid.clock, environment="production")
+    leave_pending(secrets, plaid.clock, environment="production")
     assert run(secrets, "--sandbox") == 0
     assert "No sandbox sign-in is left open." in capsys.readouterr().out
     assert fake.calls == []
@@ -148,8 +126,8 @@ def test_login_settles_only_its_own_environment(plaid, secrets, capsys):
 
 def test_login_of_one_name_settles_that_one_only(plaid, secrets, capsys):
     plaid()
-    leave_open(secrets, plaid.clock, "bank", age=4000)
-    leave_open(secrets, plaid.clock, "broker", age=4000)
+    leave_pending(secrets, plaid.clock, "bank", age=4000)
+    leave_pending(secrets, plaid.clock, "broker", age=4000)
     assert run(secrets, "--sandbox", "--item", "broker") == 0
     assert [p.name for p in secrets.iterdir()] == ["plaid-link-bank.json"]
     assert run(secrets, "--sandbox", "--item", "absent") == 0
@@ -160,8 +138,8 @@ def test_login_of_one_name_settles_that_one_only(plaid, secrets, capsys):
 def test_a_fault_on_one_sign_in_does_not_stop_the_others(
         plaid, secrets, capsys):
     fake = plaid()
-    leave_open(secrets, plaid.clock, "a-bank")
-    leave_open(secrets, plaid.clock, "b-bank", age=4000)
+    leave_pending(secrets, plaid.clock, "a-bank")
+    leave_pending(secrets, plaid.clock, "b-bank", age=4000)
     fake.link_docs = [plaidapi.TransportError("URLError: reset"),
                       {"link_sessions": []}]
     assert run(secrets, "--sandbox") == 1
@@ -179,6 +157,17 @@ def test_a_sign_in_record_that_cannot_be_read_fails_login(
     assert "plaid-link-bank.json exists but cannot be read" in (
         capsys.readouterr().out)
     assert fake.calls == []
+
+
+def test_a_damaged_record_beside_an_open_sign_in_fails_login(
+        plaid, secrets, capsys):
+    plaid()
+    leave_pending(secrets, plaid.clock, "bank", age=4000)
+    (secrets / "plaid-link-broken.json").write_text("{")
+    assert run(secrets, "--sandbox") == 1
+    out = capsys.readouterr().out
+    assert "plaid-link-broken.json exists but cannot be read" in out
+    assert "bank: the sign-in made no Item" in out
 
 
 # ---- --check ---------------------------------------------------------------------
@@ -320,7 +309,9 @@ def test_check_fails_on_a_token_file_that_cannot_be_read(
     plaid()
     (secrets / "plaid-token-bank.json").write_text("{")
     assert run(secrets, "--check", "--sandbox") == 1
-    assert "exists but cannot be read" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "exists but cannot be read" in out
+    assert "Item is linked" not in out
 
 
 def test_check_reports_the_other_items_beside_a_damaged_file(
@@ -344,13 +335,23 @@ def test_check_without_an_answer_fails(plaid, secrets, capsys):
 def test_check_lists_the_sign_ins_left_open(plaid, secrets, capsys):
     fake = plaid()
     store(secrets)
-    leave_open(secrets, plaid.clock, "broker")
+    leave_pending(secrets, plaid.clock, "broker")
     assert run(secrets, "--check", "--sandbox") == 0
     out = capsys.readouterr().out
     assert "bank: ok" in out
     assert ("broker: a sign-in started 2026-01-02T03:04:05+00:00 is left "
             "open; `login --sandbox` settles it") in out
     assert fake.called("link_get") == []
+
+
+def test_check_reports_a_sign_in_record_that_cannot_be_read(
+        plaid, secrets, capsys):
+    plaid()
+    store(secrets)
+    (secrets / "plaid-link-broker.json").write_text("{")
+    run(secrets, "--check", "--sandbox")
+    assert ("plaid-link-broker.json exists but cannot be read"
+            in capsys.readouterr().out)
 
 
 # ---- the command line --------------------------------------------------------------
@@ -360,6 +361,7 @@ def test_check_lists_the_sign_ins_left_open(plaid, secrets, capsys):
     ["--mfa-timeout", "600"],
     ["--sandbox-institution", "ins_000"],
     ["--item", "Bad Name"],
+    ["--item", ""],
     ["--country-codes", "US"],                  # for --check only
     ["--check", "--country-codes", "USA"],
     ["--password", "x"],
@@ -368,6 +370,13 @@ def test_arguments_that_do_not_apply_are_refused(argv):
     with pytest.raises(SystemExit) as caught:
         login.parse_args(argv)
     assert caught.value.code == 2
+
+
+def test_a_plain_login_reads_no_country_codes(monkeypatch):
+    # Only --check asks Plaid with them, so a plain login never fails on
+    # them.
+    monkeypatch.setenv("PLAID_COUNTRY_CODES", "USA")
+    assert login.parse_args([]).country_codes is None
 
 
 def test_country_codes_fall_back_to_the_environment(monkeypatch):

@@ -20,7 +20,8 @@
 #                       does nothing.
 #   login --check       Probe the app keys and every stored Item, and list
 #                       the sign-ins left open. Reads only; exit 0 when the
-#                       keys and every Item are healthy.
+#                       keys are accepted, an Item is linked, and every
+#                       Item is healthy.
 #   download            Read every linked Item into bronze: accounts and
 #                       balances, holdings, both ledgers, liabilities. One
 #                       run per Item, under <data-dir>/<item>/<UTC-ts>/.
@@ -50,7 +51,8 @@
 # The app keys are read from PLAID_CLIENT_ID, PLAID_SECRET (Production)
 # and PLAID_SANDBOX_SECRET, auto-sourced from <secrets-dir>/plaid.env
 # (override the path with $PLAID_ENV_FILE). Each Item's access token is
-# in <secrets-dir>/plaid-token-<name>.json, written by login.
+# in <secrets-dir>/plaid-token-<name>.json. link writes it, and so does
+# login when it settles a sign-in that link left open.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -3,21 +3,14 @@ Item, owner-only, and never mistaken for absent when it is merely
 unreadable."""
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 
 import pytest
-from conftest import LINK_TOKEN, access_token
+from conftest import HOSTED_URL, LINK_TOKEN, access_token, an_item
 
 import items
-
-
-def an_item(name="bank", environment="sandbox", n=1) -> items.Item:
-    return items.Item(
-        name=name, environment=environment,
-        access_token=access_token(environment, n),
-        item_id=f"item-synthetic-{n}", institution_id="ins_000",
-        institution_name="Synthetic Bank",
-        linked_at="2026-01-02T03:04:05+00:00")
 
 
 # ---- names -------------------------------------------------------------------
@@ -152,7 +145,7 @@ def test_a_stray_file_under_the_prefix_is_passed_over(secrets, caplog):
 def a_pending(name="bank") -> items.PendingLink:
     return items.PendingLink(
         name=name, environment="sandbox", link_token=LINK_TOKEN,
-        hosted_link_url="https://hosted.example.invalid/hl/synthetic",
+        hosted_link_url=HOSTED_URL,
         required="transactions", created_at="2026-01-02T03:04:05+00:00",
         expires_at=1_800_003_600)
 
@@ -244,3 +237,79 @@ def test_the_remedy_fits_the_answer(code, error_type, needle):
         assert hint == ""
     else:
         assert needle in hint
+
+
+# ---- a link whose target is gone, and a file removed mid-listing ----------
+
+def test_a_token_file_whose_link_target_is_gone_is_unreadable(secrets,
+                                                             tmp_path):
+    items.save_item(secrets, an_item("bank"))
+    os.symlink(tmp_path / "gone.json", secrets / "plaid-token-broker.json")
+    with pytest.raises(items.ItemStoreError, match="cannot be read"):
+        items.load_item(secrets, "broker")
+    with pytest.raises(items.ItemStoreError):
+        items.of_environment(secrets, "sandbox")
+    chosen, unreadable = items.select(secrets, "sandbox", None)
+    assert [i.name for i in chosen] == ["bank"] and len(unreadable) == 1
+
+
+def test_a_sign_in_file_whose_link_target_is_gone_is_unreadable(secrets,
+                                                               tmp_path):
+    os.symlink(tmp_path / "gone.json", secrets / "plaid-link-bank.json")
+    with pytest.raises(items.ItemStoreError, match="cannot be read"):
+        items.load_pending(secrets, "bank")
+    assert items.open_sign_ins(secrets, "sandbox")[0] == []
+
+
+def test_a_token_file_removed_since_the_listing_is_passed_over(
+        secrets, monkeypatch):
+    items.save_item(secrets, an_item("bank"))
+    monkeypatch.setattr(items, "_stored_names",
+                        lambda secrets_dir, prefix=None: ["bank", "gone"])
+    assert [i.name for i in items.list_items(secrets)] == ["bank"]
+    assert [i.name for i in items.select(secrets, "sandbox", None)[0]] == [
+        "bank"]
+
+
+@pytest.mark.parametrize("field,value", [("access_token", 123),
+                                         ("item_id", ["x"])])
+def test_a_credential_that_is_not_text_is_refused(secrets, field, value):
+    items.save_item(secrets, an_item("bank"))
+    path = secrets / "plaid-token-bank.json"
+    doc = json.loads(path.read_text())
+    doc[field] = value
+    path.write_text(json.dumps(doc))
+    with pytest.raises(items.ItemStoreError):
+        items.load_item(secrets, "bank")
+    chosen, unreadable = items.select(secrets, "sandbox", None)
+    assert chosen == [] and len(unreadable) == 1
+
+
+# ---- the lock ---------------------------------------------------------------
+
+def test_a_lock_on_a_file_its_holder_removed_is_taken_again(secrets,
+                                                          monkeypatch):
+    real_flock = fcntl.flock
+    calls = []
+
+    def flock(fd, operation):
+        if not calls:
+            # The holder ends between this run's open and its flock.
+            items.lock_path(secrets, "bank").unlink()
+        calls.append(operation)
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    with items.held(secrets, "bank") as mine:
+        assert mine
+        with items.held(secrets, "bank") as again:
+            assert not again
+    assert not items.lock_path(secrets, "bank").exists()
+
+
+def test_an_invalid_name_is_an_argparse_error_in_its_own_words():
+    import argparse
+    with pytest.raises(argparse.ArgumentTypeError,
+                       match="'Bank' is not a valid Item name"):
+        items.item_name("Bank")
+    assert items.item_name("bank") == "bank"

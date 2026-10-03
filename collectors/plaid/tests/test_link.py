@@ -11,11 +11,15 @@ import pytest
 from conftest import (
     HOSTED_URL,
     LINK_TOKEN,
+    LOGIN_REQUIRED,
     access_token,
+    leave_pending,
     link_session,
+    linked,
     plaid_error,
     public_token,
     store,
+    will_exchange,
 )
 
 import items
@@ -26,29 +30,6 @@ import plaidapi
 
 def run(secrets, *argv):
     return link.main(["--secrets-dir", str(secrets), *argv])
-
-
-def linked(n: int = 1) -> dict:
-    """A /link/token/get answer whose session made Item `n`."""
-    return {"link_sessions": [
-        link_session(f"s{n}", public_tokens=[public_token(n=n)])]}
-
-
-def will_exchange(fake, n: int = 1, environment: str = "sandbox"):
-    fake.exchanges[public_token(n=n)] = {
-        "access_token": access_token(environment, n),
-        "item_id": f"item-synthetic-{n}"}
-
-
-def leave_pending(secrets, clock, name="bank", *, age=60, lifetime=3600):
-    """A sign-in an earlier run started `age` seconds ago."""
-    pending = items.PendingLink(
-        name=name, environment="sandbox", link_token=LINK_TOKEN,
-        hosted_link_url=HOSTED_URL, required="transactions",
-        created_at="2026-01-02T03:04:05+00:00",
-        expires_at=int(clock.time()) - age + lifetime)
-    items.save_pending(secrets, pending)
-    return pending
 
 
 # ---- a new Item ----------------------------------------------------------------
@@ -83,6 +64,17 @@ def test_a_new_link_stores_the_item(plaid, secrets, capsys, caplog):
     assert "The rest of the page can be finished or closed" in out
     for secret in (access_token(), public_token(), LINK_TOKEN):
         assert secret not in out
+
+
+def test_a_new_item_plaid_reports_an_error_on_is_kept_and_fails(
+        plaid, secrets, capsys):
+    fake = plaid()
+    fake.link_docs = [linked()]
+    will_exchange(fake)
+    fake.item_docs[access_token()] = {"item": {"error": LOGIN_REQUIRED}}
+    assert run(secrets, "--item", "bank", "--sandbox") == 1
+    assert items.load_item(secrets, "bank").item_id == "item-synthetic-1"
+    assert "bank: needs a new sign-in" in capsys.readouterr().out
 
 
 def test_the_session_is_written_down_before_its_url_is_shown(
@@ -134,7 +126,7 @@ def test_the_page_lives_as_long_as_the_wait(plaid, secrets):
 def test_production_is_the_default_environment(plaid, secrets, capsys):
     fake = plaid("production")
     fake.link_docs = [linked()]
-    will_exchange(fake, environment="production")
+    will_exchange(fake)
     assert run(secrets, "--item", "bank") == 0
     assert items.load_item(secrets, "bank").environment == "production"
     out = capsys.readouterr().out
@@ -165,7 +157,7 @@ def test_a_session_marked_finished_before_its_result_is_waited_on(
 
 
 def test_a_later_visit_succeeds_after_an_earlier_one_was_closed(
-        plaid, secrets):
+        plaid, secrets, capsys):
     # Plaid lists a token's sessions in no fixed order: here the newer
     # visit comes first, and it is the start time that says so.
     fake = plaid()
@@ -180,6 +172,7 @@ def test_a_later_visit_succeeds_after_an_earlier_one_was_closed(
     will_exchange(fake)
     assert run(secrets, "--item", "bank", "--sandbox") == 0
     assert len(fake.called("link_get")) == 2
+    assert "Plaid reports" not in capsys.readouterr().out
 
 
 def test_an_exit_ends_the_wait_even_beside_a_tab_that_was_just_closed(
@@ -207,6 +200,7 @@ def test_an_item_made_before_the_page_was_cancelled_is_still_claimed(
     will_exchange(fake)
     assert run(secrets, "--item", "bank", "--sandbox") == 0
     assert items.load_item(secrets, "bank").item_id == "item-synthetic-1"
+    assert len(fake.called("link_get")) == 1
 
 
 def test_an_item_is_claimed_while_its_session_is_still_open(plaid, secrets):
@@ -215,6 +209,7 @@ def test_an_item_is_claimed_while_its_session_is_still_open(plaid, secrets):
         finished=False, public_tokens=[public_token()])]}]
     will_exchange(fake)
     assert run(secrets, "--item", "bank", "--sandbox") == 0
+    assert len(fake.called("link_get")) == 1
 
 
 def test_the_wait_logs_the_pages_progress_once_per_event(
@@ -273,6 +268,7 @@ def test_an_exit_ends_the_wait_with_plaids_own_words(plaid, secrets, capsys):
     assert (secrets / "plaid-link-bank.json").exists()
     assert "Nothing was linked. The page stays open until " in out
     assert "`login --sandbox` claims such an Item" in out
+    assert "half an hour" in out
 
 
 def test_a_page_closed_without_an_error_says_so(plaid, secrets, capsys):
@@ -676,8 +672,8 @@ def test_a_fault_at_the_exchange_keeps_the_session_for_a_retry(
 
 def test_a_second_item_of_one_sign_in_gets_a_name_of_its_own(
         plaid, secrets, capsys):
-    # The hosted page lets a person link again before leaving. Each Item
-    # is a slot spent and a token that exists once, so both are kept.
+    # One visit to the hosted page can make a second Item. Each Item is a
+    # slot spent and a token that exists once, so both are kept.
     fake = plaid()
     fake.link_docs = [{"link_sessions": [link_session(
         public_tokens=[public_token(n=1), public_token(n=2)])]}]
@@ -782,6 +778,16 @@ def test_a_renewal_completed_on_a_second_visit_succeeds(plaid, secrets):
     assert run(secrets, "--item", "bank", "--sandbox") == 0
 
 
+def test_ctrl_c_during_a_renewal_names_no_record(plaid, secrets, capsys):
+    # Update mode writes no sign-in record, so none stays behind.
+    fake = plaid()
+    store(secrets)
+    fake.link_docs = [KeyboardInterrupt()]
+    assert run(secrets, "--item", "bank", "--sandbox") == 130
+    out = capsys.readouterr().out
+    assert "Stopped." in out and "record stays" not in out
+
+
 @pytest.mark.parametrize("code,hint", [
     ("ITEM_NOT_FOUND", "`link --item NEW-NAME --sandbox`"),
     ("INVALID_ACCESS_TOKEN", "A new link does not repair this."),
@@ -813,9 +819,7 @@ def test_a_renewed_item_plaid_still_faults_reports_failure(
     fake = plaid()
     store(secrets)
     fake.link_docs = [{"link_sessions": [link_session()]}]
-    fake.item_docs[access_token()] = {"item": {"error": {
-        "error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED",
-        "error_message": "the login details of this item have changed"}}}
+    fake.item_docs[access_token()] = {"item": {"error": LOGIN_REQUIRED}}
     assert run(secrets, "--item", "bank", "--sandbox") == 1
     out = capsys.readouterr().out
     assert "bank: needs a new sign-in" in out
@@ -834,6 +838,55 @@ def test_a_new_item_flag_is_refused_for_an_existing_item(
     with pytest.raises(SystemExit, match="exists and keeps the products"):
         run(secrets, "--item", "bank", "--sandbox", *argv)
     assert fake.calls == []
+
+
+@pytest.mark.parametrize("argv", [
+    ["--require", "investments"],
+    ["--sandbox-institution", "ins_000"],
+])
+def test_a_new_item_flag_is_refused_while_a_sign_in_is_open(
+        plaid, secrets, argv):
+    # The open page can still make an Item, so its record must stay, and
+    # the page cannot take the flag.
+    fake = plaid()
+    leave_pending(secrets, plaid.clock)
+    with pytest.raises(SystemExit, match="requires transactions is open"):
+        run(secrets, "--item", "bank", "--sandbox", *argv)
+    assert [c[0] for c in fake.calls] == ["link_get"]
+    assert (secrets / "plaid-link-bank.json").exists()
+
+
+def test_an_open_sign_in_resumes_under_the_product_it_requires(
+        plaid, secrets):
+    fake = plaid()
+    leave_pending(secrets, plaid.clock)
+    fake.link_docs = [{"link_sessions": []}, linked()]
+    will_exchange(fake)
+    assert run(secrets, "--item", "bank", "--sandbox", "--require",
+               "transactions") == 0
+    assert fake.called("new_link") == []
+
+
+def test_a_damaged_token_file_stops_a_new_sign_in_before_it_starts(
+        plaid, secrets, capsys):
+    # Storing the new Item would fail on it after the sign-in had made
+    # the Item, which a public token's half hour may not outlive.
+    fake = plaid()
+    (secrets / "plaid-token-broker.json").write_text("{")
+    assert run(secrets, "--item", "bank", "--sandbox") == 1
+    assert "plaid-token-broker.json exists but cannot be read" in (
+        capsys.readouterr().out)
+    assert fake.calls == []
+    assert not (secrets / "plaid-link-bank.json").exists()
+
+
+def test_a_damaged_token_file_does_not_stop_a_renewal(plaid, secrets):
+    fake = plaid()
+    store(secrets)
+    (secrets / "plaid-token-broker.json").write_text("{")
+    fake.link_docs = [{"link_sessions": [link_session()]}]
+    assert run(secrets, "--item", "bank", "--sandbox") == 0
+    assert fake.called("update_link")
 
 
 # ---- the two environments never mix ------------------------------------------------
@@ -891,6 +944,18 @@ def test_a_sandbox_item_needs_its_required_product(plaid, secrets, capsys):
                "--require", "investments") == 1
     assert "does not offer investments" in capsys.readouterr().out
     assert fake.called("sandbox_item") == []
+
+
+def test_a_name_with_no_room_for_a_suffix_falls_back_to_the_item_id(
+        secrets):
+    # Every suffix makes a 40-character name too long. A taken one then
+    # falls back to a name made from the item id, the same for the same id.
+    wanted = "b" * 40
+    items.token_path(secrets, wanted).write_text("{}")
+    name = link._free_name(secrets, wanted, "item-synthetic-1")
+    assert items.ITEM_NAME_RE.match(name) and name.startswith("item-")
+    assert name == link._free_name(secrets, wanted, "item-synthetic-1")
+    assert name != link._free_name(secrets, wanted, "item-synthetic-2")
 
 
 # ---- the command line --------------------------------------------------------------

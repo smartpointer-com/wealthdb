@@ -76,10 +76,13 @@ Each rule below was read in Plaid's documentation on 2026-10-01.
 ~/.secrets/
 ├── plaid.env                  app keys, managed by hand
 ├── plaid-token-<name>.json    one Item: access token, ids, environment
-└── plaid-link-<name>.json     a sign-in that is not settled yet
+├── plaid-link-<name>.json     a sign-in that is not settled yet
+└── plaid-link-<name>.lock     present while a run works on that sign-in
 ```
 
-- All three are mode 0600.
+- Every file the collector writes has mode 0600. A token or sign-in file
+  found wider is narrowed when it is read.
+- plaid.env is restricted by hand.
 - One token file per Item. Linking one Item never rewrites another's
   token.
 - A token file that exists and does not parse is an error. It is never
@@ -99,16 +102,16 @@ stands:
     └── <UTC-ts>/        one download run (§5)
 ```
 
+A tree holds the runs of one Item (§5). `prune` checks every tree
+before it removes anything. A tree that holds a run that is not plaid's
+run of that tree means the data dir is a wrong one, such as the data
+root itself, and then nothing is removed.
+
 `$XDG_CONFIG_HOME/plaid.cfg`, by default `~/.config/plaid.cfg`, holds
 settings, never a credential. It is JSON. Its one setting is the opt-in
 to the reads Plaid bills per call (§5). A missing file holds no
 settings. A file that does not parse, or names a setting or a read the
 collector does not know, stops the run that needs it.
-
-A tree holds the runs of one Item (§5). `prune` checks every tree
-before it removes anything. A tree that holds a run that is not plaid's
-run of that tree means the data dir is a wrong one, such as the data
-root itself, and then nothing is removed.
 
 ## 4. The `link` and `login` verbs
 
@@ -160,9 +163,11 @@ Rules that keep an Item from being lost:
 - **A token that cannot be written is revoked.** `/item/remove` is
   called, so no access exists without a record. This is the only use of
   that route.
-- **Only Plaid's word that the link token is gone discards a pending
-  sign-in.** That word is `INVALID_LINK_TOKEN`. Any other error, a
-  passing fault or a refusal, stops the run and keeps the file.
+- **Only two errors discard a pending sign-in.** `INVALID_LINK_TOKEN`
+  says the link token is gone. A refused exchange says a public token
+  can no longer be claimed, as after half an hour. The run then reports
+  an Item that nothing can claim. Any other error, a passing fault or
+  another refusal, stops the run and keeps the file.
 - **One run at a time works on a name's sign-in.** It holds
   `plaid-link-<name>.lock` with `flock` while it works. Two runs would
   both exchange one public token, and the one that lost would report
@@ -204,7 +209,7 @@ A pending file does not change the exit status.
 ## 5. The `download` verb
 
 `download` reads every Item of one environment, or the Items `--item`
-names. Each Item gets a new run under `<bronze-dir>/<item>/<UTC-ts>/`.
+names. Each Item gets a new run under `<data-dir>/<item>/<UTC-ts>/`.
 A token file that cannot be read is reported and fails the run, and the
 other Items are still read. A run that names its Items reads only their
 files. `login --check` treats the files the same way.
@@ -297,10 +302,11 @@ product's files are written only once all its pages are in, so a product
 that failed today never reads as "now empty". Only a `complete` run is
 a load input.
 
-**Waits.** A fault on Plaid's side or a rate limit is asked again twice,
-after 10 s and 30 s. `PRODUCT_NOT_READY` is asked again every 20 s for
-up to five minutes. A refused request is not asked again, and a refresh
-is never asked again.
+**Waits.** A request that gets no answer is sent again twice, after
+1.5 s and 3 s. A fault on Plaid's side or a rate limit is asked again
+twice, after 10 s and 30 s. `PRODUCT_NOT_READY` is asked again every
+20 s for up to five minutes. A refused request is not asked again, and
+a refresh is never sent again.
 
 **Paging.** Plaid pages by offset, so a row that arrives or leaves
 mid-read shifts the pages after it. A read starts again when a page
@@ -345,8 +351,8 @@ takes it in on `wealthdb reload <source>`.
 A complete run that lacks a file it lists, or holds a file not in the
 shape `download` writes, stops its tree. So does a run whose run.json
 cannot be read. An update keeps the runs before it loaded. A rebuild
-leaves the silver as it was. It and the runs after it wait until it is
-moved out of the tree.
+leaves the silver as it was. The broken run and the runs after it wait
+until it is moved out of the tree.
 
 **Which Item.** A tree that holds a run that is not plaid's means the
 data dir is a wrong one, such as the data root itself. `load` then

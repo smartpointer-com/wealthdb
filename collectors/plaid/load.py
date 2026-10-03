@@ -87,7 +87,7 @@ def day(value) -> int | None:
     """A date Plaid states as YYYY-MM-DD, at 00:00 UTC."""
     if not value:
         return None
-    return int(datetime.strptime(value[:10], "%Y-%m-%d")
+    return int(datetime.fromisoformat(value[:10])
                .replace(tzinfo=timezone.utc).timestamp())
 
 
@@ -386,7 +386,7 @@ def complete_runs(tree: Path) -> list[Path]:
     complete run, and the runs after it must not load over the gap."""
     runs = []
     for run_dir in bronze.iter_run_dirs(tree):
-        meta = trees.manifest(run_dir)
+        meta = bronze.read_manifest(run_dir / trees.RUN_FILE)
         status = meta.get("status") if meta else None
         if status == trees.COMPLETE or (
                 meta is None and (run_dir / trees.RUN_FILE).exists()):
@@ -408,7 +408,10 @@ def _foreign_database(db_path: Path) -> bool:
     if not db_path.exists():
         return False
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        # as_uri() escapes the '#', '?' and '%' that a file: URI would
+        # read as its own syntax.
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro",
+                               uri=True)
         try:
             names = {n for (n,) in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -525,6 +528,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Plaid's own data dir. Each Item has its tree of runs "
                         "in it.")
     p.add_argument("--item", metavar="NAME", action="append",
+                   type=items.item_name,
                    help="Load only this Item. Repeat for more. Default: every "
                         "Item tree under --bronze-dir.")
     p.add_argument("--silver-db", type=Path, default=None,
@@ -532,11 +536,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "--item names. Default: <bronze-dir>/<item>/<item>.db.")
     cli.add_standard_args(p, verb="load")
     args = p.parse_args(argv)
-    for name in args.item or []:
-        try:
-            items.check_name(name)
-        except ValueError as e:
-            p.error(str(e))
     if args.silver_db is not None and len(set(args.item or [])) != 1:
         p.error("--silver-db (or PLAID_SILVER_DB, through the wrapper) names "
                 "one Item's database; name that Item with --item")

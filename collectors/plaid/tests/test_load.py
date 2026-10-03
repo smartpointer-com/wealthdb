@@ -26,9 +26,9 @@ def account(n, type_="depository", subtype="checking", current=100.5,
                          "unofficial_currency_code": None, **balances}}
 
 
-def security(n, type_="equity", ticker="SYN"):
-    return {"security_id": f"sec-{n}", "name": f"Synthetic {type_} {n}",
-            "ticker_symbol": ticker, "type": type_, "subtype": None,
+def security(n, ticker="SYN"):
+    return {"security_id": f"sec-{n}", "name": f"Synthetic equity {n}",
+            "ticker_symbol": ticker, "type": "equity", "subtype": None,
             "iso_currency_code": "USD", "unofficial_currency_code": None,
             "cusip": None, "isin": None, "figi": None, "cfi_code": None,
             "market_identifier_code": None, "is_cash_equivalent": False,
@@ -44,8 +44,7 @@ def holding(account_n, security_n, quantity=2, value=21.5):
             "vested_quantity": None, "vested_value": None, "tax_lots": []}
 
 
-def tx(n, account_n=1, amount=12.34, date="2026-01-20", pending=False,
-       detailed="FOOD_AND_DRINK_GROCERIES"):
+def tx(n, account_n=1, amount=12.34, date="2026-01-20", pending=False):
     return {"transaction_id": f"tx-{n}", "account_id": f"acc-{account_n}",
             "amount": amount, "date": date, "authorized_date": date,
             "iso_currency_code": "USD", "unofficial_currency_code": None,
@@ -53,17 +52,16 @@ def tx(n, account_n=1, amount=12.34, date="2026-01-20", pending=False,
             "original_description": "SYNTHETIC GROCER 0001",
             "pending": pending, "pending_transaction_id": None,
             "personal_finance_category": {
-                "primary": detailed.split("_")[0], "detailed": detailed,
+                "primary": "FOOD_AND_DRINK",
+                "detailed": "FOOD_AND_DRINK_GROCERIES",
                 "confidence_level": "HIGH", "version": "v2"},
             "payment_channel": "in store", "transaction_code": None,
             "check_number": None, "merchant_category_code": "5411"}
 
 
-def itx(n, account_n=2, amount=105.0, type_="buy", subtype="buy",
-        security_n=1, date="2026-01-20"):
-    return {"investment_transaction_id": f"itx-{n}",
-            "account_id": f"acc-{account_n}",
-            "security_id": f"sec-{security_n}", "date": date,
+def itx(n, amount=105.0, type_="buy", subtype="buy", security_n=1):
+    return {"investment_transaction_id": f"itx-{n}", "account_id": "acc-2",
+            "security_id": f"sec-{security_n}", "date": "2026-01-20",
             "transaction_datetime": None, "name": f"{type_} synthetic",
             "type": type_, "subtype": subtype, "amount": amount,
             "quantity": 10, "price": 10.5, "fees": 0,
@@ -650,9 +648,9 @@ def test_a_database_of_another_item_is_refused(tree, tmp_path, caplog):
         ("tx-2",)]
 
 
-def sqlite_file(path, table="foo"):
+def sqlite_file(path):
     conn = sqlite3.connect(path)
-    conn.execute(f"CREATE TABLE {table} (x)")
+    conn.execute("CREATE TABLE foo (x)")
     conn.commit()
     conn.close()
     return path.read_bytes()
@@ -688,6 +686,18 @@ def test_a_database_that_is_not_plaid_silver_is_left_alone(tree, caplog):
         assert load_tree(tree, *argv) == 1
         assert (tree / "bank.db").read_bytes() == before
     assert "is not a plaid silver database" in caplog.text
+
+
+@pytest.mark.parametrize("dirname", ["data#1", "data?1", "data%41"])
+def test_the_database_check_reads_the_database_itself(tmp_path, dirname):
+    # '#', '?' and '%' mean something in a file: URI. In a path they are
+    # just characters.
+    tree = tmp_path / dirname / "plaid" / "bank"
+    write_run(tree, "20260130T070000Z", transactions=[tx(1)])
+    assert load_tree(tree) == 0
+    write_run(tree, "20260131T070000Z", transactions=[tx(2)])
+    assert load_tree(tree) == 0
+    assert [p.name for p in tmp_path.iterdir()] == [dirname]
 
 
 def test_a_tree_with_no_run_yet_opens_no_database(tmp_path):
@@ -821,15 +831,13 @@ def test_a_run_download_writes_is_what_load_reads(tmp_path, monkeypatch):
     # download itself, through the scripted Plaid, loads in full.
     from datetime import date
 
-    from conftest import FakePlaid, access_token
+    from conftest import FakePlaid, an_item
 
     import download
-    import items
 
     fake = FakePlaid("sandbox")
-    item = items.Item(name="bank", environment="sandbox",
-                      access_token=access_token(), item_id="item-synthetic-1")
-    fake.item_docs[access_token()] = item_doc()
+    item = an_item()
+    fake.item_docs[item.access_token] = item_doc()
     accts = [account(1), account(2, "investment", "ira"),
              account(3, "credit", "credit card")]
     fake.data.update({

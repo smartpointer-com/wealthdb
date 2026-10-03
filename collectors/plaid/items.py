@@ -2,27 +2,29 @@
 The Items one deployment has linked, and the files that hold them.
 
 An Item is one login at one institution. Each has a local name, chosen at
-`link`, and one credential file under the secrets dir:
+`link`. A name has these files in the secrets dir:
 
     plaid-token-<name>.json   the Item's access token, its ids and its
                               environment. Written once, when the Item is
                               made; update mode never changes the token.
     plaid-link-<name>.json    a Hosted Link session that has not been
                               settled yet. Written before its URL is
-                              shown, removed once the outcome is stored.
+                              shown, removed once the sign-in is settled.
     plaid-link-<name>.lock    held by the one run that works on that name's
                               sign-in, so two runs never claim one Item.
                               Removed when that run ends.
 
-One file per Item, so linking one never rewrites the token of another. A
-token cannot be fetched again: Plaid shows it once, at the exchange, and a
-Trial plan does not return the slot of an Item whose token is lost. That
-is why a file that exists but does not parse is an error here, never read
-as "no such Item" — the caller's next step would be to link a second one.
+One token file per Item, so linking one never rewrites the token of
+another. A token cannot be fetched again: Plaid shows it once, at the
+exchange, and a Trial plan does not return the slot of an Item whose token
+is lost. So a file that exists and cannot be read is an error here, never
+"no such Item". Read as absent, it would lead the caller to link a second
+Item.
 """
 
 from __future__ import annotations
 
+import argparse
 import fcntl
 import json
 import logging
@@ -62,6 +64,15 @@ def check_name(name: str) -> str:
             f"digits, '-' and '_', starting with a letter or a digit, at "
             f"most 40 characters")
     return name
+
+
+def item_name(value: str) -> str:
+    """argparse `type` for --item: the name, or argparse's error saying
+    why it is not one."""
+    try:
+        return check_name(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
 
 
 @dataclass
@@ -104,9 +115,9 @@ def _read(path: Path, kind: type, prefix: str):
     """The record in `path` as a `kind`, or ItemStoreError. A field the
     file lacks reads as None. An error never quotes the file: it holds a
     credential."""
-    if path.stat().st_mode & 0o077:
-        session.secure_file(path)
     try:
+        if path.stat().st_mode & 0o077:
+            session.secure_file(path)
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise ItemStoreError(
@@ -131,12 +142,14 @@ def _read(path: Path, kind: type, prefix: str):
 
 
 def load_item(secrets_dir: Path, name: str) -> Item | None:
-    """The stored Item called `name`, or None when no file exists."""
+    """The stored Item called `name`, or None when no file exists. A link
+    whose target is gone is a file that cannot be read."""
     path = token_path(secrets_dir, name)
-    if not path.exists():
+    if not os.path.lexists(path):
         return None
     item = _read(path, Item, _TOKEN_PREFIX)
-    if not item.access_token or not item.item_id:
+    if not all(isinstance(v, str) and v
+               for v in (item.access_token, item.item_id)):
         raise ItemStoreError(f"{path} holds no access token or no item id.")
     # A Plaid token states its environment: access-<environment>-<uuid>.
     if not item.access_token.startswith(f"access-{item.environment}-"):
@@ -168,7 +181,9 @@ def _stored_names(secrets_dir: Path, prefix: str = _TOKEN_PREFIX
 def list_items(secrets_dir: Path) -> list[Item]:
     """Every stored Item, by name. Raises ItemStoreError on the first file
     that cannot be read."""
-    return [load_item(secrets_dir, name) for name in _stored_names(secrets_dir)]
+    # A file removed since the listing is passed over.
+    return [item for name in _stored_names(secrets_dir)
+            if (item := load_item(secrets_dir, name)) is not None]
 
 
 def of_environment(secrets_dir: Path, environment: str) -> list[Item]:
@@ -244,14 +259,14 @@ def select(secrets_dir: Path, environment: str, names: list[str] | None
         except ItemStoreError as e:
             unreadable.append(e)
             continue
-        if item.environment == environment:
+        if item is not None and item.environment == environment:
             chosen.append(item)
     return chosen, unreadable
 
 
 def load_pending(secrets_dir: Path, name: str) -> PendingLink | None:
     path = pending_path(secrets_dir, name)
-    if not path.exists():
+    if not os.path.lexists(path):
         return None
     pending = _read(path, PendingLink, _LINK_PREFIX)
     if not pending.link_token:
@@ -295,16 +310,24 @@ def held(secrets_dir: Path, name: str) -> Iterator[bool]:
     next run takes it over: the system releases the lock of a process
     that has ended."""
     path = lock_path(secrets_dir, name)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    try:
+    while True:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            os.close(fd)
             yield False
             return
+        # The run that held the lock removes its file as it ends. A lock
+        # on that removed file guards nothing, so this run starts over.
         try:
-            yield True
-        finally:
-            path.unlink(missing_ok=True)
+            if os.path.samestat(os.fstat(fd), os.stat(path)):
+                break
+        except FileNotFoundError:
+            pass
+        os.close(fd)
+    try:
+        yield True
     finally:
+        path.unlink(missing_ok=True)
         os.close(fd)
