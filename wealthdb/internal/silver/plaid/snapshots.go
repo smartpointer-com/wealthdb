@@ -252,9 +252,8 @@ func closedCash(last, now []cashKey, t int64) []canonical.CashBalanceChange {
 	var out []canonical.CashBalanceChange
 	for _, k := range last {
 		if !slices.Contains(now, k) {
-			cb := current(t, k.account, k.currency, canonical.NewDecimalFromInt(0))
-			cb.Payload = silver.ClosureMarkerPayload
-			out = append(out, cb)
+			out = append(out, balanceOf(t, k.account, k.currency, canonical.BalanceKindCurrent,
+				canonical.NewDecimalFromInt(0), silver.ClosureMarkerPayload))
 		}
 	}
 	return out
@@ -335,11 +334,11 @@ func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, 
 			appendMortgage(b, t, a, s)
 			continue
 		}
-		cb := balanceOf(t, a.id, s.currency, s.kind, s.amount)
+		payload := json.RawMessage(`{"basis":"roster"}`)
 		if s.at != t {
-			cb.Payload = json.RawMessage(fmt.Sprintf(`{"basis":"carried","stated_at":%d}`, s.at))
+			payload = json.RawMessage(fmt.Sprintf(`{"basis":"carried","stated_at":%d}`, s.at))
 		}
-		b.CashBalances = append(b.CashBalances, cb)
+		b.CashBalances = append(b.CashBalances, balanceOf(t, a.id, s.currency, s.kind, s.amount, payload))
 		keys = append(keys, cashKey{a.id, s.currency})
 	}
 	holdings, err := c.holdingsAt(ctx, t)
@@ -349,19 +348,17 @@ func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, 
 	return append(keys, appendHoldings(b, t, byID, holdings, secs)...), nil
 }
 
-func current(t int64, accountID, currency string, amount canonical.Decimal) canonical.CashBalanceChange {
-	return balanceOf(t, accountID, currency, canonical.BalanceKindCurrent, amount)
-}
-
+// balanceOf is one account's cash in one currency at t. Its payload says
+// what the figure was read from.
 func balanceOf(t int64, accountID, currency string, kind canonical.BalanceKind,
-	amount canonical.Decimal) canonical.CashBalanceChange {
+	amount canonical.Decimal, payload json.RawMessage) canonical.CashBalanceChange {
 	return canonical.CashBalanceChange{
 		SnapshotAt:        t,
 		AccountExternalID: accountID,
 		Currency:          currency,
 		BalanceKind:       kind,
 		Amount:            amount,
-		Payload:           json.RawMessage(`{"basis":"roster"}`),
+		Payload:           payload,
 	}
 }
 
@@ -432,8 +429,8 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 		if currency == "" {
 			continue
 		}
-		value := silver.DecimalPtrOrNil(h.value)
 		if isCash(sec, currency) {
+			value := silver.DecimalPtrOrNil(h.value)
 			if value == nil {
 				value = silver.DecimalPtrOrNil(h.quantity)
 			}
@@ -504,9 +501,8 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 		}
 	}
 	for _, k := range cashOrder {
-		cb := current(t, k.account, k.currency, cash[k])
-		cb.Payload = json.RawMessage(`{"basis":"holdings"}`)
-		b.CashBalances = append(b.CashBalances, cb)
+		b.CashBalances = append(b.CashBalances, balanceOf(t, k.account, k.currency,
+			canonical.BalanceKindCurrent, cash[k], json.RawMessage(`{"basis":"holdings"}`)))
 	}
 	return cashOrder
 }
@@ -552,17 +548,17 @@ func (c *Connection) appendStatementCloses(ctx context.Context, w canonical.Wind
 	latest map[string]account, stated map[string]statedBalance,
 	at func(int64) *canonical.SnapshotBatch) error {
 	rows, err := c.db.QueryContext(ctx, `
-SELECT l.account_id, l.last_statement_issue_date, l.last_statement_balance
-  FROM liabilities l
- WHERE l.kind = 'credit'
-   AND l.last_statement_balance IS NOT NULL
-   AND l.last_statement_issue_date BETWEEN ? AND ?
-   AND l.last_statement_issue_date < ?
-   AND l.snapshot_at = (SELECT MAX(l2.snapshot_at) FROM liabilities l2
-                         WHERE l2.account_id = l.account_id AND l2.kind = 'credit'
-                           AND l2.last_statement_issue_date = l.last_statement_issue_date
-                           AND l2.last_statement_balance IS NOT NULL)
- ORDER BY l.account_id, l.last_statement_issue_date`, w.Start, w.End, newest)
+SELECT account_id, last_statement_issue_date, last_statement_balance FROM (
+    SELECT account_id, last_statement_issue_date, last_statement_balance,
+           ROW_NUMBER() OVER (PARTITION BY account_id, last_statement_issue_date
+                              ORDER BY snapshot_at DESC) AS rn
+      FROM liabilities
+     WHERE kind = 'credit'
+       AND last_statement_balance IS NOT NULL
+       AND last_statement_issue_date BETWEEN ? AND ?
+       AND last_statement_issue_date < ?
+) WHERE rn = 1
+ ORDER BY account_id, last_statement_issue_date`, w.Start, w.End, newest)
 	if err != nil {
 		return fmt.Errorf("plaid appendStatementCloses: %w", err)
 	}
@@ -584,14 +580,8 @@ SELECT l.account_id, l.last_statement_issue_date, l.last_statement_balance
 		}
 		b := at(issued)
 		b.Accounts = append(b.Accounts, accountChange(a, issued, issued))
-		b.CashBalances = append(b.CashBalances, canonical.CashBalanceChange{
-			SnapshotAt:        issued,
-			AccountExternalID: id,
-			Currency:          currency,
-			BalanceKind:       canonical.BalanceKindClosing,
-			Amount:            amount.Neg(),
-			Payload:           json.RawMessage(`{"basis":"statement_closing"}`),
-		})
+		b.CashBalances = append(b.CashBalances, balanceOf(issued, id, currency,
+			canonical.BalanceKindClosing, amount.Neg(), json.RawMessage(`{"basis":"statement_closing"}`)))
 	}
 	return rows.Err()
 }
@@ -786,9 +776,9 @@ func (c *Connection) accountsAt(ctx context.Context, t int64) ([]account, error)
 // latest run that listed it.
 func (c *Connection) latestAccounts(ctx context.Context) (map[string]account, error) {
 	rows, err := c.db.QueryContext(ctx, `SELECT `+accountColumns+`
-  FROM accounts a
- WHERE a.snapshot_at = (SELECT MAX(a2.snapshot_at) FROM accounts a2
-                         WHERE a2.account_id = a.account_id)`)
+  FROM accounts
+ WHERE (snapshot_at, account_id) IN (SELECT MAX(snapshot_at), account_id
+                                       FROM accounts GROUP BY account_id)`)
 	if err != nil {
 		return nil, fmt.Errorf("plaid latestAccounts: %w", err)
 	}
@@ -833,13 +823,14 @@ func (c *Connection) readSecurities(ctx context.Context) (map[string]security, e
 SELECT s.security_id, COALESCE(s.name, ''), COALESCE(s.ticker_symbol, ''),
        COALESCE(s.type, ''), COALESCE(s.currency, ''), COALESCE(s.cusip, ''),
        COALESCE(s.isin, ''), COALESCE(s.cfi_code, ''), s.payload,
-       EXISTS (SELECT 1 FROM holdings h
-                WHERE h.security_id = s.security_id
-                  AND CAST(h.institution_price AS REAL) NOT IN (0, 1))
-    OR EXISTS (SELECT 1 FROM investment_transactions i
-                WHERE i.security_id = s.security_id
-                  AND LOWER(TRIM(i.type)) IN ('buy', 'sell')
-                  AND CAST(i.price AS REAL) NOT IN (0, 1))
+       s.security_id IN (
+           SELECT security_id FROM holdings
+            WHERE CAST(institution_price AS REAL) NOT IN (0, 1)
+           UNION ALL
+           SELECT security_id FROM investment_transactions
+            WHERE security_id IS NOT NULL
+              AND LOWER(TRIM(type)) IN ('buy', 'sell')
+              AND CAST(price AS REAL) NOT IN (0, 1))
   FROM securities s`)
 	if err != nil {
 		return nil, fmt.Errorf("plaid readSecurities: %w", err)

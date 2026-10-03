@@ -39,7 +39,7 @@ func instrumentKey(s security) string {
 // Cash is worth one per unit. Plaid can type a bond as cash, with no
 // ticker, and a price then gives it away. Such a security is a position,
 // and its type says nothing (pairFor).
-func isCash(s security, holdingCurrency string) bool {
+func isCash(s security, currency string) bool {
 	if norm(s.typ) != "cash" {
 		return false
 	}
@@ -48,7 +48,7 @@ func isCash(s security, holdingCurrency string) bool {
 		return !s.priced
 	}
 	return strings.HasPrefix(t, "CUR:") ||
-		t == strings.ToUpper(holdingCurrency) || t == strings.ToUpper(s.currency)
+		t == strings.ToUpper(currency) || t == strings.ToUpper(s.currency)
 }
 
 // pairFor maps a security that is not cash to its (asset class, vehicle)

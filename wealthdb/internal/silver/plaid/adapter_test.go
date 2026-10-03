@@ -186,6 +186,15 @@ func liability(t *testing.T, db *sql.DB, at int64, accountID, balance string, is
 		at, accountID, balance, issued)
 }
 
+func status(t *testing.T, conn silver.Connection) canonical.Status {
+	t.Helper()
+	s, err := conn.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	return s
+}
+
 func window(t *testing.T, conn silver.Connection) canonical.Window {
 	t.Helper()
 	w, err := conn.ChangeWindow(context.Background(), -1)
@@ -827,6 +836,36 @@ func TestAnAccountThatLeftTheItemReadsZeroOnce(t *testing.T) {
 	}
 }
 
+// An account the Item no longer lists keeps its ledger, in the description
+// of the last run that listed it.
+func TestAnAccountThatLeftTheItemKeepsItsLedger(t *testing.T) {
+	path, db := newFixture(t)
+	for d := 10; d <= 12; d++ {
+		run(t, db, runAt(d), day(1), noInvestments)
+		acct(t, db, runAt(d), "acct-checking", "depository", "checking", "100")
+	}
+	for d := 10; d <= 11; d++ {
+		acct(t, db, runAt(d), "acct-card", "credit", "credit card", "50")
+	}
+	exec(t, db, `UPDATE accounts SET name = 'Synthetic old name'
+	             WHERE account_id = 'acct-card' AND snapshot_at = ?`, runAt(10))
+	bank(t, db, bankRow{id: "tx-card", account: "acct-card", amount: "-5", name: "Kiosk", at: day(3)})
+	conn := openConn(t, path)
+	if _, ok := collectTransactions(t, conn)["tx-card"]; !ok {
+		t.Errorf("the departed card's ledger is gone")
+	}
+	var named []canonical.AccountChange
+	for _, a := range accountChanges(collectSnapshots(t, conn), "acct-card") {
+		if a.FirstSeenAt == day(3) {
+			named = append(named, a)
+		}
+	}
+	if len(named) != 1 || named[0].DisplayName == nil ||
+		*named[0].DisplayName != "Synthetic credit card …0000" {
+		t.Errorf("the departed card = %+v, want its newest description", named)
+	}
+}
+
 func TestARunWhoseHoldingsWereNotReadAddsNothing(t *testing.T) {
 	path, db := newFixture(t)
 	seedItem(t, db, runAt(10))
@@ -1210,11 +1249,7 @@ func TestAStatementOlderThanEveryLedgerWindow(t *testing.T) {
 	acct(t, db, runAt(10), "acct-card", "credit", "credit card", "410.25")
 	liability(t, db, runAt(10), "acct-card", "380", day(2))
 	conn := openConn(t, path)
-	s, err := conn.Status(context.Background())
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if s.OldestSnapshotAt != day(2) {
+	if s := status(t, conn); s.OldestSnapshotAt != day(2) {
 		t.Errorf("oldest snapshot = %d, want the issue date %d", s.OldestSnapshotAt, day(2))
 	}
 	if w := window(t, conn); w.Start != day(2) {
@@ -1580,6 +1615,9 @@ func TestABondPlaidTypesAsCashIsAPosition(t *testing.T) {
 			name: "EXAMPLE NOTE 2031 - INTEREST PAID", at: day(4)},
 		{id: "itx-interest", account: "acct-ira", security: "sec-cash", typ: "cash",
 			subtype: "interest", amount: "2", quantity: "0", price: "0.05", at: day(4)},
+		// A priced buy that names no security marks no security as priced.
+		{id: "itx-unnamed", account: "acct-ira", typ: "buy", subtype: "buy",
+			amount: "-10", quantity: "1", price: "10", at: day(4)},
 	} {
 		inv(t, db, r)
 	}
@@ -1712,11 +1750,7 @@ func TestATradeDateOpensTheRanges(t *testing.T) {
 	inv(t, db, invRow{id: "itx-buy", account: "acct-ira", security: "sec-eq", typ: "buy",
 		subtype: "buy", amount: "-100", quantity: "1", price: "100", at: day(5), traded: day(3)})
 	conn := openConn(t, path)
-	s, err := conn.Status(context.Background())
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if s.OldestTransactionAt != day(3) || s.LatestTransactionAt != day(3) {
+	if s := status(t, conn); s.OldestTransactionAt != day(3) || s.LatestTransactionAt != day(3) {
 		t.Errorf("transaction range = [%d, %d], want the trade date %d", s.OldestTransactionAt,
 			s.LatestTransactionAt, day(3))
 	}
@@ -1872,12 +1906,7 @@ func TestStatusAndChangeWindow(t *testing.T) {
 		subtype: "buy", amount: "-1", quantity: "1", price: "1", at: day(3)})
 	bank(t, db, bankRow{id: "tx-1", account: "acct-checking", amount: "-5", name: "Kiosk", at: day(7)})
 	conn := openConn(t, path)
-	ctx := context.Background()
-
-	s, err := conn.Status(ctx)
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
+	s := status(t, conn)
 	if s.LatestChangeNumber != runAt(10) {
 		t.Errorf("change number = %d, want the run's start", s.LatestChangeNumber)
 	}
@@ -1896,7 +1925,7 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	if !w.HasChanges || w.Start != day(1) || w.End != runAt(10) || w.NewChangeNumber != runAt(10) {
 		t.Errorf("window = %+v", w)
 	}
-	idle, err := conn.ChangeWindow(ctx, w.NewChangeNumber)
+	idle, err := conn.ChangeWindow(context.Background(), w.NewChangeNumber)
 	if err != nil {
 		t.Fatalf("ChangeWindow: %v", err)
 	}
@@ -1912,11 +1941,7 @@ func TestAnInvestmentOnlyItemHasATransactionRange(t *testing.T) {
 	seedItem(t, db, runAt(10))
 	inv(t, db, invRow{id: "itx-buy", account: "acct-ira", security: "sec-eq", typ: "buy",
 		subtype: "buy", amount: "-1", quantity: "1", price: "1", at: day(3)})
-	s, err := openConn(t, path).Status(context.Background())
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if s.OldestTransactionAt != day(3) || s.LatestTransactionAt != day(3) {
+	if s := status(t, openConn(t, path)); s.OldestTransactionAt != day(3) || s.LatestTransactionAt != day(3) {
 		t.Errorf("transaction range = [%d, %d]", s.OldestTransactionAt, s.LatestTransactionAt)
 	}
 }
@@ -1924,11 +1949,7 @@ func TestAnInvestmentOnlyItemHasATransactionRange(t *testing.T) {
 func TestEmptySilverIsNotAnError(t *testing.T) {
 	path, _ := newFixture(t)
 	conn := openConn(t, path)
-	s, err := conn.Status(context.Background())
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if s.LatestChangeNumber != -1 || s.OldestTransactionAt != -1 {
+	if s := status(t, conn); s.LatestChangeNumber != -1 || s.OldestTransactionAt != -1 {
 		t.Errorf("empty status = %+v", s)
 	}
 	if w := window(t, conn); w.HasChanges {

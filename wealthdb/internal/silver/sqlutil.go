@@ -193,11 +193,12 @@ func DatePtrFromNullUnix(n sql.NullInt64) *time.Time {
 // re-read of what the source will show, so the only honest trigger is
 // "a dump was loaded since the last watermark", and the only honest
 // response is to re-emit the full history and let gold's deleteWindow
-// over [Start,End] make that idempotent. Four adapters had the same
-// three queries and the same two methods written out; what genuinely
-// differs between them is which tables bound the span, so that arrives
-// as `spanExtrema` — a query yielding (MIN, MAX) over every date the
-// source's projection touches. `kind` names the source in errors.
+// over [Start,End] make that idempotent. What differs between sources is
+// which tables bound the span. That arrives as `spanExtrema`, a query
+// yielding (MIN, MAX) over every date the source's projection touches. A
+// silver whose ledger is not one `transactions` table also passes the
+// query that bounds its ledger (LoadClockStatusOver). `kind` names the
+// source in errors.
 
 // LoadClockStatus reports the content ranges and pins LatestChangeNumber
 // to MAX(dump_runs.snapshot_at). Each bronze dump loaded bumps it and a

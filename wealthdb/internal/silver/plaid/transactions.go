@@ -281,13 +281,13 @@ func neighboursOf(rows []investmentRow) neighbours {
 // same day (the other leg of a merger). Any other such movement is marked
 // unvalued: gold cannot price it.
 func book(r investmentRow, m measured, nb neighbours) booking {
-	kind, known := investmentTxKind(r.typ, r.subtype, m.inKind, m.inward())
 	if k, ok := describedKind(r.typ, r.subtype, r.name); ok {
 		return booking{k, true, m.amount, false}
 	}
 	if k, ok := securityCash(r, m, nb); ok {
 		return booking{k, true, m.amount, false}
 	}
+	kind, known := investmentTxKind(r.typ, r.subtype, m.inKind, m.inward())
 	if kind != canonical.TxKindTransferIn && kind != canonical.TxKindTransferOut {
 		return booking{kind, known, m.amount, false}
 	}

@@ -314,8 +314,9 @@ the sign would book it twice.
 - Nothing maps to `contribution`, which is a capital call.
 - A row of kind `other`, and a row kinded by Plaid's type alone, keep
   Plaid's type and subtype in `payload.source_kind`. Kinding by type is
-  a departure from DESIGN.md §6.8. `status -v` counts those rows as
-  `kind guessed`.
+  a departure from DESIGN.md §6.8. `status -v` counts a row kinded by
+  type as `kind guessed`, and a row of kind `other` under
+  `kind='other'`.
 - `provider_category` is unset on this ledger: Plaid files no category
   here.
 
