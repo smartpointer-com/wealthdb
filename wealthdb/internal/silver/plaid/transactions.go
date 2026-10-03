@@ -71,7 +71,8 @@ func (c *Connection) appendBankLedger(ctx context.Context, w canonical.Window,
 SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
        COALESCE(name, ''), COALESCE(original_description, ''),
        COALESCE(merchant_name, ''), COALESCE(category_primary, ''),
-       COALESCE(category_detailed, ''), COALESCE(check_number, ''), payload
+       COALESCE(category_detailed, ''), COALESCE(check_number, ''),
+       COALESCE(json_extract(payload, '$.category_id'), ''), payload
   FROM transactions
  WHERE posted_at BETWEEN ? AND ?`, w.Start, w.End)
 	if err != nil {
@@ -80,12 +81,12 @@ SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			id, accountID, rawAmount, currency, name, original string
-			merchant, primary, detailed, check, payload        string
-			posted                                             int64
+			id, accountID, rawAmount, currency, name, original  string
+			merchant, primary, detailed, check, legacy, payload string
+			posted                                              int64
 		)
 		if err := rows.Scan(&id, &accountID, &posted, &rawAmount, &currency, &name,
-			&original, &merchant, &primary, &detailed, &check, &payload); err != nil {
+			&original, &merchant, &primary, &detailed, &check, &legacy, &payload); err != nil {
 			return err
 		}
 		a, ok := accounts[accountID]
@@ -96,7 +97,7 @@ SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
 		if err != nil {
 			return fmt.Errorf("plaid Transactions: %s: amount %q: %w", id, rawAmount, err)
 		}
-		kind := bankTxKind(a.kind, amount, primary, detailed)
+		kind := bankTxKind(a.kind, amount, primary, detailed, legacy)
 		net := canonical.ApplyCanonicalSign(kind, &amount)
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			TransactionExternalID: id,
@@ -272,14 +273,18 @@ func neighboursOf(rows []investmentRow) neighbours {
 // its direction. Every other row keeps its own amount and sign: one that
 // disagrees with its kind is a correction.
 //
-// A cash or fee row that names a security that is not cash is read by what
-// it names (securityCash). A movement of a security at no worth is a
-// corporate action where the security is a derivative (an option that
-// expired) or has a corporate action on the same day (the other leg of a
-// merger). Any other such movement is marked unvalued: gold cannot price
-// it.
+// A cash deposit or withdrawal whose text states what it is books as that
+// (describedKind). Otherwise a cash or fee row that names a security that
+// is not cash is read by what it names (securityCash). A movement of a
+// security at no worth is a corporate action where the security is a
+// derivative (an option that expired) or has a corporate action on the
+// same day (the other leg of a merger). Any other such movement is marked
+// unvalued: gold cannot price it.
 func book(r investmentRow, m measured, nb neighbours) booking {
 	kind, known := investmentTxKind(r.typ, r.subtype, m.inKind, m.inward())
+	if k, ok := describedKind(r.typ, r.subtype, r.name); ok {
+		return booking{k, true, m.amount, false}
+	}
 	if k, ok := securityCash(r, m, nb); ok {
 		return booking{k, true, m.amount, false}
 	}

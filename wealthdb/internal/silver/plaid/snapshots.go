@@ -830,10 +830,17 @@ SELECT account_id, security_id, quantity, institution_value, cost_basis,
 
 func (c *Connection) readSecurities(ctx context.Context) (map[string]security, error) {
 	rows, err := c.db.QueryContext(ctx, `
-SELECT security_id, COALESCE(name, ''), COALESCE(ticker_symbol, ''), COALESCE(type, ''),
-       COALESCE(currency, ''), COALESCE(cusip, ''), COALESCE(isin, ''),
-       COALESCE(cfi_code, ''), payload
-  FROM securities`)
+SELECT s.security_id, COALESCE(s.name, ''), COALESCE(s.ticker_symbol, ''),
+       COALESCE(s.type, ''), COALESCE(s.currency, ''), COALESCE(s.cusip, ''),
+       COALESCE(s.isin, ''), COALESCE(s.cfi_code, ''), s.payload,
+       EXISTS (SELECT 1 FROM holdings h
+                WHERE h.security_id = s.security_id
+                  AND CAST(h.institution_price AS REAL) NOT IN (0, 1))
+    OR EXISTS (SELECT 1 FROM investment_transactions i
+                WHERE i.security_id = s.security_id
+                  AND LOWER(TRIM(i.type)) IN ('buy', 'sell')
+                  AND CAST(i.price AS REAL) NOT IN (0, 1))
+  FROM securities s`)
 	if err != nil {
 		return nil, fmt.Errorf("plaid readSecurities: %w", err)
 	}
@@ -842,7 +849,7 @@ SELECT security_id, COALESCE(name, ''), COALESCE(ticker_symbol, ''), COALESCE(ty
 	for rows.Next() {
 		var s security
 		if err := rows.Scan(&s.id, &s.name, &s.ticker, &s.typ, &s.currency,
-			&s.cusip, &s.isin, &s.cfi, &s.payload); err != nil {
+			&s.cusip, &s.isin, &s.cfi, &s.payload, &s.priced); err != nil {
 			return nil, err
 		}
 		out[s.id] = s

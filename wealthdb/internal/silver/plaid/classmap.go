@@ -8,10 +8,12 @@ import (
 )
 
 // security is one row of silver's `securities` table, as the projection
-// reads it.
+// reads it. priced is true when a holding or a buy or sell of it states a
+// price other than 0 or 1.
 type security struct {
 	id, name, ticker, typ, currency, cusip, isin, cfi string
 	payload                                           string
+	priced                                            bool
 }
 
 // instrumentKey is the gold instrument id of a security: its CUSIP, else its
@@ -33,12 +35,19 @@ func instrumentKey(s security) string {
 // ticker. Cash is a balance of its account, not a position. A cash-type
 // security with a ticker of its own is a money market fund, and stays a
 // position.
+//
+// Cash is worth one per unit. Plaid can type a bond as cash, with no
+// ticker, and a price then gives it away. Such a security is a position,
+// and its type says nothing (pairFor).
 func isCash(s security, holdingCurrency string) bool {
 	if norm(s.typ) != "cash" {
 		return false
 	}
 	t := strings.ToUpper(strings.TrimSpace(s.ticker))
-	return t == "" || strings.HasPrefix(t, "CUR:") ||
+	if t == "" {
+		return !s.priced
+	}
+	return strings.HasPrefix(t, "CUR:") ||
 		t == strings.ToUpper(holdingCurrency) || t == strings.ToUpper(s.currency)
 }
 
@@ -58,8 +67,11 @@ func pairFor(s security) (canonical.AssetClass, canonical.Vehicle, bool) {
 	case "mutual fund":
 		return fundExposure(s.name), canonical.VehicleFund, true
 	case "cash":
-		// A money market fund: cash with a ticker of its own (isCash).
-		return canonical.AssetClassCash, canonical.VehicleFund, true
+		// A money market fund: cash with a ticker of its own. Without one,
+		// the security is priced, and Plaid's type is wrong (isCash).
+		if strings.TrimSpace(s.ticker) != "" {
+			return canonical.AssetClassCash, canonical.VehicleFund, true
+		}
 	case "fixed income":
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond, true
 	case "derivative":

@@ -118,9 +118,11 @@ func hold(t *testing.T, db *sql.DB, at int64, accountID, securityID string, seq 
 
 // bankRow is one row of the bank and card ledger; the zero value of an
 // optional field is NULL, except the currency, which is USD unless
-// noCurrency says the row states none.
+// noCurrency says the row states none. `legacy` is Plaid's older category
+// id, kept in the payload.
 type bankRow struct {
 	id, account, amount, name, original, merchant, primary, detailed, check string
+	legacy                                                                  string
 	pending, noCurrency                                                     bool
 	at                                                                      int64
 }
@@ -135,20 +137,27 @@ func bank(t *testing.T, db *sql.DB, r bankRow) {
 	if r.noCurrency {
 		currency = nil
 	}
+	legacy := "null"
+	if r.legacy != "" {
+		legacy = `"` + r.legacy + `"`
+	}
 	exec(t, db, `INSERT INTO transactions (transaction_id, account_id, posted_at, amount,
 	             currency, name, merchant_name, original_description, pending,
 	             category_primary, category_detailed, check_number, run_at, payload)
 	             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
 		r.id, r.account, r.at, r.amount, currency, null(r.name), null(r.merchant), null(r.original),
 		pending, null(r.primary), null(r.detailed), null(r.check),
-		`{"transaction_id":"`+r.id+`","pending":`+map[bool]string{true: "true", false: "false"}[r.pending]+`}`)
+		`{"transaction_id":"`+r.id+`","category_id":`+legacy+
+			`,"pending":`+map[bool]string{true: "true", false: "false"}[r.pending]+`}`)
 }
 
 // invRow is one row of the investment ledger, as load.py stores it: the
 // amount in the fleet's sign, the quantity in Plaid's own. `traded` is
-// Plaid's transaction time, NULL when zero.
+// Plaid's transaction time, NULL when zero. `name` is the institution's
+// text, "<type> synthetic" when empty.
 type invRow struct {
 	id, account, security, typ, subtype, amount, quantity, price, fees, cancels string
+	name                                                                        string
 	at, traded                                                                  int64
 }
 
@@ -158,11 +167,15 @@ func inv(t *testing.T, db *sql.DB, r invRow) {
 	if r.traded != 0 {
 		traded = r.traded
 	}
+	name := r.name
+	if name == "" {
+		name = r.typ + " synthetic"
+	}
 	exec(t, db, `INSERT INTO investment_transactions (investment_transaction_id, account_id,
 	             security_id, posted_at, transaction_at, name, type, subtype, amount, quantity,
 	             price, fees, currency, cancel_transaction_id, run_at, payload)
 	             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, 0, '{}')`,
-		r.id, r.account, null(r.security), r.at, traded, r.typ+" synthetic", r.typ, r.subtype,
+		r.id, r.account, null(r.security), r.at, traded, name, r.typ, r.subtype,
 		r.amount, null(r.quantity), null(r.price), null(r.fees), null(r.cancels))
 }
 
@@ -382,35 +395,39 @@ func TestWrapperFor(t *testing.T) {
 
 func TestPairForIsAlwaysAnAdmittedPair(t *testing.T) {
 	cases := []struct {
-		typ, cfi, name string
-		ac             canonical.AssetClass
-		veh            canonical.Vehicle
-		known          bool
+		typ, ticker, cfi, name string
+		ac                     canonical.AssetClass
+		veh                    canonical.Vehicle
+		known                  bool
 	}{
-		{"equity", "", "PLACEHOLDER CORP", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
-		{"etf", "", "PLACEHOLDER TOTAL MARKET ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF, true},
-		{"etf", "", "PLACEHOLDER TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF, true},
-		{"mutual fund", "", "PLACEHOLDER MONEY MARKET FUND", canonical.AssetClassCash, canonical.VehicleFund, true},
-		{"mutual fund", "", "PLACEHOLDER GROWTH FUND", canonical.AssetClassPublicEquity, canonical.VehicleFund, true},
-		{"cash", "", "PLACEHOLDER SWEEP FUND", canonical.AssetClassCash, canonical.VehicleFund, true},
-		{"fixed income", "", "PLACEHOLDER NOTE", canonical.AssetClassFixedIncome, canonical.VehicleBond, true},
-		{"derivative", "", "PLACEHOLDER CALL", canonical.AssetClassPublicEquity, canonical.VehicleOption, true},
-		{"cryptocurrency", "", "PLACEHOLDER TOKEN", canonical.AssetClassCrypto, canonical.VehiclePhysical, true},
-		{"loan", "", "PLACEHOLDER LOAN", canonical.AssetClassPrivateDebt, canonical.VehicleLoan, true},
+		{"equity", "", "", "PLACEHOLDER CORP", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"etf", "", "", "PLACEHOLDER TOTAL MARKET ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF, true},
+		{"etf", "", "", "PLACEHOLDER TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF, true},
+		{"mutual fund", "", "", "PLACEHOLDER MONEY MARKET FUND", canonical.AssetClassCash, canonical.VehicleFund, true},
+		{"mutual fund", "", "", "PLACEHOLDER GROWTH FUND", canonical.AssetClassPublicEquity, canonical.VehicleFund, true},
+		{"cash", "EXMXX", "", "PLACEHOLDER SWEEP FUND", canonical.AssetClassCash, canonical.VehicleFund, true},
+		{"fixed income", "", "", "PLACEHOLDER NOTE", canonical.AssetClassFixedIncome, canonical.VehicleBond, true},
+		{"derivative", "", "", "PLACEHOLDER CALL", canonical.AssetClassPublicEquity, canonical.VehicleOption, true},
+		{"cryptocurrency", "", "", "PLACEHOLDER TOKEN", canonical.AssetClassCrypto, canonical.VehiclePhysical, true},
+		{"loan", "", "", "PLACEHOLDER LOAN", canonical.AssetClassPrivateDebt, canonical.VehicleLoan, true},
 		// Plaid's own type wins over the CFI code.
-		{"equity", "CEXXXX", "PLACEHOLDER BOND CORP", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"equity", "", "CEXXXX", "PLACEHOLDER BOND CORP", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
 		// A type Plaid leaves as `other` falls back on a collective
 		// investment vehicle's CFI code.
-		{"other", "CEXXXX", "PLACEHOLDER TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF, false},
-		{"other", "cexxxx", "PLACEHOLDER TOTAL MARKET ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF, false},
-		{"other", "CIXXXX", "PLACEHOLDER BOND FUND", canonical.AssetClassFixedIncome, canonical.VehicleFund, false},
-		{"", "CIXXXX", "PLACEHOLDER MONEY MARKET FUND", canonical.AssetClassCash, canonical.VehicleFund, false},
-		{"other", "ESXXXX", "PLACEHOLDER BOND CORP", canonical.AssetClassOther, canonical.VehicleOther, false},
-		{"other", "", "PLACEHOLDER THING", canonical.AssetClassOther, canonical.VehicleOther, false},
-		{"", "", "PLACEHOLDER THING", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"other", "", "CEXXXX", "PLACEHOLDER TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF, false},
+		{"other", "", "cexxxx", "PLACEHOLDER TOTAL MARKET ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF, false},
+		{"other", "", "CIXXXX", "PLACEHOLDER BOND FUND", canonical.AssetClassFixedIncome, canonical.VehicleFund, false},
+		{"", "", "CIXXXX", "PLACEHOLDER MONEY MARKET FUND", canonical.AssetClassCash, canonical.VehicleFund, false},
+		{"other", "", "ESXXXX", "PLACEHOLDER BOND CORP", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"other", "", "", "PLACEHOLDER THING", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"", "", "", "PLACEHOLDER THING", canonical.AssetClassOther, canonical.VehicleOther, false},
+		// Cash with no ticker reaches here only priced: Plaid's type is
+		// wrong, and the security falls back as `other` does.
+		{"cash", "", "", "PLACEHOLDER NOTE 2031", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"cash", "", "CIXXXX", "PLACEHOLDER BOND FUND", canonical.AssetClassFixedIncome, canonical.VehicleFund, false},
 	}
 	for _, c := range cases {
-		ac, veh, known := pairFor(security{typ: c.typ, cfi: c.cfi, name: c.name})
+		ac, veh, known := pairFor(security{typ: c.typ, ticker: c.ticker, cfi: c.cfi, name: c.name})
 		if ac != c.ac || veh != c.veh || known != c.known {
 			t.Errorf("pairFor(%q, %q, %q) = (%q, %q, %v), want (%q, %q, %v)",
 				c.typ, c.cfi, c.name, ac, veh, known, c.ac, c.veh, c.known)
@@ -431,6 +448,10 @@ func TestIsCashAndInstrumentKey(t *testing.T) {
 		{security{id: "s2", typ: "cash", ticker: "CUR:USD"}, true, "CUR:USD"},
 		{security{id: "s3", typ: "cash", ticker: "USD"}, true, "USD"},
 		{security{id: "s4", typ: "cash", ticker: "EXMXX"}, false, "EXMXX"},
+		// A price other than one gives away a security typed as cash; a
+		// currency stays cash at any price.
+		{security{id: "s8", typ: "cash", priced: true}, false, "plaid:s8"},
+		{security{id: "s9", typ: "cash", ticker: "CUR:EUR", priced: true}, true, "CUR:EUR"},
 		{security{id: "s5", typ: "equity", ticker: "EXA", isin: "XX0000000000"}, false, "XX0000000000"},
 		{security{id: "s6", typ: "equity", ticker: "EXA", cusip: "000000000", isin: "XX0000000000"}, false, "000000000"},
 		{security{id: "s7", typ: "mutual fund"}, false, "plaid:s7"},
@@ -448,30 +469,77 @@ func TestIsCashAndInstrumentKey(t *testing.T) {
 func TestBankTxKind(t *testing.T) {
 	cash, card := canonical.AccountKindCash, canonical.AccountKindCard
 	cases := []struct {
-		kind              canonical.AccountKind
-		amount            string
-		primary, detailed string
-		want              canonical.TxKind
+		kind                      canonical.AccountKind
+		amount                    string
+		primary, detailed, legacy string
+		want                      canonical.TxKind
 	}{
-		{cash, "0.12", "INCOME", "INCOME_INTEREST_EARNED", canonical.TxKindInterest},
-		{cash, "-5", "BANK_FEES", "BANK_FEES_OVERDRAFT_FEES", canonical.TxKindFee},
-		{cash, "-5", "BANK_FEES", "BANK_FEES_INTEREST_CHARGE", canonical.TxKindInterest},
-		{cash, "-40", "FOOD_AND_DRINK", "FOOD_AND_DRINK_GROCERIES", canonical.TxKindWithdrawal},
-		{cash, "-500", "TRANSFER_OUT", "TRANSFER_OUT_ACCOUNT_TRANSFER", canonical.TxKindWithdrawal},
-		{cash, "2500", "INCOME", "INCOME_SALARY", canonical.TxKindDeposit},
-		{cash, "5", "BANK_FEES", "BANK_FEES_OVERDRAFT_FEES", canonical.TxKindDeposit},
-		{card, "-40", "FOOD_AND_DRINK", "FOOD_AND_DRINK_GROCERIES", canonical.TxKindPurchase},
-		{card, "-25", "BANK_FEES", "BANK_FEES_LATE_FEES", canonical.TxKindFee},
-		{card, "-9", "BANK_FEES", "BANK_FEES_INTEREST_CHARGE", canonical.TxKindInterest},
-		{card, "-60", "LOAN_PAYMENTS", "LOAN_PAYMENTS_BNPL", canonical.TxKindPurchase},
-		{card, "300", "LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", canonical.TxKindCardPayment},
-		{card, "300", "TRANSFER_IN", "TRANSFER_IN_ACCOUNT_TRANSFER", canonical.TxKindCardPayment},
-		{card, "40", "FOOD_AND_DRINK", "FOOD_AND_DRINK_GROCERIES", canonical.TxKindRefund},
-		{card, "25", "BANK_FEES", "BANK_FEES_LATE_FEES", canonical.TxKindRefund},
+		{cash, "0.12", "INCOME", "INCOME_INTEREST_EARNED", "", canonical.TxKindInterest},
+		{cash, "-5", "BANK_FEES", "BANK_FEES_OVERDRAFT_FEES", "", canonical.TxKindFee},
+		{cash, "-5", "BANK_FEES", "BANK_FEES_INTEREST_CHARGE", "", canonical.TxKindInterest},
+		{cash, "-40", "FOOD_AND_DRINK", "FOOD_AND_DRINK_GROCERIES", "", canonical.TxKindWithdrawal},
+		{cash, "-500", "TRANSFER_OUT", "TRANSFER_OUT_ACCOUNT_TRANSFER", "", canonical.TxKindWithdrawal},
+		{cash, "2500", "INCOME", "INCOME_SALARY", "", canonical.TxKindDeposit},
+		{cash, "5", "BANK_FEES", "BANK_FEES_OVERDRAFT_FEES", "", canonical.TxKindDeposit},
+		// A debit only Plaid's older category files as a bank fee is one.
+		{cash, "-5", "GENERAL_SERVICES", "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", "10001000", canonical.TxKindFee},
+		// Money borrowed arriving on a bank account is a deposit.
+		{cash, "900", "LOAN_DISBURSEMENTS", "LOAN_DISBURSEMENTS_OTHER_DISBURSEMENT", "", canonical.TxKindDeposit},
+		{card, "-40", "FOOD_AND_DRINK", "FOOD_AND_DRINK_GROCERIES", "", canonical.TxKindPurchase},
+		{card, "-25", "BANK_FEES", "BANK_FEES_LATE_FEES", "", canonical.TxKindFee},
+		{card, "-9", "BANK_FEES", "BANK_FEES_INTEREST_CHARGE", "", canonical.TxKindInterest},
+		{card, "-30", "GENERAL_SERVICES", "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", "10000000", canonical.TxKindFee},
+		{card, "-40", "GENERAL_SERVICES", "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", "18000000", canonical.TxKindPurchase},
+		{card, "-40", "GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", "11000000", canonical.TxKindPurchase},
+		{card, "-60", "LOAN_PAYMENTS", "LOAN_PAYMENTS_BNPL", "", canonical.TxKindPurchase},
+		{card, "300", "LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", "", canonical.TxKindCardPayment},
+		{card, "300", "TRANSFER_IN", "TRANSFER_IN_ACCOUNT_TRANSFER", "", canonical.TxKindCardPayment},
+		// A card cannot be lent to with a credit: a "disbursement" there
+		// is the bill paid.
+		{card, "300", "LOAN_DISBURSEMENTS", "LOAN_DISBURSEMENTS_OTHER_DISBURSEMENT", "", canonical.TxKindCardPayment},
+		// Plaid's older category names the payment where the newer one
+		// misfiles it.
+		{card, "300", "INCOME", "INCOME_OTHER", legacyCardPayment, canonical.TxKindCardPayment},
+		{card, "40", "FOOD_AND_DRINK", "FOOD_AND_DRINK_GROCERIES", "13005000", canonical.TxKindRefund},
+		{card, "25", "BANK_FEES", "BANK_FEES_LATE_FEES", "", canonical.TxKindRefund},
+		{card, "30", "GENERAL_SERVICES", "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", "10000000", canonical.TxKindRefund},
+		// A debit is never a payment, whatever its older category says.
+		{card, "-40", "GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", legacyCardPayment, canonical.TxKindPurchase},
 	}
 	for _, c := range cases {
-		if got := bankTxKind(c.kind, dec(t, c.amount), c.primary, c.detailed); got != c.want {
-			t.Errorf("bankTxKind(%s, %s, %s) = %q, want %q", c.kind, c.amount, c.detailed, got, c.want)
+		if got := bankTxKind(c.kind, dec(t, c.amount), c.primary, c.detailed, c.legacy); got != c.want {
+			t.Errorf("bankTxKind(%s, %s, %s, %q) = %q, want %q", c.kind, c.amount, c.detailed, c.legacy, got, c.want)
+		}
+	}
+}
+
+func TestDescribedKind(t *testing.T) {
+	cases := []struct {
+		typ, subtype, text string
+		want               canonical.TxKind
+	}{
+		{"cash", "deposit", "EXAMPLE NOTE 2031 - INT RECEIVED EXAMPLE NOTE", canonical.TxKindInterest},
+		{"cash", "deposit", "BANK INTEREST EARNED", canonical.TxKindInterest},
+		{"cash", "deposit", "EXAMPLE FUND - CAPITAL GAINS DISTRIBUTION", canonical.TxKindCapitalGain},
+		{"cash", "withdrawal", "ACCOUNT SERVICE FEE", canonical.TxKindFee},
+		{"cash", "withdrawal", "TAX FILING FEE", canonical.TxKindFee},
+		{"cash", "withdrawal", "EXAMPLE STATE TAXPYMT", canonical.TxKindTax},
+		{"cash", "deposit", "EXAMPLE STATE TAX REFUND", canonical.TxKindTax},
+		// Only the action after the security's name is read.
+		{"cash", "deposit", "EXAMPLE TAX REVENUE BOND - REDEMPTION", ""},
+		{"cash", "deposit", "EXAMPLE INT'L EQUITY FUND - DEP", ""},
+		{"cash", "withdrawal", "OUTGOING WIRE", ""},
+		{"cash", "withdrawal", "INT'L WIRE FEE", canonical.TxKindFee},
+		{"cash", "deposit", "JOURNAL FROM OTHER ACCOUNT", ""},
+		// Other types and subtypes keep their own reading.
+		{"cash", "dividend", "EXAMPLE FUND - INTEREST", ""},
+		{"fee", "adjustment", "EXAMPLE FUND - FEE", ""},
+		{"transfer", "transfer", "EXAMPLE FUND - INT", ""},
+	}
+	for _, c := range cases {
+		got, ok := describedKind(c.typ, c.subtype, c.text)
+		if got != c.want || ok != (c.want != "") {
+			t.Errorf("describedKind(%q, %q, %q) = (%q, %v), want %q", c.typ, c.subtype, c.text, got, ok, c.want)
 		}
 	}
 }
@@ -1248,6 +1316,95 @@ func TestTheBankLedgerKindsSignsAndText(t *testing.T) {
 	}
 }
 
+// A card's bill paid can arrive filed as a loan disbursement, or under a
+// category Plaid's older taxonomy corrects. Both are the bill paid; a
+// merchant's credit stays a refund. A card's own fee the older taxonomy
+// alone names is a fee, not a purchase.
+func TestACardRowIsFoundWhereverPlaidFilesIt(t *testing.T) {
+	path, db := newFixture(t)
+	seedItem(t, db, runAt(10))
+	for _, r := range []bankRow{
+		{id: "tx-paid", account: "acct-card", amount: "300", name: "CARD PAYMENT RECEIVED",
+			primary: "LOAN_DISBURSEMENTS", detailed: "LOAN_DISBURSEMENTS_OTHER_DISBURSEMENT",
+			legacy: legacyCardPayment, at: day(3)},
+		{id: "tx-autopay", account: "acct-card", amount: "120", name: "EXAMPLE AUTOPAY",
+			primary: "INCOME", detailed: "INCOME_OTHER", legacy: legacyCardPayment, at: day(4)},
+		{id: "tx-credit", account: "acct-card", amount: "15", name: "Merchant credit",
+			primary: "GENERAL_MERCHANDISE", detailed: "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+			legacy: "19000000", at: day(5)},
+		{id: "tx-annual", account: "acct-card", amount: "-30", name: "EXAMPLE CARD FEE",
+			primary: "GENERAL_SERVICES", detailed: "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+			legacy: "10000000", at: day(6)},
+	} {
+		bank(t, db, r)
+	}
+	got := collectTransactions(t, openConn(t, path))
+	for id, want := range map[string]canonical.TxKind{"tx-paid": canonical.TxKindCardPayment,
+		"tx-autopay": canonical.TxKindCardPayment, "tx-credit": canonical.TxKindRefund,
+		"tx-annual": canonical.TxKindFee} {
+		if got[id].Kind != want {
+			t.Errorf("%s kind = %q, want %q", id, got[id].Kind, want)
+		}
+	}
+}
+
+// Coupons, fund distributions, fees and taxes can arrive as plain cash
+// deposits and withdrawals. Where the text says which, the row books as
+// that, keeping its amount and the security it names.
+func TestCashRowsBookAsTheirTextSays(t *testing.T) {
+	path, db := newFixture(t)
+	seedItem(t, db, runAt(10))
+	sec(t, db, "sec-bond", "EXAMPLE NOTE 2031", "", "equity")
+	sec(t, db, "sec-cashbond", "EXAMPLE NOTE 2032", "", "cash")
+	sec(t, db, "sec-fund", "EXAMPLE FUND", "EXF", "mutual fund")
+	cash := func(id, security, subtype, amount, text string) invRow {
+		return invRow{id: id, account: "acct-ira", security: security, typ: "cash",
+			subtype: subtype, amount: amount, quantity: "0", price: "0", name: text, at: day(3)}
+	}
+	rows := []invRow{
+		cash("itx-coupon", "sec-bond", "deposit", "250", "EXAMPLE NOTE 2031 - INTEREST PAID"),
+		cash("itx-coupon-cash", "sec-cashbond", "deposit", "125", "EXAMPLE NOTE 2032 - INT RECEIVED"),
+		cash("itx-gain", "sec-fund", "deposit", "40", "EXAMPLE FUND - SHORT-TERM CAP GAIN"),
+		cash("itx-fee", "", "withdrawal", "-75", "ACCOUNT SERVICE FEE"),
+		cash("itx-tax", "", "withdrawal", "-60", "EXAMPLE STATE TAXPYMT"),
+		cash("itx-wire", "", "withdrawal", "-900", "OUTGOING WIRE"),
+		cash("itx-redeem", "sec-bond", "deposit", "5000", "EXAMPLE NOTE 2031 - REDEMPTION"),
+	}
+	for _, r := range rows {
+		inv(t, db, r)
+	}
+	got := collectTransactions(t, openConn(t, path))
+	for id, want := range map[string]struct {
+		kind       canonical.TxKind
+		instrument string
+	}{
+		"itx-coupon":      {canonical.TxKindInterest, "plaid:sec-bond"},
+		"itx-coupon-cash": {canonical.TxKindInterest, ""},
+		"itx-gain":        {canonical.TxKindCapitalGain, "EXF"},
+		"itx-fee":         {canonical.TxKindFee, ""},
+		"itx-tax":         {canonical.TxKindTax, ""},
+		"itx-wire":        {canonical.TxKindWithdrawal, ""},
+		// Text that states nothing leaves the row to the other rules: a
+		// cash deposit naming a security is a sale of it.
+		"itx-redeem": {canonical.TxKindSell, "plaid:sec-bond"},
+	} {
+		tx := got[id]
+		if tx.Kind != want.kind {
+			t.Errorf("%s kind = %q, want %q", id, tx.Kind, want.kind)
+		}
+		named := ""
+		if tx.InstrumentExternalID != nil {
+			named = *tx.InstrumentExternalID
+		}
+		if named != want.instrument {
+			t.Errorf("%s names %q, want %q", id, named, want.instrument)
+		}
+	}
+	for _, r := range rows {
+		assertAmount(t, r.id+" net", got[r.id].NetAmount, r.amount)
+	}
+}
+
 func TestTheInvestmentLedger(t *testing.T) {
 	path, db := newFixture(t)
 	seedItem(t, db, runAt(10))
@@ -1397,6 +1554,68 @@ func TestCashNamingASecurityIsReadByWhatItNames(t *testing.T) {
 		if tx := got[id]; tx.InstrumentExternalID == nil || *tx.InstrumentExternalID != "EXA" {
 			t.Errorf("%s names %v, want EXA", id, tx.InstrumentExternalID)
 		}
+	}
+}
+
+// Plaid can type a bond as cash, with no ticker. A price other than 0 or 1
+// gives it away, on a holding or on a trade: it is a position, a buy moves
+// it, and its coupon names it. Cash stays the account's cash, whatever
+// placeholder price a row that is no trade states.
+func TestABondPlaidTypesAsCashIsAPosition(t *testing.T) {
+	path, db := newFixture(t)
+	seedItem(t, db, runAt(10))
+	sec(t, db, "sec-note", "EXAMPLE NOTE 2031", "", "cash")
+	sec(t, db, "sec-held", "EXAMPLE NOTE 2033", "", "cash")
+	sec(t, db, "sec-idle", "EXAMPLE CASH", "", "cash")
+	hold(t, db, runAt(10), "acct-ira", "sec-note", 0, "5000", "5100", "")
+	hold(t, db, runAt(10), "acct-ira", "sec-held", 0, "2000", "1960", "")
+	hold(t, db, runAt(10), "acct-ira", "sec-idle", 0, "50", "50", "")
+	exec(t, db, `UPDATE holdings SET institution_price = CASE security_id
+	             WHEN 'sec-held' THEN '98' WHEN 'sec-cash' THEN '1' WHEN 'sec-idle' THEN '0' END`)
+	for _, r := range []invRow{
+		{id: "itx-buy", account: "acct-ira", security: "sec-note", typ: "buy", subtype: "buy",
+			amount: "-5050", quantity: "5000", price: "101", at: day(3)},
+		{id: "itx-coupon", account: "acct-ira", security: "sec-note", typ: "cash",
+			subtype: "deposit", amount: "125", quantity: "0", price: "0",
+			name: "EXAMPLE NOTE 2031 - INTEREST PAID", at: day(4)},
+		{id: "itx-interest", account: "acct-ira", security: "sec-cash", typ: "cash",
+			subtype: "interest", amount: "2", quantity: "0", price: "0.05", at: day(4)},
+	} {
+		inv(t, db, r)
+	}
+
+	batches := collectSnapshots(t, openConn(t, path))
+	positions := map[string]canonical.PositionChange{}
+	for _, pos := range positionsAt(batches, runAt(10)) {
+		if pos.InstrumentExternalID != nil {
+			positions[*pos.InstrumentExternalID] = pos
+		}
+	}
+	for key, value := range map[string]string{"plaid:sec-note": "5100", "plaid:sec-held": "1960"} {
+		pos, ok := positions[key]
+		if !ok || pos.AssetClass != canonical.AssetClassOther ||
+			!strings.Contains(string(pos.Payload), `"source_type":"cash"`) {
+			t.Errorf("%s = %+v, want an (other, other) position keeping Plaid's type", key, pos)
+			continue
+		}
+		assertAmount(t, key+" value", pos.MarketValue, value)
+	}
+	if cash := cashAt(batches, runAt(10), "acct-ira", canonical.BalanceKindCurrent); len(cash) != 1 ||
+		!cash[0].Amount.Equal(dec(t, "350")) {
+		t.Errorf("cash = %+v, want the 350 of the two cash lines", cash)
+	}
+
+	got := collectTransactions(t, openConn(t, path))
+	for id, want := range map[string]canonical.TxKind{
+		"itx-buy": canonical.TxKindBuy, "itx-coupon": canonical.TxKindInterest} {
+		tx := got[id]
+		if tx.Kind != want || tx.InstrumentExternalID == nil || *tx.InstrumentExternalID != "plaid:sec-note" {
+			t.Errorf("%s = %q on %v, want %q on plaid:sec-note", id, tx.Kind, tx.InstrumentExternalID, want)
+		}
+	}
+	assertAmount(t, "buy quantity", got["itx-buy"].Quantity, "5000")
+	if tx := got["itx-interest"]; tx.Kind != canonical.TxKindInterest || tx.InstrumentExternalID != nil {
+		t.Errorf("itx-interest = %q on %v, want interest on the cash", tx.Kind, tx.InstrumentExternalID)
 	}
 }
 

@@ -167,6 +167,12 @@ say what such an account holds.
   and stays a `(cash, fund)` position. The payload of a balance read off
   the holdings says `"basis": "holdings"`. One read off Plaid's account
   list says `"basis": "roster"`.
+- **Cash that has a price.** Cash is worth one per unit. Plaid can type
+  a bond as cash, with no ticker. Such a security is not cash when a
+  holding of it, or a buy or sell of it, states a price other than 0
+  or 1. It is then a position, and its type says nothing about its
+  class (§6). Any other row's price is a placeholder, and does not
+  count.
 - **A balance Plaid leaves empty.** Gold reads a source's current state
   from its latest instant, so every run restates every account. A run
   may list a cash, card or mortgage account with no balance, or with no
@@ -203,6 +209,7 @@ say what such an account holds.
 | derivative | `(public_equity, option)` |
 | cryptocurrency | `(crypto, physical)` |
 | loan | `(private_debt, loan)`: a loan the holder owns |
+| cash, with no ticker and a price | by the CFI code, below; else `(other, other)` |
 | other, or anything else | by the CFI code, below; else `(other, other)` |
 
 Plaid marks bitcoin as a cash equivalent. It is still crypto.
@@ -211,7 +218,8 @@ A security of type `other`, or of a type no row above names, is read by
 its CFI code (ISO 10962). Category C is a collective investment vehicle.
 In group E it is `(RefineETFExposure(name), etf)`. In any other group
 it is classed as a mutual fund. A security classed by its CFI code, or
-not at all, keeps Plaid's type as `source_type` in the payload.
+not at all, keeps Plaid's type as `source_type` in the payload. Config
+`instrument_overrides` states the class of one that lands wrong.
 
 ## 7. Transactions
 
@@ -231,11 +239,16 @@ in the fleet's sign, and it still goes through `ApplyCanonicalSign`.
 | Account | Row | Kind |
 | --- | --- | --- |
 | cash | `INCOME_INTEREST_EARNED`, or a debit `BANK_FEES_INTEREST_CHARGE` | `interest` |
-| cash | another debit under `BANK_FEES` | `fee` |
+| cash | another debit under `BANK_FEES`, or under Plaid's older category "Bank Fees" | `fee` |
 | cash | any other debit / credit | `withdrawal` / `deposit` |
-| card | a debit: `BANK_FEES_INTEREST_CHARGE` / other `BANK_FEES` / anything else | `interest` / `fee` / `purchase` |
-| card | a credit under `LOAN_PAYMENTS` or `TRANSFER_IN` | `card_payment` |
+| card | a debit: `BANK_FEES_INTEREST_CHARGE` / other `BANK_FEES` or older "Bank Fees" / anything else | `interest` / `fee` / `purchase` |
+| card | a credit under `LOAN_PAYMENTS`, `TRANSFER_IN` or `LOAN_DISBURSEMENTS`, or Plaid's older category "Payment > Credit Card" | `card_payment` |
 | card | any other credit | `refund` |
+
+A card payment can arrive filed as a loan disbursement. A credit on a
+card cannot be a loan disbursement, since a card lends with a debit.
+Plaid still sends its older category beside the newer one. The older
+one can name a payment or a fee where the newer one does not.
 
 A cash account's row is never a transfer kind, in either direction. A
 transfer kind would leave the spending and the income population.
@@ -272,8 +285,17 @@ the sign would book it twice.
   interest) names no instrument.
 - A row of type `cash` or `fee` states no quantity or price. Plaid's
   figures there are placeholders.
-- A row of type `cash` or `fee` that names a security that is not cash
-  is read by what it names:
+- A cash deposit or withdrawal can be a coupon, a fund distribution,
+  a fee or a tax. Then only its text says so, and the row keeps its
+  amount and the security it names. A text that names a security puts
+  the action after ` - `, and only the action is read. The first of
+  these that the action names decides:
+  - interest: `INTEREST`, or `INT` as a word of its own;
+  - a capital gain: `CAP GAIN` or `CAPITAL GAIN`, singular or plural;
+  - a fee: `FEE` or `FEES`;
+  - a tax: `TAX`, `TAXES` or `TAXPYMT`.
+- Otherwise a row of type `cash` or `fee` that names a security that is
+  not cash is read by what it names:
   - an adjustment of type `fee`, or a cash withdrawal, is `tax` where
     the security paid a dividend into the account on the same posting
     date, else a `fee`;

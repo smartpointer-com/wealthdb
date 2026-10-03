@@ -1,6 +1,7 @@
 package plaid
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -111,8 +112,23 @@ const (
 	pfcInterestCharge = "BANK_FEES_INTEREST_CHARGE"
 	pfcInterestEarned = "INCOME_INTEREST_EARNED"
 	pfcLoanPayments   = "LOAN_PAYMENTS"
+	pfcLoanDisbursed  = "LOAN_DISBURSEMENTS"
 	pfcTransferIn     = "TRANSFER_IN"
 )
+
+// Plaid still sends its older category id beside the personal finance
+// category, and the older one can name a row the newer one misfiles.
+// legacyCardPayment is "Payment > Credit Card"; every id in the family
+// "Bank Fees" starts with legacyBankFees.
+const (
+	legacyCardPayment = "16001000"
+	legacyBankFees    = "10"
+)
+
+// feeDebit reports whether a debit is a bank fee by either category.
+func feeDebit(primary, legacy string) bool {
+	return primary == pfcBankFees || strings.HasPrefix(legacy, legacyBankFees)
+}
 
 // bankTxKind maps a bank or card ledger row to the canonical kind, from the
 // account's kind, the row's direction (silver's fleet sign: money in is
@@ -120,24 +136,30 @@ const (
 //
 // On a cash account interest earned or charged is `interest`, any other
 // bank-fee debit is `fee`, and everything else is a deposit or a withdrawal
-// by sign. It is never a transfer kind, in either direction: that would
-// leave both the spending and the income population.
+// by sign. A debit is a bank fee when either category files it as one. A
+// row is never a transfer kind, in either direction: that would leave both
+// the spending and the income population.
 //
 // On a card a debit is a purchase, a fee or interest. A credit is the bill
-// paid (`card_payment`) when Plaid files it as a loan payment or a transfer
-// in, and a refund otherwise. The fee test sits inside the debit case: a
-// fee reversal carries the same category, and `fee` forces a negative sign.
-func bankTxKind(kind canonical.AccountKind, amount canonical.Decimal, primary, detailed string) canonical.TxKind {
+// paid (`card_payment`) when Plaid files it as a loan payment, a transfer in
+// or a loan disbursement, or its older category says "Payment > Credit
+// Card". Any other credit is a refund. A credit on a card cannot be a loan
+// disbursement, since a card lends with a debit. The fee test sits inside
+// the debit case: a fee reversal carries the same category, and `fee`
+// forces a negative sign.
+func bankTxKind(kind canonical.AccountKind, amount canonical.Decimal,
+	primary, detailed, legacy string) canonical.TxKind {
 	debit := amount.IsNegative()
 	if kind == canonical.AccountKindCard {
 		switch {
 		case debit && detailed == pfcInterestCharge:
 			return canonical.TxKindInterest
-		case debit && primary == pfcBankFees:
+		case debit && feeDebit(primary, legacy):
 			return canonical.TxKindFee
 		case debit:
 			return canonical.TxKindPurchase
-		case primary == pfcLoanPayments || primary == pfcTransferIn:
+		case primary == pfcLoanPayments, primary == pfcTransferIn,
+			primary == pfcLoanDisbursed, legacy == legacyCardPayment:
 			return canonical.TxKindCardPayment
 		}
 		return canonical.TxKindRefund
@@ -145,7 +167,7 @@ func bankTxKind(kind canonical.AccountKind, amount canonical.Decimal, primary, d
 	switch {
 	case detailed == pfcInterestEarned, debit && detailed == pfcInterestCharge:
 		return canonical.TxKindInterest
-	case debit && primary == pfcBankFees:
+	case debit && feeDebit(primary, legacy):
 		return canonical.TxKindFee
 	case debit:
 		return canonical.TxKindWithdrawal
@@ -249,6 +271,41 @@ func investmentTxKind(typ, subtype string, inKind, inward bool) (canonical.TxKin
 		return canonical.TxKindFee, false
 	}
 	return canonical.TxKindOther, false
+}
+
+// describedKinds read the institution's own text on a cash deposit or
+// withdrawal. Plaid can file coupons, fund distributions, fees and taxes
+// under these generic subtypes, and then only the text says what the row
+// is. The first pattern that matches decides. INT counts only as a word
+// of its own, so INT'L in a fund's name is not interest.
+var describedKinds = []struct {
+	re   *regexp.Regexp
+	kind canonical.TxKind
+}{
+	{regexp.MustCompile(`\bINTEREST\b|\bINT(\s|$)`), canonical.TxKindInterest},
+	{regexp.MustCompile(`\bCAP(ITAL)?\s+GAINS?\b`), canonical.TxKindCapitalGain},
+	{regexp.MustCompile(`\bFEES?\b`), canonical.TxKindFee},
+	{regexp.MustCompile(`\bTAX(ES)?\b|TAXPYMT`), canonical.TxKindTax},
+}
+
+// describedKind is the kind the text of a cash deposit or withdrawal
+// states, if it states one. A text that names a security puts the action
+// after " - ", and only the action is read: a security's name can hold any
+// of these words.
+func describedKind(typ, subtype, text string) (canonical.TxKind, bool) {
+	if sub := norm(subtype); norm(typ) != "cash" || sub != "deposit" && sub != "withdrawal" {
+		return "", false
+	}
+	action := strings.ToUpper(text)
+	if _, after, ok := strings.Cut(action, " - "); ok {
+		action = after
+	}
+	for _, d := range describedKinds {
+		if d.re.MatchString(action) {
+			return d.kind, true
+		}
+	}
+	return "", false
 }
 
 func movementKind(inKind, inward bool) canonical.TxKind {
