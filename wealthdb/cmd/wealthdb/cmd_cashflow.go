@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -118,8 +119,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		}
 	}
 
-	part, ok := reportPeriods[*period]
-	if !ok {
+	if _, ok := reportPeriods[*period]; !ok {
 		return errs.Newf(2, "cashflow: invalid --period %q (want %s)",
 			*period, strings.Join(reportPeriodNames, " | "))
 	}
@@ -153,63 +153,43 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "cashflow: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
-	db, err := openGoldForRead(g, cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
+	rep := cashflowReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
+		period: *period, level: *level, investing: *investing})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	return writeReport(ctx, rep, *cols, "cashflow", open, *privacy, fmtChoice, stdout)
+}
 
-	switch view {
+// cashflowReport is one view of the cash flow family, the runner the
+// CLI and the MCP server share. The refusals are the front-ends' to
+// make before they get here.
+func cashflowReport(req request) *report {
+	part := reportPeriods[req.period]
+	switch req.view {
 	case "summary":
-		colSet, err := resolveCashflowSummaryColumns(*cols, outCcy, *period)
-		if err != nil {
-			return errs.Newf(2, "cashflow: %s", err.Error())
-		}
-		rows, err := gold.CashflowSummary(ctx, db, fromEpoch, toEpoch, outCcy, part)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildCashflowSummaryColumnRegistry(req.currency, req.period), defaultCashflowSummaryColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.CashflowSummaryRow, error) {
+				return gold.CashflowSummary(ctx, db, req.from, req.to, req.currency, part)
+			})
 	case "flows":
-		colSet, err := resolveCashflowFlowColumns(*cols, outCcy, *period)
-		if err != nil {
-			return errs.Newf(2, "cashflow: %s", err.Error())
-		}
-		rows, err := gold.CashflowFlows(ctx, db, fromEpoch, toEpoch, outCcy, part, *level, *investing)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildCashflowFlowColumnRegistry(req.currency, req.period), defaultCashflowFlowColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.CashflowFlowRow, error) {
+				return gold.CashflowFlows(ctx, db, req.from, req.to, req.currency, part, req.level, req.investing)
+			})
 	case "sankey":
-		colSet, err := resolveCashflowSankeyColumns(*cols, outCcy)
-		if err != nil {
-			return errs.Newf(2, "cashflow: %s", err.Error())
-		}
-		rows, err := gold.CashflowSankey(ctx, db, fromEpoch, toEpoch, outCcy, *level, *investing)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildCashflowSankeyColumnRegistry(req.currency), defaultCashflowSankeyColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.CashflowSankeyRow, error) {
+				return gold.CashflowSankey(ctx, db, req.from, req.to, req.currency, req.level, req.investing)
+			})
 	case "coverage":
-		colSet, err := resolveCashflowCoverageColumns(*cols, *period)
-		if err != nil {
-			return errs.Newf(2, "cashflow: %s", err.Error())
-		}
-		rows, err := gold.CashflowCoverage(ctx, db, fromEpoch, toEpoch, part)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildCashflowCoverageColumnRegistry(req.period), defaultCashflowCoverageColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.CashflowCoverageRow, error) {
+				return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
+			})
 	default:
-		colSet, err := resolveCashflowTransactionColumns(*cols, outCcy)
-		if err != nil {
-			return errs.Newf(2, "cashflow: %s", err.Error())
-		}
-		rows, err := gold.CashflowTransactions(ctx, db, fromEpoch, toEpoch, outCcy)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildCashflowTransactionColumnRegistry(req.currency), defaultCashflowTransactionColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.CashflowTransactionRow, error) {
+				return gold.CashflowTransactions(ctx, db, req.from, req.to, req.currency)
+			})
 	}
 }
 
@@ -299,10 +279,6 @@ var defaultCashflowSummaryColumns = []string{
 	"investing", "financing", "vehicles", "net_cash_flow",
 }
 
-func resolveCashflowSummaryColumns(flagValue, outCcy, period string) ([]columnSpec[gold.CashflowSummaryRow], error) {
-	return resolveColumns(flagValue, defaultCashflowSummaryColumns, buildCashflowSummaryColumnRegistry(outCcy, period))
-}
-
 func buildCashflowFlowColumnRegistry(outCcy, period string) []columnSpec[gold.CashflowFlowRow] {
 	return []columnSpec[gold.CashflowFlowRow]{
 		{Name: "period", Align: output.AlignLeft,
@@ -341,10 +317,6 @@ func buildCashflowFlowColumnRegistry(outCcy, period string) []columnSpec[gold.Ca
 var defaultCashflowFlowColumns = []string{
 	"period", "section", "class", "group", "txn_count",
 	"inflow", "outflow", "net", "share",
-}
-
-func resolveCashflowFlowColumns(flagValue, outCcy, period string) ([]columnSpec[gold.CashflowFlowRow], error) {
-	return resolveColumns(flagValue, defaultCashflowFlowColumns, buildCashflowFlowColumnRegistry(outCcy, period))
 }
 
 // nodeKey renders a node's identity as `section.class.group`, stopping
@@ -389,10 +361,6 @@ func buildCashflowSankeyColumnRegistry(outCcy string) []columnSpec[gold.Cashflow
 
 var defaultCashflowSankeyColumns = []string{"stage", "source", "target", "value", "share"}
 
-func resolveCashflowSankeyColumns(flagValue, outCcy string) ([]columnSpec[gold.CashflowSankeyRow], error) {
-	return resolveColumns(flagValue, defaultCashflowSankeyColumns, buildCashflowSankeyColumnRegistry(outCcy))
-}
-
 var defaultCashflowCoverageColumns = []string{
 	"period", "silver_source", "account", "currency", "ledger", "measured", "gap", "status"}
 
@@ -426,10 +394,6 @@ func buildCashflowCoverageColumnRegistry(period string) []columnSpec[gold.Cashfl
 		{Name: "status", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowCoverageRow) string { return r.Status }},
 	}
-}
-
-func resolveCashflowCoverageColumns(flagValue, period string) ([]columnSpec[gold.CashflowCoverageRow], error) {
-	return resolveColumns(flagValue, defaultCashflowCoverageColumns, buildCashflowCoverageColumnRegistry(period))
 }
 
 func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.CashflowTransactionRow] {
@@ -504,10 +468,6 @@ func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.Cas
 var defaultCashflowTransactionColumns = []string{
 	"silver_source", "date", "account", "kind", "section", "class", "group",
 	"name", "currency", "net_amount", "value",
-}
-
-func resolveCashflowTransactionColumns(flagValue, outCcy string) ([]columnSpec[gold.CashflowTransactionRow], error) {
-	return resolveColumns(flagValue, defaultCashflowTransactionColumns, buildCashflowTransactionColumnRegistry(outCcy))
 }
 
 func cashflowUsage() string {

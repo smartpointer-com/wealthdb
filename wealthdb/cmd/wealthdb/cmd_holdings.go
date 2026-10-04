@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 func init() {
@@ -46,6 +48,65 @@ func cmdHoldings(ctx context.Context, g globalFlags, subargs []string, stdin io.
 		return errs.Newf(2, "holdings: unknown view %q", view)
 	}
 	return h(ctx, g, rest, stdin, stdout, stderr)
+}
+
+// holdingsReport is one holdings view as of req.asOf, the runner the
+// CLI views and the MCP server share. The global rollup is one fixed
+// row, so its default column set is its whole registry.
+func holdingsReport(req request) *report {
+	ccy, asOf := req.currency, req.asOf
+	switch req.view {
+	case "global":
+		registry := buildGlobalColumnRegistry(ccy)
+		return newReport(registry, columnNames(registry), func(ctx context.Context, db *sql.DB) ([]gold.GlobalRow, error) {
+			row, err := gold.GlobalAsOf(ctx, db, asOf, ccy)
+			if err != nil {
+				return nil, err
+			}
+			return []gold.GlobalRow{row}, nil
+		})
+	case "sources":
+		return newReport(buildSourceColumnRegistry(ccy), defaultSourceColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.SourceRow, error) {
+				return gold.SourcesAsOf(ctx, db, asOf, ccy)
+			})
+	case "portfolios":
+		// The portfolio column's redaction class depends on the
+		// source's kind, which only gold knows; the registry reads it
+		// through kindOf, filled before the rows are rendered.
+		kinds := map[string]string{}
+		kindOf := func(id string) string { return kinds[id] }
+		return newReport(buildPortfolioColumnRegistry(ccy, kindOf), defaultPortfolioColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.PortfolioRow, error) {
+				sk, err := gold.SourceKinds(ctx, db)
+				if err != nil {
+					return nil, err
+				}
+				for k, v := range sk {
+					kinds[k] = v
+				}
+				return gold.PortfoliosAsOf(ctx, db, asOf, ccy)
+			})
+	case "accounts":
+		return newReport(buildAccountColumnRegistry(ccy), defaultAccountColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.AccountRow, error) {
+				return gold.AccountsAsOf(ctx, db, asOf, ccy)
+			})
+	default:
+		withCash := req.withCash
+		return newReport(buildColumnRegistry(ccy), defaultColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
+				rows, err := gold.PositionsAsOf(ctx, db, asOf, ccy)
+				if err != nil || !withCash {
+					return rows, err
+				}
+				cash, err := gold.CashAsOf(ctx, db, asOf, ccy)
+				if err != nil {
+					return nil, err
+				}
+				return mergeSorted(rows, cash), nil
+			})
+	}
 }
 
 const holdingsUsage = `wealthdb holdings — what is held, where, and what it is worth, as of a date

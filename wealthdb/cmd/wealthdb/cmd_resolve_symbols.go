@@ -282,7 +282,7 @@ func openGoldForResolve(goldPath string, forceReadOnly bool, opts resolveSymbols
 	if err != nil {
 		return nil, nil, err
 	}
-	db, err := gold.Open(goldPath, gold.ModeReadWrite)
+	db, err := retryGoldLock(context.Background(), func() (*sql.DB, error) { return gold.Open(goldPath, gold.ModeReadWrite) })
 	if err != nil {
 		lock.unlock()
 		return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)

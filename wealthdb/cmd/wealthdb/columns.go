@@ -134,11 +134,16 @@ func columnsByName[T any](names []string, registry []columnSpec[T]) ([]columnSpe
 }
 
 func joinColumnNames[T any](registry []columnSpec[T]) string {
+	return strings.Join(columnNames(registry), ", ")
+}
+
+// columnNames is a registry's column names, in order.
+func columnNames[T any](registry []columnSpec[T]) []string {
 	names := make([]string, len(registry))
 	for i, c := range registry {
 		names[i] = c.Name
 	}
-	return strings.Join(names, ", ")
+	return names
 }
 
 // rowsToTable assembles an output.Table from a typed row slice

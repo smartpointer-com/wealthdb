@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -81,39 +82,9 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return err
 	}
 
-	// kinds is populated after the gold DB opens; the column
-	// registry's privacy closure reads it through kindOf, so the
-	// -C validation below can still run before any DB access.
-	kinds := map[string]string{}
-	kindOf := func(id string) string { return kinds[id] }
-
-	colSet, err := resolvePortfolioColumns(*hf.cols, hv.outCcy, kindOf)
-	if err != nil {
-		return errs.Newf(2, "portfolios: %s", err.Error())
-	}
-
-	db, err := openGoldForRead(g, hv.cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	if *hf.privacy {
-		sk, err := gold.SourceKinds(ctx, db)
-		if err != nil {
-			return err
-		}
-		for k, v := range sk {
-			kinds[k] = v
-		}
-	}
-
-	rows, err := gold.PortfoliosAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
-	if err != nil {
-		return err
-	}
-
-	return writeFormatted(stdout, hv.fmtChoice, rowsToTable(rows, colSet, *hf.privacy, hv.fmtChoice))
+	rep := holdingsReport(request{view: "portfolios", currency: hv.outCcy, asOf: hv.asOfEpoch})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
+	return writeReport(ctx, rep, *hf.cols, "portfolios", open, *hf.privacy, hv.fmtChoice, stdout)
 }
 
 // ---- column registry -----------------------------------------------------
@@ -187,10 +158,6 @@ var defaultPortfolioColumns = []string{
 	"tax_wrapper", "management_style", "base_currency",
 	"positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
-}
-
-func resolvePortfolioColumns(flagValue, outCcy string, kindOf func(string) string) ([]columnSpec[gold.PortfolioRow], error) {
-	return resolveColumns(flagValue, defaultPortfolioColumns, buildPortfolioColumnRegistry(outCcy, kindOf))
 }
 
 func portfoliosUsage() string {

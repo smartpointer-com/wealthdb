@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -94,8 +95,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "spending: bad flags")
 	}
 
-	part, ok := reportPeriods[*period]
-	if !ok {
+	if _, ok := reportPeriods[*period]; !ok {
 		return errs.Newf(2, "spending: invalid --period %q (want %s)",
 			*period, strings.Join(reportPeriodNames, " | "))
 	}
@@ -125,43 +125,31 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "spending: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
-	db, err := openGoldForRead(g, cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
+	rep := spendingReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	return writeReport(ctx, rep, *cols, "spending", open, *privacy, fmtChoice, stdout)
+}
 
-	switch view {
+// spendingReport is one view of the spending family, the runner the
+// CLI and the MCP server share.
+func spendingReport(req request) *report {
+	part := reportPeriods[req.period]
+	switch req.view {
 	case "summary":
-		colSet, err := resolveSpendSummaryColumns(*cols, outCcy, *period)
-		if err != nil {
-			return errs.Newf(2, "spending: %s", err.Error())
-		}
-		rows, err := gold.SpendingSummary(ctx, db, fromEpoch, toEpoch, outCcy, part)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildSpendSummaryColumnRegistry(req.currency, req.period), defaultSpendSummaryColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.SpendSummaryRow, error) {
+				return gold.SpendingSummary(ctx, db, req.from, req.to, req.currency, part)
+			})
 	case "categories":
-		colSet, err := resolveSpendCategoryColumns(*cols, outCcy, *period)
-		if err != nil {
-			return errs.Newf(2, "spending: %s", err.Error())
-		}
-		rows, err := gold.SpendingCategories(ctx, db, fromEpoch, toEpoch, outCcy, part, *level)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildSpendCategoryColumnRegistry(req.currency, req.period), defaultSpendCategoryColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.SpendCategoryRow, error) {
+				return gold.SpendingCategories(ctx, db, req.from, req.to, req.currency, part, req.level)
+			})
 	default:
-		colSet, err := resolveSpendTransactionColumns(*cols, outCcy)
-		if err != nil {
-			return errs.Newf(2, "spending: %s", err.Error())
-		}
-		rows, err := gold.SpendingTransactions(ctx, db, fromEpoch, toEpoch, outCcy)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildSpendTransactionColumnRegistry(req.currency), defaultSpendTransactionColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.SpendTransactionRow, error) {
+				return gold.SpendingTransactions(ctx, db, req.from, req.to, req.currency)
+			})
 	}
 }
 
@@ -238,10 +226,6 @@ var defaultSpendSummaryColumns = []string{
 	"period", "txn_count", "spend", "refunds", "net_spend",
 }
 
-func resolveSpendSummaryColumns(flagValue, outCcy, period string) ([]columnSpec[gold.SpendSummaryRow], error) {
-	return resolveColumns(flagValue, defaultSpendSummaryColumns, buildSpendSummaryColumnRegistry(outCcy, period))
-}
-
 func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.SpendCategoryRow] {
 	return []columnSpec[gold.SpendCategoryRow]{
 		{Name: "period", Align: output.AlignLeft,
@@ -276,10 +260,6 @@ func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.S
 
 var defaultSpendCategoryColumns = []string{
 	"period", "category", "txn_count", "spend", "refunds", "net_spend", "share",
-}
-
-func resolveSpendCategoryColumns(flagValue, outCcy, period string) ([]columnSpec[gold.SpendCategoryRow], error) {
-	return resolveColumns(flagValue, defaultSpendCategoryColumns, buildSpendCategoryColumnRegistry(outCcy, period))
 }
 
 func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendTransactionRow] {
@@ -394,10 +374,6 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 var defaultSpendTransactionColumns = []string{
 	"silver_source", "date", "account", "merchant", "category",
 	"currency", "net_amount", "value",
-}
-
-func resolveSpendTransactionColumns(flagValue, outCcy string) ([]columnSpec[gold.SpendTransactionRow], error) {
-	return resolveColumns(flagValue, defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry(outCcy))
 }
 
 func spendingUsage() string {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,7 +23,7 @@ import (
 // generalisation of it: the two commands share the flag idiom, the
 // period vocabulary, the window default and the column machinery
 // (reportValueFlags, reportPeriods, periodLabel,
-// parseTrailingYearWindow, resolveColumns), and differ in the three
+// parseTrailingYearWindow, the report seam), and differ in the three
 // places a reader should be able to see at a glance — the views, the
 // registries, and the usage text.
 //
@@ -84,8 +85,7 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 		return errs.Newf(2, "income: bad flags")
 	}
 
-	part, ok := reportPeriods[*period]
-	if !ok {
+	if _, ok := reportPeriods[*period]; !ok {
 		return errs.Newf(2, "income: invalid --period %q (want %s)",
 			*period, strings.Join(reportPeriodNames, " | "))
 	}
@@ -115,43 +115,31 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 		return errs.Newf(2, "income: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
-	db, err := openGoldForRead(g, cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
+	rep := incomeReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	return writeReport(ctx, rep, *cols, "income", open, *privacy, fmtChoice, stdout)
+}
 
-	switch view {
+// incomeReport is one view of the income family, the runner the CLI
+// and the MCP server share.
+func incomeReport(req request) *report {
+	part := reportPeriods[req.period]
+	switch req.view {
 	case "summary":
-		colSet, err := resolveIncomeSummaryColumns(*cols, outCcy, *period)
-		if err != nil {
-			return errs.Newf(2, "income: %s", err.Error())
-		}
-		rows, err := gold.IncomeSummary(ctx, db, fromEpoch, toEpoch, outCcy, part)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildIncomeSummaryColumnRegistry(req.currency, req.period), defaultIncomeSummaryColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.IncomeSummaryRow, error) {
+				return gold.IncomeSummary(ctx, db, req.from, req.to, req.currency, part)
+			})
 	case "types":
-		colSet, err := resolveIncomeTypeColumns(*cols, outCcy, *period)
-		if err != nil {
-			return errs.Newf(2, "income: %s", err.Error())
-		}
-		rows, err := gold.IncomeTypes(ctx, db, fromEpoch, toEpoch, outCcy, part, *level)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildIncomeTypeColumnRegistry(req.currency, req.period), defaultIncomeTypeColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.IncomeTypeRow, error) {
+				return gold.IncomeTypes(ctx, db, req.from, req.to, req.currency, part, req.level)
+			})
 	default:
-		colSet, err := resolveIncomeTransactionColumns(*cols, outCcy)
-		if err != nil {
-			return errs.Newf(2, "income: %s", err.Error())
-		}
-		rows, err := gold.IncomeTransactions(ctx, db, fromEpoch, toEpoch, outCcy)
-		if err != nil {
-			return err
-		}
-		return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+		return newReport(buildIncomeTransactionColumnRegistry(req.currency), defaultIncomeTransactionColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.IncomeTransactionRow, error) {
+				return gold.IncomeTransactions(ctx, db, req.from, req.to, req.currency)
+			})
 	}
 }
 
@@ -184,10 +172,6 @@ var defaultIncomeSummaryColumns = []string{
 	"period", "txn_count", "income", "reversals", "net_income",
 }
 
-func resolveIncomeSummaryColumns(flagValue, outCcy, period string) ([]columnSpec[gold.IncomeSummaryRow], error) {
-	return resolveColumns(flagValue, defaultIncomeSummaryColumns, buildIncomeSummaryColumnRegistry(outCcy, period))
-}
-
 func buildIncomeTypeColumnRegistry(outCcy, period string) []columnSpec[gold.IncomeTypeRow] {
 	return []columnSpec[gold.IncomeTypeRow]{
 		{Name: "period", Align: output.AlignLeft,
@@ -218,10 +202,6 @@ func buildIncomeTypeColumnRegistry(outCcy, period string) []columnSpec[gold.Inco
 
 var defaultIncomeTypeColumns = []string{
 	"period", "type", "txn_count", "income", "reversals", "net_income", "share",
-}
-
-func resolveIncomeTypeColumns(flagValue, outCcy, period string) ([]columnSpec[gold.IncomeTypeRow], error) {
-	return resolveColumns(flagValue, defaultIncomeTypeColumns, buildIncomeTypeColumnRegistry(outCcy, period))
 }
 
 func buildIncomeTransactionColumnRegistry(outCcy string) []columnSpec[gold.IncomeTransactionRow] {
@@ -301,10 +281,6 @@ func buildIncomeTransactionColumnRegistry(outCcy string) []columnSpec[gold.Incom
 var defaultIncomeTransactionColumns = []string{
 	"silver_source", "date", "account", "kind", "payer", "income_type",
 	"provenance", "currency", "net_amount", "value",
-}
-
-func resolveIncomeTransactionColumns(flagValue, outCcy string) ([]columnSpec[gold.IncomeTransactionRow], error) {
-	return resolveColumns(flagValue, defaultIncomeTransactionColumns, buildIncomeTransactionColumnRegistry(outCcy))
 }
 
 func incomeUsage() string {

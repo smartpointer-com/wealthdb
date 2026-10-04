@@ -531,7 +531,7 @@ func reloadInPlace(
 	enrichment enrichmentLedgers,
 	stdout, stderr io.Writer,
 ) error {
-	db, err := gold.Open(cfg.GoldDB, gold.ModeReadWrite)
+	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, gold.ModeReadWrite) })
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}

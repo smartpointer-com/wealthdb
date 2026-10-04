@@ -247,7 +247,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		}
 		defer lock.unlock()
 	}
-	db, err := gold.Open(cfg.GoldDB, openMode)
+	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, openMode) })
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}

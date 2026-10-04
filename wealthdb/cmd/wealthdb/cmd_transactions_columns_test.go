@@ -22,7 +22,7 @@ func TestTransactionSpendColumns(t *testing.T) {
 		}
 	}
 
-	cols, err := resolveTransactionColumns("+merchant,spend_primary,spend_detailed", "USD")
+	cols, err := resolveColumns("+merchant,spend_primary,spend_detailed", defaultTransactionColumns, buildTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("resolve spending columns: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestTransactionSpendColumns(t *testing.T) {
 // such a narrative; the taxonomy columns beside them stay legible.
 func TestTransactionPrivacyClasses(t *testing.T) {
 	t.Parallel()
-	cols, err := resolveTransactionColumns("all", "USD")
+	cols, err := resolveColumns("all", defaultTransactionColumns, buildTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestTransactionPrivacyClasses(t *testing.T) {
 // the column could only get one of the two right.
 func TestTransactionNamePrivacyFollowsFallback(t *testing.T) {
 	t.Parallel()
-	cols, err := resolveTransactionColumns("name,description", "USD")
+	cols, err := resolveColumns("name,description", defaultTransactionColumns, buildTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestTransactionNamePrivacyFollowsFallback(t *testing.T) {
 // off by default, and carry the privacy classes their contents need.
 func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
 	t.Parallel()
-	all, err := resolveTransactionColumns("all", "USD")
+	all, err := resolveColumns("all", defaultTransactionColumns, buildTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("columns: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
 
 	// Defaults are unchanged: the trio is available through -C and is
 	// not forced on every reader.
-	def, err := resolveTransactionColumns("default", "USD")
+	def, err := resolveColumns("default", defaultTransactionColumns, buildTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("default columns: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestTransactionCheckNumberColumn(t *testing.T) {
 		}
 	}
 
-	cols, err := resolveTransactionColumns("+check_no", "USD")
+	cols, err := resolveColumns("+check_no", defaultTransactionColumns, buildTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("resolve check_no: %v", err)
 	}

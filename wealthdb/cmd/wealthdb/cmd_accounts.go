@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -49,23 +50,9 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		return err
 	}
 
-	colSet, err := resolveAccountColumns(*hf.cols, hv.outCcy)
-	if err != nil {
-		return errs.Newf(2, "accounts: %s", err.Error())
-	}
-
-	db, err := openGoldForRead(g, hv.cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	rows, err := gold.AccountsAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
-	if err != nil {
-		return err
-	}
-
-	return writeFormatted(stdout, hv.fmtChoice, rowsToTable(rows, colSet, *hf.privacy, hv.fmtChoice))
+	rep := holdingsReport(request{view: "accounts", currency: hv.outCcy, asOf: hv.asOfEpoch})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
+	return writeReport(ctx, rep, *hf.cols, "accounts", open, *hf.privacy, hv.fmtChoice, stdout)
 }
 
 // ---- column registry -----------------------------------------------------
@@ -153,10 +140,6 @@ var defaultAccountColumns = []string{
 	"account_kind", "tax_wrapper", "management_style",
 	"base_currency", "positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
-}
-
-func resolveAccountColumns(flagValue, outCcy string) ([]columnSpec[gold.AccountRow], error) {
-	return resolveColumns(flagValue, defaultAccountColumns, buildAccountColumnRegistry(outCcy))
 }
 
 func accountsUsage() string {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -119,29 +120,27 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 		return errs.Newf(2, "returns: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
-	colSet, err := resolveReturnColumns(*cols, outCcy, *method)
-	if err != nil {
-		return errs.Newf(2, "returns: %s", err.Error())
-	}
+	rep := returnsReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
+		method: *method, period: *period, annualize: *annualize, netting: *netting == "on", inception: *inception}, cfg)
+	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	return writeReport(ctx, rep, *cols, "returns", open, *privacy, fmtChoice, stdout)
+}
 
-	db, err := openGoldForRead(g, cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
-	rows, err := gold.RunReturns(ctx, db, gold.ReturnParams{
-		Level: view, FromEpoch: fromEpoch, ToEpoch: toEpoch, OutCcy: outCcy,
-		Method: *method, Period: *period, Annualize: *annualize,
-		Netting: *netting == "on", Inception: *inception,
-		InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
-		ReturnsHide: hide, PolicyOverrides: policyOv, TransferMatching: matching,
-	})
-	if err != nil {
-		return err
-	}
-	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+// returnsReport is one view of the returns family, the runner the CLI
+// and the MCP server share: RunReturns with the config's overrides, so
+// the two front-ends apply exactly the same settings.
+func returnsReport(req request, cfg *config.Config) *report {
+	return newReport(buildReturnColumnRegistry(req.currency), defaultReturnColumnsFor(req.method),
+		func(ctx context.Context, db *sql.DB) ([]gold.ReturnRow, error) {
+			inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
+			return gold.RunReturns(ctx, db, gold.ReturnParams{
+				Level: req.view, FromEpoch: req.from, ToEpoch: req.to, OutCcy: req.currency,
+				Method: req.method, Period: req.period, Annualize: req.annualize,
+				Netting: req.netting, Inception: req.inception,
+				InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
+				ReturnsHide: hide, PolicyOverrides: policyOv, TransferMatching: matching,
+			})
+		})
 }
 
 // returnsCfgSettings builds the engine-side inception-override, exclusion,
@@ -259,10 +258,6 @@ func defaultReturnColumnsFor(method string) []string {
 		out = append(out, "mwr")
 	}
 	return append(out, "quality")
-}
-
-func resolveReturnColumns(flagValue, outCcy, method string) ([]columnSpec[gold.ReturnRow], error) {
-	return resolveColumns(flagValue, defaultReturnColumnsFor(method), buildReturnColumnRegistry(outCcy))
 }
 
 // formatPct renders a return ratio as a percentage with two decimals, or "n/a"

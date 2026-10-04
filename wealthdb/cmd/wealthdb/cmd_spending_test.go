@@ -105,7 +105,7 @@ func TestSpendingPeriodLabels(t *testing.T) {
 // and the share column reads as a percentage.
 func TestSpendingColumnHeaders(t *testing.T) {
 	t.Parallel()
-	summary, err := resolveSpendSummaryColumns("all", "CHF", "monthly")
+	summary, err := resolveColumns("all", defaultSpendSummaryColumns, buildSpendSummaryColumnRegistry("CHF", "monthly"))
 	if err != nil {
 		t.Fatalf("summary columns: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestSpendingColumnHeaders(t *testing.T) {
 		t.Errorf("summary headers = %v, want %v", got, wantSummary)
 	}
 
-	cats, err := resolveSpendCategoryColumns("default", "EUR", "monthly")
+	cats, err := resolveColumns("default", defaultSpendCategoryColumns, buildSpendCategoryColumnRegistry("EUR", "monthly"))
 	if err != nil {
 		t.Fatalf("category columns: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestSpendingColumnHeaders(t *testing.T) {
 		t.Errorf("category headers = %v, want %v", got, wantCats)
 	}
 
-	txns, err := resolveSpendTransactionColumns("default", "USD")
+	txns, err := resolveColumns("default", defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("transaction columns: %v", err)
 	}
@@ -157,7 +157,7 @@ func headersOf[T any](cols []columnSpec[T]) []string {
 // tier that decided are legible under -p.
 func TestSpendingTransactionPrivacyClasses(t *testing.T) {
 	t.Parallel()
-	cols, err := resolveSpendTransactionColumns("all", "USD")
+	cols, err := resolveColumns("all", defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
 	}
@@ -213,8 +213,8 @@ const spendTestCounterparty = "SAMPLE PAYEE ZZ"
 //     stays legible, so a redacted listing still reads.
 func TestSpendingPrivacyRedacts(t *testing.T) {
 	t.Parallel()
-	cols, err := resolveSpendTransactionColumns(
-		"account_id,merchant,merchant_signature,counterparty,description,value", "USD")
+	cols, err := resolveColumns("account_id,merchant,merchant_signature,counterparty,description,value",
+		defaultSpendTransactionColumns, buildSpendTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("resolve columns: %v", err)
 	}

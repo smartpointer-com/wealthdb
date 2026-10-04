@@ -181,49 +181,61 @@ verdict.`)
 		return err
 	}
 
-	db, err := openGoldForRead(g, cfg, "gold database %q does not exist. Run 'wealthdb init' first.")
-	if err != nil {
-		return err
+	rep := categorizationsReport(families, *categoryFilter)
+	open := func() (*sql.DB, error) {
+		return openGoldForRead(g, cfg, "gold database %q does not exist. Run 'wealthdb init' first.")
 	}
-	defer db.Close()
+	return writeReport(ctx, rep, "default", "categorizations", open, *privacy, fmtChoice, stdout)
+}
 
-	// One dump over both stores, each row saying which family it came
-	// from. A signature can be in BOTH — one counterparty can be a
-	// merchant and a payer — and the family column is what tells the
-	// two rows apart.
-	var dump []categorizationRow
-	for _, fam := range families {
-		q := `SELECT ` + fam.signatureColumn + `, ` + fam.storeNameColumn + `, ` + fam.valueColumn + `,
+// categorizationsReport dumps the verdict stores of the given families,
+// narrowed to one taxonomy value when detailed is set: the runner the
+// CLI and the MCP server share.
+//
+// One dump over both stores, each row saying which family it came
+// from. A signature can be in BOTH — one counterparty can be a
+// merchant and a payer — and the family column is what tells the two
+// rows apart.
+func categorizationsReport(families []categorizeFamily, detailed string) *report {
+	registry := categorizationColumns()
+	return newReport(registry, columnNames(registry), func(ctx context.Context, db *sql.DB) ([]categorizationRow, error) {
+		var dump []categorizationRow
+		for _, fam := range families {
+			q := `SELECT ` + fam.signatureColumn + `, ` + fam.storeNameColumn + `, ` + fam.valueColumn + `,
                  signature_version, assigned_at, model_name
             FROM ` + fam.storeTable
-		args := []any{}
-		if *categoryFilter != "" {
-			q += ` WHERE ` + fam.valueColumn + ` = ?`
-			args = append(args, *categoryFilter)
-		}
-		q += ` ORDER BY ` + fam.signatureColumn
-
-		rows, err := db.QueryContext(ctx, q, args...)
-		if err != nil {
-			return fmt.Errorf("categorizations: %w", err)
-		}
-		for rows.Next() {
-			r := categorizationRow{Family: fam.name}
-			if err := rows.Scan(&r.Signature, &r.Name, &r.Detailed,
-				&r.Version, &r.AssignedAt, &r.ModelName); err != nil {
-				rows.Close()
-				return fmt.Errorf("categorizations scan: %w", err)
+			args := []any{}
+			if detailed != "" {
+				q += ` WHERE ` + fam.valueColumn + ` = ?`
+				args = append(args, detailed)
 			}
-			dump = append(dump, r)
+			q += ` ORDER BY ` + fam.signatureColumn
+			famRows, err := scanCategorizations(ctx, db, fam.name, q, args)
+			if err != nil {
+				return nil, err
+			}
+			dump = append(dump, famRows...)
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
+		return dump, nil
+	})
+}
+
+// scanCategorizations runs one store's dump query.
+func scanCategorizations(ctx context.Context, db *sql.DB, family, q string, args []any) ([]categorizationRow, error) {
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("categorizations: %w", err)
 	}
-	return writeFormatted(stdout, fmtChoice,
-		rowsToTable(dump, categorizationColumns(), *privacy, fmtChoice))
+	defer rows.Close()
+	var out []categorizationRow
+	for rows.Next() {
+		r := categorizationRow{Family: family}
+		if err := rows.Scan(&r.Signature, &r.Name, &r.Detailed, &r.Version, &r.AssignedAt, &r.ModelName); err != nil {
+			return nil, fmt.Errorf("categorizations scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // categorizationRow is one verdict-store row as the dump renders it.
@@ -318,7 +330,7 @@ func forgetCategorizations(ctx context.Context, g globalFlags, cfg *config.Confi
 		}
 		defer lock.unlock()
 	}
-	db, err := gold.Open(cfg.GoldDB, openMode)
+	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, openMode) })
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}

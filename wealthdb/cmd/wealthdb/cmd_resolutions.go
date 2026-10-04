@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -64,44 +65,69 @@ The model_name column tells you each row's provenance:
 		return err
 	}
 
-	db, err := openGoldForRead(g, cfg, "gold database %q does not exist. Run 'wealthdb init' first.")
-	if err != nil {
-		return err
+	rep := resolutionsReport(*sourceFilter)
+	open := func() (*sql.DB, error) {
+		return openGoldForRead(g, cfg, "gold database %q does not exist. Run 'wealthdb init' first.")
 	}
-	defer db.Close()
+	return writeReport(ctx, rep, "default", "resolutions", open, false, fmtChoice, stdout)
+}
 
-	q := `SELECT silver_source_id, lookup_kind, lookup_value, symbol, resolved_at, model_name
+// resolutionRow is one symbol_resolutions row as the dump renders it.
+type resolutionRow struct {
+	Source, LookupKind, LookupValue, Symbol, ModelName string
+	ResolvedAt                                         int64
+}
+
+// resolutionColumns is the dump's registry. Most of it is instrument
+// identifiers and vocabulary, which stay legible under privacy. The
+// exception is lookup_value of a by-name row: that value is a
+// transaction's statement narrative, the ticker resolved from it, so
+// it takes the free-text class the narrative takes everywhere else.
+func resolutionColumns() []columnSpec[resolutionRow] {
+	return []columnSpec[resolutionRow]{
+		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.Source }},
+		{Name: "lookup_kind", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.LookupKind }},
+		{Name: "lookup_value", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+			PrivacyFunc: func(r resolutionRow) PrivacyClass {
+				if r.LookupKind == "name" {
+					return PrivacyFreeText
+				}
+				return PrivacyNone
+			},
+			Extract: func(r resolutionRow) string { return r.LookupValue }},
+		{Name: "symbol", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.Symbol }},
+		{Name: "resolved_at", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return formatDate(r.ResolvedAt) }},
+		{Name: "model_name", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.ModelName }},
+	}
+}
+
+// resolutionsReport dumps symbol_resolutions, narrowed to one source
+// when source is set: the runner the CLI and the MCP server share.
+func resolutionsReport(source string) *report {
+	registry := resolutionColumns()
+	return newReport(registry, columnNames(registry), func(ctx context.Context, db *sql.DB) ([]resolutionRow, error) {
+		q := `SELECT silver_source_id, lookup_kind, lookup_value, symbol, resolved_at, model_name
             FROM symbol_resolutions`
-	args := []any{}
-	if *sourceFilter != "" {
-		q += ` WHERE silver_source_id = ?`
-		args = append(args, *sourceFilter)
-	}
-	q += ` ORDER BY silver_source_id, lookup_kind, lookup_value`
-
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return fmt.Errorf("resolutions: %w", err)
-	}
-	defer rows.Close()
-
-	t := output.Table{
-		Columns: []string{"silver_source", "lookup_kind", "lookup_value", "symbol", "resolved_at", "model_name"},
-		Aligns: []output.Alignment{
-			output.AlignLeft, output.AlignLeft, output.AlignLeft,
-			output.AlignLeft, output.AlignLeft, output.AlignLeft,
-		},
-	}
-	for rows.Next() {
-		var src, kind, value, symbol, modelName string
-		var resolvedAt int64
-		if err := rows.Scan(&src, &kind, &value, &symbol, &resolvedAt, &modelName); err != nil {
-			return fmt.Errorf("resolutions scan: %w", err)
+		args := []any{}
+		if source != "" {
+			q += ` WHERE silver_source_id = ?`
+			args = append(args, source)
 		}
-		t.Rows = append(t.Rows, []string{src, kind, value, symbol, formatDate(resolvedAt), modelName})
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	return writeFormatted(stdout, fmtChoice, t)
+		q += ` ORDER BY silver_source_id, lookup_kind, lookup_value`
+
+		rows, err := db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, fmt.Errorf("resolutions: %w", err)
+		}
+		defer rows.Close()
+		var out []resolutionRow
+		for rows.Next() {
+			var r resolutionRow
+			if err := rows.Scan(&r.Source, &r.LookupKind, &r.LookupValue, &r.Symbol, &r.ResolvedAt, &r.ModelName); err != nil {
+				return nil, fmt.Errorf("resolutions scan: %w", err)
+			}
+			out = append(out, r)
+		}
+		return out, rows.Err()
+	})
 }

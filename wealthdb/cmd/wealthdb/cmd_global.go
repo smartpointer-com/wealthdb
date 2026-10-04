@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -45,19 +46,9 @@ func cmdGlobal(ctx context.Context, g globalFlags, subargs []string, _ io.Reader
 		return err
 	}
 
-	db, err := openGoldForRead(g, hv.cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	row, err := gold.GlobalAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
-	if err != nil {
-		return err
-	}
-
-	cols := buildGlobalColumnRegistry(hv.outCcy)
-	return writeFormatted(stdout, hv.fmtChoice, rowsToTable([]gold.GlobalRow{row}, cols, *hf.privacy, hv.fmtChoice))
+	rep := holdingsReport(request{view: "global", currency: hv.outCcy, asOf: hv.asOfEpoch})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
+	return writeReport(ctx, rep, "default", "global", open, *hf.privacy, hv.fmtChoice, stdout)
 }
 
 // buildGlobalColumnRegistry is the fixed five-column shape of the

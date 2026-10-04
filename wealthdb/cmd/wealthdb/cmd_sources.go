@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -47,23 +48,9 @@ func cmdSources(ctx context.Context, g globalFlags, subargs []string, _ io.Reade
 		return err
 	}
 
-	colSet, err := resolveSourceColumns(*hf.cols, hv.outCcy)
-	if err != nil {
-		return errs.Newf(2, "sources: %s", err.Error())
-	}
-
-	db, err := openGoldForRead(g, hv.cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	rows, err := gold.SourcesAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
-	if err != nil {
-		return err
-	}
-
-	return writeFormatted(stdout, hv.fmtChoice, rowsToTable(rows, colSet, *hf.privacy, hv.fmtChoice))
+	rep := holdingsReport(request{view: "sources", currency: hv.outCcy, asOf: hv.asOfEpoch})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
+	return writeReport(ctx, rep, *hf.cols, "sources", open, *hf.privacy, hv.fmtChoice, stdout)
 }
 
 // ---- column registry -----------------------------------------------------
@@ -111,10 +98,6 @@ var defaultSourceColumns = []string{
 	"tax_wrapper", "management_style", "base_currency",
 	"positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
-}
-
-func resolveSourceColumns(flagValue, outCcy string) ([]columnSpec[gold.SourceRow], error) {
-	return resolveColumns(flagValue, defaultSourceColumns, buildSourceColumnRegistry(outCcy))
 }
 
 func sourcesUsage() string {

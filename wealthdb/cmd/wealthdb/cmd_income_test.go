@@ -282,7 +282,7 @@ func TestIncomeFlagReordering(t *testing.T) {
 // headers' currency suffix.
 func TestIncomeColumnHeaders(t *testing.T) {
 	t.Parallel()
-	summary, err := resolveIncomeSummaryColumns("default", "CHF", "monthly")
+	summary, err := resolveColumns("default", defaultIncomeSummaryColumns, buildIncomeSummaryColumnRegistry("CHF", "monthly"))
 	if err != nil {
 		t.Fatalf("summary columns: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestIncomeColumnHeaders(t *testing.T) {
 		t.Errorf("summary headers = %v, want %v", got, want)
 	}
 
-	types, err := resolveIncomeTypeColumns("default", "USD", "monthly")
+	types, err := resolveColumns("default", defaultIncomeTypeColumns, buildIncomeTypeColumnRegistry("USD", "monthly"))
 	if err != nil {
 		t.Fatalf("type columns: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestIncomeColumnHeaders(t *testing.T) {
 		t.Errorf("type headers = %v, want %v", got, want)
 	}
 
-	txns, err := resolveIncomeTransactionColumns("default", "USD")
+	txns, err := resolveColumns("default", defaultIncomeTransactionColumns, buildIncomeTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("transaction columns: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestIncomeColumnHeaders(t *testing.T) {
 // must be.
 func TestIncomeTransactionPrivacyClasses(t *testing.T) {
 	t.Parallel()
-	all, err := resolveIncomeTransactionColumns("all", "USD")
+	all, err := resolveColumns("all", defaultIncomeTransactionColumns, buildIncomeTransactionColumnRegistry("USD"))
 	if err != nil {
 		t.Fatalf("columns: %v", err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -47,30 +48,9 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return err
 	}
 
-	colSet, err := resolvePositionColumns(*hf.cols, hv.outCcy)
-	if err != nil {
-		return errs.Newf(2, "positions: %s", err.Error())
-	}
-
-	db, err := openGoldForRead(g, hv.cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	rows, err := gold.PositionsAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
-	if err != nil {
-		return err
-	}
-	if *hf.withCash {
-		cash, err := gold.CashAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
-		if err != nil {
-			return err
-		}
-		rows = mergeSorted(rows, cash)
-	}
-
-	return writeFormatted(stdout, hv.fmtChoice, rowsToTable(rows, colSet, *hf.privacy, hv.fmtChoice))
+	rep := holdingsReport(request{view: "positions", currency: hv.outCcy, asOf: hv.asOfEpoch, withCash: *hf.withCash})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
+	return writeReport(ctx, rep, *hf.cols, "positions", open, *hf.privacy, hv.fmtChoice, stdout)
 }
 
 // writeFormatted dispatches to the right output.Write* function
@@ -165,10 +145,6 @@ var defaultColumns = []string{
 	"silver_source", "snapshot_date", "account", "symbol",
 	"position_key", "asset_class", "vehicle", "currency", "quantity",
 	"market_value", "value",
-}
-
-func resolvePositionColumns(flagValue, outCcy string) ([]columnSpec[gold.PositionRow], error) {
-	return resolveColumns(flagValue, defaultColumns, buildColumnRegistry(outCcy))
 }
 
 func positionsUsage() string {

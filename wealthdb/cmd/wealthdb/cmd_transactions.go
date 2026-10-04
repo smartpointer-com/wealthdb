@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -109,26 +110,22 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 		return errs.Newf(2, "transactions: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
-	colSet, err := resolveTransactionColumns(*cols, outCcy)
-	if err != nil {
-		return errs.Newf(2, "transactions: %s", err.Error())
-	}
+	rep := transactionsReport(request{currency: outCcy, from: fromEpoch, to: toEpoch, newestFirst: *reverse})
+	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	return writeReport(ctx, rep, *cols, "transactions", open, *privacy, fmtChoice, stdout)
+}
 
-	db, err := openGoldForRead(g, cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
+// transactionsReport is the ledger over a window, the runner the CLI
+// and the MCP server share.
+func transactionsReport(req request) *report {
 	order := gold.SortAscending
-	if *reverse {
+	if req.newestFirst {
 		order = gold.SortDescending
 	}
-	rows, err := gold.TransactionsBetween(ctx, db, fromEpoch, toEpoch, outCcy, order)
-	if err != nil {
-		return err
-	}
-	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
+	return newReport(buildTransactionColumnRegistry(req.currency), defaultTransactionColumns,
+		func(ctx context.Context, db *sql.DB) ([]gold.TransactionRow, error) {
+			return gold.TransactionsBetween(ctx, db, req.from, req.to, req.currency, order)
+		})
 }
 
 // ---- column registry -----------------------------------------------------
@@ -277,10 +274,6 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 var defaultTransactionColumns = []string{
 	"silver_source", "date", "account", "kind", "symbol",
 	"instrument_id", "currency", "net_amount", "value",
-}
-
-func resolveTransactionColumns(flagValue, outCcy string) ([]columnSpec[gold.TransactionRow], error) {
-	return resolveColumns(flagValue, defaultTransactionColumns, buildTransactionColumnRegistry(outCcy))
 }
 
 func transactionsUsage() string {

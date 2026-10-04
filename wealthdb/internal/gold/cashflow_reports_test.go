@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -1132,6 +1133,55 @@ func TestCoverageObscuresAGapTheUnsignedVolumeCovers(t *testing.T) {
 	}
 	if r.Status != "obscured" {
 		t.Errorf("status = %q, want obscured: the unsigned volume covers the gap", r.Status)
+	}
+}
+
+// TestCoverageOrderIsStable pins the tiebreak 0112 added: accounts with
+// the same gap — every unmeasurable one has none — list by source,
+// account and currency, the same way on every run.
+func TestCoverageOrderIsStable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedBalanceSpine(t, db, ctx, 10000, 10000)
+	seedReportFixture(t, db, ctx)
+
+	key := func(r CashflowCoverageRow) string { return r.SourceID + "/" + r.Account + "/" + r.Currency }
+	var first []string
+	for run := 0; run < 5; run++ {
+		rows, err := CashflowCoverage(ctx, db, 172800, 3500000, "total")
+		if err != nil {
+			t.Fatalf("CashflowCoverage: %v", err)
+		}
+		var keys []string
+		var tied []CashflowCoverageRow
+		for _, r := range rows {
+			keys = append(keys, key(r))
+			if r.Status == "unmeasurable" {
+				tied = append(tied, r)
+			}
+		}
+		if len(tied) < 2 {
+			t.Fatalf("the fixture has %d unmeasurable accounts; the tiebreak needs two", len(tied))
+		}
+		for i := 1; i < len(tied); i++ {
+			if key(tied[i-1]) > key(tied[i]) {
+				t.Errorf("tied rows out of order: %s before %s", key(tied[i-1]), key(tied[i]))
+			}
+		}
+		if run == 0 {
+			first = keys
+		} else if strings.Join(keys, ",") != strings.Join(first, ",") {
+			t.Fatalf("run %d listed %v, run 0 listed %v", run, keys, first)
+		}
+	}
+}
+
+// TestMigration0112DDLIsRerunnable: the re-issued coverage macro re-runs
+// cleanly.
+func TestMigration0112DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0112_coverage_stable_order.sql")
+	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {
+		t.Fatalf("the replayed coverage report: %v", err)
 	}
 }
 
