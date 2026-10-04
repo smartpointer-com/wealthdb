@@ -409,8 +409,10 @@ config takes it out; what makes a row spending is its KIND, not the
 kind of account it sits on. Amounts use historic FX
 (nearest rate at-or-before the transaction) and are sign-split: spend
 and refunds are both POSITIVE magnitudes, net_spend is their
-difference. Own-account moves — card payments, funding wires, mortgage
-payments — are not spending and appear in no view.
+difference; the transactions view keeps the ledger sign, so a purchase
+is negative there. Own-account moves — card payments, funding wires,
+mortgage payments — are not spending and appear in no view; mortgage
+and loan payments are in 'wealthdb cashflow flows' (section financing).
 
 Views (coarsest → finest):
   summary       one row per period bucket
@@ -427,7 +429,10 @@ Flags:
                     (default monthly; total is one bucket for the whole window;
                     the transactions view has no buckets and ignores it)
   --level L         primary (default) | detailed — the category vocabulary
-                    the categories view groups by; ignored elsewhere
+                    the categories view groups by; ignored elsewhere.
+                    primary is about a dozen broad groups ("Food and
+                    drink"); a category someone names — groceries,
+                    restaurants, flights — is detailed
   -f, --format      table | csv | csv_plain | json
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
   -x, --currency    output currency (default: config.default_currency)
@@ -436,7 +441,7 @@ Flags:
                     (categories, provenance and shares stay visible)
 
 There are no row-filter flags. To slice by merchant, category or
-account, take -f json and filter downstream.
+account, grep the table or take -f json and filter in jq.
 
 Categories reconcile: for any period and level, the category rows of a
 bucket sum to that bucket's summary row.

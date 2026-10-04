@@ -65,19 +65,35 @@ func TestEveryListedCommandSaysWhatItDoes(t *testing.T) {
 	}
 }
 
-// TestHelpViewsCoverEveryHoldingsView pins that `wealthdb help
-// <view>` answers for each grain `holdings` dispatches, since a view
-// is not a subcommand and would otherwise report as unknown.
-func TestHelpViewsCoverEveryHoldingsView(t *testing.T) {
+// TestHelpForAViewIsTheViewsOwnHelp pins that `wealthdb help <view>`
+// answers for each grain `holdings` dispatches with that view's own
+// usage, since a view is not a subcommand and would otherwise report
+// as unknown.
+func TestHelpForAViewIsTheViewsOwnHelp(t *testing.T) {
 	t.Parallel()
 	for view := range holdingsViews {
-		if _, ok := viewHelp[view]; !ok {
-			t.Errorf("holdings view %q has no blurb for 'wealthdb help %s'", view, view)
+		got := runUsage(t, "help", view)
+		want := runUsage(t, "holdings", view, "-h")
+		if got != want {
+			t.Errorf("`wealthdb help %s` differs from `wealthdb holdings %s -h`:\n--- help ---\n%s\n--- -h ---\n%s", view, view, got, want)
 		}
 	}
-	for view := range viewHelp {
-		if _, ok := holdingsViews[view]; !ok {
-			t.Errorf("%q is blurbed as a holdings view but is not one", view)
+}
+
+// TestHelpForACommandIsItsOwnHelp pins that the two ways of asking
+// about one command print the same full text. They used to differ:
+// `help` printed a one-line blurb and `-h` the detail, and readers had
+// to be told which to use.
+func TestHelpForACommandIsItsOwnHelp(t *testing.T) {
+	t.Parallel()
+	for _, c := range commandHelps {
+		if c.hostSide || c.name == "help" || c.name == "version" {
+			continue
+		}
+		got := runUsage(t, "help", c.name)
+		want := runUsage(t, c.name, "-h")
+		if got != want {
+			t.Errorf("`wealthdb help %s` differs from `wealthdb %s -h`:\n--- help ---\n%s\n--- -h ---\n%s", c.name, c.name, got, want)
 		}
 	}
 }

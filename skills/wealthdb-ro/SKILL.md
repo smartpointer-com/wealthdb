@@ -6,8 +6,10 @@ description: Query the user's consolidated cross-institution investment portfoli
 # wealthdb — portfolio queries (read-only)
 
 `wealthdb` is a read-only CLI over one database that merges every configured
-bank, broker, pension and crypto source. In a configured deployment just run
-the command: no setup, no paths, no connection flags.
+bank, card, broker, pension and crypto source, plus the property, loans and
+private holdings recorded by hand. A house, a mortgage and a venture fund are
+accounts like any other. In a configured deployment just run the command: no
+setup, no paths, no connection flags.
 
 ## Hard rules
 
@@ -17,15 +19,74 @@ the command: no setup, no paths, no connection flags.
    `reload`, `reset`, `init`, `config`, `compact`, `categorize`,
    `resolve-symbols`, `web-config`, `web-materialize` and `wealthdb-collect`
    all write. If you think you need to write, you are wrong — just query.
-3. **Add `-f json` whenever code will parse the output.**
-4. **Every money value is a decimal string** (`"12345.67"`), never a number,
-   because a JSON number would round it. Convert before doing arithmetic.
-5. **In JSON, a column with no value is omitted from the object**, not sent as
-   `""`. Use `.key`, `has("key")` or `.key // default` in `jq` — never compare
-   to `""`.
-6. **Run `wealthdb <command> -h` for anything this file does not cover** (e.g.
-   `wealthdb cashflow -h`). Note that `wealthdb help <command>` prints only a
-   one-line blurb; `-h` is where the detail is.
+3. **One number for a whole window: add `--period total`.** The default is
+   one row per month. Never add monthly rows up yourself; let the command
+   total them.
+4. **There are no row-filter flags.** `--source`, `--account`, `--category`,
+   `--symbol` do not exist. Run the view, then filter the output. The table
+   is one row per line, so `| grep -i text` picks the rows for a name, a
+   wrapper, a category or a source; use `-f json | jq` only to sort.
+5. **Read tables; parse JSON.** The default table is for reading. Add
+   `-f json` only when you pipe into `jq`. JSON keys are the table headers,
+   currency suffix included: `value_USD`, `net_spend_USD`, `total_value_USD`,
+   `net_USD`, `"twr_%"`. There is no `.value` or `.net_spend` key. Every money
+   value is a decimal **string** (`"12345.67"`): `tonumber` before comparing
+   or sorting. The output is one JSON **array**: start every filter with `.[] |` or
+   `map(...)`; a bare `select(...)` fails with "Cannot index array". A column
+   with no value is **omitted** from the object, so write
+   `map(select(.value_USD))` before sorting on it, never compare to `""`. A
+   key with a `%` needs quotes: `."twr_%"`, `."share_%"`. A return that cannot
+   be computed is the string `"n/a"`, with the reason in `quality`.
+6. **Signs.** In the line views (`transactions`, `spending transactions`,
+   `cashflow transactions`) money leaving is **negative**: the biggest
+   purchase is the most negative value. In `summary`, `categories` and `types`,
+   `spend`, `refunds` and `income` are positive magnitudes.
+7. **Run `wealthdb help <command>` for anything this file does not cover**
+   (e.g. `wealthdb help cashflow`); `wealthdb <command> -h` prints the same
+   full help, and `wealthdb help` lists every command.
+
+## Recipes
+
+The command for each common question. Replace the window: `2025` is a whole
+year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
+
+- **Net worth now / at a date / in CHF** — `wealthdb holdings global`, then
+  `-d 2025-12-31` or `-x CHF`. One row: cash, positions, total.
+- **What each account holds, with its tax wrapper** — `wealthdb holdings accounts`
+- **One institution's total** — `wealthdb holdings sources | grep -i schwab`
+  (one row per institution; never add its accounts up by hand)
+- **One wrapper, one account, a property, a loan** —
+  `wealthdb holdings accounts | grep -i roth` (or `401`, `mortgage`)
+- **Largest holdings** —
+  `wealthdb holdings positions -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | reverse | .[0:5]'`
+  (a house or a loan is a position too; add `select(.asset_class != "real_estate")` for securities only)
+- **Return of the whole portfolio / of each account over a window** —
+  `wealthdb returns global 2025 --period total` / `wealthdb returns accounts 2025 --period total`
+- **Return of one account** —
+  `wealthdb returns accounts 2025 --period total | grep -i 'joint brokerage'`
+  (the account column is `entity`; read `twr_%`, and `quality` if it is `n/a`)
+- **Best account by return** —
+  `wealthdb returns accounts 2025 --period total -f json | jq 'map(select(."twr_%" != "n/a")) | sort_by(."twr_%"|tonumber) | reverse | .[0:3]'`
+  (a return that cannot be computed is the string `"n/a"`; drop those rows first)
+- **Total spent in a window** — `wealthdb spending summary 2025 --period total`
+- **Spending by category** — `wealthdb spending categories 2025 --period total`
+  (broad groups) or add `--level detailed` (groceries, restaurants, flights, …)
+- **One named category** —
+  `wealthdb spending categories 2026 --period total --level detailed | grep -i grocer`
+- **Biggest purchases in a month** —
+  `wealthdb spending transactions 2026-03 -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | .[0:5]'`
+  (spending lines are negative, so the most negative come first)
+- **Total income / income by type** —
+  `wealthdb income summary 2025 --period total` / `wealthdb income types 2025 --period total`
+- **One income type (dividends, interest, salary)** —
+  `wealthdb income types 2025 --period total | grep -i dividend`
+- **Net cash flow of a year** — `wealthdb cashflow summary 2025 --period total`
+- **Where the cash went, by class** — `wealthdb cashflow flows 2025 --period total --level class`
+- **Mortgage payments, retirement or education contributions** —
+  `wealthdb cashflow flows 2025 --period total --level class | grep -i -E 'mortgage|retirement|education'`
+- **Largest transactions of any kind** —
+  `wealthdb transactions 2025 -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber|fabs) | reverse | .[0:10]'`
+- **Is the data current / which dates exist** — `wealthdb status` / `wealthdb snapshots <source>`
 
 ## Pick the command
 
@@ -41,6 +102,7 @@ the command: no setup, no paths, no connection flags.
 | **What was spent**, on what | `spending <view>` |
 | **What was received**, from whom | `income <view>` |
 | **Where the household's cash came from and went** | `cashflow <view>` |
+| Mortgage or loan payments, money into retirement, education or health plans | `cashflow flows` (never `spending`: own-account moves are not spending) |
 
 | Command | Views |
 |---|---|
@@ -75,7 +137,9 @@ source contributes its latest snapshot on or before that date.
 
 Defaults when the window is omitted: `transactions` the past 30 days;
 `returns` since the first snapshot; `spending`, `income` and `cashflow` the
-trailing twelve months.
+trailing twelve months. "Last year" and "this year so far" are calendar
+windows: resolve them from today's date and pass them explicitly (`2025`, or
+`2026-01-01 today`).
 
 ## Flags
 
@@ -206,8 +270,15 @@ Covers every account except those the config excludes. Investment activity is
 never spending, and neither are own-account moves (card payments, funding
 wires, mortgage payments) — those are transfers the product already tracks.
 
-- `--period daily|weekly|monthly|quarterly|annual|total` (default monthly).
-- `--level primary|detailed` sets how coarse `categories` is (default primary).
+- `--period daily|weekly|monthly|quarterly|annual|total` (default monthly;
+  `total` for one figure over the window).
+- `--level primary|detailed` sets how coarse `categories` is (default primary:
+  about a dozen broad groups such as "Food and drink"). A category someone
+  names — groceries, restaurants, flights, gyms — is a **detailed** category:
+  add `--level detailed` and `grep` for it.
+- Mortgage payments, card payments and transfers to own accounts are not
+  spending and appear in no spending view. Mortgage and loan payments are in
+  `cashflow flows` under the `financing` section.
 - **Amounts are sign-split magnitudes, not signed ledger amounts:** `spend` and
   `refunds` are both POSITIVE, and `net_spend = spend − refunds` is the number
   a budget cares about.
@@ -276,6 +347,10 @@ The cash flow statement, and the edge list of its Sankey diagram.
   `net_cash_flow`. `operating_in` and `operating_out` are positive
   MAGNITUDES and `operating` is their difference, so do not add those
   two into the total yourself.
+- `vehicles` is every plan together: retirement, education and health. For
+  one of them, read `cashflow flows --level class` and take its row
+  ("Retirement savings", "Education savings", "Health"); `financing` holds
+  the mortgage.
 
 **`operating_in` and `operating_out` are NOT what `wealthdb income` and
 `wealthdb spending` report**, which is why they are not named after them. The
@@ -325,8 +400,8 @@ or a transaction kind with no canonical direction).
 ## Gotchas
 
 - **There are no row-filter flags** — no `--source`, `--account`, `--symbol`,
-  `--merchant`, `--category`. To filter, request `-f json` and filter or
-  aggregate in your own code.
+  `--merchant`, `--category`. To filter, `grep -i` the table or request
+  `-f json` and `select` in `jq`.
 - A source contributes nothing before its first collected snapshot. An absent
   or zero holding at an early date is missing history, not a real zero — say so
   rather than reporting $0.

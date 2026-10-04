@@ -66,6 +66,11 @@ The session token / cookie jar is the keys to the kingdom.
 - Never default a debug/transient artefact (trace, screenshot,
   log) under `~/.secrets/` — debug paths must be user-provided
   with no secrets-dir fallback.
+- An env file is a bash script. Read it by sourcing it in a bash
+  subprocess (`bash -n FILE` first, then
+  `set -a; source FILE; set +a; env -0`), never with a hand-rolled
+  `KEY=VALUE` parser — quoting, escapes and `$`-expansion are the
+  shell's job.
 
 ## 4. Do not leak private information into source
 
@@ -90,6 +95,15 @@ sample drops shared for debugging):
   of scope"), never by what a real login was observed to contain. (Do not
   reproduce a real roster even as a "forbidden example" — describe the
   shape, not the specifics.)
+- **Narrative about a real person's finances** — what someone holds,
+  bought, sold, closed or moved, and which institutions they have a
+  relationship with. This is private even when no number appears, and
+  it is bad documentation besides. Describe the data shape and the
+  parsing mechanism impersonally instead.
+- **Deployment specifics** — absolute personal paths
+  (`/Users/<name>/…`), hostnames, schedules, the real data root. The
+  repo stays generic and pluggable; that wiring lives in config
+  outside it.
 
 Fine to use: bank names, widely-held example tickers (SPX / QQQ /
 VTI), IBAN-spec placeholder letters (`CH<chk><BBBB><RRRR>…`), and a
@@ -104,6 +118,13 @@ value-grep catches (any statement of account counts, product types
 present or absent, or contact points on file). When the user pastes a
 captured response or log fragment in chat, strip identifiers before
 committing anything derived from it. When in doubt, ask.
+
+A brief for a sub-agent gets the same care. Give the *shape* of a
+value (`####XXXXXXXX####`), never a real value, not even masked or
+labelled "synthetic" — the agent reuses it verbatim as a fixture, and
+it lands in a tracked file. After any agent commit that touches
+fixtures, grep the tree for every real token handled in that session,
+not just the one that was noticed.
 
 ## 5. Git & commit conventions
 
@@ -144,6 +165,12 @@ Hold every change to the bar a senior engineer would.
   idiom of the surrounding code.
 - **Examples stay synthetic** (§4) — never a real identifier, even
   in a comment, fixture, or doc.
+- **A temp file pairs with a trap.** In shell, `mktemp` is followed
+  by `trap … EXIT` (or `RETURN` inside a function) so the file is
+  removed on an early exit too.
+- **Config lives under `$XDG_CONFIG_HOME`** (default
+  `$HOME/.config/<tool>.cfg`, or `$HOME/.config/<tool>/` for several
+  files), not inside the tool's data tree.
 
 ## 7. Build & test entry points
 
@@ -175,3 +202,37 @@ Underneath, each component also builds directly:
   `load.py`).
 - **Docker collectors** (a Dockerfile + `entrypoint.sh`): the per-tool
   wrapper (`./<tool> <login|download|load>`) drives `docker run`.
+
+## 8. Documentation
+
+- **Simple English.** One idea per sentence, mostly under 20 words.
+  Lists instead of colon-chains. No nested clauses and no dash-asides
+  inside a clause. Plain verbs ("reads", "shows", "computes"). The
+  audience is international and skims.
+- **A README says what the software does, in plain words, with a
+  few real examples.** Big picture first, then example commands
+  (each one verified to run), then where the output goes. Exact
+  syntax, flag inventories, internal mechanism names and config or
+  ledger catalogues belong in `help` output and topic docs.
+- **Docs describe the present.** No origin story — no "began as",
+  "used to", "now also". A feature reads as if it had always been
+  there. Version history belongs in release notes and git.
+- **No plan files or "deviations from the plan" notes in the
+  repo.** Design plans and stage notes live outside the tree; a
+  deviation is reported, not committed. This holds even when a task
+  brief asks for such a section.
+- When a process doc has to name the human, it is "the user", never
+  "the owner".
+
+## 9. Login and challenge flows
+
+- **Mirror the provider's own form.** Submit input as entered, show
+  the provider's error text verbatim, re-prompt a bounded number of
+  times the way the form does, then exit fast with a clear message.
+  No guessed code lifetimes, staleness thresholds, carry-forward or
+  auto-restart logic: the provider's error is the only reliable
+  signal, and re-running is the recovery path.
+- **A step that waits for a human sets no tight deadline.** An MFA
+  prompt, a browser the human drives, a VNC session: default to an
+  hour or more, or wait for an idle/close signal instead of a wall
+  clock. A short default assumes someone is waiting at the screen.

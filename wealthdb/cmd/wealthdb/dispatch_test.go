@@ -111,7 +111,7 @@ func TestNoArgsShowsUsage(t *testing.T) {
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
 	}
-	if !strings.Contains(se, "wealthdb — gold-layer portfolio CLI") {
+	if !strings.Contains(se, "wealthdb — a household's complete financial picture") {
 		t.Errorf("stderr missing usage banner: %s", se)
 	}
 }
@@ -759,7 +759,7 @@ func TestHoldingsDispatch(t *testing.T) {
 	if code != 2 {
 		t.Errorf("bare holdings exit = %d, want 2", code)
 	}
-	if !strings.Contains(se, "point-in-time portfolio views") {
+	if !strings.Contains(se, "what is held, where, and what it is worth") {
 		t.Errorf("bare holdings missing usage: %s", se)
 	}
 

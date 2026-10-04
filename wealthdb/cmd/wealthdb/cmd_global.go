@@ -90,10 +90,10 @@ func buildGlobalColumnRegistry(outCcy string) []columnSpec[gold.GlobalRow] {
 func globalCmdUsage() string {
 	return `usage: wealthdb holdings global [-d YYYY-MM-DD] [-f FORMAT] [-x CCY] [-p]
 
-Roll the entire portfolio up into a single row — the ultimate level
-of aggregation, summing every account's output-currency cash,
-positions, and total value. Reconciles with the sum of the rows from
-'wealthdb holdings accounts'.
+Roll everything up into a single row: the household's cash,
+positions and total value (net worth) in the output currency, every
+account included, loans subtracted. Reconciles with the sum of the
+rows from 'wealthdb holdings accounts'.
 
 Columns (CUR = the -x/--currency choice, default config.default_currency):
   min_snapshot_date      earliest of the per-account latest snapshot dates

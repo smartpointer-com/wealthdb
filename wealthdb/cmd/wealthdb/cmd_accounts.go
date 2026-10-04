@@ -163,8 +163,11 @@ func accountsUsage() string {
 	registry := buildAccountColumnRegistry("CCY")
 	return `usage: wealthdb holdings accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
-Print one row per registered account, with derived aggregate
-columns rolled up over the account's positions and cash balances.
+Print one row per account: its source, its kind (brokerage, cash,
+card, mortgage, custody, …), its tax wrapper (taxable, roth_ira,
+401k, pillar_3a, …), and its positions, cash and total value as of
+the date. A loan or a card balance is negative. Property, loans and
+private holdings recorded by hand are accounts like any other.
 Base-currency aggregates (positions_value, cash_balance,
 total_value) are blank for accounts with no base_currency. The
 matching _<CCY> aggregates use the -x/--currency choice and stay

@@ -287,10 +287,13 @@ func transactionsUsage() string {
 	registry := buildTransactionColumnRegistry("CCY")
 	return `usage: wealthdb transactions [FROM [TO]] [-r] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
-Print transactions over a date range. Default: past 30 days,
-table format, oldest first, default column set, output currency
-from config.default_currency, historic FX (nearest rate
-at-or-before occurred_at).
+Print transactions over a date range: trades, dividends, interest,
+fees, deposits, withdrawals and transfers, one line each. Money
+leaving an account is negative, money arriving positive. Default:
+past 30 days, table format, oldest first, default column set,
+output currency from config.default_currency, historic FX (nearest
+rate at-or-before occurred_at). There are no row filters: filter the
+output (grep on the table, or -f json and jq).
 
 Date arguments (positional, optional; may appear before or after
 flags):

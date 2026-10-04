@@ -48,21 +48,26 @@ func cmdHoldings(ctx context.Context, g globalFlags, subargs []string, stdin io.
 	return h(ctx, g, rest, stdin, stdout, stderr)
 }
 
-const holdingsUsage = `wealthdb holdings — point-in-time portfolio views
+const holdingsUsage = `wealthdb holdings — what is held, where, and what it is worth, as of a date
 
 usage:
-  wealthdb holdings <view> [flags]
+  wealthdb holdings <view> [-d DATE] [-f FORMAT] [-x CCY] [-C COLS] [-p]
 
-views (coarsest → finest aggregation):
-  global       roll the whole portfolio into a single total row
-  sources      one row per silver source
-  portfolios   one row per portfolio (+ a sentinel row per source)
-  accounts     one row per account
-  positions    one row per individual holding (instrument)
+views (coarsest → finest):
+  global       one row: cash, positions value and total value of everything (net worth)
+  sources      one row per source (institution)
+  portfolios   one row per portfolio, plus one row per source for its ungrouped accounts
+  accounts     one row per account, with its kind, tax wrapper and value
+  positions    one row per individual holding; --with-cash adds the cash lines
 
-Each view takes a date (-d), output format (-f), currency (-x),
-and -p/--privacy; all but global also take -C/--columns.
-Totals reconcile: global == Σ sources == Σ portfolios == Σ accounts
-== positions --with-cash. Run 'wealthdb holdings <view> -h' for a
-view's full flags.
+Holdings cover every collected account: bank, card, brokerage, pension
+and crypto accounts, and the property, loans and private holdings
+recorded by hand. A loan or a card balance is a negative value. Each
+source contributes its latest snapshot on or before the as-of date
+(-d, default today). Totals reconcile: global == Σ sources ==
+Σ portfolios == Σ accounts == positions --with-cash.
+
+There are no row filters: pick the view, then filter the output (grep
+on the table, or -f json and jq). Run 'wealthdb holdings <view> -h'
+for a view's columns.
 `

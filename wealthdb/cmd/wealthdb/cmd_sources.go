@@ -121,10 +121,10 @@ func sourcesUsage() string {
 	registry := buildSourceColumnRegistry("CCY")
 	return `usage: wealthdb holdings sources [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
-Print one row per silver source, rolling up every one of its
-accounts (positions + cash). The source-grain level between
-'wealthdb holdings accounts' / 'portfolios' and 'holdings global'.
-Sum of total_value_<CCY> across all rows equals the same sum from
+Print one row per source (an institution, or a hand-kept ledger),
+rolling up every one of its accounts (positions + cash): the one
+row to read for "how much is at <institution>". Sum of
+total_value_<CCY> across all rows equals the same sum from
 'wealthdb holdings accounts', 'portfolios', and 'global'.
 
 Flags:

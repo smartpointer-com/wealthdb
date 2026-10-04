@@ -197,12 +197,11 @@ func portfoliosUsage() string {
 	registry := buildPortfolioColumnRegistry("CCY", func(string) string { return "" })
 	return `usage: wealthdb holdings portfolios [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
-Print one row per portfolio (wealth-management wrapper grouping
-component accounts) plus one sentinel row per silver_source that
-aggregates accounts with no portfolio (Schwab, Swissquote, any
-UBS account the bank didn't group). Sum of total_value_<CCY>
-across all rows equals the same sum from 'wealthdb holdings
-accounts', which equals 'wealthdb holdings positions --with-cash'.
+Print one row per portfolio (a grouping of accounts the source
+manages together) plus one row per source for the accounts it did
+not group. Sum of total_value_<CCY> across all rows equals the same
+sum from 'wealthdb holdings accounts', which equals 'wealthdb
+holdings positions --with-cash'.
 
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)

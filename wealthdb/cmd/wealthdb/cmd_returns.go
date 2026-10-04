@@ -303,7 +303,8 @@ Flags:
   --period P        monthly | quarterly (default) | annual | total
                     (per-bucket TWR rows + a since-inception summary row; the
                     summary's cumulative TWR is chained over the entity's
-                    actual snapshot days, NOT --period)
+                    actual snapshot days, NOT --period. total gives one row
+                    per entity for the whole window)
   --annualize MODE  auto (default; only spans >= 1y) | always | never
   --netting on|off  net internal transfers at coarse grains (default on; the
                     accounts view is always exact and ignores this)

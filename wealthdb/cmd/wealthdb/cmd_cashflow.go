@@ -563,6 +563,10 @@ Flags beyond the ones every report shares:
                 groups and shares stay legible
 
 Notes
+  vehicles is every plan together — retirement, education and health;
+  for one of them read 'flows --level class' and take its row. The
+  mortgage is under financing.
+
   The four sections sum to net_cash_flow, and a bucket's flows rows —
   the Cash row included — sum to zero. Both identities are structural
   and guard arithmetic rather than population: the reconciliation that
