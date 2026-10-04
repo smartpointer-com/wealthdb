@@ -75,6 +75,63 @@ To try it without real data, `make demo` builds a synthetic household
 and `make demo-mcp` serves it on port 3400 (container
 `wealthdb-mcp-demo`).
 
+## Claude Desktop
+
+Claude Desktop runs the server itself, over stdio. Its *Add custom
+connector* dialog does not work here: Claude calls a custom connector
+[from Anthropic's servers](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp),
+and those cannot reach a loopback address or an SSH tunnel.
+
+Open **Settings → Developer → Edit Config**. It edits
+`claude_desktop_config.json`. Add the server, then quit and reopen the
+app:
+
+```json
+{
+  "mcpServers": {
+    "wealthdb": {
+      "command": "/path/to/wealthdb",
+      "args": ["mcp", "stdio"],
+      "env": {
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+        "WEALTHDB_DATA_ROOT": "/path/to/data-root"
+      }
+    }
+  }
+}
+```
+
+A desktop app does not get the shell's environment, so the config
+passes it:
+
+- `command` is the full path to the `wealthdb` wrapper.
+- `PATH` must hold the directory `docker` is in.
+- `WEALTHDB_DATA_ROOT` is needed only when the data root is not the
+  default. The same holds for `XDG_CONFIG_HOME` and the config file.
+
+When wealthdb runs on another host, the command is `ssh`. It needs no
+tunnel, no port and no token:
+
+```json
+{
+  "mcpServers": {
+    "wealthdb": {
+      "command": "/usr/bin/ssh",
+      "args": ["-T", "-o", "BatchMode=yes", "<host>",
+               "env", "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+               "WEALTHDB_DATA_ROOT=/path/to/data-root",
+               "/path/to/wealthdb", "mcp", "stdio"]
+    }
+  }
+}
+```
+
+SSH must log in without a prompt, with a key the agent holds. Run
+`ssh <host> true` once in a terminal to accept the host key.
+
+Claude Desktop sends each result to Anthropic's hosted model. Put
+`"--privacy"` after `"stdio"` to send redacted results instead.
+
 ## What a model can ask
 
 Eleven tools, every parameter optional:
