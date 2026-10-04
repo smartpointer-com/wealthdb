@@ -60,7 +60,10 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
-	return c.validateWeb()
+	if err := c.validateWeb(); err != nil {
+		return err
+	}
+	return c.validateMCP()
 }
 
 // validateSources checks every silver_sources entry and returns the set of
@@ -497,6 +500,40 @@ func (c *Config) validateCashflow(seenIDs map[string]bool) error {
 func (c *Config) validateWeb() error {
 	if c.Web != nil && c.Web.Port != 0 && (c.Web.Port < 1 || c.Web.Port > 65535) {
 		return fmt.Errorf("config: web.port %d is out of range (1-65535)", c.Web.Port)
+	}
+	return nil
+}
+
+// validateMCP checks mcp: the optional MCP server. The port must be in
+// range and must not collide with the web server's; turning the token
+// off takes two settings, auth none and insecure, so that neither one
+// alone can expose the data.
+func (c *Config) validateMCP() error {
+	m := c.MCP
+	if m == nil {
+		return nil
+	}
+	if m.Port != 0 && (m.Port < 1 || m.Port > 65535) {
+		return fmt.Errorf("config: mcp.port %d is out of range (1-65535)", m.Port)
+	}
+	if c.Web != nil {
+		webPort := c.Web.Port
+		if webPort == 0 {
+			webPort = DefaultWebPort
+		}
+		if m.EffectivePort() == webPort {
+			return fmt.Errorf("config: mcp.port %d is also the web server's port; pick another", webPort)
+		}
+	}
+	switch m.Auth {
+	case "", MCPAuthToken:
+	case MCPAuthNone:
+		if !m.Insecure {
+			return fmt.Errorf(`config: mcp.auth "none" serves the data to any process on this machine; ` +
+				`it needs "insecure": true beside it to take effect`)
+		}
+	default:
+		return fmt.Errorf("config: mcp.auth %q is not a mode (want token | none)", m.Auth)
 	}
 	return nil
 }

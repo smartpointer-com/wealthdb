@@ -50,7 +50,17 @@ const (
 // The returned *sql.DB is the standard database/sql handle; close
 // it with db.Close() when done.
 func Open(path string, mode Mode) (*sql.DB, error) {
-	return open(path, mode, true)
+	return open(path, mode, true, nil)
+}
+
+// OpenReadOnlyWith opens an on-disk gold file read-only, passing
+// options to DuckDB as configuration (memory_limit, threads,
+// temp_directory, …). A long-lived reader needs them where a one-shot
+// command does not: it must not size itself to the host, and on a
+// read-only mount DuckDB's default spill path beside the database is
+// unwritable.
+func OpenReadOnlyWith(path string, options map[string]string) (*sql.DB, error) {
+	return open(path, ModeReadOnly, false, options)
 }
 
 // ReopenReadWrite opens an already-open-once gold file read-write
@@ -64,23 +74,29 @@ func Open(path string, mode Mode) (*sql.DB, error) {
 // the signal it exists for: which binary last wrote this database.
 // The first open of the command records that.
 func ReopenReadWrite(path string) (*sql.DB, error) {
-	return open(path, ModeReadWrite, false)
+	return open(path, ModeReadWrite, false, nil)
 }
 
 // open is Open's body; audit says whether an RW open stamps
-// binary_versions.
-func open(path string, mode Mode, audit bool) (*sql.DB, error) {
+// binary_versions, and options are extra DuckDB configuration.
+func open(path string, mode Mode, audit bool, options map[string]string) (*sql.DB, error) {
 	dsn := path
 	if path == "" {
 		dsn = ":memory:"
 	}
 
-	// Only on-disk databases honour access_mode; in-memory always
-	// opens read-write (there's nothing to share).
+	// DuckDB takes configuration as `?key=value` query parameters on
+	// the DSN. Only on-disk databases honour access_mode; in-memory
+	// always opens read-write (there's nothing to share).
+	params := url.Values{}
 	if mode == ModeReadOnly && dsn != ":memory:" {
-		// DuckDB takes options as `?key=value`-style query params
-		// on the DSN.
-		dsn = dsn + "?access_mode=" + url.QueryEscape("read_only")
+		params.Set("access_mode", "read_only")
+	}
+	for k, v := range options {
+		params.Set(k, v)
+	}
+	if len(params) > 0 {
+		dsn += "?" + params.Encode()
 	}
 
 	db, err := sql.Open("duckdb", dsn)

@@ -20,13 +20,15 @@ make demo                 # build silver and gold into ~/wealthdb-demo
 make demo-web             # dashboards on http://127.0.0.1:3100/ (container wealthdb-metabase-demo)
 make demo-roll            # later: add the days since the last build, load only those
 make demo-web-stop        # stop the demo's dashboards
+make demo-mcp             # MCP on http://127.0.0.1:3400/mcp (container wealthdb-mcp-demo); prints the token
+make demo-mcp-stop        # stop the demo's MCP server
 ```
 
 `make demo` takes `WEALTHDB_DEMO_ROOT=` (default `~/wealthdb-demo`),
 `AS_OF=YYYY-MM-DD` (default today, UTC), `SEED=` and `FINDINGS=1`
 (below). `make demo-roll` takes the same root and seed as the build it
 extends. The dashboards' admin password is in `web/admin-password.txt`
-under the demo root. The demo shares the engine and dashboard images
+under the demo root, and the MCP server's token in `mcp/token`. The demo shares the engine and dashboard images
 with a real setup: its make targets build them from the checkout, as
 `make all` does.
 
@@ -104,8 +106,8 @@ config, no network. The code is in `demo/demohouse/`:
 The demo root then holds `silver/<source>.db`, `wealthdb.cfg` (every
 path in it relative to the root), `overrides/*.csv`, the gold file and
 a `.wealthdb-demo` marker. The generator writes only into a root that
-is new, empty or marked. The web targets run only against a marked
-root.
+is new, empty or marked. The web and MCP targets run only against a
+marked root.
 
 A full build also removes the root's gold file. Each run's change
 number is its as-of date. A rebuild at the same as-of carries the

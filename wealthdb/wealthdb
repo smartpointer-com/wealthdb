@@ -18,11 +18,12 @@ done
 REPO="$(cd "$(dirname "$SELF")" && pwd)"
 IMAGE="wealthdb:latest"
 
-# `build` and `web` are wrapper-handled host-side, not container
-# subcommands: `build` runs `docker build`; `web` delegates to the
-# web/ component's lifecycle script. Docker isn't reachable from
-# inside the engine container, so the Metabase server is orchestrated
-# on the host. (web/ is a sibling of this inner wealthdb/ dir.)
+# `build`, `web` and `mcp` are wrapper-handled host-side, not container
+# subcommands: `build` runs `docker build`; `web` and `mcp` delegate to
+# the web/ and mcp/ components' lifecycle scripts. Docker isn't
+# reachable from inside the engine container, so the Metabase server
+# and the MCP server are orchestrated on the host. (web/ and mcp/ are
+# siblings of this inner wealthdb/ dir.)
 case "${1:-}" in
     build)
         shift
@@ -53,6 +54,10 @@ case "${1:-}" in
     web)
         shift
         exec "$(cd "$REPO/.." && pwd)/web/web" "$@"
+        ;;
+    mcp)
+        shift
+        exec "$(cd "$REPO/.." && pwd)/mcp/mcp" "$@"
         ;;
 esac
 

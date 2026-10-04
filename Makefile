@@ -20,6 +20,7 @@
 #   make demo             build the synthetic demo household into WEALTHDB_DEMO_ROOT
 #   make demo-roll        append the days since the last demo build, load them
 #   make demo-web         serve the demo's dashboards (own container and port)
+#   make demo-mcp         serve the demo to AI agents over MCP (own container and port)
 #   make test-demo        test the demo generator, and load a short demo through the engine
 #
 # A collector with a Docker wrapper (collectors/<name>/<name>) builds via
@@ -55,7 +56,7 @@ PYTHON := $(or \
 .DEFAULT_GOAL := help
 .PHONY: all build test help install uninstall hooks \
         build-wealthdb test-wealthdb \
-        build-web test-web clean-web cleanall-web \
+        build-web test-web clean-web cleanall-web test-mcp \
         build-collectors test-collectors \
         test-collectorkit clean-collectorkit cleanall-collectorkit \
         test-wrappers \
@@ -63,13 +64,13 @@ PYTHON := $(or \
         clean-collectors cleanall-collectors base-images \
         update update-venvs update-wealthdb update-bases \
         lint lint-go lint-python cleanall-lint \
-        demo demo-roll demo-web demo-web-stop test-demo
+        demo demo-roll demo-web demo-web-stop demo-mcp demo-mcp-stop test-demo
 
 # ---- aggregates --------------------------------------------------------
 
 all: build-wealthdb build-web build-collectors
 build: all
-test: test-wealthdb test-web test-collectors test-collectorkit test-wrappers test-demo
+test: test-wealthdb test-web test-mcp test-collectors test-collectorkit test-wrappers test-demo
 
 # ---- install -----------------------------------------------------------
 # Symlink the two top-level entry points onto PATH so they work from any
@@ -270,6 +271,10 @@ DEMO_WEB := $(DEMO_ENV) WEALTHDB_CONFIG="$(DEMO_ROOT)/wealthdb.cfg" \
             WEALTHDB_WEB_CONTAINER=wealthdb-metabase-demo \
             WEALTHDB_WEB_DATA_DIR="$(DEMO_ROOT)/web" \
             WEALTHDB_WEB_ENV_FILE="$(DEMO_ROOT)/web.env" $(WEALTHDB) web
+DEMO_MCP := $(DEMO_ENV) WEALTHDB_CONFIG="$(DEMO_ROOT)/wealthdb.cfg" \
+            WEALTHDB_MCP_CONTAINER=wealthdb-mcp-demo \
+            WEALTHDB_MCP_DATA_DIR="$(DEMO_ROOT)/mcp" \
+            WEALTHDB_MCP_ENV_FILE="$(DEMO_ROOT)/mcp.env" $(WEALTHDB) mcp
 DEMO_GEN_ARGS = --root "$(DEMO_ROOT)" --seed "$(SEED)" $(if $(AS_OF),--as-of $(AS_OF))
 DEMO_ROOT_SET = @test -n "$(DEMO_ROOT)" || { echo "$@: WEALTHDB_DEMO_ROOT is empty" >&2; exit 2; }
 DEMO_ROOT_MARKED = @test -f "$(DEMO_ROOT)/.wealthdb-demo" || \
@@ -301,6 +306,19 @@ demo-web-stop:
 	$(DEMO_ROOT_MARKED)
 	@$(DEMO_WEB) stop
 
+# The MCP server reads live gold, so there is nothing to refresh: a
+# rebuilt image needs a restart, and `restart` also starts a stopped one.
+demo-mcp: build-wealthdb
+	$(DEMO_ROOT_SET)
+	$(DEMO_ROOT_MARKED)
+	@$(DEMO_MCP) restart
+	@$(DEMO_MCP) url
+
+demo-mcp-stop:
+	$(DEMO_ROOT_SET)
+	$(DEMO_ROOT_MARKED)
+	@$(DEMO_MCP) stop
+
 # The generator's own suite (stdlib unittest), then a short demo loaded
 # through the engine image in scratch roots under the cache dir — a
 # directory Docker can see, holding nothing but the demo's test roots.
@@ -310,6 +328,13 @@ test-demo: build-wealthdb
 	@echo "==> test demo (generator, then a short household through the engine)"
 	@WEALTHDB_DEMO_TEST_ROOT="$(DEMO_TEST_ROOT)" WEALTHDB_BIN="$(abspath $(WEALTHDB))" \
 		$(PYTHON) -m unittest discover -s demo/tests -t demo
+
+# ---- mcp (optional MCP server) ----------------------------------------
+# The server is the engine image, so there is nothing to build; the
+# lifecycle script has pure-bash unit tests, no Docker needed.
+test-mcp:
+	@echo "==> test mcp (mcp/test_mcp.sh)"
+	@mcp/test_mcp.sh
 
 # ---- web (optional Metabase BI server) --------------------------------
 
@@ -490,6 +515,7 @@ help:
 	@echo "  make test-wealthdb      run go test ./... in the wealthdb container"
 	@echo "  make build-web          build the optional Metabase BI image"
 	@echo "  make test-web           run the web lifecycle unit tests"
+	@echo "  make test-mcp           run the MCP server lifecycle unit tests"
 	@echo "  make build-collectors   build every collector"
 	@echo "  make test-collectors    test every collector"
 	@echo "  make test-collectorkit  run the shared collectorkit test suite"
@@ -510,6 +536,7 @@ help:
 	@echo "                          default ~/wealthdb-demo; AS_OF=, SEED=, FINDINGS=1)"
 	@echo "  make demo-roll          append the days since the last demo build and load them"
 	@echo "  make demo-web / demo-web-stop   the demo's dashboards, own container and port"
+	@echo "  make demo-mcp / demo-mcp-stop   the demo over MCP, own container and port"
 	@echo "  make test-demo          test the demo generator and a short demo load"
 	@echo ""
 	@echo "  make update             refresh all tooling: pip in every host venv,"

@@ -222,6 +222,12 @@ type Config struct {
 	// engine container) and reads a read-only *snapshot* of gold, so
 	// it never contends for the single-writer lock. See web/DESIGN.md.
 	Web *WebConfig `json:"web,omitempty"`
+	// MCP configures the optional MCP server (`wealthdb mcp …`),
+	// which puts the read-only reports in front of AI agents. Absent
+	// or not enabled means `wealthdb mcp start` refuses with a pointer
+	// to this block. It reads live gold read-only, one short handle
+	// per call. See mcp/DESIGN.md.
+	MCP *MCPConfig `json:"mcp,omitempty"`
 }
 
 // DefaultWebPort is the host loopback port the Metabase server is
@@ -242,6 +248,52 @@ type WebConfig struct {
 	// (127.0.0.1:Port and [::1]:Port → container :3000). Zero/omitted
 	// → DefaultWebPort.
 	Port int `json:"port,omitempty"`
+}
+
+// DefaultMCPPort is the host loopback port the MCP server is published
+// on when `mcp.port` is omitted.
+const DefaultMCPPort = 3300
+
+// MCP auth modes. AuthToken requires a bearer token on every HTTP
+// request; AuthNone serves any local process and is honoured only with
+// Insecure set as well.
+const (
+	MCPAuthToken = "token"
+	MCPAuthNone  = "none"
+)
+
+// MCPConfig is the optional `mcp` block of wealthdb.cfg, driving the MCP
+// server managed by `wealthdb mcp`. The lifecycle runs host-side and
+// reads these settings back via the hidden `mcp-config` subcommand.
+// Keep the field names in sync with mcp/mcp.
+type MCPConfig struct {
+	// Enabled gates `wealthdb mcp start` and `wealthdb mcp stdio`.
+	Enabled bool `json:"enabled"`
+	// Port is the loopback port the server is published on. Zero or
+	// omitted means DefaultMCPPort.
+	Port int `json:"port,omitempty"`
+	// Auth is MCPAuthToken (the default when empty) or MCPAuthNone.
+	Auth string `json:"auth,omitempty"`
+	// Insecure acknowledges Auth none. Without it, validation refuses
+	// a config that turns the token off: the data is a household's
+	// finances, and one mistyped field must not publish them.
+	Insecure bool `json:"insecure,omitempty"`
+}
+
+// EffectivePort is the configured port, or DefaultMCPPort.
+func (m *MCPConfig) EffectivePort() int {
+	if m == nil || m.Port == 0 {
+		return DefaultMCPPort
+	}
+	return m.Port
+}
+
+// EffectiveAuth is the configured auth mode, or MCPAuthToken.
+func (m *MCPConfig) EffectiveAuth() string {
+	if m == nil || m.Auth == "" {
+		return MCPAuthToken
+	}
+	return m.Auth
 }
 
 // SymbolResolutionConfig is the `symbol_resolution` block of

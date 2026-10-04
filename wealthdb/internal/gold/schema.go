@@ -66,6 +66,29 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// CheckSchemaKnown returns ErrStaleBinary, wrapped, when the database's
+// schema is newer than the newest migration this binary carries: a later
+// build has written the database, and this one may misread it. Unlike
+// Open's stale-binary check it needs no build stamp, so it also holds a
+// binary built without VCS information, such as the engine image's —
+// which is what a long-running server needs after the image is rebuilt
+// and a load migrates the database under it.
+func CheckSchemaKnown(ctx context.Context, db *sql.DB) error {
+	current, err := currentSchemaVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	migrations, err := listMigrations()
+	if err != nil {
+		return err
+	}
+	if n := len(migrations); n > 0 && current > migrations[n-1].version {
+		return fmt.Errorf("%w: the database is at schema %d, and this binary knows schema %d at most",
+			ErrStaleBinary, current, migrations[n-1].version)
+	}
+	return nil
+}
+
 // currentSchemaVersion returns MAX(gold_schema_version) or 0 if
 // schema_meta does not exist.
 func currentSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {

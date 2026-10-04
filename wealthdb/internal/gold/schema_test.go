@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -261,5 +262,26 @@ func TestMigration0039DDLIsRerunnable(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("web_transactions.account_kind columns = %d, want 1", n)
+	}
+}
+
+// TestCheckSchemaKnown: a database a later build has migrated past this
+// binary's newest migration reads as stale, with or without a build
+// stamp; one at the binary's own schema does not.
+func TestCheckSchemaKnown(t *testing.T) {
+	db, ctx := openMigrated(t)
+	if err := CheckSchemaKnown(ctx, db); err != nil {
+		t.Fatalf("a database at this binary's schema: %v", err)
+	}
+	ms, err := listMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO schema_meta (gold_schema_version, applied_at) VALUES (?, 0)`,
+		ms[len(ms)-1].version+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSchemaKnown(ctx, db); !errors.Is(err, ErrStaleBinary) {
+		t.Errorf("a database one migration ahead: err = %v, want ErrStaleBinary", err)
 	}
 }

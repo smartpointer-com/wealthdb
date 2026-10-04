@@ -18,7 +18,7 @@ setup, no paths, no connection flags.
 2. **Anything else is forbidden**, whether or not it is listed here. `load`,
    `reload`, `reset`, `init`, `config`, `compact`, `categorize`,
    `resolve-symbols`, `web-config`, `web-materialize` and `wealthdb-collect`
-   all write. If you think you need to write, you are wrong — just query.
+   all write; `mcp-serve` and `mcp-config` serve other clients. If you think you need to write, you are wrong — just query.
 3. **One number for a whole window: add `--period total`.** The default is
    one row per month. Never add monthly rows up yourself; let the command
    total them.
@@ -410,3 +410,10 @@ or a transaction kind with no canonical direction).
 - Raw SQL against the databases under `$WEALTHDB_DATA_ROOT` is possible but
   rarely needed, and it bypasses `-p` entirely. Prefer the commands above; they
   hide schema, snapshot and FX details.
+
+## Without a shell
+
+This skill is for an agent with a shell. An agent without one reaches the
+same reports through the MCP server (`wealthdb mcp`, see mcp/README.md): its
+tools take filters, sort and paging where this skill pipes through `grep` and
+`jq`, and its privacy endpoint redacts as `-p` does.

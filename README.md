@@ -111,8 +111,9 @@ wealthdb cashflow sankey 2025                        # the year's cash flow as a
 ```
 
 Everything is available from the command line, in tables, CSV or JSON,
-and from a set of local dashboards (`wealthdb web`): net worth,
-allocation, returns, spending, income and cash flow. A privacy mode
+from a set of local dashboards (`wealthdb web`): net worth,
+allocation, returns, spending, income and cash flow, and to AI agents
+over MCP (`wealthdb mcp`). A privacy mode
 shows percentages instead of amounts, for a screen others may see.
 `wealthdb help` lists every command with its flags; the topic documents
 under [Documentation](#documentation) cover each feature in depth.
@@ -143,16 +144,20 @@ for irreversible damage. wealthdb keeps the two apart:
    nothing is sent to any third-party service. The two exceptions
    are named at the top: Plaid, and a remote model that
    `categorize` and `resolve-symbols` ask.
-4. **Agent access is read-only by construction.** The `wealthdb`
-   CLI's `--read-only` flag forces read-only access to the gold
-   DB, so the surface exposed to an agent is consolidated,
-   local, read-only queries — and nothing else.
+4. **Agent access is read-only by construction.** The MCP server
+   (`wealthdb mcp`, [mcp/README.md](mcp/README.md)) serves the
+   reports as tools: it has no tool that writes, it opens the
+   database read-only for one call at a time, and its container
+   mounts the data read-only. An agent with a shell can run the CLI
+   instead, with `--read-only`. Either way the surface exposed to an
+   agent is consolidated, local, read-only queries — and nothing
+   else.
 
 The result is a clean separation. An agent runs the same reports a
-person does, through `wealthdb --read-only`, with `-p` when amounts
-should stay out of a transcript. No agent is ever given write access
-to the financial data, let alone the banking credentials that produced
-it.
+person does, through the MCP server or `wealthdb --read-only`. The
+server's privacy endpoint, or `-p` on the CLI, keeps amounts out of a
+transcript. No agent is ever given write access to the financial data,
+let alone the banking credentials that produced it.
 
 ## Data sources
 
@@ -207,13 +212,14 @@ two-factor prompts.
 
 ## How it is built
 
-Three parts, and a demo, in one repository:
+Four parts, and a demo, in one repository:
 
 | Part | What it is | Runs as |
 | --- | --- | --- |
 | [`collectors/`](collectors/) | One program per source. Each logs in, downloads the raw files (bronze) and parses them into a source-shaped SQLite database (silver). | Docker, or a Python venv |
 | [`wealthdb/`](wealthdb/) | The gold engine. It reads every silver database into one canonical DuckDB store and serves the reports. | Go, in Docker |
 | [`web/`](web/) | The optional dashboards: Metabase over a read-only snapshot of gold. | Docker |
+| [`mcp/`](mcp/) | The optional MCP server: the reports as tools for AI agents, read-only over live gold. | the engine image, in Docker |
 | [`demo/`](demo/) | An invented household, generated into synthetic silver sources, for trying wealthdb without a bank. | Python, stdlib only |
 
 ```
@@ -223,6 +229,7 @@ collectors/<source>/         wealthdb/
   (one SQLite per source)             │                     wealthdb spending | income | cashflow
                                       │                     wealthdb transactions
                                       │                     wealthdb web  (Metabase, over a snapshot)
+                                      │                     wealthdb mcp  (AI agents, read-only)
 ```
 
 Sources only meet at gold. A collector never reads another collector's
@@ -251,6 +258,7 @@ wealthdb init                     # create the gold database
 wealthdb load -a                  # consolidate every source (gold)
 wealthdb holdings global          # the first report
 wealthdb web start                # the dashboards (optional; see web/README.md)
+wealthdb mcp start                # the reports for AI agents (optional; see mcp/README.md)
 ```
 
 Credentials go in `~/.secrets/<source>.env`; each collector's README
@@ -270,11 +278,13 @@ synthetic sources, and the ordinary `load` builds gold from them.
 ```sh
 make demo                         # build the demo into ~/wealthdb-demo
 make demo-web                     # its dashboards on http://127.0.0.1:3100/
+make demo-mcp                     # its reports for an AI agent, on http://127.0.0.1:3400/mcp
 make demo-roll                    # later: add the days since the last build
 ```
 
 The demo keeps to its own directory, its own gold and its own
-dashboard container, so its data never mixes with a real setup's. It
+dashboard and MCP containers, so its data never mixes with a real
+setup's. It
 does share the engine and dashboard images: the demo targets build them
 from the checkout, as `make all` does. [demo/README.md](demo/README.md)
 describes the household and how to query it from the command line.
@@ -298,7 +308,8 @@ describes the household and how to query it from the command line.
   playbook for building a collector with a coding agent.
 - **[collectors/README.md](collectors/README.md)**,
   **[wealthdb/README.md](wealthdb/README.md)**,
-  **[web/README.md](web/README.md)** — usage of each part; the
+  **[web/README.md](web/README.md)**,
+  **[mcp/README.md](mcp/README.md)** — usage of each part; the
   `DESIGN.md` beside each covers its internals.
 
 ## License

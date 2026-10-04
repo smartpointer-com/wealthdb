@@ -126,6 +126,7 @@ wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticke
 wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
 wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants and payers via the configured LLM.
 wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict stores; --forget SIG removes one (RW).
+wealthdb mcp-serve --stdio | --http ADDR (RO) Serve the read-only reports to AI agents over MCP (mcp/DESIGN.md).
 wealthdb version                      (RO)    Print the version: a release tag, or `<last release> nightly <commit>`.
 wealthdb help [<subcommand>]
 ```
@@ -359,13 +360,16 @@ handle is open, and refuses to attach a file that any other handle
 — read-write or read-only — already holds. A single live reader is
 therefore enough to fail a read-write open.
 
-A second open of the same file, read-write *or* read-only, fails
-immediately with DuckDB's conflicting-lock IO error rather than
-blocking or queueing: `gold.Open` surfaces it from `db.Ping()` and
-the dispatcher exits 5 (`ExitOpenFailed`). One read-write handle OR
+An open that meets another process's handle gets DuckDB's
+conflicting-lock IO error from `db.Ping()`; DuckDB itself neither
+blocks nor queues. Every command's open retries that error on a short
+ladder (0, 1, 3 and 5 seconds), then fails and the dispatcher exits 5
+(`ExitOpenFailed`). The wait is for a reader: one holds its handle for
+one report, seconds at most. A writer outlasts the ladder. One read-write handle OR
 several read-only handles, never both — which is why `wealthdb web`
 serves Metabase a snapshot copy instead of the live file
-(web/DESIGN.md §2).
+(web/DESIGN.md §2), while the MCP server opens live gold read-only
+for each call and holds nothing between calls (mcp/DESIGN.md §2).
 
 #### The gold write mutex
 
@@ -763,6 +767,11 @@ Example config file:
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
 | `web.port` | integer | Host loopback port Metabase is published on (127.0.0.1 + [::1] → container 3000). Default 3000. |
+| `mcp` | object | Optional. Enables the MCP server driven by `wealthdb mcp` (host-side). See [mcp/README.md](../../mcp/README.md). |
+| `mcp.enabled` | bool | `true` to allow `wealthdb mcp start` and `wealthdb mcp stdio`. Absent block or `false` = the server is not configured. |
+| `mcp.port` | integer | Host loopback port the server is published on (127.0.0.1 + [::1], same port in the container). Default 3300; must differ from the web port. |
+| `mcp.auth` | string | `token` (default): every HTTP request carries the bearer token. `none`: no token, honoured only beside `mcp.insecure`. |
+| `mcp.insecure` | bool | Acknowledges `mcp.auth: none`. Validation refuses `none` without it. |
 | `silver_sources[]` | array | Registered silver databases. |
 | `silver_sources[].id` | string | User-defined unique identifier. Used in CLI args. Must match `^[A-Za-z0-9_-]+$`. |
 | `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …), or `auto` to auto-detect (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |
@@ -2894,6 +2903,12 @@ docker run --rm \
 The `:ro` flag on the `$XDG_DATA_HOME/wealthdb` mount makes the gold DB file
 unwriteable inside the container; `wealthdb`'s mode detection (§4.10)
 picks this up and refuses (RW) subcommands with a clear message.
+
+**MCP server** (`wealthdb mcp start`, mcp/DESIGN.md §4): the reader
+shape, detached, with both mounts `:ro`, a read-only root file system,
+a tmpfs at `/tmp` for DuckDB's spill, no capabilities, and the bearer
+token as a read-only file. The image is the same; the command is
+`mcp-serve`.
 
 ### 12.3 Build and first-run commands
 

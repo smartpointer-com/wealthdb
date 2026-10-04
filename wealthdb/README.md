@@ -58,8 +58,9 @@ suite's reports: holdings as of any date, time- and money-weighted
 returns, spending, income and the household's cash flow statement. The
 repo-root [README](../README.md) describes what each report answers.
 
-CLI only; the optional Metabase BI server lives in
-[../web/](../web/). Single Docker image; no host-side Go toolchain
+A CLI, and an MCP server over the same reports (`mcp-serve`, run and
+managed by `wealthdb mcp` from [../mcp/](../mcp/)); the optional
+Metabase BI server lives in [../web/](../web/). Single Docker image; no host-side Go toolchain
 required.
 
 ## Subcommands
@@ -86,6 +87,7 @@ Loading, querying and maintaining the gold store:
 | `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
 | `wealthdb categorize [spending\|income]` | Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in `<family>.categorization.model`. A positional selects one family; with none, both run in order. `-n` plans without writing; `--all` re-asks every signature. |
 | `wealthdb categorizations [spending\|income]` | Dump the model-derived verdict stores for inspection, with a `family` column; `--forget SIG` retires a wrong verdict so the next run re-asks it, from both stores unless a family is named. |
+| `wealthdb mcp-serve --stdio\|--http ADDR` | Serve the read-only reports to AI agents over MCP. `wealthdb mcp start\|stop\|status\|restart\|logs\|stdio\|url` runs and manages it in a container; see [../mcp/README.md](../mcp/README.md). |
 | `wealthdb version` | Print the wealthdb version: the release tag alone for a build of a clean release checkout, otherwise `<last release> nightly <commit>` (`-dirty` for uncommitted changes). |
 | `wealthdb help [<subcommand>]` | Help. |
 

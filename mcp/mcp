@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+#
+# mcp — host-side lifecycle for the optional MCP server, which serves
+# the read-only wealthdb reports to AI agents. Reached as `wealthdb mcp
+# <subcommand>`: the wealthdb wrapper delegates the `mcp` verb here,
+# because Docker isn't reachable from inside the engine container. See
+# README.md / DESIGN.md.
+#
+# The server is the engine image itself (`wealthdb:latest`) running
+# `mcp-serve`. It reads LIVE gold read-only, one short handle per call,
+# so there is no snapshot and nothing to refresh after a load. The data
+# root and the config are mounted read-only; the container has a
+# read-only root filesystem and no capabilities. It is published on
+# loopback only (127.0.0.1 + [::1]) and asks for a bearer token.
+#
+# Functions are defined at top level; mcp_main runs only when this
+# file is executed (not sourced), so test_mcp.sh can source it and
+# unit-test the pure helpers.
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
+
+INSECURE_WARNING="INSECURE: authentication is off; any process on this machine can read this household's finances."
+
+# ---- settings ---------------------------------------------------------
+
+# _resolve_knobs sets the operational knobs from env overrides and
+# defaults. Pure (no Docker, no config round-trip); unit-tested. The
+# data root and config resolve exactly as the engine wrapper resolves
+# them, so the same-path mounts land where the config expects.
+_resolve_knobs() {
+    IMAGE="wealthdb:latest"
+    CONTAINER="${WEALTHDB_MCP_CONTAINER:-wealthdb-mcp}"
+    DATA_DIR="${WEALTHDB_MCP_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/mcp}"
+    BIND="${WEALTHDB_MCP_BIND:-both}"   # both | v4 | v6
+    TOKEN_FILE="$DATA_DIR/token"
+    DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
+    CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+    CFG="${WEALTHDB_CONFIG:-$CFG_DIR/wealthdb.cfg}"
+    ROWS="${WEALTHDB_MCP_ROWS:-}"
+    MAX_ROWS="${WEALTHDB_MCP_MAX_ROWS:-}"
+    ALLOW_HOSTS="${WEALTHDB_MCP_ALLOW_HOSTS:-}"
+}
+
+# _load_config reads the resolved `mcp` settings and the gold path via
+# the engine's hidden `mcp-config` subcommand, the one component that
+# parses and validates wealthdb.cfg. WEALTHDB_MCP_AUTH and
+# WEALTHDB_MCP_INSECURE in the environment win over the config.
+_load_config() {
+    _require_docker || return 1
+    local out
+    if [ -n "${WEALTHDB_CONFIG:-}" ]; then
+        out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" mcp-config)" || out=""
+    else
+        out="$("$WEALTHDB" mcp-config)" || out=""
+    fi
+    if [ -z "$out" ]; then
+        echo "mcp: could not read settings via 'wealthdb mcp-config' (is wealthdb.cfg valid?)" >&2
+        return 1
+    fi
+    eval "$out"
+    ENABLED="${WEALTHDB_MCP_ENABLED:-0}"
+    PORT="${WEALTHDB_MCP_PORT:-3300}"
+    GOLD_DB="${WEALTHDB_GOLD_DB:-}"
+    AUTH="${WEALTHDB_MCP_AUTH:-${WEALTHDB_MCP_CONFIG_AUTH:-token}}"
+    INSECURE="${WEALTHDB_MCP_INSECURE:-${WEALTHDB_MCP_CONFIG_INSECURE:-0}}"
+}
+
+_require_docker() {
+    command -v docker >/dev/null 2>&1 || { echo "mcp: docker not found on PATH" >&2; return 1; }
+}
+
+# ---- pure helpers (unit-tested) ---------------------------------------
+
+# _is_true VALUE → success for 1 / true / yes / on (any case).
+_is_true() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# _check_auth validates AUTH and INSECURE. Turning the token off takes
+# two settings, auth none and insecure, so that no single mistyped
+# value can publish the data.
+_check_auth() {
+    case "$AUTH" in
+        token) return 0 ;;
+        none)
+            if _is_true "$INSECURE"; then
+                return 0
+            fi
+            echo "mcp: auth is \"none\", which serves the data to any process on this machine." >&2
+            echo "     It takes effect only beside \"insecure\": true in the mcp block (or WEALTHDB_MCP_INSECURE=1)." >&2
+            return 1 ;;
+        *)  echo "mcp: auth \"$AUTH\" is not a mode (want token | none)" >&2; return 1 ;;
+    esac
+}
+
+# _publish_args PORT BIND → prints `docker run` -p flags (one token
+# per line) for loopback IPv4 and/or IPv6. The server listens on the
+# same port inside the container.
+_publish_args() {
+    local port="$1" bind="$2"
+    case "$bind" in
+        v4)   printf '%s\n' -p "127.0.0.1:${port}:${port}" ;;
+        v6)   printf '%s\n' -p "[::1]:${port}:${port}" ;;
+        both) printf '%s\n' -p "127.0.0.1:${port}:${port}" -p "[::1]:${port}:${port}" ;;
+        *)    echo "mcp: invalid WEALTHDB_MCP_BIND '$bind' (want both|v4|v6)" >&2; return 1 ;;
+    esac
+}
+
+# _base_args populates DOCKER_ARGS with what the detached server and a
+# stdio session share: the user, the same-path read-only mounts and the
+# hardening. The token travels as a file, never an env variable, which
+# `docker inspect` would print.
+_base_args() {
+    DOCKER_ARGS+=(
+        -u "$(id -u):$(id -g)"
+        -e HOME="$HOME"
+        -e XDG_CONFIG_HOME="$CFG_DIR"
+        -e WEALTHDB_DATA_ROOT="$DATA_ROOT"
+        -v "$CFG:$CFG:ro"
+        -v "$DATA_ROOT:$DATA_ROOT:ro"
+        --read-only --tmpfs /tmp
+        --cap-drop ALL --security-opt no-new-privileges
+        --memory 3g
+    )
+}
+
+# _serve_args prints the mcp-serve flags the knobs ask for (one token
+# per line).
+_serve_args() {
+    [ -n "$ROWS" ] && printf '%s\n' --rows "$ROWS"
+    [ -n "$MAX_ROWS" ] && printf '%s\n' --max-rows "$MAX_ROWS"
+    local h
+    for h in $(printf '%s' "$ALLOW_HOSTS" | tr ',' ' '); do
+        printf '%s\n' --allow-host "$h"
+    done
+    return 0
+}
+
+# _docker_run_args populates DOCKER_ARGS for the detached HTTP server
+# from the resolved globals. Pure (no exec); unit-tested.
+_docker_run_args() {
+    DOCKER_ARGS=(run -d --name "$CONTAINER" --restart unless-stopped)
+    _base_args
+    if [ "$AUTH" = token ]; then
+        DOCKER_ARGS+=(-v "$TOKEN_FILE:/run/wealthdb-mcp/token:ro")
+    fi
+    local tok
+    while IFS= read -r tok; do
+        DOCKER_ARGS+=("$tok")
+    done < <(_publish_args "$PORT" "$BIND")
+    # Every interface inside the container, which is what the publish
+    # reaches; the publish itself is loopback only.
+    DOCKER_ARGS+=("$IMAGE" -c "$CFG" mcp-serve --http ":$PORT" --all-interfaces)
+    if [ "$AUTH" = token ]; then
+        DOCKER_ARGS+=(--token-file /run/wealthdb-mcp/token)
+    else
+        DOCKER_ARGS+=(--auth none --insecure)
+    fi
+    while IFS= read -r tok; do
+        DOCKER_ARGS+=("$tok")
+    done < <(_serve_args)
+}
+
+# _stdio_args populates DOCKER_ARGS for one stdio session: -i and never
+# -t (stdin is the client's pipe), no name, no port, no token — the
+# client already runs as the user. Extra arguments (--privacy) pass
+# through to mcp-serve.
+_stdio_args() {
+    DOCKER_ARGS=(run --rm -i)
+    _base_args
+    DOCKER_ARGS+=("$IMAGE" -c "$CFG" mcp-serve --stdio)
+    local tok
+    while IFS= read -r tok; do
+        DOCKER_ARGS+=("$tok")
+    done < <(_serve_args)
+    DOCKER_ARGS+=("$@")
+}
+
+# _ensure_token makes TOKEN_FILE hold the bearer token, mode 600:
+# WEALTHDB_MCP_TOKEN when set, else the token generated on first start
+# and kept across restarts.
+_ensure_token() {
+    mkdir -p "$DATA_DIR"
+    chmod 700 "$DATA_DIR" 2>/dev/null || true
+    if [ -n "${WEALTHDB_MCP_TOKEN:-}" ]; then
+        if [ "${#WEALTHDB_MCP_TOKEN}" -lt 16 ]; then
+            echo "mcp: WEALTHDB_MCP_TOKEN is shorter than 16 characters" >&2
+            return 1
+        fi
+        (umask 077; printf '%s\n' "$WEALTHDB_MCP_TOKEN" > "$TOKEN_FILE")
+    elif [ ! -s "$TOKEN_FILE" ]; then
+        (umask 077; _gen_token > "$TOKEN_FILE")
+        echo "mcp: generated a bearer token in $TOKEN_FILE" >&2
+    fi
+    chmod 600 "$TOKEN_FILE"
+}
+
+# _gen_token prints 32 random bytes as hex.
+_gen_token() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 32
+    else
+        od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+        echo
+    fi
+}
+
+# _image_outdated succeeds when the running container's image is not
+# the current wealthdb:latest — after a rebuild, the server still runs
+# the old binary until it is restarted.
+_image_outdated() {
+    local running latest
+    running="$(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null)" || return 1
+    latest="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" || return 1
+    [ -n "$running" ] && [ -n "$latest" ] && [ "$running" != "$latest" ]
+}
+
+# _base_url prints the server's base URL on the loopback address the
+# publish uses: IPv6 only when BIND=v6.
+_base_url() {
+    if [ "$BIND" = v6 ]; then
+        printf 'http://[::1]:%s\n' "$PORT"
+    else
+        printf 'http://127.0.0.1:%s\n' "$PORT"
+    fi
+}
+
+_is_running() { [ -n "$(docker ps  -q -f "name=^${CONTAINER}\$" -f status=running 2>/dev/null)" ]; }
+_exists()     { [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ]; }
+
+_require_enabled() {
+    if [ "$ENABLED" != 1 ]; then
+        echo "mcp: not enabled. Add an \"mcp\" block to wealthdb.cfg, e.g.:" >&2
+        echo '      "mcp": { "enabled": true, "port": 3300 }' >&2
+        return 1
+    fi
+}
+
+_require_image() {
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        echo "mcp: image $IMAGE not found; run 'wealthdb build' first" >&2
+        return 1
+    fi
+}
+
+# ---- subcommands ------------------------------------------------------
+
+mcp_start() {
+    _load_config || return 1
+    _require_enabled || return 1
+    _check_auth || return 1
+    _require_image || return 1
+    if _is_running; then
+        echo "mcp: already running (container $CONTAINER). Use 'wealthdb mcp restart'." >&2
+        return 1
+    fi
+    if _exists; then docker rm "$CONTAINER" >/dev/null 2>&1 || true; fi
+    if [ "$AUTH" = token ]; then
+        _ensure_token || return 1
+    else
+        echo "mcp: $INSECURE_WARNING" >&2
+    fi
+
+    _docker_run_args
+    if ! docker "${DOCKER_ARGS[@]}" >/dev/null; then
+        if [ "$BIND" = both ]; then
+            echo "mcp: dual-stack publish failed; retrying IPv4-only (set WEALTHDB_MCP_BIND=v4 to silence)." >&2
+            docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+            BIND=v4
+            _docker_run_args
+            docker "${DOCKER_ARGS[@]}" >/dev/null || return 1
+        else
+            return 1
+        fi
+    fi
+    _start_banner
+}
+
+mcp_stop() {
+    _require_docker || return 1
+    if _exists; then
+        docker stop "$CONTAINER" >/dev/null 2>&1 || true
+        docker rm   "$CONTAINER" >/dev/null 2>&1 || true
+        echo "mcp: stopped $CONTAINER (the token is kept in $TOKEN_FILE)"
+    else
+        echo "mcp: no container '$CONTAINER' to stop"
+    fi
+}
+
+mcp_status() {
+    _load_config || return 1
+    if _is_running; then
+        echo "mcp: running   container=$CONTAINER   port=$PORT (bind=$BIND)"
+        echo "     url: $(_base_url)/mcp   privacy: $(_base_url)/mcp/privacy"
+        if _image_outdated; then
+            echo "     image: outdated — $IMAGE was rebuilt; run 'wealthdb mcp restart'"
+        else
+            echo "     image: current"
+        fi
+    elif _exists; then
+        echo "mcp: stopped   (container $CONTAINER exists but is not running)"
+    else
+        echo "mcp: not running   (no container $CONTAINER)"
+    fi
+    if [ "$AUTH" = token ]; then
+        echo "     auth: bearer token in $TOKEN_FILE ('wealthdb mcp url' prints it)"
+    else
+        echo "     auth: none"
+        echo "     $INSECURE_WARNING"
+    fi
+    echo "     live gold: ${GOLD_DB:-<unset>}"
+    [ "$ENABLED" = 1 ] || echo "     note: mcp.enabled is not set in wealthdb.cfg"
+    return 0
+}
+
+mcp_url() {
+    _load_config || return 1
+    local base
+    base="$(_base_url)"
+    echo "URL:          $base/mcp"
+    echo "Privacy URL:  $base/mcp/privacy"
+    if [ "$AUTH" = token ]; then
+        if [ ! -s "$TOKEN_FILE" ]; then
+            echo "mcp: no token yet; 'wealthdb mcp start' generates one" >&2
+            return 1
+        fi
+        local token
+        token="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+        echo "Header:       Authorization: Bearer $token"
+        echo
+        echo "For a client's mcpServers block:"
+        printf '  "wealthdb": { "type": "http", "url": "%s/mcp",\n' "$base"
+        printf '                "headers": { "Authorization": "Bearer %s" } }\n' "$token"
+    else
+        echo "Header:       none ($INSECURE_WARNING)"
+    fi
+}
+
+# mcp_stdio serves one MCP session on stdin/stdout, for a client that
+# starts the server as a process. Nothing but the protocol may reach
+# stdout, so every message here goes to stderr.
+mcp_stdio() {
+    _load_config || return 1
+    _require_enabled || return 1
+    _require_image || return 1
+    _stdio_args "$@"
+    exec docker "${DOCKER_ARGS[@]}"
+}
+
+mcp_logs() { _require_docker || return 1; exec docker logs -f "$CONTAINER"; }
+
+_start_banner() {
+    cat >&2 <<EOF
+mcp: $CONTAINER is up → MCP on $(_base_url)/mcp
+     (redacted: $(_base_url)/mcp/privacy)
+
+  Run 'wealthdb mcp url' for the URL and the Authorization header, ready
+  to paste into a client. For a client that starts its own process, use
+  'wealthdb mcp stdio' as the command instead.
+
+  Calls read live gold read-only; nothing needs refreshing after a load.
+  After rebuilding the image, run 'wealthdb mcp restart'.
+EOF
+    if [ -n "${GOLD_DB:-}" ] && [ ! -f "$GOLD_DB" ]; then
+        echo "  Note: there is no database at the configured path yet; calls say so" >&2
+        echo "  until 'wealthdb init' and 'wealthdb load -a' have run." >&2
+    fi
+    if [ "$AUTH" != token ]; then
+        echo "mcp: $INSECURE_WARNING" >&2
+    fi
+}
+
+mcp_help() {
+    cat <<'EOF'
+wealthdb mcp — the optional MCP server: the read-only reports for AI agents
+
+usage:
+  wealthdb mcp <subcommand>
+
+subcommands:
+  start      run the server, detached (container wealthdb-mcp, image wealthdb:latest)
+  stop       stop and remove the container (the token is kept)
+  status     running state, URL, auth, whether the image is outdated
+  restart    stop, then start (after rebuilding the image)
+  logs       follow the container logs
+  stdio      serve one MCP session on stdin/stdout, for clients that
+             start the server themselves; --privacy redacts
+  url        print the URL and the Authorization header, ready to paste
+  help       this message
+
+Two endpoints: /mcp serves full data, /mcp/privacy redacts amounts,
+account numbers and the names taken off statements. Every call reads the live database read-only, so
+answers are as fresh as the last load. Published on 127.0.0.1 and [::1]
+only. Enable it with an "mcp" block in wealthdb.cfg:
+
+      "mcp": { "enabled": true, "port": 3300 }
+
+HTTP asks for a bearer token, generated on first start (chmod 600).
+Turning it off takes both "auth": "none" and "insecure": true; "none"
+alone is refused, and every start and status warns while it is off.
+
+env overrides: WEALTHDB_CONFIG (non-default wealthdb.cfg path),
+WEALTHDB_MCP_CONTAINER, WEALTHDB_MCP_DATA_DIR, WEALTHDB_MCP_BIND
+(both|v4|v6), WEALTHDB_MCP_TOKEN, WEALTHDB_MCP_AUTH and
+WEALTHDB_MCP_INSECURE (the config fields' env forms), WEALTHDB_MCP_ROWS
+(rows per result, default 100), WEALTHDB_MCP_MAX_ROWS (a ceiling on a
+call's limit), WEALTHDB_MCP_ALLOW_HOSTS (Host names to answer besides
+loopback, comma-separated), WEALTHDB_MCP_ENV_FILE (default
+~/.secrets/wealthdb-mcp.env, read for the variables above).
+EOF
+}
+
+mcp_main() {
+    set -euo pipefail
+    # Optional env file for the token and the knobs. It is a bash
+    # script: syntax-checked, then sourced with every assignment
+    # exported.
+    local envf="${WEALTHDB_MCP_ENV_FILE:-$HOME/.secrets/wealthdb-mcp.env}"
+    if [ -f "$envf" ]; then
+        bash -n "$envf" || { echo "mcp: $envf has a syntax error" >&2; return 1; }
+        set -a
+        # shellcheck source=/dev/null
+        . "$envf"
+        set +a
+    fi
+    _resolve_knobs
+    local cmd="${1:-help}"
+    if [ "$#" -gt 0 ]; then shift; fi
+    case "$cmd" in
+        start)            mcp_start ;;
+        stop)             mcp_stop ;;
+        status)           mcp_status ;;
+        restart)          mcp_stop; mcp_start ;;
+        logs)             mcp_logs ;;
+        stdio)            mcp_stdio "$@" ;;
+        url)              mcp_url ;;
+        help|-h|--help)   mcp_help ;;
+        *) printf 'mcp: unknown subcommand %q\n\n' "$cmd" >&2; mcp_help >&2; return 2 ;;
+    esac
+}
+
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    mcp_main "$@"
+fi

@@ -100,6 +100,11 @@ var commandHelps = []commandHelp{
 	{name: "web", args: "<verb>", hostSide: true, group: "other",
 		short: "manage the optional Metabase dashboards (host-side wrapper)",
 		long:  "Manage the optional Metabase dashboards: start, stop, status, restart, refresh, logs. Served by the host-side `wealthdb` wrapper rather than this binary — see web/README.md."},
+	{name: "mcp", args: "<verb>", hostSide: true, group: "other",
+		short: "manage the optional MCP server that serves the reports to AI agents (host-side wrapper)",
+		long:  "Manage the optional MCP server that serves the read-only reports to AI agents: start, stop, status, restart, logs, stdio, url. Served by the host-side `wealthdb` wrapper rather than this binary — see mcp/README.md."},
+	{name: "mcp-serve", args: "--stdio | --http ADDR", group: "other",
+		short: "the MCP server itself; 'wealthdb mcp' runs and manages it"},
 	{name: "version", group: "other", short: "print the wealthdb version"},
 	{name: "help", args: "[<subcommand>]", group: "other", short: "this listing, or a subcommand's full help"},
 }
@@ -118,12 +123,14 @@ func hostSideCommand(name string) (commandHelp, bool) {
 
 // hiddenSubcommands are registered (so they're callable) but omitted
 // from the usage listing — internal plumbing, not user-facing.
-// `web-config` emits resolved web settings for the host-side
-// `wealthdb web` wrapper; `web-materialize` rewrites the
-// report_returns table before the wrapper snapshots gold.
+// `web-config` and `mcp-config` emit resolved settings for the
+// host-side `wealthdb web` and `wealthdb mcp` wrappers;
+// `web-materialize` rewrites the report_returns table before the
+// wrapper snapshots gold.
 var hiddenSubcommands = map[string]bool{
 	"web-config":      true,
 	"web-materialize": true,
+	"mcp-config":      true,
 }
 
 func cmdHelp(ctx context.Context, g globalFlags, subargs []string, stdin io.Reader, stdout, stderr io.Writer) error {

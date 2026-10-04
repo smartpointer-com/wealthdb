@@ -14,6 +14,7 @@ import re
 
 DEMO_MARKER = ".wealthdb-demo"
 WEB_PORT = 3100
+MCP_PORT = 3400
 
 EQUITY_TRANSFER_COLUMNS = ("silver_source_id", "account", "occurred_at", "direction", "quantity",
                            "cost_basis", "value", "currency", "instrument", "note")
@@ -50,6 +51,7 @@ def render(spec):
         },
         "income": {"rules": spec["config"]["income_rules"]},
         "web": {"enabled": True, "port": WEB_PORT},
+        "mcp": {"enabled": True, "port": MCP_PORT},
     }
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
