@@ -625,7 +625,10 @@ RETIRED_CARD_NAMES = ["net_worth_usd_current", "net_worth_chf_current",
                       # dashboard's. The twin name is NOT retired — it is
                       # the Income dashboard's own, and always was the
                       # name the collision resolved to.
-                      "Income by month (USD)"]
+                      "Income by month (USD)",
+                      # The log axis Metabase draws is a linear axis over
+                      # log values, so its ticks fall between powers of ten.
+                      "Cumulative return (log scale)"]
 
 # Dashboard names retired by renames ("Net Worth" undersold the income /
 # cost flow tiles); archived on provision so a re-run cleans them up.
@@ -642,7 +645,7 @@ DECLARED_SOURCE = "declared"
 # are all percentage/index-only; only the by-source table carries money.
 PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
                         "Return (TWR)", "Return (MWR)", "Annualized return (TWR)",
-                        "Cumulative return (log scale)", "Monthly returns (TWR)",
+                        "Cumulative return (TWR)", "Monthly returns (TWR)",
                         "Quarterly returns (TWR)", "Annual returns (TWR)",
                         # A share of rows, not of money — and it already
                         # runs over the _pct model, so its drill-through
@@ -685,7 +688,7 @@ IN_UNCATEGORIZED_SQL = (
 # The native-SQL returns charts: the Currency / Start-year pickers map onto
 # their {{currency}} / {{start_year}} template variables (the MBQL returns
 # cards get the same pickers on their currency / window_from_year dimensions).
-RETURNS_NATIVE_CARDS = {"Cumulative return (log scale)", "Monthly returns (TWR)",
+RETURNS_NATIVE_CARDS = {"Cumulative return (TWR)", "Monthly returns (TWR)",
                         "Quarterly returns (TWR)", "Annual returns (TWR)"}
 
 # The whole-portfolio scalars — global grain, so the Source picker doesn't
@@ -880,25 +883,26 @@ def returns_period_sql(granularity):
 
 
 def returns_growth_sql():
-    """Cumulative growth index (base 100), per source and the '(all sources)'
-    line, derived from the ENGINE's since-<year> windowed TWRs — NOT by
-    chaining the per-period buckets. Chaining calendar-month/quarter Modified-
-    Dietz returns is unsound here: a flow landing between two sparse snapshots
-    poisons that bucket (a mid-month deposit with no fresh snapshot reads as a
-    huge loss, then a huge gain next period), so a chained index can diverge by
-    hundreds of points from the true TWR for sparse-snapshot sources — a real
-    gainer chained all the way down to a spurious near-total loss. The windowed
-    summaries use the engine's snapshot-aligned chain, so they are correct and
-    — being the very figures the scalars and by-source table show — the chart
-    agrees with them by construction.
+    """Cumulative return since the start of the earliest visible year, per
+    source and the '(all sources)' line, derived from the ENGINE's since-<year>
+    windowed TWRs — NOT by chaining the per-period buckets. Chaining
+    calendar-month/quarter Modified-Dietz returns is unsound here: a flow
+    landing between two sparse snapshots poisons that bucket (a mid-month
+    deposit with no fresh snapshot reads as a huge loss, then a huge gain next
+    period), so a chained index can diverge by hundreds of points from the true
+    TWR for sparse-snapshot sources — a real gainer chained all the way down to
+    a spurious near-total loss. The windowed summaries use the engine's
+    snapshot-aligned chain, so they are correct and — being the very figures
+    the scalars and by-source table show — the chart agrees with them by
+    construction.
 
-    Since window_from_year=Y is the TWR from Jan 1 Y to today, the index at the
-    start of year Y is G(Y) = base / (1 + TWR_since_Y); normalizing the earliest
-    visible year to 100 gives G(Y) = 100 * (1 + TWR_since_Ymin) / (1 + TWR_Y).
-    {{start_year}} sets Ymin (the index rebases to the chosen start); null
-    windows (degenerate inception) drop out, so the line begins where the return
-    is first defined. Annual granularity — one point per year — is the price of
-    correctness here; a finer curve would need per-month windowed summaries."""
+    Since window_from_year=Y is the TWR from Jan 1 Y to today, growth from the
+    start of Ymin to the start of Y is (1 + TWR_since_Ymin) / (1 + TWR_Y), and
+    the cumulative return is that minus 1. {{start_year}} sets Ymin (the line
+    rebases to the chosen start); null windows (degenerate inception) drop out,
+    so the line begins where the return is first defined. Annual granularity —
+    one point per year — is the price of correctness here; a finer curve would
+    need per-month windowed summaries."""
     cf = CURRENCY_FIELD_ID is not None
     ccy_sub = "\n     AND {{currency}}" if cf else ""
     ccy_f = "" if cf else "currency = {{currency}} AND "
@@ -918,19 +922,17 @@ def returns_growth_sql():
         "  SELECT source, yr, twr FROM w\n"
         "   WHERE " + ccy_f + "yr >= {{start_year}} AND twr IS NOT NULL)\n"
         "SELECT source, make_date(yr, 1, 1) AS year,\n"
-        "       100 * first_value(1 + twr) OVER (PARTITION BY source ORDER BY yr)\n"
-        "           / (1 + twr) AS growth_index\n"
+        "       first_value(1 + twr) OVER (PARTITION BY source ORDER BY yr)\n"
+        "           / (1 + twr) - 1 AS cumulative_return\n"
         "  FROM f\n"
         " ORDER BY yr")
 
 
-def _series_viz(time_col, series_col, metric, *, log=False, percent=False):
+def _series_viz(time_col, series_col, metric, *, percent=False):
     """Viz for a native time series split by a category: x = time_col,
     one line per series_col, y = metric. Native queries need the axes named
     explicitly (there is no MBQL breakout for Metabase to infer them from)."""
     viz = {"graph.dimensions": [time_col, series_col], "graph.metrics": [metric]}
-    if log:
-        viz["graph.y_axis.scale"] = "log"
     if percent:
         viz["column_settings"] = {f'["name","{metric}"]': {"number_style": "percent"}}
     return viz
@@ -1780,15 +1782,14 @@ def question_defs(db_id, mid):
         # global grain unioned in as a toggleable '(all sources)' line; the
         # Currency / Start-year pickers map onto their {{currency}} /
         # {{start_year}} variables.
-        "Cumulative return (log scale)": ("line",
-            "Growth of 100, indexed from the chosen start year, per source and "
-            "the '(all sources)' portfolio line — derived from the engine's "
-            "since-<year> returns (so it matches the scalars and the by-source "
-            "table exactly). Annual granularity. Log y-axis so a steady "
-            "compounding rate reads as a straight line and every source is "
-            "comparable regardless of size. Built for the Returns dashboard.",
+        "Cumulative return (TWR)": ("line",
+            "Time-weighted return compounded from the chosen start year, per "
+            "source and the '(all sources)' portfolio line — derived from the "
+            "engine's since-<year> returns (so it matches the scalars and the "
+            "by-source table exactly). Annual granularity. Built for the "
+            "Returns dashboard.",
             _native(db_id, returns_growth_sql(), returns_tags()),
-            _series_viz("year", "source", "growth_index", log=True)),
+            _series_viz("year", "source", "cumulative_return", percent=True)),
         "Monthly returns (TWR)": ("line",
             "Time-weighted return per month, one line per source plus the "
             "'(all sources)' portfolio line. Built for the Returns dashboard "
@@ -1973,14 +1974,12 @@ def base_dashboards():
             "returns", [
             # Scalars rescope to the since-<start year> window; charts split
             # by source with the global grain as a toggleable '(all sources)'
-            # line. The cumulative chart is log-scaled (returns go negative,
-            # so a growth index — always positive — is what a log axis can
-            # show). MWR is a summary figure only (the per-period buckets
+            # line. MWR is a summary figure only (the per-period buckets
             # carry TWR); that is engine behavior the scalars mirror.
             ("Return (TWR)", 0, 0, 8, 3, None),
             ("Return (MWR)", 0, 8, 8, 3, None),
             ("Annualized return (TWR)", 0, 16, 8, 3, None),
-            ("Cumulative return (log scale)", 3, 0, 24, 8, None),
+            ("Cumulative return (TWR)", 3, 0, 24, 8, None),
             ("Monthly returns (TWR)", 11, 0, 8, 6, None),
             ("Quarterly returns (TWR)", 11, 8, 8, 6, None),
             ("Annual returns (TWR)", 11, 16, 8, 6, None),

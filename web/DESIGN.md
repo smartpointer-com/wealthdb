@@ -301,10 +301,9 @@ the MBQL scalars/table) then rescopes the whole figure exactly, so a
 later start makes the null a real number.
 
 The dashboard reads this as: rescopable **scalars** (TWR / MWR /
-annualized) and a **by-source table**; a **cumulative growth-of-100
-chart on a log axis** (returns go negative, so a growth index — always
-positive — is what a log axis can show); and **monthly / quarterly /
-annual** per-period charts. Every chart is split by source with the
+annualized) and a **by-source table**; a **cumulative return chart**
+compounded from the chosen start year, on a linear percent axis; and
+**monthly / quarterly / annual** per-period charts. Every chart is split by source with the
 global grain unioned in as a toggleable `(all sources)` line — the
 pseudo-source that keeps one chart per granularity instead of separate
 global and by-source views. These charts are native SQL (window
