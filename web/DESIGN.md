@@ -97,9 +97,10 @@ the `report_cashflow` model over `web_cashflow` (migration 0084) — which
 backs the Cash Flow dashboard's Section picker rather than any card —
 and `_pct` privacy variants of the models the privacy
 surface reads. On top of the models, provisioning creates pre-defined
-metrics, questions and seven dashboards — **Wealth
-Overview** and **Allocation** carry dashboard-level filters (a time range
-resp. a required as-of day, plus a source picker), **Returns** carries a
+questions and seven dashboards — **Wealth
+Overview** and **Allocation** carry dashboard-level filters (a required
+currency picker, a time range resp. a required as-of day, and a source
+picker), **Returns** carries a
 required currency picker (returns are stored one row set per currency),
 **Spending** carries the time range and source picker plus a required
 currency picker, an account picker and a category multi-select,
@@ -111,7 +112,16 @@ required currency picker, and two grain pickers of its own — a required
 charts and the line list take and the headline figures and the Sankey
 decline — and no account picker at all, the household boundary being
 what defines the pool, **Data Freshness** is deliberately unfiltered — all of them
-MBQL/definition-only, no data baked in.
+definitions only (MBQL or SQL), no data baked in.
+A tile that sums money in the chosen currency is native SQL over a gold
+`web_*` serving view. The views carry the USD/CHF/EUR trio as columns,
+and a dashboard picker selects rows but never a column. So each such
+tile reads a required `{{currency}}` variable, which picks the column
+with a CASE and defaults to USD when the card is opened on its own. The
+Wealth Overview's three headline figures read `web_sources_latest`
+(migration 0113), each source's latest snapshot, so they print what
+`wealthdb holdings sources` prints. A native tile has no "see these
+records" drill-through. That is the price of the picker.
 Each dashboard also gets a **privacy twin** (linked from the dashboard's top
 row): same layout and filters, but every card shows shares (%) instead of
 money. The twins' charts are native SQL over the gold `web_*` serving views
@@ -123,10 +133,9 @@ its normalization denominator in-query with those same filters applied:
 holdings divide by the *selected* sources' total at the selected window's
 end (the net-worth envelope ends at 100, and a subset still totals 100),
 the income/fee flows by their own peak month within the selected window
-(the tallest bar always reads 100). The scalars are MBQL ratios of sums — net
-worth reads a constant 100, positions + cash split it — over `_pct` models
-that pre-scale values to % of the latest global net worth, so a scalar's
-drill-through never exposes absolute amounts.
+(the tallest bar always reads 100). The Wealth Overview twin's scalars are
+ratios of sums over the selected sources' latest snapshots (`web_sources_latest`,
+migration 0113) — net worth reads a constant 100, positions + cash split it.
 The **Spending** twin adds redaction to normalization, the way the Returns
 twin redacts money columns: its shares are of the window's own net spend
 (the breakdowns, merchant and account lists) or of its biggest month (the
@@ -160,14 +169,13 @@ is built over `PRIVACY_INCOME_FILTERS` like every other card there.
 Neither declares a currency variable, a share of rows being the same in
 every currency.
 
-The **Wealth Overview**'s "Investment income by month (USD)" card reads
+The **Wealth Overview**'s "Investment income by month" card reads
 the same income base (migration 0072), so it and the Income dashboard
 agree to the cent. The first word is load-bearing twice: it says what
 the card charts — the four investment types, not the whole base — and it
 keeps the name distinct from the Income dashboard's own "Income by
-month". Privacy twin names are derived by stripping a `(USD)` marker and
-appending `(privacy)`, so two cards whose names differ only by that
-marker would collapse onto one twin, and whichever was defined last
+month". Provisioning matches cards by name, so two dashboards' cards
+of one name would become one card, and whichever was defined last
 would silently replace the other.
 It selects the four investment income *types* rather than five
 transaction kinds, and its old credit-card fence is gone with the

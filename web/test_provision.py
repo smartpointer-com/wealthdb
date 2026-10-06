@@ -76,8 +76,6 @@ def all_cards(db_id, mid):
     """name -> (display, description, dataset_query) for every card
     provisioning defines, in the shape ensure_cards assembles them."""
     cards = {}
-    for name, (display, desc, query) in p.metric_defs(db_id, mid).items():
-        cards[name] = (display, desc, query)
     for name, (display, desc, query, _viz) in p.question_defs(db_id, mid).items():
         cards[name] = (display, desc, query)
     for name, (_t, display, desc, query, _viz) in p.privacy_card_defs(db_id, mid).items():
@@ -396,9 +394,20 @@ check("no picker on the twin is bound to an account column",
            if "display_name" in json.dumps(x.get("values_source_config", {}))
            or "account_external_id" in json.dumps(x.get("values_source_config", {}))],
       json.dumps(TWIN_PARAMS))
-check("other range dashboards keep just the range pair",
-      [x["id"] for x in p.dashboard_parameters(MID, "range", "Wealth Overview")]
-      == [p.TIME_PARAM_ID, p.SOURCE_PARAM_ID])
+for _d in ("Wealth Overview", "Wealth Overview (privacy)"):
+    check(f"'{_d}' carries the currency picker and the range pair",
+          [x["id"] for x in p.dashboard_parameters(MID, "range", _d)]
+          == [p.WEALTH_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID])
+for _d in ("Allocation", "Allocation (privacy)"):
+    check(f"'{_d}' carries the currency picker and the as-of pickers",
+          [x["id"] for x in p.dashboard_parameters(MID, "asof", _d)]
+          == [p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID,
+              p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID])
+_wccy = p.dashboard_parameters(MID, "range", "Wealth Overview")[0]
+check("that currency picker is required, defaults to USD and offers the trio",
+      _wccy["required"] is True and _wccy["default"] == ["USD"]
+      and _wccy["values_source_config"]["values"] == ["USD", "CHF", "EUR"],
+      _wccy)
 
 # ---- the twin never renders a counterparty ----------------------------
 
@@ -457,9 +466,13 @@ check("the card-balances tiles take no category picker (no such dimension)",
       all(p.CATEGORY_PARAM_ID not in [pid for pid, _ in targets[c]]
           for c in ("Card balances over time",
                     "Card balances over time (privacy)")))
-check("the existing privacy charts still map as dimensions",
-      all(t[0] == "dimension"
-          for _pid, t in targets["Net worth over time (privacy)"]))
+check("a privacy chart maps its field filters as dimensions and the "
+      "currency as a variable",
+      sorted(targets["Net worth over time (privacy)"]) == sorted([
+          (p.WEALTH_CURRENCY_PARAM_ID, ["variable", ["template-tag", "currency"]]),
+          (p.TIME_PARAM_ID, ["dimension", ["template-tag", "time_range"]]),
+          (p.SOURCE_PARAM_ID, ["dimension", ["template-tag", "source"]])]),
+      targets["Net worth over time (privacy)"])
 
 # An unsynced column drops its filter rather than emitting a {{tag}} the
 # query never declares.
@@ -632,13 +645,11 @@ check("every account kind the flow charts fence out is one gold can store",
 # transaction with no matching accounts row — and those are flows the chart
 # is supposed to show. The NULL-keeping branch is the whole reason it is not
 # a one-liner, so a future simplification has to fail here.
-_CARD_QUERIES = "\n".join(json.dumps(q) for _d, _desc, q in CARDS.values())
-check("the MBQL flow fence keeps rows with a NULL account_kind",
-      '"is-null"' in _CARD_QUERIES,
-      "no card spells the null branch; a bare != would drop unmatched rows")
-check("the native flow fence keeps rows with a NULL account_kind",
-      "account_kind IS NULL OR account_kind NOT IN" in _CARD_QUERIES,
-      "the native form dropped its null branch")
+for _n in ("Fees & taxes by month", "Fees & taxes by month (privacy)"):
+    check(f"'{_n}' keeps rows with a NULL account_kind",
+          "account_kind IS NULL OR account_kind NOT IN"
+          in (sql_of(CARDS[_n][2]) or ""),
+          "the fence dropped its null branch; a bare NOT IN drops unmatched rows")
 
 # ---- the dashboard PUT payloads ---------------------------------------
 
@@ -723,11 +734,23 @@ if twin:
           all(m["parameter_id"] in {x["id"] for x in body["parameters"]}
               for dc in body["dashcards"] for m in dc["parameter_mappings"]))
 
-overview = [d for d in layouts if d.get("name") == "Wealth Overview"][0]
-check("Wealth Overview is untouched by the spending pickers",
-      all({m["parameter_id"] for m in dc["parameter_mappings"]} ==
-          {p.TIME_PARAM_ID, p.SOURCE_PARAM_ID}
-          for dc in overview["dashcards"] if dc["card_id"] is not None))
+# Every Wealth Overview and Allocation tile, on the base and on the twin,
+# answers every picker its dashboard carries — the currency one above
+# all, since a tile it misses silently keeps showing USD.
+_TOP = {card_ids[c] for c in p.POSITION_FILTERED_CARDS}
+for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
+                                       p.TIME_PARAM_ID, p.SOURCE_PARAM_ID}),
+                  ("Allocation", {p.WEALTH_CURRENCY_PARAM_ID,
+                                  p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID})):
+    for _name in (_d, _d + p.PRIVACY_SUFFIX):
+        _body = [d for d in layouts if d.get("name") == _name][0]
+        _tiles = [dc for dc in _body["dashcards"] if dc["card_id"] is not None]
+        _off = [dc["card_id"] for dc in _tiles
+                if {m["parameter_id"] for m in dc["parameter_mappings"]}
+                != (_want | {p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID}
+                    if dc["card_id"] in _TOP else _want)]
+        check(f"every '{_name}' tile answers every picker the dashboard carries",
+              bool(_tiles) and not _off, _off)
 
 
 # ---- Income dashboards ----------------------------------------------
@@ -1040,7 +1063,7 @@ check("the privacy tile population includes the exempt cards",
       sorted(_privacy_tiles))
 
 # The Wealth Overview's income card now reads the income base.
-_wo = sql_of(CARDS["Investment income by month (USD)"][2]) or ""
+_wo = sql_of(CARDS["Investment income by month"][2]) or ""
 check("the Wealth Overview income card reads web_income",
       "web_income" in _wo, _wo[:120])
 check("...and names the four investment income types",
@@ -1283,6 +1306,51 @@ for _name, _q in list(_cf_sql.items()) + list(_cf_twin_sql.items()):
     _bad = [c for c in ("class_label", "class_node", "group_label", "group_node")
             if f"{c} =" in _q or f"{c} IN" in _q]
     check(f"'{_name}' keys its predicates on ids, not labels", not _bad, _bad)
+
+section("the Wealth Overview and Allocation read the chosen currency")
+
+# A tile that hard-codes one reporting currency keeps showing it whatever
+# the picker says, plausibly and without an error. So every money tile on
+# these four dashboards is native, reads {{currency}}, and names no
+# _usd / _chf / _eur column outside the CASE the variable drives.
+_CCY_CASE = re.compile(r"CASE \{\{currency\}\} WHEN 'CHF' THEN .*? END", re.S)
+_WEALTH_DASHES = ("Wealth Overview", "Allocation")
+for _d in _WEALTH_DASHES:
+    for _name in (_d, _d + p.PRIVACY_SUFFIX):
+        for _c, *_ in DEFS[_name][3]:
+            _q = CARDS[_c][2]
+            _sql = sql_of(_q)
+            check(f"'{_c}' is native", _sql is not None)
+            if _sql is None:
+                continue
+            check(f"'{_c}' declares the currency variable",
+                  _q["native"]["template-tags"].get("currency") == p.CURRENCY_TAG)
+            check("...and reads it", "{{currency}}" in _sql, _sql[:200])
+            _rest = _CCY_CASE.sub("", _sql)
+            _fixed = re.findall(r"\b\w+_(?:usd|chf|eur)\b", _rest)
+            check("...and fixes no reporting currency outside the CASE",
+                  not _fixed, _fixed)
+            check(f"'{_c}' carries no currency marker in its name",
+                  not re.search(r"\((USD|CHF|EUR)\)", _c))
+
+# The headline figures stay on the latest snapshot, the figure
+# `wealthdb holdings sources` prints, with the time filter on it.
+for _c in ("Net worth", "Positions value", "Cash balance",
+           "Net worth (privacy)", "Positions value (privacy)",
+           "Cash balance (privacy)"):
+    _q = CARDS[_c][2]
+    check(f"'{_c}' reads each source's latest snapshot",
+          "FROM web_sources_latest" in (sql_of(_q) or "")
+          and _q["native"]["template-tags"]["time_range"]["dimension"][1]
+          == p.FIELD_IDS[("web_sources_latest", "snapshot_at")])
+check("web_sources_latest is one of the views provisioning requires",
+      "web_sources_latest" in p.web_views_wanted(), p.web_views_wanted())
+
+# ensure_cards archives every retired name it finds AFTER saving the live
+# cards, so a name on both lists would be saved and then archived — a
+# dashboard tile pointing at the archive.
+_retired_live = sorted(set(p.RETIRED_CARD_NAMES) & set(CARDS))
+check("no retired card name is still defined", not _retired_live, _retired_live)
 
 section("a percent-styled column is a fraction, not a percentage")
 

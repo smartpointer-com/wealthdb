@@ -341,6 +341,8 @@ var webViews = []struct{ view, col, src string }{
 		"SELECT occurred_at FROM report_spending_transactions_multi(0, 9223372036854775807)"},
 	{"web_card_balances_history", "as_of_day",
 		"SELECT as_of_day FROM report_card_balances_history_multi()"},
+	{"web_sources_latest", "snapshot_at",
+		"SELECT snapshot_at FROM report_sources_multi(9223372036854775807)"},
 }
 
 // TestWebViewsRenderEpochsInUTC pins what every serving view promises a

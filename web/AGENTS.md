@@ -89,8 +89,8 @@ connection details in `provision.py`, or the writable spill mount at
 ## 5. Provisioning is API-based and idempotent
 
 `web/provision.py` skips the setup wizard by creating the admin, adding
-the gold DB, and creating the pre-defined report models, metrics,
-questions and dashboards over the OSS API. Keep it idempotent (safe on
+the gold DB, and creating the pre-defined report models, questions
+and dashboards over the OSS API. Keep it idempotent (safe on
 every start — it skips the admin and the DB, and updates any card or
 dashboard that already exists by name in place). Do **not** switch to
 Metabase's config-file provisioning — it's Pro/EE-only and a silent

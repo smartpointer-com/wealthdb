@@ -308,10 +308,10 @@ web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
   The gold DuckDB database is pre-added as a read-only snapshot, with
   report models mirroring the global / portfolios / accounts /
   positions / transactions / returns commands, plus pre-defined
-  metrics and the Wealth Overview / Allocation / Returns / Data
-  Freshness dashboards, each with a privacy twin that hides absolute
-  values (all in the 'wealthdb (pre-defined)' collection; duplicate
-  before customizing).
+  questions and the Wealth Overview / Allocation / Returns / Spending
+  / Income / Cash Flow / Data Freshness dashboards, each with a
+  privacy twin that hides absolute values (all in the 'wealthdb
+  (pre-defined)' collection; duplicate before customizing).
   Run 'wealthdb web refresh' after each 'wealthdb load' to update.
 EOF
 }
