@@ -2656,16 +2656,9 @@ def validate(conn):
         log.warning("validation: no portfolios in silver — "
                     "run.json/account_dimensions was empty in every dump?")
     else:
-        seen_kinds = {r[1] for r in portfolio_rows}
         for ext_id, kind, n in portfolio_rows[:10]:
             log.info("validation: portfolio %s (kind=%s) → %d accounts",
                      ext_id, kind, n)
-        if "529" not in seen_kinds:
-            log.info("validation: no '529' portfolio derived from "
-                     "this dump (no Education group present)")
-        if "trust_managed" not in seen_kinds:
-            log.info("validation: no 'trust_managed' portfolio derived "
-                     "from this dump (no Authorized group present)")
 
 
 if __name__ == "__main__":

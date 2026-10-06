@@ -70,7 +70,6 @@ bronze subdirectory holds documents that arrive out-of-band.
   login.
 - **Trade execution, money movement, account configuration.** See
   [AGENTS.md](AGENTS.md) §1 — the contract is read-only.
-
 - **Akoya / FDX / Plaid / SnapTrade.** B2B-only.
 - **Prospectuses / fund supplements / disclosures.** Out of
   document-center scope (AGENTS.md §1).
