@@ -288,7 +288,8 @@ _provision() {
     fi
     echo "web: provisioning Metabase (admin + gold database + report models + dashboards)…" >&2
     if python3 "$HERE/provision.py" --base "http://127.0.0.1:$PORT" \
-         --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold; then
+         --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold \
+         --default-currency "${WEALTHDB_DEFAULT_CURRENCY:-USD}"; then
         PROV_LOGIN="log in as $email (password $pwhint)"
     else
         PROV_LOGIN="auto-provision incomplete — finish setup in the browser"

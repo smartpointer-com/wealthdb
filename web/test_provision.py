@@ -147,7 +147,7 @@ PCT_SQL = MODELS["report_spending_pct"][0]
 check("the model reads the web_spending serving view",
       "FROM web_spending s" in SPEND_SQL)
 check("one row per reporting currency (a currency picker filters rows)",
-      "(VALUES ('USD'), ('CHF'), ('EUR')) AS c(currency)" in SPEND_SQL and
+      p._ccy_values() in SPEND_SQL and
       "AS value" in SPEND_SQL)
 check("the money model keeps the merchant column",
       "merchant_name" in SPEND_SQL)
@@ -242,8 +242,7 @@ check("a ring promising a total in the hole says whose total it is",
 for _name in ("Card balances over time", "Card balances over time (privacy)"):
     _sql = sql_of(CARDS[_name][2]) or ""
     check(f"'{_name}' states what is owed as a positive figure",
-          "-balance_chf" in _sql and "-balance_eur" in _sql
-          and "-balance_usd" in _sql, _sql)
+          all(f"-balance_{c}" in _sql for c in p._ccy_lower()), _sql)
 check("the money card-balances chart is split by the account label",
       "account_label" in (sql_of(CARDS["Card balances over time"][2]) or ""))
 
@@ -345,8 +344,8 @@ check("currency picker is required and defaults to USD",
       PARAMS["Currency"]["required"] is True and
       PARAMS["Currency"]["default"] == ["USD"] and
       PARAMS["Currency"]["id"] == p.SPEND_CURRENCY_PARAM_ID)
-check("currency offers the reporting trio",
-      PARAMS["Currency"]["values_source_config"]["values"] == ["USD", "CHF", "EUR"])
+check("currency offers every reporting currency",
+      PARAMS["Currency"]["values_source_config"]["values"] == list(p.REPORTING_CURRENCIES))
 check("the account picker draws display_name values",
       PARAMS["Account"]["values_source_config"]["value_field"][1] == "display_name")
 # The spending model renders the taxonomy in words and keeps the values
@@ -404,9 +403,10 @@ for _d in ("Allocation", "Allocation (privacy)"):
           == [p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID,
               p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID])
 _wccy = p.dashboard_parameters(MID, "range", "Wealth Overview")[0]
-check("that currency picker is required, defaults to USD and offers the trio",
+check("that currency picker is required, defaults to USD and offers every "
+      "reporting currency",
       _wccy["required"] is True and _wccy["default"] == ["USD"]
-      and _wccy["values_source_config"]["values"] == ["USD", "CHF", "EUR"],
+      and _wccy["values_source_config"]["values"] == list(p.REPORTING_CURRENCIES),
       _wccy)
 
 # ---- the twin never renders a counterparty ----------------------------
@@ -497,8 +497,9 @@ class FakeAPI:
     probes, and records every call so the test can assert what did NOT
     happen (a sync must not be attempted for a stale snapshot)."""
 
-    def __init__(self, views, tables):
+    def __init__(self, views, tables, version=None):
         self.views, self.tables, self.calls = views, tables, []
+        self.version = p.MIN_GOLD_SCHEMA if version is None else version
 
     def __call__(self, base, path, method="GET", data=None, session=None,
                  timeout=30):
@@ -508,6 +509,8 @@ class FakeAPI:
         if path == "/api/dataset":
             if self.views is None:                      # probe unanswerable
                 return 500, {}
+            if "schema_meta" in data["native"]["query"]:
+                return 202, {"data": {"rows": [[self.version]]}}
             return 202, {"data": {"rows": [[v] for v in self.views]}}
         return 200, {}
 
@@ -592,6 +595,23 @@ try:
           bool([c for c in api.calls if "sync_schema" in c[1]]),
           str(api.calls))
 
+    # A snapshot older than the cards' columns carries every view by name,
+    # so the view probe passes it; only the schema version tells it apart.
+    # Provisioning onto it would rewrite every money card to read columns
+    # the snapshot lacks.
+    api = p.req = FakeAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]),
+                          version=p.MIN_GOLD_SCHEMA - 1)
+    with quiet():
+        old_schema = p.ensure_synced("b", "s", 1, tries=1, delay=0) is None
+    check("a snapshot older than the cards' schema aborts the run", old_schema)
+    check("...before reading the metadata or attempting a sync",
+          [c for c in api.calls if c[1] == "/api/dataset"] == api.calls, str(api.calls))
+    p.req = FakeAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
+    p.req.version = "unreadable"
+    with quiet():
+        unknown = p.ensure_synced("b", "s", 1, tries=1, delay=0) is None
+    check("a schema version the probe cannot read aborts too", unknown)
+
     # The invariant that abort protects: a metadata read that fails says
     # nothing about the schema, and must never be coerced to an empty table
     # list — that would resolve no field ids at all.
@@ -650,6 +670,13 @@ for _n in ("Fees & taxes by month", "Fees & taxes by month (privacy)"):
           "account_kind IS NULL OR account_kind NOT IN"
           in (sql_of(CARDS[_n][2]) or ""),
           "the fence dropped its null branch; a bare NOT IN drops unmatched rows")
+
+# The guard's version is a migration that exists, and the newest one the
+# cards read: the one that gave every serving view its GBP columns.
+_MIG_FILES = sorted(f for f in os.listdir(GOLD_MIGRATIONS) if f.endswith(".sql"))
+check("the cards' minimum gold schema is a migration on disk",
+      any(f.startswith(f"{p.MIN_GOLD_SCHEMA:04d}_") for f in _MIG_FILES),
+      p.MIN_GOLD_SCHEMA)
 
 # ---- the dashboard PUT payloads ---------------------------------------
 
@@ -1077,12 +1104,12 @@ MERCH = CARDS["Top 50 merchants"][2]["query"]
 AGGS = MERCH.get("aggregation", [])
 check("it sums one column per reporting currency",
       [a[2].get("display-name") for a in AGGS if a[0] == "aggregation-options"]
-      == ["USD", "CHF", "EUR"])
+      == list(p.REPORTING_CURRENCIES))
 check("each column carries its own currency predicate, so no row filter is needed",
       all(a[1][0] == "sum-where"
           and a[1][2] == ["=", ["field", "currency", {"base-type": "type/Text"}], ccy]
-          for a, ccy in zip(AGGS, ("USD", "CHF", "EUR"), strict=True)))
-check("the ranking is by the USD column (aggregation 0)",
+          for a, ccy in zip(AGGS, p.REPORTING_CURRENCIES, strict=True)))
+check("the ranking is by the default currency's column (USD, aggregation 0)",
       MERCH.get("order-by") == [["desc", ["aggregation", 0]]]
       and AGGS[0][2]["display-name"] == "USD")
 check("it no longer needs the standalone-currency caveat",
@@ -1094,7 +1121,7 @@ check("the Currency picker is not wired to it — a row filter would empty "
 section("every spending tile reads one currency")
 # The long-format model is right only under a row filter on `currency`,
 # which the dashboard supplies and nothing else does — so a tile over it
-# summed all three currencies whenever it was opened on its own. Every
+# summed every currency whenever it was opened on its own. Every
 # money spending tile now settles that for itself: natively through the
 # {{currency}} variable the picker substitutes (and which defaults to
 # USD), or, on the merchant ranking, by carrying each currency as its own
@@ -1113,7 +1140,7 @@ for _c, *_ in DEFS["Spending"][3]:
     check(f"'{_c}' carries a currency column per reporting currency",
           _c in p.SPEND_ALL_CURRENCY_CARDS
           and [a[2].get("display-name")
-               for a in _q["query"]["aggregation"]] == ["USD", "CHF", "EUR"])
+               for a in _q["query"]["aggregation"]] == list(p.REPORTING_CURRENCIES))
 
 # ---- the Cash Flow dashboard ------------------------------------------
 
@@ -1261,8 +1288,8 @@ for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
 # A picker whose values are known must OFFER them. Metabase derives the
 # widget from `values_query_type`, and a parameter that declares a value
 # source but not that key renders as a free-text box: the reader has to
-# know that the currencies are spelled USD/CHF/EUR and the investing
-# grains `whole`/`class`, and a typo silently filters everything away.
+# know how the currencies are spelled and that the investing
+# grains are `whole`/`class`, and a typo silently filters everything away.
 _LISTED = {"Currency", "Investing"}
 _seen_listed = 0
 for _dash, _def in p.dashboard_defs().items():
@@ -1312,8 +1339,8 @@ section("the Wealth Overview and Allocation read the chosen currency")
 # A tile that hard-codes one reporting currency keeps showing it whatever
 # the picker says, plausibly and without an error. So every money tile on
 # these four dashboards is native, reads {{currency}}, and names no
-# _usd / _chf / _eur column outside the CASE the variable drives.
-_CCY_CASE = re.compile(r"CASE \{\{currency\}\} WHEN 'CHF' THEN .*? END", re.S)
+# reporting-currency column outside the CASE the variable drives.
+_CCY_CASE = re.compile(r"CASE \{\{currency\}\}(?: WHEN '[A-Z]{3}' THEN -?\w+)+ END")
 _WEALTH_DASHES = ("Wealth Overview", "Allocation")
 for _d in _WEALTH_DASHES:
     for _name in (_d, _d + p.PRIVACY_SUFFIX):
@@ -1324,14 +1351,14 @@ for _d in _WEALTH_DASHES:
             if _sql is None:
                 continue
             check(f"'{_c}' declares the currency variable",
-                  _q["native"]["template-tags"].get("currency") == p.CURRENCY_TAG)
+                  _q["native"]["template-tags"].get("currency") == p.currency_tag())
             check("...and reads it", "{{currency}}" in _sql, _sql[:200])
             _rest = _CCY_CASE.sub("", _sql)
-            _fixed = re.findall(r"\b\w+_(?:usd|chf|eur)\b", _rest)
+            _fixed = re.findall(r"\b\w+_(?:" + "|".join(p._ccy_lower()) + r")\b", _rest)
             check("...and fixes no reporting currency outside the CASE",
                   not _fixed, _fixed)
             check(f"'{_c}' carries no currency marker in its name",
-                  not re.search(r"\((USD|CHF|EUR)\)", _c))
+                  not re.search(r"\((?:" + "|".join(p.REPORTING_CURRENCIES) + r")\)", _c))
 
 # The headline figures stay on the latest snapshot, the figure
 # `wealthdb holdings sources` prints, with the time filter on it.
@@ -1351,6 +1378,79 @@ check("web_sources_latest is one of the views provisioning requires",
 # dashboard tile pointing at the archive.
 _retired_live = sorted(set(p.RETIRED_CARD_NAMES) & set(CARDS))
 check("no retired card name is still defined", not _retired_live, _retired_live)
+
+section("the reporting currencies")
+
+# The currency list is one contract in three places: the value columns
+# gold's `_multi` macros and serving views carry, the partitions the
+# returns materializer writes, and every picker, CASE and unpivot here.
+# A currency missing from one of them renders blank or not at all, so
+# the three are read off disk and compared.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_go = open(os.path.join(_REPO, "wealthdb", "internal", "gold",
+                        "returns_materialize.go"), encoding="utf-8").read()
+_go_ccys = re.search(r"var materializeCurrencies = \[\]string\{([^}]*)\}", _go)
+check("the returns materializer writes exactly the reporting currencies",
+      _go_ccys is not None and
+      re.findall(r'"([A-Z]{3})"', _go_ccys.group(1)) == list(p.REPORTING_CURRENCIES),
+      _go_ccys.group(1) if _go_ccys else "materializeCurrencies not found")
+
+
+def _latest_definition(name):
+    """The text of the last migration statement that (re)defines `name`."""
+    found = re.findall(rf"CREATE OR REPLACE (?:VIEW|MACRO) {name}\b.*?;\n",
+                       MIGRATION_SQL, re.S)
+    return found[-1] if found else ""
+
+
+_missing = {v: [c for c in p.REPORTING_CURRENCIES
+                if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
+            for v in p.web_views_wanted()}
+check("every serving view carries a value column per reporting currency",
+      not any(_missing.values()), {v: m for v, m in _missing.items() if m})
+_fxv = _latest_definition("fx_reporting_value")
+check("the conversion helper names every reporting currency",
+      all(f"'{c}'" in _fxv for c in p.REPORTING_CURRENCIES), _fxv[:200])
+
+# A currency the CASE does not name must render blank, not as another
+# currency's figures: an arm per currency, and no ELSE to fall into.
+_case = p._ccy_case("value")
+check("the currency CASE has an arm per reporting currency and no ELSE",
+      all(f"WHEN '{c}' THEN value_{c.lower()}" in _case for c in p.REPORTING_CURRENCIES)
+      and "ELSE" not in _case, _case)
+check("the long models unpivot every reporting currency",
+      all(f"WHEN '{c}' THEN s.value_{c.lower()}" in SPEND_SQL for c in p.REPORTING_CURRENCIES)
+      and "ELSE" not in SPEND_SQL.split("AS value")[0].rsplit("CASE", 1)[-1], SPEND_SQL[-400:])
+
+# The configured default currency is what every dashboard opens on.
+check("a reporting currency is taken as the default as configured",
+      p.default_currency("gbp") == "GBP")
+with quiet():
+    _fallback = p.default_currency("JPY")
+check("any other currency falls back to USD", _fallback == "USD")
+_saved = p.DEFAULT_CURRENCY
+p.DEFAULT_CURRENCY = "GBP"
+try:
+    _params = [x for d, df in p.dashboard_defs().items()
+               for x in p.dashboard_parameters(MID, df[1], d) if x["slug"] == "currency"]
+    check("with a GBP default, every Currency picker opens on GBP",
+          bool(_params) and all(x["default"] == ["GBP"] for x in _params),
+          [x["default"] for x in _params])
+    _gbp_cards = all_cards(1, MID)
+    _tags = [q["native"]["template-tags"]["currency"]
+             for _d, _desc, q in _gbp_cards.values()
+             if q.get("type") == "native" and "currency" in q["native"]["template-tags"]]
+    check("...and every native card's currency variable defaults to it",
+          bool(_tags) and all(t["default"] in ("GBP", ["GBP"]) for t in _tags),
+          sorted({str(t["default"]) for t in _tags}))
+    _m = _gbp_cards["Top 50 merchants"][2]["query"]
+    check("...and the merchant ranking orders by the GBP column",
+          _m["order-by"] == [["desc", ["aggregation", p.REPORTING_CURRENCIES.index("GBP")]]])
+    check("...and the standalone notes name it",
+          "runs in GBP" in _gbp_cards["Net worth"][1])
+finally:
+    p.DEFAULT_CURRENCY = _saved
+    p.privacy_card_defs(1, MID)     # rebuild the picker registry at the default
 
 section("a percent-styled column is a fraction, not a percentage")
 

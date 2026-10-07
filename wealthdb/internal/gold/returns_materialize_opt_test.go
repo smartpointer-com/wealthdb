@@ -16,7 +16,7 @@ import (
 // produces must be bit-identical to the one loadReturnsDataset(ccy) builds from
 // the per-currency macros — same accounts, value series, snapshot days, flows,
 // derived flags and globalMax. If they ever diverge, the materialized table
-// would silently stop matching the CLI for CHF/EUR.
+// would silently stop matching the CLI outside USD.
 func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedMaterializeFixture(t, db, ctx)

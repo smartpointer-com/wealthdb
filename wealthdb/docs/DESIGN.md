@@ -762,7 +762,7 @@ Example config file:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. `~` and `$HOME` expanded. |
-| `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb holdings positions` (and future net-worth commands) when `--currency` is omitted. Overridable per invocation. |
+| `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb holdings positions` (and future net-worth commands) when `--currency` is omitted. Overridable per invocation. When it is a reporting currency (USD, CHF, EUR or GBP), the web dashboards open in it too. |
 | `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. `~` / `$HOME` / `${VAR}` expanded; a missing file is a no-op. See §13.10. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
@@ -2308,10 +2308,10 @@ What follows for readers of these macros:
 ### 10.8 Multi-currency reports (Metabase)
 
 The Metabase models need a value column **per reporting currency** (USD, CHF,
-EUR) so the currency is picked by picking a column — Metabase native
+EUR, GBP) so the currency is picked by picking a column — Metabase native
 *models* don't expose template-tag parameters to questions built on them, so a
 "target currency" widget wouldn't reach the charts. Calling
-`report_x(MAX, 'USD' | 'CHF' | 'EUR')` three times and joining would re-run the
+`report_x(MAX, '<ccy>')` once per currency and joining would re-run the
 whole pipeline per currency: only the out-currency conversion varies; the scan,
 cash dedup, and **base-currency** conversion are currency-agnostic. Migration
 `0024_multi_currency_reports.sql` factors that shared work out so it runs once.
@@ -2334,15 +2334,26 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   unaffected — verified by a byte-for-byte before/after diff).
 - **`report_x_multi` macros.** `report_{global,sources,accounts,portfolios,positions}_multi(p_asof)`,
   `report_transactions_multi(p_from, p_to)`, and the five `report_*_history_multi()`
-  emit one value set per currency — `{positions_value,cash_balance,total_value}_{usd,chf,eur}`
+  emit one value set per currency — `{positions_value,cash_balance,total_value}_{usd,chf,eur,gbp}`
   plus the base trio. Each `_<ccy>` column equals `report_x(MAX, '<ccy>')` for
   that currency by construction (same base, identical 5-leg COALESCE). They are
   Metabase-only, so they emit **DECIMAL** money directly (no CLI VARCHAR-trim
   round-trip); the `web/provision.py` wrapper then only casts epoch columns to
-  TIMESTAMP. Per-currency conversion shares pivot legs (`ccy→{CHF,USD,EUR}` plus
-  the `CHF→{USD,EUR}` / `USD→{CHF,EUR}` crosses) rather than N independent
-  blocks. The reporting set is USD/CHF/EUR, fixed in the macros; change it in a
-  new migration.
+  TIMESTAMP.
+- **One conversion helper** (migration 0114). Every `_multi` macro converts
+  through the same three objects:
+  - `fx_reporting_legs`: each currency's rate to each reporting currency;
+  - `fx_reporting_bridges`: the CHF and USD rates to each reporting currency;
+  - `fx_reporting_value(amt, ccy, target, legs, bridges)`: one value.
+
+  A macro joins each view once and calls the scalar macro per currency. The
+  order is the single-currency macros' own: identity, direct, through CHF,
+  through USD. Each view lies on a grid of every day one of its rates is quoted,
+  so one ASOF lookup finds the rate the separate lookups did, and the products
+  keep their order, so the values are the same to the bit. The reporting set
+  lives in the two views, the scalar macro and each macro's column list.
+  Adding a currency is a new migration that re-issues them, plus the returns
+  materializer's list and `web/provision.py`'s `REPORTING_CURRENCIES`.
 - **`account_kind` on the transaction macros.** `report_transactions` and
   `report_transactions_multi` carry the owning account's `account_kind`
   (migration 0039), so a consumer can fence a kind out of a chart — the web's
@@ -2545,7 +2556,7 @@ out. A cash gift or family support stays in as `gift` (migration `0047`),
 likewise its own primary: spending with no merchant behind it, placed by a
 config rule or a pin. Migration `0042` adds
 three reports over it, each with the `_multi` sibling §10.8 describes
-(single-currency VARCHAR money for the CLI, DECIMAL USD/CHF/EUR for the web):
+(single-currency VARCHAR money for the CLI, DECIMAL in every reporting currency for the web):
 
 | macro | grain |
 |---|---|
@@ -2622,10 +2633,10 @@ migration `0049`):
   picker and both category levels for the breakdowns, NULL rendered as
   `(uncategorized)` here.
 - **`web_card_balances_history`** — a card account's owed balance per UTC day,
-  carried forward, in the three reporting currencies
+  carried forward, in the reporting currencies
   (`report_card_balances_history_multi()`). Its grain is finer than the
   account-history macros': one row per (source, account, **currency**), carrying
-  the native balance alongside the converted trio, which is what the card cards
+  the native balance alongside the converted values, which is what the card cards
   chart. It was also the first macro to ASOF-join each (source, account,
   currency) onto the day spine independently — migration `0043`, because the
   account-history macros then gated each day on one active snapshot per source

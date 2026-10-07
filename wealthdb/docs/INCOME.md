@@ -770,7 +770,7 @@ one number answers for both.
   multi-currency sibling for all three of its reports; income has two.
   Nothing reads either summary `_multi` today, so the gap is recorded
   rather than filled — an unread macro is a shape to keep true for
-  nothing. A Metabase card that needs the summary in three currencies
+  nothing. A Metabase card that needs the summary in every reporting currency
   is what would close it.
 - ~~**Whether a transfer override can assert a cross-currency pair.**~~
   Answered: it can. The partition by native currency belongs to the

@@ -527,14 +527,14 @@ func TestIncomeTypesMultiMirrorsTheSpendingPair(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
 
-	// The same 16 columns the spending pair publishes, in the same
+	// The same 20 columns the spending pair publishes, in the same
 	// order, with income's nouns.
 	assertMacroProjects(t, db, ctx, "report_income_types_multi(0, 5000, 'total', 'detailed')",
 		"period_start", "type", "type_label", "txn_count",
-		"income_usd", "income_chf", "income_eur",
-		"reversals_usd", "reversals_chf", "reversals_eur",
-		"net_income_usd", "net_income_chf", "net_income_eur",
-		"share_usd", "share_chf", "share_eur")
+		"income_usd", "income_chf", "income_eur", "income_gbp",
+		"reversals_usd", "reversals_chf", "reversals_eur", "reversals_gbp",
+		"net_income_usd", "net_income_chf", "net_income_eur", "net_income_gbp",
+		"share_usd", "share_chf", "share_eur", "share_gbp")
 
 	// Money is DECIMAL, not VARCHAR: a string cannot be summed, ordered
 	// numerically or divided, which is why the shares were impossible
@@ -555,9 +555,9 @@ func TestIncomeTypesMultiMirrorsTheSpendingPair(t *testing.T) {
 		types[col] = typ
 	}
 	for _, col := range []string{
-		"income_usd", "income_chf", "income_eur",
-		"reversals_usd", "reversals_chf", "reversals_eur",
-		"net_income_usd", "net_income_chf", "net_income_eur",
+		"income_usd", "income_chf", "income_eur", "income_gbp",
+		"reversals_usd", "reversals_chf", "reversals_eur", "reversals_gbp",
+		"net_income_usd", "net_income_chf", "net_income_eur", "net_income_gbp",
 	} {
 		if !strings.HasPrefix(types[col], "DECIMAL") {
 			t.Errorf("%s is %s, want DECIMAL", col, types[col])

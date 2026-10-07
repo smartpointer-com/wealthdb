@@ -11,10 +11,28 @@ import (
 )
 
 // materializeCurrencies is the output-currency set report_returns carries —
-// the same trio the `_multi` report macros emit, loaded in one pass. A fourth
-// currency is a deliberate schema decision (every partition triples the table),
-// not a config knob.
-var materializeCurrencies = []string{"USD", "CHF", "EUR"}
+// the reporting currencies the `_multi` report macros emit (migration 0114),
+// loaded in one pass. Another currency is a schema decision rather than a
+// config knob: the macros must emit its columns, and every currency adds a
+// full set of partitions to the table.
+var materializeCurrencies = []string{"USD", "CHF", "EUR", "GBP"}
+
+// MaterializedCurrencies returns the currencies report_returns carries, in
+// materialization order.
+func MaterializedCurrencies() []string {
+	return append([]string(nil), materializeCurrencies...)
+}
+
+// multiColumns is `CAST(<prefix>_<ccy> AS VARCHAR)` for each materialized
+// currency, in materializeCurrencies order: the `_multi` value columns a
+// loader scans.
+func multiColumns(prefix string) string {
+	cols := make([]string, len(materializeCurrencies))
+	for i, ccy := range materializeCurrencies {
+		cols[i] = fmt.Sprintf("CAST(%s_%s AS VARCHAR)", prefix, strings.ToLower(ccy))
+	}
+	return strings.Join(cols, ", ")
+}
 
 // materializeGrains and materializePeriods span the full RunReturns matrix;
 // together with materializeCurrencies each combination is one table partition.
@@ -39,12 +57,12 @@ type MaterializeParams struct {
 }
 
 // MaterializeReturns rewrites the report_returns table. It writes the full
-// returns matrix — 4 grains × 4 periods × 3 currencies, each partition the
+// returns matrix — 4 grains × 4 periods × 4 currencies, each partition the
 // verbatim output of one CLI-default RunReturns (method both, netting on,
 // inception full, annualize auto, since-inception window, window_from_year=0)
 // — plus, for each grain × currency × year in the data's span, a since-that-
 // year total summary (window_from_year=Y) for the dashboard's start-year
-// rescoping. The three currencies are loaded in a single pass over the `_multi`
+// rescoping. The currencies are loaded in a single pass over the `_multi`
 // report macros, and each currency's dataset drives every (grain, period) and
 // windowed computation without re-querying — the loaded data depends only on
 // the currency, never the grain, period or window. Rows are written in one
@@ -66,7 +84,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 		rows                         []ReturnRow
 	}
 	var parts []partition
-	// Base matrix: the 48 (grain, period, currency) partitions, since inception
+	// Base matrix: the 64 (grain, period, currency) partitions, since inception
 	// (window_from_year = 0).
 	for _, ccy := range materializeCurrencies {
 		ds := datasets[ccy]
@@ -224,10 +242,11 @@ func datasetYearRange(datasets map[string]*returnsDataset, toEpoch int64) (int, 
 	return minYear, maxYear
 }
 
-// loadReturnsDatasetsMulti loads all three currencies' datasets in a single
-// pass over each `_multi` macro: one scan of report_accounts_history_multi for
-// the daily value spines and one of report_transactions_multi for the flows,
-// versus three scans each if loaded per currency. Currency-independent inputs
+// loadReturnsDatasetsMulti loads every materialized currency's dataset in a
+// single pass over each `_multi` macro: one scan of
+// report_accounts_history_multi for the daily value spines and one of
+// report_transactions_multi for the flows, versus one scan per currency of
+// each. Currency-independent inputs
 // (snapshot days, source kinds, portfolio names, fx) are read once and shared.
 // The per-currency result is bit-identical to loadReturnsDataset(ccy).
 func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov map[string]ReturnsPolicyOverride, tm *TransferMatching) (map[string]*returnsDataset, error) {
@@ -245,36 +264,37 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 		byCcy[ccy] = map[string]*accountData{}
 	}
 
-	// The daily value spine in USD/CHF/EUR at once. The row set is currency-
-	// independent (shared spine); only the value columns and their NULL-ness
-	// differ per currency, so appendSeries' skip-if-NULL reproduces each
-	// single-currency series exactly.
+	// The daily value spine in every currency at once. The row set is
+	// currency-independent (shared spine); only the value columns and their
+	// NULL-ness differ per currency, so appendSeries' skip-if-NULL reproduces
+	// each single-currency series exactly.
 	rows, err := db.QueryContext(ctx,
 		`SELECT as_of_day, silver_source_id, account_external_id, account_kind,
-		        display_name, base_currency, portfolio_external_id,
-		        CAST(total_value_usd AS VARCHAR), CAST(total_value_chf AS VARCHAR),
-		        CAST(total_value_eur AS VARCHAR)
+		        display_name, base_currency, portfolio_external_id, `+multiColumns("total_value")+`
 		   FROM report_accounts_history_multi()
 		  ORDER BY silver_source_id, account_external_id, as_of_day`)
 	if err != nil {
 		return nil, fmt.Errorf("MaterializeReturns history: %w", err)
 	}
+	tots := make([]sql.NullString, len(materializeCurrencies))
 	for rows.Next() {
 		var (
-			asOf                   int64
-			src, acct, kind        string
-			label, base, pf        sql.NullString
-			totUSD, totCHF, totEUR sql.NullString
+			asOf            int64
+			src, acct, kind string
+			label, base, pf sql.NullString
 		)
-		if err := rows.Scan(&asOf, &src, &acct, &kind, &label, &base, &pf,
-			&totUSD, &totCHF, &totEUR); err != nil {
+		dest := []any{&asOf, &src, &acct, &kind, &label, &base, &pf}
+		for i := range tots {
+			dest = append(dest, &tots[i])
+		}
+		if err := rows.Scan(dest...); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("MaterializeReturns history scan: %w", err)
 		}
 		day := asOf / 86400
-		appendSeries(byCcy["USD"], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, totUSD)
-		appendSeries(byCcy["CHF"], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, totCHF)
-		appendSeries(byCcy["EUR"], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, totEUR)
+		for i, ccy := range materializeCurrencies {
+			appendSeries(byCcy[ccy], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, tots[i])
+		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -284,8 +304,8 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 		return nil, err
 	}
 
-	// Snapshot days are currency-independent: one scan, distributed to all
-	// three maps.
+	// Snapshot days are currency-independent: one scan, distributed to every
+	// currency's map.
 	maps := make([]map[string]*accountData, 0, len(materializeCurrencies))
 	for _, ccy := range materializeCurrencies {
 		maps = append(maps, byCcy[ccy])
@@ -294,7 +314,7 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 		return nil, err
 	}
 
-	// Flows in USD/CHF/EUR at once, distributed per currency exactly as
+	// Flows in every currency at once, distributed per currency exactly as
 	// attachFlows would for each.
 	txns, err := loadTransactionsMulti(ctx, db)
 	if err != nil {
@@ -310,9 +330,9 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 		}
 	}
 	for _, t := range txns {
-		collect("USD", attachOneFlow(byCcy["USD"], fx, "USD", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valUSD, t.returnsInternal), t)
-		collect("CHF", attachOneFlow(byCcy["CHF"], fx, "CHF", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valCHF, t.returnsInternal), t)
-		collect("EUR", attachOneFlow(byCcy["EUR"], fx, "EUR", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valEUR, t.returnsInternal), t)
+		for i, ccy := range materializeCurrencies {
+			collect(ccy, attachOneFlow(byCcy[ccy], fx, ccy, t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.vals[i], t.returnsInternal), t)
+		}
 	}
 	for _, ccy := range materializeCurrencies {
 		matchCrossTransfers(cands[ccy], tm, byCcy[ccy])
@@ -327,29 +347,28 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 	return out, nil
 }
 
-// txnMultiRow is one transaction with its net amount converted to USD/CHF/EUR
-// in a single pass (report_transactions_multi), for the multi-currency flow
-// loader. Only the fields attachOneFlow and the transfer matcher read are
-// carried.
+// txnMultiRow is one transaction with its net amount converted to every
+// materialized currency in a single pass (report_transactions_multi), for the
+// multi-currency flow loader. Only the fields attachOneFlow and the transfer
+// matcher read are carried.
 type txnMultiRow struct {
-	src, acct, txID, ccy   string
-	kind                   canonical.TxKind
-	occurredAt             int64
-	valUSD, valCHF, valEUR *string
-	netAmt                 *string // native-currency net amount (transfer matching)
+	src, acct, txID, ccy string
+	kind                 canonical.TxKind
+	occurredAt           int64
+	vals                 []*string // in materializeCurrencies order
+	netAmt               *string   // native-currency net amount (transfer matching)
 	// returnsInternal: the adapter's conduit verdict, as in flowTxnRow.
 	returnsInternal bool
 }
 
 // loadTransactionsMulti loads every transaction once with its net amount in
-// USD/CHF/EUR, ordered like report_transactions so per-currency flow append
-// order matches the single-currency attachFlows.
+// every materialized currency, ordered like report_transactions so
+// per-currency flow append order matches the single-currency attachFlows.
 func loadTransactionsMulti(ctx context.Context, db *sql.DB) ([]txnMultiRow, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
-		        r.currency, r.transaction_external_id,
-		        CAST(r.value_usd AS VARCHAR), CAST(r.value_chf AS VARCHAR),
-		        CAST(r.value_eur AS VARCHAR), CAST(r.net_amount AS VARCHAR),
+		        r.currency, r.transaction_external_id, `+multiColumns("r.value")+`,
+		        CAST(r.net_amount AS VARCHAR),
 		        COALESCE(t.payload ->> 'returns_flow' = 'internal', FALSE) AS returns_internal
 		   FROM report_transactions_multi(?, ?) r
 		   LEFT JOIN transactions t
@@ -363,18 +382,23 @@ func loadTransactionsMulti(ctx context.Context, db *sql.DB) ([]txnMultiRow, erro
 	var out []txnMultiRow
 	for rows.Next() {
 		var (
-			r                        txnMultiRow
-			kind                     string
-			vUSD, vCHF, vEUR, netAmt sql.NullString
+			r      txnMultiRow
+			kind   string
+			netAmt sql.NullString
 		)
-		if err := rows.Scan(&r.src, &r.acct, &r.occurredAt, &kind, &r.ccy, &r.txID,
-			&vUSD, &vCHF, &vEUR, &netAmt, &r.returnsInternal); err != nil {
+		vals := make([]sql.NullString, len(materializeCurrencies))
+		dest := []any{&r.src, &r.acct, &r.occurredAt, &kind, &r.ccy, &r.txID}
+		for i := range vals {
+			dest = append(dest, &vals[i])
+		}
+		dest = append(dest, &netAmt, &r.returnsInternal)
+		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("MaterializeReturns transactions scan: %w", err)
 		}
 		r.kind = canonical.TxKind(kind)
-		r.valUSD = nullStringToPtr(vUSD)
-		r.valCHF = nullStringToPtr(vCHF)
-		r.valEUR = nullStringToPtr(vEUR)
+		for _, v := range vals {
+			r.vals = append(r.vals, nullStringToPtr(v))
+		}
 		r.netAmt = nullStringToPtr(netAmt)
 		out = append(out, r)
 	}

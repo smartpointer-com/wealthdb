@@ -22,7 +22,7 @@ func TestWebConfigEmitsShellEnv(t *testing.T) {
 	t.Parallel()
 	cfg := webTestCfg(t, `{
 		"gold_db": "/Users/Shared/x/wealthdb.db",
-		"default_currency": "USD",
+		"default_currency": "GBP",
 		"silver_sources": [],
 		"web": {"enabled": true, "port": 4444}
 	}`)
@@ -36,6 +36,7 @@ func TestWebConfigEmitsShellEnv(t *testing.T) {
 		"WEALTHDB_WEB_ENABLED=1",
 		"WEALTHDB_WEB_PORT=4444",
 		`WEALTHDB_GOLD_DB='/Users/Shared/x/wealthdb.db'`,
+		`WEALTHDB_DEFAULT_CURRENCY='GBP'`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)

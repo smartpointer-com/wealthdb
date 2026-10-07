@@ -217,8 +217,8 @@ func TestReturnsCardEmitsNoRowsAndLeavesAggregatesIdentical(t *testing.T) {
 
 // TestMaterializeReturnsCardInvisible re-runs the same proof through the
 // multi-currency loader: MaterializeReturns shares appendSeries / attachOneFlow
-// with RunReturns, and its whole report_returns table (48 partitions plus the
-// windowed summaries, in USD/CHF/EUR) must be identical with and without a card.
+// with RunReturns, and its whole report_returns table (every partition plus the
+// windowed summaries, in every currency) must be identical with and without a card.
 func TestMaterializeReturnsCardInvisible(t *testing.T) {
 	const dump = `SELECT * FROM report_returns ORDER BY ALL`
 

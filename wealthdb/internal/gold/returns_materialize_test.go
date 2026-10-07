@@ -14,8 +14,9 @@ import (
 
 // seedMaterializeFixture builds a two-source synthetic gold DB (a
 // flow-complete brokerage in a portfolio plus a portfolio-less account on the
-// pre-seeded 'test-src') with USD/CHF and USD/EUR rates, so every grain has
-// entities and all three output currencies resolve. Returns the window end.
+// pre-seeded 'test-src') with USD/CHF, USD/EUR and USD/GBP rates, so every
+// grain has entities and every output currency resolves. Returns the window
+// end.
 func seedMaterializeFixture(t *testing.T, db *sql.DB, ctx context.Context) int64 {
 	t.Helper()
 	seedReturnsSource(t, db, ctx, "src-a", "schwab")
@@ -29,6 +30,7 @@ func seedMaterializeFixture(t *testing.T, db *sql.DB, ctx context.Context) int64
 
 	seedFX(t, db, dy(2024, time.January, 1), "USD", "CHF", "1.10")
 	seedFX(t, db, dy(2024, time.January, 1), "USD", "EUR", "1.05")
+	seedFX(t, db, dy(2024, time.January, 1), "USD", "GBP", "0.80")
 
 	return time.Date(2024, time.July, 2, 23, 59, 59, 0, time.UTC).Unix()
 }

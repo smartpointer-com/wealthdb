@@ -39,10 +39,9 @@ func cmdWebConfig(_ context.Context, g globalFlags, _ []string, _ io.Reader, std
 	fmt.Fprintf(stdout, "WEALTHDB_WEB_ENABLED=%s\n", enabled)
 	fmt.Fprintf(stdout, "WEALTHDB_WEB_PORT=%d\n", port)
 	fmt.Fprintf(stdout, "WEALTHDB_GOLD_DB=%s\n", shellSingleQuote(cfg.GoldDB))
-	// Passed to provision.py's --default-currency, which accepts it
-	// for compatibility only and does not use it — the report models
-	// expose per-currency (_<CCY>) column sets rather than binding a
-	// single currency.
+	// Passed to provision.py's --default-currency: the currency every
+	// dashboard's Currency picker opens on, when it is one of the
+	// reporting currencies.
 	fmt.Fprintf(stdout, "WEALTHDB_DEFAULT_CURRENCY=%s\n", shellSingleQuote(cfg.DefaultCurrency))
 	return nil
 }

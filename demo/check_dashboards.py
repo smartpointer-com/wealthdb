@@ -76,10 +76,11 @@ def mint_key(base, email, password):
     return auth, key["id"], {"X-API-Key": key["unmasked_key"]}
 
 
-def combos(params, sources, first_year, today):
+def combos(params, sources, currencies, first_year, today):
     """(label, parameter values) for one dashboard: the defaults, each
     window with no source, full history with each source, then each other
-    picker varied alone around the defaults."""
+    picker varied alone around the defaults. `currencies` is what the
+    dashboard's own Currency picker offers."""
     by_slug = {p["slug"]: p for p in params}
     base = {}
     for p in params:
@@ -99,7 +100,7 @@ def combos(params, sources, first_year, today):
                 v[time["id"]] = full
             out.append((f"source {s}", v))
     variations = {
-        "currency": [["USD"], ["CHF"], ["EUR"]],
+        "currency": [[c] for c in currencies],
         "investing": [["whole"], ["class"]],
         "section": [["operating_in"], ["operating_out"], ["investing"], ["financing"], ["vehicles"]],
         "start_year": [[y] for y in range(first_year, today.year + 1)],
@@ -145,16 +146,20 @@ def main(argv=None):
         for d in dashboards:
             _, dash = call(a.base, f"/api/dashboard/{d['id']}", headers=auth)
             ptypes = {p["id"]: p["type"] for p in dash.get("parameters", [])}
-            source = next((p for p in dash.get("parameters", []) if p["slug"] == "source"), None)
-            sources = []
-            if source:
-                _, vals = call(a.base, f"/api/dashboard/{d['id']}/params/{source['id']}/values", headers=auth)
-                sources = sorted(v[0] for v in (vals or {}).get("values", []))
+            def offered(slug, dash=dash, d=d):
+                """The values the dashboard's `slug` picker offers."""
+                p = next((p for p in dash.get("parameters", []) if p["slug"] == slug), None)
+                if not p:
+                    return []
+                _, vals = call(a.base, f"/api/dashboard/{d['id']}/params/{p['id']}/values", headers=auth)
+                return sorted(v[0] for v in (vals or {}).get("values", []))
+
+            sources, currencies = offered("source"), offered("currency")
             jobs = []
             for dc in dash.get("dashcards", []):
                 if not dc.get("card_id"):
                     continue
-                for label, values in combos(dash.get("parameters", []), sources, a.first_year, today):
+                for label, values in combos(dash.get("parameters", []), sources, currencies, a.first_year, today):
                     jobs.append((dc, label, values))
             def run(job, dash=dash, ptypes=ptypes):
                 return job, run_card(a.base, auth, dash, job[0], ptypes, job[2])

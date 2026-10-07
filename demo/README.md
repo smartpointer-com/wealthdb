@@ -154,7 +154,7 @@ A findings build is a one-off picture: it cannot be appended to.
   engine image in a scratch root under the cache dir.
 - `demo/check_dashboards.py` runs every card of every dashboard of a
   running demo Metabase through its API. It covers each time window,
-  each source, three currencies (USD, CHF, EUR), and the investing
+  each source, every currency the Currency picker offers, and the investing
   grain, section, start year and as-of pickers. It uses a temporary API
   key, so no filter values stay behind on the admin account. Its
   defaults are the demo's port and `~/wealthdb-demo`. Another root

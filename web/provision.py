@@ -51,7 +51,10 @@ def main():
     ap.add_argument("--password", required=True)
     ap.add_argument("--gold-path", required=True)
     ap.add_argument("--db-name", default="gold")
+    ap.add_argument("--default-currency", default="USD")
     a = ap.parse_args()
+    global DEFAULT_CURRENCY
+    DEFAULT_CURRENCY = default_currency(a.default_currency)
 
     if not wait_health(a.base):
         print("provision: Metabase did not become healthy in time", file=sys.stderr)
@@ -116,6 +119,58 @@ def main():
 # report_transactions spans all of time (filter in Metabase).
 MAX_BIGINT = 9223372036854775807
 
+# The reporting currencies: the value column sets the `_multi` report
+# macros and the web_* serving views carry (gold migration 0114), and the
+# rows report_returns carries. Every currency list, CASE and picker below
+# is generated from this one tuple.
+REPORTING_CURRENCIES = ("USD", "CHF", "EUR", "GBP")
+
+# The currency every picker and every native card's {{currency}}
+# variable defaults to: wealthdb.cfg's default_currency when it is a
+# reporting currency (main() sets it), USD otherwise.
+DEFAULT_CURRENCY = "USD"
+
+
+def default_currency(configured):
+    """The picker default for configured default currency `configured`."""
+    ccy = (configured or "").strip().upper()
+    if ccy in REPORTING_CURRENCIES:
+        return ccy
+    print(f"provision: default_currency {ccy or '(unset)'} is not a reporting "
+          f"currency ({_ccy_words()}); the dashboards default to USD",
+          file=sys.stderr)
+    return "USD"
+
+
+def _ccy_words():
+    """The reporting currencies as prose: 'USD, CHF, EUR and GBP'."""
+    return ", ".join(REPORTING_CURRENCIES[:-1]) + " and " + REPORTING_CURRENCIES[-1]
+
+
+def _ccy_slash():
+    """The reporting currencies as a compact list: 'USD/CHF/EUR/GBP'."""
+    return "/".join(REPORTING_CURRENCIES)
+
+
+def _ccy_lower():
+    return tuple(c.lower() for c in REPORTING_CURRENCIES)
+
+
+def _ccy_values():
+    """The reporting currencies as an inline table, one row each."""
+    return "(VALUES " + ", ".join(f"('{c}')" for c in REPORTING_CURRENCIES) + ") AS c(currency)"
+
+
+def _ccy_pick(alias, col, pct=False):
+    """`<alias>.<col>_<ccy>` for the row's own reporting currency `c.currency`
+    — the unpivot of a wide value set into the long model shape. pct=True
+    divides each leg by that currency's latest net worth."""
+    legs = "".join(
+        f" WHEN '{c}' THEN {alias}.{col}_{c.lower()}" + (f" / nw.nw_{c.lower()}" if pct else "")
+        for c in REPORTING_CURRENCIES)
+    return f"CASE c.currency{legs} END"
+
+
 # Collection the pre-defined models live in (kept apart from anything the
 # user builds by hand).
 COLLECTION_NAME = "wealthdb (pre-defined)"
@@ -140,7 +195,7 @@ def report_models():
     that rendering, the cash fold-in and the
     '(uncategorized)' labelling themselves. The macros already emit DECIMAL
     money/quantity columns and one value column set per reporting currency
-    (USD/CHF/EUR), so no value casting is needed here. The `_latest` reports
+    (REPORTING_CURRENCIES), so no value casting is needed here. The `_latest` reports
     are as of each source's latest snapshot; the `_history` reports carry value
     forward per day; the `_pct` family are the privacy variants for standalone
     privacy browsing (values as % of the latest global net worth,
@@ -167,8 +222,9 @@ def report_models():
     # percentages, where NULL just blanks the values.
     NW_LATEST = ("(SELECT " + ", ".join(
         f"CASE WHEN total_value_{c} > 0 THEN total_value_{c} END AS nw_{c}"
-        for c in ("usd", "chf", "eur")) +
+        for c in _ccy_lower()) +
         f" FROM report_global_multi({MAX_BIGINT})) AS nw")
+    NW_COLS = [f"nw_{c}" for c in _ccy_lower()]
 
     def pct_wrap(from_expr, value_cols, ts_cols=(), exclude=()):
         """Privacy wrapper: every monetary column becomes % of the latest
@@ -178,7 +234,7 @@ def report_models():
         repl = [f"epoch_ms({c} * 1000) AS {c}" for c in ts_cols]
         repl += [f"{c} / nw.nw_{c.rsplit('_', 1)[1]} * 100 AS {c}"
                  for c in value_cols]
-        excl = ", ".join(["nw_usd", "nw_chf", "nw_eur", *exclude])
+        excl = ", ".join([*NW_COLS, *exclude])
         return (f"SELECT * EXCLUDE ({excl}) REPLACE ({', '.join(repl)}) "
                 f"FROM {from_expr}, {NW_LATEST}")
 
@@ -191,8 +247,8 @@ def report_models():
         if not pct:
             return f"SELECT * FROM {view}"
         vals = ", ".join(f"value_{c} / nw.nw_{c} * 100 AS value_{c}"
-                         for c in ("usd", "chf", "eur"))
-        return (f"SELECT * EXCLUDE (nw_usd, nw_chf, nw_eur) "
+                         for c in _ccy_lower())
+        return (f"SELECT * EXCLUDE ({', '.join(NW_COLS)}) "
                 f"REPLACE ({vals}) FROM {view}, {NW_LATEST}")
 
     def spending(pct=False):
@@ -226,7 +282,7 @@ def report_models():
         <kind>)`, and the view keeps the bare name and the id beside
         it.
 
-        The wide value trio is unpivoted to one row per (spending line,
+        The wide value set is unpivoted to one row per (spending line,
         reporting currency) — the long shape report_returns already has,
         and the only shape an MBQL card can switch currency in: a dashboard
         picker selects rows, so it can land on a `currency` DIMENSION but
@@ -251,15 +307,11 @@ def report_models():
                 "       s.spend_primary AS spend_primary_id,\n"
                 "       s.spend_detailed AS spend_detailed_id,\n"
                 "       s.provider_spend_label AS provider_category, c.currency")
-        legs = ["CASE c.currency"] + [
-            f" WHEN '{c.upper()}' THEN s.value_{c}" + (f" / nw.nw_{c}" if pct else "")
-            for c in ("chf", "eur")] + [
-            " ELSE s.value_usd" + (" / nw.nw_usd" if pct else ""), " END"]
-        val = "".join(legs) + (" * 100" if pct else "")
+        val = _ccy_pick("s", "value", pct) + (" * 100" if pct else "")
         return (f"SELECT {cols},\n"
                 f"       {val} AS value\n"
                 "  FROM web_spending s,\n"
-                "       (VALUES ('USD'), ('CHF'), ('EUR')) AS c(currency)"
+                f"       {_ccy_values()}"
                 + (f",\n       {NW_LATEST}" if pct else ""))
 
     def income():
@@ -269,7 +321,7 @@ def report_models():
         same reasoning behind every choice: the type columns carry the
         DISPLAY LABEL, with the vendored values beside them as `*_id`;
         `display_name` carries the account LABEL; and the wide value
-        trio is unpivoted to one row per (line, reporting currency),
+        set is unpivoted to one row per (line, reporting currency),
         which is the only shape an MBQL card can switch currency in.
 
         There is no `pct=True` variant. Every income tile is native
@@ -290,20 +342,17 @@ def report_models():
                 "       i.income_primary AS income_primary_id,\n"
                 "       i.income_detailed AS income_detailed_id,\n"
                 "       i.provider_income_label AS provider_category, c.currency")
-        legs = ["CASE c.currency"] + [
-            f" WHEN '{c.upper()}' THEN i.value_{c}" for c in ("chf", "eur")] + [
-            " ELSE i.value_usd", " END"]
         return (f"SELECT {cols},\n"
-                f"       {''.join(legs)} AS value\n"
+                f"       {_ccy_pick('i', 'value')} AS value\n"
                 "  FROM web_income i,\n"
-                "       (VALUES ('USD'), ('CHF'), ('EUR')) AS c(currency)")
+                f"       {_ccy_values()}")
 
     def cashflow():
         """The cashflow model over gold's web_cashflow view.
 
         The income model's shape with the statement's vocabulary: the
         node columns carry the DISPLAY names, the keys sit beside them
-        as `*_id`, and the wide value trio is unpivoted to one row per
+        as `*_id`, and the wide value set is unpivoted to one row per
         (line, reporting currency).
 
         Like the income model it exists for a dashboard PICKER — the
@@ -322,17 +371,14 @@ def report_models():
                 "       f.class AS class_id,\n"
                 "       f.grp   AS group_id,\n"
                 "       f.name, c.currency")
-        legs = ["CASE c.currency"] + [
-            f" WHEN '{c.upper()}' THEN f.value_{c}" for c in ("chf", "eur")] + [
-            " ELSE f.value_usd", " END"]
         return (f"SELECT {cols},\n"
-                f"       {''.join(legs)} AS value\n"
+                f"       {_ccy_pick('f', 'value')} AS value\n"
                 "  FROM web_cashflow f,\n"
-                "       (VALUES ('USD'), ('CHF'), ('EUR')) AS c(currency)")
+                f"       {_ccy_values()}")
 
     V3 = [f"{p}_{c}" for p in ("positions_value", "cash_balance", "total_value")
-          for c in ("usd", "chf", "eur")]
-    V1 = ["value_usd", "value_chf", "value_eur"]
+          for c in _ccy_lower()]
+    V1 = [f"value_{c}" for c in _ccy_lower()]
     BASE3 = ("positions_value_base", "cash_balance_base", "total_value_base")
 
     L = f"({MAX_BIGINT})"   # _multi _latest macro arg (as-of = latest snapshot)
@@ -340,30 +386,30 @@ def report_models():
         "report_global_latest": (
             wrap(f"report_global_multi{L}", ["min_snapshot_at", "max_snapshot_at"]),
             "Whole-portfolio rollup as of the latest snapshot: cash, positions and "
-            "total value in USD, CHF and EUR (one column set per currency), with the "
+            f"total value in {_ccy_words()} (one column set per currency), with the "
             "min/max snapshot date span. Mirrors `wealthdb holdings global`."),
         "report_sources_latest": (
             wrap(f"report_sources_multi{L}", ["snapshot_at"]),
             "One row per silver source as of the latest snapshot: positions + cash "
-            "totalled in the source's base currency and in USD/CHF/EUR, with rolled-up "
+            f"totalled in the source's base currency and in {_ccy_slash()}, with rolled-up "
             "tax wrapper / management style. Mirrors `wealthdb holdings sources`."),
         "report_portfolios_latest": (
             wrap(f"report_portfolios_multi{L}", ["snapshot_at"]),
             "One row per portfolio as of the latest snapshot: positions + cash totalled "
-            "in the portfolio's base currency and in USD/CHF/EUR, with rolled-up tax "
+            f"in the portfolio's base currency and in {_ccy_slash()}, with rolled-up tax "
             "wrapper / management style. Mirrors `wealthdb holdings portfolios`."),
         "report_accounts_latest": (
             wrap(f"report_accounts_multi{L}", ["snapshot_at"]),
             "One row per account as of the latest snapshot: positions + cash totalled "
-            "in the account's base currency and in USD/CHF/EUR, with kind, tax wrapper "
+            f"in the account's base currency and in {_ccy_slash()}, with kind, tax wrapper "
             "and management style. Mirrors `wealthdb holdings accounts`."),
         "report_positions_latest": (
             wrap(f"report_positions_multi{L}", ["snapshot_at"]),
             "One row per held position as of the latest snapshot, with market value in "
-            "USD, CHF and EUR. Mirrors `wealthdb holdings positions`."),
+            f"{_ccy_words()}. Mirrors `wealthdb holdings positions`."),
         "report_transactions": (
             wrap(f"report_transactions_multi(0, {MAX_BIGINT})", ["occurred_at"]),
-            "Every transaction over all time, with net amount in USD, CHF and EUR at the "
+            f"Every transaction over all time, with net amount in {_ccy_words()} at the "
             "transaction date. Mirrors `wealthdb transactions` (filter the date range in "
             "Metabase)."),
         # History reports: one row per entity per UTC day, from the first snapshot to
@@ -378,24 +424,25 @@ def report_models():
         "report_global_history": (
             wrap("report_global_history_multi()", ["as_of_day"]),
             "Whole-portfolio value for every day from the first snapshot to today "
-            "(carried forward between snapshots), in USD, CHF and EUR. The net-worth-"
-            "over-time series — chart total_value_usd (or _chf / _eur) against as_of_day."),
+            f"(carried forward between snapshots), in {_ccy_words()}. The net-worth-"
+            "over-time series — chart total_value_usd (or another currency's "
+            "column) against as_of_day."),
         "report_sources_history": (
             wrap("report_sources_history_multi()", ["as_of_day"]),
             "Per-silver-source value for every day (carried forward), in the source's "
-            "base currency and in USD/CHF/EUR. Filter to a source and chart against "
+            f"base currency and in {_ccy_slash()}. Filter to a source and chart against "
             "as_of_day."),
         "report_accounts_history": (
             wrap("report_accounts_history_multi()", ["as_of_day"]),
             "Per-account value for every day (carried forward), in the account's base "
-            "currency and in USD/CHF/EUR. Filter to an account and chart against as_of_day."),
+            f"currency and in {_ccy_slash()}. Filter to an account and chart against as_of_day."),
         "report_portfolios_history": (
             wrap("report_portfolios_history_multi()", ["as_of_day"]),
             "Per-portfolio value for every day (carried forward), in the portfolio's base "
-            "currency and in USD/CHF/EUR. Filter to a portfolio and chart against as_of_day."),
+            f"currency and in {_ccy_slash()}. Filter to a portfolio and chart against as_of_day."),
         "report_positions_history": (
             wrap("report_positions_history_multi()", ["as_of_day", "snapshot_at"]),
-            "Per-position value for every day (carried forward), in USD, CHF and EUR. "
+            f"Per-position value for every day (carried forward), in {_ccy_words()}. "
             "Large (days x held positions) — filter to a position / account / date range "
             "before charting."),
         # Returns models wrap the materialized report_returns TABLE (written
@@ -467,7 +514,7 @@ def report_models():
         "report_asset_classes_history": (
             taxonomy_history("web_asset_classes_history"),
             "One row per asset class (incl. a 'cash' class) per source per "
-            "day, carried forward, in USD/CHF/EUR. Sums to net worth by "
+            f"day, carried forward, in {_ccy_slash()}. Sums to net worth by "
             "construction; liability classes are negative."),
         "report_asset_classes_history_pct": (
             taxonomy_history("web_asset_classes_history", pct=True),
@@ -479,7 +526,7 @@ def report_models():
         "report_vehicles_history": (
             taxonomy_history("web_vehicles_history"),
             "One row per vehicle (wrapper, incl. a 'demand_deposit' vehicle "
-            "for cash) per source per day, carried forward, in USD/CHF/EUR. "
+            f"for cash) per source per day, carried forward, in {_ccy_slash()}. "
             "Sums to net worth by construction."),
         "report_vehicles_history_pct": (
             taxonomy_history("web_vehicles_history", pct=True),
@@ -498,7 +545,7 @@ def report_models():
             "and a bill on a card not itemised names the issuer it "
             "was paid to), resolved category (both "
             "levels, '(uncategorized)' when unknown) and account — with its "
-            "net amount in USD, CHF and EUR carried as "
+            f"net amount in {_ccy_words()} carried as "
             "one row per currency (pick one with a `currency` filter). "
             "Spend is negative and a refund positive. Mirrors "
             "`wealthdb spending transactions`."),
@@ -509,8 +556,8 @@ def report_models():
             "staking reward, otherwise the line's own normalized "
             "counterparty; blank on an own-account move or a gift, which "
             "have none), resolved type (both levels, '(uncategorized)' "
-            "when unknown) and account — with its net amount in USD, CHF "
-            "and EUR carried as one row per currency (pick one with a "
+            "when unknown) and account — with its net amount in "
+            f"{_ccy_words()} carried as one row per currency (pick one with a "
             "`currency` filter). A receipt is positive and a reversal "
             "negative. Mirrors `wealthdb income transactions`."),
         "report_cashflow": (
@@ -518,7 +565,7 @@ def report_models():
             "Every cashflow line over all time — the node it landed on "
             "(section, class and group, with the keys beside the display "
             "names), the name the line carries where it has one, and the "
-            "kind it was booked as — with its amount in USD, CHF and EUR "
+            f"kind it was booked as — with its amount in {_ccy_words()} "
             "carried as one row per currency (pick one with a `currency` "
             "filter). Positive is cash arriving in the household's pool "
             "and negative is cash leaving it. Mirrors `wealthdb cashflow "
@@ -761,13 +808,21 @@ def _percent_viz(*cols):
 # Currency / Start-year / Source pickers map onto them; the same pickers map
 # onto the MBQL cards' currency / window_from_year / silver_source_id
 # dimensions. Currency and start year default so a card still runs standalone.
-# CURRENCY_TAG doubles as the native spending cards' {{currency}} variable
-# (spend_tags), where it picks a value column inside a CASE.
-CURRENCY_TAG = {"id": "ccy-tag", "name": "currency", "display-name": "Currency",
-                "type": "text", "default": "USD", "required": True}
 START_YEAR_TAG = {"id": "year-tag", "name": "start_year",
                   "display-name": "Start year", "type": "number",
                   "default": "0", "required": True}
+
+
+def currency_tag():
+    """The required {{currency}} text variable: the one a native card
+    picks its value column with (_ccy_case), and the returns charts'
+    fallback before the currency field has synced. It defaults to
+    DEFAULT_CURRENCY, which is the configured one only once main() has
+    run, so it is built on call."""
+    return {"id": "ccy-tag", "name": "currency", "display-name": "Currency",
+            "type": "text", "default": DEFAULT_CURRENCY, "required": True}
+
+
 # The Cash Flow dashboard's investing grain. Required with a `whole`
 # default, so a card opened away from the dashboard draws the section as
 # one movement — the reading a household opens the statement with —
@@ -841,9 +896,10 @@ def returns_tags():
         # unlike a plain text variable's bare-string default.
         currency = {"id": "ccy-ff", "name": "currency", "display-name": "Currency",
                     "type": "dimension", "dimension": ["field", CURRENCY_FIELD_ID, None],
-                    "widget-type": "string/=", "default": ["USD"], "required": True}
+                    "widget-type": "string/=", "default": [DEFAULT_CURRENCY],
+                    "required": True}
     else:
-        currency = CURRENCY_TAG
+        currency = currency_tag()
     tags = {"currency": currency, "start_year": START_YEAR_TAG}
     if SOURCE_FIELD_ID is not None:
         tags["source_ff"] = {"id": "src-ff", "name": "source_ff",
@@ -1009,14 +1065,14 @@ def question_defs(db_id, mid):
     # negative, refunds positive), so every card charts its negation,
     # `net_spend`, and a month's outflow reads as a positive bar. The
     # long-format model means a card that runs without a currency filter
-    # sums USD + CHF + EUR, hence the standalone note.
+    # sums every reporting currency, hence the standalone note.
 
     def ccy_spend(ccy):
         """Net spend in ONE reporting currency, as a named column.
 
         The long model carries a row per (line, currency), so a card that
-        wants all three at once cannot take the Currency picker — a row
-        filter would empty the two columns it does not select. Each
+        wants them all at once cannot take the Currency picker — a row
+        filter would empty every column it does not select. Each
         column instead carries its own currency predicate, which makes
         the card right on the dashboard and right opened standalone,
         where no picker reaches it."""
@@ -1030,9 +1086,9 @@ def question_defs(db_id, mid):
     # The native card reads its currency from a required template
     # variable instead, so it has a working default of its own.
     native_note = (" Built for the Spending dashboard; opened standalone it "
-                   "runs in USD, the currency variable's default.")
+                   f"runs in {DEFAULT_CURRENCY}, the currency variable's default.")
     income_native_note = (" Built for the Income dashboard; opened standalone "
-                          "it runs in USD, the currency variable's default.")
+                          f"it runs in {DEFAULT_CURRENCY}, the currency variable's default.")
     bal_tags = spend_tags("web_card_balances_history", CARD_BALANCE_FILTERS)
     register_native_targets("Card balances over time", bal_tags,
                             CARD_BALANCE_PICKERS)
@@ -1042,11 +1098,11 @@ def question_defs(db_id, mid):
     # long-format model carries a row per (line, reporting currency), so
     # an MBQL tile over it is right only while a row filter holds it to
     # one — which the dashboard supplies and nothing else does. Opened on
-    # its own, such a tile summed all three currencies, silently and
+    # its own, such a tile summed every currency, silently and
     # plausibly. A template VARIABLE is substituted by the picker rather
     # than ANDed with the tile's own filters, and {{currency}} defaults
-    # to USD, so a native tile reads the dashboard's choice on the
-    # dashboard and USD anywhere else.
+    # to the configured default currency, so a native tile reads the
+    # dashboard's choice on the dashboard and the default anywhere else.
     #
     # What it costs is MBQL drill-through: a native result has no "see
     # these records". The two tables keep theirs by staying MBQL — one
@@ -1090,7 +1146,7 @@ def question_defs(db_id, mid):
     cf_pickers_nosec = [t for t in CASHFLOW_PICKERS if t[1] != "section"]
     cf_val = f"sum({_ccy_case('value')})::DOUBLE"
     cf_note = (" Built for the Cash Flow dashboard; opened standalone it "
-               "runs in USD with investing netted as a whole, the two "
+               f"runs in {DEFAULT_CURRENCY} with investing netted as a whole, the two "
                "variables' defaults.")
 
     def cashflow_native(name, display, desc, sql, viz, section=True):
@@ -1116,9 +1172,9 @@ def question_defs(db_id, mid):
     # income tile reads the Income dashboard's view but answers only its
     # own dashboard's three pickers.
     wo_note = (" Built for the Wealth Overview; opened standalone it runs "
-               "in USD, the currency variable's default.")
+               f"in {DEFAULT_CURRENCY}, the currency variable's default.")
     al_note = (" Built for the Allocation dashboard, which supplies the "
-               "as-of day; opened standalone it runs in USD, the currency "
+               f"as-of day; opened standalone it runs in {DEFAULT_CURRENCY}, the currency "
                "variable's default, and sums every day, so set the As Of "
                "Day filter to a single day first.")
     lat_tags = spend_tags("web_sources_latest", range_filters("snapshot_at"))
@@ -1422,19 +1478,19 @@ def question_defs(db_id, mid):
             "on a card not itemised (which names its issuer, not a "
             "merchant), cash out of an ATM — and lines nothing has resolved "
             "are outside the ranking, though inside every total and the "
-            "transaction list. Net spend is shown in all three reporting "
-            "currencies at once and the ranking is by USD, so this card "
+            "transaction list. Net spend is shown in every reporting "
+            f"currency at once and the ranking is by {DEFAULT_CURRENCY}, so this card "
             "answers to every picker except Currency — and reads the same "
             "opened on its own as it does on the dashboard.",
             _mbql(db_id, mid["report_spending"],
-                  {"aggregation": [ccy_spend("USD"), ccy_spend("CHF"),
-                                   ccy_spend("EUR")],
+                  {"aggregation": [ccy_spend(c) for c in REPORTING_CURRENCIES],
                    "filter": ["and",
                               ["not-null", _f("merchant_name", "type/Text")],
                               ["!=", _f("spend_primary", "type/Text"),
                                      _f("spend_detailed", "type/Text")]],
                    "breakout": [_f("merchant_name", "type/Text")],
-                   "order-by": [["desc", ["aggregation", 0]]],
+                   "order-by": [["desc", ["aggregation",
+                                 REPORTING_CURRENCIES.index(DEFAULT_CURRENCY)]]],
                    "limit": 50}),
             {}),
         "Spend by account": spend_native("Spend by account", "row",
@@ -1465,8 +1521,8 @@ def question_defs(db_id, mid):
             _series_viz("as_of_day", "account_label", "owed")),
         # The one tile that lists LINES rather than grouping them, which
         # is why it reads the view natively like the charts do: the long
-        # model would hand it each line three times over, once per
-        # reporting currency, and no aggregation to fold them back.
+        # model would hand it each line once per reporting currency, and
+        # no aggregation to fold them back.
         "Largest transactions": spend_native("Largest transactions", "table",
             "The fifty largest single spending lines of the window, with "
             "merchant (blank only where the line has none to show), account "
@@ -1848,20 +1904,21 @@ def question_defs(db_id, mid):
             {}),
         "Source freshness": ("table",
             "Per source: latest snapshot, its age in days, and the value "
-            "riding on it (USD).",
+            f"riding on it ({DEFAULT_CURRENCY}).",
             _mbql(db_id, mid["report_sources_latest"],
                   {"expressions": {"days_stale": days_stale},
                    "filter": fed_sources,
                    "fields": [_f("silver_source_id", "type/Text"),
                               _f("snapshot_at", "type/DateTime"),
                               ["expression", "days_stale"],
-                              _dec("total_value_usd")],
+                              _dec(f"total_value_{DEFAULT_CURRENCY.lower()}")],
                    "order-by": [["desc", ["expression", "days_stale"]]]}),
             {}),
     }
 
 
-# Dashboard filters: a required currency picker (default USD) and a
+# Dashboard filters: a required currency picker (default: the configured
+# default currency) and a
 # silver-source picker (default: all values) plus either a time range
 # over flows/history (default: past 12 months) or a single as-of day
 # over point-in-time holdings (default: today), each linked to every
@@ -1939,7 +1996,7 @@ def base_dashboards():
     return {
         "Wealth Overview": (
             "The whole picture over time, in a chosen currency (default "
-            "USD): net worth, cash vs positions, and income and cost "
+            f"{DEFAULT_CURRENCY}): net worth, cash vs positions, and income and cost "
             "flows. " + note, "range", [
             # Net worth = positions + cash by construction — the first
             # three tiles reconcile exactly; the trend tile is a monthly
@@ -1956,7 +2013,7 @@ def base_dashboards():
         "Allocation": (
             "Where the value sits — asset class, currency, tax wrapper, "
             "management style and the largest positions — as of a chosen "
-            "day (default: today), in a chosen currency (default USD). "
+            f"day (default: today), in a chosen currency (default {DEFAULT_CURRENCY}). "
             + note, "asof", [
             # The two taxonomy dimensions side by side on the top row.
             ("Allocation by asset class", 0, 0, 12, 8, "as_of_day"),
@@ -1969,7 +2026,7 @@ def base_dashboards():
         "Returns": (
             "How the portfolio performed — time-weighted (TWR) and "
             "money-weighted (MWR) returns, per period and per source, in a "
-            "chosen currency (default USD). Use the Start-year picker to "
+            f"chosen currency (default {DEFAULT_CURRENCY}). Use the Start-year picker to "
             "rescope past the noisy inception period (0 = since inception); "
             "the since-inception TWR is often n/a because the first months "
             "are degenerate. " + note,
@@ -1990,7 +2047,7 @@ def base_dashboards():
         "Spending": (
             "Where the money goes — the trend, the categories behind it, "
             "the merchants and accounts it left through, and what the cards "
-            "owe — over a chosen window in a chosen currency (default USD). "
+            f"owe — over a chosen window in a chosen currency (default {DEFAULT_CURRENCY}). "
             "Spending is what the tracked accounts paid out; "
             "own-account moves are not spend and never appear. " + note,
             "range", [
@@ -2193,7 +2250,7 @@ CARD_BALANCE_PICKERS = [t for t in SPEND_PICKERS if t[1] != "category"]
 # The Wealth Overview's and Allocation's filters. Neither dashboard
 # names an account anywhere, so the base and the twin share them.
 # Every tile reads a serving view natively and takes the Currency picker
-# as the {{currency}} variable: the views carry the reporting trio as
+# as the {{currency}} variable: the views carry the reporting currencies as
 # columns, and a picker selects rows but never a column.
 def range_filters(col):
     """A time range on `col` plus the source filter: the Wealth
@@ -2230,19 +2287,22 @@ def spend_tags(table, spec):
     """Template tags for a native spending card over serving view
     `table`: the required {{currency}} text variable, plus a field filter
     per column in `spec` whose field id has synced."""
-    return {"currency": CURRENCY_TAG, **view_tags(table, spec)}
+    return {"currency": currency_tag(), **view_tags(table, spec)}
 
 
 def _ccy_case(col, neg=False):
-    """The `col`_usd / _chf / _eur trio reduced to the one the required
+    """The `col`_<ccy> column set reduced to the one the required
     {{currency}} variable names. A template variable interpolates a
     VALUE, never an identifier, so a native card picks its column with a
-    CASE rather than by splicing a column name in. `neg` negates it, so
-    a figure gold stores negative by convention — a spending outflow, a
-    card's owed balance — reads as a positive one."""
+    CASE rather than by splicing a column name in. Every reporting
+    currency has its own arm and there is no ELSE: a currency the CASE
+    does not name renders blank rather than as another currency's
+    figures. `neg` negates it, so a figure gold stores negative by
+    convention — a spending outflow, a card's owed balance — reads as a
+    positive one."""
     s = "-" if neg else ""
-    return (f"CASE {{{{currency}}}} WHEN 'CHF' THEN {s}{col}_chf"
-            f" WHEN 'EUR' THEN {s}{col}_eur ELSE {s}{col}_usd END")
+    arms = "".join(f" WHEN '{c}' THEN {s}{col}_{c.lower()}" for c in REPORTING_CURRENCIES)
+    return f"CASE {{{{currency}}}}{arms} END"
 
 
 def _cashflow_nodes(where, sum_expr):
@@ -2618,7 +2678,7 @@ def privacy_card_defs(db_id, model_ids):
     # run standalone they aggregate across all days, so filter As Of Day
     # to a single day first.
     standalone = (" Built for the Allocation dashboard, which supplies "
-                  "the as-of day; opened standalone it runs in USD, the "
+                  f"the as-of day; opened standalone it runs in {DEFAULT_CURRENCY}, the "
                   "currency variable's default, and sums every day, so set "
                   "the As Of Day filter to a single day first.")
 
@@ -2707,7 +2767,7 @@ def privacy_card_defs(db_id, model_ids):
     # sources model. The dashboard is unfiltered by design, so the
     # model's fixed %-of-latest scale IS the selected-sources scale, and
     # the source rows total 100. Own description: the base card's
-    # promises a USD value column, which here holds shares.
+    # promises a money column, which here holds shares.
     pmid = {**model_ids,
             "report_sources_latest": model_ids["report_sources_latest_pct"]}
     display, _desc, query, viz = question_defs(db_id, pmid)["Source freshness"]
@@ -3374,39 +3434,40 @@ def dashboard_parameters(model_ids, mode, name=""):
                                     {"base-type": "type/Text"}]}}
 
     def currency_picker(pid):
-        """The required, USD-defaulted reporting-currency picker every
+        """The required reporting-currency picker every
         filtered dashboard but Returns carries.
 
         Required with a default, because a card running with the
         currency cleared would be wrong: a tile over a model with one
-        row per (line, reporting currency) would sum USD + CHF + EUR,
+        row per (line, reporting currency) would sum every currency,
         and a native tile's {{currency}} variable needs a value. A
         required parameter resets to its default rather than clearing.
-        The list is
-        static because the reporting trio is the product's, not the
-        data's, and a card-backed list would re-scan the whole population
-        for three known strings. `values_query_type` is what makes
-        Metabase render a dropdown instead of a free-text box."""
+        The default is the configured one (DEFAULT_CURRENCY). The list
+        is static because the reporting currencies are the product's,
+        not the data's, and a card-backed list would re-scan the whole
+        population for a few known strings. `values_query_type` is what
+        makes Metabase render a dropdown instead of a free-text box."""
         return {"id": pid, "name": "Currency", "slug": "currency",
                 "type": "string/=", "sectionId": "string",
-                "isMultiSelect": False, "default": ["USD"], "required": True,
+                "isMultiSelect": False, "default": [DEFAULT_CURRENCY],
+                "required": True,
                 "values_query_type": "list",
                 "values_source_type": "static-list",
-                "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
+                "values_source_config": {"values": list(REPORTING_CURRENCIES)}}
 
     source = card_picker(SOURCE_PARAM_ID, "Source", "source",
                          "report_sources_latest", "silver_source_id")
     if mode == "returns":
-        # Required + USD default: report_returns carries one row set per
-        # currency, so a card must never run with the currency cleared —
-        # every period would show all three currency rows (a required
-        # parameter resets to its default instead of clearing). The values
+        # Required, defaulting to DEFAULT_CURRENCY: report_returns carries
+        # one row set per currency, so a card must never run with the
+        # currency cleared — every period would show a row per currency (a
+        # required parameter resets to its default instead of clearing). The values
         # come off the materialized table's own currency column, like the
         # start-year list below.
         currency = {"id": CURRENCY_PARAM_ID, "name": "Currency",
                     "slug": "currency", "type": "string/=",
                     "sectionId": "string", "isMultiSelect": False,
-                    "default": ["USD"], "required": True,
+                    "default": [DEFAULT_CURRENCY], "required": True,
                     "values_query_type": "list",
                     "values_source_type": "card",
                     "values_source_config": {
@@ -3617,6 +3678,27 @@ def missing_web_views(base, sid, db_id):
     return [t for t in want if t not in have]
 
 
+# The oldest gold schema the cards can read: the migration that gave the
+# serving views and `_multi` models their GBP columns (0114). A snapshot
+# taken before it carries every view by name, so the view probe below
+# passes it; only the version tells it apart.
+MIN_GOLD_SCHEMA = 114
+
+
+def gold_schema_version(base, sid, db_id):
+    """The mounted gold snapshot's schema version, probed through the
+    driver, or None when the probe does not answer."""
+    st, res = req(base, "/api/dataset", "POST",
+                  {"type": "native", "database": db_id,
+                   "native": {"query": "SELECT max(gold_schema_version) FROM schema_meta",
+                              "template-tags": {}}}, session=sid)
+    rows = (res.get("data") or {}).get("rows") if st == 202 else None
+    try:
+        return int(rows[0][0])
+    except (TypeError, IndexError, ValueError):
+        return None
+
+
 def ensure_synced(base, sid, db_id, tries=20, delay=3):
     """Make every column behind FILTER_FIELD_COLUMNS available: when
     some are missing from the synced metadata, either Metabase simply
@@ -3627,7 +3709,18 @@ def ensure_synced(base, sid, db_id, tries=20, delay=3):
     stale snapshot that would break the view-backed models, or a sync
     that was still incomplete when the budget ran out. All three end the
     same way, because a partial answer is what a filter-less card is
-    built from."""
+    built from.
+
+    A snapshot older than MIN_GOLD_SCHEMA is refused first: its views
+    exist by name but lack columns the cards read, so every card would
+    converge onto SQL that fails."""
+    version = gold_schema_version(base, sid, db_id)
+    if version is None or version < MIN_GOLD_SCHEMA:
+        print(f"provision: the gold snapshot is at schema {version or 'unknown'} "
+              f"and the cards need {MIN_GOLD_SCHEMA} — run `wealthdb web "
+              "refresh` to re-snapshot a migrated gold; leaving the existing "
+              "cards untouched", file=sys.stderr)
+        return None
     tables = gold_metadata(base, sid, db_id)
     if tables is None:
         print("provision: cannot read the gold metadata — aborting before "
@@ -3835,7 +3928,7 @@ def ensure_models(base, sid, db_id, coll_id, by_name):
     archived = archive_all(base, sid, "card",
                            [by_name[n]["id"] for n in RETIRED_MODEL_NAMES
                             if n in by_name])
-    print(f"provision: report models (USD/CHF/EUR) — {created} created, "
+    print(f"provision: report models ({_ccy_slash()}) — {created} created, "
           f"{updated} updated, {archived} retired (collection '{COLLECTION_NAME}')")
     return ids
 

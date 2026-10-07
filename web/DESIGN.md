@@ -86,7 +86,7 @@ the pre-defined report models (`POST /api/card`, `type: "model"`) as native-quer
 shims over the gold **multi-currency** report macros — `SELECT * FROM
 report_x_multi(…)` (migration 0024), which build on the same line bases the
 CLI's single-currency macros use and emit one value-column set per currency
-(USD/CHF/EUR), so the models track command output by construction and bake in
+(USD/CHF/EUR/GBP), so the models track command output by construction and bake in
 no data. In a `wealthdb (pre-defined)` collection: the `_latest` snapshot
 reports (+ all-time `report_transactions`), the daily `_history` reports
 (migration 0022) for time-series charts, the two taxonomy models over the
@@ -114,10 +114,13 @@ decline — and no account picker at all, the household boundary being
 what defines the pool, **Data Freshness** is deliberately unfiltered — all of them
 definitions only (MBQL or SQL), no data baked in.
 A tile that sums money in the chosen currency is native SQL over a gold
-`web_*` serving view. The views carry the USD/CHF/EUR trio as columns,
-and a dashboard picker selects rows but never a column. So each such
-tile reads a required `{{currency}}` variable, which picks the column
-with a CASE and defaults to USD when the card is opened on its own. The
+`web_*` serving view. The views carry each reporting currency as a
+column, and a dashboard picker selects rows but never a column. So each
+such tile reads a required `{{currency}}` variable, which picks the
+column with a CASE. Every Currency picker, and every card opened on its
+own, defaults to `default_currency` from wealthdb.cfg when that is a
+reporting currency, and to USD otherwise. `web/web` passes it to
+`provision.py` from `wealthdb web-config`. The
 Wealth Overview's three headline figures read `web_sources_latest`
 (migration 0113), each source's latest snapshot, so they print what
 `wealthdb holdings sources` prints. A native tile has no "see these
@@ -211,10 +214,12 @@ renders as a dropdown of the values its column takes, and every column that
 identifies an account is a label (a card's display name falls back to its
 masked last four digits), so the filter is dropped rather than rebound onto
 a column that would mean something else.
-A pre-0043 snapshot is caught before any of this is written: provisioning
-probes the driver for the serving views **by name** and aborts with a "run
-`wealthdb web refresh`" message rather than converging the cards to a
-degraded shape.
+A stale snapshot is caught before any of this is written. Provisioning
+probes the driver for the snapshot's schema version and for the serving
+views **by name**. It aborts with a "run `wealthdb web refresh`" message
+rather than converging the cards to a degraded shape. The version check
+catches a snapshot older than 0114: its views exist by name, but they lack
+the GBP columns every money card reads.
 Idempotent — re-running updates cards and dashboards in place and archives
 retired names. The admin password comes from
 `WEALTHDB_WEB_ADMIN_PASSWORD` (e.g. `~/.secrets/wealthdb-web.env`) or is
@@ -271,19 +276,19 @@ partition is the **verbatim output of one `RunReturns` call with the
 CLI's default knobs** — `wealthdb returns <grain> --period
 <granularity> --method both -x <CCY>` — so dashboard numbers equal CLI
 numbers by construction. 4 grains × 4 granularities (monthly,
-quarterly, annual, total) × 3 currencies (the `_multi` trio) = 48
-partitions; the whole table is rewritten in one transaction (DELETE +
+quarterly, annual, total) × 4 currencies (the reporting set of the
+`_multi` macros) = 64 partitions; the whole table is rewritten in one transaction (DELETE +
 batched INSERT), so a failed run leaves the previous materialization
 intact. Bucket rows carry TWR only and MWR lives on the
 since-inception summary rows — that is engine behavior, mirrored, not
 smoothed over. Diagnostic knobs (`--netting off`, `--inception strict`)
 stay CLI-only.
 
-The 48 partitions are cheap because the loaded data depends only on the
+The 64 partitions are cheap because the loaded data depends only on the
 currency, never the grain or period: `RunReturns` is split into a load
 step (the DuckDB scans) and a pure in-memory `computeReturns`, so the
 materializer loads each currency's dataset **once** and drives all 16
-`(grain, period)` computations off it — and loads all three currencies
+`(grain, period)` computations off it — and loads every currency
 in a single pass over the `_multi` report macros rather than one scan
 per currency. With the per-row inserts replaced by batched multi-row
 `INSERT`s, refresh time is cut by roughly an order of magnitude.

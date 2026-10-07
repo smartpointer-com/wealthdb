@@ -730,14 +730,14 @@ const goldenAccountsHistory = `-1|full-src|F-0000|brokerage|Brokerage EXAMPLE|US
 0|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|<null>|<null>|1100.0000|0.0000|1100.0000|1100.0000|0.0000|1100.0000
 0|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|<null>|<null>|0.0000|260.0000|260.0000|0.0000|260.0000|260.0000`
 
-const goldenAccountsHistoryMulti = `-1|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1100.0000|0.0000|1100.0000|1100.0000|0.0000|1100.0000|<null>|0.0000|<null>|<null>|0.0000|<null>
--1|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|260.0000|260.0000|0.0000|260.0000|260.0000|0.0000|<null>|<null>|0.0000|<null>|<null>
--2|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1000.0000|0.0000|1000.0000|1000.0000|0.0000|1000.0000|<null>|0.0000|<null>|<null>|0.0000|<null>
--2|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|250.0000|250.0000|0.0000|250.0000|250.0000|0.0000|<null>|<null>|0.0000|<null>|<null>
--3|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1000.0000|0.0000|1000.0000|1000.0000|0.0000|1000.0000|<null>|0.0000|<null>|<null>|0.0000|<null>
--3|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|250.0000|250.0000|0.0000|250.0000|250.0000|0.0000|<null>|<null>|0.0000|<null>|<null>
-0|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1100.0000|0.0000|1100.0000|1100.0000|0.0000|1100.0000|<null>|0.0000|<null>|<null>|0.0000|<null>
-0|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|260.0000|260.0000|0.0000|260.0000|260.0000|0.0000|<null>|<null>|0.0000|<null>|<null>`
+const goldenAccountsHistoryMulti = `-1|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1100.0000|0.0000|1100.0000|1100.0000|0.0000|1100.0000|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>
+-1|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|260.0000|260.0000|0.0000|260.0000|260.0000|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>
+-2|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1000.0000|0.0000|1000.0000|1000.0000|0.0000|1000.0000|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>
+-2|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|250.0000|250.0000|0.0000|250.0000|250.0000|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>
+-3|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1000.0000|0.0000|1000.0000|1000.0000|0.0000|1000.0000|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>
+-3|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|250.0000|250.0000|0.0000|250.0000|250.0000|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>
+0|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1100.0000|0.0000|1100.0000|1100.0000|0.0000|1100.0000|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>
+0|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|260.0000|260.0000|0.0000|260.0000|260.0000|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>`
 
 const goldenSourcesHistory = `-1|full-src|USD|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000
 -2|full-src|USD|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000
@@ -773,7 +773,8 @@ var historyMacroColumns = []struct {
 		"tax_wrapper", "management_style", "positions_value_base", "cash_balance_base",
 		"total_value_base", "positions_value_usd", "cash_balance_usd", "total_value_usd",
 		"positions_value_chf", "cash_balance_chf", "total_value_chf",
-		"positions_value_eur", "cash_balance_eur", "total_value_eur"}},
+		"positions_value_eur", "cash_balance_eur", "total_value_eur",
+		"positions_value_gbp", "cash_balance_gbp", "total_value_gbp"}},
 	{"report_sources_history('USD')", []string{
 		"as_of_day", "silver_source_id", "base_currency", "tax_wrapper", "management_style",
 		"positions_value_base", "cash_balance_base", "total_value_base",
@@ -783,7 +784,8 @@ var historyMacroColumns = []struct {
 		"positions_value_base", "cash_balance_base", "total_value_base",
 		"positions_value_usd", "cash_balance_usd", "total_value_usd",
 		"positions_value_chf", "cash_balance_chf", "total_value_chf",
-		"positions_value_eur", "cash_balance_eur", "total_value_eur"}},
+		"positions_value_eur", "cash_balance_eur", "total_value_eur",
+		"positions_value_gbp", "cash_balance_gbp", "total_value_gbp"}},
 	{"report_portfolios_history('USD')", []string{
 		"as_of_day", "silver_source_id", "portfolio_external_id", "display_name", "base_currency",
 		"relationship_id", "nickname", "tax_wrapper", "management_style",
@@ -795,7 +797,8 @@ var historyMacroColumns = []struct {
 		"positions_value_base", "cash_balance_base", "total_value_base",
 		"positions_value_usd", "cash_balance_usd", "total_value_usd",
 		"positions_value_chf", "cash_balance_chf", "total_value_chf",
-		"positions_value_eur", "cash_balance_eur", "total_value_eur"}},
+		"positions_value_eur", "cash_balance_eur", "total_value_eur",
+		"positions_value_gbp", "cash_balance_gbp", "total_value_gbp"}},
 	{"report_positions_history('USD')", []string{
 		"as_of_day", "silver_source_id", "snapshot_at", "account_external_id", "display_name",
 		"relationship_id", "nickname", "account_category", "position_key", "instrument_external_id",
@@ -804,7 +807,7 @@ var historyMacroColumns = []struct {
 		"as_of_day", "silver_source_id", "snapshot_at", "account_external_id", "display_name",
 		"relationship_id", "nickname", "account_category", "position_key", "instrument_external_id",
 		"symbol", "name", "asset_class", "vehicle", "currency", "quantity", "market_value",
-		"value_usd", "value_chf", "value_eur"}},
+		"value_usd", "value_chf", "value_eur", "value_gbp"}},
 	{"report_global_history('USD')", []string{
 		"as_of_day", "cash_balance_outccy", "positions_value_outccy", "total_value_outccy"}},
 }

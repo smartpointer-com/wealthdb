@@ -15,7 +15,7 @@ func init() {
 }
 
 // cmdWebMaterialize rewrites the report_returns table in the live gold DB:
-// the full RunReturns matrix (4 grains × 4 periods × 3 currencies, plus the
+// the full RunReturns matrix (4 grains × 4 periods × 4 currencies, plus the
 // per-year windowed since-<year> summaries) with the CLI-default knobs and the
 // same wealthdb.cfg returns settings a CLI run applies (returnsCfgSettings)
 // — each base partition is the verbatim output of a bare
@@ -58,6 +58,6 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "returns: materialized %d rows (4 grains x 4 periods x 3 currencies, plus per-year windows)\n", n)
+	fmt.Fprintf(stderr, "returns: materialized %d rows (4 grains x 4 periods x %d currencies, plus per-year windows)\n", n, len(gold.MaterializedCurrencies()))
 	return nil
 }

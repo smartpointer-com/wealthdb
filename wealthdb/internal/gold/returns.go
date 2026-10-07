@@ -248,7 +248,7 @@ const (
 // the derived globalMax and the (currency-independent) FX bounds. Loading is
 // the expensive part — several DuckDB scans — so a dataset is built once and
 // reused across every (grain, period) computation for its currency; see
-// MaterializeReturns, which loads three currencies in a single pass.
+// MaterializeReturns, which loads every reporting currency in a single pass.
 type returnsDataset struct {
 	accts     map[string]*accountData
 	fx        fxBounds
