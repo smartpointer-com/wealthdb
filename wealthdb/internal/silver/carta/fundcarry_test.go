@@ -11,9 +11,10 @@ import (
 )
 
 // fundBookFixture is a fund (entity 300) called twice before its first NAV,
-// and optionally a cap-table company (entity 100) held from an earlier day.
-// The first call's date is ISO-shaped, as a supplied pre-coverage row is.
-func fundBookFixture(t *testing.T, withCompany bool) silver.Connection {
+// and optionally a cap-table company (entity 100) held from an earlier day,
+// plus any extra silver statements. The first call's date is ISO-shaped, as a
+// supplied pre-coverage row is.
+func fundBookFixture(t *testing.T, withCompany bool, extra ...string) silver.Connection {
 	t.Helper()
 	path, db := newFixtureSilver(t)
 	nav := unixDate(t, "2024-09-30")
@@ -37,6 +38,9 @@ INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_inv
 INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
     quantity, cost, market_value, position_status, currency, payload)
     VALUES (%d, 100, 'share', 1, 1000, 500, 5000, 'held', '$', '{}');`, d0101, d0101)
+	}
+	for _, x := range extra {
+		stmts += x
 	}
 	if _, err := db.Exec(stmts); err != nil {
 		t.Fatal(err)

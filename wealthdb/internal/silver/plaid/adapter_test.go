@@ -1146,24 +1146,24 @@ func TestAnOtherSecurityFallsBackOnItsCFICode(t *testing.T) {
 
 // Shares not yet vested are not the holder's. A position holds the vested
 // ones at their vested value, else at the price, else at the value pro
-// rata, and notes the rest.
+// rata, and notes the rest. Its book value is the holding's cost pro rata.
 func TestOnlyVestedSharesArePositions(t *testing.T) {
 	path, db := newFixture(t)
 	run(t, db, runAt(10), day(1), nil)
 	acct(t, db, runAt(10), "acct-plan", "investment", "brokerage", "0")
 	cases := []struct {
 		security, price, vestedQuantity, vestedValue string
-		quantity, value, unvested                    string
+		quantity, value, unvested, book              string
 	}{
-		{"sec-a", "50", "40", "2000", "40", "2000", "60"},
-		{"sec-b", "55", "40", "", "40", "2200", "60"},
-		{"sec-c", "", "25", "", "25", "1250", "75"},
-		{"sec-d", "50", "100", "5000", "100", "5000", ""}, // all vested
-		{"sec-e", "50", "", "", "100", "5000", ""},        // nothing stated
+		{"sec-a", "50", "40", "2000", "40", "2000", "60", "1600"},
+		{"sec-b", "55", "40", "", "40", "2200", "60", "1600"},
+		{"sec-c", "", "25", "", "25", "1250", "75", "1000"},
+		{"sec-d", "50", "100", "5000", "100", "5000", "", "4000"}, // all vested
+		{"sec-e", "50", "", "", "100", "5000", "", "4000"},        // nothing stated
 	}
 	for i, c := range cases {
 		sec(t, db, c.security, "PLACEHOLDER CORP "+c.security, fmt.Sprintf("EX%d", i), "equity")
-		hold(t, db, runAt(10), "acct-plan", c.security, 0, "100", "5000", "")
+		hold(t, db, runAt(10), "acct-plan", c.security, 0, "100", "5000", "4000")
 		exec(t, db, `UPDATE holdings SET institution_price = ?, vested_quantity = ?, vested_value = ?
 		             WHERE security_id = ?`, null(c.price), null(c.vestedQuantity), null(c.vestedValue), c.security)
 	}
@@ -1178,6 +1178,7 @@ func TestOnlyVestedSharesArePositions(t *testing.T) {
 		}
 		assertAmount(t, c.security+" quantity", p.Quantity, c.quantity)
 		assertAmount(t, c.security+" value", p.MarketValue, c.value)
+		assertAmount(t, c.security+" book value", p.BookValue, c.book)
 		want := `"unvested_quantity":"` + c.unvested + `"`
 		if has := strings.Contains(string(p.Payload), `"unvested_quantity"`); has != (c.unvested != "") ||
 			c.unvested != "" && !strings.Contains(string(p.Payload), want) {

@@ -624,15 +624,22 @@ def _pdf_text(pdf: Path) -> str | None:
         return None
 
 
-def _parse_statement_nav(pdf: Path) -> str | None:
-    """Extract the LP's ending capital balance (= NAV) from a capital-account
-    statement PDF, via pdftotext -layout. Returns a digit string, or None if
-    the layout doesn't match."""
-    text = _pdf_text(pdf)
-    if text is None:
-        return None
+def _statement_nav_from_text(text: str) -> str | None:
+    """The LP's ending capital balance (= NAV) from a capital-account
+    statement's pdftotext output, as a digit string; None if the layout
+    doesn't match."""
     m = re.search(r"Ending balance\s*\$?\s*\(?([\d,]+)\)?", text)
     return m.group(1).replace(",", "") if m else None
+
+
+def _parse_statement_nav(pdf: Path) -> tuple[str | None, float | None]:
+    """The NAV and the inception-to-date capital contributions a
+    capital-account statement PDF states (via pdftotext -layout); either is
+    None when its line is absent."""
+    text = _pdf_text(pdf)
+    if text is None:
+        return None, None
+    return _statement_nav_from_text(text), _statement_flows_from_text(text)[0]
 
 
 def _statement_flows_from_text(text: str) -> tuple[float | None, float | None]:
@@ -780,7 +787,9 @@ def _period_deltas(statements) -> list[tuple]:
 def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
     """Parse the fund's capital-account-statement PDFs into a quarterly NAV
     time series — the history the structured partner-metrics doesn't carry.
-    One fund_metrics delta per statement date; the richer structured row
+    One fund_metrics delta per statement date, carrying the NAV and the
+    inception-to-date capital contributed the same statement states, so the
+    row has a book value as well as a value. The richer structured row
     (loaded at its sharing_date) is left intact (INSERT OR IGNORE)."""
     idx = _read_json(docs_dir / "index.json")
     rows = idx.get("results") if isinstance(idx, dict) else None
@@ -791,17 +800,21 @@ def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
         pdf = docs_dir / f"doc_{row.get('id')}.pdf"
         if not pdf.is_file():
             continue
-        nav = _parse_statement_nav(pdf)
+        nav, contributed = _parse_statement_nav(pdf)
         snap = _date_ts(row.get("document_date"))
         if nav is None or snap is None:
             continue
+        contributed = None if contributed is None else f"{contributed:.2f}"
         conn.execute(
             "INSERT OR IGNORE INTO fund_metrics "
             "(snapshot_at, entity_external_id, currency, net_asset_value, "
-            " sharing_date, payload) VALUES (?,?,?,?,?,?)",
-            (snap, fund_eid, "USD", nav, _s(row.get("document_date")),
+            " capital_contributed, sharing_date, payload) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (snap, fund_eid, "USD", nav, contributed,
+             _s(row.get("document_date")),
              _cj({"source": "capital_account_statement",
-                  "document_id": row.get("id"), "net_asset_value": nav})))
+                  "document_id": row.get("id"), "net_asset_value": nav,
+                  "capital_contributed": contributed})))
         n += 1
     return n
 

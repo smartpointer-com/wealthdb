@@ -34,12 +34,14 @@ type holding struct {
 // vested. Plaid states a vested quantity for equity compensation. Where it
 // is below the whole, the position is the vested quantity at the vested
 // value. A vested value Plaid leaves empty is the price times the vested
-// quantity, else the whole value pro rata.
-func (h holding) owned() (quantity, value, unvested *canonical.Decimal) {
+// quantity, else the whole value pro rata. Plaid states the cost of the
+// whole holding only, so the vested part's cost is that cost pro rata.
+func (h holding) owned() (quantity, value, cost, unvested *canonical.Decimal) {
 	quantity, value = silver.DecimalPtrOrNil(h.quantity), silver.DecimalPtrOrNil(h.value)
+	cost = silver.DecimalPtrOrNil(h.costBasis)
 	vested := silver.DecimalPtrOrNil(h.vestedQuantity)
 	if quantity == nil || vested == nil || vested.IsNegative() || !vested.LessThan(*quantity) {
-		return quantity, value, nil
+		return quantity, value, cost, nil
 	}
 	rest := quantity.Sub(*vested)
 	vestedValue := silver.DecimalPtrOrNil(h.vestedValue)
@@ -51,7 +53,11 @@ func (h holding) owned() (quantity, value, unvested *canonical.Decimal) {
 		v := value.Mul(*vested).Div(*quantity)
 		vestedValue = &v
 	}
-	return vested, vestedValue, &rest
+	if cost != nil {
+		c := cost.Mul(*vested).Div(*quantity)
+		cost = &c
+	}
+	return vested, vestedValue, cost, &rest
 }
 
 // Snapshots emits one batch per run in the window, at the run's start, and
@@ -451,11 +457,10 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 			positions[k] = p
 			order = append(order, k)
 		}
-		quantity, value, unvested := h.owned()
+		quantity, value, cost, unvested := h.owned()
 		p.quantity = addPtr(p.quantity, quantity)
 		p.value = addPtr(p.value, value)
 		p.unvested = addPtr(p.unvested, unvested)
-		cost := silver.DecimalPtrOrNil(h.costBasis)
 		p.costKnown = p.costKnown && cost != nil
 		p.costBasis = addPtr(p.costBasis, cost)
 		p.payloads = append(p.payloads, json.RawMessage(h.payload))

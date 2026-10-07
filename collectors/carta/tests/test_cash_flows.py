@@ -51,6 +51,26 @@ def test_statement_flows_absent_lines():
     assert load._statement_flows_from_text("nothing relevant here") == (None, None)
 
 
+def test_statement_nav_row_carries_contributed_capital(migrated, tmp_path, monkeypatch):
+    # A statement-sourced fund_metrics row states the inception-to-date
+    # capital contributed beside the NAV, so it has a book value too.
+    docs = _fund_docs(tmp_path, [
+        _STMT_ROW,
+        {"id": "s2", "document_type": "Capital account statement",
+         "document_date": "03/31/2099"},
+    ])
+    monkeypatch.setattr(load, "_parse_statement_nav", lambda pdf: {
+        "s1": ("120000", 100000.0),
+        "s2": ("90000", None),
+    }[pdf.stem.removeprefix("doc_")])
+    assert load.load_statement_nav(migrated, docs, 7) == 2
+    rows = migrated.execute(
+        "SELECT net_asset_value, capital_contributed, "
+        "json_extract(payload, '$.capital_contributed') FROM fund_metrics "
+        "WHERE entity_external_id = 7 ORDER BY snapshot_at").fetchall()
+    assert rows == [("120000", "100000.00", "100000.00"), ("90000", None, None)]
+
+
 # ---- per-period differencing of inception-to-date --------------------------
 
 def test_period_deltas_difference_and_sort():

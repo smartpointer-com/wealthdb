@@ -177,7 +177,8 @@ CREATE INDEX ix_accounts_internal_id
 -- Per-portfolio per-currency cash/value rollups, derived from
 -- portfolios[i] fields in investment-overview. balance_kind values:
 --   'cash'        — portfolios[i].cashBalance (free cash inside portfolio)
---   'invested'    — portfolios[i].investedAmount (amount put in by the holder)
+--   'invested'    — portfolios[i].investedAmount (despite its name, the
+--                   current valuation, cash included: it equals currentValue)
 --   'current'     — portfolios[i].currentValue (current valuation)
 --   'securities'  — portfolios[i].securitiesBalance (non-cash holdings value)
 --   'saving'      — portfolios[i].savingValuation

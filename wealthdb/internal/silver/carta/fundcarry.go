@@ -2,13 +2,16 @@ package carta
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // A fund reports its first NAV on its first capital-account statement, which
@@ -16,7 +19,8 @@ import (
 // valuation of its own, and leaving it out of the portfolio would book every
 // call as a loss in the period it was paid and the first NAV as a gain. So
 // until a fund's first NAV the interest is carried at the capital paid in,
-// less any capital paid back, and the first NAV then marks it.
+// less any capital paid back, and the first NAV then marks it. Its book value
+// is the capital paid in, gross of any paid back, as on a NAV row.
 
 // fundFlow is one fund cash event: positive for capital called, negative for
 // capital distributed.
@@ -113,22 +117,40 @@ func (l fundLedger) carryDates() []int64 {
 	return out
 }
 
-// carryAt is the fund's carried value at t: capital paid in less capital paid
-// back, on or before t. False once the fund has a NAV on or before t, and when
-// nothing is carried.
-func (b *fundBook) carryAt(t int64) (float64, bool) {
+// carryAt is the fund's carried value at t, capital paid in less capital paid
+// back on or before t, and its book value, the capital paid in alone. False
+// once the fund has a NAV on or before t, and when nothing is carried.
+func (b *fundBook) carryAt(t int64) (value, called float64, ok bool) {
 	if b.hasNAV && b.firstNAV <= t {
-		return 0, false
+		return 0, 0, false
 	}
-	var v float64
 	for _, f := range b.flows {
 		if f.at > t {
 			break
 		}
-		v += f.net
+		value += f.net
+		if f.net > 0 {
+			called += f.net
+		}
 	}
-	v = math.Round(v*100) / 100
-	return v, v > 0
+	value = math.Round(value*100) / 100
+	called = math.Round(called*100) / 100
+	return value, called, value > 0
+}
+
+// acquisitionDate is the day of the fund's first capital call, the day the
+// interest was acquired, or nil when the ledger holds no call for it.
+func (l fundLedger) acquisitionDate(eid int64) *time.Time {
+	b, ok := l[eid]
+	if !ok {
+		return nil
+	}
+	for _, f := range b.flows {
+		if f.net > 0 {
+			return silver.DatePtrFromNullUnix(sql.NullInt64{Int64: f.at, Valid: true})
+		}
+	}
+	return nil
 }
 
 // appendFundCarryAt adds the carried position of every fund that has no NAV
@@ -145,11 +167,15 @@ func appendFundCarryAt(t int64, acct string, ledger fundLedger, batch *canonical
 			continue
 		}
 		b := ledger[eid]
-		v, ok := b.carryAt(t)
+		v, called, ok := b.carryAt(t)
 		if !ok {
 			continue
 		}
 		carried, err := canonical.NewDecimalFromString(strconv.FormatFloat(v, 'f', 2, 64))
+		if err != nil {
+			return fmt.Errorf("appendFundCarryAt: %w", err)
+		}
+		book, err := canonical.NewDecimalFromString(strconv.FormatFloat(called, 'f', 2, 64))
 		if err != nil {
 			return fmt.Errorf("appendFundCarryAt: %w", err)
 		}
@@ -170,7 +196,8 @@ func appendFundCarryAt(t int64, acct string, ledger fundLedger, batch *canonical
 			Vehicle:              canonical.VehicleFund,
 			Currency:             b.ccy,
 			MarketValue:          &carried,
-			BookValue:            &carried,
+			BookValue:            &book,
+			AcquisitionDate:      ledger.acquisitionDate(eid),
 			Payload:              payload,
 		})
 		active[eid] = b.ccy

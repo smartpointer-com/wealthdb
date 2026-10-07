@@ -123,8 +123,10 @@ see §6):
   so the acquisition date can precede the platform's own coverage. A
   position aggregates a company's whole cap-table line, so any later lot's
   date would claim the oldest shares were acquired more recently than they
-  were. Lots that state none (a convertible, say) contribute nothing, and a
-  position whose lots all state none carries no date.
+  were. A convertible that states none contributes its issue date: a
+  SAFE or note is not re-issued on a split or transfer the way a share
+  certificate is, so its issue date is the day it was bought. Other lots that state none contribute nothing, and a position
+  whose lots all state none carries no date.
 - The per-lot detail (label, `security_type`, quantity, cost, market_value,
   issue date, acquisition date, strike) rides in the position payload under
   `lots`.
@@ -133,7 +135,10 @@ see §6):
 `fund`)):
 - `market_value` = `net_asset_value` — the NAV of the latest quarterly
   statement on/before the as-of date (a real per-quarter time series).
-- `book_value` = `capital_contributed` (cost basis paid in).
+- `book_value` = `capital_contributed`: the capital paid in, gross of any
+  capital paid back. A row parsed from a capital-account statement takes
+  the statement's inception-to-date contributions.
+- `acquisition_date` = the fund's first capital call.
 - `quantity` = NULL (an LP interest has no unit count).
 - `commitment` / `called_capital` / `distributions` / `vintage_year` ride
   in the payload.
@@ -142,9 +147,10 @@ Before a fund's first NAV — its first statement can follow its first call
 by years — the interest has no valuation of its own. Leaving it out would
 book each call as a loss in the period it was paid and the first NAV as a
 gain, so from the first call until the first NAV the position is carried at
-the capital paid in less any capital paid back (`market_value` =
-`book_value`), with `valuation_basis: called_capital` in its payload. Each
-fund cash event before the first NAV is a snapshot day.
+the capital paid in less any capital paid back (`market_value`). Its
+`book_value` is the capital paid in alone, as on a NAV row, and its payload
+carries `valuation_basis: called_capital`. Each fund cash event before the
+first NAV is a snapshot day.
 
 So an as-of query sees the held cap-table equity valued at its basis and the
 fund at the right quarter's NAV; after a cap-table exit, only the

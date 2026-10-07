@@ -422,8 +422,10 @@ The collector reconstructs, per dump:
   holding gets an `exited` delta at the acquisition date (`canceled_date`, from
   the option-grant vesting-data).
 - **Fund** — a NAV `held` delta per capital-account statement: the quarterly
-  ending-capital-balance parsed from each statement PDF (the structured
-  partner-metrics supplies only the latest quarter, at its sharing date).
+  ending-capital-balance parsed from each statement PDF, with the
+  statement's inception-to-date capital contributions as
+  `capital_contributed` (the structured partner-metrics supplies only the
+  latest quarter, at its sharing date).
 
 **Valuation — in `securities.market_value`:** held shares →
 `quantity × FMV-as-of(snapshot)`; unexercised options → 0; exited → 0. The FMV

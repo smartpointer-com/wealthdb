@@ -233,7 +233,7 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
-	if err := c.appendFundAt(ctx, t, acct, &batch, active, classesNew, vehicles); err != nil {
+	if err := c.appendFundAt(ctx, t, acct, ledger, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
 	if err := appendFundCarryAt(t, acct, ledger, &batch, active, classesNew, vehicles); err != nil {
@@ -370,8 +370,15 @@ SELECT entity_external_id, security_type, security_external_id,
 		// The holding's acquisition date is the EARLIEST its held lots
 		// carry. A position here aggregates a company's whole cap-table
 		// line, so any later lot's date would say the oldest shares were
-		// acquired more recently than they were.
-		if acq, ok := flowDateUnix(acqStr); ok && (!a.hasAcquired || acq < a.acquiredUnix) {
+		// acquired more recently than they were. A convertible is not
+		// re-issued on a split or transfer the way a certificate is, so
+		// where Carta states no acquisition date its issue date is the day
+		// it was bought.
+		acquired := acqStr
+		if acquired == "" && secType == "convertible" {
+			acquired = isDt
+		}
+		if acq, ok := flowDateUnix(acquired); ok && (!a.hasAcquired || acq < a.acquiredUnix) {
 			a.acquiredUnix, a.hasAcquired = acq, true
 		}
 		if quantity.Valid {
@@ -442,9 +449,10 @@ SELECT entity_external_id, security_type, security_external_id,
 
 // appendFundAt forward-fills the fund LP positions as of t: each fund's latest
 // capital-account delta on/before t (one position per fund). MarketValue =
-// net_asset_value (the NAV at that quarter), BookValue = capital_contributed.
-// Money arrives as decimal strings, parsed exactly.
-func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
+// net_asset_value (the NAV at that quarter), BookValue = capital_contributed,
+// AcquisitionDate = the fund's first capital call. Money arrives as decimal
+// strings, parsed exactly.
+func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, ledger fundLedger, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	const q = `
 SELECT entity_external_id, COALESCE(currency, 'USD'),
        COALESCE(net_asset_value, ''), COALESCE(capital_contributed, ''), payload
@@ -480,6 +488,7 @@ SELECT entity_external_id, COALESCE(currency, 'USD'),
 			AssetClass:           canonical.AssetClassPrivateEquity,
 			Vehicle:              canonical.VehicleFund,
 			Currency:             ccy,
+			AcquisitionDate:      ledger.acquisitionDate(entityID),
 			Payload:              json.RawMessage(payload),
 		}
 		if mv, err := canonical.NewDecimalFromString(nav); err == nil && nav != "" {

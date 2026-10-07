@@ -159,8 +159,9 @@ say what such an account holds.
   states a vested quantity below the whole, the position holds the
   vested quantity. Its value is Plaid's vested value, else the price
   times the vested quantity, else the whole value pro rata. The payload
-  notes the `unvested_quantity`. The book value stays as Plaid states
-  it.
+  notes the `unvested_quantity`. Plaid states the cost of the whole
+  holding only, so the book value is that cost pro rata to the vested
+  quantity.
 - **Cash.** A security is cash when its type is `cash` and it has no
   ticker, a currency code as its ticker, or a `CUR:` ticker. A
   cash-type security with a ticker of its own is a money market fund,
