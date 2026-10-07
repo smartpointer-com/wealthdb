@@ -54,6 +54,7 @@ from pathlib import Path
 from collectorkit import bronze, cli, compress, silver, srcfp
 
 import pdf_parsers
+import pdf_parsers_1099
 import pdf_parsers_daf
 import pdf_parsers_supplied
 
@@ -93,16 +94,24 @@ _DAF_STATEMENT_PARSER_VERSION = (
     f"dafstmt.v{pdf_parsers_daf.PARSER_VERSION}."
     + srcfp.parser_fingerprint([pdf_parsers_daf], _EXTRACTOR_DISTS)
 )
+# The Consolidated 1099 pass reads each PDF twice under two namespaces:
+# first only which form it is, then the lots of the copy it keeps.
+_CONSOLIDATED_1099_PARSER_VERSION = (
+    f"1099.v{pdf_parsers_1099.PARSER_VERSION}."
+    + srcfp.parser_fingerprint([pdf_parsers_1099], _EXTRACTOR_DISTS)
+)
+_CONSOLIDATED_1099_IDENTITY_VERSION = (
+    _CONSOLIDATED_1099_PARSER_VERSION + ".identity")
 
-# Those three values are also the PARSER GENERATIONS stamped into
+# Those values are also the PARSER GENERATIONS stamped into
 # `parser_generations` (migration 0008) once a pass has run, so silver can be
 # asked in plain SQL which parser produced the rows it is holding.
 #
-# All three passes key their rows on text read off the page — a holding's
-# description is part of the `historical_position_snapshots` primary key, an
-# activity row's is inside its id — so a parser edit re-keys them and
-# `INSERT OR REPLACE` has nothing left to replace. The scraped feed already
-# paid for this lesson: migration 0005 rebuilt `transactions` because
+# The three statement passes key their rows on text read off the page — a
+# holding's description is part of the `historical_position_snapshots`
+# primary key, an activity row's is inside its id — so a parser edit re-keys
+# them and `INSERT OR REPLACE` has nothing left to replace. The scraped feed
+# already paid for this lesson: migration 0005 rebuilt `transactions` because
 # Fidelity's mutable description text sat inside the identity and a re-label
 # duplicated the rows.
 #
@@ -117,9 +126,15 @@ _DAF_STATEMENT_PARSER_VERSION = (
 #     the document is re-parsed. Three passes share that table and only
 #     `source_sha256` says which PDF a row came from, so the document is the
 #     largest scope that can be named without reaching into another pass.
+#   * closed lots — by `document_kind`, which names the pass that wrote
+#     them: the supplied pass's with its activity rows
+#     (`_drop_supplied_closed_lots`), and the 1099 pass's when its own
+#     generation moves (`_load_consolidated_1099s`), which is also what
+#     sends that pass back over every dump in bronze.
 STATEMENT_GENERATION_SCOPE = "statement_529"
 DAF_GENERATION_SCOPE = "daf_statement"
 SUPPLIED_GENERATION_SCOPE = "supplied_statement"
+CONSOLIDATED_1099_GENERATION_SCOPE = "consolidated_1099"
 
 
 def _logical_bronze_path(path):
@@ -284,6 +299,10 @@ def main(argv=None):
         if signature is None and supplied_dir.is_dir():
             signature = _read_signature_sidecar(supplied_dir)
 
+        pending = [d for d in dumps if not already_loaded(conn, d)]
+        dumps_1099, rederive_1099s = _dumps_for_1099s(
+            conn, dumps, pending, schema_version)
+
         cache = ParseCache(
             args.parse_cache_dir or _default_parse_cache_dir())
         with PdfParseCoordinator(cache, os.cpu_count() or 1) as coord:
@@ -292,10 +311,16 @@ def main(argv=None):
             # unique parses run across a single pool (workers import
             # pdfplumber once, all cores stay busy) instead of a fresh
             # pool per dump. Cache hits are never enqueued, so a
-            # fully-warm run creates no pool at all.
-            for dump in dumps:
-                if already_loaded(conn, dump):
-                    continue
+            # fully-warm run creates no pool at all. A Consolidated 1099
+            # is enqueued for its identity only: which copies get parsed
+            # in full is known once every identity is.
+            for dump in dumps_1099:
+                for path in _consolidated_1099_candidates(dump):
+                    coord.enqueue(
+                        coord.sha_for(path),
+                        _CONSOLIDATED_1099_IDENTITY_VERSION,
+                        _read_1099_identity_worker, str(path))
+            for dump in pending:
                 for path in _statement_pdf_candidates(dump):
                     coord.enqueue(
                         coord.sha_for(path), _STATEMENT_PARSER_VERSION,
@@ -331,6 +356,9 @@ def main(argv=None):
                     log.exception("load of %s failed; rolled back", dump.name)
             log.info("loaded=%d skipped=%d total=%d",
                      loaded, skipped, len(dumps))
+            if dumps_1099:
+                _load_consolidated_1099s(
+                    conn, dumps_1099, rederive=rederive_1099s, coord=coord)
             _load_supplied_statements_oneshot(
                 conn, supplied_dir, schema_version,
                 signature=signature, coord=coord,
@@ -1197,6 +1225,9 @@ def _classify_documents_pdf(filename):
       <YYYY>-<Nickname>-<NNNN>-CORRECTED-Consolidated-Form-1099.pdf
       <YYYY>-<Nickname>-<NNNN>-Form-1099-Q-Instructions.pdf
           → tax_form, tax_year=<YYYY>
+      Consolidated_Form_1099.pdf, CORRECTED_Consolidated_Form_1099__1.pdf,
+      Form_1099_Q_….pdf
+          → tax_form; the name states no year (the form itself does)
     """
     info = {"file_format": "pdf"}
     if filename.lower().startswith("statement"):
@@ -1206,6 +1237,8 @@ def _classify_documents_pdf(filename):
     if m:
         info["doc_kind"] = "tax_form"
         info["tax_year"] = int(m.group(1))
+    elif "1099" in filename:
+        info["doc_kind"] = "tax_form"
     else:
         info["doc_kind"] = "statement"  # fallback
     return info
@@ -2158,7 +2191,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
         # unstamped, so the next load tries the whole thing again.
         owed_a_purge = silver.stale_generation(
             conn, SUPPLIED_GENERATION_SCOPE, version)
-        inserted = skipped = activity = activity_dup = 0
+        inserted = skipped = activity = activity_dup = sales = 0
         # One ledger for the whole walk: a feed row absorbed by one
         # statement must not be absorbed again by the next.
         claims = _FeedClaims()
@@ -2186,10 +2219,12 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
                 continue
             if owed_a_purge:
                 dropped = _drop_supplied_activity(conn)
+                dropped_lots = (_drop_supplied_closed_lots(conn)
+                                if schema_version >= 10 else 0)
                 log.info(
                     "supplied-statements: the parser has changed since these "
-                    "rows were written; dropped %d activity row(s) for "
-                    "re-derivation", dropped,
+                    "rows were written; dropped %d activity row(s) and %d "
+                    "closed lot(s) for re-derivation", dropped, dropped_lots,
                 )
                 owed_a_purge = False
             _drop_document_holdings(conn, sha)
@@ -2198,6 +2233,8 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
                 conn, path, result, sha, claims=claims)
             activity += act_in
             activity_dup += act_dup
+            if schema_version >= 10:
+                sales += _insert_supplied_closed_lots(conn, path, result, sha)
         synth = _synthesize_missing_account_masters(conn)
         if not owed_a_purge:
             # Either the generation had not moved, or it had and the
@@ -2208,9 +2245,10 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
         conn.commit()
         log.info(
             "supplied-statements: %d holdings rows inserted, %d activity "
-            "row(s) inserted (%d already in the scraped feed), %d PDF(s) "
-            "skipped, %d account master row(s) synthesised",
-            inserted, activity, activity_dup, skipped, synth,
+            "row(s) inserted (%d already in the scraped feed), %d sale(s) "
+            "inserted, %d PDF(s) skipped, %d account master row(s) "
+            "synthesised",
+            inserted, activity, activity_dup, sales, skipped, synth,
         )
     except Exception:
         conn.rollback()
@@ -2456,6 +2494,271 @@ def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
                     aid, period_end, e,
                 )
     return inserted
+
+
+# ============================================================
+# Closed lots (migration 0010)
+# ============================================================
+#
+# Two documents state realized lots: the Form 1099-B pages of a
+# Consolidated 1099 (`document_kind = '1099b'`) and the sales in a
+# supplied statement's Securities Bought & Sold section
+# (`document_kind = 'statement'`). Both land in `closed_lots` as printed;
+# the same sale in both stays twice, for gold to reconcile.
+
+_CLOSED_LOT_COLUMNS = (
+    "lot_id", "document_kind", "account_external_id", "tax_year",
+    "form_prepared", "description", "instrument_key", "cusip", "action",
+    "quantity", "acquired_date", "date_sold", "settlement_date", "proceeds",
+    "cost_basis", "accrued_market_discount",
+    "wash_sale_disallowed", "gain_loss", "fees", "federal_tax_withheld",
+    "term", "covered", "form_8949_box", "specific_share_id", "corrected",
+    "source_sha256", "payload",
+)
+_INSERT_CLOSED_LOT = (
+    f"INSERT OR REPLACE INTO closed_lots ({', '.join(_CLOSED_LOT_COLUMNS)}) "
+    f"VALUES ({', '.join('?' * len(_CLOSED_LOT_COLUMNS))})")
+
+
+def _insert_closed_lot(conn, prefix, identity, occurrence, row):
+    """Insert one `closed_lots` row. Its id is derived from the lot's own
+    content plus its occurrence index within the document, so the same lot
+    read again converges while two identical lots on one document stay two.
+    ``row`` maps column names to values; the rest default to NULL."""
+    occ = occurrence.get(identity, 0)
+    occurrence[identity] = occ + 1
+    row = dict(row, lot_id=prefix + hashlib.sha256(
+        f"{identity}|#{occ}".encode()).hexdigest()[:28])
+    conn.execute(_INSERT_CLOSED_LOT,
+                 tuple(row.get(c) for c in _CLOSED_LOT_COLUMNS))
+
+
+def _bool_column(value):
+    return None if value is None else int(bool(value))
+
+
+def _insert_supplied_closed_lots(conn, pdf_path, parsed, sha):
+    """Insert one `closed_lots` row per sale the parsed supplied statement
+    lists under Securities Bought & Sold. Returns the count.
+
+    The statement prints a sale, not its lots: one row carries the sale's
+    basis, its realized gain and, when every lot shares one, its term. It
+    prints the settlement date only, so `settlement_date` is set and the
+    acquired and sold dates stay NULL."""
+    inserted = 0
+    occurrence: dict[str, int] = {}
+    for account in parsed.get("accounts", []):
+        aid = account.get("account_external_id")
+        if not aid:
+            continue
+        for sale in account.get("sales", []):
+            identity = "|".join(str(sale.get(k)) for k in (
+                "settlement_date", "symbol", "action", "quantity", "amount",
+                "cost_basis"))
+            _insert_closed_lot(conn, "stmt_", f"{aid}|{identity}", occurrence, {
+                "document_kind": "statement",
+                "account_external_id": aid,
+                "description": sale.get("description"),
+                "instrument_key": sale.get("symbol"),
+                "action": sale.get("action"),
+                "quantity": sale.get("quantity"),
+                "settlement_date": sale.get("settlement_date"),
+                "proceeds": sale.get("amount"),
+                "cost_basis": sale.get("cost_basis"),
+                "gain_loss": sale.get("gain_loss"),
+                "fees": sale.get("transaction_cost"),
+                "term": sale.get("term"),
+                "specific_share_id": _bool_column(sale.get("specific_share_id")),
+                "source_sha256": sha,
+                "payload": normalize_payload(
+                    {**sale, "statement": pdf_path.name}),
+            })
+            inserted += 1
+    return inserted
+
+
+def _drop_supplied_closed_lots(conn):
+    """Drop every statement-derived closed lot, for a re-derivation of all
+    of them — the closed-lot counterpart of `_drop_supplied_activity`, and
+    spent at the same moment. `document_kind` names exactly the rows the
+    supplied pass writes."""
+    return conn.execute(
+        "DELETE FROM closed_lots WHERE document_kind = 'statement'").rowcount
+
+
+# A Consolidated 1099 under either naming Fidelity uses:
+# `<YYYY>-<nickname>-<NNNN>-Consolidated-Form-1099.pdf` and
+# `[CORRECTED_]Consolidated_Form_1099[__<n>].pdf`.
+_CONSOLIDATED_1099_RE = re.compile(r"Consolidated[-_]Form[-_]1099",
+                                   re.IGNORECASE)
+
+
+def _consolidated_1099_candidates(dump_dir):
+    """The Consolidated Form 1099 PDFs in a dump's ``documents/``,
+    corrected forms included, in sorted order."""
+    docs_dir = dump_dir / "documents"
+    if not docs_dir.is_dir():
+        return []
+    return [p for p in sorted(docs_dir.glob("*.pdf"))
+            if _CONSOLIDATED_1099_RE.search(p.name)]
+
+
+def _read_1099_identity_worker(path):
+    """ProcessPoolExecutor target: which form one Consolidated 1099 is,
+    or ``{"_error": "<repr>"}``."""
+    try:
+        return pdf_parsers_1099.read_consolidated_1099_identity(path)
+    except Exception as e:
+        return {"_error": repr(e), "path": str(path)}
+
+
+def _parse_1099_worker(path):
+    """Parse one Consolidated 1099 in full, or ``{"_error": "<repr>"}``."""
+    try:
+        return pdf_parsers_1099.parse_consolidated_1099_pdf(path)
+    except Exception as e:
+        return {"_error": repr(e), "path": str(path)}
+
+
+def _held_1099_forms(conn):
+    """``(account, tax_year) -> form_prepared`` of the 1099-B lots silver
+    holds."""
+    return {(aid, year): prepared for aid, year, prepared in conn.execute(
+        "SELECT account_external_id, tax_year, MAX(form_prepared) "
+        "FROM closed_lots WHERE document_kind = '1099b' "
+        "GROUP BY account_external_id, tax_year")}
+
+
+def _latest_1099_copies(dumps, coord):
+    """The copy to keep of each form found in ``dumps``:
+    ``(account, tax_year) -> (prepared, path, sha)``.
+
+    Fidelity re-renders a Consolidated 1099 on every download, so one
+    form arrives in every dump with new bytes. A form is its account and
+    tax year; the copy prepared latest wins, which puts a corrected form
+    over the original, and between copies of one form the later dump's.
+    Only the first pages are read here; the lots are parsed for the
+    copies kept."""
+    chosen = {}
+    for dump in dumps:
+        for path in _consolidated_1099_candidates(dump):
+            sha = coord.sha_for(path)
+            ident = coord.resolve(sha, _CONSOLIDATED_1099_IDENTITY_VERSION,
+                                  _read_1099_identity_worker, str(path))
+            key = (ident.get("account_external_id"), ident.get("tax_year"))
+            if "_error" in ident or None in key or not ident.get("prepared"):
+                log.warning(
+                    "1099: %s/%s states no account, tax year or prepared "
+                    "date; skipping (%s)", dump.name, path.name,
+                    ident.get("_error", "unrecognised layout"))
+                continue
+            best = chosen.get(key)
+            if best is None or ident["prepared"] >= best[0]:
+                chosen[key] = (ident["prepared"], path, sha)
+    return chosen
+
+
+def _replace_1099_lots(conn, parsed, sha):
+    """Replace the 1099-B lots of the form ``parsed`` is a copy of with
+    its own. Returns the number of lots written."""
+    aid = parsed["account_external_id"]
+    year = parsed["tax_year"]
+    conn.execute(
+        "DELETE FROM closed_lots WHERE document_kind = '1099b' "
+        "AND account_external_id = ? AND tax_year = ?", (aid, year))
+    occurrence: dict[str, int] = {}
+    for lot in parsed.get("lots", []):
+        identity = "|".join(str(lot.get(k)) for k in (
+            "form_8949_box", "term", "covered", "cusip", "description",
+            "action", "quantity", "acquired_date", "date_sold", "proceeds",
+            "cost_basis"))
+        _insert_closed_lot(conn, "1099b_", f"{aid}|{year}|{identity}",
+                           occurrence, {
+            "document_kind": "1099b",
+            "account_external_id": aid,
+            "tax_year": year,
+            "form_prepared": parsed.get("prepared"),
+            "description": lot.get("description"),
+            "instrument_key": lot.get("symbol") or lot.get("cusip"),
+            "cusip": lot.get("cusip"),
+            "action": lot.get("action"),
+            "quantity": lot.get("quantity"),
+            "acquired_date": lot.get("acquired_date"),
+            "date_sold": lot.get("date_sold"),
+            "proceeds": lot.get("proceeds"),
+            "cost_basis": lot.get("cost_basis"),
+            "accrued_market_discount": lot.get("accrued_market_discount"),
+            "wash_sale_disallowed": lot.get("wash_sale_disallowed"),
+            "gain_loss": lot.get("gain_loss"),
+            "federal_tax_withheld": lot.get("federal_tax_withheld"),
+            "term": lot.get("term"),
+            "covered": _bool_column(lot.get("covered")),
+            "form_8949_box": lot.get("form_8949_box"),
+            "corrected": _bool_column(lot.get("corrected")),
+            "source_sha256": sha,
+            "payload": normalize_payload(lot),
+        })
+    return len(parsed.get("lots", []))
+
+
+def _dumps_for_1099s(conn, dumps, pending, schema_version):
+    """Which dumps the 1099 pass reads, and whether it re-derives:
+    ``(dumps, rederive)``. It reads the dumps this run loads, or every
+    dump in bronze when its parser has changed since the lots silver
+    holds were written (or none have been)."""
+    if schema_version < 10:
+        return [], False
+    if silver.stale_generation(conn, CONSOLIDATED_1099_GENERATION_SCOPE,
+                               _CONSOLIDATED_1099_PARSER_VERSION):
+        return list(dumps), True
+    return list(pending), False
+
+
+def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None):
+    """Load the Form 1099-B lots of every Consolidated 1099 in ``dumps``
+    into `closed_lots`, one form at a time.
+
+    A form whose copy silver already holds, or holds a later one of, is
+    passed over; otherwise its lots replace the ones held. With
+    ``rederive`` — the parser has changed since silver's 1099-B rows were
+    written, or none were — ``dumps`` is every dump in bronze, and the
+    held rows are all dropped before the first form is written, so every
+    form is re-derived. The drop waits for a form that parsed, for the
+    same reason the supplied pass holds its purge: a run on which no PDF
+    parses keeps the rows it has and leaves the generation unstamped."""
+    coord = coord or _transient_coordinator()
+    try:
+        chosen = _latest_1099_copies(dumps, coord)
+        conn.execute("BEGIN")
+        held = {} if rederive else _held_1099_forms(conn)
+        owed_a_purge = rederive
+        forms = lots = 0
+        for key, (prepared, path, sha) in sorted(chosen.items()):
+            if held.get(key) is not None and held[key] >= prepared:
+                continue
+            parsed = coord.resolve(sha, _CONSOLIDATED_1099_PARSER_VERSION,
+                                   _parse_1099_worker, str(path))
+            if "_error" in parsed:
+                log.warning("1099: parse failed for %s: %s",
+                            path.name, parsed["_error"])
+                continue
+            if owed_a_purge:
+                dropped = conn.execute(
+                    "DELETE FROM closed_lots WHERE document_kind = '1099b'"
+                ).rowcount
+                log.info("1099: re-deriving every form for this parser "
+                         "generation; dropped %d lot(s)", dropped)
+                owed_a_purge = False
+            lots += _replace_1099_lots(conn, parsed, sha)
+            forms += 1
+        if not owed_a_purge:
+            silver.stamp_generation(conn, CONSOLIDATED_1099_GENERATION_SCOPE,
+                                    _CONSOLIDATED_1099_PARSER_VERSION)
+        conn.commit()
+        log.info("1099: %d form(s) read, %d lot(s) written", forms, lots)
+    except Exception:
+        conn.rollback()
+        log.exception("1099 load failed; rolled back")
 
 
 # Default portfolio + management classification for an account

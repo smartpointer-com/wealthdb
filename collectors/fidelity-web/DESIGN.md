@@ -369,6 +369,7 @@ databases always conform to the latest schema.
 | `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's structural columns + a per-file occurrence index; §3.3 — file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
 | `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `cost_basis` and `unrealized_gain_loss` (USD as printed; supplied statements only, NULL where the statement states none), `currency`, `source_sha256`; rest in `payload`. Populated from two PDF archives — scraped 529 statements (`pdf_parsers.parse_statement_pdf()`) and statements supplied out-of-band under `<bronze-dir>/supplied-statements/` (`pdf_parsers_supplied.parse_supplied_statement_pdf()`). See §4.5. |
+| `closed_lots` | event | synthetic `lot_id` (content plus an occurrence index within the document) | `document_kind` (`1099b` / `statement`), `account_external_id`, `tax_year`, `form_prepared`, `description`, `instrument_key`, `cusip`, `action`, `quantity`, `acquired_date` (ISO, or the form's own `Various` / `Unknown`), `date_sold`, `settlement_date`, `proceeds`, `cost_basis`, `accrued_market_discount`, `wash_sale_disallowed`, `gain_loss`, `fees`, `federal_tax_withheld`, `term` (`short` / `long`), `covered`, `form_8949_box`, `specific_share_id`, `corrected`, `currency`, `source_sha256`; rest in `payload`. One row per realized lot as a document prints it: the Form 1099-B lots of a Consolidated 1099 (§4.6) and the sales of a supplied statement (§4.5). The same sale in both stays twice. |
 | `parser_generations` | meta | `scope` | `generation`, `stamped_at`. Which generation of a document parser produced the rows a pass is holding — the same fingerprint the parse cache is keyed on. See §4.5. |
 
 Notes:
@@ -511,19 +512,32 @@ statement PDFs supplied out-of-band and dropped in. These use a
 different layout (`pdf_parsers_supplied.py`) and are loaded from a
 directory rather than the scraped dump tree.
 
-They carry two things, not one. **Holdings** rebuild the position
-archive (`historical_position_snapshots`). **Account-level activity**
+They carry three things. **Holdings** rebuild the position
+archive (`historical_position_snapshots`), with each holding's cost
+basis and unrealized gain or loss as printed. **Account-level activity**
 goes to `transactions`: the statement's `Withdrawals`, `Deposits` and
 `Fees and Charges` sections — wires, cheques, tax payments and
 account fees. The scraped activity feed omits these rows, and for
 the era before the first scrape the statement is the only source.
 The feed's own `REDEMPTION FROM CORE ACCOUNT` row books the cash
-being RAISED for such a payment but never the payment.
+being RAISED for such a payment but never the payment. **Sales** go to
+`closed_lots` (`document_kind = 'statement'`): each sale the
+`Securities Bought & Sold` section lists, with its printed basis,
+transaction cost (`fees`) and amount, the term and gain or loss
+printed under it, and the `s` that marks Specific Share
+identification. The section prints a settlement date and no trade or
+acquired date, so a sale row has only `settlement_date`. The price
+stays in `payload`, because a bond prints it in percent of par. A
+sale whose lots span both terms prints one gain line per term; its
+`gain_loss` is their sum and its `term` NULL, with the lines in
+`payload`. A sale and the `Cancelled Sell` that reverses it on the
+same statement are both left out.
 
 Everything else the statement prints under Activity is deliberately
 left alone, because the feed does carry it: dividends and interest,
-the corporate actions under `Other Activity In` / `Out`, and the
-inter-account journals under `Exchanges In` / `Out`.
+the corporate actions under `Other Activity In` / `Out`, the
+inter-account journals under `Exchanges In` / `Out`, and the purchases
+under `Securities Bought & Sold`.
 
 Two rows for one event are avoided twice over. Within the statement
 archive an id derived from the row's own content converges the
@@ -592,6 +606,12 @@ grain that family of rows can be named at:
   residual: a row whose last writer was a statement since removed
   from bronze keeps that statement's sha, so the statement still
   present will not delete it. `load --force` is the repair.
+- **Closed lots** — by `document_kind`, which names the pass that
+  wrote them. The supplied pass drops its `statement` rows together
+  with its activity rows, under the same held purge. The 1099 pass
+  (§4.6) keeps its own generation; when it moves, the pass reads every
+  dump in bronze again and drops its `1099b` rows once the first form
+  has parsed.
 
 A document is dropped only once its parse has **succeeded**. One that
 fails to parse, fails its signature guard or fails reconciliation
@@ -611,12 +631,37 @@ the Tax forms sub-page. The download anchors carry aria-labels
 ending in ` (pdf)` exclusively; an early DOM snapshot suggested
 CSV / XML variants may exist for some 1099 types, but live
 testing found no such variants surface in practice. Silver
-stores the PDFs in `documents` keyed by
-`content_sha256` with `doc_kind='tax_form'` and the parsed
-`tax_year`. Structured per-lot extraction (1099 detail into a
-`tax_form_rows` table) is a follow-up; a parser would mirror
-the 529-statement reconstruction implemented in §4.5
-(pdfplumber + per-line layout heuristics).
+stores the PDFs in `documents` keyed by `content_sha256` with
+`doc_kind='tax_form'`. `tax_year` is set when the file name
+states it (`<YYYY>-<nickname>-<NNNN>-Consolidated-Form-1099.pdf`);
+the `Consolidated_Form_1099__<n>.pdf` naming states none.
+
+The Form 1099-B pages are parsed into `closed_lots`
+(`document_kind = '1099b'`, `pdf_parsers_1099.py`): one row per lot
+with its quantity, acquired and sold dates, proceeds, cost basis,
+accrued market discount, wash sale loss disallowed, gain or loss and
+federal withholding. The section a lot prints under names its Form
+8949 box (A, B, D, E), and with it the term and whether the basis is
+reported to the IRS (`covered`). A section whose term is unknown names
+no single box.
+
+The form leaves an empty cell blank rather than printing a zero, so
+two rows can print the same number of figures in different columns.
+The parser therefore reads placed words, not text, and assigns each
+figure to the column whose box label (`1d`, `1e`, `1f`, `1g`,
+`Gain/Loss`, `4`) it sits under.
+
+**One form, many copies.** Fidelity re-renders a Consolidated 1099
+on every download: the same form arrives in each dump with new bytes,
+so the documents table holds one row per copy and a form cannot be
+keyed on its sha. The pass keys a form on its account and tax year,
+both read off the form, and keeps the copy prepared latest (the page
+footer's date). A corrected form is prepared later than the original
+and so replaces its lots. Each copy is first read only far enough to
+learn which form it is; the lots are parsed for the copy kept, and
+only when it is newer than the one silver holds. The pass reads the
+dumps a load ingests, or every dump in bronze when its parser
+generation has moved (§4.5.1).
 
 ### 4.7 Balances + Performance pages
 
@@ -1029,13 +1074,14 @@ other open items are in §11.
 ## 11. Open questions
 
 ### 11.1 PDF regeneration
-Does Fidelity regenerate statement / 1099 PDFs per request
-(different sha256 each time, same logical content) like Schwab
-does? Resolve by downloading the same statement twice and diffing
-sha256s. The silver loader dedups on `content_sha256`, which
-assumes stable hashes; if they turn out to be regenerated, switch
-to `(account, doc_date, doc_kind, filename)` dedup à la
-schwab-web.
+The Consolidated 1099 is regenerated per request: each download
+carries the same form with new bytes. `documents` keeps one row per
+copy; `closed_lots` keys the form on its account and tax year instead
+(§4.6). Whether statement PDFs are regenerated the same way is open.
+Resolve by downloading the same statement twice and diffing sha256s.
+The silver loader dedups statements on `content_sha256`, which assumes
+stable hashes; if they turn out to be regenerated, switch to
+`(account, doc_date, doc_kind, filename)` dedup à la schwab-web.
 
 ### 11.2 GraphQL endpoint
 `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql`
@@ -1333,10 +1379,10 @@ force-including it.
 **The completeness invariant (fleet lesson).** Gold's report macros
 anchor holdings on the latest positions-bearing snapshot **per
 source**, treating every such snapshot as a complete observation of
-that source. A partial dump therefore corrupts: the retired
-`--mode daf` produced a one-account positions snapshot that became
-the fidelity anchor and zeroed every retail holding. The invariant
-is enforced at both ends:
+that source. A partial dump therefore corrupts: a mode that
+downloads only some of a source's accounts produces a positions
+snapshot that becomes the source's anchor and zeroes every holding
+it omits. The invariant is enforced at both ends:
 
 - **Download**: every positions-bearing mode covers both channels —
   `all` runs the full DAF phase, `positions` runs the master + pool

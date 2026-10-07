@@ -1255,6 +1255,7 @@ def test_statements_state_no_cost_basis(tmp_path, monkeypatch):
         "FROM historical_position_snapshots").fetchone()[1:] == (0, 0)
     assert conn.execute(
         "SELECT COUNT(*) FROM historical_position_snapshots").fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM closed_lots").fetchone()[0] == 0
 
 
 # ============================================================

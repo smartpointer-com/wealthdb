@@ -46,9 +46,11 @@ Coverage scope:
   the December monthly statement at the same period end, so
   they're skipped.
 * Holdings sections per account. Of the Activity blocks only
-  Withdrawals, Deposits and Fees and Charges are read (see
-  ``ACTIVITY_SECTIONS``); the income, transfer and trade blocks
-  are not, nor are Income Summary / Estimated Cash Flow.
+  Withdrawals, Deposits and Fees and Charges are read as activity
+  (see ``ACTIVITY_SECTIONS``), and the sales of Securities Bought &
+  Sold as closed lots (see ``parse_sales_block``); the income and
+  transfer blocks are not, nor are Income Summary / Estimated Cash
+  Flow.
 * That limit is invisible on an account the live activity feed
   also covers, which carries the rest. For an account the feed no
   longer returns, such as a closed one, the ledger is whatever
@@ -80,7 +82,7 @@ text layout unlocks the swap for both modules (see the note in
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
 
@@ -414,6 +416,192 @@ def parse_activity_block(account_text, *, period=None,
     return rows
 
 
+# ============================================================
+# Per-account SECURITIES BOUGHT & SOLD — the sales
+# ============================================================
+#
+# The section lists every trade the account settled in the period.
+# Only the sales are read: a sale is the one row that states a cost
+# basis and, on a continuation line, its term and realized gain or loss.
+# A purchase states neither, and the scraped activity feed carries the
+# trades themselves.
+#
+# A row reads `[s]MM/DD <security name> <symbol or CUSIP> <action>
+# <quantity> <price> <cost basis> <transaction cost> <amount>`. The leading
+# `s` marks a security whose basis follows Specific Share
+# identification. The date is the settlement date; the statement prints
+# no trade date. Text that wraps below a row (the rest of the name,
+# trade notes, a lot reference) never opens with a date, so a row ends
+# at the next dated line.
+
+_BOUGHT_SOLD_HEADING_RE = re.compile(
+    r"^Securities Bought & Sold(?: \(continued\))?$")
+
+# The actions a sale prints under. `Cancelled Sell` is not a sale: it
+# reverses one, and `parse_sales_block` pairs it off.
+_SALE_ACTIONS = ("You Sold", "Redeemed")
+_CANCELLED_SALE = "Cancelled Sell"
+
+_SALE_ROW_RE = re.compile(
+    r"^(?P<ssid>s)?(?P<mm>\d{2})/(?P<dd>\d{2})\s+(?P<desc>.+?)\s+"
+    r"(?P<symbol>\S+)\s+"
+    r"(?P<action>" + "|".join(map(re.escape, (*_SALE_ACTIONS, _CANCELLED_SALE)))
+    + r")\s+(?P<tail>.+)$")
+
+# Any trade row, sale or not: it ends the row above it.
+_TRADE_ROW_RE = re.compile(r"^s?\d{2}/\d{2}\s")
+
+# `Short-term loss: $12.34` — on its own line or after a wrapped note.
+_TERM_RE = re.compile(
+    r"\b(?P<term>Short|Long)-term (?P<sign>gain|loss): \$(?P<amt>[\d,]+\.\d{2})")
+
+# Slack, in dollars, when telling a fee from a basis by the row's arithmetic.
+_AMOUNT_TOLERANCE = 0.015
+
+
+@dataclass
+class SuppliedSaleRow:
+    """One sale from the Securities Bought & Sold section, as printed.
+
+    ``quantity`` and ``amount`` are magnitudes: the statement prints the
+    quantity of a sale negative. ``cost_basis`` is None where the
+    statement prints ``-`` or ``unknown``. ``term`` and ``gain_loss``
+    come from the continuation lines, one per term and sign the sale
+    realized: ``gain_loss`` is their sum, and ``term`` is set only when
+    every line names the same term. Both stay None when there is none.
+    """
+    settlement_date: date_cls
+    description: str
+    symbol: str                       # Symbol/CUSIP column as printed
+    action: str
+    specific_share_id: bool
+    quantity: float | None
+    price: float | None               # per unit, or percent of par for a bond
+    cost_basis: float | None
+    transaction_cost: float | None    # signed as printed
+    amount: float | None              # transaction amount
+    term: str | None = None           # 'short' | 'long'
+    gain_loss: float | None = None
+    cells: tuple = ()                 # the numeric cells as printed
+    terms: list = field(default_factory=list)  # every (term, signed gain) printed
+
+
+def _sale_cells(tokens):
+    """Map a sale row's numeric tail onto its five columns: quantity,
+    price, total cost basis, transaction cost, amount.
+
+    pdfplumber drops an empty cell instead of printing it, so a row
+    with one blank between price and amount yields four tokens. The
+    one in the middle is then the transaction cost when it closes the
+    row's arithmetic (``quantity × price + transaction cost = amount``)
+    and the cost basis otherwise; with no price to test against it is
+    left unassigned rather than guessed.
+    """
+    vals = [_parse_number(t.replace("$", "")) for t in tokens]
+    if len(vals) >= 5:
+        return tuple(vals[-5:])
+    if len(vals) == 4:
+        qty, price, middle, amount = vals
+        if middle is None:
+            return qty, price, None, None, amount
+        if qty is not None and price is not None and amount is not None:
+            if abs(abs(qty) * price + middle - amount) <= _AMOUNT_TOLERANCE:
+                return qty, price, None, middle, amount
+            return qty, price, middle, None, amount
+        return qty, price, None, None, amount
+    return None
+
+
+def parse_sales_block(account_text, *, period=None):
+    """Extract the sales from one per-account section's Securities
+    Bought & Sold listing. Returns [] when the section is absent or
+    lists only purchases.
+
+    A cancelled sale prints twice: the sale, then a ``Cancelled Sell``
+    row with the opposite quantity and amount. Neither is a realized
+    sale, so a pair matched on symbol, quantity and amount drops out
+    together. A cancellation with no sale above it on the statement
+    stays, under its own action, so a reader can pair it across
+    statements.
+    """
+    rows = []
+    pending = None
+    inside = False
+
+    def flush():
+        nonlocal pending
+        if pending is not None:
+            if pending.terms:
+                pending.gain_loss = round(sum(v for _, v in pending.terms), 2)
+                kinds = {t for t, _ in pending.terms}
+                if len(kinds) == 1:
+                    pending.term = kinds.pop()
+            rows.append(pending)
+            pending = None
+
+    for raw in account_text.splitlines():
+        ln = raw.strip()
+        if not ln:
+            continue
+        if _BOUGHT_SOLD_HEADING_RE.match(ln):
+            inside = True
+            continue
+        if not inside:
+            continue
+        if ln.startswith("Total ") or ln.startswith("Net "):
+            flush()
+            inside = False
+            continue
+        m = _SALE_ROW_RE.match(ln)
+        if m:
+            flush()
+            d = _activity_row_date(int(m["mm"]), int(m["dd"]), period)
+            cells = _sale_cells(m["tail"].split())
+            if d is None or cells is None:
+                continue
+            qty, price, basis, transaction_cost, amount = cells
+            pending = SuppliedSaleRow(
+                settlement_date=d,
+                description=" ".join(m["desc"].split()),
+                symbol=m["symbol"],
+                action=m["action"],
+                specific_share_id=bool(m["ssid"]),
+                quantity=abs(qty) if qty is not None else None,
+                price=price,
+                cost_basis=basis,
+                transaction_cost=transaction_cost,
+                amount=abs(amount) if amount is not None else None,
+                cells=tuple(m["tail"].split()),
+            )
+            continue
+        if _TRADE_ROW_RE.match(ln):
+            flush()
+            continue
+        if pending is not None:
+            for t in _TERM_RE.finditer(ln):
+                v = float(t["amt"].replace(",", ""))
+                pending.terms.append(
+                    (t["term"].lower(), -v if t["sign"] == "loss" else v))
+    flush()
+    return _drop_cancelled_sales(rows)
+
+
+def _drop_cancelled_sales(rows):
+    """Drop each sale together with the ``Cancelled Sell`` row that
+    reverses it: same symbol, same quantity, same amount."""
+    out = list(rows)
+    for cancel in [r for r in rows if r.action == _CANCELLED_SALE]:
+        match = next(
+            (r for r in out if r.action != _CANCELLED_SALE
+             and r.symbol == cancel.symbol and r.quantity == cancel.quantity
+             and r.amount == cancel.amount),
+            None)
+        if match is not None:
+            out.remove(match)
+            out.remove(cancel)
+    return out
+
+
 def parse_holdings_block(account_text, *, expected_signature=None):
     """Extract every holdings row from a per-account section.
 
@@ -648,6 +836,7 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
                     "account_external_id": "NNNNNNNNN",
                     "holdings": [{...}, ...],
                     "activity": [{...}, ...],
+                    "sales": [{...}, ...],
                 },
                 ...
             ],
@@ -679,12 +868,32 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
         activity = parse_activity_block(
             block.text, period=period, expected_signature=expected_signature,
         )
-        # A block with neither holdings nor activity is a cover page
+        sales = parse_sales_block(block.text, period=period)
+        # A block with no holdings, activity or sales is a cover page
         # or a summary spread, not an account section.
-        if not rows and not activity:
+        if not rows and not activity and not sales:
             continue
         accounts_out.append({
             "account_external_id": block.account_external_id,
+            "sales": [
+                {
+                    "settlement_date": r.settlement_date.isoformat(),
+                    "description": r.description,
+                    "symbol": r.symbol,
+                    "action": r.action,
+                    "specific_share_id": r.specific_share_id,
+                    "quantity": r.quantity,
+                    "price": r.price,
+                    "cost_basis": r.cost_basis,
+                    "transaction_cost": r.transaction_cost,
+                    "amount": r.amount,
+                    "term": r.term,
+                    "gain_loss": r.gain_loss,
+                    "cells": list(r.cells),
+                    "terms": [list(t) for t in r.terms],
+                }
+                for r in sales
+            ],
             "activity": [
                 {
                     "date": r.date.isoformat(),

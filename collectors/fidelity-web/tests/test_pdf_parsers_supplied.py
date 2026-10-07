@@ -364,3 +364,133 @@ def test_an_arrears_row_resolves_backwards_not_into_the_future():
         "11/12 Placeholder Adr Each Rep 1 Ord -10.00")
     row = next(r for r in _activity(text) if r.amount == -10.00)
     assert row.date == date(2025, 11, 12)
+
+
+# ============================================================
+# Securities Bought & Sold — the sales
+# ============================================================
+
+# One account's Bought & Sold listing across a page break: a purchase,
+# a Specific Share sale with its gain on a wrapped note line, a sale
+# whose lots span both terms, a sale with an unknown basis, a sale and
+# its cancellation, two four-cell rows (one blank charge, one blank
+# basis), and a bond redemption. Every value is invented.
+_SALES_TEXT = """\
+INVESTMENT REPORT
+March 1, 2026 - March 31, 2026
+Account # 100-000001
+PLACEHOLDER HOLDER - INDIVIDUAL
+Activity
+Securities Bought & Sold
+Settlement Symbol/ Total Transaction
+Date Security Name CUSIP Description Quantity Price Cost Basis Cost Amount
+03/03 EXAMPLE CORP COM 000000AA0 You Bought 10.000 $50.00000 - -$500.00
+s03/04 SAMPLE INDS INC 000000BB0 You Sold -4.000 25.00000 80.00 -0.02 99.98
+AVERAGE PRICE TRADE DETAILS ON Short-term gain: $19.98
+REQUEST refer to confirm for Lot detail
+s03/05 PLACEHOLDER HLDGS COM 000000CC0 You Sold -10.000 12.00000 150.00 -0.05 119.95
+CL A Short-term gain: $4.95
+Long-term loss: $35.00
+refer to confirm for Lot detail
+03/06 MYSTERY CO 000000DD0 You Sold -5.000 20.00000 unknown -0.03 99.97
+7 of 20
+INVESTMENT REPORT
+March 1, 2026 - March 31, 2026
+Account # 100-000001
+PLACEHOLDER HOLDER - INDIVIDUAL
+Activity
+Securities Bought & Sold (continued)
+Settlement Symbol/ Total Transaction
+Date Security Name CUSIP Description Quantity Price Cost Basis Cost Amount
+03/09 EXAMPLE CORP COM 000000AA0 You Sold -2.000 50.00000 - 100.00
+03/09 EXAMPLE CORP COM 000000AA0 Cancelled Sell 2.000 50.00000 - -100.00
+CXL PLACEHOLDER NOTE
+s03/10 SAMPLE INDS INC 000000BB0 You Sold -1.000 30.00000 -0.01 29.99
+s03/11 SAMPLE INDS INC 000000BB0 You Sold -1.000 30.00000 21.00 30.00
+Long-term gain: $9.00
+s03/12 EXAMPLE STATE BOND 000000EE0 Redeemed -1,000.000 - $1,000.00 - $1,000.00
+Long-term loss: $12.50
+Total Securities Bought -$500.00
+Total Securities Sold $1,479.89 -$0.11
+Dividends, Interest & Other Income
+03/13 EXAMPLE CORP COM 000000AA0 You Sold -9.000 1.00000 9.00 - 9.00
+"""
+
+
+def _sales(text=_SALES_TEXT):
+    period = ppt.parse_statement_period(text)
+    blocks = ppt.parse_account_blocks(text)
+    assert len(blocks) == 1
+    return ppt.parse_sales_block(blocks[0].text, period=period)
+
+
+def test_sales_are_read_and_purchases_are_not():
+    rows = _sales()
+    assert [r.settlement_date.day for r in rows] == [4, 5, 6, 10, 11, 12]
+    assert {r.action for r in rows} == {"You Sold", "Redeemed"}
+
+
+def test_a_sale_carries_its_printed_basis_charges_and_term():
+    sale = _sales()[0]
+    assert sale.settlement_date == date(2026, 3, 4)
+    assert (sale.description, sale.symbol) == ("SAMPLE INDS INC", "000000BB0")
+    assert sale.specific_share_id is True
+    assert (sale.quantity, sale.price, sale.cost_basis) == (4.0, 25.0, 80.0)
+    assert (sale.transaction_cost, sale.amount) == (-0.02, 99.98)
+    assert (sale.term, sale.gain_loss) == ("short", 19.98)
+
+
+def test_a_sale_over_both_terms_names_no_single_term():
+    sale = _sales()[1]
+    assert sale.term is None
+    assert sale.gain_loss == -30.05
+    assert sale.terms == [("short", 4.95), ("long", -35.0)]
+
+
+def test_an_unknown_basis_is_null_and_so_is_a_missing_term():
+    sale = _sales()[2]
+    assert sale.cost_basis is None
+    assert sale.cells[2] == "unknown"
+    assert sale.specific_share_id is False
+    assert (sale.term, sale.gain_loss) == (None, None)
+
+
+def test_a_sale_and_its_cancellation_drop_out_together():
+    assert not [r for r in _sales() if r.settlement_date.day == 9]
+
+
+def test_a_cancellation_with_no_sale_on_the_statement_stays():
+    text = _SALES_TEXT.replace(
+        "03/09 EXAMPLE CORP COM 000000AA0 You Sold -2.000 50.00000 - 100.00\n", "")
+    cancel = [r for r in _sales(text) if r.settlement_date.day == 9]
+    assert [r.action for r in cancel] == ["Cancelled Sell"]
+
+
+def test_a_blank_cell_is_told_apart_by_the_row_arithmetic():
+    by_day = {r.settlement_date.day: r for r in _sales()}
+    # 1 × 30.00 − 0.01 = 29.99: the middle figure is the charge.
+    assert (by_day[10].cost_basis, by_day[10].transaction_cost) == (None, -0.01)
+    # 1 × 30.00 + 21.00 ≠ 30.00: the middle figure is the basis.
+    assert (by_day[11].cost_basis, by_day[11].transaction_cost) == (21.0, None)
+
+
+def test_a_redemption_reads_its_basis_without_a_price():
+    bond = _sales()[-1]
+    assert (bond.action, bond.price, bond.cost_basis) == ("Redeemed", None, 1000.0)
+    assert (bond.quantity, bond.amount) == (1000.0, 1000.0)
+    assert (bond.term, bond.gain_loss) == ("long", -12.5)
+
+
+def test_the_listing_ends_at_its_totals():
+    # A dated row after the totals belongs to another section.
+    assert all(r.settlement_date.day != 13 for r in _sales())
+
+
+def test_the_pdf_entry_point_returns_the_sales(monkeypatch):
+    monkeypatch.setattr(ppt, "_extract_pdf_text", lambda path: _SALES_TEXT)
+    out = ppt.parse_supplied_statement_pdf("/fake/path.pdf")
+    (account,) = out["accounts"]
+    first = account["sales"][0]
+    assert first["settlement_date"] == "2026-03-04"
+    assert first["specific_share_id"] is True
+    assert first["terms"] == [["short", 19.98]]

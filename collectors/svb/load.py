@@ -93,6 +93,7 @@ _MIGRATIONS = (
     "0003_management_style.sql",
     "0004_historical_position_snapshots.sql",
     "0009_historical_cost_basis.sql",
+    "0010_closed_lots.sql",
 )
 
 
