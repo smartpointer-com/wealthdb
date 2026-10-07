@@ -167,13 +167,14 @@ IRS-level categorisation.
 
 ### Gold-layer mitigation
 
-**The 1099-B parser now lives in silver** (`source='form_1099b'`,
+**The 1099-B parser lives in silver** (`source='form_1099b'`,
 DESIGN.md §6a): per-lot proceeds, cost basis, acquisition date,
-term, and wash-sale flag land in the row `payload`. Gold projects
-these into its `tax_lots` table and treats them as
-authoritative-for-sales (see §8). Remaining 1099 sections (DIV /
-INT / OID) are still unparsed. **Do not** modify the api silver —
-the data simply isn't in the api.
+term, and wash-sale flag land in the row `payload`. Gold ingests
+each lot as a `sell` transaction, authoritative for sales within its
+tax year (see §8). The lot detail stays in the transaction's
+`payload`; gold has no lot table. Remaining 1099 sections (DIV /
+INT / OID) are unparsed. **Do not** modify the api silver — the
+data simply isn't in the api.
 
 ## 5. No live position snapshots in web silver
 

@@ -1130,8 +1130,43 @@ _POSITIONS_HEADER_RE = re.compile(
 # "TotalExchangeTradedFunds", "Total Exchange Traded Funds", etc.
 # pdfplumber emits the squashed form (no spaces between Total
 # and the section); pypdfium2 emits the spaced form. Accept
-# both.
-_POSITIONS_FOOTER_RE = re.compile(r"^Total\s*[A-Z][\w &/+\-]*\s*\$")
+# both. The first total is parenthesised when it is negative
+# ("Total Options ($1,000.00)", a short option), and Fixed Income
+# prints a quantity total before it ("Total Fixed Income
+# 10,000.0000 $9,900.00"). A footer that fails to match leaves the
+# section open, and the lines after it parse as holdings.
+_POSITIONS_FOOTER_RE = re.compile(
+    r"^Total\s*[A-Z][\w &/+\-]*?\s*(?:[\d,]+\.\d+\s+)?\(?\$")
+
+# An option holding's lines (2025+ layout), as pypdfium2 wraps them:
+#   XMPL                  underlying, alone on its line
+#   01/16/20              expiry, its year split across two lines
+#   26 50.00              rest of the year, strike
+#   C                     call or put
+#   CALL EXAMPLE CORP     description
+#   ,
+#   $50 EXP 01/16/26
+#   1.0000 2.50000 250.00 200.00 50.00 <1%
+# A short holding prints its quantity on a line of its own, followed
+# by the "S" endnote, before the remaining columns:
+#   (1.0000)
+#   S
+#   2.50000 (250.00) (300.00) 50.00
+# A row starts at an underlying alone on its line whose next line
+# opens with the expiry; the description word ("CALL") and the
+# endnote ("S") fit the ticker shape too, and must not.
+_OPTION_EXPIRY_LINE_RE = re.compile(r"^\d{2}/\d{2}/\d{2}")
+# The contract, read off the start of the block: underlying, expiry
+# (its year possibly split), strike, call or put. The key matches
+# the one the transactions parser gives the contract's trades.
+_OPTION_CONTRACT_RE = re.compile(
+    r"^(?P<under>\S+)\s+(?P<md>\d{2}/\d{2}/)(?P<c>\d{2})\s*(?P<y>\d{2})"
+    r"\s+(?P<strike>[\d,]*\.\d+)\s*(?P<cp>[CP])\b")
+
+# Sections whose holdings wrap their columns over several lines, so
+# the columns of one holding are gathered from the lines around the
+# first line that carries three or more of them.
+_WRAPPED_COLUMN_SECTIONS = frozenset({"Options", "Fixed Income"})
 
 # Per-row leading token must look like a ticker or CUSIP. We
 # reuse _TICKER_RE / _CUSIP_RE from the transactions parser.
@@ -1215,7 +1250,7 @@ def _parse_positions_new(text: str) -> list[dict]:
             rows.append(parsed)
         buffer, raw_buffer = [], []
 
-    for raw in lines:
+    for idx, raw in enumerate(lines):
         line = raw.strip()
         m_head = _POSITIONS_HEADER_RE.match(line)
         if m_head:
@@ -1244,8 +1279,14 @@ def _parse_positions_new(text: str) -> list[dict]:
         # deny-set below it would split the ADR's block and steal
         # the real ticker's numbers (dropping the ADR itself and
         # emitting a spurious "SPONSORED" holding).
-        if ((_TICKER_RE.match(tokens[0]) or _CUSIP_RE.match(tokens[0]))
-                and tokens[0] not in _POSITIONS_CONT_WORDS):
+        starts_row = (
+            (_TICKER_RE.match(tokens[0]) or _CUSIP_RE.match(tokens[0]))
+            and tokens[0] not in _POSITIONS_CONT_WORDS)
+        if starts_row and section == "Options":
+            nxt = next((ln.strip() for ln in lines[idx + 1:] if ln.strip()), "")
+            starts_row = (len(tokens) == 1
+                          and bool(_OPTION_EXPIRY_LINE_RE.match(nxt)))
+        if starts_row:
             _flush()
             buffer = [line]
             raw_buffer = [raw]
@@ -1795,6 +1836,9 @@ def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
     if not (_TICKER_RE.match(ticker) or _CUSIP_RE.match(ticker)):
         return None
 
+    if section in _WRAPPED_COLUMN_SECTIONS:
+        return _parse_wrapped_position_block(block_lines, section, numbers_idx)
+
     # Gather description tokens from every line, excluding the
     # ticker itself and excluding the trailing numeric tokens of
     # the numbers line.
@@ -1838,6 +1882,82 @@ def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
         "footnotes": footnotes or None,
         "raw_lines": [],
     }
+
+
+def _is_column_line(line: str) -> bool:
+    """True if every token of `line` is a position column or an
+    endnote marker between columns, so the line continues a
+    holding's columns rather than its description."""
+    toks = line.split()
+    _, consumed, _ = _peel_position_columns(toks)
+    return bool(toks) and consumed == len(toks)
+
+
+def _description(tokens: list[str]) -> str:
+    """A wrapped holding's description: its tokens without the margin
+    marker and the lone commas the wrap leaves behind."""
+    return " ".join(
+        t for t in _strip_margin_marker(" ".join(tokens)).split() if t != ",")
+
+
+def _parse_wrapped_position_block(
+    block_lines: list[str], section: str, numbers_idx: int,
+) -> dict:
+    """Parse an Options or Fixed Income holding, whose columns wrap.
+
+    The columns are the numbers line plus the column-only lines after
+    it, where a bond's original cost basis, unrealized gain, yield,
+    income and accrued interest wrap. Peeling the joined lines from
+    the right also takes in the column-only lines before it, where a
+    short option's quantity and its "S" endnote sit; the peel stops at
+    the description, whose last token is a date (an option's expiry,
+    a bond's maturity)."""
+    hi = numbers_idx + 1
+    while hi < len(block_lines) and _is_column_line(block_lines[hi]):
+        hi += 1
+    tokens = " ".join(block_lines[:hi]).split()
+    cols, consumed, footnotes = _peel_position_columns(tokens)
+    head = tokens[: len(tokens) - consumed]
+
+    def col(i: int) -> float | None:
+        return _as_num(cols[i]) if i < len(cols) else None
+
+    pct = cols[-1] if cols and (cols[-1].endswith("%") or cols[-1] == "<1%") else None
+    row = {
+        "instrument_key": head[0],
+        "description": _description(head[1:]),
+        "quantity": col(0),
+        "market_price": col(1),
+        "market_value": col(2),
+        "cost_basis": col(3),
+        "unrealized_gain_loss": col(4),
+        "accrued_interest": None,
+        "est_yield": None,
+        "est_annual_income": None,
+        "pct_of_acct": None,
+        "section": section,
+        "footnotes": footnotes or None,
+        "raw_lines": [],
+    }
+    if section == "Options":
+        # quantity, price, market value, cost basis, unrealized gain,
+        # % of account. Options carry no yield and no income.
+        m = _OPTION_CONTRACT_RE.match(" ".join(head))
+        if m:
+            row["instrument_key"] = (
+                f"{m['under']} {m['md']}{m['c']}{m['y']} {m['strike']} {m['cp']}")
+            row["description"] = _description(" ".join(head)[m.end():].split())
+        row["pct_of_acct"] = pct if len(cols) > 5 else None
+    else:
+        # quantity/par, price, market value, adjusted cost basis,
+        # original cost basis, unrealized gain, yield to maturity,
+        # annual income, accrued interest, % of account.
+        row["unrealized_gain_loss"] = col(5)
+        row["est_yield"] = cols[6] if len(cols) > 6 else None
+        row["est_annual_income"] = col(7)
+        row["accrued_interest"] = col(8)
+        row["pct_of_acct"] = pct if len(cols) > 9 else None
+    return row
 
 
 # ============================================================

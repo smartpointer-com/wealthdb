@@ -959,6 +959,140 @@ class TestSponsoredAdrSegmentation:
         assert "SPONSORED ADR" in rows[0]["description"]
 
 
+class TestParsePositionsWrappedColumns:
+    """Options and Fixed Income holdings wrap their columns over
+    several lines (2025+ layout, pypdfium2). Wholly synthetic fixtures
+    in the statement's shape: invented tickers and CUSIPs, round
+    made-up values."""
+
+    OPTIONS_HEAD = (
+        "Positions - Options\n"
+        "Symbol Description Quantity Price($) Market Value($) Cost Basis($)\n"
+        "Unrealized\n"
+        "Gain/(Loss)($) Est. Yield\n"
+        "Est. Annual\n"
+        "Income($)\n"
+        "% of\n"
+        "Acct\n"
+    )
+    LONG_CALL = (
+        "XMPL\n"
+        "01/16/20\n"
+        "26 50.00\n"
+        "C\n"
+        "CALL EXAMPLE CORP\n"
+        ",\n"
+        "$50 EXP 01/16/26\n"
+        "2.0000 3.00000 600.00 500.00 100.00 <1%\n"
+    )
+    SHORT_CALL = (
+        "SYNX\n"
+        "06/18/20\n"
+        "27\n"
+        "120.00 C\n"
+        "CALL SYNTHETIC INDUSTRIES\n"
+        ",\n"
+        "$120 EXP 06/18/27\n"
+        "(1.0000)\n"
+        "S\n"
+        "4.00000 (400.00) (600.00) 200.00\n"
+    )
+    TRAILER = (
+        "Option Customers: Be aware of the following: 1) Commissions\n"
+        "Transactions - Summary\n"
+        "Transaction Details\n"
+        "07/01 Sale XMPL EXAMPLE CORP (10.0000) 25.0000 0.01 249.99 (10.00),\n"
+        "TotalTransactions $0.00\n"
+    )
+
+    def test_long_and_short_calls(self):
+        text = (self.OPTIONS_HEAD + self.LONG_CALL + self.SHORT_CALL
+                + "Total Options $200.00 ($100.00) $300.00 $0.00 <1%\n")
+        rows = pp.parse_positions(text)
+        by_key = {r["instrument_key"]: r for r in rows}
+        assert sorted(by_key) == ["SYNX 06/18/2027 120.00 C",
+                                  "XMPL 01/16/2026 50.00 C"]
+        long = by_key["XMPL 01/16/2026 50.00 C"]
+        assert (long["quantity"], long["market_price"], long["market_value"],
+                long["cost_basis"], long["unrealized_gain_loss"]) == (
+            2.0, 3.0, 600.0, 500.0, 100.0)
+        assert long["pct_of_acct"] == "<1%"
+        assert long["est_yield"] is None
+        assert long["description"] == "CALL EXAMPLE CORP $50 EXP 01/16/26"
+        short = by_key["SYNX 06/18/2027 120.00 C"]
+        assert (short["quantity"], short["market_price"], short["market_value"],
+                short["cost_basis"], short["unrealized_gain_loss"]) == (
+            -1.0, 4.0, -400.0, -600.0, 200.0)
+        assert short["footnotes"] == ["S"]
+        assert short["pct_of_acct"] is None
+
+    def test_negative_options_total_closes_the_section(self):
+        # A short option makes the section total negative. The footer
+        # must still close the section, or the transaction lines after
+        # it parse as holdings.
+        text = (self.OPTIONS_HEAD + self.SHORT_CALL
+                + "Total Options ($400.00) ($600.00) $200.00 $0.00A\n"
+                + self.TRAILER)
+        rows = pp.parse_positions(text)
+        assert [r["instrument_key"] for r in rows] == ["SYNX 06/18/2027 120.00 C"]
+
+    def test_fixed_income_columns_after_the_numbers_line(self):
+        text = (
+            "Positions - Fixed Income\n"
+            "Symbol/\n"
+            "CUSIP Description Coupon\n"
+            "Maturity\n"
+            "Date Quantity/Par Price($)\n"
+            "Accrued\n"
+            "Interest$)\n"
+            "% of\n"
+            "Acct\n"
+            "000000AA0 US TREASURY NT\n"
+            "(M)\n"
+            "2.000% 05/15/30 10,000.0000 99.00000 9,900.00 9,800.00\n"
+            "9,750.00\n"
+            "100.00 2.20% 200.00 50.00 1%\n"
+            "000000BB0 US TREASURY BD\n"
+            "(M)\n"
+            "1.50% 02/15/40 5,000.0000 80.00000 4,000.00 4,500.00\n"
+            "4,600.00\n"
+            "(500.00) 3.10% 75.00 10.00 <1%\n"
+            "Total Fixed Income 15,000.0000 $13,900.00 $14,300.00 ($400.00) $60.00 1%\n"
+            "Total Adj Cost Basis $14,300.00\n"
+        )
+        rows = pp.parse_positions(text)
+        by_key = {r["instrument_key"]: r for r in rows}
+        assert sorted(by_key) == ["000000AA0", "000000BB0"]
+        a = by_key["000000AA0"]
+        assert (a["quantity"], a["market_price"], a["market_value"],
+                a["cost_basis"], a["unrealized_gain_loss"]) == (
+            10000.0, 99.0, 9900.0, 9800.0, 100.0)
+        assert a["est_yield"] == "2.20%"
+        assert a["est_annual_income"] == 200.0
+        assert a["accrued_interest"] == 50.0
+        assert a["pct_of_acct"] == "1%"
+        assert a["description"] == "US TREASURY NT 2.000% 05/15/30"
+        b = by_key["000000BB0"]
+        assert b["cost_basis"] == 4500.0
+        assert b["unrealized_gain_loss"] == -500.0
+        assert b["accrued_interest"] == 10.0
+
+    def test_fixed_income_without_pct_column(self):
+        text = (
+            "Positions - Fixed Income\n"
+            "000000AA0 US TREASURY NT\n"
+            "(M)\n"
+            "2.000% 05/15/30 10,000.0000 99.00000 9,900.00 9,800.00\n"
+            "9,750.00\n"
+            "100.00 2.20% 200.00 50.00\n"
+            "Total Fixed Income 10,000.0000 $9,900.00 $9,800.00 $100.00 $50.00\n"
+        )
+        (row,) = pp.parse_positions(text)
+        assert row["unrealized_gain_loss"] == 100.0
+        assert row["accrued_interest"] == 50.0
+        assert row["pct_of_acct"] is None
+
+
 # ============================================================
 # parse_statement_pdf — return-dict shape
 # ============================================================
