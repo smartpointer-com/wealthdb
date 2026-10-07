@@ -65,7 +65,7 @@ shared collector conventions.
 | Verb | Status | Notes |
 | --- | --- | --- |
 | `login`    | implemented | Headless Playwright Firefox, CLI-MFA on stdin, persistent profile. |
-| `download` | implemented | Per-portfolio SPA loop: 19-column trade CSV + balance CSV + daily-overview CSV per portfolio. |
+| `download` | implemented | Per-portfolio SPA loop: 13-column trade CSV + balance CSV + daily-overview CSV per portfolio. |
 | `load`     | implemented | DuckDB silver, aggregate-then-window holdings replay with incremental upsert + balance reconciliation + portfolio_prices ingest (per-portfolio quote currency). |
 | `fetch-prices` | implemented | USDT-denominated price backfill from Binance public spot (no key, no signup). 1000-day chunked klines, polite rate-limited. Stablecoins emit synthetic 1.0. |
 | `prune`    | implemented | Reclaim bronze disk — deletes whole non-complete dumps (crashed / in-progress walks) and strips `screenshots/` (the `download --debug` captures) from complete dumps. A complete dump's load inputs are left intact. |

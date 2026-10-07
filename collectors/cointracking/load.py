@@ -363,12 +363,10 @@ def ingest_transactions(
             SELECT * FROM read_csv_auto(?, header=true, all_varchar=true)
         """, [str(trades_csv)])
 
-        # Verify the expected column names are present. The blob
-        # CSV header is:
+        # Verify the expected column names are present. The export's
+        # header is:
         #   "Type","Buy","Cur.","Sell","Cur.","Fee","Cur.","Exchange",
-        #   "Group","Comment","Trade ID","Imported From","Add Date",
-        #   "Date","From Address","To Address","Tx Hash",
-        #   "Sell From Address","Sell To Address"
+        #   "Group","Comment","Date","LPN","Tx-ID"
         # DuckDB auto-renames duplicate "Cur." columns to Cur., Cur._1,
         # Cur._2 in declaration order — buy / sell / fee respectively.
         cols = set(c[0] for c in conn.execute(
@@ -383,22 +381,16 @@ def ingest_transactions(
                 f"get set to 'Extended with additional columns'?"
             )
 
-        # Project into the transactions schema. transaction_external_id
-        # is synthesized as `cu_<id>:r<row>:<Trade ID or Tx-ID or
-        # empty>` — guarantees uniqueness even when CoinTracking's
-        # Trade ID isn't (the row-number prefix is deterministic
-        # given the CSV's row order, so re-loads produce the same
-        # IDs).
-        has_trade_id = "Trade ID" in cols
-        has_tx_id = "Tx-ID" in cols
-        tx_id_expr = (
-            "COALESCE(NULLIF(\"Trade ID\", ''), "
-            if has_trade_id else "COALESCE("
-        )
-        tx_id_expr += (
-            "NULLIF(\"Tx-ID\", ''), 'synth')"
-            if has_tx_id else "'synth')"
-        )
+        # Project into the transactions schema. CoinTracking gives a
+        # row no unique id (Tx-ID is often blank or shared), and many
+        # rows share a timestamp, so transaction_external_id is a hash
+        # of the row's own columns: `cu_<id>:<16 hex>`, plus `:<n>` on
+        # the 2nd, 3rd, … copy of an exact duplicate row. It does not
+        # depend on the CSV's row order, so every load of the same
+        # export yields the same ids, and a row keeps its id across
+        # exports until CoinTracking amends it.
+        row_hash = "sha256(concat_ws(chr(31), {}))".format(", ".join(
+            f"COALESCE(\"{c}\", '')" for c in sorted(cols)))
         lpn_expr = "NULLIF(\"LPN\", '')" if "LPN" in cols else "NULL"
 
         n_before = conn.execute(
@@ -417,8 +409,9 @@ def ingest_transactions(
                 comment, lpn, payload
             )
             SELECT
-                'cu_{cu_id}:r' || ROW_NUMBER() OVER (ORDER BY "Date") ||
-                    ':' || {tx_id_expr} AS transaction_external_id,
+                'cu_{cu_id}:' || substr(h, 1, 16) ||
+                    CASE WHEN copy > 1 THEN ':' || copy ELSE '' END
+                    AS transaction_external_id,
                 'cu_{cu_id}' AS portfolio_external_id,
                 'cu_{cu_id}:' || "Exchange" AS wallet_external_id,
                 {snapshot_at} AS snapshot_at,
@@ -433,7 +426,8 @@ def ingest_transactions(
                 NULLIF("Comment", ''),
                 {lpn_expr} AS lpn,
                 NULL AS payload
-            FROM raw
+            FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY h) AS copy
+                    FROM (SELECT *, {row_hash} AS h FROM raw))
         """)
         loaded = conn.execute(
             "SELECT COUNT(*) FROM transactions").fetchone()[0] - n_before

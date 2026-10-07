@@ -141,9 +141,9 @@ pulls the complete transaction list per portfolio.
 1. `GET /enter_coins.php?change_user=<id>` activates the
    portfolio server-side.
 2. Set `<select name="extended">` value="2" → "Extended with
-   additional columns" — the 19-column CSV mode (Trade ID,
-   Imported From, Add Date, address/hash fields). Wait for
-   networkidle.
+   additional columns". Its CSV export carries 13 columns:
+   Type, Buy, Cur., Sell, Cur., Fee, Cur., Exchange, Group,
+   Comment, Date, LPN, Tx-ID. Wait for networkidle.
 3. Click `button:has-text("Export")` → wait for menu →
    click `text("CSV (Full Export)")`. `page.expect_download()` +
    `save_as()` captures the blob.
@@ -215,13 +215,16 @@ materialises no bronze tree. The discovery harness's own diagnostics stay in
 Each `load` invocation iterates the bronze tree, processing every
 snapshot not already in `dump_runs`. Per snapshot:
 
-1. **transactions** — fully replaced. Each blob CSV is parsed via
+1. **transactions** — fully replaced. Each trade CSV is parsed via
    `read_csv_auto(all_varchar=true)` and projected into the silver
-   schema. `transaction_external_id` is synthesized as
-   `cu_<id>:r<row_seq>:<Trade ID || Tx-ID || 'synth'>` because
-   neither CoinTracking column is globally unique — Trade IDs are
-   sparse and frequently blank, and many rows share or lack one.
-   Row order in the CSV is deterministic so re-loads produce stable IDs.
+   schema. CoinTracking gives a row no unique id: `Tx-ID` is often
+   blank or shared, and many rows share a timestamp. So
+   `transaction_external_id` is `cu_<id>:<hash>`, where the hash is
+   the first 16 hex digits of a sha256 over the row's columns. The
+   2nd, 3rd, … copy of an exact duplicate row gets `:2`, `:3`, ….
+   The id does not depend on the CSV's row order. A row keeps its
+   id across exports until CoinTracking amends it, and gold's order
+   (`occurred_at`, then id) is total and the same on every load.
 
 2. **portfolios + wallets** — upserted from the run.json manifest +
    the loaded transactions' `Exchange` column.
@@ -593,8 +596,8 @@ using the data-model vocabulary above:
 - `portfolios` — one row per linked CoinTracking user account.
 - `wallets` — one row per (portfolio, wallet); covers custodial
   exchanges and self-custody hardware wallets uniformly.
-- `transactions` — raw rows from the 19-column "CSV (Full Export)"
-  trade blob, one per CSV row, with the source `type` preserved and
+- `transactions` — raw rows from the 13-column "CSV (Full Export)"
+  trade CSV, one per CSV row, with the source `type` preserved and
   amounts as `DECIMAL(38, 18)`.
 - `positions_daily` — COMPUTED by load.py via the transaction
   replay: `(as_of_date, portfolio, wallet, instrument) → amount`.

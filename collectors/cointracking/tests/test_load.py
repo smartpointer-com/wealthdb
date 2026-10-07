@@ -24,17 +24,15 @@ import load as loader  # noqa: E402
 
 CU = "1"
 
-# The "Extended with additional columns" trades.csv header (DuckDB
-# auto-renames the duplicate "Cur." columns to Cur._1 / Cur._2).
+# The trades.csv export header (DuckDB auto-renames the duplicate
+# "Cur." columns to Cur._1 / Cur._2).
 TRADES_HEADER = (
     '"Type","Buy","Cur.","Sell","Cur.","Fee","Cur.","Exchange",'
-    '"Group","Comment","Trade ID","Imported From","Add Date","Date",'
-    '"From Address","To Address","Tx Hash","Sell From Address",'
-    '"Sell To Address"'
+    '"Group","Comment","Date","LPN","Tx-ID"'
 )
 TRADE_ROW = (
     '"Trade","0.5","BTC","15000","USD","10","USD","ExchangeA",'
-    '"","","TID1","","","2024-01-15 10:00:00","","","","",""'
+    '"","","2024-01-15 10:00:00","","TXID1"'
 )
 
 
@@ -56,12 +54,11 @@ def _fresh_db(tmp_path: Path) -> duckdb.DuckDBPyConnection:
 def _row(type_, *, buy="", buy_cur="", sell="", sell_cur="", fee="",
          fee_cur="", exchange="ExchangeA", comment="",
          date="2024-01-15 10:00:00") -> str:
-    """One 19-column "Extended" trades.csv row (all fields quoted).
-    Positional layout matches TRADES_HEADER: Type, Buy, Cur.(buy),
-    Sell, Cur.(sell), Fee, Cur.(fee), Exchange, Group, Comment, Trade
-    ID, Imported From, Add Date, Date, then five address/hash fields."""
+    """One trades.csv row (all fields quoted). Positional layout
+    matches TRADES_HEADER: Type, Buy, Cur.(buy), Sell, Cur.(sell), Fee,
+    Cur.(fee), Exchange, Group, Comment, Date, LPN, Tx-ID."""
     fields = [type_, buy, buy_cur, sell, sell_cur, fee, fee_cur,
-              exchange, "", comment, "", "", "", date, "", "", "", "", ""]
+              exchange, "", comment, date, "", ""]
     return ",".join(f'"{f}"' for f in fields)
 
 
@@ -178,6 +175,42 @@ def test_ingest_transactions(tmp_path):
     assert sell_ccy == "USD"
     assert float(fee) == 10.0
     assert fee_ccy == "USD"
+
+
+def _ids(tmp_path: Path, name: str, rows: list[str]) -> list[tuple[str, str]]:
+    """Load `rows` into a fresh silver; return its (type,
+    transaction_external_id) pairs, sorted."""
+    run_dir, manifest = _seed_bronze_rows(tmp_path / name, rows)
+    conn = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
+    loader.apply_migrations(conn)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600)
+    return sorted(conn.execute(
+        "SELECT type, transaction_external_id FROM transactions").fetchall())
+
+
+def test_transaction_ids_follow_row_content_not_row_order(tmp_path):
+    # Rows sharing a timestamp get the same id whatever order the
+    # export lists them in; exact duplicates are told apart by a copy
+    # number; an amended row gets a new id while its siblings keep
+    # theirs.
+    same_second = "2024-01-15 10:00:00"
+    a = _row("Deposit", buy="1", buy_cur="BTC", date=same_second)
+    b = _row("Staking", buy="0.01", buy_cur="BTC", date=same_second)
+    c = _row("Withdrawal", sell="0.5", sell_cur="BTC", date=same_second)
+    first = _ids(tmp_path, "first", [a, b, c, b])
+    assert _ids(tmp_path, "second", [b, c, b, a]) == first
+
+    ids = dict(first)
+    staking = [tid for typ, tid in first if typ == "Staking"]
+    base = staking[0]
+    assert base.startswith(f"cu_{CU}:")
+    assert staking == [base, base + ":2"]
+
+    amended = dict(_ids(tmp_path, "amended", [
+        a, _row("Staking", buy="0.02", buy_cur="BTC", date=same_second), c]))
+    assert amended["Deposit"] == ids["Deposit"]
+    assert amended["Withdrawal"] == ids["Withdrawal"]
+    assert amended["Staking"] not in staking
 
 
 def _transactions(conn) -> list[tuple]:

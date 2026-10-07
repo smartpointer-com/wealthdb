@@ -15,8 +15,8 @@ the per-portfolio loop:
        b. set <select name="extended"> value="2"     → "Extended with
                                                         additional
                                                         columns" mode
-       c. click Export → CSV (Full Export)           → 19-column
-                                                        trade history blob
+       c. click Export → CSV (Full Export)           → 13-column
+                                                        trade history CSV
        d. GET /balance_by_exchange.php?change_user=<id>
        e. click Export → CSV                         → current per-
                                                         wallet balance
@@ -59,9 +59,9 @@ DEFAULT_PROFILE_DIR = Path("/secrets/cointracking-profile")
 DEFAULT_BRONZE_DIR = Path("/data")
 
 # `select[name="extended"]` value="2" maps to "Table View: Extended
-# with additional columns" — the 19-column CSV mode (Trade ID,
-# Imported From, Add Date, address/hash fields). value=0 / 1 give
-# simpler column sets.
+# with additional columns". Its "CSV (Full Export)" carries 13
+# columns: Type, Buy, Cur., Sell, Cur., Fee, Cur., Exchange, Group,
+# Comment, Date, LPN, Tx-ID. value=0 / 1 give simpler table views.
 TABLE_MODE_VALUE = "2"
 
 # Same un-auth marker login.py uses for the probe.
@@ -344,8 +344,8 @@ def download_portfolio(page, portfolio: dict, run_dir: Path,
     log_prefix = f"[cu={cu_id}]"
     portfolio_dir = run_dir / f"cu_{cu_id}"
 
-    # Trade history. Set the table to the 19-column mode first,
-    # then trigger the blob-CSV download.
+    # Trade history. Set the table to the extended mode first,
+    # then trigger the CSV download.
     log.info("%s GET /enter_coins.php?change_user=…", log_prefix)
     page.goto(f"{ENTER_COINS_URL}?change_user={cu_id}",
               wait_until="domcontentloaded", timeout=30_000)
