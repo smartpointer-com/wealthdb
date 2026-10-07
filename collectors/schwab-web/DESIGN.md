@@ -249,6 +249,13 @@ each monthly/quarterly statement's holdings block into
 snapshot per statement period, not the per-dump granularity the
 api gives.
 
+A statement can list one instrument on more than one row. The loader
+sums those rows into one, because silver keys a position by
+instrument. Each statement is checked at load: its positions plus
+its closing cash must equal the account value it prints. A statement
+that does not add up logs a warning, so a parser gap shows at load
+rather than in the returns built on the data.
+
 **Gold-layer recommendation**: don't try to interpolate
 mid-year positions for pre-api dates. Mark gaps explicitly. The
 statement transactions feed gives ENOUGH activity context to

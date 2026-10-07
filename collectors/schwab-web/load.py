@@ -911,6 +911,8 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                     job["ldk"],
                 )
 
+            _check_account_value(parsed, job["ldk"])
+
             if job["need_pos"]:
                 n_pos = _insert_position_snapshots(
                     conn, job["suffix"], period_end_ts,
@@ -1577,6 +1579,54 @@ def _reconcile_account_numbers(conn: sqlite3.Connection,
     return n_updated
 
 
+# Position fields that add up when one instrument fills several rows of
+# a statement. The rest (price, description, section, yield) are the
+# instrument's own and are taken from its first row.
+_ADDITIVE_POSITION_FIELDS = (
+    "quantity", "market_value", "cost_basis", "unrealized_gain_loss",
+    "accrued_interest", "est_annual_income",
+)
+
+
+def _merge_same_instrument(positions: list[dict]) -> list[dict]:
+    """One row per instrument_key. A statement can list one instrument on
+    more than one row, and silver keys a position by instrument, so the
+    rows are summed rather than left to overwrite each other. A sum that
+    has a missing part is missing."""
+    merged: dict[str, dict] = {}
+    for pos in positions:
+        key = pos.get("instrument_key")
+        if key not in merged:
+            merged[key] = dict(pos)
+            continue
+        into = merged[key]
+        for f in _ADDITIVE_POSITION_FIELDS:
+            a, b = into.get(f), pos.get(f)
+            into[f] = None if a is None or b is None else a + b
+        into["raw_lines"] = (into.get("raw_lines") or []) + (pos.get("raw_lines") or [])
+        into["footnotes"] = sorted(set(into.get("footnotes") or [])
+                                   | set(pos.get("footnotes") or [])) or None
+    return list(merged.values())
+
+
+def _check_account_value(parsed: dict, ldk: str) -> None:
+    """Warn when a statement's positions plus closing cash do not add up
+    to the account value it prints. Every row the parser misses or
+    misreads shows up here, so a new layout variant is caught at load
+    rather than in the returns built on it."""
+    printed = parsed.get("account_value")
+    if printed is None:
+        return
+    cash = (parsed.get("cash_summary") or {}).get("closing_balance") or 0.0
+    total = cash + sum(p.get("market_value") or 0.0
+                       for p in parsed.get("positions") or [])
+    if abs(total - printed) >= 0.01:
+        log.warning(
+            "statement %s: positions and cash add up to %.2f, not the "
+            "%.2f the statement prints as its account value", ldk, total,
+            printed)
+
+
 def _insert_position_snapshots(conn: sqlite3.Connection,
                                 account_external_id: str,
                                 as_of_date: int,
@@ -1590,10 +1640,11 @@ def _insert_position_snapshots(conn: sqlite3.Connection,
 
     Rows missing an instrument_key are dropped (parser failure
     indicator); a position row with no symbol can't be joined
-    against anything downstream.
+    against anything downstream. Rows of one instrument are summed
+    first (_merge_same_instrument).
     """
     written = 0
-    for pos in positions:
+    for pos in _merge_same_instrument(positions):
         instrument_key = pos.get("instrument_key")
         if not instrument_key:
             log.warning(

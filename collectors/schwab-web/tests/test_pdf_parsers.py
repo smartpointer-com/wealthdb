@@ -1336,6 +1336,114 @@ class TestParseCashSummaryLegacy:
         assert cash["closing_balance"] == 5.5
 
 
+class TestParsePositionsLegacyRowShapes:
+    """Legacy (2020-2024) rows that print other than the seven Equities
+    columns: Options and Mutual Funds layouts, rows that stop after % of
+    account, short holdings, and endnote markers among the columns.
+    Synthetic-text fixtures only."""
+
+    @staticmethod
+    def _section(name: str, body: str) -> str:
+        return (
+            f"Investment Detail - {name}\n"
+            "Quantity Market Price Market Value\n"
+            "% of\n"
+            "Account\n"
+            + body
+            + "Total Investment Detail $999,999.99\n"
+        )
+
+    def test_long_and_short_options_key_on_their_contract(self):
+        text = self._section("Options", (
+            "CALL EXAMPLE CORP 2.0000 3.00000 600.00 <1% 100.00\n"
+            "$50 EXP 01/16/26 2.0000 2.5000 500.00 12/01/25 100.00\n"
+            "SYMBOL: XMPL 01/16/2026 50.00 C\n"
+            "PUT SYNTHETIC INDS 1000 1.0000 S4.00000 (400.00) 200.00\n"
+            "$120 EXP 06/18/27 1.0000 S 6.0000 (600.00) 01/02/26 200.00\n"
+            "SYMBOL: SYNX 06/18/2027 1.0000 S 6.0000 (600.00) 01/02/26 200.00\n"
+            "120.00 P\n"
+            "Cost Basis (600.00)\n"
+            "Total Options 1.0000 200.00 <1% 300.00\n"))
+        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        assert sorted(rows) == ["SYNX 06/18/2027 120.00 P", "XMPL 01/16/2026 50.00 C"]
+        long = rows["XMPL 01/16/2026 50.00 C"]
+        assert (long["quantity"], long["market_price"], long["market_value"],
+                long["pct_of_acct"], long["unrealized_gain_loss"]) == (
+            2.0, 3.0, 600.0, "<1%", 100.0)
+        short = rows["SYNX 06/18/2027 120.00 P"]
+        assert (short["quantity"], short["market_price"], short["market_value"],
+                short["unrealized_gain_loss"], short["cost_basis"]) == (
+            -1.0, 4.0, -400.0, 200.0, -600.0)
+        assert short["description"] == "PUT SYNTHETIC INDS 1000"
+
+    def test_mutual_fund_row_prints_cost_basis_in_the_row(self):
+        text = self._section("Mutual Funds", (
+            "Bond Funds Quantity\n"
+            "EXAMPLE BOND FUND (M) 100.0000 10.00000 1,000.00 1,100.00 (100.00) 1%\n"
+            "FUND\n"
+            "SYMBOL: XBND\n"
+            "SYNTHETIC INCOME FUND (M) 50.0000 20.00000 1,000.00 <1%\n"
+            "SYMBOL: XMUN\n"
+            "Total Bond Funds 150.0000 2,000.00 1,100.00 (100.00) 2%\n"))
+        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        assert (rows["XBND"]["market_value"], rows["XBND"]["cost_basis"],
+                rows["XBND"]["unrealized_gain_loss"], rows["XBND"]["pct_of_acct"]) == (
+            1000.0, 1100.0, -100.0, "1%")
+        # A fund with no cost stops after % of account.
+        assert (rows["XMUN"]["quantity"], rows["XMUN"]["market_value"],
+                rows["XMUN"]["cost_basis"], rows["XMUN"]["pct_of_acct"]) == (
+            50.0, 1000.0, None, "<1%")
+
+    def test_equity_rows_that_the_seven_column_rule_missed(self):
+        text = self._section("Equities", (
+            "EXAMPLE.COM INC (M) 10.0000 100.00000 1,000.00 1% 200.00 N/A N/A\n"
+            "SYMBOL: XCOM\n"
+            "SYNTHETIC TRUST XTR 300.0000 10.00000 3,000.00 2%\n"
+            "SYMBOL: XTRU\n"
+            "EXAMPLE 8 CORP (M) 40.0000 5.00000 200.00 <1% N/A iN/A N/A\n"
+            "SYMBOL: XEIG\n"
+            "SYNTHETIC SHORT CO (M) 100.0000 S 2.50000 (250.00) (10.00) N/A N/A\n"
+            "SYMBOL: XSHO\n"))
+        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        assert sorted(rows) == ["XCOM", "XEIG", "XSHO", "XTRU"]
+        assert rows["XCOM"]["market_value"] == 1000.0      # punctuated name
+        assert (rows["XTRU"]["market_value"], rows["XTRU"]["unrealized_gain_loss"]) == (
+            3000.0, None)                                  # stops after % of account
+        assert rows["XEIG"]["market_value"] == 200.0       # glued endnote on N/A
+        assert (rows["XSHO"]["quantity"], rows["XSHO"]["market_value"],
+                rows["XSHO"]["unrealized_gain_loss"]) == (-100.0, -250.0, -10.0)
+
+
+class TestParseAccountValue:
+    def test_legacy_total(self):
+        assert pp.parse_account_value(
+            "Total Assets Long $ 1,250.00\nTotal Account Value $ 1,000.00 100%\n") == 1000.0
+
+    def test_2025_ending_value_is_this_periods(self):
+        assert pp.parse_account_value(
+            "Beginning Account Value $900.00 $800.00\n"
+            "Ending Account Value $1,000.00 $1,000.00\n") == 1000.0
+
+    def test_absent(self):
+        assert pp.parse_account_value("no summary here") is None
+
+
+class TestParseCashSummaryEarliest:
+    def test_deposit_accounts_print_the_ending_balance_alone(self):
+        text = (
+            "Investment Detail\n"
+            "Description Symbol Quantity Price Market Value\n"
+            "Cash, Money Market, and Deposit Accounts\n"
+            "DEPOSIT ACCOUNTS X,Z 5,000.00\n"
+            "Investments\n"
+            "ALPHACORP INC ALPH 100.0000 50.00000 5,000.00\n"
+            "Total Account Value 10,000.00\n"
+        )
+        cash = pp.parse_cash_summary(text)
+        assert cash["closing_balance"] == 5000.0
+        assert cash["opening_balance"] is None
+
+
 class TestParsePositionsVeryOld:
     """2017-2019 layout: bare 'Investment Detail' header,
     'Investments' sub-header, rows of the shape

@@ -2025,3 +2025,48 @@ def test_an_explicit_reparse_still_purges_a_moved_generation(tmp_path):
     args.reparse = True
     assert load.run_load(args) == 0
     assert _snapshot_row_count(args.silver_db) == 0
+
+
+# ---------------------------------------------------------------------------
+# Statement positions: one instrument on several rows, and the account-value
+# check every statement is held to.
+# ---------------------------------------------------------------------------
+
+def _pos(key, qty, mv, cost=None, ugl=None):
+    return {"instrument_key": key, "quantity": qty, "market_value": mv,
+            "cost_basis": cost, "unrealized_gain_loss": ugl,
+            "market_price": 10.0, "section": "Equities", "raw_lines": [key]}
+
+
+class TestStatementPositions:
+    def test_one_instrument_on_two_rows_is_summed(self, migrated):
+        # silver keys a position by instrument, so the second row would
+        # otherwise overwrite the first and its value would be lost.
+        n = load._insert_position_snapshots(
+            migrated, "001", 1700000000,
+            [_pos("XDUP", 30.0, 300.0, 250.0, 50.0),
+             _pos("XMPL", 10.0, 100.0),
+             _pos("XDUP", 20.0, 200.0, None, None)],
+            "sha")
+        assert n == 2
+        rows = dict((r[0], r[1:]) for r in migrated.execute(
+            "SELECT instrument_key, quantity, market_value, cost_basis "
+            "FROM historical_position_snapshots"))
+        # A part with no cost makes the summed cost unknown, not partial.
+        assert rows == {"XDUP": (50.0, 500.0, None), "XMPL": (10.0, 100.0, None)}
+
+    def test_a_statement_that_does_not_add_up_is_reported(self, caplog):
+        parsed = {"account_value": 1000.0,
+                  "cash_summary": {"closing_balance": 100.0},
+                  "positions": [_pos("XMPL", 10.0, 850.0)]}
+        with caplog.at_level("WARNING", logger=load.log.name):
+            load._check_account_value(parsed, "doc-1")
+        assert "add up to 950.00, not the 1000.00" in caplog.text
+
+    def test_a_statement_that_adds_up_is_silent(self, caplog):
+        parsed = {"account_value": 1000.0,
+                  "cash_summary": {"closing_balance": 150.0},
+                  "positions": [_pos("XMPL", 10.0, 850.0)]}
+        with caplog.at_level("WARNING", logger=load.log.name):
+            load._check_account_value(parsed, "doc-1")
+        assert caplog.text == ""

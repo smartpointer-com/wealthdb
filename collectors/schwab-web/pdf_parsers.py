@@ -1190,8 +1190,8 @@ def parse_positions(text: str) -> list[dict]:
         cost basis in the row. Options and Fixed Income wrap their
         columns over several lines (_parse_wrapped_position_block).
       * 2020-2024: section header "Investment Detail - <Section>",
-        multi-line-per-instrument with seven trailing columns on
-        the main row plus a separate "Cost Basis N" line and a
+        multi-line-per-instrument with the section's trailing
+        columns on the main row plus a separate "Cost Basis N" line and a
         "SYMBOL: TICKER" continuation that holds the real ticker
         (the main row leads with the company name).
       * 2017-2019: section header "Investment Detail" (no
@@ -1321,10 +1321,10 @@ def _parse_positions_new(text: str) -> list[dict]:
 #   - Cost basis is a SEPARATE line, not a column in the main row.
 #   - Each position is followed by per-tax-lot detail lines we
 #     skip (the silver schema only needs aggregate cost basis).
-#   - Main row carries 7 trailing values: quantity, market_price,
-#     market_value, pct_of_acct, unrealized, est_yield,
-#     est_annual_income. Cost basis comes from the "Cost Basis"
-#     continuation line.
+#   - Main row carries the section's trailing columns
+#     (_LEGACY_DEFAULT_COLUMNS, _LEGACY_SECTION_COLUMNS). Cost basis
+#     comes from the "Cost Basis" continuation line, except where
+#     Mutual Funds prints it in the row.
 
 _LEGACY_POSITIONS_HEADER_RE = re.compile(
     r"^Investment\s+Detail\s*[-–]\s*"
@@ -1348,13 +1348,117 @@ _LEGACY_COST_BASIS_RE = re.compile(
 )
 _LEGACY_DATE_TOKEN_RE = re.compile(r"^\d{2}/\d{2}/\d{2,4}$")
 
+# The trailing columns of a legacy main row, in print order. Most
+# sections print seven; Mutual Funds prints cost basis in the row and
+# no yield or income; Options prints no yield, income or cost basis.
+# A row can stop after % of account. So the columns are aligned on the
+# % of account column
+# (_LEGACY_PCT_RE), not counted from either end: a holding whose name
+# ends in a number ("… EXAMPLE 2000") keeps that number in its
+# description, and a row without the later columns still parses.
+_LEGACY_DEFAULT_COLUMNS = (
+    "quantity", "market_price", "market_value", "pct_of_acct",
+    "unrealized_gain_loss", "est_yield", "est_annual_income",
+)
+_LEGACY_SECTION_COLUMNS = {
+    "Mutual Funds": (
+        "quantity", "market_price", "market_value", "cost_basis",
+        "unrealized_gain_loss", "pct_of_acct",
+    ),
+    "Options": (
+        "quantity", "market_price", "market_value", "pct_of_acct",
+        "unrealized_gain_loss",
+    ),
+}
+# Columns kept as printed rather than parsed to a number.
+_LEGACY_TEXT_COLUMNS = frozenset({"pct_of_acct", "est_yield"})
+# The % of account column: a whole percent or "<1%". A yield also ends
+# in "%" but prints decimals ("1.25%"), so it never matches.
+_LEGACY_PCT_RE = re.compile(r"^(?:<1|\d{1,3})%$")
+# The columns every legacy row starts with; a row that stops after % of
+# account prints only these, whatever its section prints otherwise.
+_LEGACY_LEADING_COLUMNS = (
+    "quantity", "market_price", "market_value", "pct_of_acct",
+)
+# An option's contract on its SYMBOL: line, which can wrap the strike
+# and call/put onto the next line past the lot detail:
+#   SYMBOL: XMPL 01/16/2026 50.00 C
+#   SYMBOL: XMPL 01/16/2026 1.0000 2.0000 200.00 12/01/25 50.00
+#   50.00 C
+# The key matches the one the transactions parser gives the
+# contract's trades.
+_LEGACY_OPTION_SYMBOL_RE = re.compile(
+    r"\bSYMBOL:\s+(?P<under>[A-Z][A-Z0-9./-]{0,8})\s+(?P<exp>\d{2}/\d{2}/\d{4})\b"
+    r".*?(?P<strike>[\d,]*\.\d+)\s+(?P<cp>[CP])\b")
+
+
+def _legacy_columns(section: str) -> tuple[str, ...]:
+    """The trailing columns a legacy main row of `section` prints."""
+    return _LEGACY_SECTION_COLUMNS.get(section, _LEGACY_DEFAULT_COLUMNS)
+
+
+def _legacy_row_columns(tokens: list[str], section: str,
+                        ) -> tuple[list[str], dict[str, str]] | None:
+    """A legacy main row's description tokens and its columns by name;
+    None when the line is not a main row.
+
+    The columns are the trailing run of column tokens, read past any
+    endnote markers (_peel_position_columns) and aligned so that a % of
+    account column falls on the first whole-percent token with all the
+    columns before it in the run. Columns after it are taken as far as
+    the row prints them. The section's own layout is tried first, then
+    the leading columns alone (_LEGACY_LEADING_COLUMNS). A column token
+    before the aligned run belongs to the description ("… EXAMPLE 2000").
+
+    A short holding has no % of account but an "S" endnote; its columns
+    are the section's without % of account, and its quantity is
+    returned negative, the way the 2025+ layout prints it."""
+    cols, consumed, footnotes = _peel_position_columns(tokens)
+    desc = tokens[: len(tokens) - consumed]
+    for layout in (_legacy_columns(section), _LEGACY_LEADING_COLUMNS):
+        pct = layout.index("pct_of_acct")
+        for i in range(pct, len(cols)):
+            if _LEGACY_PCT_RE.match(cols[i]):
+                k = i - pct
+                return desc + cols[:k], dict(zip(layout, cols[k:], strict=False))
+    if not any("S" in f.split(",") for f in footnotes):
+        return None
+    return _legacy_short_row_columns(tokens, section)
+
+
+def _legacy_short_row_columns(tokens: list[str], section: str,
+                              ) -> tuple[list[str], dict[str, str]] | None:
+    """A short legacy row. It prints no % of account; its price carries
+    the "S" endnote, glued to the front or standing alone before it; its
+    value is negative and its quantity unsigned:
+      CALL EXAMPLE CORP 1.0000 S2.50000 (250.00) 100.00
+      EXAMPLE CORP (M) 100.0000 S 2.50000 (250.00) (10.00) N/A N/A
+    The row is anchored on the marker: the quantity is the token before
+    it, the price the token it is glued to or the next one, and the
+    section's later columns (bar % of account) follow."""
+    layout = [c for c in _legacy_columns(section) if c != "pct_of_acct"]
+    for j in range(len(tokens) - 1, 0, -1):
+        if tokens[j] == "S":
+            price, rest = tokens[j + 1:j + 2], tokens[j + 2:]
+        elif tokens[j][:1] == "S" and _is_trailing_col_token(tokens[j][1:]):
+            price, rest = [tokens[j][1:]], tokens[j + 1:]
+        else:
+            continue
+        if not price or not rest or not _is_trailing_col_token(tokens[j - 1]):
+            return None
+        printed = dict(zip(layout, [tokens[j - 1], *price, *rest], strict=False))
+        printed["quantity"] = f"({printed['quantity'].strip('()')})"
+        return tokens[: j - 1], printed
+    return None
+
 
 def _parse_positions_legacy(text: str) -> list[dict]:
     """Parse the 2020-2024 "Investment Detail - X" layout.
 
     Same return shape as the 2025+ parser. A block is the run of
-    lines from one "main row" (>= 7 trailing numeric tokens AND
-    a leading company-name token) to the next; tax-lot detail
+    lines from one "main row" (a line _legacy_row_columns reads
+    columns from, AND a leading company-name token) to the next;
+    tax-lot detail
     lines are absorbed into the block but only the SYMBOL: /
     Cost Basis / accrued-interest information is extracted —
     per-lot detail is parser-skipped.
@@ -1395,16 +1499,15 @@ def _parse_positions_legacy(text: str) -> list[dict]:
         tokens = line.split()
         if not tokens:
             continue
-        cnt = _count_trailing_col_tokens(tokens)
-        # A "main row" has >= 7 trailing tokens AND a leading
-        # uppercase token that is NOT a known continuation
-        # marker. Tax-lot lines have a date token mid-row which
-        # breaks the trailing-token run, so they end up with
-        # cnt < 7.
+        # A "main row" carries the section's columns through % of
+        # account (_legacy_row_columns) AND a leading uppercase token
+        # that is NOT a known continuation marker. Tax-lot lines have
+        # a date token mid-row which breaks the trailing-token run, so
+        # they never reach a % of account column.
         is_main = (
-            cnt >= 7
-            and tokens[0] not in ("SYMBOL:", "Cost", "Accrued", "Total")
-            and re.match(r"^[A-Z][A-Z0-9]*$", tokens[0])
+            tokens[0] not in ("SYMBOL:", "Cost", "Accrued", "Total")
+            and re.match(r"^[A-Z][A-Z0-9.&'/-]*$", tokens[0])
+            and _legacy_row_columns(tokens, section) is not None
         )
         if is_main:
             _flush()
@@ -1426,11 +1529,10 @@ def _parse_legacy_position_block(block_lines: list[str],
         return None
     main = block_lines[0]
     tokens = main.split()
-    cnt = _count_trailing_col_tokens(tokens)
-    if cnt < 7:
+    found = _legacy_row_columns(tokens, section)
+    if found is None:
         return None
-    trailing = tokens[len(tokens) - cnt:]
-    desc_tokens = tokens[: len(tokens) - cnt]
+    desc_tokens, printed = found
     description = " ".join(desc_tokens)
     description = _strip_margin_marker(description)
 
@@ -1439,10 +1541,14 @@ def _parse_legacy_position_block(block_lines: list[str],
     accrued_interest: float | None = None
     extra_desc: list[str] = []
 
-    for line in block_lines[1:]:
+    for i, line in enumerate(block_lines[1:], start=1):
         m_sym = _LEGACY_SYMBOL_LINE_RE.search(line)
         if m_sym and instrument_key is None:
             instrument_key = m_sym.group("ticker")
+            if section == "Options" and (m_opt := _LEGACY_OPTION_SYMBOL_RE.search(
+                    " ".join(block_lines[i:i + 2]))):
+                instrument_key = (f"{m_opt['under']} {m_opt['exp']} "
+                                  f"{m_opt['strike']} {m_opt['cp']}")
             # Don't `continue` — SYMBOL: lines also carry
             # per-lot data, but we're not using it.
         m_cb = _LEGACY_COST_BASIS_RE.match(line)
@@ -1478,35 +1584,24 @@ def _parse_legacy_position_block(block_lines: list[str],
     if instrument_key is None:
         return None
 
-    # Trailing-column order in the legacy layout:
-    # quantity, market_price, market_value, pct_of_acct,
-    # unrealized, est_yield, est_annual_income
-    quantity = _as_num(trailing[0])
-    market_price = _as_num(trailing[1])
-    market_value = _as_num(trailing[2])
-    pct_of_acct = (
-        trailing[3] if trailing[3].endswith("%") or trailing[3] == "<1%"
-        else None
-    )
-    unrealized = _as_num(trailing[4])
-    est_yield = trailing[5]
-    est_annual_income = _as_num(trailing[6])
-
-    return {
+    row = {
         "instrument_key": instrument_key,
         "description": description,
-        "quantity": quantity,
-        "market_price": market_price,
-        "market_value": market_value,
+        "quantity": None,
+        "market_price": None,
+        "market_value": None,
         "cost_basis": cost_basis,
-        "unrealized_gain_loss": unrealized,
+        "unrealized_gain_loss": None,
         "accrued_interest": accrued_interest,
-        "est_yield": est_yield,
-        "est_annual_income": est_annual_income,
-        "pct_of_acct": pct_of_acct,
-        "section": section,
-        "raw_lines": list(block_lines),
+        "est_yield": None,
+        "est_annual_income": None,
+        "pct_of_acct": None,
     }
+    for col, tok in printed.items():
+        row[col] = tok if col in _LEGACY_TEXT_COLUMNS else _as_num(tok)
+    row["section"] = section
+    row["raw_lines"] = list(block_lines)
+    return row
 
 
 # ============================================================
@@ -1687,19 +1782,6 @@ def _as_num(s: str) -> float | None:
     return _parse_number(s)
 
 
-def _count_trailing_col_tokens(tokens: list[str]) -> int:
-    """Number of trailing tokens (scanning right-to-left) that fit a
-    position-row column slot — the run length the legacy-layout parsers
-    use to tell a main row from a description/tax-lot continuation."""
-    cnt = 0
-    for tok in reversed(tokens):
-        if _is_trailing_col_token(tok):
-            cnt += 1
-        else:
-            break
-    return cnt
-
-
 def _is_trailing_col_token(s: str) -> bool:
     """True if `s` fits a Positions-row trailing column slot —
     a number, a number-with-%, an integer, or one of the literal
@@ -1736,9 +1818,10 @@ _POSITION_FOOTNOTE_RE = re.compile(r"[A-Za-z](?:,[A-Za-z]){0,4}")
 # A footnote marker glued (no whitespace) to the FRONT of a numeric
 # column token — pypdfium2 emits this when the marked column is a
 # parenthesised negative, e.g. "t(1,200.00)" (third-party-edited
-# unrealized loss). Group 1 = marker letters, group 2 = the column.
+# unrealized loss) — or of an N/A placeholder ("iN/A"). Group 1 =
+# marker letters, group 2 = the column.
 _POSITION_FOOTNOTE_GLUED_RE = re.compile(
-    r"^([A-Za-z](?:,[A-Za-z]){0,4})(\(?-?[\d,].*)$")
+    r"^([A-Za-z](?:,[A-Za-z]){0,4})(\(?-?[\d,].*|N/A)$")
 
 
 def _split_glued_footnote(tok: str) -> tuple[str | None, str | None]:
@@ -2236,12 +2319,17 @@ def _parse_cash_summary_legacy(text: str) -> dict | None:
 #   BANK SWEEP X,Z 5,000.00 1,500.00
 #   CASH 0.00 300.00
 # The trailing two numerics are starting + ending balance.
+# The earliest statements head the sub-section "Cash, Money Market,
+# and Deposit Accounts" and print the ending balance alone:
+#   DEPOSIT ACCOUNTS X,Z 5,000.00
+# so their opening balance is unknown.
 # Per-category cash flow (deposits / withdrawals / etc.) is not
 # itemised in this layout; we surface only opening/closing and
 # leave the per-category fields NULL.
 
 _VERY_OLD_CASH_SUBHEADER_RE = re.compile(
-    r"^Cash\s+and\s+Bank\s+Sweep\s*$"
+    r"^(?:Cash\s+and\s+Bank\s+Sweep"
+    r"|Cash,\s+Money\s+Market,\s+and\s+Deposit\s+Accounts)\s*$"
 )
 
 
@@ -2250,6 +2338,7 @@ def _parse_cash_summary_very_old(text: str) -> dict | None:
     in_section = False
     in_cash = False
     opening_total = 0.0
+    opening_known = True
     closing_total = 0.0
     rows_seen = 0
     for raw in lines:
@@ -2277,17 +2366,21 @@ def _parse_cash_summary_very_old(text: str) -> dict | None:
             continue
         if not in_cash:
             continue
-        # Each cash row: trailing two decimal-numeric tokens.
+        # Each cash row: a label, then the starting and ending
+        # balance, or the ending balance alone.
         tokens = line.split()
-        if len(tokens) < 3:
+        if len(tokens) < 2 or not _NUM_RE.fullmatch(tokens[-1]):
             continue
-        if not (_NUM_RE.fullmatch(tokens[-1]) and _NUM_RE.fullmatch(tokens[-2])):
-            continue
-        opening = _parse_number(tokens[-2])
         closing = _parse_number(tokens[-1])
-        if opening is None or closing is None:
+        opening = (_parse_number(tokens[-2])
+                   if len(tokens) >= 3 and _NUM_RE.fullmatch(tokens[-2])
+                   else None)
+        if closing is None:
             continue
-        opening_total += opening
+        if opening is None:
+            opening_known = False
+        else:
+            opening_total += opening
         closing_total += closing
         rows_seen += 1
     if rows_seen == 0:
@@ -2297,7 +2390,7 @@ def _parse_cash_summary_very_old(text: str) -> dict | None:
     # the cash numbers. Use 2017-2019 NULLs for the per-category
     # fields the source doesn't carry.
     return {
-        "opening_balance": opening_total,
+        "opening_balance": opening_total if opening_known else None,
         "closing_balance": closing_total,
         "deposits":           None,
         "withdrawals":        None,
@@ -2317,6 +2410,28 @@ def _parse_cash_summary_very_old(text: str) -> dict | None:
 # Convenience: open + parse a file path
 # ============================================================
 
+# The account's total value at period end, as the statement prints it:
+# "Total Account Value $ 1,234.56" (2017-2024 layouts) or the first
+# figure, this period's, of "Ending Account Value $1,234.56 $1,000.00"
+# (2025+).
+_ACCOUNT_VALUE_RES = (
+    re.compile(r"^Total\s+Account\s+Value\s*\$?\s*(\(?[\d,]+\.\d{2}\)?)"),
+    re.compile(r"^Ending\s+Account\s+Value\s*\$(\(?[\d,]+\.\d{2}\)?)"),
+)
+
+
+def parse_account_value(text: str) -> float | None:
+    """The account's total value at period end, as printed; None when the
+    statement prints none. Positions plus closing cash should equal it,
+    which is what the loader checks every statement against."""
+    for line in text.split("\n"):
+        for rx in _ACCOUNT_VALUE_RES:
+            m = rx.match(line.strip())
+            if m:
+                return _parse_number(m.group(1))
+    return None
+
+
 def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     """Open a Schwab brokerage statement PDF and return a dict
     with the statement period and the extracted transactions.
@@ -2333,6 +2448,7 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     txs = parse_transactions(full_text, statement_year=statement_year)
     positions = parse_positions(full_text)
     cash = parse_cash_summary(full_text)
+    account_value = parse_account_value(full_text)
     registration = parse_account_registration(full_text)
     account_number = parse_account_number(full_text)
     return {
@@ -2342,6 +2458,7 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
         "transactions": [t.to_dict() for t in txs],
         "positions": positions,
         "cash_summary": cash,
+        "account_value": account_value,
         "account_registration": registration,
         "account_number": account_number,
     }
