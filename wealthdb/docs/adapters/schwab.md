@@ -130,8 +130,21 @@ real data, maps to the canonical gold `kind` taxonomy:
 | `DIVIDEND_OR_INTEREST` | `dividend` or `interest` | from `payload` subtype |
 | `WIRE_IN` / `CASH_RECEIPT` / `ELECTRONIC_FUND`(+) | `deposit` | |
 | `WIRE_OUT` / `CASH_DISBURSEMENT` / `ELECTRONIC_FUND`(−) | `withdrawal` | |
-| `RECEIVE_AND_DELIVER` | `transfer_in` or `transfer_out` | sign-driven |
+| `RECEIVE_AND_DELIVER` | `corporate_action`, `journal`, `transfer_in` or `transfer_out` | see below |
 | `SMA_ADJUSTMENT` | `other` | margin-related, rare |
+
+`RECEIVE_AND_DELIVER` carries a zero `netAmount`, so the adapter types
+it from the description and the security leg. Schwab books the legs of
+one event on the same account at the same instant, and the adapter
+reads them as a group:
+
+- A row whose description names a split, merger, expiration, spin-off
+  or name change is a `corporate_action`. So is every row booked with
+  it, such as the new-share leg of a reverse split.
+- Legs of one instrument whose quantities cancel move shares between
+  the account's cash and margin sub-accounts. They are a `journal`.
+- Any other row is a delivery: `transfer_in` for a positive quantity,
+  `transfer_out` for a negative one.
 
 Per the global fallback rule (DESIGN.md §6.8): any new Schwab
 `kind` value an adapter version doesn't recognise lands as `other`

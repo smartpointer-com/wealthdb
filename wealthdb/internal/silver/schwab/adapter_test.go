@@ -473,13 +473,11 @@ func TestTransactionsKindMapping(t *testing.T) {
 		{"CASH_DISBURSEMENT", negative, "", canonical.TxKindWithdrawal},
 		{"ELECTRONIC_FUND", negative, "", canonical.TxKindWithdrawal},
 		{"ELECTRONIC_FUND", positive, "", canonical.TxKindDeposit},
-		{"RECEIVE_AND_DELIVER", negative, "", canonical.TxKindTransferOut},
-		{"RECEIVE_AND_DELIVER", positive, "", canonical.TxKindTransferIn},
 		{"SMA_ADJUSTMENT", zero, "", canonical.TxKindOther},
 		{"MEMORANDUM", zero, "", canonical.TxKindOther},
 	}
 	for _, c := range cases {
-		if got := kindFor(c.schwabKind, c.amount, c.description); got != c.want {
+		if got := kindFor(c.schwabKind, c.amount, nil, c.description); got != c.want {
 			t.Errorf("kindFor(%q, %s, %q) = %q, want %q", c.schwabKind, c.amount.String(), c.description, got, c.want)
 		}
 	}

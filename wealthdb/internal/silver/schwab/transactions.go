@@ -209,6 +209,7 @@ SELECT activity_id, timestamp, account_external_id, kind, payload
 	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
+	var deliveries []int
 	for rows.Next() {
 		var (
 			activityID, extID, kind, payload string
@@ -231,11 +232,15 @@ SELECT activity_id, timestamp, account_external_id, kind, payload
 				tx.InstrumentExternalID = &k
 			}
 		}
+		if kind == "RECEIVE_AND_DELIVER" {
+			deliveries = append(deliveries, len(out.Transactions))
+		}
 		out.Transactions = append(out.Transactions, tx)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	settleDeliveries(out.Transactions, deliveries)
 	return silver.NewTransactionStream(out), nil
 }
 
@@ -268,7 +273,15 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 		netAmount = *tp.NetAmount
 	}
 
-	kind := kindFor(silverKind, netAmount, tp.Description)
+	// For trades and deliveries, surface the instrument leg's quantity,
+	// price, and instrument identity. Pick the leg whose instrument is
+	// not a cash placeholder (CURRENCY/CASH_EQUIVALENT).
+	leg, hasLeg := pickInstrumentLeg(tp.TransferItems)
+	var legQty *canonical.Decimal
+	if hasLeg {
+		legQty = &leg.Amount
+	}
+	kind := kindFor(silverKind, netAmount, legQty, tp.Description)
 
 	// netAmount is kept as signed, never forced to the kind's canonical
 	// sign. The API signs it from the account's side (a buy negative, a
@@ -286,10 +299,7 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 		Payload:               json.RawMessage(payload),
 	}
 
-	// For trades, surface the instrument leg's quantity, price,
-	// and instrument identity. Pick the leg whose instrument is
-	// not a cash placeholder (CURRENCY/CASH_EQUIVALENT).
-	if leg, ok := pickInstrumentLeg(tp.TransferItems); ok {
+	if hasLeg {
 		key := preferredInstrumentKey(leg.Instrument)
 		if key != "" {
 			tx.InstrumentExternalID = &key
