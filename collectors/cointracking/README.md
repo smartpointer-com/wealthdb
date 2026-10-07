@@ -113,6 +113,20 @@ rest — one MFA prompt every few years.
 #    is unattended for the multi-year lifetime of the device-trust cookie.
 ```
 
+### Timezone
+
+CoinTracking writes each trade's date in the timezone set on the
+portfolio's account. `load` stores it as printed and converts it to
+UTC. Name each portfolio's zone in `~/.config/cointracking.cfg`
+(under `$XDG_CONFIG_HOME` when set). The wrapper sources that file:
+
+```sh
+COINTRACKING_TIMEZONES="cu_1001=Europe/Zurich cu_1002=America/New_York"
+```
+
+A portfolio the file does not name is read as UTC. A changed zone
+applies at the next `load`. DESIGN.md has the details.
+
 Standalone USD-price tools:
 
 ```sh

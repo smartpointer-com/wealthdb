@@ -225,9 +225,13 @@ snapshot not already in `dump_runs`. Per snapshot:
    The id does not depend on the CSV's row order. A row keeps its
    id across exports until CoinTracking amends it, and gold's order
    (`occurred_at`, then id) is total and the same on every load.
+   `Group` and `Tx-ID` land in `trade_group` and `tx_id` as printed.
+   `Date` lands in `occurred_local` as printed, and `occurred_at`
+   holds it converted to UTC (see "Timezone" below).
 
 2. **portfolios + wallets** — upserted from the run.json manifest +
-   the loaded transactions' `Exchange` column.
+   the loaded transactions' `Exchange` column. Each portfolio row
+   records the timezone its `Date` column was read in.
 
 3. **positions_daily — incremental upsert.** The full new time
    series is computed via the aggregate-then-window replay; we
@@ -252,7 +256,21 @@ snapshot not already in `dump_runs`. Per snapshot:
 
 5. **dump_runs** — the snapshot is recorded with the cutoff date
    + rows-written count in `payload`, so re-runs can tell which
-   snapshot moved which slice of history.
+   snapshot moved which slice of history. The row also records
+   the schema version the snapshot was loaded under.
+
+After the loop, the load checks the newest loaded snapshot, whose
+rows `transactions` holds. It ingests that snapshot again when one
+of two things has changed since it was loaded:
+
+- the schema version, because rows loaded under an older one hold
+  NULL in the columns a newer one adds;
+- a portfolio's configured timezone, because its `occurred_at` was
+  converted from the old zone.
+
+So a migration or a new timezone setting takes effect at the next
+`load`, with no new download and no `--force`. A portfolio missing
+from the newest export keeps its rows as last loaded.
 
 `--replay-only` skips the bronze ingest and re-runs the
 positions_daily incremental upsert against whatever's already
@@ -262,6 +280,41 @@ rules.
 `--force` deletes the silver DB and rebuilds it from all bronze (the
 fleet-wide meaning). Useful for re-validating after a load.py change
 without manually clearing the silver.
+
+### Timezone
+
+CoinTracking writes the trade export's `Date` in the timezone set
+on the portfolio's account, with no offset. The export does not say
+which zone that is. So the zone is a per-deployment setting:
+
+- `load --timezone cu_<id>=<zone>`, repeated per portfolio, names
+  each portfolio's IANA zone.
+- Without the flag, `load` reads the same items from
+  `COINTRACKING_TIMEZONES`, separated by spaces. The wrapper sources
+  `$XDG_CONFIG_HOME/cointracking.cfg` (default
+  `~/.config/cointracking.cfg`) and forwards that variable.
+- A portfolio named in neither is read as UTC.
+- An item of another shape, or a zone DuckDB does not know, stops
+  the load before it starts. A typo must not pass for UTC.
+
+`occurred_at` is the `Date` wall time read in the zone and converted
+to UTC. DuckDB's ICU rules settle the two wall times a daylight-saving
+change makes unclear:
+
+- a wall time the change repeats reads as its later occurrence;
+- a wall time the change skips reads with the offset in force before
+  the change.
+
+The conversion is only as good as the export. CoinTracking's own
+imports from exchanges and spreadsheets can leave a row hours off,
+whatever the account setting. Silver keeps such rows as exported.
+A row stamped at exactly midnight local time, as a date-only import
+leaves it, lands on the previous UTC day in a zone east of UTC. A
+consumer must not depend on sub-day precision.
+
+A changed zone moves `occurred_at`, so a row near midnight can change
+day in `positions_daily` and in gold after its next load. The
+transaction id hashes the export's text and does not move.
 
 ## Prune — reclaiming bronze disk
 
@@ -593,12 +646,15 @@ would need.
 The silver schema mirrors the shape cointracking canonicalises,
 using the data-model vocabulary above:
 
-- `portfolios` — one row per linked CoinTracking user account.
+- `portfolios` — one row per linked CoinTracking user account, with
+  the `timezone` its trade dates were read in.
 - `wallets` — one row per (portfolio, wallet); covers custodial
   exchanges and self-custody hardware wallets uniformly.
 - `transactions` — raw rows from the 13-column "CSV (Full Export)"
   trade CSV, one per CSV row, with the source `type` preserved and
-  amounts as `DECIMAL(38, 18)`.
+  amounts as `DECIMAL(38, 18)`. `trade_group`, `tx_id` and
+  `occurred_local` hold the `Group`, `Tx-ID` and `Date` text as
+  printed; `occurred_at` is `occurred_local` in UTC.
 - `positions_daily` — COMPUTED by load.py via the transaction
   replay: `(as_of_date, portfolio, wallet, instrument) → amount`.
   Written only on days where state actually changed; gold queries
@@ -612,8 +668,9 @@ using the data-model vocabulary above:
   keyed on (instrument, provider).
 
 Concrete columns are in
-[`migrations/0001_initial.sql`](migrations/0001_initial.sql) and
-[`migrations/0002_prices.sql`](migrations/0002_prices.sql).
+[`migrations/0001_initial.sql`](migrations/0001_initial.sql),
+[`migrations/0002_prices.sql`](migrations/0002_prices.sql) and
+[`migrations/0003_group_txid_local_time.sql`](migrations/0003_group_txid_local_time.sql).
 
 The Go gold adapter (`wealthdb/internal/silver/cointracking/`) opens
 this DuckDB silver read-only and projects portfolios → accounts →

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -36,6 +37,13 @@ TRADE_ROW = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_timezone_env(monkeypatch):
+    # The wrapper forwards a deployment's zones in this variable; keep
+    # them out of the tests' synthetic portfolios.
+    monkeypatch.delenv(loader.TIMEZONES_ENV, raising=False)
+
+
 def _seed_bronze(root: Path) -> tuple[Path, dict]:
     run_dir = root / "20240115T100000Z"
     (run_dir / f"cu_{CU}").mkdir(parents=True, exist_ok=True)
@@ -52,13 +60,13 @@ def _fresh_db(tmp_path: Path) -> duckdb.DuckDBPyConnection:
 
 
 def _row(type_, *, buy="", buy_cur="", sell="", sell_cur="", fee="",
-         fee_cur="", exchange="ExchangeA", comment="",
-         date="2024-01-15 10:00:00") -> str:
+         fee_cur="", exchange="ExchangeA", group="", comment="",
+         date="2024-01-15 10:00:00", tx_id="") -> str:
     """One trades.csv row (all fields quoted). Positional layout
     matches TRADES_HEADER: Type, Buy, Cur.(buy), Sell, Cur.(sell), Fee,
     Cur.(fee), Exchange, Group, Comment, Date, LPN, Tx-ID."""
     fields = [type_, buy, buy_cur, sell, sell_cur, fee, fee_cur,
-              exchange, "", comment, date, "", ""]
+              exchange, group, comment, date, "", tx_id]
     return ",".join(f'"{f}"' for f in fields)
 
 
@@ -109,7 +117,8 @@ def test_dust_sweep_other_expense_zeroes_the_swept_balance(tmp_path):
     ]
     run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
     conn = _fresh_db(tmp_path)
-    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
+                               timezones={})
     loader.upsert_positions_daily(conn, snapshot_at=1706745600)
 
     latest = _latest_positions(conn)
@@ -131,7 +140,8 @@ def test_warn_unhandled_types_flags_unrouted_leg(tmp_path):
     ]
     run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
     conn = _fresh_db(tmp_path)
-    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800,
+                               timezones={})
     # (type, dropped_buy_legs, dropped_sell_legs)
     assert loader.warn_unhandled_transaction_types(conn) == [
         ("Margin Trade", 0, 1)]
@@ -148,7 +158,8 @@ def test_warn_unhandled_types_silent_when_covered(tmp_path):
     ]
     run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
     conn = _fresh_db(tmp_path)
-    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
+                               timezones={})
     assert loader.warn_unhandled_transaction_types(conn) == []
 
 
@@ -156,7 +167,7 @@ def test_ingest_transactions(tmp_path):
     run_dir, manifest = _seed_bronze(tmp_path / "bronze")
     conn = _fresh_db(tmp_path)
     n = loader.ingest_transactions(conn, manifest, run_dir,
-                                   snapshot_at=1705312800)
+                                   snapshot_at=1705312800, timezones={})
     assert n == 1
 
     row = conn.execute(
@@ -183,7 +194,8 @@ def _ids(tmp_path: Path, name: str, rows: list[str]) -> list[tuple[str, str]]:
     run_dir, manifest = _seed_bronze_rows(tmp_path / name, rows)
     conn = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
     loader.apply_migrations(conn)
-    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
+                               timezones={})
     return sorted(conn.execute(
         "SELECT type, transaction_external_id FROM transactions").fetchall())
 
@@ -231,7 +243,7 @@ def test_ingest_transactions_compressed_converges(tmp_path):
     conn_plain = duckdb.connect(str(tmp_path / "plain.duckdb"))
     loader.apply_migrations(conn_plain)
     loader.ingest_transactions(conn_plain, manifest, run_plain,
-                               snapshot_at=1705312800)
+                               snapshot_at=1705312800, timezones={})
 
     run_zst, manifest = _seed_bronze(tmp_path / "zst")
     compress.compress_file(run_zst / f"cu_{CU}" / "trades.csv")
@@ -239,7 +251,7 @@ def test_ingest_transactions_compressed_converges(tmp_path):
     conn_zst = duckdb.connect(str(tmp_path / "zst.duckdb"))
     loader.apply_migrations(conn_zst)
     n = loader.ingest_transactions(conn_zst, manifest, run_zst,
-                                   snapshot_at=1705312800)
+                                   snapshot_at=1705312800, timezones={})
 
     assert n == 1
     assert _transactions(conn_zst) == _transactions(conn_plain)
@@ -294,8 +306,10 @@ def test_ingest_replaces_per_portfolio(tmp_path):
     # — each trades.csv is a complete replay of that portfolio.
     run_dir, manifest = _seed_bronze(tmp_path / "bronze")
     conn = _fresh_db(tmp_path)
-    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800)
-    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800,
+                               timezones={})
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800,
+                               timezones={})
     assert conn.execute(
         "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
 
@@ -542,3 +556,252 @@ def test_force_rebuild_equals_incremental(tmp_path):
     rebuilt = _dump_silver_state(silver)
 
     assert rebuilt == incremental
+
+
+# ---- Group, Tx-ID and the export's local time ------------------------
+
+def _seed_export(root: Path, slug: str, portfolios: dict[str, list[str]],
+                 header: str = TRADES_HEADER) -> Path:
+    """A complete bronze run: run.json plus one trades.csv per
+    portfolio id in `portfolios`, holding that portfolio's rows."""
+    run_dir = root / slug
+    for cu, rows in portfolios.items():
+        (run_dir / f"cu_{cu}").mkdir(parents=True, exist_ok=True)
+        (run_dir / f"cu_{cu}" / "trades.csv").write_text(
+            header + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    (run_dir / "run.json").write_text(json.dumps({
+        "portfolios": [{"id": cu, "name": f"test {cu}"} for cu in portfolios],
+        "status": "complete",
+    }), encoding="utf-8")
+    return run_dir
+
+
+def _ingest(tmp_path: Path, portfolios: dict[str, list[str]],
+            timezones: dict[str, str], header: str = TRADES_HEADER,
+            name: str = "silver") -> duckdb.DuckDBPyConnection:
+    """Ingest one export into a fresh silver and return the connection."""
+    run_dir = _seed_export(tmp_path / f"{name}-bronze", "20240201T000000Z",
+                           portfolios, header)
+    manifest = json.loads((run_dir / "run.json").read_text())
+    conn = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
+    loader.apply_migrations(conn)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
+                               timezones=timezones)
+    return conn
+
+
+def _times(conn) -> dict[tuple[str, str], str]:
+    """(portfolio, occurred_local) → occurred_at as text."""
+    return {(p, local): str(at) for p, local, at in conn.execute(
+        "SELECT portfolio_external_id, occurred_local, occurred_at "
+        "FROM transactions").fetchall()}
+
+
+def test_group_and_tx_id_land_as_columns(tmp_path):
+    # A populated Group / Tx-ID is kept as printed; a blank one is NULL.
+    conn = _ingest(tmp_path, {CU: [
+        _row("Trade", buy="1", buy_cur="ETH", sell="0.05", sell_cur="BTC",
+             group="GroupA", tx_id="TX-0001", date="2024-01-15 10:00:00"),
+        _row("Deposit", buy="1", buy_cur="BTC", date="2024-01-14 10:00:00"),
+    ]}, timezones={})
+    assert sorted(conn.execute(
+        "SELECT type, trade_group, tx_id FROM transactions").fetchall()) == [
+        ("Deposit", None, None),
+        ("Trade", "GroupA", "TX-0001"),
+    ]
+
+
+def test_export_without_group_and_tx_id_columns_loads(tmp_path):
+    # An export whose header lacks Group, LPN and Tx-ID still loads;
+    # the three columns are NULL.
+    header = ('"Type","Buy","Cur.","Sell","Cur.","Fee","Cur.","Exchange",'
+              '"Comment","Date"')
+    row = '"Deposit","1","BTC","","","","","ExchangeA","","2024-01-15 10:00:00"'
+    conn = _ingest(tmp_path, {CU: [row]}, timezones={}, header=header)
+    assert conn.execute(
+        "SELECT lpn, trade_group, tx_id, occurred_local, occurred_at "
+        "FROM transactions").fetchall() == [
+        (None, None, None, "2024-01-15 10:00:00",
+         datetime(2024, 1, 15, 10, 0)),
+    ]
+
+
+def test_occurred_at_is_local_date_converted_from_the_portfolio_zone(
+        tmp_path):
+    # Portfolio 1 has a zone: its Date reads as local time there and
+    # converts to UTC, at the winter and the summer offset. Portfolio 2
+    # has none and reads as UTC. occurred_local keeps the text as
+    # exported for both.
+    winter, summer = "2024-01-15 00:30:00", "2024-07-15 12:00:00"
+    rows = [_row("Deposit", buy="1", buy_cur="BTC", date=winter),
+            _row("Deposit", buy="2", buy_cur="BTC", date=summer)]
+    conn = _ingest(tmp_path, {"1": rows, "2": rows},
+                   timezones={"cu_1": "Europe/Zurich"})
+    assert _times(conn) == {
+        ("cu_1", winter): "2024-01-14 23:30:00",
+        ("cu_1", summer): "2024-07-15 10:00:00",
+        ("cu_2", winter): winter,
+        ("cu_2", summer): summer,
+    }
+
+
+@pytest.mark.parametrize("zone, local, utc", [
+    # Wall times a spring-forward change skips read with the offset in
+    # force before the change.
+    ("Europe/Zurich", "2024-03-31 02:30:00", "2024-03-31 01:30:00"),
+    ("America/New_York", "2024-03-10 02:30:00", "2024-03-10 07:30:00"),
+    # Wall times a fall-back change repeats read as the later one.
+    ("Europe/Zurich", "2024-10-27 02:30:00", "2024-10-27 01:30:00"),
+    ("America/New_York", "2024-11-03 01:30:00", "2024-11-03 06:30:00"),
+    # Either side of a change, the offset of that side.
+    ("Europe/Zurich", "2024-03-31 01:59:59", "2024-03-31 00:59:59"),
+    ("Europe/Zurich", "2024-03-31 03:00:00", "2024-03-31 01:00:00"),
+])
+def test_occurred_at_on_a_daylight_saving_change(tmp_path, zone, local, utc):
+    conn = _ingest(tmp_path, {CU: [_row("Staking", buy="1", buy_cur="ETH",
+                                        date=local)]},
+                   timezones={f"cu_{CU}": zone})
+    assert _times(conn) == {(f"cu_{CU}", local): utc}
+
+
+def test_transaction_ids_do_not_depend_on_the_timezone(tmp_path):
+    rows = [_row("Deposit", buy="1", buy_cur="BTC", date="2024-01-15 00:30:00"),
+            _row("Trade", buy="1", buy_cur="ETH", sell="0.05", sell_cur="BTC",
+                 group="GroupA", tx_id="TX-0001",
+                 date="2024-01-15 00:30:00")]
+
+    def ids(name, timezones):
+        conn = _ingest(tmp_path, {CU: rows}, timezones, name=name)
+        return sorted(r[0] for r in conn.execute(
+            "SELECT transaction_external_id FROM transactions").fetchall())
+
+    assert ids("utc", {}) == ids("tokyo", {f"cu_{CU}": "Asia/Tokyo"})
+
+
+def test_parse_timezones_items_env_and_errors(monkeypatch):
+    zones = {"cu_1": "Europe/Zurich", "cu_2": "America/New_York"}
+    assert loader.parse_args([
+        "--timezone", "cu_1=Europe/Zurich",
+        "--timezone", "cu_2=America/New_York",
+    ]).timezones == zones
+    # No flag: the items come from the environment variable.
+    monkeypatch.setenv(loader.TIMEZONES_ENV,
+                       " cu_1=Europe/Zurich\tcu_2=America/New_York ")
+    assert loader.parse_args([]).timezones == zones
+    # A flag replaces the environment variable entirely.
+    assert loader.parse_args(["--timezone", "cu_3=UTC"]).timezones == {
+        "cu_3": "UTC"}
+    monkeypatch.delenv(loader.TIMEZONES_ENV)
+    assert loader.parse_args([]).timezones == {}
+    # The same zone twice is fine.
+    assert loader.parse_timezones(["cu_1=UTC", "cu_1=UTC"]) == {"cu_1": "UTC"}
+
+
+@pytest.mark.parametrize("items, message", [
+    (["1=Europe/Zurich"], "is not cu_<id>=<zone>"),
+    (["cu_1"], "is not cu_<id>=<zone>"),
+    (["cu_1=Europe/Nowhere"], "unknown timezone"),
+    (["cu_1=UTC", "cu_1=Europe/Zurich"], "two timezones"),
+])
+def test_parse_timezones_rejects(items, message, capsys):
+    with pytest.raises(ValueError, match=message):
+        loader.parse_timezones(items)
+    argv = [a for item in items for a in ("--timezone", item)]
+    with pytest.raises(SystemExit) as exc:
+        loader.parse_args(argv)
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def _silver_argv(tmp_path: Path) -> list[str]:
+    return ["--bronze-dir", str(tmp_path / "bronze"),
+            "--silver-db", str(tmp_path / "silver" / "cointracking.duckdb"),
+            "--no-fetch-prices"]
+
+
+def _query(tmp_path: Path, sql: str) -> list[tuple]:
+    conn = duckdb.connect(str(tmp_path / "silver" / "cointracking.duckdb"))
+    try:
+        return conn.execute(sql).fetchall()
+    finally:
+        conn.close()
+
+
+def _schema_version() -> int:
+    conn = duckdb.connect()
+    try:
+        return loader.apply_migrations(conn)
+    finally:
+        conn.close()
+
+
+def test_load_ingests_the_newest_export_again_when_a_timezone_changes(
+        tmp_path, caplog):
+    # A zone set after the export was loaded applies at the next load,
+    # without a new download. A load with nothing changed reads nothing
+    # again.
+    _seed_export(tmp_path / "bronze", "20240201T000000Z", {CU: [
+        _row("Deposit", buy="1", buy_cur="BTC", date="2024-01-15 00:30:00")]})
+    argv = _silver_argv(tmp_path)
+    zoned = argv + ["--timezone", f"cu_{CU}=Europe/Zurich"]
+    state_sql = ("SELECT p.timezone, t.occurred_at, d.as_of_date, "
+                 "r.silver_schema_version "
+                 "FROM portfolios p, transactions t, positions_daily d, "
+                 "dump_runs r")
+
+    assert loader.main(argv) == 0
+    assert _query(tmp_path, state_sql) == [
+        ("UTC", datetime(2024, 1, 15, 0, 30), date(2024, 1, 15),
+         _schema_version())]
+
+    caplog.set_level("INFO", logger="cointracking.load")
+    assert loader.main(zoned) == 0
+    assert "again" in caplog.text
+    # The deposit moves to the UTC day before; the replay follows it.
+    assert _query(tmp_path, state_sql) == [
+        ("Europe/Zurich", datetime(2024, 1, 14, 23, 30), date(2024, 1, 14),
+         _schema_version())]
+
+    caplog.clear()
+    assert loader.main(zoned) == 0
+    assert "again" not in caplog.text
+
+
+def test_load_backfills_rows_loaded_under_an_older_schema(tmp_path):
+    # Silver at schema v2 with the export already loaded, as a load
+    # before v3 left it. The migration adds the columns: the portfolio
+    # reads as UTC, which is the zone that load applied, and the
+    # transaction holds NULL. The next load ingests the export again
+    # and fills them.
+    silver = tmp_path / "silver" / "cointracking.duckdb"
+    silver.parent.mkdir()
+    run_dir = _seed_export(tmp_path / "bronze", "20240201T000000Z", {CU: [
+        _row("Trade", buy="1", buy_cur="ETH", sell="0.05", sell_cur="BTC",
+             group="GroupA", tx_id="TX-0001", date="2024-01-15 10:00:00")]})
+    conn = duckdb.connect(str(silver))
+    for name in ("0001_initial.sql", "0002_prices.sql"):
+        conn.execute((loader.MIGRATIONS_DIR / name).read_text())
+    conn.execute("INSERT INTO portfolios VALUES (?, ?, 'test', 1, NULL)",
+                 [f"cu_{CU}", int(CU)])
+    conn.execute(
+        "INSERT INTO transactions (transaction_external_id, "
+        "portfolio_external_id, wallet_external_id, snapshot_at, "
+        "occurred_at, type) VALUES (?, ?, ?, 1, ?, 'Trade')",
+        [f"cu_{CU}:0000000000000000", f"cu_{CU}", f"cu_{CU}:ExchangeA",
+         datetime(2024, 1, 15, 10, 0)])
+    conn.execute("INSERT INTO dump_runs VALUES (?, 1, ?, NULL)",
+                 [loader.parse_run_ts(run_dir), str(run_dir)])
+    loader.apply_migrations(conn)
+    assert conn.execute(
+        "SELECT p.timezone, t.trade_group, t.tx_id, t.occurred_local "
+        "FROM portfolios p, transactions t").fetchall() == [
+        ("UTC", None, None, None)]
+    conn.close()
+
+    assert loader.main(_silver_argv(tmp_path)) == 0
+    assert _query(tmp_path,
+                  "SELECT t.trade_group, t.tx_id, t.occurred_local, "
+                  "t.occurred_at, r.silver_schema_version "
+                  "FROM transactions t, dump_runs r") == [
+        ("GroupA", "TX-0001", "2024-01-15 10:00:00",
+         datetime(2024, 1, 15, 10, 0), _schema_version())]

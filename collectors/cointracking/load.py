@@ -9,7 +9,10 @@ read_csv_auto) and ingests into the DuckDB silver layer:
 
   - `transactions` is fully replaced with the rows from the latest
     processed snapshot. (Every download is a complete dump; we
-    don't keep per-snapshot transaction history in silver.)
+    don't keep per-snapshot transaction history in silver.) The
+    export's `Date` is local time in the portfolio's CoinTracking
+    timezone; `occurred_at` converts it to UTC with the zone
+    --timezone sets for the portfolio.
 
   - `positions_daily` is INCREMENTALLY upserted via the
     aggregate-then-window replay. The full new time series is
@@ -23,7 +26,9 @@ read_csv_auto) and ingests into the DuckDB silver layer:
     Exchange column.
 
   - `dump_runs` records each snapshot processed (idempotency gate;
-    a re-run skips already-loaded snapshots).
+    a re-run skips already-loaded snapshots). The newest loaded
+    snapshot is ingested again when it was loaded under an older
+    schema version or another timezone.
 
 After ingest, the loader reconciles each portfolio's computed
 final balance against the balance.csv from /balance_by_exchange.php.
@@ -71,6 +76,15 @@ RECONCILE_ABS_TOL = "0.00000001"
 # the multi-word "Total" form is naturally excluded by [A-Z0-9_]+
 # (no spaces).
 COIN_VALUE_HEADER_RE = re.compile(r'^([A-Z0-9_]+) Value in ([A-Z]+)$')
+
+# CoinTracking writes the trade export's `Date` in the timezone set on
+# each portfolio's account, with no offset. The account setting is not
+# in the export, so the zone comes from config: one `cu_<id>=<zone>`
+# item per portfolio, from --timezone or this environment variable. A
+# portfolio named in neither is read in DEFAULT_TIMEZONE.
+TIMEZONES_ENV = "COINTRACKING_TIMEZONES"
+DEFAULT_TIMEZONE = "UTC"
+TIMEZONE_ITEM_RE = re.compile(r"^(cu_\d+)=(\S+)$")
 
 
 # Type handler vocabulary — the single source of truth for BOTH the
@@ -220,8 +234,58 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "running `fetch-prices --missing` immediately after load. Pass "
               "this to skip the price fill (e.g. an offline reload)."),
     )
+    p.add_argument(
+        "--timezone", dest="timezones", action="append",
+        metavar="cu_<id>=ZONE",
+        help=("The IANA zone a portfolio's CoinTracking account is set "
+              "to, such as cu_1001=Europe/Zurich. The trade export "
+              "writes each Date in that zone; the load converts it to "
+              "UTC. Repeat for each portfolio. Default: the items in "
+              f"${TIMEZONES_ENV}, separated by spaces. A portfolio "
+              "named in neither is read as UTC."),
+    )
     cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    items = args.timezones
+    if items is None:
+        items = os.environ.get(TIMEZONES_ENV, "").split()
+    try:
+        args.timezones = parse_timezones(items)
+    except ValueError as exc:
+        p.error(str(exc))
+    return args
+
+
+def parse_timezones(items: list[str]) -> dict[str, str]:
+    """Map `cu_<id>=<zone>` items to {portfolio_external_id: zone}.
+
+    Raises ValueError on an item of another shape, a portfolio named
+    twice with different zones, or a zone DuckDB's ICU does not know:
+    a typo must not pass for UTC."""
+    zones: dict[str, str] = {}
+    probe = duckdb.connect()
+    try:
+        for item in items:
+            m = TIMEZONE_ITEM_RE.match(item)
+            if not m:
+                raise ValueError(
+                    f"timezone item {item!r} is not cu_<id>=<zone>")
+            portfolio, zone = m.groups()
+            if zones.get(portfolio, zone) != zone:
+                raise ValueError(
+                    f"{portfolio} is given two timezones: "
+                    f"{zones[portfolio]} and {zone}")
+            try:
+                probe.execute(
+                    "SELECT timezone(?, TIMESTAMP '2000-01-01')", [zone])
+            except duckdb.Error:
+                raise ValueError(
+                    f"{portfolio}: unknown timezone {zone!r}; use an IANA "
+                    f"name such as Europe/Zurich") from None
+            zones[portfolio] = zone
+    finally:
+        probe.close()
+    return zones
 
 
 def apply_migrations(conn: duckdb.DuckDBPyConnection) -> int:
@@ -272,28 +336,36 @@ def parse_run_ts(run_dir: Path) -> int:
     return bronze.parse_run_ts(run_dir.name)
 
 
+def timezone_for(timezones: dict[str, str], portfolio_id: str) -> str:
+    """The zone a portfolio's `Date` column is read in."""
+    return timezones.get(portfolio_id, DEFAULT_TIMEZONE)
+
+
 def ingest_portfolios_and_wallets(
     conn: duckdb.DuckDBPyConnection,
-    manifest: dict, snapshot_at: int,
+    manifest: dict, snapshot_at: int, timezones: dict[str, str],
 ) -> None:
     """Upsert portfolio + wallet rows from the run.json manifest +
     the trade CSVs' Exchange column. Wallets are discovered from
-    transactions; portfolios come from the manifest."""
+    transactions; portfolios come from the manifest, each with the
+    timezone its transactions were read in."""
     # Portfolios — one row per linked CoinTracking user, keyed on
     # the change_user ID.
     for portfolio in manifest["portfolios"]:
+        portfolio_id = f"cu_{portfolio['id']}"
         conn.execute(
             """INSERT INTO portfolios
                (portfolio_external_id, cointracking_user_id, display_name,
-                snapshot_at, payload)
-               VALUES (?, ?, ?, ?, ?)
+                snapshot_at, payload, timezone)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT (portfolio_external_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  snapshot_at  = excluded.snapshot_at,
-                 payload      = excluded.payload""",
-            [f"cu_{portfolio['id']}", int(portfolio["id"]),
+                 payload      = excluded.payload,
+                 timezone     = excluded.timezone""",
+            [portfolio_id, int(portfolio["id"]),
              portfolio["name"], snapshot_at,
-             json.dumps(portfolio)],
+             json.dumps(portfolio), timezone_for(timezones, portfolio_id)],
         )
 
     # Wallets — derived from the Exchange column after the
@@ -327,9 +399,16 @@ def _bronze_csv(run_dir: Path, cu_id: str, kind: str) -> Path | None:
     return compress.resolve_variant(run_dir / f"cu_{cu_id}" / f"{kind}.csv")
 
 
+def _optional_text(col: str, cols: set[str]) -> str:
+    """SQL for a text column the export may omit: a blank cell or an
+    absent column is NULL."""
+    return f"NULLIF(\"{col}\", '')" if col in cols else "NULL"
+
+
 def ingest_transactions(
     conn: duckdb.DuckDBPyConnection,
     manifest: dict, run_dir: Path, snapshot_at: int,
+    timezones: dict[str, str],
 ) -> int:
     """Replace `transactions` for the portfolios present in this
     snapshot and re-populate from each one's trades.csv. Returns
@@ -338,7 +417,13 @@ def ingest_transactions(
     export), so per-portfolio truncate-and-reinsert is safe.
     Portfolios missing from this snapshot keep whatever they were
     last loaded with — relevant when CT's flaky linked-user
-    discovery drops one off a refresh."""
+    discovery drops one off a refresh.
+
+    `Date` is kept as printed in `occurred_local`; `occurred_at` is
+    that wall time read in the portfolio's zone (`timezones`, else
+    UTC) and converted to UTC. A wall time a daylight-saving change
+    repeats reads as its later occurrence; one the change skips reads
+    with the offset in force before the change (DuckDB's ICU rules)."""
     portfolio_ids = [f"cu_{p['id']}" for p in manifest["portfolios"]]
     if portfolio_ids:
         placeholders = ", ".join(["?"] * len(portfolio_ids))
@@ -388,10 +473,10 @@ def ingest_transactions(
         # the 2nd, 3rd, … copy of an exact duplicate row. It does not
         # depend on the CSV's row order, so every load of the same
         # export yields the same ids, and a row keeps its id across
-        # exports until CoinTracking amends it.
+        # exports until CoinTracking amends it. The hash reads the
+        # export's text, so the timezone a load applies never moves it.
         row_hash = "sha256(concat_ws(chr(31), {}))".format(", ".join(
             f"COALESCE(\"{c}\", '')" for c in sorted(cols)))
-        lpn_expr = "NULLIF(\"LPN\", '')" if "LPN" in cols else "NULL"
 
         n_before = conn.execute(
             "SELECT COUNT(*) FROM transactions").fetchone()[0]
@@ -402,11 +487,12 @@ def ingest_transactions(
                 wallet_external_id,
                 snapshot_at,
                 occurred_at,
+                occurred_local,
                 type,
                 buy_amount, buy_currency,
                 sell_amount, sell_currency,
                 fee_amount, fee_currency,
-                comment, lpn, payload
+                comment, lpn, trade_group, tx_id, payload
             )
             SELECT
                 'cu_{cu_id}:' || substr(h, 1, 16) ||
@@ -415,7 +501,9 @@ def ingest_transactions(
                 'cu_{cu_id}' AS portfolio_external_id,
                 'cu_{cu_id}:' || "Exchange" AS wallet_external_id,
                 {snapshot_at} AS snapshot_at,
-                CAST("Date" AS TIMESTAMP) AS occurred_at,
+                timezone('UTC', timezone($zone, CAST("Date" AS TIMESTAMP)))
+                    AS occurred_at,
+                "Date" AS occurred_local,
                 "Type" AS type,
                 TRY_CAST(NULLIF("Buy", '') AS DECIMAL(38, 18)),
                 NULLIF("Cur.", ''),
@@ -424,11 +512,13 @@ def ingest_transactions(
                 TRY_CAST(NULLIF("Fee", '') AS DECIMAL(38, 18)),
                 NULLIF("Cur._2", ''),
                 NULLIF("Comment", ''),
-                {lpn_expr} AS lpn,
+                {_optional_text("LPN", cols)} AS lpn,
+                {_optional_text("Group", cols)} AS trade_group,
+                {_optional_text("Tx-ID", cols)} AS tx_id,
                 NULL AS payload
             FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY h) AS copy
                     FROM (SELECT *, {row_hash} AS h FROM raw))
-        """)
+        """, {"zone": timezone_for(timezones, f"cu_{cu_id}")})
         loaded = conn.execute(
             "SELECT COUNT(*) FROM transactions").fetchone()[0] - n_before
         log.info("  cu_%s: %d transactions loaded", cu_id, loaded)
@@ -1196,6 +1286,7 @@ def fetch_fx_rates(
 
 def process_snapshot(
     conn: duckdb.DuckDBPyConnection, run_dir: Path, force: bool,
+    timezones: dict[str, str], schema_version: int,
 ) -> None:
     """Ingest one bronze snapshot dir into silver."""
     snapshot_at = parse_run_ts(run_dir)
@@ -1211,10 +1302,11 @@ def process_snapshot(
 
     manifest = json.loads((run_dir / "run.json").read_text())
 
-    n_tx = ingest_transactions(conn, manifest, run_dir, snapshot_at)
+    n_tx = ingest_transactions(conn, manifest, run_dir, snapshot_at,
+                               timezones)
     log.info("  total transactions loaded: %d", n_tx)
 
-    ingest_portfolios_and_wallets(conn, manifest, snapshot_at)
+    ingest_portfolios_and_wallets(conn, manifest, snapshot_at, timezones)
 
     cutoff, n_rewritten = upsert_positions_daily(conn, snapshot_at)
 
@@ -1224,7 +1316,8 @@ def process_snapshot(
 
     reconcile_balances(conn, manifest, run_dir)
 
-    # Record the snapshot. Replace existing on --force.
+    # Record the snapshot and the schema version it was loaded under.
+    # Replace the row when the snapshot is ingested again.
     conn.execute(
         "INSERT INTO dump_runs (snapshot_at, silver_schema_version, "
         "run_dir, payload) VALUES (?, ?, ?, ?) "
@@ -1232,9 +1325,51 @@ def process_snapshot(
         "  silver_schema_version = excluded.silver_schema_version, "
         "  run_dir               = excluded.run_dir, "
         "  payload               = excluded.payload",
-        [snapshot_at, 1, str(run_dir),
+        [snapshot_at, schema_version, str(run_dir),
          json.dumps({"cutoff": cutoff, "rewritten": n_rewritten})],
     )
+
+
+def newest_loaded(
+    conn: duckdb.DuckDBPyConnection, snapshots: list[Path],
+) -> Path | None:
+    """The newest of `snapshots` that dump_runs records as loaded. Its
+    rows are the ones `transactions` holds."""
+    loaded = {r[0] for r in conn.execute(
+        "SELECT snapshot_at FROM dump_runs").fetchall()}
+    for snap in reversed(snapshots):
+        if parse_run_ts(snap) in loaded:
+            return snap
+    return None
+
+
+def reingest_reason(
+    conn: duckdb.DuckDBPyConnection, run_dir: Path,
+    timezones: dict[str, str], schema_version: int,
+) -> str | None:
+    """Why a loaded snapshot differs from what loading it now would
+    write, or None when it does not.
+
+    Two things change without a new export. A schema version can add
+    transaction columns, which rows loaded under an older one hold NULL
+    in. A portfolio's configured timezone can change after its rows
+    were read in the old one."""
+    loaded_version = conn.execute(
+        "SELECT silver_schema_version FROM dump_runs WHERE snapshot_at = ?",
+        [parse_run_ts(run_dir)]).fetchone()[0]
+    if loaded_version < schema_version:
+        return (f"loaded under schema version {loaded_version}, "
+                f"now {schema_version}")
+    applied = dict(conn.execute(
+        "SELECT portfolio_external_id, timezone FROM portfolios").fetchall())
+    manifest = json.loads((run_dir / "run.json").read_text())
+    for portfolio in manifest["portfolios"]:
+        portfolio_id = f"cu_{portfolio['id']}"
+        zone = timezone_for(timezones, portfolio_id)
+        if applied.get(portfolio_id) != zone:
+            return (f"{portfolio_id} was read in "
+                    f"{applied.get(portfolio_id)}, now {zone}")
+    return None
 
 
 def _stage_work_db(
@@ -1311,12 +1446,26 @@ def run_load(conn: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> int:
     log.info("found %d bronze snapshot(s) to consider", len(snapshots))
     for snap in snapshots:
         try:
-            process_snapshot(conn, snap, args.force)
+            process_snapshot(conn, snap, args.force, args.timezones, version)
         except Exception as exc:
             log.error("snapshot %s failed: %s", snap.name, exc)
             # Continue with the next snapshot — partial progress
             # is better than a full rollback.
             continue
+
+    # Ingest the newest loaded export again when the schema or a
+    # timezone has changed since it was loaded, so neither change waits
+    # for the next download. A portfolio missing from that export keeps
+    # its rows as last loaded.
+    newest = newest_loaded(conn, snapshots)
+    reason = (reingest_reason(conn, newest, args.timezones, version)
+              if newest else None)
+    if reason:
+        log.info("ingesting %s again: %s", newest.name, reason)
+        try:
+            process_snapshot(conn, newest, True, args.timezones, version)
+        except Exception as exc:
+            log.error("snapshot %s failed: %s", newest.name, exc)
 
     if args.fetch_prices:
         log.info("price-fill: filling missing USD prices "

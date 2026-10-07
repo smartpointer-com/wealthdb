@@ -18,7 +18,10 @@ ENV_PREFIX=COINTRACKING
 # BINANCE_API_KEY is optional — it raises the Binance rate limit for the
 # default price fill on `load`; forwarded so a host-exported key reaches
 # the container (it also works via /secrets/cointracking.env).
-ENV_VARS=(COINTRACKING_USERNAME COINTRACKING_PASSWORD BINANCE_API_KEY)
+# COINTRACKING_TIMEZONES names the timezone each portfolio's CoinTracking
+# account is set to; `load` reads the trade export's dates in it.
+ENV_VARS=(COINTRACKING_USERNAME COINTRACKING_PASSWORD BINANCE_API_KEY
+          COINTRACKING_TIMEZONES)
 HAS_DEBUG=1
 HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
 HAS_SAFETY=1        # refuse to evict a live VNC handoff
@@ -28,6 +31,19 @@ SILVER_SUBCOMMANDS=(load fetch-prices)  # replaces the default {load} — fetch-
                                         # backfills prices straight into silver
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# The deployment's settings, such as COINTRACKING_TIMEZONES. Plain bash,
+# sourced with every assignment exported so `docker run -e` can forward
+# it, and before wrapper_init so it can also set the per-prefix knobs
+# (COINTRACKING_DATA_DIR etc.). A missing file holds no settings.
+COINTRACKING_CFG="${COINTRACKING_CFG:-${XDG_CONFIG_HOME:-$HOME/.config}/cointracking.cfg}"
+if [[ -f "$COINTRACKING_CFG" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$COINTRACKING_CFG"
+    set +a
+fi
+
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/wrapper-lib.sh"
 wrapper_init
@@ -62,6 +78,9 @@ Subcommands:
                       deviation day onwards, populates
                       \`portfolio_prices\` from overview.csv,
                       reconciles final balances vs the balance CSV.
+                      Reads each trade's Date in the portfolio's
+                      CoinTracking timezone (see Settings) and
+                      stores it in UTC.
                       Pass --replay-only / --force for diagnostics.
                       The price fill (missing USDT-denominated prices
                       from Binance) runs by default at the end;
@@ -110,6 +129,14 @@ Override mounts via env:
   COINTRACKING_SECRETS_DIR=/path/to/secrets
   COINTRACKING_DATA_DIR=/path/to/data
   COINTRACKING_DEBUG_DIR=/path/to/debug
+
+Settings:
+  $COINTRACKING_CFG is sourced as bash when it exists
+  (override the path with COINTRACKING_CFG). Its COINTRACKING_TIMEZONES
+  names the timezone each portfolio's CoinTracking account is set to,
+  as cu_<id>=<zone> items separated by spaces:
+    COINTRACKING_TIMEZONES="cu_1001=Europe/Zurich cu_1002=America/New_York"
+  \`load\` reads a portfolio it does not name as UTC.
 
 Credentials:
   COINTRACKING_USERNAME / COINTRACKING_PASSWORD are read from
