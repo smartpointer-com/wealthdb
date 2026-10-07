@@ -283,7 +283,9 @@ To change the silver schema, add a new
 `migrations/NNNN_<slug>.sql` file. The number must be strictly greater
 than any existing migration. Each file:
 
-- Contains the DDL and any data backfill needed.
+- Contains the DDL and any data backfill SQL can express. A backfill
+  that needs the loader's own SWIFT parse runs as a pass in `load.py`
+  instead (see [DESIGN.md](DESIGN.md) §8).
 - Ends with `INSERT INTO schema_meta (silver_schema_version, applied_at) VALUES (N, CAST(strftime('%s','now') AS INTEGER));` as the migration-complete marker the loader checks for.
 
 The loader executes each new migration in numeric order and commits

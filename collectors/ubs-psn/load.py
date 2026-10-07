@@ -25,11 +25,15 @@ Currently loaded:
     sections are skipped)
   - TDCAPI cash-account pricing/interest bookings from ZME.zip
   - TDPOPF monthly portfolio performance from ZME.zip
-  - MT535 holdings from ZAH.zip
+  - MT535 holdings, with the cost each states, from ZAH.zip
   - MT537 pending securities from ZM5.zip
   - MT940 cash balances + cash_movement events from Z40.zip
   - MT515 trade_confirmation events from ZAG.zip
   - MT566 corporate_action_confirmation events from ZAN.zip
+
+Before loading, a pass fills the cost fields of rows loaded before
+migration 0005 from the SWIFT text silver already stores (see
+backfill_cost_fields).
 
 ZAY.zip (MT950) is intentionally not loaded — see migration 0001's
 header. ZMH (MT536) and other MT types are added when real samples
@@ -45,6 +49,7 @@ rather than the dashed ExtAcctId).
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sqlite3
@@ -289,6 +294,29 @@ def parse_mt_balance(s: str) -> dict | None:
         "currency_iso": ccy,
         "amount": amt.replace(",", "."),
     }
+
+
+def _swift_decimal(s: str) -> float | None:
+    """'1234,56' (SWIFT comma decimal, trailing comma allowed) -> 1234.56."""
+    try:
+        return float(s.rstrip(",").replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _parse_amount_ccy(s: str | None) -> tuple[str | None, float | None]:
+    """Parse '[N]<CCY><amount-with-comma>' (e.g. 'XXX1234,56') into
+    ('XXX', 1234.56). The optional leading `N` is ISO 15022's sign for a
+    negative amount."""
+    if not s:
+        return None, None
+    m = re.match(r"^(N?)([A-Z]{3})([0-9.,]+)", s)
+    if not m:
+        return None, None
+    amount = _swift_decimal(m.group(3))
+    if amount is not None and m.group(1):
+        amount = -amount
+    return m.group(2), amount
 
 
 def _extract_safe_id(fields: list[tuple[str, str]]) -> str | None:
@@ -681,14 +709,73 @@ def load_tdpopf(conn, snapshot_at, relationship_id, entities):
 # SWIFT MT loaders
 # --------------------------------------------------------------------------
 
+# The cost a holding states, as promoted onto `holdings` (migration 0005).
+HOLDING_COST_COLUMNS = (
+    "cost_basis", "cost_currency", "average_cost",
+    "acquisition_fx_rate", "acquisition_fx_from", "acquisition_fx_to",
+)
+
+# UBS appends the average cost and the average acquisition FX rate to a
+# holding as `:70C::SUBB//` narrative lines, each wrapping an ISO 15022
+# field: `?AQPR:90A::AVER//INDC/<CCY><amount>` and
+# `?AFXH:92B::AEXR//<from>/<to>/<rate>`. An average cost quoted other
+# than as a currency amount (a percent of nominal, say) does not match
+# and stays unpromoted.
+_AVER_RE = re.compile(r"::AVER//[A-Z]{4}/(N?[A-Z]{3}[0-9.,]+)")
+_AEXR_RE = re.compile(r"::AEXR//([A-Z]{3})/([A-Z]{3})/([0-9.,]+)")
+
+
+def _holding_cost(entries: dict[str, list[str]]) -> tuple:
+    """The cost one MT535 holding states, in HOLDING_COST_COLUMNS order.
+
+    `entries` is the FIN block as `holdings.payload.fields` stores it
+    (tag -> values). Read, as printed:
+
+      - `:19A::BOOK//<CCY><amount>`: the holding's total book cost.
+      - `AVER` in the `:70C::SUBB//` narrative: the average unit cost.
+      - `AEXR` in the same narrative: the average acquisition FX rate,
+        where one unit of `from` is `rate` units of `to`.
+
+    `AHOD`, also in the narrative, is not promoted: it restates BOOK.
+    BOOK and AVER share one currency, `cost_currency`. Should they ever
+    differ, the average cost stays NULL rather than carry the wrong
+    label. Every value a holding does not state is NULL.
+    """
+    book_ccy, book = None, None
+    for v in entries.get("19A", []):
+        if v.startswith(":BOOK//"):
+            book_ccy, book = _parse_amount_ccy(v[len(":BOOK//"):])
+            break
+
+    narrative = "\n".join(entries.get("70C", []))
+    aver_ccy, aver = None, None
+    m = _AVER_RE.search(narrative)
+    if m:
+        aver_ccy, aver = _parse_amount_ccy(m.group(1))
+    if book is not None and aver is not None and aver_ccy != book_ccy:
+        log.warning("MT535 holding states AVER in %s but BOOK in %s; "
+                    "average cost left NULL", aver_ccy, book_ccy)
+        aver = None
+    cost_ccy = (book_ccy if book is not None
+                else aver_ccy if aver is not None else None)
+
+    fx_rate, fx_from, fx_to = None, None, None
+    m = _AEXR_RE.search(narrative)
+    if m:
+        fx_from, fx_to = m.group(1), m.group(2)
+        fx_rate = _swift_decimal(m.group(3))
+    return book, cost_ccy, aver, fx_rate, fx_from, fx_to
+
+
 def load_mt535(conn, snapshot_at, relationship_id, mt_text):
     """MT535 Statement of Holdings.
 
     One MT535 message per safekeeping account. Body has
         :97A::SAFE//<safekeeping_id>
         :16R:FIN ... :16S:FIN     (repeated, one per holding)
-    Inside each FIN block we extract ISIN from :35B: and store the
-    whole block content as the holdings.payload.
+    Inside each FIN block we extract ISIN from :35B:, promote the cost
+    the holding states (see _holding_cost) and store the whole block
+    content as the holdings.payload.
     """
     fields = parse_mt_block4(mt_text)
     safe = _extract_safe_id(fields)
@@ -721,9 +808,11 @@ def load_mt535(conn, snapshot_at, relationship_id, mt_text):
             payload = canonical_json({"safekeeping": safe, "fields": entries})
             conn.execute(
                 "INSERT OR REPLACE INTO holdings"
-                "(snapshot_at, relationship_id, safekeeping_external_id, isin, payload) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (snapshot_at, relationship_id, safe, isin, payload),
+                "(snapshot_at, relationship_id, safekeeping_external_id, isin, "
+                f"{', '.join(HOLDING_COST_COLUMNS)}, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (snapshot_at, relationship_id, safe, isin,
+                 *_holding_cost(entries), payload),
             )
             n += 1
             continue
@@ -1084,30 +1173,12 @@ def _parse_unix_dt(s: str | None, fmt: str) -> int | None:
         return None
 
 
-def _parse_amount_ccy(s: str | None) -> tuple[str | None, float | None]:
-    """Parse '<CCY><amount-with-comma>' (e.g. 'XXX1234,56') into ('XXX', 1234.56)."""
-    if not s:
-        return None, None
-    m = re.match(r"^([A-Z]{3})([0-9.,]+)", s)
-    if not m:
-        return None, None
-    try:
-        return m.group(1), float(m.group(2).rstrip(",").replace(",", "."))
-    except ValueError:
-        return m.group(1), None
-
-
 def _parse_unit_amount(s: str | None) -> float | None:
     """Parse 'UNIT/5087,' (or any single-prefix code) into 5087.0."""
     if not s:
         return None
     m = re.match(r"\w+/([0-9.,]+)", s)
-    if not m:
-        return None
-    try:
-        return float(m.group(1).rstrip(",").replace(",", "."))
-    except ValueError:
-        return None
+    return _swift_decimal(m.group(1)) if m else None
 
 
 def _parse_35b(val: str) -> tuple[str | None, str | None]:
@@ -1134,6 +1205,14 @@ def _parse_35b(val: str) -> tuple[str | None, str | None]:
                   if not ln.startswith("ISIN") and not ln.startswith("/")]
     name = " ".join(name_lines) if name_lines else None
     return isin, name
+
+
+def _mt515_charges(by_q: dict[str, dict[str, str]]) -> dict:
+    """The confirmation's charges and fees (`:19A::CHAR//`), as the payload
+    keys that sit beside the transaction tax and stamp duty. Both null
+    when the confirmation states none."""
+    ccy, amount = _parse_amount_ccy(by_q.get("19A", {}).get("CHAR"))
+    return {"charges_amount": amount, "charges_currency": ccy}
 
 
 def load_mt515(conn, snapshot_at, relationship_id, mt_text):
@@ -1230,6 +1309,7 @@ def load_mt515(conn, snapshot_at, relationship_id, mt_text):
         "transaction_tax_currency": trax_ccy,
         "stamp_duty_amount": stam_amt,
         "stamp_duty_currency": stam_ccy,
+        **_mt515_charges(by_q),
         "safekeeping_external_id": safe_acct,
         "cash_account_external_id": cash_acct,
         "buyer_bic": buyer_bic,
@@ -1253,6 +1333,54 @@ def load_mt515(conn, snapshot_at, relationship_id, mt_text):
          canonical_json(payload_obj)),
     )
     return 1
+
+
+# --------------------------------------------------------------------------
+# Cost fields on rows loaded before migration 0005
+# --------------------------------------------------------------------------
+
+_HOLDING_COST_SET = ", ".join(f"{c} = ?" for c in HOLDING_COST_COLUMNS)
+
+
+def backfill_cost_fields(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Fill the cost fields on rows that predate them; return how many
+    (holdings, trade confirmations) it filled.
+
+    The figures are already in silver: a holding keeps its FIN block in
+    `payload.fields`, a confirmation its block 4 in `payload.raw_fields`.
+    Each row goes through the same parse a fresh load uses, so the pass
+    reads no bronze and a filled row equals a freshly loaded one.
+
+    The pass selects only rows that still need it: a holding whose
+    payload states a cost but whose cost columns are all NULL, and a
+    confirmation whose payload has no `charges_amount` key. Once every
+    such row is filled it finds nothing, so running it on every load
+    costs a scan of each table.
+    """
+    holdings = [
+        (*_holding_cost(json.loads(payload)["fields"]), rowid)
+        for rowid, payload in conn.execute(
+            "SELECT rowid, payload FROM holdings "
+            "WHERE cost_basis IS NULL AND average_cost IS NULL "
+            "  AND acquisition_fx_rate IS NULL "
+            "  AND (payload LIKE '%:BOOK//%' OR payload LIKE '%::AVER//%' "
+            "       OR payload LIKE '%::AEXR//%')")
+    ]
+    conn.executemany(
+        f"UPDATE holdings SET {_HOLDING_COST_SET} WHERE rowid = ?", holdings)
+
+    trades = []
+    for eid, payload in conn.execute(
+            "SELECT event_external_id, payload FROM events "
+            "WHERE kind = 'trade_confirmation' "
+            "  AND json_type(payload, '$.charges_amount') IS NULL"):
+        obj = json.loads(payload)
+        fields = [tuple(f) for f in obj.get("raw_fields", [])]
+        obj.update(_mt515_charges(_by_qualifier(fields)))
+        trades.append((canonical_json(obj), eid))
+    conn.executemany(
+        "UPDATE events SET payload = ? WHERE event_external_id = ?", trades)
+    return len(holdings), len(trades)
 
 
 # --------------------------------------------------------------------------
@@ -1409,6 +1537,11 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
+    with conn:
+        filled = backfill_cost_fields(conn)
+    if any(filled):
+        log.info("Filled cost fields on %d holding(s) and %d trade "
+                 "confirmation(s) loaded before migration 0005", *filled)
 
     dumps = list(bronze.iter_run_dirs(args.bronze_dir))
     log.info("Found %d dump directory(s) under %s", len(dumps), args.bronze_dir)

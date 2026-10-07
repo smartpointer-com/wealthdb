@@ -112,7 +112,8 @@ doesn't try to surface it:
   `TDPOPF` between monthly emissions). Silver does not insert empty
   rows.
 - **Computed / derived columns.** No FX-converted values, no
-  realised-PnL, no settled flags. Those live in the gold layer.
+  realised-PnL, no settled flags. Those live in the gold layer. The
+  cost columns of §8 are figures the source states, not derived ones.
 
 ## 6. Reload contract
 
@@ -183,3 +184,51 @@ nothing was queued — kept so its `listing.json` can be read, since
 discarding it would hide the listing in exactly the case it explains.
 The verb stays safety-first; its value is guaranteeing a fleet-wide
 prune never deletes a load input.
+
+## 8. Cost basis
+
+### Holdings
+
+An MT535 holding states its cost. Silver promotes it to columns on
+`holdings` (migration 0005). Each value is stored as printed, with no
+conversion. NULL means the holding does not state the value; silver
+never derives one.
+
+| Column | MT535 source | Meaning |
+| --- | --- | --- |
+| `cost_basis` | `:19A::BOOK//<CCY><amount>` | total book cost |
+| `cost_currency` | the currency of BOOK | currency of `cost_basis` and `average_cost` |
+| `average_cost` | `AVER` in the `:70C::SUBB//` narrative | average cost per unit |
+| `acquisition_fx_rate` | `AEXR` in the narrative | average FX rate of the purchases |
+| `acquisition_fx_from` | first currency of `AEXR` | the instrument currency |
+| `acquisition_fx_to` | second currency of `AEXR` | the reference currency |
+
+How to read them:
+
+- BOOK and AVER are in the instrument currency. `holdings` has no
+  currency column of its own, so `cost_currency` is set whenever a
+  cost figure is.
+- One unit of `acquisition_fx_from` is `acquisition_fx_rate` units of
+  `acquisition_fx_to`.
+- The narrative also carries `AHOD`. It restates BOOK and is not
+  promoted.
+- An `AVER` that is not a currency amount, such as a percent of
+  nominal, is not promoted. Its raw text stays in `payload.fields`.
+- A holding that states no BOOK keeps `cost_basis` NULL.
+
+### Trade confirmations
+
+The MT515 payload structures the trade's charges as
+`transaction_tax_*` (`:19A::TRAX//`), `stamp_duty_*` (`:19A::STAM//`)
+and `charges_*` (`:19A::CHAR//`). Each is an `_amount` and a
+`_currency` key, both null when the confirmation states no such
+charge. An amount carrying ISO 15022's `N` sign is negative.
+
+### Rows loaded before migration 0005
+
+The migration only adds the columns. On every run, `load.py` fills the
+rows that predate them from what silver already stores: a holding's
+FIN block in `payload.fields`, a confirmation's block 4 in
+`payload.raw_fields`. The pass reads no bronze, and a filled row equals
+a freshly loaded one. Once every such row is filled, the pass finds
+nothing to do.

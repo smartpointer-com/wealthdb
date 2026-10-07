@@ -16,8 +16,13 @@ The MT940 section at the end is about the two ways a cash movement can
 be lost between bronze and silver: two entries the bank booked under
 one :61: reference collapsing into one row, and an entry value-dated
 outside the statement that carries it being deleted by the statement
-that covers that date. Synthetic safekeeping ids / ISINs / IBANs /
-amounts only.
+that covers that date.
+
+The last section covers cost: the book cost, average cost and
+acquisition FX rate an MT535 holding states, an MT515's charges, and
+the pass that fills both on rows loaded before migration 0005.
+
+Synthetic safekeeping ids / ISINs / IBANs / amounts only.
 """
 from __future__ import annotations
 
@@ -59,7 +64,8 @@ MT535 = (
 # (:98A::TRAD//). Both settle two days later. Every id, ISIN and figure
 # is invented, and the dates sit in a decade the source cannot have
 # booked in.
-def _mt515(seme: str, trade_tag: str, buse: str) -> str:
+def _mt515(seme: str, trade_tag: str, buse: str,
+           extra_amounts: str = "") -> str:
     return (
         "{1:F01TESTXXXXAXXX0000000000}{2:I515TESTXXXXXXXXN}{4:\n"
         ":16R:GENL\n"
@@ -80,6 +86,7 @@ def _mt515(seme: str, trade_tag: str, buse: str) -> str:
         ":16R:SETDET\n"
         ":16R:AMT\n"
         ":19A::SETT//USD1000,\n"
+        f"{extra_amounts}"
         ":16S:AMT\n"
         ":16S:SETDET\n"
         "-}"
@@ -140,6 +147,20 @@ def _fresh_db(tmp_path: Path) -> sqlite3.Connection:
     conn = loader.open_db(tmp_path / "ubs-psn.db")
     conn.row_factory = sqlite3.Row
     silver.apply_migrations(conn, loader.MIGRATIONS_DIR)
+    return conn
+
+
+def _db_before(tmp_path: Path, version: int) -> sqlite3.Connection:
+    """A silver DB with every migration numbered below `version` applied,
+    and none from `version` on: the schema a DB loaded before that
+    migration has."""
+    conn = loader.open_db(tmp_path / "ubs-psn.db")
+    conn.row_factory = sqlite3.Row
+    for sql in sorted(loader.MIGRATIONS_DIR.glob("*.sql")):
+        if int(sql.name[:4]) >= version:
+            break
+        conn.executescript(sql.read_text(encoding="utf-8"))
+    assert silver.current_schema_version(conn) == version - 1
     return conn
 
 
@@ -725,14 +746,7 @@ def test_migration_0004_clears_only_what_has_to_re_derive(tmp_path):
     snapshot and rewritten identically by the replay, and the other
     event kinds have nothing to do with either defect, so widening the
     delete to them would be throwing away rows for no reason."""
-    db = tmp_path / "ubs-psn.db"
-    conn = loader.open_db(db)
-    conn.row_factory = sqlite3.Row
-    for sql in sorted(loader.MIGRATIONS_DIR.glob("*.sql")):
-        if sql.name.startswith("0004"):
-            break
-        conn.executescript(sql.read_text(encoding="utf-8"))
-    assert silver.current_schema_version(conn) == 3
+    conn = _db_before(tmp_path, 4)
 
     with conn:
         conn.execute(
@@ -749,8 +763,179 @@ def test_migration_0004_clears_only_what_has_to_re_derive(tmp_path):
             "INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) "
             "VALUES (1700000000, 3, '/nonexistent/20260101T000000Z')")
 
-    assert silver.apply_migrations(conn, loader.MIGRATIONS_DIR) == 4
+    assert silver.apply_migrations(conn, loader.MIGRATIONS_DIR) >= 4
     assert _rows(conn, "dump_runs") == []
     assert [r["kind"] for r in conn.execute("SELECT kind FROM events")] == [
         "trade_confirmation"]
     assert len(_rows(conn, "cash_balances")) == 1
+
+
+# ============================================================
+# Cost an MT535 holding states, and an MT515's charges
+# ============================================================
+
+# FIN blocks for a synthetic MT535. Every ISIN and figure is invented.
+# A holding in its reference currency: BOOK, and a narrative with AVER
+# and AHOD but no AEXR.
+FIN_DOMESTIC = (
+    ":35B:ISIN XX0000000002\n"
+    "EXAMPLE EQUITY\n"
+    ":90B::MRKT//ACTU/CHF12,5\n"
+    ":93B::AGGR//UNIT/40,\n"
+    ":19A::HOLD//CHF500,\n"
+    ":19A::HOLD//CHF500,\n"
+    ":19A::BOOK//CHF400,\n"
+    ":70C::SUBB//?AQPR:90A::AVER//INDC/CHF10,\n"
+    "?AHLD:19A::AHOD//CHF400,\n"
+)
+# A holding in a foreign currency: the narrative adds AEXR, the average
+# rate the units were bought at, into the reference currency.
+FIN_FOREIGN = (
+    ":35B:ISIN XX0000000003\n"
+    "/XX/00000003\n"
+    "EXAMPLE FOREIGN EQUITY\n"
+    ":90B::MRKT//ACTU/SEK9,\n"
+    ":92B::EXCH//SEK/CHF/0,125\n"
+    ":93B::AGGR//UNIT/1000,\n"
+    ":19A::HOLD//SEK9000,\n"
+    ":19A::HOLD//CHF1125,\n"
+    ":19A::BOOK//SEK8000,5\n"
+    ":70C::SUBB//?AQPR:90A::AVER//INDC/SEK8,0005\n"
+    "?AHLD:19A::AHOD//SEK8000,5\n"
+    "?AFXH:92B::AEXR//SEK/CHF/0,1275\n"
+)
+# An alternative-fund unit: no market price, and neither BOOK nor a
+# narrative.
+FIN_ALTERNATIVE = (
+    ":35B:ISIN XX0000000004\n"
+    "EXAMPLE PRIVATE MARKETS FUND\n"
+    ":90E::MRKT//UKWN\n"
+    ":93B::AGGR//UNIT/3,\n"
+    ":19A::HOLD//CHF300,\n"
+    ":19A::HOLD//CHF300,\n"
+)
+
+
+def _mt535_with(*fins: str) -> str:
+    body = "".join(f":16R:FIN\n{fin}:16S:FIN\n" for fin in fins)
+    return ("{1:F01TESTXXXXAXXX0000000000}{2:I535TESTXXXXXXXXN}{4:\n"
+            ":16R:GENL\n:97A::SAFE//SK123\n:16S:GENL\n" + body + "-}")
+
+
+def _holding_costs(conn) -> dict[str, tuple]:
+    cols = ", ".join(loader.HOLDING_COST_COLUMNS)
+    return {r[0]: tuple(r)[1:] for r in conn.execute(
+        f"SELECT isin, {cols} FROM holdings")}
+
+
+def test_load_mt535_promotes_the_cost_a_holding_states(tmp_path):
+    """BOOK, AVER and AEXR land in columns, as printed: the figures in
+    the instrument currency, the FX rate with both of its currencies.
+    A holding that states none of them keeps every cost column NULL,
+    never 0."""
+    conn = _fresh_db(tmp_path)
+    with conn:
+        assert loader.load_mt535(
+            conn, 1700000000, REL,
+            _mt535_with(FIN_DOMESTIC, FIN_FOREIGN, FIN_ALTERNATIVE)) == 3
+    assert _holding_costs(conn) == {
+        "XX0000000002": (400.0, "CHF", 10.0, None, None, None),
+        "XX0000000003": (8000.5, "SEK", 8.0005, 0.1275, "SEK", "CHF"),
+        "XX0000000004": (None, None, None, None, None, None),
+    }
+
+
+def test_holding_cost_keeps_a_mismatched_average_cost_unlabelled(caplog):
+    """BOOK and AVER share one currency column. Should a holding ever
+    state them in two currencies, the average cost stays NULL rather
+    than carry the book cost's currency, and the load log says so."""
+    entries = {
+        "19A": [":BOOK//CHF400,"],
+        "70C": [":SUBB//?AQPR:90A::AVER//INDC/SEK10,\n"
+                "?AHLD:19A::AHOD//CHF400,"],
+    }
+    with caplog.at_level("WARNING"):
+        assert loader._holding_cost(entries) == (
+            400.0, "CHF", None, None, None, None)
+    assert "AVER" in caplog.text
+
+
+def test_parse_amount_ccy_reads_the_iso_negative_sign():
+    """ISO 15022 marks a negative amount with a leading N. A currency
+    code that itself begins with N still reads as unsigned."""
+    assert loader._parse_amount_ccy("NCHF12,5") == ("CHF", -12.5)
+    assert loader._parse_amount_ccy("NOK12,5") == ("NOK", 12.5)
+    assert loader._parse_amount_ccy("NNOK12,") == ("NOK", -12.0)
+    assert loader._parse_amount_ccy("EUR--") == (None, None)
+
+
+def _trade_payload(conn, seme: str) -> dict:
+    row = conn.execute("SELECT payload FROM events WHERE event_external_id = ?",
+                       (f"mt515:{seme}",)).fetchone()
+    return json.loads(row["payload"])
+
+
+def test_load_mt515_structures_the_charges(tmp_path):
+    """`:19A::CHAR//` joins the transaction tax and stamp duty as payload
+    keys. A confirmation that states no charges carries both keys as
+    null."""
+    conn = _fresh_db(tmp_path)
+    with conn:
+        loader.load_mt515(conn, 1700000000, REL, _mt515(
+            "CHARGED1", ":98A::TRAD//20981202", "BUYI",
+            ":19A::CHAR//SEK12,34\n:19A::STAM//SEK1,\n"))
+        loader.load_mt515(conn, 1700000000, REL, _mt515(
+            "PLAIN001", ":98A::TRAD//20981202", "SELL"))
+    charged = _trade_payload(conn, "CHARGED1")
+    assert (charged["charges_amount"], charged["charges_currency"]) == (
+        12.34, "SEK")
+    assert (charged["stamp_duty_amount"], charged["stamp_duty_currency"]) == (
+        1.0, "SEK")
+    plain = _trade_payload(conn, "PLAIN001")
+    assert (plain["charges_amount"], plain["charges_currency"]) == (None, None)
+
+
+def test_backfill_fills_rows_loaded_before_migration_0005(tmp_path):
+    """Rows loaded before 0005 hold the cost only as raw SWIFT text in
+    their payload. The loader's pass fills them from that text, with no
+    bronze read, and a filled row equals a freshly loaded one. A second
+    pass finds nothing left to fill."""
+    charged = _mt515("CHARGED1", ":98A::TRAD//20981202", "BUYI",
+                     ":19A::CHAR//SEK5,\n")
+    plain = _mt515("PLAIN001", ":98A::TRAD//20981202", "SELL")
+
+    # What a fresh load writes.
+    fresh = _fresh_db(tmp_path / "fresh")
+    with fresh:
+        loader.load_mt535(fresh, 1700000000, REL, _mt535_with(
+            FIN_DOMESTIC, FIN_FOREIGN, FIN_ALTERNATIVE))
+        loader.load_mt515(fresh, 1700000000, REL, charged)
+        loader.load_mt515(fresh, 1700000000, REL, plain)
+    want_costs = _holding_costs(fresh)
+    want_events = _rows(fresh, "events")
+
+    # The same rows as a pre-0005 loader wrote them: payload only, and
+    # no charges keys in a confirmation's payload.
+    old = _db_before(tmp_path / "old", 5)
+    with old:
+        for r in fresh.execute(
+                "SELECT snapshot_at, relationship_id, "
+                "safekeeping_external_id, isin, payload FROM holdings"):
+            old.execute("INSERT INTO holdings VALUES (?, ?, ?, ?, ?)",
+                        tuple(r))
+        for r in fresh.execute("SELECT * FROM events"):
+            p = json.loads(r["payload"])
+            del p["charges_amount"], p["charges_currency"]
+            old.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (*tuple(r)[:6], loader.canonical_json(p)))
+
+    assert silver.apply_migrations(old, loader.MIGRATIONS_DIR) >= 5
+    assert set(_holding_costs(old).values()) == {(None,) * 6}
+    with old:
+        # The alternative fund states no cost and is not a row to fill.
+        assert loader.backfill_cost_fields(old) == (2, 2)
+    assert _holding_costs(old) == want_costs
+    assert _rows(old, "events") == want_events
+
+    with old:
+        assert loader.backfill_cost_fields(old) == (0, 0)
