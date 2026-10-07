@@ -1414,6 +1414,158 @@ class TestParsePositionsLegacyRowShapes:
                 rows["XSHO"]["unrealized_gain_loss"]) == (-100.0, -250.0, -10.0)
 
 
+class TestParseLegacyLots:
+    """Tax-lot lines under a legacy (2020-2024) holding. Synthetic-text
+    fixtures only."""
+
+    @staticmethod
+    def _section(name: str, body: str) -> str:
+        return (
+            f"Investment Detail - {name}\n"
+            "Quantity Market Price Market Value\n"
+            f"{name} Units Purchased Cost Per Share Cost Basis Acquired"
+            " Holding Days Holding Period\n"
+            + body
+            + "Total Investment Detail $999,999.99\n"
+        )
+
+    @staticmethod
+    def _lot_fields(lot: dict) -> tuple:
+        return (lot["quantity"], lot["unit_cost"], lot["cost_basis"],
+                lot["acquired_date"], lot["unrealized_gain_loss"],
+                lot["holding_days"], lot["term"], lot["footnotes"])
+
+    def test_single_lot_holding_takes_its_cost_basis_from_the_lot(self):
+        # One lot prints no "Cost Basis" total; the lot's is the holding's.
+        text = self._section("Equities", (
+            "EXAMPLE CORP (M) 10.0000 12.00000 120.00 1% 20.00 N/A N/A\n"
+            "SYMBOL: XMPL 10.0000 10.0000 100.00 03/15/22 20.00 400 Long-Term\n"))
+        [row] = pp.parse_positions(text)
+        assert row["cost_basis"] == 100.0
+        assert [self._lot_fields(lt) for lt in row["lots"]] == [
+            (10.0, 10.0, 100.0, "2022-03-15", 20.0, 400, "LONG", None)]
+
+    def test_several_lots_keep_the_printed_total(self):
+        text = self._section("Equities", (
+            "SYNTHETIC HLDGS (M) 30.0000 5.00000 150.00 2% (30.00) N/A N/A\n"
+            "CLASS A 10.0000 4.0000 40.00 01/04/21 10.00 900 Long-Term\n"
+            "SYMBOL: SYNH 15.0000 6.0000 90.00 t 06/01/22 (15.00) 120 Short-Term\n"
+            "5.0000 10.0000 50.00 e 07/01/22 (25.00) 90 Short-Term\n"
+            "Cost Basis 180.00\n"))
+        [row] = pp.parse_positions(text)
+        assert row["instrument_key"] == "SYNH"
+        assert row["description"] == "SYNTHETIC HLDGS"
+        assert row["cost_basis"] == 180.0
+        assert [self._lot_fields(lt) for lt in row["lots"]] == [
+            (10.0, 4.0, 40.0, "2021-01-04", 10.0, 900, "LONG", None),
+            (15.0, 6.0, 90.0, "2022-06-01", -15.0, 120, "SHORT", ["t"]),
+            (5.0, 10.0, 50.0, "2022-07-01", -25.0, 90, "SHORT", ["e"]),
+        ]
+        assert row["lots"][1]["raw_line"].startswith("SYMBOL: SYNH 15.0000")
+
+    def test_lot_before_the_symbol_line(self):
+        # A wrapped description can carry the holding's only lot, with
+        # the SYMBOL: tag on the line after it.
+        text = self._section("Exchange Traded Funds", (
+            "EXAMPLE AGGREGATE 2.0000 50.00000 100.00 <1% (2.00) N/A N/A\n"
+            "BOND ETF 2.0000 51.0000 102.00 05/17/22 (2.00)\n"
+            "SYMBOL: XTRS\n"))
+        [row] = pp.parse_positions(text)
+        assert row["description"] == "EXAMPLE AGGREGATE"
+        assert row["cost_basis"] == 102.0
+        # A statement without the holding-period columns prints no term.
+        assert self._lot_fields(row["lots"][0]) == (
+            2.0, 51.0, 102.0, "2022-05-17", -2.0, None, None, None)
+
+    def test_reinvested_dividend_summary_lot_has_no_date(self):
+        text = self._section("Exchange Traded Funds", (
+            "EXAMPLE INCOME ETF (M) 12.0000 10.00000 120.00 1% 6.00 2.00% 2.40\n"
+            "SYMBOL: XINC 10.0000 9.5000 95.00 02/01/21 5.00 700 Long-Term\n"
+            "2.0000 9.5000 r 19.00 1.00 Long-Term\n"
+            "Cost Basis 114.00\n"))
+        [row] = pp.parse_positions(text)
+        assert self._lot_fields(row["lots"][1]) == (
+            2.0, 9.5, 19.0, None, 1.0, None, "LONG", ["r"])
+
+    def test_lot_with_unknown_basis(self):
+        text = self._section("Equities", (
+            "SYNTHETIC WORKS 40.0000 2.00000 80.00 <1% N/A N/A N/A\n"
+            "SYMBOL: XMIN 40.0000 N/A please provide 11/02/23 N/A 45 Short-Term\n"))
+        [row] = pp.parse_positions(text)
+        assert row["cost_basis"] is None
+        assert self._lot_fields(row["lots"][0]) == (
+            40.0, None, None, "2023-11-02", None, 45, "SHORT", None)
+
+    def test_option_lots_read_past_the_expiry_in_the_description(self):
+        text = self._section("Options", (
+            "CALL EXAMPLE CORP 1.0000 3.00000 300.00 <1% 50.00\n"
+            "$50 EXP 01/16/26 1.0000 2.5000 250.00 12/01/25 50.00 30 Short-Term\n"
+            "SYMBOL: XMPL 01/16/2026 50.00 C\n"
+            "PUT SYNTHETIC INDS 1.0000 S4.00000 (400.00) 200.00\n"
+            "$120 EXP 06/18/27 1.0000 S 6.0000 (600.00) 01/02/26 200.00 9 Short-Term\n"
+            "SYMBOL: SYNX 06/18/2027 120.00 P\n"))
+        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        assert self._lot_fields(rows["XMPL 01/16/2026 50.00 C"]["lots"][0]) == (
+            1.0, 2.5, 250.0, "2025-12-01", 50.0, 30, "SHORT", None)
+        short = rows["SYNX 06/18/2027 120.00 P"]
+        # A short lot is negative, like the short holding.
+        assert short["cost_basis"] == -600.0
+        assert self._lot_fields(short["lots"][0]) == (
+            -1.0, 6.0, -600.0, "2026-01-02", 200.0, 9, "SHORT", ["S"])
+
+    def test_lots_continue_across_a_page_break(self):
+        # The holding stays open over the "(continued)" header: its last
+        # lot and its Cost Basis total print on the next page, and the
+        # page furniture between is not description.
+        text = (
+            "Investment Detail - Equities\n"
+            "EXAMPLE CORP (M) 30.0000 10.00000 300.00 3% 60.00 N/A N/A\n"
+            "SYMBOL: XMPL 10.0000 8.0000 80.00 01/03/22 20.00 500 Long-Term\n"
+            "10.0000 8.0000 80.00 02/03/22 20.00 470 Long-Term\n"
+            "Account Number\n"
+            "Page 4 of 9\n"
+            "Investment Detail - Equities (continued)\n"
+            "Quantity Market Price Market Value\n"
+            "Assets\n"
+            "10.0000 8.0000 80.00 03/03/22 20.00 440 Long-Term\n"
+            "Cost Basis 240.00\n"
+            "SYNTHETIC HLDGS 5.0000 2.00000 10.00 <1% 1.00 N/A N/A\n"
+            "CLASS B\n"
+            "Example Account of\n"
+            "A SAMPLE HOLDER\n"
+            "Investment Detail - Equities (continued)\n"
+            "SYMBOL: SYNH 5.0000 1.8000 9.00 04/04/22 1.00 400 Long-Term\n"
+            "Total Investment Detail $310.00\n"
+        )
+        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        assert sorted(rows) == ["SYNH", "XMPL"]
+        assert rows["XMPL"]["description"] == "EXAMPLE CORP"
+        assert rows["XMPL"]["cost_basis"] == 240.0
+        assert [lt["acquired_date"] for lt in rows["XMPL"]["lots"]] == [
+            "2022-01-03", "2022-02-03", "2022-03-03"]
+        # The holder block at the foot of the page ends the description.
+        assert rows["SYNH"]["description"] == "SYNTHETIC HLDGS CLASS B"
+        assert rows["SYNH"]["cost_basis"] == 9.0
+
+    def test_lines_that_are_not_lots(self):
+        for line in (
+            "EXAMPLE CORP (M) 10.0000 12.00000 120.00 1% 20.00 N/A N/A",
+            "SYMBOL: XMPL 01/16/2026 50.00 C",
+            "Cost Basis 1,000.00",
+            "Total Equities 10.0000 120.00 1% 20.00 N/A",
+            "EXP: 01/16/26",
+            "10.0000 10.0000 100.00 02/30/22 20.00",
+        ):
+            assert pp._parse_legacy_lot_line(line) is None, line
+
+    def test_other_layouts_print_no_lots(self):
+        new = (
+            "Positions - Equities\n"
+            "SYN1 SyntheticOne(M) 10.0000 1.00000 10.00 8.00 2.00 N/A N/A 1%\n"
+            "TotalEquities $10.00 $8.00 $2.00 N/A 1%\n")
+        assert "lots" not in pp.parse_positions(new)[0]
+
+
 class TestParseAccountValue:
     def test_legacy_total(self):
         assert pp.parse_account_value(

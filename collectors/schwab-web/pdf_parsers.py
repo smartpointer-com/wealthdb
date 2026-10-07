@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field, asdict
-from datetime import date
+from datetime import date, datetime
 
 from collectorkit import statement_period
 from collectorkit.pdf import extract_text_pdfium as _extract_pdf_text
@@ -1191,9 +1191,10 @@ def parse_positions(text: str) -> list[dict]:
         columns over several lines (_parse_wrapped_position_block).
       * 2020-2024: section header "Investment Detail - <Section>",
         multi-line-per-instrument with the section's trailing
-        columns on the main row plus a separate "Cost Basis N" line and a
+        columns on the main row plus a separate "Cost Basis N" line, a
         "SYMBOL: TICKER" continuation that holds the real ticker
-        (the main row leads with the company name).
+        (the main row leads with the company name), and one line per
+        tax lot, returned under "lots".
       * 2017-2019: section header "Investment Detail" (no
         subsection), with a single "Investments" sub-header
         followed by simple rows of the shape
@@ -1319,8 +1320,10 @@ def _parse_positions_new(text: str) -> list[dict]:
 #   - First token of the main row is the COMPANY NAME, not the
 #     ticker. The real ticker lives on the "SYMBOL: XXX" line.
 #   - Cost basis is a SEPARATE line, not a column in the main row.
-#   - Each position is followed by per-tax-lot detail lines we
-#     skip (the silver schema only needs aggregate cost basis).
+#   - Each position is followed by one line per tax lot
+#     (_parse_legacy_lot_line). A holding with several lots prints
+#     their total on the "Cost Basis" line; a holding with one lot
+#     prints no total, so its cost basis is the lot's.
 #   - Main row carries the section's trailing columns
 #     (_LEGACY_DEFAULT_COLUMNS, _LEGACY_SECTION_COLUMNS). Cost basis
 #     comes from the "Cost Basis" continuation line, except where
@@ -1346,7 +1349,6 @@ _LEGACY_COST_BASIS_RE = re.compile(
     r"^Cost\s+Basis\s+(?P<cb>\(?[\d,]+\.\d+\)?)"
     r"(?:\s+Accrued\s+(?:Dividend|Interest):\s+(?P<acc>\(?[\d,]+\.\d+\)?))?"
 )
-_LEGACY_DATE_TOKEN_RE = re.compile(r"^\d{2}/\d{2}/\d{2,4}$")
 
 # The trailing columns of a legacy main row, in print order. Most
 # sections print seven; Mutual Funds prints cost basis in the row and
@@ -1390,6 +1392,92 @@ _LEGACY_LEADING_COLUMNS = (
 _LEGACY_OPTION_SYMBOL_RE = re.compile(
     r"\bSYMBOL:\s+(?P<under>[A-Z][A-Z0-9./-]{0,8})\s+(?P<exp>\d{2}/\d{2}/\d{4})\b"
     r".*?(?P<strike>[\d,]*\.\d+)\s+(?P<cp>[CP])\b")
+
+
+# A tax-lot line. Its columns are units purchased, cost per share, cost
+# basis, acquired date, unrealized gain and, on most statements, the
+# holding days and the holding period:
+#   CLASS A 25.0000 35.0000 875.00 01/15/22 125.00 800 Long-Term
+#   SYMBOL: XMPL 10.0000 20.0000 200.00 t 03/01/21 (50.00) 400 Long-Term
+#   1.0000 S 6.0000 (600.00) 01/02/26 200.00 30 Short-Term
+#   5.0000 12.0000 r 60.00 (2.00) Long-Term
+#   10.0000 N/A please provide 04/05/21 N/A
+# The line can open with the holding's description or its SYMBOL: tag,
+# and that text can hold numbers and dates of its own (an option's
+# expiry), so the columns are read from the right. An endnote marker can
+# follow the cost basis ("t": basis from a third party, "e": edited by
+# the holder). Reinvested dividends print as one summary lot with an "r"
+# marker and no acquired date. A short lot prints its units unsigned
+# behind an "S" marker and its cost basis negative. A lot whose basis
+# Schwab does not know prints "N/A please provide" for cost per share and
+# cost basis.
+_LEGACY_LOT_DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{2}$")
+_LEGACY_LOT_TERMS = {"Long-Term": "LONG", "Short-Term": "SHORT"}
+
+
+def _parse_legacy_lot_line(line: str) -> dict | None:
+    """One tax lot from a legacy lot line, or None when the line is not
+    one. The lot's figures are as printed; its quantity is negative for
+    a short lot, as the holding's is. `acquired_date` is ISO, None when
+    the line prints no date."""
+    toks = line.split()
+
+    def num(tok: str) -> bool:
+        return bool(_NUM_RE.fullmatch(tok))
+
+    term = _LEGACY_LOT_TERMS.get(toks[-1]) if toks else None
+    if term:
+        toks.pop()
+    holding_days = None
+    if term and toks and toks[-1].isdigit():
+        holding_days = int(toks.pop())
+    if not toks or not (num(toks[-1]) or toks[-1] == "N/A"):
+        return None
+    gain = _parse_number(toks.pop())
+    footnotes: list[str] = []
+    acquired = None
+    if toks and _LEGACY_LOT_DATE_RE.match(toks[-1]):
+        try:
+            acquired = datetime.strptime(toks.pop(), "%m/%d/%y").date().isoformat()
+        except ValueError:
+            return None
+        if toks and _POSITION_FOOTNOTE_RE.fullmatch(toks[-1]):
+            footnotes.append(toks.pop())
+        if toks[-2:] == ["please", "provide"]:
+            del toks[-2:]
+            cost_basis = unit_cost = None
+            if not toks or toks.pop() != "N/A":
+                return None
+        elif len(toks) >= 3 and num(toks[-1]) and num(toks[-2]):
+            cost_basis = _parse_number(toks.pop())
+            unit_cost = _parse_number(toks.pop())
+        else:
+            return None
+    elif len(toks) >= 4 and num(toks[-1]) and toks[-2] == "r" and num(toks[-3]):
+        cost_basis = _parse_number(toks.pop())
+        footnotes.append(toks.pop())
+        unit_cost = _parse_number(toks.pop())
+    else:
+        return None
+    short = bool(toks) and toks[-1] == "S"
+    if short:
+        footnotes.insert(0, toks.pop())
+    if not toks or not num(toks[-1]):
+        return None
+    quantity = _parse_number(toks.pop())
+    if short and quantity is not None:
+        quantity = -abs(quantity)
+    return {
+        "quantity": quantity,
+        "unit_cost": unit_cost,
+        "cost_basis": cost_basis,
+        "acquired_date": acquired,
+        "unrealized_gain_loss": gain,
+        "holding_days": holding_days,
+        "term": term,
+        "footnotes": footnotes or None,
+        "raw_line": line,
+    }
 
 
 def _legacy_columns(section: str) -> tuple[str, ...]:
@@ -1455,13 +1543,11 @@ def _legacy_short_row_columns(tokens: list[str], section: str,
 def _parse_positions_legacy(text: str) -> list[dict]:
     """Parse the 2020-2024 "Investment Detail - X" layout.
 
-    Same return shape as the 2025+ parser. A block is the run of
-    lines from one "main row" (a line _legacy_row_columns reads
-    columns from, AND a leading company-name token) to the next;
-    tax-lot detail
-    lines are absorbed into the block but only the SYMBOL: /
-    Cost Basis / accrued-interest information is extracted —
-    per-lot detail is parser-skipped.
+    Same return shape as the 2025+ parser, plus each holding's tax
+    lots under "lots". A block is the run of lines from one "main
+    row" (a line _legacy_row_columns reads columns from, AND a
+    leading company-name token) to the next; the SYMBOL:, tax-lot,
+    Cost Basis and description lines that follow belong to it.
     """
     lines = [ln.rstrip() for ln in text.split("\n")]
     rows: list[dict] = []
@@ -1482,8 +1568,13 @@ def _parse_positions_legacy(text: str) -> list[dict]:
             continue
         m = _LEGACY_POSITIONS_HEADER_RE.match(line)
         if m:
-            _flush()
             new_section = m.group("section").strip()
+            # A section continued on the next page keeps the open
+            # holding: its remaining lots and its Cost Basis line can
+            # follow the page break.
+            if new_section == section and line.endswith("(continued)"):
+                continue
+            _flush()
             section = (
                 None if new_section in _LEGACY_NON_INSTRUMENT_SECTIONS
                 else new_section
@@ -1540,38 +1631,40 @@ def _parse_legacy_position_block(block_lines: list[str],
     cost_basis: float | None = None
     accrued_interest: float | None = None
     extra_desc: list[str] = []
+    lots: list[dict] = []
 
+    # Description fragments follow the main row, among its first lots;
+    # the first other line (the SYMBOL: tag, page furniture) ends them.
+    in_description = True
     for i, line in enumerate(block_lines[1:], start=1):
         m_sym = _LEGACY_SYMBOL_LINE_RE.search(line)
+        if m_sym:
+            in_description = False
         if m_sym and instrument_key is None:
             instrument_key = m_sym.group("ticker")
             if section == "Options" and (m_opt := _LEGACY_OPTION_SYMBOL_RE.search(
                     " ".join(block_lines[i:i + 2]))):
                 instrument_key = (f"{m_opt['under']} {m_opt['exp']} "
                                   f"{m_opt['strike']} {m_opt['cp']}")
-            # Don't `continue` — SYMBOL: lines also carry
-            # per-lot data, but we're not using it.
+            # Don't `continue`: a SYMBOL: line can also carry a lot.
         m_cb = _LEGACY_COST_BASIS_RE.match(line)
         if m_cb:
             cost_basis = _parse_number(m_cb.group("cb"))
             if m_cb.group("acc"):
                 accrued_interest = _parse_number(m_cb.group("acc"))
             continue
-        # Description-only continuation lines have no digits and
-        # no SYMBOL: marker. Tax-lot rows always carry a date
-        # token (MM/DD/YY) — skip those.
-        toks = line.split()
-        if any(_LEGACY_DATE_TOKEN_RE.match(t) for t in toks):
+        lot = _parse_legacy_lot_line(line)
+        if lot is not None:
+            lots.append(lot)
             continue
-        if m_sym is None:
-            # Description fragment (e.g. "CLASS A", "SPONSORED ADR").
-            # Only keep all-uppercase short fragments to avoid
-            # accidentally pulling in disclosure text.
-            if (
-                len(toks) <= 6
-                and all(re.match(r"^[A-Z][\w&./:\-]*$", t) for t in toks)
-            ):
-                extra_desc.append(line.strip())
+        # A description fragment ("CLASS A", "SPONSORED ADR") is a
+        # short all-uppercase line, which keeps disclosure text out.
+        toks = line.split()
+        if (in_description and len(toks) <= 6
+                and all(re.match(r"^[A-Z][\w&./:\-]*$", t) for t in toks)):
+            extra_desc.append(line.strip())
+        else:
+            in_description = False
     if extra_desc:
         description = (description + " " + " ".join(extra_desc)).strip()
 
@@ -1583,6 +1676,10 @@ def _parse_legacy_position_block(block_lines: list[str],
             instrument_key = first
     if instrument_key is None:
         return None
+    # A holding with one lot prints no "Cost Basis" total: the lot's
+    # cost basis is the holding's.
+    if cost_basis is None and len(lots) == 1:
+        cost_basis = lots[0]["cost_basis"]
 
     row = {
         "instrument_key": instrument_key,
@@ -1600,6 +1697,7 @@ def _parse_legacy_position_block(block_lines: list[str],
     for col, tok in printed.items():
         row[col] = tok if col in _LEGACY_TEXT_COLUMNS else _as_num(tok)
     row["section"] = section
+    row["lots"] = lots
     row["raw_lines"] = list(block_lines)
     return row
 

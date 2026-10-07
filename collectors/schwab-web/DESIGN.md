@@ -110,6 +110,7 @@ those rows.
 | `transactions` | `transactions` | Same column shape. Different `activity_id` value space — see §2.2 |
 | `instruments` | — | api-only (present unless `--no-instruments`) |
 | — | `documents` | web-only. One row per downloaded PDF/XML/CSV, sha256-deduped |
+| — | `open_lots` | web-only. One row per tax lot a statement prints under a holding; see §9.1 |
 
 ## 4. Irreconcilable differences (and gold-layer mitigations)
 
@@ -251,10 +252,11 @@ api gives.
 
 A statement can list one instrument on more than one row. The loader
 sums those rows into one, because silver keys a position by
-instrument. Each statement is checked at load: its positions plus
-its closing cash must equal the account value it prints. A statement
-that does not add up logs a warning, so a parser gap shows at load
-rather than in the returns built on the data.
+instrument. The 2020-2024 layout also prints each holding's tax
+lots; they land in `open_lots` (§9.1). Each statement is checked at
+load: its positions plus its closing cash must equal the account value
+it prints. A statement that does not add up logs a warning, so a
+parser gap shows at load rather than in the returns built on the data.
 
 **Gold-layer recommendation**: don't try to interpolate
 mid-year positions for pre-api dates. Mark gaps explicitly. The
@@ -561,3 +563,47 @@ registration as a fixture-free smoke test:
 
 The WARNING line is suppressed when every account got a
 label.
+
+## 9. Cost basis and tax lots
+
+### 9.1 Open lots (migration 0006)
+
+The 2020-2024 statement layout prints one line per tax lot under each
+holding. A lot line shows:
+
+- units purchased, cost per share and cost basis;
+- the acquired date;
+- the unrealized gain or loss;
+- on most statements, the holding days and the holding period.
+
+`open_lots` holds one row per printed lot. A row carries the key of
+its holding in `historical_position_snapshots` (`as_of_date`,
+`account_external_id`, `instrument_key`) and `lot_index`, its place in
+print order. Statements of the 2017-2019 and 2025+ layouts print no
+lots.
+
+Every figure is as printed:
+
+- `term` is `SHORT` or `LONG`, from the holding-period column. It is
+  NULL on statements without that column.
+- `acquired_date` is ISO. It is NULL on the reinvested-dividend summary
+  lot, which prints no date (endnote `r`).
+- `unit_cost` and `cost_basis` are NULL when Schwab does not know the
+  basis ("N/A please provide").
+- A short lot has a negative quantity and cost basis, like its holding.
+- An option lot's unit cost is per share of the underlying, not per
+  contract.
+- `footnotes` keeps the endnote markers: `t` (basis from a third
+  party), `e` (edited by the holder), `r`, and `S` (short).
+- `covered` is always NULL. Statements do not say whether a lot is
+  covered.
+
+A holding with several lots prints their total on a "Cost Basis" line.
+A holding with one lot prints no total, so its `cost_basis` in
+`historical_position_snapshots` is the lot's. A holding can continue
+on the next page; its later lots and its total still belong to it.
+
+The statement passes write `open_lots` together with the holdings. A
+re-parse of a statement replaces its lots. A moved parser generation
+purges the table with the other statement tables (migration 0005), and
+the re-walk refills it.

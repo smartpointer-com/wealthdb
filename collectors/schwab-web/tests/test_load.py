@@ -22,6 +22,7 @@ import load  # noqa: E402
 from collectorkit import bronze  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
+_HEAD_VERSION = int(max(MIGRATIONS_DIR.glob("[0-9]*.sql")).name[:4])
 
 
 # ============================================================
@@ -214,7 +215,7 @@ class TestMigrations:
         # logical_doc_key backfilled from the documents join (sha256-independent).
         assert rows["aaa"] == "NNN|1709251200|Stmt_2024-03.PDF"
         assert rows["ccc"] == "NNN|1709251200|Stmt_2024-03.PDF"
-        assert load._current_schema_version(conn) == 5
+        assert load._current_schema_version(conn) == _HEAD_VERSION
 
 
 # ============================================================
@@ -1965,6 +1966,11 @@ def _seed_snapshot_rows(db):
             "closing_balance, source_sha256, payload) "
             "VALUES (1700000000, 1697500000, '1234', 'USD', 1.0, "
             "'sha0', '{}')")
+        conn.execute(
+            "INSERT OR REPLACE INTO open_lots ("
+            "as_of_date, account_external_id, instrument_key, lot_index, "
+            "quantity, source_sha256, payload) "
+            "VALUES (1700000000, '1234', 'ABCDE1234', 0, 1.0, 'sha0', '{}')")
         conn.commit()
     finally:
         conn.close()
@@ -2003,7 +2009,7 @@ def test_an_unmoved_parser_leaves_the_snapshot_tables_alone(tmp_path):
     _seed_snapshot_rows(args.silver_db)
 
     assert load.run_load(args) == 0
-    assert _snapshot_row_count(args.silver_db) == 2
+    assert _snapshot_row_count(args.silver_db) == 3
 
 
 def test_an_explicit_reparse_still_purges_a_moved_generation(tmp_path):
@@ -2032,10 +2038,26 @@ def test_an_explicit_reparse_still_purges_a_moved_generation(tmp_path):
 # check every statement is held to.
 # ---------------------------------------------------------------------------
 
-def _pos(key, qty, mv, cost=None, ugl=None):
+def _pos(key, qty, mv, cost=None, ugl=None, lots=None):
     return {"instrument_key": key, "quantity": qty, "market_value": mv,
             "cost_basis": cost, "unrealized_gain_loss": ugl,
-            "market_price": 10.0, "section": "Equities", "raw_lines": [key]}
+            "market_price": 10.0, "section": "Equities", "raw_lines": [key],
+            "lots": lots or []}
+
+
+def _lot(qty, cost, acquired, footnotes=None):
+    return {"quantity": qty, "unit_cost": cost / qty, "cost_basis": cost,
+            "acquired_date": acquired, "unrealized_gain_loss": 1.0,
+            "holding_days": 30, "term": "SHORT", "footnotes": footnotes,
+            "raw_line": f"{qty} {cost} {acquired}"}
+
+
+def _open_lots(conn):
+    return conn.execute(
+        "SELECT as_of_date, instrument_key, lot_index, quantity, cost_basis,"
+        " acquired_date, term, covered, footnotes, json(payload)"
+        " FROM open_lots ORDER BY as_of_date, instrument_key, lot_index"
+    ).fetchall()
 
 
 class TestStatementPositions:
@@ -2055,6 +2077,46 @@ class TestStatementPositions:
         # A part with no cost makes the summed cost unknown, not partial.
         assert rows == {"XDUP": (50.0, 500.0, None), "XMPL": (10.0, 100.0, None)}
 
+    def test_lots_land_in_open_lots(self, migrated):
+        load._insert_position_snapshots(
+            migrated, "001", 1700000000,
+            [_pos("XMPL", 15.0, 150.0, 120.0, 30.0,
+                  [_lot(10.0, 80.0, "2022-01-03", ["t"]),
+                   _lot(5.0, 40.0, None)]),
+             _pos("XNOL", 1.0, 10.0)],
+            "sha")
+        assert _open_lots(migrated) == [
+            (1700000000, "XMPL", 0, 10.0, 80.0, "2022-01-03", "SHORT", None, "t",
+             '{"holding_days":30,"raw_line":"10.0 80.0 2022-01-03"}'),
+            (1700000000, "XMPL", 1, 5.0, 40.0, None, "SHORT", None, None,
+             '{"holding_days":30,"raw_line":"5.0 40.0 None"}'),
+        ]
+
+    def test_lots_of_one_instrument_on_two_rows_keep_print_order(self, migrated):
+        load._insert_position_snapshots(
+            migrated, "001", 1700000000,
+            [_pos("XDUP", 10.0, 100.0, 80.0, 20.0, [_lot(10.0, 80.0, "2022-01-03")]),
+             _pos("XDUP", 5.0, 50.0, 40.0, 10.0, [_lot(5.0, 40.0, "2022-02-03")])],
+            "sha")
+        assert [(r[2], r[5]) for r in _open_lots(migrated)] == [
+            (0, "2022-01-03"), (1, "2022-02-03")]
+
+    def test_a_reparse_replaces_the_statement_lots(self, migrated):
+        two = [_lot(10.0, 80.0, "2022-01-03"), _lot(5.0, 40.0, "2022-02-03")]
+        load._insert_position_snapshots(
+            migrated, "001", 1700000000,
+            [_pos("XMPL", 15.0, 150.0, 120.0, 30.0, two)], "sha")
+        load._insert_position_snapshots(
+            migrated, "001", 1700086400,
+            [_pos("XMPL", 15.0, 150.0, 120.0, 30.0, two)], "sha")
+        load._insert_position_snapshots(
+            migrated, "001", 1700000000,
+            [_pos("XMPL", 10.0, 100.0, 80.0, 20.0, two[:1])], "sha2")
+        # The re-parsed statement's lots replace its old ones; another
+        # statement's lots stay.
+        assert [(r[0], r[2]) for r in _open_lots(migrated)] == [
+            (1700000000, 0), (1700086400, 0), (1700086400, 1)]
+
     def test_a_statement_that_does_not_add_up_is_reported(self, caplog):
         parsed = {"account_value": 1000.0,
                   "cash_summary": {"closing_balance": 100.0},
@@ -2070,3 +2132,63 @@ class TestStatementPositions:
         with caplog.at_level("WARNING", logger=load.log.name):
             load._check_account_value(parsed, "doc-1")
         assert caplog.text == ""
+
+
+# ---------------------------------------------------------------------------
+# Open lots reach a silver loaded before migration 0006: the parser change
+# moves the parser generation, and the re-parse fills the holding's cost
+# basis and its lots.
+# ---------------------------------------------------------------------------
+
+_LEGACY_STATEMENT_TEXT = (
+    "Investment Detail - Equities\n"
+    "EXAMPLE CORP (M) 10.0000 12.00000 120.00 100% 20.00 N/A N/A\n"
+    "SYMBOL: XMPL 10.0000 10.0000 100.00 03/15/22 20.00 400 Long-Term\n"
+    "Total Investment Detail 120.00\n"
+)
+
+
+def test_a_silver_loaded_before_open_lots_gains_them_on_the_next_load(
+        tmp_path, monkeypatch):
+    args = _generation_args(tmp_path)
+    _make_bronze_run(args.bronze_dir, "20260520T120000Z", [
+        {"suffix": "NNN", "label": "Demo …NNN",
+         "documents": [{"date": "06/30/2022", "type": "Statements",
+                        "document": "Brokerage Statement",
+                        "filename": "Brokerage-Statement_2022-06-30_NNN.PDF"}]},
+    ])
+    as_of = load.parse_doc_date("06/30/2022")
+
+    # A silver at schema 5, written by an older parser that left the
+    # single-lot holding without a cost basis.
+    early = tmp_path / "m"
+    early.mkdir()
+    for f in sorted(MIGRATIONS_DIR.glob("000[1-5]_*.sql")):
+        (early / f.name).write_text(f.read_text())
+    conn = sqlite3.connect(str(args.silver_db))
+    load.apply_migrations(conn, early)
+    conn.execute(
+        "INSERT INTO historical_position_snapshots (as_of_date,"
+        " account_external_id, instrument_key, quantity, market_value,"
+        " cost_basis, source_sha256, payload)"
+        " VALUES (?, 'NNN', 'XMPL', 10.0, 120.0, NULL, 'sha0', '{}')",
+        (as_of,))
+    load.silver.stamp_generation(
+        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(load.pp, "_extract_pdf_text",
+                        lambda path: _LEGACY_STATEMENT_TEXT)
+    assert load.run_load(args) == 0
+
+    conn = sqlite3.connect(str(args.silver_db))
+    try:
+        assert load._current_schema_version(conn) == _HEAD_VERSION
+        assert conn.execute(
+            "SELECT cost_basis FROM historical_position_snapshots"
+            " WHERE instrument_key = 'XMPL'").fetchall() == [(100.0,)]
+        assert [r[:7] for r in _open_lots(conn)] == [
+            (as_of, "XMPL", 0, 10.0, 100.0, "2022-03-15", "LONG")]
+    finally:
+        conn.close()

@@ -66,7 +66,8 @@ _current_schema_version = silver.current_schema_version
 # document parsers produced the rows in hand. A stale one implies
 # `--reparse` for the whole invocation — the single lever the run gate, the
 # per-document gates and the per-document deletes all already read — plus a
-# purge of the two snapshot tables, which have no delete path of their own.
+# purge of the statement snapshot tables, which have no delete path of their
+# own.
 #
 # One fingerprint over both parsers rather than one each: they are edited
 # together as often as not, a false purge costs a re-parse of an archive the
@@ -77,7 +78,8 @@ DOCUMENT_GENERATION = srcfp.parser_fingerprint([pp, tf], ("pypdfium2",))
 # Written exclusively by the statement passes, and keyed on parser output
 # (`as_of_date` / `period_end`, `instrument_key`), so a moved capture
 # strands the old row under a key nothing will write again.
-_SNAPSHOT_TABLES = ("historical_position_snapshots", "historical_cash_balances")
+_SNAPSHOT_TABLES = ("historical_position_snapshots", "historical_cash_balances",
+                    "open_lots")
 
 log = logging.getLogger("schwab-web.load")
 
@@ -1592,7 +1594,8 @@ def _merge_same_instrument(positions: list[dict]) -> list[dict]:
     """One row per instrument_key. A statement can list one instrument on
     more than one row, and silver keys a position by instrument, so the
     rows are summed rather than left to overwrite each other. A sum that
-    has a missing part is missing."""
+    has a missing part is missing. The rows' lots are kept in print
+    order."""
     merged: dict[str, dict] = {}
     for pos in positions:
         key = pos.get("instrument_key")
@@ -1604,6 +1607,7 @@ def _merge_same_instrument(positions: list[dict]) -> list[dict]:
             a, b = into.get(f), pos.get(f)
             into[f] = None if a is None or b is None else a + b
         into["raw_lines"] = (into.get("raw_lines") or []) + (pos.get("raw_lines") or [])
+        into["lots"] = (into.get("lots") or []) + (pos.get("lots") or [])
         into["footnotes"] = sorted(set(into.get("footnotes") or [])
                                    | set(pos.get("footnotes") or [])) or None
     return list(merged.values())
@@ -1632,17 +1636,23 @@ def _insert_position_snapshots(conn: sqlite3.Connection,
                                 as_of_date: int,
                                 positions: list[dict],
                                 source_sha256: str) -> int:
-    """INSERT OR REPLACE one row per parsed position. Returns the
-    count of rows written. PK is
+    """INSERT OR REPLACE one row per parsed position, and write the
+    statement's tax lots to `open_lots`. Returns the count of position
+    rows written. PK is
     (as_of_date, account_external_id, instrument_key) — a
     re-parse of the same logical statement (different sha256,
-    same content) collapses onto the same row.
+    same content) collapses onto the same row. The statement's lots
+    replace whatever lots silver held for it.
 
     Rows missing an instrument_key are dropped (parser failure
     indicator); a position row with no symbol can't be joined
     against anything downstream. Rows of one instrument are summed
     first (_merge_same_instrument).
     """
+    conn.execute(
+        "DELETE FROM open_lots WHERE account_external_id = ? AND as_of_date = ?",
+        (account_external_id, as_of_date),
+    )
     written = 0
     for pos in _merge_same_instrument(positions):
         instrument_key = pos.get("instrument_key")
@@ -1681,8 +1691,40 @@ def _insert_position_snapshots(conn: sqlite3.Connection,
                 source_sha256, payload,
             ),
         )
+        _insert_open_lots(conn, account_external_id, as_of_date,
+                          instrument_key, pos.get("lots") or [], source_sha256)
         written += 1
     return written
+
+
+def _insert_open_lots(conn: sqlite3.Connection,
+                      account_external_id: str,
+                      as_of_date: int,
+                      instrument_key: str,
+                      lots: list[dict],
+                      source_sha256: str) -> None:
+    """One `open_lots` row per lot the statement prints for a holding,
+    numbered in print order. Figures are as printed; whether a lot is
+    covered is never printed, so `covered` stays NULL."""
+    for idx, lot in enumerate(lots):
+        conn.execute(
+            "INSERT INTO open_lots"
+            " (as_of_date, account_external_id, instrument_key, lot_index,"
+            "  quantity, unit_cost, cost_basis, acquired_date,"
+            "  unrealized_gain_loss, term, covered, footnotes,"
+            "  source_sha256, payload)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+            (
+                as_of_date, account_external_id, instrument_key, idx,
+                lot.get("quantity"), lot.get("unit_cost"),
+                lot.get("cost_basis"), lot.get("acquired_date"),
+                lot.get("unrealized_gain_loss"), lot.get("term"),
+                ",".join(lot.get("footnotes") or []) or None,
+                source_sha256,
+                canonical_json({"holding_days": lot.get("holding_days"),
+                                "raw_line": lot.get("raw_line")}),
+            ),
+        )
 
 
 def _insert_cash_balance(conn: sqlite3.Connection,
