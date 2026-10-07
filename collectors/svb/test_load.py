@@ -1238,9 +1238,23 @@ def test_dump_run_marker_is_written(tmp_path, monkeypatch):
     # historical-only silver needs this marker for `wealthdb load` to see it.
     conn = _build(tmp_path, monkeypatch)
     run = conn.execute(
-        "SELECT snapshot_at, run_dir, mode FROM dump_runs").fetchall()
+        "SELECT snapshot_at, run_dir, mode, silver_schema_version "
+        "FROM dump_runs").fetchall()
+    applied = conn.execute(
+        "SELECT MAX(silver_schema_version) FROM schema_meta").fetchone()[0]
     assert run == [(B.ts_from_iso("2023-01-31"), "svb-sleeves-build",
-                    "historical")]
+                    "historical", applied)]
+
+
+def test_statements_state_no_cost_basis(tmp_path, monkeypatch):
+    # The shared schema has the basis columns; these statements print no
+    # basis, so every row leaves them NULL rather than 0.
+    conn = _build(tmp_path, monkeypatch)
+    assert conn.execute(
+        "SELECT COUNT(*), COUNT(cost_basis), COUNT(unrealized_gain_loss) "
+        "FROM historical_position_snapshots").fetchone()[1:] == (0, 0)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM historical_position_snapshots").fetchone()[0] > 0
 
 
 # ============================================================

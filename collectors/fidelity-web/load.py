@@ -2434,14 +2434,18 @@ def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
                     "INSERT OR REPLACE INTO historical_position_snapshots ("
                     "as_of_date, account_external_id, description, "
                     "instrument_key, quantity, price, market_value, "
-                    "percent_of_total, currency, source_sha256, payload"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "percent_of_total, cost_basis, unrealized_gain_loss, "
+                    "currency, source_sha256, payload"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         as_of, aid, desc,
                         holding.get("instrument_key"),
                         holding.get("quantity"),
                         holding.get("price"),
-                        mv, pct, "USD", sha,
+                        mv, pct,
+                        holding.get("cost_basis"),
+                        holding.get("unrealized_gain"),
+                        "USD", sha,
                         normalize_payload(holding),
                     ),
                 )

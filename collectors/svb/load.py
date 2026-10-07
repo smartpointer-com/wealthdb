@@ -92,6 +92,7 @@ _MIGRATIONS = (
     "0002_currency_asset_class_core_position.sql",
     "0003_management_style.sql",
     "0004_historical_position_snapshots.sql",
+    "0009_historical_cost_basis.sql",
 )
 
 
@@ -876,7 +877,8 @@ def mark_dump_run(conn: sqlite3.Connection) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version, "
         "run_dir, mode) VALUES (?,?,?,?)",
-        (row[0], 4, "svb-sleeves-build", "historical"),
+        (row[0], silver.current_schema_version(conn), "svb-sleeves-build",
+         "historical"),
     )
 
 

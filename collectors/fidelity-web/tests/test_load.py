@@ -1129,3 +1129,75 @@ def test_a_repeat_sighting_does_not_claim_a_second_feed_row(migrated):
     assert migrated.execute(
         "SELECT COUNT(*) FROM transactions WHERE amount = -1650.0"
     ).fetchone()[0] == 2
+
+
+# ============================================================
+# Statement cost basis — migration 0009
+# ============================================================
+
+# One supplied statement: an equity line printing its cost and gain,
+# and the core account, which prints `not applicable` for both. Every
+# value is invented.
+_PARSED_HOLDINGS = {
+    "period_end": "2026-01-31",
+    "accounts": [{
+        "account_external_id": "100000001",
+        "activity": [],
+        "holdings": [
+            {"description": "EXAMPLE CORP COM", "instrument_key": "TICK1",
+             "quantity": 10.0, "price": 50.0, "market_value": 500.0,
+             "cost_basis": 420.0, "unrealized_gain": 80.0},
+            {"description": "EXAMPLE MONEY MARKET", "instrument_key": "CORE_X",
+             "quantity": 99.0, "price": 1.0, "market_value": 99.0,
+             "cost_basis": None, "unrealized_gain": None},
+        ],
+    }],
+}
+
+
+def _basis_rows(conn):
+    return conn.execute(
+        "SELECT description, cost_basis, unrealized_gain_loss "
+        "FROM historical_position_snapshots ORDER BY description").fetchall()
+
+
+def test_supplied_holdings_carry_cost_basis_and_unrealized_gain(migrated):
+    load._insert_supplied_historical_rows(
+        migrated, Path("p.PDF"), _PARSED_HOLDINGS, "sha0")
+    assert _basis_rows(migrated) == [
+        ("EXAMPLE CORP COM", 420.0, 80.0),
+        ("EXAMPLE MONEY MARKET", None, None),
+    ]
+
+
+def test_cost_basis_backfills_rows_loaded_before_migration_0009(conn, tmp_path):
+    # Silver at schema 8, holding the rows a loader of that schema wrote:
+    # a supplied holding with its basis only in payload, a loss, whose sign
+    # must survive, a core-account row whose basis is null, and a 529 row
+    # whose layout prints none.
+    old = tmp_path / "migrations"
+    old.mkdir()
+    for f in sorted(MIGRATIONS_DIR.glob("000[1-8]_*.sql")):
+        (old / f.name).write_text(f.read_text(encoding="utf-8"))
+    load.apply_migrations(conn, old)
+    for desc, payload in (
+        ("EXAMPLE CORP COM", {"cost_basis": 420.0, "unrealized_gain": 80.0}),
+        ("EXAMPLE LOSS CO", {"cost_basis": 300.0, "unrealized_gain": -25.5}),
+        ("EXAMPLE MONEY MARKET", {"cost_basis": None, "unrealized_gain": None}),
+        ("EXAMPLE PLAN PORTFOLIO", {"percent_of_total": 0.5}),
+    ):
+        conn.execute(
+            "INSERT INTO historical_position_snapshots (as_of_date, "
+            "account_external_id, description, currency, source_sha256, "
+            "payload) VALUES (1700000000, '100000001', ?, 'USD', 'sha0', ?)",
+            (desc, json.dumps(payload)))
+    conn.commit()
+
+    load.apply_migrations(conn, MIGRATIONS_DIR)
+
+    assert _basis_rows(conn) == [
+        ("EXAMPLE CORP COM", 420.0, 80.0),
+        ("EXAMPLE LOSS CO", 300.0, -25.5),
+        ("EXAMPLE MONEY MARKET", None, None),
+        ("EXAMPLE PLAN PORTFOLIO", None, None),
+    ]
