@@ -172,9 +172,11 @@ DESIGN.md §6a): per-lot proceeds, cost basis, acquisition date,
 term, and wash-sale flag land in the row `payload`. Gold ingests
 each lot as a `sell` transaction, authoritative for sales within its
 tax year (see §8). The lot detail stays in the transaction's
-`payload`; gold has no lot table. Remaining 1099 sections (DIV /
-INT / OID) are unparsed. **Do not** modify the api silver — the
-data simply isn't in the api.
+`payload`; gold has no lot table. Silver also keeps the 1099-B lots,
+and the realized lots of the Year-End Summary and the Gain/Loss
+Report, in `closed_lots` (DESIGN.md §9.2); gold does not read it yet.
+Remaining 1099 sections (DIV / INT / OID) are unparsed. **Do not**
+modify the api silver — the data simply isn't in the api.
 
 ## 5. No live position snapshots in web silver
 

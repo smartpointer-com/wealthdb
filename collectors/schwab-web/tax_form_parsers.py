@@ -1,23 +1,29 @@
-"""Parsers for Schwab year-end tax forms (the 1099 Composite).
+"""Parsers for Schwab year-end tax documents: the 1099 Composite, the
+Year-End Summary and the Gain/Loss Report.
 
-Today this covers the **1099-B** section — sales / dispositions, the
-authoritative annual record of *what was sold*, carrying **cost basis
-and acquisition date per lot**. The brokerage-statement parser only
-sees sales that print as activity rows; a sale that shows up only as
-a position delta is invisible to it. The 1099-B closes that gap and
-adds the cost-basis-vs-proceeds discriminator the gold returns layer
-needs for transferred, gifted and long-held positions.
+The **1099-B** section of the 1099 Composite covers sales /
+dispositions, the authoritative annual record of *what was sold*,
+carrying **cost basis and acquisition date per lot**. The
+brokerage-statement parser only sees sales that print as activity
+rows; a sale that shows up only as a position delta is invisible to
+it. The 1099-B closes that gap and adds the cost-basis-vs-proceeds
+discriminator the gold returns layer needs for transferred, gifted and
+long-held positions.
 
 Schwab ships the 1099 Composite in three bronze formats: a PDF (the
 human copy), an OFX-2.x **XML**, and a flat **CSV**. The XML and CSV
 are machine-readable twins of the same data. We prefer the **XML**
 (cleaner per-field structure, an explicit "Various" acquisition flag,
-and a `TAXYEAR` element) and fall back to the CSV; the PDF is left as
-an opaque document.
+and a `TAXYEAR` element) and fall back to the CSV. The PDF's 1099-B
+pages are not read; its Year-End Summary half is.
 
 Output: one normalised row dict per 1099-B lot, shaped for the silver
 `transactions` loader (`source='form_1099b'`). See `_lot_row` for the
 field contract.
+
+The Year-End Summary and the Gain/Loss Report are PDFs only. Their
+realized-lot sections also list the lots the 1099-B leaves out; see
+"Realized-lot reports" below.
 
 No PII lives in this module — it parses whatever the bronze file holds.
 Real names / numbers land only in the *local* silver DB, never in
@@ -34,6 +40,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from collectorkit.pdf import extract_text_pdfium
 from numparse import parse_amount
 
 log = logging.getLogger("schwab-web.tax_form_parsers")
@@ -362,3 +369,380 @@ def parse_1099b(path, fmt: str | None = None) -> dict:
     if fmt == "csv":
         return parse_1099b_csv(text)
     raise ValueError(f"unsupported 1099 format: {fmt!r}")
+
+
+# ============================================================
+# Realized-lot reports: Year-End Summary and Gain/Loss Report
+# ============================================================
+#
+# Two PDF reports list every realized lot of a tax year, the ones the
+# 1099-B leaves out included: sales in accounts that get no 1099-B, and
+# lots "not reported on Form 1099-B" whose basis the 1099-B omits.
+#
+#   * The Year-End Summary, on its own or as the second half of the
+#     1099 Composite PDF, has "Short-Term / Long-Term Realized Gain or
+#     (Loss)" sections. A section's subtitle says whether its lots are
+#     covered and which Form 8949 box they belong in. A lot prints as
+#       [DESCRIPTION] [CUSIP] QTY ACQUIRED SOLD $ PROCEEDS $ COST
+#           (-- | $ WASH) [$ MARKET DISCOUNT] $ GAIN
+#     where the description can wrap onto the lines above, an option
+#     prints its contract ("XMPL 01/16/2026 50.00 C") instead, and the
+#     amounts after the cost can wrap onto the next line.
+#   * The Gain/Loss Report has one "Realized Gain or (Loss)" section with
+#     Short-Term and Long-Term parts, headed by the account's cost-basis
+#     methods ("Mutual Funds: First In First Out"). A lot prints as
+#       [DESCRIPTION: TICKER] QTY ACQUIRED SOLD $PROCEEDS $COST $GAIN
+#
+# Both print endnote letters among the amounts, glued to one ("$ 100.00t",
+# "t($5.00)") or standing alone, and an "S" beside a short sale's
+# quantity. Page furniture (the holder block, page numbers) sits between
+# the pages of a section and is skipped.
+
+_REPORT_LOT_RE = re.compile(
+    r"^(?P<head>.*?)\s*(?P<qty>[\d,]*\.\d+)\s*(?P<short>S?)\s*"
+    r"(?P<acq>\d{2}/\d{2}/\d{2}|Various|VARIOUS)\s+(?P<sold>\d{2}/\d{2}/\d{2})"
+    r"\s+(?P<cells>[A-Za-z]?[($].*)$")
+# One amount cell: "$ 1,234.56", "$1,234.56", "($12.00)", "$ (12.00)",
+# with an endnote letter glued before or after; or a dash / "Missing"
+# where the report prints no amount. An endnote letter can also stand
+# alone among the cells.
+_REPORT_CELL_RE = re.compile(
+    r"(?P<pre>[A-Za-z]?)(?P<amt>\(?\$\s*\(?[\d,]+\.\d{2}\)?)(?P<post>[A-Za-z]{0,2})"
+    r"|(?P<none>--|Missing)|(?<!\S)(?P<mark>[A-Za-z])(?!\S)")
+_REPORT_CUSIP_RE = re.compile(r"^[A-Z0-9]{8}\d$")
+_REPORT_OPTION_RE = re.compile(
+    r"^(?P<under>[A-Z][A-Z0-9./]*)\s+(?P<exp>\d{2}/\d{2}/\d{4})\s+"
+    r"(?P<strike>[\d,]*\.\d+)\s+(?P<cp>[CP])$")
+_REPORT_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9./]*$")
+# An option's OCC symbol, as a Gain/Loss Report prints it after the
+# underlying: "XMPL 260116C00050000" (expiry YYMMDD, call or put, strike
+# in thousandths).
+_REPORT_OCC_RE = re.compile(
+    r"^(?P<under>[A-Z][A-Z0-9./]*) (?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})"
+    r"(?P<cp>[CP])(?P<strike>\d{8})$")
+_YES_HEADER_RE = re.compile(
+    r"^(?P<term>Short|Long)-Term Realized Gain or \(Loss\)(?: \(continued\))?$")
+_YES_TOTAL_RE = re.compile(r"^Total (?:Short|Long)-Term\b")
+_YES_TAX_YEAR_RE = re.compile(r"^TAX YEAR (\d{4})\b", re.M)
+_GLR_HEADER_RE = re.compile(r"^Realized Gain or \(Loss\)(?: \(continued\))?$")
+_GLR_TERM_RE = re.compile(
+    r"^(?P<term>Short|Long)-Term(?: \(continued\))? Quantity/Par$")
+_GLR_METHOD_RE = re.compile(r"^(?P<cls>[A-Z][\w ]*?):\s*(?P<method>\S.*?)\s*$")
+_GLR_TAX_YEAR_RE = re.compile(r"^(\d{4}) Year-End Schwab Gain/Loss Report\b", re.M)
+_PAGE_RE = re.compile(r"^Page \d+ of \d+$")
+_BOX_RE = re.compile(r"\bBox ([A-F])\b")
+
+
+def _report_cells(text: str) -> tuple[list[float | None], list[str]] | None:
+    """The amount cells of `text` in print order, plus the endnote letters
+    among them; None when `text` holds anything else."""
+    cells: list[float | None] = []
+    marks: list[str] = []
+    pos = 0
+    for m in _REPORT_CELL_RE.finditer(text):
+        if text[pos:m.start()].strip():
+            return None
+        pos = m.end()
+        if m["mark"]:
+            marks.append(m["mark"])
+            continue
+        if m["none"]:
+            cells.append(None)
+            continue
+        cells.append(parse_amount(m["amt"].replace("$", "").replace(" ", "")))
+        marks.extend(x for x in (m["pre"], m["post"]) if x)
+    if not cells or text[pos:].strip():
+        return None
+    return cells, marks
+
+
+def _report_iso(token: str) -> str | None:
+    """A report's MM/DD/YY date as ISO; 'Various' as printed."""
+    if token.lower() == "various":
+        return "Various"
+    try:
+        return datetime.strptime(token, "%m/%d/%y").date().isoformat()
+    except ValueError:
+        return None
+
+
+class _ReportLots:
+    """Collects the lots of one realized-lot report as its lines go by.
+
+    A lot line may arrive with its amounts cut short; the amount-only
+    lines after it complete it. A lot still short when another kind of
+    line arrives, or one with more amounts than a lot prints, is dropped
+    and counted in `incomplete`."""
+
+    def __init__(self, n_cells: tuple[int, ...]):
+        self.n_cells = n_cells     # the cell counts a complete lot prints
+        self.lots: list[dict] = []
+        self.incomplete = 0
+        self.desc: list[str] = []
+        self.pending: dict | None = None
+
+    def drop_pending(self) -> None:
+        if self.pending is not None:
+            self.incomplete += 1
+            self.pending = None
+
+    def lot_line(self, m: re.Match, cells: list, marks: list[str],
+                 raw: str, **section) -> None:
+        self.drop_pending()
+        head = " ".join([*self.desc, m["head"]]).split()
+        self.desc = []
+        self.pending = {
+            "head": head, "quantity": _to_float(m["qty"]),
+            "acquired_date": _report_iso(m["acq"]),
+            "disposed_date": _report_iso(m["sold"]),
+            "cells": cells, "footnotes": (["S"] if m["short"] else []) + marks,
+            "raw_lines": [raw], **section,
+        }
+        self._maybe_emit()
+
+    def amount_line(self, cells: list, marks: list[str], raw: str) -> None:
+        """Extend a pending lot with an amount-only line. Without one the
+        line is a subtotal's amounts, and is ignored."""
+        if self.pending is None:
+            return
+        self.pending["cells"] += cells
+        self.pending["footnotes"] += marks
+        self.pending["raw_lines"].append(raw)
+        self._maybe_emit()
+
+    def text_line(self, line: str) -> None:
+        self.drop_pending()
+        self.desc.append(line)
+
+    def unreadable_lot_line(self) -> None:
+        """A lot line whose amounts do not read as amount cells."""
+        self.reset_description()
+        self.incomplete += 1
+
+    def reset_description(self) -> None:
+        self.drop_pending()
+        self.desc = []
+
+    def _maybe_emit(self) -> None:
+        n = len(self.pending["cells"])
+        if n < min(self.n_cells):
+            return
+        if n not in self.n_cells:
+            self.drop_pending()
+            return
+        self.lots.append(self.pending)
+        self.pending = None
+
+
+def _report_line(acc: _ReportLots, line: str, **section) -> None:
+    """Feed one line of a realized section's body to `acc`: a lot line,
+    an amount-only line, or description text."""
+    m_lot = _REPORT_LOT_RE.match(line)
+    if m_lot:
+        parsed = _report_cells(m_lot["cells"])
+        if parsed is None:
+            acc.unreadable_lot_line()
+        else:
+            acc.lot_line(m_lot, *parsed, raw=line, **section)
+    elif (parsed := _report_cells(line)) is not None:
+        acc.amount_line(*parsed, raw=line)
+    else:
+        acc.text_line(line)
+
+
+def _finish_report(acc: _ReportLots, lots: list[dict], year_re: re.Pattern,
+                   text: str) -> dict:
+    """Stamp every lot with the report's tax year: the one it prints, or
+    else the year most of its lots were sold in."""
+    m = year_re.search(text)
+    tax_year = int(m[1]) if m else _modal_year([lot["disposed_date"] for lot in lots])
+    for lot in lots:
+        lot["footnotes"] = lot["footnotes"] or None
+        lot["tax_year"] = tax_year
+    return {"tax_year": tax_year, "lots": lots, "incomplete": acc.incomplete}
+
+
+def _year_end_summary_lot(lot: dict) -> dict:
+    """A Year-End Summary lot in the closed-lot shape."""
+    cells = lot.pop("cells")
+    head = lot.pop("head")
+    cusip = None
+    if head and _REPORT_CUSIP_RE.match(head[-1]):
+        cusip = head.pop()
+    elif (head and len(head[-1]) > 9 and head[-1][:-9].isalpha()
+          and _REPORT_CUSIP_RE.match(head[-1][-9:])
+          and sum(ch.isdigit() for ch in head[-1][-9:]) >= 3):
+        # The description's last word glued to the CUSIP ("CLASS A" +
+        # CUSIP prints as "A" + CUSIP).
+        head[-1], cusip = head[-1][:-9], head[-1][-9:]
+    name = " ".join(head) or None
+    m = _REPORT_OPTION_RE.match(name or "")
+    return {
+        "security_name": name, "cusip": cusip,
+        "instrument_key": (f"{m['under']} {m['exp']} {m['strike']} {m['cp']}"
+                           if m else cusip),
+        "proceeds": cells[0], "cost_basis": cells[1],
+        "wash_sale_disallowed": cells[2],
+        "accrued_market_discount": cells[3] if len(cells) == 5 else None,
+        "realized_gain_loss": cells[-1], **lot,
+    }
+
+
+def _yes_subtitle(text: str) -> dict:
+    """Covered flag and Form 8949 boxes from a realized section's
+    subtitle. A section of lots not reported on the 1099-B says neither
+    covered nor noncovered."""
+    low = text.lower()
+    covered = 0 if "noncovered" in low else 1 if "covered securities" in low else None
+    boxes = dict.fromkeys(_BOX_RE.findall(text))
+    return {"covered": covered, "form_8949_box": ",".join(boxes) or None}
+
+
+def parse_year_end_summary_text(text: str) -> dict:
+    """The realized lots of a Year-End Summary, standalone or inside a
+    1099 Composite PDF.
+
+    Returns {"tax_year", "lots", "incomplete"}: one dict per lot with
+    security_name, cusip, instrument_key, quantity, acquired_date,
+    disposed_date, proceeds, cost_basis, wash_sale_disallowed,
+    accrued_market_discount, realized_gain_loss, term, covered,
+    form_8949_box, footnotes, raw_lines and tax_year; and the count of
+    lot lines whose amounts could not be read."""
+    acc = _ReportLots(n_cells=(4, 5))
+    mode = "out"   # out | subtitle | columns | data
+    term = None
+    subtitle: list[str] = []
+    section: dict = {"covered": None, "form_8949_box": None}
+    for raw in text.split("\n"):
+        line = raw.strip()
+        m_head = _YES_HEADER_RE.match(line)
+        if m_head:
+            acc.reset_description()
+            term = m_head["term"].upper()
+            mode, subtitle = "subtitle", []
+            continue
+        if mode == "out" or not line:
+            continue
+        if mode == "subtitle":
+            if line.startswith("Description OR"):
+                if subtitle:
+                    section = _yes_subtitle(" ".join(subtitle))
+                mode = "columns"
+            else:
+                subtitle.append(line)
+            continue
+        if mode == "columns":
+            if line == "Gain or (Loss)":
+                mode = "data"
+            continue
+        if line == "Adjusted" and not acc.desc and acc.pending is None:
+            continue        # the column headings' last line, on some layouts
+        if _YES_TOTAL_RE.match(line) or line.startswith("Please see the"):
+            # A section's end, or the page's: furniture until the next
+            # section header.
+            acc.reset_description()
+            mode = "out"
+            continue
+        if line.startswith("Security Subtotal"):
+            acc.reset_description()
+            continue
+        _report_line(acc, line, term=term, **section)
+    acc.drop_pending()
+    return _finish_report(acc, [_year_end_summary_lot(lot) for lot in acc.lots],
+                          _YES_TAX_YEAR_RE, text)
+
+
+def _report_symbol_key(symbol: str) -> str | None:
+    """The instrument key of a Gain/Loss Report symbol: the ticker, or an
+    option's contract in the statements' form ("XMPL 01/16/2026 50.00 C")
+    so it matches the holding's key."""
+    if _REPORT_TICKER_RE.match(symbol):
+        return symbol
+    m = _REPORT_OCC_RE.match(symbol)
+    if m:
+        return (f"{m['under']} {m['mm']}/{m['dd']}/20{m['yy']} "
+                f"{int(m['strike']) / 1000:.2f} {m['cp']}")
+    return None
+
+
+def _gain_loss_report_lot(lot: dict) -> dict:
+    """A Gain/Loss Report lot in the closed-lot shape. Its description
+    ends in ": TICKER"."""
+    proceeds, cost, gain = lot.pop("cells")
+    name, colon, symbol = " ".join(lot.pop("head")).rpartition(":")
+    symbol = symbol.strip()
+    if not colon:
+        name, symbol = symbol, ""
+    return {
+        "security_name": name.strip() or None, "cusip": None,
+        "instrument_key": _report_symbol_key(symbol),
+        "proceeds": proceeds, "cost_basis": cost,
+        "wash_sale_disallowed": None, "accrued_market_discount": None,
+        "realized_gain_loss": gain, "covered": None, "form_8949_box": None,
+        **lot,
+    }
+
+
+def parse_gain_loss_report_text(text: str) -> dict:
+    """The realized lots and cost-basis methods of a Gain/Loss Report.
+
+    Returns {"tax_year", "lots", "methods", "incomplete"}: lots in the
+    shape parse_year_end_summary_text returns (a Gain/Loss Report prints
+    no wash sale, market discount, covered flag or Form 8949 box), and
+    the methods as printed, one {"asset_class", "method"} per line of
+    the report's "Accounting Method" block."""
+    acc = _ReportLots(n_cells=(3,))
+    methods: dict[str, str] = {}
+    mode = "out"   # out | methods | columns | data
+    term = None
+    for raw in text.split("\n"):
+        line = raw.strip()
+        m_term = _GLR_TERM_RE.match(line)
+        if m_term:
+            acc.reset_description()
+            term = m_term["term"].upper()
+            mode = "columns"
+            continue
+        if _GLR_HEADER_RE.match(line):
+            acc.reset_description()
+            mode = "out"
+            continue
+        if line == "Accounting Method":
+            mode = "methods"
+            continue
+        if mode == "methods":
+            if m := _GLR_METHOD_RE.match(line):
+                methods.setdefault(m["cls"], m["method"])
+            else:
+                mode = "out"    # the block ends at its first other line
+            continue
+        if mode == "columns":
+            if line == "Gain or (Loss)":
+                mode = "data"
+            continue
+        if mode != "data" or not line:
+            continue
+        if _PAGE_RE.match(line) or line.startswith("Total "):
+            acc.reset_description()
+            mode = "out"
+            continue
+        if line.startswith("Security Subtotal"):
+            acc.reset_description()
+            continue
+        _report_line(acc, line, term=term)
+    acc.drop_pending()
+    result = _finish_report(acc, [_gain_loss_report_lot(lot) for lot in acc.lots],
+                            _GLR_TAX_YEAR_RE, text)
+    result["methods"] = [{"asset_class": k, "method": v} for k, v in methods.items()]
+    return result
+
+
+def parse_realized_report_pdf(path, kind: str) -> dict:
+    """Parse a realized-lot report PDF: `kind` is 'year_end_summary' (a
+    Year-End Summary or 1099 Composite PDF) or 'gain_loss_report'."""
+    text = extract_text_pdfium(path)
+    if kind == "year_end_summary":
+        return parse_year_end_summary_text(text)
+    if kind == "gain_loss_report":
+        return parse_gain_loss_report_text(text)
+    raise ValueError(f"unsupported realized-lot report: {kind!r}")

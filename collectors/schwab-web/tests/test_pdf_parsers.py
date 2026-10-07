@@ -1680,6 +1680,28 @@ class TestParseCashSummaryVeryOld:
         assert pp.parse_cash_summary("nothing relevant\n") is None
 
 
+@pytest.mark.parametrize("pattern", [pp._NEW_TX_ROW_STOP_RE, pp._LEGACY_TX_ROW_STOP_RE])
+@pytest.mark.parametrize("line", [
+    "PLACEHOLDER UXXUTMA",
+    "PLACEHOLDER UYYUGMA",
+    "PLACEHOLDER XXUTMA",
+    "UNTIL AGE 21 PLACEHOLDER UTMA",
+    "PLACEHOLDER CUST FOR PLACEHOLDER",
+    "PLACEHOLDER FBO PLACEHOLDER",
+])
+def test_a_custodial_marker_stops_a_row_for_any_state(pattern, line):
+    # The custodial page header carries a state-coded marker; the row
+    # stop must recognise it whatever the state, so the header never
+    # runs into the description of the row above it.
+    assert pattern.match(line)
+
+
+@pytest.mark.parametrize("pattern", [pp._NEW_TX_ROW_STOP_RE, pp._LEGACY_TX_ROW_STOP_RE])
+@pytest.mark.parametrize("line", ["Bank Interest PLACEHOLDER", "DIVIDEND EXAMPLE FUND"])
+def test_an_ordinary_description_line_does_not_stop_a_row(pattern, line):
+    assert not pattern.match(line)
+
+
 class TestParseTransactionsLegacy:
     """Legacy (2017-2024) "Transaction Detail" / "Transaction
     Detail - <Category>" sections. Synthetic-text rows only."""

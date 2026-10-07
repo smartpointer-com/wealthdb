@@ -603,6 +603,9 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         "form_1099b_transactions_inserted": 0,
         "form_1099b_parse_errors": 0,
         "form_1099b_pdf_only": 0,
+        "closed_lots_inserted": 0,
+        "realized_report_parse_errors": 0,
+        "realized_lots_unreadable": 0,
         "positions_inserted": 0,
         "cash_balances_inserted": 0,
         "statements_logical_deduped": 0,
@@ -983,15 +986,17 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             n_updated += 1
         stats["account_registration_updated"] = n_updated
 
-    # 3rd-Party-Distribution letters and 1099-Composite tax forms.
-    # Both are already in the documents table (recorded in the
-    # statement walk above) but skipped there for row parsing; these
-    # two passes add their transaction rows. They iterate the same
+    # 3rd-Party-Distribution letters, 1099-Composite tax forms and the
+    # realized-lot reports. All are already in the documents table
+    # (recorded in the statement walk above) but skipped there for row
+    # parsing; these passes add their rows. They iterate the same
     # manifest["statements"] documents and use their own
     # logical_doc_key gates, so they're idempotent across runs and
     # sha256 re-downloads independently of the statement parser.
     _load_distribution_letters(conn, run_dir, manifest, reparse, stats)
     _load_1099b_forms(conn, run_dir, manifest, reparse, stats)
+    _load_realized_reports(conn, run_dir, manifest, reparse, stats,
+                           seen_logical_docs)
 
     # Tx-history exports: per-account CSV/JSON/XML. JSON is the
     # canonical source for silver rows;
@@ -1464,12 +1469,156 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
             # Delete only after a successful parse, so a failure can't
             # drop the prior rows with no replacement.
             _reparse_delete(conn, ldk, rows_exist, reparse, stats)
+            lots = parsed.get("lots", [])
             n = _insert_parsed_transactions(
-                conn, suffix, parsed.get("lots", []), "form_1099b",
-                doc.get("sha256") or "", ldk,
+                conn, suffix, lots, "form_1099b", doc.get("sha256") or "", ldk,
             )
             stats["transactions_inserted"] += n
             stats["form_1099b_transactions_inserted"] += n
+            stats["closed_lots_inserted"] += _replace_closed_lots(
+                conn, ldk, "form_1099b", suffix,
+                [(_closed_lot_from_1099b(lot), lot) for lot in lots],
+                doc.get("sha256") or "",
+            )
+
+
+# Realized-lot reports by filename prefix: the Year-End Summary (alone,
+# or inside the 1099 Composite PDF) and the Gain/Loss Report.
+_REALIZED_REPORT_KINDS = (
+    ("1099-Composite-and-Year-End-Summary", "year_end_summary"),
+    ("Year-End-Summary", "year_end_summary"),
+    ("Year-End-Gain-Loss-Reporting", "gain_loss_report"),
+)
+
+# closed_lots columns a parsed lot fills, by the lot's own field names.
+_CLOSED_LOT_FIELDS = (
+    "tax_year", "security_name", "cusip", "instrument_key", "quantity",
+    "acquired_date", "disposed_date", "proceeds", "cost_basis",
+    "wash_sale_disallowed", "accrued_market_discount", "realized_gain_loss",
+    "term", "covered", "form_8949_box",
+)
+
+
+def _closed_lot_from_1099b(row: dict) -> dict:
+    """A 1099-B lot (the `form_1099b` transaction row) in the closed-lot
+    shape. A 1099-B lot is covered unless flagged noncovered, prints no
+    gain, and names its security by description only."""
+    return {
+        "tax_year": row.get("tax_year"),
+        "security_name": row.get("security_name"),
+        "quantity": row.get("quantity"),
+        "acquired_date": row.get("acquired_date"),
+        "disposed_date": row.get("date_sold"),
+        "proceeds": row.get("proceeds"),
+        "cost_basis": row.get("cost_basis"),
+        "wash_sale_disallowed": row.get("wash_sale_disallowed"),
+        "accrued_market_discount": row.get("accrued_market_discount"),
+        "term": row.get("term"),
+        "covered": 0 if row.get("noncovered") else 1,
+        "form_8949_box": row.get("form_8949_code"),
+    }
+
+
+def _replace_closed_lots(conn: sqlite3.Connection, ldk: str, kind: str,
+                         account_external_id: str,
+                         lots: list[tuple[dict, dict]],
+                         source_sha256: str) -> int:
+    """Replace one document's `closed_lots` rows with `lots`, numbered in
+    print order. Each lot is its closed-lot fields and the payload to
+    keep. Returns the rows written."""
+    conn.execute(
+        "DELETE FROM closed_lots WHERE logical_doc_key = ? AND document_kind = ?",
+        (ldk, kind),
+    )
+    cols = ", ".join(_CLOSED_LOT_FIELDS)
+    marks = ", ".join("?" for _ in _CLOSED_LOT_FIELDS)
+    for idx, (lot, payload) in enumerate(lots):
+        conn.execute(
+            "INSERT INTO closed_lots (logical_doc_key, document_kind,"
+            f" lot_index, account_external_id, {cols}, footnotes,"
+            f" source_sha256, payload) VALUES (?, ?, ?, ?, {marks}, ?, ?, ?)",
+            (ldk, kind, idx, account_external_id,
+             *(lot.get(f) for f in _CLOSED_LOT_FIELDS),
+             ",".join(lot.get("footnotes") or []) or None,
+             source_sha256, canonical_json(payload)),
+        )
+    return len(lots)
+
+
+def _load_realized_reports(conn: sqlite3.Connection, run_dir: Path,
+                           manifest: dict, reparse: bool, stats: dict,
+                           seen_logical_docs: set[tuple]) -> None:
+    """Parse the realized-lot reports (Year-End Summary, Gain/Loss
+    Report; see _REALIZED_REPORT_KINDS) into `closed_lots`, and a Gain/Loss
+    Report's cost-basis methods into `cost_basis_methods`.
+
+    A report is parsed when silver holds no rows for it, or on
+    `--reparse`, and once per invocation (`seen_logical_docs`); each
+    parse replaces the report's rows. A report with no realized lots
+    holds no rows, so a later bronze run that carries it parses it
+    again."""
+    statements_dir = run_dir / "statements"
+    for acct in manifest.get("statements", []):
+        suffix = acct.get("suffix")
+        if not suffix:
+            continue
+        for doc in acct.get("documents", []):
+            filename = doc.get("filename") or ""
+            raw_type = doc.get("type") or ""
+            if _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower()) != "tax_form":
+                continue
+            if _format_from_filename(filename) != "pdf":
+                continue
+            kind = next((k for prefix, k in _REALIZED_REPORT_KINDS
+                         if filename.startswith(prefix)), None)
+            if kind is None:
+                continue
+            doc_date = parse_doc_date(doc.get("date") or "")
+            if doc_date is None:
+                log.warning("report %s has unparseable date %r; skipping",
+                            filename, doc.get("date"))
+                continue
+            seen_key = (suffix, doc_date, kind, filename)
+            if seen_key in seen_logical_docs:
+                continue
+            ldk = _logical_doc_key(suffix, doc_date, filename)
+            held = conn.execute(
+                "SELECT 1 FROM closed_lots WHERE logical_doc_key = ?"
+                " AND document_kind = ?", (ldk, kind),
+            ).fetchone() is not None
+            if held and not reparse:
+                continue
+            path = statements_dir / suffix / filename
+            if not path.is_file():
+                log.warning("report in manifest but missing on disk: %s", path)
+                stats["documents_missing_on_disk"] += 1
+                continue
+            seen_logical_docs.add(seen_key)
+            try:
+                parsed = tf.parse_realized_report_pdf(path, kind)
+            except Exception as e:
+                log.warning("realized-lot report parse failed for %s: %s",
+                            path, e)
+                stats["realized_report_parse_errors"] += 1
+                continue
+            sha256 = doc.get("sha256") or ""
+            if parsed["incomplete"]:
+                log.warning("%s: %d realized lot(s) whose amounts could not "
+                            "be read were left out", ldk, parsed["incomplete"])
+                stats["realized_lots_unreadable"] += parsed["incomplete"]
+            stats["closed_lots_inserted"] += _replace_closed_lots(
+                conn, ldk, kind, suffix,
+                [(lot, lot) for lot in parsed["lots"]], sha256)
+            conn.execute("DELETE FROM cost_basis_methods WHERE logical_doc_key = ?",
+                         (ldk,))
+            for m in parsed.get("methods", []):
+                conn.execute(
+                    "INSERT INTO cost_basis_methods (logical_doc_key,"
+                    " asset_class, account_external_id, as_of_date, tax_year,"
+                    " method, source_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (ldk, m["asset_class"], suffix, doc_date,
+                     parsed["tax_year"], m["method"], sha256),
+                )
 
 
 def _registration_from_tax_forms(conn: sqlite3.Connection,
@@ -1869,6 +2018,7 @@ def run_load(args: argparse.Namespace) -> int:
                         "logical-dup %d, registrations %d, "
                         "acct-numbers %d, pdf errors %d; "
                         "1099-B +%d (pdf-only %d, errors %d), "
+                        "closed lots +%d (unreadable %d, report errors %d), "
                         "distributions +%d (errors %d)",
                         run_dir.name,
                         stats["accounts_inserted"], stats["accounts_deduped"],
@@ -1884,6 +2034,9 @@ def run_load(args: argparse.Namespace) -> int:
                         stats["form_1099b_transactions_inserted"],
                         stats["form_1099b_pdf_only"],
                         stats["form_1099b_parse_errors"],
+                        stats["closed_lots_inserted"],
+                        stats["realized_lots_unreadable"],
+                        stats["realized_report_parse_errors"],
                         stats["distribution_transactions_inserted"],
                         stats["distribution_parse_errors"],
                     )

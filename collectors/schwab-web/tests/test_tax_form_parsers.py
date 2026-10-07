@@ -273,3 +273,245 @@ class TestXmlCsvAgree:
             for field in ("date_sold", "acquired_date", "quantity",
                           "proceeds", "cost_basis", "term", "noncovered"):
                 assert c[field] == x[name][field], (name, field)
+
+
+# ============================================================
+# Realized-lot reports: Year-End Summary and Gain/Loss Report
+# ============================================================
+#
+# Synthetic page text in the line shapes pypdfium2 extracts from the
+# two reports. Invented names, CUSIPs, amounts and dates; XMPL is a
+# made-up ticker.
+
+_YES_COLUMNS = (
+    "Description OR\n"
+    "Option Symbol\n"
+    "CUSIP\n"
+    "Number Quantity/Par\n"
+    "Date\n"
+    "Acquired\n"
+    " Date\n"
+    "Sold Total Proceeds (-)Cost Basis\n"
+    "(+)Wash Sale\n"
+    "Loss Disallowed\n"
+    "(=)Realized\n"
+    "Gain or (Loss)\n"
+)
+
+_YES_TEXT = (
+    "TAX YEAR 2019\n"
+    "YEAR-END SUMMARY\n"
+    "Short-Term Realized Gain or (Loss). . . . . . . . 3\n"
+    "Short-Term Realized Gain or (Loss)\n"
+    " \n"
+    "This section is for covered securities and corresponds to transactions"
+    ' reported on your 1099-B as "cost basis is reported to the IRS."'
+    " Report on Form 8949, Part I, with Box A checked.\n"
+    + _YES_COLUMNS
+    + "EXAMPLE HOLDINGS INC CLASS\n"
+    "A\n"
+    "000000AA1 10.00 01/05/19 03/10/19 $ 1,200.00 $ 1,000.00 -- $ 200.00 \n"
+    "000000AA1 5.00 02/06/19 03/10/19 $ 600.00 $ 650.00 $ 50.00 $ 0.00 \n"
+    "Security Subtotal $ 1,800.00 $ 1,650.00\n"
+    " \n"
+    "$ 50.00 $ 200.00 f\n"
+    "XMPL 09/20/2019 30.00 P 3.00S 06/03/19 07/01/19 $ 750.00 $ 120.00t\n"
+    " -- $ 630.00\n"
+    "Security Subtotal $ 750.00 $ 120.00\n"
+    " \n"
+    "-- $ 630.00 f\n"
+    'Please see the "Endnotes for Your Realized Gain or (Loss)" for an'
+    " explanation of the codes and symbols.\n"
+    "Account Number\n"
+    "0000-0000\n"
+    "A SAMPLE HOLDER\n"
+    "Page 4 of 9\n"
+    "Short-Term Realized Gain or (Loss) (continued)\n"
+    "This section is for covered securities and corresponds to transactions"
+    ' reported on your 1099-B as "cost basis is reported to the IRS."'
+    " Report on Form 8949, Part I, with Box A checked.\n"
+    + _YES_COLUMNS
+    + "SYNTHETIC WIDGETS CORP CLASS A000000BB2 3.00 04/03/19 05/04/19"
+    " $ 90.00 $ 60.00 -- $ 30.00 \n"
+    "Security Subtotal $ 90.00 $ 60.00\n"
+    " \n"
+    "-- $ 30.00 f\n"
+    "Total Short-Term (Covered) $ 2,640.00 $ 1,830.00 $ 50.00 $ 860.00 f\n"
+    "Total Short-Term $ 2,640.00 $ 1,830.00 $ 50.00 $ 860.00 f\n"
+    "Long-Term Realized Gain or (Loss)\n"
+    " \n"
+    "The transactions in this section are not reported on Form 1099-B or to"
+    " the IRS. Report on Form 8949, Part II, with Box F checked.\n"
+    + _YES_COLUMNS
+    + "EXAMPLE TRUST UNITS 000000CC3 7.00 Various 08/08/19 $ 70.00 Missing -- --\n"
+    "Security Subtotal $ 70.00 --\n"
+    "EXAMPLE NOTE 4.5%\n"
+    "000000DD4 1,000.00 01/02/15 09/01/19 $ 1,000.00 $\n"
+    "$\n"
+    "990.00\n"
+    "Total Long-Term $ 1,070.00 -- -- --\n"
+)
+
+
+class TestYearEndSummary:
+    def setup_method(self):
+        self.result = tf.parse_year_end_summary_text(_YES_TEXT)
+        self.lots = self.result["lots"]
+
+    def test_tax_year_and_lot_count(self):
+        assert self.result["tax_year"] == 2019
+        assert len(self.lots) == 5
+        # The bond line whose amounts scatter over several lines is left
+        # out and counted.
+        assert self.result["incomplete"] == 1
+
+    def test_covered_lot_with_a_wrapped_description(self):
+        lot = self.lots[0]
+        assert (lot["security_name"], lot["cusip"], lot["instrument_key"]) == (
+            "EXAMPLE HOLDINGS INC CLASS A", "000000AA1", "000000AA1")
+        assert (lot["quantity"], lot["acquired_date"], lot["disposed_date"],
+                lot["proceeds"], lot["cost_basis"], lot["wash_sale_disallowed"],
+                lot["realized_gain_loss"]) == (
+            10.0, "2019-01-05", "2019-03-10", 1200.0, 1000.0, None, 200.0)
+        assert (lot["term"], lot["covered"], lot["form_8949_box"]) == (
+            "SHORT", 1, "A")
+
+    def test_wash_sale_and_description_shared_by_the_next_lot(self):
+        lot = self.lots[1]
+        # The second lot of a security prints only its CUSIP.
+        assert (lot["security_name"], lot["cusip"]) == (None, "000000AA1")
+        assert (lot["wash_sale_disallowed"], lot["realized_gain_loss"]) == (50.0, 0.0)
+
+    def test_short_option_lot_with_wrapped_amounts(self):
+        lot = self.lots[2]
+        assert lot["instrument_key"] == "XMPL 09/20/2019 30.00 P"
+        assert lot["cusip"] is None
+        assert (lot["quantity"], lot["proceeds"], lot["cost_basis"],
+                lot["wash_sale_disallowed"], lot["realized_gain_loss"]) == (
+            3.0, 750.0, 120.0, None, 630.0)
+        assert lot["footnotes"] == ["S", "t"]
+        assert len(lot["raw_lines"]) == 2
+
+    def test_page_furniture_and_glued_cusip(self):
+        lot = self.lots[3]
+        assert (lot["security_name"], lot["cusip"]) == (
+            "SYNTHETIC WIDGETS CORP CLASS A", "000000BB2")
+        assert (lot["covered"], lot["form_8949_box"]) == (1, "A")
+
+    def test_not_reported_section_with_missing_basis(self):
+        lot = self.lots[4]
+        assert (lot["acquired_date"], lot["cost_basis"], lot["realized_gain_loss"]) == (
+            "Various", None, None)
+        assert (lot["term"], lot["covered"], lot["form_8949_box"]) == ("LONG", None, "F")
+
+    def test_market_discount_column(self):
+        text = _YES_TEXT.replace(
+            "$ 600.00 $ 650.00 $ 50.00 $ 0.00",
+            "$ 600.00 $ 650.00 -- $ 5.00 $ (55.00)")
+        lot = tf.parse_year_end_summary_text(text)["lots"][1]
+        assert (lot["wash_sale_disallowed"], lot["accrued_market_discount"],
+                lot["realized_gain_loss"]) == (None, 5.0, -55.0)
+
+    def test_subtitle_naming_two_boxes(self):
+        assert tf._yes_subtitle(
+            "The transactions in this section are not reported on Form 1099-B"
+            " or to the IRS. Report on Form 8949, in either Part I with Box C"
+            " checked or Part II with Box F checked, as appropriate.") == {
+            "covered": None, "form_8949_box": "C,F"}
+        assert tf._yes_subtitle(
+            "This section is for noncovered securities and corresponds to"
+            " transactions reported on your 1099-B as \"cost basis is available"
+            " but not reported to the IRS.\" Report on Form 8949, Part II, with"
+            " Box E checked.") == {"covered": 0, "form_8949_box": "E"}
+
+
+_GLR_TEXT = (
+    "2022 Year-End Schwab Gain/Loss Report\n"
+    "Accounting Methods: The default accounting\n"
+    "methods used in this report are compliant with IRS\n"
+    "Example Account of\n"
+    "Report Period\n"
+    "Realized Gain or (Loss)\n"
+    "Accounting Method \n"
+    "Mutual Funds: First In First Out \n"
+    "All Other Investments: High Cost \n"
+    "Short-Term Quantity/Par\n"
+    "Acquired/\n"
+    "Opened\n"
+    "Sold/\n"
+    "Closed Total Proceeds Cost Basis\n"
+    "Realized\n"
+    "Gain or (Loss)\n"
+    "EXAMPLE GROWTH ETF: XMPL 10.0000 01/03/22 02/04/22 $500.00 $650.00 t($150.00)\n"
+    "EXAMPLE GROWTH ETF: XMPL 5.0000 01/10/22 02/04/22 $250.00 $200.00 $50.00\n"
+    "Security Subtotal $750.00 $850.00 ($100.00)\n"
+    "PUT EXAMPLE GROWTH $40 EXP\n"
+    "06/17/22: XMPL 220617P00040000 \n"
+    "1.0000 S05/02/22 06/01/22 $300.00 $120.00 $180.00\n"
+    "Security Subtotal $300.00 $120.00 $180.00\n"
+    "Page 3 of 8\n"
+    "A SAMPLE HOLDER\n"
+    "Realized Gain or (Loss) (continued)\n"
+    "Accounting Method \n"
+    "Mutual Funds: First In First Out\n"
+    "All Other Investments: High Cost \n"
+    "Short-Term (continued) Quantity/Par\n"
+    "Closed Total Proceeds Cost Basis\n"
+    "Realized\n"
+    "Gain or (Loss)\n"
+    "SYNTHETIC WARRANTS EXP\n"
+    "07/01/27: XWRT \n"
+    "100.0000 03/01/22 04/01/22 $20.00 $30.00 ($10.00)\n"
+    "Total Short-Term $1,070.00 $1,000.00 $70.00\n"
+    "Long-Term Quantity/Par\n"
+    "Closed Total Proceeds Cost Basis\n"
+    "Realized\n"
+    "Gain or (Loss)\n"
+    "SYNTHETIC BOND FUND: XBND 20.0000 01/04/21 03/01/22 $400.00 $380.00 $20.00\n"
+    "Total Long-Term $400.00 $380.00 $20.00\n"
+    "Total Realized Gain or (Loss) $1,470.00 $1,380.00 $90.00\n"
+    "Contact: Example Desk\n"
+)
+
+
+class TestGainLossReport:
+    def setup_method(self):
+        self.result = tf.parse_gain_loss_report_text(_GLR_TEXT)
+        self.lots = self.result["lots"]
+
+    def test_methods_as_printed(self):
+        assert self.result["methods"] == [
+            {"asset_class": "Mutual Funds", "method": "First In First Out"},
+            {"asset_class": "All Other Investments", "method": "High Cost"},
+        ]
+
+    def test_lots_terms_and_totals(self):
+        assert self.result["tax_year"] == 2022
+        assert self.result["incomplete"] == 0
+        assert [(lot["instrument_key"], lot["term"]) for lot in self.lots] == [
+            ("XMPL", "SHORT"), ("XMPL", "SHORT"),
+            ("XMPL 06/17/2022 40.00 P", "SHORT"),
+            ("XWRT", "SHORT"), ("XBND", "LONG")]
+        assert sum(lot["proceeds"] for lot in self.lots) == 1470.0
+        assert sum(lot["cost_basis"] for lot in self.lots) == 1380.0
+
+    def test_lot_fields(self):
+        lot = self.lots[0]
+        assert (lot["security_name"], lot["quantity"], lot["acquired_date"],
+                lot["disposed_date"], lot["proceeds"], lot["cost_basis"],
+                lot["realized_gain_loss"], lot["footnotes"]) == (
+            "EXAMPLE GROWTH ETF", 10.0, "2022-01-03", "2022-02-04",
+            500.0, 650.0, -150.0, ["t"])
+        # The report prints none of these.
+        assert (lot["wash_sale_disallowed"], lot["covered"],
+                lot["form_8949_box"], lot["cusip"]) == (None, None, None, None)
+
+    def test_short_option_with_a_wrapped_description(self):
+        lot = self.lots[2]
+        assert lot["security_name"] == "PUT EXAMPLE GROWTH $40 EXP 06/17/22"
+        assert (lot["quantity"], lot["acquired_date"], lot["footnotes"]) == (
+            1.0, "2022-05-02", ["S"])
+
+    def test_report_without_lots(self):
+        assert tf.parse_gain_loss_report_text("2022 Year-End Schwab Gain/Loss Report\n") == {
+            "tax_year": 2022, "lots": [], "incomplete": 0, "methods": []}

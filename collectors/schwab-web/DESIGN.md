@@ -111,6 +111,8 @@ those rows.
 | `instruments` | — | api-only (present unless `--no-instruments`) |
 | — | `documents` | web-only. One row per downloaded PDF/XML/CSV, sha256-deduped |
 | — | `open_lots` | web-only. One row per tax lot a statement prints under a holding; see §9.1 |
+| — | `closed_lots` | web-only. One row per realized lot a year-end tax document prints; see §9.2 |
+| — | `cost_basis_methods` | web-only. The cost-basis methods a Gain/Loss Report prints; see §9.3 |
 
 ## 4. Irreconcilable differences (and gold-layer mitigations)
 
@@ -347,11 +349,17 @@ per document kind, parses these into `transactions`:
   each record into the matching transaction's `payload` under `_more`
   (keyed by `_tx_history_row_key`).
 - **1099-Composite XML / CSV** → `source='form_1099b'` (the 1099-B
-  sale lots; see §6a). XML preferred over the CSV twin; the PDF copy
-  stays an opaque document.
+  sale lots; see §6a). XML preferred over the CSV twin. The lots also
+  land in `closed_lots` (§9.2).
 - **3rd-Party-Distribution letters** (the `Letters` doc kind) →
   `source='third_party_distribution'` (securities + cash transfers
   out; see §6b).
+
+Two more passes fill the lot tables rather than `transactions`: the
+statement pass writes `open_lots` (§9.1), and the realized-lot reports
+(the Year-End Summary, inside the 1099 Composite PDF or on its own,
+and the Gain/Loss Report) fill `closed_lots` and `cost_basis_methods`
+(§9.2, §9.3).
 
 ### 6a. 1099-B sale lots (`source='form_1099b'`)
 
@@ -364,8 +372,9 @@ position delta rather than as an activity row. Parsed by
 - **Format precedence.** Schwab ships the form as PDF + XML + CSV
   twins sharing one base filename. We prefer the **XML** (OFX-2.x,
   cleaner per-field structure, an explicit `DTVAR` "Various" flag, a
-  `TAXYEAR` element), fall back to the **CSV**, and leave the PDF as
-  an opaque document. The `logical_doc_key` keys on the **base
+  `TAXYEAR` element) and fall back to the **CSV**. The PDF's 1099-B
+  pages are not read; its Year-End Summary half is (§9.2). The
+  `logical_doc_key` keys on the **base
   filename without extension**, so the XML and CSV twins dedup to one
   set of rows (whichever is parsed first wins; `--reparse` clears all
   formats at once).
@@ -607,3 +616,58 @@ The statement passes write `open_lots` together with the holdings. A
 re-parse of a statement replaces its lots. A moved parser generation
 purges the table with the other statement tables (migration 0005), and
 the re-walk refills it.
+
+### 9.2 Closed lots (migration 0007)
+
+`closed_lots` holds one row per realized lot that a year-end tax
+document prints. `document_kind` names the document:
+
+- `form_1099b`: the 1099-B lots of the 1099 Composite XML or CSV
+  (§6a). The same parse writes the `form_1099b` rows of
+  `transactions`, which stay as they are.
+- `year_end_summary`: the "Realized Gain or (Loss)" sections of the
+  Year-End Summary. It is a PDF of its own, or the second half of the
+  1099 Composite PDF. Its sections "not reported on Form 1099-B" carry
+  the basis the 1099-B leaves out.
+- `gain_loss_report`: the Year-End Gain/Loss Report. It also lists the
+  realized lots of accounts that get no 1099-B.
+
+A row carries the security as printed (`security_name`, and `cusip`
+where the document prints one). `instrument_key` is the CUSIP, the
+ticker, or an option's contract in the form the statements use
+(`XMPL 01/16/2026 50.00 C`). The lot's figures are as printed:
+quantity, acquired and disposed dates, proceeds, cost basis, wash sale
+disallowed, market discount and realized gain. `term` is `SHORT` or
+`LONG`. NULL means the document does not print the figure:
+
+- a 1099-B row prints no realized gain;
+- a Gain/Loss Report prints no wash sale, market discount, covered
+  flag or Form 8949 box;
+- the Year-End Summary prints "Missing" for an unknown basis, and the
+  1099-B prints a placeholder 0.00 that silver nulls (§6a).
+
+`covered` comes from the 1099-B's noncovered flag, or from the
+subtitle of a Year-End Summary section. A section "not reported on
+Form 1099-B" does not say, so its lots carry NULL. `form_8949_box` is
+the box as printed; a section that names two boxes gives `C,F`.
+`acquired_date` is ISO, or `Various` as printed. A short sale keeps
+its printed, unsigned quantity and carries the endnote `S`.
+
+The same lot can appear in several documents: a 1099-B lot is also in
+that year's Year-End Summary, and a corrected 1099 repeats the
+original. Silver keeps every copy, keyed by the document's
+`logical_doc_key`. Gold reconciles them.
+
+Every parse of a document replaces its rows. A Year-End Summary or
+Gain/Loss Report is parsed once per load, when silver holds no rows
+for it or on `--reparse`. A lot line whose amounts do not read as
+amounts is left out, with a warning and a count in the load log. A
+Year-End Summary bond line that prints an adjusted basis can scatter
+its amounts over several lines this way.
+
+### 9.3 Cost-basis methods (migration 0007)
+
+A Gain/Loss Report prints the account's cost-basis methods above its
+lots, one line per asset class, such as "Mutual Funds: First In First
+Out". `cost_basis_methods` keeps them as printed, with the report's
+document date as `as_of_date` and its tax year.

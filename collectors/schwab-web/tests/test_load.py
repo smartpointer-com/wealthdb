@@ -2192,3 +2192,170 @@ def test_a_silver_loaded_before_open_lots_gains_them_on_the_next_load(
             (as_of, "XMPL", 0, 10.0, 100.0, "2022-03-15", "LONG")]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Realized lots (migration 0007): 1099-B lots, Year-End Summary and Gain/Loss
+# Report sections into closed_lots, and a Gain/Loss Report's cost-basis
+# methods into cost_basis_methods.
+# ---------------------------------------------------------------------------
+
+_MINI_YES_TEXT = (
+    "TAX YEAR 2021\n"
+    "Short-Term Realized Gain or (Loss)\n"
+    "This section is for covered securities and corresponds to transactions"
+    " reported on your 1099-B. Report on Form 8949, Part I, with Box A checked.\n"
+    "Description OR\n"
+    "Gain or (Loss)\n"
+    "SYNTH BETA INC 000000BB2 50.00 Various 06/15/21 $ 1,000.00 $ 500.00 -- $ 500.00 \n"
+    "Total Short-Term $ 1,000.00 $ 500.00 -- $ 500.00\n"
+    "Long-Term Realized Gain or (Loss)\n"
+    "The transactions in this section are not reported on Form 1099-B or to"
+    " the IRS. Report on Form 8949, Part II, with Box F checked.\n"
+    "Description OR\n"
+    "Gain or (Loss)\n"
+    "SYNTH OMEGA LTD 000000OO9 4.00 01/04/10 10/01/21 $ 80.00 $ 20.00 -- $ 60.00 \n"
+    "Total Long-Term $ 80.00 $ 20.00 -- $ 60.00\n"
+)
+
+_MINI_GLR_TEXT = (
+    "2021 Year-End Schwab Gain/Loss Report\n"
+    "Realized Gain or (Loss)\n"
+    "Accounting Method \n"
+    "Mutual Funds: First In First Out \n"
+    "All Other Investments: High Cost \n"
+    "Long-Term Quantity/Par\n"
+    "Gain or (Loss)\n"
+    "SYNTH OMEGA LTD: XOMG 4.0000 01/04/10 10/01/21 $80.00 $20.00 $60.00\n"
+    "Total Long-Term $80.00 $20.00 $60.00\n"
+)
+
+
+def _closed_lots(conn):
+    return conn.execute(
+        "SELECT document_kind, lot_index, security_name, instrument_key,"
+        " quantity, acquired_date, disposed_date, proceeds, cost_basis,"
+        " realized_gain_loss, term, covered, form_8949_box, tax_year"
+        " FROM closed_lots ORDER BY document_kind, logical_doc_key, lot_index"
+    ).fetchall()
+
+
+class TestClosedLotsLoad:
+    _YES = "1099-Composite-and-Year-End-Summary---2021_2022-02-09_999.PDF"
+    _GLR = "Year-End-Gain-Loss-Reporting---2021_2022-01-26_999.PDF"
+
+    def _bronze(self, tmp_path, run_ts="20260520T120000Z"):
+        return _make_doc_bronze(tmp_path, run_ts, "999", [
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-X999.XML", "content": _MINI_1099B_XML},
+            {"date": "02/09/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": self._YES, "content": f"%PDF-1.4 stub {self._YES}\n"},
+            {"date": "01/26/2022", "type": "Tax Forms",
+             "document": "Year End Gain Loss Reporting - 2021",
+             "filename": self._GLR, "content": f"%PDF-1.4 stub {self._GLR}\n"},
+        ])
+
+    @staticmethod
+    def _patch_pdf_text(monkeypatch, calls=None):
+        def text(path):
+            if calls is not None:
+                calls.append(Path(path).name)
+            return (_MINI_GLR_TEXT if "Gain-Loss" in str(path)
+                    else _MINI_YES_TEXT)
+        monkeypatch.setattr(load.tf, "extract_text_pdfium", text)
+
+    def test_a_1099b_lot_lands_in_transactions_and_closed_lots(
+            self, monkeypatch, migrated, tmp_path):
+        self._patch_pdf_text(monkeypatch)
+        stats = load.load_run(migrated, self._bronze(tmp_path), workers=1)
+        migrated.commit()
+        assert stats["form_1099b_transactions_inserted"] == 2
+        assert stats["closed_lots_inserted"] == 5
+        rows = [r for r in _closed_lots(migrated) if r[0] == "form_1099b"]
+        assert rows == [
+            ("form_1099b", 0, "SYNTH ALPHA CORP", None, 100.0, "2010-01-04",
+             "2021-10-01", 3000.0, 100.0, None, "LONG", 1, "D", 2021),
+            ("form_1099b", 1, "SYNTH BETA INC", None, 50.0, "Various",
+             "2021-06-15", 1000.0, 500.0, None, "SHORT", 1, "B", 2021),
+        ]
+        # The same sale also prints in the Year-End Summary; silver keeps both.
+        yes = [r for r in _closed_lots(migrated) if r[0] == "year_end_summary"]
+        assert [(r[2], r[3], r[8], r[9], r[11], r[12]) for r in yes] == [
+            ("SYNTH BETA INC", "000000BB2", 500.0, 500.0, 1, "A"),
+            ("SYNTH OMEGA LTD", "000000OO9", 20.0, 60.0, None, "F"),
+        ]
+        glr = [r for r in _closed_lots(migrated) if r[0] == "gain_loss_report"]
+        assert [(r[3], r[8], r[10], r[13]) for r in glr] == [("XOMG", 20.0, "LONG", 2021)]
+
+    def test_methods_land_in_cost_basis_methods(self, monkeypatch, migrated, tmp_path):
+        self._patch_pdf_text(monkeypatch)
+        load.load_run(migrated, self._bronze(tmp_path), workers=1)
+        migrated.commit()
+        rows = migrated.execute(
+            "SELECT account_external_id, as_of_date, tax_year, asset_class, method"
+            " FROM cost_basis_methods ORDER BY asset_class").fetchall()
+        as_of = load.parse_doc_date("01/26/2022")
+        assert rows == [("999", as_of, 2021, "All Other Investments", "High Cost"),
+                        ("999", as_of, 2021, "Mutual Funds", "First In First Out")]
+
+    def test_a_report_is_parsed_once_and_replaced_on_reparse(
+            self, monkeypatch, migrated, tmp_path):
+        calls: list[str] = []
+        self._patch_pdf_text(monkeypatch, calls)
+        load.load_run(migrated, self._bronze(tmp_path), workers=1)
+        # A later run that carries the same reports leaves them alone.
+        load.load_run(migrated, self._bronze(tmp_path, "20260521T120000Z"),
+                      workers=1)
+        assert sorted(calls) == sorted([self._YES, self._GLR])
+        n = len(_closed_lots(migrated))
+        load.load_run(migrated, self._bronze(tmp_path, "20260522T120000Z"),
+                      reparse=True, workers=1)
+        migrated.commit()
+        assert len(_closed_lots(migrated)) == n == 5
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM cost_basis_methods").fetchone()[0] == 2
+
+    def test_unreadable_lots_are_counted(self, monkeypatch, migrated, tmp_path):
+        broken = _MINI_YES_TEXT.replace(
+            "$ 80.00 $ 20.00 -- $ 60.00 \n", "$ 80.00 $\n")
+        monkeypatch.setattr(load.tf, "extract_text_pdfium", lambda path: broken)
+        stats = load.load_run(migrated, self._bronze(tmp_path), workers=1)
+        assert stats["realized_lots_unreadable"] == 1
+
+
+def test_0007_backfills_1099b_lots_from_transactions(conn, tmp_path):
+    early = tmp_path / "m"
+    early.mkdir()
+    for f in sorted(MIGRATIONS_DIR.glob("000[1-6]_*.sql")):
+        (early / f.name).write_text(f.read_text())
+    load.apply_migrations(conn, early)
+    row = {"date": "2021-06-15", "date_sold": "2021-06-15", "kind": "Sale",
+           "security_name": "SYNTH BETA INC", "quantity": 50.0,
+           "acquired_date": "Various", "proceeds": 1000.0, "cost_basis": None,
+           "cost_basis_raw": 0.0, "basis_not_shown": True, "noncovered": True,
+           "wash_sale_disallowed": None, "accrued_market_discount": 0.0,
+           "term": "SHORT", "form_8949_code": "B", "tax_year": 2021}
+    for i, r in enumerate((row, dict(row, security_name="SYNTH ALPHA CORP",
+                                     noncovered=False, cost_basis=10.0))):
+        conn.execute(
+            "INSERT INTO transactions (activity_id, timestamp,"
+            " account_external_id, kind, source, source_sha256,"
+            " logical_doc_key, payload)"
+            " VALUES (?, 1623715200, '999', 'Sale', 'form_1099b', 'sha1',"
+            " '999|1644883200|XXXX-X999', ?)",
+            (f"id{i}", load.canonical_json(r)))
+    load.apply_migrations(conn, MIGRATIONS_DIR)
+    assert _closed_lots(conn) == [
+        ("form_1099b", 0, "SYNTH BETA INC", None, 50.0, "Various",
+         "2021-06-15", 1000.0, None, None, "SHORT", 0, "B", 2021),
+        ("form_1099b", 1, "SYNTH ALPHA CORP", None, 50.0, "Various",
+         "2021-06-15", 1000.0, 10.0, None, "SHORT", 1, "B", 2021),
+    ]
+    # The backfilled payload is the transaction's, which is what a
+    # re-parse writes too.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM closed_lots c JOIN transactions t"
+        " ON t.logical_doc_key = c.logical_doc_key AND t.payload = c.payload"
+    ).fetchone()[0] == 2

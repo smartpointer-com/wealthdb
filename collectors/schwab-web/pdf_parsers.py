@@ -582,7 +582,7 @@ _NEW_TX_ROW_STOP_RE = re.compile(
     r"|Endnotes\b"
     r")"
     # Catch the custodial-header line by content marker.
-    r"|.*\b(?:FBO|CUST\s+FOR|UCA?UTMA|UCAUGMA|UTMA|UGMA)\b",
+    r"|.*\b(?:FBO|CUST\s+FOR|U?[A-Z]{2}U[TG]MA|U[TG]MA)\b",
     re.IGNORECASE,
 )
 # Cap on the block's joined-line length before _parse_new_tx_block
@@ -809,9 +809,10 @@ _LEGACY_TX_ROW_STOP_RE = re.compile(
     r"|©"  # copyright line
     r")"
     # Also stop on any line containing custodial-header markers
-    # ("FBO" / "CUST FOR" / "UCAUTMA") anywhere — Schwab emits
-    # them as the FIRST page-header line for ESA / UTMA accounts.
-    r"|.*\b(?:FBO|CUST\s+FOR|UCA?UTMA|UCAUGMA|UTMA|UGMA)\b",
+    # ("FBO" / "CUST FOR" / a state-coded "<state>UTMA" or
+    # "<state>UGMA", for any state) anywhere — Schwab emits them as
+    # the FIRST page-header line for ESA / UTMA / UGMA accounts.
+    r"|.*\b(?:FBO|CUST\s+FOR|U?[A-Z]{2}U[TG]MA|U[TG]MA)\b",
     re.IGNORECASE,
 )
 # Belt-and-suspenders cap. A legitimate transaction description in
