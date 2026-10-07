@@ -189,6 +189,32 @@ def _norm_blank(s: str) -> str | None:
     return s or None
 
 
+def _csv_number(s: str) -> float | None:
+    """A CSV figure as a float, or None when the cell states none.
+
+    A blank cell, or one without a digit (a placeholder such as "--"),
+    is None. A decimal comma reads as a point, as for Net Amount.
+    """
+    s = s.strip()
+    if not any(ch.isdigit() for ch in s):
+        return None
+    return float(s.replace(",", "."))
+
+
+def _csv_unit_price(s: str) -> tuple[float | None, str | None]:
+    """The "Unit price" cell as (price, price_quote).
+
+    The export marks a price in percent of nominal (a bond trade) with
+    a trailing "%". The quote is None when the cell states no price.
+    """
+    s = s.strip()
+    percent = s.endswith("%")
+    price = _csv_number(s.removesuffix("%"))
+    if price is None:
+        return None, None
+    return price, "percent" if percent else "unit"
+
+
 def parse_transactions_csv(path: Path) -> list[dict]:
     """Read one transactions_NNN.csv into a list of row dicts."""
     with path.open("r", encoding="utf-8", newline="") as fh:
@@ -249,6 +275,7 @@ def load_transactions_csv(
         currency = r["Currency"].strip()
         # Net Amount: signed decimal, no thousands separator.
         net_amount = float(r["Net Amount"].replace(",", "."))
+        unit_price, price_quote = _csv_unit_price(r["Unit price"])
         payload = canonical_json({
             "date_raw": r["Date"],
             "order_num_raw": r["Order #"],
@@ -267,11 +294,17 @@ def load_transactions_csv(
         conn.execute(
             "INSERT INTO transactions("
             " account_external_id, occurred_at, transaction_type,"
-            " order_num, isin, symbol, currency, net_amount, payload) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            " order_num, isin, symbol, currency, net_amount,"
+            " quantity, unit_price, price_quote, fees, accrued_interest,"
+            " payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
             (
                 customer_id, occurred_at, r["Transaction"].strip(),
-                order_num, isin, symbol, currency, net_amount, payload,
+                order_num, isin, symbol, currency, net_amount,
+                _csv_number(r["Quantity"]), unit_price, price_quote,
+                _csv_number(r["Costs"]),
+                _csv_number(r["Accrued Interest"]),
+                payload,
             ),
         )
         n += 1
@@ -302,6 +335,16 @@ def _xls_row(sheet, r: int) -> list:
 
 def _strip_cells(row: list) -> list:
     return [c.strip() if isinstance(c, str) else c for c in row]
+
+
+def _xls_number(v) -> float | None:
+    """An XLS cell as a float, or None when the cell holds no number.
+
+    xlrd returns a number cell as float and a blank one as ''.
+    """
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    return None
 
 
 def _trim_trailing_blanks(cells: list) -> list:
@@ -449,6 +492,7 @@ def parse_portfolio_performance(pdf_path: Path) -> dict:
             "quantity":       <float>,
             "avg_price":      <float>,
             "market_price":   <float>,
+            "price_quote":    "unit" | "percent",   # "%" on the prices
             "price_date":     "YYYY-MM-DD",
             "valuation_chf":  <float>,
             "account_pct":    <float>,
@@ -582,6 +626,15 @@ def _pp_parse_asset_allocation(layout_text: str, pdf_path: Path) -> list[dict]:
         avg_price_raw, market_price_raw, price_date_raw = tail_tokens[:3]
         valuation_raw, pct_raw = tail_tokens[3], tail_tokens[4]
 
+        # A price printed with "%" is in percent of nominal (a bond).
+        # The two prices of a row share one quote.
+        percent = avg_price_raw.endswith("%")
+        if percent != market_price_raw.endswith("%"):
+            raise SystemExit(
+                f"{pdf_path}: average and market price of {isin} are "
+                f"quoted differently: {line!r}"
+            )
+
         md = _PP_DATE_RE.match(price_date_raw)
         if not md:
             raise SystemExit(
@@ -598,6 +651,7 @@ def _pp_parse_asset_allocation(layout_text: str, pdf_path: Path) -> list[dict]:
             "quantity": quantity,
             "avg_price": _pp_to_number(avg_price_raw),
             "market_price": _pp_to_number(market_price_raw),
+            "price_quote": "percent" if percent else "unit",
             "price_date": price_date,
             "valuation_chf": _pp_to_number(valuation_raw),
             "account_pct": _pp_to_number(pct_raw),
@@ -666,14 +720,20 @@ def load_portfolio_performance_docs(
                 # value. wealthdb-side joins should key on ISIN.
                 symbol = pos["name"]
                 currency = pos["currency"] or ""
-                payload = canonical_json(pos)
+                # price_quote is a column only; the payload keeps
+                # the parsed row without it.
+                fields = {k: v for k, v in pos.items() if k != "price_quote"}
+                # The statement states no P&L, and its CHF valuation
+                # includes accrued interest, so the CHF columns stay
+                # NULL.
                 conn.execute(
                     "INSERT INTO positions("
                     " snapshot_at, account_external_id, symbol, currency,"
-                    " name, isin, payload, source) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                    " name, isin, average_cost, price_quote, payload, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     (snapshot_at, account_id, symbol, currency,
-                     pos["name"], pos["isin"], payload, source_tag),
+                     pos["name"], pos["isin"], pos["avg_price"],
+                     pos["price_quote"], canonical_json(fields), source_tag),
                 )
             conn.execute("COMMIT;")
             loaded += 1
@@ -712,12 +772,17 @@ def load_positions(
         name = match.get("name")
         isin = match.get("isin")
         payload = canonical_json(r)
+        # The export prints every price per unit; a bond's unit is one
+        # unit of nominal.
         conn.execute(
             "INSERT INTO positions("
             " snapshot_at, account_external_id, symbol, currency,"
-            " name, isin, payload) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?);",
-            (snapshot_at, customer_id, symbol, currency, name, isin, payload),
+            " name, isin, average_cost, price_quote,"
+            " market_value_chf, unrealized_gain_loss_chf, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'unit', ?, ?, ?);",
+            (snapshot_at, customer_id, symbol, currency, name, isin,
+             _xls_number(r["unit_cost"]), _xls_number(r["total_value_chf"]),
+             _xls_number(r["pl_nominal_chf"]), payload),
         )
         n += 1
     return n

@@ -89,6 +89,20 @@ class PortfolioPerformanceParserTests(unittest.TestCase):
         # Name with diacritics and euro sign must survive cleanly.
         self.assertEqual(by_isin["XX0000000003"]["name"], "Fonds Société Fictive €")
 
+    def test_price_quote_from_percent_marker(self):
+        rows = load._pp_parse_asset_allocation(
+            SYNTHETIC_ASSET_ALLOCATION, Path("synthetic.pdf"),
+        )
+        quotes = {r["isin"]: r["price_quote"] for r in rows}
+        self.assertEqual(quotes["XX0000000001"], "percent")
+        self.assertEqual(quotes["XX0000000002"], "unit")
+
+    def test_mixed_price_quote_fails(self):
+        # One price in percent, the other per unit: the row is not read.
+        text = SYNTHETIC_ASSET_ALLOCATION.replace("101.000%", "101.000")
+        with self.assertRaises(SystemExit):
+            load._pp_parse_asset_allocation(text, Path("synthetic.pdf"))
+
     def test_cash_rows_excluded(self):
         rows = load._pp_parse_asset_allocation(
             SYNTHETIC_ASSET_ALLOCATION, Path("synthetic.pdf"),

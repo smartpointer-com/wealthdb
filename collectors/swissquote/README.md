@@ -422,7 +422,7 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 
 Parses one or more bronze dump directories (as produced by
 `download.py`) and inserts them into a SQLite silver database.
-The schema is defined in `migrations/` (0001–0005); the loader
+The schema is defined in `migrations/` (0001–0006); the loader
 applies any pending migrations on startup before loading data, so
 the silver database is always at the latest schema version.
 
@@ -558,6 +558,39 @@ Unicode-aware `\w`. A label the regex can't parse (e.g. one
 starting with a lowercase letter like "ePrivate Banking") is logged
 as a warning at scrape time and is absent from `accounts`, so
 `account_product` falls back to `''`.
+
+## Silver: cost-basis columns
+
+`positions` and `transactions` carry the figures a cost-basis
+reader needs as columns (migration 0006). Each column holds the
+source's figure as printed. Nothing is converted or rescaled. NULL
+means the source states no figure. The `payload` keeps the full row.
+
+`positions`:
+
+- `average_cost` is the cost per unit, in the row's currency. A live
+  row takes the export's "Unit cost". A statement row takes the
+  Portfolio Performance "Average price".
+- `price_quote` says how the row's prices are quoted: `unit`, or
+  `percent` of nominal. The statement prints bond prices in percent.
+  The live export prints every price per unit; a bond's unit is one
+  unit of nominal.
+- `market_value_chf` and `unrealized_gain_loss_chf` are the export's
+  "Total value CHF" and "P&L Nominal CHF". Their difference is the
+  position's CHF cost at the FX rates of its purchases.
+- Statement rows leave the two CHF columns NULL. The statement states
+  no P&L. Its CHF valuation includes a bond's accrued interest and
+  stays in `payload`.
+
+`transactions` takes these from the CSV export, on every row type:
+
+- `quantity`, `unit_price` and `accrued_interest`, as printed.
+- `price_quote`: `percent` when the export marks the unit price with
+  "%" (a bond trade), `unit` otherwise, NULL with no unit price.
+- `fees`: the export's "Costs" cell.
+
+A blank cell, or a placeholder with no digit, is NULL. A printed zero
+stays 0.
 
 ## Gold integration
 
