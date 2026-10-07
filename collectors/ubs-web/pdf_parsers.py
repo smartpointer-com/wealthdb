@@ -1,6 +1,6 @@
 """PDF parsers for UBS Switzerland statement archive.
 
-Both parsers are built on pdfplumber's `extract_text()`:
+The parsers are built on pdfplumber's text and word extraction:
 
   parse_statement_of_assets(pdf_path, doc_token, label)
       → list of position snapshots from one Statement-of-assets PDF.
@@ -9,8 +9,13 @@ Both parsers are built on pdfplumber's `extract_text()`:
       → (cash-balance rows, movement rows) from one Account-Statement
         PDF — opened once and laid out for both passes.
 
-Both return plain dicts ready for the loader to insert into the
-silver `historical_*` tables.
+  parse_maturity_notice / parse_payment_advice
+      → a mortgage's outstanding principal; a payment's movement row.
+
+  parse_capital_call / parse_contract_note
+      → the price a holding was bought at, for the `advices` table.
+
+Each returns plain dicts ready for the loader to insert into silver.
 
 Parsing strategy: PDF tables in UBS statements are not real PDF
 tables (no row / column structure for pdfplumber to detect — see
@@ -212,21 +217,60 @@ _SECURITY_HEADLINE_RE = re.compile(
 
 # Private-markets / alternatives headline. Same outer column anchors
 # as _SECURITY_HEADLINE_RE, but the middle pricing block differs:
-# UBS-sponsored Private Markets funds and SPV interests carry a single
-# exchange rate (or the literal "n.a.") where listed securities print
-# the cost-price / market-price / market-gain triple. Synthetic
-# examples of the two forms:
-#   "1 000 Example PE Fund   USD  1.0500  12 345  5.00"
-#   "2 000 Example PE Fund   USD  n.a.    0        0.00"
+# UBS-sponsored Private Markets funds and SPV interests print a single
+# figure (or the literal "n.a.") where listed securities print the
+# cost-price / market-price / market-gain triple. That figure is the
+# market price, the fund's NAV per unit: units × price is the market
+# value. Synthetic examples of the two forms:
+#   "1 000 Example PE Fund   USD  1.0500  1 050  5.00"
+#   "2 000 Example PE Fund   USD  n.a.    0      0.00"
 # The first form is the funded "Outstanding Shares" holding (real
 # NAV in market_value); the "n.a." form is a Net/Unfunded Commitment
 # tracking row with a 0 market value. Tried only as a fallback after
 # _SECURITY_HEADLINE_RE so listed-security parsing is unchanged.
 _PM_HEADLINE_RE = re.compile(
     r"^\s*(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
-    r"(?P<ccy>[A-Z]{3})\s+(?P<rate>n\.a\.|[\d\s']+\.\d+)\s+"
+    r"(?P<ccy>[A-Z]{3})\s+(?P<price>n\.a\.|[\d\s']+\.\d+)\s+"
     r"(?P<market_value>-?[\d\s']+)\s+(?P<pct_na>-?\d+\.\d{2})\s*$"
 )
+
+# A holding prints up to four lines. The column header names what each
+# line carries on the right-hand side:
+#
+#   Number/Amount Description … Cost price  Market price Market gain Market value % NA
+#   Sector         Exchange rate Exchange rate Exchange gain Accrued interest
+#   Duration       Cost value    Market price date Unrealized P/L
+#   Yield          Last purchase
+#
+# The headline regexes above read line 1. The lines below it share the
+# left-hand side with the wrapped description, the sector, and the
+# distribution notes, so each is read from its right end (synthetic
+# example of a holding in a currency other than the portfolio's):
+#
+#   "1 000 Reg.shs Example AG  GBP 20.000000 25.00 25.00% 32 500 4.50"
+#   "(XMPL) All sectors 1.25000 1.30000 4.00%"
+#   "Distribution: 01.06.2030 25 000 30.00%"
+#   "Distribution amount: GBP 0.5 2.00% DY 15.03.2030"
+#
+# Line 2 carries the two exchange rates only when the holding's currency
+# differs from the portfolio's: the average buy rate, then the current
+# one. Line 3 carries the cost value (the units at their average cost,
+# converted at the average buy rate, in the portfolio's currency), an
+# optional market-price date, and the unrealized P/L as a percentage of
+# the cost value. Line 4 ends in the last purchase date where the
+# statement prints one.
+_HOLDING_FX_RE = re.compile(
+    r"(?:^|\s)(?P<acquisition>\d+\.\d+)\s+(?P<current>\d+\.\d+)\s+"
+    r"-?\d+\.\d+%(?:\s+-?\d{1,3}(?:[ ']\d{3})*(?:\.\d+)?)?\s*$"
+)
+_HOLDING_COST_RE = re.compile(
+    r"(?:^|\s)(?P<cost>-?\d{1,3}(?:[ ']\d{3})*)\s+"
+    r"(?:\d{2}\.\d{2}\.\d{4}\s+)?(?P<pl>-?\d+\.\d+)%\s*$"
+)
+_TRAILING_DATE_RE = re.compile(r"(?:^|\s)(?P<date>\d{2}\.\d{2}\.\d{4})\s*$")
+# A distribution's ex-date, printed in the left-hand column of any line
+# below the headline. Its date is the label's, never the last purchase.
+_DISTRIBUTION_DATE_RE = re.compile(r"^\s*Distribution:\s+\d{2}\.\d{2}\.\d{4}")
 
 # Overview asset-class line for a portfolio whose securities have no
 # Detailed-positions page of their own (UBS does not issue a
@@ -328,21 +372,15 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
         if im and pending_cash is not None:
             iban = im["iban"].replace(" ", "")
             results.append({
-                "as_of_date": label_meta["as_of_date"],
-                "portfolio_external_id": psn_portfolio,
+                **_position_row(label_meta["as_of_date"], psn_portfolio,
+                                base_ccy, doc_token),
                 "account_external_id": iban,
                 "instrument_isin": None,
                 "currency_iso": pending_cash["ccy"],
                 "units": pending_cash["units"],
                 "market_value": pending_cash["market_value"],
-                "market_value_currency": base_ccy,
-                "cost_price": None,
-                "market_price": None,
-                "accrued_interest": None,
-                "exchange_rate_to_base": pending_cash["fx"],
+                "current_fx_rate": pending_cash["fx"],
                 "description": pending_cash["desc"],
-                "sector": None,
-                "source_doc_token": doc_token,
                 "payload": json.dumps({"raw": pending_cash, "iban_line": line.strip()}),
             })
             pending_cash = None
@@ -352,25 +390,31 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
     # listed-security row (_SECURITY_HEADLINE_RE) or a private-markets
     # row (_PM_HEADLINE_RE); the listed form is tried first so its
     # parsing is unchanged. We keep the CLOSEST match above the ISIN
-    # line, of either kind, so adjacent blocks don't cross-attribute. ---
+    # line, of either kind, and never look past the previous holding's
+    # own Valor/ISIN line: a holding whose headline does not match is
+    # left out rather than given the headline of the one above it. ---
+    block_start = 0
     for i, line in enumerate(section):
         vi = _VALOR_ISIN_RE.match(line)
         if not vi:
             continue
         isin = vi["isin"]
         headline = None
+        headline_at = None
         headline_is_pm = False
         sector = None
-        for j in range(max(0, i - 10), i):
+        for j in range(max(block_start, i - 10), i):
             prev = section[j]
             hm = _SECURITY_HEADLINE_RE.match(prev)
             if hm:
                 headline = hm
+                headline_at = j
                 headline_is_pm = False
             else:
                 pm = _PM_HEADLINE_RE.match(prev)
                 if pm:
                     headline = pm
+                    headline_at = j
                     headline_is_pm = True
             # Sector lives on the second line of a listed-security row,
             # usually right after the description (e.g. 'Financials',
@@ -383,65 +427,45 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
                     ch.isdigit() for ch in stripped.split()[-1]
                 ) and len(stripped) < 50:
                     sector = stripped
+        block_start = i + 1
         if headline is None:
             continue
-
-        if headline_is_pm:
-            mv = _to_float(headline["market_value"])
-            # Skip Net/Unfunded Commitment tracking rows: they print
-            # an 'n.a.' price and a 0 market value. The funded
-            # "Outstanding Shares" row carries the real NAV.
-            if not mv:
-                continue
-            rate = (None if headline["rate"] == "n.a."
-                    else _to_float(headline["rate"]))
-            results.append({
-                "as_of_date": label_meta["as_of_date"],
-                "portfolio_external_id": psn_portfolio,
-                "account_external_id": "",
-                "instrument_isin": isin,
-                "currency_iso": headline["ccy"],
-                "units": _to_float(headline["units"]),
-                "market_value": mv,
-                "market_value_currency": base_ccy,
-                "cost_price": None,
-                "market_price": None,
-                "accrued_interest": None,
-                "exchange_rate_to_base": rate,
-                "description": headline["desc"].strip(),
-                "sector": None,
-                "source_doc_token": doc_token,
-                "payload": json.dumps({
-                    "valor": vi["valor"],
-                    "isin": isin,
-                    "kind": "private_market",
-                    "headline": headline.group(),
-                }),
-            })
+        market_value = _to_float(headline["market_value"])
+        # Skip Net/Unfunded Commitment tracking rows: they print an
+        # 'n.a.' price and a 0 market value. The funded "Outstanding
+        # Shares" row carries the real NAV.
+        if headline_is_pm and not market_value:
             continue
-
-        results.append({
-            "as_of_date": label_meta["as_of_date"],
-            "portfolio_external_id": psn_portfolio,
-            "account_external_id": "",
+        row = {
+            **_position_row(label_meta["as_of_date"], psn_portfolio,
+                            base_ccy, doc_token),
+            **_holding_detail(section[headline_at + 1:i], market_value,
+                              private_market=headline_is_pm),
             "instrument_isin": isin,
             "currency_iso": headline["ccy"],
             "units": _to_float(headline["units"]),
-            "market_value": _to_float(headline["market_value"]),
-            "market_value_currency": base_ccy,
-            "cost_price": _to_float(headline["cost_price"]),
-            "market_price": _to_float(headline["market_price"]),
-            "accrued_interest": None,
-            "exchange_rate_to_base": None,
+            "market_value": market_value,
             "description": headline["desc"].strip(),
-            "sector": sector,
-            "source_doc_token": doc_token,
-            "payload": json.dumps({
+        }
+        if headline_is_pm:
+            row["market_price"] = (None if headline["price"] == "n.a."
+                                   else _to_float(headline["price"]))
+            row["payload"] = json.dumps({
+                "valor": vi["valor"],
+                "isin": isin,
+                "kind": "private_market",
+                "headline": headline.group(),
+            })
+        else:
+            row["cost_price"] = _to_float(headline["cost_price"])
+            row["market_price"] = _to_float(headline["market_price"])
+            row["sector"] = sector
+            row["payload"] = json.dumps({
                 "valor": vi["valor"],
                 "isin": isin,
                 "headline": headline.group(),
-            }),
-        })
+            })
+        results.append(row)
 
     # --- Overview-only asset classes: precious metals / commodities.
     # UBS issues no Detailed-positions page for some portfolio types,
@@ -461,6 +485,117 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
             full_text, label_meta, branch, base, base_ccy, doc_token))
 
     return results
+
+
+def _position_row(as_of_date: int, portfolio: str, base_ccy: str | None,
+                  doc_token: str) -> dict:
+    """A `historical_position_snapshots` row with every column the
+    statement may leave unprinted set to None. Each row kind overrides
+    the columns it reads, so a column added to the table is added here
+    once rather than to every kind."""
+    return {
+        "as_of_date": as_of_date,
+        "portfolio_external_id": portfolio,
+        "account_external_id": "",
+        "instrument_isin": None,
+        "currency_iso": None,
+        "units": None,
+        "market_value": None,
+        "market_value_currency": base_ccy,
+        "cost_price": None,
+        "market_price": None,
+        "accrued_interest": None,
+        "current_fx_rate": None,
+        "acquisition_fx_rate": None,
+        "cost_basis": None,
+        "last_purchase_date": None,
+        "description": None,
+        "sector": None,
+        "source_doc_token": doc_token,
+        "payload": "{}",
+    }
+
+
+def _holding_detail(lines: list[str], market_value: float | None, *,
+                    private_market: bool) -> dict:
+    """The facts a holding prints below its headline (see
+    `_HOLDING_FX_RE`): the average buy and current exchange rates, the
+    cost value and the last purchase date. `lines` are the printed lines
+    between the headline and the Valor/ISIN line. A fact the statement
+    does not print stays None.
+
+    The last purchase date is read from the line below line 3, so line 3
+    is found first. A listed holding's line 3 is the one ending in its
+    cost value and unrealized P/L. A private-markets holding prints
+    neither: its line 2 is the wrapped fund name and its line 3 carries
+    the market-price (NAV) date alone.
+    """
+    detail = {"acquisition_fx_rate": None, "current_fx_rate": None,
+              "cost_basis": None, "last_purchase_date": None}
+    after_fx = 0
+    for k, ln in enumerate(lines):
+        m = _HOLDING_FX_RE.search(ln)
+        if m:
+            detail["acquisition_fx_rate"] = _to_float(m["acquisition"])
+            detail["current_fx_rate"] = _to_float(m["current"])
+            after_fx = k + 1
+            break
+
+    line3 = None
+    if private_market:
+        if len(lines) > 1 and _TRAILING_DATE_RE.search(lines[1]):
+            line3 = 1
+    else:
+        for k in range(after_fx, len(lines)):
+            m = _HOLDING_COST_RE.search(lines[k])
+            if m:
+                detail["cost_basis"] = _cost_value(
+                    m["cost"], float(m["pl"]), market_value)
+                line3 = k
+                break
+
+    if line3 is not None and line3 + 1 < len(lines):
+        m = _TRAILING_DATE_RE.search(
+            _DISTRIBUTION_DATE_RE.sub("", lines[line3 + 1]))
+        if m:
+            detail["last_purchase_date"] = _dmy_to_unix(m["date"])
+    return detail
+
+
+def _cost_value(run: str, pl_pct: float,
+                market_value: float | None) -> float | None:
+    """The cost value at the right end of `run`, a run of digit groups.
+
+    The left-hand column of line 3 can end in a figure of its own, such
+    as a distribution amount ('Distribution amount: USD 2'), set one
+    space before the cost value. The two then read as one grouped number.
+    The unrealized P/L printed beside the cost value tells the readings
+    apart: it is the market value over the cost value, less one, so the
+    longest run of trailing groups that agrees with it is the cost value.
+    Both figures are printed rounded, which the tolerance allows for.
+    When no reading agrees, or there is no market value to check
+    against, the cost value is not read.
+    """
+    if market_value is None:
+        return None
+    groups = run.replace("'", " ").split()
+    factor = 1 + pl_pct / 100
+    for start in range(len(groups)):
+        cost = _to_float("".join(groups[start:]))
+        if cost is None or cost == 0:
+            continue
+        if abs(cost * factor - market_value) <= 1 + abs(cost) * 1e-4:
+            return cost
+    return None
+
+
+def _dmy_to_unix(dmy: str) -> int | None:
+    """DD.MM.YYYY → Unix seconds UTC midnight; None when not a date."""
+    try:
+        d, mo, y = (int(x) for x in dmy.split("."))
+        return _to_unix(date(y, mo, d))
+    except ValueError:
+        return None
 
 
 def _assemble_psn_portfolio(branch: str, base: str, portfolio_no: str,
@@ -512,21 +647,12 @@ def _overview_precious_metals(full_text: str, label_meta: dict,
         # instrument with a null canonical ISIN.
         synth_key = f"PM-{port16}"
         rows.append({
-            "as_of_date": label_meta["as_of_date"],
-            "portfolio_external_id": port16,
-            "account_external_id": "",
+            **_position_row(label_meta["as_of_date"], port16, base_ccy,
+                            doc_token),
             "instrument_isin": synth_key,
             "currency_iso": base_ccy,
-            "units": None,
             "market_value": mv,
-            "market_value_currency": base_ccy,
-            "cost_price": None,
-            "market_price": None,
-            "accrued_interest": None,
-            "exchange_rate_to_base": None,
             "description": "Precious metals & commodities",
-            "sector": None,
-            "source_doc_token": doc_token,
             "payload": json.dumps({
                 "kind": "overview_asset_class",
                 "asset_class": "precious_metals",
@@ -1668,3 +1794,282 @@ def parse_payment_advice_text(text: str, doc_token: str) -> list[dict]:
             "trx_no_printed": trx_printed,
         }, ensure_ascii=False),
     }]
+
+
+# ============================================================
+# Securities advices: capital calls and contract notes
+# ============================================================
+#
+# Two document kinds state the price a holding was bought at where the
+# statement of assets and the MT535 feed state none. Each yields at most
+# one `advices` row, every figure as printed.
+#
+# A capital call reaches the archive as a "Private Market Letter": a UBS
+# cover page titled "Capital Call", then the fund administrator's
+# notice. Quarterly reports and other letters share that label, so the
+# cover title is what selects a call. The notice is the administrator's
+# own prose with no fixed layout, so each figure is read from the
+# sentence that states it (synthetic example, whitespace collapsed):
+#
+#   Example Fund ("EF") - Capital Call No. 23 Investing in Example LP
+#   ISIN - XX0000000000
+#   … will now make Capital Call No. 23 of USD 12,345.67, which
+#   represents 7.25% of your Net Commitment of USD 170,285.10. …
+#   … makes the amount of USD 12,345.67 available in your account by
+#   value date 15 March 2030. …
+#   Total 1,234,567.00 12,345.67
+#
+# The breakdown's "Total" line ends in the investor's column: the called
+# amount plus anything charged on top of it, such as equalisation
+# interest on a late closing. That is the cash the call takes.
+#
+# A contract note confirms a purchase outside the exchange (synthetic):
+#
+#   Contract note
+#   Produced on 30 March 2030
+#   New issue purchase
+#   Trade date: 15.03.2030 Place of transaction Issuer
+#   Settlement date: 30.03.2030
+#   Quantity Security 1234567 ISIN XX0000000000 Price
+#   1 000 Example Fund SICAV USD 90.00
+#   E-USD-capitalisation
+#   Market value in trading currency USD 90 000.00
+#   Placement Fee USD 900.00
+#   Swiss federal stamp duty USD 120.00
+#   To the debit of account 0000 00000000.XX USD Value date 30.03.2030 USD 91 020.00
+#
+# A prepayment towards a subscription prints no quantity line: the ISIN
+# stands on a line of its own below the fund name, and the conversion
+# rate reads "USD / CHF at 0.90000". The subscription that settles
+# against it prints "Minus your prepayment" and debits the difference.
+
+_PRODUCED_ON_RE = re.compile(
+    r"^Produced on\s+(?P<day>\d{1,2})\s+(?P<month>[A-Z][a-z]+)\s+(?P<year>\d{4})\s*$",
+    re.M)
+_ISIN_SHAPE = r"[A-Z]{2}[A-Z0-9]{9}\d"
+_LONG_DATE = r"(?P<day>\d{1,2})\s+(?P<month>[A-Z][a-z]+)\s+(?P<year>\d{4})"
+
+_CALL_TITLE_RE = re.compile(r"^Capital Call\s*$", re.M)
+# Usually a line of its own; a notice may instead set it at the end of
+# the "Investing in" line.
+_CALL_ISIN_RE = re.compile(
+    rf"(?:^|\s)ISIN\s*[-–]\s*(?P<isin>{_ISIN_SHAPE})\s*$", re.M)
+_CALL_LETTER_DATE_RE = re.compile(rf"^{_LONG_DATE}\s*$")
+_CALL_AMOUNT_RE = re.compile(
+    r"(?P<ccy>[A-Z]{3})\s+(?P<amount>\d{1,3}(?:,\d{3})*\.\d{2}),?\s+"
+    r"which represents")
+_CALL_VALUE_DATE_RE = re.compile(
+    rf"available in your account\s+(?:by\s+)?value date\s+{_LONG_DATE}")
+_CALL_PAYABLE_RE = re.compile(
+    r"makes the amount of\s+[A-Z]{3}\s+(?P<amount>\d{1,3}(?:,\d{3})*\.\d{2})"
+    r"\s+available")
+_CALL_TOTAL_RE = re.compile(
+    r"^Total\s+\d{1,3}(?:,\d{3})*\.\d{2}\s+"
+    r"(?P<amount>\d{1,3}(?:,\d{3})*\.\d{2})\s*$", re.M)
+
+_NOTE_TITLE_RE = re.compile(r"^Contract note\s*$", re.M)
+_NOTE_TRADE_DATE_RE = re.compile(r"^Trade date:\s*(?P<date>\d{2}\.\d{2}\.\d{4})\b")
+_NOTE_SETTLEMENT_DATE_RE = re.compile(
+    r"^Settlement date:\s*(?P<date>\d{2}\.\d{2}\.\d{4})\b")
+_NOTE_SECURITY_HEADER_RE = re.compile(
+    rf"^Quantity\s+Security\s+(?P<valor>\d+)\s+ISIN\s+(?P<isin>{_ISIN_SHAPE})"
+    r"\s+Price\s*$")
+_NOTE_SECURITY_RE = re.compile(
+    r"^(?P<quantity>\d[\d ']*(?:\.\d+)?)\s+(?P<name>\S.*?)\s+"
+    r"(?P<ccy>[A-Z]{3})\s+(?P<price>\d[\d ']*\.\d+)\s*$")
+_NOTE_ISIN_LINE_RE = re.compile(rf"^(?P<isin>{_ISIN_SHAPE})\s*$")
+_NOTE_AMOUNT = r"\s+(?P<ccy>[A-Z]{3})\s+(?P<v>\d[\d ']*\.\d{2})\s*$"
+_NOTE_FIGURES = {
+    "amount": re.compile(r"^Market value in trading currency" + _NOTE_AMOUNT),
+    "prepayment": re.compile(r"^Minus your prepayment" + _NOTE_AMOUNT),
+    "placement_fee": re.compile(r"^Placement Fee" + _NOTE_AMOUNT),
+    "stamp_duty": re.compile(r"^Swiss federal stamp duty" + _NOTE_AMOUNT),
+}
+_NOTE_DEBIT_RE = re.compile(
+    r"^To the debit of account\s+.+?\s+[A-Z]{3}\s+Value date\s+"
+    r"(?P<date>\d{2}\.\d{2}\.\d{4})" + _NOTE_AMOUNT)
+_NOTE_FX_RES = (
+    re.compile(r"^(?P<base>[A-Z]{3})\s*/\s*(?P<quote>[A-Z]{3})\s+at\s+"
+               r"(?P<rate>\d+\.\d+)\s*$"),
+    re.compile(r"^For\s+(?P<base>[A-Z]{3})\s*/\s*(?P<quote>[A-Z]{3})\s+"
+               r"conversions, we have used the following rate:\s*"
+               r"(?P<rate>\d+\.\d+)\.?\s*$"),
+)
+
+
+def _long_date_to_unix(m: re.Match) -> int | None:
+    """'15 March 2030' (the match's day/month/year groups) → Unix seconds
+    UTC midnight; None for a month name this table does not know."""
+    month = _MONTH_NAMES.get(m["month"])
+    if month is None:
+        return None
+    return _to_unix(date(int(m["year"]), month, int(m["day"])))
+
+
+def _advice_row(kind: str, doc_token: str) -> dict:
+    """An `advices` row with every figure unset."""
+    return {
+        "source_doc_token": doc_token, "kind": kind, "title": None,
+        "doc_date": None, "trade_date": None, "value_date": None,
+        "instrument_isin": None, "valor": None, "security_name": None,
+        "currency_iso": None, "quantity": None, "price": None,
+        "amount": None, "prepayment": None, "placement_fee": None,
+        "stamp_duty": None, "settlement_amount": None,
+        "settlement_currency_iso": None, "fx_rate": None,
+        "fx_rate_pair": None, "payload": "{}",
+    }
+
+
+def parse_capital_call(pdf_path: Path, doc_token: str,
+                       label: str) -> list[dict]:
+    """Read a capital call from a Private Market Letter. Returns [] for a
+    letter that is not one, which is told from the cover page alone so a
+    long quarterly report is not read in full."""
+    with pdfplumber.open(pdf_path) as pdf:
+        if not pdf.pages:
+            return []
+        cover = pdf.pages[0].extract_text(x_tolerance=2) or ""
+        if not _CALL_TITLE_RE.search(cover):
+            return []
+        text = "\n".join(
+            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:4])
+    return parse_capital_call_text(text, doc_token)
+
+
+def parse_capital_call_text(text: str, doc_token: str) -> list[dict]:
+    """Pure-text variant of `parse_capital_call`. Returns [] unless the
+    document is a capital call stating its ISIN and its called amount,
+    the two facts the row is about."""
+    if not _CALL_TITLE_RE.search(text):
+        return []
+    lines = [ln.strip() for ln in text.splitlines()]
+    flat = " ".join(ln for ln in lines if ln)
+    isin_m = _CALL_ISIN_RE.search(text)
+    amount_m = _CALL_AMOUNT_RE.search(flat)
+    if isin_m is None or amount_m is None:
+        return []
+
+    row = _advice_row("capital_call", doc_token)
+    printed = {"amount": amount_m.group(0), "isin": isin_m.group(0).strip()}
+    row["instrument_isin"] = isin_m["isin"]
+    row["currency_iso"] = row["settlement_currency_iso"] = amount_m["ccy"]
+    row["amount"] = _to_float(amount_m["amount"])
+
+    # The title is the notice's own heading: the lines between the
+    # administrator's dated line and the ISIN line.
+    isin_at = next(k for k, ln in enumerate(lines) if _CALL_ISIN_RE.search(ln))
+    title: list[str] = []
+    for ln in reversed(lines[max(0, isin_at - 4):isin_at]):
+        if not ln or _CALL_LETTER_DATE_RE.match(ln):
+            break
+        title.insert(0, ln)
+    row["title"] = " ".join(title) or None
+
+    m = _PRODUCED_ON_RE.search(text)
+    if m:
+        row["doc_date"] = _long_date_to_unix(m)
+    m = _CALL_VALUE_DATE_RE.search(flat)
+    if m:
+        row["value_date"] = _long_date_to_unix(m)
+        printed["value_date"] = m.group(0)
+    m = _CALL_TOTAL_RE.search(text) or _CALL_PAYABLE_RE.search(flat)
+    if m:
+        row["settlement_amount"] = _to_float(m["amount"])
+        printed["settlement_amount"] = m.group(0)
+    row["payload"] = json.dumps(printed, ensure_ascii=False)
+    return [row]
+
+
+def parse_contract_note(pdf_path: Path, doc_token: str,
+                        label: str) -> list[dict]:
+    """Read the purchase a contract note confirms."""
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join(
+            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:2])
+    return parse_contract_note_text(text, doc_token)
+
+
+def parse_contract_note_text(text: str, doc_token: str) -> list[dict]:
+    """Pure-text variant of `parse_contract_note`. Returns [] unless the
+    document is a contract note stating an ISIN and a market value."""
+    if not _NOTE_TITLE_RE.search(text):
+        return []
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    row = _advice_row("contract_note", doc_token)
+    printed: dict[str, str] = {}
+    name: list[str] = []
+    dates_end = None     # the line after the settlement date
+    in_name = False      # reading the security name's wrapped lines
+
+    for k, ln in enumerate(lines):
+        m = _PRODUCED_ON_RE.match(ln)
+        if m and row["doc_date"] is None:
+            row["doc_date"] = _long_date_to_unix(m)
+            if k + 1 < len(lines):
+                row["title"] = lines[k + 1]
+            continue
+        m = _NOTE_TRADE_DATE_RE.match(ln)
+        if m:
+            row["trade_date"] = _dmy_to_unix(m["date"])
+            continue
+        m = _NOTE_SETTLEMENT_DATE_RE.match(ln)
+        if m:
+            row["value_date"] = _dmy_to_unix(m["date"])
+            dates_end = k + 1
+            continue
+        m = _NOTE_SECURITY_HEADER_RE.match(ln)
+        if m:
+            row["valor"], row["instrument_isin"] = m["valor"], m["isin"]
+            printed["security"] = ln
+            continue
+        if row["valor"] is not None and row["quantity"] is None:
+            m = _NOTE_SECURITY_RE.match(ln)
+            if m:
+                row["quantity"] = _to_float(m["quantity"])
+                row["price"] = _to_float(m["price"])
+                row["currency_iso"] = m["ccy"]
+                name.append(m["name"])
+                printed["quantity"] = ln
+                in_name = True
+                continue
+        m = _NOTE_ISIN_LINE_RE.match(ln)
+        if m and row["instrument_isin"] is None and dates_end is not None:
+            # A prepayment: the fund name is the lines between the dates
+            # and the ISIN, less the phrase that introduces it
+            # ("Prepayment for Subscription of").
+            row["instrument_isin"] = m["isin"]
+            name = [n for n in lines[dates_end:k] if not n.endswith(" of")]
+            printed["isin"] = ln
+            continue
+        col = next((c for c, rx in _NOTE_FIGURES.items() if rx.match(ln)),
+                   None)
+        if col:
+            fm = _NOTE_FIGURES[col].match(ln)
+            in_name = False
+            row[col] = _to_float(fm["v"])
+            row["currency_iso"] = row["currency_iso"] or fm["ccy"]
+            printed[col] = ln
+            continue
+        if in_name:
+            name.append(ln)
+            continue
+        m = _NOTE_DEBIT_RE.match(ln)
+        if m:
+            row["value_date"] = _dmy_to_unix(m["date"])
+            row["settlement_amount"] = _to_float(m["v"])
+            row["settlement_currency_iso"] = m["ccy"]
+            printed["settlement_amount"] = ln
+            continue
+        for rx in _NOTE_FX_RES:
+            m = rx.match(ln)
+            if m:
+                row["fx_rate"] = _to_float(m["rate"])
+                row["fx_rate_pair"] = f"{m['base']}/{m['quote']}"
+                printed["fx_rate"] = ln
+                break
+
+    if row["instrument_isin"] is None or row["amount"] is None:
+        return []
+    row["security_name"] = " ".join(name) or None
+    row["payload"] = json.dumps(printed, ensure_ascii=False)
+    return [row]

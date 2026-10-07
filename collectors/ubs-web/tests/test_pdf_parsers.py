@@ -18,6 +18,8 @@ from pdf_parsers import (
     _stmt_split_multi,
     parse_account_statement_text,
     parse_account_statement_transactions_pages,
+    parse_capital_call_text,
+    parse_contract_note_text,
     parse_label_statement_of_assets,
     parse_maturity_notice_text,
     parse_payment_advice_text,
@@ -627,8 +629,8 @@ class TestStatementOfAssetsSecurities:
             # 2. structured product with a one-letter price flag ('B')
             "200 Example Structured Note USD 100.000000 120.00 B 20.00% 24 000 10.00",
             "Valor 222 - ISIN XX0000000022",
-            # 3. funded private-markets Outstanding Shares (FX rate, NAV)
-            "300 MVPX Placeholder Fund USD 1.2500 9 999 4.00",
+            # 3. funded private-markets Outstanding Shares (NAV per unit)
+            "300 MVPX Placeholder Fund USD 1.2500 375 4.00",
             "Valor 333 - ISIN XX0000000033",
             # 4. unfunded commitment (n.a. price, 0 value) -> skipped
             "400 MVPX Placeholder Fund USD n.a. 0 0.00",
@@ -661,17 +663,18 @@ class TestStatementOfAssetsSecurities:
         assert amc["cost_price"] == pytest.approx(100.0)
 
     def test_private_market_outstanding_shares_captured(self):
-        """A funded private-markets row (FX rate + NAV, no gain%) is
-        captured via the PM-headline fallback, with the FX rate kept
-        in exchange_rate_to_base and no cost/market price."""
+        """A funded private-markets row (one price figure + NAV, no
+        gain%) is captured via the PM-headline fallback. The figure is
+        the NAV per unit — units × figure is the market value — so it is
+        the market price, not an exchange rate, and no cost is printed."""
         rows = parse_statement_of_assets_text(
             self._soa_text(), "<doc-token>", self.LABEL)
         pm = self._by_isin(rows)["XX0000000033"]
-        assert pm["market_value"] == pytest.approx(9999.0)
+        assert pm["market_value"] == pytest.approx(375.0)
         assert pm["units"] == pytest.approx(300.0)
-        assert pm["exchange_rate_to_base"] == pytest.approx(1.25)
+        assert pm["market_price"] == pytest.approx(1.25)
+        assert pm["current_fx_rate"] is None
         assert pm["cost_price"] is None
-        assert pm["market_price"] is None
 
     def test_unfunded_commitment_row_skipped(self):
         """The 'n.a.'-priced 0-value commitment row adds no position."""
@@ -707,6 +710,268 @@ class TestStatementOfAssetsSecurities:
             self._soa_text("CHF"), "<doc-token>", self.LABEL)
         assert not [r for r in rows
                     if r["description"] == "Precious metals & commodities"]
+
+
+class TestStatementOfAssetsHoldingDetail:
+    """The lines a holding prints below its headline: the average buy
+    and current exchange rates (line 2), the cost value (line 3) and the
+    last purchase date (line 4). Each is read from the right-hand end of
+    its line, since the wrapped description and the distribution notes
+    share the left-hand side. Every figure is synthetic, and each block's
+    figures agree with each other the way a real statement's do: cost
+    value = units × cost price × buy rate, and the unrealized P/L is the
+    market value over the cost value."""
+
+    LABEL = TestStatementOfAssetsSecurities.LABEL
+
+    def _rows(self, *block: str) -> dict:
+        text = "\n".join(["Valued in USD", "Detailed positions", *block,
+                          "Additional information Abbreviations"])
+        rows = parse_statement_of_assets_text(text, "<doc-token>", self.LABEL)
+        return {r["instrument_isin"]: r for r in rows}
+
+    # A GBP holding in a USD portfolio, its line 3 carrying a market-price
+    # date between the cost value and the P/L.
+    FOREIGN = (
+        "1 000 Reg.shs Example Equity AG GBP 20.000000 25.00 25.00% 32 500 4.50",
+        "(XMPL) All sectors 1.250000 1.300000 4.00%",
+        "Distribution: 01.06.2030 25 000 30.06.2030 30.00%",
+        "Distribution amount: GBP 0.5 2.00% DY 15.03.2030",
+        "Valor 555 - ISIN XX0000000055",
+    )
+
+    def test_a_foreign_currency_holding_states_both_rates(self):
+        row = self._rows(*self.FOREIGN)["XX0000000055"]
+        assert row["acquisition_fx_rate"] == pytest.approx(1.25)
+        assert row["current_fx_rate"] == pytest.approx(1.3)
+        assert row["cost_basis"] == pytest.approx(25000.0)
+        assert row["last_purchase_date"] == 1899763200     # 15.03.2030
+
+    def test_a_holding_in_the_portfolio_currency_states_no_rate(self):
+        row = self._rows(
+            "500 Example ETF USD 10.000000 12.00 20.00% 6 000 1.00",
+            "Example ETF Class A All sectors",
+            "Distribution: 01.06.2030 5 000 20.00%",
+            "Distribution amount: USD 0.1 1.00% DY 15.02.2030",
+            "Valor 666 - ISIN XX0000000066",
+        )["XX0000000066"]
+        assert row["acquisition_fx_rate"] is None
+        assert row["current_fx_rate"] is None
+        assert row["cost_basis"] == pytest.approx(5000.0)
+        assert row["last_purchase_date"] == 1897344000     # 15.02.2030
+
+    def test_a_figure_set_against_the_cost_value_is_not_read_into_it(self):
+        # The distribution amount 'USD 2' sits one space before the cost
+        # value '450 000', so the line reads '2 450 000'. Only the shorter
+        # reading agrees with the printed P/L (360 000 / 450 000 - 1).
+        row = self._rows(
+            "3 000 Reg.shs Example Holding AG USD 150.000000 120.00 -20.00% 360 000 9.00",
+            "Distribution: 01.05.2030 Consumer staples",
+            "Distribution amount: USD 2 450 000 -20.00%",
+            "3.00% DY 20.01.2030",
+            "Valor 777 - ISIN XX0000000077",
+        )["XX0000000077"]
+        assert row["cost_basis"] == pytest.approx(450000.0)
+        assert row["last_purchase_date"] == 1895097600     # 20.01.2030
+
+    def test_a_cost_value_no_reading_agrees_with_is_left_unread(self):
+        row = self._rows(
+            "100 Reg.shs Example Equity AG USD 10.000000 12.00 20.00% 1 200 1.00",
+            "All sectors",
+            "9 999 20.00%",
+            "Valor 999 - ISIN XX0000000099",
+        )["XX0000000099"]
+        assert row["cost_basis"] is None
+
+    def test_a_distribution_date_is_not_a_purchase(self):
+        row = self._rows(
+            "200 Example Bond Fund USD 50.000000 55.00 10.00% 11 000 2.00",
+            "All sectors",
+            "10 000 10.00%",
+            "Distribution: 01.07.2030",
+            "Valor 888 - ISIN XX0000000088",
+        )["XX0000000088"]
+        assert row["cost_basis"] == pytest.approx(10000.0)
+        assert row["last_purchase_date"] is None
+
+    def test_a_private_market_holding_reads_its_last_purchase_below_the_nav_date(self):
+        row = self._rows(
+            "300 MVPX Placeholder Fund USD 1.2500 375 4.00",
+            "Placeholder Fund 9",
+            "Outstanding Shares 31.03.2030",
+            "Strategy: Private markets - Others 15.01.2030",
+            "Valor 333 - ISIN XX0000000033",
+        )["XX0000000033"]
+        assert row["market_price"] == pytest.approx(1.25)
+        assert row["last_purchase_date"] == 1894665600     # 15.01.2030
+        assert row["cost_basis"] is None
+        assert row["acquisition_fx_rate"] is None
+
+    def test_a_cash_line_keeps_its_rate_as_the_current_one(self):
+        rows = parse_statement_of_assets_text("\n".join([
+            "Valued in USD", "Detailed positions",
+            "GBP 1 000.00 Example Cash Account GBP 0.00 1.3000 1 300 0.10",
+            "CH00 0000 0000 0000 0000 A",
+            "Additional information Abbreviations",
+        ]), "<doc-token>", self.LABEL)
+        assert rows[0]["current_fx_rate"] == pytest.approx(1.3)
+        assert rows[0]["acquisition_fx_rate"] is None
+
+    def test_a_holding_whose_headline_does_not_parse_takes_no_other(self):
+        # The second headline prints an integer cost price, which the
+        # headline pattern does not read. Its Valor line is within reach
+        # of the first holding's headline, which must not be lent to it.
+        rows = self._rows(
+            *self.FOREIGN,
+            "Country of custody Switzerland",
+            "50 Reg.shs Example Other AG USD 148 150.5 1.69% 7 525 1.00",
+            "All sectors",
+            "Valor 444 - ISIN XX0000000044",
+        )
+        assert "XX0000000055" in rows
+        assert "XX0000000044" not in rows
+
+
+class TestCapitalCall:
+    """A capital call: the UBS cover page titled "Capital Call", then the
+    administrator's notice. All names, figures and identifiers are
+    synthetic."""
+
+    COVER = [
+        "Capital Call",
+        "Produced on 10 March 2030",
+        "Please find enclosed a capital call notice in relation to your",
+        "investment in Example Fund 9.",
+    ]
+
+    def _text(self, *, isin_line: str = "ISIN - XX0000000011",
+              investing: str = "Investing in Example LP",
+              total: str = "Total 1,234,567.00 12,345.67",
+              amount: str = "12,345.67") -> str:
+        return "\n".join([
+            *self.COVER,
+            "8 March 2030",
+            "Example Fund 9 (“EF 9”) - Capital Call No. 23",
+            *([investing] if investing else []),
+            isin_line,
+            "Dear Investor",
+            "In accordance with the terms of the Supplement, EF 9 will now make Capital Call No. 23 of",
+            f"USD {amount}, which represents 7.25% of your Net Commitment of USD 170,285.10.",
+            "A breakdown of the Capital Call is provided below.",
+            "Fund (USD) Investor Amount (USD)",
+            "Investments 1,234,567.00 12,345.67",
+            total,
+            "Please ensure that your Client Advisor makes the amount of USD 12,345.67 available in your account",
+            "by value date 20",
+            "March 2030.",
+        ])
+
+    def test_the_call_is_read(self):
+        [row] = parse_capital_call_text(self._text(), "<doc-token>")
+        assert row["kind"] == "capital_call"
+        assert row["instrument_isin"] == "XX0000000011"
+        assert row["currency_iso"] == "USD"
+        assert row["amount"] == pytest.approx(12345.67)
+        assert row["settlement_amount"] == pytest.approx(12345.67)
+        assert row["value_date"] == 1900195200             # 20.03.2030
+        assert row["doc_date"] == 1899331200               # 10.03.2030
+        assert row["title"] == (
+            "Example Fund 9 (“EF 9”) - Capital Call No. 23 "
+            "Investing in Example LP")
+        assert row["quantity"] is None and row["price"] is None
+        assert json.loads(row["payload"])["isin"] == "ISIN - XX0000000011"
+
+    def test_the_cash_taken_includes_what_is_charged_on_top_of_the_call(self):
+        # A late closing's equalisation interest is in the breakdown total
+        # and in the cash, never in the called amount.
+        [row] = parse_capital_call_text(
+            self._text(total="Total 1,234,567.00 12,596.17"), "<doc-token>")
+        assert row["amount"] == pytest.approx(12345.67)
+        assert row["settlement_amount"] == pytest.approx(12596.17)
+
+    def test_an_isin_set_at_the_end_of_the_investing_line_is_read(self):
+        [row] = parse_capital_call_text(
+            self._text(investing="", isin_line="Investing in ISIN – XX0000000011"),
+            "<doc-token>")
+        assert row["instrument_isin"] == "XX0000000011"
+        assert row["title"] == "Example Fund 9 (“EF 9”) - Capital Call No. 23"
+
+    def test_a_letter_that_is_not_a_call_yields_nothing(self):
+        text = self._text().replace("Capital Call\n", "Quarterly Report\n", 1)
+        assert parse_capital_call_text(text, "<doc-token>") == []
+
+
+class TestContractNote:
+    """A contract note for a purchase outside the exchange. All names,
+    figures and identifiers are synthetic."""
+
+    NEW_ISSUE = "\n".join([
+        "Contract note",
+        "Produced on 30 March 2030",
+        "New issue purchase",
+        "Trade date: 15.03.2030 Place of transaction Issuer",
+        "Settlement date: 30.03.2030",
+        "Quantity Security 1234567 ISIN XX0000000022 Price",
+        "800.5 Example Fund SICAV USD 100.00",
+        "E-USD-capitalisation",
+        "Market value in trading currency USD 80 050.00",
+        "Minus your prepayment USD 80 000.00",
+        "Placement Fee USD 800.00",
+        "Swiss federal stamp duty USD 120.00",
+        "To the debit of account 0000 00000000.XX USD Value date 30.03.2030 USD 970.00",
+        "For USD /CHF conversions, we have used the following rate: 0.900000.",
+    ])
+
+    PREPAYMENT = "\n".join([
+        "Contract note",
+        "Produced on 1 March 2030",
+        "Prepayment for fund subscription",
+        "Trade date: 01.03.2030 Place of transaction Issuer",
+        "Settlement date: 02.03.2030",
+        "Prepayment for Subscription of",
+        "Example Fund SICAV -",
+        "E-USD-capitalisation",
+        "XX0000000033",
+        "Market value in trading currency USD 80 000.00",
+        "USD / CHF at 0.90000",
+        "To the debit of account 0000 00000000.XX USD Value date 02.03.2030 USD 80 000.00",
+    ])
+
+    def test_a_new_issue_purchase_is_read(self):
+        [row] = parse_contract_note_text(self.NEW_ISSUE, "<doc-token>")
+        assert row["kind"] == "contract_note"
+        assert row["title"] == "New issue purchase"
+        assert (row["valor"], row["instrument_isin"]) == ("1234567", "XX0000000022")
+        assert row["security_name"] == "Example Fund SICAV E-USD-capitalisation"
+        assert row["quantity"] == pytest.approx(800.5)
+        assert row["price"] == pytest.approx(100.0)
+        assert row["currency_iso"] == "USD"
+        assert row["amount"] == pytest.approx(80050.0)
+        assert row["prepayment"] == pytest.approx(80000.0)
+        assert row["placement_fee"] == pytest.approx(800.0)
+        assert row["stamp_duty"] == pytest.approx(120.0)
+        assert row["settlement_amount"] == pytest.approx(970.0)
+        assert row["settlement_currency_iso"] == "USD"
+        assert row["fx_rate"] == pytest.approx(0.9)
+        assert row["fx_rate_pair"] == "USD/CHF"
+        assert row["trade_date"] == 1899763200             # 15.03.2030
+        assert row["value_date"] == 1901059200             # 30.03.2030
+        assert row["doc_date"] == 1901059200
+
+    def test_a_prepayment_names_its_fund_above_a_bare_isin(self):
+        [row] = parse_contract_note_text(self.PREPAYMENT, "<doc-token>")
+        assert row["instrument_isin"] == "XX0000000033"
+        assert row["valor"] is None
+        assert row["security_name"] == "Example Fund SICAV - E-USD-capitalisation"
+        assert row["quantity"] is None and row["price"] is None
+        assert row["amount"] == pytest.approx(80000.0)
+        assert row["placement_fee"] is None and row["stamp_duty"] is None
+        assert row["fx_rate"] == pytest.approx(0.9)
+        assert row["fx_rate_pair"] == "USD/CHF"
+
+    def test_a_document_that_is_not_a_contract_note_yields_nothing(self):
+        text = self.NEW_ISSUE.replace("Contract note", "Order confirmation", 1)
+        assert parse_contract_note_text(text, "<doc-token>") == []
 
 
 # ---- Issue 1: opening/closing/total balances must be extracted ---

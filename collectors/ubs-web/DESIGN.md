@@ -600,18 +600,23 @@ position.)
 
 **Position-row shapes the Statement-of-assets walker handles.**
 The securities walker anchors on each `Valor … - ISIN …` line and
-reads the headline row just above it, in three flavours:
+reads the headline row just above it. It looks no further back than
+the previous holding's own `Valor` line, so a holding whose headline
+does not match is left out rather than given its neighbour's. The
+headline comes in three flavours:
 
 1. **Listed securities** — the `cost-price / market-price /
    market-gain%` triple. A one-letter price qualifier UBS sometimes
    prints after the market price (e.g. a structured product's
    `120.00 B 20.00%`) is tolerated.
 2. **Private-markets / SPV holdings** (UBS-sponsored Private Markets
-   funds and SPV interests) — these print a single FX rate, or the
-   literal `n.a.`, where listed rows print the triple. The funded
-   "Outstanding Shares" row carries the NAV; the `n.a.` Net/Unfunded
-   Commitment rows are 0-valued and skipped (the same fund's
-   commitment ISINs would otherwise add value-less rows).
+   funds and SPV interests) — these print a single price, or the
+   literal `n.a.`, where listed rows print the triple. The price is
+   the NAV per unit (units × price = market value), stored as
+   `market_price`. The funded "Outstanding Shares" row carries the
+   NAV; the `n.a.` Net/Unfunded Commitment rows are 0-valued and
+   skipped (the same fund's commitment ISINs would otherwise add
+   value-less rows).
 3. **Overview-only asset classes** — UBS issues no Detailed-positions
    page for some portfolio types (e.g. precious-metals custody), so
    such a holding has no per-instrument row anywhere in the PDF. Its
@@ -623,6 +628,36 @@ reads the headline row just above it, in three flavours:
    USD-valued PDFs (the reporting-currency baseline); the
    duplicate USD copies collapse on the silver PK. The gold adapter
    recognises the non-ISIN key and leaves the canonical ISIN null.
+
+**The cost side of a holding.** A holding prints up to four lines,
+and the column header names what each carries on its right-hand
+side:
+
+| Line | Right-hand columns | Silver column |
+| --- | --- | --- |
+| 1 | cost price, market price, market gain, market value, % NA | `cost_price`, `market_price`, `market_value` |
+| 2 | average buy exchange rate, current exchange rate, exchange gain, accrued interest | `acquisition_fx_rate`, `current_fx_rate` |
+| 3 | cost value, market-price date, unrealized P/L (a percentage) | `cost_basis` |
+| 4 | last purchase date | `last_purchase_date` |
+
+- Line 2 prints the two rates only when the holding's currency
+  (`currency_iso`) differs from the portfolio's
+  (`market_value_currency`). Both rates convert the first into the
+  second. A cash line prints one rate, its current one, in the same
+  `current_fx_rate` column.
+- `cost_basis` is the statement's "cost value": the units at their
+  average cost, at the average buy rate, in `market_value_currency`.
+  The cost price, by contrast, is in `currency_iso`.
+- The left-hand side of lines 2 to 4 holds the wrapped description, the
+  sector and the distribution notes, so each figure is read from the
+  line's right end. A distribution amount can sit one space before
+  the cost value and read as part of it. The printed unrealized P/L
+  (market value over cost value, less one) decides which reading is
+  the cost value; when none agrees, `cost_basis` stays NULL.
+- A distribution's ex-date (`Distribution: <date>`) is never read as
+  the last purchase date.
+- A private-markets holding prints no cost value. Its line 3 carries
+  the NAV date, and its line 4 the last purchase date.
 
 **Why separate from the live-fetch `positions` / `accounts`
 tables.** Two reasons:
@@ -676,6 +711,40 @@ wins per date) is owned by the wealthdb UBS adapter — see
   Treat NULL as "the source PDF did not print that line" rather
   than as 0.0.
 
+### 3.9 Securities advices: capital calls and contract notes
+
+Two document kinds state what a holding was bought for where neither
+the statement of assets nor the PSN MT535 feed does. The `advices`
+table (migration 0013) holds one row per document, every figure as
+printed.
+
+| `kind` | Archive `doc_type` | What it states |
+| --- | --- | --- |
+| `capital_call` | `Private Market Letter` whose cover page is titled "Capital Call" | the called amount, the cash the call takes, the value date, the fund's ISIN |
+| `contract_note` | `Contract note` | a purchase outside the exchange: units, price, market value, placement fee, stamp duty, the debit, any prepayment it settles against, the conversion rate |
+
+- **A capital call states no units and no price.** The fund issues
+  the units later, at a NAV the statement of assets reports. MT535
+  carries no book cost for such units, so the calls are the record of
+  what was paid in. `amount` is the called amount. `settlement_amount`
+  is the breakdown's investor total: the called amount plus anything
+  charged on top of it, such as equalisation interest on a late
+  closing.
+- **The notice is the fund administrator's prose.** It has no fixed
+  layout, so each figure is read from the sentence that states it
+  rather than from a fixed position.
+- **Other Private Market Letters are not calls.** Quarterly reports and
+  other letters share the label. The cover title selects the calls,
+  and it is read from the first page alone, so a long report is not
+  read in full.
+- **A prepayment is a contract note of its own.** It states the
+  amount and the conversion rate but no units. The subscription that
+  settles against it prints "Minus your prepayment" (`prepayment`)
+  and debits only the difference.
+- **Charges are separate from the amount.** `placement_fee` and
+  `stamp_duty` are as printed, beside the market value, never folded
+  into it.
+
 ## 4. Web loader implementation notes
 
 - **Migration runner.** Applies pending migrations in numeric
@@ -702,7 +771,8 @@ wins per date) is owned by the wealthdb UBS adapter — see
      upsert the parsed positions / cash balances into the
      `historical_*` tables. The Account-Statement movement walker
      and the Credit/Debit Advice parser write `transactions` from
-     the same walk (§3.6).
+     the same walk (§3.6), and the capital-call and contract-note
+     parsers write `advices` (§3.9).
 
 - **PDF parsing isolation.** `pdfplumber` is bundled in the
   Docker image (`requirements.txt`). The parsers live in
@@ -1012,20 +1082,23 @@ listed here because they are properties of the feeds, not of gold.
   currently-selected relationship, so a session captures exactly
   one: covering a second one takes a relationship switch and
   another run. Could be automated in download.py later.
-- **Cost basis comes in two shapes.** Web carries a per-unit
-  `cost_price` in the instrument currency. PSN's MT535 carries the
-  holding's total book cost (`:19A::BOOK//`). Its `:70C::SUBB//`
-  narrative adds the average unit cost (`AVER`), the holding cost
-  (`AHOD`) and, for a foreign-currency holding, the average
-  acquisition FX rate (`AEXR`). A holding can come without a book
-  cost; its narrative then has no `AVER` either.
+- **Cost basis comes in two shapes.** The web statement of assets
+  carries a per-unit `cost_price` in the instrument currency, the
+  holding's cost value in the portfolio currency (`cost_basis`) and,
+  for a foreign-currency holding, the average buy FX rate (§3.8).
+  PSN's MT535 carries the holding's total book cost (`:19A::BOOK//`).
+  Its `:70C::SUBB//` narrative adds the average unit cost (`AVER`), the
+  holding cost (`AHOD`) and, for a foreign-currency holding, the
+  average acquisition FX rate (`AEXR`). A holding can come without a
+  book cost; its narrative then has no `AVER` either. For a
+  private-markets holding the paid-in amounts are in `advices` (§3.9).
 - **FX coverage differs sharply.** PSN carries 980+ FX rates; web
   carries only the 8 CHF/* pairs in the `positions.csv` footer.
-- **Documents are not indexed by instrument.** Trade confirmations
-  and corporate-action notices reference ISINs in the PDF body, but
-  the web loader does not parse PDF bodies; `documents` is indexed
-  by type + date + account only. Per-ISIN attribution would need a
-  PDF text-extraction pass.
+- **Documents are not indexed by instrument.** `documents` is indexed
+  by type + date + account only. Capital calls and contract notes are
+  parsed into `advices` (§3.9), which carry the ISIN. Trade
+  confirmations and corporate-action notices also name ISINs in the
+  PDF body, but no parser reads them.
 - **A managed portfolio's trades arrive on three rails, none of
   which covers the whole timeline.** The Account Statement PDF
   reprints a year's movements, but is published annually — so it

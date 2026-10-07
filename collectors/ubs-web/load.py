@@ -102,6 +102,7 @@ _DOCUMENT_PASS_DELETES = (
     "DELETE FROM historical_mortgages",
     "DELETE FROM transactions WHERE transaction_external_id LIKE 'stmt:%'",
     "DELETE FROM transactions WHERE payload LIKE '%payment_advice_pdf%'",
+    "DELETE FROM advices",
 )
 
 # The `doc_type` spellings of the per-movement payment advices. UBS labels
@@ -111,6 +112,14 @@ _DOCUMENT_PASS_DELETES = (
 # (a securities confirmation) are deliberately NOT in the set: neither is a
 # payment, and neither carries the movement block this pass reads.
 ADVICE_DOC_TYPES = frozenset({"credit advice", "debit advice"})
+
+# The `doc_type`s that carry a securities advice: what a holding was
+# bought for, where the statement of assets states no price (`advices`,
+# migration 0013). A Private Market Letter is a capital call only when its
+# cover page says so, and the parser declines the quarterly reports and
+# other letters filed under the same label.
+CONTRACT_NOTE_DOC_TYPE = "Contract note"
+PRIVATE_MARKET_LETTER_DOC_TYPE = "Private Market Letter"
 
 
 @functools.lru_cache(maxsize=1)
@@ -1692,8 +1701,9 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
     (token, kind, file_name, rows, error_message); exactly one of
     `rows` or `error_message` is set on every non-skipped call."""
     from pdf_parsers import (
-        parse_statement_of_assets, parse_account_statement_combined,
-        parse_maturity_notice, parse_payment_advice,
+        parse_account_statement_combined, parse_capital_call,
+        parse_contract_note, parse_maturity_notice, parse_payment_advice,
+        parse_statement_of_assets,
     )
     token, fp, label, doc_type = args
     path = Path(fp)
@@ -1715,6 +1725,12 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
         if (doc_type or "").strip().lower() in ADVICE_DOC_TYPES:
             rows = parse_payment_advice(path, token, label)
             return token, "payment_advice", path.name, rows, None
+        if doc_type == CONTRACT_NOTE_DOC_TYPE:
+            rows = parse_contract_note(path, token, label)
+            return token, "securities_advice", path.name, rows, None
+        if doc_type == PRIVATE_MARKET_LETTER_DOC_TYPE:
+            rows = parse_capital_call(path, token, label)
+            return token, "securities_advice", path.name, rows, None
         # Account Statement: a single PDF open yields BOTH the summary
         # balances (for historical_cash_balances) and the per-transaction
         # movement rows (for the transactions backfill), reusing one
@@ -1731,11 +1747,12 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
                                parse_cache: dict) -> tuple[int, int, int, int]:
     """Walk every PDF tracked in the documents table whose label
     indicates a Statement of assets, an Account Statement, a
-    Maturity notice or a payment advice; parse it in a worker-pool of
-    subprocesses, and upsert into the historical_* / transactions
-    tables on the main thread. Returns (position_rows, cash_rows,
-    mortgage_rows, transaction_rows) — the advice rows are
-    transactions and are counted with the statement ones.
+    Maturity notice, a payment advice or a securities advice; parse it
+    in a worker-pool of subprocesses, and upsert into the historical_* /
+    transactions / advices tables on the main thread. Returns
+    (position_rows, cash_rows, mortgage_rows, transaction_rows) — the
+    payment-advice rows are transactions and are counted with the
+    statement ones; the securities advices are logged.
 
     pdfplumber / pdfminer text extraction is CPU-bound and largely
     GIL-bound, so the speedup comes from real OS processes, not
@@ -1770,8 +1787,10 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
         "   OR doc_type = ? "
         "   OR doc_type = 'Account Statement' "
         "   OR doc_type = 'Maturity notice' "
+        "   OR doc_type IN (?, ?) "
         f"   OR LOWER(doc_type) IN ({advice_slots})",
-        (SUPPLIED_STMT_OF_ASSETS_DOC_TYPE, *advice_types),
+        (SUPPLIED_STMT_OF_ASSETS_DOC_TYPE, CONTRACT_NOTE_DOC_TYPE,
+         PRIVATE_MARKET_LETTER_DOC_TYPE, *advice_types),
     )
     work = cur.fetchall()
     if not work:
@@ -1826,6 +1845,7 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     mortgage_rows = 0
     txn_rows = 0
     txn_reject_stmts = 0
+    securities_advice_rows = 0
     advices: list[dict] = []
     for _token, kind, name, rows, err in results:
         if err is not None:
@@ -1835,6 +1855,8 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
             pos_rows += _insert_hist_positions(conn, rows or [])
         elif kind == "mortgage":
             mortgage_rows += _insert_hist_mortgages(conn, rows or [])
+        elif kind == "securities_advice":
+            securities_advice_rows += _insert_advices(conn, rows or [])
         elif kind == "payment_advice":
             # Collected, not written here: an advice is only worth writing
             # where nothing else recorded the movement, and the statement
@@ -1859,6 +1881,9 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     if advice_rows:
         log.info("%d movement(s) from payment advices", advice_rows)
     txn_rows += advice_rows
+    if securities_advice_rows:
+        log.info("%d capital call(s) and contract note(s)",
+                 securities_advice_rows)
     # Stamped here rather than by the caller, so it records a walk that
     # actually ran: the early returns above leave the older generation in
     # place and the next dump tries again.
@@ -1894,6 +1919,17 @@ def _replace_hist_cash_row(conn: sqlite3.Connection, r: dict) -> None:
     )
 
 
+# The columns `pdf_parsers` fills on every position row it emits.
+_HIST_POSITION_COLUMNS = (
+    "as_of_date", "portfolio_external_id", "account_external_id",
+    "instrument_isin", "currency_iso", "units", "market_value",
+    "market_value_currency", "cost_price", "market_price",
+    "accrued_interest", "current_fx_rate", "acquisition_fx_rate",
+    "cost_basis", "last_purchase_date", "description", "sector",
+    "source_doc_token", "payload",
+)
+
+
 def _insert_hist_positions(conn: sqlite3.Connection,
                            rows: list[dict]) -> int:
     n = 0
@@ -1903,26 +1939,35 @@ def _insert_hist_positions(conn: sqlite3.Connection,
                 _replace_hist_cash_row(conn, r)
             conn.execute(
                 "INSERT OR REPLACE INTO historical_position_snapshots ("
-                "as_of_date, portfolio_external_id, account_external_id, "
-                "instrument_isin, currency_iso, units, market_value, "
-                "market_value_currency, cost_price, market_price, "
-                "accrued_interest, exchange_rate_to_base, description, "
-                "sector, source_doc_token, payload"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    r["as_of_date"], r["portfolio_external_id"],
-                    r["account_external_id"], r["instrument_isin"],
-                    r["currency_iso"], r["units"], r["market_value"],
-                    r["market_value_currency"], r["cost_price"],
-                    r["market_price"], r["accrued_interest"],
-                    r["exchange_rate_to_base"], r["description"],
-                    r["sector"], r["source_doc_token"], r["payload"],
-                ),
+                f"{', '.join(_HIST_POSITION_COLUMNS)}"
+                f") VALUES ({', '.join('?' for _ in _HIST_POSITION_COLUMNS)})",
+                tuple(r[col] for col in _HIST_POSITION_COLUMNS),
             )
             n += 1
         except sqlite3.IntegrityError as e:
             log.debug("hist position insert failed: %s", e)
     return n
+
+
+# The columns `pdf_parsers` fills on every `advices` row.
+_ADVICE_COLUMNS = (
+    "source_doc_token", "kind", "title", "doc_date", "trade_date",
+    "value_date", "instrument_isin", "valor", "security_name",
+    "currency_iso", "quantity", "price", "amount", "prepayment",
+    "placement_fee", "stamp_duty", "settlement_amount",
+    "settlement_currency_iso", "fx_rate", "fx_rate_pair", "payload",
+)
+
+
+def _insert_advices(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Upsert capital calls and contract notes, one row per document."""
+    for r in rows:
+        conn.execute(
+            f"INSERT OR REPLACE INTO advices ({', '.join(_ADVICE_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in _ADVICE_COLUMNS)})",
+            tuple(r[col] for col in _ADVICE_COLUMNS),
+        )
+    return len(rows)
 
 
 def _insert_hist_cash_balances(conn: sqlite3.Connection,

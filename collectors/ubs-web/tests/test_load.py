@@ -464,7 +464,9 @@ def _hist_row(isin=None, ccy="CHF", value=1000.0, date=1700000000,
         "currency_iso": ccy, "units": value, "market_value": value,
         "market_value_currency": "CHF", "cost_price": None,
         "market_price": None, "accrued_interest": None,
-        "exchange_rate_to_base": None, "description": "Account",
+        "current_fx_rate": None, "acquisition_fx_rate": None,
+        "cost_basis": None, "last_purchase_date": None,
+        "description": "Account",
         "sector": None, "source_doc_token": doc, "payload": "{}",
     }
 
@@ -677,6 +679,10 @@ def _route(monkeypatch, tmp_path, doc_type: str, label: str = "") -> str:
                         lambda *a: called.append("positions") or [])
     monkeypatch.setattr(pdf_parsers, "parse_account_statement_combined",
                         lambda *a: called.append("statement") or ([], []))
+    monkeypatch.setattr(pdf_parsers, "parse_contract_note",
+                        lambda *a: called.append("contract_note") or [])
+    monkeypatch.setattr(pdf_parsers, "parse_capital_call",
+                        lambda *a: called.append("capital_call") or [])
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")
     loader._parse_one_pdf(("token", str(pdf), label, doc_type))
@@ -1363,3 +1369,114 @@ def test_the_supplied_directory_is_not_a_bronze_dump(tmp_path):
     (tmp_path / loader.SUPPLIED_DOCUMENTS_DIRNAME).mkdir()
     (tmp_path / "20260101T000000Z").mkdir()
     assert [d.name for d in loader.scan_bronze(tmp_path)] == ["20260101T000000Z"]
+
+
+# ============================================================
+# Statement holdings' cost side, and the securities advices
+# ============================================================
+
+def test_0013_moves_a_private_market_price_and_keeps_a_cash_rate(tmp_path):
+    """Rows loaded before migration 0013 carry the private-markets NAV
+    per unit in the exchange-rate column. The migration moves it to
+    `market_price`, where the parser writes it, and leaves a cash line's
+    rate where it was, under the column's new name."""
+    before = tmp_path / "migrations-0012"
+    before.mkdir()
+    for f in MIGRATIONS_DIR.glob("*.sql"):
+        if int(f.name[:4]) <= 12:
+            (before / f.name).write_text(f.read_text(encoding="utf-8"),
+                                         encoding="utf-8")
+    conn = sqlite3.connect(str(tmp_path / "ubs-web.db"))
+    conn.row_factory = sqlite3.Row
+    silver.apply_migrations(conn, before)
+    insert = (
+        "INSERT INTO historical_position_snapshots (as_of_date, "
+        "portfolio_external_id, account_external_id, instrument_isin, "
+        "currency_iso, units, market_value, market_value_currency, "
+        "market_price, exchange_rate_to_base, source_doc_token, payload) "
+        "VALUES (1900000000, '0000000000000001', ?, ?, ?, ?, ?, 'USD', "
+        "NULL, ?, 'doc', ?)")
+    conn.execute(insert, ("", "XX0000000033", "USD", 300.0, 375.0, 1.25,
+                          '{"kind": "private_market"}'))
+    conn.execute(insert, ("CH0000000000000000000A", None, "GBP", 1000.0,
+                          1300.0, 1.3, '{"raw": {}}'))
+    conn.commit()
+
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
+
+    pm, cash = (dict(r) for r in conn.execute(
+        "SELECT * FROM historical_position_snapshots "
+        "ORDER BY instrument_isin IS NULL"))
+    assert pm["market_price"] == pytest.approx(1.25)
+    assert pm["current_fx_rate"] is None
+    assert cash["current_fx_rate"] == pytest.approx(1.3)
+    assert cash["market_price"] is None
+    for row in (pm, cash):
+        assert "exchange_rate_to_base" not in row
+        assert row["acquisition_fx_rate"] is None
+        assert row["cost_basis"] is None
+        assert row["last_purchase_date"] is None
+    conn.close()
+
+
+def test_a_holdings_cost_side_reaches_silver(tmp_path):
+    conn = _fresh_db(tmp_path)
+    loader._insert_hist_positions(conn, [{
+        **_hist_row(isin="XX0000000055", ccy="GBP"),
+        "current_fx_rate": 1.3, "acquisition_fx_rate": 1.25,
+        "cost_basis": 25000.0, "last_purchase_date": 1899763200,
+    }])
+    row = conn.execute(
+        "SELECT current_fx_rate, acquisition_fx_rate, cost_basis, "
+        "last_purchase_date FROM historical_position_snapshots").fetchone()
+    assert tuple(row) == (1.3, 1.25, 25000.0, 1899763200)
+    conn.close()
+
+
+def test_securities_advices_route_to_their_parsers(monkeypatch, tmp_path):
+    assert _route(monkeypatch, tmp_path, "Contract note") == "contract_note"
+    assert _route(monkeypatch, tmp_path,
+                  "Private Market Letter") == "capital_call"
+
+
+def test_the_walk_lists_the_securities_advices(tmp_path):
+    assert _archive_walk_saw(tmp_path, loader.CONTRACT_NOTE_DOC_TYPE)
+    assert _archive_walk_saw(tmp_path, loader.PRIVATE_MARKET_LETTER_DOC_TYPE)
+
+
+def _securities_advice(token: str, amount: float) -> dict:
+    """One parsed `advices` row as `pdf_parsers` emits them."""
+    row = dict.fromkeys(loader._ADVICE_COLUMNS)
+    row.update(source_doc_token=token, kind="capital_call",
+               instrument_isin="XX0000000011", currency_iso="USD",
+               amount=amount, payload="{}")
+    return row
+
+
+def test_the_walk_writes_securities_advices_and_re_derives_them(tmp_path):
+    conn = _fresh_db(tmp_path)
+    _seed_doc(conn, "call", "sha-call", loader.PRIVATE_MARKET_LETTER_DOC_TYPE)
+    dump = tmp_path / "bronze" / "20260101T000000Z"
+    (dump / "documents").mkdir(parents=True)
+
+    def walk(amount: float) -> None:
+        cache = {"sha-call": ("call", "securities_advice", "call.pdf",
+                              [_securities_advice("call", amount)], None)}
+        with conn:
+            loader._load_historical_from_pdfs(conn, 1700000000, dump, cache)
+
+    walk(12345.67)
+    walk(13579.24)      # a re-derive replaces the row rather than adding one
+    rows = conn.execute("SELECT source_doc_token, amount FROM advices").fetchall()
+    assert [tuple(r) for r in rows] == [("call", 13579.24)]
+    conn.close()
+
+
+def test_the_purge_takes_the_securities_advices(tmp_path):
+    conn = _fresh_db(tmp_path)
+    loader._insert_advices(conn, [_securities_advice("call", 12345.67)])
+
+    loader._purge_stale_document_rows(conn)
+
+    assert conn.execute("SELECT COUNT(*) FROM advices").fetchone()[0] == 0
+    conn.close()
