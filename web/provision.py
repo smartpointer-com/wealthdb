@@ -161,14 +161,32 @@ def _ccy_values():
     return "(VALUES " + ", ".join(f"('{c}')" for c in REPORTING_CURRENCIES) + ") AS c(currency)"
 
 
+def _ccy_switch(selector, leg):
+    """`CASE <selector> WHEN '<CCY>' THEN <leg(ccy)> … END` over every
+    reporting currency, `ccy` lower-case. There is no ELSE: a currency the
+    CASE does not name renders blank rather than as another currency's
+    figures."""
+    arms = "".join(f" WHEN '{c}' THEN {leg(c.lower())}" for c in REPORTING_CURRENCIES)
+    return f"CASE {selector}{arms} END"
+
+
 def _ccy_pick(alias, col, pct=False):
     """`<alias>.<col>_<ccy>` for the row's own reporting currency `c.currency`
     — the unpivot of a wide value set into the long model shape. pct=True
     divides each leg by that currency's latest net worth."""
-    legs = "".join(
-        f" WHEN '{c}' THEN {alias}.{col}_{c.lower()}" + (f" / nw.nw_{c.lower()}" if pct else "")
-        for c in REPORTING_CURRENCIES)
-    return f"CASE c.currency{legs} END"
+    return _ccy_switch("c.currency", lambda c: f"{alias}.{col}_{c}"
+                       + (f" / nw.nw_{c}" if pct else ""))
+
+
+def _ccy_case(col, neg=False):
+    """The `col`_<ccy> column set reduced to the one the required
+    {{currency}} variable names. A template variable interpolates a
+    VALUE, never an identifier, so a native card picks its column with a
+    CASE rather than by splicing a column name in. `neg` negates it, so
+    a figure gold stores negative by convention — a spending outflow, a
+    card's owed balance — reads as a positive one."""
+    s = "-" if neg else ""
+    return _ccy_switch("{{currency}}", lambda c: f"{s}{col}_{c}")
 
 
 # Collection the pre-defined models live in (kept apart from anything the
@@ -748,12 +766,6 @@ IN_UNCATEGORIZED_SQL = (
     f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS uncategorized_share\n"
     "  FROM web_income")
 
-# The native-SQL returns charts: the Currency / Start-year pickers map onto
-# their {{currency}} / {{start_year}} template variables (the MBQL returns
-# cards get the same pickers on their currency / window_from_year dimensions).
-RETURNS_NATIVE_CARDS = {"Cumulative return (TWR)", "Monthly returns (TWR)",
-                        "Quarterly returns (TWR)", "Annual returns (TWR)"}
-
 # The whole-portfolio scalars — global grain, so the Source picker doesn't
 # apply (their silver_source_id is '').
 RETURNS_GLOBAL_SCALARS = {"Return (TWR)", "Return (MWR)", "Annualized return (TWR)"}
@@ -1042,6 +1054,15 @@ def _donut(threshold=0, total=True):
             "pie.slice_threshold": threshold}
 
 
+def allocation_note():
+    """The sentence an Allocation card's description ends with, on the
+    base dashboard and the twin alike."""
+    return (" Built for the Allocation dashboard, which supplies the as-of "
+            f"day; opened standalone it runs in {DEFAULT_CURRENCY}, the "
+            "currency variable's default, and sums every day, so set the As "
+            "Of Day filter to a single day first.")
+
+
 def question_defs(db_id, mid):
     """question name -> (display, description, dataset_query, viz
     settings). A tile that sums money in the dashboard's chosen currency
@@ -1054,6 +1075,17 @@ def question_defs(db_id, mid):
     set per currency, so there the Currency picker is a row filter), the
     freshness cards, and the spending tiles that need no currency
     variable."""
+    def returns_native(name, desc, sql, viz):
+        """A native returns chart, its pickers registered from its tags:
+        Currency lands as a dimension when it is a field filter and as a
+        variable otherwise, Start year as a variable, Source only when
+        its field filter exists."""
+        tags = returns_tags()
+        register_native_targets(name, tags, [(CURRENCY_PARAM_ID, "currency"),
+                                             (START_YEAR_PARAM_ID, "start_year"),
+                                             (SOURCE_PARAM_ID, "source_ff")])
+        return ("line", desc, _native(db_id, sql, tags), viz)
+
     def part(grain, granularity):
         """Filter to one (grain, granularity) partition of report_returns
         (the returns scalars/table use the summary 'total' partition; the
@@ -1105,10 +1137,9 @@ def question_defs(db_id, mid):
     # dashboard's choice on the dashboard and the default anywhere else.
     #
     # What it costs is MBQL drill-through: a native result has no "see
-    # these records". The two tables keep theirs by staying MBQL — one
+    # these records". The merchant ranking keeps its by staying MBQL: it
     # aggregates, so a per-currency column collapses its duplicate rows
-    # (ccy_spend), and the other is the transaction list, which is
-    # itself the records a drill-through would reach.
+    # (ccy_spend).
     sp_where, sp_val, spend_native = _family_native_kit(
         db_id, "web_spending", SPEND_FILTERS, SPEND_PICKERS, True, native_note)
 
@@ -1173,10 +1204,7 @@ def question_defs(db_id, mid):
     # own dashboard's three pickers.
     wo_note = (" Built for the Wealth Overview; opened standalone it runs "
                f"in {DEFAULT_CURRENCY}, the currency variable's default.")
-    al_note = (" Built for the Allocation dashboard, which supplies the "
-               f"as-of day; opened standalone it runs in {DEFAULT_CURRENCY}, the currency "
-               "variable's default, and sums every day, so set the As Of "
-               "Day filter to a single day first.")
+    al_note = allocation_note()
     lat_tags = spend_tags("web_sources_latest", range_filters("snapshot_at"))
     hist_tags = spend_tags("web_sources_history", range_filters("as_of_day"))
     wo_income_tags = spend_tags("web_income", range_filters("occurred_at"))
@@ -1833,33 +1861,33 @@ def question_defs(db_id, mid):
             _percent_viz("max")),
         # Native cumulative + per-period charts. All split by source with the
         # global grain unioned in as a toggleable '(all sources)' line; the
-        # Currency / Start-year pickers map onto their {{currency}} /
-        # {{start_year}} variables.
-        "Cumulative return (TWR)": ("line",
+        # Currency / Start-year / Source pickers map onto their {{currency}}
+        # / {{start_year}} / {{source_ff}} tags.
+        "Cumulative return (TWR)": returns_native("Cumulative return (TWR)",
             "Time-weighted return compounded from the chosen start year, per "
             "source and the '(all sources)' portfolio line — derived from the "
             "engine's since-<year> returns (so it matches the scalars and the "
             "by-source table exactly). Annual granularity. Built for the "
             "Returns dashboard.",
-            _native(db_id, returns_growth_sql(), returns_tags()),
+            returns_growth_sql(),
             _series_viz("year", "source", "cumulative_return", percent=True)),
-        "Monthly returns (TWR)": ("line",
+        "Monthly returns (TWR)": returns_native("Monthly returns (TWR)",
             "Time-weighted return per month, one line per source plus the "
             "'(all sources)' portfolio line. Built for the Returns dashboard "
             "(Currency + Start-year pickers).",
-            _native(db_id, returns_period_sql("monthly"), returns_tags()),
+            returns_period_sql("monthly"),
             _series_viz("period", "source", "twr", percent=True)),
-        "Quarterly returns (TWR)": ("line",
+        "Quarterly returns (TWR)": returns_native("Quarterly returns (TWR)",
             "Time-weighted return per quarter, one line per source plus the "
             "'(all sources)' portfolio line. Built for the Returns dashboard "
             "(Currency + Start-year pickers).",
-            _native(db_id, returns_period_sql("quarterly"), returns_tags()),
+            returns_period_sql("quarterly"),
             _series_viz("period", "source", "twr", percent=True)),
-        "Annual returns (TWR)": ("line",
+        "Annual returns (TWR)": returns_native("Annual returns (TWR)",
             "Time-weighted return per calendar year, one line per source plus "
             "the '(all sources)' portfolio line. Built for the Returns "
             "dashboard (Currency + Start-year pickers).",
-            _native(db_id, returns_period_sql("annual"), returns_tags()),
+            returns_period_sql("annual"),
             _series_viz("period", "source", "twr", percent=True)),
         "Returns by source": ("table",
             "Returns per source over the chosen window: TWR and MWR, plain and "
@@ -1918,15 +1946,14 @@ def question_defs(db_id, mid):
 
 
 # Dashboard filters: a required currency picker (default: the configured
-# default currency) and a
-# silver-source picker (default: all values) plus either a time range
-# over flows/history (default: past 12 months) or a single as-of day
-# over point-in-time holdings (default: today), each linked to every
-# tile — plus widget-scoped asset-class and vehicle pickers that render
-# inline on the Top-positions tile only. The Returns dashboards carry a
-# start-year picker instead of a time filter — the periods are
-# precomputed buckets; the Spending dashboards carry an account and a
-# category picker on top of the time-range pair. The parameter ids are
+# default currency) and a silver-source picker (default: all values) plus
+# either a time range over flows/history (default: past 12 months) or a
+# single as-of day over point-in-time holdings (default: today), each
+# linked to every tile — plus widget-scoped asset-class and vehicle
+# pickers that render inline on the Top-positions tile only. The Returns
+# dashboards carry a start-year picker instead of a time filter — the
+# periods are precomputed buckets; the Spending dashboards carry an
+# account and a category picker on top of the time-range pair. The parameter ids are
 # arbitrary but must be stable across runs so re-provisioning converges
 # instead of accumulating parameters, and they must be distinct — a
 # reused id would make two pickers one.
@@ -1981,13 +2008,15 @@ def base_dashboards():
     24-column grid. The filter mode picks the global filters (see
     dashboard_parameters): 'range' for flows/history dashboards, 'asof'
     for point-in-time holdings dashboards, 'returns' for the returns
-    dashboards (a required currency picker; no time filter — the periods
-    are precomputed buckets, and the summary rows ignore windows by
-    construction), None for no filters. The time filter lands on each
-    card's time column (as_of_day for history cards, occurred_at for
-    transactions, snapshot_at for latest-snapshot cards); the source
-    filter lands on silver_source_id — in 'returns' mode on every tile
-    but the whole-portfolio scalars (RETURNS_GLOBAL_SCALARS), whose
+    dashboards (a start-year picker and no time filter — the periods are
+    precomputed buckets, and the summary rows ignore windows by
+    construction), None for no filters. Every filtered mode carries a
+    required currency picker. The time filter lands on each card's time
+    column (as_of_day for history cards, occurred_at for transactions,
+    snapshot_at for latest-snapshot cards): a native card's own tag, or
+    the tile's time column below for an MBQL one. The source filter
+    lands on silver_source_id — in 'returns' mode on every tile but the
+    whole-portfolio scalars (RETURNS_GLOBAL_SCALARS), whose
     silver_source_id is ''. Data Freshness is deliberately unfiltered —
     its job is to show every source, especially the stale ones a time
     filter would hide."""
@@ -2152,6 +2181,14 @@ def _cl(tags, name):
     return "\n     [[AND {{" + name + "}}]]" if name in tags else ""
 
 
+def range_filters(col):
+    """A time range on `col` plus the source filter: the pair every
+    'range' dashboard's native cards carry, before any filter of their
+    own."""
+    return {"time_range": (col, "date/all-options"),
+            "source": ("silver_source_id", "string/=")}
+
+
 # ---- spending: the shared pieces of the money and privacy cards -------
 
 # The field filters a native spending card may carry, and the pickers
@@ -2159,12 +2196,10 @@ def _cl(tags, name):
 # filter applies); web_card_balances_history is the per-account daily
 # carry-forward of card balances, which has no category dimension. The
 # privacy variants below are what the twin's cards actually take.
-SPEND_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
-                 "source": ("silver_source_id", "string/="),
+SPEND_FILTERS = {**range_filters("occurred_at"),
                  "account": ("account_label", "string/="),
                  "category": ("spend_primary_label", "string/=")}
-CARD_BALANCE_FILTERS = {"time_range": ("as_of_day", "date/all-options"),
-                        "source": ("silver_source_id", "string/="),
+CARD_BALANCE_FILTERS = {**range_filters("as_of_day"),
                         "account": ("account_label", "string/=")}
 # The same specs for the privacy twin, WITHOUT the account filter. A
 # field filter's widget is a dropdown of the values its column takes, so
@@ -2191,8 +2226,7 @@ INCOME_TYPE_PARAM_ID = "aa5df10c"
 # earned type behind a single "Income" value and offer the deltas
 # beside it — hiding every distinction a reader opens the dashboard
 # for.
-INCOME_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
-                  "source": ("silver_source_id", "string/="),
+INCOME_FILTERS = {**range_filters("occurred_at"),
                   "account": ("account_label", "string/="),
                   "type": ("income_label", "string/=")}
 # The twin's, without the account filter, for the reason the spending
@@ -2230,8 +2264,7 @@ CASHFLOW_SECTION_PARAM_ID = "aa5df10f"
 # line list. `cashflow_native` (question_defs) and `cashflow_card`
 # (cashflow_privacy_defs) draw that line, by withholding the tag from
 # the cards that decline it.
-CASHFLOW_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
-                    "source": ("silver_source_id", "string/="),
+CASHFLOW_FILTERS = {**range_filters("occurred_at"),
                     "section": ("section", "string/=")}
 # The twin's filters are the same: none of the three renders a dropdown
 # of anything that identifies an account, which is the reason the other
@@ -2247,18 +2280,12 @@ SPEND_PICKERS = [(SPEND_CURRENCY_PARAM_ID, "currency"),
                  (ACCOUNT_PARAM_ID, "account"), (CATEGORY_PARAM_ID, "category")]
 CARD_BALANCE_PICKERS = [t for t in SPEND_PICKERS if t[1] != "category"]
 
-# The Wealth Overview's and Allocation's filters. Neither dashboard
-# names an account anywhere, so the base and the twin share them.
-# Every tile reads a serving view natively and takes the Currency picker
-# as the {{currency}} variable: the views carry the reporting currencies as
-# columns, and a picker selects rows but never a column.
-def range_filters(col):
-    """A time range on `col` plus the source filter: the Wealth
-    Overview's pair."""
-    return {"time_range": (col, "date/all-options"),
-            "source": ("silver_source_id", "string/=")}
-
-
+# The Wealth Overview's and Allocation's filters (the Overview's pair is
+# range_filters). Neither dashboard names an account anywhere, so the
+# base and the twin share them. Every tile reads a serving view natively
+# and takes the Currency picker as the {{currency}} variable: the views
+# carry the reporting currencies as columns, and a picker selects rows but
+# never a column.
 ASOF_FILTERS = {"as_of_day": ("as_of_day", "date/single"),
                 "source": ("silver_source_id", "string/=")}
 POSITION_FILTERS = {**ASOF_FILTERS,
@@ -2288,21 +2315,6 @@ def spend_tags(table, spec):
     `table`: the required {{currency}} text variable, plus a field filter
     per column in `spec` whose field id has synced."""
     return {"currency": currency_tag(), **view_tags(table, spec)}
-
-
-def _ccy_case(col, neg=False):
-    """The `col`_<ccy> column set reduced to the one the required
-    {{currency}} variable names. A template variable interpolates a
-    VALUE, never an identifier, so a native card picks its column with a
-    CASE rather than by splicing a column name in. Every reporting
-    currency has its own arm and there is no ELSE: a currency the CASE
-    does not name renders blank rather than as another currency's
-    figures. `neg` negates it, so a figure gold stores negative by
-    convention — a spending outflow, a card's owed balance — reads as a
-    positive one."""
-    s = "-" if neg else ""
-    arms = "".join(f" WHEN '{c}' THEN {s}{col}_{c.lower()}" for c in REPORTING_CURRENCIES)
-    return f"CASE {{{{currency}}}}{arms} END"
 
 
 def _cashflow_nodes(where, sum_expr):
@@ -2478,10 +2490,9 @@ def _spend_where(tags, indent="   "):
         _cl(tags, n) for n in tags if tags[n].get("type") == "dimension")
 
 
-# Dashboard picker -> template tag wiring for the native cards (the
-# privacy twins' charts, and the base spending card that reads a serving
-# view directly), rebuilt whenever the card definitions are built: every
-# entry is keyed by card name and every pass rewrites all of them.
+# Dashboard picker -> template tag wiring for every native card, rebuilt
+# whenever the card definitions are built: every entry is keyed by card
+# name and every pass rewrites all of them.
 # ensure_dashboards reads it to map those cards' pickers; cards absent
 # here take the default MBQL dimension mappings.
 NATIVE_PARAM_TARGETS = {}
@@ -2492,8 +2503,8 @@ def register_native_targets(card, tags, pairs):
     (parameter id, tag name); a tag whose field id has not synced yet is
     absent from `tags`, and its picker stays unmapped until a later
     provision. A field-filter tag maps as a `dimension` target; a plain
-    template variable (the spending cards' {{currency}}, which picks a
-    value column inside a CASE) maps as a `variable` one."""
+    template variable ({{currency}}, {{start_year}}, {{investing}})
+    maps as a `variable` one."""
     NATIVE_PARAM_TARGETS[card] = [
         (pid, ["dimension" if tags[t].get("type") == "dimension" else "variable",
                ["template-tag", t]])
@@ -2677,10 +2688,7 @@ def privacy_card_defs(db_id, model_ids):
     # for the Allocation twin, which supplies the required as-of day;
     # run standalone they aggregate across all days, so filter As Of Day
     # to a single day first.
-    standalone = (" Built for the Allocation dashboard, which supplies "
-                  f"the as-of day; opened standalone it runs in {DEFAULT_CURRENCY}, the "
-                  "currency variable's default, and sums every day, so set "
-                  "the As Of Day filter to a single day first.")
+    standalone = allocation_note()
 
     def breakdown_sql(view, dim, col, tags):
         return (
@@ -4042,32 +4050,12 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
                 return [{"parameter_id": pid, "card_id": card_ids[card],
                          "target": target} for pid, target in native]
             if mode == "returns":
-                # Currency + Start-year land on every returns tile. The
-                # native charts take them as template variables ({{currency}}
-                # / {{start_year}}); the MBQL scalars + table take them as
-                # dimensions (currency, and window_from_year to pick the
-                # since-<year> summary). The Source picker lands on the charts
-                # (a field-filter variable, when its field id resolved) and
-                # the by-source table (silver_source_id dimension) but NOT the
-                # global scalars, whose silver_source_id is '' — a source
-                # filter would blank them.
-                if card in RETURNS_NATIVE_CARDS:
-                    # Currency is a field-filter dimension (dropdown) when its
-                    # id resolved, else a plain text variable.
-                    ccy_target = (["dimension", ["template-tag", "currency"]]
-                                  if CURRENCY_FIELD_ID is not None else
-                                  ["variable", ["template-tag", "currency"]])
-                    maps = [
-                        {"parameter_id": CURRENCY_PARAM_ID, "card_id": card_ids[card],
-                         "target": ccy_target},
-                        {"parameter_id": START_YEAR_PARAM_ID, "card_id": card_ids[card],
-                         "target": ["variable", ["template-tag", "start_year"]]},
-                    ]
-                    if SOURCE_FIELD_ID is not None:
-                        maps.append(
-                            {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],
-                             "target": ["dimension", ["template-tag", "source_ff"]]})
-                    return maps
+                # The MBQL returns scalars + table (the native charts took
+                # the path above) take Currency + Start-year as dimensions:
+                # currency, and window_from_year to pick the since-<year>
+                # summary. The Source picker lands on the by-source table
+                # but NOT the global scalars, whose silver_source_id is ''
+                # — a source filter would blank them.
                 maps = [
                     {"parameter_id": CURRENCY_PARAM_ID, "card_id": card_ids[card],
                      "target": ["dimension", _f("currency", "type/Text")]},

@@ -32,11 +32,10 @@ func seedReportingFX(t *testing.T, db *sql.DB) {
 }
 
 // TestFxReportingValueMatchesTheReference holds the shared helper to the
-// conversion every report macro spelled out before it existed: for each
-// source currency, reporting target and day — before the first rate,
-// between changes, after the last — fx_reporting_value over the two
-// grid views gives fxConvert's answer to the last decimal, NULL where
-// fxConvert finds no path.
+// reference conversion, fxConvert: for each source currency, reporting
+// target and day — before the first rate, between changes, after the
+// last — fx_reporting_value over the two grid views gives fxConvert's
+// answer to the last decimal, NULL where fxConvert finds no path.
 func TestFxReportingValueMatchesTheReference(t *testing.T) {
 	db, _ := openMigrated(t)
 	seedReportingFX(t, db)

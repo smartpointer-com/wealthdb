@@ -33,7 +33,11 @@ Add a `web` block to `wealthdb.cfg` (the only config it needs):
 "web": { "enabled": true, "port": 3000 }
 ```
 
-`port` defaults to 3000. Operational knobs are env overrides (not in
+`port` defaults to 3000. The dashboards open in the config's
+`default_currency` when it is USD, CHF, EUR or GBP, and in USD
+otherwise; each dashboard's Currency picker switches between the four.
+
+Operational knobs are env overrides (not in
 the config file): `WEALTHDB_WEB_IMAGE`, `WEALTHDB_WEB_CONTAINER`,
 `WEALTHDB_WEB_DATA_DIR`, `WEALTHDB_WEB_BIND` (`both`|`v4`|`v6`).
 

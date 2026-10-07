@@ -4,7 +4,7 @@ import "testing"
 
 // TestWebSourcesLatestMatchesTheMacro pins that the view adds a
 // rendering and nothing else: per source, the same snapshot and the same
-// value trio report_sources_multi returns as of the latest snapshot. The
+// value columns report_sources_multi returns as of the latest snapshot. The
 // Wealth Overview's headline figures read it, and they promise the
 // numbers `wealthdb holdings sources` prints.
 func TestWebSourcesLatestMatchesTheMacro(t *testing.T) {
@@ -30,13 +30,15 @@ func TestWebSourcesLatestMatchesTheMacro(t *testing.T) {
             SELECT CAST(epoch(snapshot_at) AS BIGINT), silver_source_id,
                    positions_value_usd, cash_balance_usd, total_value_usd,
                    positions_value_chf, cash_balance_chf, total_value_chf,
-                   positions_value_eur, cash_balance_eur, total_value_eur
+                   positions_value_eur, cash_balance_eur, total_value_eur,
+                   positions_value_gbp, cash_balance_gbp, total_value_gbp
               FROM web_sources_latest
             EXCEPT
             SELECT snapshot_at, silver_source_id,
                    positions_value_usd, cash_balance_usd, total_value_usd,
                    positions_value_chf, cash_balance_chf, total_value_chf,
-                   positions_value_eur, cash_balance_eur, total_value_eur
+                   positions_value_eur, cash_balance_eur, total_value_eur,
+                   positions_value_gbp, cash_balance_gbp, total_value_gbp
               FROM report_sources_multi(9223372036854775807))`).Scan(&differ); err != nil {
 		t.Fatalf("compare with report_sources_multi: %v", err)
 	}

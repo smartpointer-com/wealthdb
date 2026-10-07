@@ -76,7 +76,7 @@ func TestWebSpendingLabelsUncategorized(t *testing.T) {
 // the two clocks interleave.
 func seedCardBalanceFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
-	// 1 CHF = 1.25 USD, 1 EUR = 1.10 USD, so the trio resolves for a
+	// 1 CHF = 1.25 USD, 1 EUR = 1.10 USD, so USD, CHF and EUR resolve for a
 	// USD-native card.
 	seedFX(t, db, spendAt(2026, time.January, 1), "USD", "CHF", "1.25")
 	seedFX(t, db, spendAt(2026, time.January, 1), "USD", "EUR", "1.10")

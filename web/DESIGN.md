@@ -115,7 +115,8 @@ what defines the pool, **Data Freshness** is deliberately unfiltered — all of 
 definitions only (MBQL or SQL), no data baked in.
 A tile that sums money in the chosen currency is native SQL over a gold
 `web_*` serving view. The views carry each reporting currency as a
-column, and a dashboard picker selects rows but never a column. So each
+column (USD, CHF, EUR and GBP, as of gold migration 0114), and a
+dashboard picker selects rows but never a column. So each
 such tile reads a required `{{currency}}` variable, which picks the
 column with a CASE. Every Currency picker, and every card opened on its
 own, defaults to `default_currency` from wealthdb.cfg when that is a

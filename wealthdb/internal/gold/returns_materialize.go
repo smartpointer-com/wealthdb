@@ -246,9 +246,9 @@ func datasetYearRange(datasets map[string]*returnsDataset, toEpoch int64) (int, 
 // single pass over each `_multi` macro: one scan of
 // report_accounts_history_multi for the daily value spines and one of
 // report_transactions_multi for the flows, versus one scan per currency of
-// each. Currency-independent inputs
-// (snapshot days, source kinds, portfolio names, fx) are read once and shared.
-// The per-currency result is bit-identical to loadReturnsDataset(ccy).
+// each. Currency-independent inputs (snapshot days, source kinds, portfolio
+// names, fx) are read once and shared. The per-currency result is
+// bit-identical to loadReturnsDataset(ccy).
 func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov map[string]ReturnsPolicyOverride, tm *TransferMatching) (map[string]*returnsDataset, error) {
 	kinds, err := SourceKinds(ctx, db)
 	if err != nil {
@@ -276,17 +276,17 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 	if err != nil {
 		return nil, fmt.Errorf("MaterializeReturns history: %w", err)
 	}
+	var (
+		asOf            int64
+		src, acct, kind string
+		label, base, pf sql.NullString
+	)
 	tots := make([]sql.NullString, len(materializeCurrencies))
+	dest := []any{&asOf, &src, &acct, &kind, &label, &base, &pf}
+	for i := range tots {
+		dest = append(dest, &tots[i])
+	}
 	for rows.Next() {
-		var (
-			asOf            int64
-			src, acct, kind string
-			label, base, pf sql.NullString
-		)
-		dest := []any{&asOf, &src, &acct, &kind, &label, &base, &pf}
-		for i := range tots {
-			dest = append(dest, &tots[i])
-		}
 		if err := rows.Scan(dest...); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("MaterializeReturns history scan: %w", err)
@@ -379,25 +379,27 @@ func loadTransactionsMulti(ctx context.Context, db *sql.DB) ([]txnMultiRow, erro
 		return nil, fmt.Errorf("MaterializeReturns transactions: %w", err)
 	}
 	defer rows.Close()
-	var out []txnMultiRow
+	var (
+		out    []txnMultiRow
+		cur    txnMultiRow
+		kind   string
+		netAmt sql.NullString
+	)
+	vals := make([]sql.NullString, len(materializeCurrencies))
+	dest := []any{&cur.src, &cur.acct, &cur.occurredAt, &kind, &cur.ccy, &cur.txID}
+	for i := range vals {
+		dest = append(dest, &vals[i])
+	}
+	dest = append(dest, &netAmt, &cur.returnsInternal)
 	for rows.Next() {
-		var (
-			r      txnMultiRow
-			kind   string
-			netAmt sql.NullString
-		)
-		vals := make([]sql.NullString, len(materializeCurrencies))
-		dest := []any{&r.src, &r.acct, &r.occurredAt, &kind, &r.ccy, &r.txID}
-		for i := range vals {
-			dest = append(dest, &vals[i])
-		}
-		dest = append(dest, &netAmt, &r.returnsInternal)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("MaterializeReturns transactions scan: %w", err)
 		}
+		r := cur
 		r.kind = canonical.TxKind(kind)
-		for _, v := range vals {
-			r.vals = append(r.vals, nullStringToPtr(v))
+		r.vals = make([]*string, len(vals))
+		for i, v := range vals {
+			r.vals[i] = nullStringToPtr(v)
 		}
 		r.netAmt = nullStringToPtr(netAmt)
 		out = append(out, r)
