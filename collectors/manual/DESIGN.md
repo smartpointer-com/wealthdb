@@ -1,6 +1,6 @@
 # manual — design notes
 
-`load.py` validates three hand-maintained CSVs into a SQLite silver against the
+`load.py` validates a few hand-maintained CSVs into a SQLite silver against the
 synthetic [examples/](examples/) (`tests/`); the gold adapter
 ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
 §6) loads the manual source into gold, so it shows up in `wealthdb holdings positions`.
@@ -123,8 +123,7 @@ accounts existed and remains right for a book with one owner and one wrapper.
   notes; the principal is the cost-basis valuation at `acquired_at`);
   private_equity `{ownership_pct, share_cnt,
   fiduciary, converted_from_position_id?}`; private_fund `{role, commitment}`
-  (an LP interest — capital calls are `contribution` txns, distributions are
-  `distribution` txns).
+  (an LP interest; the capital paid in rides in `cost_basis.csv`).
 
 **valuations.csv** — the periodic mark-to-market series.
 `position_id, as_of_date, value, currency, notes, payload`
@@ -158,13 +157,15 @@ position-side**, no transaction:
 
 SQLite + JSON1, mirroring the bronze CSV shape one-to-one. Realized in
 [migrations/0001_initial.sql](migrations/0001_initial.sql), extended by
-[0003_accounts.sql](migrations/0003_accounts.sql).
+[0003_accounts.sql](migrations/0003_accounts.sql) and
+[0004_cost_basis.sql](migrations/0004_cost_basis.sql).
 
 | Table | Grain | Notes |
 |---|---|---|
 | `accounts` | `id` | `display_name`, `account_kind`, `tax_wrapper`, `management_style`, `notes`, `payload`. Optional (migration 0003): the sleeve a position is held in. |
 | `positions` | `id` | `account_id` (NULL → the default account), `kind`, `display_name`, `currency`, `acquired_at`, `closed_at` (NULL = held), `notes`, `payload`. |
-| `valuations` | (`position_id`, `as_of_date`) | `value`, `currency`, `notes`, `payload`. The per-date mark series; the row dated at the position's `acquired_at` is the cost basis. |
+| `valuations` | (`position_id`, `as_of_date`) | `value`, `currency`, `notes`, `payload`. The per-date mark series; the row dated at the position's `acquired_at` is the cost basis, unless `cost_basis` covers the position. |
+| `cost_basis` | (`position_id`, `as_of_date`) | `amount`, `currency`, `notes`. Optional (migration 0004): the capital paid in as of a date, gross of any paid back. |
 | `load_runs` | — (append-only) | Audit log: `load_at`, schema version, `bronze_dir`, row counts, `payload`. No idempotency gate (full rebuild each run). |
 | `schema_meta` | `silver_schema_version` | collectorkit migration bookkeeping. |
 
@@ -206,8 +207,11 @@ position's; a `valuations` `position_id` absent from `positions.csv`; a
 `account_kind`, `tax_wrapper` or `management_style` outside the canonical
 vocabulary (mirrored from `internal/canonical/enums.go` — a collectorkit
 test pins the two copies together); a position naming an `account_id` no
-account declares. It **warns** but loads when a valuation predates the
-position's `acquired_at`.
+account declares. From `cost_basis.csv`, the same checks as a valuation:
+a `position_id` absent from `positions.csv`, a duplicate (position, date),
+a currency that disagrees with the position's, a negative or non-numeric
+`amount`. It **warns** but loads when a valuation predates the position's
+`acquired_at`.
 
 ## 6. Gold mapping
 
@@ -247,9 +251,13 @@ latest `snapshot_at ≤` the query date per source, then all its positions — i
 correct at any historical date:
 - `market_value` = latest `valuations.value` with `as_of_date ≤` the snapshot
   date (forward-filled); the position drops out after `closed_at`.
-- `book_value` = the valuation dated at the position's `acquired_at` (the cost
-  basis). Constant while market moves — real estate shows purchase price vs.
+- `book_value` = for a position `cost_basis` covers, its latest entry with
+  `as_of_date ≤` the snapshot date (none before the first entry): a fund
+  commitment shows the capital called so far, not the commitment. Otherwise
+  the valuation dated at the position's `acquired_at` (the cost basis),
+  constant while market moves — real estate shows purchase price vs.
   current appraisal; a note / loan / escrow held at par shows book == market.
+  Every `cost_basis` date is a snapshot date too.
 - `quantity` = NULL — none of these are unit-denominated; they're valued by
   amount (the way carta values a fund LP interest by NAV, not units).
 - `acquisition_date` = `acquired_at`.

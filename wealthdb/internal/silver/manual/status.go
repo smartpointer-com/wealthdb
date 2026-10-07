@@ -11,16 +11,13 @@ import (
 // Silver dates are source ISO TEXT (calendar dates); strftime('%s', …)
 // converts them to the canonical unix seconds the gold contract uses.
 
-// snapshotExtrema is the MIN/MAX position event date — the union of every
-// position's acquired_at + closed_at and every valuation's as_of_date. The
+// snapshotExtrema is the MIN/MAX holding event date (eventDates). The
 // timeline runs from the earliest acquisition (which can be years before the
 // latest load) to the latest valuation. The manual collector records no
 // transactions, so the window spans only this snapshot stream.
-const snapshotExtrema = `
-SELECT MIN(t), MAX(t) FROM (
-    SELECT CAST(strftime('%s', acquired_at) AS INTEGER) AS t FROM positions
-    UNION ALL SELECT CAST(strftime('%s', closed_at)  AS INTEGER) FROM positions WHERE closed_at IS NOT NULL
-    UNION ALL SELECT CAST(strftime('%s', as_of_date) AS INTEGER) FROM valuations)`
+func (c *Connection) snapshotExtrema() string {
+	return `SELECT MIN(t), MAX(t) FROM (` + c.eventDates() + `)`
+}
 
 // Status reports the content snapshot range and pins LatestChangeNumber to
 // MAX(load_runs.load_at). The manual collector rebuilds silver from the CSVs
@@ -36,7 +33,7 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 		LatestChangeNumber:  -1,
 	}
 	var oldS, newS sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, snapshotExtrema).Scan(&oldS, &newS); err != nil {
+	if err := c.db.QueryRowContext(ctx, c.snapshotExtrema()).Scan(&oldS, &newS); err != nil {
 		return s, fmt.Errorf("manual Status snapshot: %w", err)
 	}
 	if oldS.Valid {
@@ -75,7 +72,7 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 	}
 
 	var start, end sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, snapshotExtrema).Scan(&start, &end); err != nil {
+	if err := c.db.QueryRowContext(ctx, c.snapshotExtrema()).Scan(&start, &end); err != nil {
 		return w, fmt.Errorf("manual ChangeWindow span: %w", err)
 	}
 	w.NewChangeNumber = latestLoad.Int64

@@ -8,7 +8,7 @@ A catch-all collector for **private holdings that have no bank or portal
 behind them** — directly-held real estate, convertible loan agreements
 (CLAs) into private companies, and direct equity in a private LLC (a German
 GmbH / Swiss AG). Every other collector scrapes or calls a source; this one
-has **no source**. Three hand-maintained CSVs are the input; `load` validates
+has **no source**. A few hand-maintained CSVs are the input; `load` validates
 them and projects them into a SQLite silver.
 
 > `load` is exercised against the synthetic [examples/](examples/), and the
@@ -129,7 +129,16 @@ fails with the CSV row number in hand rather than landing unnoticed in gold.
 per as-of date). Columns: `position_id`, `as_of_date`, `value`, `currency`,
 `notes`, `payload`. The asset's value as of a date is the latest row on or
 before it; the valuation dated at the position's `acquired_at` is its cost
-basis (gold's book value).
+basis (gold's book value), unless `cost_basis.csv` covers the position.
+
+**cost_basis.csv** — optional. The capital paid into a position as of a
+date, for a holding whose cost is not its first valuation: a fund
+commitment paid in over several capital calls, say. Columns:
+`position_id`, `as_of_date`, `amount`, `currency`, `notes`. Each row is
+the total paid in so far, gross of any capital paid back. A position with
+rows here takes its book value from them: the latest row on or before the
+date, and none before the first row. Positions without rows keep the
+valuation at `acquired_at`.
 
 > **No transactions.** The collector tracks positions + valuations only. The
 > wires that fund a purchase, pay a fee, or return a distribution are real
@@ -170,6 +179,10 @@ no way to get a half-applied change: fix the line, run it again.
 `valuations.csv` dated *exactly* its `acquired_at` — that first valuation is
 the cost basis, and without it the holding has none. Then add marks as they
 arrive.
+
+**Record a capital call.** For a commitment paid in over time, add a row
+to `cost_basis.csv` on each call date with the total paid in so far. The
+book value then follows the capital called, not the commitment.
 
 **Re-mark it.** One row in `valuations.csv` per (asset, date). The value on
 any date is the latest row on or before it, so marks carry forward: a

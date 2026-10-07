@@ -39,9 +39,10 @@ func openAdapter(t *testing.T, path string) silver.Connection {
 }
 
 // seed builds an event-sourced book exercising every forward-fill path: p1
-// has an investment (cost), an annual K-1 statement (tax basis), then the
-// current valuation (FMV); p2 first appears at its investment; p3 is exited
-// at its final statement (is_open=0).
+// has an investment (cost), an annual K-1 statement (tax basis, whose
+// cumulative contributions differ from the portal's), then the current
+// valuation (FMV); p2 first appears at its investment; p3 is exited at its
+// final statement (is_open=0).
 func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.Exec(`
@@ -55,7 +56,7 @@ func seed(t *testing.T, db *sql.DB) {
             contributed_minor, snapshot_at) VALUES
             -- p1: investment (cost) -> K-1 statement (tax basis) -> current FMV
             ('p1', 100,  'investment', NULL,     1, 'USD', 40000, 'cost',      40000, 1000),
-            ('p1', 200,  'statement',  NULL,     1, 'USD', 60000, 'tax_basis', 40000, 1000),
+            ('p1', 200,  'statement',  NULL,     1, 'USD', 60000, 'tax_basis', 38800, 1000),
             ('p1', 1000, 'valuation',  'live',   1, 'USD', 90000, 'fmv',       40000, 1000),
             -- p2: first appears at its investment, then current FMV
             ('p2', 200,  'investment', NULL,     1, 'USD', 20000, 'cost',      20000, 1000),
@@ -199,6 +200,20 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 	if mv := posByT[200]["p1"].MarketValue; mv == nil || mv.StringFixed(2) != "600.00" {
 		t.Errorf("t=200 p1 market_value = %v, want 600.00 (tax basis)", mv)
+	}
+	// The book value stays the portal's contributed capital; the K-1's
+	// cumulative contributions ride in the payload as tax-basis capital.
+	for _, at := range []int64{200, 1000} {
+		p := posByT[at]["p1"]
+		if bv := p.BookValue; bv == nil || bv.StringFixed(2) != "400.00" {
+			t.Errorf("t=%d p1 book_value = %v, want 400.00 (portal contributed)", at, bv)
+		}
+		if got := string(p.Payload); got != `{"tax_basis_contributed":"388"}` {
+			t.Errorf("t=%d p1 payload = %s, want the K-1 contributions as tax_basis_contributed", at, got)
+		}
+	}
+	if p := posByT[100]["p1"]; p.Payload != nil {
+		t.Errorf("t=100 p1 payload = %s, want none before the first K-1", p.Payload)
 	}
 	// Taxonomy: a multi-company private fund keeps the private_equity
 	// exposure but rides the pooled-fund vehicle -> (private_equity, fund).

@@ -2,7 +2,7 @@
 """manual — load hand-maintained private-holding CSVs into a SQLite silver.
 
 The "manual" collector is the odd one out in wealthdb: there is **no source
-to fetch from**. Bronze is three hand-maintained CSV files in $XDG_DATA_HOME/wealthdb/manual/ for private holdings that have no
+to fetch from**. Bronze is a few hand-maintained CSV files in $XDG_DATA_HOME/wealthdb/manual/ for private holdings that have no
 bank or portal behind them — real estate, direct private-company equity,
 convertible notes, fund LP interests, single-deal SPVs, and other illiquid
 positions (e.g. a receivable). The position `kind` is the
@@ -18,11 +18,13 @@ banks. See DESIGN.md §6.
 
 There is therefore no `login` and no `download` step — only `load`:
 
-  1. Read accounts.csv / positions.csv / valuations.csv. accounts.csv is
-     optional: without it every position lands in one account, which is
-     what this collector did before accounts existed. With it, a book
-     can span tax sleeves — a holding under one wrapper beside one held
-     outright — without a second silver source per sleeve.
+  1. Read accounts.csv / positions.csv / valuations.csv / cost_basis.csv.
+     accounts.csv is optional: without it every position lands in one
+     account. With it, a book can span tax sleeves — a holding under one
+     wrapper beside one held outright — without a second silver source per
+     sleeve. cost_basis.csv is optional too: a paid-in series for a
+     position whose cost is not the valuation at its acquired_at, such as
+     a fund commitment paid in over time.
   2. Validate aggressively (bad rows fail loudly with file:row:column
      context — never silently dropped).
   3. Rebuild the SQLite silver from the current CSVs (full truncate-reload,
@@ -159,6 +161,8 @@ POSITIONS_REQUIRED = ["id", "kind", "display_name", "currency", "acquired_at"]
 POSITIONS_OPTIONAL = ["closed_at", "notes", "payload", "vehicle", "account_id"]
 VALUATIONS_REQUIRED = ["position_id", "as_of_date", "value", "currency"]
 VALUATIONS_OPTIONAL = ["notes", "payload"]
+COST_BASIS_REQUIRED = ["position_id", "as_of_date", "amount", "currency"]
+COST_BASIS_OPTIONAL = ["notes"]
 
 
 class LoadError(SystemExit):
@@ -405,6 +409,41 @@ def validate_valuations(rows: list[dict], positions: dict[str, dict],
     return out
 
 
+def validate_cost_basis(rows: list[dict], positions: dict[str, dict],
+                        ) -> list[dict]:
+    """The optional paid-in series: the capital paid into a position as of a
+    date, gross of any paid back. Where a position has one, gold takes its
+    book value from it instead of the valuation at acquired_at."""
+    fname = "cost_basis.csv"
+    out: list[dict] = []
+    seen: set[tuple[str, date]] = set()
+    for r in rows:
+        n = r["_row"]
+        pid = _req(fname, n, "position_id", r["position_id"])
+        pos = positions.get(pid)
+        if pos is None:
+            _fail(fname, n, "position_id",
+                  "references a position not in positions.csv", pid)
+        as_of = _date(fname, n, "as_of_date", r["as_of_date"])
+        if (pid, as_of) in seen:
+            _fail(fname, n, "as_of_date",
+                  f"duplicate cost basis for position {pid} on {as_of}")
+        seen.add((pid, as_of))
+        ccy = _currency(fname, n, "currency", r["currency"])
+        if ccy != pos["currency"]:
+            _fail(fname, n, "currency",
+                  f"currency {ccy} != position {pid} currency "
+                  f"{pos['currency']}")
+        out.append({
+            "position_id": pid,
+            "as_of_date": as_of,
+            "amount": _decimal(fname, n, "amount", r["amount"]),
+            "currency": ccy,
+            "notes": r["notes"].strip() or None,
+        })
+    return out
+
+
 # ----------------------------------------------------------------------
 # SQLite silver.
 # ----------------------------------------------------------------------
@@ -428,17 +467,21 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
                                POSITIONS_REQUIRED, POSITIONS_OPTIONAL)
     valuations_rows = _read_csv(bronze_dir / "valuations.csv",
                                 VALUATIONS_REQUIRED, VALUATIONS_OPTIONAL)
+    cost_basis_rows = _read_csv(bronze_dir / "cost_basis.csv",
+                                COST_BASIS_REQUIRED, COST_BASIS_OPTIONAL)
 
     if not positions_rows:
         log.warning("no positions.csv (or it is empty) in %s — nothing to "
                     "load", bronze_dir)
-        return {"accounts": 0, "positions": 0, "valuations": 0}
+        return {"accounts": 0, "positions": 0, "valuations": 0,
+                "cost_basis": 0}
 
     # Validate everything BEFORE touching silver, so a bad row never leaves
     # a half-rebuilt DB.
     accounts = validate_accounts(accounts_rows)
     positions = validate_positions(positions_rows, accounts)
     valuations = validate_valuations(valuations_rows, positions)
+    cost_basis = validate_cost_basis(cost_basis_rows, positions)
     # An account nothing is held in projects no gold account, so it is a
     # typo or a leftover rather than an empty sleeve worth carrying.
     held = {p["account_id"] for p in positions.values()}
@@ -448,6 +491,7 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
 
     conn.execute("BEGIN")
     try:
+        conn.execute("DELETE FROM cost_basis")
         conn.execute("DELETE FROM valuations")
         conn.execute("DELETE FROM positions")
         conn.execute("DELETE FROM accounts")
@@ -477,9 +521,17 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
               v["currency"], v["notes"], json.dumps(v["payload"]))
              for v in valuations],
         )
+        conn.executemany(
+            "INSERT INTO cost_basis (position_id, as_of_date, amount, "
+            "currency, notes) VALUES (?, ?, ?, ?, ?)",
+            [(c["position_id"], c["as_of_date"].isoformat(), str(c["amount"]),
+              c["currency"], c["notes"])
+             for c in cost_basis],
+        )
         counts = {"accounts": len(accounts),
                   "positions": len(positions),
-                  "valuations": len(valuations)}
+                  "valuations": len(valuations),
+                  "cost_basis": len(cost_basis)}
         conn.execute(
             "INSERT INTO load_runs (load_at, silver_schema_version, "
             "bronze_dir, positions_total, valuations_total, payload) "

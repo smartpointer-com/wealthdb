@@ -46,17 +46,12 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	return silver.NewSnapshotStream(batches), nil
 }
 
-// snapshotTimesInWindow are the distinct event dates in the window: the union
-// of every position's acquired_at + closed_at and every valuation's as_of_date
-// (silver ISO TEXT → unix seconds). load_runs.load_at is the load time, not a
-// holding event, so it is excluded.
+// snapshotTimesInWindow are the distinct holding event dates in the window
+// (eventDates; silver ISO TEXT → unix seconds). load_runs.load_at is the load
+// time, not a holding event, so it is excluded.
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	const q = `
-SELECT DISTINCT t FROM (
-    SELECT CAST(strftime('%s', acquired_at) AS INTEGER) AS t FROM positions
-    UNION SELECT CAST(strftime('%s', closed_at)  AS INTEGER) FROM positions WHERE closed_at IS NOT NULL
-    UNION SELECT CAST(strftime('%s', as_of_date) AS INTEGER) FROM valuations
-)
+	q := `
+SELECT DISTINCT t FROM (` + c.eventDates() + `)
 WHERE t BETWEEN ? AND ?
 ORDER BY t`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -76,10 +71,9 @@ ORDER BY t`
 }
 
 // buildBatch materialises the full portfolio as of event date t: every
-// position live at t, marked at its latest valuation on/before t, with the
-// valuation dated at acquired_at as its cost basis. Emits one position + one
-// instrument per live position, plus one account per account those positions
-// are held in.
+// position live at t, marked at its latest valuation on/before t, with its
+// cost basis (bookValueSQL). Emits one position + one instrument per live
+// position, plus one account per account those positions are held in.
 //
 // Only accounts holding something at t are emitted. Gold reads a snapshot as
 // the complete state of the source at that date, so an account with nothing
@@ -87,33 +81,29 @@ ORDER BY t`
 // that held no value on a date it may not have existed.
 func (c *Connection) buildBatch(ctx context.Context, t int64) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
-	const q = `
+	q := `
 SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
        p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.display_name, ''),
        CAST(strftime('%s', p.acquired_at) AS INTEGER) AS acq_unix,
        p.payload,
        (SELECT v.value FROM valuations v
          WHERE v.position_id = p.id
-           AND CAST(strftime('%s', v.as_of_date) AS INTEGER) <= ?
+           AND CAST(strftime('%s', v.as_of_date) AS INTEGER) <= ?1
          ORDER BY CAST(strftime('%s', v.as_of_date) AS INTEGER) DESC
          LIMIT 1) AS market_value,
-       (SELECT v.value FROM valuations v
-         WHERE v.position_id = p.id
-           AND CAST(strftime('%s', v.as_of_date) AS INTEGER)
-               = CAST(strftime('%s', p.acquired_at) AS INTEGER)
-         LIMIT 1) AS book_value
+       ` + c.bookValueSQL() + ` AS book_value
   FROM positions p
- WHERE CAST(strftime('%s', p.acquired_at) AS INTEGER) <= ?
+ WHERE CAST(strftime('%s', p.acquired_at) AS INTEGER) <= ?1
    AND (p.closed_at IS NULL
-        OR CAST(strftime('%s', p.closed_at) AS INTEGER) > ?)
+        OR CAST(strftime('%s', p.closed_at) AS INTEGER) > ?1)
  ORDER BY p.id`
-	rows, err := c.db.QueryContext(ctx, q, t, t, t)
+	rows, err := c.db.QueryContext(ctx, q, t)
 	if err != nil {
 		return batch, fmt.Errorf("buildBatch: %w", err)
 	}
 	defer rows.Close()
 
-	any := false
+	live := false
 	held := map[string]bool{}
 	for rows.Next() {
 		var (
@@ -125,7 +115,7 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 			&acqUnix, &payload, &marketValue, &bookValue); err != nil {
 			return batch, err
 		}
-		any = true
+		live = true
 		held[acctID] = true
 		ac := assetClassFor(kind)
 		acNew, veh := taxonomyFor(kind, vehicle)
@@ -145,9 +135,8 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 			// unit count (real estate, a loan, a whole-company stake, an LP
 			// interest — none is unit-denominated).
 		}
-		// market_value = latest valuation ≤ t (forward-filled). book_value =
-		// the valuation dated at acquired_at (the cost basis); held constant
-		// while market moves. A liability kind (mortgage) is entered as a
+		// market_value = latest valuation ≤ t (forward-filled); book_value =
+		// the cost basis (bookValueSQL). A liability kind (mortgage) is entered as a
 		// positive outstanding balance — "direction comes from kind" — so we
 		// negate it here, matching the gold convention that liability positions
 		// carry a negative market_value and net against assets in rollups.
@@ -185,7 +174,7 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 	if err := rows.Err(); err != nil {
 		return batch, err
 	}
-	if !any {
+	if !live {
 		return batch, nil // nothing held at t
 	}
 
@@ -195,6 +184,30 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 	}
 	batch.Accounts = accounts
 	return batch, nil
+}
+
+// bookValueSQL is the SQL for a position's cost basis at t, inside buildBatch's
+// query over positions p. A position the cost_basis series covers takes its
+// latest entry on or before t: the capital paid in so far, which for a
+// commitment paid in over time is less than the commitment. It has none
+// before its first entry. Any other position takes the valuation dated at its
+// acquired_at, held constant while the market moves: the price of a bought
+// asset. It reads t from the query's ?1.
+func (c *Connection) bookValueSQL() string {
+	atAcquisition := `(SELECT v.value FROM valuations v
+         WHERE v.position_id = p.id
+           AND CAST(strftime('%s', v.as_of_date) AS INTEGER)
+               = CAST(strftime('%s', p.acquired_at) AS INTEGER)
+         LIMIT 1)`
+	if !c.costBasis {
+		return atAcquisition
+	}
+	return `CASE WHEN EXISTS (SELECT 1 FROM cost_basis cb WHERE cb.position_id = p.id)
+         THEN (SELECT cb.amount FROM cost_basis cb
+                WHERE cb.position_id = p.id
+                  AND CAST(strftime('%s', cb.as_of_date) AS INTEGER) <= ?1
+                ORDER BY cb.as_of_date DESC LIMIT 1)
+         ELSE ` + atAcquisition + ` END`
 }
 
 // accountsFor is one AccountChange per account holding something at t.

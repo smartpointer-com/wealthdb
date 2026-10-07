@@ -193,6 +193,13 @@ SELECT COALESCE(NULLIF(slug, ''), '') FROM (
 // invest account and one instrument per held position (the SPV stake — gold's
 // position FK is satisfied and the account/instrument seen-range merges
 // across batches).
+//
+// The value is the latest event's mark, whichever source states it. The book
+// value is the capital contributed as the portal states it, on its latest
+// event on/before t. A K-1 states cumulative contributions too, but on the
+// partnership's tax basis, which can differ from the portal's figure; it
+// rides in the payload as tax_basis_contributed, so the book value does not
+// move between the two as the latest event changes.
 func (c *Connection) buildBatch(ctx context.Context, t int64, account string) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	if account == "" {
@@ -201,7 +208,17 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, account string) (c
 	const q = `
 SELECT ps.position_external_id,
        COALESCE(ps.currency, o.currency, 'USD'),
-       ps.market_value_minor, ps.contributed_minor,
+       ps.market_value_minor,
+       (SELECT contributed_minor FROM position_snapshots p
+         WHERE p.position_external_id = ps.position_external_id
+           AND p.event_type IN ('investment', 'valuation')
+           AND p.as_of_date <= ?1
+         ORDER BY p.as_of_date DESC LIMIT 1),
+       (SELECT contributed_minor FROM position_snapshots k
+         WHERE k.position_external_id = ps.position_external_id
+           AND k.event_type = 'statement' AND k.valuation_basis = 'tax_basis'
+           AND k.as_of_date <= ?1
+         ORDER BY k.as_of_date DESC LIMIT 1),
        COALESCE(o.kind, ''), COALESCE(o.company_name, ''),
        o.investment_date, COALESCE(o.payload, '')
   FROM position_snapshots ps
@@ -209,7 +226,7 @@ SELECT ps.position_external_id,
  WHERE ps.is_open = 1
    AND ps.as_of_date = (SELECT MAX(as_of_date) FROM position_snapshots s2
                          WHERE s2.position_external_id = ps.position_external_id
-                           AND s2.as_of_date <= ?)
+                           AND s2.as_of_date <= ?1)
  ORDER BY ps.position_external_id`
 	rows, err := c.db.QueryContext(ctx, q, t)
 	if err != nil {
@@ -217,17 +234,18 @@ SELECT ps.position_external_id,
 	}
 	defer rows.Close()
 
-	any := false
+	held := false
 	for rows.Next() {
 		var (
-			pid, currency, kind, company, payl string
-			marketMinor, contribMinor, invDate sql.NullInt64
+			pid, currency, kind, company, payl  string
+			marketMinor, contribMinor, taxMinor sql.NullInt64
+			invDate                             sql.NullInt64
 		)
-		if err := rows.Scan(&pid, &currency, &marketMinor, &contribMinor,
+		if err := rows.Scan(&pid, &currency, &marketMinor, &contribMinor, &taxMinor,
 			&kind, &company, &invDate, &payl); err != nil {
 			return batch, err
 		}
-		any = true
+		held = true
 		instKey := pid
 		acNew, vehicle := taxonomyForKind(kind)
 		change := canonical.PositionChange{
@@ -241,6 +259,10 @@ SELECT ps.position_external_id,
 			MarketValue:          minorPtr(marketMinor),
 			BookValue:            minorPtr(contribMinor),
 			AcquisitionDate:      silver.DatePtrFromNullUnix(invDate),
+		}
+		if tax := minorPtr(taxMinor); tax != nil {
+			change.Payload = silver.PayloadWith("{}", map[string]any{
+				"tax_basis_contributed": tax.String()})
 		}
 		batch.Positions = append(batch.Positions, change)
 
@@ -262,7 +284,7 @@ SELECT ps.position_external_id,
 	if err := rows.Err(); err != nil {
 		return batch, err
 	}
-	if !any {
+	if !held {
 		return batch, nil // nothing held at t
 	}
 

@@ -36,7 +36,8 @@ def _write(d: Path, name: str, text: str) -> None:
 def test_load_examples(tmp_path):
     conn = _fresh_db(tmp_path)
     counts = loader.load(conn, EXAMPLES)
-    assert counts == {"accounts": 2, "positions": 7, "valuations": 15}
+    assert counts == {"accounts": 2, "positions": 8, "valuations": 17,
+                      "cost_basis": 3}
 
     # Every position kind in the examples is an accepted kind.
     kinds = {r[0] for r in conn.execute(
@@ -62,8 +63,9 @@ def test_load_is_idempotent(tmp_path):
     loader.load(conn, EXAMPLES)
     loader.load(conn, EXAMPLES)
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
-    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 7
-    assert conn.execute("SELECT COUNT(*) FROM valuations").fetchone()[0] == 15
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 8
+    assert conn.execute("SELECT COUNT(*) FROM valuations").fetchone()[0] == 17
+    assert conn.execute("SELECT COUNT(*) FROM cost_basis").fetchone()[0] == 3
     # load_runs is an append-only audit log.
     assert conn.execute("SELECT COUNT(*) FROM load_runs").fetchone()[0] == 2
 
@@ -169,6 +171,41 @@ def test_valuation_currency_must_match_position(tmp_path):
            "p-1,2020-01-01,100,USD\n")
     conn = _fresh_db(tmp_path)
     with pytest.raises(loader.LoadError, match=r"currency USD != position"):
+        loader.load(conn, tmp_path)
+
+
+def test_cost_basis_series_loads_and_is_validated(tmp_path):
+    # cost_basis.csv is optional; when present each row is checked like a
+    # valuation: a known position, its currency, one row per date.
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at\n"
+           "pf-1,private_fund,Fund X,USD,2020-01-01\n")
+    _write(tmp_path, "cost_basis.csv",
+           "position_id,as_of_date,amount,currency,notes\n"
+           "pf-1,2020-01-01,100,USD,first call\n"
+           "pf-1,2021-01-01,250.50,USD,\n")
+    conn = _fresh_db(tmp_path)
+    assert loader.load(conn, tmp_path)["cost_basis"] == 2
+    assert [tuple(r) for r in conn.execute(
+        "SELECT as_of_date, amount, currency, notes FROM cost_basis "
+        "ORDER BY as_of_date")] == [
+        ("2020-01-01", "100", "USD", "first call"),
+        ("2021-01-01", "250.50", "USD", None)]
+
+
+@pytest.mark.parametrize("row, err", [
+    ("pf-2,2020-01-01,100,USD", r"references a position not in positions\.csv"),
+    ("pf-1,2020-01-01,100,CHF", r"currency CHF != position"),
+    ("pf-1,2020-01-01,-5,USD", r"positive magnitude"),
+])
+def test_cost_basis_rejects_bad_rows(tmp_path, row, err):
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at\n"
+           "pf-1,private_fund,Fund X,USD,2020-01-01\n")
+    _write(tmp_path, "cost_basis.csv",
+           "position_id,as_of_date,amount,currency\n" + row + "\n")
+    conn = _fresh_db(tmp_path)
+    with pytest.raises(loader.LoadError, match=err):
         loader.load(conn, tmp_path)
 
 
@@ -283,7 +320,8 @@ def test_a_book_with_no_accounts_file_still_loads(tmp_path):
     conn = _fresh_db(tmp_path)
     counts = loader.load(conn, _write_book(
         tmp_path, accounts=None, positions=positions, valuations=valuations))
-    assert counts == {"accounts": 1, "positions": 1, "valuations": 1}
+    assert counts == {"accounts": 1, "positions": 1, "valuations": 1,
+                      "cost_basis": 0}
     assert conn.execute(
         "SELECT account_id FROM positions").fetchone()[0] == loader.DEFAULT_ACCOUNT_ID
     assert conn.execute(

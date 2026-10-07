@@ -6,3 +6,4 @@ cla-002,manual,convertible_note,convertible_note,Swiss CLA #2,CHF,2023-02-01,202
 gmbh-001,manual,private_equity,stock,GmbH X,EUR,2020-11-20,,Direct minority stake,"{""share_class"": ""common"", ""ownership_pct"": 10, ""company"": ""GmbH X""}"
 gmbh-002,manual,private_equity,stock,AG Y (ex-CLA #2),CHF,2024-07-01,,Equity from CLA #2 conversion,"{""share_class"": ""common"", ""ownership_pct"": 8, ""company"": ""Swiss Startup AG #2"", ""converted_from_position_id"": ""cla-002""}"
 pe-001,sleeve-b,private_equity,stock,Example Holdings Inc,USD,2018-03-01,,Held in the second sleeve; marks derived,"{""shares"": 1000, ""marks"": ""derived""}"
+pf-001,sleeve-b,private_fund,,Example Fund LP,USD,2021-03-01,,"LP interest; capital called over time (see cost_basis.csv)","{""commitment"": 500000}"
