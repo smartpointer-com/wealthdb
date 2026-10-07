@@ -245,6 +245,19 @@ completeness), idempotent by content sha. K-1 rows link to a vehicle by
 company name (exact for single-SPV companies). Note `Ending Capital` is
 **tax basis**, not FMV; distributions appear under Line 19(a).
 
+Three more K-1 lines have their own columns (migration 0008), because
+cost basis and realized gains read them:
+
+- `property_distributions_minor` — Line 19(c), property distributed in
+  kind (such as shares at an in-kind exit). It reduces the partner's
+  basis in the vehicle, as Line 19(a) does for cash.
+- `short_term_gain_minor` — Line 8, net short-term capital gain (loss).
+- `long_term_gain_minor` — Line 9(a), net long-term capital gain (loss).
+
+Each holds the K-1 figure as printed, in minor units. A blank cell, or a
+row without the cell, is NULL. The migration fills rows already on disk
+from `payload`, so they need no re-parse.
+
 **Download (built).** The file endpoints (`/k1_packets/<id>/{download,csv}`,
 `/financial_reports/<id>/download`) accept a cookie GET but need a fresher
 session than GraphQL — a stale cookie 404s to the login wall. `download.py`

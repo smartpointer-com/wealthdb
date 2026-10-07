@@ -1,13 +1,15 @@
-"""Unit tests for load.py (event-sourced model, schema v7).
+"""Unit tests for load.py (event-sourced model, schema v8).
 
 Synthetic bronze (captures.jsonl) + synthetic K-1 CSV → SQLite silver. Covers:
-  * migrations apply (schema_meta v7)
+  * migrations apply (schema_meta v8)
   * GraphQL -> offerings (immutable identity) + vehicles + kind
   * position_snapshots: 'investment' (cost, at investment date) +
     'valuation' (FMV at the portfolio data date) events, with the
     collector-computed market_value_minor + valuation_basis
   * portfolio_summary + portfolio_timeseries + commitments
-  * K-1 money parsing + CSV -> k1_capital_accounts / tax_documents
+  * K-1 money parsing + CSV -> k1_capital_accounts / tax_documents,
+    including the property-distribution and gain lines and their
+    migration backfill from payload
   * K-1 'statement' events fed into position_snapshots; SPV identity
     (fund_name / fund_tax_id) stamped onto the offering
   * idempotent reload (no duplicate snapshots)
@@ -124,7 +126,7 @@ def test_load_basic(tmp_path):
         dashboard_capture(), commitments_capture()])
     assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
     c = sqlite3.connect(db)
-    assert c.execute("SELECT MAX(silver_schema_version) FROM schema_meta").fetchone()[0] == 7
+    assert c.execute("SELECT MAX(silver_schema_version) FROM schema_meta").fetchone()[0] == 8
 
     # offerings: immutable identity, kind from the guid suffix
     kinds = dict(c.execute("SELECT position_external_id, kind FROM offerings").fetchall())
@@ -194,7 +196,7 @@ def test_a_position_with_no_dated_mark_takes_cost(tmp_path):
 
 def test_parse_money_cents():
     assert load.parse_money_cents("$1,234.56") == 123456
-    assert load.parse_money_cents("$-7,994") == -799400
+    assert load.parse_money_cents("$-2,953") == -295300
     assert load.parse_money_cents("(1,234)") == -123400
     assert load.parse_money_cents("0") == 0
     assert load.parse_money_cents("") is None
@@ -232,6 +234,131 @@ def test_k1_documents(tmp_path):
         "AND event_type='statement'").fetchone()
     assert st == (105000, "tax_basis", 100000, "2023-12-31")
     c.close()
+
+
+# A K-1 CSV with the basis and gain lines, between other tax lines as in a
+# real package. The long-term line spells its letter in capitals, which some
+# packages do. Rows: an in-kind exit year (property distribution + both
+# gains), a year with none of the three, and a "Not Issuing" row that stops
+# after its notes.
+K1_LINES_HDR = ["Portfolio Company", "Fund", "K-1 Status", "Notes",
+                "Beginning Capital", "Contributions",
+                "Current Year Net Income (Loss)", "Other Increase (Decrease)",
+                "Withdrawals & Distributions",
+                "Line 8 - Net Short-Term Capital Gain (Loss)",
+                "Line 9(A) - Net Long-Term Capital Gain (Loss)",
+                "Line 9(B) - Collectibles (28%) Gain (Loss)",
+                "Line 13(F) - Capital Gain Property (20%)",
+                "Line 19(a) - Cash Distributions",
+                "Line 19(c) - Property Distributions",
+                "Ending Capital", "Ending Capital %", "Final K-1?",
+                "Fund Tax ID Number"]
+K1_LINES_ROWS = [
+    ["Alpha Co", "SPV Alpha, a series of X, LP", "Issued", "",
+     "$1,000", "$0", "$2,500", "", "$3,500", "($120)", "$2,620.50", "$9",
+     "$7", "$100", "$3,400", "$0", "0.0", "Yes", "12-0000001"],
+    ["Beta Co", "SPV Beta, a series of X, LP", "Issued", "",
+     "$0", "$2,000", "$-50", "", "", "", "", "", "", "", "",
+     "$1,950", "1.0", "No", "12-0000002"],
+    ["Gamma Co", "SPV Gamma, a series of X, LP", "Not Issuing", "No activity"],
+]
+
+
+def write_k1_lines_csv(docs_dir):
+    docs_dir = Path(docs_dir)
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    with open(docs_dir / "Synthetic 2024 Consolidated Schedule K-1 Package.csv",
+              "w", newline="") as f:
+        csv.writer(f).writerows([K1_LINES_HDR, *K1_LINES_ROWS])
+
+
+def _k1_lines(db):
+    c = sqlite3.connect(db)
+    try:
+        return {r[0]: r[1:] for r in c.execute(
+            "SELECT portfolio_company, property_distributions_minor, "
+            "short_term_gain_minor, long_term_gain_minor, cash_distributions_minor "
+            "FROM k1_capital_accounts")}
+    finally:
+        c.close()
+
+
+K1_LINES_EXPECTED = {
+    "Alpha Co": (340000, -12000, 262050, 10000),
+    "Beta Co": (None, None, None, None),
+    "Gamma Co": (None, None, None, None),
+}
+
+
+def test_k1_basis_and_gain_lines(tmp_path):
+    """Lines 19(c), 8 and 9(a) land in their own columns, in minor units, as
+    printed; a blank cell or a row without the cell is NULL, never 0. The
+    neighbouring 9(b) and 13(f) gain lines do not leak into them."""
+    db = tmp_path / "angellist.db"
+    write_k1_lines_csv(tmp_path / "docs")
+    assert load.main(["--bronze-dir", str(tmp_path / "bronze"), "--silver-db", str(db),
+                      "--documents-dir", str(tmp_path / "docs")]) == 0
+    assert _k1_lines(db) == K1_LINES_EXPECTED
+
+
+def test_k1_lines_backfill_from_payload(tmp_path):
+    """A K-1 row loaded under schema v7 holds the three lines only in its
+    payload. Migration 0008 fills the columns from there, and the unchanged
+    CSV is not re-parsed, so the upgraded DB must equal a fresh build."""
+    dest = tmp_path / "bronze"
+    write_run(dest, "20240101T000000Z",
+              [positions_capture([pos_node("p1", "alpha-co-s", name="Alpha Co")]),
+               dashboard_capture()])
+    write_k1_lines_csv(tmp_path / "docs")
+    argv = ["--bronze-dir", str(dest), "--documents-dir", str(tmp_path / "docs")]
+
+    # A v7 DB: this build minus the three columns and the v8 stamp.
+    old = tmp_path / "old.db"
+    assert load.main(argv + ["--silver-db", str(old)]) == 0
+    c = sqlite3.connect(old)
+    for col in ("property_distributions_minor", "short_term_gain_minor",
+                "long_term_gain_minor"):
+        c.execute(f"ALTER TABLE k1_capital_accounts DROP COLUMN {col}")
+    c.execute("DELETE FROM schema_meta WHERE silver_schema_version = 8")
+    c.commit()
+    c.close()
+
+    assert load.main(argv + ["--silver-db", str(old)]) == 0
+    assert _k1_lines(old) == K1_LINES_EXPECTED
+
+    fresh = tmp_path / "fresh.db"
+    assert load.main(argv + ["--silver-db", str(fresh)]) == 0
+    assert _dump_silver(old) == _dump_silver(fresh)
+
+
+# Money forms a K-1 CSV cell can take, each with the loader's reading.
+_MONEY_CELLS = ["$1,234.56", "$-2,953", "(1,234)", "$(5)", "(-5)", "-$12",
+                "$ 12 ", "+5", ".5", "5.", "0", "$0", "", "-", ".", "N/A",
+                "1.2.3", "1-2", "1 000", "$1,000,000.01"]
+
+
+def test_backfill_money_rules_match_loader():
+    """The migration's SQL money reading agrees with parse_money_cents, the
+    loader's, on every form above, so a backfilled row and a freshly parsed
+    one hold the same figure."""
+    conn = sqlite3.connect(":memory:")
+    for sql in sorted(load.MIGRATIONS.glob("*.sql")):
+        if int(sql.name.split("_", 1)[0]) <= 7:
+            conn.executescript(sql.read_text())
+    for i, raw in enumerate(_MONEY_CELLS):
+        payload = {"Fund": f"SPV {i}",
+                   "Line 8 - Net Short-Term Capital Gain (Loss)": raw,
+                   "Line 9(a) - Net Long-Term Capital Gain (Loss)": raw,
+                   "Line 19(c) - Property Distributions": raw}
+        conn.execute("INSERT INTO k1_capital_accounts (tax_year, fund_name, payload) "
+                     "VALUES (2024, ?, ?)", (f"SPV {i}", json.dumps(payload)))
+    conn.executescript((load.MIGRATIONS / "0008_k1_basis_lines.sql").read_text())
+    got = dict(((int(f.split()[1]), (p, s, lt)) for f, p, s, lt in conn.execute(
+        "SELECT fund_name, property_distributions_minor, short_term_gain_minor, "
+        "long_term_gain_minor FROM k1_capital_accounts")))
+    want = {i: (load.parse_money_cents(raw),) * 3 for i, raw in enumerate(_MONEY_CELLS)}
+    assert got == want
+    conn.close()
 
 
 def test_default_paths_derive_from_bronze_dir(tmp_path):

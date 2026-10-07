@@ -8,7 +8,7 @@ from collectorkit import money
 @pytest.mark.parametrize("raw, want", [
     ("$1,234.56", 1234.56),
     ("-$5.00", -5.0),
-    ("$-7,994", -7994.0),
+    ("$-2,953", -2953.0),
     ("(1,234.00)", -1234.0),
     ("($12.50)", -12.5),
     ("  42 ", 42.0),
@@ -36,7 +36,7 @@ def test_parentheses_negate_whatever_sign_is_inside():
 @pytest.mark.parametrize("raw, want", [
     ("$1,234.56", 123456),
     ("(273)", -27300),
-    ("$-7,994", -799400),
+    ("$-2,953", -295300),
     ("0", 0),
     ("", None),
     ("—", None),

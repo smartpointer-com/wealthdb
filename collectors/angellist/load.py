@@ -21,7 +21,8 @@ Tables:
                       NAV, at year-end), 'valuation' (current portal FMV, at
                       the portfolio data date)
   vehicles            one row per company (investableGuid)
-  k1_capital_accounts per (tax_year, SPV) capital-account analysis (K-1 CSV)
+  k1_capital_accounts per (tax_year, SPV) capital-account analysis plus the
+                      property-distribution and gain lines (K-1 CSV)
   tax_documents       downloaded-document provenance + completeness
   portfolio_summary   per-snapshot dashboard totals + IRR/TVPI/DPI
   portfolio_timeseries  ~monthly NAV history, latest-snapshot-wins
@@ -396,6 +397,9 @@ def _parse_k1_csv(conn, path, year, doc_id, name_to_vehicle) -> int:
         "other": _hdr_index(h, "other increase"),
         "dist": _hdr_index(h, "withdrawals & distributions"),
         "cashdist": _hdr_index(h, "cash distributions"),
+        "propdist": _hdr_index(h, "property distributions"),
+        "stgain": _hdr_index(h, "net short-term capital gain"),
+        "ltgain": _hdr_index(h, "net long-term capital gain"),
         "end": _hdr_index(h, exact="ending capital"),
         "endpct": _hdr_index(h, "ending capital %"),
     }
@@ -419,15 +423,17 @@ def _parse_k1_csv(conn, path, year, doc_id, name_to_vehicle) -> int:
             "INSERT OR REPLACE INTO k1_capital_accounts "
             "(tax_year, fund_name, fund_tax_id, portfolio_company, k1_status, final_k1, "
             " beginning_capital_minor, contributions_minor, net_income_minor, other_change_minor, "
-            " distributions_minor, cash_distributions_minor, ending_capital_minor, ending_capital_pct, "
+            " distributions_minor, cash_distributions_minor, property_distributions_minor, "
+            " short_term_gain_minor, long_term_gain_minor, ending_capital_minor, ending_capital_pct, "
             " vehicle_external_id, source_document_id, payload) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (year, fund, cell(r, "ein") or None, company or None, cell(r, "status") or None,
              1 if cell(r, "final").lower() in ("yes", "true", "1") else 0,
              parse_money_cents(cell(r, "beg")), parse_money_cents(cell(r, "contrib")),
              parse_money_cents(cell(r, "ni")), parse_money_cents(cell(r, "other")),
              parse_money_cents(cell(r, "dist")), parse_money_cents(cell(r, "cashdist")),
-             parse_money_cents(cell(r, "end")), endpct,
+             parse_money_cents(cell(r, "propdist")), parse_money_cents(cell(r, "stgain")),
+             parse_money_cents(cell(r, "ltgain")), parse_money_cents(cell(r, "end")), endpct,
              name_to_vehicle.get(company.strip().lower()) if company else None,
              doc_id, json.dumps(dict(zip(h, r, strict=False)), separators=(",", ":"))))
         n += 1
