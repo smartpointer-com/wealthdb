@@ -14,7 +14,7 @@ the other collectors live by. Most of root [AGENTS.md](../../AGENTS.md) §1–§
 (read-only sessions, never weaken auth, protect the cookie jar) simply does
 not apply here: there is no session and no credential.
 
-The only step is `load`: it reads three hand-maintained CSVs from
+The only step is `load`: it reads a few hand-maintained CSVs from
 `$XDG_DATA_HOME/wealthdb/manual/`, validates them, and rebuilds a SQLite silver. See
 [DESIGN.md](DESIGN.md).
 

@@ -1187,7 +1187,8 @@ def parse_positions(text: str) -> list[dict]:
 
       * 2025+: section header "Positions - <Section>",
         single-row-per-instrument with eight trailing columns,
-        cost basis in the row.
+        cost basis in the row. Options and Fixed Income wrap their
+        columns over several lines (_parse_wrapped_position_block).
       * 2020-2024: section header "Investment Detail - <Section>",
         multi-line-per-instrument with seven trailing columns on
         the main row plus a separate "Cost Basis N" line and a

@@ -48,7 +48,7 @@ Subcommands:
                       runs skip the 2FA push for years. --check
                       probes the existing session without firing 2FA.
   download [args...]  Fetch fresh bronze for every linked portfolio:
-                      19-column trade history CSV + per-wallet balance
+                      13-column trade history CSV + per-wallet balance
                       CSV via the SPA Export blob. Writes a UTC-
                       timestamped subdir + run.json manifest under the
                       data dir ($HOST_DATA); each CSV export is zstd-

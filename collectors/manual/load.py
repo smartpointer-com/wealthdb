@@ -552,7 +552,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description="Load hand-maintained private-holding CSVs into the "
                     "manual SQLite silver.")
     p.add_argument("--bronze-dir", type=Path, default=None,
-                   help=f"Directory holding positions.csv / valuations.csv. "
+                   help=f"Directory holding the CSVs (positions.csv, "
+                        f"valuations.csv, …). "
                         f"Precedence: this flag (the wrapper passes it from "
                         f"--data-dir / MANUAL_DATA_DIR / WEALTHDB_DATA_ROOT) > "
                         f"{DEFAULT_BRONZE_DIR}.")

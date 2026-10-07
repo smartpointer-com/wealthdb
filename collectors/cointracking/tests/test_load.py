@@ -1,7 +1,7 @@
 """Bronze→silver tests for the cointracking collector's load.py.
 
 cointracking's silver is DuckDB. These tests seed a minimal
-synthetic bronze run (a per-portfolio 19-column trades.csv) and run
+synthetic bronze run (a per-portfolio 13-column trades.csv) and run
 the transaction ingest, asserting the projected silver
 `transactions` rows. Synthetic portfolio ids / wallets / amounts
 only.

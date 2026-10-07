@@ -2,13 +2,13 @@
 # manual — host wrapper for the wealthdb "manual" collector.
 #
 # Unlike every other collector, `manual` has NO source to fetch from: the
-# bronze CSVs (accounts.csv / positions.csv / valuations.csv) are maintained
-# by hand in the data dir (default $XDG_DATA_HOME/wealthdb/manual/).
-# accounts.csv is optional — omit it and every position lands in one default
-# account, which is what the collector did before accounts existed. So there
-# is no `login` and
-# no `download` — only `load`, which validates those CSVs and rebuilds the
-# SQLite silver from them. Host-venv collector (no Docker).
+# bronze CSVs (accounts.csv / positions.csv / valuations.csv /
+# cost_basis.csv) are maintained by hand in the data dir (default
+# $XDG_DATA_HOME/wealthdb/manual/). accounts.csv and cost_basis.csv are
+# optional — without accounts.csv every position lands in one default
+# account. So there is no `login` and no `download` — only `load`, which
+# validates those CSVs and rebuilds the SQLite silver from them. Host-venv
+# collector (no Docker).
 #
 # Subcommands:
 #   load [args...]      Validate the CSVs and rebuild the silver DB.

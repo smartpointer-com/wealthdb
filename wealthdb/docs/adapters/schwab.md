@@ -125,7 +125,7 @@ real data, maps to the canonical gold `kind` taxonomy:
 
 | Schwab | Gold | Adapter notes |
 | --- | --- | --- |
-| `TRADE` | `buy` or `sell` | sign of `transferItems[].cost` / `positionEffect` |
+| `TRADE` | `buy` or `sell` | sign of `netAmount` (negative = buy) |
 | `JOURNAL` | `journal` | catch-all internal cash move |
 | `DIVIDEND_OR_INTEREST` | `dividend` or `interest` | from `payload` subtype |
 | `WIRE_IN` / `CASH_RECEIPT` / `ELECTRONIC_FUND`(+) | `deposit` | |
