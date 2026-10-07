@@ -676,7 +676,7 @@ def _route(monkeypatch, tmp_path, doc_type: str, label: str = "") -> str:
     monkeypatch.setattr(pdf_parsers, "parse_maturity_notice",
                         lambda *a: called.append("mortgage") or [])
     monkeypatch.setattr(pdf_parsers, "parse_statement_of_assets",
-                        lambda *a: called.append("positions") or [])
+                        lambda *a: called.append("positions") or ([], []))
     monkeypatch.setattr(pdf_parsers, "parse_account_statement_combined",
                         lambda *a: called.append("statement") or ([], []))
     monkeypatch.setattr(pdf_parsers, "parse_contract_note",
@@ -1479,4 +1479,60 @@ def test_the_purge_takes_the_securities_advices(tmp_path):
     loader._purge_stale_document_rows(conn)
 
     assert conn.execute("SELECT COUNT(*) FROM advices").fetchone()[0] == 0
+    conn.close()
+
+
+# ============================================================
+# A statement's transaction list
+# ============================================================
+
+def _statement_trade(seq: int, quantity: float) -> dict:
+    """One parsed `statement_trades` row as `pdf_parsers` emits them."""
+    row = dict.fromkeys(loader._STATEMENT_TRADE_COLUMNS)
+    row.update(source_doc_token="soa", seq=seq, as_of_date=1901145600,
+               portfolio_external_id="0000000000000001",
+               booking_text="Purchase Spot", isin="XX0000000055",
+               quantity=quantity, payload="{}")
+    return row
+
+
+def test_a_statement_of_assets_routes_to_its_parser(monkeypatch, tmp_path):
+    assert _route(monkeypatch, tmp_path, "",
+                  "Statement of assets as of 31032030") == "positions"
+    assert _route(monkeypatch, tmp_path,
+                  loader.SUPPLIED_STMT_OF_ASSETS_DOC_TYPE) == "positions"
+
+
+def test_the_walk_writes_statement_trades_and_re_derives_them(tmp_path):
+    conn = _fresh_db(tmp_path)
+    conn.execute(
+        "INSERT INTO documents (doc_token, content_sha256, file_path, "
+        "size_bytes, snapshot_at, doc_type, label) VALUES ('soa', 'sha-soa', "
+        "'documents/x.pdf', 1, 1700000000, NULL, "
+        "'Statement of assets as of 31032030')")
+    dump = tmp_path / "bronze" / "20260101T000000Z"
+    (dump / "documents").mkdir(parents=True)
+
+    def walk(*trades: dict) -> None:
+        cache = {"sha-soa": ("soa", "statement_of_assets", "soa.pdf",
+                             {"positions": [], "trades": list(trades)}, None)}
+        with conn:
+            loader._load_historical_from_pdfs(conn, 1700000000, dump, cache)
+
+    walk(_statement_trade(1, 100.0), _statement_trade(2, -50.0))
+    walk(_statement_trade(1, 100.0), _statement_trade(2, -50.0))
+    rows = conn.execute(
+        "SELECT seq, quantity FROM statement_trades ORDER BY seq").fetchall()
+    assert [tuple(r) for r in rows] == [(1, 100.0), (2, -50.0)]
+    conn.close()
+
+
+def test_the_purge_takes_the_statement_trades(tmp_path):
+    conn = _fresh_db(tmp_path)
+    loader._insert_statement_trades(conn, [_statement_trade(1, 100.0)])
+
+    loader._purge_stale_document_rows(conn)
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM statement_trades").fetchone()[0] == 0
     conn.close()

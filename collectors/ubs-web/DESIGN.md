@@ -745,6 +745,61 @@ printed.
   `stamp_duty` are as printed, beside the market value, never folded
   into it.
 
+### 3.10 The transaction list a Statement of assets prints
+
+A Statement of assets may close with a "Transaction list": every
+securities booking in the statement's period. The `statement_trades`
+table (migration 0014) holds one row per booking per statement, as
+printed. For each booking the list states:
+
+- the trade date and time, the value date and the booking text
+  ('Purchase Spot', 'Sale Spot', 'Incoming from spin-off');
+- the quantity, the security (name, valor, ISIN) and its currency;
+- a purchase's price and purchase rate, or a sale's average cost, its
+  average buy rate, its price and its transaction rate;
+- the cost value, the transaction value and, for a sale, the realized
+  P/L as a percentage of the cost value;
+- the charges, one column per label: tax (`taxes`), "Various" (`fees`),
+  brokerage (`commission`), stock exchange, third-party executions,
+  and a foreign financial transaction tax;
+- the settlement amount, the place of execution, the settlement and
+  order numbers, the custody account and the cash account.
+
+How it is read:
+
+- **By word position.** The header stacks up to seven labels per
+  column, one per printed row of a booking. A figure means what the
+  label in its column and its row says, and the plain text cannot tell
+  an empty cell from a missing one. So the parser places each word by
+  its x-position against the header's column edges, and each row by its
+  distance from the booking's first row in units of the header's row
+  pitch.
+- **A long booking text moves the rows below it.** When the booking
+  text wraps past two rows, every cell below the first row prints that
+  many rows lower. The trade time is the exception: it stays under the
+  trade date. The parser reads each cell at its header row plus that
+  shift. `payload` keeps every cell at the row it prints on.
+- **A booking starts at a row with a date in the first column and a
+  booking text.** The list's closing totals and the page footer end it.
+  The rows of the description column vary with the description's length,
+  so the settlement number, the Valor/ISIN line and the two accounts are
+  told apart by their shape.
+- **Currencies, as printed.** Prices and charges are in the trade's
+  currency (`currency_iso`, `charges_currency_iso`). The cost value and
+  the transaction value are in the statement's reporting currency. The
+  settlement amount carries its own.
+- **Signs, as printed.** A sale's quantity and transaction value are
+  negative; so are a purchase's settlement amount and every charge.
+
+**What it is for.** The list is the record of a portfolio's trades that
+states quantities and costs for the years before the portfolio export
+(§3.7b) reaches back. It is a reading of trades, not a rail of its own.
+The same trade is also on the Account Statement's movement ledger, on
+the export where that reaches, and on the PSN feed's MT515
+confirmations. A booking also recurs in every statement whose period
+covers it, so a month-end statement and the quarter-end one around it
+both list it. `settlement_no` names it across statements.
+
 ## 4. Web loader implementation notes
 
 - **Migration runner.** Applies pending migrations in numeric
@@ -772,7 +827,8 @@ printed.
      `historical_*` tables. The Account-Statement movement walker
      and the Credit/Debit Advice parser write `transactions` from
      the same walk (§3.6), and the capital-call and contract-note
-     parsers write `advices` (§3.9).
+     parsers write `advices` (§3.9). A Statement of assets also
+     writes its transaction list to `statement_trades` (§3.10).
 
 - **PDF parsing isolation.** `pdfplumber` is bundled in the
   Docker image (`requirements.txt`). The parsers live in
@@ -1108,7 +1164,10 @@ listed here because they are properties of the feeds, not of gold.
   `portfolio_transactions` export (§3.7b), the only rail that can be
   asked for a past window at all — though not an unbounded one: its
   archive begins where the surface's own floor does, observed at
-  2024-01-01, so the deep history stays the statements'. Both
+  2024-01-01, so the deep history stays the statements'. Below that
+  floor the Statement of assets' transaction list (§3.10) states each
+  trade's quantity and cost; it restates trades the other rails carry,
+  so it is a source to match against, never one to add. Both
   consequences for the adapter are settled there rather than here: a
   row from the export is matched against what the other rails already
   settled on that cash account and day before it enters the ledger, or

@@ -103,6 +103,7 @@ _DOCUMENT_PASS_DELETES = (
     "DELETE FROM transactions WHERE transaction_external_id LIKE 'stmt:%'",
     "DELETE FROM transactions WHERE payload LIKE '%payment_advice_pdf%'",
     "DELETE FROM advices",
+    "DELETE FROM statement_trades",
 )
 
 # The `doc_type` spellings of the per-movement payment advices. UBS labels
@@ -1715,8 +1716,9 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
         # on itself. Either way the parser reads the same document.
         if ("Statement of assets" in (label or "")
                 or doc_type == SUPPLIED_STMT_OF_ASSETS_DOC_TYPE):
-            rows = parse_statement_of_assets(path, token, label)
-            return token, "positions", path.name, rows, None
+            positions, trades = parse_statement_of_assets(path, token, label)
+            return (token, "statement_of_assets", path.name,
+                    {"positions": positions, "trades": trades}, None)
         if doc_type == "Maturity notice":
             rows = parse_maturity_notice(path, token, label)
             return token, "mortgage", path.name, rows, None
@@ -1749,10 +1751,12 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     indicates a Statement of assets, an Account Statement, a
     Maturity notice, a payment advice or a securities advice; parse it
     in a worker-pool of subprocesses, and upsert into the historical_* /
-    transactions / advices tables on the main thread. Returns
+    transactions / advices / statement_trades tables on the main thread.
+    Returns
     (position_rows, cash_rows, mortgage_rows, transaction_rows) — the
     payment-advice rows are transactions and are counted with the
-    statement ones; the securities advices are logged.
+    statement ones; the securities advices and the statements'
+    transaction lists are logged.
 
     pdfplumber / pdfminer text extraction is CPU-bound and largely
     GIL-bound, so the speedup comes from real OS processes, not
@@ -1846,13 +1850,17 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     txn_rows = 0
     txn_reject_stmts = 0
     securities_advice_rows = 0
+    trade_rows = 0
     advices: list[dict] = []
     for _token, kind, name, rows, err in results:
         if err is not None:
             log.warning("PDF parse failed for %s: %s", name, err)
             continue
-        if kind == "positions":
-            pos_rows += _insert_hist_positions(conn, rows or [])
+        if kind == "statement_of_assets":
+            pos_rows += _insert_hist_positions(
+                conn, (rows or {}).get("positions") or [])
+            trade_rows += _insert_statement_trades(
+                conn, (rows or {}).get("trades") or [])
         elif kind == "mortgage":
             mortgage_rows += _insert_hist_mortgages(conn, rows or [])
         elif kind == "securities_advice":
@@ -1884,6 +1892,8 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     if securities_advice_rows:
         log.info("%d capital call(s) and contract note(s)",
                  securities_advice_rows)
+    if trade_rows:
+        log.info("%d booking(s) from statement transaction lists", trade_rows)
     # Stamped here rather than by the caller, so it records a walk that
     # actually ran: the early returns above leave the older generation in
     # place and the next dump tries again.
@@ -1966,6 +1976,37 @@ def _insert_advices(conn: sqlite3.Connection, rows: list[dict]) -> int:
             f"INSERT OR REPLACE INTO advices ({', '.join(_ADVICE_COLUMNS)}) "
             f"VALUES ({', '.join('?' for _ in _ADVICE_COLUMNS)})",
             tuple(r[col] for col in _ADVICE_COLUMNS),
+        )
+    return len(rows)
+
+
+# The columns `pdf_parsers` fills on every `statement_trades` row.
+_STATEMENT_TRADE_COLUMNS = (
+    "source_doc_token", "seq", "as_of_date", "portfolio_external_id",
+    "reporting_currency_iso", "period_start", "period_end", "trade_date",
+    "trade_time", "value_date", "booking_text", "quantity",
+    "security_name", "valor", "isin", "currency_iso", "cost_price",
+    "acquisition_fx_rate", "cost_basis", "transaction_price",
+    "transaction_fx_rate", "transaction_gain_pct", "exchange_gain_pct",
+    "realized_pl_pct", "transaction_value", "accrued_interest",
+    "settlement_amount", "settlement_currency_iso", "taxes", "fees",
+    "commission", "stock_exchange_fees", "third_party_fees",
+    "financial_transaction_tax", "charges_currency_iso",
+    "place_of_execution", "settlement_no", "order_no", "custody_account",
+    "account_iban", "payload",
+)
+
+
+def _insert_statement_trades(conn: sqlite3.Connection,
+                             rows: list[dict]) -> int:
+    """Upsert the bookings a statement's transaction list prints, keyed by
+    the statement and the booking's place in its list."""
+    for r in rows:
+        conn.execute(
+            "INSERT OR REPLACE INTO statement_trades "
+            f"({', '.join(_STATEMENT_TRADE_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in _STATEMENT_TRADE_COLUMNS)})",
+            tuple(r[col] for col in _STATEMENT_TRADE_COLUMNS),
         )
     return len(rows)
 

@@ -832,6 +832,261 @@ class TestStatementOfAssetsHoldingDetail:
         assert "XX0000000044" not in rows
 
 
+# ---- Statement of assets: the transaction list ---------------------
+#
+# Word-based, like the Account-Statement ledger: a figure's meaning is
+# its column and its row within the booking, so the fixtures place words
+# at the column geometry the list prints (right edges 266 / 527 / 598 /
+# 682 / 782, description from 271, booking text from 96, a 10pt row
+# pitch). Every name, figure and identifier is synthetic.
+
+_TL_HEADER_ROWS = (
+    [("Trade", 39, 61), ("date", 63, 80), ("Booking", 96, 127),
+     ("text", 130, 144), ("Number/Amount", 201, 266),
+     ("Description", 271, 314), ("Cost/Purchase", 452, 506),
+     ("price", 508, 527), ("Transaction", 533, 577), ("price", 579, 598),
+     ("Transaction", 619, 663), ("gain", 666, 682),
+     ("Transaction", 715, 759), ("value", 762, 782)],
+    [("Trade", 39, 61), ("time", 63, 80), ("Tax", 253, 266),
+     ("Custody", 271, 303), ("account", 305, 336), ("Exchange", 473, 509),
+     ("rate", 512, 527), ("Exchange", 543, 580), ("rate", 582, 597),
+     ("Exchange", 627, 664), ("gain", 666, 683), ("Accrued", 719, 751),
+     ("interest", 753, 782)],
+    [("Value", 39, 61), ("date", 63, 80), ("Various", 237, 266),
+     ("Account", 271, 303), ("Cost", 487, 504), ("value", 507, 527),
+     ("Realized", 637, 669), ("P/L", 671, 682), ("Settlement", 708, 749),
+     ("amount", 752, 782)],
+    [("Brokerage", 227, 266), ("Place", 457, 476), ("of", 479, 487),
+     ("execution", 489, 526), ("in", 707, 714), ("account", 716, 747),
+     ("currency", 749, 782)],
+    [("Stock", 206, 227), ("exchange", 229, 266)],
+    [("Third-party", 181, 223), ("executions", 225, 266)],
+    [("Foreign", 202, 230), ("Financial", 233, 266)],
+    [("Transaction", 206, 250), ("Tax", 253, 266)],
+)
+_TL_TOP = 124.0
+_TL_RIGHT = {"B": 266, "D": 527, "E": 598, "F": 682, "G": 782}
+_TL_LEFT = {"A": 39, "text": 96, "C": 271}
+
+
+def _tl_cell(col: str, text: str, top: float) -> list[dict]:
+    """Words of one cell: left-aligned in A, C and the booking text,
+    right-aligned in the figure columns. 5pt per character, 3pt gaps."""
+    toks = text.split()
+    widths = [5 * len(t) for t in toks]
+    span = sum(widths) + 3 * (len(toks) - 1)
+    x = _TL_LEFT[col] if col in _TL_LEFT else _TL_RIGHT[col] - span
+    out = []
+    for tok, wdt in zip(toks, widths, strict=True):
+        out.append(_w(tok, x, x + wdt, top))
+        x += wdt + 3
+    return out
+
+
+def _tl_header() -> list[dict]:
+    return [_w(t, x0, x1, _TL_TOP + 10 * i)
+            for i, row in enumerate(_TL_HEADER_ROWS) for t, x0, x1 in row]
+
+
+def _tl_booking(start: float, rows: dict[int, dict[str, str]]) -> list[dict]:
+    """A booking's words: {row number: {column: text}}."""
+    return [w for k, cells in rows.items() for col, text in cells.items()
+            for w in _tl_cell(col, text, start + 10 * k)]
+
+
+_TL_PAGE_TEXT = ("From 01.01.2030 to 31.03.2030 Statement of assets as of 31 March 2030\n"
+                 "Valued in USD\n"
+                 "Trade date Booking text Number/Amount Description\n")
+
+# A purchase in a currency other than the reporting one, with three
+# charges; the settlement is the gross amount plus them.
+_TL_PURCHASE = {
+    0: {"A": "02.01.2030", "text": "Purchase", "B": "1 000",
+        "C": "Reg.shs Example AG", "D": "GBP 20.000000", "G": "25 000.00"},
+    1: {"A": "10:00:00", "text": "Spot", "D": "1.250000"},
+    2: {"A": "04.01.2030", "B": "GBP -50.00",
+        "C": "Settlement no.: XX00000000001", "D": "25 000"},
+    3: {"C": "Valor 555 - ISIN XX0000000055", "D": "London",
+        "G": "GBP -20 070.00"},
+    4: {"C": "999-0000000.S1"},
+    5: {"C": "CH00 0000 0000 0000 0000 A"},
+    6: {"B": "GBP -20.00"},
+}
+# A sale in the reporting currency: the average cost, the cost value and
+# the realized P/L.
+_TL_SALE = {
+    0: {"A": "15.02.2030", "text": "Sale", "B": "-100",
+        "C": "Shs Example Two", "D": "USD 50.000000", "E": "60.00",
+        "F": "20.00%", "G": "-6 000.00"},
+    1: {"A": "11:00:00", "text": "Spot",
+        "C": "Valor 666 - ISIN XX0000000066"},
+    2: {"A": "19.02.2030", "B": "USD -10.00",
+        "C": "Settlement no.: XX00000000002", "D": "5 000",
+        "F": "20.00%"},
+    3: {"D": "SIX SWX", "G": "USD 5 990.00"},
+}
+# A corporate action: no price, a booking text on two rows.
+_TL_SPIN_OFF = {
+    0: {"A": "20.03.2030", "text": "Incoming from", "B": "50",
+        "C": "Reg.shs Example Spin", "D": "CHF"},
+    1: {"text": "spin-off"},
+    2: {"A": "22.03.2030", "C": "Valor 777 - ISIN XX0000000077"},
+}
+# A booking text on three rows: every cell below the first row prints a
+# row lower than its header label, except the trade time. The transaction
+# rate (header row 1), the "Various" charge (row 2), the value date (row
+# 2), the place and the settlement amount (row 3) and the foreign
+# financial transaction tax (row 6) each print one row down.
+_TL_WRAPPED = {
+    0: {"A": "05.03.2030", "text": "Purchase from", "B": "100",
+        "C": "Shs Example Three", "D": "EUR", "E": "40.00",
+        "G": "4 400.00"},
+    1: {"A": "09:30:00", "text": "subscription"},
+    2: {"text": "rights", "E": "1.100000"},
+    3: {"A": "07.03.2030", "B": "EUR -5.00",
+        "C": "Settlement no.: XX00000000003"},
+    4: {"C": "Valor 787 - ISIN XX0000000087", "D": "Paris",
+        "G": "EUR -4 012.00"},
+    5: {"C": "999-0000000.S1"},
+    6: {"C": "CH00 0000 0000 0000 0000 A"},
+    7: {"B": "EUR -7.00"},
+}
+
+
+def _tl_pdf(*pages: list[dict]) -> _FakePDF:
+    return _FakePDF([_FakePage(words, _TL_PAGE_TEXT) for words in pages])
+
+
+class TestTransactionList:
+    LABEL = TestStatementOfAssetsSecurities.LABEL
+
+    def _trades(self, *pages: list[dict]) -> list[dict]:
+        from pdf_parsers import parse_statement_of_assets_pages
+        _positions, trades = parse_statement_of_assets_pages(
+            _tl_pdf(*pages), "<doc-token>", self.LABEL)
+        return trades
+
+    def _page(self) -> list[dict]:
+        return (_tl_header()
+                + _tl_booking(217, _TL_PURCHASE)
+                + _tl_booking(298, _TL_SALE)
+                + _tl_booking(348, _TL_SPIN_OFF)
+                + _tl_cell("A", "Subtotal inflows incl. accrued interest", 390)
+                + _tl_cell("G", "0.00", 390)
+                + _tl_cell("A", "AAAA0000/000000/XXXXXXXXXXXX", 555))
+
+    def test_each_booking_is_one_row_in_list_order(self):
+        trades = self._trades(self._page())
+        assert [t["seq"] for t in trades] == [1, 2, 3]
+        assert [t["isin"] for t in trades] == [
+            "XX0000000055", "XX0000000066", "XX0000000077"]
+        assert {t["source_doc_token"] for t in trades} == {"<doc-token>"}
+        assert {t["reporting_currency_iso"] for t in trades} == {"USD"}
+        assert {(t["period_start"], t["period_end"]) for t in trades} == {
+            (1893456000, 1901145600)}                  # 01.01.2030, 31.03.2030
+
+    def test_a_purchase_reads_its_price_rate_and_charges(self):
+        t = self._trades(self._page())[0]
+        assert t["booking_text"] == "Purchase Spot"
+        assert t["trade_date"] == 1893542400            # 02.01.2030
+        assert t["trade_time"] == "10:00:00"
+        assert t["quantity"] == pytest.approx(1000.0)
+        assert t["currency_iso"] == "GBP"
+        assert t["cost_price"] == pytest.approx(20.0)
+        assert t["acquisition_fx_rate"] == pytest.approx(1.25)
+        assert t["cost_basis"] == pytest.approx(25000.0)
+        assert t["transaction_value"] == pytest.approx(25000.0)
+        assert t["transaction_price"] is None
+        assert t["fees"] == pytest.approx(-50.0)
+        assert t["financial_transaction_tax"] == pytest.approx(-20.0)
+        assert t["taxes"] is None and t["commission"] is None
+        assert t["charges_currency_iso"] == "GBP"
+        assert t["settlement_amount"] == pytest.approx(-20070.0)
+        assert t["settlement_currency_iso"] == "GBP"
+        assert t["place_of_execution"] == "London"
+        assert t["security_name"] == "Reg.shs Example AG"
+        assert t["settlement_no"] == "XX00000000001"
+        assert t["valor"] == "555"
+        assert t["custody_account"] == "999-0000000.S1"
+        assert t["account_iban"] == "CH000000000000000000A"
+
+    def test_a_sale_reads_its_cost_and_realized_result(self):
+        t = self._trades(self._page())[1]
+        assert t["booking_text"] == "Sale Spot"
+        assert t["quantity"] == pytest.approx(-100.0)
+        assert t["cost_price"] == pytest.approx(50.0)
+        assert t["transaction_price"] == pytest.approx(60.0)
+        assert t["transaction_gain_pct"] == pytest.approx(20.0)
+        assert t["cost_basis"] == pytest.approx(5000.0)
+        assert t["realized_pl_pct"] == pytest.approx(20.0)
+        assert t["transaction_value"] == pytest.approx(-6000.0)
+        assert t["acquisition_fx_rate"] is None
+        assert t["settlement_amount"] == pytest.approx(5990.0)
+        # The settlement number printed below the Valor line is still
+        # its own, and neither enters the description.
+        assert t["settlement_no"] == "XX00000000002"
+        assert t["security_name"] == "Shs Example Two"
+
+    def test_a_corporate_action_joins_its_booking_text(self):
+        t = self._trades(self._page())[2]
+        assert t["booking_text"] == "Incoming from spin-off"
+        assert t["quantity"] == pytest.approx(50.0)
+        assert t["currency_iso"] == "CHF"
+        assert t["cost_price"] is None
+        assert t["trade_time"] is None
+        assert t["value_date"] == 1900368000             # 22.03.2030
+
+    def test_a_booking_text_on_three_rows_moves_the_rows_below_it(self):
+        t = self._trades(_tl_header() + _tl_booking(217, _TL_WRAPPED))[0]
+        assert t["booking_text"] == "Purchase from subscription rights"
+        assert t["trade_date"] == 1898899200            # 05.03.2030
+        assert t["trade_time"] == "09:30:00"
+        assert t["value_date"] == 1899072000            # 07.03.2030
+        assert t["transaction_price"] == pytest.approx(40.0)
+        assert t["transaction_fx_rate"] == pytest.approx(1.1)
+        assert t["fees"] == pytest.approx(-5.0)
+        assert t["commission"] is None
+        assert t["financial_transaction_tax"] == pytest.approx(-7.0)
+        assert t["charges_currency_iso"] == "EUR"
+        assert t["place_of_execution"] == "Paris"
+        assert t["settlement_amount"] == pytest.approx(-4012.0)
+        assert t["settlement_currency_iso"] == "EUR"
+        assert t["cost_basis"] is None and t["acquisition_fx_rate"] is None
+        assert t["realized_pl_pct"] is None
+        assert t["isin"] == "XX0000000087"
+        assert t["account_iban"] == "CH000000000000000000A"
+        # The payload keeps each cell where it prints.
+        payload = json.loads(t["payload"])
+        assert payload["B3"] == "EUR -5.00" and payload["B7"] == "EUR -7.00"
+
+    def test_the_closing_totals_are_not_a_booking(self):
+        trades = self._trades(self._page())
+        assert trades[2]["transaction_value"] is None
+        assert "Subtotal" not in trades[2]["payload"]
+
+    def test_a_charge_printed_left_of_the_quantity_label_is_a_charge(self):
+        # Older lists set a charge's currency further left than the
+        # Number/Amount label starts. It is right-aligned with the
+        # column all the same, and is not booking text.
+        booking = {**_TL_SALE, 2: {**_TL_SALE[2], "B": "USD -1 234 567.00"}}
+        t = self._trades(_tl_header() + _tl_booking(217, booking))[0]
+        assert t["booking_text"] == "Sale Spot"
+        assert t["fees"] == pytest.approx(-1234567.0)
+
+    def test_the_list_continues_across_pages(self):
+        trades = self._trades(
+            _tl_header() + _tl_booking(217, _TL_PURCHASE),
+            _tl_header() + _tl_booking(217, _TL_SALE))
+        assert [(t["seq"], t["isin"]) for t in trades] == [
+            (1, "XX0000000055"), (2, "XX0000000066")]
+
+    def test_a_page_without_the_list_header_adds_nothing(self):
+        pdf = _FakePDF([_FakePage(_tl_booking(217, _TL_SALE), "Valued in USD\n")])
+        from pdf_parsers import parse_statement_of_assets_pages
+        assert parse_statement_of_assets_pages(
+            pdf, "<doc-token>", self.LABEL) == ([], [])
+
+
 class TestCapitalCall:
     """A capital call: the UBS cover page titled "Capital Call", then the
     administrator's notice. All names, figures and identifiers are
@@ -1306,7 +1561,7 @@ _ADV_MORTGAGE_TEXT = (
     "We will debit the following:\n"
     "Settlement\n"
     "UBS SARON Mortgage\n"
-    "Account no. 000-000000.H1D 0000\n"
+    "Account no. 000-000000.AAA 0000\n"
     "Description Value date Amount in CHF\n"
     "Interest 04.01.2020 44.44\n"
 )
