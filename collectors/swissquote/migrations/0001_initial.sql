@@ -128,12 +128,13 @@ CREATE TABLE currency_balances (
 -- phantoms or silently keep stale rows when Swissquote amends a
 -- past event.
 --
--- Load semantics: window-DELETE then INSERT, in one transaction, per
--- (account_external_id, time-range). The dump emits one CSV per
--- non-overlapping window and records the bounds in run.json; the
--- loader replaces exactly that range. Reloading a window with an
--- amended past event therefore converges to Swissquote's current
--- truth, even if dates or amounts changed.
+-- Load semantics: span-DELETE then INSERT, in one transaction, per
+-- (account_external_id, CSV). The loader replaces exactly the range
+-- between the CSV's own first and last row. The window the export was
+-- requested for (recorded in run.json) does not bound the delete: an
+-- export can hold fewer days than requested, or none. Reloading a span
+-- with an amended past event therefore converges to Swissquote's
+-- current truth, even if dates or amounts changed.
 -- ============================================================
 
 -- transaction_type values seen in real data:

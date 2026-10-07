@@ -89,7 +89,7 @@ persisted session cookie across runs until it expires.
 | --- | --- |
 | [`login.py`](login.py) | Drives headless Chromium through the F5 BIG-IP login form and the Mobile Level 3 MFA gate, scrapes and prints the on-screen Operation No. (TAN) for comparison against the phone, and persists the Playwright `storageState.json`. `--check` validates an existing state file without an MFA push. |
 | [`download.py`](download.py) | Reuses the persisted session to export transactions (CSV), positions + list of assets (XLS), account overview (PDF), and per-document PDFs from eBanking into a timestamped bronze directory. Read-only — see [AGENTS.md](AGENTS.md) §1. |
-| [`load.py`](load.py) | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (window-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. Also parses **Portfolio Performance PDFs** in bronze to reconstruct historical position snapshots (one per year-end the bank issues), tagged with `source='pp:<doc_id>'` on the silver `positions` table. |
+| [`load.py`](load.py) | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (span-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. Also parses **Portfolio Performance PDFs** in bronze to reconstruct historical position snapshots (one per year-end the bank issues), tagged with `source='pp:<doc_id>'` on the silver `positions` table. |
 
 ## Container build
 
@@ -457,9 +457,11 @@ Reload semantics mirror the Schwab loader:
     **Account Statement PDFs are *not* parsed**: they are cash-flow
     ledgers, not position snapshots. Account Statements remain
     indexed in the `documents` table for future use.
-- **Events** (`transactions`) use window-DELETE-then-INSERT per
-  `(account, time-window)`. Re-running a window converges to
-  Swissquote's current truth even if dates/amounts were amended.
+- **Events** (`transactions`) use span-DELETE-then-INSERT per
+  `(account, CSV)`. The span runs from the CSV's first row to its
+  last row. It is not the requested window: an export can hold
+  fewer days than requested, or none. Re-loading a span converges
+  to Swissquote's current truth even if dates or amounts change.
 - **Documents** (PDFs) are tracked by content hash + Swissquote's
   GUID-style document ID in a `documents` table, but the binary
   itself stays on disk. Structured PDF parsing is deferred — the

@@ -209,39 +209,38 @@ def parse_transactions_csv(path: Path) -> list[dict]:
     return rows
 
 
-def load_transactions_window(
+def load_transactions_csv(
     conn: sqlite3.Connection,
     customer_id: str,
     csv_path: Path,
-    window_start_iso: str,
-    window_end_iso: str,
 ) -> int:
-    """Window-DELETE-then-INSERT for one transactions CSV.
+    """Span-DELETE-then-INSERT for one transactions CSV.
 
-    The DELETE clears every row whose occurred_at falls inside the
-    declared window for this account. The INSERT replays the CSV's
-    rows. Any upstream amendment (date shift, amount change, row
-    removal) converges to truth on reload.
+    The DELETE clears every row of this account whose occurred_at
+    falls between the CSV's own first and last row, inclusive. The
+    INSERT replays the CSV's rows. Any upstream amendment inside that
+    span (date shift, amount change, row removal) converges to truth
+    on reload.
+
+    The span comes from the rows, not from the window the export was
+    requested for: an export can hold fewer days than its requested
+    window, or no rows at all. Deleting the requested window would
+    drop rows that an earlier dump loaded and this one does not
+    replace. An empty CSV deletes nothing.
     """
-    # Convert window dates to epoch bounds in Europe/Zurich. The CSV
-    # `Date` is also wall-clock CH time, so bounds must be in the
-    # same frame to clip rows correctly.
-    ws_epoch = int(datetime.fromisoformat(window_start_iso)
-                   .replace(tzinfo=SWISSQUOTE_TZ).timestamp())
-    we_epoch = int((datetime.fromisoformat(window_end_iso)
-                    .replace(hour=23, minute=59, second=59,
-                             tzinfo=SWISSQUOTE_TZ)).timestamp())
+    rows = parse_transactions_csv(csv_path)
+    if not rows:
+        return 0
+    occurred = [_zurich_to_utc_epoch(r["Date"]) for r in rows]
     conn.execute(
         "DELETE FROM transactions "
         "WHERE account_external_id = ? "
         "  AND occurred_at >= ? AND occurred_at <= ?;",
-        (customer_id, ws_epoch, we_epoch),
+        (customer_id, min(occurred), max(occurred)),
     )
 
-    rows = parse_transactions_csv(csv_path)
     n = 0
-    for r in rows:
-        occurred_at = _zurich_to_utc_epoch(r["Date"])
+    for r, occurred_at in zip(rows, occurred, strict=True):
         order_num = _norm_blank(r["Order #"])
         if order_num == ORDER_NUM_PLACEHOLDER:
             order_num = None
@@ -1005,13 +1004,10 @@ def load_one_dump(
         else:
             log.info("  no positions.xls")
 
-        # transactions (one CSV per window)
+        # transactions (one CSV per requested window)
         for entry in run_meta.get("transactions", []) or []:
             csv_path = run_dir / entry["file"]
-            n = load_transactions_window(
-                conn, customer_id, csv_path,
-                entry["window_start"], entry["window_end"],
-            )
+            n = load_transactions_csv(conn, customer_id, csv_path)
             log.info("  +%d transactions for window %s..%s (%s)",
                      n, entry["window_start"], entry["window_end"],
                      entry["file"])
