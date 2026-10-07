@@ -15,8 +15,8 @@ RUN pip install -r requirements.txt
 
 # poppler-utils provides `pdftotext`, used by load.py to parse the fund's
 # capital-account-statement PDFs into a quarterly NAV time series (DESIGN.md
-# §5.1). The exercise-detail xlsx are parsed with the stdlib zipfile, so no
-# spreadsheet dep is needed.
+# §5.1) and the K-1 face pages (§5.3). The exercise-detail xlsx are parsed
+# with the stdlib zipfile, so no spreadsheet dep is needed.
 RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -31,7 +31,7 @@ RUN playwright install firefox && playwright install-deps firefox
 # artefacts (.venv, real-credential JSONs, recorded traces, sample
 # holder-UI HTML) never make it into the image even if .dockerignore is
 # incomplete.
-COPY explore.py login.py download.py load.py prune.py /app/
+COPY explore.py login.py download.py load.py k1.py prune.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/

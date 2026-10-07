@@ -280,11 +280,13 @@ below. (No values reproduced here — PII.)
   bypasses the cross-run index (re-fetch everything).
 
 **Implication:** the "worst case, just scrape the PDFs" fallback is *not*
-needed for the numbers — holdings, grants, vesting, exercises, cap calls,
-and fund metrics are all clean JSON. PDFs (K-1 / statements / financials)
-are captured as a document **archive** (metadata → silver `documents`
-table; blobs → disk), not parsed for figures. Filenames embed the holder's
-legal name + fund name → slug on capture; never let them reach the repo.
+needed for the holdings — holdings, grants, vesting, exercises, cap calls,
+and the latest fund metrics are all clean JSON. PDFs (K-1 / statements /
+financials / notices) are captured as a document **archive** (metadata →
+silver `documents` table; blobs → disk). `load` parses the ones that carry
+figures the JSON lacks: capital-account statements and notices (§5.1, §5.2)
+and K-1s (§5.3). Filenames embed the holder's legal name + fund name → slug
+on capture; never let them reach the repo.
 
 ## 4. login + download
 
@@ -375,12 +377,13 @@ the tables follow the observed responses.
 | Table | Grain | Notes |
 |---|---|---|
 | `entities` | (snapshot_at, entity_external_id) | One per held entity (corporation or fund). `is_fund_investment` discriminator; `legal_name`, `dba`, `entity_type`, `individual_id`, `firm_id`, plus cap-table summary `held_since` / `ownership` / `cash_cost`. |
-| `securities` | (snapshot_at, entity_external_id, security_type, security_external_id) | One per cap-table security line. `security_type` ∈ share / option / rsu / rsa / warrant / convertible / sar / piu / equity_grant. Promotes `quantity`, `exercise_price` (strike), `cost`, `vested` / `exercised` / `exercisable`, `has_vesting`, dates, plus `market_value` (the per-snapshot valuation, §5.1); rest in `payload`. |
+| `securities` | (snapshot_at, entity_external_id, security_type, security_external_id) | One per cap-table security line. `security_type` ∈ share / option / rsu / rsa / warrant / convertible / sar / piu / equity_grant. Promotes `quantity`, `exercise_price` (strike), `cost`, `vested` / `exercised` / `exercisable`, `has_vesting`, dates, plus `market_value` (the per-snapshot valuation, §5.1) and, on a share born from an exercise, `exercise_type` / `exercise_date` / `exercise_fmv` (§5.3); rest in `payload`. |
 | `vesting_schedules` | (snapshot_at, entity_external_id, grant_external_id) | Per option/RSU grant: `so_type`, `has_iso_nso_split`, `vesting_start/end_date`, `vested_shares_quantity`. |
 | `vesting_events` | (snapshot_at, grant_external_id, seq) | The dated schedule: `vest_date`, `amount`, `cumulative`, `has_vested`. **First vesting concept in wealthdb** (silver-only — §6). |
-| `fund_metrics` | (snapshot_at, entity_external_id) | The LP capital account: `commitment`, `called_capital`, `capital_contributed`, `distributions`, `net_asset_value`, `vintage_year` (decimal strings, kept verbatim as TEXT). |
+| `fund_metrics` | (snapshot_at, entity_external_id) | The LP capital account: `commitment`, `called_capital`, `capital_contributed`, `distributions`, `net_asset_value`, `vintage_year` (decimal strings, kept verbatim as TEXT), `accepted_date`, and on a statement's row its inception-to-date fees, operating income, gains and carry (§5.3). |
 | `cap_calls` | (snapshot_at, entity_external_id, call_external_id) | Active LP capital calls. |
 | `documents` | content_sha256 | PDF archive index (K-1 / 1042-S / statements / financials), content-deduped on SHA-256; the PDF blobs stay under the bronze tree. |
+| `k1_capital_accounts` | content_sha256 | One per K-1 document (§5.3): the federal face page's tax capital account (item L), net short- and long-term gain (boxes 8, 9a), and cash and property distributions (box 19 A, C). |
 | `capital_events` | (snapshot_at, entity_external_id, event_kind) | The reconstructed timeline (§5.1): one row per snapshot-defining event — `acquired` / `disposition` / `exercise` / `price_change` / `statement`. |
 | `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`), `convertible_purchase` (a SAFE / note at its principal), and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on the custody account (§6). |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. `dump_runs.snapshot_at` is the download time (idempotency only), distinct from the content tables' event-dated `snapshot_at`. |
@@ -505,6 +508,68 @@ company's side-loaded explicit legs are emitted 1:1 (the CSV supplies both
 halves, so they too net to 0), and a fund's side-loaded calls and
 distributions are paired like its own.
 
+### 5.3 Cost-basis facts (migration 0004)
+
+Silver states each cost-basis fact bronze carries as a column. None of it is
+derived: a figure is stored as the source prints it, and NULL means the
+source does not state it.
+
+**Exercise at fair-market-value.** A share certificate born from an option
+exercise names its grant (`exercise_from`, a label) and its option type
+(`exercise_type`, ISO or NSO). The exercise-detail xlsx states the date, the
+shares exercised and the fair-market-value per share at exercise. For an NSO
+that value is the shares' tax basis; for an ISO it is the AMT basis. The
+certificate is issued on or some days after the exercise, so the loader
+pairs them by grant and quantity: within one grant and one quantity, each
+certificate, oldest first, takes the oldest unpaired exercise dated on or
+before its issue date. A paired certificate carries `exercise_date` and
+`exercise_fmv` on every `securities` row. `cost` stays the cash paid
+(quantity × strike).
+
+**Fund acceptance.** `fund_metrics.accepted_date` is partner-metrics'
+`partner.accepted_date`, the day the fund accepted the partner, as printed.
+Only rows loaded from partner-metrics carry it.
+
+**Statement lines.** A capital-account statement prints, per line, the
+period, year-to-date and inception-to-date figures. Its `fund_metrics` row
+carries the inception-to-date `management_fees`, `net_operating_income`,
+`realized_gain`, `unrealized_gain` and `carried_interest`, signed as printed:
+a parenthesised figure is negative, and the nil dash is 0. A line the
+statement does not print is NULL. Together with the contributions and
+distributions these lines add up to the ending balance. When partner-metrics
+shares its figures at a statement's own date, the statement adds these
+lines to that row and leaves the rest of it as partner-metrics states it.
+A later run that shares at the same date rewrites only the partner-metrics
+columns, so the statement lines stay when that run carries no statements
+(`download --no-documents`).
+
+**K-1 tax capital.** Each tax document is searched for the federal Schedule
+K-1 (Form 1065) face page; a 1042-S has none and yields no row. `k1.py`
+reads the page from `pdftotext -bbox` word boxes, because `-layout` folds the
+form's three columns into each other on dense lines. A word belongs to the
+column its left edge falls in, and to the box whose caption is nearest above
+it. An item-L amount belongs to the caption line nearest it vertically.
+`k1_capital_accounts` keeps one row per K-1 document, keyed on its sha256:
+
+- item L: `beginning_capital`, `contributions`, `net_income`,
+  `other_change`, `distributions`, `ending_capital`;
+- `short_term_gain` (box 8) and `long_term_gain` (box 9a);
+- `cash_distributions` (box 19, code A) and `property_distributions` (box
+  19, code C).
+
+The names follow angellist's `k1_capital_accounts` without its `_minor`
+suffix, since money here is a decimal string as printed. `distributions` is
+the figure inside the form's own parentheses, so it is positive; every
+other figure carries the sign the form prints. The fund is the index row's
+`fund_id`, which is the fund entity's id. A re-issued K-1 under the same
+document id replaces the row. Two documents that print the same tax year
+both stay; gold reconciles them.
+
+**Backfill.** `exercise_type` and `accepted_date` also sit in `payload`, so
+migration 0004 fills them on existing rows. The other columns come from
+bronze files only a load parses, so existing rows gain them on a reload from
+bronze (`load --force`).
+
 ### Why SQLite, not DuckDB
 
 The repo default is SQLite + JSON1; the single DuckDB exception
@@ -579,7 +644,7 @@ The scope is **everything**; all of it is captured:
 - SAFEs / convertible notes (schema + `convertible_purchase` cash events);
 - the fund-LP capital account + active capital calls (the fund-admin surface);
 - the document archive — K-1 / 1042-S / capital-account statements /
-  quarterly financials.
+  quarterly financials — with the statements, notices and K-1s parsed.
 
 Carta's internal API exposes no transaction ledger (exercises live inside the
 grant payloads), so the dated cash flows are **reconstructed** into the

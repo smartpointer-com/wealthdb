@@ -124,7 +124,8 @@ def test_valued_count_and_price_over_time(migrated, tmp_path):
            (_ts("2024-01-01"), 5.0)]
     cancel = _ts("2025-01-01")
     load.load_securities_valued(migrated, 42, edir,
-                                fmv_timeline=fmv, cancel_ts=cancel)
+                                fmv_timeline=fmv, cancel_ts=cancel,
+                                exercises={})
 
     # only cert-1 held (cert-2 issued 2023), FMV 1.0
     assert _holdings_as_of(migrated, _ts("2021-06-01")) == (1000, 1000.0)
@@ -142,7 +143,7 @@ def test_options_carry_zero_value(migrated, tmp_path):
     edir = _synthetic_edir(tmp_path)
     load.load_securities_valued(migrated, 42, edir,
                                 fmv_timeline=[(_ts("2021-01-01"), 1.0)],
-                                cancel_ts=None)
+                                cancel_ts=None, exercises={})
     vals = migrated.execute("SELECT DISTINCT market_value FROM securities "
                             "WHERE security_type='option'").fetchall()
     assert vals == [(0.0,)]

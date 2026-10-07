@@ -31,7 +31,9 @@ Bronze → silver mapping (schema in migrations/):
                                   $0 exit; for a fund the capital calls made
                                   before Carta's coverage (§5.2)
   entities/<e>/exercises/grant_*_er_*.xlsx
-                               -> FMV at last exercise (fallback held-share value)
+                               -> FMV at last exercise (fallback held-share
+                                  value), and each exercise's date + FMV on
+                                  the share certificate it produced
   entities/<e>/fund-admin/partner-metrics.json
                                -> fund_metrics (latest LP capital account)
   entities/<e>/fund-cap-calls.json
@@ -39,7 +41,8 @@ Bronze → silver mapping (schema in migrations/):
   documents/index.json + doc_*.pdf
                                -> documents (content-deduped on sha256);
                                   capital-account statements also parsed
-                                  -> fund_metrics quarterly NAV history
+                                  -> fund_metrics quarterly NAV history;
+                                  K-1s -> k1_capital_accounts (k1.py)
 
 SQLite + JSON1 (the repo default — no DuckDB need here; this is shape
 transformation, not a window-function replay). collectorkit.silver provides
@@ -60,6 +63,8 @@ import zipfile
 from pathlib import Path
 
 from collectorkit import bronze, cli, pdftotext, silver
+
+import k1
 
 log = logging.getLogger("carta.load")
 
@@ -180,11 +185,12 @@ _XL_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
 
 def _parse_exercise_xlsx(path: Path) -> dict | None:
-    """Parse a Carta exercise-detail xlsx into {date, shares, exercise_price,
-    fmv}. The sheet is label/value rows ('Grant exercised on <date>', 'Shares
-    exercised', 'Exercise price', 'Fair market value on exercise'); the value
-    trails its label cell. xlsx == zip of XML, parsed with the stdlib. None if
-    unreadable / no date."""
+    """Parse a Carta exercise-detail xlsx into {grant_label, date, shares,
+    exercise_price, fmv}. The sheet opens with a title naming the grant
+    ('Exercise details for <grant label> (<holder>)'), then label/value rows
+    ('Grant exercised on <date>', 'Shares exercised', 'Exercise price', 'Fair
+    market value on exercise'); the value trails its label cell. xlsx == zip
+    of XML, parsed with the stdlib. None if unreadable / no date."""
     try:
         z = zipfile.ZipFile(path)
         try:
@@ -220,28 +226,92 @@ def _parse_exercise_xlsx(path: Path) -> dict | None:
     m = re.search(r"exercised on\s+(\d{2}/\d{2}/\d{4})", blob)
     if not m:
         return None
-    return {"date": m.group(1), "shares": value_after("Shares exercised"),
+    title = re.search(r"Exercise details for\s+(\S+)", blob)
+    return {"grant_label": title.group(1) if title else None,
+            "date": m.group(1), "shares": value_after("Shares exercised"),
             "exercise_price": value_after("Exercise price"),
             "fmv": value_after("Fair market value")}
 
 
-def _last_exercise_fmv(edir: Path) -> float | None:
-    """The fair-market-value at the most recent exercise — the holder's
-    after-exercise valuation basis (shares exercised at a strike below FMV
-    are worth FMV). Parsed from the exercise-detail
-    xlsx; None if none were captured."""
+def _read_exercises(edir: Path) -> list[dict]:
+    """Every exercise-detail xlsx under exercises/, parsed, each with the
+    `grant_id` its file name (grant_<gid>_er_<erid>.xlsx) carries. Sorted
+    by file name, so the result does not depend on directory order."""
     xdir = edir / "exercises"
     if not xdir.is_dir():
-        return None
-    best_ts, best_fmv = None, None
-    for xl in xdir.glob("*.xlsx"):
+        return []
+    out = []
+    for xl in sorted(xdir.glob("*.xlsx")):
         ex = _parse_exercise_xlsx(xl)
-        if not ex or ex.get("fmv") is None:
+        if ex:
+            m = re.match(r"grant_(\d+)_er_", xl.name)
+            out.append({**ex, "grant_id": m.group(1) if m else None})
+    return out
+
+
+def _last_exercise_fmv(exercises: list[dict]) -> float | None:
+    """The fair-market-value at the most recent exercise — the holder's
+    after-exercise valuation basis (shares exercised at a strike below FMV
+    are worth FMV). None if no exercise detail states one."""
+    best_ts, best_fmv = None, None
+    for ex in exercises:
+        if ex.get("fmv") is None:
             continue
         ts = _date_ts(ex.get("date"))
         if ts is not None and (best_ts is None or ts > best_ts):
             best_ts, best_fmv = ts, _f(ex["fmv"])
     return best_fmv
+
+
+# The security lists whose rows are grants that can be exercised into shares;
+# a certificate's `exercise_from` names one of them by its label.
+_GRANT_FILES = ("options", "equity-grants", "rsu", "sar")
+
+
+def _match_exercises(edir: Path, exercises: list[dict]) -> dict:
+    """Pair each share certificate born from an exercise with the exercise
+    detail behind it: {certificate id: exercise}.
+
+    A certificate names its grant by label (`exercise_from`) and states its
+    quantity and issue date; an exercise detail states its grant, the shares
+    exercised and the exercise date. The certificate is issued on or some
+    days after the exercise, so dates alone do not pair them. Within one
+    grant and one quantity, certificates and exercises pair in date order:
+    each certificate, oldest first, takes the oldest unpaired exercise dated
+    on or before its issue date. A certificate with no such exercise is left
+    out."""
+    labels: dict[str, str] = {}
+    for fname in _GRANT_FILES:
+        body = _read_json(edir / f"{fname}.json")
+        for row in (body.get("rows") if isinstance(body, dict) else None) or []:
+            if isinstance(row, dict) and row.get("id") is not None:
+                labels[str(row["id"])] = _s(row.get("label"))
+    pool: dict[tuple, list[tuple[int, dict]]] = {}
+    for ex in exercises:
+        label = labels.get(ex.get("grant_id")) or ex.get("grant_label")
+        ts, qty = _date_ts(ex.get("date")), _f(ex.get("shares"))
+        if label and ts is not None and qty is not None:
+            pool.setdefault((label, qty), []).append((ts, ex))
+    for group in pool.values():
+        group.sort(key=lambda p: p[0])
+
+    body = _read_json(edir / "shares.json")
+    certs = []
+    for row in (body.get("rows") if isinstance(body, dict) else None) or []:
+        if not isinstance(row, dict) or not row.get("exercise_from"):
+            continue
+        ts = _date_ts(row.get("issue_date"))
+        if row.get("id") is not None and ts is not None:
+            certs.append((ts, row))
+    out = {}
+    for ts, row in sorted(certs, key=lambda c: c[0]):
+        group = pool.get((row["exercise_from"], _f(row.get("quantity"))), [])
+        for i, (ex_ts, ex) in enumerate(group):
+            if ex_ts <= ts:
+                out[row["id"]] = ex
+                del group[i]
+                break
+    return out
 
 
 def _read_valuation_csv(path: Path) -> list[tuple[int, float]]:
@@ -341,8 +411,13 @@ def load_entity(conn, snap: int, ind_id: str, firm_id: str | None,
 
 
 def _insert_security(conn, snap: int, entity_id, sectype: str, row: dict, *,
-                     canceled, market_value: float, position_status: str) -> int:
-    """Write one `securities` delta row (one position at one snapshot)."""
+                     canceled, market_value: float, position_status: str,
+                     exercises: dict) -> int:
+    """Write one `securities` delta row (one position at one snapshot).
+    `exercises` maps a certificate id to the exercise detail behind it
+    (_match_exercises); a matched certificate carries that exercise's date
+    and fair-market-value."""
+    ex = exercises.get(row.get("id")) if sectype == "share" else None
     conn.execute(
         "INSERT OR REPLACE INTO securities "
         "(snapshot_at, entity_external_id, security_type, "
@@ -350,8 +425,9 @@ def _insert_security(conn, snap: int, entity_id, sectype: str, row: dict, *,
         " status, issue_date, currency, quantity, exercise_price, "
         " cost, exercised, vested, exercisable, has_vesting, "
         " is_canceled, is_expired, is_terminated, is_fully_exercised, "
-        " market_value, position_status, fund_name, payload) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " market_value, position_status, fund_name, exercise_type, "
+        " exercise_date, exercise_fmv, payload) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (snap, entity_id, sectype, row.get("id"),
          _s(row.get("label")), _s(row.get("issuable_type")),
          _s(row.get("stock_type")), _s(row.get("status")),
@@ -362,7 +438,9 @@ def _insert_security(conn, snap: int, entity_id, sectype: str, row: dict, *,
          _b(row.get("has_vesting")), canceled,
          _b(row.get("is_expired")), _b(row.get("is_terminated")),
          _b(row.get("is_fully_exercised")), market_value, position_status,
-         _s(row.get("fund_name")), _cj(row)),
+         _s(row.get("fund_name")), _s(row.get("exercise_type")),
+         ex["date"] if ex else None, _f(ex.get("fmv")) if ex else None,
+         _cj(row)),
     )
     return 1
 
@@ -384,12 +462,14 @@ def _held_market_value(sectype: str, qty: float | None,
 
 
 def load_securities(conn, snap: int, entity_id, edir: Path, *,
-                    held: bool, val_price: float | None) -> int:
+                    held: bool, val_price: float | None,
+                    exercises: dict) -> int:
     """Carta-derived fallback (no valuation override): write the cap-table
     securities at one snapshot. `held=True` is the live state — is_canceled
     forced 0, held shares valued at quantity x val_price (the FMV at the last
     exercise), options / other lines at 0. `held=False` is the exited state:
-    is_canceled from the source, market_value 0."""
+    is_canceled from the source, market_value 0. `exercises` as for
+    _insert_security."""
     n = 0
     for fname, sectype in SECURITY_FILES.items():
         body = _read_json(edir / f"{fname}.json")
@@ -406,19 +486,20 @@ def load_securities(conn, snap: int, entity_id, edir: Path, *,
                 mv = 0.0
             n += _insert_security(conn, snap, entity_id, sectype, row,
                                   canceled=canceled, market_value=mv,
-                                  position_status=pstatus)
+                                  position_status=pstatus, exercises=exercises)
     return n
 
 
 def load_securities_valued(conn, entity_id, edir: Path, *,
                            fmv_timeline: list[tuple[int, float]],
-                           cancel_ts: int | None) -> int:
+                           cancel_ts: int | None, exercises: dict) -> int:
     """Side-loaded valuation override: each share certificate is held from its
     issue date and re-valued at every FMV step in the timeline
     (quantity x FMV-as-of), so the share count *and* the per-share price both
     move correctly over time. Options / other lines carry value 0. A cancelled
     entity exits every line at cancel_ts (dropped from gold positions).
-    Returns the number of delta rows written."""
+    `exercises` as for _insert_security. Returns the number of delta rows
+    written."""
     fmv_dates = [t for t, _ in fmv_timeline]
     n = 0
     for fname, sectype in SECURITY_FILES.items():
@@ -442,11 +523,13 @@ def load_securities_valued(conn, entity_id, edir: Path, *,
                 mv = _held_market_value(sectype, qty, fmv, row)
                 n += _insert_security(conn, t, entity_id, sectype, row,
                                       canceled=0, market_value=mv,
-                                      position_status="held")
+                                      position_status="held",
+                                      exercises=exercises)
             if cancel_ts is not None:
                 _insert_security(conn, cancel_ts, entity_id, sectype, row,
                                  canceled=_b(row.get("is_canceled")),
-                                 market_value=0.0, position_status="exited")
+                                 market_value=0.0, position_status="exited",
+                                 exercises=exercises)
     return n
 
 
@@ -495,6 +578,16 @@ def load_vesting(conn, snap: int, entity_id, edir: Path) -> int:
     return n
 
 
+# fund_metrics columns a partner-metrics row states, in load_fund_metrics'
+# value order.
+_PARTNER_COLUMNS = ("fund_external_id", "fund_uuid", "currency",
+                    "vintage_year", "commitment", "called_capital",
+                    "capital_contributed", "capital_contributed_paid",
+                    "distributions", "net_asset_value",
+                    "capital_call_liabilities", "prepaid_capital_contribution",
+                    "sharing_date", "accepted_date", "payload")
+
+
 def load_fund_metrics(conn, snap: int, entity_id, edir: Path) -> int:
     body = _read_json(edir / "fund-admin" / "partner-metrics.json")
     if not isinstance(body, list) or not body:
@@ -505,14 +598,16 @@ def load_fund_metrics(conn, snap: int, entity_id, edir: Path) -> int:
     pm = body[0]
     m = pm.get("metrics") or {}
     partner = pm.get("partner") or {}
+    # An upsert over the partner-metrics columns only: the statement's
+    # inception-to-date lines merged onto this row (load_statement_nav)
+    # survive a later run that shares at the same date but carries no
+    # statements, such as a `download --no-documents` run.
     conn.execute(
-        "INSERT OR REPLACE INTO fund_metrics "
-        "(snapshot_at, entity_external_id, fund_external_id, fund_uuid, "
-        " currency, vintage_year, commitment, called_capital, "
-        " capital_contributed, capital_contributed_paid, distributions, "
-        " net_asset_value, capital_call_liabilities, "
-        " prepaid_capital_contribution, sharing_date, payload) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO fund_metrics "
+        f"(snapshot_at, entity_external_id, {', '.join(_PARTNER_COLUMNS)}) "
+        f"VALUES (?,?,{','.join('?' * len(_PARTNER_COLUMNS))}) "
+        "ON CONFLICT (snapshot_at, entity_external_id) DO UPDATE SET "
+        + ", ".join(f"{c} = excluded.{c}" for c in _PARTNER_COLUMNS),
         (snap, entity_id, _s(partner.get("fund_id")),
          _s(partner.get("fund_uuid")), _s(partner.get("fund_currency")),
          m.get("vintage_year"), _s(m.get("commitment")),
@@ -520,7 +615,7 @@ def load_fund_metrics(conn, snap: int, entity_id, edir: Path) -> int:
          _s(m.get("capital_contributed_paid")), _s(m.get("distributions")),
          _s(m.get("net_asset_value")), _s(m.get("capital_call_liabilities")),
          _s(m.get("prepaid_capital_contribution")), _s(pm.get("sharing_date")),
-         _cj(pm)),
+         _s(partner.get("accepted_date")), _cj(pm)),
     )
     return 1
 
@@ -632,40 +727,85 @@ def _statement_nav_from_text(text: str) -> str | None:
     return m.group(1).replace(",", "") if m else None
 
 
-def _parse_statement_nav(pdf: Path) -> tuple[str | None, float | None]:
-    """The NAV and the inception-to-date capital contributions a
-    capital-account statement PDF states (via pdftotext -layout); either is
-    None when its line is absent."""
-    text = _pdf_text(pdf)
-    if text is None:
-        return None, None
-    return _statement_nav_from_text(text), _statement_flows_from_text(text)[0]
+def _itd_figure(text: str, label: str) -> str | None:
+    """The INCEPTION-TO-DATE figure on a capital-account statement line, as
+    printed: `(1,234)`, `1,234` or the nil dash `—`. Each line carries three
+    columns (statement period / year to date / inception to date); the
+    inception-to-date one is the line's last token. None when no line
+    starts with `label`. Balance-sheet lines (contributions receivable /
+    received in advance) are skipped."""
+    for line in text.splitlines():
+        if not re.match(rf"\s*{re.escape(label)}\s", line):
+            continue
+        if "receivable" in line or "advance" in line:
+            continue
+        toks = re.findall(r"\(?[\d,]+(?:\.\d+)?\)?|—",
+                          line[line.find(label) + len(label):])
+        if toks:
+            return toks[-1]
+    return None
+
+
+def _itd_decimal(raw: str | None) -> str | None:
+    """A printed statement figure as a signed decimal string: parentheses
+    are negative, the nil dash is zero."""
+    if raw is None:
+        return None
+    if raw == "—":
+        return "0"
+    digits = raw.strip("()").replace(",", "")
+    return "-" + digits if raw.startswith("(") else digits
 
 
 def _statement_flows_from_text(text: str) -> tuple[float | None, float | None]:
     """The partner's INCEPTION-TO-DATE capital contributions + distributions
-    (USD) from a capital-account statement's pdftotext output. Each line
-    carries three columns (statement-period / year-to-date / inception-to-
-    date); we take the inception-to-date (LAST) figure — it reads cleanly as
-    the line's final amount and is monotonic, whereas the period columns
-    mis-align under pdftotext when '—' placeholders are present.
-    load_cash_flows differences consecutive statements into per-period flows.
-    Returns (contributions_itd, distributions_itd); a component is None if its
-    line is absent. Balance-sheet lines (contributions receivable / received in
-    advance) are skipped. Split from the PDF call for testability."""
-    def inception_to_date(label: str) -> float | None:
-        for line in text.splitlines():
-            if not re.match(rf"\s*{label}\s", line):
-                continue
-            if "receivable" in line or "advance" in line:
-                continue
-            amts = re.findall(r"\(?[\d,]+\)?", line[line.find(label) + len(label):])
-            if amts:
-                return float(amts[-1].strip("()").replace(",", ""))
-        return None
+    (USD, as magnitudes) from a capital-account statement's pdftotext output.
+    The inception-to-date column reads cleanly as the line's last figure and
+    is monotonic, whereas the period columns mis-align under pdftotext when
+    '—' placeholders are present. load_cash_flows differences consecutive
+    statements into per-period flows. Returns (contributions_itd,
+    distributions_itd); a component is None if its line is absent. Split from
+    the PDF call for testability."""
+    def magnitude(label: str) -> float | None:
+        dec = _itd_decimal(_itd_figure(text, label))
+        return None if dec is None else abs(float(dec))
 
-    return (inception_to_date("Capital contributions"),
-            inception_to_date("Capital distributions"))
+    return magnitude("Capital contributions"), magnitude("Capital distributions")
+
+
+# Statement lines carried onto the statement's fund_metrics row, by column:
+# each line's inception-to-date figure, signed as the statement prints it.
+_STATEMENT_ITD_LINES = {
+    "management_fees": "Management fees",
+    "net_operating_income": "Net operating income (loss)",
+    "realized_gain": "Net realized gain (loss)",
+    "unrealized_gain": "Net unrealized gain (loss)",
+    "carried_interest": "Carried interest accrued",
+}
+
+
+def _statement_from_text(text: str) -> dict:
+    """Everything a capital-account statement's pdftotext output states for
+    its fund_metrics row: `net_asset_value` (the ending balance, a digit
+    string), `capital_contributed` (inception-to-date contributions, "%.2f")
+    and each _STATEMENT_ITD_LINES column. A value is None when its line is
+    absent."""
+    contributed = _statement_flows_from_text(text)[0]
+    out = {
+        "net_asset_value": _statement_nav_from_text(text),
+        "capital_contributed": (None if contributed is None
+                                else f"{contributed:.2f}"),
+    }
+    for col, label in _STATEMENT_ITD_LINES.items():
+        out[col] = _itd_decimal(_itd_figure(text, label))
+    return out
+
+
+def _parse_statement(pdf: Path) -> dict | None:
+    """_statement_from_text over one capital-account statement PDF (via
+    pdftotext -layout); None when the PDF cannot be read."""
+    text = _pdf_text(pdf)
+    return None if text is None else _statement_from_text(text)
 
 
 def _parse_statement_flows(pdf: Path) -> tuple[float | None, float | None]:
@@ -787,12 +927,17 @@ def _period_deltas(statements) -> list[tuple]:
 def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
     """Parse the fund's capital-account-statement PDFs into a quarterly NAV
     time series — the history the structured partner-metrics doesn't carry.
-    One fund_metrics delta per statement date, carrying the NAV and the
-    inception-to-date capital contributed the same statement states, so the
-    row has a book value as well as a value. The richer structured row
-    (loaded at its sharing_date) is left intact (INSERT OR IGNORE)."""
+    One fund_metrics delta per statement date, carrying the NAV, the
+    inception-to-date capital contributed the same statement states (so the
+    row has a book value as well as a value), and its inception-to-date fees,
+    operating income, gains and carry.
+
+    A structured partner-metrics row loaded at the same date is richer and
+    keeps its own figures; the statement adds only the lines partner-metrics
+    lacks (_STATEMENT_ITD_LINES) to it."""
     idx = _read_json(docs_dir / "index.json")
     rows = idx.get("results") if isinstance(idx, dict) else None
+    itd_cols = list(_STATEMENT_ITD_LINES)
     n = 0
     for row in rows or []:
         if "apital account" not in (row.get("document_type") or ""):
@@ -800,21 +945,85 @@ def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
         pdf = docs_dir / f"doc_{row.get('id')}.pdf"
         if not pdf.is_file():
             continue
-        nav, contributed = _parse_statement_nav(pdf)
+        st = _parse_statement(pdf)
         snap = _date_ts(row.get("document_date"))
-        if nav is None or snap is None:
+        if st is None or st["net_asset_value"] is None or snap is None:
             continue
-        contributed = None if contributed is None else f"{contributed:.2f}"
+        nav, contributed = st["net_asset_value"], st["capital_contributed"]
         conn.execute(
-            "INSERT OR IGNORE INTO fund_metrics "
+            "INSERT INTO fund_metrics "
             "(snapshot_at, entity_external_id, currency, net_asset_value, "
-            " capital_contributed, sharing_date, payload) "
-            "VALUES (?,?,?,?,?,?,?)",
+            " capital_contributed, sharing_date, "
+            f" {', '.join(itd_cols)}, payload) "
+            f"VALUES (?,?,?,?,?,?,{','.join('?' * len(itd_cols))},?) "
+            "ON CONFLICT (snapshot_at, entity_external_id) DO UPDATE SET "
+            + ", ".join(f"{c} = excluded.{c}" for c in itd_cols),
             (snap, fund_eid, "USD", nav, contributed,
-             _s(row.get("document_date")),
+             _s(row.get("document_date")), *(st[c] for c in itd_cols),
              _cj({"source": "capital_account_statement",
                   "document_id": row.get("id"), "net_asset_value": nav,
                   "capital_contributed": contributed})))
+        n += 1
+    return n
+
+
+# k1_capital_accounts money columns, in k1.parse_face_page's keys.
+_K1_COLUMNS = ("beginning_capital", "contributions", "net_income",
+               "other_change", "distributions", "cash_distributions",
+               "property_distributions", "ending_capital", "short_term_gain",
+               "long_term_gain")
+
+
+def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
+    """Parse each tax document's federal Schedule K-1 face page into a
+    k1_capital_accounts row (k1.py), keyed on the PDF's sha256 like
+    `documents`. The fund it belongs to is the index row's `fund_id`, which
+    is the fund entity's id. The tax year is the form's own, else the
+    index's. A document already parsed under its sha256 is skipped; a
+    re-issue under the same document id replaces the stale row. A tax
+    document with no federal face page (a 1042-S) yields no row, with a
+    warning when the index types it as a K-1. Returns the number of rows
+    written."""
+    idx = _read_json(docs_dir / "index.json")
+    rows = idx.get("results") if isinstance(idx, dict) else None
+    n = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if "tax" not in (row.get("document_type") or "").lower():
+            continue
+        pdf = docs_dir / f"doc_{row.get('id')}.pdf"
+        if not pdf.is_file():
+            continue
+        sha = hashlib.sha256(pdf.read_bytes()).hexdigest()
+        if conn.execute("SELECT 1 FROM k1_capital_accounts "
+                        "WHERE content_sha256 = ?", (sha,)).fetchone():
+            continue
+        try:
+            parsed = k1.parse_bbox(k1.bbox_xhtml(pdf, timeout=60))
+        except pdftotext.ExtractionError as exc:
+            log.warning("pdftotext -bbox failed on %s: %s", pdf.name, exc)
+            continue
+        if parsed is None:
+            if "k-1" in row["document_type"].lower():
+                log.warning("%s is typed %r but has no federal K-1 face page; "
+                            "no k1_capital_accounts row", pdf.name,
+                            row["document_type"])
+            continue
+        year = parsed["tax_year"]
+        if year is None and str(row.get("tax_year") or "").isdigit():
+            year = int(row["tax_year"])
+        fund = row.get("fund_id")
+        conn.execute("DELETE FROM k1_capital_accounts WHERE doc_id = ?",
+                     (row.get("id"),))
+        conn.execute(
+            "INSERT INTO k1_capital_accounts "
+            "(content_sha256, doc_id, entity_external_id, tax_year, "
+            f" {', '.join(_K1_COLUMNS)}, payload) "
+            f"VALUES (?,?,?,?,{','.join('?' * len(_K1_COLUMNS))},?)",
+            (sha, row.get("id"),
+             int(fund) if str(fund or "").isdigit() else None, year,
+             *(parsed[c] for c in _K1_COLUMNS), _cj(parsed["printed"])))
         n += 1
     return n
 
@@ -1192,6 +1401,8 @@ def load_run(conn, run_dir: Path) -> bool:
                     # Cap-table: reconstruct the held -> cancelled lifecycle.
                     cancel_s = _entity_canceled_date(edir)
                     cancel_ts = _date_ts(cancel_s)
+                    exercises = _read_exercises(edir)
+                    matched = _match_exercises(edir, exercises)
                     override = _read_valuation_csv(
                         run_dir.parent / f"{eid}-valuations.csv")
                     if override:
@@ -1203,7 +1414,7 @@ def load_run(conn, run_dir: Path) -> bool:
                         load_entity(conn, first_ts, ind_id, firm_id, edir)
                         n_sec += load_securities_valued(
                             conn, eid, edir, fmv_timeline=override,
-                            cancel_ts=cancel_ts)
+                            cancel_ts=cancel_ts, exercises=matched)
                         events = [(first_ts, eid, "acquired", None,
                                    "first held (valuation override applies)")]
                         events += [(t, eid, "price_change", None,
@@ -1218,18 +1429,20 @@ def load_run(conn, run_dir: Path) -> bool:
                         # No override: value held shares at the FMV at the last
                         # exercise (after-exercise basis), falling back to the
                         # last strike when no exercise detail was captured.
-                        val_price = (_last_exercise_fmv(edir)
+                        val_price = (_last_exercise_fmv(exercises)
                                      or _last_exercise_price(edir))
                         held_ts = _date_ts(hd.get("held_since")) or dump_snap
                         load_entity(conn, held_ts, ind_id, firm_id, edir)
                         n_sec += load_securities(conn, held_ts, eid, edir,
-                                                 held=True, val_price=val_price)
+                                                 held=True, val_price=val_price,
+                                                 exercises=matched)
                         events = [(held_ts, eid, "acquired",
                                    _s(hd.get("held_since")), "shares first held")]
                         if cancel_ts is not None and cancel_ts > held_ts:
                             load_entity(conn, cancel_ts, ind_id, firm_id, edir)
                             load_securities(conn, cancel_ts, eid, edir,
-                                            held=False, val_price=val_price)
+                                            held=False, val_price=val_price,
+                                            exercises=matched)
                             events.append((cancel_ts, eid, "disposition",
                                            cancel_s,
                                            "acquisition: securities cancelled"))
@@ -1238,6 +1451,7 @@ def load_run(conn, run_dir: Path) -> bool:
 
         n_doc = load_documents(conn, dump_snap, run_dir.name,
                                run_dir / "documents")
+        n_k1 = load_k1_capital_accounts(conn, run_dir / "documents")
         if fund_eid is not None:
             n_navh = load_statement_nav(conn, run_dir / "documents", fund_eid)
         n_cf = load_cash_flows(conn, run_dir, dump_snap)
@@ -1248,9 +1462,9 @@ def load_run(conn, run_dir: Path) -> bool:
 
     log.info("loaded %s: %d securities, %d event(s), %d grant vesting, "
              "%d fund-metric (+%d NAV-history), %d cap-call, %d cash-flow(s), "
-             "%d new doc(s)",
+             "%d new doc(s), %d new K-1(s)",
              run_dir.name, n_sec, n_evt, n_vest, n_fund, n_navh, n_call, n_cf,
-             n_doc)
+             n_doc, n_k1)
     return True
 
 

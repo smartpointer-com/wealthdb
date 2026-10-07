@@ -59,16 +59,17 @@ def test_statement_nav_row_carries_contributed_capital(migrated, tmp_path, monke
         {"id": "s2", "document_type": "Capital account statement",
          "document_date": "03/31/2099"},
     ])
-    monkeypatch.setattr(load, "_parse_statement_nav", lambda pdf: {
-        "s1": ("120000", 100000.0),
-        "s2": ("90000", None),
+    monkeypatch.setattr(load, "_pdf_text", lambda pdf: {
+        "s1": "Capital contributions   51,374   51,374   103,861\n"
+              "Ending balance   $   121,947   $   121,947   $   121,947\n",
+        "s2": "Ending balance   $   89,513   $   89,513   $   89,513\n",
     }[pdf.stem.removeprefix("doc_")])
     assert load.load_statement_nav(migrated, docs, 7) == 2
     rows = migrated.execute(
         "SELECT net_asset_value, capital_contributed, "
         "json_extract(payload, '$.capital_contributed') FROM fund_metrics "
         "WHERE entity_external_id = 7 ORDER BY snapshot_at").fetchall()
-    assert rows == [("120000", "100000.00", "100000.00"), ("90000", None, None)]
+    assert rows == [("121947", "103861.00", "103861.00"), ("89513", None, None)]
 
 
 # ---- per-period differencing of inception-to-date --------------------------
