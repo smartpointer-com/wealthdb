@@ -173,6 +173,134 @@ def test_txn_outside_declared_window_does_not_pk_collide(tmp_path):
 
 
 # ============================================================
+# Position cost columns (migration 0005)
+# ============================================================
+#
+# average_cost is `averagePrice` as sent; unrealized_gain_loss is the
+# open P/L of the side the position is held on. Invented figures only.
+
+_COST_POSITIONS = {
+    # Long equity. averageLongPrice is a different average and must not
+    # reach the column.
+    "999999999": {
+        "instrument": {"symbol": "VTI", "cusip": "999999999",
+                       "assetType": "EQUITY"},
+        "longQuantity": 10, "shortQuantity": 0,
+        "marketValue": 2500.00,
+        "averagePrice": 200.00, "averageLongPrice": 600.00,
+        "longOpenProfitLoss": 500.00, "shortOpenProfitLoss": 0,
+    },
+    # Short option: per-share price, P/L from the short side.
+    "SPX   990119C09990000": {
+        "instrument": {"symbol": "SPX   990119C09990000",
+                       "assetType": "OPTION"},
+        "longQuantity": 0, "shortQuantity": 2,
+        "marketValue": -300.00,
+        "averagePrice": 2.50,
+        "longOpenProfitLoss": 0, "shortOpenProfitLoss": 200.00,
+    },
+    # Bond: averagePrice per 100 of par, kept as sent.
+    "912796ZZ9": {
+        "instrument": {"symbol": "912796ZZ9", "cusip": "912796ZZ9",
+                       "assetType": "FIXED_INCOME"},
+        "longQuantity": 10000,
+        "marketValue": 9950.00,
+        "averagePrice": 99.25,
+        "longOpenProfitLoss": 25.00,
+    },
+    # Zero average cost: stored as 0, not NULL.
+    "QQQ": {
+        "instrument": {"symbol": "QQQ", "assetType": "EQUITY"},
+        "longQuantity": 1,
+        "marketValue": 100.00,
+        "averagePrice": 0,
+        "longOpenProfitLoss": 100.00,
+    },
+    # Neither field sent: both columns NULL.
+    "SPY": {
+        "instrument": {"symbol": "SPY", "assetType": "EQUITY"},
+        "longQuantity": 1,
+        "marketValue": 100.00,
+    },
+    # Short with only the long-side P/L sent: not stated, so NULL.
+    "IWM": {
+        "instrument": {"symbol": "IWM", "assetType": "EQUITY"},
+        "shortQuantity": 1,
+        "marketValue": -100.00,
+        "averagePrice": 110.00,
+        "longOpenProfitLoss": 0,
+    },
+}
+
+_COST_EXPECTED = {
+    "999999999": (200.00, 500.00),
+    "SPX   990119C09990000": (2.50, 200.00),
+    "912796ZZ9": (99.25, 25.00),
+    "QQQ": (0, 100.00),
+    "SPY": (None, None),
+    "IWM": (110.00, None),
+}
+
+
+def _seed_cost_positions(root: Path) -> Path:
+    dump = root / RUN_SLUG
+    dump.mkdir(parents=True, exist_ok=True)
+    (dump / "account_numbers.json").write_text(json.dumps([
+        {"accountNumber": ACCT_PLAIN, "hashValue": ACCT_HASH},
+    ]), encoding="utf-8")
+    (dump / "accounts_positions.json").write_text(json.dumps([
+        {"securitiesAccount": {
+            "accountNumber": ACCT_PLAIN,
+            "type": "MARGIN",
+            "positions": list(_COST_POSITIONS.values()),
+        }},
+    ]), encoding="utf-8")
+    return dump
+
+
+def _cost_columns(conn) -> dict:
+    return {
+        r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT instrument_key, average_cost, unrealized_gain_loss "
+            "FROM positions")
+    }
+
+
+def test_load_writes_position_cost_columns(tmp_path):
+    conn = _fresh_db(tmp_path)
+    loader.load_dump(conn, _seed_cost_positions(tmp_path / "bronze"))
+    assert _cost_columns(conn) == _COST_EXPECTED
+    # The payload keeps the raw object, averageLongPrice included.
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM positions WHERE instrument_key = '999999999'"
+    ).fetchone()[0])
+    assert payload["averageLongPrice"] == 600.00
+
+
+def test_migration_0005_backfills_rows_loaded_before_it(tmp_path):
+    """A silver DB at schema 0004 holds positions with payload only. The
+    migration fills both columns from payload by the loader's rule."""
+    pre = tmp_path / "migrations-0004"
+    pre.mkdir()
+    for f in sorted(loader.MIGRATIONS_DIR.glob("000[1-4]_*.sql")):
+        (pre / f.name).write_text(f.read_text(encoding="utf-8"),
+                                  encoding="utf-8")
+    conn = loader.open_db(tmp_path / "schwab-api.db")
+    assert silver.apply_migrations(conn, pre) == 4
+    with conn:
+        conn.executemany(
+            "INSERT INTO positions"
+            "(snapshot_at, account_external_id, instrument_key, payload) "
+            "VALUES (?, ?, ?, ?)",
+            [(1, ACCT_HASH, key, loader.canonical_json(pos))
+             for key, pos in _COST_POSITIONS.items()],
+        )
+
+    assert silver.apply_migrations(conn, loader.MIGRATIONS_DIR) == 5
+    assert _cost_columns(conn) == _COST_EXPECTED
+
+
+# ============================================================
 # Bronze compression convergence
 # ============================================================
 #

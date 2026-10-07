@@ -275,8 +275,8 @@ SQLite chosen over alternatives:
   cheap incremental writes. Parquet is for gold-style scans.
 
 JSON1 is a non-optional companion. `json_extract` is fast enough at
-this scale that nothing needs promoting beyond the indexed
-columns. See §4.2.
+this scale that speed alone never forces a column out of `payload`.
+See §4.2.
 
 ### 4.2 Semi-relational pattern
 
@@ -299,6 +299,26 @@ For Schwab silver:
 - everything else is in `payload` — instrument descriptions, prices,
   fee types, transaction subtypes, etc.
 
+`positions` also carries two cost-basis columns. They hold Schwab's
+adjusted tax-lot basis, so an adapter reads it without a
+`json_extract` per row:
+
+| Column | Source field | Meaning |
+| --- | --- | --- |
+| `average_cost` | `averagePrice` | Cost per unit, as sent. |
+| `unrealized_gain_loss` | `longOpenProfitLoss`, or `shortOpenProfitLoss` when `shortQuantity` > 0 | Open P/L in USD, as sent. |
+
+- `average_cost` uses the API's price convention.
+  It is per share for equities, funds and options.
+  It is per 100 of par for bonds.
+- The holding's total cost is market value minus open P/L.
+  That form needs no per-asset-class scale.
+- A zero is stored as sent. NULL means the API did not send the field.
+- `averageLongPrice` stays in `payload`.
+  It is a different average and does not tie to the statements.
+- Migration 0005 fills both columns from `payload` for rows loaded
+  before it.
+
 **Why not promote more columns?** Because the upstream's schema
 evolves. Schwab adds new fields all the time; UBS varies what each
 MT message type carries; both sometimes change types (string ↔
@@ -311,7 +331,8 @@ account_external_id = ?` should be an index probe, not a JSON scan.
 
 **When to promote a JSON field into a real column** (decided per
 table, not as a universal rule):
-- The query pattern needs it as a filter or join key.
+- The query pattern needs it as a filter or join key, or an adapter
+  reads it on every row.
 - It's present on *every* row of that table (no nulls from sparse
   fields — promoting a field that's only on 60% of rows produces a
   half-useful column).

@@ -237,6 +237,18 @@ def load_user_preference(conn, snapshot_at: int, dump_dir: Path) -> int:
     return 1
 
 
+def _open_profit_loss(pos: dict) -> float | None:
+    """The position's open P/L, from the side it is held on.
+
+    A short position (`shortQuantity` > 0) reports it in
+    `shortOpenProfitLoss`, any other in `longOpenProfitLoss`. None when
+    the API omits the field. Migration 0005 backfills with the same
+    rule in SQL."""
+    if (pos.get("shortQuantity") or 0) > 0:
+        return pos.get("shortOpenProfitLoss")
+    return pos.get("longOpenProfitLoss")
+
+
 def load_accounts_positions(
     conn, snapshot_at: int, dump_dir: Path, acct_map: dict[str, str]
 ) -> tuple[int, int]:
@@ -278,7 +290,9 @@ def load_accounts_positions(
                             acct_hash[:8])
                 continue
             pos_rows.append((
-                snapshot_at, acct_hash, instrument_key, canonical_json(pos),
+                snapshot_at, acct_hash, instrument_key,
+                pos.get("averagePrice"), _open_profit_loss(pos),
+                canonical_json(pos),
             ))
 
     if bal_rows:
@@ -291,8 +305,9 @@ def load_accounts_positions(
     if pos_rows:
         conn.executemany(
             "INSERT INTO positions"
-            "(snapshot_at, account_external_id, instrument_key, payload) "
-            "VALUES (?, ?, ?, ?)",
+            "(snapshot_at, account_external_id, instrument_key, "
+            " average_cost, unrealized_gain_loss, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             pos_rows,
         )
     return len(pos_rows), len(bal_rows)
