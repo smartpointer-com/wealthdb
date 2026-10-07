@@ -1012,10 +1012,13 @@ listed here because they are properties of the feeds, not of gold.
   currently-selected relationship, so a session captures exactly
   one: covering a second one takes a relationship switch and
   another run. Could be automated in download.py later.
-- **Cost basis is web-only.** Web carries `cost_price`; PSN does
-  not. Past the PSN cutover the web cost basis stops refreshing
-  unless web is re-run or cost basis is derived from web's
-  transaction history (buy/sell events).
+- **Cost basis comes in two shapes.** Web carries a per-unit
+  `cost_price` in the instrument currency. PSN's MT535 carries the
+  holding's total book cost (`:19A::BOOK//`). Its `:70C::SUBB//`
+  narrative adds the average unit cost (`AVER`), the holding cost
+  (`AHOD`) and, for a foreign-currency holding, the average
+  acquisition FX rate (`AEXR`). A holding can come without a book
+  cost; its narrative then has no `AVER` either.
 - **FX coverage differs sharply.** PSN carries 980+ FX rates; web
   carries only the 8 CHF/* pairs in the `positions.csv` footer.
 - **Documents are not indexed by instrument.** Trade confirmations

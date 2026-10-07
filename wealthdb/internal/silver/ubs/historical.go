@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -269,6 +270,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		if positionCcy == "" {
 			positionCcy = ccy
 		}
+		bookValue, posPayload := historicalBookValue(units, cost, ccy, positionCcy, payload)
 		batch.Positions = append(batch.Positions, canonical.PositionChange{
 			SnapshotAt:           asOf,
 			AccountExternalID:    accountID,
@@ -279,9 +281,9 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			Currency:             positionCcy,
 			Quantity:             silver.DecimalPtrFromNullFloat(units),
 			MarketValue:          silver.DecimalPtrFromNullFloat(mv),
-			BookValue:            bookValueFromUnitsCost(units, cost),
+			BookValue:            bookValue,
 			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
-			Payload:              json.RawMessage(payload),
+			Payload:              posPayload,
 		})
 	}
 	return rows.Err()
@@ -560,10 +562,30 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 	return r.span(ctx, "historicalRange", queries)
 }
 
-func bookValueFromUnitsCost(units, cost sql.NullFloat64) *canonical.Decimal {
+// historicalBookValue returns a statement row's book value and the payload
+// its position carries.
+//
+// The statement prints the cost price in the instrument's currency, while the
+// position is stated in the portfolio's base currency. units × cost_price is a
+// book value only when the two currencies are the same. Otherwise the book
+// value stays NULL, since the average buy FX rate that would convert it is not
+// parsed, and the cost price travels in the payload with its currency.
+func historicalBookValue(units, cost sql.NullFloat64, instrumentCcy, positionCcy, payload string) (*canonical.Decimal, json.RawMessage) {
 	if !units.Valid || !cost.Valid {
-		return nil
+		return nil, json.RawMessage(payload)
 	}
-	d := canonical.NewDecimalFromFloat(units.Float64 * cost.Float64)
-	return &d
+	if instrumentCcy != "" && instrumentCcy == positionCcy {
+		d := canonical.NewDecimalFromFloat(units.Float64 * cost.Float64)
+		return &d, json.RawMessage(payload)
+	}
+	price := strconv.FormatFloat(cost.Float64, 'f', -1, 64)
+	out := spliceStringField(payload, costPriceKey, price)
+	return nil, spliceStringField(string(out), costCurrencyKey, instrumentCcy)
 }
+
+// The payload keys a statement row's cost price travels under when it cannot
+// become a book value.
+const (
+	costPriceKey    = `"cost_price":`
+	costCurrencyKey = `"cost_currency":`
+)

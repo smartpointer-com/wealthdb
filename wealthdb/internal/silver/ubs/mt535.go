@@ -19,13 +19,16 @@ import (
 //
 //   :HOLD//USD1500000,        → market value USD 1,500,000.00
 //   :HOLD//CHF1200000,        → same position's value in reporting CHF
-//   :BOOK//USD600000,         → book/cost basis
+//   :BOOK//USD600000,         → book cost, the holding's total cost
 //   :AGGR//UNIT/10000,        → aggregate quantity, 10000 units
 //   :AGGR//FAMT/100000,       → aggregate FACE amount, for bonds
 //   :INDC//ACTU/USD150,123456 → indicative actual price USD 150.123456
 //
-// We only need market_value and quantity for gold's positions
-// table; everything else stays in the raw payload for forensics.
+// The :70C::SUBB// narrative adds the average unit cost (AVER), the
+// holding cost (AHOD, equal to BOOK) and, when the instrument currency
+// differs from the reference currency, the average acquisition FX rate
+// (AEXR). Gold's positions table takes market value and quantity from
+// here; book cost and the narrative stay in the raw payload.
 
 var (
 	re19A = regexp.MustCompile(`^:([A-Z]{3,4})//([A-Z]{3})([0-9,]+?),?$`)

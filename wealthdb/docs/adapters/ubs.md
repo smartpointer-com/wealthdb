@@ -817,7 +817,7 @@ invariant that every gold `positions` row is owned by an
 | `currency_iso` | `instruments.currency` |
 | `units` | `positions.quantity` |
 | `market_value` | `positions.market_value` (in `market_value_currency`, typically portfolio base) |
-| `cost_price * units` | `positions.book_value` |
+| `cost_price * units` | `positions.book_value` when `currency_iso` equals the position currency; otherwise NULL, with `cost_price` and `cost_currency` in the payload |
 | `accrued_interest` | `positions.accrued_interest` |
 | `description` | `instruments.name` |
 | `sector` | (kept in payload only) |

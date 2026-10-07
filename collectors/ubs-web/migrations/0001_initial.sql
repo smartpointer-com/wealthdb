@@ -225,7 +225,7 @@ CREATE TABLE positions (
     units                    REAL,                        -- "Number/Amt." column
     market_value             REAL,                        -- in `market_value_currency`
     market_value_currency    TEXT,                        -- portfolio base ccy from positions.csv footer
-    cost_price               REAL,                        -- web-only; PSN doesn't carry cost
+    cost_price               REAL,                        -- per unit, instrument currency
     accrued_interest         REAL,
     lending_value            REAL,
     lending_value_ratio      REAL,
