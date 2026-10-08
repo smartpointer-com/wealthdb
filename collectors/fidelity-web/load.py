@@ -164,6 +164,9 @@ CASH_ONLY_ACTIONS = {
     "ACH", "WIRE", "DEBIT", "CREDIT", "CHECK",
     "DISTRIBUTION", "CONTRIBUTION", "ROLLOVER",
     "ADJUSTMENT", "ADJUST",
+    # Fee and tax lines whose first word is not FEE: an advisory fee, an
+    # asset-based fee, an IRS direct debit or deposit.
+    "ADVISOR", "ASSET", "DIRECT",
     # Donor-Advised Fund event kinds (§12): a grant/gift is cash out to
     # a charity, a pool exchange nets across pools — none carries a
     # security. A CONTRIBUTION of stock DOES carry a CUSIP and is stored
@@ -359,6 +362,11 @@ def main(argv=None):
                     log.exception("load of %s failed; rolled back", dump.name)
             log.info("loaded=%d skipped=%d total=%d",
                      loaded, skipped, len(dumps))
+            filled = _fill_instrument_keys(conn)
+            conn.commit()
+            if filled:
+                log.info("activity: %d row(s) took their instrument from "
+                         "the CUSIP in their action text", filled)
             if dumps_1099:
                 _load_consolidated_1099s(
                     conn, dumps_1099, rederive=rederive_1099s, coord=coord)
@@ -1122,6 +1130,7 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
             action = (ci.get("action") or "").strip()
             kind = _classify_action(action)
             symbol = (ci.get("symbol") or "").strip() or None
+            instrument_key = symbol or instrument_from_action(action)
             quantity = parse_decimal(ci.get("quantity"))
             price = parse_decimal(ci.get("price ($)"))
             amount = parse_decimal(ci.get("amount ($)"))
@@ -1140,7 +1149,7 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
                 "settlement_date, source_sha256, payload, currency"
                 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    activity_id, ts, account_ext, kind, symbol,
+                    activity_id, ts, account_ext, kind, instrument_key,
                     quantity, price, amount, settlement,
                     src_sha,
                     payload,
@@ -1149,6 +1158,66 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
             )
             inserted += 1
     return inserted
+
+
+# Some activity exports leave the Symbol column blank for a security
+# and name it only in the action text, by CUSIP: in parentheses after
+# the name (`YOU BOUGHT <name> (<CUSIP>) (Cash)`), or bare right after
+# the verb when no name is printed (`YOU BOUGHT <CUSIP> (Cash)`). The
+# bare form is read only behind a trade or income verb, so a check or
+# journal number elsewhere in the text is never taken for a CUSIP.
+_ACTION_CUSIP_RE = re.compile(r"\(([0-9A-Z]{8}[0-9])\)")
+_ACTION_BARE_CUSIP_RE = re.compile(
+    r"^(?:YOU BOUGHT|YOU SOLD|DIVIDEND RECEIVED|REINVESTMENT|"
+    r"REVERSE SPLIT R/S TO)\s+([0-9A-Z]{8}[0-9])(?![0-9A-Z])",
+    re.IGNORECASE)
+
+
+def _cusip_check_digit_ok(cusip):
+    """Whether a 9-character CUSIP's last digit is its check digit
+    (the modulus-10 double-add-double over the first eight)."""
+    total = 0
+    for i, ch in enumerate(cusip[:8]):
+        value = int(ch) if ch.isdigit() else ord(ch) - ord("A") + 10
+        if i % 2:
+            value *= 2
+        total += value // 10 + value % 10
+    return (10 - total % 10) % 10 == int(cusip[8])
+
+
+def instrument_from_action(action):
+    """The CUSIP an activity row's action text names, or None. In
+    parentheses, the last valid one wins, since the security's CUSIP
+    follows its name; otherwise a bare CUSIP right after the verb. A
+    token whose check digit fails is not a CUSIP."""
+    for token in reversed(_ACTION_CUSIP_RE.findall(action or "")):
+        if _cusip_check_digit_ok(token):
+            return token
+    m = _ACTION_BARE_CUSIP_RE.match((action or "").strip())
+    if m and _cusip_check_digit_ok(m.group(1).upper()):
+        return m.group(1).upper()
+    return None
+
+
+def _fill_instrument_keys(conn):
+    """Give an activity row loaded with a blank Symbol the CUSIP its
+    action text names, the way ingest does for new rows. Idempotent;
+    rows of the supplied statements (`stmt_`) and rows with no Action
+    are left alone. Returns the number of rows filled."""
+    filled = 0
+    rows = conn.execute(
+        "SELECT activity_id, json_extract(payload, '$.Action') "
+        "FROM transactions WHERE instrument_key IS NULL "
+        "AND activity_id NOT LIKE 'stmt\\_%' ESCAPE '\\' "
+        "AND json_extract(payload, '$.Action') IS NOT NULL").fetchall()
+    for activity_id, action in rows:
+        cusip = instrument_from_action(action)
+        if cusip:
+            conn.execute(
+                "UPDATE transactions SET instrument_key = ? "
+                "WHERE activity_id = ?", (cusip, activity_id))
+            filled += 1
+    return filled
 
 
 # Fidelity's Action column is free-text. Pull out the user-

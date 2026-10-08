@@ -302,6 +302,22 @@ Silver should discriminate via an `instrument_kind` column
 (`cusip` / `ticker` / `plan_code`) so gold can route plan-internal
 codes to a different lookup than CUSIPs.
 
+Some activity exports leave `Symbol` blank for a security and name it
+only in the `Action` text, by CUSIP. The loader then takes the
+transaction's `instrument_key` from that text:
+
+- a CUSIP in parentheses after the security's name
+  (`YOU BOUGHT <name> (<CUSIP>) (Cash)`), the last valid one when
+  there are several;
+- else a bare CUSIP right after a trade or income verb
+  (`YOU BOUGHT <CUSIP> (Cash)`).
+
+A token counts only when its check digit is valid. The activity id
+still hashes the `Symbol` cell as exported, so reading the CUSIP moves
+no id. Each load also fills rows loaded before with a blank `Symbol`
+(`_fill_instrument_keys`). A row whose text names no security keeps a
+NULL `instrument_key`.
+
 ### 3.3 `transaction_external_id`
 
 Fidelity activity CSVs do NOT carry a stable per-row identifier

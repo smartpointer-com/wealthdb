@@ -1201,3 +1201,85 @@ def test_cost_basis_backfills_rows_loaded_before_migration_0009(conn, tmp_path):
         ("EXAMPLE MONEY MARKET", None, None),
         ("EXAMPLE PLAN PORTFOLIO", None, None),
     ]
+
+
+# ============================================================
+# Instrument from the CUSIP in the action text
+# ============================================================
+
+def _bond_buy_row(symbol: str, cusip: str) -> str:
+    """An activity row in the shape some exports use: the Symbol cell is
+    blank and the security's CUSIP is printed in the action text."""
+    return (
+        f'03/04/2024,"Trust: Under Agreement","{ACCT_TRUST}",'
+        f'"YOU BOUGHT STUB MUNI BOND 5.000% 01/01/2099 ({cusip}) (Cash)",'
+        f'{symbol},"STUB MUNI BOND",Cash,99.5,1000,,,,-995.00,03/06/2024\n'
+    )
+
+
+def test_instrument_from_action_reads_a_valid_cusip_only():
+    assert load.instrument_from_action(
+        "YOU BOUGHT STUB BOND (000000AB5) (Cash)") == "000000AB5"
+    # A token whose check digit fails is not a CUSIP.
+    assert load.instrument_from_action(
+        "YOU BOUGHT STUB BOND (000000AB4) (Cash)") is None
+    assert load.instrument_from_action("ADVISOR FEE DEDUCTED (Cash)") is None
+    assert load.instrument_from_action(None) is None
+    # The last valid one wins.
+    assert load.instrument_from_action(
+        "EXCHANGE (999999ZZ1) FOR (000000AB5) (Cash)") == "000000AB5"
+    # Bare, right after a trade or income verb.
+    assert load.instrument_from_action(
+        "YOU BOUGHT 000000AB5 (Cash)") == "000000AB5"
+    assert load.instrument_from_action(
+        "REVERSE SPLIT R/S TO 999999ZZ1#REOR M0000000000000") == "999999ZZ1"
+    # A bare number anywhere else is not read, even when it would pass
+    # the check digit.
+    assert load.instrument_from_action("CHECK PAID # 000000AB5") is None
+    assert load.instrument_from_action(
+        "YOU BOUGHT AVERAGE PRICE TRADE DETAILS ON REQUEST") is None
+
+
+def test_a_blank_symbol_takes_the_cusip_without_moving_the_id(
+        migrated, tmp_path):
+    dump = tmp_path / "20260101T120000Z"
+    (dump / "activity").mkdir(parents=True)
+    (dump / "activity" / "activity_20240301__20240331.csv").write_text(
+        _activity_csv(_bond_buy_row("", "000000AB5")))
+    load._load_transactions(migrated, 1, dump)
+    activity_id, instrument_key = migrated.execute(
+        "SELECT activity_id, instrument_key FROM transactions").fetchone()
+    assert instrument_key == "000000AB5"
+    # The id hashes the Symbol cell as exported (blank), so a row loaded
+    # before the instrument was read keeps its id.
+    identity = load._activity_identity(
+        ACCT_TRUST, load.ts_from_mdy("03/04/2024"), "BUY", None, 1000.0,
+        99.5, -995.0, load.ts_from_mdy("03/06/2024"))
+    assert activity_id == load._synthesise_activity_id(identity, 0)
+
+
+def test_a_printed_symbol_wins_over_the_action_text(migrated, tmp_path):
+    dump = tmp_path / "20260101T120000Z"
+    (dump / "activity").mkdir(parents=True)
+    (dump / "activity" / "activity_20240301__20240331.csv").write_text(
+        _activity_csv(_bond_buy_row("00000ZZ96", "000000AB5")))
+    load._load_transactions(migrated, 1, dump)
+    assert migrated.execute(
+        "SELECT instrument_key FROM transactions").fetchone()[0] == "00000ZZ96"
+
+
+def test_fill_instrument_keys_fills_rows_loaded_without_one(migrated):
+    payload = json.dumps({"Action": "YOU SOLD STUB BOND (000000AB5) (Cash)"})
+    for activity_id in ("feed1", "stmt_1"):
+        migrated.execute(
+            "INSERT INTO transactions (activity_id, timestamp, "
+            "account_external_id, kind, instrument_key, amount, "
+            "source_sha256, payload, currency) "
+            "VALUES (?, 1, ?, 'SELL', NULL, 10.0, 'sha', ?, 'USD')",
+            (activity_id, ACCT_TRUST, payload))
+    assert load._fill_instrument_keys(migrated) == 1
+    rows = dict(migrated.execute(
+        "SELECT activity_id, instrument_key FROM transactions"))
+    # A supplied-statement row keeps the instrument its own pass gave it.
+    assert rows == {"feed1": "000000AB5", "stmt_1": None}
+    assert load._fill_instrument_keys(migrated) == 0
