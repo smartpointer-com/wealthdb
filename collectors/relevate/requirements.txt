@@ -13,4 +13,4 @@ requests>=2.32,<3
 # Quartalsbericht PDFs the documents/ phase has saved. Same library
 # Swissquote uses for its historical Portfolio Performance PDFs.
 # Pure-Python, no native deps; small wheel.
-pypdf>=6,<7
+pypdf>=6.19,<7

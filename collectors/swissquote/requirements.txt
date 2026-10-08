@@ -16,7 +16,11 @@ xlrd==1.2.0
 
 # pypdf is used by load.py to extract position snapshots from
 # Portfolio performance PDFs.
-pypdf==5.1.0
+pypdf>=6.19,<7
+
+# fontTools lets pypdf decode the CFF Type1 fonts those PDFs embed.
+# Without it, pypdf logs a warning for every such font.
+fonttools>=4.66,<5
 
 # pytest is bundled in the image so tests can be run inside the
 # container with `./swissquote sh -c "cd /app && pytest"`, no
