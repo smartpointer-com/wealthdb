@@ -2439,13 +2439,17 @@ def parse_capital_call_text(text: str, doc_token: str) -> list[dict]:
     row["amount"] = _to_float(amount_m["amount"])
 
     # The title is the notice's own heading: the lines between the
-    # administrator's dated line and the ISIN line.
-    isin_at = next(k for k, ln in enumerate(lines) if _CALL_ISIN_RE.search(ln))
+    # administrator's dated line and the ISIN line. An ISIN wrapped onto
+    # the line after its label matches the text but no single line, and
+    # then the heading cannot be placed.
+    isin_at = next((k for k, ln in enumerate(lines)
+                    if _CALL_ISIN_RE.search(ln)), None)
     title: list[str] = []
-    for ln in reversed(lines[max(0, isin_at - 4):isin_at]):
-        if not ln or _CALL_LETTER_DATE_RE.match(ln):
-            break
-        title.insert(0, ln)
+    if isin_at is not None:
+        for ln in reversed(lines[max(0, isin_at - 4):isin_at]):
+            if not ln or _CALL_LETTER_DATE_RE.match(ln):
+                break
+            title.insert(0, ln)
     row["title"] = " ".join(title) or None
 
     m = _PRODUCED_ON_RE.search(text)

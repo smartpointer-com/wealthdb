@@ -1267,6 +1267,12 @@ class TestCapitalCall:
         assert row["instrument_isin"] == "XX0000000011"
         assert row["title"] == "Example Fund 9 (“EF 9”) - Capital Call No. 23"
 
+    def test_an_isin_wrapped_onto_the_next_line_is_read_without_a_title(self):
+        [row] = parse_capital_call_text(
+            self._text(isin_line="ISIN -\nXX0000000011"), "<doc-token>")
+        assert row["instrument_isin"] == "XX0000000011"
+        assert row["title"] is None
+
     def test_a_letter_that_is_not_a_call_yields_nothing(self):
         text = self._text().replace("Capital Call\n", "Quarterly Report\n", 1)
         assert parse_capital_call_text(text, "<doc-token>") == []
