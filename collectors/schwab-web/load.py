@@ -897,17 +897,13 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             )
             # The snapshot gates above probe `doc_date` — the manifest's
             # date, the only one known BEFORE the parse — while these two
-            # inserters write the PARSED period_end. The gate therefore
-            # looks for a row under a date the inserter never wrote
-            # whenever the two disagree, never closes, and re-parses that
-            # statement on every subsequent run.
-            #
-            # They have never disagreed: across every statement in the
-            # archive the parsed period_end equals the manifest date, which
-            # is why this is a canary and not a schema change. Carrying a
+            # inserters write the PARSED period_end. When the two disagree,
+            # the gate looks for a row under a date the inserter never
+            # wrote, never closes, and the statement re-parses on every
+            # run; the warning below names it. The rows it writes are the
+            # same each time, so the cost is the re-parse alone. Carrying a
             # logical_doc_key onto both snapshot tables (as migration 0004
-            # did for transactions) is the real fix, and this is the line
-            # that says when it has become worth doing.
+            # did for transactions) would let the gate close.
             if period_end_ts != job["doc_date"]:
                 log.warning(
                     "statement %s: parsed period_end differs from the "
