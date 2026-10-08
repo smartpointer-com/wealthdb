@@ -184,7 +184,9 @@ The api silver emits positions per dump run; the web silver has
 no live per-dump positions. Web position history is
 statement-cadence instead: `historical_position_snapshots` holds
 the per-statement holdings parsed from the statement PDFs
-(DESIGN.md §4.5). The 2020-2024 statements also print each holding's
+(DESIGN.md §4.5). One account and period end holds the rows of one
+statement; a second statement for the same account and period end
+does not overwrite them. The 2020-2024 statements also print each holding's
 tax lots, which silver keeps in `open_lots` (DESIGN.md §9.1); gold
 does not read them yet. The 1099-B parser (§4) yields sale lots, not
 positions.

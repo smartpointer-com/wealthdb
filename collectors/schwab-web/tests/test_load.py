@@ -1468,23 +1468,20 @@ class TestSha256ChurnTransactionIdempotency:
 
 
 # ============================================================
-# Cross-run parse-dedup (shared seen_logical_docs)
+# Cross-run parse-dedup (parse markers, shared seen_logical_docs)
 # ============================================================
 
 class TestSeenLogicalDocsSharedAcrossRuns:
-    """A statement that yields no transactions never closes its own
-    transaction gate (there is no transaction row to detect on the next
-    run), so without a shared parse-dedup set the same logical statement
-    is re-parsed in every later bronze run. run_load shares the set
-    across an invocation's runs via load_run's `seen_logical_docs`
-    argument so each logical statement is parsed once. Silver is
-    identical either way — the skipped parse would only re-produce rows
-    already present.
+    """A statement that yields no transactions leaves no transaction row
+    to detect on the next run. Its parse marker in `parsed_documents`
+    closes the gate across runs and invocations instead. `--reparse`
+    ignores the markers; there the invocation-wide `seen_logical_docs`
+    set keeps each logical statement to one parse. Silver is identical
+    either way — the skipped parse would only re-produce rows already
+    present.
     """
 
-    # Zero transactions, but positions + cash present, so on a re-download
-    # the positions and cash gates close on existing rows and the
-    # transaction gate is the ONLY thing that would force a re-parse.
+    # Zero transactions, but positions + cash present.
     PARSED_ZERO_TX = {
         "path": "<patched>",
         "period_start": "2026-02-01",
@@ -1540,36 +1537,13 @@ class TestSeenLogicalDocsSharedAcrossRuns:
         monkeypatch.setattr(load.pp, "parse_statement_pdf", _counting)
         return calls
 
-    def test_shared_set_parses_zero_tx_statement_once(
-            self, monkeypatch, migrated, tmp_path):
-        calls = self._count_calls(monkeypatch)
-        seen: set[tuple] = set()
-        run1 = self._bronze(tmp_path, "20260301T000000Z")
-        run2 = self._bronze(tmp_path, "20260302T000000Z",
-                            extra=b"%SCHWAB-REGEN-2%")
-        load.load_run(migrated, run1, workers=1, seen_logical_docs=seen)
-        stats2 = load.load_run(migrated, run2, workers=1,
-                               seen_logical_docs=seen)
-        migrated.commit()
-        # Parsed exactly once across both runs — the shared set caught the
-        # zero-transaction re-download in run 2.
-        assert len(calls) == 1
-        assert stats2["statements_logical_deduped"] == 1
-        # Positions written once; still no transactions — silver as if the
-        # re-parse had run.
-        assert migrated.execute(
-            "SELECT COUNT(*) FROM historical_position_snapshots"
-        ).fetchone()[0] == 1
-        assert migrated.execute(
-            "SELECT COUNT(*) FROM transactions"
-        ).fetchone()[0] == 0
+    def _counts(self, conn):
+        return [conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                for t in ("historical_position_snapshots", "transactions",
+                          "parsed_documents")]
 
-    def test_default_per_run_scope_reparses_zero_tx_statement(
+    def test_a_parse_marker_skips_the_statement_in_a_later_run(
             self, monkeypatch, migrated, tmp_path):
-        # Without a shared set (the default), the zero-transaction
-        # statement is re-parsed in the second run — the wasted work the
-        # shared set removes — yet silver is unchanged (one position row,
-        # no transactions).
         calls = self._count_calls(monkeypatch)
         run1 = self._bronze(tmp_path, "20260301T000000Z")
         run2 = self._bronze(tmp_path, "20260302T000000Z",
@@ -1577,13 +1551,36 @@ class TestSeenLogicalDocsSharedAcrossRuns:
         load.load_run(migrated, run1, workers=1)
         load.load_run(migrated, run2, workers=1)
         migrated.commit()
+        assert len(calls) == 1
+        # One position row, no transactions, one marker.
+        assert self._counts(migrated) == [1, 0, 1]
+
+    def test_shared_set_parses_once_under_reparse(
+            self, monkeypatch, migrated, tmp_path):
+        calls = self._count_calls(monkeypatch)
+        seen: set[tuple] = set()
+        run1 = self._bronze(tmp_path, "20260301T000000Z")
+        run2 = self._bronze(tmp_path, "20260302T000000Z",
+                            extra=b"%SCHWAB-REGEN-2%")
+        load.load_run(migrated, run1, reparse=True, workers=1,
+                      seen_logical_docs=seen)
+        stats2 = load.load_run(migrated, run2, reparse=True, workers=1,
+                               seen_logical_docs=seen)
+        migrated.commit()
+        assert len(calls) == 1
+        assert stats2["statements_logical_deduped"] == 1
+        assert self._counts(migrated) == [1, 0, 1]
+
+    def test_reparse_ignores_the_marker(self, monkeypatch, migrated, tmp_path):
+        calls = self._count_calls(monkeypatch)
+        load.load_run(migrated, self._bronze(tmp_path, "20260301T000000Z"),
+                      workers=1)
+        load.load_run(migrated, self._bronze(tmp_path, "20260302T000000Z",
+                                             extra=b"%SCHWAB-REGEN-2%"),
+                      reparse=True, workers=1)
+        migrated.commit()
         assert len(calls) == 2
-        assert migrated.execute(
-            "SELECT COUNT(*) FROM historical_position_snapshots"
-        ).fetchone()[0] == 1
-        assert migrated.execute(
-            "SELECT COUNT(*) FROM transactions"
-        ).fetchone()[0] == 0
+        assert self._counts(migrated) == [1, 0, 1]
 
 
 class TestRollbackDoesNotPoisonSeenSet:
@@ -2069,7 +2066,7 @@ class TestStatementPositions:
             [_pos("XDUP", 30.0, 300.0, 250.0, 50.0),
              _pos("XMPL", 10.0, 100.0),
              _pos("XDUP", 20.0, 200.0, None, None)],
-            "sha")
+            "sha", "ldk")
         assert n == 2
         rows = dict((r[0], r[1:]) for r in migrated.execute(
             "SELECT instrument_key, quantity, market_value, cost_basis "
@@ -2084,7 +2081,7 @@ class TestStatementPositions:
                   [_lot(10.0, 80.0, "2022-01-03", ["t"]),
                    _lot(5.0, 40.0, None)]),
              _pos("XNOL", 1.0, 10.0)],
-            "sha")
+            "sha", "ldk")
         assert _open_lots(migrated) == [
             (1700000000, "XMPL", 0, 10.0, 80.0, "2022-01-03", "SHORT", None, "t",
              '{"holding_days":30,"raw_line":"10.0 80.0 2022-01-03"}'),
@@ -2097,7 +2094,7 @@ class TestStatementPositions:
             migrated, "001", 1700000000,
             [_pos("XDUP", 10.0, 100.0, 80.0, 20.0, [_lot(10.0, 80.0, "2022-01-03")]),
              _pos("XDUP", 5.0, 50.0, 40.0, 10.0, [_lot(5.0, 40.0, "2022-02-03")])],
-            "sha")
+            "sha", "ldk")
         assert [(r[2], r[5]) for r in _open_lots(migrated)] == [
             (0, "2022-01-03"), (1, "2022-02-03")]
 
@@ -2105,13 +2102,13 @@ class TestStatementPositions:
         two = [_lot(10.0, 80.0, "2022-01-03"), _lot(5.0, 40.0, "2022-02-03")]
         load._insert_position_snapshots(
             migrated, "001", 1700000000,
-            [_pos("XMPL", 15.0, 150.0, 120.0, 30.0, two)], "sha")
+            [_pos("XMPL", 15.0, 150.0, 120.0, 30.0, two)], "sha", "ldk")
         load._insert_position_snapshots(
             migrated, "001", 1700086400,
-            [_pos("XMPL", 15.0, 150.0, 120.0, 30.0, two)], "sha")
+            [_pos("XMPL", 15.0, 150.0, 120.0, 30.0, two)], "sha", "ldk")
         load._insert_position_snapshots(
             migrated, "001", 1700000000,
-            [_pos("XMPL", 10.0, 100.0, 80.0, 20.0, two[:1])], "sha2")
+            [_pos("XMPL", 10.0, 100.0, 80.0, 20.0, two[:1])], "sha2", "ldk")
         # The re-parsed statement's lots replace its old ones; another
         # statement's lots stay.
         assert [(r[0], r[2]) for r in _open_lots(migrated)] == [
@@ -2321,6 +2318,8 @@ class TestClosedLotsLoad:
         broken = _MINI_YES_TEXT.replace(
             "$ 80.00 $ 20.00 -- $ 60.00 \n", "$ 80.00 $\n")
         monkeypatch.setattr(load.tf, "extract_text_pdfium", lambda path: broken)
+        # The page layout does not hold the lot either.
+        monkeypatch.setattr(load.tf, "_pdf_words", lambda path: [])
         stats = load.load_run(migrated, self._bronze(tmp_path), workers=1)
         assert stats["realized_lots_unreadable"] == 1
 
@@ -2359,3 +2358,235 @@ def test_0007_backfills_1099b_lots_from_transactions(conn, tmp_path):
         "SELECT COUNT(*) FROM closed_lots c JOIN transactions t"
         " ON t.logical_doc_key = c.logical_doc_key AND t.payload = c.payload"
     ).fetchone()[0] == 2
+
+
+# ---------------------------------------------------------------------------
+# Parse markers and statement ownership (migration 0008).
+# ---------------------------------------------------------------------------
+
+# A 1099 Composite XML without a 1099-B section.
+_MINI_1099_NO_B_XML = (
+    '<?xml version="1.0"?>\n<?OFX OFXHEADER="200" VERSION="200" ?>\n'
+    "<OFX><TAX1099MSGSRSV1><TAX1099TRNRS><TAX1099RS>"
+    "<TAX1099DIV_V100><TAXYEAR>2021</TAXYEAR></TAX1099DIV_V100>"
+    "</TAX1099RS></TAX1099TRNRS></TAX1099MSGSRSV1></OFX>"
+)
+
+
+class TestReportsWithoutRows:
+    """A 1099, Year-End Summary or Gain/Loss Report whose parse yields no
+    rows is parsed once per parser generation, like one that does."""
+
+    _YES = "Year-End-Summary---2021_2022-02-09_999.PDF"
+    _GLR = "Year-End-Gain-Loss-Reporting---2021_2022-01-26_999.PDF"
+
+    def _bronze(self, tmp_path, run_ts):
+        return _make_doc_bronze(tmp_path, run_ts, "999", [
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-X999.XML", "content": _MINI_1099_NO_B_XML},
+            {"date": "02/09/2022", "type": "Tax Forms",
+             "document": "Year-End Summary - 2021",
+             "filename": self._YES, "content": f"%PDF-1.4 stub {self._YES}\n"},
+            {"date": "01/26/2022", "type": "Tax Forms",
+             "document": "Year End Gain Loss Reporting - 2021",
+             "filename": self._GLR, "content": f"%PDF-1.4 stub {self._GLR}\n"},
+        ])
+
+    def _count_parses(self, monkeypatch):
+        calls: list[str] = []
+
+        def text(path):
+            calls.append(Path(path).name)
+            return ("2021 Year-End Schwab Gain/Loss Report\n" if "Gain-Loss" in str(path)
+                    else "TAX YEAR 2021\nYEAR-END SUMMARY\n")
+
+        def parse_1099b(path, fmt=None):
+            calls.append(Path(path).name)
+            return orig_1099b(path, fmt)
+
+        orig_1099b = load.tf.parse_1099b
+        monkeypatch.setattr(load.tf, "extract_text_pdfium", text)
+        monkeypatch.setattr(load.tf, "parse_1099b", parse_1099b)
+        return calls
+
+    def test_parsed_once_across_runs(self, monkeypatch, migrated, tmp_path):
+        calls = self._count_parses(monkeypatch)
+        load.load_run(migrated, self._bronze(tmp_path, "20260520T120000Z"), workers=1)
+        load.load_run(migrated, self._bronze(tmp_path, "20260521T120000Z"), workers=1)
+        migrated.commit()
+        assert sorted(calls) == sorted([self._YES, self._GLR, "XXXX-X999.XML"])
+        assert migrated.execute(
+            "SELECT document_kind FROM parsed_documents ORDER BY 1").fetchall() == [
+            ("form_1099b",), ("gain_loss_report",), ("year_end_summary",)]
+        assert migrated.execute("SELECT COUNT(*) FROM closed_lots").fetchone()[0] == 0
+
+    def test_parsed_again_on_reparse(self, monkeypatch, migrated, tmp_path):
+        calls = self._count_parses(monkeypatch)
+        load.load_run(migrated, self._bronze(tmp_path, "20260520T120000Z"), workers=1)
+        load.load_run(migrated, self._bronze(tmp_path, "20260521T120000Z"),
+                      reparse=True, workers=1)
+        assert len(calls) == 6
+
+
+class TestStatementOwnership:
+    """Statement snapshot rows are keyed by account and the period end the
+    statement prints. The first statement to write a key owns it."""
+
+    _NAME = "Brokerage-Statement_2026-02-28_NNN.PDF"
+    _COPY = "Brokerage-Statement_2026-02-28_NNN.2.PDF"
+    _END = load.parse_doc_date("02/28/2026")
+
+    @staticmethod
+    def _parsed(market_value=5000.0):
+        return {
+            "period_start": "2026-02-01", "period_end": "2026-02-28",
+            "transactions": [],
+            "positions": [_pos("SYN1", 100.0, market_value, 4000.0, 1000.0,
+                               [_lot(100.0, 4000.0, "2025-01-02")])],
+            "cash_summary": {"opening_balance": 100.0, "closing_balance": 150.0,
+                             "currency_iso": "USD", "raw_line": ""},
+        }
+
+    def _patch(self, monkeypatch, by_name):
+        calls: list[str] = []
+
+        def parse(path, statement_year=None):
+            calls.append(Path(path).name)
+            return by_name[Path(path).name]
+
+        monkeypatch.setattr(load.pp, "parse_statement_pdf", parse)
+        return calls
+
+    @staticmethod
+    def _bronze(tmp_path, run_ts, docs):
+        return _make_bronze_run(tmp_path, run_ts, [
+            {"suffix": "NNN", "label": "L",
+             "documents": [{"date": date, "type": "Statements",
+                            "document": "Brokerage Statement", "filename": name}
+                           for date, name in docs]},
+        ])
+
+    @staticmethod
+    def _rows(conn):
+        return (conn.execute(
+            "SELECT as_of_date, market_value, logical_doc_key"
+            " FROM historical_position_snapshots").fetchall(),
+            conn.execute(
+            "SELECT period_end, closing_balance, logical_doc_key"
+            " FROM historical_cash_balances").fetchall(),
+            conn.execute("SELECT COUNT(*) FROM open_lots").fetchone()[0])
+
+    def _ldk(self, date, name):
+        return load._logical_doc_key("NNN", load.parse_doc_date(date), name)
+
+    def test_a_misdated_statement_is_parsed_once_under_its_period_end(
+            self, monkeypatch, migrated, tmp_path):
+        # The manifest dates the statement a month early; its rows take
+        # the period end it prints, and its marker closes the gate.
+        calls = self._patch(monkeypatch, {self._COPY: self._parsed()})
+        docs = [("01/31/2026", self._COPY)]
+        load.load_run(migrated, self._bronze(tmp_path, "20260301T000000Z", docs),
+                      workers=1)
+        load.load_run(migrated, self._bronze(tmp_path, "20260302T000000Z", docs),
+                      workers=1)
+        migrated.commit()
+        assert calls == [self._COPY]
+        ldk = self._ldk("01/31/2026", self._COPY)
+        assert self._rows(migrated) == (
+            [(self._END, 5000.0, ldk)], [(self._END, 150.0, ldk)], 1)
+
+    def test_a_copy_under_another_name_writes_nothing(
+            self, monkeypatch, migrated, tmp_path, caplog):
+        self._patch(monkeypatch, {self._NAME: self._parsed(),
+                                  self._COPY: self._parsed()})
+        run = self._bronze(tmp_path, "20260301T000000Z",
+                           [("02/28/2026", self._NAME), ("01/31/2026", self._COPY)])
+        with caplog.at_level("WARNING", logger=load.log.name):
+            stats = load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert (stats["statements_copies"], stats["statements_conflicting"]) == (1, 0)
+        ldk = self._ldk("02/28/2026", self._NAME)
+        assert self._rows(migrated) == (
+            [(self._END, 5000.0, ldk)], [(self._END, 150.0, ldk)], 1)
+        assert caplog.text == ""
+        # Both statements are marked parsed.
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM parsed_documents").fetchone()[0] == 2
+
+    def test_other_content_for_the_same_period_end_is_kept_out(
+            self, monkeypatch, migrated, tmp_path, caplog):
+        self._patch(monkeypatch, {self._NAME: self._parsed(),
+                                  self._COPY: self._parsed(market_value=6000.0)})
+        run = self._bronze(tmp_path, "20260301T000000Z",
+                           [("02/28/2026", self._NAME), ("01/31/2026", self._COPY)])
+        with caplog.at_level("WARNING", logger=load.log.name):
+            stats = load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert (stats["statements_copies"], stats["statements_conflicting"]) == (0, 1)
+        ldk = self._ldk("02/28/2026", self._NAME)
+        assert self._rows(migrated) == (
+            [(self._END, 5000.0, ldk)], [(self._END, 150.0, ldk)], 1)
+        assert self._ldk("01/31/2026", self._COPY) in caplog.text
+
+    def test_a_reparse_of_the_owner_replaces_its_rows(
+            self, monkeypatch, migrated, tmp_path):
+        by_name = {self._NAME: self._parsed()}
+        self._patch(monkeypatch, by_name)
+        docs = [("02/28/2026", self._NAME)]
+        load.load_run(migrated, self._bronze(tmp_path, "20260301T000000Z", docs),
+                      workers=1)
+        by_name[self._NAME] = self._parsed(market_value=6000.0)
+        load.load_run(migrated, self._bronze(tmp_path, "20260302T000000Z", docs),
+                      reparse=True, workers=1)
+        migrated.commit()
+        assert self._rows(migrated)[0] == [
+            (self._END, 6000.0, self._ldk("02/28/2026", self._NAME))]
+
+
+def test_a_moved_parser_clears_the_parse_markers(tmp_path):
+    args = _generation_args(tmp_path)
+    assert load.run_load(args) == 0
+    conn = sqlite3.connect(str(args.silver_db))
+    load._mark_parsed(conn, "NNN|0|Brokerage-Statement.PDF", "statement", "sha0")
+    load.silver.stamp_generation(
+        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+    conn.commit()
+    conn.close()
+
+    assert load.run_load(args) == 0
+    conn = sqlite3.connect(str(args.silver_db))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM parsed_documents").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_0008_backfills_the_owner_of_snapshot_rows(conn, tmp_path):
+    early = tmp_path / "m"
+    early.mkdir()
+    for f in sorted(MIGRATIONS_DIR.glob("000[1-7]_*.sql")):
+        (early / f.name).write_text(f.read_text())
+    load.apply_migrations(conn, early)
+    end = load.parse_doc_date("02/28/2026")
+    conn.execute(
+        "INSERT INTO documents (sha256, snapshot_at, account_external_id,"
+        " doc_date, doc_kind, file_format, filename, size_bytes, payload)"
+        " VALUES ('sha1', 0, 'NNN', ?, 'statement', 'pdf',"
+        " 'Brokerage-Statement_2026-02-28_NNN.PDF', 1, '{}')", (end,))
+    for key, sha in (("SYN1", "sha1"), ("SYN2", "sha-not-in-documents")):
+        conn.execute(
+            "INSERT INTO historical_position_snapshots (as_of_date,"
+            " account_external_id, instrument_key, source_sha256, payload)"
+            " VALUES (?, 'NNN', ?, ?, '{}')", (end, key, sha))
+    conn.execute(
+        "INSERT INTO historical_cash_balances (period_end, period_start,"
+        " account_external_id, currency_iso, source_sha256, payload)"
+        " VALUES (?, ?, 'NNN', 'USD', 'sha1', '{}')", (end, end))
+    load.apply_migrations(conn, MIGRATIONS_DIR)
+    ldk = f"NNN|{end}|Brokerage-Statement_2026-02-28_NNN.PDF"
+    assert conn.execute(
+        "SELECT instrument_key, logical_doc_key FROM historical_position_snapshots"
+        " ORDER BY 1").fetchall() == [("SYN1", ldk), ("SYN2", None)]
+    assert conn.execute(
+        "SELECT logical_doc_key FROM historical_cash_balances").fetchall() == [(ldk,)]

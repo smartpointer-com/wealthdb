@@ -515,3 +515,145 @@ class TestGainLossReport:
     def test_report_without_lots(self):
         assert tf.parse_gain_loss_report_text("2022 Year-End Schwab Gain/Loss Report\n") == {
             "tax_year": 2022, "lots": [], "incomplete": 0, "methods": []}
+
+
+# ============================================================
+# Year-End Summary lots read from the page layout
+# ============================================================
+#
+# A bond lot that prints an adjusted basis stacks a second row of
+# amounts under the first, and the text extractor interleaves the two.
+# The fixture is a hand-built PDF whose text runs are drawn in that
+# interleaved order, so the extracted text scatters the same way.
+
+def _pdf(runs: list[tuple[float, float, str]]) -> bytes:
+    """A one-page PDF (792 x 612 points) drawing each (x, y, text) run in
+    7-point Helvetica, in the order given."""
+    ops = []
+    for x, y, text in runs:
+        text = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        ops.append(f"BT /F1 7 Tf {x} {y} Td ({text}) Tj ET")
+    stream = "\n".join(ops).encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612]"
+        b" /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objs) + 1, xref)
+    return bytes(out)
+
+
+_LAYOUT_HEAD = [
+    (36, 570, "TAX YEAR 2023"),
+    (36, 470, "Long-Term Realized Gain or (Loss)"),
+    (36, 455, "The transactions in this section are not reported on Form"
+              " 1099-B or to the IRS. Report on Form 8949, Part II, with Box F"
+              " checked."),
+    (36, 420, "Description OR"),
+    (36, 410, "Option Symbol"),
+    (410, 405, "Total Proceeds"),
+    (503, 412, "(-)Cost Basis"),
+    (518, 402, "Adjusted"),
+    (594, 421, "(+)Wash Sale"),
+    (582, 412, "Loss Disallowed"),
+    (574, 402, "(-)Market Discount"),
+    (692, 421, "(=)Realized"),
+    (681, 412, "Gain or (Loss)"),
+    (700, 402, "Adjusted"),
+]
+
+
+def _bond_runs(y: float, cost: str, adjusted: str, discount: str,
+               gain: str, adjusted_gain: str) -> list[tuple[float, float, str]]:
+    """A bond lot of 1,000.00 units at row `y` and its second row below,
+    in the order the PDF draws them: the second row's amounts between
+    the first row's. Amounts sit right-aligned under their headings."""
+    low = y - 10
+
+    def right(edge, text):
+        return edge - 3.9 * len(text)
+
+    return [
+        (36, y, "EXAMPLE TREASURY NOTE"), (36, low, "1.250% MATURED"),
+        (182, y, "000000DD4"), (270, y, "1,000.00"), (316, y, "01/02/15"),
+        (350, y, "09/01/23"), (383, y, "$"), (430, y, "1,000.00"),
+        (467, y, "$"), (467, low, "$"),
+        (right(548, cost), y, cost), (right(548, adjusted), low, adjusted),
+        (559, low, "$"), (635, y + 1, "--"),
+        (right(640, discount), low, discount),
+        (650, y, "$"), (650, low, "$"),
+        (right(731, gain), y, gain), (right(731, adjusted_gain), low, adjusted_gain),
+        (733, low + 2, "b"),
+    ]
+
+
+_LAYOUT_TAIL = [
+    (36, 330, "SYNTH OMEGA LTD"), (182, 330, "000000OO9"), (290, 330, "4.00"),
+    (316, 330, "01/04/10"), (350, 330, "10/01/23"), (383, 330, "$"),
+    (440, 330, "80.00"), (467, 330, "$"), (530, 330, "20.00"),
+    (635, 331, "--"), (650, 330, "$"), (712, 330, "60.00"),
+    (36, 310, "Total Long-Term"),
+    (36, 80, 'Please see the "Endnotes for Your Realized Gain or (Loss)"'),
+]
+
+
+class TestYearEndSummaryLayout:
+    @staticmethod
+    def _parse(tmp_path, *bonds, extra=()):
+        path = tmp_path / "Year-End-Summary.PDF"
+        path.write_bytes(_pdf([*_LAYOUT_HEAD, *(r for b in bonds for r in b),
+                               *extra, *_LAYOUT_TAIL]))
+        return tf.parse_realized_report_pdf(path, "year_end_summary")
+
+    _BOND = _bond_runs(385, "990.00", "995.00", "4.00", "10.00", "6.00")
+
+    def test_a_bond_lot_whose_amounts_scatter_is_read_from_the_page(self, tmp_path):
+        result = self._parse(tmp_path, self._BOND)
+        assert result["incomplete"] == 0
+        lot = result["lots"][0]
+        assert (lot["security_name"], lot["cusip"], lot["quantity"],
+                lot["acquired_date"], lot["disposed_date"]) == (
+            "EXAMPLE TREASURY NOTE 1.250% MATURED", "000000DD4", 1000.0,
+            "2015-01-02", "2023-09-01")
+        assert (lot["proceeds"], lot["cost_basis"], lot["wash_sale_disallowed"],
+                lot["accrued_market_discount"], lot["realized_gain_loss"]) == (
+            1000.0, 990.0, None, 4.0, 10.0)
+        assert (lot["adjusted_cost_basis"], lot["adjusted_gain_loss"]) == (995.0, 6.0)
+        assert (lot["term"], lot["covered"], lot["form_8949_box"],
+                lot["footnotes"], lot["tax_year"]) == ("LONG", None, "F", ["b"], 2023)
+        # The scattered fragments are kept as the lot's raw lines.
+        assert len(lot["raw_lines"]) > 1
+
+    def test_the_scattered_fragments_stay_out_of_the_next_lot(self, tmp_path):
+        lot = self._parse(tmp_path, self._BOND)["lots"][1]
+        assert (lot["security_name"], lot["proceeds"], lot["realized_gain_loss"]) == (
+            "SYNTH OMEGA LTD", 80.0, 60.0)
+        # A lot read from the text prints no adjusted figures.
+        assert "adjusted_cost_basis" not in lot
+
+    def test_lots_with_the_same_dates_and_quantity_keep_print_order(self, tmp_path):
+        result = self._parse(
+            tmp_path, self._BOND,
+            _bond_runs(355, "980.00", "985.00", "3.00", "20.00", "17.00"))
+        assert result["incomplete"] == 0
+        assert [(lot["cost_basis"], lot["adjusted_gain_loss"])
+                for lot in result["lots"][:2]] == [(990.0, 6.0), (980.0, 17.0)]
+
+    def test_a_lot_whose_rows_do_not_read_is_counted(self, tmp_path):
+        # A third row of amounts under the lot: no column says which
+        # field it is.
+        result = self._parse(tmp_path, self._BOND, extra=[(720, 365, "1.00")])
+        assert result["incomplete"] == 1
+        assert [lot["security_name"] for lot in result["lots"]] == ["SYNTH OMEGA LTD"]

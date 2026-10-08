@@ -49,14 +49,14 @@
 -- instrument_key) or (period_end, account, currency) — collapses
 -- those churned re-downloads into a single row. Re-parsing a
 -- churned PDF just produces the same row again; the loader uses
--- INSERT OR REPLACE so the latest parse wins (it's
--- deterministic for the same input bytes).
+-- INSERT OR REPLACE so a re-parse replaces the row (it's
+-- deterministic for the same input bytes). Migration 0008 adds
+-- the statement that owns the rows, and its parse marker.
 --
--- The `source_sha256` column points at whichever PDF the most
--- recent parse came from, so gold can still trace a row back to
--- its bronze artefact. (Multiple churned copies of the same
--- statement parse identically; the column just doesn't keep all
--- of them.)
+-- The `source_sha256` column points at the PDF the row was
+-- parsed from, so gold can still trace a row back to its bronze
+-- artefact. (Multiple churned copies of the same statement parse
+-- identically; the column just doesn't keep all of them.)
 --
 -- ------------------------------------------------------------
 -- NULL preservation

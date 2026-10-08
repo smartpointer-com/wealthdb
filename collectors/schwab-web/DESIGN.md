@@ -113,6 +113,7 @@ those rows.
 | — | `open_lots` | web-only. One row per tax lot a statement prints under a holding; see §9.1 |
 | — | `closed_lots` | web-only. One row per realized lot a year-end tax document prints; see §9.2 |
 | — | `cost_basis_methods` | web-only. The cost-basis methods a Gain/Loss Report prints; see §9.3 |
+| — | `parsed_documents` | web-only. The logical documents parsed under the current parser generation; see §4.4 |
 
 ## 4. Irreconcilable differences (and gold-layer mitigations)
 
@@ -211,6 +212,15 @@ same logical PDF with a new sha256 is a clean no-op for
 transactions. **Gold needs no transaction dedup pass for this
 case.**
 
+**Parse markers (migration 0008)**: each pass records the logical
+documents it parses in `parsed_documents`, keyed by
+`logical_doc_key` and the document kind. A later load skips a
+marked document, so a re-download is not parsed again. This holds
+also when the parse yields no rows: a statement without
+transactions, a 1099 without 1099-B lots, a report without realized
+lots. A moved parser generation clears the markers, and `--reparse`
+ignores them.
+
 **Gold-layer mitigation for `documents`**: when consuming web silver
 `documents`, deduplicate on `(account_external_id, doc_date,
 doc_kind, filename)` rather than `sha256`. Pick any one
@@ -251,6 +261,20 @@ each monthly/quarterly statement's holdings block into
 `historical_cash_balances`). So pre-api position history is one
 snapshot per statement period, not the per-dump granularity the
 api gives.
+
+Both tables key a statement's rows by account and the period end the
+statement prints. The manifest's date for a statement can differ from
+that period end. Both tables carry `logical_doc_key`, the statement
+that wrote the rows. The first statement to write an account and
+period end owns them. A later statement with the same account and
+period end writes nothing:
+
+- when its rows would be the same, it is a copy, and the load counts
+  it;
+- when they would differ, the load logs a warning that names both
+  statements.
+
+A re-parse of the owning statement replaces its rows.
 
 A statement can list one instrument on more than one row. The loader
 sums those rows into one, because silver keys a position by
@@ -659,11 +683,25 @@ original. Silver keeps every copy, keyed by the document's
 `logical_doc_key`. Gold reconciles them.
 
 Every parse of a document replaces its rows. A Year-End Summary or
-Gain/Loss Report is parsed once per load, when silver holds no rows
-for it or on `--reparse`. A lot line whose amounts do not read as
-amounts is left out, with a warning and a count in the load log. A
-Year-End Summary bond line that prints an adjusted basis can scatter
-its amounts over several lines this way.
+Gain/Loss Report is parsed once per parser generation, also when it
+holds no lots: its parse marker (§4.4) skips it on later loads.
+`--reparse` parses it again.
+
+A Year-End Summary bond lot that prints an adjusted basis has a second
+row of amounts under the first:
+
+- the first row holds the proceeds, the cost basis, the wash sale and
+  the gain;
+- the second row holds the adjusted basis, the market discount and
+  the adjusted gain.
+
+The text extractor mixes the two rows, so the lot line does not read.
+The parser then reads the lot from the words of the PDF page. An
+amount belongs to the column whose heading it sits under, and to the
+row it sits on. `cost_basis` and `realized_gain_loss` take the first
+row. The adjusted basis and the adjusted gain go into the payload as
+`adjusted_cost_basis` and `adjusted_gain_loss`. A lot that reads
+neither way is left out, with a warning and a count in the load log.
 
 ### 9.3 Cost-basis methods (migration 0007)
 

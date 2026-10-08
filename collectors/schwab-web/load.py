@@ -23,11 +23,16 @@ Idempotency:
     `activity_id` (see _synthesize_activity_id below) that is
     sha256-independent — re-parsing the same statement (even from
     a Schwab-regenerated PDF with a new sha256) converges to the
-    same rows via INSERT OR IGNORE. The load gate uses the
-    `logical_doc_key` column (account + doc_date + filename) so
-    re-downloads of the same logical PDF are skipped. Use
+    same rows via INSERT OR IGNORE.
+  * `parsed_documents` marks each logical document (account +
+    doc_date + filename, the `logical_doc_key`) parsed under the
+    current parser generation, so re-downloads of the same logical
+    PDF are skipped, whatever rows its parse yielded. Use
     --reparse to force re-ingestion of a logical document (deletes
     by logical_doc_key, then re-inserts).
+  * The statement snapshot tables are keyed by account and the
+    period end a statement prints; the first statement to write a
+    key owns it (see _write_statement_snapshots).
 
 Usage:
     load.py --silver-db <path.db> --bronze-dir <root>
@@ -67,7 +72,7 @@ _current_schema_version = silver.current_schema_version
 # `--reparse` for the whole invocation — the single lever the run gate, the
 # per-document gates and the per-document deletes all already read — plus a
 # purge of the statement snapshot tables, which have no delete path of their
-# own.
+# own, and of the parse markers, which vouch for the old generation.
 #
 # One fingerprint over both parsers rather than one each: they are edited
 # together as often as not, a false purge costs a re-parse of an archive the
@@ -139,10 +144,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--reparse", action="store_true",
-        help=("Re-parse every statement PDF whose sha256 is already "
-              "in `documents`, even if `transactions` already has "
-              "rows for it. Deletes old transactions for that "
-              "source first, then re-inserts. Use after a parser fix."),
+        help=("Re-parse every document (one copy per logical "
+              "document), even one already parsed under the current "
+              "parser generation. Deletes its old rows first, then "
+              "re-inserts. A changed parser implies it."),
     )
     p.add_argument(
         "--workers", type=int, default=None,
@@ -393,9 +398,9 @@ def _logical_doc_key(account_external_id: str,
                      filename: str) -> str:
     """Stable opaque key for a logical document (same account +
     period + filename regardless of which sha256 the download produced).
-    Used to gate transaction loading: if any transactions for this logical
-    document already exist in silver we can skip re-parsing, and for
-    --reparse delete to clear all sha256-churn variants at once.
+    Keys the parse markers that gate re-parsing, the rows a document
+    writes, and the --reparse delete that clears all sha256-churn
+    variants at once.
 
     Format: "<account_external_id>|<doc_date_int>|<filename>". Schwab
     filenames contain only letters, digits, hyphens, underscores, and
@@ -609,6 +614,10 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         "positions_inserted": 0,
         "cash_balances_inserted": 0,
         "statements_logical_deduped": 0,
+        # Statements whose account and period end another statement's
+        # rows already hold: with the same content, or with other content.
+        "statements_copies": 0,
+        "statements_conflicting": 0,
         "account_registration_updated": 0,
         "account_number_updated": 0,
         # Not a counter: suffixes whose account_number_full went
@@ -621,18 +630,18 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     # Schwab regenerates statement PDFs on every download (different
     # sha256 each time — see INTEROP.md §3), but the parser output is
     # byte-identical for the same logical document. The first sha256
-    # seen per logical doc is parsed; subsequent re-downloads skip the
-    # positions / cash / transactions parse. run_load shares this set
-    # across the invocation's bronze runs so a statement that yields no
-    # transactions (whose transaction gate never closes on its own) is
-    # not re-parsed in every later run; a run-local default restores the
-    # per-run scope for direct callers.
+    # seen per logical doc is parsed; subsequent re-downloads skip it.
+    # Across invocations the parse markers in `parsed_documents` do this
+    # job; the set covers what they cannot: `--reparse`, which ignores
+    # them, and the runs of one invocation before their marks commit.
+    # run_load shares the set across the invocation's bronze runs; a
+    # run-local default restores the per-run scope for direct callers.
     if seen_logical_docs is None:
         seen_logical_docs = set()
 
     # Parse jobs accumulated during the manifest walk. Each entry
     # captures everything the serial-insert phase needs (suffix,
-    # sha256, doc_date, gate flags). The actual PDF parse happens
+    # sha256, logical_doc_key, doc_date). The actual PDF parse happens
     # in a worker pool once the walk completes — see the
     # parallel-parse block below.
     parse_jobs: list[dict] = []
@@ -748,66 +757,19 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 stats["documents_missing_on_disk"] += 1
                 continue
 
-            # Three independent gates: transactions (per logical
-            # document), positions (per logical statement), cash
-            # (per logical statement). Each gate decides if its
-            # inserter should run; the PDF is parsed once if ANY
-            # gate is open.
-            #
-            # Transaction gate uses the logical-document key
-            # (account + doc_date + filename), NOT the sha256.
-            # Schwab regenerates PDFs per download (new sha256
-            # each time — INTEROP.md §3), so a sha256-based gate
-            # would re-insert duplicates on every re-download.
-            # The activity_id is also sha256-independent now
-            # (see _synthesize_activity_id), so INSERT OR IGNORE
-            # prevents row-level duplication; this gate is just
-            # the efficiency optimisation to skip re-parsing.
+            # One gate per logical statement (account + doc_date +
+            # filename), never the sha256: Schwab regenerates PDFs per
+            # download (new sha256 each time — INTEROP.md §3). A copy
+            # already parsed in this invocation is skipped; one parsed
+            # under the current parser generation carries a parse marker
+            # and is skipped unless `--reparse`.
             logical_key = (suffix, doc_date, doc_kind, filename)
-            logical_dup = logical_key in seen_logical_docs
-            if logical_dup:
+            if logical_key in seen_logical_docs:
                 stats["statements_logical_deduped"] += 1
-
-            ldk = _logical_doc_key(suffix, doc_date, filename)
-            tx_already = (
-                logical_dup
-                or conn.execute(
-                    "SELECT 1 FROM transactions WHERE logical_doc_key = ?",
-                    (ldk,),
-                ).fetchone() is not None
-            )
-
-            # Skip positions/cash parsing if we've already done this
-            # logical doc THIS run (sha256 churn). Across runs the
-            # INSERT OR REPLACE in the inserters keeps things
-            # idempotent, but we still gate on existing rows to
-            # avoid wasted parsing.
-            pos_already = (
-                logical_dup
-                or conn.execute(
-                    "SELECT 1 FROM historical_position_snapshots"
-                    " WHERE account_external_id = ? AND as_of_date = ?",
-                    (suffix, doc_date),
-                ).fetchone() is not None
-            )
-            cash_already = (
-                logical_dup
-                or conn.execute(
-                    "SELECT 1 FROM historical_cash_balances"
-                    " WHERE account_external_id = ? AND period_end = ?",
-                    (suffix, doc_date),
-                ).fetchone() is not None
-            )
-            need_pos = (not pos_already) or reparse
-            need_cash = (not cash_already) or reparse
-
-            need_tx = (not tx_already) or reparse
-            if not (need_tx or need_pos or need_cash):
                 continue
-
-            # Mark this logical doc as in-flight so any later
-            # churned re-download in THIS run hits logical_dup
-            # and stays out of the parse list.
+            ldk = _logical_doc_key(suffix, doc_date, filename)
+            if not reparse and _is_parsed(conn, ldk, "statement"):
+                continue
             seen_logical_docs.add(logical_key)
 
             year_hint = datetime.fromtimestamp(doc_date, tz=timezone.utc).year
@@ -818,10 +780,6 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 "pdf_path": str(pdf_path),
                 "doc_date": doc_date,
                 "year_hint": year_hint,
-                "need_tx": need_tx,
-                "need_pos": need_pos,
-                "need_cash": need_cash,
-                "tx_reparse_delete": need_tx and tx_already and reparse,
             })
 
     # Parse every collected statement PDF, then insert serially. PDF
@@ -870,22 +828,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             if num:
                 numbers_by_acct.setdefault(job["suffix"], set()).add(num)
 
-            if job["tx_reparse_delete"]:
-                # Delete by logical_doc_key so all sha256-churn
-                # variants of the same statement are cleared at once.
-                conn.execute(
-                    "DELETE FROM transactions WHERE logical_doc_key = ?",
-                    (job["ldk"],),
-                )
-                stats["transactions_reparsed"] += 1
-
-            if job["need_tx"]:
-                n = _insert_statement_transactions(
-                    conn, job["suffix"],
-                    parsed.get("transactions", []), job["sha256"],
-                    job["ldk"],
-                )
-                stats["transactions_inserted"] += n
+            _reparse_delete(conn, job["ldk"], reparse, stats)
+            stats["transactions_inserted"] += _insert_statement_transactions(
+                conn, job["suffix"], parsed.get("transactions", []),
+                job["sha256"], job["ldk"],
+            )
 
             period_end_ts = (
                 parse_iso_date(parsed.get("period_end"))
@@ -895,38 +842,15 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 parse_iso_date(parsed.get("period_start"))
                 or job["doc_date"]
             )
-            # The snapshot gates above probe `doc_date` — the manifest's
-            # date, the only one known BEFORE the parse — while these two
-            # inserters write the PARSED period_end. When the two disagree,
-            # the gate looks for a row under a date the inserter never
-            # wrote, never closes, and the statement re-parses on every
-            # run; the warning below names it. The rows it writes are the
-            # same each time, so the cost is the re-parse alone. Carrying a
-            # logical_doc_key onto both snapshot tables (as migration 0004
-            # did for transactions) would let the gate close.
             if period_end_ts != job["doc_date"]:
-                log.warning(
-                    "statement %s: parsed period_end differs from the "
-                    "manifest date; its positions/cash gate cannot close "
-                    "and it will re-parse on every run",
-                    job["ldk"],
-                )
+                log.info("statement %s prints a period end other than its "
+                         "manifest date; its rows take the printed one",
+                         job["ldk"])
 
             _check_account_value(parsed, job["ldk"])
-
-            if job["need_pos"]:
-                n_pos = _insert_position_snapshots(
-                    conn, job["suffix"], period_end_ts,
-                    parsed.get("positions") or [], job["sha256"],
-                )
-                stats["positions_inserted"] += n_pos
-
-            if job["need_cash"]:
-                n_cash = _insert_cash_balance(
-                    conn, job["suffix"], period_end_ts, period_start_ts,
-                    parsed.get("cash_summary"), job["sha256"],
-                )
-                stats["cash_balances_inserted"] += n_cash
+            _write_statement_snapshots(conn, job, parsed, period_start_ts,
+                                       period_end_ts, stats)
+            _mark_parsed(conn, job["ldk"], "statement", job["sha256"])
 
         # Pin the account-registration label onto each
         # account's accounts-table row. Stable across runs —
@@ -987,10 +911,12 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     # (recorded in the statement walk above) but skipped there for row
     # parsing; these passes add their rows. They iterate the same
     # manifest["statements"] documents and use their own
-    # logical_doc_key gates, so they're idempotent across runs and
-    # sha256 re-downloads independently of the statement parser.
+    # logical_doc_key gates (parse markers, or transaction rows for the
+    # letters), so they're idempotent across runs and sha256
+    # re-downloads independently of the statement parser.
     _load_distribution_letters(conn, run_dir, manifest, reparse, stats)
-    _load_1099b_forms(conn, run_dir, manifest, reparse, stats)
+    _load_1099b_forms(conn, run_dir, manifest, reparse, stats,
+                      seen_logical_docs)
     _load_realized_reports(conn, run_dir, manifest, reparse, stats,
                            seen_logical_docs)
 
@@ -1306,34 +1232,52 @@ def _insert_parsed_transactions(conn: sqlite3.Connection,
 
 
 def _gate_logical_doc(conn: sqlite3.Connection, ldk: str,
-                      reparse: bool) -> tuple[bool, bool]:
-    """Shared transactions load gate for the newer feeds. Returns
-    `(should_process, rows_exist)` and deletes nothing.
+                      reparse: bool) -> bool:
+    """Shared transactions load gate for the distribution letters: True
+    when the letter is to be parsed. Deletes nothing.
 
     The delete-on-reparse is intentionally NOT done here: the caller
     must parse first and only delete on a *successful* parse (via
     `_reparse_delete`), so a parse failure can never drop existing rows
     without a replacement. This mirrors the statement-PDF path, which
-    checks the parse result before its window delete."""
-    already = conn.execute(
+    checks the parse result before its delete."""
+    return reparse or conn.execute(
         "SELECT 1 FROM transactions WHERE logical_doc_key = ?", (ldk,),
-    ).fetchone() is not None
-    if already and not reparse:
-        return False, True
-    return True, already
+    ).fetchone() is None
 
 
-def _reparse_delete(conn: sqlite3.Connection, ldk: str, rows_exist: bool,
-                    reparse: bool, stats: dict) -> None:
+def _reparse_delete(conn: sqlite3.Connection, ldk: str, reparse: bool,
+                    stats: dict) -> None:
     """Clear all rows for a logical doc immediately before re-insert,
-    once its parse has succeeded. No-op unless `--reparse` and rows
-    already exist (all sha256-churn variants share one logical_doc_key,
-    so this clears them together)."""
-    if rows_exist and reparse:
-        conn.execute(
+    once its parse has succeeded. No-op unless `--reparse` (all
+    sha256-churn variants share one logical_doc_key, so this clears them
+    together)."""
+    if reparse and conn.execute(
             "DELETE FROM transactions WHERE logical_doc_key = ?", (ldk,),
-        )
+    ).rowcount:
         stats["transactions_reparsed"] += 1
+
+
+def _is_parsed(conn: sqlite3.Connection, ldk: str, document_kind: str) -> bool:
+    """Whether the logical document carries a parse marker: it has been
+    parsed under the current parser generation."""
+    return conn.execute(
+        "SELECT 1 FROM parsed_documents"
+        " WHERE logical_doc_key = ? AND document_kind = ?",
+        (ldk, document_kind),
+    ).fetchone() is not None
+
+
+def _mark_parsed(conn: sqlite3.Connection, ldk: str, document_kind: str,
+                 source_sha256: str) -> None:
+    """Record that the logical document has been parsed, whatever rows the
+    parse yielded, so later loads skip it until the parser generation
+    moves or `--reparse`."""
+    conn.execute(
+        "INSERT OR REPLACE INTO parsed_documents"
+        " (logical_doc_key, document_kind, source_sha256) VALUES (?, ?, ?)",
+        (ldk, document_kind, source_sha256),
+    )
 
 
 def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
@@ -1374,8 +1318,7 @@ def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
                 stats["documents_missing_on_disk"] += 1
                 continue
             ldk = _logical_doc_key(suffix, doc_date, filename)
-            proceed, rows_exist = _gate_logical_doc(conn, ldk, reparse)
-            if not proceed:
+            if not _gate_logical_doc(conn, ldk, reparse):
                 continue
             try:
                 rows = pp.parse_distribution_pdf(path)
@@ -1385,7 +1328,7 @@ def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
                 continue
             # Delete only after a successful parse, so a failure can't
             # drop the prior rows with no replacement.
-            _reparse_delete(conn, ldk, rows_exist, reparse, stats)
+            _reparse_delete(conn, ldk, reparse, stats)
             n = _insert_parsed_transactions(
                 conn, suffix, rows, "third_party_distribution",
                 doc.get("sha256") or "", ldk,
@@ -1395,7 +1338,8 @@ def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
 
 
 def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
-                      manifest: dict, reparse: bool, stats: dict) -> None:
+                      manifest: dict, reparse: bool, stats: dict,
+                      seen_logical_docs: set[tuple]) -> None:
     """Parse 1099 Composite tax forms (doc_kind='tax_form', document
     name containing "1099 Composite") into sale rows with
     source='form_1099b'.
@@ -1405,7 +1349,11 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
     the CSV, and key the logical_doc_key on the **base filename
     (without extension)** so the XML and CSV twins dedup to one set of
     rows. A form available only as PDF is logged as a coverage gap
-    (no machine-readable lot detail to parse)."""
+    (no machine-readable lot detail to parse).
+
+    A form is parsed once per invocation (`seen_logical_docs`), and once
+    per parser generation: its parse marker skips it on later loads
+    unless `--reparse`, also when it holds no 1099-B lots."""
     statements_dir = run_dir / "statements"
     for acct in manifest.get("statements", []):
         suffix = acct.get("suffix")
@@ -1445,17 +1393,19 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
                 log.warning("1099 %s has unparseable date %r; skipping",
                             filename, doc.get("date"))
                 continue
+            # Format-independent key: the XML and CSV twins share `base`,
+            # so whichever we parse first wins and the other is skipped.
+            seen_key = (suffix, doc_date, "form_1099b", base)
+            ldk = _logical_doc_key(suffix, doc_date, base)
+            if seen_key in seen_logical_docs or (
+                    not reparse and _is_parsed(conn, ldk, "form_1099b")):
+                continue
             path = statements_dir / suffix / filename
             if not path.is_file():
                 log.warning("1099 in manifest but missing on disk: %s", path)
                 stats["documents_missing_on_disk"] += 1
                 continue
-            # Format-independent key: the XML and CSV twins share `base`,
-            # so whichever we parse first wins and the other is skipped.
-            ldk = _logical_doc_key(suffix, doc_date, base)
-            proceed, rows_exist = _gate_logical_doc(conn, ldk, reparse)
-            if not proceed:
-                continue
+            seen_logical_docs.add(seen_key)
             try:
                 parsed = tf.parse_1099b(path, fmt)
             except Exception as e:
@@ -1464,7 +1414,7 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
                 continue
             # Delete only after a successful parse, so a failure can't
             # drop the prior rows with no replacement.
-            _reparse_delete(conn, ldk, rows_exist, reparse, stats)
+            _reparse_delete(conn, ldk, reparse, stats)
             lots = parsed.get("lots", [])
             n = _insert_parsed_transactions(
                 conn, suffix, lots, "form_1099b", doc.get("sha256") or "", ldk,
@@ -1476,6 +1426,7 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
                 [(_closed_lot_from_1099b(lot), lot) for lot in lots],
                 doc.get("sha256") or "",
             )
+            _mark_parsed(conn, ldk, "form_1099b", doc.get("sha256") or "")
 
 
 # Realized-lot reports by filename prefix: the Year-End Summary (alone,
@@ -1548,11 +1499,10 @@ def _load_realized_reports(conn: sqlite3.Connection, run_dir: Path,
     Report; see _REALIZED_REPORT_KINDS) into `closed_lots`, and a Gain/Loss
     Report's cost-basis methods into `cost_basis_methods`.
 
-    A report is parsed when silver holds no rows for it, or on
-    `--reparse`, and once per invocation (`seen_logical_docs`); each
-    parse replaces the report's rows. A report with no realized lots
-    holds no rows, so a later bronze run that carries it parses it
-    again."""
+    A report is parsed once per invocation (`seen_logical_docs`), and
+    once per parser generation: its parse marker skips it on later loads
+    unless `--reparse`, also when it holds no realized lots. Each parse
+    replaces the report's rows."""
     statements_dir = run_dir / "statements"
     for acct in manifest.get("statements", []):
         suffix = acct.get("suffix")
@@ -1578,11 +1528,7 @@ def _load_realized_reports(conn: sqlite3.Connection, run_dir: Path,
             if seen_key in seen_logical_docs:
                 continue
             ldk = _logical_doc_key(suffix, doc_date, filename)
-            held = conn.execute(
-                "SELECT 1 FROM closed_lots WHERE logical_doc_key = ?"
-                " AND document_kind = ?", (ldk, kind),
-            ).fetchone() is not None
-            if held and not reparse:
+            if not reparse and _is_parsed(conn, ldk, kind):
                 continue
             path = statements_dir / suffix / filename
             if not path.is_file():
@@ -1615,6 +1561,7 @@ def _load_realized_reports(conn: sqlite3.Connection, run_dir: Path,
                     (ldk, m["asset_class"], suffix, doc_date,
                      parsed["tax_year"], m["method"], sha256),
                 )
+            _mark_parsed(conn, ldk, kind, sha256)
 
 
 def _registration_from_tax_forms(conn: sqlite3.Connection,
@@ -1776,29 +1723,40 @@ def _check_account_value(parsed: dict, ldk: str) -> None:
             printed)
 
 
-def _insert_position_snapshots(conn: sqlite3.Connection,
-                                account_external_id: str,
-                                as_of_date: int,
-                                positions: list[dict],
-                                source_sha256: str) -> int:
-    """INSERT OR REPLACE one row per parsed position, and write the
-    statement's tax lots to `open_lots`. Returns the count of position
-    rows written. PK is
-    (as_of_date, account_external_id, instrument_key) — a
-    re-parse of the same logical statement (different sha256,
-    same content) collapses onto the same row. The statement's lots
-    replace whatever lots silver held for it.
+# The content columns of a statement's snapshot rows, as the row builders
+# below emit them. Each table's rows also carry `source_sha256`, and the
+# two snapshot tables `logical_doc_key`, the statement that wrote them.
+_POSITION_COLUMNS = (
+    "as_of_date", "account_external_id", "instrument_key", "quantity",
+    "market_price", "market_value", "cost_basis", "unrealized_gain_loss",
+    "accrued_interest", "payload",
+)
+_OPEN_LOT_COLUMNS = (
+    "as_of_date", "account_external_id", "instrument_key", "lot_index",
+    "quantity", "unit_cost", "cost_basis", "acquired_date",
+    "unrealized_gain_loss", "term", "covered", "footnotes", "payload",
+)
+_CASH_COLUMNS = (
+    "period_end", "period_start", "account_external_id", "currency_iso",
+    "opening_balance", "closing_balance", "total_debits", "total_credits",
+    "payload",
+)
 
+
+def _position_rows(account_external_id: str, as_of_date: int,
+                   positions: list[dict]) -> tuple[list[tuple], list[tuple]]:
+    """One statement's `historical_position_snapshots` rows and the
+    `open_lots` rows of their tax lots, in _POSITION_COLUMNS and
+    _OPEN_LOT_COLUMNS order.
+
+    Rows of one instrument are summed first (_merge_same_instrument).
     Rows missing an instrument_key are dropped (parser failure
-    indicator); a position row with no symbol can't be joined
-    against anything downstream. Rows of one instrument are summed
-    first (_merge_same_instrument).
-    """
-    conn.execute(
-        "DELETE FROM open_lots WHERE account_external_id = ? AND as_of_date = ?",
-        (account_external_id, as_of_date),
-    )
-    written = 0
+    indicator); a position row with no symbol can't be joined against
+    anything downstream. Lots are numbered in print order; their figures
+    are as printed, and whether a lot is covered is never printed, so
+    `covered` stays NULL."""
+    pos_rows: list[tuple] = []
+    lot_rows: list[tuple] = []
     for pos in _merge_same_instrument(positions):
         instrument_key = pos.get("instrument_key")
         if not instrument_key:
@@ -1820,75 +1778,36 @@ def _insert_position_snapshots(conn: sqlite3.Connection,
             "footnotes": pos.get("footnotes"),
             "raw_lines": pos.get("raw_lines"),
         })
-        conn.execute(
-            "INSERT OR REPLACE INTO historical_position_snapshots"
-            " (as_of_date, account_external_id, instrument_key,"
-            "  quantity, market_price, market_value, cost_basis,"
-            "  unrealized_gain_loss, accrued_interest,"
-            "  source_sha256, payload)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                as_of_date, account_external_id, instrument_key,
-                pos.get("quantity"), pos.get("market_price"),
-                pos.get("market_value"), pos.get("cost_basis"),
-                pos.get("unrealized_gain_loss"),
-                pos.get("accrued_interest"),
-                source_sha256, payload,
-            ),
-        )
-        _insert_open_lots(conn, account_external_id, as_of_date,
-                          instrument_key, pos.get("lots") or [], source_sha256)
-        written += 1
-    return written
-
-
-def _insert_open_lots(conn: sqlite3.Connection,
-                      account_external_id: str,
-                      as_of_date: int,
-                      instrument_key: str,
-                      lots: list[dict],
-                      source_sha256: str) -> None:
-    """One `open_lots` row per lot the statement prints for a holding,
-    numbered in print order. Figures are as printed; whether a lot is
-    covered is never printed, so `covered` stays NULL."""
-    for idx, lot in enumerate(lots):
-        conn.execute(
-            "INSERT INTO open_lots"
-            " (as_of_date, account_external_id, instrument_key, lot_index,"
-            "  quantity, unit_cost, cost_basis, acquired_date,"
-            "  unrealized_gain_loss, term, covered, footnotes,"
-            "  source_sha256, payload)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
-            (
+        pos_rows.append((
+            as_of_date, account_external_id, instrument_key,
+            pos.get("quantity"), pos.get("market_price"),
+            pos.get("market_value"), pos.get("cost_basis"),
+            pos.get("unrealized_gain_loss"), pos.get("accrued_interest"),
+            payload,
+        ))
+        for idx, lot in enumerate(pos.get("lots") or []):
+            lot_rows.append((
                 as_of_date, account_external_id, instrument_key, idx,
                 lot.get("quantity"), lot.get("unit_cost"),
                 lot.get("cost_basis"), lot.get("acquired_date"),
-                lot.get("unrealized_gain_loss"), lot.get("term"),
+                lot.get("unrealized_gain_loss"), lot.get("term"), None,
                 ",".join(lot.get("footnotes") or []) or None,
-                source_sha256,
                 canonical_json({"holding_days": lot.get("holding_days"),
                                 "raw_line": lot.get("raw_line")}),
-            ),
-        )
+            ))
+    return pos_rows, lot_rows
 
 
-def _insert_cash_balance(conn: sqlite3.Connection,
-                          account_external_id: str,
-                          period_end: int,
-                          period_start: int,
-                          cash: dict | None,
-                          source_sha256: str) -> int:
-    """INSERT OR REPLACE one row per (period_end, account,
-    currency). Returns 0 (no cash_summary parsed) or 1.
+def _cash_rows(account_external_id: str, period_end: int, period_start: int,
+               cash: dict | None) -> list[tuple]:
+    """One statement's `historical_cash_balances` row, in _CASH_COLUMNS
+    order: none without a cash summary, else one for its currency.
 
-    NULLs are preserved: missing opening / closing / debits /
-    credits stay NULL in the row rather than being coerced to
-    0.0 — the consumer needs to distinguish "not reported" from
-    "actually zero".
-    """
+    NULLs are preserved: missing opening / closing / debits / credits
+    stay NULL in the row rather than being coerced to 0.0 — the consumer
+    needs to distinguish "not reported" from "actually zero"."""
     if not cash:
-        return 0
-    currency = cash.get("currency_iso") or "USD"
+        return []
     payload = canonical_json({
         "deposits":            cash.get("deposits"),
         "withdrawals":         cash.get("withdrawals"),
@@ -1899,20 +1818,129 @@ def _insert_cash_balance(conn: sqlite3.Connection,
         "other_activity":      cash.get("other_activity"),
         "raw_line":            cash.get("raw_line"),
     })
+    return [(
+        period_end, period_start, account_external_id,
+        cash.get("currency_iso") or "USD",
+        cash.get("opening_balance"), cash.get("closing_balance"),
+        cash.get("total_debits"), cash.get("total_credits"), payload,
+    )]
+
+
+def _insert_rows(conn: sqlite3.Connection, verb: str, table: str,
+                 columns: tuple[str, ...], rows: list[tuple]) -> None:
+    """`verb` ("INSERT" or "INSERT OR REPLACE") every row into `table`."""
+    conn.executemany(
+        f"{verb} INTO {table} ({', '.join(columns)})"
+        f" VALUES ({', '.join('?' for _ in columns)})", rows)
+
+
+def _insert_position_snapshots(conn: sqlite3.Connection,
+                                account_external_id: str,
+                                as_of_date: int,
+                                positions: list[dict],
+                                source_sha256: str,
+                                logical_doc_key: str) -> int:
+    """INSERT OR REPLACE one row per parsed position, and write the
+    statement's tax lots to `open_lots`. Returns the count of position
+    rows written. PK is (as_of_date, account_external_id,
+    instrument_key) — a re-parse of the same logical statement
+    (different sha256, same content) collapses onto the same row. The
+    statement's lots replace whatever lots silver held for it."""
+    pos_rows, lot_rows = _position_rows(account_external_id, as_of_date,
+                                        positions)
     conn.execute(
-        "INSERT OR REPLACE INTO historical_cash_balances"
-        " (period_end, period_start, account_external_id, currency_iso,"
-        "  opening_balance, closing_balance, total_debits, total_credits,"
-        "  source_sha256, payload)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            period_end, period_start, account_external_id, currency,
-            cash.get("opening_balance"), cash.get("closing_balance"),
-            cash.get("total_debits"), cash.get("total_credits"),
-            source_sha256, payload,
-        ),
+        "DELETE FROM open_lots WHERE account_external_id = ? AND as_of_date = ?",
+        (account_external_id, as_of_date),
     )
-    return 1
+    _insert_rows(conn, "INSERT OR REPLACE", "historical_position_snapshots",
+                 (*_POSITION_COLUMNS, "source_sha256", "logical_doc_key"),
+                 [(*r, source_sha256, logical_doc_key) for r in pos_rows])
+    _insert_rows(conn, "INSERT", "open_lots",
+                 (*_OPEN_LOT_COLUMNS, "source_sha256"),
+                 [(*r, source_sha256) for r in lot_rows])
+    return len(pos_rows)
+
+
+def _insert_cash_balance(conn: sqlite3.Connection,
+                          account_external_id: str,
+                          period_end: int,
+                          period_start: int,
+                          cash: dict | None,
+                          source_sha256: str,
+                          logical_doc_key: str) -> int:
+    """INSERT OR REPLACE one row per (period_end, account, currency).
+    Returns 0 (no cash_summary parsed) or 1."""
+    rows = _cash_rows(account_external_id, period_end, period_start, cash)
+    _insert_rows(conn, "INSERT OR REPLACE", "historical_cash_balances",
+                 (*_CASH_COLUMNS, "source_sha256", "logical_doc_key"),
+                 [(*r, source_sha256, logical_doc_key) for r in rows])
+    return len(rows)
+
+
+def _stored_statement_rows(conn: sqlite3.Connection, account_external_id: str,
+                           period_end: int) -> tuple[list[tuple], ...]:
+    """The content of the snapshot rows silver holds for an account and
+    period end, in the row builders' shape and sorted."""
+    def rows(table, columns, date_column):
+        return sorted(conn.execute(
+            f"SELECT {', '.join(columns)} FROM {table}"
+            f" WHERE account_external_id = ? AND {date_column} = ?",
+            (account_external_id, period_end)).fetchall())
+    return (rows("historical_position_snapshots", _POSITION_COLUMNS, "as_of_date"),
+            rows("open_lots", _OPEN_LOT_COLUMNS, "as_of_date"),
+            rows("historical_cash_balances", _CASH_COLUMNS, "period_end"))
+
+
+def _snapshot_owner(conn: sqlite3.Connection, account_external_id: str,
+                    period_end: int, logical_doc_key: str) -> str | None:
+    """Another statement whose snapshot rows hold this account and period
+    end, or None."""
+    row = conn.execute(
+        "SELECT logical_doc_key FROM historical_position_snapshots"
+        " WHERE account_external_id = ? AND as_of_date = ?"
+        "   AND logical_doc_key != ?"
+        " UNION ALL"
+        " SELECT logical_doc_key FROM historical_cash_balances"
+        " WHERE account_external_id = ? AND period_end = ?"
+        "   AND logical_doc_key != ?"
+        " LIMIT 1",
+        (account_external_id, period_end, logical_doc_key) * 2,
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _write_statement_snapshots(conn: sqlite3.Connection, job: dict,
+                               parsed: dict, period_start: int,
+                               period_end: int, stats: dict) -> None:
+    """Write a parsed statement's positions, lots and cash, keyed by
+    account and the period end it prints.
+
+    The rows of one account and period end belong to the first statement
+    that writes them. A later statement with the same account and period
+    end writes nothing: when its rows would be the same, it is a copy and
+    is counted; when they would differ, a warning names both statements.
+    A re-parse of the owning statement replaces its rows."""
+    suffix, ldk = job["suffix"], job["ldk"]
+    positions = parsed.get("positions") or []
+    cash = parsed.get("cash_summary")
+    owner = _snapshot_owner(conn, suffix, period_end, ldk)
+    if owner is not None:
+        mine = (*(sorted(r) for r in _position_rows(suffix, period_end, positions)),
+                sorted(_cash_rows(suffix, period_end, period_start, cash)))
+        if mine == _stored_statement_rows(conn, suffix, period_end):
+            log.info("statement %s repeats the rows of %s; not written again",
+                     ldk, owner)
+            stats["statements_copies"] += 1
+        else:
+            log.warning("statement %s has the account and period end of %s "
+                        "but other positions or cash; the rows of %s are "
+                        "kept", ldk, owner, owner)
+            stats["statements_conflicting"] += 1
+        return
+    stats["positions_inserted"] += _insert_position_snapshots(
+        conn, suffix, period_end, positions, job["sha256"], ldk)
+    stats["cash_balances_inserted"] += _insert_cash_balance(
+        conn, suffix, period_end, period_start, cash, job["sha256"], ldk)
 
 
 # ============================================================
@@ -1921,13 +1949,16 @@ def _insert_cash_balance(conn: sqlite3.Connection,
 
 def _purge_stale_snapshots(conn: sqlite3.Connection) -> None:
     """Drop the statement-derived snapshot tables, which have no delete path
-    of their own, so the re-walk refills them rather than adding to them.
+    of their own, so the re-walk refills them rather than adding to them;
+    and the parse markers, so a document whose re-parse does not commit is
+    parsed by the next load rather than skipped.
 
     Called whenever the generation has moved — never on a bare `--reparse`,
     which re-walks under keys that have not changed and so has nothing to
     collapse. A stale generation also forces `reparse` on, which is what
     guarantees the walk that refills these tables actually happens.
     """
+    conn.execute("DELETE FROM parsed_documents")
     dropped = sum(conn.execute(f"DELETE FROM {t}").rowcount
                   for t in _SNAPSHOT_TABLES)
     log.info("the document parsers have changed since these rows were "
@@ -1967,11 +1998,11 @@ def run_load(args: argparse.Namespace) -> int:
         log.info("found %d bronze run(s) under %s", len(runs), args.bronze_dir)
 
         # One parse pool and one parse-dedup set for the whole invocation.
-        # A per-run pool paid a spawn/teardown cycle for every bronze run;
-        # a per-run dedup set re-parsed every zero-transaction statement in
-        # each later run. Hoisting both here parses each logical statement
-        # once across a cumulative bronze archive. The pool is skipped when
-        # nothing needs loading or when serial parsing is forced.
+        # A per-run pool would pay a spawn/teardown cycle for every bronze
+        # run; a per-run dedup set would re-parse, under `--reparse`, every
+        # logical document once per bronze run that carries it. The pool is
+        # skipped when nothing needs loading or when serial parsing is
+        # forced.
         seen_logical_docs: set[tuple] = set()
         # Suffixes whose account_number_full was pinned by this
         # invocation's in-run harvest, accumulated only from runs
@@ -2011,7 +2042,8 @@ def run_load(args: argparse.Namespace) -> int:
                     log.info(
                         "loaded %s: accts +%d/-%d, docs +%d/-%d, "
                         "tx +%d (reparsed %d), positions +%d, cash +%d, "
-                        "logical-dup %d, registrations %d, "
+                        "logical-dup %d, copies %d, conflicts %d, "
+                        "registrations %d, "
                         "acct-numbers %d, pdf errors %d; "
                         "1099-B +%d (pdf-only %d, errors %d), "
                         "closed lots +%d (unreadable %d, report errors %d), "
@@ -2024,6 +2056,8 @@ def run_load(args: argparse.Namespace) -> int:
                         stats["positions_inserted"],
                         stats["cash_balances_inserted"],
                         stats["statements_logical_deduped"],
+                        stats["statements_copies"],
+                        stats["statements_conflicting"],
                         stats["account_registration_updated"],
                         stats["account_number_updated"],
                         stats["pdf_parse_errors"],

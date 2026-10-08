@@ -39,6 +39,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from collectorkit.pdf import extract_text_pdfium
 from numparse import parse_amount
@@ -409,6 +410,10 @@ _REPORT_LOT_RE = re.compile(
 _REPORT_CELL_RE = re.compile(
     r"(?P<pre>[A-Za-z]?)(?P<amt>\(?\$\s*\(?[\d,]+\.\d{2}\)?)(?P<post>[A-Za-z]{0,2})"
     r"|(?P<none>--|Missing)|(?<!\S)(?P<mark>[A-Za-z])(?!\S)")
+# A line of nothing but the pieces of amount cells ("$", "1,234.56 $",
+# "--", an endnote letter): what an unreadable lot line scatters after it.
+_FRAGMENT_PIECE = r"(?:\$|--|Missing|[A-Za-z]?\(?[\d,]+\.\d{2}\)?[A-Za-z]{0,2}|[A-Za-z])"
+_REPORT_FRAGMENT_RE = re.compile(rf"^{_FRAGMENT_PIECE}(?:\s+{_FRAGMENT_PIECE})*$")
 _REPORT_CUSIP_RE = re.compile(r"^[A-Z0-9]{8}\d$")
 _REPORT_OPTION_RE = re.compile(
     r"^(?P<under>[A-Z][A-Z0-9./]*)\s+(?P<exp>\d{2}/\d{2}/\d{4})\s+"
@@ -472,7 +477,15 @@ class _ReportLots:
     A lot line may arrive with its amounts cut short; the amount-only
     lines after it complete it. A lot still short when another kind of
     line arrives, or one with more amounts than a lot prints, is dropped
-    and counted in `incomplete`."""
+    and counted in `incomplete`.
+
+    A lot line whose amounts do not read as cells at all keeps its place
+    in print order with `cells` None and the `anchor` that finds its row
+    on the page (quantity, acquired and sold dates as printed, and how
+    many lot lines with that anchor came before it). The amount fragments
+    the text extractor scatters after it are kept as its raw lines.
+    `resolve` fills its amounts from the page layout, or counts it in
+    `incomplete`."""
 
     def __init__(self, n_cells: tuple[int, ...]):
         self.n_cells = n_cells     # the cell counts a complete lot prints
@@ -480,24 +493,34 @@ class _ReportLots:
         self.incomplete = 0
         self.desc: list[str] = []
         self.pending: dict | None = None
+        self.scattered: dict | None = None   # the lot whose fragments follow
+        self.anchors: Counter = Counter()
 
     def drop_pending(self) -> None:
         if self.pending is not None:
             self.incomplete += 1
             self.pending = None
 
-    def lot_line(self, m: re.Match, cells: list, marks: list[str],
-                 raw: str, **section) -> None:
+    def _new_lot(self, m: re.Match, cells: list | None, marks: list[str],
+                 raw: str, section: dict) -> dict:
         self.drop_pending()
+        self.scattered = None
         head = " ".join([*self.desc, m["head"]]).split()
         self.desc = []
-        self.pending = {
+        anchor = (m["qty"], m["acq"], m["sold"])
+        self.anchors[anchor] += 1
+        return {
             "head": head, "quantity": _to_float(m["qty"]),
             "acquired_date": _report_iso(m["acq"]),
             "disposed_date": _report_iso(m["sold"]),
             "cells": cells, "footnotes": (["S"] if m["short"] else []) + marks,
             "raw_lines": [raw], **section,
+            "anchor": (*anchor, self.anchors[anchor] - 1),
         }
+
+    def lot_line(self, m: re.Match, cells: list, marks: list[str],
+                 raw: str, **section) -> None:
+        self.pending = self._new_lot(m, cells, marks, raw, section)
         self._maybe_emit()
 
     def amount_line(self, cells: list, marks: list[str], raw: str) -> None:
@@ -512,16 +535,43 @@ class _ReportLots:
 
     def text_line(self, line: str) -> None:
         self.drop_pending()
+        self.scattered = None
         self.desc.append(line)
 
-    def unreadable_lot_line(self) -> None:
+    def unreadable_lot_line(self, m: re.Match, raw: str, **section) -> None:
         """A lot line whose amounts do not read as amount cells."""
-        self.reset_description()
-        self.incomplete += 1
+        self.scattered = self._new_lot(m, None, [], raw, section)
+        self.lots.append(self.scattered)
+
+    def scattered_fragment(self, line: str) -> bool:
+        """Keep `line` with the unreadable lot before it when it is one of
+        the amount fragments that lot scatters."""
+        if self.scattered is None or not _REPORT_FRAGMENT_RE.match(line):
+            return False
+        self.scattered["raw_lines"].append(line)
+        return True
 
     def reset_description(self) -> None:
         self.drop_pending()
+        self.scattered = None
         self.desc = []
+
+    def resolve(self, read) -> None:
+        """Fill each unreadable lot's amounts with `read(anchor)`, which
+        returns the lot's amount fields or None; a lot it cannot read,
+        or every one when `read` is None, is dropped and counted."""
+        lots = []
+        for lot in self.lots:
+            anchor = lot.pop("anchor")
+            if lot["cells"] is None:
+                amounts = read(anchor) if read else None
+                if amounts is None:
+                    self.incomplete += 1
+                    continue
+                lot["footnotes"] += amounts.pop("footnotes")
+                lot.update(amounts)
+            lots.append(lot)
+        self.lots = lots
 
     def _maybe_emit(self) -> None:
         n = len(self.pending["cells"])
@@ -536,12 +586,15 @@ class _ReportLots:
 
 def _report_line(acc: _ReportLots, line: str, **section) -> None:
     """Feed one line of a realized section's body to `acc`: a lot line,
-    an amount-only line, or description text."""
+    an amount fragment of an unreadable lot, an amount-only line, or
+    description text."""
+    if acc.scattered_fragment(line):
+        return
     m_lot = _REPORT_LOT_RE.match(line)
     if m_lot:
         parsed = _report_cells(m_lot["cells"])
         if parsed is None:
-            acc.unreadable_lot_line()
+            acc.unreadable_lot_line(m_lot, raw=line, **section)
         else:
             acc.lot_line(m_lot, *parsed, raw=line, **section)
     elif (parsed := _report_cells(line)) is not None:
@@ -598,7 +651,235 @@ def _yes_subtitle(text: str) -> dict:
     return {"covered": covered, "form_8949_box": ",".join(boxes) or None}
 
 
-def parse_year_end_summary_text(text: str) -> dict:
+# Year-End Summary lots read by their place on the page.
+#
+# A bond lot with an adjusted basis prints two rows of amounts under one
+# set of column headings. The first row holds the proceeds, the cost
+# basis, the wash sale and the gain. The row below holds the adjusted
+# basis (under "Adjusted"), the market discount (under "(-)Market
+# Discount", in the wash sale's column) and the adjusted gain (under
+# "Adjusted"). The text extractor interleaves the two rows, so the lot
+# line reads short and its other amounts arrive as loose fragments. Such
+# a lot is read from the page's words instead: an amount belongs to the
+# column whose heading it is right-aligned under, and to the row it sits
+# on.
+
+class _Word(NamedTuple):
+    """A run of characters on one line, with its box in PDF points from
+    the page's bottom-left corner."""
+    text: str
+    x0: float
+    x1: float
+    bottom: float
+    top: float
+
+    @property
+    def mid(self) -> float:
+        return (self.bottom + self.top) / 2
+
+
+_WORD_DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{2}$")
+_WORD_QTY_RE = re.compile(r"^(?P<qty>[\d,]*\.\d+)S?$")
+_WORD_AMOUNT_RE = re.compile(
+    r"^(?P<pre>[A-Za-z]?)(?P<amt>\(?[\d,]+\.\d{2}\)?)(?P<post>[A-Za-z]{0,2})$")
+# Amount fields by (column, row): the first row of amounts is 0, the row
+# a bond lot prints below it is 1. The market discount has a column of
+# its own on some layouts and shares the wash sale's on others.
+_YES_LAYOUT_FIELDS = {
+    ("proceeds", 0): "proceeds",
+    ("cost", 0): "cost_basis",
+    ("cost", 1): "adjusted_cost_basis",
+    ("wash", 0): "wash_sale_disallowed",
+    ("wash", 1): "accrued_market_discount",
+    ("discount", 0): "accrued_market_discount",
+    ("gain", 0): "realized_gain_loss",
+    ("gain", 1): "adjusted_gain_loss",
+}
+# The heading word whose right edge marks each amount column.
+_YES_HEADING_WORDS = {
+    "proceeds": "Proceeds", "cost": "Basis", "wash": "Disallowed",
+    "discount": "Discount", "gain": "(Loss)",
+}
+# How far an amount's right edge may sit from its heading's, in points.
+_YES_COLUMN_SLACK = 12.0
+
+
+def _pdf_words(path) -> list[list[_Word]]:
+    """Every page's words. A word ends at whitespace, at a change of
+    line, or where the next character starts left of it."""
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as pdfium_c
+
+    pages: list[list[_Word]] = []
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        for i in range(len(pdf)):
+            page = pdf[i]
+            textpage = page.get_textpage()
+            try:
+                words: list[list] = []
+                cur = None
+                for c in range(textpage.count_chars()):
+                    ch = chr(pdfium_c.FPDFText_GetUnicode(textpage, c))
+                    if ch.isspace() or not ch.isprintable():
+                        cur = None
+                        continue
+                    left, bottom, right, top = textpage.get_charbox(c)
+                    if cur is not None and (left < cur[2] - 1 or bottom > cur[4]
+                                            or top < cur[3]):
+                        cur = None
+                    if cur is None:
+                        cur = [ch, left, right, bottom, top]
+                        words.append(cur)
+                    else:
+                        cur[0] += ch
+                        cur[2], cur[3], cur[4] = (max(cur[2], right),
+                                                  min(cur[3], bottom), max(cur[4], top))
+                pages.append([_Word(*w) for w in words])
+            finally:
+                textpage.close()
+                page.close()
+    finally:
+        pdf.close()
+    return pages
+
+
+def _same_row(words: list[_Word], word: _Word) -> list[_Word]:
+    """The words whose middle lies within `word`'s height, left to right."""
+    return sorted((w for w in words if word.bottom <= w.mid <= word.top),
+                  key=lambda w: w.x0)
+
+
+def _yes_headings(words: list[_Word]) -> list[tuple[float, dict[str, float]]]:
+    """Each realized section's column headings on a page: the bottom of
+    its "Total Proceeds" and the right edge of every amount column. The
+    other headings stack within a few lines of "Total Proceeds"."""
+    out = []
+    for w in words:
+        if w.text != "Proceeds":
+            continue
+        row = _same_row(words, w)
+        at = row.index(w)
+        if at == 0 or row[at - 1].text != "Total":
+            continue
+        block = [h for h in words if w.bottom - 12 <= h.mid <= w.top + 30]
+        cols = {"proceeds": w.x1}
+        for col, label in _YES_HEADING_WORDS.items():
+            edges = [h.x1 for h in block if h.text == label and h.x0 > w.x1]
+            if edges:
+                cols[col] = min(edges)
+        if {"cost", "wash", "gain"} <= cols.keys():
+            if abs(cols.get("discount", -1e9) - cols["wash"]) < _YES_COLUMN_SLACK:
+                del cols["discount"]       # stacked under the wash sale
+            out.append((w.bottom, cols))
+    return out
+
+
+def _yes_lot_rows(pages: list[list[_Word]]) -> dict[tuple, list]:
+    """Every lot row under a realized section's headings, in print order,
+    by its anchor: (quantity, acquired, sold) as printed. A lot row is a
+    sold date after an acquired date (or "Various") and a quantity, with
+    a short sale's "S" glued on or apart."""
+    rows: dict[tuple, list] = {}
+    for words in pages:
+        headings = _yes_headings(words)
+        if not headings:
+            continue
+        found = []
+        for sold in words:
+            above = [h for h in headings if h[0] > sold.top]
+            if not above or not _WORD_DATE_RE.match(sold.text):
+                continue
+            cols = min(above, key=lambda h: h[0])[1]
+            texts = [w.text for w in _same_row(words, sold) if w.x1 <= sold.x1]
+            if len(texts) >= 4 and texts[-3] == "S":
+                del texts[-3]
+            if len(texts) < 3 or not (_WORD_DATE_RE.match(texts[-2])
+                                      or texts[-2].lower() == "various"):
+                continue
+            qty = _WORD_QTY_RE.match(texts[-3])
+            if qty and sold.x1 < cols["proceeds"]:
+                found.append(((qty["qty"], texts[-2], sold.text), sold, cols))
+        # Top of the page first: the order the text lists the lots in.
+        for key, sold, cols in sorted(found, key=lambda f: -f[1].top):
+            rows.setdefault(key, []).append((words, sold, cols))
+    return rows
+
+
+def _yes_lot_amounts(words: list[_Word], sold: _Word,
+                     cols: dict[str, float]) -> dict | None:
+    """The amount fields of the lot whose sold date is `sold`, from its
+    row and the row below, down to the next lot, subtotal, total or the
+    page's endnote line. None when a word there is not an amount, an
+    amount fits no column, a column holds two, or the proceeds, cost
+    basis or gain is missing."""
+    below = sorted((w for w in words if w.top < sold.bottom), key=lambda w: -w.top)
+    stop = next((w.top for w in below
+                 if (w.x0 < sold.x1 and w.x1 > sold.x0)
+                 or w.text in ("Security", "Total", "Please")), -1e9)
+    band = [w for w in words
+            if w.x0 > sold.x1 and stop < w.mid and w.bottom <= sold.top]
+    second = [w.mid for w in band if w.top < sold.bottom]
+    if second and max(second) - min(second) > sold.top - sold.bottom:
+        return None                     # more than one row below
+    fields: dict = {"footnotes": []}
+    for w in band:
+        if w.text == "$":
+            continue
+        if len(w.text) == 1 and w.text.isalpha():
+            fields["footnotes"].append(w.text)
+            continue
+        m = _WORD_AMOUNT_RE.match(w.text)
+        if m is None and w.text not in ("--", "Missing"):
+            return None
+        col = min(cols, key=lambda c: abs(cols[c] - w.x1))
+        field = _YES_LAYOUT_FIELDS.get((col, 0 if w.top >= sold.bottom else 1))
+        if (abs(cols[col] - w.x1) > _YES_COLUMN_SLACK or field is None
+                or field in fields):
+            return None
+        fields[field] = parse_amount(m["amt"]) if m else None
+        if m:
+            fields["footnotes"] += [x for x in (m["pre"], m["post"]) if x]
+    if not {"proceeds", "cost_basis", "realized_gain_loss"} <= fields.keys():
+        return None
+    return fields
+
+
+class _YesLayout:
+    """The words of a Year-End Summary PDF, read the first time a lot
+    needs them."""
+
+    def __init__(self, path):
+        self.path = path
+        self._rows: dict[tuple, list] | None = None
+
+    def read(self, anchor: tuple) -> dict | None:
+        """The amounts of the lot at `anchor` (quantity, acquired, sold,
+        and how many lot lines with those came before it), in a text-read
+        lot's shape: `cells` (proceeds, cost basis, wash sale, market
+        discount, gain) and `footnotes`, plus the adjusted basis and gain.
+        None when the pages hold no such lot or its amounts do not
+        read."""
+        if self._rows is None:
+            self._rows = _yes_lot_rows(_pdf_words(self.path))
+        *key, occurrence = anchor
+        found = self._rows.get(tuple(key), [])
+        if occurrence >= len(found):
+            return None
+        fields = _yes_lot_amounts(*found[occurrence])
+        if fields is None:
+            return None
+        return {
+            "cells": [fields.get(f) for f in (
+                "proceeds", "cost_basis", "wash_sale_disallowed",
+                "accrued_market_discount", "realized_gain_loss")],
+            "footnotes": fields["footnotes"],
+            "adjusted_cost_basis": fields.get("adjusted_cost_basis"),
+            "adjusted_gain_loss": fields.get("adjusted_gain_loss"),
+        }
+
+
+def parse_year_end_summary_text(text: str, layout: _YesLayout | None = None) -> dict:
     """The realized lots of a Year-End Summary, standalone or inside a
     1099 Composite PDF.
 
@@ -607,7 +888,13 @@ def parse_year_end_summary_text(text: str) -> dict:
     disposed_date, proceeds, cost_basis, wash_sale_disallowed,
     accrued_market_discount, realized_gain_loss, term, covered,
     form_8949_box, footnotes, raw_lines and tax_year; and the count of
-    lot lines whose amounts could not be read."""
+    lot lines whose amounts could not be read.
+
+    A lot line whose amounts the text does not hold in order is read from
+    `layout`, the words of the same PDF by their place on the page. Such a
+    lot also carries `adjusted_cost_basis` and `adjusted_gain_loss`, None
+    where not printed. Without a layout the lot is left out and
+    counted."""
     acc = _ReportLots(n_cells=(4, 5))
     mode = "out"   # out | subtitle | columns | data
     term = None
@@ -648,6 +935,7 @@ def parse_year_end_summary_text(text: str) -> dict:
             continue
         _report_line(acc, line, term=term, **section)
     acc.drop_pending()
+    acc.resolve(layout.read if layout else None)
     return _finish_report(acc, [_year_end_summary_lot(lot) for lot in acc.lots],
                           _YES_TAX_YEAR_RE, text)
 
@@ -731,6 +1019,7 @@ def parse_gain_loss_report_text(text: str) -> dict:
             continue
         _report_line(acc, line, term=term)
     acc.drop_pending()
+    acc.resolve(None)
     result = _finish_report(acc, [_gain_loss_report_lot(lot) for lot in acc.lots],
                             _GLR_TAX_YEAR_RE, text)
     result["methods"] = [{"asset_class": k, "method": v} for k, v in methods.items()]
@@ -742,7 +1031,7 @@ def parse_realized_report_pdf(path, kind: str) -> dict:
     Year-End Summary or 1099 Composite PDF) or 'gain_loss_report'."""
     text = extract_text_pdfium(path)
     if kind == "year_end_summary":
-        return parse_year_end_summary_text(text)
+        return parse_year_end_summary_text(text, _YesLayout(path))
     if kind == "gain_loss_report":
         return parse_gain_loss_report_text(text)
     raise ValueError(f"unsupported realized-lot report: {kind!r}")
