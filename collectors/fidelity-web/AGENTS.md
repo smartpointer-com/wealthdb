@@ -28,6 +28,15 @@ within the surfaces listed below:
 - Document download endpoints reachable via the session cookie
   (typically REST endpoints fetched via Playwright's request API
   rather than per-row link clicks).
+- The positions page's read-only query API under
+  `/ftgw/digital/positions/poswebex/api/`, called with the
+  session's own CSRF token and account context, and bodies shaped
+  like the page's: `positions` (the positions table), `openlots`
+  (one position's open-lot table), `closedpositions` (a tax year's
+  closed positions) and `closedlots` (one closed position's lots).
+  They are POSTs, and they are reads: the page sends them whenever
+  a table is opened. `download.POSWEB_READ_ENDPOINTS` is the
+  allow-list in code.
 - Logout (optional; not required between runs, but harmless).
 
 Forbidden — do not navigate to, click, or scrape:
@@ -49,9 +58,11 @@ Forbidden — do not navigate to, click, or scrape:
   access there would expose data to an external party).
 - Any "confirm" / "submit" / "place" button outside the login
   form itself.
+- Any other endpoint of the positions API. `…/api/state/save`
+  stores the page's display settings: it is never called.
 - Anything that performs a `POST` other than the login form, the
-  read-only filter Apply actions, and explicit export-generation
-  triggers.
+  read-only filter Apply actions, explicit export-generation
+  triggers, and the four positions-API queries above.
 
 A single Fidelity login may surface accounts of several
 registrations, including accounts visible only through transitively

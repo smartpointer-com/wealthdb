@@ -23,7 +23,10 @@ order, otherwise the named single phase):
 * ``positions`` — Switch to the all-accounts view, pick a preset
   (``Overview`` then ``DividendView``), kebab → Download for each;
   Fidelity returns one CSV per view containing rows for every
-  visible account.
+  visible account. Then the lot step: per account, the page's own
+  positions and closed-positions queries, and the lots of each new
+  or changed position (``--refresh-lots`` fetches every one). See
+  ``scrape_lots``.
 
 * ``activity`` — Navigate to Activity & Orders once, drive the
   page-level timepicker filter (preset 'Past 90 days' for the
@@ -75,6 +78,7 @@ Usage:
                 [--mode all|positions|activity|documents|balances|performance]
                 [--lookback PRESET|YYYY-MM-DD]
                 [--exclude-accounts <a,b>]
+                [--refresh-lots]
                 [--dry-run]
                 [--debug]
                 [--screenshot-dir /debug/<dir>]
@@ -92,11 +96,14 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import functools
 import hashlib
 import json
 import logging
 import os
+import random
 import re
+import signal
 import sys
 import time
 import zlib
@@ -468,6 +475,7 @@ PHASE_RESULT_KEYS = (
     ("balances", "balances_results"),
     ("performance", "performance_results"),
     ("daf", "daf_results"),
+    ("lots", "lots_results"),
 )
 
 # For the phases whose result is a status dict rather than a list of
@@ -480,6 +488,7 @@ PHASE_OK_STATUS = {
     "balances": ("explored-no-export",),
     "performance": ("explored-no-export",),
     "daf": ("complete", "dry-run", "no-daf"),
+    "lots": ("complete",),
 }
 
 # The exit code a run uses to say a phase came back short. Distinct
@@ -496,7 +505,7 @@ def _gap_label(entry):
     win = entry.get("window")
     if isinstance(win, (list, tuple)) and len(win) == 2 and all(win):
         return f"{win[0]}..{win[1]}"
-    for key in ("view", "row_label"):
+    for key in ("view", "row_label", "account"):
         if entry.get(key):
             return str(entry[key])
     return str(entry.get("error") or "unknown")
@@ -960,6 +969,552 @@ def scrape_positions(page, bronze_dir, capture_dir):
             })
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Open and closed lots — the positions page's own read-only lot queries
+# ---------------------------------------------------------------------------
+#
+# The positions page fetches its table and each position's lot table
+# from a JSON API under POSWEB_API. Every call is a POST, but each one
+# in POSWEB_READ_ENDPOINTS is a read-only query the page itself sends
+# when a table is opened (AGENTS.md §1). The queries run as `fetch`
+# inside the page, so they leave through the browser's own network
+# stack with its TLS fingerprint and bot-manager cookies, like the
+# page's own; Playwright's request API would send them from a different
+# client, which Akamai can tell apart. Nothing here builds a request
+# the page does not: the session's CSRF token and its account context (`pico`)
+# are copied from the page's own positions request, and every body
+# mirrors the page's.
+
+POSWEB_API = "https://digital.fidelity.com/ftgw/digital/positions/poswebex/api"
+# The only endpoints `_poswebex_post` will call. `state/save`, which
+# stores display settings, is deliberately absent.
+POSWEB_READ_ENDPOINTS = frozenset({
+    "positions", "openlots", "closedpositions", "closedlots"})
+LOTS_PAGE_SIZE = 10
+# A pause before each lot request, drawn from this range, so a run
+# opens tables at a person's pace rather than in a burst. About one
+# request in LOT_LONG_PAUSE_EVERY waits LOT_LONG_PAUSE_S instead, the
+# way a reader stops to look at a table.
+LOT_REQUEST_PAUSE_S = (2.0, 5.0)
+LOT_LONG_PAUSE_EVERY = 25
+LOT_LONG_PAUSE_S = (20.0, 45.0)
+# The most lot tables one run fetches. Past it, the remaining new or
+# changed positions are deferred to the next run, so a full refresh
+# spreads over several nights instead of sending a thousand requests
+# in one session. A nightly's own changes stay well under it.
+LOT_MAX_FETCHES_PER_RUN = 200
+LOT_CONTEXT_TIMEOUT_S = 60
+# Consecutive failed lot requests after which the step stops: by then
+# the session has most likely ended, and every further request would
+# fail too.
+LOT_MAX_CONSECUTIVE_FAILURES = 5
+LOTS_INDEX = "index.json"
+LOTS_BUNDLE = "lots.jsonl"
+
+
+def _row_val(row, *path):
+    """The numeric `val` at ``path`` in a poswebex row, or None. A cell
+    is ``{"val": …, "disp": …}``; an empty one carries ``""`` for val."""
+    cell = row
+    for key in path:
+        if not isinstance(cell, dict):
+            return None
+        cell = cell.get(key)
+    val = cell.get("val") if isinstance(cell, dict) else None
+    return val if isinstance(val, (int, float)) else None
+
+
+def lot_position_rows(positions):
+    """The rows of a poswebex positions response whose lots can be
+    opened: position rows the page marks `isEligibleForLots`."""
+    for row in (positions or {}).get("rowData") or []:
+        if not str(row.get("rowType", "")).startswith("POSITION"):
+            continue
+        if (row.get("meta") or {}).get("isEligibleForLots"):
+            yield row
+
+
+def lot_position_id(row):
+    """A position's key within its account: the CUSIP, else the
+    symbol."""
+    sym = row.get("sym") or {}
+    return sym.get("cusip") or sym.get("name")
+
+
+def open_lot_signature(row):
+    """What decides whether a position's lots must be fetched again: its
+    quantity and cost basis total. A buy, a sale, a reinvestment or a
+    basis adjustment changes one of them."""
+    return {
+        "quantity": _row_val(row, "qty"),
+        "cost_basis_total": _row_val(row, "cstBasStk", "top"),
+    }
+
+
+def closed_lot_signature(row):
+    """What decides whether a closed position's lots must be fetched
+    again: its proceeds, cost basis and gain. A further sale of the
+    same security in the year changes them."""
+    return {
+        "proceeds": _row_val(row, "proceedsAmt"),
+        "cost_basis": _row_val(row, "cstBasCloPos"),
+        "gain_loss": _row_val(row, "totGLCloPos"),
+    }
+
+
+def _row_symbol(row):
+    sym = row.get("sym") or {}
+    return {"symbol": sym.get("name"), "cusip": sym.get("cusip")}
+
+
+def closedpositions_body(ctx, account, tax_year, ineligible):
+    """The closedpositions query the page sends for one account's
+    closed positions in a tax year. ``ineligible`` is the page's list
+    of accounts without lots."""
+    return {
+        "dateType": "TAX_YEAR",
+        "taxYear": str(tax_year),
+        "accts": [account],
+        "pico": ctx["body"].get("pico"),
+        "externalCustId": ctx["body"].get("externalCustId"),
+        "settings": {"isUnadjusted": False, "filter": ""},
+        "ineligibleAccounts": list(ineligible),
+    }
+
+
+def closedlots_body(ctx, account, cusip, tax_year):
+    """The closedlots query the page sends for one closed position."""
+    return {
+        "acctNum": account,
+        "cusip": cusip,
+        "pageNum": 1,
+        "startDate": f"{tax_year}-01-01",
+        "endDate": f"{tax_year}-12-31",
+        "pico": ctx["body"].get("pico"),
+        "isUnadjusted": False,
+        "isDownLoad": True,
+    }
+
+
+def openlots_body(account, row, page_num):
+    """The openlots request the page sends for one position's lot
+    table, one page at a time."""
+    meta = row.get("meta") or {}
+    sym = row.get("sym") or {}
+    return {
+        "acctNum": account,
+        "acctType": meta.get("acctType"),
+        "cusip": sym.get("cusip"),
+        "symbol": sym.get("name"),
+        "holdingType": meta.get("holdingType"),
+        "isUnadjusted": False,
+        "isCostBasisAdjusted": bool(meta.get("isFixedIncome")),
+        "pageNum": page_num,
+        "pageSize": LOTS_PAGE_SIZE,
+        "returnBasketTaxLotDetail": False,
+        "positionDetail": {
+            "lastPrice": _row_val(row, "lstPrStk", "top"),
+            "securityType": meta.get("securityType"),
+            "currentValue": _row_val(row, "curVal"),
+            "quantity": _row_val(row, "qty"),
+            "costBasis": meta.get("cstbasType"),
+            "isCostBasisEditable": False,
+            "isNotQuotable": bool(meta.get("isNotQuotable")),
+            "isCrypto": bool(meta.get("isCrypto")),
+        },
+    }
+
+
+_LOTS_LAST_PAGE_RE = re.compile(r'<meta name="lastPage" content="(\d+)"')
+
+
+def openlots_last_page(html):
+    """The page count an openlots response states, or None when the
+    response is not a lot table (an error page, a sign-in bounce)."""
+    m = _LOTS_LAST_PAGE_RE.search(html or "")
+    return int(m.group(1)) if m else None
+
+
+def decode_pico(pico):
+    """The account list inside the page's `pico` context (base64 of a
+    gzipped JSON object), or [] when it does not decode."""
+    try:
+        obj = json.loads(zlib.decompress(base64.b64decode(pico),
+                                         zlib.MAX_WBITS | 16))
+    except (TypeError, ValueError, zlib.error):
+        return []
+    accounts = obj.get("accounts") if isinstance(obj, dict) else None
+    return accounts if isinstance(accounts, list) else []
+
+
+def lot_ineligible_accounts(pico_accounts):
+    """The accounts the page treats as having no lots, in the page's
+    order: anything that is not a brokerage account, and 529 plans."""
+    return [str(a["accountId"]) for a in pico_accounts
+            if a.get("accountId")
+            and (a.get("cit") or not a.get("brokerageAccount"))]
+
+
+def previous_lot_index(dest_root, current_slug):
+    """The newest lot index in a complete dump before ``current_slug``,
+    or None. An index carries forward the fetch each position's lots
+    came from, so the newest one alone says what is already in bronze.
+    A dump that did not complete is passed over: `load` never reads it,
+    so a fetch it holds never reaches silver, and `prune` deletes it."""
+    for run_dir in reversed(list(bronze.iter_run_dirs(dest_root))):
+        if run_dir.name >= current_slug:
+            continue
+        if bronze.run_status(run_dir / "run.json") not in (None, "complete"):
+            continue
+        index = bronze.read_manifest(run_dir / "lots" / LOTS_INDEX)
+        if index is not None:
+            return index
+    return None
+
+
+class LotFetchError(RuntimeError):
+    """A lot request came back as something other than its answer."""
+
+
+class _LotBundle:
+    """Every response of a run's lot step, one JSON line each, in one
+    file: ``{"id", "endpoint", "account", "position", "tax_year",
+    "page", "body"}``, the body as received.
+
+    One file per response would cost a filesystem block each, and a
+    run fetches only new and changed positions, so no response repeats
+    an earlier run's bytes for the dedup sweep to share. In one file the
+    repeated table markup also compresses once. Lines are flushed as
+    they arrive, so a run that dies keeps what it fetched; ``close``
+    compresses the finished file."""
+
+    def __init__(self, path):
+        self.path = path
+        self._fh = open(path, "w", encoding="utf-8")
+        self._next = 0
+
+    def add(self, endpoint, body, *, account, position=None,
+            tax_year=None, page=None):
+        """Append one response; returns its record id."""
+        rid = self._next
+        self._next += 1
+        self._fh.write(json.dumps({
+            "id": rid, "endpoint": endpoint, "account": account,
+            "position": position, "tax_year": tax_year, "page": page,
+            "body": body}, ensure_ascii=False) + "\n")
+        self._fh.flush()
+        return rid
+
+    def close(self):
+        self._fh.close()
+        if self._next:
+            compress_export(self.path)
+        else:
+            self.path.unlink(missing_ok=True)
+
+
+class _LotFailures:
+    """Counts consecutive lot-request failures; ``record`` raises
+    LotStepAborted once LOT_MAX_CONSECUTIVE_FAILURES are reached. Also
+    holds what is left of the run's LOT_MAX_FETCHES_PER_RUN."""
+
+    def __init__(self):
+        self.run = 0
+        self.fetches_left = LOT_MAX_FETCHES_PER_RUN
+
+    def record(self, ok):
+        self.run = 0 if ok else self.run + 1
+        if self.run >= LOT_MAX_CONSECUTIVE_FAILURES:
+            raise LotStepAborted(
+                f"{self.run} lot requests failed in a row")
+
+
+class LotStepAborted(RuntimeError):
+    """The lot step stopped early; see _LotFailures."""
+
+
+def _lot_pause():
+    if random.randrange(LOT_LONG_PAUSE_EVERY) == 0:
+        time.sleep(random.uniform(*LOT_LONG_PAUSE_S))
+    else:
+        time.sleep(random.uniform(*LOT_REQUEST_PAUSE_S))
+
+
+def _capture_positions_context(page, timeout_s=LOT_CONTEXT_TIMEOUT_S):
+    """Load the positions page and copy what its own positions request
+    carries: the CSRF header, the preset-view header and the JSON body
+    (with its `pico` account context). Returns None when the page sends
+    no such request in time."""
+    seen = {}
+
+    def on_request(request):
+        if (request.method == "POST"
+                and request.url.split("?", 1)[0] == f"{POSWEB_API}/positions"
+                and request.post_data and "body" not in seen):
+            try:
+                seen["body"] = json.loads(request.post_data)
+            except ValueError:
+                return
+            seen["request"] = request
+
+    page.on("request", on_request)
+    try:
+        goto_and_wait(page, URL_POSITIONS, wait_selector=SEL_KEBAB_MENU)
+        deadline = time.monotonic() + timeout_s
+        while "body" not in seen and time.monotonic() < deadline:
+            page.wait_for_timeout(500)
+    finally:
+        page.remove_listener("request", on_request)
+    if "body" not in seen:
+        return None
+    # Read outside the event handler: all_headers() is a round trip to
+    # the browser, and it is the call that also returns the headers the
+    # browser added.
+    try:
+        headers = seen["request"].all_headers()
+    except Exception:  # noqa: BLE001
+        headers = seen["request"].headers
+    return {
+        "body": seen["body"],
+        "csrf": headers.get("x-csrf-token"),
+        "preset_view": headers.get("preset-view"),
+    }
+
+
+# Runs in the page: the browser adds the origin, referer and cookies
+# itself, as for the page's own queries.
+_IN_PAGE_POST_JS = """async ({url, headers, body}) => {
+    const r = await fetch(url, {method: "POST", headers, body,
+                                credentials: "include"});
+    return {status: r.status, text: await r.text()};
+}"""
+
+
+def _poswebex_post(page, ctx, endpoint, body):
+    """One read-only poswebex query, sent by the page itself with
+    `fetch`, paced. The page must be on the positions page, the origin
+    the query belongs to. Raises
+    LotFetchError on a failed fetch or a non-2xx status. Returns the
+    response text."""
+    if endpoint not in POSWEB_READ_ENDPOINTS:
+        raise ValueError(f"poswebex endpoint not allow-listed: {endpoint}")
+    headers = {
+        "content-type": "application/json",
+        "accept": "application/json, text/html",
+    }
+    if ctx.get("csrf"):
+        headers["x-csrf-token"] = ctx["csrf"]
+    if endpoint == "positions" and ctx.get("preset_view"):
+        headers["preset-view"] = ctx["preset_view"]
+    _lot_pause()
+    try:
+        resp = page.evaluate(_IN_PAGE_POST_JS, {
+            "url": f"{POSWEB_API}/{endpoint}", "headers": headers,
+            "body": json.dumps(body)})
+    except Exception as e:  # noqa: BLE001
+        raise LotFetchError(f"{endpoint}: {e}") from e
+    if not 200 <= resp["status"] < 300:
+        raise LotFetchError(f"{endpoint}: HTTP {resp['status']}")
+    return resp["text"]
+
+
+def _fetch_account_json(page, ctx, endpoint, body):
+    """One JSON query: ``(parsed, text)``."""
+    text = _poswebex_post(page, ctx, endpoint, body)
+    try:
+        return json.loads(text), text
+    except ValueError as e:
+        raise LotFetchError(f"{endpoint}: body not JSON: {e}") from e
+
+
+def _fetch_open_lots(page, ctx, account, row, bundle, key):
+    """Every page of one position's lot table, into ``bundle``. Returns
+    the record ids."""
+    pid = lot_position_id(row)
+    records = []
+    page_num, last = 1, 1
+    while page_num <= last:
+        html = _poswebex_post(page, ctx, "openlots",
+                              openlots_body(account, row, page_num))
+        stated = openlots_last_page(html)
+        if stated is None:
+            raise LotFetchError("openlots: response is not a lot table")
+        last = stated if page_num == 1 else last
+        records.append(bundle.add("openlots", html, account=key,
+                                  position=pid, page=page_num))
+        page_num += 1
+    log.info("  open lots of %s: %d page(s)", pid, len(records))
+    return records
+
+
+def _fetch_closed_lots(page, ctx, account, row, tax_year, bundle, key):
+    """One closed position's lots, into ``bundle``. Returns the record
+    id in a list, like ``_fetch_open_lots``."""
+    pid = lot_position_id(row)
+    lots, text = _fetch_account_json(
+        page, ctx, "closedlots", closedlots_body(ctx, account, pid, tax_year))
+    if not isinstance(lots, list):
+        raise LotFetchError("closedlots: response is not a lot list")
+    log.info("  closed lots of %s (%d): %d lot(s)", pid, tax_year, len(lots))
+    return [bundle.add("closedlots", text, account=key, position=pid,
+                       tax_year=tax_year)]
+
+
+def _keep_or_fetch(item, sig, prev, fetch, counts, entry, failures, slug):
+    """Point ``item`` at the fetch ``prev`` came from when its
+    signature is unchanged, else call ``fetch`` for new records. A failed
+    fetch, or one past the run's fetch budget, leaves ``item`` without
+    `fetched_in`, so the next run tries again."""
+    if prev and prev.get("fetched_in") and all(
+            prev.get(k) == v for k, v in sig.items()):
+        item.update(fetched_in=prev["fetched_in"],
+                    records=prev.get("records") or [])
+        counts["kept"] += 1
+        return
+    if failures.fetches_left <= 0:
+        counts["deferred"] += 1
+        return
+    failures.fetches_left -= 1
+    try:
+        item["records"] = fetch()
+    except LotFetchError as e:
+        log.warning("lots: a position in account %s failed: %s",
+                    entry["account"], e)
+        entry["failed"].append(item["position"])
+        entry["status"] = "error"
+        failures.record(False)
+        return
+    item["fetched_in"] = slug
+    counts["fetched"] += 1
+    failures.record(True)
+
+
+def scrape_lots(page, bronze_dir, accounts, prev_index, *, refresh=False,
+                tax_years=None):
+    """Fetch the open lots of every new or changed position, and the
+    lots of every new or changed closed position of ``tax_years``
+    (default: the previous and the current year).
+
+    The previous year stays in so that a sale after a year's last run,
+    or a basis the broker corrects after year end, still arrives;
+    earlier years come from the Consolidated 1099s (§4.6). Per account,
+    one positions query lists its positions and one closedpositions
+    query per tax year its closed positions. A position's lots are
+    fetched when it is new, when its signature (quantity and cost
+    basis total; for a closed position, proceeds, cost basis and gain)
+    differs from the fetch its lots came from, or always with
+    ``refresh``. `lots/index.json` records every lot-eligible position
+    with the dump its lots were fetched in and their record ids in that
+    dump's `lots/lots.jsonl.zst`, so an unchanged position points at an
+    earlier dump and costs no request.
+
+    Returns the phase result: an envelope status and one entry per
+    account. A failed account or position is recorded and the walk
+    goes on; the index still lists the position, without a fetch, so
+    the next run fetches it. Past LOT_MAX_FETCHES_PER_RUN, new and
+    changed positions are deferred the same way: a full refresh takes
+    several runs, and the step still counts as complete. After
+    LOT_MAX_CONSECUTIVE_FAILURES in a row the step stops; accounts it
+    did not reach are missing from the index, so the next run fetches
+    them in full."""
+    lots_dir = bronze_dir / "lots"
+    lots_dir.mkdir(parents=True, exist_ok=True)
+    slug = bronze_dir.name
+    if tax_years is None:
+        this_year = datetime.now(timezone.utc).year
+        tax_years = (this_year - 1, this_year)
+    result = {"status": "complete", "refresh": refresh,
+              "tax_years": list(tax_years), "accounts": {}}
+    ctx = _capture_positions_context(page)
+    if ctx is None:
+        log.warning("lots: the positions page sent no positions query; "
+                    "skipping the lot step")
+        return {"status": "error", "refresh": refresh,
+                "error": "no positions query to copy the session from"}
+    ineligible = lot_ineligible_accounts(decode_pico(ctx["body"].get("pico")))
+    prev_open, prev_closed = {}, {}
+    if prev_index and not refresh:
+        prev_open = {(e.get("account"), e.get("position")): e
+                     for e in prev_index.get("open") or []}
+        prev_closed = {(e.get("account"), e.get("tax_year"),
+                        e.get("position")): e
+                       for e in prev_index.get("closed") or []}
+    index = {"snapshot_at": slug, "refresh": refresh,
+             "tax_years": list(tax_years), "open": [], "closed": []}
+    failures = _LotFailures()
+    bundle = _LotBundle(lots_dir / LOTS_BUNDLE)
+    try:
+        for account in accounts:
+            if account in ineligible:
+                continue
+            key = account_key(account)
+            entry = {"account": key, "status": "ok", "failed": [],
+                     "open": {"fetched": 0, "kept": 0, "deferred": 0},
+                     "closed": {"fetched": 0, "kept": 0, "deferred": 0}}
+            result["accounts"][key] = entry
+            try:
+                positions, text = _fetch_account_json(
+                    page, ctx, "positions",
+                    dict(ctx["body"], accts=[account], isRefresh=False))
+                bundle.add("positions", text, account=key)
+                closed = []
+                for year in tax_years:
+                    answer, text = _fetch_account_json(
+                        page, ctx, "closedpositions",
+                        closedpositions_body(ctx, account, year, ineligible))
+                    bundle.add("closedpositions", text, account=key,
+                               tax_year=year)
+                    closed += [(year, row) for row in lot_position_rows(answer)]
+                failures.record(True)
+            except LotFetchError as e:
+                log.warning("lots: positions of account %s failed: %s",
+                            key, e)
+                entry.update(status="error", error=str(e))
+                failures.record(False)
+                continue
+            for row in lot_position_rows(positions):
+                pid = lot_position_id(row)
+                sig = open_lot_signature(row)
+                item = {"account": key, "position": pid,
+                        **_row_symbol(row), **sig}
+                index["open"].append(item)
+                _keep_or_fetch(
+                    item, sig, prev_open.get((key, pid)),
+                    functools.partial(
+                        _fetch_open_lots, page, ctx, account, row, bundle,
+                        key),
+                    entry["open"], entry, failures, slug)
+            for year, row in closed:
+                pid = lot_position_id(row)
+                sig = closed_lot_signature(row)
+                item = {"account": key, "position": pid,
+                        "tax_year": year, **_row_symbol(row), **sig}
+                index["closed"].append(item)
+                _keep_or_fetch(
+                    item, sig, prev_closed.get((key, year, pid)),
+                    functools.partial(
+                        _fetch_closed_lots, page, ctx, account, row, year,
+                        bundle, key),
+                    entry["closed"], entry, failures, slug)
+            log.info("lots: account %s open fetched=%d kept=%d deferred=%d, "
+                     "closed fetched=%d kept=%d deferred=%d, failed=%d", key,
+                     entry["open"]["fetched"], entry["open"]["kept"],
+                     entry["open"]["deferred"], entry["closed"]["fetched"],
+                     entry["closed"]["kept"], entry["closed"]["deferred"],
+                     len(entry["failed"]))
+    except LotStepAborted as e:
+        log.warning("lots: step stopped early: %s", e)
+        result["error"] = str(e)
+    finally:
+        if result.get("error") or any(
+                a["status"] != "ok" for a in result["accounts"].values()):
+            result["status"] = "partial"
+        index["status"] = result["status"]
+        bundle.close()
+        bronze.atomic_write_json(lots_dir / LOTS_INDEX, index)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -3177,6 +3732,15 @@ def walk(context, page, config):
         run_json["positions_results"] = scrape_positions(
             page, bronze_dir, capture_dir,
         )
+        try:
+            run_json["lots_results"] = scrape_lots(
+                page, bronze_dir, in_scope,
+                previous_lot_index(dest_root, slug),
+                refresh=config.get("refresh_lots", "false").lower() == "true",
+            )
+        except Exception as e:
+            log.exception("lots phase failed")
+            run_json["lots_results"] = {"status": "error", "error": str(e)}
     if mode in ("all", "activity"):
         run_json["activity_results"] = scrape_activity(
             page, since_date, until_date,
@@ -3981,6 +4545,8 @@ def run_oneshot(args):
             }
             if args.exclude_accounts:
                 config["exclude_accounts"] = args.exclude_accounts
+            if args.refresh_lots:
+                config["refresh_lots"] = "true"
             try:
                 coverage = walk(context, page, config)
             finally:
@@ -4076,6 +4642,14 @@ def parse_args(argv):
         help="Comma-separated account ids to skip.",
     )
     p.add_argument(
+        "--refresh-lots", action="store_true",
+        help=("Fetch the lots of every lot-eligible open and closed "
+              "position, not only of the new and changed ones, up to "
+              "the per-run limit; the runs after it fetch the rest. "
+              "The positions phase (--mode positions or all) runs the "
+              "lot step; the first run is always a full fetch."),
+    )
+    p.add_argument(
         "--dry-run", action="store_true",
         help="Walk + enumerate without writing artefacts.",
     )
@@ -4120,7 +4694,16 @@ def parse_args(argv):
     return p.parse_args(argv)
 
 
+def _exit_on_sigterm(signum, frame):
+    """`docker stop` sends SIGTERM to this process, which runs as PID 1
+    in the container, where the default action is to ignore it until
+    the SIGKILL that follows. Raising instead unwinds through
+    run_oneshot's ``finally``, so an interrupted walk still logs out."""
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
 def main(argv=None):
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
     args = parse_args(argv or sys.argv[1:])
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

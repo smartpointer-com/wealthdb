@@ -85,6 +85,12 @@ bronze subdirectory holds documents that arrive out-of-band.
 │   ├── positions/
 │   │   ├── positions_summary.csv.zst           Overview view (all accounts in one CSV)
 │   │   └── positions_dividend.csv.zst          DividendView (ex-date, yield, est. annual income)
+│   ├── lots/                                   the positions phase's lot step (§8.3.1)
+│   │   ├── index.json                          every lot-eligible position, with the dump its
+│   │   │                                       lots were fetched in and their record ids — NOT compressed
+│   │   └── lots.jsonl.zst                      every response of the step, one JSON line each:
+│   │                                           positions and closed-positions queries, open-lot
+│   │                                           table pages, closed lots
 │   ├── activity/
 │   │   └── activity_<YYYYMMDD>__<YYYYMMDD>.csv.zst one CSV per date-window (Custom-range mode),
 │   │                                           or activity_past_90_days.csv.zst (preset mode);
@@ -133,8 +139,8 @@ tmp+rename, decompress-and-sha256-verify before the plain file is
 unlinked, mtime carried over). HTML/CSV-shaped bronze compresses to a
 small fraction of its raw size. The list of compressed forms is exactly
 the load inputs that are text: `positions/*.csv`, `activity/*.csv`,
-`balances/balances.html`, `performance/performance.html`, and any
-`documents/Statement*.csv` companions. **PDFs are never compressed**
+`balances/balances.html`, `performance/performance.html`,
+`lots/lots.jsonl`, and any `documents/Statement*.csv` companions. **PDFs are never compressed**
 (already internally compressed; excluding them avoids spending CPU to
 grow the file), nor is `run.json` (it must stay greppable — it is the
 status-lifecycle handshake `prune` keys on), nor the `--debug`
@@ -369,7 +375,8 @@ databases always conform to the latest schema.
 | `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's structural columns + a per-file occurrence index; §3.3 — file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
 | `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `cost_basis` and `unrealized_gain_loss` (USD as printed; supplied statements only, NULL where the statement states none), `currency`, `source_sha256`; rest in `payload`. Populated from two PDF archives — scraped 529 statements (`pdf_parsers.parse_statement_pdf()`) and statements supplied out-of-band under `<bronze-dir>/supplied-statements/` (`pdf_parsers_supplied.parse_supplied_statement_pdf()`). See §4.5. |
-| `closed_lots` | event | synthetic `lot_id` (content plus an occurrence index within the document) | `document_kind` (`1099b` / `statement`), `account_external_id`, `tax_year`, `form_prepared`, `description`, `instrument_key`, `cusip`, `action`, `quantity`, `acquired_date` (ISO, or the form's own `Various` / `Unknown`), `date_sold`, `settlement_date`, `proceeds`, `cost_basis`, `accrued_market_discount`, `wash_sale_disallowed`, `gain_loss`, `fees`, `federal_tax_withheld`, `term` (`short` / `long`), `covered`, `form_8949_box`, `specific_share_id`, `corrected`, `currency`, `source_sha256`; rest in `payload`. One row per realized lot as a document prints it: the Form 1099-B lots of a Consolidated 1099 (§4.6) and the sales of a supplied statement (§4.5). The same sale in both stays twice. |
+| `closed_lots` | event | synthetic `lot_id` (content plus an occurrence index within the document) | `document_kind` (`form_1099b` / `statement` / `closed_positions`), `account_external_id`, `tax_year`, `form_prepared`, `security_name`, `instrument_key`, `cusip`, `action`, `quantity`, `acquired_date` (ISO, or the form's own `Various` / `Unknown`), `disposed_date`, `settlement_date`, `proceeds`, `cost_basis`, `accrued_market_discount`, `wash_sale_disallowed`, `realized_gain_loss`, `fees`, `federal_tax_withheld`, `term` (`SHORT` / `LONG`), `covered`, `form_8949_box`, `specific_share_id`, `corrected`, `currency`, `source_sha256`; rest in `payload`. One row per realized lot as a source states it: the Form 1099-B lots of a Consolidated 1099 (§4.6), the sales of a supplied statement (§4.5), and the positions page's closed lots for a tax year (§8.3.1). The names and values match schwab-web's `closed_lots`. The same sale in two sources stays twice. |
+| `open_lots` | snapshot | `(snapshot_at, account_external_id, instrument_key, lot_index)` | `cusip`, `quantity`, `unit_cost`, `cost_basis`, `acquired_date` (ISO), `unrealized_gain_loss`, `current_value`, `term` (`SHORT` / `LONG`), `covered` (not stated; NULL), `currency`, `source_sha256`; the printed cells in `payload`. One row per open lot, as the positions page's lot table prints it (§8.3.1). `snapshot_at` is the dump that fetched the table; an unchanged position keeps the rows of its last fetch. |
 | `parser_generations` | meta | `scope` | `generation`, `stamped_at`. Which generation of a document parser produced the rows a pass is holding — the same fingerprint the parse cache is keyed on. See §4.5. |
 
 Notes:
@@ -529,7 +536,7 @@ identification. The section prints a settlement date and no trade or
 acquired date, so a sale row has only `settlement_date`. The price
 stays in `payload`, because a bond prints it in percent of par. A
 sale whose lots span both terms prints one gain line per term; its
-`gain_loss` is their sum and its `term` NULL, with the lines in
+`realized_gain_loss` is their sum and its `term` NULL, with the lines in
 `payload`. A sale and the `Cancelled Sell` that reverses it on the
 same statement are both left out.
 
@@ -610,7 +617,7 @@ grain that family of rows can be named at:
   wrote them. The supplied pass drops its `statement` rows together
   with its activity rows, under the same held purge. The 1099 pass
   (§4.6) keeps its own generation; when it moves, the pass reads every
-  dump in bronze again and drops its `1099b` rows once the first form
+  dump in bronze again and drops its `form_1099b` rows once the first form
   has parsed.
 
 A document is dropped only once its parse has **succeeded**. One that
@@ -637,7 +644,7 @@ states it (`<YYYY>-<nickname>-<NNNN>-Consolidated-Form-1099.pdf`);
 the `Consolidated_Form_1099__<n>.pdf` naming states none.
 
 The Form 1099-B pages are parsed into `closed_lots`
-(`document_kind = '1099b'`, `pdf_parsers_1099.py`): one row per lot
+(`document_kind = 'form_1099b'`, `pdf_parsers_1099.py`): one row per lot
 with its quantity, acquired and sold dates, proceeds, cost basis,
 accrued market discount, wash sale loss disallowed, gain or loss and
 federal withholding. The section a lot prints under names its Form
@@ -896,6 +903,74 @@ positions-covering dumps keep landing while the retail positions
 table stops advancing, and a `load --force` rebuild recovers the
 whole gap from bronze. The activity CSV headers were spared this
 round; their lookups are case-insensitive now too.
+
+#### 8.3.1 Open and closed lots
+
+The positions page opens a position's lot table from a JSON API under
+`/ftgw/digital/positions/poswebex/api/`. The lot step of the
+positions phase (`scrape_lots`) calls that API the way the page does,
+after the Positions CSVs. Each query runs as `fetch` inside the page,
+so it leaves through the browser's own network stack, with its TLS
+fingerprint and the bot manager's cookies. Playwright's request API
+would send it from a different client, which Akamai can tell apart
+and answers by blocking sign-in.
+
+1. It loads the positions page and copies what the page's own
+   `positions` query carries: the CSRF header and the body, whose
+   `pico` field is the session's account context.
+2. Per in-scope account, it sends that query scoped to the account.
+   The answer lists every position, with the fields a lot request
+   needs and an `isEligibleForLots` flag. 529 plans and non-brokerage
+   accounts have no lots and are skipped.
+3. Per eligible position, it fetches the `openlots` table: an HTML
+   table, ten lots per page, with acquired date (`Mon-DD-YYYY`),
+   term, gain, current value, quantity, average cost and cost basis
+   total.
+4. Per account, it sends the `closedpositions` query for the previous
+   and the current tax year. The previous year catches a sale made
+   after that year's last run and a basis corrected after year end;
+   earlier years come from the Consolidated 1099s (§4.6). Per eligible
+   closed position, it fetches `closedlots`: JSON, one object of
+   printed strings per lot, with acquired and sold dates, quantity,
+   proceeds, cost basis, and the gain under a short-term or a
+   long-term column.
+
+The responses go into one file per run, `lots/lots.jsonl.zst`, one
+line each, with the body as received. Lines are written as responses
+arrive and the file is compressed when the step ends, so a run that
+dies keeps what it fetched. One file instead of one per response
+saves a filesystem block per response, and the repeated table markup
+compresses once. A run fetches only new and changed positions, so no
+response repeats an earlier run's bytes for the dedup sweep to share.
+
+Only new and changed positions are fetched. `lots/index.json` lists
+every eligible position with its signature, the dump its lots were
+fetched in, and their record ids in that dump's bundle. An open position's signature is its quantity and cost
+basis total; a closed position's is its proceeds, cost basis and
+gain. A position whose signature matches the newest earlier index
+keeps that fetch and costs no request. Only a complete dump's index
+counts: `load` never reads a dump that did not complete, so a fetch
+it holds would never reach silver.
+
+Requests are paced like a person opening tables: two to five seconds
+apart, with a longer pause about every twenty-five. A run fetches at
+most 200 lot tables. The rest of the new and changed positions are
+deferred to the next run, which picks them up from the index, so a
+full fetch spreads over several nights. `--refresh-lots` ignores the
+index; the runs after it complete the refresh.
+
+A failed account or position is recorded in `lots_results` and in
+the index without a fetch, so the next run fetches it. After five
+failed requests in a row the step stops, since the session has most
+likely ended. The phase is `lots` in `coverage`: a partial step makes
+the run exit 4, and the dump stays loadable. The lot step never
+affects the positions load.
+
+The load reads the open-lot tables fetched in each dump into
+`open_lots`, and the closed lots into `closed_lots` as
+`closed_positions`. A closed position's new fetch replaces the rows of
+its earlier one. The load warns when a position's lots do not sum to
+the figures the page stated for the position.
 
 ### 8.4 Activity & Orders
 

@@ -42,8 +42,9 @@ from prune import CONFIG as PRUNE_CONFIG
 
 CONFIG = recompress.RecompressConfig(
     # The compressible bronze artefacts, and nothing else: HTML from the
-    # balances / performance surfaces, and the positions / activity /
-    # statement-companion CSVs. documents/*.pdf (already compressed) and
+    # balances / performance surfaces, the positions / activity /
+    # statement-companion CSVs, and the lot step's response bundle.
+    # documents/*.pdf (already compressed), lots/index.json and
     # run.json (the status-lifecycle handshake) never match a pattern,
     # and the debug screenshots/ tree lives under its own subdir.
     patterns=(
@@ -52,6 +53,7 @@ CONFIG = recompress.RecompressConfig(
         "positions/*.csv",
         "activity/*.csv",
         "documents/*.csv",
+        "lots/*.jsonl",
     ),
     # Literally prune's predicate — one completeness definition.
     is_complete=PRUNE_CONFIG.is_complete,

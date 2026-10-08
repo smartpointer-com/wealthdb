@@ -94,6 +94,8 @@ _MIGRATIONS = (
     "0004_historical_position_snapshots.sql",
     "0009_historical_cost_basis.sql",
     "0010_closed_lots.sql",
+    "0011_open_lots.sql",
+    "0012_closed_lots_names.sql",
 )
 
 

@@ -162,7 +162,7 @@ def test_apply_migrations_creates_schema(conn):
     names = [r[0] for r in cur.fetchall()]
     assert names == [
         "accounts", "closed_lots", "documents", "dump_runs",
-        "historical_position_snapshots", "parser_generations",
+        "historical_position_snapshots", "open_lots", "parser_generations",
         "portfolios", "positions", "schema_meta", "transactions",
     ]
 

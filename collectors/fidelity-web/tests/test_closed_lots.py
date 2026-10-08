@@ -1,6 +1,6 @@
 """
-Unit tests for the closed-lots load (migration 0010): the Consolidated
-1099 pass and the supplied statements' sales.
+Unit tests for the closed-lots load (migrations 0010, 0012): the
+Consolidated 1099 pass and the supplied statements' sales.
 
 The 1099 parser is replaced by a stub that reads each fixture "PDF" as
 JSON naming the form it is, so a test can lay down any sequence of
@@ -11,6 +11,7 @@ number, security and amount is invented.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -94,7 +95,7 @@ def _form(dump, name, *, prepared, lots, year=2025, acct=ACCT,
 def _held(conn):
     return conn.execute(
         "SELECT tax_year, form_prepared, proceeds, cost_basis, source_sha256 "
-        "FROM closed_lots WHERE document_kind = '1099b' "
+        "FROM closed_lots WHERE document_kind = 'form_1099b' "
         "ORDER BY tax_year, proceeds").fetchall()
 
 
@@ -187,12 +188,12 @@ def test_lot_columns_are_promoted(migrated, tmp_path, stub_1099):
                prepared="2026-02-15", lots=[lot])
     load._load_consolidated_1099s(migrated, [d1], rederive=True)
     row = migrated.execute(
-        "SELECT instrument_key, cusip, acquired_date, date_sold, term, "
+        "SELECT instrument_key, cusip, acquired_date, disposed_date, term, "
         "covered, form_8949_box, wash_sale_disallowed, "
-        "accrued_market_discount, federal_tax_withheld, gain_loss, "
+        "accrued_market_discount, federal_tax_withheld, realized_gain_loss, "
         "corrected, settlement_date, specific_share_id, currency "
         "FROM closed_lots").fetchone()
-    assert row == ("000000AA0", "000000AA0", "Various", "2025-03-04", "long",
+    assert row == ("000000AA0", "000000AA0", "Various", "2025-03-04", "LONG",
                    0, "E", 25.0, 1.5, 4.0, -100.0, 1, None, None, "USD")
 
 
@@ -342,11 +343,11 @@ def test_a_statement_sale_lands_as_a_closed_lot(migrated):
     assert n == 1
     row = migrated.execute(
         "SELECT document_kind, account_external_id, instrument_key, action, "
-        "quantity, proceeds, cost_basis, fees, gain_loss, term, "
-        "specific_share_id, settlement_date, acquired_date, date_sold, "
+        "quantity, proceeds, cost_basis, fees, realized_gain_loss, term, "
+        "specific_share_id, settlement_date, acquired_date, disposed_date, "
         "tax_year, covered, source_sha256 FROM closed_lots").fetchone()
     assert row == ("statement", ACCT, "000000BB0", "You Sold", 4.0,
-                   99.98, 80.0, -0.02, 19.98, "short", 1, "2026-03-04",
+                   99.98, 80.0, -0.02, 19.98, "SHORT", 1, "2026-03-04",
                    None, None, None, None, "sha0")
     # The price is quoted per unit or in percent of par; it stays in payload.
     payload = json.loads(migrated.execute(
@@ -372,4 +373,27 @@ def test_the_statement_purge_spares_the_1099_lots(migrated, tmp_path, stub_1099)
     assert load._drop_supplied_closed_lots(migrated) == 1
 
     assert migrated.execute(
-        "SELECT document_kind FROM closed_lots").fetchall() == [("1099b",)]
+        "SELECT document_kind FROM closed_lots").fetchall() == [
+            ("form_1099b",)]
+
+
+def test_migration_0012_renames_rows_written_before_it(tmp_path):
+    """A silver at schema 10 keeps every closed lot through 0012, under
+    schwab-web's names and values."""
+    old = tmp_path / "migrations"
+    old.mkdir()
+    for mig in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if mig.name < "0011":
+            shutil.copy(mig, old)
+    conn = sqlite3.connect(":memory:")
+    load.apply_migrations(conn, old)
+    conn.execute(
+        "INSERT INTO closed_lots (lot_id, document_kind, account_external_id, "
+        "description, action, date_sold, gain_loss, term, source_sha256, "
+        "payload) VALUES ('1099b_x', '1099b', ?, 'EXAMPLE CORP', 'Sale', "
+        "'2025-03-04', -5.0, 'long', 'sha', '{}')", (ACCT,))
+    load.apply_migrations(conn, MIGRATIONS_DIR)
+    assert conn.execute(
+        "SELECT lot_id, document_kind, security_name, disposed_date, "
+        "realized_gain_loss, term FROM closed_lots").fetchall() == [
+        ("1099b_x", "form_1099b", "EXAMPLE CORP", "2025-03-04", -5.0, "LONG")]

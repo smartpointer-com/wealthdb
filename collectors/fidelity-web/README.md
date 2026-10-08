@@ -63,7 +63,7 @@ Login, bronze fetch, and silver loader are operational.
 | Component | Status |
 | --- | --- |
 | [`download.py`](download.py) login + logout | one-shot: Camoufox + Akamai trust + Fidelity device-trust + CLI-MFA prompt; best-effort logout before context teardown |
-| [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts) |
+| [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts; then the open and closed lots of new and changed positions, or of all with `--refresh-lots`, loaded into `open_lots` and `closed_lots` — [DESIGN.md §8.3.1](DESIGN.md)) |
 | [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--lookback` window bisected into ≤93-day chunks, clamped to Fidelity's ~4-year retention) |
 | [`download.py`](download.py) documents — tax forms | implemented (multi-year via `#options-select-TimeFilter`; one click per form by unique anchor id) |
 | [`download.py`](download.py) documents — statements | implemented (per-row click fires an authenticated `financial-documents/download` POST; the PDF is decoded from base64-in-JSON in that response; scroll-into-view + JS-click fallback for rows below the fold). |
@@ -243,6 +243,11 @@ Once the profile dir is seeded, every run is one-shot:
                                             # (a partial dump would read downstream as the
                                             #  uncovered accounts having emptied; there is no
                                             #  DAF-only mode for the same reason)
+./fidelity-web download --mode positions --refresh-lots
+                                            # also re-fetch the lots of every
+                                            # position, not just new and changed
+                                            # ones (200 per run; later runs
+                                            # fetch the rest)
 ./fidelity-web download --mode activity
 ./fidelity-web download --mode documents
 ./fidelity-web download --mode balances    # balances.html (no CSV export)

@@ -53,6 +53,7 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, compress, silver, srcfp
 
+import lot_parsers
 import pdf_parsers
 import pdf_parsers_1099
 import pdf_parsers_daf
@@ -130,7 +131,9 @@ _CONSOLIDATED_1099_IDENTITY_VERSION = (
 #     them: the supplied pass's with its activity rows
 #     (`_drop_supplied_closed_lots`), and the 1099 pass's when its own
 #     generation moves (`_load_consolidated_1099s`), which is also what
-#     sends that pass back over every dump in bronze.
+#     sends that pass back over every dump in bronze. The positions
+#     page's closed lots need no generation: each fetch replaces its
+#     closed position's rows (`_load_closed_positions`).
 STATEMENT_GENERATION_SCOPE = "statement_529"
 DAF_GENERATION_SCOPE = "daf_statement"
 SUPPLIED_GENERATION_SCOPE = "supplied_statement"
@@ -557,6 +560,12 @@ def load_dump(conn, dump_dir, schema_version, coord=None):
         pos_count = 0
     else:
         pos_count = _load_positions(conn, snapshot_at, merged)
+    lot_step = (_read_lot_step(dump_dir, run_meta)
+                if schema_version >= 11 else None)
+    lot_count = (_load_open_lots(conn, snapshot_at, dump_dir.name, lot_step)
+                 if lot_step else 0)
+    closed_lot_count = (_load_closed_positions(conn, dump_dir.name, lot_step)
+                        if lot_step and schema_version >= 12 else 0)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
     hist_pos_count = _load_historical_from_pdfs(conn, dump_dir, coord)
@@ -570,11 +579,11 @@ def load_dump(conn, dump_dir, schema_version, coord=None):
         daf_hist_count = _load_daf_historical(conn, dump_dir, coord)
 
     log.info(
-        "loaded %s: portfolios=%d accounts=%d positions=%d "
-        "transactions=%d documents=%d hist_positions=%d%s",
+        "loaded %s: portfolios=%d accounts=%d positions=%d open_lots=%d "
+        "closed_lots=%d transactions=%d documents=%d hist_positions=%d%s",
         dump_dir.name, portfolio_count + daf.get("portfolios", 0),
         account_count + daf.get("accounts", 0),
-        pos_count + daf.get("positions", 0),
+        pos_count + daf.get("positions", 0), lot_count, closed_lot_count,
         txn_count + daf.get("transactions", 0),
         doc_count + daf.get("documents", 0),
         hist_pos_count + daf_hist_count,
@@ -808,6 +817,129 @@ def _load_positions(conn, snapshot_at, merged):
         )
         inserted += 1
     return inserted
+
+
+# ------------------------------------------------------------
+# Open lots (migration 0011)
+# ------------------------------------------------------------
+
+# How far a position's lots may sum from its own quantity and cost
+# basis total before the load says so. The lot table prints cents and
+# thousandths, so honest rounding stays well inside these.
+_LOT_QUANTITY_TOLERANCE = 0.0005
+_LOT_COST_TOLERANCE = 0.01
+
+
+def _read_lot_step(dump_dir, run_meta):
+    """This dump's lot step as ``(index, records, hash_to_id)``, or None
+    when it has none.
+
+    ``records`` maps each record id in `lots/lots.jsonl` (compressed or
+    not) to its line. A line that does not parse, the tail of a run
+    killed mid-write, is skipped with a warning; an index entry that
+    points at it then fails to load on its own."""
+    lots_dir = dump_dir / "lots"
+    index = _read_json_file(lots_dir / "index.json")
+    if not index:
+        return None
+    records = {}
+    path = compress.resolve_variant(lots_dir / "lots.jsonl")
+    if path is not None:
+        with compress.open_text(path) as fh:
+            for line_no, line in enumerate(fh, 1):
+                try:
+                    rec = json.loads(line)
+                    records[rec["id"]] = rec
+                except (ValueError, KeyError, TypeError):
+                    log.warning("%s: lots.jsonl line %d does not parse; "
+                                "skipped", dump_dir.name, line_no)
+    hash_to_id = {account_key(aid): aid
+                  for aid in run_meta.get("accounts_enumerated") or []}
+    return index, records, hash_to_id
+
+
+def _lot_bodies(records, item):
+    """The response bodies an index entry points at, in order. Raises
+    ValueError when one is missing from the bundle."""
+    bodies = []
+    for rid in item.get("records") or []:
+        rec = records.get(rid)
+        if rec is None or not isinstance(rec.get("body"), str):
+            raise ValueError(f"record {rid} is missing")
+        bodies.append(rec["body"])
+    return bodies
+
+
+def _load_open_lots(conn, snapshot_at, dump_name, lot_step):
+    """Load the open lots this dump fetched.
+
+    Only the positions whose `fetched_in` is this dump are read; an
+    unchanged position points at the earlier dump that fetched its
+    lots, which loaded them then. Each fetched position is checked
+    against the figures the positions query reported for it: a lot
+    table whose quantities or costs do not add up to the position is
+    loaded as printed, and the load warns."""
+    index, records, hash_to_id = lot_step
+    inserted = 0
+    for item in index.get("open") or []:
+        if item.get("fetched_in") != dump_name:
+            continue
+        aid = hash_to_id.get(item.get("account"))
+        instr = (item.get("symbol") or item.get("position") or "").rstrip("*")
+        if not aid or not instr:
+            log.warning("%s: lot index entry for account %s names no "
+                        "known account or symbol; skipped",
+                        dump_name, item.get("account"))
+            continue
+        lots = []
+        try:
+            for page_num, html in enumerate(_lot_bodies(records, item), 1):
+                sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
+                lots += [(lot, page_num, sha)
+                         for lot in lot_parsers.parse_open_lots(html)]
+        except ValueError as e:
+            log.warning("%s: open lots of %s not loaded: %s",
+                        dump_name, instr, e)
+            continue
+        conn.execute(
+            "DELETE FROM open_lots WHERE snapshot_at = ? "
+            "AND account_external_id = ? AND instrument_key = ?",
+            (snapshot_at, aid, instr))
+        for lot_index, (lot, page_num, sha) in enumerate(lots):
+            conn.execute(
+                "INSERT INTO open_lots ("
+                "snapshot_at, account_external_id, instrument_key, "
+                "lot_index, cusip, quantity, unit_cost, cost_basis, "
+                "acquired_date, unrealized_gain_loss, current_value, term, "
+                "source_sha256, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (snapshot_at, aid, instr, lot_index, item.get("cusip"),
+                 lot.get("quantity"), lot.get("unit_cost"),
+                 lot.get("cost_basis"), lot.get("acquired_date"),
+                 lot.get("unrealized_gain_loss"), lot.get("current_value"),
+                 lot.get("term"), sha,
+                 normalize_payload({"cells": lot["cells"],
+                                    "page": page_num})),
+            )
+        inserted += len(lots)
+        _check_lot_sums(dump_name, instr, item, [lot for lot, _, _ in lots])
+    return inserted
+
+
+def _check_lot_sums(dump_name, instr, item, lots):
+    """Warn when a position's lots miss its quantity or cost basis
+    total. Each check runs only when the position states the figure."""
+    for field, column, tolerance in (
+            ("quantity", "quantity", _LOT_QUANTITY_TOLERANCE),
+            ("cost_basis_total", "cost_basis", _LOT_COST_TOLERANCE)):
+        stated = item.get(field)
+        if not isinstance(stated, (int, float)):
+            continue
+        total = sum(lot.get(column) or 0.0 for lot in lots)
+        if abs(total - stated) > tolerance:
+            log.warning("%s: the open lots of %s sum to %s %.4f, the "
+                        "position states %.4f", dump_name, instr,
+                        column, total, stated)
 
 
 # Regexes for the instrument-shape rules in _classify_asset_class.
@@ -1316,7 +1448,7 @@ def _read_json_file(path):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
-        log.warning("DAF: could not read %s: %s", path.name, e)
+        log.warning("could not read %s: %s", path.name, e)
         return None
 
 
@@ -2497,21 +2629,23 @@ def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
 
 
 # ============================================================
-# Closed lots (migration 0010)
+# Closed lots (migrations 0010, 0012)
 # ============================================================
 #
-# Two documents state realized lots: the Form 1099-B pages of a
-# Consolidated 1099 (`document_kind = '1099b'`) and the sales in a
+# Three sources state realized lots: the Form 1099-B pages of a
+# Consolidated 1099 (`document_kind = 'form_1099b'`), the sales in a
 # supplied statement's Securities Bought & Sold section
-# (`document_kind = 'statement'`). Both land in `closed_lots` as printed;
-# the same sale in both stays twice, for gold to reconcile.
+# (`document_kind = 'statement'`), and the positions page's closed lots
+# (`document_kind = 'closed_positions'`). All land in `closed_lots` as
+# printed; the same sale in two of them stays twice, for gold to
+# reconcile.
 
 _CLOSED_LOT_COLUMNS = (
     "lot_id", "document_kind", "account_external_id", "tax_year",
-    "form_prepared", "description", "instrument_key", "cusip", "action",
-    "quantity", "acquired_date", "date_sold", "settlement_date", "proceeds",
+    "form_prepared", "security_name", "instrument_key", "cusip", "action",
+    "quantity", "acquired_date", "disposed_date", "settlement_date", "proceeds",
     "cost_basis", "accrued_market_discount",
-    "wash_sale_disallowed", "gain_loss", "fees", "federal_tax_withheld",
+    "wash_sale_disallowed", "realized_gain_loss", "fees", "federal_tax_withheld",
     "term", "covered", "form_8949_box", "specific_share_id", "corrected",
     "source_sha256", "payload",
 )
@@ -2531,6 +2665,11 @@ def _insert_closed_lot(conn, prefix, identity, occurrence, row):
         f"{identity}|#{occ}".encode()).hexdigest()[:28])
     conn.execute(_INSERT_CLOSED_LOT,
                  tuple(row.get(c) for c in _CLOSED_LOT_COLUMNS))
+
+
+def _closed_lot_term(term):
+    """A parser's 'short' / 'long' as the column's 'SHORT' / 'LONG'."""
+    return term.upper() if term else None
 
 
 def _bool_column(value):
@@ -2558,16 +2697,16 @@ def _insert_supplied_closed_lots(conn, pdf_path, parsed, sha):
             _insert_closed_lot(conn, "stmt_", f"{aid}|{identity}", occurrence, {
                 "document_kind": "statement",
                 "account_external_id": aid,
-                "description": sale.get("description"),
+                "security_name": sale.get("description"),
                 "instrument_key": sale.get("symbol"),
                 "action": sale.get("action"),
                 "quantity": sale.get("quantity"),
                 "settlement_date": sale.get("settlement_date"),
                 "proceeds": sale.get("amount"),
                 "cost_basis": sale.get("cost_basis"),
-                "gain_loss": sale.get("gain_loss"),
+                "realized_gain_loss": sale.get("gain_loss"),
                 "fees": sale.get("transaction_cost"),
-                "term": sale.get("term"),
+                "term": _closed_lot_term(sale.get("term")),
                 "specific_share_id": _bool_column(sale.get("specific_share_id")),
                 "source_sha256": sha,
                 "payload": normalize_payload(
@@ -2584,6 +2723,61 @@ def _drop_supplied_closed_lots(conn):
     supplied pass writes."""
     return conn.execute(
         "DELETE FROM closed_lots WHERE document_kind = 'statement'").rowcount
+
+
+def _load_closed_positions(conn, dump_name, lot_step):
+    """Load the closed-position lots this dump fetched into
+    `closed_lots` as 'closed_positions'.
+
+    Each fetch is the page's whole lot list for one closed position in
+    one tax year, so it replaces the rows an earlier fetch wrote for
+    that position and year. A closed position whose lots do not sum to
+    the proceeds or cost basis the page stated for it loads as
+    printed, and the load warns."""
+    index, records, hash_to_id = lot_step
+    inserted = 0
+    for item in index.get("closed") or []:
+        if item.get("fetched_in") != dump_name:
+            continue
+        aid = hash_to_id.get(item.get("account"))
+        instr = item.get("symbol") or item.get("position")
+        year = item.get("tax_year")
+        try:
+            [body] = _lot_bodies(records, item)
+            lots = json.loads(body)
+        except ValueError:
+            lots = None
+        if not aid or not instr or not isinstance(lots, list):
+            log.warning("%s: closed lots of a position in account %s not "
+                        "loaded", dump_name, item.get("account"))
+            continue
+        sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        conn.execute(
+            "DELETE FROM closed_lots WHERE document_kind = 'closed_positions' "
+            "AND account_external_id = ? AND tax_year = ? "
+            "AND instrument_key = ?", (aid, year, instr))
+        occurrence: dict[str, int] = {}
+        rows = [lot_parsers.closed_lot_row(lot) for lot in lots]
+        for lot, row in zip(lots, rows, strict=True):
+            identity = "|".join(str(row.get(k)) for k in (
+                "acquired_date", "disposed_date", "quantity", "proceeds",
+                "cost_basis"))
+            _insert_closed_lot(
+                conn, "web_", f"{aid}|{year}|{instr}|{identity}", occurrence,
+                dict(row, document_kind="closed_positions",
+                     account_external_id=aid, tax_year=year,
+                     instrument_key=instr, cusip=item.get("cusip"),
+                     source_sha256=sha, payload=normalize_payload(lot)))
+        inserted += len(rows)
+        for field in ("proceeds", "cost_basis"):
+            stated = item.get(field)
+            total = sum(r.get(field) or 0.0 for r in rows)
+            if isinstance(stated, (int, float)) \
+                    and abs(total - stated) > _LOT_COST_TOLERANCE:
+                log.warning("%s: the closed lots of %s sum to %s %.2f, the "
+                            "position states %.2f", dump_name, instr,
+                            field, total, stated)
+    return inserted
 
 
 # A Consolidated 1099 under either naming Fidelity uses:
@@ -2625,7 +2819,7 @@ def _held_1099_forms(conn):
     holds."""
     return {(aid, year): prepared for aid, year, prepared in conn.execute(
         "SELECT account_external_id, tax_year, MAX(form_prepared) "
-        "FROM closed_lots WHERE document_kind = '1099b' "
+        "FROM closed_lots WHERE document_kind = 'form_1099b' "
         "GROUP BY account_external_id, tax_year")}
 
 
@@ -2664,7 +2858,7 @@ def _replace_1099_lots(conn, parsed, sha):
     aid = parsed["account_external_id"]
     year = parsed["tax_year"]
     conn.execute(
-        "DELETE FROM closed_lots WHERE document_kind = '1099b' "
+        "DELETE FROM closed_lots WHERE document_kind = 'form_1099b' "
         "AND account_external_id = ? AND tax_year = ?", (aid, year))
     occurrence: dict[str, int] = {}
     for lot in parsed.get("lots", []):
@@ -2674,24 +2868,24 @@ def _replace_1099_lots(conn, parsed, sha):
             "cost_basis"))
         _insert_closed_lot(conn, "1099b_", f"{aid}|{year}|{identity}",
                            occurrence, {
-            "document_kind": "1099b",
+            "document_kind": "form_1099b",
             "account_external_id": aid,
             "tax_year": year,
             "form_prepared": parsed.get("prepared"),
-            "description": lot.get("description"),
+            "security_name": lot.get("description"),
             "instrument_key": lot.get("symbol") or lot.get("cusip"),
             "cusip": lot.get("cusip"),
             "action": lot.get("action"),
             "quantity": lot.get("quantity"),
             "acquired_date": lot.get("acquired_date"),
-            "date_sold": lot.get("date_sold"),
+            "disposed_date": lot.get("date_sold"),
             "proceeds": lot.get("proceeds"),
             "cost_basis": lot.get("cost_basis"),
             "accrued_market_discount": lot.get("accrued_market_discount"),
             "wash_sale_disallowed": lot.get("wash_sale_disallowed"),
-            "gain_loss": lot.get("gain_loss"),
+            "realized_gain_loss": lot.get("gain_loss"),
             "federal_tax_withheld": lot.get("federal_tax_withheld"),
-            "term": lot.get("term"),
+            "term": _closed_lot_term(lot.get("term")),
             "covered": _bool_column(lot.get("covered")),
             "form_8949_box": lot.get("form_8949_box"),
             "corrected": _bool_column(lot.get("corrected")),
@@ -2744,7 +2938,7 @@ def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None):
                 continue
             if owed_a_purge:
                 dropped = conn.execute(
-                    "DELETE FROM closed_lots WHERE document_kind = '1099b'"
+                    "DELETE FROM closed_lots WHERE document_kind = 'form_1099b'"
                 ).rowcount
                 log.info("1099: re-deriving every form for this parser "
                          "generation; dropped %d lot(s)", dropped)
