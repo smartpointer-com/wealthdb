@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import itertools
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -294,3 +296,104 @@ def test_a_daf_whose_accounts_all_landed_is_complete():
         "per_account": {"acct-a": {"status": "complete", "grants": 3}},
     }})
     assert cov["daf"] == {"complete": True, "gaps": []}
+
+
+# --------------------------------------------- a backfill past retention
+
+class FakeActivityPage:
+    """The activity page as a backfill drives it. It refuses the Custom
+    range of a window that starts before ``serves_from`` or is listed in
+    ``refuses``, and exports one row on a window's first day."""
+
+    def __init__(self, serves_from, refuses=()):
+        self.serves_from = serves_from
+        self.refuses = set(refuses)
+        self.window = None
+
+    def select_range(self, page, since, until, capture_dir, label):
+        if since < self.serves_from or since in self.refuses:
+            return None
+        self.window = (since, until)
+        return f"{since:%Y%m%d}__{until:%Y%m%d}"
+
+    def download(self, page, capture_dir, label):
+        row = f"{self.window[0]:%m/%d/%Y},X,BUY,-1.00\n"
+
+        class Download:
+            def save_as(self, path):
+                Path(path).write_text(
+                    "Run Date,Account,Action,Amount ($)\n" + row,
+                    encoding="utf-8")
+        return Download()
+
+
+@pytest.fixture
+def backfill(monkeypatch, tmp_path):
+    """Run a `--lookback all` activity backfill against a fake page."""
+    monkeypatch.setattr(download, "goto_and_wait", lambda *a, **k: None)
+    monkeypatch.setattr(download, "_probe_activity_date_bounds",
+                        lambda page, capture_dir: (None, None))
+
+    def run(page):
+        monkeypatch.setattr(download, "_select_activity_custom_range",
+                            page.select_range)
+        monkeypatch.setattr(download, "_click_activity_download",
+                            page.download)
+        return download.scrape_activity(
+            page, date(1996, 1, 1), date.today(), tmp_path, None)
+    return run
+
+
+SERVES_FROM = date.today() - timedelta(days=1000)
+
+
+def test_windows_before_retention_are_not_gaps(backfill):
+    results = backfill(FakeActivityPage(SERVES_FROM))
+
+    outside = [r for r in results if r.get("status") == "outside-retention"]
+    fetched = [r for r in results if r.get("ok")]
+    assert outside and fetched
+    assert len(outside) + len(fetched) == len(results)
+    assert all("ok" not in r for r in outside)
+    assert max(r["window"][1] for r in outside) < min(
+        r["window"][0] for r in fetched)
+    cov = download.phase_coverage({"activity_results": results})
+    assert cov["activity"] == {"complete": True, "gaps": []}
+    assert download.exit_code_for_coverage(cov) == 0
+
+
+def test_a_window_refused_after_an_accepted_one_stays_a_gap(backfill):
+    first = backfill(FakeActivityPage(SERVES_FROM))
+    later = date.fromisoformat(
+        [r for r in first if r.get("ok")][3]["window"][0])
+
+    results = backfill(FakeActivityPage(SERVES_FROM, refuses={later}))
+
+    gap = next(r for r in results if r["window"][0] == later.isoformat())
+    assert (gap["ok"], gap["error"]) == (False, "custom-range not applied")
+    cov = download.phase_coverage({"activity_results": results})
+    assert cov["activity"]["gaps"] == ["{}..{}".format(*gap["window"])]
+
+
+def test_a_page_that_refuses_every_window_leaves_every_window_a_gap(backfill):
+    results = backfill(FakeActivityPage(date.today() + timedelta(days=1)))
+    assert results and all(r["ok"] is False for r in results)
+    cov = download.phase_coverage({"activity_results": results})
+    assert len(cov["activity"]["gaps"]) == len(results)
+
+
+def test_a_window_the_page_took_bounds_retention_though_its_export_failed():
+    """The page applied the range, so retention reaches that far; the
+    window itself is still a gap."""
+    results = download.mark_outside_retention([
+        {"window": ["2021-01-01", "2021-01-30"], "ok": False,
+         "error": "custom-range not applied"},
+        {"window": ["2021-01-31", "2021-03-01"], "ok": False,
+         "error": "export held 2021-03-02..2021-03-09, outside the "
+                  "requested window"},
+        {"window": ["2021-03-02", "2021-03-31"], "ok": True, "file": "a.csv"},
+    ])
+    assert results[0] == {"window": ["2021-01-01", "2021-01-30"],
+                          "status": "outside-retention"}
+    cov = download.phase_coverage({"activity_results": results})
+    assert cov["activity"]["gaps"] == ["2021-01-31..2021-03-01"]

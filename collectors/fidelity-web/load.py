@@ -2831,33 +2831,66 @@ def _held_1099_forms(conn):
         "GROUP BY account_external_id, tax_year")}
 
 
-def _latest_1099_copies(dumps, coord):
-    """The copy to keep of each form found in ``dumps``:
+def _1099_copies(dumps, coord):
+    """Every Consolidated 1099 copy in ``dumps`` with the identity read
+    off its first pages: ``[(dump, path, sha, identity)]``."""
+    copies = []
+    for dump in dumps:
+        for path in _consolidated_1099_candidates(dump):
+            sha = coord.sha_for(path)
+            copies.append((dump, path, sha, coord.resolve(
+                sha, _CONSOLIDATED_1099_IDENTITY_VERSION,
+                _read_1099_identity_worker, str(path))))
+    return copies
+
+
+def _latest_1099_copies(copies):
+    """The copy to keep of each form among ``copies``:
     ``(account, tax_year) -> (prepared, path, sha)``.
 
     Fidelity re-renders a Consolidated 1099 on every download, so one
     form arrives in every dump with new bytes. A form is its account and
     tax year; the copy prepared latest wins, which puts a corrected form
     over the original, and between copies of one form the later dump's.
-    Only the first pages are read here; the lots are parsed for the
+    Only the identities are read by then; the lots are parsed for the
     copies kept."""
     chosen = {}
-    for dump in dumps:
-        for path in _consolidated_1099_candidates(dump):
-            sha = coord.sha_for(path)
-            ident = coord.resolve(sha, _CONSOLIDATED_1099_IDENTITY_VERSION,
-                                  _read_1099_identity_worker, str(path))
-            key = (ident.get("account_external_id"), ident.get("tax_year"))
-            if "_error" in ident or None in key or not ident.get("prepared"):
-                log.warning(
-                    "1099: %s/%s states no account, tax year or prepared "
-                    "date; skipping (%s)", dump.name, path.name,
-                    ident.get("_error", "unrecognised layout"))
-                continue
-            best = chosen.get(key)
-            if best is None or ident["prepared"] >= best[0]:
-                chosen[key] = (ident["prepared"], path, sha)
+    for dump, path, sha, ident in copies:
+        key = (ident.get("account_external_id"), ident.get("tax_year"))
+        if "_error" in ident or None in key or not ident.get("prepared"):
+            log.warning(
+                "1099: %s/%s states no account, tax year or prepared "
+                "date; skipping (%s)", dump.name, path.name,
+                ident.get("_error", "unrecognised layout"))
+            continue
+        best = chosen.get(key)
+        if best is None or ident["prepared"] >= best[0]:
+            chosen[key] = (ident["prepared"], path, sha)
     return chosen
+
+
+def _file_1099_documents(conn, copies):
+    """Give each copy's `documents` row the account and tax year its form
+    states. Returns the number of rows changed.
+
+    The newer file name, ``Consolidated_Form_1099.pdf``, states neither,
+    and the ``<YYYY>-…`` one states only the year, so the classifier
+    leaves the rest NULL. Only a NULL column is filled: a column the
+    form does not state stays NULL, and a year the name stated stays."""
+    changed = 0
+    for _, _, sha, ident in copies:
+        if "_error" in ident:
+            continue
+        aid, year = ident.get("account_external_id"), ident.get("tax_year")
+        changed += conn.execute(
+            "UPDATE documents"
+            "   SET account_external_id = COALESCE(account_external_id, ?),"
+            "       tax_year = COALESCE(tax_year, ?)"
+            " WHERE content_sha256 = ?"
+            "   AND ((account_external_id IS NULL AND ? IS NOT NULL)"
+            "     OR (tax_year IS NULL AND ? IS NOT NULL))",
+            (aid, year, sha, aid, year)).rowcount
+    return changed
 
 
 def _replace_1099_lots(conn, parsed, sha):
@@ -2906,8 +2939,9 @@ def _replace_1099_lots(conn, parsed, sha):
 def _dumps_for_1099s(conn, dumps, pending, schema_version):
     """Which dumps the 1099 pass reads, and whether it re-derives:
     ``(dumps, rederive)``. It reads the dumps this run loads, or every
-    dump in bronze when its parser has changed since the lots silver
-    holds were written (or none have been)."""
+    dump in bronze when its generation is stale: its parser has changed
+    since the lots silver holds were written, or no generation is
+    stamped (none was yet, or migration 0013 dropped it)."""
     if schema_version < 10:
         return [], False
     if silver.stale_generation(conn, CONSOLIDATED_1099_GENERATION_SCOPE,
@@ -2918,7 +2952,8 @@ def _dumps_for_1099s(conn, dumps, pending, schema_version):
 
 def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None):
     """Load the Form 1099-B lots of every Consolidated 1099 in ``dumps``
-    into `closed_lots`, one form at a time.
+    into `closed_lots`, one form at a time, and file each copy's account
+    and tax year into `documents` (`_file_1099_documents`).
 
     A form whose copy silver already holds, or holds a later one of, is
     passed over; otherwise its lots replace the ones held. With
@@ -2930,8 +2965,10 @@ def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None):
     parses keeps the rows it has and leaves the generation unstamped."""
     coord = coord or _transient_coordinator()
     try:
-        chosen = _latest_1099_copies(dumps, coord)
+        copies = _1099_copies(dumps, coord)
+        chosen = _latest_1099_copies(copies)
         conn.execute("BEGIN")
+        filed = _file_1099_documents(conn, copies)
         held = {} if rederive else _held_1099_forms(conn)
         owed_a_purge = rederive
         forms = lots = 0
@@ -2957,7 +2994,8 @@ def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None):
             silver.stamp_generation(conn, CONSOLIDATED_1099_GENERATION_SCOPE,
                                     _CONSOLIDATED_1099_PARSER_VERSION)
         conn.commit()
-        log.info("1099: %d form(s) read, %d lot(s) written", forms, lots)
+        log.info("1099: %d form(s) read, %d lot(s) written, %d document(s) "
+                 "filed", forms, lots, filed)
     except Exception:
         conn.rollback()
         log.exception("1099 load failed; rolled back")

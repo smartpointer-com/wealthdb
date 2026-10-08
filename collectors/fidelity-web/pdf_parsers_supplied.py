@@ -455,8 +455,19 @@ _TRADE_ROW_RE = re.compile(r"^s?\d{2}/\d{2}\s")
 _TERM_RE = re.compile(
     r"\b(?P<term>Short|Long)-term (?P<sign>gain|loss): \$(?P<amt>[\d,]+\.\d{2})")
 
-# Slack, in dollars, when telling a fee from a basis by the row's arithmetic.
-_AMOUNT_TOLERANCE = 0.015
+# Slack, in dollars, when telling a transaction cost from a basis by the
+# row's arithmetic: the half cent the printed amount is rounded by. It stays
+# below a one-cent cost, the smallest a row prints.
+_AMOUNT_TOLERANCE = 0.0051
+
+# The most accrued interest a bond sale's amount can carry, per unit of par:
+# interest accrues over at most one coupon period, so a year of a 15% coupon
+# bounds it.
+_MAX_ACCRUED_PER_PAR = 0.15
+
+# How a sale row's arithmetic closes, best first: per unit, in percent of
+# par with accrued interest on top, or not at all.
+_PER_UNIT, _BY_ACCRUED, _OPEN = 2, 1, 0
 
 
 @dataclass
@@ -492,24 +503,52 @@ def _sale_cells(tokens):
 
     pdfplumber drops an empty cell instead of printing it, so a row
     with one blank between price and amount yields four tokens. The
-    one in the middle is then the transaction cost when it closes the
-    row's arithmetic (``quantity × price + transaction cost = amount``)
-    and the cost basis otherwise; with no price to test against it is
-    left unassigned rather than guessed.
+    one in the middle is the transaction cost when the row's arithmetic
+    closes better with it as the cost, and the cost basis when it
+    closes better without it (see ``_closing``). When both readings
+    close equally well, a figure signed against the amount is the
+    transaction cost: a cost lowers the amount, and a basis is never
+    negative. Any other row leaves the figure unassigned rather than
+    guessed.
     """
     vals = [_parse_number(t.replace("$", "")) for t in tokens]
     if len(vals) >= 5:
         return tuple(vals[-5:])
-    if len(vals) == 4:
-        qty, price, middle, amount = vals
-        if middle is None:
-            return qty, price, None, None, amount
-        if qty is not None and price is not None and amount is not None:
-            if abs(abs(qty) * price + middle - amount) <= _AMOUNT_TOLERANCE:
-                return qty, price, None, middle, amount
-            return qty, price, middle, None, amount
+    if len(vals) != 4:
+        return None
+    qty, price, middle, amount = vals
+    if None in (qty, price, middle, amount):
         return qty, price, None, None, amount
-    return None
+    as_cost = _closing(qty, price, middle, amount)
+    as_basis = _closing(qty, price, 0.0, amount)
+    if as_cost > as_basis or (
+            as_cost == as_basis != _OPEN and middle * amount < 0):
+        return qty, price, None, middle, amount
+    if as_basis > as_cost:
+        return qty, price, middle, None, amount
+    return qty, price, None, None, amount
+
+
+def _closing(qty, price, cost, amount):
+    """How ``quantity × price + transaction cost = amount`` closes with
+    ``cost`` as the transaction cost.
+
+    A share's price is per unit, and the equation holds exactly. A
+    bond's is in percent of par, and its amount can add the interest
+    accrued since the last coupon: ``quantity × price / 100 + cost``
+    then falls short of the amount by no more than
+    ``_MAX_ACCRUED_PER_PAR`` of the par sold. A ``Cancelled Sell``
+    prints quantity, cost and amount with the opposite signs, so the
+    test runs on the figures signed as on a sale.
+    """
+    sign = 1 if amount > 0 else -1
+    units, cost, amount = abs(qty), cost * sign, amount * sign
+    if abs(units * price + cost - amount) <= _AMOUNT_TOLERANCE:
+        return _PER_UNIT
+    accrued = amount - (units * price / 100 + cost)
+    if -_AMOUNT_TOLERANCE <= accrued <= units * _MAX_ACCRUED_PER_PAR:
+        return _BY_ACCRUED
+    return _OPEN
 
 
 def parse_sales_block(account_text, *, period=None):

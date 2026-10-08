@@ -535,7 +535,15 @@ transaction cost (`fees`) and amount, the term and gain or loss
 printed under it, and the `s` that marks Specific Share
 identification. The section prints a settlement date and no trade or
 acquired date, so a sale row has only `settlement_date`. The price
-stays in `payload`, because a bond prints it in percent of par. A
+stays in `payload`, because a bond prints it in percent of par.
+The text extraction drops an empty cell, so a sale with a blank basis
+or a blank transaction cost prints one figure between price and
+amount. The row's arithmetic tells which one it is: quantity × price
++ transaction cost = amount. A bond's price is read in percent of par,
+and its amount can add accrued interest. When both readings close
+equally well, a figure that lowers the amount is the transaction
+cost, since a basis is never negative. A figure no reading places
+stays NULL, so a transaction cost never lands as a basis. A
 sale whose lots span both terms prints one gain line per term; its
 `realized_gain_loss` is their sum and its `term` NULL, with the lines in
 `payload`. A sale and the `Cancelled Sell` that reverses it on the
@@ -642,7 +650,11 @@ testing found no such variants surface in practice. Silver
 stores the PDFs in `documents` keyed by `content_sha256` with
 `doc_kind='tax_form'`. `tax_year` is set when the file name
 states it (`<YYYY>-<nickname>-<NNNN>-Consolidated-Form-1099.pdf`);
-the `Consolidated_Form_1099__<n>.pdf` naming states none.
+the `Consolidated_Form_1099__<n>.pdf` naming states none. The 1099
+pass below reads each copy's account and tax year off the form and
+fills the copy's `account_external_id` and `tax_year` where the row
+holds NULL. A year the file name states stays. A column the form does
+not state stays NULL.
 
 The Form 1099-B pages are parsed into `closed_lots`
 (`document_kind = 'form_1099b'`, `pdf_parsers_1099.py`): one row per lot
@@ -1069,6 +1081,16 @@ course rather than as a fault, and `ACTIVITY_RETENTION_FLOOR_DAYS` is
 the fallback floor. Without it `--lookback all` asks for thirty years
 and chunks every one of them into 30-day windows, most of them past
 anything Fidelity holds.
+
+The floor is an assumption, and it can lie before what Fidelity
+serves. The page then refuses the Custom range of the first windows.
+A refused window that ends before the first window the page accepted
+in the same run is outside retention, not a gap.
+`mark_outside_retention` records it in `activity_results` with
+`"status": "outside-retention"` and no `ok` flag, so `coverage` does
+not count it and a full backfill can exit 0. A refused window after
+an accepted one stays a gap. So does every window of a run in which
+the page accepted none.
 
 ### 8.5 Documents
 

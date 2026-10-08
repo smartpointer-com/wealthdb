@@ -212,7 +212,17 @@ MAX_ACTIVITY_WINDOW_DAYS = 30
 # retention on this export has been ~4-5 years; five is the generous
 # reading. It matters because `--lookback all` asks for thirty years,
 # and every year past retention is a month of identical empty exports.
+# The floor can still lie before what Fidelity serves. The page refuses
+# those first windows, and `mark_outside_retention` keeps them out of
+# the phase's gaps.
 ACTIVITY_RETENTION_FLOOR_DAYS = 5 * 366
+
+# The error a window records when the page refuses its Custom range.
+ACTIVITY_RANGE_REFUSED = "custom-range not applied"
+
+# The status of a refused window that ends before the first window the
+# page accepted (see `mark_outside_retention`).
+ACTIVITY_OUTSIDE_RETENTION = "outside-retention"
 
 # How many times a window's export is pulled before its rows are
 # accepted, and how long to let the table settle between tries. The
@@ -458,6 +468,38 @@ def make_activity_windows(since_date, until_date):
         windows.append((cursor, end))
         cursor = end + timedelta(days=1)
     return windows
+
+
+def mark_outside_retention(results):
+    """Tell the windows of an activity backfill that lie past Fidelity's
+    retention apart from its gaps.
+
+    The backfill starts at ``ACTIVITY_RETENTION_FLOOR_DAYS``, an assumed
+    floor, so its first windows can lie before what Fidelity serves, and
+    the page refuses their Custom range. A refused window that ends
+    before the first window the page accepted is outside retention: no
+    run can fetch it. It is recorded with the status
+    ``ACTIVITY_OUTSIDE_RETENTION`` and no ``ok`` flag, which keeps it
+    out of the phase's gaps. A refused window after an accepted one
+    stays a gap. So does every refused window of a run in which the
+    page accepted none, because nothing then shows where retention
+    starts."""
+    accepted = [r["window"][0] for r in results
+                if r.get("window") and r.get("error") != ACTIVITY_RANGE_REFUSED]
+    if not accepted:
+        return results
+    first = min(accepted)
+    out = [
+        {"window": r["window"], "status": ACTIVITY_OUTSIDE_RETENTION}
+        if r.get("error") == ACTIVITY_RANGE_REFUSED and r.get("window")
+        and r["window"][1] < first else r
+        for r in results
+    ]
+    outside = sum(r.get("status") == ACTIVITY_OUTSIDE_RETENTION for r in out)
+    if outside:
+        log.info("activity backfill: %d window(s) before %s lie outside "
+                 "Fidelity's retention; not counted as gaps", outside, first)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2291,7 +2333,7 @@ def _activity_csv_for_window(page, since_date, until_date,
             "window": [since_date.isoformat(),
                        until_date.isoformat()],
             "ok": False,
-            "error": "custom-range not applied",
+            "error": ACTIVITY_RANGE_REFUSED,
         }
     try:
         # Download, then check the FILE against the window it is
@@ -2437,7 +2479,7 @@ def scrape_activity(page, since_date, until_date,
             results.append(_activity_csv_for_window(
                 page, w_start, w_end, bronze_dir, capture_dir,
             ))
-        return results
+        return mark_outside_retention(results)
 
     # Preset path — single rolling CSV.
     selected_range = _select_activity_page_timeperiod(

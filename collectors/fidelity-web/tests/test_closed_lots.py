@@ -314,6 +314,88 @@ def test_migration_0010_refiles_1099s_catalogued_as_statements(tmp_path):
     ).fetchall() == [("a", "tax_form"), ("b", "tax_form"), ("c", "statement")]
 
 
+def _catalogue(conn, dump):
+    """File each PDF of ``dump`` into `documents` the way a dump load does."""
+    for path in sorted((dump / "documents").glob("*.pdf")):
+        load._ingest_document(conn, 1000, path,
+                              load._classify_documents_pdf(path.name))
+    conn.commit()
+
+
+def _documents(conn):
+    return conn.execute(
+        "SELECT file_name, account_external_id, tax_year FROM documents "
+        "ORDER BY file_name").fetchall()
+
+
+def test_each_1099_copy_is_filed_under_the_account_and_year_it_states(
+        migrated, tmp_path, stub_1099):
+    d1 = _form(tmp_path / "20260301T000000Z", "Consolidated_Form_1099.pdf",
+               prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
+    # A copy of the same form, which is not parsed for its lots.
+    _form(d1, "Consolidated_Form_1099__1.pdf", prepared="2026-02-15",
+          copy=1, lots=[_lot(100.0, 90.0)])
+    # The older naming states the year, which stays as the name states it.
+    _form(d1, "2024-Placeholder-0002-Consolidated-Form-1099.pdf",
+          prepared="2025-02-15", year=2023, acct="100000002", lots=[])
+    # A form that states no account, and one that does not read at all.
+    _form(d1, "Consolidated_Form_1099__2.pdf", prepared="2026-02-15",
+          acct=None, lots=[])
+    _form(d1, "Consolidated_Form_1099__3.pdf", prepared="2026-02-15",
+          lots=[], broken=True)
+    (d1 / "documents" / "Form_1099_Q_Instructions.pdf").write_bytes(b"%PDF")
+    _catalogue(migrated, d1)
+
+    load._load_consolidated_1099s(migrated, [d1], rederive=True)
+
+    assert _documents(migrated) == [
+        ("2024-Placeholder-0002-Consolidated-Form-1099.pdf", "100000002", 2024),
+        ("Consolidated_Form_1099.pdf", ACCT, 2025),
+        ("Consolidated_Form_1099__1.pdf", ACCT, 2025),
+        ("Consolidated_Form_1099__2.pdf", None, 2025),
+        ("Consolidated_Form_1099__3.pdf", None, None),
+        ("Form_1099_Q_Instructions.pdf", None, None),
+    ]
+
+
+def test_a_copy_already_held_is_filed_by_a_later_pass(
+        migrated, tmp_path, stub_1099):
+    d1 = _form(tmp_path / "20260301T000000Z", "Consolidated_Form_1099.pdf",
+               prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
+    _catalogue(migrated, d1)
+    load._load_consolidated_1099s(migrated, [d1], rederive=True)
+    # A silver whose copies were catalogued before the pass filed them.
+    migrated.execute("UPDATE documents SET account_external_id = NULL, "
+                     "tax_year = NULL")
+    migrated.commit()
+
+    load._load_consolidated_1099s(migrated, [d1])
+
+    assert _documents(migrated) == [("Consolidated_Form_1099.pdf", ACCT, 2025)]
+    assert len(stub_1099) == 1
+
+
+def test_migration_0013_sends_the_1099_pass_over_every_dump(tmp_path):
+    old = tmp_path / "migrations"
+    old.mkdir()
+    for mig in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if mig.name < "0013":
+            shutil.copy(mig, old)
+    conn = sqlite3.connect(":memory:")
+    load.apply_migrations(conn, old)
+    for scope in (load.CONSOLIDATED_1099_GENERATION_SCOPE,
+                  load.SUPPLIED_GENERATION_SCOPE):
+        load.silver.stamp_generation(conn, scope, "generation")
+    conn.commit()
+
+    load.apply_migrations(conn, MIGRATIONS_DIR)
+
+    assert load._dumps_for_1099s(conn, ["d1", "d2"], ["d2"], 13) == (
+        ["d1", "d2"], True)
+    assert conn.execute("SELECT scope FROM parser_generations").fetchall() == [
+        (load.SUPPLIED_GENERATION_SCOPE,)]
+
+
 # ============================================================
 # Supplied statements — the sales
 # ============================================================

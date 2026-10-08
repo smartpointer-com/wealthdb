@@ -17,6 +17,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pdf_parsers_supplied as ppt  # noqa: E402
@@ -494,3 +496,47 @@ def test_the_pdf_entry_point_returns_the_sales(monkeypatch):
     assert first["settlement_date"] == "2026-03-04"
     assert first["specific_share_id"] is True
     assert first["terms"] == [["short", 19.98]]
+
+
+# A four-cell row's middle figure, told apart by the row's arithmetic.
+# Every value is invented.
+@pytest.mark.parametrize("tokens, basis, cost", [
+    # A share: 2 × 10.00 − 0.01 = 19.99, so the figure is the cost.
+    (["-2.000", "10.00000", "-0.01", "19.99"], None, -0.01),
+    # 3 × 3.335 = 10.005 rounds to 10.00 with or without a one-cent
+    # cost; the figure lowers the amount, so it is the cost.
+    (["-3.000", "3.33500", "-0.01", "10.00"], None, -0.01),
+    # A share: 10 × 50.00 = 500.00 without it, so it is the basis, even
+    # though the percent-of-par reading closes too.
+    (["-10.000", "50.00000", "495.00", "500.00"], 495.0, None),
+    # A bond at 99.5% of par: 1,000 × 0.995 − 0.02 = 994.98.
+    (["-1,000.000", "99.50000", "-0.02", "994.98"], None, -0.02),
+    # The same bond with accrued interest in the amount: both readings
+    # close, and a figure that lowers the amount is the cost.
+    (["-1,000.000", "$99.50000", "-$0.02", "$1,003.48"], None, -0.02),
+    # The same bond with a basis and no cost: only the reading without
+    # the figure closes.
+    (["-1,000.000", "99.50000", "$1,010.00", "$1,003.50"], 1010.0, None),
+    # A cancellation prints quantity, cost and amount with flipped signs.
+    (["1.000", "30.00000", "0.01", "-29.99"], None, 0.01),
+    # Neither reading closes: the figure stays unassigned.
+    (["-1.000", "30.00000", "5.00", "12.00"], None, None),
+    # Both close by accrued interest, and the figure carries the
+    # amount's sign: it stays unassigned.
+    (["-1,000.000", "99.50000", "0.02", "1,003.48"], None, None),
+])
+def test_a_four_cell_row_assigns_its_middle_figure(tokens, basis, cost):
+    qty, price, got_basis, got_cost, amount = ppt._sale_cells(tokens)
+    assert (got_basis, got_cost) == (basis, cost)
+    assert (qty, amount) == (ppt._parse_number(tokens[0]),
+                             ppt._parse_number(tokens[3]))
+
+
+def test_a_bond_sale_never_reads_its_transaction_cost_as_basis():
+    text = _SALES_TEXT.replace(
+        "s03/10 SAMPLE INDS INC 000000BB0 You Sold -1.000 30.00000 -0.01 29.99",
+        "s03/10 EXAMPLE CITY BOND 000000FF0 You Sold -5,000.000 $101.25000"
+        " -$0.04 $5,104.21")
+    bond = next(r for r in _sales(text) if r.settlement_date.day == 10)
+    assert (bond.price, bond.cost_basis, bond.transaction_cost) == (
+        101.25, None, -0.04)

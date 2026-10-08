@@ -64,14 +64,14 @@ Login, bronze fetch, and silver loader are operational.
 | --- | --- |
 | [`download.py`](download.py) login + logout | one-shot: Camoufox + Akamai trust + Fidelity device-trust + CLI-MFA prompt; best-effort logout before context teardown |
 | [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts; then the open and closed lots of new and changed positions, or of all with `--refresh-lots`, loaded into `open_lots` and `closed_lots` — [DESIGN.md §8.3.1](DESIGN.md)) |
-| [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--lookback` window bisected into ≤93-day chunks, clamped to Fidelity's ~4-year retention) |
+| [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--lookback` window bisected into ≤30-day chunks, clamped to Fidelity's ~4-year retention; a window before what Fidelity serves is not a gap) |
 | [`download.py`](download.py) documents — tax forms | implemented (multi-year via `#options-select-TimeFilter`; one click per form by unique anchor id) |
 | [`download.py`](download.py) documents — statements | implemented (per-row click fires an authenticated `financial-documents/download` POST; the PDF is decoded from base64-in-JSON in that response; scroll-into-view + JS-click fallback for rows below the fold). |
 | [`download.py`](download.py) balances | implemented as HTML capture only — no direct export; per-account values are in `data-testid$='-totalaccountvalue-label'` for silver to scrape. The actions menu's 'Create Balance Letter' is a multi-step wizard; deferred. |
 | [`download.py`](download.py) performance | implemented as HTML capture only — Fidelity offers no structured export here (pure Highcharts UI + collapsible info tiles). Silver loader either scrapes return % from DOM text or accepts the gap. |
 | [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). |
 | [`pdf_parsers.py`](pdf_parsers.py) + [migration 0004](migrations/0004_historical_position_snapshots.sql) | implemented — 529 statement-PDF parser back-fills `historical_position_snapshots` for any quarter the statement archive covers. Accounts whose statements Fidelity does not serve (see [DESIGN.md §4.5](DESIGN.md)) are back-filled from `pdf_parsers_supplied.py` instead. |
-| [`pdf_parsers_1099.py`](pdf_parsers_1099.py) + [migration 0010](migrations/0010_closed_lots.sql) | implemented — reads the Form 1099-B lots of each Consolidated 1099 into `closed_lots`, next to the sales the supplied statements list ([DESIGN.md §4.6](DESIGN.md)). |
+| [`pdf_parsers_1099.py`](pdf_parsers_1099.py) + [migration 0010](migrations/0010_closed_lots.sql) | implemented — reads the Form 1099-B lots of each Consolidated 1099 into `closed_lots`, next to the sales the supplied statements list, and files each copy in `documents` under the account and tax year the form states ([DESIGN.md §4.6](DESIGN.md)). |
 | `wealthdb` Fidelity adapter | implemented — see [`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/) |
 | [`explore.py`](explore.py) DAF discovery harness | implemented — VNC-driven recording session that mapped the Donor-Advised Fund surface ([DESIGN.md §12.1](DESIGN.md)) |
 | [`download.py`](download.py) DAF phase | implemented — SSO hop into the Fidelity Charitable SPA, then its JSON REST API, CSV exports, and PDF document set per giving account. Rides `--mode all` (full) and `--mode positions` (pool snapshot); no DAF-only mode, so every positions-bearing dump covers both channels ([DESIGN.md §12.2–12.3](DESIGN.md)) |
@@ -254,7 +254,7 @@ Once the profile dir is seeded, every run is one-shot:
 ./fidelity-web download --mode performance # HTML snapshot (no structured export)
 ./fidelity-web download --mode activity \
   --lookback 2022-06-01                  # Custom-range backfill from that date to
-                                          # today (chunked into ≤93-day windows,
+                                          # today (chunked into ≤30-day windows,
                                           # clamped to Fidelity's ~4-year retention)
 ./fidelity-web download --lookback 1y    # shared window flag: a preset
                                           # (1w/4w/3m/6m/1y/2y/5y/all) or an ISO date;
