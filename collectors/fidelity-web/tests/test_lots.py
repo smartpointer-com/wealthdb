@@ -83,19 +83,6 @@ LOT_B = ("Dec-15-2025", "Short", "-$20.00", "-4.00%", "$500.00", "25",
          "$20.80", "$520.00")
 
 
-class FakeResponse:
-    def __init__(self, status, body):
-        self.status = status
-        self._body = body
-
-    @property
-    def ok(self):
-        return 200 <= self.status < 300
-
-    def body(self):
-        return self._body
-
-
 class FakeApi:
     """Serves the four lot queries from fixtures and records each
     call's endpoint and body."""
@@ -109,7 +96,8 @@ class FakeApi:
         self.closed_lots = closed_lots or {}  # cusip -> closedlots list
         self.calls = []
 
-    def post(self, url, data=None, headers=None, timeout=None):
+    def post(self, url, data):
+        """``(status, text)`` of one query."""
         endpoint = url.rsplit("/", 1)[1]
         body = json.loads(data)
         self.calls.append((endpoint, body))
@@ -118,13 +106,12 @@ class FakeApi:
         elif endpoint == "closedpositions":
             answer = self.closed.get(body["accts"][0], {"rowData": []})
         elif body["cusip"] in self.fail:
-            return FakeResponse(500, b"")
+            return 500, ""
         elif endpoint == "closedlots":
             answer = self.closed_lots[body["cusip"]]
         else:
-            return FakeResponse(200, self.tables[
-                (body["cusip"], body["pageNum"])].encode())
-        return FakeResponse(200, json.dumps(answer).encode())
+            return 200, self.tables[(body["cusip"], body["pageNum"])]
+        return 200, json.dumps(answer)
 
     def opened(self, endpoint="openlots"):
         return [b["cusip"] for e, b in self.calls if e == endpoint]
@@ -140,9 +127,8 @@ class FakePage:
 
     def evaluate(self, script, arg):
         assert "fetch(" in script
-        resp = self.api.post(arg["url"], data=arg["body"])
-        return {"status": resp.status,
-                "text": resp.body().decode("utf-8")}
+        status, text = self.api.post(arg["url"], arg["body"])
+        return {"status": status, "text": text}
 
 
 @pytest.fixture
@@ -172,7 +158,7 @@ def _run(tmp_path, slug, api, prev=None, refresh=False, tax_years=(2099,)):
     run_dir.mkdir()
     result = download.scrape_lots(FakePage(api), run_dir, [ACCT, ACCT_529],
                                   prev, refresh=refresh, tax_years=tax_years)
-    index = download.read_lot_index(run_dir / "lots")
+    index = lot_parsers.read_lot_index(run_dir / "lots")
     return result, index
 
 
@@ -295,7 +281,8 @@ def test_closed_positions_fetch_only_when_new_or_changed(tmp_path, no_pause):
     assert second["closed"][0]["fetched_in"] == "20990101T000000Z"
 
 
-def test_a_run_writes_one_bundle_beside_its_index(tmp_path, no_pause):
+def test_a_run_writes_one_bundle_beside_its_index(
+        migrated, tmp_path, no_pause):
     """Every response of the step lands in one compressed file, and the
     load reads what the download wrote."""
     _run(tmp_path, "20990101T000000Z", _api(ROWS))
@@ -306,21 +293,8 @@ def test_a_run_writes_one_bundle_beside_its_index(tmp_path, no_pause):
     lot_step = load._read_lot_step(run_dir, meta)
     assert [r["endpoint"] for r in lot_step[1].values()] == [
         "positions", "closedpositions", "openlots", "openlots", "openlots"]
-    c = sqlite3.connect(":memory:")
-    load.apply_migrations(c, MIGRATIONS_DIR)
-    assert load._load_open_lots(c, 4070908800, run_dir.name, lot_step) == 3
-
-
-def test_a_bundle_cut_short_loads_what_it_holds(migrated, tmp_path, caplog):
-    slug = "20990101T000000Z"
-    dump = _dump(tmp_path, slug, [_item(slug, qty=75, cost=1000.0)],
-                 [_lot_table([LOT_A])])
-    with open(dump / "lots" / "lots.jsonl", "a") as fh:
-        fh.write('{"id": 1, "endpoint": "openl')
-    with caplog.at_level(logging.WARNING):
-        n = load._load_open_lots(migrated, 4070908800, slug, _step(dump))
-    assert n == 1
-    assert "line 2 does not parse" in caplog.text
+    assert load._load_open_lots(
+        migrated, 4070908800, run_dir.name, lot_step) == 3
 
 
 def test_each_tax_year_is_queried_and_kept_apart(tmp_path, no_pause):
@@ -380,17 +354,24 @@ def test_sigterm_unwinds_instead_of_being_ignored():
         download._exit_on_sigterm(15, None)
 
 
-def test_the_index_is_written_compact_and_read_in_either_form(tmp_path):
+def test_the_index_is_written_compact_and_read_in_either_form(
+        tmp_path, caplog):
     lots_dir = tmp_path / "lots"
     lots_dir.mkdir()
+    assert lot_parsers.read_lot_index(lots_dir) is None
     download.write_lot_index(lots_dir, {"open": [{"position": "X"}]})
     assert [p.name for p in lots_dir.iterdir()] == ["index.json.zst"]
-    assert download.read_lot_index(lots_dir) == {"open": [{"position": "X"}]}
+    assert lot_parsers.read_lot_index(lots_dir) == {
+        "open": [{"position": "X"}]}
     (lots_dir / "index.json.zst").unlink()
     (lots_dir / "index.json").write_text('{"open": []}')
-    assert download.read_lot_index(lots_dir) == {"open": []}
-    (lots_dir / "index.json").write_text('{"open": [')
-    assert download.read_lot_index(lots_dir) is None
+    assert lot_parsers.read_lot_index(lots_dir) == {"open": []}
+    # An index that does not read as an object is none, and says so.
+    with caplog.at_level(logging.WARNING):
+        for broken in ('{"open": [', "[]"):
+            (lots_dir / "index.json").write_text(broken)
+            assert lot_parsers.read_lot_index(lots_dir) is None
+    assert caplog.text.count("lot index") == 2
 
 
 def test_previous_index_is_the_newest_earlier_one(tmp_path):
@@ -519,6 +500,18 @@ def _item(slug, qty=100, cost=1520.0, records=(0,)):
             "records": list(records)}
 
 
+def test_a_bundle_cut_short_loads_what_it_holds(migrated, tmp_path, caplog):
+    slug = "20990101T000000Z"
+    dump = _dump(tmp_path, slug, [_item(slug, qty=75, cost=1000.0)],
+                 [_lot_table([LOT_A])])
+    with open(dump / "lots" / "lots.jsonl", "a") as fh:
+        fh.write('{"id": 1, "endpoint": "openl')
+    with caplog.at_level(logging.WARNING):
+        n = load._load_open_lots(migrated, 4070908800, slug, _step(dump))
+    assert n == 1
+    assert "line 2 does not parse" in caplog.text
+
+
 def test_load_writes_the_fetched_lots(migrated, tmp_path, caplog):
     slug = "20990101T000000Z"
     page2 = _lot_table([LOT_B], 2)
@@ -552,8 +545,8 @@ def test_load_warns_when_lots_miss_the_position(migrated, tmp_path, caplog):
                  [_lot_table([LOT_A])])
     with caplog.at_level(logging.WARNING):
         load._load_open_lots(migrated, 4070908800, slug, _step(dump))
-    assert "sum to quantity 75.0000, the position states 101.0000" \
-        in caplog.text
+    assert ("the open lots of AAAA sum to quantity 75.0000, the position "
+            "states 101.0000") in caplog.text
     assert "cost_basis" not in caplog.text
 
 
@@ -612,5 +605,5 @@ def test_load_warns_when_closed_lots_miss_the_position(
                               [_closed_lot("CUSIPDDD4", 4950.0, 5000.0)])
     with caplog.at_level(logging.WARNING):
         load._load_closed_positions(migrated, name, step)
-    assert "sum to proceeds 4950.00, the position states 9900.00" \
-        in caplog.text
+    assert ("the closed lots of CUSIPDDD4 sum to proceeds 4950.0000, the "
+            "position states 9900.0000") in caplog.text

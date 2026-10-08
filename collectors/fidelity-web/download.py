@@ -113,6 +113,8 @@ from urllib.parse import quote
 
 from collectorkit import bronze, cli, compress, debugcap, envfile, launch
 
+import lot_parsers
+
 
 log = logging.getLogger("fidelity-web.download")
 
@@ -1025,9 +1027,9 @@ def scrape_positions(page, bronze_dir, capture_dir):
 # stack with its TLS fingerprint and bot-manager cookies, like the
 # page's own; Playwright's request API would send them from a different
 # client, which Akamai can tell apart. Nothing here builds a request
-# the page does not: the session's CSRF token and its account context (`pico`)
-# are copied from the page's own positions request, and every body
-# mirrors the page's.
+# the page does not: the session's CSRF token and its account context
+# (`pico`) are copied from the page's own positions request, and every
+# body mirrors the page's.
 
 POSWEB_API = "https://digital.fidelity.com/ftgw/digital/positions/poswebex/api"
 # The only endpoints `_poswebex_post` will call. `state/save`, which
@@ -1052,8 +1054,6 @@ LOT_CONTEXT_TIMEOUT_S = 60
 # the session has most likely ended, and every further request would
 # fail too.
 LOT_MAX_CONSECUTIVE_FAILURES = 5
-LOTS_INDEX = "index.json"
-LOTS_BUNDLE = "lots.jsonl"
 
 
 def _row_val(row, *path):
@@ -1210,24 +1210,10 @@ def previous_lot_index(dest_root, current_slug):
             continue
         if bronze.run_status(run_dir / "run.json") not in (None, "complete"):
             continue
-        index = read_lot_index(run_dir / "lots")
+        index = lot_parsers.read_lot_index(run_dir / "lots")
         if index is not None:
             return index
     return None
-
-
-def read_lot_index(lots_dir):
-    """A dump's lot index, compressed or not, or None when it has none
-    or it does not parse."""
-    path = compress.resolve_variant(lots_dir / LOTS_INDEX)
-    if path is None:
-        return None
-    try:
-        with compress.open_text(path) as fh:
-            index = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    return index if isinstance(index, dict) else None
 
 
 def write_lot_index(lots_dir, index):
@@ -1236,7 +1222,7 @@ def write_lot_index(lots_dir, index):
     file; without indentation and compressed it is about a tenth of
     its pretty-printed size. The plain file is written atomically first,
     so a failed compression leaves a readable index."""
-    path = lots_dir / LOTS_INDEX
+    path = lots_dir / lot_parsers.LOTS_INDEX
     bronze.atomic_write_bytes(path, json.dumps(
         index, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     compress_export(path)
@@ -1363,9 +1349,8 @@ _IN_PAGE_POST_JS = """async ({url, headers, body}) => {
 def _poswebex_post(page, ctx, endpoint, body):
     """One read-only poswebex query, sent by the page itself with
     `fetch`, paced. The page must be on the positions page, the origin
-    the query belongs to. Raises
-    LotFetchError on a failed fetch or a non-2xx status. Returns the
-    response text."""
+    the query belongs to. Returns the response text; raises
+    LotFetchError on a failed fetch or a non-2xx status."""
     if endpoint not in POSWEB_READ_ENDPOINTS:
         raise ValueError(f"poswebex endpoint not allow-listed: {endpoint}")
     headers = {
@@ -1467,16 +1452,17 @@ def scrape_lots(page, bronze_dir, accounts, prev_index, *, refresh=False,
 
     The previous year stays in so that a sale after a year's last run,
     or a basis the broker corrects after year end, still arrives;
-    earlier years come from the Consolidated 1099s (§4.6). Per account,
-    one positions query lists its positions and one closedpositions
-    query per tax year its closed positions. A position's lots are
-    fetched when it is new, when its signature (quantity and cost
-    basis total; for a closed position, proceeds, cost basis and gain)
-    differs from the fetch its lots came from, or always with
-    ``refresh``. `lots/index.json` records every lot-eligible position
-    with the dump its lots were fetched in and their record ids in that
-    dump's `lots/lots.jsonl.zst`, so an unchanged position points at an
-    earlier dump and costs no request.
+    earlier years come from the Consolidated 1099s (DESIGN.md §4.6). Per
+    account, one positions query lists its positions and one
+    closedpositions query per tax year its closed positions. A
+    position's lots are fetched when it is new, when its signature
+    (quantity and cost basis total; for a closed position, proceeds,
+    cost basis and gain) differs from the fetch its lots came from, or
+    always with ``refresh``. The index (`lots/index.json`) records every
+    lot-eligible position with the dump its lots were fetched in and
+    their record ids in that dump's bundle (`lots/lots.jsonl`), both
+    compressed, so an unchanged position points at an earlier dump and
+    costs no request.
 
     Returns the phase result: an envelope status and one entry per
     account. A failed account or position is recorded and the walk
@@ -1512,7 +1498,7 @@ def scrape_lots(page, bronze_dir, accounts, prev_index, *, refresh=False,
     index = {"snapshot_at": slug, "refresh": refresh,
              "tax_years": list(tax_years), "open": [], "closed": []}
     failures = _LotFailures()
-    bundle = _LotBundle(lots_dir / LOTS_BUNDLE)
+    bundle = _LotBundle(lots_dir / lot_parsers.LOTS_BUNDLE)
     try:
         for account in accounts:
             if account in ineligible:

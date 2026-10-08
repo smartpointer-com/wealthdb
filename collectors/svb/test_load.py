@@ -1250,11 +1250,10 @@ def test_statements_state_no_cost_basis(tmp_path, monkeypatch):
     # The shared schema has the basis columns; these statements print no
     # basis, so every row leaves them NULL rather than 0.
     conn = _build(tmp_path, monkeypatch)
-    assert conn.execute(
+    rows, basis, gain = conn.execute(
         "SELECT COUNT(*), COUNT(cost_basis), COUNT(unrealized_gain_loss) "
-        "FROM historical_position_snapshots").fetchone()[1:] == (0, 0)
-    assert conn.execute(
-        "SELECT COUNT(*) FROM historical_position_snapshots").fetchone()[0] > 0
+        "FROM historical_position_snapshots").fetchone()
+    assert rows > 0 and (basis, gain) == (0, 0)
     assert conn.execute("SELECT COUNT(*) FROM closed_lots").fetchone()[0] == 0
 
 

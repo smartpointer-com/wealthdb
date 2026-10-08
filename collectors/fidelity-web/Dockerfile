@@ -20,8 +20,9 @@ RUN pip install -r requirements.txt
 # logout); load.py is the silver loader, prune.py the bronze
 # debug-artefact/incomplete-dump cleaner, and recompress.py the
 # one-time HTML/CSV → .zst backlog sweep (all also reachable
-# host-side via the wrapper).
-COPY download.py explore.py load.py prune.py recompress.py pdf_parsers.py pdf_parsers_supplied.py pdf_common.py /app/
+# host-side via the wrapper). The other modules are what those scripts
+# import; tests/test_dockerfile.py keeps the list complete.
+COPY download.py explore.py load.py prune.py recompress.py lot_parsers.py pdf_parsers.py pdf_parsers_supplied.py pdf_parsers_daf.py pdf_parsers_1099.py pdf_common.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh

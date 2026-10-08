@@ -1,4 +1,9 @@
-"""Parsers for the positions page's lot tables.
+"""The positions page's lot step, read back: its bronze files and its
+lot tables (DESIGN.md §8.3.1).
+
+``read_lot_index`` reads a dump's lot index. ``download`` writes it and
+reads the previous run's back; ``load`` reads it to find the lots a
+dump fetched.
 
 ``parse_open_lots`` reads one page of an open-lot table, the HTML the
 page's ``openlots`` query returns. Columns are found by their header
@@ -11,9 +16,41 @@ object of printed strings, into `closed_lots` columns.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from datetime import datetime
 from html.parser import HTMLParser
+
+from collectorkit import compress
+
+log = logging.getLogger("fidelity-web.lots")
+
+# The lot step's files in a dump's `lots/` directory, each written
+# zstd-compressed: the index of every lot-eligible position, and the
+# bundle of every response, one JSON line each.
+LOTS_INDEX = "index.json"
+LOTS_BUNDLE = "lots.jsonl"
+
+
+def read_lot_index(lots_dir):
+    """A dump's lot index, compressed or not, or None when the dump has
+    none. An index that does not read as a JSON object is None too, with
+    a warning."""
+    path = compress.resolve_variant(lots_dir / LOTS_INDEX)
+    if path is None:
+        return None
+    try:
+        with compress.open_text(path) as fh:
+            index = json.load(fh)
+    except (OSError, ValueError) as e:
+        log.warning("%s: lot index unreadable: %s", path, e)
+        return None
+    if not isinstance(index, dict):
+        log.warning("%s: lot index is not a JSON object", path)
+        return None
+    return index
+
 
 # Header text → silver column. A header not listed here is kept in
 # `cells` only.

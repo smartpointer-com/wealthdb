@@ -230,8 +230,10 @@ def parse_args(argv):
               "(filenames `<registration> <M>.<YY> Statement.PDF`; "
               "Fidelity's naming convention for legacy monthly "
               "statements). Monthly statements are parsed via "
-              "pdf_parsers_supplied and their per-account holdings land "
-              "in `historical_position_snapshots`. Accounts whose "
+              "pdf_parsers_supplied: their holdings land in "
+              "`historical_position_snapshots`, their account-level "
+              "activity in `transactions` and their sales in "
+              "`closed_lots` (DESIGN.md §4.5). Accounts whose "
               "statements Fidelity does not serve are outside the live "
               "web-scraper's reach, so this is the only path to "
               "populate their pre-toolkit-era snapshots. Year-end "
@@ -260,10 +262,10 @@ def parse_args(argv):
     p.add_argument(
         "--parse-cache-dir", type=Path, default=None,
         help=("Directory for the content-addressed PDF parse cache: "
-              "parsed 529 + supplied statement holdings keyed by "
-              "content hash + "
-              "parser version, so a `--force` rebuild or nightly reload "
-              "replays unchanged PDFs instead of re-extracting them. "
+              "every parsed statement and Consolidated 1099, keyed by "
+              "content hash + parser version, so a `--force` rebuild or "
+              "nightly reload replays unchanged PDFs instead of "
+              "re-extracting them. "
               "DEFAULT: `$XDG_CACHE_HOME/wealthdb/fidelity-web/"
               "parse-cache` (falls back to `~/.cache/...`). A derived "
               "cache, kept outside the bronze tree and outside "
@@ -346,12 +348,8 @@ def main(argv=None):
                         (str(path), signature))
             coord.dispatch()
 
-            loaded = skipped = 0
-            for dump in dumps:
-                if already_loaded(conn, dump):
-                    log.debug("skipping already-loaded %s", dump.name)
-                    skipped += 1
-                    continue
+            loaded = 0
+            for dump in pending:
                 try:
                     conn.execute("BEGIN")
                     load_dump(conn, dump, schema_version, coord)
@@ -361,7 +359,7 @@ def main(argv=None):
                     conn.rollback()
                     log.exception("load of %s failed; rolled back", dump.name)
             log.info("loaded=%d skipped=%d total=%d",
-                     loaded, skipped, len(dumps))
+                     loaded, len(dumps) - len(pending), len(dumps))
             filled = _fill_instrument_keys(conn)
             conn.commit()
             if filled:
@@ -831,35 +829,36 @@ def _load_positions(conn, snapshot_at, merged):
 # Open lots (migration 0011)
 # ------------------------------------------------------------
 
-# How far a position's lots may sum from its own quantity and cost
-# basis total before the load says so. The lot table prints cents and
-# thousandths, so honest rounding stays well inside these.
+# How far a position's lots may sum from the figures the page states for
+# the position before the load says so: (index field, lot column,
+# tolerance). The lot tables print cents and thousandths, so honest
+# rounding stays well inside these.
 _LOT_QUANTITY_TOLERANCE = 0.0005
 _LOT_COST_TOLERANCE = 0.01
+_OPEN_LOT_SUMS = (
+    ("quantity", "quantity", _LOT_QUANTITY_TOLERANCE),
+    ("cost_basis_total", "cost_basis", _LOT_COST_TOLERANCE),
+)
+_CLOSED_LOT_SUMS = (
+    ("proceeds", "proceeds", _LOT_COST_TOLERANCE),
+    ("cost_basis", "cost_basis", _LOT_COST_TOLERANCE),
+)
 
 
 def _read_lot_step(dump_dir, run_meta):
     """This dump's lot step as ``(index, records, hash_to_id)``, or None
     when it has none.
 
-    ``records`` maps each record id in `lots/lots.jsonl` (compressed or
-    not) to its line. A line that does not parse, the tail of a run
-    killed mid-write, is skipped with a warning; an index entry that
-    points at it then fails to load on its own."""
+    ``records`` maps each record id in the bundle (`lots/lots.jsonl`,
+    compressed or not) to its line. A line that does not parse, the tail
+    of a run killed mid-write, is skipped with a warning; an index entry
+    that points at it then fails to load on its own."""
     lots_dir = dump_dir / "lots"
-    index_path = compress.resolve_variant(lots_dir / "index.json")
-    if index_path is None:
-        return None
-    try:
-        with compress.open_text(index_path) as fh:
-            index = json.load(fh)
-    except (OSError, ValueError) as e:
-        log.warning("%s: lot index unreadable: %s", dump_dir.name, e)
-        return None
+    index = lot_parsers.read_lot_index(lots_dir)
     if not index:
         return None
     records = {}
-    path = compress.resolve_variant(lots_dir / "lots.jsonl")
+    path = compress.resolve_variant(lots_dir / lot_parsers.LOTS_BUNDLE)
     if path is not None:
         with compress.open_text(path) as fh:
             for line_no, line in enumerate(fh, 1):
@@ -938,23 +937,24 @@ def _load_open_lots(conn, snapshot_at, dump_name, lot_step):
                                     "page": page_num})),
             )
         inserted += len(lots)
-        _check_lot_sums(dump_name, instr, item, [lot for lot, _, _ in lots])
+        _check_lot_sums(dump_name, "open", instr, item,
+                        [lot for lot, _, _ in lots], _OPEN_LOT_SUMS)
     return inserted
 
 
-def _check_lot_sums(dump_name, instr, item, lots):
-    """Warn when a position's lots miss its quantity or cost basis
-    total. Each check runs only when the position states the figure."""
-    for field, column, tolerance in (
-            ("quantity", "quantity", _LOT_QUANTITY_TOLERANCE),
-            ("cost_basis_total", "cost_basis", _LOT_COST_TOLERANCE)):
+def _check_lot_sums(dump_name, kind, instr, item, lots, checks):
+    """Warn when a position's ``kind`` ('open' or 'closed') lots miss a
+    figure the page stated for the position, per ``(field, column,
+    tolerance)`` of ``checks``. Each check runs only when the position
+    states its figure."""
+    for field, column, tolerance in checks:
         stated = item.get(field)
         if not isinstance(stated, (int, float)):
             continue
         total = sum(lot.get(column) or 0.0 for lot in lots)
         if abs(total - stated) > tolerance:
-            log.warning("%s: the open lots of %s sum to %s %.4f, the "
-                        "position states %.4f", dump_name, instr,
+            log.warning("%s: the %s lots of %s sum to %s %.4f, the "
+                        "position states %.4f", dump_name, kind, instr,
                         column, total, stated)
 
 
@@ -1525,7 +1525,7 @@ def _read_json_file(path):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
-        log.warning("could not read %s: %s", path.name, e)
+        log.warning("DAF: could not read %s: %s", path.name, e)
         return None
 
 
@@ -2557,6 +2557,17 @@ def _unclaimed_feed_match(conn, account_external_id, amount, ts, claims,
     return None
 
 
+def _occurrence_id(prefix, identity, occurrence):
+    """A row id derived from the row's own content, ``identity``, plus
+    its occurrence index among the rows of one document that share it,
+    counted in ``occurrence``. The same row read again converges on its
+    id, while two identical rows in one document keep two."""
+    occ = occurrence.get(identity, 0)
+    occurrence[identity] = occ + 1
+    return prefix + hashlib.sha256(
+        f"{identity}|#{occ}".encode()).hexdigest()[:28]
+
+
 def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
     """Insert the statement's ACCOUNT-LEVEL activity into
     ``transactions`` — the money in and out, and the account fees.
@@ -2591,10 +2602,7 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
             desc = (row.get("description") or "").strip()
             identity = "|".join(
                 (aid, row["date"], row.get("section") or "", f"{amount:.2f}", desc))
-            occ = occurrence.get(identity, 0)
-            occurrence[identity] = occ + 1
-            activity_id = "stmt_" + hashlib.sha256(
-                f"{identity}|#{occ}".encode()).hexdigest()[:28]
+            activity_id = _occurrence_id("stmt_", identity, occurrence)
             # Keyed on the STATEMENT row's own id, not the feed row's:
             # the year-end statement repeats the whole year, so this
             # payment may be offered again later in the pass and hashes
@@ -2732,14 +2740,10 @@ _INSERT_CLOSED_LOT = (
 
 
 def _insert_closed_lot(conn, prefix, identity, occurrence, row):
-    """Insert one `closed_lots` row. Its id is derived from the lot's own
-    content plus its occurrence index within the document, so the same lot
-    read again converges while two identical lots on one document stay two.
-    ``row`` maps column names to values; the rest default to NULL."""
-    occ = occurrence.get(identity, 0)
-    occurrence[identity] = occ + 1
-    row = dict(row, lot_id=prefix + hashlib.sha256(
-        f"{identity}|#{occ}".encode()).hexdigest()[:28])
+    """Insert one `closed_lots` row under the id `_occurrence_id` derives
+    from the lot's own content. ``row`` maps column names to values; the
+    rest default to NULL."""
+    row = dict(row, lot_id=_occurrence_id(prefix, identity, occurrence))
     conn.execute(_INSERT_CLOSED_LOT,
                  tuple(row.get(c) for c in _CLOSED_LOT_COLUMNS))
 
@@ -2846,14 +2850,8 @@ def _load_closed_positions(conn, dump_name, lot_step):
                      instrument_key=instr, cusip=item.get("cusip"),
                      source_sha256=sha, payload=normalize_payload(lot)))
         inserted += len(rows)
-        for field in ("proceeds", "cost_basis"):
-            stated = item.get(field)
-            total = sum(r.get(field) or 0.0 for r in rows)
-            if isinstance(stated, (int, float)) \
-                    and abs(total - stated) > _LOT_COST_TOLERANCE:
-                log.warning("%s: the closed lots of %s sum to %s %.2f, the "
-                            "position states %.2f", dump_name, instr,
-                            field, total, stated)
+        _check_lot_sums(dump_name, "closed", instr, item, rows,
+                        _CLOSED_LOT_SUMS)
     return inserted
 
 

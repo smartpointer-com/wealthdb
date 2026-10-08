@@ -45,8 +45,8 @@ CONFIG = recompress.RecompressConfig(
     # balances / performance surfaces, the positions / activity /
     # statement-companion CSVs, and the lot step's index and response
     # bundle. documents/*.pdf (already compressed) and run.json (the
-    # status-lifecycle handshake) never match a pattern,
-    # and the debug screenshots/ tree lives under its own subdir.
+    # status-lifecycle handshake) never match a pattern, and the debug
+    # screenshots/ tree lives under its own subdir.
     patterns=(
         "balances/*.html",
         "performance/*.html",

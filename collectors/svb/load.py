@@ -87,16 +87,6 @@ _SIGNATURE_SIDECAR = "signature.txt"
 _DERIVED_MARKS_FILE = "derived-marks.xlsx"
 _PARSE_CACHE_FILE = "parse-cache.json"
 _PARSE_CACHE_SCHEMA = 1  # bump whenever the sidecar's on-disk layout changes
-_MIGRATIONS = (
-    "0001_initial.sql",
-    "0002_currency_asset_class_core_position.sql",
-    "0003_management_style.sql",
-    "0004_historical_position_snapshots.sql",
-    "0009_historical_cost_basis.sql",
-    "0010_closed_lots.sql",
-    "0011_open_lots.sql",
-    "0012_closed_lots_names.sql",
-)
 
 
 def ts_from_iso(d: str) -> int:
@@ -130,9 +120,10 @@ def read_signatures(bronze_dir: Path,
 
 
 def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
-    for name in _MIGRATIONS:
-        sql = (migrations_dir / name).read_text(encoding="utf-8")
-        conn.executescript(sql)
+    """Run every migration in ``migrations_dir``, in name order: the
+    fidelity-web migrations svb copies (DESIGN.md §Pieces)."""
+    for path in sorted(migrations_dir.glob("*.sql")):
+        conn.executescript(path.read_text(encoding="utf-8"))
 
 
 def holdings_known(parsed: dict, acct: dict) -> bool:
