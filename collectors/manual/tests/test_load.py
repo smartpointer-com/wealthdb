@@ -152,8 +152,8 @@ def test_unknown_vehicle(tmp_path):
 
 def test_converted_from_dangling_reference(tmp_path):
     """A position that back-references a converted_from_position_id which
-    isn't in positions.csv fails loudly (the conversion-link integrity check
-    that replaces the old conversion transaction)."""
+    isn't in positions.csv fails loudly (the conversion-link integrity check:
+    with no transactions, that back-reference records the conversion)."""
     _write(tmp_path, "positions.csv",
            "id,kind,display_name,currency,acquired_at,payload\n"
            'p-1,private_equity,X,CHF,2022-01-01,"{""converted_from_position_id"": ""nope-9""}"\n')
@@ -171,6 +171,21 @@ def test_valuation_currency_must_match_position(tmp_path):
            "p-1,2020-01-01,100,USD\n")
     conn = _fresh_db(tmp_path)
     with pytest.raises(loader.LoadError, match=r"currency USD != position"):
+        loader.load(conn, tmp_path)
+
+
+def test_a_second_valuation_on_one_date_is_rejected(tmp_path):
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at\n"
+           "p-1,real_estate,X,CHF,2020-01-01\n")
+    _write(tmp_path, "valuations.csv",
+           "position_id,as_of_date,value,currency\n"
+           "p-1,2020-01-01,100,CHF\n"
+           "p-1,2020-01-01,120,CHF\n")
+    conn = _fresh_db(tmp_path)
+    with pytest.raises(loader.LoadError,
+                       match=r"row 3:as_of_date: duplicate valuation for "
+                             r"position p-1"):
         loader.load(conn, tmp_path)
 
 
@@ -197,6 +212,8 @@ def test_cost_basis_series_loads_and_is_validated(tmp_path):
     ("pf-2,2020-01-01,100,USD", r"references a position not in positions\.csv"),
     ("pf-1,2020-01-01,100,CHF", r"currency CHF != position"),
     ("pf-1,2020-01-01,-5,USD", r"positive magnitude"),
+    ("pf-1,2020-01-01,100,USD\npf-1,2020-01-01,200,USD",
+     r"row 3:as_of_date: duplicate cost basis for position pf-1"),
 ])
 def test_cost_basis_rejects_bad_rows(tmp_path, row, err):
     _write(tmp_path, "positions.csv",
@@ -304,15 +321,14 @@ def test_accounts_carry_their_declared_sleeve(tmp_path):
     rows = dict(conn.execute(
         "SELECT id, tax_wrapper FROM accounts").fetchall())
     assert rows["trust"] == "trust_non_grantor"
-    # An empty cell takes the default the one account always had, so a book
-    # that declares accounts only to name a trust does not have to restate
-    # the ordinary case.
+    # An empty cell takes the default account's taxonomy, so a book that
+    # declares accounts only to name a trust does not have to restate the
+    # ordinary case.
     assert rows["own"] == loader.DEFAULT_TAX_WRAPPER
 
 
 def test_a_book_with_no_accounts_file_still_loads(tmp_path):
-    # The compatibility guarantee: positions.csv alone behaves exactly as it
-    # did before accounts existed, in the account it always used.
+    # positions.csv alone loads every position into the default account.
     positions = ("id,kind,display_name,currency,acquired_at\n"
                  "p1,real_estate,Alpha,CHF,2020-01-01\n")
     valuations = ("position_id,as_of_date,value,currency\n"

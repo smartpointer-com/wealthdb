@@ -17,7 +17,9 @@ Bronze → silver mapping (schema in migrations/):
   entities/<e>/meta.json
             + holdings-dashboard.json
                                -> entities (one row per snapshot per entity)
-  entities/<e>/<sectype>.json  -> securities ({rows} of each security-type file)
+  entities/<e>/<sectype>.json  -> securities ({rows} of each security-type file);
+                                  shares + convertibles also -> cash_flows
+                                  (exercises, convertible purchases, the exit)
   entities/<e>/vesting/grant_*.json
                                -> vesting_schedules + vesting_events
   <entity_external_id>-valuations.csv
@@ -39,10 +41,11 @@ Bronze → silver mapping (schema in migrations/):
   entities/<e>/fund-cap-calls.json
                                -> cap_calls
   documents/index.json + doc_*.pdf
-                               -> documents (content-deduped on sha256);
-                                  capital-account statements also parsed
-                                  -> fund_metrics quarterly NAV history of
-                                  the fund the index row names (`fund_id`);
+                               -> documents (content-deduped on sha256).
+                                  A fund reads the rows whose `fund_id`
+                                  names it: capital-account statements ->
+                                  its fund_metrics quarterly NAV history;
+                                  statements + notices -> its cash_flows.
                                   K-1s -> k1_capital_accounts (k1.py)
 
 SQLite + JSON1 (the repo default — no DuckDB need here; this is shape

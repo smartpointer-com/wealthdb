@@ -6,11 +6,12 @@ mapping over the free-text `document_type`, the disk-driven extract hook, the
 a stub Api (no network, no Camoufox). Asserts each document class behaves per the
 carta mode mapping:
 
-  * executed-once archival notices/reports (quarterly & annual financials,
-    capital-call & distribution notices) → LINKED from a prior run, fetch avoided
-    (safe: immutable under their id, never parsed by load.py);
+  * executed-once archival reports (quarterly & annual financials) → LINKED
+    from a prior run, fetch avoided (safe: immutable under their id, never
+    parsed by load.py);
   * parsed / restatement-prone docs — capital-account statements (parsed for NAV
-    + fund cash flows) and tax docs (K-1, 1042-S) — → ALWAYS fetched and
+    + fund cash flows), capital-call & distribution notices (parsed for dated
+    fund cash flows) and tax docs (K-1, 1042-S) — → ALWAYS fetched and
     content-compared (unchanged one hardlinked, a restated/corrected one KEPT —
     the re-issue case link-mode would miss);
   * an unrecognised type → always fetched (fail-safe);
@@ -43,7 +44,7 @@ from collectorkit import docdedup  # noqa: E402
 # Synthetic surrogate document ids (Carta's numeric/uuid `id`, stringified).
 STMT_ID = "1000001"
 K1_ID = "1000002"
-LINK_ID = "1000003"          # an archival notice (link-mode)
+LINK_ID = "1000003"          # an archival report (link-mode)
 OTHER_ID = "1000004"
 
 BODY = b"%PDF-1.4 synthetic statement body " + b"x" * 200

@@ -60,8 +60,8 @@ log = logging.getLogger("manual.load")
 HERE = Path(__file__).resolve().parent
 MIGRATIONS_DIR = HERE / "migrations"
 
-# Default data layout: $XDG_DATA_HOME/wealthdb/manual/{positions,valuations}.csv
-# with the silver DB (manual.db) alongside them. The bronze dir comes from
+# Default data layout: the CSVs in $XDG_DATA_HOME/wealthdb/manual/, with the
+# silver DB (manual.db) alongside them. The bronze dir comes from
 # --bronze-dir (the wrapper resolves --data-dir / MANUAL_DATA_DIR /
 # WEALTHDB_DATA_ROOT and passes it through), else the default; the silver DB
 # is --silver-db > $MANUAL_SILVER_DB > <bronze-dir>/manual.db.
@@ -142,10 +142,9 @@ TAX_WRAPPERS = {
 MANAGEMENT_STYLES = {"self_directed", "advisory", "discretionary", "automated"}
 
 # The account a position falls into when accounts.csv is absent or the
-# position names none — the single account every manual position was in
-# before accounts existed, with the taxonomy it always had. Keeping the id
-# stable is what makes this change invisible to a deployment that does not
-# want accounts: same gold account_external_id, same wrapper, same style.
+# position names none. Its id and taxonomy are fixed, so a book without
+# accounts.csv always projects the same gold account_external_id, wrapper
+# and style.
 DEFAULT_ACCOUNT_ID = "manual"
 DEFAULT_ACCOUNT_NAME = "Manual"
 DEFAULT_ACCOUNT_KIND = "other"
@@ -288,8 +287,7 @@ def default_account() -> dict:
 
 def validate_accounts(rows: list[dict]) -> dict[str, dict]:
     """The declared pseudo-accounts, keyed by id. An empty accounts.csv (or
-    none at all) yields the single default account, which is what every
-    manual book had before accounts existed."""
+    none at all) yields the single default account."""
     fname = "accounts.csv"
     out: dict[str, dict] = {}
     for r in rows:
@@ -372,6 +370,33 @@ def validate_positions(rows: list[dict], accounts: dict[str, dict],
     return out
 
 
+def _dated_row(fname: str, r: dict, positions: dict[str, dict],
+               seen: set[tuple[str, date]], what: str,
+               ) -> tuple[str, dict, date, str]:
+    """(position_id, position, as_of_date, currency) of one row of a
+    per-position dated series, checked: the position exists, the series
+    holds one row per (position, date), and the currency is the
+    position's. `seen` collects the (position, date) keys checked so far;
+    `what` names the series in the duplicate error."""
+    n = r["_row"]
+    pid = _req(fname, n, "position_id", r["position_id"])
+    pos = positions.get(pid)
+    if pos is None:
+        _fail(fname, n, "position_id",
+              "references a position not in positions.csv", pid)
+    as_of = _date(fname, n, "as_of_date", r["as_of_date"])
+    if (pid, as_of) in seen:
+        _fail(fname, n, "as_of_date",
+              f"duplicate {what} for position {pid} on {as_of}")
+    seen.add((pid, as_of))
+    ccy = _currency(fname, n, "currency", r["currency"])
+    if ccy != pos["currency"]:
+        _fail(fname, n, "currency",
+              f"currency {ccy} != position {pid} currency "
+              f"{pos['currency']}")
+    return pid, pos, as_of, ccy
+
+
 def validate_valuations(rows: list[dict], positions: dict[str, dict],
                         ) -> list[dict]:
     fname = "valuations.csv"
@@ -379,21 +404,8 @@ def validate_valuations(rows: list[dict], positions: dict[str, dict],
     seen: set[tuple[str, date]] = set()
     for r in rows:
         n = r["_row"]
-        pid = _req(fname, n, "position_id", r["position_id"])
-        pos = positions.get(pid)
-        if pos is None:
-            _fail(fname, n, "position_id",
-                  "references a position not in positions.csv", pid)
-        as_of = _date(fname, n, "as_of_date", r["as_of_date"])
-        if (pid, as_of) in seen:
-            _fail(fname, n, "as_of_date",
-                  f"duplicate valuation for position {pid} on {as_of}")
-        seen.add((pid, as_of))
-        ccy = _currency(fname, n, "currency", r["currency"])
-        if ccy != pos["currency"]:
-            _fail(fname, n, "currency",
-                  f"currency {ccy} != position {pid} currency "
-                  f"{pos['currency']}")
+        pid, pos, as_of, ccy = _dated_row(fname, r, positions, seen,
+                                          "valuation")
         if as_of < pos["acquired_at"]:
             log.warning("%s:row %d: valuation date %s precedes %s "
                         "acquisition %s", fname, n, as_of, pid,
@@ -418,26 +430,12 @@ def validate_cost_basis(rows: list[dict], positions: dict[str, dict],
     out: list[dict] = []
     seen: set[tuple[str, date]] = set()
     for r in rows:
-        n = r["_row"]
-        pid = _req(fname, n, "position_id", r["position_id"])
-        pos = positions.get(pid)
-        if pos is None:
-            _fail(fname, n, "position_id",
-                  "references a position not in positions.csv", pid)
-        as_of = _date(fname, n, "as_of_date", r["as_of_date"])
-        if (pid, as_of) in seen:
-            _fail(fname, n, "as_of_date",
-                  f"duplicate cost basis for position {pid} on {as_of}")
-        seen.add((pid, as_of))
-        ccy = _currency(fname, n, "currency", r["currency"])
-        if ccy != pos["currency"]:
-            _fail(fname, n, "currency",
-                  f"currency {ccy} != position {pid} currency "
-                  f"{pos['currency']}")
+        pid, _, as_of, ccy = _dated_row(fname, r, positions, seen,
+                                        "cost basis")
         out.append({
             "position_id": pid,
             "as_of_date": as_of,
-            "amount": _decimal(fname, n, "amount", r["amount"]),
+            "amount": _decimal(fname, r["_row"], "amount", r["amount"]),
             "currency": ccy,
             "notes": r["notes"].strip() or None,
         })
@@ -577,9 +575,10 @@ def main(argv: list[str]) -> int:
         version = apply_migrations(conn)
         log.info("silver schema at version %d (%s)", version, silver_db)
         counts = load(conn, bronze_dir)
-        log.info("loaded %d account(s), %d position(s), %d valuation(s)",
-                 counts["accounts"], counts["positions"],
-                 counts["valuations"])
+        log.info("loaded %d account(s), %d position(s), %d valuation(s), "
+                 "%d cost-basis row(s)", counts["accounts"],
+                 counts["positions"], counts["valuations"],
+                 counts["cost_basis"])
     finally:
         conn.close()
     return 0

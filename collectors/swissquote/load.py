@@ -58,7 +58,7 @@ ISO_CCY_RE = re.compile(r"^[A-Z]{3}$")
 # ============================================================
 
 # Silver connections use the manual-transaction model (isolation_level=None;
-# explicit BEGIN/COMMIT per window) with row_factory=Row — exactly what
+# explicit BEGIN/COMMIT per dump) with row_factory=Row — exactly what
 # collectorkit's silver.open_db provides.
 open_db = silver.open_db
 
@@ -316,11 +316,10 @@ def load_transactions_csv(
 # ============================================================
 
 # Labelled columns of the Positions XLS header. The leading "" is the
-# unlabelled section/asset-class column and is positional. Exports up
-# to 2026-08-15 also carried one trailing blank cell after
-# "Positions %" (14 cells); the 2026-08-19 export dropped it (13
-# cells) with the labelled columns unchanged, so `_check_xls_header`
-# ignores trailing blanks and both variants load identically.
+# unlabelled section/asset-class column and is positional. Some
+# exports carry one trailing blank cell after "Positions %" (14
+# cells), others none (13 cells), with the labelled columns the same;
+# `_check_xls_header` ignores trailing blanks, so both load identically.
 POSITIONS_EXPECTED_HEADER = [
     "", "Symbol", "Quantity", "Unit cost", "Total value",
     "Daily change", "Daily chg. %", "Price", "CCY",
@@ -359,9 +358,10 @@ def _check_xls_header(header: list, expected: list, path: Path,
                       kind: str) -> None:
     """Fail loud unless the header's labelled columns match `expected`
     exactly. Trailing blank cells are ignored: the XLS export engine
-    has flapped on emitting one (see POSITIONS_EXPECTED_HEADER), and a
-    cosmetic blank must not block the load — but any change to a
-    labelled column (rename, reorder, add, remove) still aborts.
+    emits one on some exports and not on others (see
+    POSITIONS_EXPECTED_HEADER), and a cosmetic blank must not block the
+    load — but any change to a labelled column (rename, reorder, add,
+    remove) still aborts.
     """
     if _trim_trailing_blanks(header) != expected:
         raise SystemExit(
@@ -792,10 +792,10 @@ def load_positions(
 # List of Assets XLS parser
 # ============================================================
 
-# Labelled columns of the List of Assets XLS header. No trailing
-# blank observed to date, but the sheet comes from the same export
-# engine as positions.xls (whose trailing blank came and went — see
-# POSITIONS_EXPECTED_HEADER), so the check tolerates one the same way.
+# Labelled columns of the List of Assets XLS header. The sheet comes
+# from the same export engine as positions.xls, whose trailing blank
+# cell varies (see POSITIONS_EXPECTED_HEADER), so the check tolerates
+# one the same way.
 LOA_EXPECTED_HEADER = [
     "Currency", "Rate", "Cash balance", "Positions value",
     "Total value", "Valuation CHF", "Account %",

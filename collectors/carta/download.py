@@ -36,19 +36,19 @@ quarterly financials, capital-call / distribution notices):
   (a doc already on disk this run is not re-fetched) collapses the same PDF
   appearing on multiple index pages. The cross-run layer is the shared
   ``collectorkit.docdedup`` engine, chosen per document class:
-    - parsed / restatement-prone documents — capital-account statements (load.py
-      parses their NAV + inception-to-date flows) and tax documents (K-1, 1042-S)
-      — can be re-issued/corrected under a stable Carta doc id, so they are
-      ALWAYS fetched and content-compared against the prior copy: an unchanged
-      (byte-identical) one is hardlinked (disk reclaimed), a changed one keeps
-      its fresh bytes (a re-issue is never missed). This is the correctness-safe
-      default for anything load.py reads for figures;
-    - executed-once archival notices/reports — quarterly & annual financials,
-      capital-call and distribution notices — are immutable under their doc id
-      and are not parsed, so an identical copy from a prior complete run is
-      HARDLINKED into the new run dir and the fetch is skipped (any hardlink
-      error falls through to a real fetch — a document degrades to a fetch,
-      never to a miss);
+    - parsed / restatement-prone documents — capital-account statements and
+      capital-call / distribution notices (load.py parses their NAV, lines and
+      dated flows) and tax documents (K-1, 1042-S) — can be re-issued/corrected
+      under a stable Carta doc id, so they are ALWAYS fetched and
+      content-compared against the prior copy: an unchanged (byte-identical)
+      one is hardlinked (disk reclaimed), a changed one keeps its fresh bytes
+      (a re-issue is never missed). This is the correctness-safe default for
+      anything load.py reads for figures;
+    - executed-once archival reports — quarterly & annual financials — are
+      immutable under their doc id and are not parsed, so an identical copy
+      from a prior complete run is HARDLINKED into the new run dir and the
+      fetch is skipped (any hardlink error falls through to a real fetch — a
+      document degrades to a fetch, never to a miss);
     - any other / unrecognised document_type is fetch-verified too (the safe
       default — always fetched, a byte-identical copy still deduped).
   Every run dir stays self-contained (a hardlink is a real in-run file), so the
@@ -395,25 +395,26 @@ def capture_fund(api: Api, iid: str, entity_id: str, edir: Path) -> None:
 # ALWAYS fetched (a byte-identical one is still hardlinked to reclaim disk).
 _TAX_KEYWORDS = frozenset({"k-1", "k1", "1042", "1099", "tax"})
 
-# fetch-verify. Capital-account statements are PARSED by load.py (ending balance
-# → quarterly NAV; inception-to-date contributions/distributions → fund cash
-# flows) and are restatement-prone under a stable id, so they must always be
-# fetched and byte-compared — link-mode would risk feeding a superseded NAV into
-# the silver replay. This case-folded "capital account" match is a deliberate
-# SUPERSET of load.py's case-sensitive "apital account" trigger (a match there
-# implies "capital account" once lower-cased), so every document load.py parses
-# is classified fetch-verify here and can never fall into the link set below —
-# the safe direction (a stray non-parsed statement fetch-verified only costs a
-# fetch, never a stale NAV).
+# fetch-verify. Capital-account statements and capital-call / distribution
+# notices are PARSED by load.py (a statement's ending balance → quarterly NAV,
+# its inception-to-date lines → fund_metrics and fund cash flows; a notice's
+# due date and amount → a dated fund cash flow) and are restatement-prone under
+# a stable id, so they must always be fetched and byte-compared — link-mode
+# would risk feeding a superseded figure into the silver replay. These
+# case-folded matches are a deliberate SUPERSET of load.py's case-sensitive
+# "apital account" / "apital call" / "istribution" triggers (a match there
+# implies one here once lower-cased), so every document load.py parses is
+# classified fetch-verify here and can never fall into the link set below —
+# the safe direction (a stray non-parsed document fetch-verified only costs a
+# fetch, never a stale figure).
 _STATEMENT_KEYWORDS = frozenset({"capital account", "capital call",
                                  "distribution"})
 
-# link (fetch-avoidance): executed-once archival notices/reports — quarterly &
-# annual financials, capital-call notices, distribution notices — immutable once
-# issued under their doc id and NOT parsed by load.py for any figure (fund calls
-# / distributions are differenced from the statements above, never these
-# notices). An identical copy from a prior complete run is hardlinked in and the
-# fetch skipped; any hardlink error falls through to a real fetch.
+# link (fetch-avoidance): executed-once archival reports — quarterly & annual
+# financials — immutable once issued under their doc id and NOT parsed by
+# load.py for any figure. An identical copy from a prior complete run is
+# hardlinked in and the fetch skipped; any hardlink error falls through to a
+# real fetch.
 _LINK_KEYWORDS = frozenset({"quarterly", "annual", "financial"})
 
 
@@ -425,8 +426,9 @@ def _document_class(doc: dict) -> str | None:
 
       * a TAX document (``_TAX_KEYWORDS``) → `tax` → fetch-verify (a corrected /
         re-issued form under a stable id is caught, never linked stale);
-      * a capital-account STATEMENT (``_STATEMENT_KEYWORDS`` — the figures load.py
-        parses) → `mutable` → fetch-verify (a restatement is never missed);
+      * a capital-account STATEMENT or a capital-call / distribution NOTICE
+        (``_STATEMENT_KEYWORDS`` — the figures load.py parses) → `mutable` →
+        fetch-verify (a restatement is never missed);
       * an executed-once archival report (``_LINK_KEYWORDS``: quarterly and
         annual financials) → `immutable` → link-mode (hardlink the prior
         identical copy, skip the fetch) — safe because these are immutable
@@ -512,8 +514,8 @@ def _process_document(skip, api: Api, row: dict, docs_dir: Path, *,
     returns :data:`NO_BLOB` (a null-blob-by-design, NOT a fetch failure) without
     touching the fetch/dedup path. Otherwise it dispatches to
     :func:`docdedup.process` by the document's class: link-mode for the
-    executed-once archival notices, fetch-verify for the parsed statements / tax
-    docs / unknown types. ``force`` bypasses the cross-run index. The fetch
+    executed-once archival reports, fetch-verify for the parsed statements and
+    notices / tax docs / unknown types. ``force`` bypasses the cross-run index. The fetch
     closure is :func:`_fetch_document`, so any hardlink failure falls straight
     through to a real fetch."""
     url = row.get("document_url")
@@ -540,9 +542,9 @@ def capture_documents(api: Api, iid: str, docs_dir: Path, *,
     ids) collapses the same document appearing on multiple index pages in ONE
     run — it is processed once. The orthogonal cross-run layer is ``collectorkit.docdedup``
     (via :func:`_process_document`): a document identical to a prior COMPLETE run
-    is deduped — an immutable, unparsed archival notice is hardlinked in and the
-    fetch avoided; a parsed statement or tax doc is always re-fetched and
-    byte-compared, so a re-issue is never missed. ``force`` bypasses the
+    is deduped — an immutable, unparsed archival report is hardlinked in and the
+    fetch avoided; a parsed statement, notice or tax doc is always re-fetched
+    and byte-compared, so a re-issue is never missed. ``force`` bypasses the
     cross-run index. ``doc_counts`` is the per-outcome audit block."""
     all_rows: list[dict] = []
     page_no = 1
@@ -665,8 +667,8 @@ def run(context, args, run_dir: Path, snapshot_at: int,
     # COMPLETE prior runs' on-disk PDFs (extract_carta), keyed (doc_id,). Built
     # AFTER main() dropped this run's in-progress marker and excluding this run,
     # so the in-flight dump never seeds itself. link-mode reuses an identical
-    # prior copy for immutable archival notices; fetch-verify re-reads statements
-    # / tax / unknown docs. See _document_class. --documents-force bypasses it.
+    # prior copy for immutable archival reports; fetch-verify re-reads statements
+    # / notices / tax / unknown docs. See _document_class. --documents-force bypasses it.
     if args.no_documents:
         log.info("--no-documents: skipping the documents pass")
         n_docs, n_pdf, doc_counts = 0, 0, _empty_doc_counts()
