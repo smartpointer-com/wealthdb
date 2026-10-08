@@ -37,9 +37,11 @@ _resolve_knobs() {
     SPILL_DIR="$DATA_DIR/spill"
 }
 
-# _load_config reads the resolved `web` settings (enabled, port) and
-# the gold DB path from wealthdb.cfg, via the engine's `web-config`
-# subcommand — the one component that parses + validates the JSON.
+# _load_config reads the resolved `web` settings (enabled, port), the
+# gold DB path and the default currency from wealthdb.cfg, via the
+# engine's `web-config` subcommand — the one component that parses +
+# validates the JSON. The default currency stays in
+# WEALTHDB_DEFAULT_CURRENCY, which _provision passes on.
 _load_config() {
     _require_docker
     local out

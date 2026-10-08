@@ -44,21 +44,6 @@ def _no_timezone_env(monkeypatch):
     monkeypatch.delenv(loader.TIMEZONES_ENV, raising=False)
 
 
-def _seed_bronze(root: Path) -> tuple[Path, dict]:
-    run_dir = root / "20240115T100000Z"
-    (run_dir / f"cu_{CU}").mkdir(parents=True, exist_ok=True)
-    (run_dir / f"cu_{CU}" / "trades.csv").write_text(
-        TRADES_HEADER + "\n" + TRADE_ROW + "\n", encoding="utf-8")
-    manifest = {"portfolios": [{"id": CU, "name": "test"}]}
-    return run_dir, manifest
-
-
-def _fresh_db(tmp_path: Path) -> duckdb.DuckDBPyConnection:
-    conn = duckdb.connect(str(tmp_path / "cointracking.duckdb"))
-    loader.apply_migrations(conn)
-    return conn
-
-
 def _row(type_, *, buy="", buy_cur="", sell="", sell_cur="", fee="",
          fee_cur="", exchange="ExchangeA", group="", comment="",
          date="2024-01-15 10:00:00", tx_id="") -> str:
@@ -70,14 +55,47 @@ def _row(type_, *, buy="", buy_cur="", sell="", sell_cur="", fee="",
     return ",".join(f'"{f}"' for f in fields)
 
 
-def _seed_bronze_rows(root: Path, rows: list[str]) -> tuple[Path, dict]:
-    """Materialise a bronze run whose cu_<CU> trades.csv holds `rows`."""
-    run_dir = root / "20240201T000000Z"
-    (run_dir / f"cu_{CU}").mkdir(parents=True, exist_ok=True)
-    (run_dir / f"cu_{CU}" / "trades.csv").write_text(
-        TRADES_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
-    manifest = {"portfolios": [{"id": CU, "name": "test"}]}
-    return run_dir, manifest
+def _seed_export(root: Path, slug: str, portfolios: dict[str, list[str]],
+                 header: str = TRADES_HEADER) -> Path:
+    """A complete bronze run: run.json plus one trades.csv per
+    portfolio id in `portfolios`, holding that portfolio's rows."""
+    run_dir = root / slug
+    for cu, rows in portfolios.items():
+        (run_dir / f"cu_{cu}").mkdir(parents=True, exist_ok=True)
+        (run_dir / f"cu_{cu}" / "trades.csv").write_text(
+            header + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    (run_dir / "run.json").write_text(json.dumps({
+        "portfolios": [{"id": cu, "name": f"test {cu}"} for cu in portfolios],
+        "status": "complete",
+    }), encoding="utf-8")
+    return run_dir
+
+
+def _seed(root: Path, rows: list[str] | None = None) -> tuple[Path, dict]:
+    """A complete one-portfolio bronze run whose cu_<CU> trades.csv
+    holds `rows` (default: TRADE_ROW alone), and its manifest."""
+    run_dir = _seed_export(root, "20240201T000000Z", {CU: rows or [TRADE_ROW]})
+    return run_dir, json.loads((run_dir / "run.json").read_text())
+
+
+def _fresh_db(tmp_path: Path) -> duckdb.DuckDBPyConnection:
+    conn = duckdb.connect(str(tmp_path / "cointracking.duckdb"))
+    loader.apply_migrations(conn)
+    return conn
+
+
+def _ingest(tmp_path: Path, portfolios: dict[str, list[str]],
+            timezones: dict[str, str], header: str = TRADES_HEADER,
+            name: str = "silver") -> duckdb.DuckDBPyConnection:
+    """Ingest one export into a fresh silver and return the connection."""
+    run_dir = _seed_export(tmp_path / f"{name}-bronze", "20240201T000000Z",
+                           portfolios, header)
+    manifest = json.loads((run_dir / "run.json").read_text())
+    conn = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
+    loader.apply_migrations(conn)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
+                               timezones=timezones)
+    return conn
 
 
 def _latest_positions(conn) -> dict[tuple[str, str], Decimal]:
@@ -105,8 +123,7 @@ def test_dust_sweep_other_expense_zeroes_the_swept_balance(tmp_path):
     # with an `Income (non taxable)` buy of the consolidated proceeds.
     # The sell leg is a real outgoing delta: if `Other Expense` is
     # unrouted the dust never leaves and the replay's per-wallet
-    # balance stays stranded at the swept amount. Regression for that
-    # gap (the buy leg was always handled). Amounts are synthetic.
+    # balance stays stranded at the swept amount. Amounts are synthetic.
     rows = [
         _row("Deposit", buy="0.01230000", buy_cur="ETH",
              date="2024-01-01 00:00:00"),
@@ -115,7 +132,7 @@ def test_dust_sweep_other_expense_zeroes_the_swept_balance(tmp_path):
         _row("Income (non taxable)", buy="0.50", buy_cur="USD",
              comment="Dust Sweeping", date="2024-02-01 00:00:00"),
     ]
-    run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
+    run_dir, manifest = _seed(tmp_path / "bronze", rows)
     conn = _fresh_db(tmp_path)
     loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
                                timezones={})
@@ -130,15 +147,14 @@ def test_dust_sweep_other_expense_zeroes_the_swept_balance(tmp_path):
 
 def test_warn_unhandled_types_flags_unrouted_leg(tmp_path):
     # A populated leg whose type is on neither list must be reported,
-    # not silently dropped — this is the guard that would have caught
-    # the `Other Expense` gap at load time.
+    # not silently dropped.
     rows = [
         _row("Trade", buy="0.5", buy_cur="BTC", sell="15000",
              sell_cur="USD", date="2024-01-15 10:00:00"),
         _row("Margin Trade", sell="1.0", sell_cur="BTC",
              date="2024-01-16 10:00:00"),
     ]
-    run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
+    run_dir, manifest = _seed(tmp_path / "bronze", rows)
     conn = _fresh_db(tmp_path)
     loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800,
                                timezones={})
@@ -156,7 +172,7 @@ def test_warn_unhandled_types_silent_when_covered(tmp_path):
         _row("Income (non taxable)", buy="0.05000000", buy_cur="USD",
              comment="Dust Sweeping", date="2024-02-01 00:00:00"),
     ]
-    run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
+    run_dir, manifest = _seed(tmp_path / "bronze", rows)
     conn = _fresh_db(tmp_path)
     loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
                                timezones={})
@@ -164,7 +180,7 @@ def test_warn_unhandled_types_silent_when_covered(tmp_path):
 
 
 def test_ingest_transactions(tmp_path):
-    run_dir, manifest = _seed_bronze(tmp_path / "bronze")
+    run_dir, manifest = _seed(tmp_path / "bronze")
     conn = _fresh_db(tmp_path)
     n = loader.ingest_transactions(conn, manifest, run_dir,
                                    snapshot_at=1705312800, timezones={})
@@ -191,11 +207,7 @@ def test_ingest_transactions(tmp_path):
 def _ids(tmp_path: Path, name: str, rows: list[str]) -> list[tuple[str, str]]:
     """Load `rows` into a fresh silver; return its (type,
     transaction_external_id) pairs, sorted."""
-    run_dir, manifest = _seed_bronze_rows(tmp_path / name, rows)
-    conn = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
-    loader.apply_migrations(conn)
-    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
-                               timezones={})
+    conn = _ingest(tmp_path, {CU: rows}, timezones={}, name=name)
     return sorted(conn.execute(
         "SELECT type, transaction_external_id FROM transactions").fetchall())
 
@@ -233,19 +245,19 @@ def _transactions(conn) -> list[tuple]:
 
 def test_ingest_transactions_compressed_converges(tmp_path):
     # Convergence gate for bronze compression: the same bronze content
-    # as trades.csv.zst (the form download now writes, and the form
-    # the recompress sweep leaves behind) must produce silver rows
+    # as trades.csv.zst (the form download writes, and the form the
+    # recompress sweep leaves behind) must produce silver rows
     # identical to the plain-CSV load. DuckDB decompresses .csv.zst
     # natively inside read_csv_auto; load.py only resolves the path.
     from collectorkit import compress
 
-    run_plain, manifest = _seed_bronze(tmp_path / "plain")
+    run_plain, manifest = _seed(tmp_path / "plain")
     conn_plain = duckdb.connect(str(tmp_path / "plain.duckdb"))
     loader.apply_migrations(conn_plain)
     loader.ingest_transactions(conn_plain, manifest, run_plain,
                                snapshot_at=1705312800, timezones={})
 
-    run_zst, manifest = _seed_bronze(tmp_path / "zst")
+    run_zst, manifest = _seed(tmp_path / "zst")
     compress.compress_file(run_zst / f"cu_{CU}" / "trades.csv")
     assert not (run_zst / f"cu_{CU}" / "trades.csv").exists()
     conn_zst = duckdb.connect(str(tmp_path / "zst.duckdb"))
@@ -263,7 +275,7 @@ def test_bronze_csv_resolution_prefers_plain(tmp_path):
     # original is authoritative.
     from collectorkit import compress
 
-    run_dir, _ = _seed_bronze(tmp_path / "bronze")
+    run_dir, _ = _seed(tmp_path / "bronze")
     plain = run_dir / f"cu_{CU}" / "trades.csv"
     compress.compress_file(plain, remove_original=False)
     assert loader._bronze_csv(run_dir, CU, "trades") == plain
@@ -301,10 +313,30 @@ def test_discover_skips_in_progress_keeps_complete_and_legacy(tmp_path):
     assert names == {"20240114T100000Z", "20240115T100000Z"}
 
 
+def test_discover_loads_exactly_the_dumps_prune_keeps(tmp_path):
+    # load and prune share one completeness rule: a run.json whose
+    # status is "complete", or that has no status at all. Any other
+    # status, including one this code has never seen, is a dump prune
+    # deletes, so load must not have ingested it.
+    import prune
+
+    bronze = tmp_path / "bronze"
+    statuses = [None, "complete", "in-progress", "dry-run", "failed"]
+    runs = [_seed_run(bronze, f"2024011{i}T100000Z", status=s)
+            for i, s in enumerate(statuses)]
+
+    kept = {r.name for r in runs
+            if prune.CONFIG.is_complete(
+                r, json.loads((r / "run.json").read_text()))[0]
+            == "complete"}
+    assert kept == {"20240110T100000Z", "20240111T100000Z"}
+    assert {p.name for p in loader.discover_bronze_snapshots(bronze)} == kept
+
+
 def test_ingest_replaces_per_portfolio(tmp_path):
     # A second ingest of the same portfolio replaces (not duplicates)
     # — each trades.csv is a complete replay of that portfolio.
-    run_dir, manifest = _seed_bronze(tmp_path / "bronze")
+    run_dir, manifest = _seed(tmp_path / "bronze")
     conn = _fresh_db(tmp_path)
     loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800,
                                timezones={})
@@ -425,24 +457,11 @@ def test_stage_work_db_seeds_from_existing_target(tmp_path):
     assert loader._stage_work_db(silver, None) == (silver, False)
 
 
-def _seed_complete_run(root: Path, slug: str) -> Path:
-    """A loadable bronze snapshot: run.json (complete) + a one-row
-    trades.csv, enough to drive main() end to end."""
-    run_dir = root / slug
-    (run_dir / f"cu_{CU}").mkdir(parents=True, exist_ok=True)
-    (run_dir / f"cu_{CU}" / "trades.csv").write_text(
-        TRADES_HEADER + "\n" + TRADE_ROW + "\n", encoding="utf-8")
-    (run_dir / "run.json").write_text(json.dumps(
-        {"portfolios": [{"id": CU, "name": "test"}], "status": "complete"}),
-        encoding="utf-8")
-    return run_dir
-
-
 def test_scratch_dir_promotes_finished_db_and_cleans_up(tmp_path):
     # Driving main() with --scratch-dir builds the DB under scratch and
     # moves it onto --silver-db, leaving no scratch copy or temp behind.
     bronze = tmp_path / "bronze"
-    _seed_complete_run(bronze, "20240115T100000Z")
+    _seed(bronze)
     silver = tmp_path / "silver" / "cointracking.duckdb"
     scratch = tmp_path / "scratch"
 
@@ -469,7 +488,7 @@ def test_scratch_dir_cleans_temp_when_promote_fails(tmp_path, monkeypatch):
     # must still be cleared — and the target is never a partial file (the
     # rename never ran, so it stays absent here).
     bronze = tmp_path / "bronze"
-    _seed_complete_run(bronze, "20240115T100000Z")
+    _seed(bronze)
     silver = tmp_path / "silver" / "cointracking.duckdb"
     scratch = tmp_path / "scratch"
 
@@ -538,7 +557,7 @@ def test_force_rebuild_equals_incremental(tmp_path):
     # keeps both loads offline (the post-ingest USD price fill is
     # default-on and would otherwise reach the network).
     bronze = tmp_path / "bronze"
-    _seed_complete_run(bronze, "20240115T100000Z")
+    _seed(bronze)
     silver = tmp_path / "silver" / "cointracking.duckdb"
 
     argv = ["--bronze-dir", str(bronze), "--silver-db", str(silver),
@@ -559,36 +578,6 @@ def test_force_rebuild_equals_incremental(tmp_path):
 
 
 # ---- Group, Tx-ID and the export's local time ------------------------
-
-def _seed_export(root: Path, slug: str, portfolios: dict[str, list[str]],
-                 header: str = TRADES_HEADER) -> Path:
-    """A complete bronze run: run.json plus one trades.csv per
-    portfolio id in `portfolios`, holding that portfolio's rows."""
-    run_dir = root / slug
-    for cu, rows in portfolios.items():
-        (run_dir / f"cu_{cu}").mkdir(parents=True, exist_ok=True)
-        (run_dir / f"cu_{cu}" / "trades.csv").write_text(
-            header + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
-    (run_dir / "run.json").write_text(json.dumps({
-        "portfolios": [{"id": cu, "name": f"test {cu}"} for cu in portfolios],
-        "status": "complete",
-    }), encoding="utf-8")
-    return run_dir
-
-
-def _ingest(tmp_path: Path, portfolios: dict[str, list[str]],
-            timezones: dict[str, str], header: str = TRADES_HEADER,
-            name: str = "silver") -> duckdb.DuckDBPyConnection:
-    """Ingest one export into a fresh silver and return the connection."""
-    run_dir = _seed_export(tmp_path / f"{name}-bronze", "20240201T000000Z",
-                           portfolios, header)
-    manifest = json.loads((run_dir / "run.json").read_text())
-    conn = duckdb.connect(str(tmp_path / f"{name}.duckdb"))
-    loader.apply_migrations(conn)
-    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600,
-                               timezones=timezones)
-    return conn
-
 
 def _times(conn) -> dict[tuple[str, str], str]:
     """(portfolio, occurred_local) → occurred_at as text."""

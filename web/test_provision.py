@@ -159,7 +159,7 @@ check("both models label an account with its source and kind, not its "
       "bare name",
       all("s.account_label AS display_name" in q for q in (SPEND_SQL, PCT_SQL)))
 check("the privacy model scales by the latest net worth, per currency",
-      all(f"nw.nw_{c}" in PCT_SQL for c in ("usd", "chf", "eur")))
+      all(f"nw.nw_{c}" in PCT_SQL for c in p._ccy_lower()))
 
 # ---- the cards --------------------------------------------------------
 
@@ -249,8 +249,8 @@ check("the money card-balances chart is split by the account label",
 # A card called "by month" charts months. Metabase infers the x-axis
 # from cardinality, and there are more categories than months in any
 # window worth charting, so both monthly cards pin their dimensions —
-# over their own SQL aliases now that both read the view natively.
-# Without the pin the card draws its own transpose.
+# over their own SQL aliases, both reading the view natively. Without
+# the pin the card draws its own transpose.
 check("the monthly cards put the month on the x-axis, categories in the "
       "stack",
       all(d[i]["graph.dimensions"] == ["month", "category"]
@@ -733,7 +733,7 @@ if spending:
                       for dc in tiles]))
     # A tile carrying every currency as its own column is the exception:
     # the Currency picker is a row filter on the long model, so wiring it
-    # would empty the two columns the picker does not select.
+    # would empty every column but the one the picker selects.
     for dc in (dc for dc in tiles if dc["card_id"] in ALL_CCY_IDS):
         check("an all-currency tile takes every picker but Currency",
               {m["parameter_id"] for m in dc["parameter_mappings"]} ==
@@ -793,7 +793,7 @@ check("every Income tile is defined",
       [n for n in INCOME_CARD_NAMES if n not in CARDS])
 
 # Every income tile reads the serving view and takes the currency
-# variable: a tile that summed all three reporting currencies would be
+# variable: a tile that summed every reporting currency would be
 # silently and plausibly wrong.
 _income_sql = {n: (sql_of(CARDS[n][2]) or "") for n in INCOME_CARD_NAMES if n in CARDS}
 _qdefs = p.question_defs(1, MID)
@@ -813,9 +813,9 @@ check("the uncategorised-share tile declares no currency variable",
       "{{currency}}" not in _income_sql["Uncategorized income share"])
 # ...and none of them negates: gold stores a receipt positive, and the
 # negation is the spending family's alone.
-check("no Income tile negates the value",
-      not any("-value_usd" in q or "-value_chf" in q for q in _income_sql.values()),
-      [n for n, q in _income_sql.items() if "-value_usd" in q])
+_negating = [n for n, q in _income_sql.items()
+             if any(f"-value_{c}" in q for c in p._ccy_lower())]
+check("no Income tile negates the value", not _negating, _negating)
 
 # The payer ranking excludes the lines that have no payer rather than
 # grouping them under a blank.
@@ -1041,19 +1041,17 @@ check("the Income type picker binds to the detailed label",
        if q["slug"] == "type"][0]["values_source_config"]["value_field"][1]
       == "income_detailed")
 
-# No two base cards may share a privacy twin name. privacy_name() strips
-# a " (USD)" marker, so two cards whose names differ only by it collapse
-# onto one twin — and whichever definition is merged last silently
-# replaces the other, leaving a dashboard rendering the wrong chart.
-_twinned = [n for n in CARDS
-            if not n.endswith(p.PRIVACY_SUFFIX) and n not in p.PRIVACY_EXEMPT_CARDS
-            and p.privacy_name(n) in CARDS]
-_collisions = {}
-for _n in _twinned:
-    _collisions.setdefault(p.privacy_name(_n), []).append(_n)
-check("no two base cards map onto one privacy twin name",
-      all(len(v) == 1 for v in _collisions.values()),
-      {k: v for k, v in _collisions.items() if len(v) > 1})
+# Provisioning matches cards by name. ensure_cards merges the base and
+# the privacy definitions into one name-keyed payload map, so a name both
+# define leaves one card standing in for two — whichever was merged last
+# — and a dashboard renders the wrong chart. The models share the
+# collection's name map, so a card named like a model would overwrite it.
+_base_names = set(p.question_defs(1, MID))
+_twin_names = set(p.privacy_card_defs(1, MID))
+_clashes = sorted((_base_names & _twin_names)
+                  | ((_base_names | _twin_names) & set(MODELS)))
+check("no card name is defined twice, nor shared with a model",
+      bool(_base_names) and bool(_twin_names) and not _clashes, _clashes)
 
 # No twin card may carry an account field filter. A native card's
 # template tags render as widgets wherever it is opened, so a tag is a
@@ -1089,14 +1087,14 @@ check("the privacy tile population includes the exempt cards",
       any(c in p.PRIVACY_EXEMPT_CARDS for c in _privacy_tiles),
       sorted(_privacy_tiles))
 
-# The Wealth Overview's income card now reads the income base.
+# The Wealth Overview's income card reads the income base.
 _wo = sql_of(CARDS["Investment income by month"][2]) or ""
 check("the Wealth Overview income card reads web_income",
       "web_income" in _wo, _wo[:120])
 check("...and names the four investment income types",
       all(t in _wo for t in p.INVESTMENT_INCOME_TYPES),
       [t for t in p.INVESTMENT_INCOME_TYPES if t not in _wo])
-check("...and no longer fences card accounts",
+check("...and fences no card accounts",
       "account_kind" not in _wo, _wo[:200])
 
 section("the merchant ranking carries every currency")
@@ -1112,20 +1110,21 @@ check("each column carries its own currency predicate, so no row filter is neede
 check("the ranking is by the default currency's column (USD, aggregation 0)",
       MERCH.get("order-by") == [["desc", ["aggregation", 0]]]
       and AGGS[0][2]["display-name"] == "USD")
-check("it no longer needs the standalone-currency caveat",
+check("it carries no standalone-currency caveat",
       "filter currency to a single" not in CARDS["Top 50 merchants"][1])
 check("the Currency picker is not wired to it — a row filter would empty "
-      "the two columns it does not select",
+      "every column but the one it selects",
       "Top 50 merchants" in p.SPEND_ALL_CURRENCY_CARDS)
 
 section("every spending tile reads one currency")
 # The long-format model is right only under a row filter on `currency`,
 # which the dashboard supplies and nothing else does — so a tile over it
-# summed every currency whenever it was opened on its own. Every
-# money spending tile now settles that for itself: natively through the
+# would sum every currency whenever it was opened on its own. Every
+# money spending tile settles that for itself: natively through the
 # {{currency}} variable the picker substitutes (and which defaults to
-# USD), or, on the merchant ranking, by carrying each currency as its own
-# column. Nothing on the dashboard may still read the model unguarded.
+# the configured currency), or, on the merchant ranking, by carrying
+# each currency as its own column. Nothing on the dashboard may read the
+# model unguarded.
 SPEND_MODEL_CARD = f"card__{MID['report_spending']}"
 for _c, *_ in DEFS["Spending"][3]:
     _q = CARDS[_c][2]
@@ -1250,10 +1249,10 @@ for _n in ("Savings rate", "Savings rate (privacy)"):
 # "Operating out" prints a positive magnitude, so its share has to be
 # one too.
 check("'Operating out (privacy)' reports a positive magnitude, as its base tile does",
-      "-value_usd" in _cf_twin_sql["Operating out (privacy)"],
+      all(f"-value_{c}" in _cf_twin_sql["Operating out (privacy)"] for c in p._ccy_lower()),
       _cf_twin_sql["Operating out (privacy)"][:240])
 check("'Operating in (privacy)' does not negate",
-      "-value_usd" not in _cf_twin_sql["Operating in (privacy)"],
+      not any(f"-value_{c}" in _cf_twin_sql["Operating in (privacy)"] for c in p._ccy_lower()),
       _cf_twin_sql["Operating in (privacy)"][:240])
 # One hub. It is the sum of the positive nets AT THE LEVEL DRAWN, so a
 # class-level sum is a different number from the diagram's whenever a

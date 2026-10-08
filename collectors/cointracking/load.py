@@ -97,16 +97,15 @@ TIMEZONE_ITEM_RE = re.compile(r"^(cu_\d+)=(\S+)$")
 # `sell_amount IS NOT NULL` filter selecting the one populated leg.
 #
 # A `type` on NEITHER list contributes nothing, silently: an outgoing
-# type we forget to list leaves the replay's per-wallet balance too
-# high (the coins that left are never subtracted); an incoming one
-# leaves it too low. `Other Expense` is CoinTracking's generic
-# outgoing-balance type — observed as the sell leg of an exchange
-# dust sweep (a periodic conversion of tiny leftover balances, which
-# CoinTracking labels "Dust Sweeping" in the Comment column), where
-# each swept dust balance is booked as an `Other Expense` sell paired
-# with an `Income (non taxable)` buy of the consolidated proceeds.
-# That pairing is what first exposed the gap: the buy leg landed while
-# the dust never left, stranding each source balance at exactly the
+# type left off leaves the replay's per-wallet balance too high (the
+# coins that left are never subtracted); an incoming one leaves it too
+# low. `Other Expense` is CoinTracking's generic outgoing-balance type,
+# and the sell leg of an exchange dust sweep (a periodic conversion of
+# tiny leftover balances, which CoinTracking labels "Dust Sweeping" in
+# the Comment column): each swept dust balance is booked as an `Other
+# Expense` sell paired with an `Income (non taxable)` buy of the
+# consolidated proceeds. Without the sell leg the proceeds land while
+# the dust never leaves, stranding each source balance at exactly the
 # swept amount. The lists are kept as data so the guard can warn on
 # any unrouted leg rather than drop it.
 #
@@ -297,33 +296,25 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> int:
     ).fetchone()[0]
 
 
-# run.json status values that mark a run dir as NOT a finished dump.
-# "in-progress" is left by a crashed walk; "dry-run" is defensive
-# (download --dry-run materialises no run dir, so the value is never
-# actually written). A run whose status is any of these is kept out of
-# the silver load so partial captures never reach gold; `prune`
-# reclaims such dirs.
-NON_COMPLETE_STATUSES = ("in-progress", "dry-run")
+# run.json status values that mark a run dir as a finished dump:
+# "complete", or none at all (a dump predating the status lifecycle only
+# ever got a run.json at the end). Any other status — "in-progress" from
+# a crashed walk, or one this loader does not know — keeps the run out of
+# silver, so a partial capture never reaches gold. `prune` applies the
+# same rule and reclaims such dirs. An unreadable run.json also reads as
+# no status; its load then fails loudly rather than being skipped.
+COMPLETE_STATUSES = ("complete", None)
 
 
 def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
-    """Return the timestamped subdirs of bronze_dir that hold a
-    completed run.json (chronological). A run.json whose ``status`` is
-    ``"in-progress"`` (a crashed walk) or ``"dry-run"`` is skipped so a
-    partial dump never reaches silver; a statusless manifest (a dump
-    predating the status lifecycle) stays loadable."""
-    if not bronze_dir.is_dir():
-        return []
+    """Return the timestamped subdirs of bronze_dir whose run.json marks
+    a finished dump (COMPLETE_STATUSES), oldest first."""
     snapshots = []
-    for p in sorted(bronze_dir.iterdir()):
-        if not p.is_dir():
-            continue
-        if not bronze.RUN_DIR_RE.match(p.name):
-            continue
+    for p in bronze.iter_run_dirs(bronze_dir):
         run_json = p / "run.json"
         if not run_json.is_file():
             continue
-        if bronze.run_status(run_json) in NON_COMPLETE_STATUSES:
+        if bronze.run_status(run_json) not in COMPLETE_STATUSES:
             log.info("skipping %s (run.json status not complete)", p.name)
             continue
         snapshots.append(p)
@@ -603,8 +594,8 @@ def ingest_portfolio_prices(
     wide coin pairs are folded into one (date, sym, fiat, value,
     amount) stream, so the price division / filters and the conflict
     resolution run once for the portfolio rather than once per coin
-    column (the former shape issued a separate insert per pair, each
-    re-offering the full history to the growing conflict index).
+    column, each of which would re-offer the full history to the
+    growing conflict index.
 
     A NOT EXISTS anti-join drops rows whose price key already exists
     before the insert runs; the ON CONFLICT DO NOTHING clause backs
@@ -749,12 +740,11 @@ def warn_unhandled_transaction_types(
     The replay routes rows by `type`; a leg whose type is unlisted
     contributes nothing to positions_daily, so the affected wallet's
     balance reads high (a dropped sell) or low (a dropped buy) with no
-    error raised — exactly how the `Other Expense` dust-sweep leg
-    slipped through before it was added to SELL_TYPES. CoinTracking
-    keeps growing its vocabulary (margin, lending, derivatives, …), so
-    this is a standing guard against the next unlisted type, not a
-    one-off. Returns the (type, dropped_buy_legs, dropped_sell_legs)
-    rows it warned on — empty when coverage is complete."""
+    error raised. CoinTracking keeps growing its vocabulary (margin,
+    lending, derivatives, …), so this is a standing guard against the
+    next unlisted type. Returns the (type, dropped_buy_legs,
+    dropped_sell_legs) rows it warned on — empty when coverage is
+    complete."""
     rows = conn.execute(f"""
         SELECT
             type,

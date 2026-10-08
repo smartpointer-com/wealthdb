@@ -625,12 +625,10 @@ COST_KINDS = ["fee", "tax"]
 # this fence a card would report spending costs as portfolio costs. Card
 # flows are spending; they belong to the spending surface.
 #
-# The income charts no longer need it and no longer use it: they read
-# `web_income` (migration 0072), whose base admits a card's finance
-# charge nowhere at all — a negative `interest` is spending's by
-# migration 0041, and a card fee is not an income kind. The fence
-# shrank to the one question it still answers when the income tile was
-# re-pointed at the income base.
+# The income charts need no such fence: they read `web_income`
+# (migration 0072), whose base admits a card's finance charge nowhere
+# at all — a negative `interest` is spending's by migration 0041, and a
+# card fee is not an income kind.
 #
 # Fenced on the account_kind column the transaction report macros carry
 # (migration 0039), which is NULL for a transaction whose account is
@@ -647,7 +645,9 @@ UNCATEGORIZED = "(uncategorized)"
 
 # Card names retired by renames and removals, each group noted where it
 # is listed; archived on provision so a re-run cleans them up.
-RETIRED_CARD_NAMES = ["net_worth_usd_current", "net_worth_chf_current",
+RETIRED_CARD_NAMES = [
+                      # Identifier-style metric names -> prose names
+                      "net_worth_usd_current", "net_worth_chf_current",
                       "net_worth_eur_current", "positions_value_usd_current",
                       "cash_balance_usd_current", "net_worth_usd_daily",
                       # Top 10 -> Top 100 (with the inline asset-class filter)
@@ -927,23 +927,31 @@ def _native(db_id, sql, tags):
             "native": {"query": sql, "template-tags": tags}}
 
 
+def _returns_clauses():
+    """(ccy_sub, ccy_eq, src) — the currency and source clauses of the
+    native returns charts.
+
+    Currency is a field filter inside each UNION arm (`ccy_sub`, a
+    dropdown) when its field id is known, else a plain-variable equality
+    the caller puts in the outer WHERE (`ccy_eq`); exactly one of the two
+    is non-empty. Source is an optional [[…]] field-filter clause
+    (omitted when nothing is selected), emitted only when the tag exists:
+    referencing an undefined {{tag}} would make the query invalid."""
+    cf = CURRENCY_FIELD_ID is not None
+    return ("\n     AND {{currency}}" if cf else "",
+            "" if cf else "currency = {{currency}}",
+            "\n     [[AND {{source_ff}}]]" if SOURCE_FIELD_ID is not None else "")
+
+
 def _returns_source_union(granularity, value_col):
     """A UNION selecting one column from the per-source rows plus the global
     grain relabelled as the toggleable '(all sources)' pseudo-source, for one
     granularity's per-period buckets. Filtered to {{currency}} and to periods
-    ending on/after {{start_year}} (0 = all). The Source field filter (an
-    optional [[…]] clause) narrows the real sources but never the '(all
-    sources)' line, so the global reference stays visible while a subset is
-    selected. Shared by the period and growth charts."""
-    # Currency: a field filter inside each subquery (dropdown) when its id is
-    # known, else a plain-variable equality in the outer WHERE. Source: an
-    # optional [[…]] field-filter clause (omitted when nothing is selected, and
-    # only emitted when the tag exists — referencing an undefined {{tag}} would
-    # make the query invalid).
-    cf = CURRENCY_FIELD_ID is not None
-    ccy_sub = "\n     AND {{currency}}" if cf else ""
-    ccy_outer = "" if cf else "currency = {{currency}}\n   AND "
-    src_clause = "\n     [[AND {{source_ff}}]]" if SOURCE_FIELD_ID is not None else ""
+    ending on/after {{start_year}} (0 = all). The Source field filter
+    narrows the real sources but never the '(all sources)' line, so the
+    global reference stays visible while a subset is selected."""
+    ccy_sub, ccy_eq, src_clause = _returns_clauses()
+    ccy_outer = ccy_eq + "\n   AND " if ccy_eq else ""
     return (
         "WITH s AS (\n"
         "  SELECT silver_source_id, currency, end_day, " + value_col + " AS v\n"
@@ -991,10 +999,8 @@ def returns_growth_sql():
     so the line begins where the return is first defined. Annual granularity —
     one point per year — is the price of correctness here; a finer curve would
     need per-month windowed summaries."""
-    cf = CURRENCY_FIELD_ID is not None
-    ccy_sub = "\n     AND {{currency}}" if cf else ""
-    ccy_f = "" if cf else "currency = {{currency}} AND "
-    src = "\n     [[AND {{source_ff}}]]" if SOURCE_FIELD_ID is not None else ""
+    ccy_sub, ccy_eq, src = _returns_clauses()
+    ccy_f = ccy_eq + " AND " if ccy_eq else ""
     return (
         "WITH w AS (\n"
         "  SELECT silver_source_id AS source, currency, window_from_year AS yr, twr\n"
@@ -1022,7 +1028,7 @@ def _series_viz(time_col, series_col, metric, *, percent=False):
     explicitly (there is no MBQL breakout for Metabase to infer them from)."""
     viz = {"graph.dimensions": [time_col, series_col], "graph.metrics": [metric]}
     if percent:
-        viz["column_settings"] = {f'["name","{metric}"]': {"number_style": "percent"}}
+        viz.update(_percent_viz(metric))
     return viz
 
 
@@ -1126,11 +1132,11 @@ def question_defs(db_id, mid):
                             CARD_BALANCE_PICKERS)
 
     # The spending tiles read the serving view natively, the way the
-    # privacy twin's already do. The reason is the Currency picker: the
+    # privacy twin's do. The reason is the Currency picker: the
     # long-format model carries a row per (line, reporting currency), so
     # an MBQL tile over it is right only while a row filter holds it to
     # one — which the dashboard supplies and nothing else does. Opened on
-    # its own, such a tile summed every currency, silently and
+    # its own, such a tile would sum every currency, silently and
     # plausibly. A template VARIABLE is substituted by the picker rather
     # than ANDed with the tile's own filters, and {{currency}} defaults
     # to the configured default currency, so a native tile reads the
@@ -1372,13 +1378,13 @@ def question_defs(db_id, mid):
                 "\n GROUP BY 1, 2, 3, 4\n ORDER BY 5 DESC\n LIMIT 100",
                 pos_tags),
             {}),
-        # The spending cards run over the long-format report_spending
-        # model, whose `currency` dimension the dashboard's required
-        # Currency picker selects. The one exception is the card-balances
-        # chart: card balances are a different grain (per account per
-        # day, carried forward) with no model of their own, so it reads
-        # web_card_balances_history natively and takes the pickers as
-        # template tags (registered above).
+        # The spending tiles are native over web_spending (spend_native)
+        # but for two MBQL ones: the uncategorized share, a share of rows
+        # over the _pct model, and the merchant ranking, which carries
+        # every currency as its own column (SPEND_ALL_CURRENCY_CARDS).
+        # The card-balances chart reads web_card_balances_history, card
+        # balances being a different grain (per account per day, carried
+        # forward), with its pickers registered above.
         "Spend — monthly trend": spend_native("Spend — monthly trend",
             "smartscalar",
             "Net spend in the window's latest month, with the change vs the "
@@ -1547,10 +1553,9 @@ def question_defs(db_id, mid):
                 + _spend_where(bal_tags, " ") + "\n"
                 " GROUP BY 1, 2\n ORDER BY 1", bal_tags),
             _series_viz("as_of_day", "account_label", "owed")),
-        # The one tile that lists LINES rather than grouping them, which
-        # is why it reads the view natively like the charts do: the long
-        # model would hand it each line once per reporting currency, and
-        # no aggregation to fold them back.
+        # The one tile that lists LINES rather than grouping them: over
+        # the long model it would get each line once per reporting
+        # currency, with no aggregation to fold them back.
         "Largest transactions": spend_native("Largest transactions", "table",
             "The fifty largest single spending lines of the window, with "
             "merchant (blank only where the line has none to show), account "
@@ -1952,11 +1957,12 @@ def question_defs(db_id, mid):
 # linked to every tile — plus widget-scoped asset-class and vehicle
 # pickers that render inline on the Top-positions tile only. The Returns
 # dashboards carry a start-year picker instead of a time filter — the
-# periods are precomputed buckets; the Spending dashboards carry an
-# account and a category picker on top of the time-range pair. The parameter ids are
-# arbitrary but must be stable across runs so re-provisioning converges
-# instead of accumulating parameters, and they must be distinct — a
-# reused id would make two pickers one.
+# periods are precomputed buckets; the Spending, Income and Cash Flow
+# dashboards carry pickers of their own on top of the time-range pair
+# (dashboard_parameters). The parameter ids are arbitrary but must be
+# stable across runs so re-provisioning converges instead of
+# accumulating parameters, and they must be distinct — a reused id
+# would make two pickers one.
 TIME_PARAM_ID = "aa5df100"
 SOURCE_PARAM_ID = "aa5df101"
 ASOF_PARAM_ID = "aa5df102"
@@ -1995,11 +2001,10 @@ POSITION_FILTERED_CARDS = {"Top 100 positions", "Top 100 positions (privacy)"}
 
 # Spending cards that carry every reporting currency as its own column,
 # and so must NOT be wired to the Currency picker: the long model has a
-# row per (line, currency), so a row filter on `currency` would empty the
-# two columns the picker does not select. Such a card is also the only
-# kind that reads correctly opened standalone, where no picker reaches it.
+# row per (line, currency), so a row filter on `currency` would empty
+# every column but the one the picker selects. Such a card also reads the
+# same opened standalone, where no picker reaches it.
 SPEND_ALL_CURRENCY_CARDS = {"Top 50 merchants"}
-
 
 
 def base_dashboards():
@@ -2311,9 +2316,10 @@ def _flow_fence(kinds):
 
 
 def spend_tags(table, spec):
-    """Template tags for a native spending card over serving view
-    `table`: the required {{currency}} text variable, plus a field filter
-    per column in `spec` whose field id has synced."""
+    """Template tags for a native money card over serving view `table`
+    (every family's, not only spending's): the required {{currency}}
+    text variable, plus a field filter per column in `spec` whose field
+    id has synced."""
     return {"currency": currency_tag(), **view_tags(table, spec)}
 
 
@@ -3046,7 +3052,7 @@ def income_privacy_defs(db_id):
         f"SELECT month, type, {peak_div} AS income_pct\n  FROM m\n ORDER BY 1",
         {"graph.dimensions": ["month", "type"],
          "graph.metrics": ["income_pct"],
-         "stackable.stack_type": "stacked"}),
+         "stackable.stack_type": "stacked"})
     # The share ring carries no figure in its hole: a total of shares is
     # 100 by construction and says nothing, and the hole is where the
     # base ring puts the money this one exists not to show.
@@ -3442,8 +3448,8 @@ def dashboard_parameters(model_ids, mode, name=""):
                                     {"base-type": "type/Text"}]}}
 
     def currency_picker(pid):
-        """The required reporting-currency picker every
-        filtered dashboard but Returns carries.
+        """The required reporting-currency picker every filtered
+        dashboard carries.
 
         Required with a default, because a card running with the
         currency cleared would be wrong: a tile over a model with one
@@ -3466,17 +3472,11 @@ def dashboard_parameters(model_ids, mode, name=""):
     source = card_picker(SOURCE_PARAM_ID, "Source", "source",
                          "report_sources_latest", "silver_source_id")
     if mode == "returns":
-        # Required, defaulting to DEFAULT_CURRENCY: report_returns carries
-        # one row set per currency, so a card must never run with the
-        # currency cleared — every period would show a row per currency (a
-        # required parameter resets to its default instead of clearing). The values
-        # come off the materialized table's own currency column, like the
-        # start-year list below.
-        currency = {"id": CURRENCY_PARAM_ID, "name": "Currency",
-                    "slug": "currency", "type": "string/=",
-                    "sectionId": "string", "isMultiSelect": False,
-                    "default": [DEFAULT_CURRENCY], "required": True,
-                    "values_query_type": "list",
+        # report_returns carries one row set per currency, so a card
+        # running with the currency cleared would show every period once
+        # per currency. The values come off the materialized table's own
+        # currency column, like the start-year list below.
+        currency = {**currency_picker(CURRENCY_PARAM_ID),
                     "values_source_type": "card",
                     "values_source_config": {
                         "card_id": model_ids["report_returns"],
