@@ -231,4 +231,5 @@ rows that predate them from what silver already stores: a holding's
 FIN block in `payload.fields`, a confirmation's block 4 in
 `payload.raw_fields`. The pass reads no bronze, and a filled row equals
 a freshly loaded one. Once every such row is filled, the pass finds
-nothing to do.
+nothing to do. The exception is a holding whose cost field the parse
+cannot read: it stays NULL and the pass reads it again on each run.

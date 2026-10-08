@@ -695,10 +695,11 @@ side:
 tables.** Two reasons:
 
 1. **Identity model differs.** The PDFs use UBS's `NN` portfolio
-   numbering (e.g. `01` … `06`), which the loader expands to the
-   PSN-aligned `BBBBAAAAAAAANN` form — directly joinable against
-   PSN's `PrtflId`. The live-fetch `portfolios` table uses 4-char
-   UBS-internal codes (e.g. `RNNN`, `NNNN`) which are a different
+   numbering (`01`, `02`, …), which the loader expands to the
+   16-char PSN-aligned form: the 4-digit branch, the 8-digit base and
+   the 4-digit portfolio number, all zero-padded. It joins directly
+   against PSN's `PrtflId`. The live-fetch `portfolios` table uses
+   4-char UBS-internal codes (e.g. `RNNN`, `NNNN`) which are a different
    surface. Putting them in one table would require either a
    mapping that doesn't exist in either source, or a `source`
    column that gold would still have to filter on every query.
@@ -710,10 +711,10 @@ tables.** Two reasons:
    customer see right now").
 
 **Cross-feed join keys.** `historical_position_snapshots` carries
-the portfolio identifier in PSN's `PrtflId`-aligned form (per the
-`BBBBAAAAAAAANN` expansion above), so it lines up directly with
-PSN `holdings`. `historical_cash_balances` carries
-`account_external_id` as the IBAN — the same canonical form PSN
+the portfolio identifier in PSN's `PrtflId`-aligned form (the
+expansion above), so it joins PSN's `portfolios` directly, and PSN's
+`holdings` through `safekeeping_accounts`. `historical_cash_balances`
+carries `account_external_id` as the IBAN — the same canonical form PSN
 uses. How gold splices the historical and PSN snapshots (which feed
 wins per date) is owned by the wealthdb UBS adapter — see
 [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
@@ -853,8 +854,8 @@ both list it. `settlement_no` names it across statements.
      account_external_id)`.
   4. Catalog `documents/*.pdf` files referenced in `run.json` →
      upsert `documents`, computing `content_sha256` per file.
-  5. Walk the `documents` table, route every PDF whose label
-     matches a known statement type to `pdf_parsers.py`, and
+  5. Walk the `documents` table, route every PDF whose label or
+     `doc_type` names a type the parsers read to `pdf_parsers.py`, and
      upsert the parsed positions / cash balances into the
      `historical_*` tables. The Account-Statement movement walker
      and the Credit/Debit Advice parser write `transactions` from

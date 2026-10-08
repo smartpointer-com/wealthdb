@@ -113,7 +113,7 @@ names and roles are the same:
 | [`explore.py`](explore.py) | Discovery harness. Launches headed Chromium on the container's Xvfb display and serves it over VNC, so a session can be driven by hand while everything it produces is recorded: the network (requests, responses and bodies, line-flushed so a crash keeps the log), the clicks, one DOM snapshot plus screenshot per structurally distinct screen, and every file downloaded. Artefacts land under `--debug-dir`, never bronze. The harness itself never navigates and never clicks — it opens the login page and records from there, so the read-only surface in [AGENTS.md](AGENTS.md) §1 binds whoever drives. An existing session is reused and saved back on exit, so a sign-in here is not paid for twice. |
 | [`cards.py`](cards.py) | The credit-card surface, read from the SPA's own REST API rather than scraped (see [DESIGN.md §5](DESIGN.md)): the roster, each card account's paged ledger, its billing periods with their reconciling totals, and each period's statement PDF. Read-only and enforced — an allow-list of read endpoints gates every request, including the paging cursor the ledger hands back, so a link the API advertises is never followed for being advertised. Driven by `download.py`; not a verb of its own. |
 | [`card_parsers.py`](card_parsers.py) | Bronze → silver for the card surface: pure functions from the captured JSON to the rows `load.py` writes, with no database handle, so each is testable against a synthetic payload. Holds the three readings that are easy to get wrong — the row key is minted from row content, because the API's `_id` is re-minted at every login and `transactionNr` was never a key, a `RESERVED` row is unposted activity rather than a transaction, and `merchantName` is the category while `details` is the merchant. |
-| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive — the scraped one plus any bank-delivered PDFs under `supplied-documents/` — and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
+| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive — the scraped one plus any bank-delivered PDFs under `supplied-documents/` — and reads it via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image): positions with their cost, and the transaction list, from each "Statement of assets"; cash balances and movements from each "Account Statement"; mortgage balances from maturity notices; payments from credit and debit advices; and capital calls and contract notes ([DESIGN.md](DESIGN.md) §3.6–§3.10). |
 
 ### Why both CSV and MT940?
 
@@ -229,80 +229,21 @@ legacy `--dry-run` shell (`dry_run: false`).
 
 Silver lives at `$XDG_DATA_HOME/wealthdb/ubs-web/ubs-web.db` by default;
 companion PSN silver is at `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` (from
-`ubs-psn`). Schemas in [migrations/](migrations/):
+`ubs-psn`). The schema is built by the files in
+[migrations/](migrations/), and each file's header says what it adds.
+Silver holds:
 
-- [`0001_initial.sql`](migrations/0001_initial.sql) — live-fetch
-  tables: `banking_relationships`, `portfolios`, `accounts`,
-  `positions`, `transactions`, `documents`. Driven by the
-  positions.csv / MT940 / CSV / document-API artefacts.
-- [`0002_historical_snapshots.sql`](migrations/0002_historical_snapshots.sql)
-  — `historical_position_snapshots` (semi-annual full snapshots
-  reconstructed from "Statement of assets" PDFs) and
-  `historical_cash_balances` (monthly cash deltas reconstructed
-  from "Account Statement" PDFs). Kept separate from the live-
-  fetch tables because the identity model and cadence differ.
-- [`0003_backfill_historical_portfolio_id.sql`](migrations/0003_backfill_historical_portfolio_id.sql)
-  — one-shot backfill: prepends a leading zero to any 15-char
-  `historical_position_snapshots.portfolio_external_id` value so it
-  lines up with PSN's 16-char canonical form. Idempotent; the parser
-  writes the 16-char form itself.
-- [`0004_mortgages.sql`](migrations/0004_mortgages.sql) —
-  `mortgages`: the per-mortgage liability rows positions.csv
-  carries under "Pro memoria - Mortgages" (UBS-internal mortgage
-  number as `account_external_id`; term, rate type, collateral in
-  named columns; negative outstanding balance).
-- [`0005_historical_mortgages.sql`](migrations/0005_historical_mortgages.sql)
-  — `historical_mortgages`: per-quarter outstanding principal
-  reconstructed from the "Maturity notice" PDFs, keyed
-  `(as_of_date, account_external_id)`.
-- [`0006_single_window.sql`](migrations/0006_single_window.sql) —
-  `dump_runs` rebuild collapsing the per-facet window columns into
-  one `window_*` pair (one `--lookback` window per run).
-- [`0007_cards.sql`](migrations/0007_cards.sql) — the credit-card
-  surface: `card_accounts` (a snapshot series, carrying the balance,
-  the limit and the magnitude of unposted activity), `card_transactions`
-  (booked rows keyed on the API's own opaque row id), `card_invoices`
-  (billing periods with their opening balance, turnover and settlement
-  date, plus whether the four figures reconcile) and `card_statements`
-  (the statement PDFs, indexed). Separate tables rather than columns on
-  `accounts` / `transactions`, because a card is keyed by an opaque
-  token where a cash account is keyed by IBAN and carries the columns
-  that join it to the PSN feed.
-- [`0008_card_session_ids.sql`](migrations/0008_card_session_ids.sql) —
-  re-keys that surface. Every id the card API hands out is re-minted at
-  login, so no API id names a row across dumps. The row key is a
-  content id the parsers mint.
-- [`0009_parser_generations.sql`](migrations/0009_parser_generations.sql)
-  — `parser_generations`: which generation of the PDF parsers wrote the
-  document-derived rows. When the parsers change, the next load drops
-  those rows and derives them again, so a re-parse replaces rows rather
-  than adding beside them.
-- [`0010_card_identity_rehash.sql`](migrations/0010_card_identity_rehash.sql)
-  — keys `card_transactions` on the card, the dates and the amounts,
-  without the merchant text, which UBS re-labels between fetches. It
-  clears the card ledger and `dump_runs`, so the next load re-reads
-  every dump from bronze.
-- [`0011_collapse_cash_duplicates.sql`](migrations/0011_collapse_cash_duplicates.sql)
-  — keeps one cash row per date, portfolio, account and currency in
-  `historical_position_snapshots`. A cash line has no ISIN, so the
-  primary key cannot collapse its copies; the loader deletes the row a
-  cash line replaces.
-- [`0012_portfolio_transactions.sql`](migrations/0012_portfolio_transactions.sql)
-  — `portfolio_transactions`: a managed portfolio's securities trades
-  and corporate actions, from the portfolio export. Kept apart from
-  `transactions`, the cash surface (DESIGN.md §3.7b).
-- [`0013_holding_cost_and_advices.sql`](migrations/0013_holding_cost_and_advices.sql)
-  — the cost side of a statement holding: `acquisition_fx_rate`,
-  `cost_basis` and `last_purchase_date` on
-  `historical_position_snapshots`, whose `exchange_rate_to_base` becomes
-  `current_fx_rate`. Also `advices`: one row per capital call or
-  contract note (DESIGN.md §3.8, §3.9).
-- [`0014_statement_trades.sql`](migrations/0014_statement_trades.sql) —
-  `statement_trades`: the transaction list a Statement of assets
-  prints, one row per booking per statement (DESIGN.md §3.10).
-- [`0015_holding_nav_date.sql`](migrations/0015_holding_nav_date.sql) —
-  `nav_date` on `historical_position_snapshots`: the date of the NAV a
-  private-markets holding prints (DESIGN.md §3.8).
+- what the live fetch reads: `banking_relationships`, `portfolios`,
+  `accounts`, `positions`, `mortgages`, `transactions` and `documents`;
+- a managed portfolio's trades from the portfolio export:
+  `portfolio_transactions` (DESIGN.md §3.7b);
+- the credit-card surface: `card_accounts`, `card_transactions`,
+  `card_invoices` and `card_statements` (DESIGN.md §5.9);
+- what the PDF archive states: `historical_position_snapshots`,
+  `historical_cash_balances` and `historical_mortgages` (DESIGN.md
+  §3.8), `advices` (§3.9) and `statement_trades` (§3.10). The
+  statement-era cash movements land in `transactions` (§3.6);
+- bookkeeping: `dump_runs`, `parser_generations` and `schema_meta`.
 
 Full design notes including the per-entity gold-merge contract,
 identifier conventions, IBAN ↔ PSN AcctId conversion, the
