@@ -25,8 +25,8 @@
 #
 # A collector with a Docker wrapper (collectors/<name>/<name>) builds via
 # `<wrapper> build` and tests with pytest inside the container; a host-venv
-# collector (schwab-api, ubs-psn, fred, manual, svb) builds its .venv
-# from requirements.txt. schwab-api and fidelity-web are hybrids: they
+# collector (fred, manual, plaid, svb, ubs-psn) builds its .venv from
+# requirements.txt. schwab-api and fidelity-web are hybrids: they
 # Docker-build AND carry a host venv (`.host-venv` marker).
 # Collectors that ship no tests are a no-op for the test target. Each
 # test-<x> rebuilds its <x> first, so testing always runs current code.
@@ -42,8 +42,8 @@ WEALTHDB      := wealthdb/wealthdb
 WEALTHDB_TEST := wealthdb/wealthdb-test
 WEALTHDB_GO   := wealthdb/wealthdb-go
 
-# Interpreter for the host-venv collectors (schwab-api, ubs-psn, fred,
-# manual, svb). Their
+# Interpreter for the host-venv collectors and the hybrids' host venvs
+# (fred, manual, plaid, svb, ubs-psn; schwab-api, fidelity-web). Their
 # deps (e.g. schwab-py) need Python >=3.10, but macOS /usr/bin/python3 is
 # 3.9 and `make` may resolve a bare `python3` to it. Prefer a versioned
 # python3.X from PATH, then a Homebrew install, then plain python3.
