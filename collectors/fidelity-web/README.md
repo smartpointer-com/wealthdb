@@ -63,7 +63,7 @@ Login, bronze fetch, and silver loader are operational.
 | Component | Status |
 | --- | --- |
 | [`download.py`](download.py) login + logout | one-shot: Camoufox + Akamai trust + Fidelity device-trust + CLI-MFA prompt; best-effort logout before context teardown |
-| [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts; then the open and closed lots of new and changed positions, or of all with `--refresh-lots`, loaded into `open_lots` and `closed_lots` — [DESIGN.md §8.3.1](DESIGN.md)) |
+| [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts; then the open and closed lots of new and changed positions, or of all with `--refresh-lots`, loaded into `open_lots` and `closed_lots` by [`lot_parsers.py`](lot_parsers.py) — [DESIGN.md §8.3.1](DESIGN.md)) |
 | [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--lookback` window bisected into ≤30-day chunks, clamped to Fidelity's ~4-year retention; a window before what Fidelity serves is not a gap) |
 | [`download.py`](download.py) documents — tax forms | implemented (multi-year via `#options-select-TimeFilter`; one click per form by unique anchor id) |
 | [`download.py`](download.py) documents — statements | implemented (per-row click fires an authenticated `financial-documents/download` POST; the PDF is decoded from base64-in-JSON in that response; scroll-into-view + JS-click fallback for rows below the fold). |
@@ -322,14 +322,15 @@ or the captures of one.
 
 #### Compressing the pre-compression backlog
 
-`download` zstd-compresses every HTML/CSV export as it lands
-(`balances.html.zst`, `positions_*.csv.zst`, `activity_*.csv.zst`),
-and `load` reads the `.zst` and plain forms alike (it decompresses in
-Python). Run dirs written before compression existed can be converted
-once with the `recompress` verb, which replaces each plain compressible
-file inside a **complete** dump with a compressed twin — the original is
-unlinked only after the twin has been decompressed and sha256-verified
-against it, and an interrupted sweep is safe to re-run. PDFs and
+`download` zstd-compresses every HTML/CSV export and the lot step's
+files as they land (`balances.html.zst`, `positions_*.csv.zst`,
+`activity_*.csv.zst`, `lots/*.zst`), and `load` reads the `.zst` and
+plain forms alike (it decompresses in Python). Run dirs written before
+compression existed can be converted once with the `recompress` verb,
+which replaces each plain compressible file inside a **complete** dump
+with a compressed twin — the original is unlinked only after the twin
+has been decompressed and sha256-verified against it, and an
+interrupted sweep is safe to re-run. PDFs and
 `run.json` are left untouched. Unlike `prune` this rewrites load
 inputs, so it is strictly manual: never schedule it, review the plan
 first, and verify afterwards with `load --force` (silver must come out
@@ -381,6 +382,10 @@ for the shared env-file rules.
 │   ├── positions/
 │   │   ├── positions_summary.csv.zst      Overview view (all accounts)
 │   │   └── positions_dividend.csv.zst     DividendView (all accounts)
+│   ├── lots/
+│   │   ├── index.json.zst                 every lot-eligible position and the dump that
+│   │   │                                   fetched its lots
+│   │   └── lots.jsonl.zst                 the lot step's responses, one JSON line each
 │   ├── activity/
 │   │   └── activity_<since>__<until>.csv.zst  one CSV per date-window
 │   │                                       (consolidated across accounts;
@@ -397,15 +402,16 @@ for the shared env-file rules.
 ├── 20260525T120000Z/
 │   └── …
 ├── manual/                                hand-dropped artefacts (documents that arrive out-of-band)
-├── supplied-statements/                   statement PDFs supplied out-of-band (parsed into historical position snapshots)
+├── supplied-statements/                   statement PDFs supplied out-of-band (parsed into position snapshots, transactions and closed lots)
 └── fidelity-web.db                        silver SQLite (default location)
 ```
 
-HTML/CSV load inputs are zstd-compressed in place as they land
-(`.zst`; plain in pre-compression dumps — both forms load, and the
-loader decompresses in Python). PDFs and `run.json` stay raw. See
-[DESIGN.md](DESIGN.md) §2 for the compression + convergence contract
-and the manual `recompress` backlog sweep.
+HTML/CSV load inputs and the lot step's files are zstd-compressed in
+place as they land (`.zst`; plain in pre-compression dumps — both
+forms load, and the loader decompresses in Python). PDFs and
+`run.json` stay raw. See [DESIGN.md](DESIGN.md) §2 for the
+compression + convergence contract and the manual `recompress`
+backlog sweep.
 
 `run.json` keys `account_dimensions` by `sha256(account_external_id)[:16]`,
 so `ls` of a bronze dir + a glance at the manifest does not

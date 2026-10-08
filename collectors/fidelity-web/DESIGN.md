@@ -126,7 +126,7 @@ bronze subdirectory holds documents that arrive out-of-band.
 ├── 20260525T120000Z/
 │   └── …
 ├── manual/                                     hand-dropped artefacts (documents that arrive out-of-band)
-├── supplied-statements/                        statement PDFs supplied out-of-band (→ historical_position_snapshots + transactions, §4.5)
+├── supplied-statements/                        statement PDFs supplied out-of-band (→ historical_position_snapshots + transactions + closed_lots, §4.5)
 └── fidelity-web.db                             silver SQLite (default location)
 ```
 
@@ -137,11 +137,11 @@ names, and both forms load — see **Bronze compression** below.)
 place as it lands (`collectorkit.compress.compress_file`: atomic
 tmp+rename, decompress-and-sha256-verify before the plain file is
 unlinked, mtime carried over). HTML/CSV-shaped bronze compresses to a
-small fraction of its raw size. The list of compressed forms is exactly
-the load inputs that are text: `positions/*.csv`, `activity/*.csv`,
-`balances/balances.html`, `performance/performance.html`,
-`lots/index.json`, `lots/lots.jsonl`, and any `documents/Statement*.csv`
-companions. **PDFs are never compressed**
+small fraction of its raw size. The compressed forms are
+`positions/*.csv`, `activity/*.csv`, `balances/balances.html`,
+`performance/performance.html`, `lots/index.json`, `lots/lots.jsonl`,
+any `documents/Statement*.csv` companions, and the DAF's
+`exports/*.csv`. **PDFs are never compressed**
 (already internally compressed; excluding them avoids spending CPU to
 grow the file), nor is `run.json` (it must stay greppable — it is the
 status-lifecycle handshake `prune` keys on), nor the `--debug`
@@ -608,7 +608,7 @@ statement (no zombie balances).
 
 #### 4.5.1 A re-parse replaces its rows
 
-All three PDF passes key their rows on text read off the page: a
+The three statement passes key their rows on text read off the page: a
 holding's description is part of the `historical_position_snapshots`
 primary key, and an activity row's description is inside its
 `activity_id`. Editing a parser therefore re-keys the rows it
@@ -998,9 +998,9 @@ affects the positions load.
 
 The load reads the open-lot tables fetched in each dump into
 `open_lots`, and the closed lots into `closed_lots` as
-`closed_positions`. A closed position's new fetch replaces the rows of
-its earlier one. The load warns when a position's lots do not sum to
-the figures the page stated for the position.
+`closed_positions` (`lot_parsers.py`). A closed position's new fetch
+replaces the rows of its earlier one. The load warns when a position's
+lots do not sum to the figures the page stated for the position.
 
 ### 8.4 Activity & Orders
 
