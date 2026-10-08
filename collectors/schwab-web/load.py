@@ -24,19 +24,22 @@ Idempotency:
     sha256-independent — re-parsing the same statement (even from
     a Schwab-regenerated PDF with a new sha256) converges to the
     same rows via INSERT OR IGNORE.
-  * `parsed_documents` marks each logical document (account +
-    doc_date + filename, the `logical_doc_key`) parsed under the
-    current parser generation, so re-downloads of the same logical
-    PDF are skipped, whatever rows its parse yielded. Use
-    --reparse to force re-ingestion of a logical document (deletes
-    by logical_doc_key, then re-inserts).
+  * `parsed_documents` marks each logical statement, 1099 and
+    realized-lot report (account + doc_date + filename, the
+    `logical_doc_key`) parsed under the current parser generation,
+    so re-downloads of the same logical document are skipped,
+    whatever rows its parse yielded. The distribution letters and
+    tx-history exports are skipped once they have transaction
+    rows. Use --reparse to force re-ingestion of a logical
+    document (deletes by logical_doc_key, then re-inserts).
   * The statement snapshot tables are keyed by account and the
     period end a statement prints; the first statement to write a
     key owns it (see _write_statement_snapshots).
 
 Usage:
     load.py --silver-db <path.db> --bronze-dir <root>
-            [--migrations-dir <dir>] [--reparse] [-v]
+            [--migrations-dir <dir>] [--reparse] [--workers N]
+            [--force] [-v]
 """
 
 from __future__ import annotations
@@ -146,8 +149,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--reparse", action="store_true",
         help=("Re-parse every document (one copy per logical "
               "document), even one already parsed under the current "
-              "parser generation. Deletes its old rows first, then "
-              "re-inserts. A changed parser implies it."),
+              "parser generation. Its rows are replaced once the new "
+              "parse succeeds. A changed parser implies it."),
     )
     p.add_argument(
         "--workers", type=int, default=None,
@@ -277,11 +280,10 @@ def _parse_statements(parse_jobs: list[dict],
 # ============================================================
 
 def canonical_json(obj) -> str:
-    """JSON encoding suitable for content-dedup: stable key order,
-    no whitespace, ensure_ascii=False so non-ASCII labels compare
-    bit-for-bit. Matches schwab-api's convention."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False)
+    """The payload and content-dedup encoding: stable key order, no
+    whitespace, non-ASCII characters kept as UTF-8 (unlike schwab-api,
+    which escapes them)."""
+    return silver.canonical_json(obj)
 
 
 def parse_snapshot_at(dump_dir_name: str) -> int:
@@ -356,6 +358,67 @@ def already_loaded(conn: sqlite3.Connection, snapshot_at: int) -> bool:
         "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,),
     ).fetchone()
     return row is not None
+
+
+def _doc_kind(doc: dict) -> str:
+    """A manifest document's silver doc_kind, from its `type`."""
+    raw_type = doc.get("type") or "Unknown"
+    return _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower())
+
+
+def _format_from_filename(filename: str) -> str:
+    """A document's format, from its file extension; a file without one
+    counts as a PDF."""
+    ext = Path(filename).suffix.lstrip(".").lower()
+    return ext or "pdf"
+
+
+def _account_documents(manifest: dict, doc_kind: str):
+    """Each (account suffix, manifest document) of a run's statements
+    area whose doc_kind is `doc_kind`, in manifest order."""
+    for acct in manifest.get("statements", []):
+        suffix = acct.get("suffix")
+        if not suffix:
+            continue
+        for doc in acct.get("documents", []):
+            if _doc_kind(doc) == doc_kind:
+                yield suffix, doc
+
+
+def _document_date(doc: dict) -> int | None:
+    """A manifest document's date, or None with a warning when it does
+    not read; the document is then skipped."""
+    doc_date = parse_doc_date(doc.get("date") or "")
+    if doc_date is None:
+        log.warning("document %s has unparseable date %r; skipping",
+                    doc.get("filename"), doc.get("date"))
+    return doc_date
+
+
+def _bronze_file(run_dir: Path, suffix: str, filename: str,
+                 stats: dict) -> Path | None:
+    """A manifest document's file in the run's statements area, or None,
+    counted as missing, when it is not on disk."""
+    path = run_dir / "statements" / suffix / filename
+    if path.is_file():
+        return path
+    log.warning("document in manifest but missing on disk: %s", path)
+    stats["documents_missing_on_disk"] += 1
+    return None
+
+
+def _record_document(conn: sqlite3.Connection, stats: dict,
+                     row: tuple) -> None:
+    """Add a `documents` row (sha256, snapshot_at, account_external_id,
+    doc_date, doc_kind, file_format, filename, size_bytes, payload) unless
+    its sha256 is already held, and count it as new or as a duplicate."""
+    new = conn.execute(
+        "INSERT OR IGNORE INTO documents"
+        " (sha256, snapshot_at, account_external_id, doc_date,"
+        "  doc_kind, file_format, filename, size_bytes, payload)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", row,
+    ).rowcount
+    stats["documents_new" if new else "documents_dup"] += 1
 
 
 # ============================================================
@@ -583,15 +646,15 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     """Load one bronze-run dir. Returns a stats dict for logging.
 
     `pool` and `seen_logical_docs`, when supplied by run_load, are shared
-    across all of an invocation's bronze runs so each logical statement
+    across all of an invocation's bronze runs so each logical document
     is parsed once. Left at their defaults (a run-local pool and a fresh
-    set) a direct call keeps the original per-run scope.
+    set) a direct call keeps a per-run scope.
 
-    A logical doc marked here is recorded in `seen_logical_docs` during
-    the manifest walk, before this run's inserts commit. run_load owns
-    the rollback: it snapshots the set before the run and restores it if
-    the run fails, so a rolled-back run never leaves a doc marked seen
-    (which would wrongly skip it on every later run)."""
+    A logical doc is added to `seen_logical_docs` when a pass takes it
+    up, before this run's inserts commit. run_load owns the rollback: it
+    snapshots the set before the run and restores it if the run fails, so
+    a rolled-back run never leaves a doc seen (which would wrongly skip it
+    on every later run)."""
     snapshot_at = parse_snapshot_at(run_dir.name)
     stats = {
         "snapshot_at": snapshot_at,
@@ -626,8 +689,8 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         # (_reconcile_account_numbers).
         "account_numbers_pinned": set(),
     }
-    # Parse-dedup set: (account_suffix, doc_date, doc_kind, filename).
-    # Schwab regenerates statement PDFs on every download (different
+    # Parse-dedup set: (logical_doc_key, document_kind), the parse-marker
+    # key. Schwab regenerates statement PDFs on every download (different
     # sha256 each time — see INTEROP.md §3), but the parser output is
     # byte-identical for the same logical document. The first sha256
     # seen per logical doc is parsed; subsequent re-downloads skip it.
@@ -635,7 +698,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     # job; the set covers what they cannot: `--reparse`, which ignores
     # them, and the runs of one invocation before their marks commit.
     # run_load shares the set across the invocation's bronze runs; a
-    # run-local default restores the per-run scope for direct callers.
+    # run-local default keeps a per-run scope for direct callers.
     if seen_logical_docs is None:
         seen_logical_docs = set()
 
@@ -670,7 +733,6 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
 
     _insert_dump_run(conn, snapshot_at, run_dir)
 
-    statements_dir = run_dir / "statements"
     for acct in manifest.get("statements", []):
         suffix = acct.get("suffix")
         if not suffix:
@@ -694,13 +756,10 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 log.warning("manifest doc missing filename/sha256: %s", doc)
                 continue
 
-            doc_date = parse_doc_date(doc.get("date") or "")
+            doc_date = _document_date(doc)
             if doc_date is None:
-                log.warning("doc %s has unparseable date %r; skipping",
-                            filename, doc.get("date"))
                 continue
-            raw_type = doc.get("type") or "Unknown"
-            doc_kind = _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower())
+            doc_kind = _doc_kind(doc)
             # The downloader writes the format from the row's
             # `Click to Download <FORMAT>` aria-label, but Schwab
             # has been observed to render a row whose label says
@@ -710,51 +769,31 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             # on disk over the manifest claim, so a mis-labelled
             # row doesn't get handed to pypdfium2.
             claimed_fmt = (doc.get("format") or "").lower()
-            actual_fmt = _format_from_filename(filename)
-            if claimed_fmt and claimed_fmt != actual_fmt:
+            fmt = _format_from_filename(filename)
+            if claimed_fmt and claimed_fmt != fmt:
                 log.warning(
                     "manifest format/extension mismatch for %s "
                     "(manifest=%s, on-disk=%s); using on-disk",
-                    filename, claimed_fmt, actual_fmt,
+                    filename, claimed_fmt, fmt,
                 )
-            fmt = actual_fmt
-
-            doc_payload = canonical_json({
-                "raw_type": raw_type,
-                "raw_doc_name": doc.get("document"),
-                "format": fmt,
-            })
-
-            existing = conn.execute(
-                "SELECT 1 FROM documents WHERE sha256 = ?", (sha256,),
-            ).fetchone()
-            if existing is None:
-                conn.execute(
-                    "INSERT INTO documents"
-                    " (sha256, snapshot_at, account_external_id, doc_date,"
-                    "  doc_kind, file_format, filename, size_bytes, payload)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (sha256, snapshot_at, suffix, doc_date, doc_kind,
-                     fmt, filename, size, doc_payload),
-                )
-                stats["documents_new"] += 1
-            else:
-                stats["documents_dup"] += 1
+            _record_document(conn, stats, (
+                sha256, snapshot_at, suffix, doc_date, doc_kind, fmt,
+                filename, size, canonical_json({
+                    "raw_type": doc.get("type") or "Unknown",
+                    "raw_doc_name": doc.get("document"),
+                    "format": fmt,
+                }),
+            ))
 
             # This walk parses only the Statement PDFs (positions,
-            # cash, transactions). The 1099-Composite tax forms and
-            # 3rd-Party-Distribution letters captured here are parsed
-            # in their own later passes (_load_1099b_forms,
-            # _load_distribution_letters); everything else stays an
-            # opaque-blob document.
+            # cash, transactions). The distribution letters, 1099
+            # Composite forms and realized-lot reports recorded here
+            # are parsed in their own passes below; everything else
+            # stays an opaque-blob document.
             if doc_kind != "statement" or fmt != "pdf":
                 continue
-
-            pdf_path = statements_dir / suffix / filename
-            if not pdf_path.is_file():
-                log.warning("doc in manifest but missing on disk: %s",
-                            pdf_path)
-                stats["documents_missing_on_disk"] += 1
+            pdf_path = _bronze_file(run_dir, suffix, filename, stats)
+            if pdf_path is None:
                 continue
 
             # One gate per logical statement (account + doc_date +
@@ -763,14 +802,14 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             # already parsed in this invocation is skipped; one parsed
             # under the current parser generation carries a parse marker
             # and is skipped unless `--reparse`.
-            logical_key = (suffix, doc_date, doc_kind, filename)
-            if logical_key in seen_logical_docs:
+            ldk = _logical_doc_key(suffix, doc_date, filename)
+            seen_key = (ldk, "statement")
+            if seen_key in seen_logical_docs:
                 stats["statements_logical_deduped"] += 1
                 continue
-            ldk = _logical_doc_key(suffix, doc_date, filename)
             if not reparse and _is_parsed(conn, ldk, "statement"):
                 continue
-            seen_logical_docs.add(logical_key)
+            seen_logical_docs.add(seen_key)
 
             year_hint = datetime.fromtimestamp(doc_date, tz=timezone.utc).year
             parse_jobs.append({
@@ -910,11 +949,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     # realized-lot reports. All are already in the documents table
     # (recorded in the statement walk above) but skipped there for row
     # parsing; these passes add their rows. They iterate the same
-    # manifest["statements"] documents and use their own
-    # logical_doc_key gates (parse markers, or transaction rows for the
-    # letters), so they're idempotent across runs and sha256
-    # re-downloads independently of the statement parser.
-    _load_distribution_letters(conn, run_dir, manifest, reparse, stats)
+    # manifest["statements"] documents and gate on the logical_doc_key
+    # (parse markers, or transaction rows for the letters), so they're
+    # idempotent across runs and sha256 re-downloads.
+    _load_distribution_letters(conn, run_dir, manifest, reparse, stats,
+                               seen_logical_docs)
     _load_1099b_forms(conn, run_dir, manifest, reparse, stats,
                       seen_logical_docs)
     _load_realized_reports(conn, run_dir, manifest, reparse, stats,
@@ -945,25 +984,14 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 log.warning("tx-history manifest export missing fields: %s",
                             export)
                 continue
-            doc_payload = canonical_json({
-                "raw_type": "Transaction History Export",
-                "format": fmt,
-            })
-            existing = conn.execute(
-                "SELECT 1 FROM documents WHERE sha256 = ?", (sha256,),
-            ).fetchone()
-            if existing is None:
-                conn.execute(
-                    "INSERT INTO documents"
-                    " (sha256, snapshot_at, account_external_id, doc_date,"
-                    "  doc_kind, file_format, filename, size_bytes, payload)"
-                    " VALUES (?, ?, ?, ?, 'tx_history_export', ?, ?, ?, ?)",
-                    (sha256, snapshot_at, suffix, snapshot_at,
-                     fmt, filename, size, doc_payload),
-                )
-                stats["documents_new"] += 1
-            else:
-                stats["documents_dup"] += 1
+            _record_document(conn, stats, (
+                sha256, snapshot_at, suffix, snapshot_at,
+                "tx_history_export", fmt, filename, size,
+                canonical_json({
+                    "raw_type": "Transaction History Export",
+                    "format": fmt,
+                }),
+            ))
 
             # JSON is the canonical row source — same logical
             # events as the CSV/XML but with a couple of extra
@@ -980,23 +1008,13 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 continue
             # Logical-doc gate for tx-history: keyed on
             # (account, snapshot_at, filename) since each export
-            # run produces a uniquely-named file. The gate avoids
-            # redundant re-parsing across loaders; INSERT OR IGNORE
-            # in _insert_tx_history_transactions is the row-level
+            # run produces a uniquely-named file. The gate skips an
+            # export already loaded; INSERT OR IGNORE in
+            # _insert_tx_history_transactions is the row-level
             # dedup backstop.
             tx_ldk = _logical_doc_key(suffix, snapshot_at, filename)
-            already_has_rows = conn.execute(
-                "SELECT 1 FROM transactions WHERE logical_doc_key = ?",
-                (tx_ldk,),
-            ).fetchone() is not None
-            if already_has_rows and not reparse:
+            if not _gate_logical_doc(conn, tx_ldk, reparse):
                 continue
-            if already_has_rows and reparse:
-                conn.execute(
-                    "DELETE FROM transactions WHERE logical_doc_key = ?",
-                    (tx_ldk,),
-                )
-                stats["transactions_reparsed"] += 1
             try:
                 with json_path.open("r", encoding="utf-8") as fh:
                     payload = json.load(fh)
@@ -1004,6 +1022,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 log.warning("tx-history JSON parse failed for %s: %s",
                             json_path, e)
                 continue
+            _reparse_delete(conn, tx_ldk, reparse, stats)
             txs = payload.get("BrokerageTransactions") or []
             n = _insert_tx_history_transactions(
                 conn, suffix, txs, sha256, more_details, tx_ldk,
@@ -1011,11 +1030,6 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             stats["transactions_inserted"] += n
 
     return stats
-
-
-def _format_from_filename(filename: str) -> str:
-    ext = Path(filename).suffix.lstrip(".").lower()
-    return ext or "pdf"
 
 
 def _load_more_details(acct_dir: Path) -> dict:
@@ -1120,21 +1134,25 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
         row_key = _tx_history_row_key(tx)
         if row_key in more_details:
             payload_dict["_more"] = more_details[row_key]
-        payload = canonical_json(payload_dict)
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO transactions"
-            " (activity_id, timestamp, account_external_id, kind,"
-            "  instrument_key, source, source_sha256, logical_doc_key,"
-            "  payload)"
-            " VALUES (?, ?, ?, ?, ?, 'tx_history_json', ?, ?, ?)",
-            (activity_id, timestamp, account_external_id,
-             tx.get("Action") or "Unknown",
-             tx.get("Symbol") or None,
-             source_sha256, logical_doc_key, payload),
-        )
-        if cur.rowcount:
-            inserted += 1
+        inserted += _insert_transaction(conn, (
+            activity_id, timestamp, account_external_id,
+            tx.get("Action") or "Unknown", tx.get("Symbol") or None,
+            "tx_history_json", source_sha256, logical_doc_key,
+            canonical_json(payload_dict),
+        ))
     return inserted
+
+
+def _insert_transaction(conn: sqlite3.Connection, row: tuple) -> int:
+    """INSERT OR IGNORE one `transactions` row: (activity_id, timestamp,
+    account_external_id, kind, instrument_key, source, source_sha256,
+    logical_doc_key, payload). Returns 1 when it was inserted, else 0."""
+    return conn.execute(
+        "INSERT OR IGNORE INTO transactions"
+        " (activity_id, timestamp, account_external_id, kind,"
+        "  instrument_key, source, source_sha256, logical_doc_key,"
+        "  payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", row,
+    ).rowcount
 
 
 def _insert_statement_transactions(conn: sqlite3.Connection,
@@ -1147,8 +1165,8 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
 
     `logical_doc_key` is the sha256-independent key for the
     logical document (account + doc_date + filename), stored on
-    every row so the load gate and --reparse delete can operate
-    on it without touching source_sha256.
+    every row so the --reparse delete clears all of a logical
+    statement's rows at once.
 
     Skips rows that have no amount (parser failure indicator) —
     a parser regression should drop the bad row, not break the
@@ -1168,25 +1186,17 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
             log.warning("skipping transaction with no parseable date: %s",
                         tx.get("date"))
             continue
-        kind = tx.get("category") or "Unknown"
         # Statement PDFs expose only the ticker in the activity
         # rows (CUSIP lives in the positions block), so
         # instrument_key carries the parser's ticker; the gold
         # layer resolves to CUSIP via the api silver's
         # instruments table.
-        instrument_key = tx.get("symbol")
-        payload = canonical_json(tx)
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO transactions"
-            " (activity_id, timestamp, account_external_id, kind,"
-            "  instrument_key, source, source_sha256, logical_doc_key,"
-            "  payload)"
-            " VALUES (?, ?, ?, ?, ?, 'statement_pdf', ?, ?, ?)",
-            (activity_id, timestamp, account_external_id, kind,
-             instrument_key, source_sha256, logical_doc_key, payload),
-        )
-        if cur.rowcount:
-            inserted += 1
+        inserted += _insert_transaction(conn, (
+            activity_id, timestamp, account_external_id,
+            tx.get("category") or "Unknown", tx.get("symbol"),
+            "statement_pdf", source_sha256, logical_doc_key,
+            canonical_json(tx),
+        ))
     return inserted
 
 
@@ -1197,7 +1207,8 @@ def _insert_parsed_transactions(conn: sqlite3.Connection,
                                 source_sha256: str,
                                 logical_doc_key: str) -> int:
     """INSERT OR IGNORE one row per normalised parser row, for the
-    newer feeds (form_1099b, third_party_distribution).
+    feeds whose parser maps the row itself (form_1099b,
+    third_party_distribution).
 
     Mirrors `_insert_statement_transactions` — same synthetic
     activity_id contract (`date`/`amount`/`description`/`symbol` +
@@ -1213,28 +1224,21 @@ def _insert_parsed_transactions(conn: sqlite3.Connection,
             log.warning("skipping %s row with no parseable date: %r",
                         source, row.get("date"))
             continue
-        activity_id = _synthesize_activity_id(account_external_id, row, idx)
-        kind = row.get("kind") or "Unknown"
-        instrument_key = row.get("instrument_key")
-        payload = canonical_json(row)
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO transactions"
-            " (activity_id, timestamp, account_external_id, kind,"
-            "  instrument_key, source, source_sha256, logical_doc_key,"
-            "  payload)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (activity_id, timestamp, account_external_id, kind,
-             instrument_key, source, source_sha256, logical_doc_key, payload),
-        )
-        if cur.rowcount:
-            inserted += 1
+        inserted += _insert_transaction(conn, (
+            _synthesize_activity_id(account_external_id, row, idx),
+            timestamp, account_external_id, row.get("kind") or "Unknown",
+            row.get("instrument_key"), source, source_sha256,
+            logical_doc_key, canonical_json(row),
+        ))
     return inserted
 
 
 def _gate_logical_doc(conn: sqlite3.Connection, ldk: str,
                       reparse: bool) -> bool:
-    """Shared transactions load gate for the distribution letters: True
-    when the letter is to be parsed. Deletes nothing.
+    """The load gate of the documents that carry no parse marker (the
+    distribution letters and the tx-history exports): True when the
+    document is to be parsed, on `--reparse` or while it has no
+    transaction rows. Deletes nothing.
 
     The delete-on-reparse is intentionally NOT done here: the caller
     must parse first and only delete on a *successful* parse (via
@@ -1281,8 +1285,8 @@ def _mark_parsed(conn: sqlite3.Connection, ldk: str, document_kind: str,
 
 
 def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
-                               manifest: dict, reparse: bool,
-                               stats: dict) -> None:
+                               manifest: dict, reparse: bool, stats: dict,
+                               seen_logical_docs: set[tuple]) -> None:
     """Parse 3rd-Party-Distribution letters (doc_kind='letter', the
     "3rd-Party-Distribution_*.PDF" filename) into transfer rows with
     source='third_party_distribution'.
@@ -1290,51 +1294,41 @@ def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
     These letters are already recorded in the documents table by the
     statement walk; this pass only adds the transaction rows. Each
     letter is one logical document (no format twins), so the
-    logical_doc_key uses the filename directly."""
-    statements_dir = run_dir / "statements"
-    for acct in manifest.get("statements", []):
-        suffix = acct.get("suffix")
-        if not suffix:
+    logical_doc_key uses the filename directly. A letter is parsed once
+    per invocation (`seen_logical_docs`), and while it has no
+    transaction rows or on `--reparse`."""
+    for suffix, doc in _account_documents(manifest, "letter"):
+        filename = doc.get("filename") or ""
+        if (not filename.startswith("3rd-Party-Distribution")
+                or _format_from_filename(filename) != "pdf"):
             continue
-        for doc in acct.get("documents", []):
-            filename = doc.get("filename") or ""
-            raw_type = doc.get("type") or ""
-            doc_kind = _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower())
-            if doc_kind != "letter":
-                continue
-            if not filename.startswith("3rd-Party-Distribution"):
-                continue
-            if _format_from_filename(filename) != "pdf":
-                continue
-            doc_date = parse_doc_date(doc.get("date") or "")
-            if doc_date is None:
-                log.warning("distribution %s has unparseable date %r; skipping",
-                            filename, doc.get("date"))
-                continue
-            path = statements_dir / suffix / filename
-            if not path.is_file():
-                log.warning("distribution in manifest but missing on disk: %s",
-                            path)
-                stats["documents_missing_on_disk"] += 1
-                continue
-            ldk = _logical_doc_key(suffix, doc_date, filename)
-            if not _gate_logical_doc(conn, ldk, reparse):
-                continue
-            try:
-                rows = pp.parse_distribution_pdf(path)
-            except Exception as e:
-                log.warning("distribution parse failed for %s: %s", path, e)
-                stats["distribution_parse_errors"] += 1
-                continue
-            # Delete only after a successful parse, so a failure can't
-            # drop the prior rows with no replacement.
-            _reparse_delete(conn, ldk, reparse, stats)
-            n = _insert_parsed_transactions(
-                conn, suffix, rows, "third_party_distribution",
-                doc.get("sha256") or "", ldk,
-            )
-            stats["transactions_inserted"] += n
-            stats["distribution_transactions_inserted"] += n
+        doc_date = _document_date(doc)
+        if doc_date is None:
+            continue
+        path = _bronze_file(run_dir, suffix, filename, stats)
+        if path is None:
+            continue
+        ldk = _logical_doc_key(suffix, doc_date, filename)
+        seen_key = (ldk, "third_party_distribution")
+        if seen_key in seen_logical_docs or not _gate_logical_doc(
+                conn, ldk, reparse):
+            continue
+        seen_logical_docs.add(seen_key)
+        try:
+            rows = pp.parse_distribution_pdf(path)
+        except Exception as e:
+            log.warning("distribution parse failed for %s: %s", path, e)
+            stats["distribution_parse_errors"] += 1
+            continue
+        # Delete only after a successful parse, so a failure can't
+        # drop the prior rows with no replacement.
+        _reparse_delete(conn, ldk, reparse, stats)
+        n = _insert_parsed_transactions(
+            conn, suffix, rows, "third_party_distribution",
+            doc.get("sha256") or "", ldk,
+        )
+        stats["transactions_inserted"] += n
+        stats["distribution_transactions_inserted"] += n
 
 
 def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
@@ -1344,89 +1338,76 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
     name containing "1099 Composite") into sale rows with
     source='form_1099b'.
 
-    Schwab ships each logical form in up to three formats (XML, CSV,
-    PDF) that share a base filename. We prefer the XML, fall back to
-    the CSV, and key the logical_doc_key on the **base filename
-    (without extension)** so the XML and CSV twins dedup to one set of
-    rows. A form available only as PDF is logged as a coverage gap
-    (no machine-readable lot detail to parse).
+    Schwab ships each logical form as a PDF plus, where it offers them,
+    machine-readable XML and CSV twins. The twins share a base filename;
+    the PDF is named apart. All three share the manifest row (date and
+    document name). We prefer the XML, fall back to the CSV, and key the
+    logical_doc_key on the **base filename (without extension)** so the
+    XML and CSV twins dedup to one set of rows. A PDF without an XML or
+    CSV on its manifest row is logged as a coverage gap (no
+    machine-readable lot detail to parse).
 
     A form is parsed once per invocation (`seen_logical_docs`), and once
     per parser generation: its parse marker skips it on later loads
     unless `--reparse`, also when it holds no 1099-B lots."""
-    statements_dir = run_dir / "statements"
-    for acct in manifest.get("statements", []):
-        suffix = acct.get("suffix")
-        if not suffix:
+    twins: dict[tuple[str, str], dict[str, dict]] = {}
+    pdfs: list[tuple[str, dict]] = []
+    for suffix, doc in _account_documents(manifest, "tax_form"):
+        if "1099 Composite" not in (doc.get("document") or ""):
             continue
-        # Group this account's 1099-Composite docs by base filename
-        # (sans extension); within each group keep one doc per format.
-        groups: dict[str, dict[str, dict]] = {}
-        for doc in acct.get("documents", []):
-            raw_type = doc.get("type") or ""
-            if _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower()) != "tax_form":
-                continue
-            if "1099 Composite" not in (doc.get("document") or ""):
-                continue
-            filename = doc.get("filename") or ""
-            fmt = _format_from_filename(filename)
-            if fmt not in ("xml", "csv", "pdf"):
-                continue
-            base = filename[: -(len(fmt) + 1)] if "." in filename else filename
-            groups.setdefault(base, {}).setdefault(fmt, doc)
+        filename = doc.get("filename") or ""
+        fmt = _format_from_filename(filename)
+        if fmt == "pdf":
+            pdfs.append((suffix, doc))
+        elif fmt in ("xml", "csv"):
+            base = filename[: -(len(fmt) + 1)]
+            twins.setdefault((suffix, base), {}).setdefault(fmt, doc)
 
-        for base, by_fmt in groups.items():
-            if "xml" in by_fmt:
-                fmt, doc = "xml", by_fmt["xml"]
-            elif "csv" in by_fmt:
-                fmt, doc = "csv", by_fmt["csv"]
-            else:
-                # PDF-only form — no machine-readable lots to parse.
-                log.info("1099 Composite %s available only as PDF; "
-                         "no lot detail parsed", base)
-                stats["form_1099b_pdf_only"] += 1
-                continue
+    readable_rows = {(suffix, doc.get("date"), doc.get("document"))
+                     for (suffix, _), by_fmt in twins.items()
+                     for doc in by_fmt.values()}
+    for suffix, doc in pdfs:
+        if (suffix, doc.get("date"), doc.get("document")) not in readable_rows:
+            log.info("1099 Composite %s available only as PDF; "
+                     "no lot detail parsed", doc.get("filename"))
+            stats["form_1099b_pdf_only"] += 1
 
-            filename = doc.get("filename") or ""
-            doc_date = parse_doc_date(doc.get("date") or "")
-            if doc_date is None:
-                log.warning("1099 %s has unparseable date %r; skipping",
-                            filename, doc.get("date"))
-                continue
-            # Format-independent key: the XML and CSV twins share `base`,
-            # so whichever we parse first wins and the other is skipped.
-            seen_key = (suffix, doc_date, "form_1099b", base)
-            ldk = _logical_doc_key(suffix, doc_date, base)
-            if seen_key in seen_logical_docs or (
-                    not reparse and _is_parsed(conn, ldk, "form_1099b")):
-                continue
-            path = statements_dir / suffix / filename
-            if not path.is_file():
-                log.warning("1099 in manifest but missing on disk: %s", path)
-                stats["documents_missing_on_disk"] += 1
-                continue
-            seen_logical_docs.add(seen_key)
-            try:
-                parsed = tf.parse_1099b(path, fmt)
-            except Exception as e:
-                log.warning("1099-B parse failed for %s: %s", path, e)
-                stats["form_1099b_parse_errors"] += 1
-                continue
-            # Delete only after a successful parse, so a failure can't
-            # drop the prior rows with no replacement.
-            _reparse_delete(conn, ldk, reparse, stats)
-            lots = parsed.get("lots", [])
-            n = _insert_parsed_transactions(
-                conn, suffix, lots, "form_1099b", doc.get("sha256") or "", ldk,
-            )
-            stats["transactions_inserted"] += n
-            stats["form_1099b_transactions_inserted"] += n
-            stats["closed_lots_inserted"] += _replace_closed_lots(
-                conn, ldk, "form_1099b", suffix,
-                [(_closed_lot_from_1099b(lot), lot) for lot in lots],
-                doc.get("sha256") or "",
-            )
-            _mark_parsed(conn, ldk, "form_1099b", doc.get("sha256") or "")
+    for (suffix, base), by_fmt in twins.items():
+        fmt = "xml" if "xml" in by_fmt else "csv"
+        doc = by_fmt[fmt]
+        doc_date = _document_date(doc)
+        if doc_date is None:
+            continue
+        # Format-independent key: the XML and CSV twins share `base`,
+        # so whichever we parse first wins and the other is skipped.
+        ldk = _logical_doc_key(suffix, doc_date, base)
+        seen_key = (ldk, "form_1099b")
+        if seen_key in seen_logical_docs or (
+                not reparse and _is_parsed(conn, ldk, "form_1099b")):
+            continue
+        path = _bronze_file(run_dir, suffix, doc["filename"], stats)
+        if path is None:
+            continue
+        seen_logical_docs.add(seen_key)
+        try:
+            parsed = tf.parse_1099b(path, fmt)
+        except Exception as e:
+            log.warning("1099-B parse failed for %s: %s", path, e)
+            stats["form_1099b_parse_errors"] += 1
+            continue
+        sha256 = doc.get("sha256") or ""
+        # Delete only after a successful parse, so a failure can't
+        # drop the prior rows with no replacement.
+        _reparse_delete(conn, ldk, reparse, stats)
+        lots = parsed.get("lots", [])
+        n = _insert_parsed_transactions(
+            conn, suffix, lots, "form_1099b", sha256, ldk)
+        stats["transactions_inserted"] += n
+        stats["form_1099b_transactions_inserted"] += n
+        stats["closed_lots_inserted"] += _replace_closed_lots(
+            conn, ldk, "form_1099b", suffix,
+            [(_closed_lot_from_1099b(lot), lot) for lot in lots], sha256)
+        _mark_parsed(conn, ldk, "form_1099b", sha256)
 
 
 # Realized-lot reports by filename prefix: the Year-End Summary (alone,
@@ -1503,65 +1484,50 @@ def _load_realized_reports(conn: sqlite3.Connection, run_dir: Path,
     once per parser generation: its parse marker skips it on later loads
     unless `--reparse`, also when it holds no realized lots. Each parse
     replaces the report's rows."""
-    statements_dir = run_dir / "statements"
-    for acct in manifest.get("statements", []):
-        suffix = acct.get("suffix")
-        if not suffix:
+    for suffix, doc in _account_documents(manifest, "tax_form"):
+        filename = doc.get("filename") or ""
+        kind = next((k for prefix, k in _REALIZED_REPORT_KINDS
+                     if filename.startswith(prefix)), None)
+        if kind is None or _format_from_filename(filename) != "pdf":
             continue
-        for doc in acct.get("documents", []):
-            filename = doc.get("filename") or ""
-            raw_type = doc.get("type") or ""
-            if _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower()) != "tax_form":
-                continue
-            if _format_from_filename(filename) != "pdf":
-                continue
-            kind = next((k for prefix, k in _REALIZED_REPORT_KINDS
-                         if filename.startswith(prefix)), None)
-            if kind is None:
-                continue
-            doc_date = parse_doc_date(doc.get("date") or "")
-            if doc_date is None:
-                log.warning("report %s has unparseable date %r; skipping",
-                            filename, doc.get("date"))
-                continue
-            seen_key = (suffix, doc_date, kind, filename)
-            if seen_key in seen_logical_docs:
-                continue
-            ldk = _logical_doc_key(suffix, doc_date, filename)
-            if not reparse and _is_parsed(conn, ldk, kind):
-                continue
-            path = statements_dir / suffix / filename
-            if not path.is_file():
-                log.warning("report in manifest but missing on disk: %s", path)
-                stats["documents_missing_on_disk"] += 1
-                continue
-            seen_logical_docs.add(seen_key)
-            try:
-                parsed = tf.parse_realized_report_pdf(path, kind)
-            except Exception as e:
-                log.warning("realized-lot report parse failed for %s: %s",
-                            path, e)
-                stats["realized_report_parse_errors"] += 1
-                continue
-            sha256 = doc.get("sha256") or ""
-            if parsed["incomplete"]:
-                log.warning("%s: %d realized lot(s) whose amounts could not "
-                            "be read were left out", ldk, parsed["incomplete"])
-                stats["realized_lots_unreadable"] += parsed["incomplete"]
-            stats["closed_lots_inserted"] += _replace_closed_lots(
-                conn, ldk, kind, suffix,
-                [(lot, lot) for lot in parsed["lots"]], sha256)
-            conn.execute("DELETE FROM cost_basis_methods WHERE logical_doc_key = ?",
-                         (ldk,))
-            for m in parsed.get("methods", []):
-                conn.execute(
-                    "INSERT INTO cost_basis_methods (logical_doc_key,"
-                    " asset_class, account_external_id, as_of_date, tax_year,"
-                    " method, source_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (ldk, m["asset_class"], suffix, doc_date,
-                     parsed["tax_year"], m["method"], sha256),
-                )
-            _mark_parsed(conn, ldk, kind, sha256)
+        doc_date = _document_date(doc)
+        if doc_date is None:
+            continue
+        ldk = _logical_doc_key(suffix, doc_date, filename)
+        seen_key = (ldk, kind)
+        if seen_key in seen_logical_docs or (
+                not reparse and _is_parsed(conn, ldk, kind)):
+            continue
+        path = _bronze_file(run_dir, suffix, filename, stats)
+        if path is None:
+            continue
+        seen_logical_docs.add(seen_key)
+        try:
+            parsed = tf.parse_realized_report_pdf(path, kind)
+        except Exception as e:
+            log.warning("realized-lot report parse failed for %s: %s",
+                        path, e)
+            stats["realized_report_parse_errors"] += 1
+            continue
+        sha256 = doc.get("sha256") or ""
+        if parsed["incomplete"]:
+            log.warning("%s: %d realized lot(s) whose amounts could not "
+                        "be read were left out", ldk, parsed["incomplete"])
+            stats["realized_lots_unreadable"] += parsed["incomplete"]
+        stats["closed_lots_inserted"] += _replace_closed_lots(
+            conn, ldk, kind, suffix,
+            [(lot, lot) for lot in parsed["lots"]], sha256)
+        conn.execute("DELETE FROM cost_basis_methods WHERE logical_doc_key = ?",
+                     (ldk,))
+        for m in parsed.get("methods", []):
+            conn.execute(
+                "INSERT INTO cost_basis_methods (logical_doc_key,"
+                " asset_class, account_external_id, as_of_date, tax_year,"
+                " method, source_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ldk, m["asset_class"], suffix, doc_date,
+                 parsed["tax_year"], m["method"], sha256),
+            )
+        _mark_parsed(conn, ldk, kind, sha256)
 
 
 def _registration_from_tax_forms(conn: sqlite3.Connection,

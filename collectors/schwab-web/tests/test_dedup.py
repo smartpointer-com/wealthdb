@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -150,3 +153,19 @@ def test_dry_run_collapses_nothing(tmp_path, monkeypatch):
     dedup.main(["--bronze-dir", str(tmp_path), "--dry-run"])
     assert _ino(a / "statements/9999/stmt.pdf") == ia
     assert _ino(b / "statements/9999/stmt.pdf") == ib
+
+
+def test_the_image_ships_every_script_its_entrypoint_runs():
+    """`collapse-statements` runs /app/dedup.py, so the image must carry it:
+    a verb whose script the Dockerfile leaves out fails outside the
+    wrapper's live /app mount."""
+    here = Path(__file__).resolve().parent.parent
+    if not (here / "Dockerfile").is_file():
+        pytest.skip("the build context is not mounted")
+    run = set(re.findall(r"python3 /app/(\w+\.py)",
+                         (here / "entrypoint.sh").read_text()))
+    dockerfile = (here / "Dockerfile").read_text().replace("\\\n", " ")
+    copied = set(re.findall(r"\b(\w+\.py)\b", " ".join(
+        ln for ln in dockerfile.splitlines() if ln.startswith("COPY"))))
+    assert "dedup.py" in run
+    assert run <= copied, sorted(run - copied)

@@ -618,6 +618,23 @@ class TestTxHistoryIngest:
         assert payload.get("_more", {}).get("Settle Date") == "05/14/2024"
         assert payload.get("_more", {}).get("Principal") == "$100.00"
 
+    def test_reparse_parse_failure_preserves_prior_rows(self, migrated, tmp_path):
+        """An export that no longer reads during --reparse keeps the rows
+        an earlier parse wrote: they are deleted only for a parse that
+        replaces them."""
+        txs = [{"Date": "05/12/2024", "Action": "Buy", "Symbol": "ABC",
+                "Description": "ACME CORP", "Amount": "-$100.01"}]
+        run = _make_tx_history_bronze(tmp_path, "20260520T120000Z", "000", txs)
+        load.load_run(migrated, run)
+        migrated.commit()
+        export = next((run / "transactions" / "000").glob("*.json"))
+        export.write_text("{ not json", encoding="utf-8")
+        stats = load.load_run(migrated, run, reparse=True)
+        migrated.commit()
+        assert stats["transactions_reparsed"] == 0
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+
 
 class TestPositionsAndCashLoad:
     """End-to-end loader tests for migration 0002 (positions +
@@ -1858,6 +1875,24 @@ class TestForm1099bLoad:
         assert stats["form_1099b_transactions_inserted"] == 0
         assert stats["form_1099b_pdf_only"] == 1
 
+    def test_a_pdf_with_a_machine_readable_twin_is_no_coverage_gap(
+            self, monkeypatch, migrated, tmp_path):
+        # The PDF is named apart from its XML twin; the manifest row they
+        # share (date and document) pairs them.
+        monkeypatch.setattr(load.tf, "extract_text_pdfium", lambda path: "")
+        pdf = "1099-Composite-and-Year-End-Summary---2021_2022-02-15_999.PDF"
+        run = _make_doc_bronze(tmp_path, "20260520T120000Z", "999", [
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-X999.XML", "content": _MINI_1099B_XML},
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": pdf, "content": f"%PDF-1.4 stub {pdf}\n"},
+        ])
+        stats = load.load_run(migrated, run, workers=1)
+        assert stats["form_1099b_transactions_inserted"] == 2
+        assert stats["form_1099b_pdf_only"] == 0
+
 
 class TestDistributionLoad:
     _SYNTH_ROWS = [{
@@ -1932,6 +1967,25 @@ class TestDistributionLoad:
             " WHERE source='third_party_distribution'"
         ).fetchone()[0]
         assert n == 1                                # prior row preserved
+
+    def test_parsed_once_per_invocation_under_reparse(
+            self, monkeypatch, migrated, tmp_path):
+        calls: list[str] = []
+
+        def parse(path):
+            calls.append(path)
+            return [dict(r) for r in self._SYNTH_ROWS]
+
+        monkeypatch.setattr(load.pp, "parse_distribution_pdf", parse)
+        seen: set[tuple] = set()
+        for run_ts in ("20260520T120000Z", "20260521T120000Z"):
+            load.load_run(migrated, self._bronze(tmp_path, run_ts=run_ts),
+                          reparse=True, workers=1, seen_logical_docs=seen)
+        migrated.commit()
+        assert len(calls) == 1
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM transactions"
+            " WHERE source='third_party_distribution'").fetchone()[0] == 1
 
 
 # ============================================================

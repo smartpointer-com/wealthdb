@@ -51,8 +51,7 @@ from pathlib import Path
 
 import pdf_parsers as pp
 from collectorkit import bronze, dedup, prune
-from load import (_DOC_KIND_BY_TYPE, _format_from_filename, canonical_json,
-                  parse_doc_date)
+from load import _doc_kind, _format_from_filename, canonical_json, parse_doc_date
 
 
 def _read_manifest(run_dir: Path) -> dict | None:
@@ -99,9 +98,8 @@ def build_statement_catalog(bronze_dir: Path) -> dict[str, tuple[str, int]]:
                 # either (load.py), so requiring both keeps this congruent.
                 if not filename or not doc.get("sha256"):
                     continue
-                raw_type = doc.get("type") or "Unknown"
-                doc_kind = _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower())
-                if doc_kind != "statement" or _format_from_filename(filename) != "pdf":
+                if (_doc_kind(doc) != "statement"
+                        or _format_from_filename(filename) != "pdf"):
                     continue
                 doc_date = parse_doc_date(doc.get("date") or "")
                 if doc_date is None:

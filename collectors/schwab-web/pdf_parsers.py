@@ -1355,10 +1355,10 @@ _LEGACY_COST_BASIS_RE = re.compile(
 # sections print seven; Mutual Funds prints cost basis in the row and
 # no yield or income; Options prints no yield, income or cost basis.
 # A row can stop after % of account. So the columns are aligned on the
-# % of account column
-# (_LEGACY_PCT_RE), not counted from either end: a holding whose name
-# ends in a number ("… EXAMPLE 2000") keeps that number in its
-# description, and a row without the later columns still parses.
+# % of account column (_LEGACY_PCT_RE), not counted from either end: a
+# holding whose name ends in a number ("… EXAMPLE 2000") keeps that
+# number in its description, and a row without the later columns still
+# parses.
 _LEGACY_DEFAULT_COLUMNS = (
     "quantity", "market_price", "market_value", "pct_of_acct",
     "unrealized_gain_loss", "est_yield", "est_annual_income",
@@ -2535,12 +2535,11 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     """Open a Schwab brokerage statement PDF and return a dict
     with the statement period and the extracted transactions.
 
-    `statement_year` is the fallback when the period header is
-    missing — older quarterly statements (pre-2025) don't render
-    a "Period: Month D-DD, YYYY" line the same way and the
-    auto-detected period comes back None. The loader passes the
-    year extracted from the manifest doc-date so the row parser
-    can still resolve MM/DD dates to full timestamps.
+    `statement_year` is the year the transactions parser gives the
+    MM/DD dates of the activity rows; without it, the year of the
+    printed period end. Older quarterly statements (pre-2025) can
+    lack a period header that reads, so the loader always passes the
+    year of the manifest doc-date.
     """
     full_text = _extract_pdf_text(path)
     period = parse_statement_period(full_text)
