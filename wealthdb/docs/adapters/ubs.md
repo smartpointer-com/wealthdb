@@ -782,6 +782,15 @@ Where the lookup finds nothing, two weaker claims follow, in order:
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
 `dump_runs` is empty.
 
+A new `dump_runs` row or event triggers a load. PSN delivers a report
+after the business day it covers, so a dump's holdings, balances and
+events are dated before the dump, and before the previous dump's time
+as well. Once a load is triggered, the PSN window therefore starts
+seven days before the previous change number for those business-dated
+rows. Rows in that stretch that gold already holds are re-emitted
+unchanged. A report older than seven days, such as an archive backfill
+after a long outage, needs `wealthdb reload`.
+
 ## 9. Historical (PDF-reconstructed) data — ubs-web migration 0002
 
 `ubs-web` migration 0002 added two parallel tables built

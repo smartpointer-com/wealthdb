@@ -72,14 +72,26 @@ SELECT
 	return s, nil
 }
 
+// psnBusinessDayLookback is how far before the previous dump the
+// window reaches for business-dated rows. A report arrives at the
+// earliest the night after its business day, and up to about four
+// days later over a weekend or holiday; seven days covers that with
+// room to spare. A report older than this (an archive backfill after
+// a long outage) needs a full `wealthdb reload`.
+const psnBusinessDayLookback = int64(7 * 24 * 3600)
+
 // ChangeWindow returns a window that brackets every silver row
 // the next snapshot pass needs to see. Trigger is still "is there
 // anything new in dump_runs or events past since" (so an idle
 // reload remains a no-op), but the window bounds are computed
-// across the content tables too — they carry business-date
-// midnight snapshot_at values that can fall either side of the
-// triggering dump_runs row, so a bounds query restricted to
-// dump_runs alone would clip them out of the byTime dispatch.
+// across the content tables and events too. Those carry
+// business-date timestamps, and PSN delivers a report after the
+// business day it covers: a new dump's holdings and events are
+// dated before the dump, and before `since`, the previous dump's
+// time, as well. So once a dump has triggered, the bounds take
+// every content row and event dated after since minus
+// psnBusinessDayLookback. The rows in that stretch that gold
+// already holds are re-emitted unchanged.
 //
 // NewChangeNumber stays a live-time concept
 // (MAX(dump_runs.snapshot_at)) so subsequent loads with no new
@@ -115,6 +127,7 @@ SELECT
         UNION ALL SELECT MIN(snapshot_at) FROM instruments          WHERE snapshot_at > ?
         UNION ALL SELECT MIN(snapshot_at) FROM fx_rates             WHERE snapshot_at > ?
         UNION ALL SELECT MIN(snapshot_at) FROM forward_contracts    WHERE snapshot_at > ?
+        UNION ALL SELECT MIN(timestamp)   FROM events               WHERE timestamp   > ?
     )), -1),
     COALESCE((SELECT MAX(t) FROM (
         SELECT MAX(snapshot_at) AS t FROM cash_accounts        WHERE snapshot_at > ?
@@ -125,11 +138,16 @@ SELECT
         UNION ALL SELECT MAX(snapshot_at) FROM instruments          WHERE snapshot_at > ?
         UNION ALL SELECT MAX(snapshot_at) FROM fx_rates             WHERE snapshot_at > ?
         UNION ALL SELECT MAX(snapshot_at) FROM forward_contracts    WHERE snapshot_at > ?
+        UNION ALL SELECT MAX(timestamp)   FROM events               WHERE timestamp   > ?
     )), -1)
 `
+	floor := since
+	if since >= 0 {
+		floor = since - psnBusinessDayLookback
+	}
 	args := []any{since, since, since, since, since}
-	for i := 0; i < 16; i++ {
-		args = append(args, since)
+	for i := 0; i < 18; i++ {
+		args = append(args, floor)
 	}
 	var start, end, newCN sql.NullInt64
 	var contentLo, contentHi sql.NullInt64
