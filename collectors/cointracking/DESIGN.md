@@ -474,14 +474,13 @@ indistinguishable from a real kline.
 
 ### Coverage gap
 
-After fetching + FX + backfill, the remaining USD-derivability
-gap is entirely coins with no Binance kline history at all —
-niche staked-ETH derivatives, brand-new pre-listing windows,
-regulatory-purged delistings (certain privacy coins and tokens
-delisted from major CEXes, …). A Yahoo
-Finance secondary-source fallback would close that tail; left as
-a follow-up — the gold-layer's forward-fill or "unpriced"
-sentinel can handle the residual.
+After fetching, FX and backfill, a coin stays unpriced only when
+Binance has no kline history for it at all: a coin before its
+listing, or one whose history Binance purged after a delisting. The
+`exchangeInfo` pair metadata can outlive that history, so a mapping
+can resolve to a symbol with no prices. A Yahoo Finance secondary
+source would close that tail; until then gold's forward-fill or
+"unpriced" sentinel handles it.
 
 ## Data model
 
@@ -519,8 +518,8 @@ during replay — CoinTracking already excludes them from the
 recorded amount. They ride through to silver for tax-cost
 reporting; the balance equation never reads them.
 
-The CSV also contains dedicated **`Type = "Other Fee"`** rows
-(a small minority of rows). These ARE real balance deltas: the
+The CSV also contains dedicated **`Type = "Other Fee"`** rows.
+These ARE real balance deltas: the
 event itself is a fee being deducted from a wallet, recorded as a
 `-sell` on the wallet's currency. The replay applies them like a
 Withdrawal. The distinction matters: same column name (`Fee`),
@@ -537,8 +536,7 @@ in the `Comment` column) that books each swept dust balance as an
 sell side and the proceeds land while the dust never leaves,
 stranding each swept balance at exactly the swept amount.
 
-**Type handler set (validated against captured balance.csv).**
-CoinTracking has accumulated a ~19-type vocabulary over time;
+**Type handler set.** CoinTracking has a ~19-type vocabulary;
 the replay routes each row by `type`. The two lists live as the
 `BUY_TYPES` / `SELL_TYPES` constants in `load.py` — a single source
 of truth shared by the replay SQL and the unhandled-type guard:
@@ -560,18 +558,15 @@ branch based on which CSV column is populated.
 **Unlisted types are silently dropped — so the loader makes it
 loud.** A `type` on neither list contributes nothing to the replay:
 an outgoing type left off the sell side leaves a wallet's balance
-too high, an incoming one too low, with no error. That is precisely
-how `Other Expense` escaped notice until reconciliation flagged it.
-Because CoinTracking keeps growing the vocabulary (margin, lending,
+too high, an incoming one too low, with no error. Because
+CoinTracking keeps growing the vocabulary (margin, lending,
 derivatives, …), `warn_unhandled_transaction_types()` runs on every
 load and logs a WARNING naming any type whose populated leg the
 replay would drop, with the dropped buy/sell-leg counts. It is a
 standing tripwire for the next unlisted type — not a substitute for
-adding the handler.
-
-With the set above, every portfolio reconciles against its
-per-wallet balance.csv with zero discrepancies beyond ±10⁻⁸ (the
-8-decimal CSV export precision).
+adding the handler. The reconciliation step (Load, step 4) is the
+second check: a missing handler shows up as a per-wallet mismatch
+against balance.csv.
 
 **Silver is DuckDB, not SQLite — the exception in this repo.**
 Every other collector's silver is SQLite + JSON1; cointracking

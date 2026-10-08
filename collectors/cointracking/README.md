@@ -153,16 +153,12 @@ No API key required. Optional `BINANCE_API_KEY` env activates
 authenticated tiers for higher rate-limit ceilings; unused on the
 public endpoint at api.binance.com.
 
-**Coverage gap (small in practice):** Binance retains pair
-metadata in `exchangeInfo` long after it purges the kline history
-for a delisted coin (e.g. some privacy coins and older altcoins
-dropped from the exchange), so a mapping can resolve to a symbol
-with no price data. Impact is bounded by the architecture:
-`coin_prices` is only read by gold for non-USD portfolios (USD
-portfolios use `portfolio_prices` directly), and those non-USD
-portfolios in practice hold mostly major coins that Binance covers
-fully. A Yahoo Finance secondary-source fallback is parked as an
-"if it ever bites" follow-up.
+**Coverage gap:** Binance retains pair metadata in `exchangeInfo`
+long after it purges the kline history for a delisted coin, so a
+mapping can resolve to a symbol with no price data. The architecture
+bounds the impact: gold reads `coin_prices` only for non-USD
+portfolios (USD portfolios use `portfolio_prices` directly). DESIGN.md
+("Coverage gap") has the details.
 
 Probe the session without firing a 2FA push:
 

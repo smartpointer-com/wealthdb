@@ -14,9 +14,9 @@ stays pure (CLI/query only; no daemon).
 The one thing the host script needs from the engine is config it can't
 easily parse itself (`wealthdb.cfg` is JSON, validated in Go): it calls
 `wealthdb web-config`, a hidden read-only subcommand that prints the
-resolved `web.enabled`, `web.port`, and `gold_db` as shell-evalable
-`KEY=VALUE` lines. One source of truth (the Go parser), no `jq`
-dependency, no bash JSON parsing.
+resolved `web.enabled`, `web.port`, `gold_db` and `default_currency` as
+shell-evalable `KEY=VALUE` lines. One source of truth (the Go parser), no
+`jq` dependency, no bash JSON parsing.
 
 ## 2. Read-only snapshot, not the live gold file
 
@@ -92,7 +92,7 @@ reports (+ all-time `report_transactions`), the daily `_history` reports
 (migration 0022) for time-series charts, the two taxonomy models over the
 `web_*` breakdown views (migration 0032), cast-only shims over the materialized
 `report_returns` table (§8), the spending models over `web_spending`
-(migration 0043), the income models over `web_income` (migration 0072),
+(migration 0043), the income model over `web_income` (migration 0072),
 the `report_cashflow` model over `web_cashflow` (migration 0084) — which
 backs the Cash Flow dashboard's Section picker rather than any card —
 and `_pct` privacy variants of the models the privacy
@@ -115,8 +115,8 @@ what defines the pool, **Data Freshness** is deliberately unfiltered — all of 
 definitions only (MBQL or SQL), no data baked in.
 A tile that sums money in the chosen currency is native SQL over a gold
 `web_*` serving view. The views carry each reporting currency as a
-column (USD, CHF, EUR and GBP, as of gold migration 0114), and a
-dashboard picker selects rows but never a column. So each
+column (gold migration 0114), and a dashboard picker selects rows but
+never a column. So each
 such tile reads a required `{{currency}}` variable, which picks the
 column with a CASE. Every Currency picker, and every card opened on its
 own, defaults to `default_currency` from wealthdb.cfg when that is a
@@ -181,12 +181,11 @@ keeps the name distinct from the Income dashboard's own "Income by
 month". Provisioning matches cards by name, so two dashboards' cards
 of one name would become one card, and whichever was defined last
 would silently replace the other.
-It selects the four investment income *types* rather than five
-transaction kinds, and its old credit-card fence is gone with the
-question it answered: a card's finance charge is an outflow and is not
-in the income base at all. A private fund's distribution is absent for
-the same structural reason — it floors to `capital_return`, which the
-base excludes.
+It selects the four investment income *types* rather than transaction
+kinds, and it needs no credit-card fence: a card's finance charge is an
+outflow and is not in the income base at all. A private fund's
+distribution is absent for the same structural reason — it floors to
+`capital_return`, which the base excludes.
 
 On both spending views the merchant list ranks merchants only: a line whose resolved
 category is a delta — a gift, a bill on a card not itemised, cash out of an
@@ -195,7 +194,7 @@ resolved, so both are left out of the ranking. The predicate is the delta
 categories themselves (a delta is primary-level, so the two category columns
 are equal on one, and equal at `(uncategorized)` on a line nothing resolved)
 plus a merchant to rank by. The two halves are tested separately because a
-blank merchant no longer implies a delta: 0048 blanks the column on a delta
+blank merchant does not imply a delta: 0048 blanks the column on a delta
 line, but 0052 gives a card bill the ISSUER it was paid to — a handle on which
 card the money went to, not a shop to rank among.
 
@@ -210,7 +209,7 @@ model fence the merchant store, not this column, so a fold that is only a
 bank's tag ranks under that tag.
 The transaction lists keep such lines, since a line is a line, and the twin's
 shares stay relative to the window's whole net spend.
-It also carries **no account picker**, where the money view does: a picker
+The Spending twin also carries **no account picker**, where the money view does: a picker
 renders as a dropdown of the values its column takes, and every column that
 identifies an account is a label (a card's display name falls back to its
 masked last four digits), so the filter is dropped rather than rebound onto
@@ -235,9 +234,9 @@ gold snapshot without us having to loosen the snapshot's perms.
 The DuckDB engine lives inside the Metabase JVM, so one `java` process
 holds the JVM heap *plus* DuckDB's native memory. Unconstrained, DuckDB
 assumes 80% of the machine's RAM; a dashboard opening fires all of its
-tiles concurrently, and the history-heavy privacy queries once ballooned
-the process until the kernel OOM-killed it (taking the whole Docker VM's
-memory with it). Four settings work together, each load-bearing:
+tiles concurrently, and history-heavy queries can grow the process until
+the kernel OOM-kills it (taking the whole Docker VM's memory with it).
+Four settings work together, each load-bearing:
 
 - **DuckDB `memory_limit` (4GB) + `threads` (8)** — set by `provision.py`
   as connection *details*, which the driver forwards as instance-level
@@ -291,13 +290,12 @@ step (the DuckDB scans) and a pure in-memory `computeReturns`, so the
 materializer loads each currency's dataset **once** and drives all 16
 `(grain, period)` computations off it — and loads every currency
 in a single pass over the `_multi` report macros rather than one scan
-per currency. With the per-row inserts replaced by batched multi-row
-`INSERT`s, refresh time is cut by roughly an order of magnitude.
+per currency, and writes in batched multi-row `INSERT`s.
 Aggregate grains sum constituent account values as floats, so their
 cent-and-below digits depend on summation order; `groupAccounts`
 sorts each group's members by `(source, account)` so a run is
-byte-deterministic (the accounts grain, whose groups are singletons,
-was always exact).
+byte-deterministic (the accounts grain's groups are singletons, so it
+is exact either way).
 
 That cheap re-compute also buys the dashboard's **start-year picker**.
 The since-inception TWR is frequently `null` — the earliest months are
@@ -324,18 +322,22 @@ global and by-source views. These charts are native SQL (window
 functions and the union need it) and take the Currency / Start-year /
 Source pickers as template variables (Source is a field filter).
 
-The growth index is derived from the **windowed** summaries, not by
-chaining the per-period buckets: `G(Y) = base / (1 + TWR_since_Y)`,
-normalized so the earliest visible year is 100. Chaining calendar-bucket
+The cumulative return is derived from the **windowed** summaries, not
+by chaining the per-period buckets. The growth from the start of the
+earliest visible year `Y0` to the start of year `Y` is
+`(1 + TWR_since_Y0) / (1 + TWR_since_Y)`; the chart plots that minus 1,
+so it starts at 0% in `Y0`. Chaining calendar-bucket
 Modified-Dietz returns would be wrong here — a flow landing between two
 sparse snapshots poisons that bucket (a mid-month deposit with no fresh
 snapshot reads as a large loss, then a large gain next period), so a
 chained index can diverge from the true TWR by hundreds of points for
 sparse-snapshot sources — a real gainer chained down to a spurious
 near-total loss. The windowed TWRs use the
-engine's snapshot-aligned chain, so the growth chart is correct and
-agrees with the scalars and table by construction — at the cost of
-annual granularity (a finer curve would need per-month windows).
+engine's snapshot-aligned chain, so the chart is correct and is
+built from the same figures the scalars and table show — at the cost
+of annual granularity (a finer curve would need per-month windows).
+The last point is the start of the current year, so the stretch from
+then to today is not drawn.
 
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*
@@ -367,10 +369,12 @@ pure functions of module constants, so the filter registry, the model
 SQL, the card and dashboard defs, the parameter ids and the picker →
 template-tag wiring all check statically. Two behaviours worth naming:
 the privacy twin is asserted to render no merchant or account label in
-any card it defines, and a snapshot missing a serving view is asserted
-to abort the run (against a stubbed API) instead of half-provisioning.
-Whether Metabase *accepts* a payload needs a live instance and is not
-covered. The Go side (`web` config block,
+any card it defines, and a snapshot missing a serving view or older
+than the schema the cards read is asserted to abort the run (against a
+stubbed API) instead of half-provisioning. Whether Metabase *accepts* a
+payload needs a live instance: `demo/check_dashboards.py` runs every
+card of a running demo Metabase through its API (demo/README.md).
+The Go side (`web` config block,
 validation, the `web-config` emitter, `MaterializeReturns` and the
 `web-materialize` command) is covered by `go test ./...`
 (`make test-wealthdb`). End-to-end (build → start → provision → query

@@ -107,7 +107,7 @@ Subcommands:
   recompress [args..] One-time backlog sweep: replace plain
                       cu_<id>/*.csv inside complete dumps with
                       sha256-verified .csv.zst twins — the form
-                      download now writes. Runs in-container (needs
+                      download writes. Runs in-container (needs
                       the zstd codec; the single-writer guard keeps it
                       from racing a live download). Manual only, never
                       scheduled; review --dry-run first, then verify

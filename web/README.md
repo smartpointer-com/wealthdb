@@ -5,6 +5,10 @@ and visualizing analytics over the **gold** DuckDB database. Optional,
 fully dockerized (no host Java/Metabase), read-only against your data,
 and reachable only over an SSH tunnel + Metabase's own login.
 
+It comes with seven dashboards: Wealth Overview, Allocation, Returns,
+Spending, Income, Cash Flow and Data Freshness. Each has a privacy
+twin that shows shares (%) instead of amounts.
+
 Part of the **wealthdb** suite — see [the architecture
 overview](../DESIGN.md). Run it via the main wrapper:
 
@@ -49,8 +53,8 @@ wealthdb web build         # or: make build-web
 
 # 2. Enable it in wealthdb.cfg (see above), then start it. This snapshots
 #    gold, runs Metabase, and AUTO-PROVISIONS it: creates the admin,
-#    pre-adds the gold database, and creates the report models (latest +
-#    daily history) mirroring the CLI — no "tell us about your company" wizard.
+#    pre-adds the gold database, and creates the report models mirroring
+#    the CLI plus the dashboards — no "tell us about your company" wizard.
 wealthdb web start
 #    -> prints the admin login. A generated password is saved to
 #       $XDG_DATA_HOME/wealthdb/web/admin-password.txt (chmod 600);
@@ -60,8 +64,9 @@ wealthdb web start
 ssh -L 3000:127.0.0.1:3000 <this-host>
 open http://127.0.0.1:3000/        # log in as admin@wealthdb.local
 
-# 4. The "gold" DuckDB database is already there — just start querying.
-#    After each data load, refresh the snapshot:
+# 4. The dashboards are in the "wealthdb (pre-defined)" collection, and
+#    the "gold" DuckDB database is there to query. After each data load,
+#    refresh the snapshot:
 wealthdb load -a && wealthdb web refresh
 ```
 
@@ -83,7 +88,7 @@ wealthdb load -a && wealthdb web refresh
 ```
 web/
 ├── web            # host lifecycle script (start/stop/status/refresh/logs/build)
-├── provision.py   # idempotent Metabase setup: admin + gold DB + report models (stdlib)
+├── provision.py   # idempotent Metabase setup: admin, gold DB, models, cards, dashboards (stdlib)
 ├── Dockerfile     # Metabase (from JAR, glibc base) + pinned DuckDB driver → /plugins
 ├── test_web.sh    # unit tests: lifecycle script, then provision.py (make test-web)
 ├── test_provision.py  # unit tests for provision.py's definitions (no Metabase)
