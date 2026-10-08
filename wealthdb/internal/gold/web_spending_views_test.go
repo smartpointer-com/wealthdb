@@ -161,8 +161,8 @@ func TestAccountHistoryKeepsBothClocks(t *testing.T) {
 
 // TestCardBalancesHistoryCarriesEachAccountIndependently pins the
 // dedicated view: every card day from its first balance onward, carried
-// forward per account rather than per source, valued in all three
-// reporting currencies, and keeping a zero balance (a paid-off card is
+// forward per account rather than per source, valued in the reporting
+// currencies, and keeping a zero balance (a paid-off card is
 // at zero — dropping the row the way cash_chosen does would leave the
 // series owing money forever).
 func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {

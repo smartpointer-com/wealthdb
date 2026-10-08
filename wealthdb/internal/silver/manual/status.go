@@ -12,9 +12,9 @@ import (
 // converts them to the canonical unix seconds the gold contract uses.
 
 // snapshotExtrema is the MIN/MAX holding event date (eventDates). The
-// timeline runs from the earliest acquisition (which can be years before the
-// latest load) to the latest valuation. The manual collector records no
-// transactions, so the window spans only this snapshot stream.
+// earliest can be an acquisition years before the latest load. The manual
+// collector records no transactions, so the window spans only this snapshot
+// stream.
 func (c *Connection) snapshotExtrema() string {
 	return `SELECT MIN(t), MAX(t) FROM (` + c.eventDates() + `)`
 }

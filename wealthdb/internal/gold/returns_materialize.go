@@ -14,7 +14,8 @@ import (
 // the reporting currencies the `_multi` report macros emit (migration 0114),
 // loaded in one pass. Another currency is a schema decision rather than a
 // config knob: the macros must emit its columns, and every currency adds a
-// full set of partitions to the table.
+// full set of partitions to the table. web/test_provision.py reads this
+// literal and holds it to the macros and the dashboards' list.
 var materializeCurrencies = []string{"USD", "CHF", "EUR", "GBP"}
 
 // MaterializedCurrencies returns the currencies report_returns carries, in
@@ -57,7 +58,7 @@ type MaterializeParams struct {
 }
 
 // MaterializeReturns rewrites the report_returns table. It writes the full
-// returns matrix — 4 grains × 4 periods × 4 currencies, each partition the
+// returns matrix — every grain × period × currency, each partition the
 // verbatim output of one CLI-default RunReturns (method both, netting on,
 // inception full, annualize auto, since-inception window, window_from_year=0)
 // — plus, for each grain × currency × year in the data's span, a since-that-
@@ -84,7 +85,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 		rows                         []ReturnRow
 	}
 	var parts []partition
-	// Base matrix: the 64 (grain, period, currency) partitions, since inception
+	// Base matrix: every (grain, period, currency) partition, since inception
 	// (window_from_year = 0).
 	for _, ccy := range materializeCurrencies {
 		ds := datasets[ccy]

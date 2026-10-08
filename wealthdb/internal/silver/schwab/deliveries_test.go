@@ -79,6 +79,75 @@ func TestReceiveAndDeliverKinds(t *testing.T) {
 	}
 }
 
+// TestADeliveryGrossAmountTakesItsSettledKindsSign: a delivery leg's cost
+// is signed for the kind the row settles on, as buildTransaction signs any
+// other row's. A row re-typed against its siblings as a corporate action or
+// a journal, kinds with no fixed sign, keeps the cost as Schwab states it,
+// not the sign its provisional transfer kind would give it.
+func TestADeliveryGrossAmountTakesItsSettledKindsSign(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	leg := func(id string, ts int, desc, qty, cost string) string {
+		return `('` + id + `', ` + strconv.Itoa(ts) + `, 'ACC', 'RECEIVE_AND_DELIVER',
+             '{"netAmount":0.0,"description":"` + desc + `","transferItems":[
+                {"instrument":{"assetType":"EQUITY","symbol":"XMPL"},
+                 "amount":` + qty + `,"cost":` + cost + `,"price":0.0}]}')`
+	}
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, payload) VALUES
+            ` + leg("RS-NEW", 1100, "EXAMPLE CORP", "10", "-1000") + `,
+            ` + leg("RS-OLD", 1100, "EXAMPLE CORP XXXREVERSE SPLIT EFF", "-100", "1000") + `,
+            ` + leg("MV-OUT", 1400, "EXAMPLE CORP CLASS A", "-25", "500") + `,
+            ` + leg("MV-IN", 1400, "EXAMPLE CORP CLASS A", "25", "-500") + `,
+            ` + leg("DLV-IN", 1500, "EXAMPLE CORP CLASS A", "40", "-400") + `,
+            ` + leg("DLV-OUT", 1700, "EXAMPLE CORP", "-5", "50") + `;
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]struct {
+		kind  canonical.TxKind
+		gross string
+	}{
+		"RS-NEW":  {canonical.TxKindCorporateAction, "-1000"},
+		"RS-OLD":  {canonical.TxKindCorporateAction, "1000"},
+		"MV-OUT":  {canonical.TxKindJournal, "500"},
+		"MV-IN":   {canonical.TxKindJournal, "-500"},
+		"DLV-IN":  {canonical.TxKindTransferIn, "400"},
+		"DLV-OUT": {canonical.TxKindTransferOut, "-50"},
+	}
+	for _, tx := range batch.Transactions {
+		w, ok := want[tx.TransactionExternalID]
+		if !ok {
+			continue
+		}
+		delete(want, tx.TransactionExternalID)
+		if tx.Kind != w.kind {
+			t.Errorf("%s: kind = %q, want %q", tx.TransactionExternalID, tx.Kind, w.kind)
+		}
+		if tx.GrossAmount == nil || tx.GrossAmount.String() != w.gross {
+			t.Errorf("%s: gross amount = %v, want %s", tx.TransactionExternalID, tx.GrossAmount, w.gross)
+		}
+	}
+	for id := range want {
+		t.Errorf("%s: not emitted", id)
+	}
+}
+
 func TestCorporateActionDescription(t *testing.T) {
 	for d, want := range map[string]bool{
 		"EXAMPLE CORP XXXREVERSE SPLIT EFF":                 true,

@@ -347,20 +347,6 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 	return rows.Err()
 }
 
-// hasTable reports whether the silver SQLite contains a table of
-// the given name.
-func (c *apiReader) hasTable(ctx context.Context, table string) (bool, error) {
-	var n int
-	err := c.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`,
-		table,
-	).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("hasTable(%s): %w", table, err)
-	}
-	return n > 0, nil
-}
-
 // latestKnownInstrumentNames returns symbol → human-readable name
 // from the `instruments` table, picking the row with the highest
 // snapshot_at for each symbol. Returns an empty (non-nil) map when
@@ -370,7 +356,7 @@ func (c *apiReader) hasTable(ctx context.Context, table string) (bool, error) {
 // per-snapshot instrument descriptions, so callers get the freshest
 // label we know about for that symbol.
 func (c *apiReader) latestKnownInstrumentNames(ctx context.Context) (map[string]string, error) {
-	exists, err := c.hasTable(ctx, "instruments")
+	exists, err := silver.HasTables(ctx, c.db, "instruments")
 	if err != nil {
 		return nil, err
 	}

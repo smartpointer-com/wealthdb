@@ -277,13 +277,5 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 // (rebuilt against 0001 only) won't have them, and the adapter
 // must still load — falling back to the live-only stream.
 func (r *webReader) hasHistoricalTables(ctx context.Context) (bool, error) {
-	var n int
-	err := r.db.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM sqlite_master
- WHERE type = 'table'
-   AND name IN ('historical_position_snapshots', 'historical_cash_balances')`).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("schwab-web hasHistoricalTables: %w", err)
-	}
-	return n == 2, nil
+	return silver.HasTables(ctx, r.db, "historical_position_snapshots", "historical_cash_balances")
 }

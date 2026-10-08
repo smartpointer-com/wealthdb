@@ -829,7 +829,7 @@ func TestWebCashflowIsLineGrainAndReadyToDraw(t *testing.T) {
 		}
 	}
 
-	// One row per line, valued in all three reporting currencies.
+	// One row per line, valued in every reporting currency.
 	var n, lines int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cashflow`).Scan(&n); err != nil {
 		t.Fatalf("count web_cashflow: %v", err)

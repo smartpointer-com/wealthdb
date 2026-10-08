@@ -736,7 +736,7 @@ func loadPortfolioNames(ctx context.Context, db *sql.DB) (map[string]string, err
 
 // loadSnapshotDays attaches each account's distinct real snapshot days (the
 // inception anchor and empty-bucket detector). The day list is currency-
-// independent, so the multi-currency loader passes all three per-currency maps
+// independent, so the multi-currency loader passes every per-currency map
 // and this scans once, distributing to whichever map holds the account.
 func loadSnapshotDays(ctx context.Context, db *sql.DB, byKeys ...map[string]*accountData) error {
 	rows, err := db.QueryContext(ctx, `
@@ -902,7 +902,7 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 
 // crossCandidate is one attached external flow in the transfer matcher's
 // candidate pool, carrying the transaction's NATIVE currency and amount:
-// native amounts are identical across the three output-currency datasets, so
+// native amounts are identical across the output-currency datasets, so
 // every currency partition derives the same pairings (matching on converted
 // amounts would let day-gap FX drift pair differently per partition).
 type crossCandidate struct {

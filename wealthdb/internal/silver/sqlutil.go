@@ -59,6 +59,27 @@ func HasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, err
 	return false, rows.Err()
 }
 
+// HasTables reports whether a silver DB has every named table.
+// Adapters use it to read the tables a newer silver migration adds
+// without breaking on older silvers that predate them. SQLite-only.
+func HasTables(ctx context.Context, db *sql.DB, names ...string) (bool, error) {
+	if len(names) == 0 {
+		return true, nil
+	}
+	args := make([]any, len(names))
+	for i, n := range names {
+		args[i] = n
+	}
+	var n int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name IN (?`+strings.Repeat(", ?", len(names)-1)+`)`,
+		args...).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("HasTables(%s): %w", strings.Join(names, ", "), err)
+	}
+	return n == len(names), nil
+}
+
 // DecimalPtrOrNil parses a string-encoded decimal from a silver
 // column. Returns nil for NULL / empty input, and nil (not an
 // error) on a parse failure — adapters treat an unparseable

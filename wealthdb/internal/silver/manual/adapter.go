@@ -65,13 +65,12 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 	if err != nil {
 		return nil, err
 	}
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
-	        WHERE type = 'table' AND name = 'cost_basis'`).Scan(&n); err != nil {
+	costBasis, err := silver.HasTables(ctx, db, "cost_basis")
+	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("manual silver: %w", err)
 	}
-	return &Connection{db: db, costBasis: n > 0}, nil
+	return &Connection{db: db, costBasis: costBasis}, nil
 }
 
 // Connection reads one manual silver. costBasis says whether it holds the

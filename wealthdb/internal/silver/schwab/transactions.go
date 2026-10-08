@@ -88,7 +88,7 @@ func (c *apiReader) scanPositionDescriptions(ctx context.Context, out map[string
 }
 
 func (c *apiReader) scanInstrumentDescriptions(ctx context.Context, out map[string]string) error {
-	exists, err := c.hasTable(ctx, "instruments")
+	exists, err := silver.HasTables(ctx, c.db, "instruments")
 	if err != nil || !exists {
 		return err
 	}
@@ -247,15 +247,14 @@ SELECT activity_id, timestamp, account_external_id, kind, payload
 // schwabTransferItem is one leg of a transaction's transferItems
 // array.
 type schwabTransferItem struct {
-	Instrument     schwabInstrument   `json:"instrument"`
-	Amount         canonical.Decimal  `json:"amount"`
-	Cost           *canonical.Decimal `json:"cost"`
-	Price          *canonical.Decimal `json:"price"`
-	PositionEffect string             `json:"positionEffect"`
+	Instrument schwabInstrument   `json:"instrument"`
+	Amount     canonical.Decimal  `json:"amount"`
+	Cost       *canonical.Decimal `json:"cost"`
+	Price      *canonical.Decimal `json:"price"`
 }
 
-// schwabTxPayload covers what we extract from each transactions
-// row's payload.
+// schwabTxPayload covers the fields buildTransaction reads from a
+// transactions row's payload.
 type schwabTxPayload struct {
 	NetAmount     *canonical.Decimal   `json:"netAmount"`
 	Description   string               `json:"description"`
@@ -306,10 +305,11 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 		}
 		qty := leg.Amount
 		tx.Quantity = &qty
-		if leg.Price != nil {
-			tx.Price = leg.Price
-		}
-		if leg.Cost != nil {
+		tx.Price = leg.Price
+		// A delivery's cost is signed by settleDeliveries, once its
+		// kind is settled against its siblings.
+		tx.GrossAmount = leg.Cost
+		if silverKind != "RECEIVE_AND_DELIVER" {
 			tx.GrossAmount = canonical.ApplyCanonicalSign(kind, leg.Cost)
 		}
 	}

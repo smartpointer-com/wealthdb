@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Historical-snapshot reader for the relevate silver migration 0002
@@ -37,16 +38,7 @@ import (
 // applied to the silver. Older silvers (still on 0001) silently
 // skip the historical projection.
 func (c *Connection) hasHistoricalTables(ctx context.Context) (bool, error) {
-	var n int
-	err := c.db.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM sqlite_master
- WHERE type = 'table'
-   AND name IN ('historical_position_snapshots', 'historical_cash_balances')
-`).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("hasHistoricalTables: %w", err)
-	}
-	return n == 2, nil
+	return silver.HasTables(ctx, c.db, "historical_position_snapshots", "historical_cash_balances")
 }
 
 // historicalSnapshotTimes returns the distinct snapshot_at values

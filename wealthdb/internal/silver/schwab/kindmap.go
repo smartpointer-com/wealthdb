@@ -103,6 +103,11 @@ func isCorporateActionDescription(d string) bool {
 //
 // What remains keeps the per-row kind: a delivery in or out by the
 // sign of its quantity.
+//
+// buildTransaction leaves a delivery's gross amount as Schwab states
+// it, and each is signed here once its kind is settled. Signed for the
+// per-row kind first, a row re-typed to a kind with no fixed sign
+// would keep the transfer's sign rather than Schwab's.
 func settleDeliveries(txs []canonical.TransactionChange, idx []int) {
 	type groupKey struct {
 		account string
@@ -120,7 +125,7 @@ func settleDeliveries(txs []canonical.TransactionChange, idx []int) {
 		}
 		if corporate {
 			for _, i := range g {
-				setKind(&txs[i], canonical.TxKindCorporateAction)
+				txs[i].Kind = canonical.TxKindCorporateAction
 			}
 			continue
 		}
@@ -136,17 +141,13 @@ func settleDeliveries(txs []canonical.TransactionChange, idx []int) {
 				continue
 			}
 			if n, ok := net[*t.InstrumentExternalID]; ok && n.IsZero() {
-				setKind(&txs[i], canonical.TxKindJournal)
+				txs[i].Kind = canonical.TxKindJournal
 			}
 		}
 	}
-}
-
-// setKind re-types a transaction and re-signs its gross amount for the
-// new kind, as buildTransaction signs it for the first.
-func setKind(t *canonical.TransactionChange, k canonical.TxKind) {
-	t.Kind = k
-	t.GrossAmount = canonical.ApplyCanonicalSign(k, t.GrossAmount)
+	for _, i := range idx {
+		txs[i].GrossAmount = canonical.ApplyCanonicalSign(txs[i].Kind, txs[i].GrossAmount)
+	}
 }
 
 // isInterestDescription returns true when a DIVIDEND_OR_INTEREST

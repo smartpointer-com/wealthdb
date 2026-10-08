@@ -30,15 +30,7 @@ import (
 // table. Pre-v4 silvers won't have it; the adapter must still
 // load, falling back to the live-only stream.
 func (c *Connection) hasHistoricalTable(ctx context.Context) (bool, error) {
-	var n int
-	err := c.db.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM sqlite_master
- WHERE type = 'table'
-   AND name = 'historical_position_snapshots'`).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("fidelity hasHistoricalTable: %w", err)
-	}
-	return n == 1, nil
+	return silver.HasTables(ctx, c.db, "historical_position_snapshots")
 }
 
 // historicalSnapshotTimes returns the distinct as_of_date values

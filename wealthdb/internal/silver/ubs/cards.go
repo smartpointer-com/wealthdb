@@ -32,13 +32,7 @@ import (
 // schema that carries cards. A DB written before collector migration
 // 0007 has none, and must keep loading rather than fail.
 func (r *webReader) hasCardTables(ctx context.Context) (bool, error) {
-	const q = `SELECT COUNT(*) FROM sqlite_master
-                WHERE type='table' AND name IN ('card_accounts','card_transactions')`
-	var n int
-	if err := r.db.QueryRowContext(ctx, q).Scan(&n); err != nil {
-		return false, fmt.Errorf("hasCardTables: %w", err)
-	}
-	return n == 2, nil
+	return silver.HasTables(ctx, r.db, "card_accounts", "card_transactions")
 }
 
 // appendWebCards emits, per snapshot in the window, one AccountChange

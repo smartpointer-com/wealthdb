@@ -2535,15 +2535,7 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
 // predate some of them, and a reader that serves every vintage asks rather
 // than assumes.
 func (r *webReader) hasTable(ctx context.Context, name string) (bool, error) {
-	var n int
-	err := r.db.QueryRowContext(ctx, `
-        SELECT COUNT(*)
-          FROM sqlite_master
-         WHERE type = 'table' AND name = ?`, name).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("hasTable %s: %w", name, err)
-	}
-	return n > 0, nil
+	return silver.HasTables(ctx, r.db, name)
 }
 
 // buildMortgageAccountIndex maps a folded mortgage reference onto the account

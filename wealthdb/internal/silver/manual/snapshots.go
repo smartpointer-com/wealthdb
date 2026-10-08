@@ -136,10 +136,11 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 			// interest — none is unit-denominated).
 		}
 		// market_value = latest valuation ≤ t (forward-filled); book_value =
-		// the cost basis (bookValueSQL). A liability kind (mortgage) is entered as a
-		// positive outstanding balance — "direction comes from kind" — so we
-		// negate it here, matching the gold convention that liability positions
-		// carry a negative market_value and net against assets in rollups.
+		// the cost basis (bookValueSQL). A liability kind (mortgage) is
+		// entered as a positive outstanding balance — "direction comes from
+		// kind" — so both are negated here, matching the gold convention
+		// that liability positions carry a negative market_value and net
+		// against assets in rollups.
 		neg := ac == canonical.AssetClassMortgage
 		if marketValue.Valid {
 			if mv, err := canonical.NewDecimalFromString(signed(marketValue.String, neg)); err == nil {

@@ -87,7 +87,8 @@ func TestMigration0072DDLIsRerunnable(t *testing.T) {
 	if n == 0 {
 		t.Error("web_income is empty after a re-run")
 	}
-	// The three reporting currencies the picker switches between.
+	// The re-run re-issues 0072's own column set, valued in USD, CHF
+	// and EUR; migration 0114 adds GBP.
 	assertMacroProjects(t, db, ctx, "web_income",
 		"occurred_at", "silver_source_id", "account_external_id", "display_name",
 		"account_label", "account_kind", "payer_name", "income_primary",

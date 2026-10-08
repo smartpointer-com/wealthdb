@@ -1,6 +1,11 @@
 package silver
 
-import "testing"
+import (
+	"context"
+	"database/sql"
+	"path/filepath"
+	"testing"
+)
 
 // TestJoinText pins the transaction-text composition rule the adapters
 // share: trim each part, drop the empty ones, join the rest with "; ",
@@ -59,5 +64,43 @@ func TestPayloadWith(t *testing.T) {
 					c.payload, c.extra, got, c.want)
 			}
 		})
+	}
+}
+
+// TestHasTables pins the probe the adapters share for tables a newer
+// silver migration adds: true only when every named table exists, and a
+// view or an index of that name does not count.
+func TestHasTables(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "silver.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`
+        CREATE TABLE a (x INTEGER);
+        CREATE TABLE b (x INTEGER);
+        CREATE VIEW v AS SELECT x FROM a;
+        CREATE INDEX i ON a (x);`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		names []string
+		want  bool
+	}{
+		{[]string{"a"}, true},
+		{[]string{"a", "b"}, true},
+		{[]string{"a", "c"}, false},
+		{[]string{"c"}, false},
+		{[]string{"v"}, false},
+		{[]string{"i"}, false},
+		{nil, true},
+	} {
+		got, err := HasTables(context.Background(), db, c.names...)
+		if err != nil {
+			t.Fatalf("HasTables(%q): %v", c.names, err)
+		}
+		if got != c.want {
+			t.Errorf("HasTables(%q) = %v, want %v", c.names, got, c.want)
+		}
 	}
 }
