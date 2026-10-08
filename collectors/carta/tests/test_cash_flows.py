@@ -3,7 +3,8 @@ Unit tests for load.py's cash-flow ledger (migration 0003).
 
 Covers the inception-to-date statement parsing, the per-period differencing,
 the cap-table cash-flow synthesis (exercises + exit), and the fund ledger:
-notices, the pre-coverage residue, and a supplied file that itemises it.
+notices, the pre-coverage residue, a supplied file that itemises it, and a
+login with two funds, each reading only its own documents.
 In-memory SQLite + a tmp_path bronze edir. Synthetic data only — no real
 holdings or figures.
 """
@@ -57,18 +58,18 @@ def test_statement_nav_row_carries_contributed_capital(migrated, tmp_path, monke
     docs = _fund_docs(tmp_path, [
         _STMT_ROW,
         {"id": "s2", "document_type": "Capital account statement",
-         "document_date": "03/31/2099"},
+         "document_date": "03/31/2099", "fund_id": "42"},
     ])
     monkeypatch.setattr(load, "_pdf_text", lambda pdf: {
         "s1": "Capital contributions   51,374   51,374   103,861\n"
               "Ending balance   $   121,947   $   121,947   $   121,947\n",
         "s2": "Ending balance   $   89,513   $   89,513   $   89,513\n",
     }[pdf.stem.removeprefix("doc_")])
-    assert load.load_statement_nav(migrated, docs, 7) == 2
+    assert load.load_statement_nav(migrated, docs, 42) == 2
     rows = migrated.execute(
         "SELECT net_asset_value, capital_contributed, "
         "json_extract(payload, '$.capital_contributed') FROM fund_metrics "
-        "WHERE entity_external_id = 7 ORDER BY snapshot_at").fetchall()
+        "WHERE entity_external_id = 42 ORDER BY snapshot_at").fetchall()
     assert rows == [("121947", "103861.00", "103861.00"), ("89513", None, None)]
 
 
@@ -306,9 +307,9 @@ def _ledger(conn) -> list[tuple]:
 
 
 _STMT_ROW = {"id": "s1", "document_type": "Capital account statement",
-             "document_date": "12/31/2098"}
-_CALL_A = {"id": "n1", "document_type": "Capital call notice"}
-_CALL_B = {"id": "n2", "document_type": "Capital call notice"}
+             "document_date": "12/31/2098", "fund_id": "42"}
+_CALL_A = {"id": "n1", "document_type": "Capital call notice", "fund_id": "42"}
+_CALL_B = {"id": "n2", "document_type": "Capital call notice", "fund_id": "42"}
 
 
 def _two_call_notices() -> dict:
@@ -356,7 +357,7 @@ def test_fund_falls_back_to_statement_differencing_without_notices(migrated,
     # No notices at all: the statements are all there is, and each positive
     # jump in the inception-to-date figure becomes one flow at the period end.
     rows = [_STMT_ROW, {"id": "s2", "document_type": "Capital account statement",
-                        "document_date": "12/31/2099"}]
+                        "document_date": "12/31/2099", "fund_id": "42"}]
     docs = _fund_docs(tmp_path, rows)
     _stub_parsers(monkeypatch,
                   {"s1": (281250.0, 0.0), "s2": (358750.0, 46250.0)}, {})
@@ -489,7 +490,7 @@ def test_supplied_calls_itemise_the_first_statement_without_notices(
     # Without notices the first statement's inception-to-date figure is the
     # lump; later statements' deltas are per period and stay as they are.
     rows = [_STMT_ROW, {"id": "s2", "document_type": "Capital account statement",
-                        "document_date": "12/31/2099"}]
+                        "document_date": "12/31/2099", "fund_id": "42"}]
     docs = _fund_docs(tmp_path, rows)
     _stub_parsers(monkeypatch,
                   {"s1": (281250.0, 0.0), "s2": (358750.0, 0.0)}, {})
@@ -515,3 +516,72 @@ def test_a_fund_ignores_a_supplied_row_it_cannot_pair(migrated, tmp_path,
         load._fund_cash_flows(migrated, 42, docs, 1_700_000_000, tmp_path)
     assert "not a capital_call or distribution with an amount" in caplog.text
     assert not [r for r in _ledger(migrated) if ":supplied:" in r[0]]
+
+
+# ============================================================
+# a login with two funds
+# ============================================================
+
+def _statement(contributed: str, ending: str) -> str:
+    return (f"Capital contributions        —        —        {contributed}\n"
+            f"Ending balance   $   {ending}   $   {ending}   $   {ending}\n")
+
+
+def _two_fund_run(root: Path) -> Path:
+    """One bronze run of a login that is a partner in funds 42 and 43. The
+    index holds both funds' documents, each naming its fund, and one
+    statement of a fund the run has no entity for."""
+    run = root / "20990201T000000Z"
+    for eid in (42, 43):
+        edir = run / "entities" / f"fund_{eid}"
+        edir.mkdir(parents=True)
+        (edir / "meta.json").write_text(json.dumps(
+            {"corporation_id": eid, "is_fund_investment": True}))
+    rows = [
+        {"id": "s1", "document_type": "Capital account statements",
+         "document_date": "12/31/2098", "fund_id": "42"},
+        {"id": "n1", "document_type": "Capital calls", "fund_id": "42"},
+        {"id": "t1", "document_type": "Capital account statements",
+         "document_date": "12/31/2098", "fund_id": "43"},
+        {"id": "d1", "document_type": "Distributions", "fund_id": "43"},
+        {"id": "u1", "document_type": "Capital account statements",
+         "document_date": "12/31/2098", "fund_id": "44"},
+    ]
+    for row in rows:
+        row["document_name"] = f"document {row['id']}"
+    _fund_docs(run, rows).rename(run / "documents")
+    (run / "run.json").write_text(json.dumps(
+        {"status": "complete", "individual_id": "ind-1"}))
+    return run
+
+
+def test_each_fund_reads_only_its_own_documents(tmp_path, monkeypatch, caplog):
+    # Both funds state a statement at the same date. Each fund's NAV row and
+    # ledger come from the documents whose index row names it; a statement
+    # of a fund with no entity in the run is read by neither, and logged.
+    texts = {"s1": _statement("217,500", "224,931"), "n1": _CALL_NOTICE,
+             "t1": _statement("95,380", "101,742"), "d1": _DIST_NOTICE,
+             "u1": _statement("70,113", "73,309")}
+    monkeypatch.setattr(load, "_pdf_text",
+                        lambda pdf: texts[pdf.stem.removeprefix("doc_")])
+    conn = load.silver.open_db(tmp_path / "carta.db")
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+
+    with caplog.at_level("WARNING"):
+        assert load.load_run(conn, _two_fund_run(tmp_path))
+
+    assert [tuple(r) for r in conn.execute(
+        "SELECT entity_external_id, net_asset_value, capital_contributed "
+        "FROM fund_metrics WHERE snapshot_at = ? ORDER BY 1",
+        (load._date_ts("12/31/2098"),))] == [
+            (42, "224931", "217500.00"), (43, "101742", "95380.00")]
+    assert [tuple(r) for r in _ledger(conn)] == [
+        ("call:42:notice:n1", "capital_call", "06/15/2098", 61250.0),
+        ("call:42:pre:n1", "capital_call", "05/20/2098", 156250.0),
+        ("call:43:t1", "capital_call", "12/31/2098", 95380.0),
+        ("dist:43:notice:d1", "distribution", "01/15/2099", 1234.56),
+    ]
+    assert [m for m in caplog.messages if "belongs to no fund entity" in m] == [
+        "document u1 (Capital account statements) belongs to no fund entity "
+        "of this run; not read"]
+    conn.close()

@@ -41,7 +41,8 @@ Bronze → silver mapping (schema in migrations/):
   documents/index.json + doc_*.pdf
                                -> documents (content-deduped on sha256);
                                   capital-account statements also parsed
-                                  -> fund_metrics quarterly NAV history;
+                                  -> fund_metrics quarterly NAV history of
+                                  the fund the index row names (`fund_id`);
                                   K-1s -> k1_capital_accounts (k1.py)
 
 SQLite + JSON1 (the repo default — no DuckDB need here; this is shape
@@ -656,17 +657,52 @@ def load_capital_events(conn, events) -> int:
     return n
 
 
+def _index_rows(docs_dir: Path) -> list[dict]:
+    """The rows of documents/index.json; empty when the run holds no index
+    (a `download --no-documents` run)."""
+    if not (docs_dir / "index.json").is_file():
+        return []
+    idx = _read_json(docs_dir / "index.json")
+    rows = idx.get("results") if isinstance(idx, dict) else None
+    return [row for row in rows or [] if isinstance(row, dict)]
+
+
+def _fund_ledger_kind(document_type: str | None) -> str | None:
+    """'statement' for a capital-account statement, 'notice' for a capital
+    call or distribution notice, None for any other document type."""
+    dtype = document_type or ""
+    if "apital account" in dtype:
+        return "statement"
+    if "apital call" in dtype or "istribution" in dtype:
+        return "notice"
+    return None
+
+
+def _fund_documents(docs_dir: Path, fund_eid) -> list[dict]:
+    """The index rows of one fund's documents: those whose `fund_id` is the
+    fund entity's id. One login's index holds the documents of every fund it
+    is a partner in."""
+    return [row for row in _index_rows(docs_dir)
+            if row.get("fund_id") is not None
+            and str(row["fund_id"]) == str(fund_eid)]
+
+
+def _warn_unowned_fund_documents(docs_dir: Path, fund_eids: list) -> None:
+    """Log each statement or notice whose `fund_id` names no fund entity of
+    the run. No fund's NAV history or ledger reads it."""
+    owners = {str(eid) for eid in fund_eids}
+    for row in _index_rows(docs_dir):
+        if (_fund_ledger_kind(row.get("document_type"))
+                and str(row.get("fund_id")) not in owners):
+            log.warning("document %s (%s) belongs to no fund entity of this "
+                        "run; not read", row.get("id"), row.get("document_type"))
+
+
 def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
     """Index documents/index.json, content-deduping each PDF on its SHA-256.
     bronze_path is stored relative to the bronze root."""
-    if not (docs_dir / "index.json").is_file():
-        return 0
-    idx = _read_json(docs_dir / "index.json")
-    rows = idx.get("results") if isinstance(idx, dict) else None
     n = 0
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
+    for row in _index_rows(docs_dir):
         doc_id = row.get("id")
         pdf = docs_dir / f"doc_{doc_id}.pdf"
         if not pdf.is_file():
@@ -925,22 +961,20 @@ def _period_deltas(statements) -> list[tuple]:
 
 
 def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
-    """Parse the fund's capital-account-statement PDFs into a quarterly NAV
-    time series — the history the structured partner-metrics doesn't carry.
-    One fund_metrics delta per statement date, carrying the NAV, the
-    inception-to-date capital contributed the same statement states (so the
-    row has a book value as well as a value), and its inception-to-date fees,
-    operating income, gains and carry.
+    """Parse one fund's capital-account-statement PDFs (_fund_documents)
+    into a quarterly NAV time series — the history the structured
+    partner-metrics doesn't carry. One fund_metrics delta per statement
+    date, carrying the NAV, the inception-to-date capital contributed the
+    same statement states (so the row has a book value as well as a value),
+    and its inception-to-date fees, operating income, gains and carry.
 
     A structured partner-metrics row loaded at the same date is richer and
     keeps its own figures; the statement adds only the lines partner-metrics
     lacks (_STATEMENT_ITD_LINES) to it."""
-    idx = _read_json(docs_dir / "index.json")
-    rows = idx.get("results") if isinstance(idx, dict) else None
     itd_cols = list(_STATEMENT_ITD_LINES)
     n = 0
-    for row in rows or []:
-        if "apital account" not in (row.get("document_type") or ""):
+    for row in _fund_documents(docs_dir, fund_eid):
+        if _fund_ledger_kind(row.get("document_type")) != "statement":
             continue
         pdf = docs_dir / f"doc_{row.get('id')}.pdf"
         if not pdf.is_file():
@@ -978,18 +1012,15 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
     """Parse each tax document's federal Schedule K-1 face page into a
     k1_capital_accounts row (k1.py), keyed on the PDF's sha256 like
     `documents`. The fund it belongs to is the index row's `fund_id`, which
-    is the fund entity's id. The tax year is the form's own, else the
-    index's. A document already parsed under its sha256 is skipped; a
-    re-issue under the same document id replaces the stale row. A tax
-    document with no federal face page (a 1042-S) yields no row, with a
-    warning when the index types it as a K-1. Returns the number of rows
+    is the fund entity's id. The tax year and period are the form's own
+    (k1.parse_face_page); the index's `tax_year` fills in only when the
+    form prints no year. A document already parsed under its sha256 is
+    skipped; a re-issue under the same document id replaces the stale row.
+    A tax document with no federal face page (a 1042-S) yields no row, with
+    a warning when the index types it as a K-1. Returns the number of rows
     written."""
-    idx = _read_json(docs_dir / "index.json")
-    rows = idx.get("results") if isinstance(idx, dict) else None
     n = 0
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
+    for row in _index_rows(docs_dir):
         if "tax" not in (row.get("document_type") or "").lower():
             continue
         pdf = docs_dir / f"doc_{row.get('id')}.pdf"
@@ -1011,18 +1042,24 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
                             row["document_type"])
             continue
         year = parsed["tax_year"]
-        if year is None and str(row.get("tax_year") or "").isdigit():
-            year = int(row["tax_year"])
+        indexed = str(row.get("tax_year") or "")
+        if indexed.isdigit():
+            if year is None:
+                year = int(indexed)
+            elif int(indexed) != year:
+                log.info("%s: the index files it under tax year %s; the "
+                         "form states %d", pdf.name, indexed, year)
         fund = row.get("fund_id")
         conn.execute("DELETE FROM k1_capital_accounts WHERE doc_id = ?",
                      (row.get("id"),))
         conn.execute(
             "INSERT INTO k1_capital_accounts "
             "(content_sha256, doc_id, entity_external_id, tax_year, "
-            f" {', '.join(_K1_COLUMNS)}, payload) "
-            f"VALUES (?,?,?,?,{','.join('?' * len(_K1_COLUMNS))},?)",
+            f" period_start, period_end, {', '.join(_K1_COLUMNS)}, payload) "
+            f"VALUES (?,?,?,?,?,?,{','.join('?' * len(_K1_COLUMNS))},?)",
             (sha, row.get("id"),
              int(fund) if str(fund or "").isdigit() else None, year,
+             parsed["period_start"], parsed["period_end"],
              *(parsed[c] for c in _K1_COLUMNS), _cj(parsed["printed"])))
         n += 1
     return n
@@ -1112,7 +1149,8 @@ def _captable_cash_flows(conn, eid, edir: Path, snap: int,
 def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int,
                      bronze_root: Path) -> int:
     """Fund cash flows: `capital_call` (deposit+contribution in gold) and
-    `distribution` (distribution+withdrawal).
+    `distribution` (distribution+withdrawal), from the fund's own documents
+    (_fund_documents).
 
     Two sources, and the better one wins per kind. A NOTICE states the day the
     money was due and the amount to the cent, so where the fund has issued
@@ -1138,8 +1176,6 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int,
     and is skipped with a warning. Where the fund reports no lump for a kind
     at all, the supplied rows are that kind's whole ledger.
     """
-    idx = _read_json(docs_dir / "index.json")
-    rows = idx.get("results") if isinstance(idx, dict) else None
     supplied = []
     path = bronze_root / f"{eid}-transactions.csv"
     for i, tx in enumerate(_read_transactions_csv(path)):
@@ -1149,18 +1185,18 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int,
             continue
         supplied.append({**tx, "row": i})
     stmts, notices = [], []
-    for row in rows or []:
-        dtype = row.get("document_type") or ""
+    for row in _fund_documents(docs_dir, eid):
+        kind = _fund_ledger_kind(row.get("document_type"))
         pdf = docs_dir / f"doc_{row.get('id')}.pdf"
-        if not pdf.is_file():
+        if kind is None or not pdf.is_file():
             continue
-        if "apital account" in dtype:
+        if kind == "statement":
             date = _s(row.get("document_date"))
             if not date:
                 continue
             contrib, dist = _parse_statement_flows(pdf)
             stmts.append((date, row.get("id"), contrib, dist))
-        elif "apital call" in dtype or "istribution" in dtype:
+        else:
             parsed = _parse_notice(pdf)
             if parsed:
                 parsed["docid"] = row.get("id")
@@ -1296,9 +1332,10 @@ def _residue_from_cumulative(notice: dict) -> float | None:
 def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
     """Build the dated cash-flow ledger (migration 0003): a row per cash event
     — stock exercises / exit from the cap-table certs + cancellation, and fund
-    capital calls / distributions from the capital-account statements. Amounts
-    are positive magnitudes; the gold adapter projects each as a balanced
-    double-entry pair on the custody account (DESIGN.md §6)."""
+    capital calls / distributions from each fund's notices and
+    capital-account statements. Amounts are positive magnitudes; the gold
+    adapter projects each as a balanced double-entry pair on the custody
+    account (DESIGN.md §6)."""
     entities_dir = run_dir / "entities"
     if not entities_dir.is_dir():
         return 0
@@ -1368,7 +1405,7 @@ def load_run(conn, run_dir: Path) -> bool:
         )
 
         n_sec = n_vest = n_fund = n_call = n_evt = n_navh = n_cf = 0
-        fund_eid = None
+        fund_eids = []
         entities_dir = run_dir / "entities"
         if entities_dir.is_dir():
             for edir in sorted(entities_dir.iterdir()):
@@ -1387,7 +1424,7 @@ def load_run(conn, run_dir: Path) -> bool:
                     # figure, not a download-time one. The full quarterly NAV
                     # history comes from the statement PDFs (load_statement_nav,
                     # after this loop).
-                    fund_eid = eid
+                    fund_eids.append(eid)
                     sharing = _fund_sharing_date(edir)
                     snap = _date_ts(sharing) or dump_snap
                     load_entity(conn, snap, ind_id, firm_id, edir)
@@ -1449,11 +1486,12 @@ def load_run(conn, run_dir: Path) -> bool:
                         n_evt += load_capital_events(conn, events)
                     n_vest += load_vesting(conn, dump_snap, eid, edir)
 
-        n_doc = load_documents(conn, dump_snap, run_dir.name,
-                               run_dir / "documents")
-        n_k1 = load_k1_capital_accounts(conn, run_dir / "documents")
-        if fund_eid is not None:
-            n_navh = load_statement_nav(conn, run_dir / "documents", fund_eid)
+        docs_dir = run_dir / "documents"
+        n_doc = load_documents(conn, dump_snap, run_dir.name, docs_dir)
+        n_k1 = load_k1_capital_accounts(conn, docs_dir)
+        for eid in fund_eids:
+            n_navh += load_statement_nav(conn, docs_dir, eid)
+        _warn_unowned_fund_documents(docs_dir, fund_eids)
         n_cf = load_cash_flows(conn, run_dir, dump_snap)
         conn.execute("COMMIT")
     except Exception:

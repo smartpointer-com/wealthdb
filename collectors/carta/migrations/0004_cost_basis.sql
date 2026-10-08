@@ -57,7 +57,7 @@ CREATE TABLE k1_capital_accounts (
     content_sha256          TEXT    NOT NULL PRIMARY KEY,   -- the K-1 PDF (documents.content_sha256)
     doc_id                  INTEGER,                        -- documents.doc_id
     entity_external_id      INTEGER,                        -- the fund entity (index fund_id)
-    tax_year                INTEGER,                        -- the form's calendar year
+    tax_year                INTEGER,                        -- the form's tax year (a fiscal year: 0005)
     beginning_capital       TEXT,                           -- item L: beginning capital account
     contributions           TEXT,                           -- item L: capital contributed during the year
     net_income              TEXT,                           -- item L: current year net income (loss)

@@ -1,11 +1,11 @@
 """
-Unit tests for the cost-basis facts silver carries (migration 0004).
+Unit tests for the cost-basis facts silver carries (migrations 0004, 0005).
 
 Covers the exercise detail matched to the certificate it produced, the
 capital-account statement's inception-to-date lines, the fund's accepted
-date, the federal Schedule K-1 face page, the migration's backfill of rows
-loaded before it, and one bronze run loaded end to end. Synthetic data only:
-invented ids, labels, dates and figures.
+date, the federal Schedule K-1 face page and a fiscal year's period, the
+migrations' effect on rows loaded before them, and one bronze run loaded
+end to end. Synthetic data only: invented ids, labels, dates and figures.
 """
 from __future__ import annotations
 
@@ -240,7 +240,7 @@ def test_a_statement_adds_its_lines_to_partner_metrics_of_the_same_day(
     snap = load._date_ts("12/31/2098")
     load.load_fund_metrics(migrated, snap, 9, edir)
     docs = _docs(tmp_path, [{"id": 5, "document_type": "Capital account statements",
-                             "document_date": "12/31/2098"}])
+                             "document_date": "12/31/2098", "fund_id": 9}])
     monkeypatch.setattr(load, "_pdf_text", lambda pdf: _STATEMENT)
     assert load.load_statement_nav(migrated, docs, 9) == 1
     assert migrated.execute(
@@ -365,6 +365,8 @@ def test_k1_face_page_reads_item_l_gains_and_distributions():
     got = k1.parse_bbox(_bbox(_COVER, _k1_face()))
     assert {k: v for k, v in got.items() if k != "printed"} == {
         "tax_year": 2098,
+        "period_start": None,          # a calendar-year form
+        "period_end": None,
         "beginning_capital": "104286",
         "contributions": "51374",
         "net_income": "-3127",
@@ -478,6 +480,64 @@ def test_a_reissued_k1_replaces_the_row_for_its_document(migrated, tmp_path,
         "SELECT COUNT(*) FROM k1_capital_accounts").fetchone() == (1,)
 
 
+# ---- fiscal-year K-1 --------------------------------------------------------
+
+def _heading_period(start: str | None = None, end: str | None = None) -> list[str]:
+    """The heading's "tax year beginning ... ending ..." line, below the
+    calendar year, its two fields filled the way a preparer fills them."""
+    p = [_w(112, 102, "beginning"), _w(231, 102, "ending")]
+    if start:
+        p += [_w(160, 101, start)]
+    if end:
+        p += [_w(270, 101, end)]
+    return p
+
+
+def test_a_fiscal_year_k1_states_its_period():
+    got = k1.parse_bbox(_bbox(_COVER, _k1_face()
+                              + _heading_period("07/01/2098", "06/30/2099")))
+    assert (got["tax_year"], got["period_start"], got["period_end"]) == (
+        2098, "2098-07-01", "2099-06-30")
+    assert got["printed"]["period_end"] == "06/30/2099"
+    assert _item_l(got) == ("104286", "51374", "-3127", "3618", "148915")
+
+
+def test_a_calendar_year_k1_leaves_its_period_blank():
+    # Blank fields, or only the year the form edition preprints in them.
+    for face in (_k1_face() + _heading_period(),
+                 _k1_face() + _heading_period("2098", "20")):
+        got = k1.parse_bbox(_bbox(face))
+        assert (got["tax_year"], got["period_start"], got["period_end"]) == (
+            2098, None, None)
+        assert "period_start" not in got["printed"]
+
+
+def test_a_fiscal_year_k1_takes_the_tax_year_its_period_begins_in(
+        migrated, tmp_path, monkeypatch):
+    # The index files the form under the year the fiscal year ends in, and
+    # the heading's calendar year is not printed; the form's own period
+    # names the tax year.
+    docs = _docs(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9,
+                             "tax_year": "2099"}])
+    face = [w for w in _k1_face() if 'yMin="84.' not in w]   # the year line
+    face += _heading_period("07/01/2098", "06/30/2099")
+    monkeypatch.setattr(k1, "bbox_xhtml", lambda pdf, timeout=None: _bbox(face))
+    load.load_k1_capital_accounts(migrated, docs)
+    assert migrated.execute(
+        "SELECT tax_year, period_start, period_end, "
+        "json_extract(payload, '$.period_start') "
+        "FROM k1_capital_accounts").fetchone() == (
+            2098, "2098-07-01", "2099-06-30", "07/01/2098")
+
+
+def test_k1_date():
+    for raw in ("07/01/2098", "7/1/98", "07 / 01 / 2098", "07/01 2098",
+                "07-01-2098", "2098-07-01", "July 1, 2098", "Jul. 1, 2098"):
+        assert k1._date(raw) == "2098-07-01", raw
+    for raw in ("2098", "/ / 20", "13/01/2098", "07/01/298", "STMT 1"):
+        assert k1._date(raw) is None, raw
+
+
 # ---- migration 0004 backfill ------------------------------------------------
 
 def test_migration_backfills_rows_loaded_before_it(tmp_path):
@@ -498,13 +558,28 @@ def test_migration_backfills_rows_loaded_before_it(tmp_path):
         (json.dumps({"partner": {"accepted_date": "2097-05-06T00:00:00"}}),
          json.dumps({"source": "capital_account_statement"})))
     c.commit()
-    assert load.silver.apply_migrations(c, MIGRATIONS_DIR) == 4
+    assert load.silver.apply_migrations(c, MIGRATIONS_DIR) == 5
     assert c.execute("SELECT security_external_id, exercise_type, "
                      "exercise_fmv FROM securities ORDER BY 1").fetchall() == [
         (11, None, None), (21, "NSO", None)]
     assert c.execute("SELECT snapshot_at, accepted_date, management_fees "
                      "FROM fund_metrics ORDER BY 1").fetchall() == [
         (0, "2097-05-06T00:00:00", None), (1, None, None)]
+
+
+def test_migration_0005_leaves_the_period_of_existing_k1_rows_empty(tmp_path):
+    older = tmp_path / "migrations"
+    older.mkdir()
+    for f in MIGRATIONS_DIR.glob("000[1-4]_*.sql"):
+        shutil.copy(f, older)
+    c = sqlite3.connect(":memory:")
+    load.silver.apply_migrations(c, older)
+    c.execute("INSERT INTO k1_capital_accounts (content_sha256, tax_year, "
+              "payload) VALUES ('ab12', 2098, '{}')")
+    c.commit()
+    assert load.silver.apply_migrations(c, MIGRATIONS_DIR) == 5
+    assert c.execute("SELECT tax_year, period_start, period_end "
+                     "FROM k1_capital_accounts").fetchall() == [(2098, None, None)]
 
 
 # ---- one bronze run, end to end ---------------------------------------------

@@ -383,7 +383,7 @@ the tables follow the observed responses.
 | `fund_metrics` | (snapshot_at, entity_external_id) | The LP capital account: `commitment`, `called_capital`, `capital_contributed`, `distributions`, `net_asset_value`, `vintage_year` (decimal strings, kept verbatim as TEXT), `accepted_date`, and on a statement's row its inception-to-date fees, operating income, gains and carry (§5.3). |
 | `cap_calls` | (snapshot_at, entity_external_id, call_external_id) | Active LP capital calls. |
 | `documents` | content_sha256 | PDF archive index (K-1 / 1042-S / statements / financials), content-deduped on SHA-256; the PDF blobs stay under the bronze tree. |
-| `k1_capital_accounts` | content_sha256 | One per K-1 document (§5.3): the federal face page's tax capital account (item L), net short- and long-term gain (boxes 8, 9a), and cash and property distributions (box 19 A, C). |
+| `k1_capital_accounts` | content_sha256 | One per K-1 document (§5.3): the federal face page's tax year and, for a fiscal year, its period (migration 0005), the tax capital account (item L), net short- and long-term gain (boxes 8, 9a), and cash and property distributions (box 19 A, C). |
 | `capital_events` | (snapshot_at, entity_external_id, event_kind) | The reconstructed timeline (§5.1): one row per snapshot-defining event — `acquired` / `disposition` / `exercise` / `price_change` / `statement`. |
 | `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`), `convertible_purchase` (a SAFE / note at its principal), and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on the custody account (§6). |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. `dump_runs.snapshot_at` is the download time (idempotency only), distinct from the content tables' event-dated `snapshot_at`. |
@@ -428,7 +428,11 @@ The collector reconstructs, per dump:
   ending-capital-balance parsed from each statement PDF, with the
   statement's inception-to-date capital contributions as
   `capital_contributed` (the structured partner-metrics supplies only the
-  latest quarter, at its sharing date).
+  latest quarter, at its sharing date). One document index holds the
+  documents of every fund a login is a partner in. A fund's documents are
+  the index rows whose `fund_id` is its `entity_external_id`. A statement or
+  notice whose `fund_id` names no fund entity of the run is logged and not
+  read.
 
 **Valuation — in `securities.market_value`:** held shares →
 `quantity × FMV-as-of(snapshot)`; unexercised options → 0; exited → 0. The FMV
@@ -481,12 +485,13 @@ carries the nature + direction), reconstructed from data we *do* have:
   side-loaded `<entity_external_id>-transactions.csv` supplies the exit legs
   (for example a sale plus the withdrawals it splits into, as canonical kinds
   the gold emits 1:1), which then replace the $0 exit.
-- **`capital_call`** / **`distribution`** — from the fund's notices where it
-  issues them, else from the capital-account statements. A notice states the
-  day the money was due and the amount to the cent, so it is the ledger for its
-  kind. A statement reports only inception-to-date figures; differencing
-  consecutive statements (by date) places a flow no more precisely than the
-  period it fell in, so it is the fallback for a fund that shares no notices.
+- **`capital_call`** / **`distribution`** — from the fund's own notices
+  where it issues them, else from its capital-account statements (a fund's
+  documents as in §5.1). A notice states the day the money was due and the
+  amount to the cent, so it is the ledger for its kind. A statement reports
+  only inception-to-date figures; differencing consecutive statements (by
+  date) places a flow no more precisely than the period it fell in, so it is
+  the fallback for a fund that shares no notices.
   The per-period statement columns mis-align under pdftotext when `—`
   placeholders are present, so the inception-to-date column — which reads
   cleanly as the line's last amount — is differenced instead.
@@ -565,10 +570,19 @@ other figure carries the sign the form prints. The fund is the index row's
 document id replaces the row. Two documents that print the same tax year
 both stay; gold reconciles them.
 
+**Tax year and period (migration 0005).** The heading reads "For calendar
+year YYYY, or tax year beginning … ending …". A calendar-year form leaves
+the two dates blank. `tax_year` is then the heading's year, and
+`period_start` and `period_end` are NULL. A fiscal-year form fills in the
+dates; they are stored as YYYY-MM-DD. A fiscal year is filed on the form
+edition of the year it begins in, so `tax_year` is the year of
+`period_start`. The index's own `tax_year` counts only when the form prints
+no year. Where the two disagree, the form wins and the load logs it.
+
 **Backfill.** `exercise_type` and `accepted_date` also sit in `payload`, so
-migration 0004 fills them on existing rows. The other columns come from
-bronze files only a load parses, so existing rows gain them on a reload from
-bronze (`load --force`).
+migration 0004 fills them on existing rows. The other columns, including
+migration 0005's period, come from bronze files only a load parses, so
+existing rows gain them on a reload from bronze (`load --force`).
 
 ### Why SQLite, not DuckDB
 
@@ -650,7 +664,7 @@ Carta's internal API exposes no transaction ledger (exercises live inside the
 grant payloads), so the dated cash flows are **reconstructed** into the
 `cash_flows` table (§5.2) — exercises from the certs, convertible purchases
 from the note principals, the exit at cancellation,
-fund calls / distributions from the statements — for projection to gold
+fund calls / distributions from each fund's notices and statements — for projection to gold
 transactions per §6.1.
 
 ## 8. Read-only & PII
