@@ -347,7 +347,7 @@ the dump layer; full order history is intentionally not captured.
 
 Parses one or more bronze dump directories (as produced by
 `download.py`) and inserts them into a SQLite silver database. The
-schema is defined in [`migrations/`](migrations/) (0001–0005);
+schema is defined in [`migrations/`](migrations/);
 the loader applies any pending migrations on startup before loading
 data, so the silver database is always at the latest schema version.
 

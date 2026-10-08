@@ -1,7 +1,7 @@
 # schwab-web ↔ schwab-api interop notes
 
 A focused cross-repo memo for the `schwab-api` maintainer
-and the `wealthdb` gold-layer maintainer. Extracted from
+and the `wealthdb` gold-layer maintainer. It condenses
 [DESIGN.md](DESIGN.md) §§4–5. Two silvers, one gold layer
 that needs to converge them.
 
@@ -18,8 +18,8 @@ that needs to converge them.
   (full-account-number join for accounts; date-splice for
   transactions) and a **logical-document dedup** on the web side
   because Schwab regenerates PDFs per download.
-- The schwab-api collector itself does **not** need to change. One nice-to-have
-  suggested below; everything else is gold-layer work.
+- The schwab-api collector itself does **not** need to change (§6);
+  everything else is gold-layer work.
 
 ---
 
@@ -77,8 +77,8 @@ the api hashValue is opaque).
 | | `schwab-web` | `schwab-api` |
 | --- | --- | --- |
 | Column | `transactions.activity_id` | `transactions.activity_id` |
-| Value | Synthetic SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index>` (sha256-independent since migration 0004) | Schwab-supplied `activityId` |
-| Stable across re-loads? | Yes (deterministic; sha256-churn-safe since 0004) | Yes |
+| Value | Synthetic SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index>` (sha256-independent) | Schwab-supplied `activityId` |
+| Stable across re-loads? | Yes (deterministic; sha256-churn-safe) | Yes |
 | Joinable? | **No** — different value spaces |
 
 All four web feeds — `statement_pdf`, `tx_history_json`, `form_1099b`,
@@ -148,8 +148,8 @@ JOIN logical_docs ld
   ON d.sha256 = ld.canonical_sha256;
 ```
 
-Transactions are **already deduped at the silver level** since
-migration 0004: `activity_id` is sha256-independent and
+Transactions are **already deduped at the silver level**:
+`activity_id` is sha256-independent and
 `INSERT OR IGNORE` prevents duplicate rows even if the same logical
 statement is re-downloaded with a new sha256. Gold does **not**
 need a second dedup pass for sha256-churn duplicates; the silver is
@@ -232,7 +232,7 @@ the web feed is and isn't carrying:
 
 ---
 
-## 8. Gold-layer hand-off: consuming the two new silver sources
+## 8. Gold-layer hand-off: the 1099-B and distribution sources
 
 The gold reader
 (`wealthdb/internal/silver/schwab/web_reader.go`) consumes both
@@ -257,8 +257,8 @@ and must not be summed.
   drop `statement_pdf` / `tx_history_json` rows that map to `TxKindSell`
   whose `timestamp` falls in that calendar year, and use the
   `form_1099b` lots instead. Outside covered tax years, keep the
-  existing feeds. (Apply this *after* the existing JSON-authoritative
-  splice and the cross-feed external-flow dedup, as a third stage.)
+  existing feeds. (This runs *after* the JSON-authoritative splice
+  and the cross-feed external-flow dedup, as a third stage.)
 - **Cost basis.** Each lot's `payload` carries `proceeds`,
   `cost_basis` (nullable — `null` means Schwab did not report it; see
   the `basis_not_shown` / `noncovered` flags + `cost_basis_raw`),
@@ -279,13 +279,12 @@ and must not be summed.
   are **new** data — no other feed records them; the statements show
   them only as an unexplained position drop. Map `kind='Transfer Out'`
   → `TxKindTransferOut`; the row carries `symbol`/`instrument_key`,
-  `quantity`, and `market_value` (the external-flow magnitude). These
-  reconciled cleanly against position deltas in testing (the position
-  drops by the transferred quantity across the letter date).
+  `quantity`, and `market_value` (the external-flow magnitude). The
+  holding drops by the transferred quantity across the letter date.
 - **Cash transfers** (`payload.transfer_kind == "cash"`, `method` ∈
   {`wire`, `schwab_third_party`}) **may overlap** a `statement_pdf` /
   `tx_history_json` cash debit for the same movement. Run them through
-  the existing cross-feed external-flow dedup (3-day / 0.5%-amount
+  the cross-feed external-flow dedup (3-day / 0.5%-amount
   tolerance); when matched, treat `third_party_distribution` as
   authoritative (it names the counterparty). Do **not** sum a cash
   distribution and a matching statement debit.

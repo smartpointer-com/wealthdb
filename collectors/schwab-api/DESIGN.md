@@ -308,16 +308,11 @@ adjusted tax-lot basis, so an adapter reads it without a
 | `average_cost` | `averagePrice` | Cost per unit, as sent. |
 | `unrealized_gain_loss` | `longOpenProfitLoss`, or `shortOpenProfitLoss` when `shortQuantity` > 0 | Open P/L in USD, as sent. |
 
-- `average_cost` uses the API's price convention.
-  It is per share for equities, funds and options.
-  It is per 100 of par for bonds.
-- The holding's total cost is market value minus open P/L.
-  That form needs no per-asset-class scale.
-- A zero is stored as sent. NULL means the API did not send the field.
-- `averageLongPrice` stays in `payload`.
-  It is a different average and does not tie to the statements.
-- Migration 0005 fills both columns from `payload` for rows loaded
-  before it.
+The holding's total cost is market value minus open P/L, which needs
+no per-asset-class scale. The header of
+[migrations/0005_position_cost.sql](migrations/0005_position_cost.sql)
+gives the price convention of `average_cost`, the meaning of zero and
+NULL, and why `averageLongPrice` stays in `payload`.
 
 **Why not promote more columns?** Because the upstream's schema
 evolves. Schwab adds new fields all the time; UBS varies what each

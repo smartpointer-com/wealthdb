@@ -70,8 +70,8 @@ bridge them manually.
 
 | | web silver | api silver |
 | --- | --- | --- |
-| Value | Synthetic hex SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index>` (sha256-independent since migration 0004) | Schwab-supplied `activityId` from `/accounts/{hash}/transactions` |
-| Stable across re-loads? | Yes (deterministic; sha256-churn-safe since 0004) | Yes |
+| Value | Synthetic hex SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index>` (sha256-independent) | Schwab-supplied `activityId` from `/accounts/{hash}/transactions` |
+| Stable across re-loads? | Yes (deterministic; sha256-churn-safe) | Yes |
 | Joinable across silvers? | **No** — see §4.2 |
 
 ### 2.3 `instrument_key`
@@ -205,21 +205,24 @@ LOGICAL document count is roughly half the row count.
 
 **Silver mitigation (migration 0004)**: the `transactions` table is
 sha256-churn-safe. `activity_id` does not include `source_sha256`;
-the load gate uses `logical_doc_key` (`account|doc_date|filename`)
-rather than `source_sha256`; and `INSERT OR IGNORE` on the
+every load gate keys on `logical_doc_key` (`account|doc_date|filename`),
+never on `source_sha256`; and `INSERT OR IGNORE` on the
 `activity_id` PK prevents row-level duplicates. Re-downloading the
 same logical PDF with a new sha256 is a clean no-op for
 transactions. **Gold needs no transaction dedup pass for this
 case.**
 
-**Parse markers (migration 0008)**: each pass records the logical
-documents it parses in `parsed_documents`, keyed by
-`logical_doc_key` and the document kind. A later load skips a
-marked document, so a re-download is not parsed again. This holds
-also when the parse yields no rows: a statement without
-transactions, a 1099 without 1099-B lots, a report without realized
-lots. A moved parser generation clears the markers, and `--reparse`
-ignores them.
+**Parse markers (migration 0008)**: the statement, 1099-B and
+realized-lot passes record the logical documents they parse in
+`parsed_documents`, keyed by `logical_doc_key` and the document kind.
+A later load skips a marked document, so a re-download is not parsed
+again. This holds also when the parse yields no rows: a statement
+without transactions, a 1099 without 1099-B lots, a report without
+realized lots. A moved parser generation clears the markers, and
+`--reparse` ignores them. The distribution letters and the
+tx-history exports carry no marker; they are skipped once they have
+transaction rows. Within one load, each logical document is parsed
+once, also under `--reparse`.
 
 **Gold-layer mitigation for `documents`**: when consuming web silver
 `documents`, deduplicate on `(account_external_id, doc_date,
@@ -229,28 +232,14 @@ the first time we saw the logical doc). The `transactions` table
 is clean.
 
 **Bronze-disk mitigation (`collapse-statements` verb)**: the per-download
-re-render also means the `statements/` tree grows one full PDF copy per run,
-and the byte-identical `wealthdb-collect dedup` sweep can never collapse them
-(the bytes differ). The [collapse-statements](dedup.py) verb reclaims that: it parses
-each statement PDF exactly as `load` does and, within one logical
-statement across runs, hardlinks every copy whose parsed content is
-identical onto the oldest copy. This is **silver-safe but lossy at the
-byte level** — the re-rendered bytes are discarded, the oldest copy's
-bytes back them all. It is safe precisely because of §4.4's own
-observation that nothing re-reads a statement PDF's on-disk bytes
-against the manifest: `load` keys `documents` off the manifest sha256,
-finds the PDF by filename, and re-parses whatever bytes are there,
-gating on `logical_doc_key`. `run.json` is never touched, so the
-manifest-derived rows are unchanged; and because two copies collapse
-only when they parse **identically**, `load --force` reproduces
-byte-identical silver. Copies of one logical statement that do NOT
-parse alike (a genuine restatement, or parser nondeterminism) are
-reported as **DIVERGENT** and left entirely alone — never collapsed.
-The verb needs the image's PDF parser, so it runs in-container like
-`load` (not host-side like `prune`); `--dry-run` emits the evidence
-report (per-group plan + any divergences + reclaimable bytes) and
-collapses nothing. It is a deliberate manual one-off, not wired into
-orchestration.
+re-render also means the `statements/` tree grows one full PDF copy per
+run, and the byte-identical `wealthdb-collect dedup` sweep can never
+collapse them (the bytes differ). The `collapse-statements` verb
+hardlinks the copies of one logical statement that parse identically
+onto the oldest copy. It is silver-safe because `load` keys
+`documents` off the manifest sha256 and re-parses whatever bytes the
+filename holds. The README section "Reclaiming disk
+(`collapse-statements`)" and [dedup.py](dedup.py) describe the verb.
 
 ### 4.5 Web position snapshots are statement-cadence, not live
 
@@ -290,24 +279,13 @@ statement transactions feed gives ENOUGH activity context to
 recompute positions retroactively when needed,
 but that's a gold-layer derivation, not a silver one.
 
-## 5. Recommendations for schwab-api
+## 5. What the merge needs from schwab-api
 
-These are nice-to-haves for the schwab-api maintainer; the web
-silver doesn't strictly need any of them.
-
-- **Persist a stable mapping `hashValue → accountNumber` in
-  `accounts.payload`**. The api already gets `accountNumber`
-  back from `/accounts/accountNumbers`; per-account JSON in
-  `accounts.payload` should carry it verbatim so gold can join
-  to web by suffix without an extra Schwab call. (Looking at
-  the migration 0001 comments, this *is* the case — the
-  payload stores `{accountNumber, hashValue}`. Good. The only
-  thing gold needs to know is that the LAST 3 digits of
-  `accountNumber` equal the web silver's `account_external_id`.)
-- **The full Schwab account-number string is promoted.** The api
-  silver's migration 0004 adds `account_number` as a real column
-  on `accounts`, so gold joins on it directly with no JSON-parse
-  step.
+Nothing beyond what the api silver carries. Its `accounts.payload`
+keeps `{accountNumber, hashValue}` from `/accounts/accountNumbers`, and
+its migration 0004 promotes the full account number to the
+`accounts.account_number` column. That column is the api side of the
+§4.1 bridge.
 
 ## 6. Bronze artefact layout (for reference)
 
@@ -320,9 +298,9 @@ silver doesn't strictly need any of them.
     ├── statements/
     │   └── <suffix>/
     │       ├── Brokerage-Statement_2026-04-30_<suffix>.PDF
-    │       ├── 1099-Composite-and-Year-End-Summary_2026-02-21_<suffix>.PDF
-    │       ├── 1099-Composite-and-Year-End-Summary_2026-02-21_<suffix>.XML
-    │       └── 1099-Composite-and-Year-End-Summary_2026-02-21_<suffix>.CSV
+    │       ├── 1099-Composite-and-Year-End-Summary---2025_2026-02-21_<suffix>.PDF
+    │       ├── XXXX-X<suffix>.XML      the same 1099's machine-readable
+    │       └── XXXX-X<suffix>.CSV      twins, named apart from the PDF
     ├── transactions/
     │   └── <suffix>/
     │       ├── <Nick>_XXX<suffix>_Transactions_<ts>.csv
@@ -349,11 +327,9 @@ complete ones, and never a `load` input (`statements/`,
 `transactions/`, `run.json`).
 
 A narrower reclaim also fires from complete dumps:
-`transactions/*/page-*.html`. Before the `--debug` gate landed, the
-per-account landing-page HTML was written ungated straight into the
-`transactions/<suffix>/` load-input dir as `page-001.html`; the gate
-relocated that capture to `<run>/screenshots/`, but run dirs written
-earlier still strand those orphans. `load` never read them — the
+`transactions/*/page-*.html`. Older run dirs hold a copy of the
+per-account landing-page HTML inside the `transactions/<suffix>/`
+load-input dir as `page-001.html`. `load` never reads them — the
 tx-history loader consumes only `more-details.json` and the manifest's
 per-account `.csv`/`.json`/`.xml` exports — so `prune` reclaims them via
 an explicit file glob. The glob matches only names that both begin
@@ -393,15 +369,16 @@ statement parser cannot see when a sale prints only as a bare
 position delta rather than as an activity row. Parsed by
 [`tax_form_parsers.py`](tax_form_parsers.py).
 
-- **Format precedence.** Schwab ships the form as PDF + XML + CSV
-  twins sharing one base filename. We prefer the **XML** (OFX-2.x,
-  cleaner per-field structure, an explicit `DTVAR` "Various" flag, a
+- **Format precedence.** Schwab ships the form as a PDF and, where it
+  offers them, as XML + CSV twins. The twins share one base filename;
+  the PDF is named apart (§6). All three share the manifest row (date
+  and document name). We prefer the **XML** (OFX-2.x, cleaner
+  per-field structure, an explicit `DTVAR` "Various" flag, a
   `TAXYEAR` element) and fall back to the **CSV**. The PDF's 1099-B
   pages are not read; its Year-End Summary half is (§9.2). The
-  `logical_doc_key` keys on the **base
-  filename without extension**, so the XML and CSV twins dedup to one
-  set of rows (whichever is parsed first wins; `--reparse` clears all
-  formats at once).
+  `logical_doc_key` keys on the **base filename without extension**,
+  so the XML and CSV twins dedup to one set of rows (whichever is
+  parsed first wins; `--reparse` clears all formats at once).
 - **Tax year** is taken from the content (`TAXYEAR`, cross-checked
   against the sold-date year), never the unreliable `.N` filename
   suffix.
@@ -450,9 +427,9 @@ and with no extra system dependency).
   bare "Investment Detail" / "Transaction Detail"; 2020-2024
   "Investment Detail - X" / "Transaction Detail - X"; 2025+
   "Positions - X" / "Transaction Details"). Each tier is tried
-  in turn; the loader still passes `statement_year` as a
-  fallback for the few pre-2025 quarterly headers that pdfplumber
-  / pypdfium2 didn't surface.
+  in turn. A transaction row prints its date as MM/DD; the year
+  comes from the statement's manifest date, which the loader
+  passes as `statement_year`.
 - **Some sale rows lose their amount**. Such rows are skipped
   during load with a warning rather than failing the whole
   statement; worth a follow-up parser pass.
@@ -460,7 +437,7 @@ and with no extra system dependency).
   event can land in silver from more than one feed:
   `statement_pdf` (parser-derived, multi-year via quarterly
   statements), `tx_history_json` (Schwab-rendered, ~4-year "All"
-  range), and now `form_1099b` (authoritative sales within a tax
+  range), and `form_1099b` (authoritative sales within a tax
   year). They get different synthetic `activity_id`s (their content
   fields differ; the id does not depend on `source_sha256`), so all
   rows insert without UNIQUE conflict. Gold
@@ -468,14 +445,13 @@ and with no extra system dependency).
   `(account, timestamp, amount, ±description)` preferring
   tx_history_json; and treat `form_1099b` as authoritative-for-sales
   within its covered tax year (see INTEROP.md §4 + §8).
-- **1099 Composite sales are now parsed** into `form_1099b`
-  (§6a). Remaining 1099 sections (DIV / INT / OID / MISC) are not
-  parsed; tax years available only as a PDF (no XML/CSV twin) are
-  skipped with a logged `form_1099b_pdf_only` count.
-- **3rd-Party-Distribution transfers are now parsed** into
-  `third_party_distribution` (§6b). These are mostly new data the
-  other feeds lack; cash transfers may overlap a statement cash
-  debit and are gold's to dedupe (INTEROP.md §8).
+- **The 1099 Composite yields its sales only** (`form_1099b`,
+  §6a). The other 1099 sections (DIV / INT / OID / MISC) are not
+  parsed. A tax year available only as a PDF (no XML/CSV twin on its
+  manifest row) is skipped and counted as `form_1099b_pdf_only`.
+- **3rd-Party-Distribution transfers** (`third_party_distribution`,
+  §6b) are mostly data the other feeds lack. A cash transfer may
+  overlap a statement cash debit; gold dedupes it (INTEROP.md §8).
 - **The per-row "More" detail pass runs by default; `--no-more-detail`
   opts out** — it adds ~1 modal click per transaction, on the order
   of an hour for a high-activity account, so `--no-more-detail` skips
