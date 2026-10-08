@@ -629,6 +629,28 @@ headline comes in three flavours:
    duplicate USD copies collapse on the silver PK. The gold adapter
    recognises the non-ISIN key and leaves the canonical ISIN null.
 
+**Headlines whose figures run together.** The listed and
+private-markets patterns find where one figure ends by the decimal
+point a price prints. Some headlines print none, or leave a column
+blank, and their figures run together:
+
+- an integer cost price, such as `1 200 1 150 -4.17%`;
+- a blank market gain, printed when the price has not moved, as in
+  `43.50 43.50 4 350`;
+- an integer private-markets price, such as `1 1 000`.
+
+A block neither pattern reads is read from its figures alone. They are
+split every way the digit grouping allows, and a reading must agree
+with itself:
+
+- a printed market gain equals the market price over the cost price,
+  less one;
+- a blank market gain means the two prices are the same figure;
+- a private-markets row prints one price and no gain.
+
+The headline is read only when exactly one reading agrees. Otherwise
+the holding is left out.
+
 **The cost side of a holding.** A holding prints up to four lines,
 and the column header names what each carries on its right-hand
 side:
@@ -636,8 +658,8 @@ side:
 | Line | Right-hand columns | Silver column |
 | --- | --- | --- |
 | 1 | cost price, market price, market gain, market value, % NA | `cost_price`, `market_price`, `market_value` |
-| 2 | average buy exchange rate, current exchange rate, exchange gain, accrued interest | `acquisition_fx_rate`, `current_fx_rate` |
-| 3 | cost value, market-price date, unrealized P/L (a percentage) | `cost_basis` |
+| 2 | average buy exchange rate, current exchange rate, exchange gain, accrued interest | `acquisition_fx_rate`, `current_fx_rate`, `accrued_interest` |
+| 3 | cost value, market-price date, unrealized P/L (a percentage) | `cost_basis`; a private-markets holding's `nav_date` |
 | 4 | last purchase date | `last_purchase_date` |
 
 - Line 2 prints the two rates only when the holding's currency
@@ -645,6 +667,11 @@ side:
   (`market_value_currency`). Both rates convert the first into the
   second. A cash line prints one rate, its current one, in the same
   `current_fx_rate` column.
+- The accrued interest follows the exchange gain on line 2, where the
+  holding accrues any. It is printed in the market-value column, so it
+  is in `market_value_currency`. It is read only behind the two rates:
+  on a holding in the portfolio's currency, nothing on line 2 tells a
+  figure in that column from one that ends the wrapped description.
 - `cost_basis` is the statement's "cost value": the units at their
   average cost, at the average buy rate, in `market_value_currency`.
   The cost price, by contrast, is in `currency_iso`.
@@ -654,10 +681,15 @@ side:
   the cost value and read as part of it. The printed unrealized P/L
   (market value over cost value, less one) decides which reading is
   the cost value; when none agrees, `cost_basis` stays NULL.
+- A holding whose market gain is blank leaves the P/L blank too, and
+  its line 3 ends in the cost value alone. With the price unchanged,
+  that figure equals the market value, and a line is taken as line 3
+  only when it does.
 - A distribution's ex-date (`Distribution: <date>`) is never read as
   the last purchase date.
 - A private-markets holding prints no cost value. Its line 3 carries
-  the NAV date, and its line 4 the last purchase date.
+  the NAV date (`nav_date`, ISO `YYYY-MM-DD`), and its line 4 the last
+  purchase date.
 
 **Why separate from the live-fetch `positions` / `accounts`
 tables.** Two reasons:

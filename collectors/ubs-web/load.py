@@ -1935,7 +1935,7 @@ _HIST_POSITION_COLUMNS = (
     "instrument_isin", "currency_iso", "units", "market_value",
     "market_value_currency", "cost_price", "market_price",
     "accrued_interest", "current_fx_rate", "acquisition_fx_rate",
-    "cost_basis", "last_purchase_date", "description", "sector",
+    "cost_basis", "nav_date", "last_purchase_date", "description", "sector",
     "source_doc_token", "payload",
 )
 

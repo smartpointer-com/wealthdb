@@ -242,10 +242,10 @@ companion PSN silver is at `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` (from
   from "Account Statement" PDFs). Kept separate from the live-
   fetch tables because the identity model and cadence differ.
 - [`0003_backfill_historical_portfolio_id.sql`](migrations/0003_backfill_historical_portfolio_id.sql)
-  — one-shot backfill: prepends a leading zero to any pre-existing
-  15-char `historical_position_snapshots.portfolio_external_id`
-  values so they line up with PSN's 16-char canonical form.
-  Idempotent; the parser fix prevents any new 15-char rows.
+  — one-shot backfill: prepends a leading zero to any 15-char
+  `historical_position_snapshots.portfolio_external_id` value so it
+  lines up with PSN's 16-char canonical form. Idempotent; the parser
+  writes the 16-char form itself.
 - [`0004_mortgages.sql`](migrations/0004_mortgages.sql) —
   `mortgages`: the per-mortgage liability rows positions.csv
   carries under "Pro memoria - Mortgages" (UBS-internal mortgage
@@ -270,9 +270,39 @@ companion PSN silver is at `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` (from
   that join it to the PSN feed.
 - [`0008_card_session_ids.sql`](migrations/0008_card_session_ids.sql) —
   re-keys that surface. Every id the card API hands out is re-minted at
-  login, so two dumps a day apart shared no ledger id and the upsert
-  that was meant to re-observe a row inserted a second copy instead.
-  The row key is now a content id the parsers mint.
+  login, so no API id names a row across dumps. The row key is a
+  content id the parsers mint.
+- [`0009_parser_generations.sql`](migrations/0009_parser_generations.sql)
+  — `parser_generations`: which generation of the PDF parsers wrote the
+  document-derived rows. When the parsers change, the next load drops
+  those rows and derives them again, so a re-parse replaces rows rather
+  than adding beside them.
+- [`0010_card_identity_rehash.sql`](migrations/0010_card_identity_rehash.sql)
+  — keys `card_transactions` on the card, the dates and the amounts,
+  without the merchant text, which UBS re-labels between fetches. It
+  clears the card ledger and `dump_runs`, so the next load re-reads
+  every dump from bronze.
+- [`0011_collapse_cash_duplicates.sql`](migrations/0011_collapse_cash_duplicates.sql)
+  — keeps one cash row per date, portfolio, account and currency in
+  `historical_position_snapshots`. A cash line has no ISIN, so the
+  primary key cannot collapse its copies; the loader deletes the row a
+  cash line replaces.
+- [`0012_portfolio_transactions.sql`](migrations/0012_portfolio_transactions.sql)
+  — `portfolio_transactions`: a managed portfolio's securities trades
+  and corporate actions, from the portfolio export. Kept apart from
+  `transactions`, the cash surface (DESIGN.md §3.7b).
+- [`0013_holding_cost_and_advices.sql`](migrations/0013_holding_cost_and_advices.sql)
+  — the cost side of a statement holding: `acquisition_fx_rate`,
+  `cost_basis` and `last_purchase_date` on
+  `historical_position_snapshots`, whose `exchange_rate_to_base` becomes
+  `current_fx_rate`. Also `advices`: one row per capital call or
+  contract note (DESIGN.md §3.8, §3.9).
+- [`0014_statement_trades.sql`](migrations/0014_statement_trades.sql) —
+  `statement_trades`: the transaction list a Statement of assets
+  prints, one row per booking per statement (DESIGN.md §3.10).
+- [`0015_holding_nav_date.sql`](migrations/0015_holding_nav_date.sql) —
+  `nav_date` on `historical_position_snapshots`: the date of the NAV a
+  private-markets holding prints (DESIGN.md §3.8).
 
 Full design notes including the per-entity gold-merge contract,
 identifier conventions, IBAN ↔ PSN AcctId conversion, the

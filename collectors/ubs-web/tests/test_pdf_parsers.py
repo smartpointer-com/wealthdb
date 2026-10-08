@@ -589,9 +589,10 @@ class TestStatementOfAssetsSecurities:
       1. Listed securities — the cost/market/gain% triple.
       2. Listed securities whose market price carries a one-letter
          qualifier (e.g. a structured product's "120.00 B 20.00%").
-      3. Private-markets / SPV holdings — a single FX rate (or
-         "n.a.") in place of the triple; the funded "Outstanding
-         Shares" row carries the NAV, the n.a. commitment rows are 0.
+      3. Private-markets / SPV holdings — a single price, the NAV per
+         unit (or "n.a."), in place of the triple; the funded
+         "Outstanding Shares" row carries the NAV, the n.a. commitment
+         rows are 0.
 
     All identifiers are synthetic placeholders per AGENTS.md §4 —
     the ISIN-shaped tokens use the reserved 'XX' prefix and repdigit
@@ -803,6 +804,7 @@ class TestStatementOfAssetsHoldingDetail:
             "Valor 333 - ISIN XX0000000033",
         )["XX0000000033"]
         assert row["market_price"] == pytest.approx(1.25)
+        assert row["nav_date"] == "2030-03-31"
         assert row["last_purchase_date"] == 1894665600     # 15.01.2030
         assert row["cost_basis"] is None
         assert row["acquisition_fx_rate"] is None
@@ -818,18 +820,137 @@ class TestStatementOfAssetsHoldingDetail:
         assert rows[0]["acquisition_fx_rate"] is None
 
     def test_a_holding_whose_headline_does_not_parse_takes_no_other(self):
-        # The second headline prints an integer cost price, which the
-        # headline pattern does not read. Its Valor line is within reach
-        # of the first holding's headline, which must not be lent to it.
+        # The second headline prints an integer cost price, and its market
+        # gain agrees with no split of the prices, so it is not read. Its
+        # Valor line is within reach of the first holding's headline,
+        # which must not be lent to it.
         rows = self._rows(
             *self.FOREIGN,
             "Country of custody Switzerland",
-            "50 Reg.shs Example Other AG USD 148 150.5 1.69% 7 525 1.00",
+            "50 Reg.shs Example Other AG USD 148 150.5 9.99% 7 525 1.00",
             "All sectors",
             "Valor 444 - ISIN XX0000000044",
         )
         assert "XX0000000055" in rows
         assert "XX0000000044" not in rows
+
+    def test_a_foreign_currency_holding_states_its_accrued_interest(self):
+        row = self._rows(
+            "10 000 4% Example Notes 2030-2035 GBP 100.000000 101.00 1.00% 13 130 4.50",
+            "Corporates 1.250000 1.300000 4.00% 260",
+            "12 500 5.04%",
+            "15.03.2030",
+            "Valor 556 - ISIN XX0000000056",
+        )["XX0000000056"]
+        assert row["acquisition_fx_rate"] == pytest.approx(1.25)
+        assert row["accrued_interest"] == pytest.approx(260.0)
+        assert row["cost_basis"] == pytest.approx(12500.0)
+
+    def test_no_accrued_interest_is_read_where_none_is_printed(self):
+        row = self._rows(*self.FOREIGN)["XX0000000055"]
+        assert row["accrued_interest"] is None
+        assert row["nav_date"] is None
+
+
+class TestStatementOfAssetsRunTogetherHeadlines:
+    """Headlines whose figures run together because a price prints no
+    decimal point or the market gain is blank. Each block's figures
+    agree with each other the way a real statement's do; every figure
+    and identifier is synthetic."""
+
+    LABEL = TestStatementOfAssetsSecurities.LABEL
+
+    def _rows(self, *block: str) -> dict:
+        text = "\n".join(["Valued in USD", "Detailed positions", *block,
+                          "Additional information Abbreviations"])
+        rows = parse_statement_of_assets_text(text, "<doc-token>", self.LABEL)
+        return {r["instrument_isin"]: r for r in rows}
+
+    def test_an_integer_cost_price_is_split_by_the_market_gain(self):
+        # '1 200 1 150' reads as 1 200 then 1 150 only: 1 150 / 1 200 - 1
+        # is the printed -4.17%.
+        row = self._rows(
+            "10 Reg.shs Example AG USD 1 200 1 150 -4.17% 11 500 1.00",
+            "Financials",
+            "12 000 -4.17%",
+            "20.01.2030",
+            "Valor 101 - ISIN XX0000000101",
+        )["XX0000000101"]
+        assert row["units"] == pytest.approx(10.0)
+        assert row["cost_price"] == pytest.approx(1200.0)
+        assert row["market_price"] == pytest.approx(1150.0)
+        assert row["market_value"] == pytest.approx(11500.0)
+        assert row["description"] == "Reg.shs Example AG"
+        assert row["sector"] == "Financials"
+        assert row["cost_basis"] == pytest.approx(12000.0)
+        assert row["last_purchase_date"] == 1895097600     # 20.01.2030
+        assert json.loads(row["payload"])["headline"].startswith("10 Reg.shs")
+
+    def test_an_integer_cost_price_beside_a_decimal_market_price(self):
+        row = self._rows(
+            "1 000 Reg.shs -A- Example Holdings HKD 150 147.5 -1.67% 18 880 1.00",
+            "Class -A- 0.128000 0.128000 0.00%",
+            "(9999) 19 200 -1.67%",
+            "15.03.2030",
+            "Valor 102 - ISIN XX0000000102",
+        )["XX0000000102"]
+        assert row["cost_price"] == pytest.approx(150.0)
+        assert row["market_price"] == pytest.approx(147.5)
+        assert row["acquisition_fx_rate"] == pytest.approx(0.128)
+        assert row["cost_basis"] == pytest.approx(19200.0)
+        assert row["last_purchase_date"] == 1899763200     # 15.03.2030
+
+    def test_a_blank_market_gain_reads_two_equal_prices(self):
+        # The price has not moved, so the gain and the P/L are blank and
+        # line 3 ends in the cost value alone. Line 2 ends in a figure
+        # too, but it is not the cost value, so it is not line 3.
+        row = self._rows(
+            "100 Reg.shs Example AG Industrials USD 43.50 43.50 4 350 1.00",
+            "Example Series 2",
+            "Distribution: 14.06.2030 4 350",
+            "Distribution amount: USD 0.7 1.61% DY 15.01.2030",
+            "Valor 103 - ISIN XX0000000103",
+        )["XX0000000103"]
+        assert row["cost_price"] == pytest.approx(43.5)
+        assert row["market_price"] == pytest.approx(43.5)
+        assert row["market_value"] == pytest.approx(4350.0)
+        assert row["cost_basis"] == pytest.approx(4350.0)
+        assert row["last_purchase_date"] == 1894665600     # 15.01.2030
+
+    def test_an_integer_private_market_price(self):
+        # '1 1 000' reads as a price of 1 and a value of 1 000. It cannot
+        # read as two equal prices of 1, since '000' is not a figure.
+        row = self._rows(
+            "1 000 MVPX Placeholder Fund USD 1 1 000 5.00",
+            "Placeholder Fund 7",
+            "Outstanding Shares 31.03.2030",
+            "Strategy: Private markets - Others 15.01.2030",
+            "Valor 104 - ISIN XX0000000104",
+        )["XX0000000104"]
+        assert row["units"] == pytest.approx(1000.0)
+        assert row["market_price"] == pytest.approx(1.0)
+        assert row["market_value"] == pytest.approx(1000.0)
+        assert row["cost_price"] is None
+        assert row["nav_date"] == "2030-03-31"
+        assert row["last_purchase_date"] == 1894665600     # 15.01.2030
+        assert json.loads(row["payload"])["kind"] == "private_market"
+
+    def test_figures_two_readings_agree_with_are_not_read(self):
+        # '10 10 100' is two equal prices of 10 and a value of 100, or a
+        # price of 10 and a value of 10 100. Nothing tells them apart.
+        assert "XX0000000105" not in self._rows(
+            "10 Example Fund USD 10 10 100 1.00",
+            "Valor 105 - ISIN XX0000000105",
+        )
+
+    def test_a_transaction_list_booking_is_not_a_headline(self):
+        # A booking's first line opens with its date, which is no number
+        # of units.
+        assert "XX0000000106" not in self._rows(
+            "20.01.2030 Sale -10 Reg.shs Example AG USD 1 200 1 150 -4.17% -11 500",
+            "Settlement no.: XX0000000000 Example Exchange USD 11 480.00",
+            "Valor 106 - ISIN XX0000000106",
+        )
 
 
 # ---- Statement of assets: the transaction list ---------------------

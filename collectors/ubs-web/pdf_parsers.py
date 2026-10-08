@@ -238,6 +238,44 @@ _PM_HEADLINE_RE = re.compile(
     r"(?P<market_value>-?[\d\s']+)\s+(?P<pct_na>-?\d+\.\d{2})\s*$"
 )
 
+# The two patterns above find where one figure ends and the next begins
+# by the decimal point a price prints. Three headline shapes print a
+# price without one, or leave a column blank, so the figures run together
+# (synthetic examples):
+#
+#   "10 Reg.shs Example AG  CHF 1 200 1 150 -4.17% 11 500 1.00"
+#       an integer cost price (and here an integer market price);
+#   "10 Reg.shs Example AG  CHF 43.50 43.50 435 1.00"
+#       a blank market gain, printed when the price has not moved;
+#   "1 000 Example PE Fund  USD 1 1 000 5.00"
+#       an integer private-markets price.
+#
+# For a block neither pattern reads, `_HEADLINE_FIGURES_RE` takes the
+# figures between the currency and the % NA as a run of tokens, and
+# `_headline_readings` splits the run every way its digit grouping
+# allows (a figure is one to three digits, then groups of three). Each
+# reading must agree with itself:
+#
+#   - a printed market gain is the market price over the cost price,
+#     less one;
+#   - a blank market gain means the two prices are the same figure;
+#   - a private-markets row prints one price and no gain.
+#
+# A headline is read only when exactly one reading agrees.
+_HEADLINE_TOKEN = r"(?:-?\d[\d']*(?:\.\d+)?%?|[A-Za-z])"
+_HEADLINE_FIGURES_RE = re.compile(
+    r"^\s*(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
+    rf"(?P<ccy>[A-Z]{{3}})\s+(?P<figures>{_HEADLINE_TOKEN}(?:\s+{_HEADLINE_TOKEN})*)\s+"
+    r"(?P<pct_na>-?\d+\.\d{2})\s*$"
+)
+# One printed figure: digit groups, an optional fraction. No leading zero
+# on the first group, so '1 000' cannot also read as '1' then '000'.
+_GROUPED_FIGURE_RE = re.compile(
+    r"-?(?:0|[1-9]\d{0,2}(?:[ ']\d{3})*)(?P<fraction>\.\d+)?")
+# A printed market gain is rounded to 0.01 percentage points, and the
+# prices it is computed from may be rounded in print too.
+_GAIN_TOLERANCE_PCT = 0.01
+
 # A holding prints up to four lines. The column header names what each
 # line carries on the right-hand side:
 #
@@ -258,18 +296,30 @@ _PM_HEADLINE_RE = re.compile(
 #
 # Line 2 carries the two exchange rates only when the holding's currency
 # differs from the portfolio's: the average buy rate, then the current
-# one. Line 3 carries the cost value (the units at their average cost,
+# one. The exchange gain follows them and, where the holding accrues
+# interest, the accrued interest. It is printed in the market-value
+# column, so it is in the portfolio's currency. A holding in the
+# portfolio's currency prints no rates, and nothing then tells an
+# accrued interest from a figure that ends the wrapped description, so
+# it is read only behind the rates.
+#
+# Line 3 carries the cost value (the units at their average cost,
 # converted at the average buy rate, in the portfolio's currency), an
 # optional market-price date, and the unrealized P/L as a percentage of
-# the cost value. Line 4 ends in the last purchase date where the
-# statement prints one.
+# the cost value. A holding whose market gain is blank leaves the P/L
+# blank too, and line 3 then ends in the cost value
+# (`_HOLDING_COST_NO_PL_RE`). Line 4 ends in the last purchase date
+# where the statement prints one.
 _HOLDING_FX_RE = re.compile(
     r"(?:^|\s)(?P<acquisition>\d+\.\d+)\s+(?P<current>\d+\.\d+)\s+"
-    r"-?\d+\.\d+%(?:\s+-?\d{1,3}(?:[ ']\d{3})*(?:\.\d+)?)?\s*$"
+    r"-?\d+\.\d+%(?:\s+(?P<accrued>-?\d{1,3}(?:[ ']\d{3})*(?:\.\d+)?))?\s*$"
 )
 _HOLDING_COST_RE = re.compile(
     r"(?:^|\s)(?P<cost>-?\d{1,3}(?:[ ']\d{3})*)\s+"
     r"(?:\d{2}\.\d{2}\.\d{4}\s+)?(?P<pl>-?\d+\.\d+)%\s*$"
+)
+_HOLDING_COST_NO_PL_RE = re.compile(
+    r"(?:^|\s)(?P<cost>-?\d{1,3}(?:[ ']\d{3})*)\s*$"
 )
 _TRAILING_DATE_RE = re.compile(r"(?:^|\s)(?P<date>\d{2}\.\d{2}\.\d{4})\s*$")
 # A distribution's ex-date, printed in the left-hand column of any line
@@ -408,11 +458,13 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
     # --- Securities positions: anchor on the Valor/ISIN line, look
     # back up to 10 lines for the headline. The headline is either a
     # listed-security row (_SECURITY_HEADLINE_RE) or a private-markets
-    # row (_PM_HEADLINE_RE); the listed form is tried first so its
-    # parsing is unchanged. We keep the CLOSEST match above the ISIN
-    # line, of either kind, and never look past the previous holding's
-    # own Valor/ISIN line: a holding whose headline does not match is
-    # left out rather than given the headline of the one above it. ---
+    # row (_PM_HEADLINE_RE); the listed form is tried first. We keep the
+    # CLOSEST match above the ISIN line, of either kind, and never look
+    # past the previous holding's own Valor/ISIN line: a holding whose
+    # headline does not match is left out rather than given the headline
+    # of the one above it. Only a block neither pattern reads is offered
+    # to `_fallback_headline`, so the fallback never displaces a headline
+    # either pattern reads. ---
     block_start = 0
     for i, line in enumerate(section):
         vi = _VALOR_ISIN_RE.match(line)
@@ -423,33 +475,35 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
         headline_at = None
         headline_is_pm = False
         sector = None
-        for j in range(max(block_start, i - 10), i):
+        look_from = max(block_start, i - 10)
+        for j in range(look_from, i):
             prev = section[j]
             hm = _SECURITY_HEADLINE_RE.match(prev)
             if hm:
-                headline = hm
+                headline = {**hm.groupdict(), "text": hm.group()}
                 headline_at = j
                 headline_is_pm = False
             else:
                 pm = _PM_HEADLINE_RE.match(prev)
                 if pm:
-                    headline = pm
+                    headline = {**pm.groupdict(), "text": pm.group()}
                     headline_at = j
                     headline_is_pm = True
-            # Sector lives on the second line of a listed-security row,
-            # usually right after the description (e.g. 'Financials',
-            # 'Information Tech.'). Private-markets rows have no sector
-            # column, so only scan for it when a listed headline is in
-            # play.
             if headline is not None and not headline_is_pm and j > 0:
-                stripped = prev.strip()
-                if stripped and not any(
-                    ch.isdigit() for ch in stripped.split()[-1]
-                ) and len(stripped) < 50:
-                    sector = stripped
+                sector = _sector_line(prev) or sector
         block_start = i + 1
         if headline is None:
-            continue
+            for j in range(i - 1, look_from - 1, -1):
+                headline = _fallback_headline(section[j])
+                if headline is not None:
+                    headline_at = j
+                    headline_is_pm = "price" in headline
+                    break
+            if headline is None:
+                continue
+            if not headline_is_pm:
+                for j in range(max(headline_at, 1), i):
+                    sector = _sector_line(section[j]) or sector
         market_value = _to_float(headline["market_value"])
         # Skip Net/Unfunded Commitment tracking rows: they print an
         # 'n.a.' price and a 0 market value. The funded "Outstanding
@@ -460,7 +514,9 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
             **_position_row(label_meta["as_of_date"], psn_portfolio,
                             base_ccy, doc_token),
             **_holding_detail(section[headline_at + 1:i], market_value,
-                              private_market=headline_is_pm),
+                              private_market=headline_is_pm,
+                              gain_blank=(not headline_is_pm
+                                          and headline["gain_pct"] is None)),
             "instrument_isin": isin,
             "currency_iso": headline["ccy"],
             "units": _to_float(headline["units"]),
@@ -474,7 +530,7 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
                 "valor": vi["valor"],
                 "isin": isin,
                 "kind": "private_market",
-                "headline": headline.group(),
+                "headline": headline["text"],
             })
         else:
             row["cost_price"] = _to_float(headline["cost_price"])
@@ -483,7 +539,7 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
             row["payload"] = json.dumps({
                 "valor": vi["valor"],
                 "isin": isin,
-                "headline": headline.group(),
+                "headline": headline["text"],
             })
         results.append(row)
 
@@ -528,6 +584,7 @@ def _position_row(as_of_date: int, portfolio: str, base_ccy: str | None,
         "current_fx_rate": None,
         "acquisition_fx_rate": None,
         "cost_basis": None,
+        "nav_date": None,
         "last_purchase_date": None,
         "description": None,
         "sector": None,
@@ -536,35 +593,142 @@ def _position_row(as_of_date: int, portfolio: str, base_ccy: str | None,
     }
 
 
+def _sector_line(line: str) -> str | None:
+    """`line` as a sector label, or None when it cannot be one.
+
+    The sector sits on the second line of a listed-security row, usually
+    right after the description (e.g. 'Financials', 'Information Tech.').
+    A short line whose last word has no digit qualifies. Private-markets
+    rows have no sector column.
+    """
+    stripped = line.strip()
+    if stripped and not any(ch.isdigit() for ch in stripped.split()[-1]) \
+            and len(stripped) < 50:
+        return stripped
+    return None
+
+
+def _fallback_headline(line: str) -> dict | None:
+    """Read a headline whose figures run together (see
+    `_HEADLINE_FIGURES_RE`), or None when the line is not one or more
+    than one reading of it agrees.
+
+    The result has the keys the walker reads from the two strict
+    patterns: a listed reading has `cost_price`, `market_price` and
+    `gain_pct` (None when blank), a private-markets one has `price`.
+    """
+    m = _HEADLINE_FIGURES_RE.match(line)
+    if not m:
+        return None
+    readings = _headline_readings(m["figures"].split())
+    if len(readings) != 1:
+        return None
+    return {"units": m["units"], "desc": m["desc"], "ccy": m["ccy"],
+            "text": m.group(), **readings[0]}
+
+
+def _headline_readings(tokens: list[str]) -> list[dict]:
+    """Every way the figure tokens between a headline's currency and its
+    % NA read as a whole holding.
+
+    With a market gain printed, the tokens before it are the two prices
+    (and an optional one-letter price qualifier) and the tokens after it
+    the market value. Without one, they are the two prices then the
+    market value, and the two prices must be the same figure; or, for a
+    private-markets row, one price then the market value.
+    """
+    gains = [k for k, t in enumerate(tokens) if t.endswith("%")]
+    if len(gains) > 1:
+        return []
+    if gains:
+        at = gains[0]
+        prices = tokens[:at]
+        if prices and prices[-1].isalpha():
+            prices = prices[:-1]
+        market_value = _grouped_figure(tokens[at + 1:], whole=True)
+        gain = float(tokens[at][:-1])
+        if market_value is None:
+            return []
+        readings = []
+        for k in range(1, len(prices)):
+            cost, market = (_grouped_figure(prices[:k]),
+                            _grouped_figure(prices[k:]))
+            if cost is None or market is None or not _to_float(cost):
+                continue
+            implied = (_to_float(market) / _to_float(cost) - 1) * 100
+            if abs(implied - gain) <= _GAIN_TOLERANCE_PCT:
+                readings.append({"cost_price": cost, "market_price": market,
+                                 "gain_pct": tokens[at],
+                                 "market_value": market_value})
+        return readings
+
+    if any(t.isalpha() for t in tokens):
+        return []
+    readings = []
+    for k in range(1, len(tokens)):
+        price = _grouped_figure(tokens[:k])
+        if price is None:
+            continue
+        market_value = _grouped_figure(tokens[k:], whole=True)
+        if market_value is not None:
+            readings.append({"price": price, "market_value": market_value})
+        if tokens[k:2 * k] == tokens[:k]:
+            market_value = _grouped_figure(tokens[2 * k:], whole=True)
+            if market_value is not None:
+                readings.append({"cost_price": price, "market_price": price,
+                                 "gain_pct": None,
+                                 "market_value": market_value})
+    return readings
+
+
+def _grouped_figure(tokens: list[str], *, whole: bool = False) -> str | None:
+    """`tokens` joined as one printed figure, or None when their digit
+    grouping is not one figure's. `whole` refuses a fraction, as a
+    market value never prints one."""
+    if not tokens:
+        return None
+    figure = " ".join(tokens)
+    m = _GROUPED_FIGURE_RE.fullmatch(figure)
+    if not m or (whole and m["fraction"]):
+        return None
+    return figure
+
+
 def _holding_detail(lines: list[str], market_value: float | None, *,
-                    private_market: bool) -> dict:
+                    private_market: bool, gain_blank: bool = False) -> dict:
     """The facts a holding prints below its headline (see
     `_HOLDING_FX_RE`): the average buy and current exchange rates, the
-    cost value and the last purchase date. `lines` are the printed lines
+    accrued interest, the cost value, the NAV date of a private-markets
+    holding and the last purchase date. `lines` are the printed lines
     between the headline and the Valor/ISIN line. A fact the statement
     does not print stays None.
 
     The last purchase date is read from the line below line 3, so line 3
     is found first. A listed holding's line 3 is the one ending in its
-    cost value and unrealized P/L. A private-markets holding prints
-    neither: its line 2 is the wrapped fund name and its line 3 carries
-    the market-price (NAV) date alone.
+    cost value and unrealized P/L, or in its cost value alone when
+    `gain_blank` says the headline's market gain is blank. A
+    private-markets holding prints neither: its line 2 is the wrapped
+    fund name and its line 3 carries the market-price (NAV) date alone.
     """
     detail = {"acquisition_fx_rate": None, "current_fx_rate": None,
-              "cost_basis": None, "last_purchase_date": None}
+              "accrued_interest": None, "cost_basis": None,
+              "nav_date": None, "last_purchase_date": None}
     after_fx = 0
     for k, ln in enumerate(lines):
         m = _HOLDING_FX_RE.search(ln)
         if m:
             detail["acquisition_fx_rate"] = _to_float(m["acquisition"])
             detail["current_fx_rate"] = _to_float(m["current"])
+            detail["accrued_interest"] = _to_float(m["accrued"])
             after_fx = k + 1
             break
 
     line3 = None
     if private_market:
-        if len(lines) > 1 and _TRAILING_DATE_RE.search(lines[1]):
+        m = _TRAILING_DATE_RE.search(lines[1]) if len(lines) > 1 else None
+        if m:
             line3 = 1
+            detail["nav_date"] = _dmy_to_iso(m["date"])
     else:
         for k in range(after_fx, len(lines)):
             m = _HOLDING_COST_RE.search(lines[k])
@@ -573,6 +737,17 @@ def _holding_detail(lines: list[str], market_value: float | None, *,
                     m["cost"], float(m["pl"]), market_value)
                 line3 = k
                 break
+        # With no P/L to anchor line 3, a line is line 3 only when the
+        # figure it ends in is the cost value: with the price unchanged,
+        # that equals the market value.
+        if line3 is None and gain_blank:
+            for k in range(after_fx, len(lines)):
+                m = _HOLDING_COST_NO_PL_RE.search(lines[k])
+                cost = m and _cost_value(m["cost"], 0.0, market_value)
+                if cost is not None:
+                    detail["cost_basis"] = cost
+                    line3 = k
+                    break
 
     if line3 is not None and line3 + 1 < len(lines):
         m = _TRAILING_DATE_RE.search(
@@ -609,13 +784,25 @@ def _cost_value(run: str, pl_pct: float,
     return None
 
 
-def _dmy_to_unix(dmy: str) -> int | None:
-    """DD.MM.YYYY → Unix seconds UTC midnight; None when not a date."""
+def _dmy_to_date(dmy: str) -> date | None:
+    """DD.MM.YYYY → date; None when not a date."""
     try:
         d, mo, y = (int(x) for x in dmy.split("."))
-        return _to_unix(date(y, mo, d))
+        return date(y, mo, d)
     except ValueError:
         return None
+
+
+def _dmy_to_unix(dmy: str) -> int | None:
+    """DD.MM.YYYY → Unix seconds UTC midnight; None when not a date."""
+    d = _dmy_to_date(dmy)
+    return _to_unix(d) if d else None
+
+
+def _dmy_to_iso(dmy: str) -> str | None:
+    """DD.MM.YYYY → 'YYYY-MM-DD'; None when not a date."""
+    d = _dmy_to_date(dmy)
+    return d.isoformat() if d else None
 
 
 def _assemble_psn_portfolio(branch: str, base: str, portfolio_no: str,

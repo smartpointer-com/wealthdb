@@ -465,7 +465,7 @@ def _hist_row(isin=None, ccy="CHF", value=1000.0, date=1700000000,
         "market_value_currency": "CHF", "cost_price": None,
         "market_price": None, "accrued_interest": None,
         "current_fx_rate": None, "acquisition_fx_rate": None,
-        "cost_basis": None, "last_purchase_date": None,
+        "cost_basis": None, "nav_date": None, "last_purchase_date": None,
         "description": "Account",
         "sector": None, "source_doc_token": doc, "payload": "{}",
     }
@@ -1424,12 +1424,45 @@ def test_a_holdings_cost_side_reaches_silver(tmp_path):
     loader._insert_hist_positions(conn, [{
         **_hist_row(isin="XX0000000055", ccy="GBP"),
         "current_fx_rate": 1.3, "acquisition_fx_rate": 1.25,
-        "cost_basis": 25000.0, "last_purchase_date": 1899763200,
+        "accrued_interest": 125.0, "cost_basis": 25000.0,
+        "nav_date": "2030-03-31", "last_purchase_date": 1899763200,
     }])
     row = conn.execute(
-        "SELECT current_fx_rate, acquisition_fx_rate, cost_basis, "
-        "last_purchase_date FROM historical_position_snapshots").fetchone()
-    assert tuple(row) == (1.3, 1.25, 25000.0, 1899763200)
+        "SELECT current_fx_rate, acquisition_fx_rate, accrued_interest, "
+        "cost_basis, nav_date, last_purchase_date "
+        "FROM historical_position_snapshots").fetchone()
+    assert tuple(row) == (1.3, 1.25, 125.0, 25000.0, "2030-03-31",
+                          1899763200)
+    conn.close()
+
+
+def test_0015_adds_the_nav_date_and_changes_no_row(tmp_path):
+    """Rows loaded before migration 0015 keep every value. The payload
+    holds no NAV date, so the column stays NULL until the re-parse."""
+    before = tmp_path / "migrations-0014"
+    before.mkdir()
+    for f in MIGRATIONS_DIR.glob("*.sql"):
+        if int(f.name[:4]) <= 14:
+            (before / f.name).write_text(f.read_text(encoding="utf-8"),
+                                         encoding="utf-8")
+    conn = sqlite3.connect(str(tmp_path / "ubs-web.db"))
+    conn.row_factory = sqlite3.Row
+    silver.apply_migrations(conn, before)
+    row = {k: v for k, v in _hist_row(isin="XX0000000033", ccy="USD").items()
+           if k != "nav_date"}
+    row.update(market_price=1.25, last_purchase_date=1894665600,
+               payload='{"kind": "private_market"}')
+    conn.execute(
+        f"INSERT INTO historical_position_snapshots ({', '.join(row)}) "
+        f"VALUES ({', '.join('?' for _ in row)})", tuple(row.values()))
+    conn.commit()
+
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
+
+    after = dict(conn.execute(
+        "SELECT * FROM historical_position_snapshots").fetchone())
+    assert after.pop("nav_date") is None
+    assert after == row
     conn.close()
 
 
