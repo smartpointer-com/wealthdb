@@ -51,45 +51,40 @@ legal, or tax advice.
 
 ## Overview
 
-The gold engine of the suite. It reads the silver SQLite databases the
+The gold engine of the suite. It reads the silver databases the
 [collectors](../collectors/) produce, one per source. It projects them
 into one canonical DuckDB schema. It reads that schema back as the
 suite's reports: holdings as of any date, time- and money-weighted
 returns, spending, income and the household's cash flow statement. The
 repo-root [README](../README.md) describes what each report answers.
 
-A CLI, and an MCP server over the same reports (`mcp-serve`, run and
-managed by `wealthdb mcp` from [../mcp/](../mcp/)); the optional
-Metabase BI server lives in [../web/](../web/). Single Docker image; no host-side Go toolchain
-required.
+It runs as a CLI and as an MCP server over the same reports
+(`mcp-serve`, run and managed by `wealthdb mcp` from [../mcp/](../mcp/)).
+The optional Metabase dashboards live in [../web/](../web/). The engine
+runs in one Docker image, with no host-side Go toolchain.
 
-## Subcommands
+## Commands
 
-Loading, querying and maintaining the gold store:
+The commands fall into four groups, the same as in `wealthdb help`:
 
-| Subcommand | Purpose |
-| --- | --- |
-| `wealthdb config` | Interactive first-time setup wizard. |
-| `wealthdb init` | Create the gold DuckDB at the configured path. |
-| `wealthdb load <id>\|-a` | Merge new silver snapshots into gold. |
-| `wealthdb reset <id>\|-a` | Purge a silver source's data from gold. |
-| `wealthdb reload <id>\|-a` | Reset then load (use after upgrading wealthdb). |
-| `wealthdb compact [--dry-run]` | Rewrite the gold DB into a fresh file to reclaim dead space. |
-| `wealthdb holdings <view>` | Point-in-time portfolio views: `positions`, `accounts`, `portfolios`, `sources`, `global` — each with currency conversion and `-d`/`-f`/`-x`/`-p` (and `-C` columns on all but `global`). |
-| `wealthdb returns <view>` | Time-weighted (TWR) & money-weighted (MWR/XIRR) returns by `accounts`, `portfolios`, `sources`, `global` over a window. `--method`, `--period {monthly\|quarterly\|annual\|total}`, `--annualize`, `--netting`, `--inception`; historic FX, after fees & taxes. Account-grain is exact; coarse grains are best-effort — read the `quality` column. |
-| `wealthdb transactions` | Print transactions over a date range, oldest first (`-r` reverses to newest first). |
-| `wealthdb spending <view>` | What the tracked accounts spent, over a window defaulting to the trailing twelve months: `summary`, `categories`, `transactions`. `--period {daily\|weekly\|monthly\|quarterly\|annual\|total}`, `--level {primary\|detailed}`, plus `-f`/`-C`/`-x`/`-p`; historic FX, own-account moves excluded. |
-| `wealthdb income <view>` | What the tracked accounts received, over the same default window: `summary`, `types`, `transactions`. `--period` as above, `--level {primary\|detailed}` defaulting to `detailed`, plus `-f`/`-C`/`-x`/`-p`; gross as booked, with `-C +withheld` showing tax deducted at source beside it. |
-| `wealthdb cashflow <view>` | Where the household's cash came from and went, over the same default window: `summary`, `flows`, `sankey`, `transactions`, `coverage`. `--period` as above, `--level {section\|class\|group}`, `--investing {whole\|class}`, plus `-f`/`-C`/`-x`/`-p`. The household is the accounts in its own tax wrappers; retirement plans, trusts and charitable vehicles are vehicles it pays into and draws on. |
-| `wealthdb status [<id>] [-v]` | Report gold state vs each silver source. |
-| `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
-| `wealthdb resolve-symbols` | Back-fill missing instrument tickers via a local LLM (configured under `symbol_resolution.model`); applies any `symbol_resolution.overrides` first. `--overrides-only` skips the LLM round-trip. |
-| `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
-| `wealthdb categorize [spending\|income]` | Categorise the merchants and payers the deterministic tiers left unplaced, via the LLM in `<family>.categorization.model`. A positional selects one family; with none, both run in order. `-n` plans without writing; `--all` re-asks every signature. |
-| `wealthdb categorizations [spending\|income]` | Dump the model-derived verdict stores for inspection, with a `family` column; `--forget SIG` retires a wrong verdict so the next run re-asks it, from both stores unless a family is named. |
-| `wealthdb mcp-serve --stdio\|--http ADDR` | Serve the read-only reports to AI agents over MCP. `wealthdb mcp start\|stop\|status\|restart\|logs\|stdio\|url` runs and manages it in a container; see [../mcp/README.md](../mcp/README.md). |
-| `wealthdb version` | Print the wealthdb version: the release tag alone for a build of a clean release checkout, otherwise `<last release> nightly <commit>` (`-dirty` for uncommitted changes). |
-| `wealthdb help [<subcommand>]` | Help. |
+- **Reports** read the database and change nothing: `holdings`,
+  `returns`, `transactions`, `spending`, `income`, `cashflow`,
+  `status` and `snapshots`.
+- **Set up and load** write it. `config` writes the config file and
+  `init` creates the database. `load`, `reset` and `reload` bring a
+  source's silver in or take it out. `compact` reclaims space.
+- **Enrich** asks the configured model. `categorize` places the
+  merchants and payers no rule could place, and `resolve-symbols`
+  fills in missing tickers. `categorizations` and `resolutions` list
+  the stored answers.
+- **Other**: `web` and `mcp` run the dashboards and the MCP server,
+  `mcp-serve` is the MCP server itself, and `version` prints the
+  version.
+
+Every report prints a table, CSV or JSON. Money is shown in the
+configured currency or another one, at historic FX rates, and a report
+can hide amounts for a screen others may see. `wealthdb help <command>`
+gives a command's views and flags.
 
 An adapter ships for every collected source — Swiss and US banks and
 brokerages, pension providers, crypto, private markets, and reference
@@ -101,55 +96,53 @@ technical container), `tax_wrapper` (the tax / regulatory
 registration) and `management_style` (who decides the allocation).
 The values of each live in [docs/DESIGN.md §13.9](docs/DESIGN.md),
 which is the one place they are written down. Adapters populate what
-silver carries; config-side
-`account_overrides` fills the rest.
+silver carries; config-side `account_overrides` fills the rest.
 
-Future work lives in [docs/DESIGN.md §13](docs/DESIGN.md).
-Notable items: market-data feeds (§13.8), instrument-name
-enrichment for Schwab equity, broader crypto-source coverage.
+Open questions and future work are in
+[docs/DESIGN.md §13](docs/DESIGN.md).
 
 ## Quickstart
 
-You need Docker. No host-side Go toolchain.
+Docker is the one requirement; there is no host-side Go toolchain.
+From the repo root:
 
 ```sh
-git clone <this repo>
-cd wealthdb
-./wealthdb build                       # one-time, ~2 min on first run
-./wealthdb config                      # interactive setup wizard
-./wealthdb init                        # create the gold DB
-./wealthdb load -a                     # merge every configured silver
-./wealthdb holdings positions          # print consolidated positions (default table format, USD)
-./wealthdb holdings positions -x CHF   # render values in CHF
-./wealthdb holdings positions -f csv   # CSV output for scripting
-./wealthdb returns accounts 2025       # per-account TWR, quarterly, for 2025
-./wealthdb returns global --method both # whole-portfolio TWR + MWR since inception
-./wealthdb status -v                   # quick health check across all silvers
+make build-wealthdb                    # build the engine image (~2 min the first time)
+make install                           # put wealthdb on PATH (~/.local/bin)
+wealthdb config                        # interactive setup wizard
+wealthdb init                          # create the gold DB
+wealthdb load -a                       # merge every configured silver
+wealthdb holdings positions            # consolidated positions, in the default currency
+wealthdb holdings positions -x CHF     # the same, in CHF
+wealthdb holdings positions -f csv     # CSV for scripting
+wealthdb returns accounts 2025         # per-account TWR for 2025, by quarter
+wealthdb returns global --method both  # whole-portfolio TWR and MWR since the first snapshot
+wealthdb status -v                     # how current each source is
 ```
 
-The `config` wizard walks you through:
+The `config` wizard asks for:
 
-1. Gold DB path (default `$XDG_DATA_HOME/wealthdb/wealthdb.db`).
-2. Default output currency (default `USD`; can be overridden per
-   query with `-x`).
-3. One or more silver sources — for each: a short id (used by
-   `load`/`reset`/`snapshots`), the source kind (`schwab`, `ubs`,
-   `swissquote`, `viac`, `cointracking`, …), and the path to the
-   silver SQLite.
+1. the gold DB path (default `$XDG_DATA_HOME/wealthdb/wealthdb.db`);
+2. the default output currency (default `USD`; `-x` overrides it per
+   query);
+3. one or more silver sources, each with a short id (used by `load`,
+   `reset` and `snapshots`), the source kind (`schwab`, `ubs`,
+   `swissquote`, `fidelity`, …) and the path to its silver database.
 
 It writes the result to `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`
-(overridable with `-c <path>`).
+(another path with `-c <path>`). [docs/DESIGN.md §5](docs/DESIGN.md)
+describes every field.
 
 ## Build and run
 
 From the repo root, the `Makefile` drives builds and tests
-(`make build-wealthdb`, `make test-wealthdb`); the commands below
-are the underlying per-component wrappers.
+(`make build-wealthdb`, `make test-wealthdb`). Underneath, from this
+directory, are the per-component wrappers.
 
-All commands run inside a single Docker image; the host wrapper
-bind-mounts `$XDG_CONFIG_HOME/wealthdb.cfg` and `$XDG_DATA_HOME/wealthdb/` at
-identical paths inside the container so `~`/`$HOME` resolution
-matches both sides.
+All commands run inside a single Docker image. The host wrapper
+bind-mounts `$XDG_CONFIG_HOME/wealthdb.cfg` and `$XDG_DATA_HOME/wealthdb/`
+at identical paths inside the container, so `~`/`$HOME` resolution
+matches on both sides.
 
 ```sh
 ./wealthdb build               # build the wealthdb:latest image

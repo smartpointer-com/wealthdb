@@ -20,10 +20,8 @@ so any silver a load has touched is at that version.
 ## 1. Silver source
 
 - Upstream: [`collectors/chase`](../../../collectors/chase).
-- Silver schema:
-  [migrations/0001_initial.sql](../../../collectors/chase/migrations/0001_initial.sql)
-  + [0002_cards.sql](../../../collectors/chase/migrations/0002_cards.sql)
-  + [0003_statement_coverage.sql](../../../collectors/chase/migrations/0003_statement_coverage.sql).
+- Silver schema: the collector's
+  [migrations](../../../collectors/chase/migrations).
 
 Each product has two eras, split at its **export seam** — the
 oldest row the CSV/QFX exports reach. At and above the seam the

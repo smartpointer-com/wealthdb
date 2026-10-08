@@ -20,8 +20,8 @@ setup, no paths, no connection flags.
    `resolve-symbols`, `web-config`, `web-materialize` and `wealthdb-collect`
    all write; `mcp-serve` and `mcp-config` serve other clients. If you think you need to write, you are wrong — just query.
 3. **One number for a whole window: add `--period total`.** The default is
-   one row per month. Never add monthly rows up yourself; let the command
-   total them.
+   one row per month (per quarter for `returns`). Never add the rows up
+   yourself; let the command total them.
 4. **There are no row-filter flags.** `--source`, `--account`, `--category`,
    `--symbol` do not exist. Run the view, then filter the output. The table
    is one row per line, so `| grep -i text` picks the rows for a name, a

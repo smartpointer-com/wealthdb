@@ -32,9 +32,9 @@ where it stands — and is the one place that list is written down.
   `$XDG_DATA_HOME/wealthdb/<source>/<UTC-timestamp>/` (XDG data dir;
   `$XDG_DATA_HOME` defaults to `~/.local/share` when unset).
 - **Silver** — bronze parsed into a source-shaped SQLite, owned by
-  each collector's `load.py`. One DB per source. JSON payloads
-  carry through anything not promoted to a column, so source-format
-  drift is absorbed here, not at gold.
+  each collector's `load.py`. One DB per source (cointracking writes
+  DuckDB instead). JSON payloads carry through anything not promoted
+  to a column, so source-format drift is absorbed here, not at gold.
 - **Gold** — one canonical DuckDB, owned by the `wealthdb` engine.
   It reads every silver through a per-source adapter and merges
   them into cross-bank `accounts` / `positions` / `transactions` /

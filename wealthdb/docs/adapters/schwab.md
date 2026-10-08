@@ -24,10 +24,9 @@ and skips the orchestrator's merge layer.
 ## 1. Silver sources
 
 - API: [`schwab-api`](../../../collectors/schwab-api/).
-  Silver schema: [migrations/0001_initial.sql](../../../collectors/schwab-api/migrations/0001_initial.sql).
+  Silver schema: the collector's [migrations](../../../collectors/schwab-api/migrations).
 - Web: [`schwab-web`](../../../collectors/schwab-web/).
-  Silver schema: [migrations/0001_initial.sql](../../../collectors/schwab-web/migrations/0001_initial.sql)
-  + [migrations/0002_historical_snapshots.sql](../../../collectors/schwab-web/migrations/0002_historical_snapshots.sql).
+  Silver schema: the collector's [migrations](../../../collectors/schwab-web/migrations).
 - Cross-collector interop notes: [schwab-web/INTEROP.md](../../../collectors/schwab-web/INTEROP.md).
 
 ## 2. Identifier conventions
@@ -260,12 +259,12 @@ as its start.
 ### 7.3. PDF sha256 churn
 
 INTEROP §3 documents that Schwab regenerates statement PDFs per
-download (different sha256 each time, same logical content).
-Mitigation lives in `schwab-web` silver — the historical
-tables use INSERT OR REPLACE on the natural PK
-`(as_of_date | period_end, account, instrument_key | currency)`
-so a re-parse of a churned PDF converges on a single row.
-wealthdb doesn't need to dedupe further.
+download (different sha256 each time, same logical content). The
+mitigation lives in `schwab-web` silver: every load gate keys on the
+logical document, not its bytes, and the statement tables keep one
+row per account and period end, owned by the first statement that
+prints it (schwab-web DESIGN.md §4.4 and §4.5). wealthdb doesn't need
+to dedupe further.
 
 ## 8. Open questions
 
@@ -276,21 +275,23 @@ wealthdb doesn't need to dedupe further.
   if tax-lot work needs the withholding as a distinct event.
 - **`open_orders` projection.** Reserved for a future `wealthdb
   orders` subcommand; no schema work needed in gold yet.
-- **1099-XML structured tax-lot data.** Per
+- **Tax lots.** Per
   [INTEROP §4](../../../collectors/schwab-web/INTEROP.md#4-tax-form-structure-has-no-api-equivalent),
-  schwab-web silver carries 1099 Composite as PDF/XML/CSV; the
-  XML has lot-level detail (cost basis, term, wash-sale flag)
-  the api doesn't surface. The web silver's `form_1099b` sale
-  rows are ingested as transactions (`web_reader.go`); the
-  lot-level detail is not — a future `tax_lots` gold table
-  could project it. Those rows carry no `instrument_key`, only
-  `security_name`, which `securityNameInstrument` reads in its two
-  shapes: a plain ticker resolves through the same symbol→CUSIP
-  bridge as any web row, and an OCC-style option resolves to its
-  UNDERLYING with `option` in `transactions.vehicle` (DESIGN.md
-  §10.8) — the exposure a trade touched is the underlying's, and how
-  it was held is the other dimension. A name of neither shape states
-  no instrument and offers itself as `instrument_hint` instead.
+  the 1099 Composite carries lot-level detail (cost basis, term,
+  wash-sale flag) the api doesn't surface. The web silver's
+  `form_1099b` sale rows are ingested as transactions
+  (`web_reader.go`). Silver also keeps the realized lots in
+  `closed_lots`, the statement lots in `open_lots` and the cost-basis
+  methods in `cost_basis_methods` (schwab-web DESIGN.md §9); gold
+  reads none of them (DESIGN.md §13.4). The `form_1099b` rows carry no
+  `instrument_key`, only `security_name`, which
+  `securityNameInstrument` reads in its two shapes: a plain ticker
+  resolves through the same symbol→CUSIP bridge as any web row, and an
+  OCC-style option resolves to its UNDERLYING with `option` in
+  `transactions.vehicle` (DESIGN.md §10.8) — the exposure a trade
+  touched is the underlying's, and how it was held is the other
+  dimension. A name of neither shape states no instrument and offers
+  itself as `instrument_hint` instead.
 - **Explicit suffix→hashValue override config.** The bridge is
   auto-only. The exact tier (§7.1) resolves any realistic suffix
   collision once `account_number_full` is present, so an

@@ -7,11 +7,10 @@ layer of the personal-portfolio data pipeline whose bronze and silver
 layers are owned by the per-source collectors under `collectors/`
 (see [the repo-root DESIGN.md](../../DESIGN.md) for the full fan-in).
 
-It is intended to be read alongside
-[schwab-api/DESIGN.md](../../collectors/schwab-api/DESIGN.md),
-which establishes the three-layer (bronze/silver/gold) model and the
-per-broker silver-schema conventions reused here. This document covers
-only what gold adds.
+The repo-root DESIGN.md sets out the three-layer (bronze/silver/gold)
+model, and [schwab-api/DESIGN.md](../../collectors/schwab-api/DESIGN.md)
+§4 the silver-schema conventions the collectors share. This document
+covers only what gold adds.
 
 ## 2. Where gold sits
 
@@ -35,12 +34,12 @@ only what gold adds.
 ```
 
 Per-bank silver databases are the **input contract**. Each silver
-schema is owned by its respective dump repo; `wealthdb` reads
-silver but never writes to it.
+schema is owned by its collector; `wealthdb` reads silver but never
+writes to it.
 
 Gold is the **agent- and human-facing** layer: canonical, indexed,
-strictly relational, and the surface that future analytics
-(`positions`, `networth`, asset-class rollups) sit on top of.
+strictly relational, and the surface the reports (holdings, returns,
+spending, income, cash flow) read.
 
 ## 3. Goals and non-goals
 
@@ -77,15 +76,18 @@ strictly relational, and the surface that future analytics
 
 ### Non-goals (deliberately omitted)
 
-- **Web UI / GUI.** CLI only.
+- **A UI of its own.** The engine is a CLI and an MCP server. The
+  optional dashboards are Metabase over a snapshot of gold
+  ([web/](../../web/)).
 - **Built-in market-data feeds (v1 only).** Real-time prices,
   ex-dividend dates, ratings, historic and implied volatility, etc.
   are out of scope for v1 — gold operates on whatever each silver
   carries. These feeds are planned future work and will arrive via
   their own ingest path independent of any bank silver. See §13.8.
-- **P&L, tax-lot tracking, performance attribution.** Future work.
-  The schema accommodates them (acquisition_date column, full
-  transactions history) but no command computes them yet.
+- **Realized P&L, tax lots, performance attribution.** No command
+  computes them. Positions carry `book_value` and `acquisition_date`
+  where silver states them, and several silvers keep tax lots that
+  gold does not read (§13.4).
 - **Cross-silver instrument deduplication.** Two silvers may hold the
   "same" equity under different `instrument_external_id`s; gold keeps
   them separate at the row level. `instruments.isin` is the join key
@@ -264,12 +266,12 @@ through:
 2. **Default output currency** — default `USD`. ISO 4217 only;
    validated for ISO 4217 shape (three uppercase ASCII letters).
 3. **First silver source** — `id` (slug matching `^[A-Za-z0-9_-]+$`),
-   `kind` (any registered adapter kind, or `auto`), and
-   `path` (default `$XDG_DATA_HOME/wealthdb/<id>/<id>.db`). The wizard opens
-   the silver DB read-only, verifies it parses as SQLite and has
-   a `dump_runs` table, and — for `kind != "auto"` — verifies the
-   declared kind matches what auto-detection would have inferred
-   (warns on mismatch but accepts).
+   `kind` (any registered adapter kind, or `auto`), and `path` (no
+   default). The wizard opens the silver DB read-only and verifies it
+   parses as SQLite and has a `dump_runs` table (a load-only silver's
+   `load_runs` also passes). It does not check the kind against the
+   file. A DuckDB silver (cointracking) fails the SQLite probe and is
+   added to the JSON by hand.
 4. **Add another silver source?** — repeats step 3 until
    declined.
 
@@ -290,8 +292,8 @@ with a clear message (exit code 4, the same code as `init` uses
 when the gold DB already exists, for consistency) and does not
 overwrite. To re-run the wizard, delete or move the existing file
 first; to add a silver to an existing config, edit the JSON
-directly. (A future `wealthdb config add-silver` subcommand could
-soften this — see §4.13.)
+directly. (A `wealthdb config add-silver` subcommand could soften
+this.)
 
 #### Non-interactive fallback
 
@@ -1275,22 +1277,12 @@ The main binary deliberately knows nothing about these mappings.
 Bank-specific mappings (which silver table feeds which gold table,
 how the `(asset_class, vehicle)` pair is derived per source, how
 `transactions.kind` maps from each bank's discriminator, identifier
-conventions,
-deferred silver tables, open questions) live in their own files
-to keep this document focused on gold-side architecture:
-
-- [adapters/schwab.md](adapters/schwab.md)
-- [adapters/ubs.md](adapters/ubs.md)
-- [adapters/swissquote.md](adapters/swissquote.md)
-- [adapters/carta.md](adapters/carta.md)
-- [adapters/cointracking.md](adapters/cointracking.md)
-- [adapters/chase.md](adapters/chase.md)
-- [adapters/amex.md](adapters/amex.md)
-- [adapters/plaid.md](adapters/plaid.md)
-- [adapters/synthetic.md](adapters/synthetic.md)
-
-(Adapters without a dedicated doc here are described inline
-where they diverge from the gold-side contract above.)
+conventions, deferred silver tables, open questions) live in their
+own files under [adapters/](adapters/), one per adapter that needed
+one; the directory is the list. This keeps the present document
+focused on gold-side architecture. (Adapters without a dedicated doc
+are described inline where they diverge from the gold-side contract
+above.)
 
 Each adapter doc is self-contained for the engineer writing or
 maintaining that adapter. New bank adapters add a new file in
@@ -2122,8 +2114,9 @@ SELECT * FROM positions
    AND acquisition_date <= :now - INTERVAL 1 YEAR;
 ```
 
-`acquisition_date` will be NULL initially; a future migration
-populates it from `transactions` history.
+`acquisition_date` is set only where silver states it (angellist,
+carta, equityzen, manual and the synthetic demo). Elsewhere it is
+NULL, so this filter sees those sources only (§13.3).
 
 ### 10.5 Net worth by bank
 
@@ -2769,7 +2762,7 @@ wealthdb/
 ├── wealthdb-test                   — thin alias: `wealthdb-go test ...` (§12.5)
 ├── go.mod / go.sum
 ├── docs/
-│   ├── DESIGN.md · RETURNS-NOTES.md · SPENDING.md · TAXONOMY.md
+│   ├── DESIGN.md · RETURNS-NOTES.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
 │   └── adapters/                   — per-bank adapter design (amex, carta, chase, cointracking, plaid, schwab, swissquote, synthetic, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand
@@ -3069,14 +3062,13 @@ a mapping from `(silver_source_id, instrument_external_id)` to a
 canonical instrument ID would tidy this up. Hold until the awkwardness
 actually bites.
 
-### 13.2 FX-rate precedence among silvers — implemented
+### 13.2 FX-rate precedence among silvers
 
-**Resolved.** This was once an open question (§10.6 originally took
-whichever row sorted first). Of the options floated, the implemented
-rule is the **configured per-source** one, refined with a day-bucket
-tiebreak so a reference source never overrides an account source on the
-days they overlap. Precedence is now **data, not runtime state**: it
-rides on a stamped gold column that the `fx_daily` view reads.
+When several silvers publish the same pair, precedence is
+**configured per source**, refined with a day-bucket tiebreak so a
+reference source never overrides an account source on the days they
+overlap. Precedence is **data, not runtime state**: it rides on a
+stamped gold column that the `fx_daily` view reads.
 
 - `fx_daily` (§10.6) buckets each `(from, to)` pair to the **UTC day**,
   so the snapshot nearest the target day always wins — a reference
@@ -3091,35 +3083,61 @@ rides on a stamped gold column that the `fx_daily` view reads.
   `gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder())` stamps each
   source's rank into the `silver_sources.fx_priority` gold column (added
   by migration `0019`; rank 0 = highest, unlisted = NULL = lowest), and
-  the `fx_norm` / `fx_daily` views read that column directly. (The old
-  runtime hook `gold.SetFxSourceOrder` and `internal/gold/fx.go` are
-  gone.)
+  the `fx_norm` / `fx_daily` views read that column directly.
 - **Exact timestamp** (`snapshot_at` DESC) breaks any remaining tie.
 
-Still out of scope today: non-snapshotted FX sources (e.g. ECB
-reference rates, or a manually maintained `fx_overrides` table for
-currencies no silver covers — `fred` now covers the major ones).
+Out of scope: non-snapshotted FX sources (e.g. ECB reference rates,
+or a manually maintained `fx_overrides` table for currencies no silver
+covers; `fred` covers the major ones).
 
 ### 13.3 acquisition_date backfill
 
-For holding-period queries to work, `acquisition_date` must be
-populated. Strategy: a `wealthdb backfill acquisitions` subcommand
+Adapters set `acquisition_date` only where silver states it (§10.4).
+For holding-period queries to work across every source, the rest must
+be derived. Strategy: a `wealthdb backfill acquisitions` subcommand
 that walks `transactions` (filtered to `kind IN ('buy',
 'transfer_in')`) and writes the earliest matching date into each
 position row. FIFO vs LIFO is a deeper design point.
 
 ### 13.4 Tax-lot tracking
 
-Once `acquisition_date` is in place, the natural next step is
-per-lot positions (one row per buy, decremented by sells). That's
-a different grain than today's `positions` table; it would live
-in a separate `position_lots` table rather than reshape `positions`.
+Gold has no lot grain. `positions.book_value` carries a holding's
+cost where an adapter reads one, and per-lot detail rides in the
+payload at most. Per-lot positions (one row per buy, decremented by
+sells) are a different grain than `positions`; they would live in a
+separate `position_lots` table rather than reshape `positions`.
+
+Silver already states more cost basis than gold reads. Each collector
+keeps the figures its source prints in columns (collectors/README.md,
+"load.py — silver"):
+
+- realized lots in `closed_lots` and open lots in `open_lots`, with
+  shared column names: schwab-web (statements and year-end tax
+  documents, its DESIGN.md §9) and fidelity-web (1099-B, statements
+  and the positions page);
+- schwab-web's `cost_basis_methods`, the methods a Gain/Loss Report
+  prints;
+- per-holding cost, average cost or unrealized gain in schwab-api,
+  schwab-web, swissquote, ubs-psn, ubs-web and fidelity-web, of which
+  only the statement holdings of schwab-web and ubs-web reach
+  `book_value`;
+- per-trade quantity, price and fees in swissquote, and a statement's
+  trade list with the cost sold and the realized P/L in ubs-web
+  (`statement_trades`);
+- what a private holding paid in: ubs-web's capital calls and
+  contract notes (`advices`), carta's exercise FMV and fund
+  statement figures, and the K-1 basis lines of angellist and carta;
+- cointracking's trade `Group` and `Tx-ID`, which pair a transfer's
+  two sides.
+
+A lot table would read these, and reconcile the copies a sale leaves
+in several documents.
 
 ### 13.5 Adapter for `auto` kind
 
 The detection rules in §5.2 work but are fragile to silver-schema
 changes. Long-term: silver should publish its own `kind` in
-`schema_meta`. Open a coordinated change with the dump repos
+`schema_meta`. Open a coordinated change with the collectors
 before relying on `auto` in production configs.
 
 ### 13.6 Concurrent loads
@@ -3178,6 +3196,10 @@ what each would need:
   source of truth for binaries; gold doesn't store them. Would
   only be projected if `wealthdb` ever needed to enumerate document
   metadata.
+- **Cost basis and lots** — the lot tables (`open_lots`,
+  `closed_lots`, `cost_basis_methods`), `ubs-web.statement_trades`
+  and `ubs-web.advices`, and the cost columns no adapter reads. §13.4
+  lists them; a lot table would project them.
 
 Adding any of these is a localised change: one new gold table
 (or column), one adapter `Snapshots` / `Transactions` extension,

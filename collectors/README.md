@@ -42,7 +42,7 @@ A collector's runtime is set by whether it ships a Dockerfile (the
 
 | Runtime | Marker | Invocation |
 | --- | --- | --- |
-| **Host venv** | a `requirements.txt`, no Dockerfile — pure-stdlib plus one thin dependency; no container | A wrapper runs the collector's `.py` under its `.venv`. |
+| **Host venv** | a `requirements.txt`, no Dockerfile — no browser and no container | A wrapper runs the collector's `.py` under its `.venv`. |
 | **Docker** | a Dockerfile + `entrypoint.sh` — browser-based scrapers run headed inside the container | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. |
 
 Two collectors are **hybrid**, and a `.host-venv` marker tells the
@@ -193,8 +193,7 @@ calls `wrapper_init`, handles `build`/`help` inline, and ends with
 `<data> → /data` (plus `/silver`, `/debug`, `/app` when applicable) and
 runs as `--user $(id -u):$(id -g)`.
 
-A **host-venv** wrapper (for pure-stdlib-plus-one-dep tools that need no
-browser) sources
+A **host-venv** wrapper (for tools that need no browser) sources
 [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh) and calls
 `host_resolve_dirs "$@"` (which populates `SECRETS_DIR` / `DATA_DIR` /
 `SILVER_DB` / `FORWARD_ARGS`), `host_source_env_file` (which sources
@@ -287,9 +286,8 @@ structurally cannot narrow a fetch, the collector says so at runtime
 - **schwab-web** and **schwab-api** deliberately share
   `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD` (one consent login for two
   silvers whose identifier spaces are disjoint).
-- **ubs-web** reads the bank-level `ubs.env` (contract number, shared with
-  a future ubs-* sibling) as a legacy fallback behind its own
-  `ubs-web.env`.
+- **ubs-web** reads the bank-level `ubs.env` (the contract number)
+  when its own `ubs-web.env` does not exist.
 - **viac** `--no-transaction-documents` opts out of only the per-event
   receipt PDFs — a narrower concept than `--no-documents`; viac's document
   centre always downloads on its date window.
@@ -298,15 +296,15 @@ structurally cannot narrow a fetch, the collector says so at runtime
   One collector serves many Items, and an access token Plaid shows only
   once is never rewritten by a later link. Its data dir holds one tree
   per Item, `<data-dir>/<item>/<UTC-ts>/`, rather than run dirs at the
-  top, so `dedup` does not reach its runs. Its silver is one database
-  per Item too, `<data-dir>/<item>/<item>.db`, so `load --silver-db`
-  needs the one `--item` it is for. A sign-in has a verb of its own,
-  `link --item NAME`: it makes a new Item, billed by Plaid, or renews
-  one, so no orchestrator runs it. Its `login` opens no page. It
-  settles the sign-ins a stopped `link` left open, and with none it does
-  nothing, so `login → download → load` runs it safely. Its `link`,
-  `login` and `download` also take `--sandbox`, which switches a run to
-  Plaid's test institutions and the Items made there. Its
+  top, so the `dedup` sweep (below) does not reach its runs. Its silver
+  is one database per Item too, `<data-dir>/<item>/<item>.db`, so
+  `load --silver-db` needs the one `--item` it is for. A sign-in has a
+  verb of its own, `link --item NAME`: it makes a new Item, billed by
+  Plaid, or renews one, so no orchestrator runs it. Its `login` opens no
+  page. It settles the sign-ins a stopped `link` left open, and with
+  none it does nothing, so `login → download → load` runs it safely. Its
+  `link`, `login` and `download` also take `--sandbox`, which switches a
+  run to Plaid's test institutions and the Items made there. Its
   `download --refresh` asks Plaid to fetch investments from the
   institution first. Plaid bills that per call on a paid plan, so a
   Production run makes it only with the opt-in in the collector's own
@@ -416,6 +414,20 @@ each ending by inserting its own version into `schema_meta`
 failed load leaves no half-loaded run behind. Silver is the **input
 contract to gold**: its columns follow the source's shape, not gold's, and
 are documented in the collector README.
+
+**Cost basis** is stated as printed, in columns rather than only in the
+payload, so a reader needs no JSON. That covers a holding's cost basis,
+average cost, unrealized gain and acquisition date, and a trade's
+quantity, price and fees. Lots have two tables:
+
+- `open_lots` holds the lots of a holding at a snapshot;
+- `closed_lots` holds realized lots, one row per lot a tax form, a
+  statement or a closed-positions page prints, tagged with its
+  `document_kind`.
+
+Both use schwab-web's column names and values for the figures they share
+([schwab-web/DESIGN.md §9](schwab-web/DESIGN.md#9-cost-basis-and-tax-lots)).
+A lot that two documents print stays in silver twice, once per document.
 
 Document text comes from
 [`collectorkit.pdf`](../shared/collectorkit/collectorkit/pdf.py)
@@ -533,9 +545,10 @@ uniform convention:
 
 The safety envelope is **identical everywhere** because it lives in one
 place — [`collectorkit.prune`](../shared/collectorkit/collectorkit/prune.py),
-a reviewed, unit-tested engine. Each collector ships a **thin `prune.py`**
-that hands the engine a `PruneConfig`: the `debug_subdirs` to reclaim
-(empty for collectors that write none) and an `is_complete(run_dir, meta)`
+a reviewed, unit-tested engine. Each collector with run dirs ships a
+**thin `prune.py`** that hands the engine a `PruneConfig`: the
+`debug_subdirs` to reclaim (empty for collectors that write none) and
+an `is_complete(run_dir, meta)`
 predicate (most delegate to `prune.status_classification`, which encodes
 the `status` lifecycle plus a per-collector legacy fallback). The engine
 guarantees, for every collector:
@@ -553,6 +566,13 @@ guarantees, for every collector:
   ever touched;
 - a whole-dir deletion **rechecks completeness + quiescence immediately
   before `rmtree`**, closing the window between planning and deletion.
+
+**`wealthdb-collect dedup`** (no source) reclaims disk another way. It
+makes byte-identical files share one copy, across the complete, quiescent
+dumps of every collector or of one `--source`, and previews with
+`--dry-run`. No content changes, but a sweep runs after `load`, never
+between `download` and `load`: a containerised load can read a stale
+file-share cache of a swept file. `wealthdb-collect help` describes it.
 
 Load-only collectors have no `<UTC-ts>/` run-dir layout, and the two ship
 **different on-disk shapes** (both user-visible, don't move the data):
@@ -631,7 +651,7 @@ restated here.
 | [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch) — full pipeline through gold, validated; bank-supplied transaction listings in `supplied/` backfill the deep past |
 | [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) — full pipeline through gold, validated live; `login --check` reads the profile only, `download --dry-run` still signs in |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
-| [`viac`](viac/) | VIAC (Pillar 3a / vested benefits) | REST + mTAN | Docker |
+| [`viac`](viac/) | VIAC (Pillar 3a) | REST + mTAN | Docker |
 | [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |
 | [`angellist`](angellist/) | AngelList LP portal (SPVs / fund deals) | scraped session | Docker (Camoufox) |
 | [`carta`](carta/) | Carta (private holdings / cap table) | scraped session | Docker (Camoufox) |

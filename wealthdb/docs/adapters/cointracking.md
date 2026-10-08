@@ -14,7 +14,8 @@ own per-portfolio valuations in each portfolio's quote currency.
 ## 1. Silver source
 
 - Upstream: [`collectors/cointracking`](../../../collectors/cointracking).
-- Silver schema: [`cointracking/migrations/0002_prices.sql`](../../../collectors/cointracking/migrations/0002_prices.sql).
+- Silver schema: the collector's
+  [migrations](../../../collectors/cointracking/migrations).
 - Silver README: [`cointracking/README.md`](../../../collectors/cointracking/README.md).
 
 The silver is **DuckDB**, not SQLite (one-off exception driven by
@@ -67,7 +68,7 @@ same `duckdb/duckdb-go/v2` driver the gold engine uses.
   ```
 
   Every wallet (= gold account) under `cu_999999` gets stamped
-  `ira`; other portfolios keep the default. Per-account
+  `traditional_ira`; other portfolios keep the default. Per-account
   overrides in the existing `account_overrides` block still win
   over portfolio overrides on the same column (most-specific
   wins).

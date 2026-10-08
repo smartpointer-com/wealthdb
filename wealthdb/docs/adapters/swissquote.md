@@ -7,8 +7,9 @@ the canonical gold schema. Implements the `silver.Adapter` /
 
 ## 1. Silver source
 
-- Upstream: `swissquote` repository.
-- Silver schema: [swissquote/migrations/0001_initial.sql](../../../collectors/swissquote/migrations/0001_initial.sql).
+- Upstream: [`collectors/swissquote`](../../../collectors/swissquote).
+- Silver schema: the collector's
+  [migrations](../../../collectors/swissquote/migrations).
 - Silver README: [swissquote/README.md](../../../collectors/swissquote/README.md).
 
 ## 2. Identifier conventions

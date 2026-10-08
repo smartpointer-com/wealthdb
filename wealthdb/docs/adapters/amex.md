@@ -26,8 +26,8 @@ place, so any silver a load has touched is at that version.
 ## 1. Silver source
 
 - Upstream: [`collectors/amex`](../../../collectors/amex).
-- Silver schema:
-  [migrations/0001_initial.sql](../../../collectors/amex/migrations/0001_initial.sql).
+- Silver schema: the collector's
+  [migrations](../../../collectors/amex/migrations).
 
 The ledger has two eras, split at the **structured horizon** — 24
 months, which is as far back as the activity JSON and every export

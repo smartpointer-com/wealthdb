@@ -17,10 +17,9 @@ and PDF-reconstructed historical fills the pre-PSN-start range.
 
 - Upstream feeds:
   - PSN: [`ubs-psn`](../../../collectors/ubs-psn/).
-    Silver schema: [migrations/0001_initial.sql](../../../collectors/ubs-psn/migrations/0001_initial.sql).
+    Silver schema: the collector's [migrations](../../../collectors/ubs-psn/migrations).
   - Web: [`ubs-web`](../../../collectors/ubs-web/).
-    Silver schema: [migrations/0001_initial.sql](../../../collectors/ubs-web/migrations/0001_initial.sql)
-    + [migrations/0002_historical_snapshots.sql](../../../collectors/ubs-web/migrations/0002_historical_snapshots.sql).
+    Silver schema: the collector's [migrations](../../../collectors/ubs-web/migrations).
 
 ## 2. Identifier conventions
 
@@ -57,6 +56,8 @@ identifier dimensions show up in every gold row:
 | `otc_contracts` | `positions` — `(foreign_exchange, forward)`, or `(other, other)` for a non-FX underlying | Same. |
 | `events` | `transactions` | See `kind` mapping in §5. Two rows the feed does not carry as events are booked from them for the accounts the statement feed never reaches: the other leg of a conversion an MT940 line describes, and the cash an MT566 confirmation paid (§7, *The accounts the feed does not speak for*). |
 | `portfolio_transactions` (web) | `transactions` | A managed portfolio's securities settlements, booked on the cash account that paid. See §11. |
+| `statement_trades` (web) | — | The trade list a Statement of assets prints, with the cost sold and the realized P/L (ubs-web DESIGN.md §3.10). Deferred (DESIGN.md §13.4). |
+| `advices` (web) | — | What capital calls and contract notes state was paid (ubs-web DESIGN.md §3.9). Deferred (DESIGN.md §13.4). |
 
 ## 4. `(asset_class, vehicle)` derivation for `holdings`
 

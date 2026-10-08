@@ -237,6 +237,9 @@ entries are cheap when framed this way — correct them and move on.
    churn); synthesize deterministic ids where the source offers none;
    snapshot timestamps carry the source's as-of time, never fetch
    time; amounts are signed per the fleet convention from day one.
+   Every cost-basis figure the source prints gets a column, and lots
+   go into the shared lot tables (collectors/README.md, "load.py —
+   silver").
 5. **Statement backfill** (conditional — build only if the measured
    history floors say the transaction export is date-capped while
    statements reach further back). If built: parse the
@@ -486,7 +489,15 @@ as hard rules rather than advice.
 - **Check which endpoints carry the sensor headers.** Bot defense
   often rides only the login endpoints; data calls need just
   cookie/CSRF — which licenses the browser-for-login + REST
-  architecture and much simpler downloads.
+  architecture and much simpler downloads. A bot manager that also
+  watches the data API can tell Playwright's request API from the
+  browser (another client, another TLS fingerprint) and answer by
+  blocking sign-in. There, reads run as `fetch` inside the page,
+  through the browser's own network stack.
+- **Pace bulk reads like a person.** Many small reads (one table per
+  position, say) go a few seconds apart, with a cap per run; an index
+  of what is fetched carries the rest to the next run. fidelity-web's
+  lot step is the reference (its DESIGN.md §8.3.1).
 - **Logins are budgeted.** Banks rate-limit: a handful of rapid
   attempts has triggered multi-hour fraud holds (pushes silently stop
   arriving; logins stall before the challenge), and about seven sign-ins
@@ -529,17 +540,24 @@ as hard rules rather than advice.
   mutable-label keys have caused double-counts. Never derive ids from
   bytes the source regenerates per download (re-rendered PDFs defeat
   byte-level dedup; dedupe on logical identity). Synthesize
-  deterministic ids where the source has none.
+  deterministic ids where the source has none, from a row's content,
+  never its position: rows that share a timestamp can come back in
+  another order.
 - **Temporal semantics: snapshot timestamps carry the source's as-of
   time, never fetch time.** Never let a sparse event stream (monthly
   documents, mortgages) mint its own snapshot instants in a
-  latest-snapshot-wins world — anchor to existing snapshot dates.
+  latest-snapshot-wins world — anchor to existing snapshot dates. A
+  source that dates a report by the business day it covers delivers
+  rows dated before the previous dump, so the gold adapter's change
+  window must reach back to them.
 - **Reconciliation is the import gate** for statement parsing:
   beginning + Σ == ending, per segment for multi-product statements,
-  with balance-chained attribution that stops on ambiguity. Parse
-  every page of every PDF — never sample. Validate extraction with
-  non-NULL counts; re-derive every regex after changing text
-  normalization.
+  with balance-chained attribution that stops on ambiguity. A
+  statement's holdings plus its cash should equal the account value it
+  prints; a load that warns on a miss shows a parser gap before it
+  reaches the returns. Parse every page of every PDF — never sample.
+  Validate extraction with non-NULL counts; re-derive every regex
+  after changing text normalization.
 - **Measure each channel's reach early** (export floor vs statement
   archive floor) — the comparison decides whether a backfill phase
   exists at all, in either direction.
@@ -547,7 +565,10 @@ as hard rules rather than advice.
   silver tables are rebuilt from bronze each load rather than patched
   incrementally (an incremental build can never retire stale rows
   after an identity shift); destructive loaders validate their input
-  before touching existing output.
+  before touching existing output, and a windowed replace deletes only
+  the span the input covers, not the span that was asked for. Mark
+  each parsed document, not just its rows: a document that yields no
+  rows is otherwise parsed again on every load.
 - **Private-market portals differ from banks:** no transaction feed
   (synthesize a balanced double-entry ledger on the custody account —
   each event nets to zero, and the deposit/withdrawal boundary legs are

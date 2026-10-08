@@ -172,8 +172,8 @@ has the full table.
   [American Express](collectors/amex/) cards.
 - **Brokerages** — [Schwab](collectors/schwab-api/) (the Trader API and
   the [client web](collectors/schwab-web/)), [Fidelity](collectors/fidelity-web/).
-- **Pensions** — [VIAC](collectors/viac/) (pillar 3a and vested
-  benefits), [Relevate](collectors/relevate/) (pillar 2).
+- **Pensions** — [VIAC](collectors/viac/) (pillar 3a),
+  [Relevate](collectors/relevate/) (pillar 2 vested benefits).
 - **Crypto** — [CoinTracking](collectors/cointracking/).
 - **Aggregators** — [Plaid](collectors/plaid/) reaches the banks,
   brokers and card issuers it covers, one linked login at a time.
@@ -234,9 +234,10 @@ collectors/<source>/         wealthdb/
 
 Sources only meet at gold. A collector never reads another collector's
 data and never touches gold; the engine reads silver and never writes
-it. Every part has its own `README.md` (usage), `DESIGN.md` (internals)
-and `AGENTS.md` (rules for coding agents). [DESIGN.md](DESIGN.md)
-describes the bronze → silver → gold model.
+it. Every part has a `README.md` (usage). Most add a `DESIGN.md`
+(internals; the engine's is under `wealthdb/docs/`) and an `AGENTS.md`
+(rules for coding agents). [DESIGN.md](DESIGN.md) describes the
+bronze → silver → gold model.
 
 ## Getting started
 
