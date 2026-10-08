@@ -196,9 +196,10 @@ def status_classification(
             return COMPLETE, "complete (no manifest; legacy artefact signal)"
         return NON_COMPLETE, "no manifest (crashed/interrupted download)"
     status = meta.get("status")
-    if status == COMPLETE:
-        return COMPLETE, "complete"
     if status is not None:
+        # The loaders' rule, so a run they skip is one prune may reclaim.
+        if bronze.is_loadable_status(status):
+            return COMPLETE, "complete"
         return NON_COMPLETE, f"status={status!r}"
     # Statusless legacy dump: defer to the collector's original signal.
     if legacy_complete is not None and legacy_complete(run_dir, meta):

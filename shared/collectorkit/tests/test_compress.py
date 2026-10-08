@@ -10,6 +10,7 @@ always run.
 from __future__ import annotations
 
 import gzip
+import logging
 import os
 from pathlib import Path
 
@@ -90,6 +91,37 @@ def test_compress_file_overwrites_stale_twin(tmp_path):
     out = compress.compress_file(f)
     assert zstandard.ZstdDecompressor().decompress(
         out.read_bytes(), max_output_size=1 << 20) == BODY
+
+
+# ============================================================
+# compress_best_effort
+# ============================================================
+
+def test_best_effort_returns_the_compressed_path(tmp_path, caplog):
+    f = _seed(tmp_path)
+    log = logging.getLogger("test_best_effort")
+    with caplog.at_level(logging.INFO, logger="test_best_effort"):
+        out = compress.compress_best_effort(f, log)
+    assert out == tmp_path / "trades.csv.zst"
+    assert list(tmp_path.iterdir()) == [out]
+    assert "compressed trades.csv" in caplog.text
+
+
+def test_best_effort_keeps_the_plain_file_on_failure(tmp_path, monkeypatch,
+                                                     caplog):
+    f = _seed(tmp_path)
+
+    def boom(self, src, dst, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(zstandard.ZstdCompressor, "copy_stream", boom)
+    log = logging.getLogger("test_best_effort")
+    with caplog.at_level(logging.WARNING, logger="test_best_effort"):
+        out = compress.compress_best_effort(f, log)
+    assert out == f
+    assert f.read_bytes() == BODY
+    assert list(tmp_path.iterdir()) == [f]
+    assert "could not compress trades.csv (disk full)" in caplog.text
 
 
 # ============================================================

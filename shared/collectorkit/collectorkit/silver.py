@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -228,6 +228,55 @@ def canonical_json(obj, *, ascii: bool = False) -> str:
     """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=ascii, default=str)
+
+
+# ============================================================
+# Row writes
+# ============================================================
+
+def _values(row, columns: Sequence[str]) -> tuple:
+    """`row` as a tuple in `columns` order: a mapping is read by column
+    name (other keys ignored), a sequence is taken as already in order."""
+    if isinstance(row, Mapping):
+        return tuple(row[c] for c in columns)
+    return tuple(row)
+
+
+def upsert_rows(conn: sqlite3.Connection, table: str,
+                columns: Sequence[str], rows: Iterable, *,
+                replace: bool = True) -> int:
+    """Write `rows` into `columns` of `table` and return how many.
+
+    `INSERT OR REPLACE` by default, so a row whose key silver already holds
+    takes its place; `replace=False` is a plain `INSERT`, which raises
+    `sqlite3.IntegrityError` on such a row. Each row is a mapping read by
+    column name or a sequence in `columns` order.
+    """
+    values = [_values(r, columns) for r in rows]
+    verb = "INSERT OR REPLACE" if replace else "INSERT"
+    conn.executemany(
+        f"{verb} INTO {table} ({', '.join(columns)}) "
+        f"VALUES ({', '.join('?' for _ in columns)})", values)
+    return len(values)
+
+
+# The columns of the `documents` index row every statement-downloading
+# collector writes: one row per document file, keyed on its sha256.
+DOCUMENT_COLUMNS = (
+    "sha256", "snapshot_at", "account_external_id", "doc_date", "doc_kind",
+    "file_format", "filename", "size_bytes", "payload",
+)
+
+
+def record_document(conn: sqlite3.Connection, row) -> bool:
+    """Add a `documents` row (:data:`DOCUMENT_COLUMNS`, as a mapping or a
+    sequence in that order) unless its sha256 is already held. True when
+    the row is new."""
+    return conn.execute(
+        f"INSERT OR IGNORE INTO documents ({', '.join(DOCUMENT_COLUMNS)}) "
+        f"VALUES ({', '.join('?' for _ in DOCUMENT_COLUMNS)})",
+        _values(row, DOCUMENT_COLUMNS),
+    ).rowcount == 1
 
 
 # ============================================================

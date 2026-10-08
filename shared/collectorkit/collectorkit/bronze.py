@@ -91,9 +91,21 @@ def run_status(run_json_path: Path) -> str | None:
     return (read_manifest(run_json_path) or {}).get("status")
 
 
-# Statuses a run.json carries while its dump is not one to load: the walk is
-# still running (or crashed mid-walk), or it was a dry run.
-INCOMPLETE_RUN_STATUSES = ("in-progress", "dry-run")
+# The run.json status of a finished dump.
+COMPLETE_STATUS = "complete"
+
+
+def is_loadable_status(status: str | None) -> bool:
+    """Whether a run with this run.json ``status`` is a load input.
+
+    ``"complete"`` is, and so is no status at all (see :func:`run_status`).
+    Any other status is not: ``"in-progress"`` from a walk that is running
+    or crashed, ``"dry-run"``, or a status this code does not know. It is
+    the rule ``prune`` applies to a present status (see
+    ``prune.status_classification``), so a run a loader skips is a run
+    ``prune`` reclaims.
+    """
+    return status is None or status == COMPLETE_STATUS
 
 
 def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
@@ -101,9 +113,9 @@ def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
     first.
 
     A run dir without a ``run.json`` is still being written, and one whose
-    status is in :data:`INCOMPLETE_RUN_STATUSES` never finished; both are
-    skipped with a line on `log`. A statusless or unreadable manifest stays
-    loadable (see :func:`run_status`).
+    status is not loadable (:func:`is_loadable_status`) never finished;
+    both are skipped with a line on `log`. A statusless or unreadable
+    manifest stays loadable (see :func:`run_status`).
     """
     if not Path(bronze_dir).is_dir():
         return []
@@ -117,7 +129,7 @@ def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
             log.info("skipping %s — no run.json (still writing?)", d.name)
             continue
         status = run_status(run_json)
-        if status in INCOMPLETE_RUN_STATUSES:
+        if not is_loadable_status(status):
             log.info("skipping %s — run.json status=%s", d.name, status)
             continue
         pending.append(d)

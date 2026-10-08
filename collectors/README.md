@@ -519,7 +519,9 @@ uniform convention:
   `run.json` at all), or — for a dump that predates this field — a
   statusless manifest that each collector classifies from its original
   terminal signal (the presence of the manifest, or of a terminal
-  artefact for collectors that never wrote a `run.json`).
+  artefact for collectors that never wrote a `run.json`). `load` takes a
+  run whose status is `complete` or absent and skips every other status
+  (`collectorkit.bronze.is_loadable_status`); `prune` reclaims those.
 
 - **`prune`** deletes, across every timestamped run dir under the bronze
   root: the collector's nominated **debug-artefact subdirs from complete
@@ -596,7 +598,9 @@ of `collectors/`); **the presence of a Dockerfile decides the runtime.**
   `requirements.txt` is copied and `pip install`ed first (a cache
   layer), then the scripts + `migrations` + `entrypoint.sh` are copied
   **by name** so stray host artefacts never enter the image;
-  `entrypoint.sh` maps the subcommand to the right script.
+  `entrypoint.sh` maps the subcommand to the right script. A collectorkit
+  test (`test_collector_images.py`) checks that each Dockerfile copies
+  every module the entrypoint's scripts import.
   `make build-<name>` runs `<wrapper> build`, and the bases come from
   `make base-images`.
 - A **host-venv** collector has only `requirements.txt` (no Dockerfile).

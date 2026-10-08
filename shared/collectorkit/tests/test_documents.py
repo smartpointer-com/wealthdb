@@ -1,6 +1,7 @@
 """The helpers a document-downloading collector shares: the class table
 (docdedup.classify), the ISO date gate (parse.iso_date), the pending-run
-listing (bronze.pending_run_dirs) and the silver document index
+listing and its status rule (bronze.pending_run_dirs,
+bronze.is_loadable_status) and the silver document index
 (documents.index_documents). Synthetic fixtures only."""
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from datetime import date
 
 import pytest
 
-from collectorkit import bronze, docdedup, documents, parse
+from collectorkit import bronze, docdedup, documents, parse, prune
 
 # ---- docdedup.classify ---------------------------------------------------
 
@@ -81,6 +82,7 @@ def test_pending_run_dirs(tmp_path, caplog):
     statusless = _run(tmp_path, "20980106T000000Z")
     corrupt = _run(tmp_path, "20980107T000000Z", manifest=False)
     (corrupt / "run.json").write_text("{not json", encoding="utf-8")
+    _run(tmp_path, "20980108T000000Z", "incomplete")     # a status not known
     (tmp_path / "not-a-run").mkdir()
 
     log = logging.getLogger("test_pending")
@@ -89,12 +91,32 @@ def test_pending_run_dirs(tmp_path, caplog):
     assert got == [done, statusless, corrupt]
     assert "no run.json" in caplog.text
     assert "status=in-progress" in caplog.text and "status=dry-run" in caplog.text
+    assert "status=incomplete" in caplog.text
 
 
 def test_pending_run_dirs_without_a_bronze_dir(tmp_path):
     conn = sqlite3.connect(":memory:")
     assert bronze.pending_run_dirs(conn, tmp_path / "absent",
                                    log=logging.getLogger("x")) == []
+
+
+@pytest.mark.parametrize("status, want", [
+    ("complete", True),
+    (None, True),          # no status: a manifest written only at the end
+    ("in-progress", False),
+    ("dry-run", False),
+    ("incomplete", False),
+    ("", False),
+])
+def test_is_loadable_status(status, want):
+    assert bronze.is_loadable_status(status) is want
+
+
+@pytest.mark.parametrize("status",
+                         ["complete", "in-progress", "dry-run", "incomplete"])
+def test_prune_keeps_exactly_the_present_statuses_a_loader_loads(status):
+    state, _ = prune.status_classification({"status": status})
+    assert (state == prune.COMPLETE) is bronze.is_loadable_status(status)
 
 
 # ---- documents.index_documents -------------------------------------------

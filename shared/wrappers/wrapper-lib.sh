@@ -38,6 +38,9 @@
 #                     other VNC servers) and passes the chosen port as
 #                     VNC_HOST_PORT inside the container.
 #
+# A wrapper with a config file calls `wrapper_source_cfg PREFIX DEFAULT`
+# before wrapper_init.
+#
 # wrapper_init POPULATES (for the caller and the helpers below):
 #   HOST_SECRETS, HOST_DATA, HOST_DEBUG (when HAS_DEBUG=1),
 #   HOST_STARTUPCACHE, CONTAINER_NAME, IMAGE.
@@ -60,6 +63,29 @@ _envvar() {
 # ----------------------------------------------------------------------
 # Initialisation + help-text helpers
 # ----------------------------------------------------------------------
+
+# wrapper_source_cfg PREFIX DEFAULT — source the collector's optional
+# config file: ${PREFIX}_CFG when set, else DEFAULT, which is left in
+# ${PREFIX}_CFG for the help text. Called before wrapper_init, so the
+# file can set the per-prefix knobs (${PREFIX}_DATA_DIR etc.) as well as
+# settings a verb reads. The file is bash: it is checked with `bash -n`,
+# then sourced with every assignment exported, so a plain KEY=VALUE line
+# reaches `docker run -e`. A missing file holds no settings; one that
+# does not parse stops the wrapper.
+wrapper_source_cfg() {
+    local var="$1_CFG"
+    local cfg="${!var:-$2}"
+    printf -v "$var" '%s' "$cfg"
+    [[ -f "$cfg" ]] || return 0
+    if ! bash -n "$cfg"; then
+        echo "${NAME}: config file $cfg has a bash syntax error" >&2
+        exit 2
+    fi
+    set -a
+    # shellcheck disable=SC1090
+    source "$cfg"
+    set +a
+}
 
 # Directory resolution precedence (highest first):
 #   1. a --secrets-dir / --data-dir / --silver-db CLI flag (parsed later,

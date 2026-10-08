@@ -10,6 +10,8 @@ shared, reviewed implementation of the whole lifecycle:
   decompress-and-verify pass before the original is removed, so a
   crash at any point leaves either the intact original or a verified
   compressed copy — never neither.
+* :func:`compress_best_effort` — the download-side call: compress a
+  fresh artefact, and on any failure warn and keep the plain file.
 * :func:`resolve_variant` — the loader-side lookup: given the logical
   (uncompressed) path, return whichever variant exists on disk. Plain
   wins over compressed so the original is authoritative whenever both
@@ -228,4 +230,26 @@ def compress_file(path: Path, *, level: int = DEFAULT_LEVEL,
         )
     if remove_original:
         path.unlink()
+    return final
+
+
+def compress_best_effort(path: Path, log: logging.Logger) -> Path:
+    """Compress a freshly written bronze artefact in place with
+    :func:`compress_file` and return the path now on disk.
+
+    A failure (disk full, the codec missing) is a warning on ``log``, and
+    the plain file stays: a loader resolves either form
+    (:func:`resolve_variant`), and :func:`compress_file` removes the
+    original only once the compressed copy is verified, so no failure loses
+    the artefact.
+    """
+    path = Path(path)
+    try:
+        final = compress_file(path)
+    except Exception as exc:  # noqa: BLE001 — best-effort by design
+        log.warning("could not compress %s (%s); keeping the plain file",
+                    path.name, exc)
+        return path
+    log.info("compressed %s → %s (%d bytes)", path.name, final.name,
+             final.stat().st_size)
     return final
