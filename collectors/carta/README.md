@@ -79,7 +79,7 @@ both `download` and the silver schema follow.
 | --- | --- | --- |
 | `explore`  | implemented | Camoufox + VNC discovery harness (HAR + crash-safe network log + trace + click log). Re-run if Carta changes its UI / endpoints. |
 | `login`    | implemented | Camoufox SPA login + CLI-2FA on stdin, persistent profile; `--check` probes the session (no 2FA push). Clears Carta's Cloudflare front. |
-| `download` | implemented | Authenticated REST/JSON walk of both families (cap-table holdings + grants + vesting + per-grant exercise-detail xlsx; fund LP capital account + cap-calls), plus the document archive (each `document_url` envelope followed to its signed CDN binary). Document fetches are download-avoidant via the shared `collectorkit.docdedup` engine: immutable archival notices (quarterly/annual financials, capital-call & distribution notices) identical to a prior run are hardlinked in rather than re-fetched, while parsed statements and tax docs (K-1 / 1042-S) are always re-fetched and content-compared so a re-issue is never missed. `--documents-force` bypasses the index. `--no-documents` skips the documents pass entirely (the run's dominant cost), recording `skipped=true` in the manifest so a partial run is not read as one that found no documents. Read-only (GET only). `--dry-run` verifies discovery without writing. |
+| `download` | implemented | Authenticated REST/JSON walk of both families (cap-table holdings + grants + vesting + per-grant exercise-detail xlsx; fund LP capital account + cap-calls), plus the document archive (each `document_url` envelope followed to its signed CDN binary). Document fetches are download-avoidant via the shared `collectorkit.docdedup` engine: immutable archival reports (quarterly/annual financials) identical to a prior run are hardlinked in rather than re-fetched, while the documents `load` parses (capital-account statements, capital-call & distribution notices) and tax docs (K-1 / 1042-S) are always re-fetched and content-compared so a re-issue is never missed. `--documents-force` bypasses the index. `--no-documents` skips the documents pass entirely (the run's dominant cost), recording `skipped=true` in the manifest so a partial run is not read as one that found no documents. Read-only (GET only). `--dry-run` verifies discovery without writing. |
 | `load`     | implemented | SQLite silver as **event-dated change deltas** (DESIGN.md §5.1): entities / securities (valued, with the FMV at exercise) / vesting / fund_metrics (quarterly NAV, fees, gains and carry parsed from each fund's statements) / capital_events / cash_flows (the dated money ledger) / documents / k1_capital_accounts (the K-1 tax year, period and tax capital account). Idempotent; migrations on startup. |
 
 The top-level `Makefile` auto-discovers this collector (`make build-carta` /
@@ -109,8 +109,8 @@ consumes the event-dated delta model (DESIGN.md §6).
 #    device" skips 2FA on renewal; exact cookie lifetime not measured).
 ./carta login
 
-# 5. Pull a fresh bronze dump (portfolios + issuers + securities +
-#    transactions + 409A FMVs + tax docs).
+# 5. Pull a fresh bronze dump (cap-table holdings, grants, vesting and
+#    exercise details; the fund capital account and cap calls; documents).
 ./carta download
 
 # 6. Ingest bronze into the SQLite silver.

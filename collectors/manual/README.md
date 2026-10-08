@@ -22,7 +22,7 @@ them and projects them into a SQLite silver.
 
 | Script | Purpose |
 | --- | --- |
-| [`load.py`](load.py) | Validate `accounts.csv` / `positions.csv` / `valuations.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
+| [`load.py`](load.py) | Validate `accounts.csv` / `positions.csv` / `valuations.csv` / `cost_basis.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
 | `login.py` | **N/A.** No source, no session. `./manual login` is a no-op that prints this. |
 | `download.py` | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
 
@@ -36,6 +36,7 @@ $XDG_DATA_HOME/wealthdb/manual/            <- hand-maintained data dir (outside 
 ├── accounts.csv             OPTIONAL: one row per pseudo-account (tax sleeve)
 ├── positions.csv            one row per held asset
 ├── valuations.csv           periodic mark-to-market, one row per (asset, date)
+├── cost_basis.csv           OPTIONAL: capital paid in so far, one row per (asset, date)
 └── manual.db                silver SQLite (written by load; safe to delete + rebuild)
 ```
 
@@ -46,7 +47,8 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 
 ```bash
 # 1. Create $XDG_DATA_HOME/wealthdb/manual/positions.csv + valuations.csv
-#    (and accounts.csv if the book spans more than one tax sleeve).
+#    (and accounts.csv if the book spans more than one tax sleeve,
+#    cost_basis.csv if a commitment is paid in over time).
 #    Copying examples/ (a synthetic sample covering every asset kind, incl.
 #    a note→equity conversion and a second sleeve) makes a good skeleton;
 #    replace the placeholder holdings with your real ones.
@@ -241,14 +243,25 @@ before touching the real file is cheaper than reasoning about it afterwards.
 
 ## Validation
 
-`load` rejects (with a `file:row:column` message and non-zero exit) any:
-duplicate id; unknown `kind`; an `account_kind`, `tax_wrapper` or
-`management_style` outside the canonical gold vocabulary; bad date /
-currency / number; a `value` currency that disagrees with the position's
-currency; a `positions` `account_id` not present in `accounts.csv`; a
-`valuations` `position_id` not present in `positions.csv`; a
-`converted_from_position_id` that references a position not in
-`positions.csv`; malformed JSON `payload`; an unexpected/typo'd column.
+`load` rejects the whole load, with a `file:row:column` message and a
+non-zero exit, on any of these:
+
+- a duplicate id;
+- an unknown `kind`;
+- an `account_kind`, `tax_wrapper` or `management_style` outside the
+  canonical gold vocabulary;
+- a bad date, currency or number;
+- a `positions` `account_id` not present in `accounts.csv`;
+- a `valuations` or `cost_basis` `position_id` not present in
+  `positions.csv`;
+- a `valuations` or `cost_basis` currency that disagrees with the
+  position's;
+- two rows for one (asset, date) in `valuations.csv`, or in
+  `cost_basis.csv`;
+- a `converted_from_position_id` that names a position not in
+  `positions.csv`;
+- a malformed JSON `payload`;
+- an unexpected (typo'd) column.
 
 It warns (but loads) when a valuation predates the position's `acquired_at`,
 and when an account holds no position — that one is usually a typo in an

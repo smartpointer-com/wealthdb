@@ -464,9 +464,10 @@ Reload semantics mirror the Schwab loader:
   to Swissquote's current truth even if dates or amounts change.
 - **Documents** (PDFs) are tracked by content hash + Swissquote's
   GUID-style document ID in a `documents` table, but the binary
-  itself stays on disk. Structured PDF parsing is deferred — the
-  `payload` JSON records source filename, doc type, contract number,
-  date, and target user from the URL query string.
+  itself stays on disk. Only the Portfolio Performance PDFs are
+  parsed (above); for every document the `payload` JSON records
+  source filename, doc type, contract number, date, and target user
+  from the URL query string.
 - **`account_overview.pdf`** is regenerated every run (it's a live
   snapshot, not a stable document). It lands in bronze but is
   intentionally NOT indexed into the `documents` table.
@@ -499,6 +500,7 @@ not already recorded in `dump_runs`. It also scans
 | `--silver-db` | `/data/swissquote.db` (wrapper mount) | Path to the silver SQLite database. Created if missing. |
 | `--bronze-dir` | `/data` (wrapper mount) | Directory containing bronze dump subdirectories and the `manual/` subdirectory. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
+| `--force` | off | Delete the silver database, then rebuild it from all bronze. |
 
 ### Schema migrations
 

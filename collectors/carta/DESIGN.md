@@ -2,7 +2,7 @@
 
 **Implemented end-to-end.** `explore` mapped the holder UI; `login`,
 `download` and `load` are built.
-The silver schema is realized in `migrations/0001_initial.sql` (§5) and the
+The silver schema is realized in `migrations/` (§5) and the
 **gold adapter is built** (`wealthdb/internal/silver/carta/`, §6). The chosen
 path (web scraper, not API — see the investigation below), the observed
 endpoints (§3), the silver schema, and the gold mapping are all locked in.
@@ -178,7 +178,7 @@ below. (No values reproduced here — PII.)
 
 - **Auth / infra.** Login at `login.app.carta.com/credentials/login/`
   (SPA), creds POSTed to `…/credentials/bff/login/`, 2FA verified at
-  `…/credentials/2fa/bff/verify_challenge`. Since 2026-08 the form is
+  `…/credentials/2fa/bff/verify_challenge`. The form is
   **two-step** (same URL, client-side step change): an email screen
   (`#username`, `#email-next-btn`) then a password screen
   (`#email-display`, `#password`, `#password-continue-btn`) — neither
@@ -382,7 +382,7 @@ the tables follow the observed responses.
 | `vesting_events` | (snapshot_at, grant_external_id, seq) | The dated schedule: `vest_date`, `amount`, `cumulative`, `has_vested`. **First vesting concept in wealthdb** (silver-only — §6). |
 | `fund_metrics` | (snapshot_at, entity_external_id) | The LP capital account: `commitment`, `called_capital`, `capital_contributed`, `distributions`, `net_asset_value`, `vintage_year` (decimal strings, kept verbatim as TEXT), `accepted_date`, and on a statement's row its inception-to-date fees, operating income, gains and carry (§5.3). |
 | `cap_calls` | (snapshot_at, entity_external_id, call_external_id) | Active LP capital calls. |
-| `documents` | content_sha256 | PDF archive index (K-1 / 1042-S / statements / financials), content-deduped on SHA-256; the PDF blobs stay under the bronze tree. |
+| `documents` | content_sha256 | PDF archive index (K-1 / 1042-S / statements / notices / financials), content-deduped on SHA-256; the PDF blobs stay under the bronze tree. |
 | `k1_capital_accounts` | content_sha256 | One per K-1 document (§5.3): the federal face page's tax year and, for a fiscal year, its period (migration 0005), the tax capital account (item L), net short- and long-term gain (boxes 8, 9a), and cash and property distributions (box 19 A, C). |
 | `capital_events` | (snapshot_at, entity_external_id, event_kind) | The reconstructed timeline (§5.1): one row per snapshot-defining event — `acquired` / `disposition` / `exercise` / `price_change` / `statement`. |
 | `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`), `convertible_purchase` (a SAFE / note at its principal), and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on the custody account (§6). |
@@ -446,7 +446,9 @@ captured. Funds value off `fund_metrics.net_asset_value`.
 Sources (parsed at load): the per-grant exercise-detail **xlsx** (date /
 shares / strike / FMV-on-exercise, captured via the option modal's `edr`
 attachments; stdlib `zipfile`), and the capital-account statement **PDFs**
-(quarterly NAV via `pdftotext -layout`, `poppler-utils` in the image).
+(quarterly NAV via `pdftotext -layout`, `poppler-utils` in the image). The
+notices (§5.2) are read the same way; the K-1s (§5.3) from `pdftotext -bbox`
+word boxes.
 
 **Valuation override (single source of truth).** When a company exits, Carta
 purges its historical 409A timeline, so the Carta-derived fallback can only
@@ -647,7 +649,7 @@ directly and is emitted 1:1, since the CSV already carries both halves.
 Which `cash_flows.kind` becomes which signed pair — and everything else on
 the gold side — lives in
 [`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md) §7.
-It is not repeated here: the two copies had already drifted apart by a row.
+It is not repeated here, so the two cannot drift apart.
 
 ## 7. Scope (as built)
 
@@ -663,9 +665,9 @@ The scope is **everything**; all of it is captured:
 Carta's internal API exposes no transaction ledger (exercises live inside the
 grant payloads), so the dated cash flows are **reconstructed** into the
 `cash_flows` table (§5.2) — exercises from the certs, convertible purchases
-from the note principals, the exit at cancellation,
-fund calls / distributions from each fund's notices and statements — for projection to gold
-transactions per §6.1.
+from the note principals, the exit at cancellation, fund calls /
+distributions from each fund's notices and statements — for projection to
+gold transactions per §6.1.
 
 ## 8. Read-only & PII
 

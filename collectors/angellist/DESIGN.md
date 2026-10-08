@@ -209,7 +209,8 @@ unstructured `VenturePost`s, and `portfolio_timeseries` is portfolio-level
 monthly NAV. The Schedule K-1 **Line 19(a)** annual distribution restates the
 dated disbursements, so it is **deliberately not emitted as a transaction** —
 emitting it would double-count every distribution. `k1_capital_accounts`
-serves only the position tax-basis statement valuations.
+feeds no transaction: it serves the position tax-basis statement valuations
+and holds the basis and gain lines (below).
 
 ### Historical valuations & K-1s
 

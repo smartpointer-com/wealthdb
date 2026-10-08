@@ -16,7 +16,7 @@ what's left is illiquid private holdings tracked by hand:
   funding round or be written to zero. Not debt in any meaningful sense.
 - **Direct private-company equity** — e.g. a stake in a GmbH / AG.
 - **Fund LP interests & SPVs** — limited-partner commitments in a venture/PE
-  fund (capital calls + distributions) and single-deal SPVs.
+  fund, paid in over several capital calls, and single-deal SPVs.
 - **Other illiquid positions** — anything without a cleaner home, e.g. a
   receivable or a private loan.
 
@@ -36,7 +36,7 @@ Sections:
 
 Every other collector has the lifecycle `login → download → load`, driving
 a privileged read-only session against a source. **`manual` has no source.**
-Two hand-maintained CSVs live in `$XDG_DATA_HOME/wealthdb/manual/`; there is no auth, no
+A few hand-maintained CSVs live in `$XDG_DATA_HOME/wealthdb/manual/`; there is no auth, no
 MFA, no Docker, no browser, no `~/.secrets/manual.env`. Only `load` exists
 (the `manual` wrapper accepts `download`/`login` as friendly no-ops). The
 runtime is **host-venv** (like `schwab-api` / `ubs-psn`) minus the network
@@ -65,7 +65,7 @@ reclaimed and exits 0, never touching the CSVs or the derived silver DB.
 
 ## 2. Bronze: the CSV schema
 
-Three CSVs, one row per thing. The **stable columns are the same across all
+Four CSVs, one row per thing. The **stable columns are the same across all
 asset kinds**; everything kind-specific lives in a JSON `payload` column —
 not sparse per-kind columns. This is the repo's silver convention (promote
 stable filter/join fields, absorb drift in `payload`) applied one layer
@@ -76,8 +76,8 @@ needs no new file and no schema change.
 
 **accounts.csv** — one row per pseudo-account, and OPTIONAL. A book that
 omits it puts every position in one account (`manual`, kind `other`,
-`taxable_personal` / `self_directed`), which is what this collector did before
-accounts existed and remains right for a book with one owner and one wrapper.
+`taxable_personal` / `self_directed`), which is right for a book with one
+owner and one wrapper.
 `id, display_name, account_kind, tax_wrapper, management_style, notes, payload`
 - An account here is a **declaration, not something fetched**: it says "these
   positions are held under this wrapper, managed this way". It exists because
@@ -88,8 +88,8 @@ accounts existed and remains right for a book with one owner and one wrapper.
   vocabularies, checked by `load.py` against literal sets mirroring
   `internal/canonical/enums.go` — a value gold would reject fails at load,
   where the CSV row number is still in hand. The two nullable ones default to
-  the taxonomy the single account always carried, so a file that declares an
-  account only to name a wrapper need not restate the ordinary case.
+  the default account's taxonomy, so a file that declares an account only to
+  name a wrapper need not restate the ordinary case.
 - The alternative was a **second silver source per sleeve** — a directory, a
   silver DB, a config entry and an `account_overrides` entry each time. One
   table replaces all of that. `account_overrides` still wins on overlap: the
@@ -137,6 +137,16 @@ accounts existed and remains right for a book with one owner and one wrapper.
   `{appraisal_source}`, convertible_note `{mark_source}`, spv/private_fund
   `{post_money_valuation}` / NAV provenance.
 
+**cost_basis.csv** — an optional paid-in series.
+`position_id, as_of_date, amount, currency, notes`
+- One row per (position, as-of date): the capital paid in so far, gross of
+  any capital paid back. It is for a holding whose cost is not its first
+  valuation, such as a fund commitment paid in over several capital calls.
+- A position with rows here takes its book value from them (§6). A position
+  without any keeps the valuation at `acquired_at`.
+- The rows are running totals, not cash events: the calls themselves are
+  bank wires, as below.
+
 **No transactions file.** The collector is positions + valuations only
 (§6). A cash-flow file would add nothing but duplication: every such event
 is a real wire in the bank accounts, already captured by the bank
@@ -169,14 +179,14 @@ SQLite + JSON1, mirroring the bronze CSV shape one-to-one. Realized in
 | `load_runs` | — (append-only) | Audit log: `load_at`, schema version, `bronze_dir`, row counts, `payload`. No idempotency gate (full rebuild each run). |
 | `schema_meta` | `silver_schema_version` | collectorkit migration bookkeeping. |
 
-Storage (carta conventions): money (`value`) is a decimal STRING (TEXT)
-verbatim — exact, no float rounding; dates are ISO `'YYYY-MM-DD'` TEXT;
+Storage (carta conventions): money (`value`, `amount`) is a decimal STRING
+(TEXT) verbatim — exact, no float rounding; dates are ISO `'YYYY-MM-DD'` TEXT;
 `payload` is TEXT JSON; `load_at` is Unix-seconds INTEGER. Rates /
 ownership_pct / other ratios stay inside `payload`, not money columns.
 Referential integrity (a valuation's `position_id`; a conversion's
 `converted_from_position_id` back-reference) is enforced in `load.py`
 (precise errors), **not** by SQLite FK constraints — the loader truncates and
-rebuilds both tables each run, so hard FKs would only complicate
+rebuilds every table each run, so hard FKs would only complicate
 delete/insert ordering. The accepted `kind` vocabulary lives in `load.py` so
 adding a kind needs no migration.
 
@@ -220,17 +230,16 @@ registered in `cmd/wealthdb/main.go`. It follows the carta/equityzen
 structure, minus the transaction half.
 
 **Accounts — one per declared sleeve**, and one default account for every
-position that names none. A book with no `accounts.csv` therefore still
-projects exactly one account, which is what this collector did before
-accounts existed.
+position that names none. A book with no `accounts.csv` therefore projects
+exactly one account.
 
-- The DEFAULT account keeps the taxonomy it always had: `account_kind =
-  other` — directly-held assets with **no institutional container** (not
+- The DEFAULT account has `account_kind = other` — directly-held assets
+  with **no institutional container** (not
   brokerage/cash/custody/crypto); the honest value (Carta uses `custody`
   because Carta administers the holdings; here nobody does) — plus
   `tax_wrapper = taxable_personal`, `management_style = self_directed`.
-  Its id is stable, so a deployment that does not want accounts sees no
-  change at all.
+  Its id is fixed, so a book without `accounts.csv` always projects the
+  same account.
 - A DECLARED account carries its own `account_kind`, `tax_wrapper` and
   `management_style` from `accounts.csv`, which is what lets one book span
   tax sleeves — holdings under one wrapper beside personally-held ones.
@@ -265,21 +274,19 @@ correct at any historical date:
 **Asset class.** Bronze `kind` **is** the canonical `asset_class`
 (identity classmap), so the CSV self-documents the class:
 
-| position `kind` = `asset_class` | status | rationale |
-|---|---|---|
-| `real_estate` | exists | Directly-held property is a first-class asset class with no existing fit; `other` would erase it from portfolio queries. |
-| `convertible_note` | exists | 0%-interest early-stage venture bets expected to convert to equity (or go to zero) — **not** debt. Calling them `private_debt`/`bond` would be technically arguable but actively misleading. |
-| `private_equity` | exists | Direct private-company equity (e.g. a GmbH/AG stake) — what carta's classmap folds into `private_equity`. |
-| `private_fund` | exists | LP interest in a venture/PE fund (carta/angellist). Capital calls → `contribution`, distributions → `distribution`. |
-| `spv` | exists | LP interest in a single-company SPV (equityzen). The one-shot buy-in → `acquisition`. |
-| `mortgage` | exists | Real-property-backed liability (gold `AssetClassMortgage`), typically securing a `real_estate` position. Valuations are entered as a positive outstanding balance; the gold adapter negates it so it nets against the property. |
-| `other` | exists | Catch-all for holdings without a fitting class — e.g. a receivable or a private loan. Semantics ride in `display_name` + `payload`. |
+| position `kind` = `asset_class` | rationale |
+|---|---|
+| `real_estate` | Directly-held property is a first-class asset class with no other fit; `other` would erase it from portfolio queries. |
+| `convertible_note` | 0%-interest early-stage venture bets expected to convert to equity (or go to zero) — **not** debt. Calling them `private_debt`/`bond` would be technically arguable but actively misleading. |
+| `private_equity` | Direct private-company equity (e.g. a GmbH/AG stake) — what carta's classmap folds into `private_equity`. |
+| `private_fund` | LP interest in a venture/PE fund, the class carta and angellist use too. The capital paid in rides in `cost_basis.csv`; the calls and distributions are bank wires. |
+| `spv` | LP interest in a single-company SPV, the class equityzen uses too. The buy-in is the valuation at `acquired_at`. |
+| `mortgage` | Real-property-backed liability (gold `AssetClassMortgage`), typically securing a `real_estate` position. Valuations are entered as a positive outstanding balance; the gold adapter negates it so it nets against the property. |
+| `other` | Catch-all for holdings without a fitting class — e.g. a receivable or a private loan. Semantics ride in `display_name` + `payload`. |
 
-Only `real_estate` + `convertible_note` are new enum values;
-`private_equity` / `private_fund` / `spv` already exist (added with carta /
-angellist / equityzen). `asset_class` carries **no SQL CHECK** (Go-validated
-only), so the two new values touch just `internal/canonical/enums.go` + its
-`assetClassValues` map — no gold migration for the enum itself.
+`asset_class` carries **no SQL CHECK** (Go-validated only), so a class
+lives in `internal/canonical/enums.go` + its `assetClassValues` map — no
+gold migration for the enum itself.
 
 **No transactions.** The adapter's `Transactions()` returns an empty stream;
 there is no `manual-funding` sentinel. Every cash flow a manual holding could
