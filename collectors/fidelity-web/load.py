@@ -839,7 +839,15 @@ def _read_lot_step(dump_dir, run_meta):
     killed mid-write, is skipped with a warning; an index entry that
     points at it then fails to load on its own."""
     lots_dir = dump_dir / "lots"
-    index = _read_json_file(lots_dir / "index.json")
+    index_path = compress.resolve_variant(lots_dir / "index.json")
+    if index_path is None:
+        return None
+    try:
+        with compress.open_text(index_path) as fh:
+            index = json.load(fh)
+    except (OSError, ValueError) as e:
+        log.warning("%s: lot index unreadable: %s", dump_dir.name, e)
+        return None
     if not index:
         return None
     records = {}

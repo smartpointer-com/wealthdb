@@ -86,8 +86,8 @@ bronze subdirectory holds documents that arrive out-of-band.
 │   │   ├── positions_summary.csv.zst           Overview view (all accounts in one CSV)
 │   │   └── positions_dividend.csv.zst          DividendView (ex-date, yield, est. annual income)
 │   ├── lots/                                   the positions phase's lot step (§8.3.1)
-│   │   ├── index.json                          every lot-eligible position, with the dump its
-│   │   │                                       lots were fetched in and their record ids — NOT compressed
+│   │   ├── index.json.zst                      every lot-eligible position, with the dump its
+│   │   │                                       lots were fetched in and their record ids
 │   │   └── lots.jsonl.zst                      every response of the step, one JSON line each:
 │   │                                           positions and closed-positions queries, open-lot
 │   │                                           table pages, closed lots
@@ -140,7 +140,8 @@ unlinked, mtime carried over). HTML/CSV-shaped bronze compresses to a
 small fraction of its raw size. The list of compressed forms is exactly
 the load inputs that are text: `positions/*.csv`, `activity/*.csv`,
 `balances/balances.html`, `performance/performance.html`,
-`lots/lots.jsonl`, and any `documents/Statement*.csv` companions. **PDFs are never compressed**
+`lots/index.json`, `lots/lots.jsonl`, and any `documents/Statement*.csv`
+companions. **PDFs are never compressed**
 (already internally compressed; excluding them avoids spending CPU to
 grow the file), nor is `run.json` (it must stay greppable — it is the
 status-lifecycle handshake `prune` keys on), nor the `--debug`
@@ -943,14 +944,15 @@ saves a filesystem block per response, and the repeated table markup
 compresses once. A run fetches only new and changed positions, so no
 response repeats an earlier run's bytes for the dedup sweep to share.
 
-Only new and changed positions are fetched. `lots/index.json` lists
-every eligible position with its signature, the dump its lots were
-fetched in, and their record ids in that dump's bundle. An open position's signature is its quantity and cost
-basis total; a closed position's is its proceeds, cost basis and
+Only new and changed positions are fetched. `lots/index.json.zst`
+(compact JSON, compressed) lists every eligible position with its
+signature, the dump its lots were fetched in, and their record ids in
+that dump's bundle. An open position's signature is its quantity and
+cost basis total; a closed position's is its proceeds, cost basis and
 gain. A position whose signature matches the newest earlier index
 keeps that fetch and costs no request. Only a complete dump's index
-counts: `load` never reads a dump that did not complete, so a fetch
-it holds would never reach silver.
+counts: `load` never reads a dump that did not complete, so a fetch it
+holds would never reach silver.
 
 Requests are paced like a person opening tables: two to five seconds
 apart, with a longer pause about every twenty-five. A run fetches at

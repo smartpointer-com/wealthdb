@@ -172,7 +172,7 @@ def _run(tmp_path, slug, api, prev=None, refresh=False, tax_years=(2099,)):
     run_dir.mkdir()
     result = download.scrape_lots(FakePage(api), run_dir, [ACCT, ACCT_529],
                                   prev, refresh=refresh, tax_years=tax_years)
-    index = json.loads((run_dir / "lots" / "index.json").read_text())
+    index = download.read_lot_index(run_dir / "lots")
     return result, index
 
 
@@ -301,7 +301,7 @@ def test_a_run_writes_one_bundle_beside_its_index(tmp_path, no_pause):
     _run(tmp_path, "20990101T000000Z", _api(ROWS))
     run_dir = tmp_path / "20990101T000000Z"
     assert sorted(p.name for p in (run_dir / "lots").iterdir()) == [
-        "index.json", "lots.jsonl.zst"]
+        "index.json.zst", "lots.jsonl.zst"]
     meta = {"accounts_enumerated": [ACCT]}
     lot_step = load._read_lot_step(run_dir, meta)
     assert [r["endpoint"] for r in lot_step[1].values()] == [
@@ -378,6 +378,19 @@ def test_a_run_defers_what_exceeds_its_fetch_budget(
 def test_sigterm_unwinds_instead_of_being_ignored():
     with pytest.raises(KeyboardInterrupt):
         download._exit_on_sigterm(15, None)
+
+
+def test_the_index_is_written_compact_and_read_in_either_form(tmp_path):
+    lots_dir = tmp_path / "lots"
+    lots_dir.mkdir()
+    download.write_lot_index(lots_dir, {"open": [{"position": "X"}]})
+    assert [p.name for p in lots_dir.iterdir()] == ["index.json.zst"]
+    assert download.read_lot_index(lots_dir) == {"open": [{"position": "X"}]}
+    (lots_dir / "index.json.zst").unlink()
+    (lots_dir / "index.json").write_text('{"open": []}')
+    assert download.read_lot_index(lots_dir) == {"open": []}
+    (lots_dir / "index.json").write_text('{"open": [')
+    assert download.read_lot_index(lots_dir) is None
 
 
 def test_previous_index_is_the_newest_earlier_one(tmp_path):

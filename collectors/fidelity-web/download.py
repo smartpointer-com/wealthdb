@@ -1168,10 +1168,36 @@ def previous_lot_index(dest_root, current_slug):
             continue
         if bronze.run_status(run_dir / "run.json") not in (None, "complete"):
             continue
-        index = bronze.read_manifest(run_dir / "lots" / LOTS_INDEX)
+        index = read_lot_index(run_dir / "lots")
         if index is not None:
             return index
     return None
+
+
+def read_lot_index(lots_dir):
+    """A dump's lot index, compressed or not, or None when it has none
+    or it does not parse."""
+    path = compress.resolve_variant(lots_dir / LOTS_INDEX)
+    if path is None:
+        return None
+    try:
+        with compress.open_text(path) as fh:
+            index = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return index if isinstance(index, dict) else None
+
+
+def write_lot_index(lots_dir, index):
+    """Write the lot index compact and compressed. It lists every
+    lot-eligible position on every run, so it is the step's largest
+    file; without indentation and compressed it is about a tenth of
+    its pretty-printed size. The plain file is written atomically first,
+    so a failed compression leaves a readable index."""
+    path = lots_dir / LOTS_INDEX
+    bronze.atomic_write_bytes(path, json.dumps(
+        index, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    compress_export(path)
 
 
 class LotFetchError(RuntimeError):
@@ -1513,7 +1539,7 @@ def scrape_lots(page, bronze_dir, accounts, prev_index, *, refresh=False,
             result["status"] = "partial"
         index["status"] = result["status"]
         bundle.close()
-        bronze.atomic_write_json(lots_dir / LOTS_INDEX, index)
+        write_lot_index(lots_dir, index)
     return result
 
 
