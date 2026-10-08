@@ -217,8 +217,9 @@ $HOME/.cache/wealthdb/debug/relevate/          # opt-in scratch logs / traces
 
 ## Configuration
 
-The wrapper sources `$HOME/.config/relevate.cfg` if present
-(plain bash, `key=value`). Override defaults:
+The wrapper sources `${XDG_CONFIG_HOME:-$HOME/.config}/relevate.cfg`
+(or `$RELEVATE_CFG`) if present: plain bash, `key=value`. Override
+defaults:
 
 ```sh
 RELEVATE_SECRETS_DIR=/path/to/secrets

@@ -296,25 +296,17 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> int:
     ).fetchone()[0]
 
 
-# run.json status values that mark a run dir as a finished dump:
-# "complete", or none at all (a dump predating the status lifecycle only
-# ever got a run.json at the end). Any other status — "in-progress" from
-# a crashed walk, or one this loader does not know — keeps the run out of
-# silver, so a partial capture never reaches gold. `prune` applies the
-# same rule and reclaims such dirs. An unreadable run.json also reads as
-# no status; its load then fails loudly rather than being skipped.
-COMPLETE_STATUSES = ("complete", None)
-
-
 def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
     """Return the timestamped subdirs of bronze_dir whose run.json marks
-    a finished dump (COMPLETE_STATUSES), oldest first."""
+    a finished dump (`bronze.is_loadable_status`), oldest first. An
+    unreadable run.json reads as no status; its load then fails loudly
+    rather than being skipped."""
     snapshots = []
     for p in bronze.iter_run_dirs(bronze_dir):
         run_json = p / "run.json"
         if not run_json.is_file():
             continue
-        if bronze.run_status(run_json) not in COMPLETE_STATUSES:
+        if not bronze.is_loadable_status(bronze.run_status(run_json)):
             log.info("skipping %s (run.json status not complete)", p.name)
             continue
         snapshots.append(p)

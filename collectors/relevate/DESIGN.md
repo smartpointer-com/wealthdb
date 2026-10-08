@@ -425,7 +425,7 @@ The `status` field is the fleet-uniform completeness signal: a run
 dir is a *complete* dump (`status == "complete"`), or a *non-complete*
 one (an `"in-progress"` marker from a crashed walk, a `"dry-run"`
 shell, an `"incomplete"` abort, or no `run.json` at all). `load` skips
-a dump still marked `"in-progress"` / `"dry-run"` so a partial capture
+a dump whose status is anything but `"complete"`, so a partial capture
 never reaches silver; `prune` reclaims non-complete run dirs (§6). The
 `ended_at` / `dry_run` fields are written alongside `status` and are the
 terminal signal `prune` falls back to for a statusless manifest

@@ -59,7 +59,7 @@ from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli, silver, srcfp
+from collectorkit import bronze, cli, silver, srcfp
 
 import pdf_parsers as pp
 import tax_form_parsers as tf
@@ -409,15 +409,9 @@ def _bronze_file(run_dir: Path, suffix: str, filename: str,
 
 def _record_document(conn: sqlite3.Connection, stats: dict,
                      row: tuple) -> None:
-    """Add a `documents` row (sha256, snapshot_at, account_external_id,
-    doc_date, doc_kind, file_format, filename, size_bytes, payload) unless
-    its sha256 is already held, and count it as new or as a duplicate."""
-    new = conn.execute(
-        "INSERT OR IGNORE INTO documents"
-        " (sha256, snapshot_at, account_external_id, doc_date,"
-        "  doc_kind, file_format, filename, size_bytes, payload)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", row,
-    ).rowcount
+    """Add a `documents` row (`silver.DOCUMENT_COLUMNS`) unless its sha256
+    is already held, and count it as new or as a duplicate."""
+    new = silver.record_document(conn, row)
     stats["documents_new" if new else "documents_dup"] += 1
 
 
@@ -719,12 +713,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     # Skip non-complete dumps. download.walk() writes run.json
     # incrementally with status="in-progress", flipping it to
     # "complete" (or "dry-run") only at the end — so a crashed walk
-    # or a --dry-run shell leaves a partial manifest present that we
-    # must NOT ingest (partial balances would leak into gold as a
-    # snapshot; a dry-run's tx-history exports still fire). A
-    # statusless manifest is treated as loadable.
+    # or a --dry-run shell leaves a partial manifest present that must
+    # NOT be ingested (partial balances would leak into gold as a
+    # snapshot; a dry-run's tx-history exports still fire).
     status = manifest.get("status")
-    if status in ("in-progress", "dry-run"):
+    if not bronze.is_loadable_status(status):
         log.warning(
             "run.json in %s has status=%r; skipping (not a complete dump)",
             run_dir, status,
@@ -1792,14 +1785,6 @@ def _cash_rows(account_external_id: str, period_end: int, period_start: int,
     )]
 
 
-def _insert_rows(conn: sqlite3.Connection, verb: str, table: str,
-                 columns: tuple[str, ...], rows: list[tuple]) -> None:
-    """`verb` ("INSERT" or "INSERT OR REPLACE") every row into `table`."""
-    conn.executemany(
-        f"{verb} INTO {table} ({', '.join(columns)})"
-        f" VALUES ({', '.join('?' for _ in columns)})", rows)
-
-
 def _insert_position_snapshots(conn: sqlite3.Connection,
                                 account_external_id: str,
                                 as_of_date: int,
@@ -1818,12 +1803,12 @@ def _insert_position_snapshots(conn: sqlite3.Connection,
         "DELETE FROM open_lots WHERE account_external_id = ? AND as_of_date = ?",
         (account_external_id, as_of_date),
     )
-    _insert_rows(conn, "INSERT OR REPLACE", "historical_position_snapshots",
-                 (*_POSITION_COLUMNS, "source_sha256", "logical_doc_key"),
-                 [(*r, source_sha256, logical_doc_key) for r in pos_rows])
-    _insert_rows(conn, "INSERT", "open_lots",
-                 (*_OPEN_LOT_COLUMNS, "source_sha256"),
-                 [(*r, source_sha256) for r in lot_rows])
+    silver.upsert_rows(conn, "historical_position_snapshots",
+                       (*_POSITION_COLUMNS, "source_sha256", "logical_doc_key"),
+                       [(*r, source_sha256, logical_doc_key) for r in pos_rows])
+    silver.upsert_rows(conn, "open_lots",
+                       (*_OPEN_LOT_COLUMNS, "source_sha256"),
+                       [(*r, source_sha256) for r in lot_rows], replace=False)
     return len(pos_rows)
 
 
@@ -1837,9 +1822,9 @@ def _insert_cash_balance(conn: sqlite3.Connection,
     """INSERT OR REPLACE one row per (period_end, account, currency).
     Returns 0 (no cash_summary parsed) or 1."""
     rows = _cash_rows(account_external_id, period_end, period_start, cash)
-    _insert_rows(conn, "INSERT OR REPLACE", "historical_cash_balances",
-                 (*_CASH_COLUMNS, "source_sha256", "logical_doc_key"),
-                 [(*r, source_sha256, logical_doc_key) for r in rows])
+    silver.upsert_rows(conn, "historical_cash_balances",
+                       (*_CASH_COLUMNS, "source_sha256", "logical_doc_key"),
+                       [(*r, source_sha256, logical_doc_key) for r in rows])
     return len(rows)
 
 

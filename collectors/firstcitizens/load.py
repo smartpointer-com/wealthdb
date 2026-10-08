@@ -284,12 +284,9 @@ def _insert_document(conn, snapshot_at: int, account_external_id: str,
                      pdf: Path) -> None:
     sha, size = bronze.sha256_file(pdf)
     doc_date = _statement_date_from_name(pdf.name)
-    conn.execute(
-        "INSERT OR IGNORE INTO documents (sha256, snapshot_at, "
-        "account_external_id, doc_date, doc_kind, file_format, filename, "
-        "size_bytes, payload) VALUES (?,?,?,?,?,?,?,?,?)",
-        (sha, snapshot_at, account_external_id, doc_date, "statement", "pdf",
-         pdf.name, size, silver.canonical_json({"source_name": pdf.name})))
+    silver.record_document(conn, (
+        sha, snapshot_at, account_external_id, doc_date, "statement", "pdf",
+        pdf.name, size, silver.canonical_json({"source_name": pdf.name})))
 
 
 # The statement filename is the safe-stemmed cycle date, `MM-DD-YYYY.pdf`
@@ -366,8 +363,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     """Load one bronze run dir. Returns True if ingested, False if skipped
     (non-complete dump, or already loaded). Idempotent."""
     status = bronze.run_status(run_dir / "run.json")
-    if status not in ("complete", None):
-        # in-progress / dry-run shells are not silver inputs.
+    if not bronze.is_loadable_status(status):
         log.info("skip %s (status=%s)", run_dir.name, status)
         return False
     try:

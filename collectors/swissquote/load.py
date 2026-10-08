@@ -61,12 +61,7 @@ ISO_CCY_RE = re.compile(r"^[A-Z]{3}$")
 # explicit BEGIN/COMMIT per dump) with row_factory=Row — exactly what
 # collectorkit's silver.open_db provides.
 open_db = silver.open_db
-
-
-def canonical_json(obj) -> str:
-    """Stable JSON for content-based dedup. Sorted keys, no spaces."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False)
+canonical_json = silver.canonical_json
 
 
 # ============================================================
@@ -101,10 +96,7 @@ def _dump_is_complete(run_dir: Path) -> bool:
         return False  # corrupt bytes — not evidence of completeness
     if not isinstance(meta, dict):
         return False
-    status = meta.get("status")
-    if status is None:
-        return True  # legacy statusless manifest == complete
-    return status == "complete"
+    return bronze.is_loadable_status(meta.get("status"))
 
 
 def find_pending_dumps(

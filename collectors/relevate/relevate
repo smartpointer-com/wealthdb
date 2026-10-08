@@ -2,8 +2,8 @@
 # Host-side wrapper around `docker run` for the relevate container.
 # Mounts ~/.secrets/ (RW; env file in, cookie jar out), the bronze
 # data dir (RW), and a separate /debug dir for opt-in scratch logs.
-# Sources an optional XDG-style config file at ~/.config/relevate.cfg
-# (overrides paths without env vars) and the credentials env file
+# Sources an optional config file, ${XDG_CONFIG_HOME:-~/.config}/relevate.cfg
+# by default (overrides paths without env vars), and the credentials env file
 # (so RELEVATE_LOGIN / RELEVATE_PASSWORD reach the container). The
 # common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -17,17 +17,11 @@ HAS_SAFETY=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# Optional XDG-style config file, sourced BEFORE wrapper_init so it
-# can override the per-prefix env knobs (RELEVATE_SECRETS_DIR etc.).
-# Plain bash, key=value style. Absent file is fine.
-RELEVATE_CFG="${RELEVATE_CFG:-$HOME/.config/relevate.cfg}"
-if [[ -f "$RELEVATE_CFG" ]]; then
-    # shellcheck disable=SC1090
-    source "$RELEVATE_CFG"
-fi
-
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+# Optional config file, sourced before wrapper_init so it can override
+# the per-prefix env knobs (RELEVATE_SECRETS_DIR etc.).
+wrapper_source_cfg RELEVATE "${XDG_CONFIG_HOME:-$HOME/.config}/relevate.cfg"
 wrapper_init
 
 if [[ "${1:-}" == "build" ]]; then
@@ -54,8 +48,8 @@ Subcommands:
                         reruns.
   load [args...]        Parse bronze into silver SQLite. Idempotent:
                         skips dumps already loaded, and skips a dump
-                        the walk never finished (run.json status
-                        in-progress / dry-run).
+                        the walk never finished (a run.json status
+                        other than complete).
   prune [args...]       Delete non-complete dumps (crashed walks +
                         --dry-run shells) and `download --debug`
                         HTTP traces from the bronze tree. Use
@@ -68,7 +62,7 @@ Subcommands:
 Mounted into the container:
 $(wrapper_mounts_help)
 
-Override mounts via env (or in \$HOME/.config/relevate.cfg):
+Override mounts via env (or in $RELEVATE_CFG):
   RELEVATE_SECRETS_DIR=/path/to/secrets
   RELEVATE_DATA_DIR=/path/to/data
   RELEVATE_DEBUG_DIR=/path/to/debug

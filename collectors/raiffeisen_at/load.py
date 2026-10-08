@@ -333,13 +333,10 @@ def _insert_balance(conn, snapshot_at: int, iban: str, row: dict) -> None:
 
 def _insert_document(conn, snapshot_at: int, iban: str, pdf: Path) -> None:
     sha, size = bronze.sha256_file(pdf)
-    conn.execute(
-        "INSERT OR IGNORE INTO documents (sha256, snapshot_at, "
-        "account_external_id, doc_date, doc_kind, file_format, filename, "
-        "size_bytes, payload) VALUES (?,?,?,?,?,?,?,?,?)",
-        (sha, snapshot_at, iban, _statement_date_from_name(pdf.name),
-         "statement", "pdf", pdf.name, size,
-         silver.canonical_json({"source_name": pdf.name})))
+    silver.record_document(conn, (
+        sha, snapshot_at, iban, _statement_date_from_name(pdf.name),
+        "statement", "pdf", pdf.name, size,
+        silver.canonical_json({"source_name": pdf.name})))
 
 
 # The statement filename is `<YYYY-MM-DD>_<system>_<id>[_v<n>].pdf`
@@ -384,8 +381,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     False if skipped (non-complete dump, or already loaded). Idempotent; the
     caller owns the transaction (`main` makes each run one)."""
     status = bronze.run_status(run_dir / "run.json")
-    if status not in ("complete", None):
-        # in-progress / dry-run shells are not silver inputs.
+    if not bronze.is_loadable_status(status):
         log.info("skip %s (status=%s)", run_dir.name, status)
         return False
     try:
@@ -452,8 +448,6 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
 _TXN_COLUMNS = ("txn_id", "account_external_id", "posted_at", "value_at",
                 "amount", "currency", "kind", "category", "description",
                 "counterparty", "source", "payload")
-_DOC_COLUMNS = ("sha256", "snapshot_at", "account_external_id", "doc_date",
-                "doc_kind", "file_format", "filename", "size_bytes", "payload")
 _DAY = timedelta(days=1)
 
 
@@ -672,7 +666,7 @@ def _stored_layer(conn) -> _Layer:
             "SELECT account_external_id, balance_date, balance, snapshot_at "
             "FROM daily_balances WHERE source=?", (SOURCE_SUPPLIED,))},
         docs={r[0]: tuple(r) for r in conn.execute(
-            f"SELECT {', '.join(_DOC_COLUMNS)} FROM documents "
+            f"SELECT {', '.join(silver.DOCUMENT_COLUMNS)} FROM documents "
             f"WHERE doc_kind=?", (DOC_KIND_LISTING,))},
     )
 
@@ -826,9 +820,8 @@ def _write_layer(conn, layer: _Layer) -> None:
     conn.execute("DELETE FROM transactions WHERE source=?", (SOURCE_SUPPLIED,))
     conn.execute("DELETE FROM daily_balances WHERE source=?", (SOURCE_SUPPLIED,))
     conn.execute("DELETE FROM documents WHERE doc_kind=?", (DOC_KIND_LISTING,))
-    conn.executemany(
-        f"INSERT INTO transactions ({', '.join(_TXN_COLUMNS)}) "
-        f"VALUES ({','.join('?' * len(_TXN_COLUMNS))})", layer.txns.values())
+    silver.upsert_rows(conn, "transactions", _TXN_COLUMNS,
+                       layer.txns.values(), replace=False)
     # REPLACE: a listing's balance takes over a live balance live does not
     # certify (the download's own day); certified ones never reach the layer.
     conn.executemany(
@@ -836,9 +829,8 @@ def _write_layer(conn, layer: _Layer) -> None:
         "balance_date, balance, snapshot_at, source) VALUES (?,?,?,?,?)",
         [(iban, day, bal, snap, SOURCE_SUPPLIED)
          for (iban, day), (bal, snap) in layer.balances.items()])
-    conn.executemany(
-        f"INSERT INTO documents ({', '.join(_DOC_COLUMNS)}) "
-        f"VALUES ({','.join('?' * len(_DOC_COLUMNS))})", layer.docs.values())
+    silver.upsert_rows(conn, "documents", silver.DOCUMENT_COLUMNS,
+                       layer.docs.values(), replace=False)
 
 
 def _check_one_truth_per_day(conn, views: dict[str, stitch.LiveView],

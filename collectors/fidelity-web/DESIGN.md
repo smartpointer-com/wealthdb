@@ -134,7 +134,7 @@ bronze subdirectory holds documents that arrive out-of-band.
 names, and both forms load — see **Bronze compression** below.)
 
 **Bronze compression.** Each HTML/CSV artefact is zstd-compressed in
-place as it lands (`collectorkit.compress.compress_file`: atomic
+place as it lands (`collectorkit.compress.compress_best_effort`: atomic
 tmp+rename, decompress-and-sha256-verify before the plain file is
 unlinked, mtime carried over). HTML/CSV-shaped bronze compresses to a
 small fraction of its raw size. The compressed forms are

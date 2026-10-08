@@ -460,13 +460,9 @@ def _insert_document(conn, snapshot_at: int, account_external_id: str,
     sha, size = bronze.sha256_file(pdf)
     kind = ("year_end_summary" if pdf.name.startswith(_YEAR_SUMMARY_PREFIX)
             else "statement")
-    conn.execute(
-        "INSERT OR IGNORE INTO documents (sha256, snapshot_at, "
-        "account_external_id, doc_date, doc_kind, file_format, filename, "
-        "size_bytes, payload) VALUES (?,?,?,?,?,?,?,?,?)",
-        (sha, snapshot_at, account_external_id, document_date(pdf.name), kind,
-         "pdf", pdf.name, size,
-         silver.canonical_json({"source_name": pdf.name})))
+    silver.record_document(conn, (
+        sha, snapshot_at, account_external_id, document_date(pdf.name), kind,
+        "pdf", pdf.name, size, silver.canonical_json({"source_name": pdf.name})))
 
 
 # A statement PDF is filed under its safe-stemmed cycle end date
@@ -625,7 +621,7 @@ def _statement_copies(bronze_dir: Path,
         manifest = (_read_json(run_dir / "run.json")
                     if (run_dir / "run.json").is_file() else None)
         manifest = manifest if isinstance(manifest, dict) else {}
-        if manifest.get("status") not in ("complete", None):
+        if not bronze.is_loadable_status(manifest.get("status")):
             continue
         try:
             run_ts = bronze.parse_run_ts(run_dir.name)
@@ -841,8 +837,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     """Load one bronze run dir. Returns True if ingested, False if skipped
     (non-complete dump, or already loaded). Idempotent."""
     status = bronze.run_status(run_dir / "run.json")
-    if status not in ("complete", None):
-        # in-progress / dry-run shells are not silver inputs.
+    if not bronze.is_loadable_status(status):
         log.info("skip %s (status=%s)", run_dir.name, status)
         return False
     try:

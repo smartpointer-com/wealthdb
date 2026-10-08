@@ -1857,13 +1857,13 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
         if kind == "statement_of_assets":
             pos_rows += _insert_hist_positions(
                 conn, (rows or {}).get("positions") or [])
-            trade_rows += _upsert_rows(
+            trade_rows += silver.upsert_rows(
                 conn, "statement_trades", _STATEMENT_TRADE_COLUMNS,
                 (rows or {}).get("trades") or [])
         elif kind == "mortgage":
             mortgage_rows += _insert_hist_mortgages(conn, rows or [])
         elif kind == "securities_advice":
-            securities_advice_rows += _upsert_rows(
+            securities_advice_rows += silver.upsert_rows(
                 conn, "advices", _ADVICE_COLUMNS, rows or [])
         elif kind == "payment_advice":
             # Collected, not written here: an advice is only worth writing
@@ -1940,24 +1940,6 @@ _HIST_POSITION_COLUMNS = (
 )
 
 
-def _upsert(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
-            row: dict) -> None:
-    """INSERT OR REPLACE the `columns` of one parsed row into `table`."""
-    conn.execute(
-        f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) "
-        f"VALUES ({', '.join('?' for _ in columns)})",
-        tuple(row[col] for col in columns),
-    )
-
-
-def _upsert_rows(conn: sqlite3.Connection, table: str,
-                 columns: tuple[str, ...], rows: list[dict]) -> int:
-    """`_upsert` every row; return how many."""
-    for r in rows:
-        _upsert(conn, table, columns, r)
-    return len(rows)
-
-
 def _insert_hist_positions(conn: sqlite3.Connection,
                            rows: list[dict]) -> int:
     n = 0
@@ -1965,8 +1947,8 @@ def _insert_hist_positions(conn: sqlite3.Connection,
         try:
             if r["instrument_isin"] is None:
                 _replace_hist_cash_row(conn, r)
-            _upsert(conn, "historical_position_snapshots",
-                    _HIST_POSITION_COLUMNS, r)
+            silver.upsert_rows(conn, "historical_position_snapshots",
+                               _HIST_POSITION_COLUMNS, [r])
             n += 1
         except sqlite3.IntegrityError as e:
             log.debug("hist position insert failed: %s", e)
@@ -2016,8 +1998,8 @@ def _insert_hist_cash_balances(conn: sqlite3.Connection,
     n = 0
     for r in rows:
         try:
-            _upsert(conn, "historical_cash_balances",
-                    _HIST_CASH_BALANCE_COLUMNS, r)
+            silver.upsert_rows(conn, "historical_cash_balances",
+                               _HIST_CASH_BALANCE_COLUMNS, [r])
             n += 1
         except sqlite3.IntegrityError as e:
             log.debug("hist cash insert failed: %s", e)
@@ -2340,7 +2322,8 @@ def _insert_hist_mortgages(conn: sqlite3.Connection,
     n = 0
     for r in rows:
         try:
-            _upsert(conn, "historical_mortgages", _HIST_MORTGAGE_COLUMNS, r)
+            silver.upsert_rows(conn, "historical_mortgages",
+                               _HIST_MORTGAGE_COLUMNS, [r])
             n += 1
         except sqlite3.IntegrityError as e:
             log.debug("hist mortgage insert failed: %s", e)

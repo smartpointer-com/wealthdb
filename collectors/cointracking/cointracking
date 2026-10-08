@@ -32,20 +32,12 @@ SILVER_SUBCOMMANDS=(load fetch-prices)  # replaces the default {load} — fetch-
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# The deployment's settings, such as COINTRACKING_TIMEZONES. Plain bash,
-# sourced with every assignment exported so `docker run -e` can forward
-# it, and before wrapper_init so it can also set the per-prefix knobs
-# (COINTRACKING_DATA_DIR etc.). A missing file holds no settings.
-COINTRACKING_CFG="${COINTRACKING_CFG:-${XDG_CONFIG_HOME:-$HOME/.config}/cointracking.cfg}"
-if [[ -f "$COINTRACKING_CFG" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$COINTRACKING_CFG"
-    set +a
-fi
-
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+# The deployment's settings, such as COINTRACKING_TIMEZONES, which
+# `docker run -e` forwards; the file can also set the per-prefix knobs
+# (COINTRACKING_DATA_DIR etc.).
+wrapper_source_cfg COINTRACKING "${XDG_CONFIG_HOME:-$HOME/.config}/cointracking.cfg"
 wrapper_init
 
 if [[ "${1:-}" == "build" ]]; then

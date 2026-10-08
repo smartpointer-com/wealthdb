@@ -1508,8 +1508,8 @@ def test_the_walk_writes_securities_advices_and_re_derives_them(tmp_path):
 
 def test_the_purge_takes_the_securities_advices(tmp_path):
     conn = _fresh_db(tmp_path)
-    loader._upsert_rows(conn, "advices", loader._ADVICE_COLUMNS,
-                        [_securities_advice("call", 12345.67)])
+    silver.upsert_rows(conn, "advices", loader._ADVICE_COLUMNS,
+                       [_securities_advice("call", 12345.67)])
 
     loader._purge_stale_document_rows(conn)
 
@@ -1564,9 +1564,9 @@ def test_the_walk_writes_statement_trades_and_re_derives_them(tmp_path):
 
 def test_the_purge_takes_the_statement_trades(tmp_path):
     conn = _fresh_db(tmp_path)
-    loader._upsert_rows(conn, "statement_trades",
-                        loader._STATEMENT_TRADE_COLUMNS,
-                        [_statement_trade(1, 100.0)])
+    silver.upsert_rows(conn, "statement_trades",
+                       loader._STATEMENT_TRADE_COLUMNS,
+                       [_statement_trade(1, 100.0)])
 
     loader._purge_stale_document_rows(conn)
 

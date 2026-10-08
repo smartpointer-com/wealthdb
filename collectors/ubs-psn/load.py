@@ -387,13 +387,7 @@ def _insert_if_changed_master(
            + tuple(c for c, _ in extra_cols) + ("payload",)
     vals = (snapshot_at,) + pk_vals \
            + tuple(v for _, v in extra_cols) + (payload_canon,)
-    placeholders = ",".join("?" * len(cols))
-    conn.execute(
-        f"INSERT OR REPLACE INTO {table} "
-        f"({','.join(cols)}) VALUES ({placeholders})",
-        vals,
-    )
-    return 1
+    return silver.upsert_rows(conn, table, cols, [vals])
 
 
 def _find_text(parsed: dict, *path: str) -> str | None:

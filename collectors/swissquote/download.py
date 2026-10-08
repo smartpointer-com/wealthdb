@@ -694,10 +694,7 @@ def dump_is_complete(run_dir: Path) -> bool:
         return False  # corrupt bytes — not evidence of completeness
     if not isinstance(meta, dict):
         return False
-    status = meta.get("status")
-    if status is None:
-        return True  # legacy statusless manifest == complete
-    return status == "complete"
+    return bronze.is_loadable_status(meta.get("status"))
 
 
 def cleanup_incomplete_run_dir(run_dir: Path) -> bool:

@@ -142,7 +142,7 @@ Schwab specifics:
 `accounts_positions.json`, every `transactions_NNN.json`,
 `open_orders.json`, and the optional `instruments.json`) is
 zstd-compressed in place as it lands
-(`collectorkit.compress.compress_file`: atomic tmp+rename,
+(`collectorkit.compress.compress_best_effort`: atomic tmp+rename,
 decompress-and-sha256-verify before the plain file is unlinked, mtime
 carried over), so the run dir fills with `.json.zst`. JSON payloads
 compress to a small fraction of their raw size. Compression is

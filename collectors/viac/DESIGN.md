@@ -292,7 +292,7 @@ dump is partial" signal than the older "no `run.json` = incomplete"
 heuristic, which a partial manifest write could defeat.
 
 `load.py` keys on it: `list_pending_dumps` skips a dump whose status is
-`"in-progress"` or `"dry-run"`, so a crashed walk never leaks a partial
+anything but `"complete"`, so a crashed walk never leaks a partial
 snapshot into silver. A statusless manifest predates the field, where
 the manifest was written only at the end so its presence alone meant
 completion, and stays loadable.

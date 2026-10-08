@@ -320,8 +320,8 @@ The `status` field is the completeness signal `prune` and `load`
 key on: `download.walk()` writes `"in-progress"` at run-dir
 creation and atomically overwrites it with `"complete"` (or
 `"dry-run"` for a `--dry-run`, whose tx-history exports still fire)
-at the end. `load` skips a dump whose `status` is `"in-progress"`
-or `"dry-run"` (a statusless legacy manifest stays loadable); `prune`
+at the end. `load` skips a dump whose `status` is anything but
+`"complete"` (a statusless legacy manifest stays loadable); `prune`
 deletes whole non-complete dumps plus `<run>/screenshots/` from
 complete ones, and never a `load` input (`statements/`,
 `transactions/`, `run.json`).

@@ -122,23 +122,25 @@ def _dump_with_status(root: Path, slug: str, status) -> Path:
     return d
 
 
-def test_list_pending_skips_in_progress_and_dry_run(tmp_path):
-    # A crashed walk (status="in-progress") and a --dry-run shell
-    # (status="dry-run") must NOT be selected for load — run.json is
-    # now present from run-dir creation, so its mere presence is not a
+def test_list_pending_skips_unfinished_dumps(tmp_path):
+    # A crashed walk (status="in-progress"), a --dry-run shell
+    # (status="dry-run") and a walk that aborted before any work
+    # (status="incomplete") must NOT be selected for load — run.json is
+    # present from run-dir creation, so its mere presence is not a
     # completeness signal.
     bronze = tmp_path / "bronze"
     _dump_with_status(bronze, "20240101T000000Z", "in-progress")
     _dump_with_status(bronze, "20240102T000000Z", "dry-run")
     complete = _dump_with_status(bronze, "20240103T000000Z", "complete")
     legacy = _dump_with_status(bronze, "20240104T000000Z", None)
+    _dump_with_status(bronze, "20240105T000000Z", "incomplete")
 
     conn, _ = _fresh_db(tmp_path)
     pending = loader.list_pending_dumps(conn, bronze)
 
     names = {p.name for p in pending}
-    # complete + statusless-legacy are loadable; the two unfinished
-    # dumps are skipped.
+    # complete + statusless-legacy are loadable; the unfinished dumps
+    # are skipped.
     assert names == {complete.name, legacy.name}
 
 

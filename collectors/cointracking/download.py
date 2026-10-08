@@ -269,25 +269,6 @@ def set_table_mode_extended_plus(page) -> None:
                              force=True, timeout=10_000)
 
 
-def compress_export(out_path: Path) -> Path:
-    """Compress a freshly saved CSV export in place (`trades.csv` →
-    `trades.csv.zst`), best-effort: `load` resolves either form, so a
-    compression failure (disk full, missing codec) downgrades to a
-    warning and the plain CSV stays — never a lost download. The
-    window in which the uncompressed file exists is the compression
-    itself; a crash inside it leaves a run dir whose run.json still
-    says "in-progress", which `load` skips and `prune` reclaims."""
-    try:
-        final = compress.compress_file(out_path)
-        log.info("  compressed %s → %s (%d bytes)", out_path.name,
-                 final.name, final.stat().st_size)
-        return final
-    except Exception as exc:  # noqa: BLE001 — best-effort by design
-        log.warning("  could not compress %s (%s); keeping the plain CSV",
-                    out_path.name, exc)
-        return out_path
-
-
 def trigger_export(page, item_selector: str, out_path: Path,
                    dry_run: bool) -> Path | None:
     """Open the Export menu, click `item_selector`, save_as the
@@ -309,7 +290,7 @@ def trigger_export(page, item_selector: str, out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     download.save_as(str(out_path))
     log.info("  saved %s (%d bytes)", out_path.name, out_path.stat().st_size)
-    return compress_export(out_path)
+    return compress.compress_best_effort(out_path, log)
 
 
 def trigger_overview_csv_export(page, out_path: Path,
@@ -334,7 +315,7 @@ def trigger_overview_csv_export(page, out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     download.save_as(str(out_path))
     log.info("  saved %s (%d bytes)", out_path.name, out_path.stat().st_size)
-    return compress_export(out_path)
+    return compress.compress_best_effort(out_path, log)
 
 
 def download_portfolio(page, portfolio: dict, run_dir: Path,

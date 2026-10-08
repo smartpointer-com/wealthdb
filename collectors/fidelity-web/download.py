@@ -119,28 +119,6 @@ import lot_parsers
 log = logging.getLogger("fidelity-web.download")
 
 
-def compress_export(path):
-    """Compress a freshly saved HTML/CSV bronze artefact in place
-    (`balances.html` → `balances.html.zst`), returning the on-disk path.
-
-    Best-effort by design: `load` resolves either form, so a compression
-    failure (disk full, missing codec) downgrades to a warning and the
-    plain file stays — never a lost artefact. `compress.compress_file`
-    decompress-and-sha256-verifies the twin before unlinking the
-    original, so the window in which data could be lost is nil. PDFs are
-    NEVER routed here — they are already internally compressed and are a
-    load input in raw form."""
-    try:
-        final = compress.compress_file(path)
-        log.info("  compressed %s → %s (%d bytes)", path.name,
-                 final.name, final.stat().st_size)
-        return final
-    except Exception as exc:  # noqa: BLE001 — best-effort by design
-        log.warning("  could not compress %s (%s); keeping the plain file",
-                    path.name, exc)
-        return path
-
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -1000,7 +978,7 @@ def scrape_positions(page, bronze_dir, capture_dir):
                 "saved positions/positions_%s.csv (%d bytes)",
                 view_key, csv_path.stat().st_size,
             )
-            final = compress_export(csv_path)
+            final = compress.compress_best_effort(csv_path, log)
             results.append({
                 "view": view_key,
                 "file": str(final.relative_to(bronze_dir)),
@@ -1225,7 +1203,7 @@ def write_lot_index(lots_dir, index):
     path = lots_dir / lot_parsers.LOTS_INDEX
     bronze.atomic_write_bytes(path, json.dumps(
         index, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-    compress_export(path)
+    compress.compress_best_effort(path, log)
 
 
 class LotFetchError(RuntimeError):
@@ -1264,7 +1242,7 @@ class _LotBundle:
     def close(self):
         self._fh.close()
         if self._next:
-            compress_export(self.path)
+            compress.compress_best_effort(self.path, log)
         else:
             self.path.unlink(missing_ok=True)
 
@@ -2363,7 +2341,7 @@ def _activity_csv_for_window(page, since_date, until_date,
             first.isoformat() if first else "-",
             last.isoformat() if last else "-",
         )
-        final = compress_export(csv_path)
+        final = compress.compress_best_effort(csv_path, log)
         result = {
             "window": [since_date.isoformat(),
                        until_date.isoformat()],
@@ -2483,7 +2461,7 @@ def scrape_activity(page, since_date, until_date,
             "saved activity/%s (%d bytes, range=%r)",
             csv_path.name, csv_path.stat().st_size, selected_range,
         )
-        final = compress_export(csv_path)
+        final = compress.compress_best_effort(csv_path, log)
         results.append({
             "timeperiod": selected_range or "default",
             "file": str(final.relative_to(bronze_dir)),
@@ -2978,7 +2956,7 @@ def scrape_balances(page, bronze_dir, capture_dir):
         "per-account values in totalaccountvalue-label testids)",
         out_path.name, out_path.stat().st_size,
     )
-    final = compress_export(out_path)
+    final = compress.compress_best_effort(out_path, log)
     return {
         "status": "explored-no-export",
         "file": str(final.relative_to(bronze_dir)),
@@ -3038,7 +3016,7 @@ def scrape_performance(page, bronze_dir, capture_dir):
         "available on this surface)",
         out_path.name, out_path.stat().st_size,
     )
-    final = compress_export(out_path)
+    final = compress.compress_best_effort(out_path, log)
     return {
         "status": "explored-no-export",
         "file": str(final.relative_to(bronze_dir)),
@@ -3250,7 +3228,7 @@ def _daf_fetch_csv(page, url, jwt, dest_dir, stem):
         return None
     out = dest_dir / f"{stem}.csv"
     out.write_bytes(resp.body())
-    return compress_export(out)
+    return compress.compress_best_effort(out, log)
 
 
 def _daf_scrape_documents(page, jwt, account_nbr, since_date, acct_dir):

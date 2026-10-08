@@ -409,13 +409,12 @@ def txn_staleness_days(latest_act_dump, latest_txn):
 
 def scan_bronze(bronze_dir):
     """The dumps worth loading: every run dir whose manifest does not
-    say it is unfinished.
+    say it is unfinished (`bronze.is_loadable_status`).
 
     A status other than `complete` marks a crashed or still-running
-    dump whose partial artefacts must not be ingested — the check
-    eleven of the fleet's loaders already make, and this one did not.
-    A dump with no manifest at all predates the field and is admitted,
-    as `bronze.run_status` documents.
+    dump whose partial artefacts must not be ingested. A dump with no
+    manifest at all predates the field and is admitted, as
+    `bronze.run_status` documents.
 
     A phase that came back SHORT is not this gate's business: such a
     dump is finished, its status is `complete`, and its artefacts are
@@ -426,7 +425,7 @@ def scan_bronze(bronze_dir):
     keep = []
     for run_dir in bronze.iter_run_dirs(bronze_dir):
         status = bronze.run_status(run_dir / "run.json")
-        if status not in (None, "complete"):
+        if not bronze.is_loadable_status(status):
             log.info("skipping %s: status=%s", run_dir.name, status)
             continue
         keep.append(run_dir)

@@ -268,29 +268,6 @@ def write_json(path: Path, payload) -> None:
     log.info("Wrote %s (%d bytes)", path, path.stat().st_size)
 
 
-def compress_export(path: Path) -> Path:
-    """Compress a freshly written bronze DATA artefact in place
-    (`accounts_positions.json` → `accounts_positions.json.zst`),
-    returning the on-disk path.
-
-    Best-effort by design: `load` resolves either form, so a compression
-    failure (disk full, missing codec) downgrades to a warning and the
-    plain file stays — never a lost artefact. `compress.compress_file`
-    decompress-and-sha256-verifies the twin before unlinking the
-    original, so the window in which data could be lost is nil.
-    `run.json` is NEVER routed here (see `write_data_artefact`): the
-    status-lifecycle manifest must stay uncompressed and greppable."""
-    try:
-        final = compress.compress_file(path)
-        log.info("Compressed %s → %s (%d bytes)", path.name, final.name,
-                 final.stat().st_size)
-        return final
-    except Exception as exc:  # noqa: BLE001 — best-effort by design
-        log.warning("Could not compress %s (%s); keeping the plain file",
-                    path.name, exc)
-        return path
-
-
 def write_data_artefact(path: Path, payload) -> Path:
     """Write a bronze DATA artefact as JSON, then zstd-compress it in
     place (best-effort). Returns the on-disk path.
@@ -300,7 +277,7 @@ def write_data_artefact(path: Path, payload) -> Path:
     every data artefact goes through here — the separation makes the
     run.json exclusion self-evident rather than a per-call omission."""
     write_json(path, payload)
-    return compress_export(path)
+    return compress.compress_best_effort(path, log)
 
 
 def schwab_get_json(response):
