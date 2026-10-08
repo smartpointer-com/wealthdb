@@ -6,7 +6,7 @@ The parsers are built on pdfplumber's text and word extraction:
       → (position snapshots, transaction-list bookings) from one
         Statement-of-assets PDF.
 
-  parse_account_statement_combined(pdf_path, doc_token, label)
+  parse_account_statement_combined(pdf_path, doc_token)
       → (cash-balance rows, movement rows) from one Account-Statement
         PDF — opened once and laid out for both passes.
 
@@ -21,8 +21,11 @@ Each returns plain dicts ready for the loader to insert into silver.
 Parsing strategy: PDF tables in UBS statements are not real PDF
 tables (no row / column structure for pdfplumber to detect — see
 the empty `extract_tables()` output during probing). They are
-visually-aligned text columns. We extract the page text and walk
-it line-by-line, anchoring on identifiable markers:
+visually-aligned text columns. Two tables tell their columns apart
+only by position, and are read from word positions instead: the
+Account-Statement movement ledger and a Statement of assets'
+transaction list (see their sections). Everything else is read from
+the page text, line by line, anchoring on identifiable markers:
 
   - "Statement of assets as of <DDMMYYYY>" in the label → as_of_date,
     or the document's own "As of <D Month YYYY>" header where there is
@@ -34,16 +37,15 @@ it line-by-line, anchoring on identifiable markers:
   - "Account Statement / DD.MM.YYYY - DD.MM.YYYY" → period range
   - "Opening balance / Closing balance" lines → cash deltas
 
-Performance note: schwab-web migrated this archive type to pypdfium2
-for a 10× speedup. ubs-web stays on pdfplumber for now because the
-visual-line reconstruction PDFium needs (count_rects() returns
-either cell-level granularity that splits a row across many lines,
-or column-shared-baseline rects that merge columns that
-pdfplumber kept apart) can't be made to round-trip the existing
-parser without a substantial regex layer rewrite. parse_account_
-statement's squish-and-match approach DOES round-trip
-byte-identical under pypdfium2; if perf becomes acute, that one
-parser is a candidate for an isolated migration.
+Performance note: pypdfium2 extracts text about 10× faster than
+pdfplumber, and schwab-web reads its statements with it. ubs-web stays
+on pdfplumber because the visual-line reconstruction PDFium needs
+(count_rects() returns either cell-level granularity that splits a row
+across many lines, or column-shared-baseline rects that merge columns
+that pdfplumber keeps apart) cannot reproduce the line layout these
+parsers read. The Account-Statement balance summary's squish-and-match
+reading does round-trip byte-identical under pypdfium2, so that one
+parser could move on its own.
 """
 from __future__ import annotations
 
@@ -65,13 +67,6 @@ _LABEL_STMT_OF_ASSETS_RE = re.compile(
     r"\d{2}\.\d{2}\.\d{4}\s+"
     r"\d{2}\s\S+\s\d{4}\s+.*?"
     r"\b(?P<acct_no>\d{3,4}-\d+)-(?P<portfolio_no>\d+)\b"
-)
-
-_LABEL_ACCT_STMT_RE = re.compile(
-    r"Account Statement\s+"
-    r"(?P<day>\d{2})\.(?P<month>\d{2})\.(?P<year>\d{4})\s+"
-    r"\d{2}\s\S+\s\d{4}\s+.*?"
-    r"\b\d{3}-\d+\.(?P<acct_suffix>\S+)"
 )
 
 
@@ -100,19 +95,32 @@ def parse_label_statement_of_assets(label: str) -> dict | None:
 # archive carries no listing row, so there is no label to read it from —
 # see `statement_of_assets_body_meta`.
 _BODY_STMT_OF_ASSETS_TITLE_RE = re.compile(r"^\s*Statement of assets\s*$", re.M)
-_BODY_STMT_OF_ASSETS_ASOF_RE = re.compile(
-    r"^\s*As of\s+(?P<day>\d{1,2})\s+(?P<month>[A-Z][a-z]+)\s+(?P<year>\d{4})\s*$",
-    re.M,
-)
 _BODY_STMT_OF_ASSETS_PORTFOLIO_RE = re.compile(
     r"^\s*Portfolio\s+(?P<acct_no>\d{3,4}-\d+)-(?P<portfolio_no>\d+)\b", re.M
 )
 
-_MONTH_NAMES = {
+# A date as the documents spell it out: "7 March 2024".
+_LONG_DATE = r"(?P<day>\d{1,2})\s+(?P<month>[A-Z][a-z]+)\s+(?P<year>\d{4})"
+_BODY_STMT_OF_ASSETS_ASOF_RE = re.compile(rf"^\s*As of\s+{_LONG_DATE}\s*$", re.M)
+
+# The documents are issued in English throughout the archive. The month
+# names are spelled out here rather than handed to strptime("%d %B %Y"),
+# whose names come from the process locale: the loader runs in a
+# container whose locale is whatever the base image sets, and a date that
+# parses on one machine and not another would silently drop rows. Keyed
+# in lower case, as UBS varies the casing within one archive.
+_MONTHS = {
     name: n for n, name in enumerate(
-        ("January", "February", "March", "April", "May", "June", "July",
-         "August", "September", "October", "November", "December"), start=1)
+        ("january", "february", "march", "april", "may", "june", "july",
+         "august", "september", "october", "november", "december"), start=1)
 }
+
+
+def _long_date(m: re.Match) -> date | None:
+    """The date a match's `day`, `month` and `year` groups spell out; None
+    for a month name this table does not know."""
+    month = _MONTHS.get(m["month"].lower())
+    return date(int(m["year"]), month, int(m["day"])) if month else None
 
 
 def statement_of_assets_body_meta(full_text: str) -> dict | None:
@@ -133,10 +141,9 @@ def statement_of_assets_body_meta(full_text: str) -> dict | None:
     portfolio_m = _BODY_STMT_OF_ASSETS_PORTFOLIO_RE.search(full_text)
     if not as_of_m or not portfolio_m:
         return None
-    month = _MONTH_NAMES.get(as_of_m["month"])
-    if month is None:
+    as_of = _long_date(as_of_m)
+    if as_of is None:
         return None
-    as_of = date(int(as_of_m["year"]), month, int(as_of_m["day"]))
     return {
         "as_of_date": _to_unix(as_of),
         "as_of_str": as_of.isoformat(),
@@ -145,27 +152,40 @@ def statement_of_assets_body_meta(full_text: str) -> dict | None:
     }
 
 
-def parse_label_account_statement(label: str) -> dict | None:
-    """Extract issue date and account suffix from the listing
-    label of an Account-Statement PDF."""
-    m = _LABEL_ACCT_STMT_RE.search(label)
-    if not m:
-        return None
-    issued = date(int(m["year"]), int(m["month"]), int(m["day"]))
-    return {
-        "issued_date": _to_unix(issued),
-        "issued_str": issued.isoformat(),
-        "account_suffix": m["acct_suffix"],        # e.g. '40X' or 'IUN'
-    }
+def _statement_of_assets_meta(full_text: str, label: str) -> dict | None:
+    """A Statement of assets' metadata. The listing row comes first, so
+    every document the archive served is read by its label; the document's
+    own header answers only for one delivered by hand, which has no
+    listing row at all."""
+    return (parse_label_statement_of_assets(label)
+            or statement_of_assets_body_meta(full_text))
 
 
-def psn_portfolio_external_id(meta: dict) -> str:
-    """The 16-char PSN-aligned portfolio id named by either kind of
-    statement-of-assets metadata — the listing label's or the document's
-    own. One assembly, one length guard, whichever road read the parts."""
+def psn_portfolio_external_id(meta: dict, portfolio_no: str | None = None
+                              ) -> str:
+    """The 16-char PSN-aligned id of the portfolio `meta` names, from
+    either kind of statement-of-assets metadata: the listing label's or
+    the document's own. `portfolio_no` names another portfolio of the
+    same relationship instead.
+
+    The id is the 4-digit branch, the 8-digit base and the 4-digit
+    portfolio number, all zero-padded. The statement strips the branch's
+    leading zero (`BBB-AAAAAAAA-NN`), and the padding restores it, so the
+    id joins to PSN's `portfolios.portfolio_external_id` directly. Gold
+    joins on it, and an id of the wrong length would silently
+    double-count every position, so a length drift raises here with the
+    printed parts in the message.
+    """
     branch, base = meta["account_number_prefix"].split("-", 1)
-    return _assemble_psn_portfolio(branch, base, meta["portfolio_number"],
-                                   meta["account_number_prefix"])
+    portfolio_no = portfolio_no or meta["portfolio_number"]
+    psn_portfolio = f"{branch.zfill(4)}{base.zfill(8)}{portfolio_no.zfill(4)}"
+    if len(psn_portfolio) != 16:
+        raise ValueError(
+            f"portfolio_external_id length != 16: {psn_portfolio!r} "
+            f"(from acct_no={meta['account_number_prefix']!r}, "
+            f"portfolio_no={portfolio_no!r})"
+        )
+    return psn_portfolio
 
 
 def _to_unix(d: date) -> int:
@@ -178,6 +198,13 @@ def _to_unix(d: date) -> int:
 
 # `Valued in EUR` (rendered as `ValuedinEUR` or `Valued in EUR` etc.)
 _BASE_CCY_RE = re.compile(r"Valued in (?P<ccy>[A-Z]{3})\b")
+
+
+def _base_currency(full_text: str) -> str | None:
+    """The currency a Statement of assets is valued in."""
+    m = _BASE_CCY_RE.search(full_text)
+    return m["ccy"] if m else None
+
 
 # Cash position rows in the "Liquidity - Accounts" section:
 #   "CHF 1 234.56 UBS Personal Account CHF 9 876.54 1 234 11.11"
@@ -201,41 +228,47 @@ _VALOR_ISIN_RE = re.compile(
     r"^\s*Valor\s+(?P<valor>\S+)\s+-\s+ISIN\s+(?P<isin>[A-Z0-9]{12})\s*$"
 )
 
+# The outer columns every holding headline prints: the units, the
+# description and the currency on the left, the % NA at the right end.
+# The headline patterns below differ only in the figures between them.
+_HEADLINE_LEFT = (r"^\s*(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
+                  r"(?P<ccy>[A-Z]{3})\s+")
+_HEADLINE_RIGHT = r"\s+(?P<pct_na>-?\d+\.\d{2})\s*$"
+
 # Securities-position headline:
 #   "100 Reg.shs Example Equity AG (XMPL) EUR 100.000000 120.5 10.00% 12 050 1.25"
 #
 # UBS prints a one-letter price qualifier after the market price on
 # some rows — e.g. a structured product's estimated/indicative
 # price renders as "120.00 B 20.00%" (synthetic example). The optional
-# `[A-Za-z]` flag group swallows it so those rows still parse; without
-# it the whole headline failed to match and the position dropped
-# silently (the same instrument parses fine in periods where UBS omits
-# the flag).
+# `[A-Za-z]` flag group swallows it; without it the whole headline
+# would fail to match and the position would drop silently.
 _SECURITY_HEADLINE_RE = re.compile(
-    r"^\s*(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
-    r"(?P<ccy>[A-Z]{3})\s+(?P<cost_price>[\d\s']+\.\d+)\s+"
+    _HEADLINE_LEFT
+    + r"(?P<cost_price>[\d\s']+\.\d+)\s+"
     r"(?P<market_price>[\d\s']+\.?\d*)\s+(?:[A-Za-z]\s+)?"
     r"(?P<gain_pct>-?\d+\.\d+%)\s+"
-    r"(?P<market_value>-?[\d\s']+)\s+(?P<pct_na>-?\d+\.\d{2})\s*$"
+    r"(?P<market_value>-?[\d\s']+)"
+    + _HEADLINE_RIGHT
 )
 
-# Private-markets / alternatives headline. Same outer column anchors
-# as _SECURITY_HEADLINE_RE, but the middle pricing block differs:
-# UBS-sponsored Private Markets funds and SPV interests print a single
-# figure (or the literal "n.a.") where listed securities print the
-# cost-price / market-price / market-gain triple. That figure is the
-# market price, the fund's NAV per unit: units × price is the market
-# value. Synthetic examples of the two forms:
+# Private-markets / alternatives headline. UBS-sponsored Private Markets
+# funds and SPV interests print a single figure (or the literal "n.a.")
+# where listed securities print the cost-price / market-price /
+# market-gain triple. That figure is the market price, the fund's NAV
+# per unit: units × price is the market value. Synthetic examples of the
+# two forms:
 #   "1 000 Example PE Fund   USD  1.0500  1 050  5.00"
 #   "2 000 Example PE Fund   USD  n.a.    0      0.00"
 # The first form is the funded "Outstanding Shares" holding (real
 # NAV in market_value); the "n.a." form is a Net/Unfunded Commitment
-# tracking row with a 0 market value. Tried only as a fallback after
-# _SECURITY_HEADLINE_RE so listed-security parsing is unchanged.
+# tracking row with a 0 market value. Tried only after
+# _SECURITY_HEADLINE_RE, so a line both read is a listed security.
 _PM_HEADLINE_RE = re.compile(
-    r"^\s*(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
-    r"(?P<ccy>[A-Z]{3})\s+(?P<price>n\.a\.|[\d\s']+\.\d+)\s+"
-    r"(?P<market_value>-?[\d\s']+)\s+(?P<pct_na>-?\d+\.\d{2})\s*$"
+    _HEADLINE_LEFT
+    + r"(?P<price>n\.a\.|[\d\s']+\.\d+)\s+"
+    r"(?P<market_value>-?[\d\s']+)"
+    + _HEADLINE_RIGHT
 )
 
 # The two patterns above find where one figure ends and the next begins
@@ -264,9 +297,9 @@ _PM_HEADLINE_RE = re.compile(
 # A headline is read only when exactly one reading agrees.
 _HEADLINE_TOKEN = r"(?:-?\d[\d']*(?:\.\d+)?%?|[A-Za-z])"
 _HEADLINE_FIGURES_RE = re.compile(
-    r"^\s*(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
-    rf"(?P<ccy>[A-Z]{{3}})\s+(?P<figures>{_HEADLINE_TOKEN}(?:\s+{_HEADLINE_TOKEN})*)\s+"
-    r"(?P<pct_na>-?\d+\.\d{2})\s*$"
+    _HEADLINE_LEFT
+    + rf"(?P<figures>{_HEADLINE_TOKEN}(?:\s+{_HEADLINE_TOKEN})*)"
+    + _HEADLINE_RIGHT
 )
 # One printed figure: digit groups, an optional fraction. No leading zero
 # on the first group, so '1 000' cannot also read as '1' then '000'.
@@ -350,14 +383,24 @@ _OVERVIEW_PRECIOUS_METALS_RE = re.compile(
 )
 
 
+def _page_text(page) -> str:
+    """One page's text, laid out as every text-walking parser here reads
+    it."""
+    return page.extract_text(x_tolerance=2) or ""
+
+
+def _pdf_text(pdf_path: Path, max_pages: int | None = None) -> str:
+    """The text of a PDF's first `max_pages` pages, or of all of them,
+    one page after another."""
+    with pdfplumber.open(pdf_path) as pdf:
+        return "\n".join(_page_text(p) for p in pdf.pages[:max_pages])
+
+
 def statement_of_assets_text(pdf_path: Path) -> str:
     """The text a Statement-of-assets walk reads, laid out as the walker
     expects it. Separate from the walk so a caller that only needs to know
     WHICH document this is can ask without parsing its positions."""
-    with pdfplumber.open(pdf_path) as pdf:
-        return "\n".join(
-            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages
-        )
+    return _pdf_text(pdf_path)
 
 
 def parse_statement_of_assets(pdf_path: Path, doc_token: str, label: str
@@ -375,7 +418,7 @@ def parse_statement_of_assets_pages(pdf, doc_token: str, label: str
     """`parse_statement_of_assets` on an open pdfplumber document, so tests
     can feed a synthetic one. The positions are read from the page text,
     the transaction list from the word positions of its own pages."""
-    texts = [p.extract_text(x_tolerance=2) or "" for p in pdf.pages]
+    texts = [_page_text(p) for p in pdf.pages]
     full_text = "\n".join(texts)
     positions = parse_statement_of_assets_text(full_text, doc_token, label)
     list_pages = [(text, page.extract_words(x_tolerance=2))
@@ -387,30 +430,14 @@ def parse_statement_of_assets_pages(pdf, doc_token: str, label: str
 
 def parse_statement_of_assets_text(full_text: str, doc_token: str,
                                    label: str) -> list[dict]:
-    """Pure-text variant of parse_statement_of_assets — same row
-    shape, but takes already-extracted PDF text so the regex /
-    line-walk layer can be exercised without a real PDF on disk."""
-    # The listing row first, so every document the archive served is read
-    # exactly as it always was; the document's own header only answers for
-    # one delivered by hand, which has no listing row at all.
-    label_meta = (parse_label_statement_of_assets(label)
-                  or statement_of_assets_body_meta(full_text))
+    """The positions half of `parse_statement_of_assets`, on text already
+    extracted, so the regex / line-walk layer can be exercised without a
+    real PDF on disk."""
+    label_meta = _statement_of_assets_meta(full_text, label)
     if label_meta is None:
         return []
-
-    # PSN-style portfolio identifier: 16 chars = 4-digit branch +
-    # 8-digit base + 4-digit portfolio number, all zero-padded.
-    # UBS strips the branch's leading zero in the PDF label
-    # (`BBB-AAAAAAAA-NN` instead of `BBBB-AAAAAAAA-NN`); the
-    # zfill(4) below restores it so the value joins to PSN's
-    # `portfolios.portfolio_external_id` directly.
-    branch, base = label_meta["account_number_prefix"].split("-", 1)
     psn_portfolio = psn_portfolio_external_id(label_meta)
-
-    base_ccy = None
-    m = _BASE_CCY_RE.search(full_text)
-    if m:
-        base_ccy = m["ccy"]
+    base_ccy = _base_currency(full_text)
 
     # --- Slice the detailed-positions section ---
     in_detail = False
@@ -456,54 +483,27 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
             pending_cash = None
 
     # --- Securities positions: anchor on the Valor/ISIN line, look
-    # back up to 10 lines for the headline. The headline is either a
-    # listed-security row (_SECURITY_HEADLINE_RE) or a private-markets
-    # row (_PM_HEADLINE_RE); the listed form is tried first. We keep the
-    # CLOSEST match above the ISIN line, of either kind, and never look
-    # past the previous holding's own Valor/ISIN line: a holding whose
-    # headline does not match is left out rather than given the headline
-    # of the one above it. Only a block neither pattern reads is offered
-    # to `_fallback_headline`, so the fallback never displaces a headline
-    # either pattern reads. ---
+    # back up to 10 lines for the headline, but never past the previous
+    # holding's own Valor/ISIN line: a holding whose headline does not
+    # match is left out rather than given the headline of the one above
+    # it (see `_closest_headline`). ---
     block_start = 0
     for i, line in enumerate(section):
         vi = _VALOR_ISIN_RE.match(line)
         if not vi:
             continue
         isin = vi["isin"]
-        headline = None
-        headline_at = None
-        headline_is_pm = False
-        sector = None
         look_from = max(block_start, i - 10)
-        for j in range(look_from, i):
-            prev = section[j]
-            hm = _SECURITY_HEADLINE_RE.match(prev)
-            if hm:
-                headline = {**hm.groupdict(), "text": hm.group()}
-                headline_at = j
-                headline_is_pm = False
-            else:
-                pm = _PM_HEADLINE_RE.match(prev)
-                if pm:
-                    headline = {**pm.groupdict(), "text": pm.group()}
-                    headline_at = j
-                    headline_is_pm = True
-            if headline is not None and not headline_is_pm and j > 0:
-                sector = _sector_line(prev) or sector
         block_start = i + 1
-        if headline is None:
-            for j in range(i - 1, look_from - 1, -1):
-                headline = _fallback_headline(section[j])
-                if headline is not None:
-                    headline_at = j
-                    headline_is_pm = "price" in headline
-                    break
-            if headline is None:
-                continue
-            if not headline_is_pm:
-                for j in range(max(headline_at, 1), i):
-                    sector = _sector_line(section[j]) or sector
+        found = _closest_headline(section, look_from, i)
+        if found is None:
+            continue
+        headline_at, headline = found
+        headline_is_pm = "price" in headline
+        sector = None
+        if not headline_is_pm:
+            for j in range(max(headline_at, 1), i):
+                sector = _sector_line(section[j]) or sector
         market_value = _to_float(headline["market_value"])
         # Skip Net/Unfunded Commitment tracking rows: they print an
         # 'n.a.' price and a 0 market value. The funded "Outstanding
@@ -558,7 +558,7 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
     # and leaves the canonical ISIN null. ---
     if base_ccy == "USD":
         results.extend(_overview_precious_metals(
-            full_text, label_meta, branch, base, base_ccy, doc_token))
+            full_text, label_meta, base_ccy, doc_token))
 
     return results
 
@@ -605,6 +605,30 @@ def _sector_line(line: str) -> str | None:
     if stripped and not any(ch.isdigit() for ch in stripped.split()[-1]) \
             and len(stripped) < 50:
         return stripped
+    return None
+
+
+def _closest_headline(section: list[str], start: int,
+                      end: int) -> tuple[int, dict] | None:
+    """The headline of the holding whose Valor/ISIN line is `section[end]`,
+    as (line index, headline), searching `section[start:end]`; None when no
+    line there reads as one.
+
+    The closest line either strict pattern reads wins, a listed-security
+    row (`_SECURITY_HEADLINE_RE`) before a private-markets one
+    (`_PM_HEADLINE_RE`). Only a block neither reads is offered to
+    `_fallback_headline`, so the fallback never displaces a headline a
+    strict pattern reads. A private-markets headline has a `price` key.
+    """
+    for j in range(end - 1, start - 1, -1):
+        m = (_SECURITY_HEADLINE_RE.match(section[j])
+             or _PM_HEADLINE_RE.match(section[j]))
+        if m:
+            return j, {**m.groupdict(), "text": m.group()}
+    for j in range(end - 1, start - 1, -1):
+        headline = _fallback_headline(section[j])
+        if headline is not None:
+            return j, headline
     return None
 
 
@@ -805,26 +829,8 @@ def _dmy_to_iso(dmy: str) -> str | None:
     return d.isoformat() if d else None
 
 
-def _assemble_psn_portfolio(branch: str, base: str, portfolio_no: str,
-                            acct_no_prefix: str) -> str:
-    """Build the 16-char PSN-aligned portfolio_external_id and
-    loud-fail on length drift. The downstream gold layer joins on
-    this column; a wrong length silently double-counts every
-    position, so it's caught at parse time with the source row in the
-    exception context."""
-    psn_portfolio = f"{branch.zfill(4)}{base.zfill(8)}{portfolio_no.zfill(4)}"
-    if len(psn_portfolio) != 16:
-        raise ValueError(
-            f"portfolio_external_id length != 16: {psn_portfolio!r} "
-            f"(from acct_no={acct_no_prefix!r}, "
-            f"portfolio_no={portfolio_no!r})"
-        )
-    return psn_portfolio
-
-
 def _overview_precious_metals(full_text: str, label_meta: dict,
-                              branch: str, base: str, base_ccy: str,
-                              doc_token: str) -> list[dict]:
+                              base_ccy: str, doc_token: str) -> list[dict]:
     """Emit one synthetic precious-metals position per portfolio whose
     overview block carries a 'Precious metals & commodities' total.
     Attribution uses the most recent 'Portfolio NN' header. Deduped
@@ -841,8 +847,7 @@ def _overview_precious_metals(full_text: str, label_meta: dict,
         pmm = _OVERVIEW_PRECIOUS_METALS_RE.match(line)
         if not pmm or current_no is None:
             continue
-        port16 = _assemble_psn_portfolio(
-            branch, base, current_no, label_meta["account_number_prefix"])
+        port16 = psn_portfolio_external_id(label_meta, current_no)
         if port16 in seen:
             continue
         seen.add(port16)
@@ -906,13 +911,9 @@ def _overview_precious_metals(full_text: str, label_meta: dict,
 # and the cash account. Their rows vary with the description's length,
 # so they are told apart by their shape rather than by row.
 #
-# Every figure is stored as printed, signs included. Prices and charges
-# are in the trade's currency; the transaction value and the cost value
-# are in the statement's reporting currency; the settlement amount is in
-# the currency it prints. The cost price of a sale is the average cost of
-# the holding sold, and its exchange rate the average buy rate. The
-# percentages are as printed: the realized P/L compares the transaction
-# value with the cost value.
+# Every figure is stored as printed, signs included. What each column
+# means, and which currency it is in, is in migration 0014's header and
+# DESIGN.md §3.10.
 
 _TL_HEADER_TEXT = "Trade date Booking text"
 # The list's period opens a line of the page header, which may share it
@@ -1146,16 +1147,14 @@ def parse_transaction_list(list_pages: list[tuple[str, list[dict]]],
     the metadata every row shares. The row's `seq` is its place in the
     list, which keys it within its document.
     """
-    meta = (parse_label_statement_of_assets(label)
-            or statement_of_assets_body_meta(full_text))
+    meta = _statement_of_assets_meta(full_text, label)
     if meta is None or not list_pages:
         return []
-    m = _BASE_CCY_RE.search(full_text)
     shared = {
         "source_doc_token": doc_token,
         "as_of_date": meta["as_of_date"],
         "portfolio_external_id": psn_portfolio_external_id(meta),
-        "reporting_currency_iso": m["ccy"] if m else None,
+        "reporting_currency_iso": _base_currency(full_text),
         "period_start": None,
         "period_end": None,
     }
@@ -1332,15 +1331,10 @@ _CURRENT_DEBT_RE = re.compile(
 )
 
 
-def parse_maturity_notice(pdf_path: Path, doc_token: str,
-                          label: str) -> list[dict]:
+def parse_maturity_notice(pdf_path: Path, doc_token: str) -> list[dict]:
     """Walk a 'Maturity notice' PDF and emit ONE row capturing the
     mortgage's outstanding principal at the notice's `As at` date."""
-    with pdfplumber.open(pdf_path) as pdf:
-        text = "\n".join(
-            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:2]
-        )
-    return parse_maturity_notice_text(text, doc_token)
+    return parse_maturity_notice_text(_pdf_text(pdf_path, 2), doc_token)
 
 
 def parse_maturity_notice_text(text: str, doc_token: str) -> list[dict]:
@@ -1672,8 +1666,8 @@ def _stmt_security(cont_lines: list[str]) -> tuple[str | None, str | None]:
     number that matches no instrument and so resolves to nothing.
 
     The spaced form is tried across every line before the glued one, so
-    an ordinary line parses exactly as it did before the glued form
-    existed.
+    the glued form reads only a movement no line of which closes with a
+    spaced valor.
     """
     lines = [c.strip() for c in cont_lines if not _STMT_REFERENCE_RE.match(c.strip())]
     for pattern in (_STMT_VALOR_RE, _STMT_GLUED_VALOR_RE):
@@ -1767,8 +1761,7 @@ def _stmt_split_multi(cont_lines: list[str],
 
 
 def parse_account_statement_combined(
-        pdf_path: Path, doc_token: str, label: str
-        ) -> tuple[list[dict], list[dict]]:
+        pdf_path: Path, doc_token: str) -> tuple[list[dict], list[dict]]:
     """Open an Account-Statement PDF once and run both passes over it:
     the movement-ledger pass (one dict per booking row) and the
     balance-summary pass (opening/closing balance + period bounds). The
@@ -1804,7 +1797,7 @@ def parse_account_statement_transactions_pages(
     head_texts: list[str] = []
 
     for page in pdf.pages:
-        text = page.extract_text(x_tolerance=2) or ""
+        text = _page_text(page)
         if return_head_text and len(head_texts) < 2:
             head_texts.append(text)
         if iban is None:
@@ -1968,7 +1961,7 @@ def parse_account_statement_transactions_pages(
         # is not emitted: every consumer downstream sees plain single
         # transactions, and the total survives as the sum of the legs.
         # A movement that is not a bundle, or one whose split could not
-        # be proved, is emitted whole exactly as before.
+        # be proved, is emitted whole, as printed.
         total = mv["amount_debit"] if mv["amount_debit"] is not None else mv["amount_credit"]
         legs = _stmt_split_multi(mv["_cont"], total)
         if legs is None:
@@ -2089,9 +2082,10 @@ _ADVICE_TRX_LINE_RE = re.compile(r"^TRX-No\.\s+(?P<rest>\S.*?)\s*$")
 _ADVICE_TRX_GROUP_RE = re.compile(r"^[A-Z0-9]+$")
 _ADVICE_TRX_JOINED_RE = re.compile(r"^[A-Z0-9]{12,24}$")
 
+# "<D> <Month> <YYYY>", with the month's casing left open (`_MONTHS`).
 _ADVICE_BOOKED_RE = re.compile(
     r"^Bookkeeping entry date\s+"
-    r"(?P<d>\d{1,2})\s+(?P<mon>[A-Za-z]+)\s+(?P<y>\d{4})\s*$"
+    r"(?P<day>\d{1,2})\s+(?P<month>[A-Za-z]+)\s+(?P<year>\d{4})\s*$"
 )
 _ADVICE_VALUE_DATE_RE = re.compile(
     r"^Val\.\s+(?P<d>\d{2})\.(?P<m>\d{2})\.(?P<y>\d{4})\s*$"
@@ -2105,18 +2099,6 @@ _ADVICE_DETAILS_LABEL = "Details of payment"
 # Amount" is that table's column header; the other two are the first
 # rows of the table itself, in case a document omits the header.
 _ADVICE_DETAILS_END = ("Currency", "Total amount", "Val.")
-
-# The advices are issued in English throughout the archive and print
-# the booking date as "<D> <Month> <YYYY>". Spelled out here rather
-# than handed to strptime("%d %B %Y"), whose month names come from
-# the process locale: the loader runs in a container whose locale is
-# whatever the base image happens to set, and a date that parses on
-# one machine and not another would silently drop rows.
-_ADVICE_MONTHS = {
-    "january": 1, "february": 2, "march": 3, "april": 4,
-    "may": 5, "june": 6, "july": 7, "august": 8,
-    "september": 9, "october": 10, "november": 11, "december": 12,
-}
 
 
 def _advice_trx_no(rest: str) -> str | None:
@@ -2159,15 +2141,10 @@ def _advice_is_internal_transfer(details: list[str]) -> bool:
     return any(m in blob for m in _STMT_INTERNAL_MARKERS)
 
 
-def parse_payment_advice(pdf_path: Path, doc_token: str,
-                         label: str) -> list[dict]:
+def parse_payment_advice(pdf_path: Path, doc_token: str) -> list[dict]:
     """Walk a Credit/Debit Advice PDF and emit at most ONE movement
     row for the account the advice is addressed to."""
-    with pdfplumber.open(pdf_path) as pdf:
-        text = "\n".join(
-            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:2]
-        )
-    return parse_payment_advice_text(text, doc_token)
+    return parse_payment_advice_text(_pdf_text(pdf_path, 2), doc_token)
 
 
 def parse_payment_advice_text(text: str, doc_token: str) -> list[dict]:
@@ -2224,9 +2201,7 @@ def parse_payment_advice_text(text: str, doc_token: str) -> list[dict]:
         if booked is None:
             m = _ADVICE_BOOKED_RE.match(ln)
             if m:
-                month = _ADVICE_MONTHS.get(m["mon"].lower())
-                if month:
-                    booked = date(int(m["y"]), month, int(m["d"]))
+                booked = _long_date(m)
                 continue
         if amount is None:
             m = _ADVICE_TOTAL_RE.match(ln)
@@ -2363,10 +2338,7 @@ def parse_payment_advice_text(text: str, doc_token: str) -> list[dict]:
 # rate reads "USD / CHF at 0.90000". The subscription that settles
 # against it prints "Minus your prepayment" and debits the difference.
 
-_PRODUCED_ON_RE = re.compile(
-    r"^Produced on\s+(?P<day>\d{1,2})\s+(?P<month>[A-Z][a-z]+)\s+(?P<year>\d{4})\s*$",
-    re.M)
-_LONG_DATE = r"(?P<day>\d{1,2})\s+(?P<month>[A-Z][a-z]+)\s+(?P<year>\d{4})"
+_PRODUCED_ON_RE = re.compile(rf"^Produced on\s+{_LONG_DATE}\s*$", re.M)
 
 _CALL_TITLE_RE = re.compile(r"^Capital Call\s*$", re.M)
 # Usually a line of its own; a notice may instead set it at the end of
@@ -2417,12 +2389,9 @@ _NOTE_FX_RES = (
 
 
 def _long_date_to_unix(m: re.Match) -> int | None:
-    """'15 March 2030' (the match's day/month/year groups) → Unix seconds
-    UTC midnight; None for a month name this table does not know."""
-    month = _MONTH_NAMES.get(m["month"])
-    if month is None:
-        return None
-    return _to_unix(date(int(m["year"]), month, int(m["day"])))
+    """`_long_date` as Unix seconds UTC midnight."""
+    d = _long_date(m)
+    return _to_unix(d) if d else None
 
 
 def _advice_row(kind: str, doc_token: str) -> dict:
@@ -2439,19 +2408,14 @@ def _advice_row(kind: str, doc_token: str) -> dict:
     }
 
 
-def parse_capital_call(pdf_path: Path, doc_token: str,
-                       label: str) -> list[dict]:
+def parse_capital_call(pdf_path: Path, doc_token: str) -> list[dict]:
     """Read a capital call from a Private Market Letter. Returns [] for a
     letter that is not one, which is told from the cover page alone so a
     long quarterly report is not read in full."""
     with pdfplumber.open(pdf_path) as pdf:
-        if not pdf.pages:
+        if not pdf.pages or not _CALL_TITLE_RE.search(_page_text(pdf.pages[0])):
             return []
-        cover = pdf.pages[0].extract_text(x_tolerance=2) or ""
-        if not _CALL_TITLE_RE.search(cover):
-            return []
-        text = "\n".join(
-            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:4])
+        text = "\n".join(_page_text(p) for p in pdf.pages[:4])
     return parse_capital_call_text(text, doc_token)
 
 
@@ -2499,13 +2463,9 @@ def parse_capital_call_text(text: str, doc_token: str) -> list[dict]:
     return [row]
 
 
-def parse_contract_note(pdf_path: Path, doc_token: str,
-                        label: str) -> list[dict]:
+def parse_contract_note(pdf_path: Path, doc_token: str) -> list[dict]:
     """Read the purchase a contract note confirms."""
-    with pdfplumber.open(pdf_path) as pdf:
-        text = "\n".join(
-            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:2])
-    return parse_contract_note_text(text, doc_token)
+    return parse_contract_note_text(_pdf_text(pdf_path, 2), doc_token)
 
 
 def parse_contract_note_text(text: str, doc_token: str) -> list[dict]:

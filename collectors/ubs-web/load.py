@@ -1720,24 +1720,24 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
             return (token, "statement_of_assets", path.name,
                     {"positions": positions, "trades": trades}, None)
         if doc_type == "Maturity notice":
-            rows = parse_maturity_notice(path, token, label)
+            rows = parse_maturity_notice(path, token)
             return token, "mortgage", path.name, rows, None
         # Before the Account-Statement fallthrough below, which would
         # otherwise take every doc_type the SELECT admits.
         if (doc_type or "").strip().lower() in ADVICE_DOC_TYPES:
-            rows = parse_payment_advice(path, token, label)
+            rows = parse_payment_advice(path, token)
             return token, "payment_advice", path.name, rows, None
         if doc_type == CONTRACT_NOTE_DOC_TYPE:
-            rows = parse_contract_note(path, token, label)
+            rows = parse_contract_note(path, token)
             return token, "securities_advice", path.name, rows, None
         if doc_type == PRIVATE_MARKET_LETTER_DOC_TYPE:
-            rows = parse_capital_call(path, token, label)
+            rows = parse_capital_call(path, token)
             return token, "securities_advice", path.name, rows, None
         # Account Statement: a single PDF open yields BOTH the summary
         # balances (for historical_cash_balances) and the per-transaction
         # movement rows (for the transactions backfill), reusing one
         # page layout across both CPU-bound passes.
-        cash, txns = parse_account_statement_combined(path, token, label)
+        cash, txns = parse_account_statement_combined(path, token)
         return (token, "account_statement", path.name,
                 {"cash": cash, "transactions": txns}, None)
     except Exception as e:  # noqa: BLE001
@@ -1752,9 +1752,8 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     Maturity notice, a payment advice or a securities advice; parse it
     in a worker-pool of subprocesses, and upsert into the historical_* /
     transactions / advices / statement_trades tables on the main thread.
-    Returns
-    (position_rows, cash_rows, mortgage_rows, transaction_rows) — the
-    payment-advice rows are transactions and are counted with the
+    Returns (position_rows, cash_rows, mortgage_rows, transaction_rows) —
+    the payment-advice rows are transactions and are counted with the
     statement ones; the securities advices and the statements'
     transaction lists are logged.
 
@@ -1768,11 +1767,10 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     result so it is parsed once, by the first dump that references it;
     later dumps replay the cached rows. A skipped (missing-file) or
     errored parse is deliberately left uncached and re-attempted per
-    dump, matching the un-cached baseline. The per-dump inserts below
-    still run for every dump, so the silver tables stay byte-identical to
-    parsing every dump afresh — including the by-design per-dump
-    duplication of NULL-ISIN cash rows and the last-dump snapshot_at
-    stamping on statement-derived transaction upserts."""
+    dump. The per-dump inserts below still run for every dump, so the
+    silver tables stay byte-identical to parsing every dump afresh —
+    including the last-dump snapshot_at stamping on statement-derived
+    transaction upserts."""
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
         return 0, 0, 0, 0
@@ -1836,10 +1834,10 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
                 # res = (token, kind, name, rows, err). Cache only a
                 # successful parse (err None, rows present); leave a skip
                 # (missing file) or an error uncached so a later dump
-                # re-attempts it, exactly as the un-cached baseline would.
-                # This keeps a transient in-worker failure (e.g. OOM under
-                # memory pressure) from being cached and permanently
-                # dropping a document's rows for the rest of the run.
+                # re-attempts it. This keeps a transient in-worker failure
+                # (e.g. OOM under memory pressure) from being cached and
+                # permanently dropping a document's rows for the rest of
+                # the run.
                 if res[3] is not None and res[4] is None:
                     parse_cache[futures[fut]] = res
                 results.append(res)
@@ -1859,12 +1857,14 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
         if kind == "statement_of_assets":
             pos_rows += _insert_hist_positions(
                 conn, (rows or {}).get("positions") or [])
-            trade_rows += _insert_statement_trades(
-                conn, (rows or {}).get("trades") or [])
+            trade_rows += _upsert_rows(
+                conn, "statement_trades", _STATEMENT_TRADE_COLUMNS,
+                (rows or {}).get("trades") or [])
         elif kind == "mortgage":
             mortgage_rows += _insert_hist_mortgages(conn, rows or [])
         elif kind == "securities_advice":
-            securities_advice_rows += _insert_advices(conn, rows or [])
+            securities_advice_rows += _upsert_rows(
+                conn, "advices", _ADVICE_COLUMNS, rows or [])
         elif kind == "payment_advice":
             # Collected, not written here: an advice is only worth writing
             # where nothing else recorded the movement, and the statement
@@ -1940,6 +1940,24 @@ _HIST_POSITION_COLUMNS = (
 )
 
 
+def _upsert(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
+            row: dict) -> None:
+    """INSERT OR REPLACE the `columns` of one parsed row into `table`."""
+    conn.execute(
+        f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) "
+        f"VALUES ({', '.join('?' for _ in columns)})",
+        tuple(row[col] for col in columns),
+    )
+
+
+def _upsert_rows(conn: sqlite3.Connection, table: str,
+                 columns: tuple[str, ...], rows: list[dict]) -> int:
+    """`_upsert` every row; return how many."""
+    for r in rows:
+        _upsert(conn, table, columns, r)
+    return len(rows)
+
+
 def _insert_hist_positions(conn: sqlite3.Connection,
                            rows: list[dict]) -> int:
     n = 0
@@ -1947,19 +1965,16 @@ def _insert_hist_positions(conn: sqlite3.Connection,
         try:
             if r["instrument_isin"] is None:
                 _replace_hist_cash_row(conn, r)
-            conn.execute(
-                "INSERT OR REPLACE INTO historical_position_snapshots ("
-                f"{', '.join(_HIST_POSITION_COLUMNS)}"
-                f") VALUES ({', '.join('?' for _ in _HIST_POSITION_COLUMNS)})",
-                tuple(r[col] for col in _HIST_POSITION_COLUMNS),
-            )
+            _upsert(conn, "historical_position_snapshots",
+                    _HIST_POSITION_COLUMNS, r)
             n += 1
         except sqlite3.IntegrityError as e:
             log.debug("hist position insert failed: %s", e)
     return n
 
 
-# The columns `pdf_parsers` fills on every `advices` row.
+# The columns `pdf_parsers` fills on every `advices` row: one capital call
+# or contract note per document.
 _ADVICE_COLUMNS = (
     "source_doc_token", "kind", "title", "doc_date", "trade_date",
     "value_date", "instrument_isin", "valor", "security_name",
@@ -1969,18 +1984,9 @@ _ADVICE_COLUMNS = (
 )
 
 
-def _insert_advices(conn: sqlite3.Connection, rows: list[dict]) -> int:
-    """Upsert capital calls and contract notes, one row per document."""
-    for r in rows:
-        conn.execute(
-            f"INSERT OR REPLACE INTO advices ({', '.join(_ADVICE_COLUMNS)}) "
-            f"VALUES ({', '.join('?' for _ in _ADVICE_COLUMNS)})",
-            tuple(r[col] for col in _ADVICE_COLUMNS),
-        )
-    return len(rows)
-
-
-# The columns `pdf_parsers` fills on every `statement_trades` row.
+# The columns `pdf_parsers` fills on every `statement_trades` row: one
+# booking a statement's transaction list prints, keyed by the statement
+# and the booking's place in its list.
 _STATEMENT_TRADE_COLUMNS = (
     "source_doc_token", "seq", "as_of_date", "portfolio_external_id",
     "reporting_currency_iso", "period_start", "period_end", "trade_date",
@@ -1997,18 +2003,12 @@ _STATEMENT_TRADE_COLUMNS = (
 )
 
 
-def _insert_statement_trades(conn: sqlite3.Connection,
-                             rows: list[dict]) -> int:
-    """Upsert the bookings a statement's transaction list prints, keyed by
-    the statement and the booking's place in its list."""
-    for r in rows:
-        conn.execute(
-            "INSERT OR REPLACE INTO statement_trades "
-            f"({', '.join(_STATEMENT_TRADE_COLUMNS)}) "
-            f"VALUES ({', '.join('?' for _ in _STATEMENT_TRADE_COLUMNS)})",
-            tuple(r[col] for col in _STATEMENT_TRADE_COLUMNS),
-        )
-    return len(rows)
+# The columns `pdf_parsers` fills on every `historical_cash_balances` row.
+_HIST_CASH_BALANCE_COLUMNS = (
+    "period_end", "account_external_id", "currency_iso", "period_start",
+    "opening_balance", "closing_balance", "total_debits", "total_credits",
+    "source_doc_token", "payload",
+)
 
 
 def _insert_hist_cash_balances(conn: sqlite3.Connection,
@@ -2016,20 +2016,8 @@ def _insert_hist_cash_balances(conn: sqlite3.Connection,
     n = 0
     for r in rows:
         try:
-            conn.execute(
-                "INSERT OR REPLACE INTO historical_cash_balances ("
-                "period_end, account_external_id, currency_iso, "
-                "period_start, opening_balance, closing_balance, "
-                "total_debits, total_credits, source_doc_token, payload"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    r["period_end"], r["account_external_id"],
-                    r["currency_iso"], r["period_start"],
-                    r["opening_balance"], r["closing_balance"],
-                    r["total_debits"], r["total_credits"],
-                    r["source_doc_token"], r["payload"],
-                ),
-            )
+            _upsert(conn, "historical_cash_balances",
+                    _HIST_CASH_BALANCE_COLUMNS, r)
             n += 1
         except sqlite3.IntegrityError as e:
             log.debug("hist cash insert failed: %s", e)
@@ -2339,25 +2327,20 @@ def _advice_already_recorded(conn: sqlite3.Connection, account: str,
     return None
 
 
+# The columns `pdf_parsers` fills on every `historical_mortgages` row.
+_HIST_MORTGAGE_COLUMNS = (
+    "as_of_date", "account_external_id", "currency_iso",
+    "outstanding_balance", "product_name", "rate_type",
+    "collateral_description", "source_doc_token", "payload",
+)
+
+
 def _insert_hist_mortgages(conn: sqlite3.Connection,
                            rows: list[dict]) -> int:
     n = 0
     for r in rows:
         try:
-            conn.execute(
-                "INSERT OR REPLACE INTO historical_mortgages ("
-                "as_of_date, account_external_id, currency_iso, "
-                "outstanding_balance, product_name, rate_type, "
-                "collateral_description, source_doc_token, payload"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    r["as_of_date"], r["account_external_id"],
-                    r["currency_iso"], r["outstanding_balance"],
-                    r["product_name"], r["rate_type"],
-                    r["collateral_description"], r["source_doc_token"],
-                    r["payload"],
-                ),
-            )
+            _upsert(conn, "historical_mortgages", _HIST_MORTGAGE_COLUMNS, r)
             n += 1
         except sqlite3.IntegrityError as e:
             log.debug("hist mortgage insert failed: %s", e)

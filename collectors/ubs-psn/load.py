@@ -19,7 +19,7 @@ per-order-type loaders; re-delivered batch content converges instead of
 duplicating, because every table either upserts on its natural key or
 dedups on payload.
 
-Currently loaded:
+Loaded:
   - SDCL / SDCA / SDSA / SDPO / SDFI from ZMD.zip
   - TDFXR / TDFWD / TDOPT / TDMM / TDOTC from ZME.zip (empty <Data>
     sections are skipped)
@@ -36,11 +36,10 @@ migration 0005 from the SWIFT text silver already stores (see
 backfill_cost_fields).
 
 ZAY.zip (MT950) is intentionally not loaded — see migration 0001's
-header. ZMH (MT536) and other MT types are added when real samples
-exist to develop against.
+header. ZMH (MT536) and the other MT types are not loaded.
 
-Account identifiers are canonicalised at load time (since migration
-0002): cash side uses IBAN everywhere (MT940 :25: is translated via
+Account identifiers are canonicalised at load time (migration 0002):
+cash side uses IBAN everywhere (MT940 :25: is translated via
 cash_accounts.payload.AcctId), safekeeping side uses the MT535
 :97A::SAFE// / UBS AcctId form everywhere (load_sdsa picks AcctId
 rather than the dashed ExtAcctId).
@@ -1352,10 +1351,12 @@ def backfill_cost_fields(conn: sqlite3.Connection) -> tuple[int, int]:
     reads no bronze and a filled row equals a freshly loaded one.
 
     The pass selects only rows that still need it: a holding whose
-    payload states a cost but whose cost columns are all NULL, and a
-    confirmation whose payload has no `charges_amount` key. Once every
-    such row is filled it finds nothing, so running it on every load
-    costs a scan of each table.
+    payload names a cost field but whose cost columns are all NULL, and a
+    confirmation whose payload has no `charges_amount` key. A filled
+    confirmation always gains the key. A holding whose cost field the
+    parse cannot read, such as an AVER quoted as a percent with no BOOK,
+    stays NULL and is selected again on the next run, to the same
+    result. Running the pass on every load costs a scan of each table.
     """
     holdings = [
         (*_holding_cost(json.loads(payload)["fields"]), rowid)

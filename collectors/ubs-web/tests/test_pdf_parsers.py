@@ -859,12 +859,7 @@ class TestStatementOfAssetsRunTogetherHeadlines:
     and identifier is synthetic."""
 
     LABEL = TestStatementOfAssetsSecurities.LABEL
-
-    def _rows(self, *block: str) -> dict:
-        text = "\n".join(["Valued in USD", "Detailed positions", *block,
-                          "Additional information Abbreviations"])
-        rows = parse_statement_of_assets_text(text, "<doc-token>", self.LABEL)
-        return {r["instrument_isin"]: r for r in rows}
+    _rows = TestStatementOfAssetsHoldingDetail._rows
 
     def test_an_integer_cost_price_is_split_by_the_market_gain(self):
         # '1 200 1 150' reads as 1 200 then 1 150 only: 1 150 / 1 200 - 1
@@ -1019,7 +1014,7 @@ _TL_PAGE_TEXT = ("From 01.01.2030 to 31.03.2030 Statement of assets as of 31 Mar
                  "Valued in USD\n"
                  "Trade date Booking text Number/Amount Description\n")
 
-# A purchase in a currency other than the reporting one, with three
+# A purchase in a currency other than the reporting one, with two
 # charges; the settlement is the gross amount plus them.
 _TL_PURCHASE = {
     0: {"A": "02.01.2030", "text": "Purchase", "B": "1 000",

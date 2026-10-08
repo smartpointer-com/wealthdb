@@ -1375,20 +1375,29 @@ def test_the_supplied_directory_is_not_a_bronze_dump(tmp_path):
 # Statement holdings' cost side, and the securities advices
 # ============================================================
 
-def test_0013_moves_a_private_market_price_and_keeps_a_cash_rate(tmp_path):
-    """Rows loaded before migration 0013 carry the private-markets NAV
-    per unit in the exchange-rate column. The migration moves it to
-    `market_price`, where the parser writes it, and leaves a cash line's
-    rate where it was, under the column's new name."""
-    before = tmp_path / "migrations-0012"
+def _db_before(tmp_path: Path, version: int) -> sqlite3.Connection:
+    """A silver DB with every migration numbered below `version` applied,
+    and none from `version` on: the schema a DB loaded before that
+    migration has."""
+    before = tmp_path / f"migrations-before-{version:04d}"
     before.mkdir()
     for f in MIGRATIONS_DIR.glob("*.sql"):
-        if int(f.name[:4]) <= 12:
+        if int(f.name[:4]) < version:
             (before / f.name).write_text(f.read_text(encoding="utf-8"),
                                          encoding="utf-8")
     conn = sqlite3.connect(str(tmp_path / "ubs-web.db"))
     conn.row_factory = sqlite3.Row
     silver.apply_migrations(conn, before)
+    assert silver.current_schema_version(conn) == version - 1
+    return conn
+
+
+def test_0013_moves_a_private_market_price_and_keeps_a_cash_rate(tmp_path):
+    """Rows loaded before migration 0013 carry the private-markets NAV
+    per unit in the exchange-rate column. The migration moves it to
+    `market_price`, where the parser writes it, and leaves a cash line's
+    rate where it was, under the column's new name."""
+    conn = _db_before(tmp_path, 13)
     insert = (
         "INSERT INTO historical_position_snapshots (as_of_date, "
         "portfolio_external_id, account_external_id, instrument_isin, "
@@ -1439,15 +1448,7 @@ def test_a_holdings_cost_side_reaches_silver(tmp_path):
 def test_0015_adds_the_nav_date_and_changes_no_row(tmp_path):
     """Rows loaded before migration 0015 keep every value. The payload
     holds no NAV date, so the column stays NULL until the re-parse."""
-    before = tmp_path / "migrations-0014"
-    before.mkdir()
-    for f in MIGRATIONS_DIR.glob("*.sql"):
-        if int(f.name[:4]) <= 14:
-            (before / f.name).write_text(f.read_text(encoding="utf-8"),
-                                         encoding="utf-8")
-    conn = sqlite3.connect(str(tmp_path / "ubs-web.db"))
-    conn.row_factory = sqlite3.Row
-    silver.apply_migrations(conn, before)
+    conn = _db_before(tmp_path, 15)
     row = {k: v for k, v in _hist_row(isin="XX0000000033", ccy="USD").items()
            if k != "nav_date"}
     row.update(market_price=1.25, last_purchase_date=1894665600,
@@ -1507,7 +1508,8 @@ def test_the_walk_writes_securities_advices_and_re_derives_them(tmp_path):
 
 def test_the_purge_takes_the_securities_advices(tmp_path):
     conn = _fresh_db(tmp_path)
-    loader._insert_advices(conn, [_securities_advice("call", 12345.67)])
+    loader._upsert_rows(conn, "advices", loader._ADVICE_COLUMNS,
+                        [_securities_advice("call", 12345.67)])
 
     loader._purge_stale_document_rows(conn)
 
@@ -1562,7 +1564,9 @@ def test_the_walk_writes_statement_trades_and_re_derives_them(tmp_path):
 
 def test_the_purge_takes_the_statement_trades(tmp_path):
     conn = _fresh_db(tmp_path)
-    loader._insert_statement_trades(conn, [_statement_trade(1, 100.0)])
+    loader._upsert_rows(conn, "statement_trades",
+                        loader._STATEMENT_TRADE_COLUMNS,
+                        [_statement_trade(1, 100.0)])
 
     loader._purge_stale_document_rows(conn)
 
