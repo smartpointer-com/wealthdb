@@ -125,8 +125,9 @@ see §6):
   date would claim the oldest shares were acquired more recently than they
   were. A convertible that states none contributes its issue date: a
   SAFE or note is not re-issued on a split or transfer the way a share
-  certificate is, so its issue date is the day it was bought. Other lots that state none contribute nothing, and a position
-  whose lots all state none carries no date.
+  certificate is, so its issue date is the day it was bought. Other lots
+  that state none contribute nothing, and a position whose lots all state
+  none carries no date.
 - The per-lot detail (label, `security_type`, quantity, cost, market_value,
   issue date, acquisition date, strike) rides in the position payload under
   `lots`.

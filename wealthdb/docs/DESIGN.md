@@ -762,7 +762,7 @@ Example config file:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. `~` and `$HOME` expanded. |
-| `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb holdings positions` (and future net-worth commands) when `--currency` is omitted. Overridable per invocation. When it is a reporting currency (USD, CHF, EUR or GBP), the web dashboards open in it too. |
+| `default_currency` | string | ISO 4217. The output currency of every command that values money, and of the MCP server, when `-x`/`--currency` is not given. When it is a reporting currency (USD, CHF, EUR or GBP, §10.8), the web dashboards open in it too. |
 | `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. `~` / `$HOME` / `${VAR}` expanded; a missing file is a no-op. See §13.10. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
@@ -2336,10 +2336,10 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   `report_transactions_multi(p_from, p_to)`, and the five `report_*_history_multi()`
   emit one value set per currency — `{positions_value,cash_balance,total_value}_{usd,chf,eur,gbp}`
   plus the base trio. Each `_<ccy>` column equals `report_x(MAX, '<ccy>')` for
-  that currency by construction (same base, identical 5-leg COALESCE). They are
-  Metabase-only, so they emit **DECIMAL** money directly (no CLI VARCHAR-trim
-  round-trip); the `web/provision.py` wrapper then only casts epoch columns to
-  TIMESTAMP.
+  that currency by construction (same base, same conversion order; see the
+  helper below). They are Metabase-only, so they emit **DECIMAL** money
+  directly (no CLI VARCHAR-trim round-trip); the `web/provision.py` wrapper
+  then only casts epoch columns to TIMESTAMP.
 - **One conversion helper** (migration 0114). Every `_multi` macro converts
   through the same three objects:
   - `fx_reporting_legs`: each currency's rate to each reporting currency;
@@ -2354,6 +2354,7 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   lives in the two views, the scalar macro and each macro's column list.
   Adding a currency is a new migration that re-issues them, plus the returns
   materializer's list and `web/provision.py`'s `REPORTING_CURRENCIES`.
+  `web/test_provision.py` checks that the three agree.
 - **`account_kind` on the transaction macros.** `report_transactions` and
   `report_transactions_multi` carry the owning account's `account_kind`
   (migration 0039), so a consumer can fence a kind out of a chart — the web's
