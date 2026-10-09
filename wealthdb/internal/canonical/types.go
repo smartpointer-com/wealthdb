@@ -105,16 +105,22 @@ type PositionChange struct {
 	PositionKey          string
 	InstrumentExternalID *string
 	// AssetClass (exposure) + Vehicle (wrapper): the 2-D taxonomy.
-	AssetClass  AssetClass
-	Vehicle     Vehicle
-	Currency    string
-	Quantity    *Decimal
+	AssetClass AssetClass
+	Vehicle    Vehicle
+	Currency   string
+	Quantity   *Decimal
+	// MarketValue is the holding's full value in Currency: accrued
+	// interest and a dividend declared but not yet paid are in it.
+	// AccruedInterest says how much of it they are.
 	MarketValue *Decimal
 	// BookValue is the holding's cost basis in Currency, nil where the
 	// source states none. Basis stamps it: set both with SetBookValue
 	// (basis.go), and never one without the other.
-	BookValue       *Decimal
-	Basis           Basis
+	BookValue *Decimal
+	Basis     Basis
+	// AccruedInterest is the part of MarketValue that has accrued
+	// (interest since the last coupon, a declared dividend not yet
+	// paid), nil where the source states none.
 	AccruedInterest *Decimal
 	// AcquisitionDate is a calendar date (no time component). Stored
 	// as DATE in DuckDB. Use time.Time at UTC midnight. It is the

@@ -283,8 +283,20 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			Currency:             positionCcy,
 			Quantity:             silver.DecimalPtrFromNullFloat(units),
 			MarketValue:          silver.DecimalPtrFromNullFloat(mv),
-			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
 			Payload:              posPayload,
+		}
+		// The statement prints a holding's accrued interest on line 2,
+		// apart from its market value and in the same currency. Gold's
+		// market value includes it (docs/DESIGN.md §7.1); the printed
+		// value stays in the payload. A row that names no market-value
+		// currency names none for the accrued figure either.
+		if a := silver.DecimalPtrFromNullFloat(accrued); a != nil && mvCcy != "" {
+			pos.AccruedInterest = a
+			if !a.IsZero() && pos.MarketValue != nil {
+				pos.Payload = silver.PayloadWith(string(pos.Payload), map[string]any{
+					"printed_market_value": pos.MarketValue.String()})
+				pos.MarketValue = silver.WithAccrued(pos.MarketValue, a)
+			}
 		}
 		pos.SetBookValue(bookValue, basis)
 		batch.Positions = append(batch.Positions, pos)

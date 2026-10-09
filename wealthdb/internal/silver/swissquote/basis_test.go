@@ -144,3 +144,43 @@ func TestBookValueOnSilverWithoutCostColumns(t *testing.T) {
 		t.Errorf("market_value = %v, want 1500", p.MarketValue)
 	}
 }
+
+// A statement prints a bond's accrued interest beside its clean value.
+// A CHF bond's market value includes it and states how much it is; a
+// bond in another currency keeps its clean value, the CHF figure staying
+// in the payload. A row without the figure states none.
+func TestAStatementBondCarriesItsAccruedInterest(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 7, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES (1000, '1000001', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, symbol, currency, payload,
+                              source, average_cost, price_quote, accrued_interest_chf) VALUES
+            (1000, '1000001', 'Placeholder Bond CHF', 'CHF',
+             '{"asset_class":"Bonds","currency":"CHF","quantity":10000,"market_price":101,"valuation_chf":10100,"accrued_interest_chf":25}',
+             'pp:doc-1', 100, 'percent', 25),
+            (1000, '1000001', 'Placeholder Note EUR', 'EUR',
+             '{"asset_class":"Bonds","currency":"EUR","quantity":10000,"market_price":101,"valuation_chf":9500,"accrued_interest_chf":20}',
+             'pp:doc-1', 100, 'percent', 20),
+            (1000, '1000001', 'Placeholder Bond Two', 'CHF',
+             '{"asset_class":"Bonds","currency":"CHF","quantity":10000,"market_price":99,"valuation_chf":9900}',
+             'pp:doc-1', 100, 'percent', NULL);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	got := positionsByKey(t, path)
+	for key, want := range map[string]struct{ mv, accrued string }{
+		"Placeholder Bond CHF@CHF": {"10125", "25"},
+		"Placeholder Note EUR@EUR": {"10100", ""},
+		"Placeholder Bond Two@CHF": {"9900", ""},
+	} {
+		p := got[key]
+		accrued := ""
+		if p.AccruedInterest != nil {
+			accrued = p.AccruedInterest.String()
+		}
+		if p.MarketValue == nil || p.MarketValue.String() != want.mv || accrued != want.accrued {
+			t.Errorf("%s: market value %v, accrued %q; want %s, %q", key, p.MarketValue, accrued, want.mv, want.accrued)
+		}
+	}
+}

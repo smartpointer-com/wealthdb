@@ -106,7 +106,9 @@ Position columns pass through:
   (`other`, `other`). The raw values are kept as
   `payload.source_asset_class` and `payload.source_vehicle`.
 - `quantity`, `market_value`, `book_value` and `accrued_interest` are
-  optional decimals. An unparseable one is absent.
+  optional decimals. An unparseable one is absent. A bond's
+  `market_value` includes its accrued interest, and
+  `accrued_interest` says how much it is (DESIGN.md §7.1).
 - A `book_value` follows one convention, which every writer of the
   kind keeps. The adapter stamps it by the pair (DESIGN.md §7.4):
   - a holding: its average cost, with no purchase fee:

@@ -129,3 +129,16 @@ func TestLotHelpers(t *testing.T) {
 		t.Error("TaxYearOf")
 	}
 }
+
+func TestWithAccrued(t *testing.T) {
+	clean, accrued := canonical.NewDecimalFromInt(1000), canonical.NewDecimalFromFloat(12.5)
+	if v := WithAccrued(&clean, &accrued); v == nil || v.String() != "1012.5" || clean.String() != "1000" {
+		t.Errorf("WithAccrued = %v (clean %v)", v, clean)
+	}
+	if v := WithAccrued(&clean, nil); v != &clean {
+		t.Error("no accrued figure changed the value")
+	}
+	if WithAccrued(nil, &accrued) != nil {
+		t.Error("a nil value gained one")
+	}
+}

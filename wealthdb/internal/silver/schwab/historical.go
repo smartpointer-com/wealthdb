@@ -87,9 +87,12 @@ func (r *webReader) snapshotsHistorical(
 // instrument dimension whenever an api position references the
 // same instrument.
 //
-// quantity, market_value and accrued_interest are forwarded. The book
-// value is the printed cost_basis; where a holding prints none but
-// states its market value and unrealized gain, it is their difference.
+// quantity and accrued_interest are forwarded. The statement prints a
+// holding's accrued interest or declared dividend apart from its market
+// value; gold's market value includes it (docs/DESIGN.md §7.1), and the
+// printed value stays in the payload. The book value is the printed
+// cost_basis; where a holding prints none but states its market value
+// and unrealized gain, it is their difference, both as printed.
 // A holding's open lots (`open_lots`) follow it into the same batch,
 // and the earliest lot's acquired date is the holding's. A lot whose
 // holding row is missing has no position to ride beside: it is
@@ -160,6 +163,7 @@ SELECT as_of_date, account_external_id, instrument_key,
 			LastSeenAt:           asOf,
 		})
 
+		printed := silver.DecimalPtrFromNullFloat(marketValue)
 		pos := canonical.PositionChange{
 			SnapshotAt:           asOf,
 			AccountExternalID:    hash,
@@ -169,15 +173,20 @@ SELECT as_of_date, account_external_id, instrument_key,
 			Vehicle:              vehicle,
 			Currency:             "USD",
 			Quantity:             silver.DecimalPtrFromNullFloat(quantity),
-			MarketValue:          silver.DecimalPtrFromNullFloat(marketValue),
+			MarketValue:          printed,
 			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
 			Payload:              json.RawMessage(payload),
+		}
+		if pos.AccruedInterest != nil && printed != nil {
+			pos.MarketValue = silver.WithAccrued(printed, pos.AccruedInterest)
+			pos.Payload = silver.PayloadWith(payload, map[string]any{
+				"printed_market_value": printed.String()})
 		}
 		if costBasis.Valid {
 			pos.SetBookValue(silver.DecimalPtrFromNullFloat(costBasis), statementBasis)
 		} else {
 			short := quantity.Valid && quantity.Float64 < 0
-			pos.SetBookValue(basisFromOpenPL(pos.MarketValue, unrealized, short), derivedBasis)
+			pos.SetBookValue(basisFromOpenPL(printed, unrealized, short), derivedBasis)
 		}
 		changes := make([]canonical.PositionLotChange, len(held))
 		for i, l := range held {

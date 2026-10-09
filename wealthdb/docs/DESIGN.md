@@ -1344,6 +1344,15 @@ applied migration, always add a new file.
   quantities (bonds in fractional units, FX in 4–6 decimals), and
   `DECIMAL(20, 10)` for FX rates. DuckDB's `DECIMAL` is exact; never
   use `DOUBLE` for money.
+- **Market value and accrued income**: a position's `market_value`
+  is its full value, accrued income included: interest accrued since
+  the last coupon, and a dividend declared but not yet paid.
+  `accrued_interest` is how much of `market_value` that income is, and
+  NULL where the source does not state it, never 0 for unknown. The
+  clean value is `market_value − accrued_interest`. An adapter whose
+  source prints the two apart adds them, and keeps the printed value in
+  the payload. A source that states only a clean value (the live
+  feeds) has a clean `market_value` and a NULL `accrued_interest`.
 - **Currency codes**: `TEXT`, ISO 4217 three-letter codes (`CHF`,
   `USD`, `XAU`, ...). Stored in the original case (uppercase).
 - **JSON**: DuckDB's native `JSON` type for `payload` columns.
@@ -1615,12 +1624,12 @@ CREATE TABLE positions (
     vehicle                 TEXT,                    -- wrapper, mirrored from instruments; writer-required
     currency                TEXT    NOT NULL,        -- position's natural currency (ISO 4217)
     quantity                DECIMAL(28, 8),          -- units / nominal / face value
-    market_value            DECIMAL(28, 4),          -- in `currency`
+    market_value            DECIMAL(28, 4),          -- in `currency`, accrued income included (§7.1)
     book_value              DECIMAL(28, 4),          -- cost basis in `currency`; NULL when source doesn't provide
     basis_origin            TEXT,                    -- the stamp on book_value (§7.4); NULL with it
     basis_method            TEXT,
     basis_fees              TEXT,
-    accrued_interest        DECIMAL(28, 4),          -- bonds; NULL otherwise
+    accrued_interest        DECIMAL(28, 4),          -- the accrued part of market_value; NULL when not stated
     acquisition_date        DATE,                    -- earliest acquisition; NULL when unknown
     payload                 JSON,                    -- raw silver row(s) that produced this fact
     PRIMARY KEY (silver_source_id, snapshot_at, account_external_id, position_key),

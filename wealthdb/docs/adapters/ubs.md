@@ -827,9 +827,9 @@ that PSN already uses for forward contracts. Either way every gold
 | `instrument_isin` | `positions.instrument_external_id`, `instruments.isin` |
 | `currency_iso` | `instruments.currency` |
 | `units` | `positions.quantity` |
-| `market_value` | `positions.market_value` (in `market_value_currency`, typically portfolio base) |
+| `market_value` | `positions.market_value` (in `market_value_currency`, typically portfolio base), plus `accrued_interest` (DESIGN.md §7.1); the printed value stays in the payload as `printed_market_value` |
 | `cost_basis` | `positions.book_value` (§12). Without it, or without `market_value_currency`, the book value is NULL and the cost figures travel in the payload |
-| `accrued_interest` | `positions.accrued_interest` |
+| `accrued_interest` | `positions.accrued_interest`, where `market_value_currency` is set; a printed 0 adds nothing |
 | `description` | `instruments.name` |
 | `sector` | (kept in payload only) |
 

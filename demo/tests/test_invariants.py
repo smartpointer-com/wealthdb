@@ -98,6 +98,8 @@ class TestLedger(Built):
                 self.assertLessEqual(first_day, min(by_day), f"{key}: a transaction before the first snapshot")
 
     def test_every_position_is_quantity_times_price(self):
+        """A position's value is its quantity at the day's price, plus a
+        bond's accrued interest, which gold's market value includes."""
         cat = self.inputs.instruments
         wanted = collections.defaultdict(list)
         for _, p in self.all("positions"):
@@ -112,7 +114,8 @@ class TestLedger(Built):
             for p in wanted.get(day, []):
                 inst = cat[p["instrument_id"]]
                 value = unit_price(inst, market.price(p["instrument_id"])) * Decimal(p["quantity"])
-                self.assertEqual(value.quantize(Decimal("0.0001")), Decimal(p["market_value"]),
+                value = value.quantize(Decimal("0.0001")) + Decimal(p["accrued_interest"] or 0)
+                self.assertEqual(value, Decimal(p["market_value"]),
                                  f'{p["account_id"]} {p["instrument_id"]} on {day}')
                 checked += 1
         self.assertGreater(checked, 10000)

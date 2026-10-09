@@ -333,3 +333,15 @@ func TaxYearOf(dates ...*time.Time) int {
 	}
 	return 0
 }
+
+// WithAccrued is a market value printed clean with the accrued income a
+// source prints apart from it added: gold's market value includes it
+// (docs/DESIGN.md §7.1). A nil value stays nil; a value with no accrued
+// figure is returned as is.
+func WithAccrued(clean, accrued *canonical.Decimal) *canonical.Decimal {
+	if clean == nil || accrued == nil {
+		return clean
+	}
+	v := clean.Add(*accrued)
+	return &v
+}

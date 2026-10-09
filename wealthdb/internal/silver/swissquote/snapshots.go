@@ -156,9 +156,10 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 //
 // market_value resolution: prefer total_value; fall back to
 // valuation_chf when the row's currency is CHF; else compute
-// quantity × market_price at the row's price quote. A statement's
-// valuation_chf includes a bond's accrued interest, so a CHF bond's
-// market value read from it carries that interest.
+// quantity × market_price at the row's price quote. Each of the three
+// is a clean value: a statement prints a bond's accrued interest on a
+// line of its own (silver `accrued_interest_chf`), and the live export
+// states none.
 type positionPayload struct {
 	AssetClass   string             `json:"asset_class"`
 	Currency     string             `json:"currency"`
@@ -225,7 +226,7 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 	// optional maps each column a later migration added to itself, or
 	// to NULL on a silver that lacks it.
 	optional := map[string]string{}
-	for _, col := range []string{"name", "isin", "average_cost", "price_quote"} {
+	for _, col := range []string{"name", "isin", "average_cost", "price_quote", "accrued_interest_chf"} {
 		has, err := silver.HasColumn(ctx, c.db, "positions", col)
 		if err != nil {
 			return err
@@ -242,10 +243,11 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 
 	q := fmt.Sprintf(`
 SELECT snapshot_at, account_external_id, symbol, currency, payload,
-       COALESCE(%s, ''), COALESCE(%s, ''), %s, COALESCE(%s, '')
+       COALESCE(%s, ''), COALESCE(%s, ''), %s, COALESCE(%s, ''), %s
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?`,
-		optional["name"], optional["isin"], optional["average_cost"], optional["price_quote"])
+		optional["name"], optional["isin"], optional["average_cost"], optional["price_quote"],
+		optional["accrued_interest_chf"])
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendPositions: %w", err)
@@ -257,9 +259,9 @@ SELECT snapshot_at, account_external_id, symbol, currency, payload,
 			extID, symbol, currency string
 			payload                 string
 			name, isin, quote       string
-			averageCost             sql.NullFloat64
+			averageCost, accrued    sql.NullFloat64
 		)
-		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload, &name, &isin, &averageCost, &quote); err != nil {
+		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload, &name, &isin, &averageCost, &quote, &accrued); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -310,6 +312,14 @@ SELECT snapshot_at, account_external_id, symbol, currency, payload,
 			Quantity:             p.Quantity,
 			MarketValue:          p.effectiveMarketValue(quote),
 			Payload:              json.RawMessage(payload),
+		}
+		// A statement bond's accrued interest is printed in CHF beside its
+		// clean value; gold's market value includes it (docs/DESIGN.md
+		// §7.1). Only a CHF bond can add it: another currency would need
+		// a rate the statement does not state, so there it stays in the
+		// payload.
+		if a := silver.DecimalPtrFromNullFloat(accrued); a != nil && currency == "CHF" && pos.MarketValue != nil {
+			pos.MarketValue, pos.AccruedInterest = silver.WithAccrued(pos.MarketValue, a), a
 		}
 		pos.SetBookValue(bookValue(p.Quantity, silver.DecimalPtrFromNullFloat(averageCost), quote), averageCostBasis)
 		batch.Positions = append(batch.Positions, pos)

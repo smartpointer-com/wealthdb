@@ -195,6 +195,11 @@ and realized, are in §8.
   `(public_equity, stock)`. Per-column upsert lets a
   later api emission win on the underlying instrument row's
   dimension when the same key reappears source-classified.
+  A statement prints a holding's accrued interest or declared
+  dividend apart from its market value. Gold's `market_value`
+  includes it and `accrued_interest` says how much it is (DESIGN.md
+  §7.1); the printed value stays in the payload as
+  `printed_market_value`. The api positions state none.
 - **Historical cash balances.** `historical_cash_balances`
   carries opening + closing balances per statement period.
   Opening lands at `period_start`, closing at `period_end`; rows

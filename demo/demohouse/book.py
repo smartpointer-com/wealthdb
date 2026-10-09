@@ -208,8 +208,10 @@ class Book:
             inst = self.instruments[h.instrument]
             coupon = inst.get("coupon")
             # A bond's accrued interest runs from its last coupon date.
+            # Gold's market value includes it (wealthdb/docs/DESIGN.md
+            # §7.1); accrued_interest says how much of it it is.
             accrued = q4(mul(h.qty, D(coupon["rate"]), accrual_fraction(coupon, day))) if coupon else None
-            value = q4(self.holding_value(h))
+            value = q4(self.holding_value(h)) + (accrued or ZERO)
             rows["positions"].append({
                 "snapshot_at": at,
                 "account_id": acct.id,

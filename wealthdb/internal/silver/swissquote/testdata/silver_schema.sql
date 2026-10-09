@@ -41,6 +41,8 @@ CREATE TABLE positions (
     price_quote              TEXT CHECK (price_quote IN ('unit', 'percent')),
     market_value_chf         REAL,
     unrealized_gain_loss_chf REAL,
+    -- swissquote v7: a statement bond's accrued interest, CHF.
+    accrued_interest_chf     REAL,
     PRIMARY KEY (snapshot_at, account_external_id, symbol, currency)
 );
 

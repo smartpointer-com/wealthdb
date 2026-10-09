@@ -161,6 +161,14 @@ The same price quote applies to the market value. Where a row states
 no value in its own currency, the adapter computes
 `quantity × market_price`, divided by 100 for a percent quote.
 
+Every value Swissquote prints is clean. A statement prints a bond's
+accrued interest on its own line, in CHF (silver
+`accrued_interest_chf`). A CHF bond's market value includes it and
+`accrued_interest` says how much it is (DESIGN.md §7.1). A bond in
+another currency keeps its clean value: adding a CHF figure would need
+a rate the statement does not state, so it stays in the payload. The
+live export states no accrued interest.
+
 A live row also states its market value and its P&L in CHF
 (`market_value_chf`, `unrealized_gain_loss_chf`). Their difference is
 the cost in CHF at the rates of the purchases. Gold's book value is

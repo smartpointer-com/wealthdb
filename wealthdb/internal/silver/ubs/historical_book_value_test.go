@@ -156,3 +156,49 @@ func TestAStatementSilverWithoutCostValueStatesNone(t *testing.T) {
 		t.Errorf("no cost price: book value %v, payload %s; want NULL and untouched", none.BookValue, none.Payload)
 	}
 }
+
+// A statement prints a holding's accrued interest beside its market
+// value, in the market value's currency. Gold's market value includes
+// it, the printed value stays in the payload, and a printed zero changes
+// nothing. A row naming no market-value currency names none for the
+// accrued figure either.
+func TestStatementHoldingsIncludeTheirAccruedInterest(t *testing.T) {
+	ctx := context.Background()
+	web := newWebFixture(t)
+	if _, err := web.db.ExecContext(ctx, `
+        INSERT INTO historical_position_snapshots
+            (as_of_date, portfolio_external_id, account_external_id,
+             instrument_isin, currency_iso, units, market_value,
+             market_value_currency, accrued_interest, source_doc_token, payload)
+        VALUES
+            (1000, '0999AAAAAAAA02', '', 'XS0000000011', 'USD', 10000, 9000, 'CHF', 40, 'tok', '{"kind":"bond"}'),
+            (1000, '0999AAAAAAAA02', '', 'CH0000000012', 'CHF', 10, 1200, 'CHF', 0, 'tok', '{"kind":"equity"}'),
+            (1000, '0999AAAAAAAA02', '', 'XS0000000013', 'USD', 10000, 9000, '', 40, 'tok', '{"kind":"bond"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	got := historicalPositions(t, web)
+	str := func(d *canonical.Decimal) string {
+		if d == nil {
+			return "<nil>"
+		}
+		return d.String()
+	}
+	for isin, want := range map[string][2]string{
+		"XS0000000011": {"9040", "40"},
+		"CH0000000012": {"1200", "0"},
+		"XS0000000013": {"9000", "<nil>"},
+	} {
+		p := got[isin]
+		if str(p.MarketValue) != want[0] || str(p.AccruedInterest) != want[1] {
+			t.Errorf("%s: market value %s, accrued %s; want %s, %s",
+				isin, str(p.MarketValue), str(p.AccruedInterest), want[0], want[1])
+		}
+	}
+	var payload struct {
+		Printed string `json:"printed_market_value"`
+	}
+	if err := json.Unmarshal(got["XS0000000011"].Payload, &payload); err != nil || payload.Printed != "9000" {
+		t.Errorf("payload %s, want printed_market_value 9000", got["XS0000000011"].Payload)
+	}
+}

@@ -258,3 +258,55 @@ func TestStatementHoldingsBasisAndOpenLots(t *testing.T) {
 		}
 	}
 }
+
+// A statement prints a holding's accrued interest or declared dividend
+// beside its market value. Gold's market value includes it and says how
+// much it is; the printed value stays in the payload, and the book value
+// derived from the printed figures uses the printed value. Every figure
+// is invented.
+func TestStatementHoldingsIncludeTheirAccruedIncome(t *testing.T) {
+	f := newMergedFixture(t)
+	asOf := utcDay("2023-12-31")
+	if _, err := f.web.Exec(`
+        INSERT INTO historical_position_snapshots
+            (as_of_date, account_external_id, instrument_key, quantity, market_value, cost_basis,
+             unrealized_gain_loss, accrued_interest, source_sha256, payload) VALUES
+            (?1, '5678', 'XMPLBOND', 1000, 1000, NULL, 50, 12.5, 'sha-stmt', '{"section":"Fixed Income"}'),
+            (?1, '5678', 'VTI',        10, 1500, 1000, 500, NULL, 'sha-stmt', '{"section":"Exchange Traded Funds"}');
+    `, asOf); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := f.open(t).Snapshots(context.Background(), everything)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]canonical.PositionChange{}
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range b.Positions {
+			if p.SnapshotAt == asOf {
+				got[p.PositionKey] = p
+			}
+		}
+		if !more {
+			break
+		}
+	}
+	bond := got["XMPLBOND"]
+	if decStr(bond.MarketValue) != "1012.5" || decStr(bond.AccruedInterest) != "12.5" || decStr(bond.BookValue) != "950" {
+		t.Errorf("bond: market value %s, accrued %s, book %s; want 1012.5, 12.5, 950",
+			decStr(bond.MarketValue), decStr(bond.AccruedInterest), decStr(bond.BookValue))
+	}
+	var payload struct {
+		Printed string `json:"printed_market_value"`
+	}
+	if err := json.Unmarshal(bond.Payload, &payload); err != nil || payload.Printed != "1000" {
+		t.Errorf("bond payload %s, want printed_market_value 1000", bond.Payload)
+	}
+	if etf := got["VTI"]; decStr(etf.MarketValue) != "1500" || etf.AccruedInterest != nil {
+		t.Errorf("etf: market value %s, accrued %v; want 1500 and none", decStr(etf.MarketValue), etf.AccruedInterest)
+	}
+}
