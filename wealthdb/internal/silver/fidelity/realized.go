@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -21,9 +23,11 @@ import (
 //   - closed_positions: the positions page's closed lots for the tax
 //     year the collector queried.
 //   - statement: a supplied statement's sales, one row per sale with
-//     its settlement date and no acquired or sold date. Its tax year
-//     is the settlement year; the transaction cost and the specific-
-//     share mark stay in the payload.
+//     its settlement date and no acquired or sold date. Neither the row
+//     nor its payload states a trade date or the statement's period, so
+//     its tax year is the settlement year, except at a year end
+//     (redateYearEndSales). The transaction cost and the specific-share
+//     mark stay in the payload.
 //
 // The same sale in two documents is two rows, as in silver. Per
 // account and tax year the best-ranked kind present is primary
@@ -82,6 +86,7 @@ SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
 	defer rows.Close()
 	var (
 		out     []canonical.RealizedLotChange
+		idents  [][]string
 		undated int
 	)
 	for rows.Next() {
@@ -104,37 +109,30 @@ SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
 			AccountExternalID:     acct,
 			Description:           silver.NullStringPtr(name),
 			DocumentKind:          canonical.RealizedDocKind(kind),
-			AcquisitionDate:       isoDate(acquired),
+			AcquisitionDate:       silver.ISODate(acquired),
 			AcquiredVarious:       strings.EqualFold(acquired, "Various"),
-			DisposalDate:          isoDate(disposed),
-			SettlementDate:        isoDate(settled),
+			DisposalDate:          silver.ISODate(disposed),
+			SettlementDate:        silver.ISODate(settled),
 			Currency:              currency,
-			Quantity:              magnitude(qty),
-			Proceeds:              magnitude(proceeds),
-			BookValue:             magnitude(cost),
+			Quantity:              silver.AbsPtr(silver.DecimalPtrOrNil(qty)),
+			Proceeds:              silver.AbsPtr(silver.DecimalPtrOrNil(proceeds)),
 			RealizedGainLoss:      silver.DecimalPtrOrNil(gain),
 			WashSaleDisallowed:    silver.DecimalPtrOrNil(wash),
 			AccruedMarketDiscount: silver.DecimalPtrOrNil(discount),
-			Term:                  lotTerm(term),
+			Term:                  canonical.ParseLotTerm(term),
 			Covered:               boolPtr(covered),
 			Form8949Box:           silver.NullStringPtr(box),
 			SourceDocument:        silver.StrPtrIfNonEmpty(sha),
 		}
-		switch {
-		case taxYear.Valid:
+		if taxYear.Valid {
 			r.TaxYear = int(taxYear.Int64)
-		case r.DisposalDate != nil:
-			r.TaxYear = r.DisposalDate.Year()
-		case r.SettlementDate != nil:
-			r.TaxYear = r.SettlementDate.Year()
-		default:
+		} else if r.TaxYear = silver.TaxYearOf(r.DisposalDate, r.SettlementDate); r.TaxYear == 0 {
 			undated++
 			continue
 		}
-		if r.BookValue != nil {
-			r.Basis = lotBasis
-		}
-		if instr, ok := ids.resolve(key); ok {
+		r.SetBookValue(silver.AbsPtr(silver.DecimalPtrOrNil(cost)), lotBasis)
+		instr, ok := ids.resolve(key)
+		if ok {
 			r.InstrumentExternalID = &instr
 		} else {
 			r.InstrumentHint = key
@@ -156,6 +154,7 @@ SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
 		}
 		r.Payload = silver.PayloadWith(payload, extra)
 		out = append(out, r)
+		idents = append(idents, distinctNonEmpty(instr, key, cusip.String))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -163,8 +162,147 @@ SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
 	if undated > 0 {
 		log.Printf("fidelity adapter: skipped %d realized lot(s) stating no tax year, sale or settlement date", undated)
 	}
+	redateYearEndSales(out, idents)
 	silver.MarkPrimary(out, realizedRank, nil)
 	return out, nil
+}
+
+// settleDays bounds how many days after its trade a sale settles:
+// three business days at the longest, across a weekend and the New
+// Year holiday.
+const settleDays = 7
+
+// tradeDated are the kinds that date a sale by its trade. Both rank
+// above the statement.
+var tradeDated = []canonical.RealizedDocKind{
+	canonical.RealizedForm1099B, canonical.RealizedClosedPositions,
+}
+
+// tradeKey names the rows one document kind states as sold in one
+// account, of one instrument, on one day: the trade date of a
+// trade-dated kind, the settlement date of a statement.
+type tradeKey struct {
+	account, instrument string
+	kind                canonical.RealizedDocKind
+	day                 string // YYYY-MM-DD
+}
+
+// tradeSum is the quantity those rows sum to.
+type tradeSum struct {
+	qty  canonical.Decimal
+	rows int
+}
+
+func (s *tradeSum) add(q canonical.Decimal) { s.qty, s.rows = s.qty.Add(q), s.rows+1 }
+
+// matches reports whether two sums agree within the thousandth each
+// printed figure is rounded to.
+func (s *tradeSum) matches(o *tradeSum) bool {
+	tolerance := canonical.NewDecimalFromFloat(0.001).Mul(canonical.NewDecimalFromInt(int64(s.rows + o.rows)))
+	return !s.qty.Sub(o.qty).Abs().GreaterThan(tolerance)
+}
+
+// redateYearEndSales moves a statement sale settled in a year's first
+// days to the year before when it traded then.
+//
+// A statement dates a sale by its settlement, the 1099-B and the
+// closed-positions page by its trade. A sale traded in late December
+// and settled in January therefore falls in two tax years. Where an
+// account's primary kind is the same in both years, that is harmless.
+// Where it differs, the settlement year counts the sale twice (the
+// form's primaries in December's year, the statements' in January's)
+// or not at all (the other way round).
+//
+// Such a sale is looked up among the trade-dated rows of its account
+// and instrument sold within settleDays up to its settlement. The
+// latest day on which one kind's lots sum to the sale's quantity, or
+// to the quantity of all the statement's sales of the instrument that
+// settle with it, is its trade date and gives its year. Without such a
+// day, a sale that could have traded in December moves there when a
+// trade-dated kind covers its settlement year: that kind lists every
+// sale of its year, and it does not list this one. Both steps rest on
+// that kind being complete for its year and naming the instrument as
+// the statement does, or by a CUSIP that joins the two.
+func redateYearEndSales(lots []canonical.RealizedLotChange, idents [][]string) {
+	type yearKey struct {
+		account string
+		year    int
+	}
+	statement := realizedRank(canonical.RealizedStatement)
+	best := map[yearKey]int{}
+	sums := map[tradeKey]*tradeSum{}
+	for i := range lots {
+		r := &lots[i]
+		rank := realizedRank(r.DocumentKind)
+		if rank < 0 {
+			continue
+		}
+		k := yearKey{r.AccountExternalID, r.TaxYear}
+		if b, seen := best[k]; !seen || rank < b {
+			best[k] = rank
+		}
+		day := r.DisposalDate
+		if r.DocumentKind == canonical.RealizedStatement {
+			day = r.SettlementDate
+		}
+		if day == nil || r.Quantity == nil {
+			continue
+		}
+		for _, id := range idents[i] {
+			tk := tradeKey{r.AccountExternalID, id, r.DocumentKind, day.Format(time.DateOnly)}
+			if sums[tk] == nil {
+				sums[tk] = &tradeSum{}
+			}
+			sums[tk].add(*r.Quantity)
+		}
+	}
+	// tradeYear is the year of the sale's trade date as a trade-dated
+	// row states it, 0 when none does.
+	tradeYear := func(i int) int {
+		r := &lots[i]
+		settled := *r.SettlementDate
+		own := &tradeSum{qty: *r.Quantity, rows: 1}
+		for d := settled; !d.Before(settled.AddDate(0, 0, -settleDays)); d = d.AddDate(0, 0, -1) {
+			for _, id := range idents[i] {
+				together := sums[tradeKey{r.AccountExternalID, id, canonical.RealizedStatement, settled.Format(time.DateOnly)}]
+				for _, kind := range tradeDated {
+					s := sums[tradeKey{r.AccountExternalID, id, kind, d.Format(time.DateOnly)}]
+					if s != nil && (s.matches(own) || s.matches(together)) {
+						return d.Year()
+					}
+				}
+			}
+		}
+		return 0
+	}
+	for i := range lots {
+		r := &lots[i]
+		if r.DocumentKind != canonical.RealizedStatement || r.SettlementDate == nil ||
+			r.DisposalDate != nil || r.TaxYear != r.SettlementDate.Year() ||
+			r.SettlementDate.AddDate(0, 0, -settleDays).Year() == r.TaxYear {
+			continue
+		}
+		if r.Quantity != nil {
+			if y := tradeYear(i); y != 0 {
+				r.TaxYear = y
+				continue
+			}
+		}
+		if b, seen := best[yearKey{r.AccountExternalID, r.TaxYear}]; seen && b < statement {
+			r.TaxYear--
+		}
+	}
+}
+
+// distinctNonEmpty lists the non-empty strings among ss, once each.
+func distinctNonEmpty(ss ...string) []string {
+	var out []string
+	for _, s := range ss {
+		if s != "" && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // realizedIDs resolves a realized lot's instrument_key, a symbol or a
@@ -265,15 +403,6 @@ UNION SELECT instrument_key FROM historical_position_snapshots WHERE instrument_
 		ids.known[k] = struct{}{}
 	}
 	return ids, keys.Err()
-}
-
-// magnitude parses a quantity or an amount gold holds as a magnitude.
-func magnitude(s sql.NullString) *canonical.Decimal {
-	d := silver.DecimalPtrOrNil(s)
-	if d != nil {
-		*d = d.Abs()
-	}
-	return d
 }
 
 // boolPtr reads a 0/1 silver flag, nil where NULL.

@@ -47,11 +47,15 @@
 //
 //   - Open lots. A holding's lots come from the latest fetch of its lot
 //     table at or before the snapshot. They ride a snapshot only while
-//     their quantities and costs still sum to the holding's (lots.go).
+//     their quantities and costs still sum to the holding's. A lot
+//     carried past its fetch states no market value, and its term only
+//     while that cannot have changed (lots.go).
 //
 //   - Realized lots. The 1099-B lots, the closed-positions page and the
 //     statements' sales each state realized lots. Per account and tax
-//     year, the best-ranked of them is primary (realized.go).
+//     year, the best-ranked of them is primary. A statement sale settled
+//     in January after a December trade counts in December's year
+//     (realized.go).
 package fidelity
 
 import (

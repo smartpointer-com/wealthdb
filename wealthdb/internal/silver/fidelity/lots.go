@@ -8,7 +8,6 @@ import (
 	"log"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -27,6 +26,12 @@ import (
 // they still describe the position: their quantities sum to its
 // quantity, and their costs to its cost basis total where both are
 // stated. Otherwise the position has no lots at X.
+//
+// A carried lot keeps what cannot have changed since the fetch: its
+// quantity, cost and acquisition date. Its market value is the fetch
+// day's, so it stays in the payload beside `fetched_at`. Its term is
+// the page's statement (docs/DESIGN.md §7.4) and is kept only while
+// the fetch still vouches for it (agedTerm).
 
 // holding names one position across snapshots.
 type holding struct{ account, instrument string }
@@ -36,11 +41,12 @@ type openLot struct {
 	index      int
 	quantity   *canonical.Decimal
 	costBasis  *canonical.Decimal
-	value      *canonical.Decimal
 	acquired   string
 	term       string
 	currency   string
 	sourceSHA  string
+	payload    string // the cells as printed
+	value      sql.NullString
 	unitCost   sql.NullString
 	unrealized sql.NullString
 	cusip      sql.NullString
@@ -83,7 +89,7 @@ SELECT snapshot_at, account_external_id, instrument_key, lot_index, cusip,
        CAST(unrealized_gain_loss AS VARCHAR),
        CAST(current_value        AS VARCHAR),
        COALESCE(term, ''),
-       currency, source_sha256
+       currency, source_sha256, payload
   FROM open_lots
  ORDER BY account_external_id, instrument_key, snapshot_at, lot_index`)
 	if err != nil {
@@ -92,19 +98,18 @@ SELECT snapshot_at, account_external_id, instrument_key, lot_index, cusip,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			at               int64
-			h                holding
-			l                openLot
-			qty, cost, value sql.NullString
+			at        int64
+			h         holding
+			l         openLot
+			qty, cost sql.NullString
 		)
 		if err := rows.Scan(&at, &h.account, &h.instrument, &l.index, &l.cusip,
-			&qty, &l.unitCost, &cost, &l.acquired, &l.unrealized, &value,
-			&l.term, &l.currency, &l.sourceSHA); err != nil {
+			&qty, &l.unitCost, &cost, &l.acquired, &l.unrealized, &l.value,
+			&l.term, &l.currency, &l.sourceSHA, &l.payload); err != nil {
 			return nil, err
 		}
 		l.quantity = silver.DecimalPtrOrNil(qty)
 		l.costBasis = silver.DecimalPtrOrNil(cost)
-		l.value = silver.DecimalPtrOrNil(value)
 		fs := carry.fetches[h]
 		if n := len(fs); n == 0 || fs[n-1].at != at {
 			fs = append(fs, lotFetch{at: at})
@@ -142,13 +147,12 @@ func (lc *lotCarry) attach(batch *canonical.SnapshotBatch, p *canonical.Position
 		}
 		return
 	}
-	for _, l := range f.lots {
-		lot := l.change(p, f.at)
-		if d := lot.AcquisitionDate; d != nil && (p.AcquisitionDate == nil || d.Before(*p.AcquisitionDate)) {
-			p.AcquisitionDate = d
-		}
-		batch.PositionLots = append(batch.PositionLots, lot)
+	lots := make([]canonical.PositionLotChange, len(f.lots))
+	for i, l := range f.lots {
+		lots[i] = l.change(p, f.at)
 	}
+	p.AcquisitionDate = canonical.EarliestLotDate(lots)
+	batch.PositionLots = append(batch.PositionLots, lots...)
 }
 
 // logSkipped reports the positions left without lots.
@@ -200,7 +204,10 @@ func (f *lotFetch) describes(qty, cost *canonical.Decimal) bool {
 
 // change maps one lot of the fetch at fetchedAt onto position p. Its
 // quantity takes the position's sign. The acquired date is a date only
-// where the table prints one; other text stays in the payload.
+// where the table prints one; other text stays in the payload, laid
+// over the cells silver keeps. A lot carried past its fetch states no
+// market value and only the term it still has; the fetch's value and
+// term stay in the payload.
 func (l openLot) change(p *canonical.PositionChange, fetchedAt int64) canonical.PositionLotChange {
 	qty := *l.quantity
 	if p.Quantity.IsNegative() != qty.IsNegative() {
@@ -210,11 +217,18 @@ func (l openLot) change(p *canonical.PositionChange, fetchedAt int64) canonical.
 	putNumber(extra, "unit_cost", l.unitCost) // a bond's is per 100 of par
 	putNumber(extra, "unrealized_gain_loss", l.unrealized)
 	putText(extra, "cusip", l.cusip)
-	acquired := isoDate(l.acquired)
+	acquired := silver.ISODate(l.acquired)
 	if acquired == nil && l.acquired != "" {
 		extra["acquired_date"] = l.acquired
 	}
-	payload, _ := json.Marshal(extra)
+	value, term := silver.DecimalPtrOrNil(l.value), canonical.ParseLotTerm(l.term)
+	if fetchedAt != p.SnapshotAt {
+		putNumber(extra, "current_value", l.value)
+		if l.term != "" {
+			extra["term"] = l.term
+		}
+		value, term = nil, agedTerm(term, acquired, p.SnapshotAt)
+	}
 	lot := canonical.PositionLotChange{
 		SnapshotAt:           p.SnapshotAt,
 		AccountExternalID:    p.AccountExternalID,
@@ -223,19 +237,32 @@ func (l openLot) change(p *canonical.PositionChange, fetchedAt int64) canonical.
 		InstrumentExternalID: p.InstrumentExternalID,
 		Currency:             l.currency,
 		Quantity:             &qty,
-		BookValue:            l.costBasis,
-		MarketValue:          l.value,
+		MarketValue:          value,
 		AcquisitionDate:      acquired,
-		Term:                 lotTerm(l.term),
+		Term:                 term,
 		// The source document is the lot table's API response, by its
 		// sha256: the positions page serves it, no PDF states it.
 		SourceDocument: silver.StrPtrIfNonEmpty(l.sourceSHA),
-		Payload:        payload,
+		Payload:        silver.PayloadWith(l.payload, extra),
 	}
-	if lot.BookValue != nil {
-		lot.BasisOrigin = lotBasis.Origin
-	}
+	lot.SetBookValue(l.costBasis, lotBasis.Origin)
 	return lot
+}
+
+// agedTerm is the term a lot the page stated as t still has at
+// snapshot at, a time after the fetch. A long lot stays long. A short
+// one stays short only while a year from its acquisition date is still
+// ahead; past that, or with no date to tell, the fetch no longer
+// vouches for a term and none is stated.
+func agedTerm(t canonical.LotTerm, acquired *time.Time, at int64) canonical.LotTerm {
+	switch {
+	case t == canonical.LotTermLong:
+		return t
+	case t == canonical.LotTermShort && acquired != nil &&
+		acquired.AddDate(1, 0, 0).After(time.Unix(at, 0).UTC()):
+		return t
+	}
+	return ""
 }
 
 // putNumber sets a payload key to a numeric silver column, as printed,
@@ -252,22 +279,4 @@ func putText(m map[string]any, key string, v sql.NullString) {
 	if v.Valid && v.String != "" {
 		m[key] = v.String
 	}
-}
-
-// isoDate parses a YYYY-MM-DD date as UTC midnight, or returns nil for
-// anything else: the `Various` or `Unknown` a form prints instead.
-func isoDate(s string) *time.Time {
-	t, err := time.Parse(time.DateOnly, s)
-	if err != nil {
-		return nil
-	}
-	return &t
-}
-
-// lotTerm maps silver's 'SHORT' / 'LONG' to gold's term, "" otherwise.
-func lotTerm(s string) canonical.LotTerm {
-	if t := canonical.LotTerm(strings.ToLower(s)); t.Valid() {
-		return t
-	}
-	return ""
 }

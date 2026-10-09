@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -163,26 +164,32 @@ func TestOpenLotsCarryWhileTheyDescribeThePosition(t *testing.T) {
             (3000, 'ACC1', 'VTI', 'Total Market ETF', 'etf', 12, 3100, 1500, '{}'),
             (4000, 'ACC1', 'QQQ', 'Nasdaq ETF', 'etf', 6, 3000, 2400, '{}'),
             (4000, 'ACC1', 'BND1', 'Treasury Note', 'bond', 5000, 4950, NULL, '{}');
-        INSERT INTO open_lots(snapshot_at, account_external_id, instrument_key, lot_index, cusip, quantity, unit_cost, cost_basis, acquired_date, unrealized_gain_loss, current_value, term, source_sha256) VALUES
-            (1000, 'ACC1', 'VTI', 0, 'SYNCUSIP1', 6, 100, 600, '2020-03-02', 900, 1500, 'LONG', 'sha-a'),
-            (1000, 'ACC1', 'VTI', 1, 'SYNCUSIP1', 4, 99.9975, 399.99, '2024-11-15', 600.01, 1000, 'SHORT', 'sha-a'),
-            (4000, 'ACC1', 'QQQ', 0, 'SYNCUSIP2', 5, 400, 2000, '2023-01-10', 500, 2500, 'LONG', 'sha-b'),
-            (4000, 'ACC1', 'BND1', 0, 'BND1', 5000, 99, 4950, 'Transferred', 0, 4950, NULL, 'sha-c');
+        INSERT INTO open_lots(snapshot_at, account_external_id, instrument_key, lot_index, cusip, quantity, unit_cost, cost_basis, acquired_date, unrealized_gain_loss, current_value, term, source_sha256, payload) VALUES
+            (1000, 'ACC1', 'VTI', 0, 'SYNCUSIP1', 6, 100, 600, '2020-03-02', 900, 1500, 'LONG', 'sha-a', '{"cells":["Mar-02-2020","6.000"],"page":1}'),
+            (1000, 'ACC1', 'VTI', 1, 'SYNCUSIP1', 4, 99.9975, 399.99, '2024-11-15', 600.01, 1000, 'SHORT', 'sha-a', '{"cells":["Nov-15-2024","4.000"],"page":1}'),
+            (4000, 'ACC1', 'VTI', 0, 'SYNCUSIP1', 12, 125, 1500, '2020-03-02', 1600, 3100, 'LONG', 'sha-d', '{}'),
+            (4000, 'ACC1', 'QQQ', 0, 'SYNCUSIP2', 5, 400, 2000, '2023-01-10', 500, 2500, 'LONG', 'sha-b', '{}'),
+            (4000, 'ACC1', 'BND1', 0, 'BND1', 5000, 99, 4950, 'Transferred', 0, 4950, NULL, 'sha-c', '{}');
     `)
 	b := allSnapshots(t, openAdapter(t, path))
 
-	// Fetched at 1000, carried unchanged to 2000.
+	// Fetched at 1000, carried to 2000 with its quantities, costs and
+	// dates; the fetch day's value and term stay in the payload.
 	for _, at := range []int64{1000, 2000} {
+		carried := at != 1000
 		lots := lotsAt(b, at, "ACC1", "VTI")
 		if len(lots) != 2 {
 			t.Fatalf("VTI lots at %d = %d, want 2", at, len(lots))
 		}
 		l := lots[0]
 		if l.LotKey != "0" || !decEq(l.Quantity, "6") || !decEq(l.BookValue, "600") ||
-			!decEq(l.MarketValue, "1500") || l.Term != canonical.LotTermLong ||
+			l.Term != canonical.LotTermLong ||
 			l.BasisOrigin != canonical.BasisStated || l.Covered != nil ||
 			l.Currency != "USD" || l.InstrumentExternalID == nil || *l.InstrumentExternalID != "VTI" {
 			t.Errorf("VTI lot 0 at %d = %+v", at, l)
+		}
+		if carried != (l.MarketValue == nil) || !carried && !decEq(l.MarketValue, "1500") {
+			t.Errorf("VTI lot 0 value at %d = %v, want 1500 on the fetch's own snapshot only", at, l.MarketValue)
 		}
 		if l.AcquisitionDate == nil || l.AcquisitionDate.Format("2006-01-02") != "2020-03-02" {
 			t.Errorf("VTI lot 0 acquired = %v, want 2020-03-02", l.AcquisitionDate)
@@ -195,8 +202,15 @@ func TestOpenLotsCarryWhileTheyDescribeThePosition(t *testing.T) {
 			t.Fatal(err)
 		}
 		if payload["cusip"] != "SYNCUSIP1" || payload["unit_cost"] != 100.0 ||
-			payload["unrealized_gain_loss"] != 900.0 || payload["fetched_at"] != 1000.0 {
-			t.Errorf("VTI lot 0 payload = %v", payload)
+			payload["unrealized_gain_loss"] != 900.0 || payload["fetched_at"] != 1000.0 ||
+			payload["page"] != 1.0 || payload["cells"] == nil {
+			t.Errorf("VTI lot 0 payload at %d = %v, want silver's cells with the annotations", at, payload)
+		}
+		if carried && (payload["current_value"] != 1500.0 || payload["term"] != "LONG") {
+			t.Errorf("VTI lot 0 payload at %d = %v, want the fetch's value and term", at, payload)
+		}
+		if !carried && (payload["current_value"] != nil || payload["term"] != nil) {
+			t.Errorf("VTI lot 0 payload at %d = %v, want value and term in their columns only", at, payload)
 		}
 		if lots[1].LotKey != "1" || lots[1].Term != canonical.LotTermShort {
 			t.Errorf("VTI lot 1 = %+v", lots[1])
@@ -214,9 +228,15 @@ func TestOpenLotsCarryWhileTheyDescribeThePosition(t *testing.T) {
 	if p := positionAt(t, b, 3000, "ACC1", "VTI"); p.AcquisitionDate != nil {
 		t.Errorf("VTI acquired at 3000 = %v, want none without lots", p.AcquisitionDate)
 	}
-	// Sold by 4000: no position, so no lots.
+	// Sold by 4000: silver holds a VTI lot table under that dump, but
+	// the dump lists no VTI position, so none of its lots reach gold.
+	for _, p := range b.Positions {
+		if p.SnapshotAt == 4000 && p.PositionKey == "VTI" {
+			t.Fatalf("a VTI position at 4000: %+v", p)
+		}
+	}
 	if lots := lotsAt(b, 4000, "ACC1", "VTI"); len(lots) != 0 {
-		t.Errorf("VTI lots at 4000 = %d, want none", len(lots))
+		t.Errorf("VTI lots at 4000 = %d, want none without a position", len(lots))
 	}
 	// A fetch that does not sum to its own dump's position.
 	if lots := lotsAt(b, 4000, "ACC1", "QQQ"); len(lots) != 0 {
@@ -234,6 +254,80 @@ func TestOpenLotsCarryWhileTheyDescribeThePosition(t *testing.T) {
 	}
 	if payload["acquired_date"] != "Transferred" {
 		t.Errorf("bond lot payload = %v, want the acquired text", payload)
+	}
+}
+
+// TestCarriedLotsAge: a lot set fetched in January and carried to June
+// keeps a long term, keeps a short one only while its first year is
+// still running, and drops a short term it can no longer vouch for.
+func TestCarriedLotsAge(t *testing.T) {
+	const jan, jun = 1736467200, 1749513600 // 2025-01-10, 2025-06-10 UTC
+	path, db := newFixtureSilver(t)
+	addLotsSchema(t, db)
+	seedSQL(t, db, `
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES
+            (1736467200, 13, '/x/1'), (1749513600, 13, '/x/2');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (1736467200, 'ACC1', '{}'), (1749513600, 'ACC1', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, description, asset_class, quantity, current_value, cost_basis_total, payload) VALUES
+            (1736467200, 'ACC1', 'VTI', 'Total Market ETF', 'etf', 11, 2200, 1100, '{}'),
+            (1749513600, 'ACC1', 'VTI', 'Total Market ETF', 'etf', 11, 2420, 1100, '{}');
+        INSERT INTO open_lots(snapshot_at, account_external_id, instrument_key, lot_index, quantity, cost_basis, acquired_date, current_value, term) VALUES
+            (1736467200, 'ACC1', 'VTI', 0, 5, 500, '2020-03-02', 1000, 'LONG'),
+            (1736467200, 'ACC1', 'VTI', 1, 3, 300, '2024-11-15', 600, 'SHORT'),
+            (1736467200, 'ACC1', 'VTI', 2, 2, 200, '2024-03-01', 400, 'SHORT'),
+            (1736467200, 'ACC1', 'VTI', 3, 1, 100, 'Various', 200, 'SHORT');
+    `)
+	b := allSnapshots(t, openAdapter(t, path))
+	for _, c := range []struct {
+		at    int64
+		terms []canonical.LotTerm
+	}{
+		{jan, []canonical.LotTerm{"long", "short", "short", "short"}},
+		{jun, []canonical.LotTerm{"long", "short", "", ""}},
+	} {
+		lots := lotsAt(b, c.at, "ACC1", "VTI")
+		if len(lots) != len(c.terms) {
+			t.Fatalf("lots at %d = %d, want %d", c.at, len(lots), len(c.terms))
+		}
+		for i, l := range lots {
+			if l.Term != c.terms[i] {
+				t.Errorf("lot %s at %d: term %q, want %q", l.LotKey, c.at, l.Term, c.terms[i])
+			}
+			if (c.at == jun) != (l.MarketValue == nil) {
+				t.Errorf("lot %s at %d: value %v, want one on the fetch's own snapshot only", l.LotKey, c.at, l.MarketValue)
+			}
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(lotsAt(b, jun, "ACC1", "VTI")[2].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["term"] != "SHORT" || payload["current_value"] != 400.0 || payload["fetched_at"] != float64(jan) {
+		t.Errorf("aged lot payload = %v, want the fetch's term and value", payload)
+	}
+}
+
+// TestAgedTermAtTheAnniversary: a short lot is short through the day
+// before its first anniversary and states no term from then on.
+func TestAgedTermAtTheAnniversary(t *testing.T) {
+	acquired := time.Date(2024, 6, 10, 0, 0, 0, 0, time.UTC)
+	anniversary := time.Date(2025, 6, 10, 0, 0, 0, 0, time.UTC).Unix()
+	for _, c := range []struct {
+		term     canonical.LotTerm
+		acquired *time.Time
+		at       int64
+		want     canonical.LotTerm
+	}{
+		{canonical.LotTermShort, &acquired, anniversary - 1, canonical.LotTermShort},
+		{canonical.LotTermShort, &acquired, anniversary, ""},
+		{canonical.LotTermShort, nil, anniversary - 1, ""},
+		{canonical.LotTermLong, nil, anniversary, canonical.LotTermLong},
+		{"", &acquired, anniversary - 1, ""},
+	} {
+		if got := agedTerm(c.term, c.acquired, c.at); got != c.want {
+			t.Errorf("agedTerm(%q, %v, %d) = %q, want %q", c.term, c.acquired, c.at, got, c.want)
+		}
 	}
 }
 
@@ -399,6 +493,66 @@ func TestRealizedLots(t *testing.T) {
 	}
 	if payload["acquired_date"] != "Unknown" || byID["f3"].AcquiredVarious {
 		t.Errorf("f3 payload = %v, want the acquired text", payload)
+	}
+}
+
+// TestYearEndStatementSalesCountOnce: a statement sale settled in
+// January that traded in December takes December's year, so the
+// primaries of two years whose kinds differ count it exactly once.
+func TestYearEndStatementSalesCountOnce(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	addLotsSchema(t, db)
+	seedSQL(t, db, `
+        INSERT INTO closed_lots(lot_id, document_kind, account_external_id, tax_year, security_name, instrument_key, cusip, quantity, disposed_date, settlement_date, proceeds) VALUES
+            -- ACC3: a 1099-B for 2024, statements only for 2025.
+            ('a1', 'form_1099b', 'ACC3', 2024, 'TOTAL MARKET ETF', 'VTI', 'SYNCUSIP1', 6, '2024-12-31', NULL, 600),
+            ('a2', 'form_1099b', 'ACC3', 2024, 'TOTAL MARKET ETF', 'VTI', 'SYNCUSIP1', 4, '2024-12-31', NULL, 400),
+            ('a3', 'statement',  'ACC3', NULL, 'TOTAL MARKET ETF', 'VTI', NULL, 10, NULL, '2025-01-02', 1000),
+            ('a4', 'statement',  'ACC3', NULL, 'TOTAL MARKET ETF', 'VTI', NULL, 7, NULL, '2025-01-06', 700),
+            ('a5', 'form_1099b', 'ACC3', 2024, 'NASDAQ ETF', 'QQQ', 'SYNCUSIP2', 5, '2024-12-30', NULL, 500),
+            ('a6', 'statement',  'ACC3', NULL, 'NASDAQ ETF', 'SYNCUSIP2', NULL, 2, NULL, '2025-01-02', 200),
+            ('a7', 'statement',  'ACC3', NULL, 'NASDAQ ETF', 'SYNCUSIP2', NULL, 3, NULL, '2025-01-02', 300),
+            -- ACC4: statements only for 2023, a 1099-B for 2024.
+            ('b1', 'statement',  'ACC4', NULL, 'TOTAL MARKET ETF', 'VTI', NULL, 1, NULL, '2023-06-01', 100),
+            ('b2', 'statement',  'ACC4', NULL, 'TOTAL MARKET ETF', 'VTI', NULL, 8, NULL, '2024-01-04', 800),
+            ('b3', 'form_1099b', 'ACC4', 2024, 'TOTAL MARKET ETF', 'VTI', 'SYNCUSIP1', 4, '2024-01-04', NULL, 400),
+            ('b4', 'statement',  'ACC4', NULL, 'TOTAL MARKET ETF', 'VTI', NULL, 4, NULL, '2024-01-05', 400),
+            -- ACC5: statements only, both years.
+            ('c1', 'statement',  'ACC5', NULL, 'TOTAL MARKET ETF', 'VTI', NULL, 2, NULL, '2024-12-02', 200),
+            ('c2', 'statement',  'ACC5', NULL, 'TOTAL MARKET ETF', 'VTI', NULL, 3, NULL, '2025-01-02', 300);
+    `)
+	lots, err := openAdapter(t, path).(silver.RealizedLotReader).RealizedLots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type want struct {
+		year    int
+		primary bool
+	}
+	wants := map[string]want{
+		"a1": {2024, true}, "a2": {2024, true},
+		"a3": {2024, false}, // the form's two lots sold on 12-31
+		"a4": {2025, true},  // a January trade: nothing sold 7 shares
+		"a5": {2024, true},
+		"a6": {2024, false}, "a7": {2024, false}, // together, the form's 5 by CUSIP
+		"b1": {2023, true},
+		"b2": {2023, true}, // not on the 2024 form, so a December trade
+		"b3": {2024, true},
+		"b4": {2024, false}, // the form's January sale
+		"c1": {2024, true},
+		"c2": {2025, true}, // no trade-dated document to tell: settlement year
+	}
+	if len(lots) != len(wants) {
+		t.Fatalf("realized lots = %d, want %d", len(lots), len(wants))
+	}
+	for _, r := range lots {
+		w := wants[r.RealizedLotExternalID]
+		if r.TaxYear != w.year || r.IsPrimary != w.primary {
+			t.Errorf("%s: year %d primary %v, want %d %v", r.RealizedLotExternalID, r.TaxYear, r.IsPrimary, w.year, w.primary)
+		}
+		if r.DocumentKind == canonical.RealizedStatement && (r.DisposalDate != nil || r.SettlementDate == nil) {
+			t.Errorf("%s: dates %v/%v, want the settlement date only", r.RealizedLotExternalID, r.DisposalDate, r.SettlementDate)
+		}
 	}
 }
 

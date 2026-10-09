@@ -1286,6 +1286,87 @@ def test_a_printed_symbol_wins_over_the_action_text(migrated, tmp_path):
         "SELECT instrument_key FROM transactions").fetchone()[0] == "00000ZZ96"
 
 
+def test_migration_0014_reloads_the_feed_onto_one_row_per_activity(
+        conn, tmp_path):
+    """Before migration 0014 an activity id hashed the Symbol cell, so a
+    transaction exported once with its Symbol and once without was two
+    rows. The migration drops the export rows and the dump ledger and
+    keeps the supplied statements' rows; the reload that follows lands
+    one row per activity, the copy that prints the Symbol."""
+    old = tmp_path / "migrations"
+    old.mkdir()
+    for f in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if f.name < "0014":
+            (old / f.name).write_text(f.read_text(encoding="utf-8"))
+    load.apply_migrations(conn, old)
+
+    bronze = tmp_path / "bronze"
+    dumps = []
+    for ts, symbol in (("20260101T120000Z", "00000ZZ96"),
+                       ("20260201T120000Z", "")):
+        dump = _write_dump(bronze, ts)
+        (dump / "activity" / "activity_20240301__20240331.csv").write_text(
+            _activity_csv(_bond_buy_row(symbol, "000000AB5")))
+        dumps.append(dump)
+        load._insert_dump_run(conn, load.ts_from_dir(ts), 13, dump, {})
+
+    # The bond buy as the old scheme filed it: one row per Symbol cell.
+    def old_id(symbol):
+        identity = json.dumps(
+            [ACCT_TRUST, load.ts_from_mdy("03/04/2024"), "BUY", symbol,
+             1000.0, 99.5, -995.0, load.ts_from_mdy("03/06/2024")],
+            separators=(",", ":"))
+        return load._synthesise_activity_id(identity, 0)
+
+    for symbol in ("00000ZZ96", None):
+        conn.execute(
+            "INSERT INTO transactions (activity_id, timestamp, "
+            "account_external_id, kind, instrument_key, quantity, price, "
+            "amount, settlement_date, source_sha256, payload) "
+            "VALUES (?, ?, ?, 'BUY', ?, 1000, 99.5, -995, ?, 'csv0', ?)",
+            (old_id(symbol), load.ts_from_mdy("03/04/2024"), ACCT_TRUST,
+             symbol or "000000AB5", load.ts_from_mdy("03/06/2024"),
+             json.dumps({"Symbol": symbol or ""})))
+    columns = ("activity_id, timestamp, account_external_id, kind, amount, "
+               "currency, source_sha256, payload")
+    stmt_row = ("stmt_0000000000000001", 1700000000, ACCT_TRUST,
+                "withdrawal", -100.0, "USD", "sha-stmt",
+                json.dumps({"Action": "Wire Tfr To Bank",
+                            "basis": "supplied_statement"}))
+    conn.execute(f"INSERT INTO transactions ({columns}) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", stmt_row)
+    conn.commit()
+
+    load.apply_migrations(conn, MIGRATIONS_DIR)
+
+    assert conn.execute(
+        f"SELECT {columns} FROM transactions").fetchall() == [stmt_row]
+    assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
+
+    version = load.silver.current_schema_version(conn)
+    for dump in dumps:
+        assert not load.already_loaded(conn, dump)
+        load.load_dump(conn, dump, version)
+
+    # One row per activity: the dividend and the 529 buy every dump
+    # repeats, and the bond buy under the Symbol one export prints.
+    feed = conn.execute(
+        "SELECT account_external_id, timestamp, kind, amount, "
+        "instrument_key FROM transactions "
+        "WHERE activity_id NOT LIKE 'stmt\\_%' ESCAPE '\\' "
+        "ORDER BY timestamp").fetchall()
+    assert feed == [
+        (ACCT_TRUST, load.ts_from_mdy("03/04/2024"), "BUY", -995.0,
+         "00000ZZ96"),
+        (ACCT_TRUST, load.ts_from_mdy("06/01/2024"), "DIVIDEND", 12.5,
+         SYM_TRUST),
+        (ACCT_529, load.ts_from_mdy("06/02/2024"), "BUY", -50.0, SYM_529),
+    ]
+    assert conn.execute(
+        f"SELECT {columns} FROM transactions WHERE activity_id LIKE "
+        "'stmt\\_%' ESCAPE '\\'").fetchall() == [stmt_row]
+
+
 def test_fill_instrument_keys_fills_rows_loaded_without_one(migrated):
     payload = json.dumps({"Action": "YOU SOLD STUB BOND (000000AB5) (Cash)"})
     for activity_id in ("feed1", "stmt_1"):

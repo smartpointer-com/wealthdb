@@ -1144,6 +1144,17 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
                 # Another export printed this transaction's Symbol; that
                 # copy names the security the way the positions do, so it
                 # stays whatever order the exports load in.
+                #
+                # Limitation: the identity names no security, so two
+                # transactions with the same economics in one account on
+                # one day (say, two securities bought for the same
+                # quantity, price and amount) differ only by occurrence
+                # index, which follows print order. When export A prints
+                # them X, Y and a later export B prints Y, X with Y's
+                # Symbol blank, B's Y lands on X's id and is skipped
+                # here, and B's X then replaces A's Y under the other id.
+                # Silver keeps X twice and loses Y until an export that
+                # prints both Symbols loads after B.
                 continue
             conn.execute(
                 "INSERT OR REPLACE INTO transactions ("
