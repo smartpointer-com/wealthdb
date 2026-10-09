@@ -314,14 +314,19 @@ position row: same period end, bridged account and position key
   `covered` stays NULL: statements do not say.
 - The payload keeps the endnote markers, the cost per share, the
   unrealized gain, the holding days and the raw line.
+- A lot whose holding row is missing has no position to sit beside.
+  It is dropped and counted in the load log.
 
 ### 8.3. Realized lots
 
 `closed_lots` holds the realized lots of three year-end documents.
 The adapter returns every one of them as a realized lot. They are
 not cut at the api's coverage start, so every tax year reaches gold.
-A lot of an account the bridge does not resolve (§7.1) is dropped
-and counted in the load log.
+Three kinds of lot are dropped and counted in the load log:
+
+- a lot of an account the bridge does not resolve (§7.1);
+- a lot of a document kind gold does not know;
+- a lot that states neither a tax year nor a disposal date.
 
 The same sale appears in several documents, so one set is primary
 per account and tax year:
@@ -332,6 +337,7 @@ per account and tax year:
    the original. A Year-End Summary can arrive twice, as its own PDF
    and inside the 1099 Composite. The document date comes from
    `logical_doc_key`. Two copies dated alike go to the greater key.
+   A key whose date does not read counts as the oldest.
 
 The figures map as printed:
 
@@ -361,6 +367,8 @@ gold's transactions. A 1099-B lot is a tax record, not a cash
 movement. It prints a closed short's opening premium as proceeds on
 the closing date, and an order filled in several lots as several
 sales. The statement and history feeds book each sale as cash once.
+The `form_1099b` rows also stay out of the transaction range that
+`Status` and `ChangeWindow` report, so they widen no load window.
 
 ## 9. Open questions
 

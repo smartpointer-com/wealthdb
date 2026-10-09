@@ -427,11 +427,14 @@ and with no extra system dependency).
   bare "Investment Detail" / "Transaction Detail"; 2020-2024
   "Investment Detail - X" / "Transaction Detail - X"; 2025+
   "Positions - X" / "Transaction Details"). Each tier is tried
-  in turn. A transaction row prints its date as MM/DD; the year
-  comes from the statement's manifest date, which the loader
-  passes as `statement_year`. A date more than half a year before
-  the printed period end takes the next year: a December statement
-  lists its last trades by their January settlement dates. A line
+  in turn. A transaction row prints its date as MM/DD; the
+  2020-2024 layout prints the year too. The year comes from the
+  printed period end. A date more than half a year before it takes
+  the next year: a December statement lists its last trades by
+  their January settlement dates. The manifest can date a statement
+  before its printed period end, even in the year before; the
+  printed one dates the rows and the snapshots alike. The manifest
+  date's year stands in only where no period header reads. A line
   that opens with a full MM/DD/YY date is an option's expiry
   wrapped from the row above, not a row of its own.
 - **Some sale rows lose their amount**. Such rows are skipped

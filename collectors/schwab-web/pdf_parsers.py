@@ -470,21 +470,24 @@ def parse_transactions(text: str, statement_year: int | None = None) -> list[Tra
         the same per-activity sub-headers but no per-category
         breakdown in the section name.
 
-    Caller can pass a `statement_year` override; if None we read
-    it from the period header in `text`.
+    A row printed as MM/DD takes the year of the printed period end,
+    which also anchors a date across a year end (_row_date). The
+    loader dates the statement's snapshots by the same period end,
+    whatever the manifest says. `statement_year` dates the rows of a
+    statement whose period header does not read; without either,
+    this raises ValueError.
     """
     period = parse_statement_period(text)
-    if statement_year is None:
-        if period is None:
-            raise ValueError(
-                "could not find statement period header; pass "
-                "statement_year explicitly"
-            )
-        statement_year = period[1].year  # use end-of-period year
-    # The period end dates a printed MM/DD across a year end
-    # (_row_date); a period from another year than the caller's is no
-    # anchor for it.
-    period_end = period[1] if period and period[1].year == statement_year else None
+    if period is not None:
+        period_end = period[1]
+        statement_year = period_end.year
+    elif statement_year is not None:
+        period_end = None
+    else:
+        raise ValueError(
+            "could not find statement period header; pass "
+            "statement_year explicitly"
+        )
     rows = _parse_transactions_new(text, statement_year, period_end)
     if rows:
         return rows
@@ -2563,11 +2566,10 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     """Open a Schwab brokerage statement PDF and return a dict
     with the statement period and the extracted transactions.
 
-    `statement_year` is the year the transactions parser gives the
-    MM/DD dates of the activity rows; without it, the year of the
-    printed period end. Older quarterly statements (pre-2025) can
-    lack a period header that reads, so the loader always passes the
-    year of the manifest doc-date.
+    `statement_year` dates the MM/DD activity rows of a statement
+    whose period header does not read (parse_transactions); a printed
+    period wins over it. The loader passes the year of the manifest
+    doc-date.
     """
     full_text = _extract_pdf_text(path)
     period = parse_statement_period(full_text)

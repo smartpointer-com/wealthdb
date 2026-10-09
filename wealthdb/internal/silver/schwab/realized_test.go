@@ -3,6 +3,7 @@ package schwab
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -225,7 +226,7 @@ func TestRealizedLotsOptional(t *testing.T) {
 	}
 }
 
-// The 1099-B rows no longer reach the transaction stream: a year the
+// The 1099-B rows stay out of the transaction stream: a year the
 // statements cover carries their sells, and a year only the 1099-B
 // states carries its sales as realized lots alone.
 func TestForm1099BLeavesTheTransactionStream(t *testing.T) {
@@ -265,7 +266,7 @@ func TestForm1099BLeavesTheTransactionStream(t *testing.T) {
 			break
 		}
 	}
-	if len(got) != 2 || !contains(got, "p-2021") || !contains(got, "p-div") {
+	if len(got) != 2 || !slices.Contains(got, "p-2021") || !slices.Contains(got, "p-div") {
 		t.Errorf("transactions = %v, want the statement rows only", got)
 	}
 
@@ -275,11 +276,98 @@ func TestForm1099BLeavesTheTransactionStream(t *testing.T) {
 	}
 }
 
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
+// The 1099-B rows widen no window and move no transaction extreme: they
+// reach no stream, so a load whose only new rows are theirs has no
+// transactions to carry.
+func TestForm1099BWidensNoWindow(t *testing.T) {
+	f := newMergedFixture(t)
+	stmt := utcDay("2021-03-03")
+	if _, err := f.web.Exec(`
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, source, source_sha256, payload) VALUES
+            ('p-2021',  ?1, '5678', 'Sale', 'VTI', 'statement_pdf', 'sha-p', '{"amount":1000}'),
+            ('f-early', ?2, '5678', 'Sale', NULL,  'form_1099b',    'sha-f', '{"tax_year":2020}'),
+            ('f-late',  ?3, '5678', 'Sale', NULL,  'form_1099b',    'sha-f', '{"tax_year":2021}');
+    `, stmt, utcDay("2020-06-01"), utcDay("2021-09-01")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	r := &webReader{db: f.web}
+	ctx := context.Background()
+
+	s, err := r.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.OldestTransactionAt != stmt || s.LatestTransactionAt != stmt {
+		t.Errorf("transaction extremes = [%d, %d], want the statement row's day %d",
+			s.OldestTransactionAt, s.LatestTransactionAt, stmt)
+	}
+
+	w, err := r.ChangeWindow(ctx, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.HasChanges || w.Start != stmt || w.End != stmt || w.NewChangeNumber != stmt {
+		t.Errorf("window = %+v, want the statement row's day alone", w)
+	}
+	if w, err := r.ChangeWindow(ctx, stmt); err != nil || w.HasChanges {
+		t.Errorf("past the statement row only 1099-B rows are new: window %+v, %v", w, err)
+	}
+}
+
+// A lot of a document kind gold does not know, and a lot that states
+// neither a tax year nor a disposal date, are dropped; the others load.
+func TestRealizedLotsDropUnplacedAndUnknownKinds(t *testing.T) {
+	f := newMergedFixture(t)
+	if _, err := f.web.Exec(`
+        INSERT INTO closed_lots
+            (logical_doc_key, document_kind, lot_index, account_external_id, tax_year, security_name,
+             quantity, disposed_date, proceeds, cost_basis, term, source_sha256, payload) VALUES
+            ('5678|1706745600|1099-2023', 'form_1099b',    0, '5678', 2023, 'VTI', 1, '2023-03-01', 150, 100, 'LONG', 'sha-kept',     '{}'),
+            ('5678|1706745600|1099-2023', 'form_1099b',    1, '5678', NULL, 'VTI', 1, NULL,         150, 100, 'LONG', 'sha-unplaced', '{}'),
+            ('5678|1706745600|1099-2023', 'form_1099b',    2, '5678', NULL, 'VTI', 1, 'Various',    150, 100, 'LONG', 'sha-undated',  '{}'),
+            ('5678|1706745600|1099-DIV',  'form_1099_div', 0, '5678', 2023, 'VTI', 1, '2023-03-01', 150, 100, 'LONG', 'sha-unknown',  '{}');
+    `); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	lots := realizedLots(t, f.open(t))
+	if len(lots) != 1 || *lots[0].SourceDocument != "sha-kept" || !lots[0].IsPrimary {
+		t.Errorf("lots = %+v, want the placed lot of a known kind alone", lots)
+	}
+}
+
+// Documents of one kind, account and tax year whose keys carry no
+// readable date tie at date zero: the greater key wins, and a dated
+// copy beats them all.
+func TestRealizedLotsTieOnUnreadableDocDates(t *testing.T) {
+	f := newMergedFixture(t)
+	if _, err := f.web.Exec(`
+        INSERT INTO closed_lots
+            (logical_doc_key, document_kind, lot_index, account_external_id, tax_year, security_name,
+             quantity, disposed_date, proceeds, cost_basis, term, source_sha256, payload) VALUES
+            ('5678|undated|YES-A.PDF',  'year_end_summary', 0, '5678', 2023, 'VTI', 1, '2023-03-01', 150, 100, 'LONG', 'sha-a', '{}'),
+            ('5678|undated|YES-B.PDF',  'year_end_summary', 0, '5678', 2023, 'VTI', 1, '2023-03-01', 150, 100, 'LONG', 'sha-b', '{}'),
+            ('5678-no-date',            'year_end_summary', 0, '5678', 2023, 'VTI', 1, '2023-03-01', 150, 100, 'LONG', 'sha-c', '{}'),
+            ('0042|undated|GLR-A.PDF',  'gain_loss_report', 0, '0042', 2023, 'VTI', 1, '2023-03-01', 150, 100, 'LONG', 'sha-d', '{}'),
+            ('0042|1706745600|GLR.PDF', 'gain_loss_report', 0, '0042', 2023, 'VTI', 1, '2023-03-01', 150, 100, 'LONG', 'sha-e', '{}'),
+            ('0042|undated|GLR-Z.PDF',  'gain_loss_report', 0, '0042', 2023, 'VTI', 1, '2023-03-01', 150, 100, 'LONG', 'sha-f', '{}');
+    `); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	want := map[string]bool{
+		"sha-a": false,
+		"sha-b": true, // the greatest of the keys that tie at date zero
+		"sha-c": false,
+		"sha-d": false,
+		"sha-e": true, // the one dated copy
+		"sha-f": false,
+	}
+	lots := realizedLots(t, f.open(t))
+	if len(lots) != len(want) {
+		t.Fatalf("lots = %d, want %d", len(lots), len(want))
+	}
+	for _, r := range lots {
+		if src := *r.SourceDocument; r.IsPrimary != want[src] {
+			t.Errorf("%s: primary = %v, want %v", src, r.IsPrimary, want[src])
 		}
 	}
-	return false
 }

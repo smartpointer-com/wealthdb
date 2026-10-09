@@ -120,33 +120,30 @@ SELECT logical_doc_key, document_kind, lot_index, account_external_id,
 			AccountExternalID:     hash,
 			Description:           silver.StrPtrIfNonEmpty(strings.TrimSpace(name.String)),
 			DocumentKind:          docKind,
-			AcquisitionDate:       isoDate(acquired.String),
+			AcquisitionDate:       silver.ISODate(acquired.String),
 			AcquiredVarious:       strings.EqualFold(strings.TrimSpace(acquired.String), "Various"),
-			DisposalDate:          isoDate(disposed.String),
+			DisposalDate:          silver.ISODate(disposed.String),
 			Currency:              "USD",
-			Quantity:              magnitude(quantity),
-			Proceeds:              magnitude(proceeds),
-			BookValue:             magnitude(costBasis),
+			Quantity:              silver.AbsPtr(silver.DecimalPtrFromNullFloat(quantity)),
+			Proceeds:              silver.AbsPtr(silver.DecimalPtrFromNullFloat(proceeds)),
 			RealizedGainLoss:      silver.DecimalPtrFromNullFloat(gain),
 			WashSaleDisallowed:    silver.DecimalPtrFromNullFloat(washSale),
 			AccruedMarketDiscount: silver.DecimalPtrFromNullFloat(marketDiscount),
-			Term:                  lotTerm(term.String),
+			Term:                  canonical.ParseLotTerm(term.String),
 			Form8949Box:           silver.StrPtrIfNonEmpty(strings.TrimSpace(box.String)),
 			SourceDocument:        silver.StrPtrIfNonEmpty(sha),
 			Payload:               json.RawMessage(payload),
 		}
-		switch {
-		case taxYear.Valid:
+		if taxYear.Valid {
 			r.TaxYear = int(taxYear.Int64)
-		case r.DisposalDate != nil:
-			r.TaxYear = r.DisposalDate.Year()
-		default:
+		} else {
+			r.TaxYear = silver.TaxYearOf(r.DisposalDate)
+		}
+		if r.TaxYear == 0 {
 			unplaced++
 			continue
 		}
-		if r.BookValue != nil {
-			r.Basis = statementBasis
-		}
+		r.SetBookValue(silver.AbsPtr(silver.DecimalPtrFromNullFloat(costBasis)), statementBasis)
 		if covered.Valid {
 			v := covered.Int64 == 1
 			r.Covered = &v
@@ -202,17 +199,6 @@ func realizedInstrument(instrumentKey, cusip, securityName string, symbolToCUSIP
 	}
 	id := webInstrument(key, symbolToCUSIP)
 	return &id, ""
-}
-
-// magnitude is a printed figure as gold's realized lots carry it,
-// unsigned.
-func magnitude(n sql.NullFloat64) *canonical.Decimal {
-	d := silver.DecimalPtrFromNullFloat(n)
-	if d == nil {
-		return nil
-	}
-	a := d.Abs()
-	return &a
 }
 
 // docSlot is where one document kind states an account's tax year.

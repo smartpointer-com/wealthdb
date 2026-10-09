@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -90,7 +91,9 @@ func (r *webReader) snapshotsHistorical(
 // value is the printed cost_basis; where a holding prints none but
 // states its market value and unrealized gain, it is their difference.
 // A holding's open lots (`open_lots`) follow it into the same batch,
-// and the earliest lot's acquired date is the holding's.
+// and the earliest lot's acquired date is the holding's. A lot whose
+// holding row is missing has no position to ride beside: it is
+// dropped and counted in the load log.
 func (r *webReader) appendHistoricalPositions(
 	ctx context.Context,
 	w canonical.Window,
@@ -125,6 +128,9 @@ SELECT as_of_date, account_external_id, instrument_key,
 			&unrealized, &accrued, &payload); err != nil {
 			return err
 		}
+		key := holdingKey{asOf, suffix, instrumentKey}
+		held := lots[key]
+		delete(lots, key) // what remains has no holding to ride beside
 		hash, ok := bridge[suffix]
 		if !ok {
 			continue
@@ -173,14 +179,25 @@ SELECT as_of_date, account_external_id, instrument_key,
 			short := quantity.Valid && quantity.Float64 < 0
 			pos.SetBookValue(basisFromOpenPL(pos.MarketValue, unrealized, short), derivedBasis)
 		}
-		held := lots[holdingKey{asOf, suffix, instrumentKey}]
-		pos.AcquisitionDate = earliestAcquired(held)
-		batch.Positions = append(batch.Positions, pos)
-		for _, l := range held {
-			batch.PositionLots = append(batch.PositionLots, l.change(asOf, hash, instrumentKey))
+		changes := make([]canonical.PositionLotChange, len(held))
+		for i, l := range held {
+			changes[i] = l.change(asOf, hash, instrumentKey)
 		}
+		pos.AcquisitionDate = canonical.EarliestLotDate(changes)
+		batch.Positions = append(batch.Positions, pos)
+		batch.PositionLots = append(batch.PositionLots, changes...)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	orphans := 0
+	for _, held := range lots {
+		orphans += len(held)
+	}
+	if orphans > 0 {
+		log.Printf("schwab adapter: dropped %d open lot(s) whose statement holding is missing", orphans)
+	}
+	return nil
 }
 
 // appendHistoricalCashBalances emits opening + closing balance

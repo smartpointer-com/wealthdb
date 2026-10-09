@@ -1,8 +1,12 @@
 package schwab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -105,7 +109,8 @@ func firstBatch(t *testing.T, conn silver.Connection) canonical.SnapshotBatch {
 // without one, its market value less its unrealized gain; without
 // either, none. Its lots ride beside it in the same batch, under the
 // same snapshot, account and position key, and the earliest lot's date
-// is the holding's. Every figure, date and line is invented.
+// is the holding's. A lot without its holding is dropped and counted.
+// Every figure, date and line is invented.
 func TestStatementHoldingsBasisAndOpenLots(t *testing.T) {
 	f := newMergedFixture(t)
 	asOf := utcDay("2023-12-31")
@@ -130,10 +135,15 @@ func TestStatementHoldingsBasisAndOpenLots(t *testing.T) {
             (?1, '5678', 'SPX 01/16/2026 50.00 C', 0, -2, 2, -400, '2023-11-01', 100, NULL, NULL, 'S', 'sha-stmt',
              '{"holding_days":60,"raw_line":"lot line S"}'),
             (?1, '9999', 'VTI', 0, 1, 100, 100, '2020-01-02', 50, 'LONG', NULL, NULL, 'sha-other',
-             '{"holding_days":1400,"raw_line":"unbridged"}');
+             '{"holding_days":1400,"raw_line":"unbridged"}'),
+            (?1, '5678', 'IWM', 0, 3, 100, 300, '2022-01-03', 10, 'LONG', NULL, NULL, 'sha-stmt',
+             '{"holding_days":700,"raw_line":"orphan"}');
     `, asOf); err != nil {
 		t.Fatalf("seed web: %v", err)
 	}
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	stream, err := f.open(t).Snapshots(context.Background(), everything)
 	if err != nil {
@@ -197,7 +207,11 @@ func TestStatementHoldingsBasisAndOpenLots(t *testing.T) {
 		"SPX 01/16/2026 50.00 C/0": {"-2", "-400", "2023-11-01", "", canonical.BasisStated},
 	}
 	if len(batch.PositionLots) != len(wantLots) {
-		t.Fatalf("lots = %d, want %d (the unbridged holding's lot stays out)", len(batch.PositionLots), len(wantLots))
+		t.Fatalf("lots = %d, want %d (the unbridged holding's lot and the orphan stay out)",
+			len(batch.PositionLots), len(wantLots))
+	}
+	if !strings.Contains(logs.String(), "dropped 1 open lot(s) whose statement holding is missing") {
+		t.Errorf("the orphan lot is not counted: log = %q", logs.String())
 	}
 	for _, l := range batch.PositionLots {
 		k := l.PositionKey + "/" + l.LotKey

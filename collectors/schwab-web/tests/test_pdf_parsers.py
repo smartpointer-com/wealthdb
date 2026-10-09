@@ -630,29 +630,62 @@ class TestRowDates:
         rows = pp.parse_transactions(text, statement_year=2019)
         assert [r.date for r in rows] == [date(2019, 12, 20), date(2020, 1, 2)]
 
+    def test_the_printed_period_dates_the_rows_when_the_year_given_differs(self):
+        # The manifest can list a statement under the month before its
+        # printed period, across a year end. The printed period dates
+        # the rows, as it dates the statement's snapshots.
+        january = (
+            "January 1-31, 2026\n"
+            "Transaction Details\n"
+            "Symbol/ Price/Rate\n"
+            "01/15 Sale SYN1 SYNTHETICONE (10.0000) 10.0000 0.01 99.99 5.00,(ST)\n"
+            "TotalTransactions ($1) $2\n"
+        )
+        rows = pp.parse_transactions(january, statement_year=2025)
+        assert [r.date for r in rows] == [date(2026, 1, 15)]
+
+        # A December statement given the next year keeps its December
+        # rows in its own year and its January settlements in the next.
+        december = (
+            "December 1 - 31, 2019\n"
+            "Transaction Detail\n"
+            "Settle\nDate\nTrade\nDate Transaction Description Quantity Price Total\n"
+            "Investments Activity\n"
+            "12/20 12/18 Sold ALPHACORP INC: ALPH (100.0000) 40.0000 4,000.00\n"
+            "01/02 12/30 Sold BETACORP INC: BETA (10.0000) 20.0000 200.00\n"
+            "Total Account Value 0.00\n"
+        )
+        rows = pp.parse_transactions(december, statement_year=2020)
+        assert [r.date for r in rows] == [date(2019, 12, 20), date(2020, 1, 2)]
+
     def test_a_statement_without_a_period_keeps_the_year_it_is_given(self):
         assert pp._row_date(1, 2, 2019, None) == date(2019, 1, 2)
         assert pp._row_date(1, 2, 2019, date(2019, 3, 31)) == date(2019, 1, 2)
         assert pp._row_date(1, 2, 2019, date(2019, 12, 31)) == date(2020, 1, 2)
 
 
-class TestStatementYearOverride:
-    def test_explicit_year_overrides_period_header(self):
+class TestStatementYear:
+    _NO_PERIOD = (
+        "Transaction Details\n"
+        "Symbol/ Price/Rate\n"
+        "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
+        "TotalTransactions ($1) $2\n"
+    )
+
+    def test_a_printed_period_wins_over_the_year_given(self):
         text = _wrap(
             "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
         )
         rows = pp.parse_transactions(text, statement_year=2099)
+        assert rows[0].date == date(2026, 2, 2)
+
+    def test_the_year_given_dates_a_statement_without_a_period(self):
+        rows = pp.parse_transactions(self._NO_PERIOD, statement_year=2099)
         assert rows[0].date == date(2099, 2, 2)
 
-    def test_missing_period_raises_without_override(self):
-        text = (
-            "Transaction Details\n"
-            "Symbol/ Price/Rate\n"
-            "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
-            "TotalTransactions ($1) $2\n"
-        )
+    def test_missing_period_raises_without_a_year(self):
         with pytest.raises(ValueError, match="statement period"):
-            pp.parse_transactions(text)
+            pp.parse_transactions(self._NO_PERIOD)
 
 
 # ============================================================

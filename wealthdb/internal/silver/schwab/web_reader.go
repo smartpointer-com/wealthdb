@@ -49,9 +49,11 @@ func (r *webReader) Close() error {
 // feed. Snapshot-time extrema come from dump_runs plus the
 // historical tables (which use as_of_date / period_end rather
 // than dump times). Transaction-time extrema come from
-// transactions.timestamp. LatestChangeNumber stays a live-time
-// concept — MAX(dump_runs.snapshot_at) — so a reload with no new
-// dump is a no-op even when historical content is present.
+// transactions.timestamp, without the form_1099b rows the
+// transaction stream leaves out (Transactions says why).
+// LatestChangeNumber stays a live-time concept —
+// MAX(dump_runs.snapshot_at) — so a reload with no new dump is a
+// no-op even when historical content is present.
 func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	out := canonical.Status{
 		OldestSnapshotAt:    -1,
@@ -69,7 +71,7 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	if err := r.db.QueryRowContext(ctx, `
         SELECT COALESCE(MIN(timestamp), -1),
                COALESCE(MAX(timestamp), -1)
-          FROM transactions`).Scan(&out.OldestTransactionAt, &out.LatestTransactionAt); err != nil {
+          FROM transactions WHERE source <> ?`, sourceFORM1099B).Scan(&out.OldestTransactionAt, &out.LatestTransactionAt); err != nil {
 		return canonical.Status{}, fmt.Errorf("schwab-web Status transactions: %w", err)
 	}
 	ok, err := r.hasHistoricalTables(ctx)
@@ -98,7 +100,8 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 // MIN(historical times) whenever there's any new live content so
 // the loader's window-DELETE covers existing historical gold
 // rows before they're re-inserted — same pattern as the UBS web
-// reader.
+// reader. The form_1099b rows reach no stream, so they widen no
+// window.
 func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	var (
 		snapMin, snapMax sql.NullInt64
@@ -111,7 +114,7 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 	}
 	if err := r.db.QueryRowContext(ctx, `
         SELECT MIN(timestamp), MAX(timestamp)
-          FROM transactions WHERE timestamp > ?`, since).Scan(&txMin, &txMax); err != nil {
+          FROM transactions WHERE timestamp > ? AND source <> ?`, since, sourceFORM1099B).Scan(&txMin, &txMax); err != nil {
 		return canonical.Window{}, fmt.Errorf("schwab-web ChangeWindow transactions: %w", err)
 	}
 	w := canonical.Window{NewChangeNumber: since}

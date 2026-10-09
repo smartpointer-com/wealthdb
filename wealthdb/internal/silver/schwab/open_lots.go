@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -73,8 +72,8 @@ SELECT as_of_date, account_external_id, instrument_key, lot_index,
 			&l.unrealized, &term, &l.footnotes, &l.sha256, &l.payload); err != nil {
 			return nil, fmt.Errorf("schwab-web open lots scan: %w", err)
 		}
-		l.acquired = isoDate(acquired.String)
-		l.term = lotTerm(term.String)
+		l.acquired = silver.ISODate(acquired.String)
+		l.term = canonical.ParseLotTerm(term.String)
 		out[k] = append(out[k], l)
 	}
 	return out, rows.Err()
@@ -95,15 +94,12 @@ func (l openLot) change(asOf int64, account, positionKey string) canonical.Posit
 		InstrumentExternalID: &instrument,
 		Currency:             "USD",
 		Quantity:             silver.DecimalPtrFromNullFloat(l.quantity),
-		BookValue:            silver.DecimalPtrFromNullFloat(l.costBasis),
 		AcquisitionDate:      l.acquired,
 		Term:                 l.term,
 		SourceDocument:       silver.StrPtrIfNonEmpty(l.sha256),
 		Payload:              l.payloadJSON(),
 	}
-	if c.BookValue != nil {
-		c.BasisOrigin = canonical.BasisStated
-	}
+	c.SetBookValue(silver.DecimalPtrFromNullFloat(l.costBasis), canonical.BasisStated)
 	return c
 }
 
@@ -128,39 +124,4 @@ func nullable[T any](v T, valid bool) any {
 		return nil
 	}
 	return v
-}
-
-// earliestAcquired is the earliest acquired date among a holding's
-// lots, nil when none prints one.
-func earliestAcquired(lots []openLot) *time.Time {
-	var first *time.Time
-	for _, l := range lots {
-		if l.acquired != nil && (first == nil || l.acquired.Before(*first)) {
-			first = l.acquired
-		}
-	}
-	return first
-}
-
-// isoDate reads an ISO calendar date as UTC midnight; nil for anything
-// else ("Various", an empty cell).
-func isoDate(s string) *time.Time {
-	t, err := time.Parse(time.DateOnly, strings.TrimSpace(s))
-	if err != nil {
-		return nil
-	}
-	return &t
-}
-
-// lotTerm maps the printed holding period onto gold's term. Any other
-// label (a 1099-B can print one) states no term; it stays in the
-// payload.
-func lotTerm(s string) canonical.LotTerm {
-	switch strings.ToUpper(strings.TrimSpace(s)) {
-	case "SHORT":
-		return canonical.LotTermShort
-	case "LONG":
-		return canonical.LotTermLong
-	}
-	return ""
 }
