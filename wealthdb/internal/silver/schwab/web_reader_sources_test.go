@@ -1,18 +1,14 @@
 package schwab
 
 import (
-	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // wtxAt builds a parsed web transaction at an explicit epoch-second timestamp
 // (not an epoch-day like wtx), with an optional raw silver payload, for the
-// 1099-B-authority and distribution-dedup stage tests. Those stages read
-// payload.tax_year / payload.transfer_kind and bucket sells by calendar year, so
-// the tests need real timestamps and payloads rather than the day-scaled wtx.
+// distribution-dedup stage tests, which read payload.transfer_kind.
 func wtxAt(id, source string, kind canonical.TxKind, acct string, ts int64, amount float64, payload string) builtWebTx {
 	d := canonical.NewDecimalFromFloat(amount)
 	b := builtWebTx{source: source, tx: canonical.TransactionChange{
@@ -26,102 +22,6 @@ func wtxAt(id, source string, kind canonical.TxKind, acct string, ts int64, amou
 		b.tx.Payload = []byte(payload)
 	}
 	return b
-}
-
-// unixYear returns the UTC epoch seconds for noon on Jul 1 of the given year, a
-// stable mid-year instant well away from any year boundary / TZ edge.
-func unixYear(year int) int64 {
-	return time.Date(year, time.July, 1, 12, 0, 0, 0, time.UTC).Unix()
-}
-
-// TestSupersedeSalesWith1099B pins INTEROP §8.1: within a covered (account,
-// tax_year) the form_1099b lots win and the statement_pdf / tx_history_json sells
-// in that calendar year are dropped, while sells outside covered years (and all
-// non-sell rows) survive untouched, and a null cost_basis on a surviving 1099-B
-// lot is preserved verbatim in the payload.
-func TestSupersedeSalesWith1099B(t *testing.T) {
-	const pdf, js, f1099 = sourceStatementPDF, sourceTxHistoryJSON, sourceFORM1099B
-
-	cases := []struct {
-		name    string
-		in      []builtWebTx
-		wantIDs []string
-	}{
-		{
-			name: "1099-B supersedes statement and tx-history sells in a covered year",
-			in: []builtWebTx{
-				// Covered (A, 2022): one 1099-B lot establishes coverage.
-				wtxAt("f-2022", f1099, canonical.TxKindSell, "A", unixYear(2022), 1000, `{"tax_year":2022,"security_name":"EXMPL ETF","cost_basis":800,"acquired_date":"2020-01-15"}`),
-				// Same-year sells from the other two feeds are superseded.
-				wtxAt("p-2022", pdf, canonical.TxKindSell, "A", unixYear(2022), 1000, ""),
-				wtxAt("j-2022", js, canonical.TxKindSell, "A", unixYear(2022), 1000, ""),
-				// A non-sell in the covered year is untouched.
-				wtxAt("j-2022-div", js, canonical.TxKindDividend, "A", unixYear(2022), 12, ""),
-			},
-			wantIDs: []string{"f-2022", "j-2022-div"},
-		},
-		{
-			name: "sell outside the covered tax year survives",
-			in: []builtWebTx{
-				wtxAt("f-2022", f1099, canonical.TxKindSell, "A", unixYear(2022), 1000, `{"tax_year":2022,"security_name":"VTI"}`),
-				// 2021 is NOT covered for account A → the web sell stays.
-				wtxAt("p-2021", pdf, canonical.TxKindSell, "A", unixYear(2021), 500, ""),
-				// Different account, same year → not covered → stays.
-				wtxAt("p-2022-B", pdf, canonical.TxKindSell, "B", unixYear(2022), 700, ""),
-			},
-			wantIDs: []string{"f-2022", "p-2021", "p-2022-B"},
-		},
-		{
-			name: "null cost_basis lot is kept (basis stays null, never coerced)",
-			in: []builtWebTx{
-				wtxAt("f-null", f1099, canonical.TxKindSell, "A", unixYear(2023), 1500, `{"tax_year":2023,"security_name":"QQQ","cost_basis":null,"cost_basis_raw":0,"basis_not_shown":true,"noncovered":true}`),
-				wtxAt("p-2023", pdf, canonical.TxKindSell, "A", unixYear(2023), 1500, ""),
-			},
-			wantIDs: []string{"f-null"},
-		},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			out := supersedeSalesWith1099B(c.in)
-			got := builtIDs(out)
-			if len(got) != len(c.wantIDs) {
-				t.Fatalf("survivors = %v, want %v", got, c.wantIDs)
-			}
-			for _, id := range c.wantIDs {
-				if !got[id] {
-					t.Errorf("expected %q to survive; survivors = %v", id, got)
-				}
-			}
-			// The surviving 1099-B null-basis lot must keep its payload verbatim
-			// (cost_basis still null — not coerced to 0).
-			if c.name == "null cost_basis lot is kept (basis stays null, never coerced)" {
-				if cb, ok := costBasisFromPayload(t, out, "f-null"); ok && cb != nil {
-					t.Errorf("cost_basis must stay null, got %v", *cb)
-				}
-			}
-		})
-	}
-}
-
-// costBasisFromPayload finds the row with id and decodes payload.cost_basis,
-// returning (value, foundRow). A nil *float64 with foundRow=true means the JSON
-// key was present and null (the case the test asserts).
-func costBasisFromPayload(t *testing.T, rows []builtWebTx, id string) (*float64, bool) {
-	t.Helper()
-	for _, r := range rows {
-		if r.tx.TransactionExternalID != id {
-			continue
-		}
-		var p struct {
-			CostBasis *float64 `json:"cost_basis"`
-		}
-		if err := json.Unmarshal(r.tx.Payload, &p); err != nil {
-			t.Fatalf("decode payload for %q: %v", id, err)
-		}
-		return p.CostBasis, true
-	}
-	return nil, false
 }
 
 // TestSupersedeStatementCashWithDistributions pins INTEROP §8.2 cash transfers: a
@@ -217,9 +117,8 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 // (extractWebTxAmounts + ApplyCanonicalSign, exactly as the build loop does) rather
 // than hand-setting NetAmount — otherwise the assertion couldn't catch a regression
 // where production never reads market_value. The row then survives the full
-// assembly tail (cash dedup is a no-op for it, 1099-B authority ignores it, PDF↔JSON
-// dedup ignores it) and contributes its market_value (negative for the outflow) to
-// the summed NetAmount.
+// assembly tail (cash dedup is a no-op for it, PDF↔JSON dedup ignores it) and
+// contributes its market_value (negative for the outflow) to the summed NetAmount.
 func TestSecuritiesTransferIsExternalNetFlow(t *testing.T) {
 	const dist = sourceThirdPartyDistribution
 	const day = int64(86400)
@@ -247,7 +146,6 @@ func TestSecuritiesTransferIsExternalNetFlow(t *testing.T) {
 	// Run the same stage tail transactionsBeforeAPIStart runs.
 	built := spliceNonExternalToJSON(in, nil)
 	built = supersedeStatementCashWithDistributions(built)
-	built = supersedeSalesWith1099B(built)
 	out := dedupeCrossFeedExternalFlows(built)
 
 	if len(out) != 1 || out[0].TransactionExternalID != "sec1" {
@@ -288,7 +186,7 @@ func buildWebTxFromPayload(id, source string, kind canonical.TxKind, acct string
 // words: the directional ones map to the directional canonical kinds, the two
 // that name an OUTSIDE bank take their direction from the amount, the three
 // that name a movement inside the household's own Schwab accounts stay
-// journals whatever their sign, and the 1099-B "Sale" string maps to
+// journals whatever their sign, and the statement's "Sale" string maps to
 // TxKindSell.
 func TestWebKindTransferDirections(t *testing.T) {
 	out := canonical.NewDecimalFromInt(-2500)
@@ -302,7 +200,7 @@ func TestWebKindTransferDirections(t *testing.T) {
 	}{
 		{"Transfer Out", nil, "", canonical.TxKindTransferOut},
 		{"Transfer In", nil, "", canonical.TxKindTransferIn},
-		{"Sale", nil, "", canonical.TxKindSell}, // 1099-B sale rows
+		{"Sale", nil, "", canonical.TxKindSell}, // statement sale rows
 
 		// The two that reach an outside bank. Left as journals these
 		// never entered the internal-transfer matcher, so the deposit

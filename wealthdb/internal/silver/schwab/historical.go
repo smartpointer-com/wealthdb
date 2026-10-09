@@ -13,7 +13,8 @@ import (
 
 // Historical-snapshot reader for the schwab-web silver
 // migration-0002 tables (`historical_position_snapshots`,
-// `historical_cash_balances`). Parsed from monthly statement
+// `historical_cash_balances`), with the holdings' open lots
+// (migration 0006, open_lots.go). Parsed from monthly statement
 // PDFs — see schwab-web/INTEROP.md §5. These complement
 // the api feed which carries only live (intra-day) positions
 // per dump run.
@@ -85,18 +86,24 @@ func (r *webReader) snapshotsHistorical(
 // instrument dimension whenever an api position references the
 // same instrument.
 //
-// market_value, cost_basis, and accrued_interest are forwarded;
-// quantity and market_price land in the payload via the silver
-// row.
+// quantity, market_value and accrued_interest are forwarded. The book
+// value is the printed cost_basis; where a holding prints none but
+// states its market value and unrealized gain, it is their difference.
+// A holding's open lots (`open_lots`) follow it into the same batch,
+// and the earliest lot's acquired date is the holding's.
 func (r *webReader) appendHistoricalPositions(
 	ctx context.Context,
 	w canonical.Window,
 	getBatch func(int64) *canonical.SnapshotBatch,
 	bridge map[string]string,
 ) error {
+	lots, err := r.openLotsInWindow(ctx, w)
+	if err != nil {
+		return err
+	}
 	const q = `
 SELECT as_of_date, account_external_id, instrument_key,
-       quantity, market_price, market_value, cost_basis,
+       quantity, market_value, cost_basis,
        unrealized_gain_loss, accrued_interest, payload
   FROM historical_position_snapshots
  WHERE as_of_date BETWEEN ? AND ?`
@@ -108,13 +115,13 @@ SELECT as_of_date, account_external_id, instrument_key,
 
 	for rows.Next() {
 		var (
-			asOf                                          int64
-			suffix, instrumentKey, payload                string
-			quantity, marketPrice, marketValue, costBasis sql.NullFloat64
-			unrealized, accrued                           sql.NullFloat64
+			asOf                             int64
+			suffix, instrumentKey, payload   string
+			quantity, marketValue, costBasis sql.NullFloat64
+			unrealized, accrued              sql.NullFloat64
 		)
 		if err := rows.Scan(&asOf, &suffix, &instrumentKey,
-			&quantity, &marketPrice, &marketValue, &costBasis,
+			&quantity, &marketValue, &costBasis,
 			&unrealized, &accrued, &payload); err != nil {
 			return err
 		}
@@ -160,8 +167,18 @@ SELECT as_of_date, account_external_id, instrument_key,
 			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
 			Payload:              json.RawMessage(payload),
 		}
-		pos.SetBookValue(silver.DecimalPtrFromNullFloat(costBasis), statementBasis)
+		if costBasis.Valid {
+			pos.SetBookValue(silver.DecimalPtrFromNullFloat(costBasis), statementBasis)
+		} else {
+			short := quantity.Valid && quantity.Float64 < 0
+			pos.SetBookValue(basisFromOpenPL(pos.MarketValue, unrealized, short), derivedBasis)
+		}
+		held := lots[holdingKey{asOf, suffix, instrumentKey}]
+		pos.AcquisitionDate = earliestAcquired(held)
 		batch.Positions = append(batch.Positions, pos)
+		for _, l := range held {
+			batch.PositionLots = append(batch.PositionLots, l.change(asOf, hash, instrumentKey))
+		}
 	}
 	return rows.Err()
 }

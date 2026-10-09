@@ -169,14 +169,15 @@ IRS-level categorisation.
 
 **The 1099-B parser lives in silver** (`source='form_1099b'`,
 DESIGN.md §6a): per-lot proceeds, cost basis, acquisition date,
-term, and wash-sale flag land in the row `payload`. Gold ingests
-each lot as a `sell` transaction, authoritative for sales within its
-tax year (see §8). The lot detail stays in the transaction's
-`payload`; gold has no lot table. Silver also keeps the 1099-B lots,
-and the realized lots of the Year-End Summary and the Gain/Loss
-Report, in `closed_lots` (DESIGN.md §9.2); gold does not read it yet.
-Remaining 1099 sections (DIV / INT / OID) are unparsed. **Do not**
-modify the api silver — the data simply isn't in the api.
+term, and wash-sale flag land in the row `payload`. Silver also keeps
+the 1099-B lots, and the realized lots of the Year-End Summary and the
+Gain/Loss Report, in `closed_lots` (DESIGN.md §9.2). Gold reads
+`closed_lots` into its realized lots, every tax year, and marks one
+document per account and tax year as primary (see §8.1). The
+`form_1099b` rows of `transactions` do not reach gold's transactions;
+the statement and history feeds carry the sales. Remaining 1099
+sections (DIV / INT / OID) are unparsed. **Do not** modify the api
+silver — the data simply isn't in the api.
 
 ## 5. No live position snapshots in web silver
 
@@ -188,8 +189,8 @@ the per-statement holdings parsed from the statement PDFs
 statement; a second statement for the same account and period end
 does not overwrite them. The 2020-2024 statements also print each holding's
 tax lots, which silver keeps in `open_lots` (DESIGN.md §9.1); gold
-does not read them yet. The 1099-B parser (§4) yields sale lots, not
-positions.
+reads them as the holding's open lots, beside its position row. The
+1099-B parser (§4) yields sale lots, not positions.
 
 ### Gold-layer mitigation
 
@@ -224,9 +225,9 @@ the web feed is and isn't carrying:
 | Gap | Impact on gold |
 | --- | --- |
 | pdf_parsers occasionally returns `amount=None` on Sale rows | A handful of missing transactions per year; gold can detect via a row-count sanity check |
-| Overlapping transaction sources (`statement_pdf` + `tx_history_json` + `form_1099b`) | Same logical event can land more than once with different synthetic `activity_id`s. Gold dedupes statement↔tx-history by (account, timestamp, amount, ±description) preferring `tx_history_json`, and lets `form_1099b` supersede sales in its tax year (§8) |
+| Overlapping transaction sources (`statement_pdf` + `tx_history_json` + `form_1099b`) | Same logical event can land more than once with different synthetic `activity_id`s. Gold dedupes statement↔tx-history by (account, timestamp, amount, ±description) preferring `tx_history_json`, and leaves `form_1099b` out of its transactions (§8.1) |
 | Per-row "More"-modal data may be absent | Captured by default (~1 click/transaction); `--no-more-detail` opts out. When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
-| `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold must bridge name → instrument (its symbol/CUSIP map), §8 |
+| `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold reads the name as a ticker or an option contract and bridges it like any web key (§8.1) |
 | `third_party_distribution` cash transfers may overlap a statement cash debit | Gold dedupes cash distributions against external flows; securities distributions are new data (§8) |
 | `account_number_full` is absent for accounts with no parseable (or conflicting) statement headers | Gold falls back to suffix matching for those accounts (see §1) |
 
@@ -234,44 +235,38 @@ the web feed is and isn't carrying:
 
 ## 8. Gold-layer hand-off: the 1099-B and distribution sources
 
-The gold reader
-(`wealthdb/internal/silver/schwab/web_reader.go`) consumes both
-sources: `supersedeSalesWith1099B` makes the 1099-B authoritative
-for sales within a covered `(account, tax_year)` (dropping the
-statement / tx-history sells in that calendar year), and
+The gold adapter (`wealthdb/internal/silver/schwab/`) reads the
+1099-B lots from `closed_lots` as realized lots and leaves the
+`form_1099b` transaction rows out (§8.1).
 `supersedeStatementCashWithDistributions` makes a cash
 distribution authoritative over a matching statement / tx-history
 cash debit. Securities transfers route through
 `externalFlowKinds`, drawing their net-flow magnitude from
 `market_value` / `cash_amount`.
 
-### 8.1 `form_1099b` — authoritative-for-sales within its tax year
+### 8.1 `form_1099b` — realized lots, not transactions
 
-The 1099-B is the complete, cost-basis-bearing record of sales. The
-`statement_pdf` and `tx_history_json` feeds carry sales too (partially
-— the statement parser misses most real sales), so the three overlap
-and must not be summed.
+A 1099-B lot is a tax record, not a cash movement. A closed short
+prints the premium of its opening sale as proceeds on the closing
+date, and an order filled in several lots prints as several sales.
+The `statement_pdf` and `tx_history_json` feeds book each sale as
+cash, once.
 
-- **Precedence.** Within a `(account, tax_year)` that has any
-  `form_1099b` rows, `form_1099b` is authoritative for **sales**:
-  drop `statement_pdf` / `tx_history_json` rows that map to `TxKindSell`
-  whose `timestamp` falls in that calendar year, and use the
-  `form_1099b` lots instead. Outside covered tax years, keep the
-  existing feeds. (This runs *after* the JSON-authoritative splice
-  and the cross-feed external-flow dedup, as a third stage.)
-- **Cost basis.** Each lot's `payload` carries `proceeds`,
-  `cost_basis` (nullable — `null` means Schwab did not report it; see
-  the `basis_not_shown` / `noncovered` flags + `cost_basis_raw`),
-  `acquired_date` (ISO, `"Various"`, or null), `term`, and
-  `wash_sale_disallowed`. Surface proceeds as the sale net amount
-  (canonical `TxKindSell` → positive) and basis as the lot's
-  acquisition outlay.
+- **Transactions.** Gold's transactions take sales from the statement
+  and history feeds only. The `form_1099b` rows of `transactions` do
+  not enter.
+- **Realized lots.** Gold reads every row of `closed_lots`: the
+  1099-B, the Year-End Summary and the Gain/Loss Report, every tax
+  year. Per account and tax year, the best document kind present is
+  primary (1099-B, then Year-End Summary, then Gain/Loss Report), and
+  within it the latest document. Figures map as printed; a `null`
+  cost basis stays NULL.
 - **Instrument resolution.** `form_1099b` rows have **no ticker or
   CUSIP** — `instrument_key` is `NULL`, the only identifier is
-  `payload.security_name`. Gold must bridge the name to an instrument
-  via its existing symbol/name map; lots that don't resolve should be
-  surfaced as name-keyed rather than dropped.
-- **Tax year** is in `payload.tax_year` (form content, not filename).
+  `security_name`. Gold reads a plain ticker or an option contract as
+  that key and bridges it like any web key. A name of neither shape
+  becomes the lot's instrument hint rather than being dropped.
+- **Tax year** is the form's `tax_year` (form content, not filename).
 
 ### 8.2 `third_party_distribution` — transfer flows out
 
@@ -298,12 +293,9 @@ and must not be summed.
   `sourceThirdPartyDistribution = "third_party_distribution"`
   constants sit alongside `sourceStatementPDF` / `sourceTxHistoryJSON`.
 - `webKind` maps `"Transfer Out"` / `"Transfer In"` →
-  `TxKindTransferOut` / `TxKindTransferIn`; `"Sale"` → `TxKindSell`
-  covers the 1099-B rows.
-- `supersedeSalesWith1099B` runs in `transactionsBeforeAPIStart`
-  beside `spliceNonExternalToJSON` + `dedupeCrossFeedExternalFlows`:
-  within any `(account, tax_year)` that has `form_1099b` lots, other
-  feeds' sells are dropped and the 1099-B lots (with basis) kept.
+  `TxKindTransferOut` / `TxKindTransferIn`.
+- `transactionsBeforeAPIStart` skips the `form_1099b` rows;
+  `RealizedLots` (`realized.go`) reads `closed_lots`.
 - `third_party_distribution` rows route through `externalFlowKinds`
   so they affect `net_flow`; securities transfers carry a position
   effect and cash transfers get the dedup-against-statement

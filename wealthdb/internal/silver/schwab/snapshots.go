@@ -259,12 +259,23 @@ type schwabPositionPayload struct {
 // silver `instruments` table; empty when --with-instruments was
 // never used) fills in InstrumentChange.Name when Schwab's per-
 // position instrument descriptor has no description (typical for
-// EQUITY rows out of /accounts).
+// EQUITY rows out of /accounts). A position's book value is its
+// market value less its open P/L (apiBookValue).
 func (c *apiReader) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instrumentNames map[string]string) error {
-	const q = `
-SELECT snapshot_at, account_external_id, instrument_key, payload
+	// Silver migration 0005 promoted the open P/L; an older silver
+	// states none, and its positions carry no book value.
+	hasOpenPL, err := silver.HasColumn(ctx, c.db, "positions", "unrealized_gain_loss")
+	if err != nil {
+		return err
+	}
+	openPLCol := "NULL"
+	if hasOpenPL {
+		openPLCol = "unrealized_gain_loss"
+	}
+	q := fmt.Sprintf(`
+SELECT snapshot_at, account_external_id, instrument_key, payload, %s
   FROM positions
- WHERE snapshot_at BETWEEN ? AND ?`
+ WHERE snapshot_at BETWEEN ? AND ?`, openPLCol)
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendPositions: %w", err)
@@ -276,8 +287,9 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 			snap          int64
 			extID, posKey string
 			payload       string
+			openPL        sql.NullFloat64
 		)
-		if err := rows.Scan(&snap, &extID, &posKey, &payload); err != nil {
+		if err := rows.Scan(&snap, &extID, &posKey, &payload, &openPL); err != nil {
 			return fmt.Errorf("appendPositions scan: %w", err)
 		}
 		batch, ok := byTime[snap]
@@ -331,7 +343,7 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 
 		quantity := pp.LongQuantity.Sub(pp.ShortQuantity)
 		instrExtIDPtr := &instrExtID
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    extID,
 			PositionKey:          posKey,
@@ -342,9 +354,24 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 			Quantity:             &quantity,
 			MarketValue:          pp.MarketValue,
 			Payload:              json.RawMessage(payload),
-		})
+		}
+		pos.SetBookValue(apiBookValue(pp, openPL), derivedBasis)
+		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
+}
+
+// apiBookValue is a position's cost basis from its market value and the
+// open P/L silver promotes beside it: the long side's P/L, or the short
+// side's when the position is short. A row long and short at once
+// states the P/L of its short side only, which says nothing of the
+// whole; it carries no basis.
+func apiBookValue(pp schwabPositionPayload, openPL sql.NullFloat64) *canonical.Decimal {
+	long, short := pp.LongQuantity.IsPositive(), pp.ShortQuantity.IsPositive()
+	if long && short {
+		return nil
+	}
+	return basisFromOpenPL(pp.MarketValue, openPL, short)
 }
 
 // latestKnownInstrumentNames returns symbol → human-readable name

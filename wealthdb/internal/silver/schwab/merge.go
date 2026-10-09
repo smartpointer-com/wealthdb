@@ -23,8 +23,9 @@ import (
 //	    dimensions come from api.
 //	  - Web emits AccountChange rows (rewritten to api hashValue)
 //	    so its `nickname` flows into gold via per-column upsert.
-//	  - Web's historical position snapshots and historical cash
-//	    balances stream alongside api's live ones — different
+//	  - Web's historical position snapshots (with their open
+//	    lots) and historical cash balances stream alongside
+//	    api's live ones — different
 //	    snapshot timestamps (statement period-ends vs live dump
 //	    times) so they coexist under the gold PK.
 //
@@ -34,6 +35,10 @@ import (
 //	    below that cutoff, api only those at or above it.
 //	    INTEROP §2 documents why a per-row merge across the
 //	    boundary isn't safe.
+//
+//	RealizedLots
+//	  - Web only: the year-end documents' lots, every tax year,
+//	    with no cut at the api's coverage start (realized.go).
 //
 // Account identity: web stores the 3-to-5-digit account suffix;
 // api stores Schwab's opaque hashValue. The orchestrator builds
@@ -412,6 +417,18 @@ SELECT DISTINCT json_extract(payload,'$.instrument.symbol') AS sym,
 		}
 	}
 	return out, nil
+}
+
+// webInstrument is the gold instrument id of a web-side key: the api
+// CUSIP when the bridge knows the ticker, so the row lands on the
+// instruments row the api side registered (and its symbol, name and
+// asset class join in), else the key as stored. A CUSIP or an option
+// contract passes through unchanged.
+func webInstrument(key string, symbolToCUSIP map[string]string) string {
+	if cusip, ok := symbolToCUSIP[key]; ok {
+		return cusip
+	}
+	return key
 }
 
 // buildAccountBridge reads (hashValue, accountNumber) from api

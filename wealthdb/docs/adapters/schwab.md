@@ -14,8 +14,9 @@ defined in [../DESIGN.md](../DESIGN.md) §6. When both subsources
 are configured the orchestrator (`merge.go`) splices them: web
 backfills pre-api-coverage transactions and contributes
 per-statement-period historical positions and cash balances that
-api doesn't surface at all. See §8 below for the merge contract
-and §1 below for the suffix↔hashValue bridge.
+api doesn't surface at all. See §7 below for the merge contract,
+§7.1 for the suffix↔hashValue bridge and §8 for cost basis and tax
+lots.
 
 Single-path mode (`"kind": "schwab", "path": ...`) is preserved
 for users with only the api silver — it's treated as api-only
@@ -36,6 +37,8 @@ and skips the orchestrator's merge layer.
 | `account_external_id` | Schwab `hashValue` | Opaque account hash, stable per Schwab developer-app. Plaintext account number stays in payload. |
 | `instrument_external_id` | CUSIP if present, else symbol | Mirrors silver's `instrument_key`. |
 | `transaction_external_id` | Schwab `activityId` | Already globally unique within Schwab. |
+| `realized_lot_external_id` | web `closed_lots` key | A hash of `(logical_doc_key, document_kind, lot_index)`: stable across loads, one per copy of a lot. |
+| `position_lots.lot_key` | web `open_lots.lot_index` | The lot's place in print order under its holding. |
 
 ## 3. Coverage matrix
 
@@ -45,9 +48,11 @@ and skips the orchestrator's merge layer.
 | `accounts` | `accounts` (kind=`brokerage`) | Account hash is `account_external_id`. |
 | `user_preference` | — | Schwab-internal UI/streamer preferences; no portfolio relevance. Likely permanent omit. |
 | `account_balances` | `cash_balances` | One row per `balance_kind`; cash-relevant fields only. |
-| `positions` | `positions`; `CASH_EQUIVALENT` rows → `cash_balances` | See §4 below. |
+| `positions` | `positions`; `CASH_EQUIVALENT` rows → `cash_balances` | See §4 below; book value in §8. |
 | `open_orders` | — | Operational state, not portfolio state. Deferred. |
 | `transactions` | `transactions` | See `kind` mapping in §5. |
+
+The web silver's tables are in §7 and §8.
 
 ## 4. Position routing
 
@@ -170,7 +175,8 @@ transfer, a corporate action, an expiry) stays `other`.
 ## 7. Web subsource (schwab-web)
 
 When the `schwab-web` subsource is configured, the adapter
-contributes four things the api silver doesn't have:
+contributes what the api silver doesn't have. The tax lots, open
+and realized, are in §8.
 
 - **Historical position snapshots.** `historical_position_snapshots`
   carries per-statement-period holdings (one row per (period_end,
@@ -196,7 +202,9 @@ contributes four things the api silver doesn't have:
 - **Pre-api transaction backfill.** Web's transactions reach
   ~3-4y back (limited by Schwab's transaction-history export);
   the api only covers ~2y. The adapter emits web transactions
-  strictly older than each account's api-coverage-start.
+  strictly older than each account's api-coverage-start. The
+  statement and history feeds carry the sales; the `form_1099b`
+  rows stay out of the transactions (§8.3).
 - **Nickname.** Web's `accounts.nickname` is the account
   label as Schwab renders it in the UI (e.g. an account-type
   hint like "IRA Account …NNN"). Promoted onto AccountChange so
@@ -266,7 +274,95 @@ row per account and period end, owned by the first statement that
 prints it (schwab-web DESIGN.md §4.4 and §4.5). wealthdb doesn't need
 to dedupe further.
 
-## 8. Open questions
+## 8. Cost basis and tax lots
+
+Schwab's basis is the sum of a holding's tax lots, commissions
+included. Every book value carries its stamp (DESIGN.md §7.4).
+
+### 8.1. Positions
+
+| Source | `book_value` | Stamp |
+| --- | --- | --- |
+| api `positions` | market value − `unrealized_gain_loss` | derived, lots, included |
+| web statement holdings | `cost_basis` as printed | stated, lots, included |
+| web statement holdings without `cost_basis` | market value − `unrealized_gain_loss` | derived, lots, included |
+
+- The api's open P/L is the long side's, or the short side's when
+  the position is short. A short position's basis is what the short
+  sale raised. It is negative, like the position and like the basis
+  the statements print for a short holding.
+- An api row that is long and short at once has no basis: its P/L
+  covers one side only.
+- A silver from before api migration 0005 has no
+  `unrealized_gain_loss`. Its positions have no basis.
+- A statement holding's `acquisition_date` is its earliest lot's
+  acquired date. Holdings without lots have none.
+
+### 8.2. Open lots
+
+`open_lots` holds the lots the 2020-2024 statements print under each
+holding. Each lot lands in `position_lots` beside its holding's
+position row: same period end, bridged account and position key
+(the holding's `instrument_key`).
+
+- `lot_key` is the lot's place in print order (`lot_index`).
+- `quantity` and `book_value` are as printed. A short lot prints
+  both negative.
+- A lot whose basis Schwab does not know ("N/A") has no book value
+  and no `basis_origin`.
+- `term` is `short` or `long` where the statement prints it.
+  `covered` stays NULL: statements do not say.
+- The payload keeps the endnote markers, the cost per share, the
+  unrealized gain, the holding days and the raw line.
+
+### 8.3. Realized lots
+
+`closed_lots` holds the realized lots of three year-end documents.
+The adapter returns every one of them as a realized lot. They are
+not cut at the api's coverage start, so every tax year reaches gold.
+A lot of an account the bridge does not resolve (§7.1) is dropped
+and counted in the load log.
+
+The same sale appears in several documents, so one set is primary
+per account and tax year:
+
+1. The best document kind present: the 1099-B, then the Year-End
+   Summary, then the Gain/Loss Report.
+2. Within that kind, the latest document. A corrected 1099 repeats
+   the original. A Year-End Summary can arrive twice, as its own PDF
+   and inside the 1099 Composite. The document date comes from
+   `logical_doc_key`. Two copies dated alike go to the greater key.
+
+The figures map as printed:
+
+- Quantity, proceeds and cost basis are magnitudes. A NULL cost
+  basis stays NULL.
+- The gain is signed. The 1099-B prints none, so it is NULL there.
+- `Various` sets `acquired_various` and leaves the date NULL.
+- The tax year is the document's, else the disposal year.
+- The payload is the silver row's own, including a bond's adjusted
+  basis on the Year-End Summary.
+
+Instruments resolve the way the web transactions do: a ticker goes
+through the symbol→CUSIP bridge, anything else stays as stored.
+
+- The Year-End Summary keys a lot by CUSIP, the api's own key.
+- The Gain/Loss Report keys a lot by ticker.
+- Both key an option by its contract, as the statements print it.
+- A 1099-B lot states only `security_name`. A plain ticker or an
+  option contract is read as that key (`securityNameKey`). An option
+  keeps its contract and does not resolve to its underlying: the lot
+  and its gain are the contract's.
+- A name of neither shape resolves to nothing. It becomes the
+  `instrument_hint`, which a config link can close.
+
+The `form_1099b` rows of the web `transactions` table do not enter
+gold's transactions. A 1099-B lot is a tax record, not a cash
+movement. It prints a closed short's opening premium as proceeds on
+the closing date, and an order filled in several lots as several
+sales. The statement and history feeds book each sale as cash once.
+
+## 9. Open questions
 
 - **Tax withholding on dividends.** Schwab reports the withholding
   inside the `DIVIDEND_OR_INTEREST` payload's `transferItems`. The
@@ -275,23 +371,9 @@ to dedupe further.
   if tax-lot work needs the withholding as a distinct event.
 - **`open_orders` projection.** Reserved for a future `wealthdb
   orders` subcommand; no schema work needed in gold yet.
-- **Tax lots.** Per
-  [INTEROP §4](../../../collectors/schwab-web/INTEROP.md#4-tax-form-structure-has-no-api-equivalent),
-  the 1099 Composite carries lot-level detail (cost basis, term,
-  wash-sale flag) the api doesn't surface. The web silver's
-  `form_1099b` sale rows are ingested as transactions
-  (`web_reader.go`). Silver also keeps the realized lots in
-  `closed_lots`, the statement lots in `open_lots` and the cost-basis
-  methods in `cost_basis_methods` (schwab-web DESIGN.md §9); gold
-  reads none of them (DESIGN.md §13.4). The `form_1099b` rows carry no
-  `instrument_key`, only `security_name`, which
-  `securityNameInstrument` reads in its two shapes: a plain ticker
-  resolves through the same symbol→CUSIP bridge as any web row, and an
-  OCC-style option resolves to its UNDERLYING with `option` in
-  `transactions.vehicle` (DESIGN.md §10.8) — the exposure a trade
-  touched is the underlying's, and how it was held is the other
-  dimension. A name of neither shape states no instrument and offers
-  itself as `instrument_hint` instead.
+- **Cost-basis methods.** A Gain/Loss Report prints the account's
+  relief method per asset class (`cost_basis_methods`, schwab-web
+  DESIGN.md §9.3). Gold does not map it yet.
 - **Explicit suffix→hashValue override config.** The bridge is
   auto-only. The exact tier (§7.1) resolves any realistic suffix
   collision once `account_number_full` is present, so an

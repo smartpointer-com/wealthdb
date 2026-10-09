@@ -8,7 +8,6 @@ import (
 	"math"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -20,9 +19,11 @@ import (
 //   - Backfilling transactions older than each account's
 //     api-coverage-start (Trader API only goes back ~2y; web
 //     statements reach further).
-//   - Providing per-statement-period position snapshots and cash
-//     balances that api doesn't surface at all (api emits only
-//     live snapshots per dump run).
+//   - Providing per-statement-period position snapshots, their
+//     open lots and cash balances that api doesn't surface at all
+//     (api emits only live snapshots per dump run).
+//   - Providing the realized lots of the year-end tax documents
+//     (realized.go).
 //   - Supplying the human-readable `nickname` Schwab attaches to
 //     each account.
 //
@@ -277,12 +278,19 @@ func (r *webReader) transactionsBeforeAPIStart(
 	// ORDER BY makes the cross-feed dedup below deterministic (its greedy
 	// first-fit consumes JSON legs in a stable order). `source` distinguishes
 	// the two overlapping sub-feeds (statement_pdf vs tx_history_json).
+	//
+	// The form_1099b rows stay out. A 1099-B lot is a tax record, not a
+	// cash movement: a short closed prints the premium of its opening sale
+	// as proceeds on the closing date, and an order filled in several lots
+	// prints as several sales. The statement and history feeds book every
+	// sale as cash; the lots reach gold as realized lots (realized.go).
 	const q = `
 SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payload, source
   FROM transactions
  WHERE timestamp BETWEEN ? AND ?
+   AND source <> ?
  ORDER BY timestamp, activity_id`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End, sourceFORM1099B)
 	if err != nil {
 		return nil, fmt.Errorf("schwab-web Transactions: %w", err)
 	}
@@ -314,38 +322,9 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			continue
 		}
 		var instrPtr *string
-		var vehicle canonical.Vehicle
-		var hint string
-		resolve := func(sym string) *string {
-			// Web stores the ticker as instrument_key. Translate
-			// to the api-side CUSIP when known so the row lands
-			// on the same gold instruments row the api side
-			// registered (and thus the symbol/name/asset_class
-			// columns populate via the LEFT JOIN). Web-only
-			// tickers fall through to using the ticker as-is.
-			if cusip, ok := symbolToCUSIP[sym]; ok {
-				sym = cusip
-			}
-			return &sym
-		}
 		if instrumentKey.Valid && instrumentKey.String != "" {
-			instrPtr = resolve(instrumentKey.String)
-		} else if sec := extractWebTxSecurityName(payload); sec == "" {
-			// nothing stated: no hint to offer
-		} else if sym, isOption, ok := securityNameInstrument(sec); !ok {
-			// A name of neither shape. Stated so a config link can
-			// close it rather than leaving the row mute.
-			hint = sec
-		} else {
-			// The 1099-B road: the feed states the instrument by NAME
-			// and nothing else. An option resolves to its underlying
-			// and says so in the vehicle — the exposure it touched is
-			// the underlying's, and the asset class is left to that
-			// instrument rather than restated here.
-			instrPtr = resolve(sym)
-			if isOption {
-				vehicle = canonical.VehicleOption
-			}
+			id := webInstrument(instrumentKey.String, symbolToCUSIP)
+			instrPtr = &id
 		}
 		netAmount, quantity, price := extractWebTxAmounts(payload)
 		description := extractWebTxDescription(payload)
@@ -355,8 +334,6 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			OccurredAt:            ts,
 			AccountExternalID:     hash,
 			InstrumentExternalID:  instrPtr,
-			Vehicle:               vehicle,
-			InstrumentHint:        hint,
 			Kind:                  txKind,
 			// Currency unknown from the web row — Schwab statements
 			// don't structure it. Default to USD: Schwab
@@ -380,15 +357,12 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 	//   2. A third_party_distribution cash transfer is authoritative over a
 	//      matching statement/tx-history cash debit (it names the counterparty);
 	//      run before the PDF↔JSON dedup so the final external set is correct.
-	//   3. form_1099b is authoritative for sales within its covered tax years;
-	//      the superseded statement/tx-history sells are dropped.
-	//   4. Remaining statement_pdf ↔ tx_history_json external flows are matched
+	//   3. Remaining statement_pdf ↔ tx_history_json external flows are matched
 	//      1:1 so net_flow isn't double-counted.
 	// Securities distributions are new data (no other feed records them) and
 	// pass straight through as TxKindTransferOut external flows.
 	built = spliceNonExternalToJSON(built, jsonThrough)
 	built = supersedeStatementCashWithDistributions(built)
-	built = supersedeSalesWith1099B(built)
 	out := canonical.TransactionBatch{Transactions: dedupeCrossFeedExternalFlows(built)}
 	return silver.NewTransactionStream(out), nil
 }
@@ -466,10 +440,10 @@ type builtWebTx struct {
 
 // schwab-web silver `source` discriminators for the transaction sub-feeds.
 // statement_pdf and tx_history_json overlap on the same economic events and are
-// reconciled against each other (splice + cross-feed dedup). form_1099b is the
-// authoritative-for-sales tax-lot feed (supersedes the other two for sells in its
-// covered tax years), and third_party_distribution carries transfer flows out
-// (securities = new data; cash = deduped against statement debits). See INTEROP §8.
+// reconciled against each other (splice + cross-feed dedup). form_1099b holds
+// the 1099-B lots, which reach gold as realized lots rather than transactions,
+// and third_party_distribution carries transfer flows out (securities = new
+// data; cash = deduped against statement debits). See INTEROP §8.
 const (
 	sourceStatementPDF           = "statement_pdf"
 	sourceTxHistoryJSON          = "tx_history_json"
@@ -568,52 +542,6 @@ func crossFeedMatch(dayA int64, amtA float64, dayB int64, amtB float64) bool {
 		eps = r
 	}
 	return absInt64(dayA-dayB) <= crossFeedDayWindow && math.Abs(amtA-amtB) <= eps
-}
-
-// supersedeSalesWith1099B applies the 1099-B authoritative-for-sales precedence
-// (INTEROP §8.1): within any (account, tax_year) that has at least one form_1099b
-// lot, the 1099-B is the complete cost-basis-bearing record of sales, so the
-// statement_pdf / tx_history_json copies of those sales (anything mapping to
-// TxKindSell whose OccurredAt calendar year equals the covered tax_year) are
-// dropped and the 1099-B lots kept instead. Outside covered (account, tax_year)
-// pairs every feed passes through untouched. form_1099b rows carry no ticker —
-// instrument_key is NULL and the only identifier is payload.security_name — so
-// unresolved lots are surfaced name-keyed (via Description), never dropped.
-func supersedeSalesWith1099B(built []builtWebTx) []builtWebTx {
-	// Covered (account, tax_year). tax_year comes from form content
-	// (payload.tax_year), not the row timestamp, because a lot sold in
-	// December can land on the next year's form.
-	type cover struct {
-		acct string
-		year int
-	}
-	covered := map[cover]bool{}
-	for i := range built {
-		b := &built[i]
-		if b.source != sourceFORM1099B {
-			continue
-		}
-		if y, ok := extractTaxYear(string(b.tx.Payload)); ok {
-			covered[cover{acct: b.tx.AccountExternalID, year: y}] = true
-		}
-	}
-	if len(covered) == 0 {
-		return built
-	}
-
-	out := make([]builtWebTx, 0, len(built))
-	for i := range built {
-		b := built[i]
-		if (b.source == sourceStatementPDF || b.source == sourceTxHistoryJSON) &&
-			b.tx.Kind == canonical.TxKindSell {
-			year := time.Unix(b.tx.OccurredAt, 0).UTC().Year()
-			if covered[cover{acct: b.tx.AccountExternalID, year: year}] {
-				continue // 1099-B is authoritative for sales in this tax year
-			}
-		}
-		out = append(out, b)
-	}
-	return out
 }
 
 // supersedeStatementCashWithDistributions applies the third_party_distribution
@@ -997,32 +925,6 @@ func webNarrative(payload string, security *string) *string {
 		movement = "" // the narrative already leads with it
 	}
 	return silver.StrPtrIfNonEmpty(strings.TrimSpace(movement + " " + sec))
-}
-
-// extractWebTxSecurityName is the 1099-B feed's only statement of what
-// a row traded. Empty for every other web source, which is what makes
-// it safe to reach for whenever no instrument_key was stored.
-func extractWebTxSecurityName(payload string) string {
-	var p struct {
-		SecurityName string `json:"security_name"`
-	}
-	_ = json.Unmarshal([]byte(payload), &p)
-	return strings.TrimSpace(p.SecurityName)
-}
-
-// extractTaxYear reads payload.tax_year off a form_1099b row. The tax year is
-// form content (the year the lot is REPORTED under), not derivable from the row
-// timestamp, because a December sale can land on the following year's form.
-// Returns ok=false when the key is absent/null so an unparseable lot simply
-// doesn't establish a covered (account, tax_year) — it never silently coerces.
-func extractTaxYear(payload string) (int, bool) {
-	var p struct {
-		TaxYear *int `json:"tax_year"`
-	}
-	if err := json.Unmarshal([]byte(payload), &p); err != nil || p.TaxYear == nil {
-		return 0, false
-	}
-	return *p.TaxYear, true
 }
 
 // distributionIsCash reports whether a third_party_distribution row is a cash
