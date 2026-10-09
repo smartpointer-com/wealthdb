@@ -70,6 +70,8 @@ var commandHelps = []commandHelp{
 		short: "what is held and what it is worth, as of a date: global, sources, portfolios, accounts, positions"},
 	{name: "returns", args: "<view>", group: "report",
 		short: "how it performed over a window, as TWR / MWR %: global, sources, portfolios, accounts"},
+	{name: "gains", args: "<view>", group: "report",
+		short: "what was gained or lost (P&L), realized and unrealized, over a window: summary, sources, portfolios, accounts, positions, realized, lots, coverage"},
 	{name: "transactions", args: "[FROM [TO]]", group: "report",
 		short: "the individual booked lines over a window; totals by kind are the three reports below"},
 	{name: "spending", args: "<view>", group: "report",

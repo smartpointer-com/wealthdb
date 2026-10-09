@@ -64,8 +64,9 @@ type request struct {
 	method, annualize, inception string // returns
 	netting                      bool   // returns
 
-	withCash    bool // holdings positions
-	newestFirst bool // transactions
+	withCash     bool // holdings positions
+	newestFirst  bool // transactions, gains realized
+	allDocuments bool // gains realized: every copy of a sale, not the primary set
 }
 
 // newReport wraps a typed registry and fetch function as a report.
