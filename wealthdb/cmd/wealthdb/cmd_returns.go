@@ -234,6 +234,8 @@ func buildReturnColumnRegistry(outCcy string) []columnSpec[gold.ReturnRow] {
 			Extract: func(r gold.ReturnRow) string { return formatCents(r.EndValue) }},
 		{Name: "net_flow", Header: "net_flow_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.ReturnRow) string { return formatCents(r.NetFlow) }},
+		{Name: "gain", Header: "gain_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.ReturnRow) string { return formatCents(r.Gain()) }},
 		{Name: "twr", Header: "twr_%", Align: output.AlignRight,
 			Extract: func(r gold.ReturnRow) string { return formatPct(r.TWR) }},
 		{Name: "twr_annualized", Header: "twr_ann_%", Align: output.AlignRight,
@@ -250,7 +252,7 @@ func buildReturnColumnRegistry(outCcy string) []columnSpec[gold.ReturnRow] {
 // defaultReturnColumnsFor adapts the default column set to --method: show the
 // twr column unless mwr-only, and the mwr column unless twr-only.
 func defaultReturnColumnsFor(method string) []string {
-	out := []string{"silver_source", "entity", "period", "start_value", "end_value", "net_flow"}
+	out := []string{"silver_source", "entity", "period", "start_value", "end_value", "net_flow", "gain"}
 	if method != "mwr" {
 		out = append(out, "twr")
 	}
@@ -266,6 +268,16 @@ func formatPct(p *float64) string {
 	if p == nil {
 		return "n/a"
 	}
+	return formatPctOrBlank(p)
+}
+
+// formatPctOrBlank is formatPct for a ratio whose absence needs no
+// reason, such as an unrealized gain on a holding with no cost basis:
+// the cell stays empty.
+func formatPctOrBlank(p *float64) string {
+	if p == nil {
+		return ""
+	}
 	return fmt.Sprintf("%.2f", *p*100)
 }
 
@@ -276,7 +288,8 @@ func returnsUsage() string {
 
 Time-weighted (TWR) and money-weighted (MWR/XIRR) returns. Grain is the
 positional <view>; everything else is a flag. Returns use historic FX
-and are net of fees and taxes paid (after-tax).
+and are net of fees and taxes paid (after-tax). The gain column is the
+money behind the percentages: end value − start value − net flow.
 
 Views (coarsest → finest):
   global       the whole tracked portfolio

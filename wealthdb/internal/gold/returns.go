@@ -1102,6 +1102,19 @@ func parseFloatPtr(s *string) (float64, bool) {
 	return parseFloat64(*s)
 }
 
+// Gain is the money the row's percentages describe: end value − start
+// value − net external flow, so capital added counts as no gain. Nil
+// when any of the three is missing.
+func (r ReturnRow) Gain() *string {
+	v0, ok0 := parseFloatPtr(r.StartValue)
+	v1, ok1 := parseFloatPtr(r.EndValue)
+	f, okF := parseFloatPtr(r.NetFlow)
+	if !ok0 || !ok1 || !okF {
+		return nil
+	}
+	return decStr(v1 - v0 - f)
+}
+
 func decStr(v float64) *string {
 	s := strconv.FormatFloat(v, 'f', 2, 64)
 	return &s

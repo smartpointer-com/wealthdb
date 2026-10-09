@@ -114,6 +114,28 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 			Extract: func(r gold.PositionRow) string { return formatCents(r.MarketValue) }},
 		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PositionRow) string { return formatCents(r.ValueOutCcy) }},
+		// The cost basis the source states (gold's book_value) and what
+		// follows from it, defined in docs/GAINS.md. Blank on a cash
+		// row and wherever the source states no basis; basis_stamp says
+		// which notion of basis the figure is.
+		{Name: "cost_basis", Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.PositionRow) string { return formatCents(r.BookValue) }},
+		{Name: "cost_basis_ccy", Header: "cost_basis_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.PositionRow) string { return formatCents(r.BookValueOutCcy) }},
+		{Name: "unrealized_gain", Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.PositionRow) string { return formatCents(r.UnrealizedGain) }},
+		{Name: "unrealized", Header: "unrealized_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.PositionRow) string { return formatCents(r.UnrealizedOutCcy) }},
+		{Name: "unrealized_pct", Align: output.AlignRight,
+			Extract: func(r gold.PositionRow) string { return formatPctOrBlank(r.UnrealizedRatio) }},
+		{Name: "basis_stamp", Align: output.AlignLeft,
+			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.BasisStamp) }},
+		{Name: "acquisition_date", Align: output.AlignLeft,
+			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.AcquisitionDate) }},
+		{Name: "accrued_interest", Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.PositionRow) string { return formatCents(r.AccruedInterest) }},
+		{Name: "clean_value", Align: output.AlignRight, Privacy: PrivacyMoney,
+			Extract: func(r gold.PositionRow) string { return formatCents(r.CleanValue) }},
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }},
 		{Name: "account_nickname", Align: output.AlignLeft,
@@ -175,8 +197,13 @@ Flags:
 Available columns:
   ` + joinColumnNames(registry) + `
 
-  (The 'value' column renders as 'value_<CCY>' in the header,
-   reflecting your -x/--currency choice.)
+  (The 'value', 'cost_basis_ccy' and 'unrealized' columns render as
+   'value_<CCY>', 'cost_basis_<CCY>' and 'unrealized_<CCY>', reflecting
+   your -x/--currency choice.)
+
+The cost basis columns are opt-in, e.g. -C +cost_basis,unrealized,basis_stamp.
+unrealized_gain is the clean value (market value less accrued interest)
+less the cost basis; 'wealthdb gains' reads it over a window.
 
 Default column set:
   ` + strings.Join(defaultColumns, ", ")
