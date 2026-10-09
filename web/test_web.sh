@@ -90,16 +90,16 @@ case "$p" in *[0-9]*) pass "has digit";; *) fail "has digit";; esac
 case "$p" in *[!A-Za-z0-9]*) pass "has special";; *) fail "has special";; esac
 if [ "${#p}" -ge 12 ]; then pass "length >= 12"; else fail "length >= 12"; fi
 
-echo "== _materialize_returns (stubbed engine) =="
+echo "== _materialize (stubbed engine) =="
 unset WEALTHDB_CONFIG
 rm -f "$tmp/engine-args"
-_materialize_returns 2>/dev/null
+_materialize 2>/dev/null
 args="$(cat "$tmp/engine-args" 2>/dev/null)"
 check     "invokes web-materialize"       "web-materialize" "$args"
 check_not "no -c without WEALTHDB_CONFIG" "-c"              "$args"
 WEALTHDB_CONFIG="/cfg/wealthdb.cfg"
 rm -f "$tmp/engine-args"
-_materialize_returns 2>/dev/null
+_materialize 2>/dev/null
 args="$(cat "$tmp/engine-args" 2>/dev/null)"
 check "passes -c with WEALTHDB_CONFIG" "-c"                "$args"
 check "passes the configured path"     "/cfg/wealthdb.cfg" "$args"
@@ -110,12 +110,12 @@ echo "== refresh wiring: materialize runs, and before the snapshot =="
 # Spy on the two steps in a subshell so the function overrides don't
 # leak into later tests. _load_config and the restart branch are
 # stubbed out (they need Docker); the assertion is purely about
-# web_refresh's ordering: returns materialization, THEN the snapshot.
+# web_refresh's ordering: materialization, THEN the snapshot.
 seq_file="$tmp/refresh-seq"
 : > "$seq_file"
 (
     _load_config()          { GOLD_DB="$tmp/gold.db"; }
-    _materialize_returns()  { echo materialize >> "$seq_file"; }
+    _materialize()          { echo materialize >> "$seq_file"; }
     _snapshot()             { echo snapshot    >> "$seq_file"; }
     _mtime()                { echo now; }
     _is_running()           { return 1; }

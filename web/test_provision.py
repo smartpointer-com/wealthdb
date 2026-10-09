@@ -1333,6 +1333,69 @@ for _name, _q in list(_cf_sql.items()) + list(_cf_twin_sql.items()):
             if f"{c} =" in _q or f"{c} IN" in _q]
     check(f"'{_name}' keys its predicates on ids, not labels", not _bad, _bad)
 
+section("the Gains dashboard")
+
+_gains_tiles = [t[0] for t in p.base_dashboards()["Gains"][2]]
+check("every Gains tile is defined",
+      bool(_gains_tiles) and all(n in CARDS for n in _gains_tiles),
+      [n for n in _gains_tiles if n not in CARDS])
+check("...and is placed once", len(set(_gains_tiles)) == len(_gains_tiles))
+_gn_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _gains_tiles if n in CARDS}
+check("every Gains tile is native over web_gains",
+      all("FROM web_gains" in q for q in _gn_sql.values()),
+      [n for n, q in _gn_sql.items() if "FROM web_gains" not in q])
+# The view carries a row set per currency, so a tile that skipped the
+# row filter would sum every currency at once.
+check("...and every read of it is held to the picked currency",
+      all(q.count("FROM web_gains") == q.count("AND currency = {{currency}}")
+          for q in _gn_sql.values()),
+      [n for n, q in _gn_sql.items()
+       if q.count("FROM web_gains") != q.count("AND currency = {{currency}}")])
+check("every Gains tile takes the four pickers",
+      all(dict(p.NATIVE_PARAM_TARGETS[n]).keys() ==
+          {p.GAINS_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
+           p.GAINS_TAX_WRAPPER_PARAM_ID} for n in _gains_tiles),
+      {n: [pid for pid, _t in p.NATIVE_PARAM_TARGETS.get(n, [])]
+       for n in _gains_tiles})
+# The '(all sources)' line is the whole the Source picker narrows away
+# from, so its arm of the union carries every filter but that one.
+_over_time = _gn_sql["Unrealized gain over time"]
+_arms = _over_time.split("UNION ALL")
+check("the over-time chart's whole-portfolio line ignores the Source picker",
+      len(_arms) == 2 and "{{source}}" in _arms[0]
+      and "{{source}}" not in _arms[1] and "{{tax_wrapper}}" in _arms[1],
+      _over_time)
+check("the winners and losers tables show ten rows each",
+      all(_gn_sql[n].rstrip().endswith("LIMIT 10")
+          for n in _gains_tiles if n.startswith(("Largest", "Best", "Worst"))))
+
+_gdash = p.dashboard_defs()
+check("the Gains dashboard has no privacy twin",
+      "Gains" in _gdash and _gdash["Gains"][2] is None
+      and "Gains" + p.PRIVACY_SUFFIX not in _gdash)
+check("...and no card has a privacy variant",
+      not [n for n in _gains_tiles if p.privacy_name(n) in CARDS])
+_gn_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Gains")]
+check("the Gains dashboard carries four pickers",
+      _gn_pickers == ["currency", "time_range", "source", "tax_wrapper"],
+      _gn_pickers)
+_gbody = [d for d in layouts if d.get("name") == "Gains"]
+check("the Gains dashboard was laid out", len(_gbody) == 1)
+if _gbody:
+    _gdc = _gbody[0]["dashcards"]
+    check("...with no switch link, and its tiles from the top row",
+          all(dc["card_id"] is not None for dc in _gdc)
+          and min(dc["row"] for dc in _gdc) == 0, [dc["row"] for dc in _gdc])
+    check("...and every picker on every tile",
+          all({m["parameter_id"] for m in dc["parameter_mappings"]} ==
+              {x["id"] for x in _gbody[0]["parameters"]} for dc in _gdc))
+    check("...on the 24-column grid without overlaps",
+          all(dc["col"] + dc["size_x"] <= 24 for dc in _gdc) and not [
+              (a["card_id"], b["card_id"]) for i, a in enumerate(_gdc)
+              for b in _gdc[i + 1:]
+              if a["col"] < b["col"] + b["size_x"] and b["col"] < a["col"] + a["size_x"]
+              and a["row"] < b["row"] + b["size_y"] and b["row"] < a["row"] + a["size_y"]])
+
 section("the Wealth Overview and Allocation read the chosen currency")
 
 # A tile that hard-codes one reporting currency keeps showing it whatever
@@ -1402,11 +1465,18 @@ def _latest_definition(name):
     return found[-1] if found else ""
 
 
+# web_gains is the one long view: a row set per currency, written by the
+# gains materializer from the same materializeCurrencies list.
+_LONG_VIEWS = {"web_gains"}
 _missing = {v: [c for c in p.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
-            for v in p.web_views_wanted()}
-check("every serving view carries a value column per reporting currency",
+            for v in p.web_views_wanted() if v not in _LONG_VIEWS}
+check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
+_gm = open(os.path.join(_REPO, "wealthdb", "internal", "gold",
+                        "gains_materialize.go"), encoding="utf-8").read()
+check("the gains materializer writes the same currency list",
+      "range materializeCurrencies" in _gm)
 _fxv = _latest_definition("fx_reporting_value")
 check("the conversion helper names every reporting currency",
       all(f"'{c}'" in _fxv for c in p.REPORTING_CURRENCIES), _fxv[:200])

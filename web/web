@@ -162,7 +162,7 @@ web_start() {
     _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
     mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR"
     if [ ! -f "$SNAP" ]; then
-        _materialize_returns
+        _materialize
         echo "web: taking initial gold snapshot…" >&2
         _snapshot "$GOLD_DB" "$SNAP"
     fi
@@ -214,7 +214,7 @@ web_status() {
 
 web_refresh() {
     _load_config
-    _materialize_returns
+    _materialize
     echo "web: refreshing snapshot from $GOLD_DB …" >&2
     _snapshot "$GOLD_DB" "$SNAP"
     echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
@@ -240,15 +240,16 @@ _gen_password() {
     printf '%sAa1!' "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | cut -c1-16)"
 }
 
-# _materialize_returns refreshes the report_returns table in LIVE
-# gold via the engine's hidden web-materialize subcommand, so the
-# snapshot taken next carries returns as fresh as the holdings. An
+# _materialize refreshes the report_returns and report_gains tables in
+# LIVE gold via the engine's hidden web-materialize subcommand, so the
+# snapshot taken next carries returns and gains as fresh as the
+# holdings. An
 # engine-owned write, mutually exclusive with `wealthdb load` under the
 # engine's write mutex (a concurrent load makes it fail, not wait); it
 # runs BEFORE _snapshot, so a failure aborts under web_main's `set -e`
 # and the previous snapshot keeps serving.
-_materialize_returns() {
-    echo "web: materializing returns (TWR/MWR) into gold …" >&2
+_materialize() {
+    echo "web: materializing returns and gains into gold …" >&2
     local rc=0
     if [ -n "${WEALTHDB_CONFIG:-}" ]; then
         "$WEALTHDB" -c "$WEALTHDB_CONFIG" web-materialize || rc=$?
@@ -256,7 +257,7 @@ _materialize_returns() {
         "$WEALTHDB" web-materialize || rc=$?
     fi
     if [ "$rc" != 0 ]; then
-        echo "web: returns materialization failed — gold busy (a 'wealthdb load' holds the write mutex?) or not writable." >&2
+        echo "web: materialization failed — gold busy (a 'wealthdb load' holds the write mutex?) or not writable." >&2
         echo "     Run 'wealthdb web refresh' once gold is idle; the previous snapshot keeps serving meanwhile." >&2
         return "$rc"
     fi
@@ -331,7 +332,7 @@ subcommands:
   stop       stop + remove the container (keeps dashboards/users in H2)
   status     running state, published port, snapshot freshness
   restart    stop then start
-  refresh    re-materialize returns + re-copy gold → read-only
+  refresh    re-materialize returns and gains + re-copy gold → read-only
              snapshot, then restart Metabase
              (run after 'wealthdb load' to update the data)
   logs       follow the container logs

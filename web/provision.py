@@ -719,10 +719,10 @@ RETIRED_DASHBOARD_NAMES = ["Net Worth"]
 # (canonical.DeclaredSourceID in the engine).
 DECLARED_SOURCE = "declared"
 
-# Every dashboard has a privacy twin whose cards show shares (%) instead
-# of money (each names its own denominator — see PRIVACY_DESC). Cards
-# listed here show no monetary values (percentages, indices, source
-# names), so the twin reuses them as-is. The returns scalars and charts
+# Every dashboard but those in NO_PRIVACY_TWIN has a privacy twin whose
+# cards show shares (%) instead of money (each names its own denominator
+# — see PRIVACY_DESC). Cards listed here show no monetary values
+# (percentages, indices, source names), so the twin reuses them as-is. The returns scalars and charts
 # are all percentage/index-only; only the by-source table carries money.
 PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
                         "Return (TWR)", "Return (MWR)", "Annualized return (TWR)",
@@ -845,8 +845,8 @@ INVESTING_TAG = {"id": "inv-tag", "name": "investing",
 
 # The gold columns backing the native cards' field filters: the returns
 # charts filter report_returns; every other native card filters the
-# web_* serving views (gold migrations 0032, 0043, 0072, 0084 and
-# 0113). Field
+# web_* serving views (gold migrations 0032, 0043, 0072, 0084, 0113
+# and 0117). Field
 # ids are per-Metabase-instance (assigned when the DB syncs), so main()
 # resolves them at provision time into FIELD_IDS — they can't be
 # hard-coded. A missing id (fresh install before the first sync) leaves
@@ -890,6 +890,9 @@ FILTER_FIELD_COLUMNS = {
                    "income_label"),
     "web_card_balances_history": ("as_of_day", "silver_source_id",
                                   "account_label"),
+    # The gains view (migration 0117). Its currency is a row filter
+    # through the {{currency}} variable, so no field filter binds it.
+    "web_gains": ("period", "silver_source_id", "tax_wrapper"),
 }
 FIELD_IDS = {}          # (table, column) -> field id, filled by main()
 CURRENCY_FIELD_ID = None
@@ -1947,6 +1950,282 @@ def question_defs(db_id, mid):
                               _dec(f"total_value_{DEFAULT_CURRENCY.lower()}")],
                    "order-by": [["desc", ["expression", "days_stale"]]]}),
             {}),
+        **gains_question_defs(db_id),
+    }
+
+
+def gains_question_defs(db_id):
+    """The Gains dashboard's cards: native SQL over web_gains (gold
+    migration 0117), the monthly gains rows materialized per reporting
+    currency. The view carries a row set per currency, so {{currency}}
+    is a row filter here, where the other families pick a value column
+    with it. A figure over the window sums the months in it; a figure at
+    the window's end reads its last month. docs/GAINS.md defines the
+    figures and the quality counters."""
+    tags = spend_tags("web_gains", GAINS_FILTERS)
+    note = (" Built for the Gains dashboard; opened standalone it runs in "
+            f"{DEFAULT_CURRENCY}, the currency variable's default, over every "
+            "month.")
+    ccy = "\n     AND currency = {{currency}}"
+    where = _spend_where(tags) + ccy
+    # The whole-portfolio line answers every picker but Source, so
+    # narrowing the sources keeps the whole in view.
+    where_all = _spend_where({k: v for k, v in tags.items()
+                              if k != "source"}) + ccy
+    # The window's rows, and its end: the positions held at the last
+    # month in range.
+    end = ("WITH w AS (\n  SELECT * FROM web_gains" + where + "),\n"
+           "e AS (SELECT * FROM w\n"
+           "       WHERE at_end AND period = (SELECT max(period) FROM w))\n")
+    gain = "coalesce(sum(realized), 0) + coalesce(sum(unrealized_change), 0)"
+    position = "coalesce(symbol, name, instrument_key)"
+
+    def native(name, display, desc, sql, viz):
+        register_native_targets(name, tags, GAINS_PICKERS)
+        return (display, desc + note, _native(db_id, sql, tags), viz)
+
+    def unrealized_table(name, desc, pred, order):
+        """Ten positions held at the window's end, by unrealized gain or
+        by its percent of the cost basis."""
+        return native(name, "table", desc,
+                      end + f"SELECT {position} AS position,\n"
+                      "       unrealized_end AS unrealized,\n"
+                      "       unrealized_end / nullif(cost_basis, 0) AS unrealized_pct,\n"
+                      "       cost_basis,\n       value,\n       account\n"
+                      f"  FROM e\n WHERE {pred}\n ORDER BY {order}\n LIMIT 10",
+                      _percent_viz("unrealized_pct"))
+
+    def realized_table(name, desc, pred, order):
+        """Ten positions by what their sales over the window realized,
+        or by its percent of the cost basis sold."""
+        return native(name, "table", desc,
+                      "WITH r AS (\n"
+                      f"  SELECT any_value({position}) AS position,\n"
+                      "         any_value(account) AS account,\n"
+                      "         sum(proceeds) AS proceeds,\n"
+                      "         sum(realized_cost_basis) AS cost_basis,\n"
+                      "         sum(realized) AS realized\n"
+                      "    FROM web_gains" + where +
+                      "\n     AND realized IS NOT NULL\n"
+                      "   GROUP BY silver_source_id, account_external_id, instrument_key)\n"
+                      "SELECT position, realized,\n"
+                      "       realized / nullif(cost_basis, 0) AS realized_pct,\n"
+                      "       proceeds, cost_basis, account\n"
+                      f"  FROM r\n WHERE {pred}\n ORDER BY {order}\n LIMIT 10",
+                      _percent_viz("realized_pct"))
+
+    def split_bars(name, desc, dim, label, metrics):
+        """Stacked bars per value of `dim`, one series per metric,
+        largest total first; a value none of the metrics has is left
+        out."""
+        cols = ",\n".join(f"       sum({c}) AS {a}" for c, a in metrics)
+        total = " + ".join(f"coalesce(sum({c}), 0)" for c, _ in metrics)
+        some = " OR ".join(f"count({c}) > 0" for c, _ in metrics)
+        return native(name, "bar", desc,
+                      f"SELECT coalesce({dim}, '(none)') AS {label},\n{cols}\n"
+                      "  FROM web_gains" + where +
+                      f"\n GROUP BY 1\nHAVING {some}\n ORDER BY {total} DESC",
+                      {"graph.dimensions": [label],
+                       "graph.metrics": [a for _, a in metrics],
+                       "stackable.stack_type": "stacked"})
+
+    gain_split = [("realized", "realized"),
+                  ("unrealized_change", "unrealized_change")]
+    term_split = [("realized_short", "short_term"),
+                  ("realized_long", "long_term"),
+                  ("realized_other", "term_unstated")]
+    return {
+        "Realized gain": native("Realized gain", "scalar",
+            "The gain or loss on what was sold over the window: the primary "
+            "realized lots, at the gain their document states or proceeds "
+            "less cost basis. A sale no document covers is not in it; the "
+            "coverage table counts those.",
+            "SELECT sum(realized) AS realized\n  FROM web_gains" + where, {}),
+        "Unrealized gain": native("Unrealized gain", "scalar",
+            "The gain or loss on what is held at the window's end: clean "
+            "value less cost basis, over the holdings that carry a cost "
+            "basis. The end is the last month in the window.",
+            end + "SELECT sum(unrealized_end) AS unrealized\n  FROM e", {}),
+        "Unrealized change": native("Unrealized change", "scalar",
+            "How far the unrealized gain moved over the window, summed month "
+            "by month. A sale moves gain out of it into realized; a purchase "
+            "adds none. In the "
+            "output currency, so it includes the exchange-rate move on a "
+            "gain held through the window.",
+            "SELECT sum(unrealized_change) AS unrealized_change\n"
+            "  FROM web_gains" + where, {}),
+        "Total gain": native("Total gain", "scalar",
+            "Realized gain plus unrealized change: the window's price gain "
+            "on what was held. Income, fees and taxes are not in it; the "
+            "Returns dashboard measures those.",
+            f"SELECT {gain} AS gain\n  FROM web_gains" + where, {}),
+        "Cost basis coverage": native("Cost basis coverage", "scalar",
+            "Share of the value held at the window's end that carries a "
+            "cost basis, among the holdings a cost basis describes (cash, "
+            "mortgages and FX forwards are not among them). The rest is "
+            "left out of every unrealized figure; the coverage table says "
+            "where.",
+            end + "SELECT sum(abs(value)) FILTER (WHERE NOT end_without_basis)\n"
+            "       / nullif(sum(abs(value)), 0) AS basis_coverage\n"
+            "  FROM e\n WHERE end_applies",
+            _percent_viz("basis_coverage")),
+        "Gains by month": native("Gains by month", "combo",
+            "Each month's realized gain and unrealized change as stacked "
+            "bars, and their sum as a line. A sale moves a bar from one "
+            "series to the other and leaves the line where it was.",
+            "SELECT period AS month,\n       sum(realized) AS realized,\n"
+            "       sum(unrealized_change) AS unrealized_change,\n"
+            f"       {gain} AS gain\n"
+            "  FROM web_gains" + where + "\n GROUP BY 1\n ORDER BY 1",
+            {"graph.dimensions": ["month"],
+             "graph.metrics": ["realized", "unrealized_change", "gain"],
+             "series_settings": {"realized": {"display": "bar"},
+                                 "unrealized_change": {"display": "bar"},
+                                 "gain": {"display": "line"}},
+             "stackable.stack_type": "stacked"}),
+        "Realized gains by month, short vs long term": native(
+            "Realized gains by month, short vs long term", "bar",
+            "Each month's realized gain by holding period, as the lots "
+            "state it: short term, long term, and lots whose document "
+            "states no term.",
+            "SELECT period AS month,\n" + ",\n".join(
+                f"       sum({c}) AS {a}" for c, a in term_split) +
+            "\n  FROM web_gains" + where + "\n     AND realized IS NOT NULL"
+            "\n GROUP BY 1\n ORDER BY 1",
+            {"graph.dimensions": ["month"],
+             "graph.metrics": [a for _, a in term_split],
+             "stackable.stack_type": "stacked"}),
+        "Unrealized gain over time": native("Unrealized gain over time", "line",
+            "The unrealized gain held at each month's end, one line per "
+            "source plus an '(all sources)' line the Source picker does not "
+            "narrow. In the output currency, so it moves with exchange "
+            "rates as well as prices.",
+            "SELECT period AS month, silver_source_id AS source,\n"
+            "       sum(unrealized_end) AS unrealized\n"
+            "  FROM web_gains" + where + "\n     AND at_end\n GROUP BY 1, 2\n"
+            "UNION ALL\n"
+            "SELECT period, '(all sources)', sum(unrealized_end)\n"
+            "  FROM web_gains" + where_all + "\n     AND at_end\n GROUP BY 1\n"
+            " ORDER BY 1",
+            _series_viz("month", "source", "unrealized")),
+        "Largest unrealized gains": unrealized_table("Largest unrealized gains",
+            "The ten positions held at the window's end with the largest "
+            "unrealized gain.",
+            "unrealized_end > 0", "unrealized DESC"),
+        "Largest unrealized losses": unrealized_table("Largest unrealized losses",
+            "The ten positions held at the window's end with the largest "
+            "unrealized loss.",
+            "unrealized_end < 0", "unrealized"),
+        "Best unrealized %": unrealized_table("Best unrealized %",
+            "The ten positions held at the window's end with the largest "
+            "unrealized gain as a share of their cost basis.",
+            "unrealized_end > 0 AND cost_basis > 0", "unrealized_pct DESC"),
+        "Worst unrealized %": unrealized_table("Worst unrealized %",
+            "The ten positions held at the window's end with the largest "
+            "unrealized loss as a share of their cost basis.",
+            "unrealized_end < 0 AND cost_basis > 0", "unrealized_pct"),
+        "Largest realized gains": realized_table("Largest realized gains",
+            "The ten positions whose sales over the window realized the "
+            "largest gain. The cost basis is that of the lots sold.",
+            "realized > 0", "realized DESC"),
+        "Largest realized losses": realized_table("Largest realized losses",
+            "The ten positions whose sales over the window realized the "
+            "largest loss. The cost basis is that of the lots sold.",
+            "realized < 0", "realized"),
+        "Best realized %": realized_table("Best realized %",
+            "The ten positions whose sales over the window realized the "
+            "largest gain as a share of the cost basis sold.",
+            "realized > 0 AND cost_basis > 0", "realized_pct DESC"),
+        "Worst realized %": realized_table("Worst realized %",
+            "The ten positions whose sales over the window realized the "
+            "largest loss as a share of the cost basis sold.",
+            "realized < 0 AND cost_basis > 0", "realized_pct"),
+        "Gain by source": split_bars("Gain by source",
+            "Each source's realized gain and unrealized change over the "
+            "window, stacked. Bars, not a ring: a ring cannot draw a loss.",
+            "silver_source_id", "source", gain_split),
+        "Gain by asset class": split_bars("Gain by asset class",
+            "Each asset class's realized gain and unrealized change over "
+            "the window, stacked. '(none)' holds the lots of a holding no "
+            "snapshot shows.",
+            "asset_class", "asset_class", gain_split),
+        "Realized gains by tax wrapper": split_bars(
+            "Realized gains by tax wrapper",
+            "Realized gain over the window per tax wrapper, by holding "
+            "period: what of it is taxable, and at which rate.",
+            "tax_wrapper", "tax_wrapper", term_split),
+        "Realized gains by tax year": native("Realized gains by tax year", "table",
+            "Per calendar year in the window: the realized gain by holding "
+            "period, wash sales disallowed, proceeds and the cost basis "
+            "sold, with the lots behind it and the sells no document "
+            "covers. Every source's documents summed; not a tax return.",
+            "SELECT CAST(year(period) AS VARCHAR) AS tax_year,\n"
+            "       sum(realized) AS realized,\n" + ",\n".join(
+                f"       sum({c}) AS {a}" for c, a in term_split) + ",\n"
+            "       sum(wash_disallowed) AS wash_disallowed,\n"
+            "       sum(proceeds) AS proceeds,\n"
+            "       sum(realized_cost_basis) AS cost_basis,\n"
+            "       sum(realized_lots) AS realized_lots,\n"
+            "       sum(sells_without_documents) AS sells_without_documents\n"
+            "  FROM web_gains" + where + "\n GROUP BY 1\n ORDER BY 1 DESC",
+            {}),
+        "Unrealized gain vs. percent": native("Unrealized gain vs. percent",
+            "scatter",
+            "Every position held at the window's end with a cost basis: its "
+            "unrealized gain against that gain as a share of its cost "
+            "basis, sized by value and coloured by asset class. The corners "
+            "are the four unrealized tables in one picture.",
+            end + f"SELECT {position} AS position,\n"
+            "       coalesce(asset_class, '(none)') AS asset_class,\n"
+            "       unrealized_end / cost_basis AS unrealized_pct,\n"
+            "       unrealized_end AS unrealized,\n"
+            "       abs(value) AS value\n"
+            "  FROM e\n WHERE unrealized_end IS NOT NULL AND cost_basis > 0",
+            # The second dimension splits the dots into one series, and
+            # so one colour, per asset class.
+            {"graph.dimensions": ["unrealized_pct", "asset_class"],
+             "graph.metrics": ["unrealized"],
+             "scatter.bubble": "value",
+             **_percent_viz("unrealized_pct")}),
+        "Positions in the green": native("Positions in the green", "scalar",
+            "Positions held at the window's end with an unrealized gain.",
+            end + "SELECT count(*) AS positions\n  FROM e\n WHERE unrealized_end > 0",
+            {}),
+        "Positions in the red": native("Positions in the red", "scalar",
+            "Positions held at the window's end with an unrealized loss.",
+            end + "SELECT count(*) AS positions\n  FROM e\n WHERE unrealized_end < 0",
+            {}),
+        "Coverage by source": native("Coverage by source", "table",
+            "Per source, how far the figures above can be trusted: the "
+            "value held at the window's end and the part with a cost basis, "
+            "then the window's counters, each a way a gain can be missing "
+            "or misplaced (docs/GAINS.md §6). Sells without documents are "
+            "missing from realized; in-kind moves and corporate actions "
+            "carry gain from before the window into unrealized change.",
+            end + ", t AS (\n"
+            "  SELECT silver_source_id,\n"
+            "         sum(sells) AS sells,\n"
+            "         sum(sells_without_documents) AS sells_without_documents,\n"
+            "         sum(realized_lots) AS realized_lots,\n"
+            "         sum(lots_without_gain) AS lots_without_gain,\n"
+            "         sum(in_kind_moves) AS in_kind_moves,\n"
+            "         sum(corporate_actions) AS corporate_actions,\n"
+            "         count(*) FILTER (WHERE basis_changed) AS basis_changed,\n"
+            "         sum(fx_missing) AS fx_missing\n"
+            "    FROM w GROUP BY 1),\n"
+            "v AS (\n"
+            "  SELECT silver_source_id,\n"
+            "         sum(value) AS value,\n"
+            "         sum(value) FILTER (WHERE NOT end_without_basis) AS value_with_basis,\n"
+            "         sum(abs(value)) FILTER (WHERE NOT end_without_basis)\n"
+            "             / nullif(sum(abs(value)), 0) AS basis_coverage\n"
+            "    FROM e WHERE end_applies GROUP BY 1)\n"
+            "SELECT silver_source_id AS source, v.value, v.value_with_basis,\n"
+            "       v.basis_coverage, t.sells, t.sells_without_documents,\n"
+            "       t.realized_lots, t.lots_without_gain, t.in_kind_moves,\n"
+            "       t.corporate_actions, t.basis_changed, t.fx_missing\n"
+            "  FROM t FULL JOIN v USING (silver_source_id)\n ORDER BY 1",
+            _percent_viz("basis_coverage")),
     }
 
 
@@ -1992,6 +2271,13 @@ INCOME_DASHBOARDS = {"Income", "Income" + PRIVACY_SUFFIX}
 
 # The same for the Cash Flow dashboards.
 CASHFLOW_DASHBOARDS = {"Cash Flow", "Cash Flow" + PRIVACY_SUFFIX}
+
+# The Gains dashboard, which has no privacy twin. Its tiles are gains on
+# named positions; a twin would redact the names and normalise the
+# money, and what would remain is the percent columns the tables carry
+# already.
+GAINS_DASHBOARDS = {"Gains"}
+NO_PRIVACY_TWIN = GAINS_DASHBOARDS
 
 # The asset-class and vehicle filters (the two taxonomy dimensions) are
 # linked only to these tiles: the Top-positions widgets, which list
@@ -2150,6 +2436,46 @@ def base_dashboards():
             ("Financing and vehicles by month", 30, 12, 12, 7, "occurred_at"),
             ("Largest flows", 37, 0, 24, 8, "occurred_at"),
         ]),
+        "Gains": (
+            "Realized and unrealized gains and losses over a chosen window, "
+            f"in a chosen currency (default {DEFAULT_CURRENCY}): the totals, "
+            "the tax years, the shape by month, where the gains came from, "
+            "the positions behind them, and what the figures miss. The "
+            "window selects whole months; a figure at its end reads the "
+            "last month in it. Price gain only: income, fees and taxes are "
+            "on the Returns dashboard. " + note,
+            "range", [
+            # Coarse to fine, so scrolling down reveals detail: the
+            # totals, the tax years, the months, where the gains came
+            # from, the monthly splits, then the positions, and last
+            # what the figures miss.
+            ("Realized gain", 0, 0, 5, 3, "period"),
+            ("Unrealized gain", 0, 5, 5, 3, "period"),
+            ("Unrealized change", 0, 10, 5, 3, "period"),
+            ("Total gain", 0, 15, 5, 3, "period"),
+            ("Cost basis coverage", 0, 20, 4, 3, "period"),
+            ("Realized gains by tax year", 3, 0, 24, 6, "period"),
+            ("Gains by month", 9, 0, 24, 8, "period"),
+            ("Gain by source", 17, 0, 8, 8, "period"),
+            ("Gain by asset class", 17, 8, 8, 8, "period"),
+            ("Realized gains by tax wrapper", 17, 16, 8, 8, "period"),
+            ("Realized gains by month, short vs long term", 25, 0, 12, 6, "period"),
+            ("Unrealized gain over time", 25, 12, 12, 6, "period"),
+            ("Unrealized gain vs. percent", 31, 0, 16, 8, "period"),
+            ("Positions in the green", 31, 16, 8, 4, "period"),
+            ("Positions in the red", 35, 16, 8, 4, "period"),
+            # The winners and losers two to a row: a table narrower
+            # than half the grid cannot show one name in full.
+            ("Largest unrealized gains", 39, 0, 12, 8, "period"),
+            ("Largest unrealized losses", 39, 12, 12, 8, "period"),
+            ("Best unrealized %", 47, 0, 12, 8, "period"),
+            ("Worst unrealized %", 47, 12, 12, 8, "period"),
+            ("Largest realized gains", 55, 0, 12, 8, "period"),
+            ("Largest realized losses", 55, 12, 12, 8, "period"),
+            ("Best realized %", 63, 0, 12, 8, "period"),
+            ("Worst realized %", 63, 12, 12, 8, "period"),
+            ("Coverage by source", 71, 0, 24, 8, "period"),
+        ]),
         "Data Freshness": (
             "Age of each source's latest snapshot — which feeds need a "
             "collector run. Unfiltered by design: it must show every "
@@ -2279,6 +2605,19 @@ CASHFLOW_PICKERS = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"),
                     (CASHFLOW_INVESTING_PARAM_ID, "investing"),
                     (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
                     (CASHFLOW_SECTION_PARAM_ID, "section")]
+
+# The Gains dashboard's own picker ids.
+GAINS_CURRENCY_PARAM_ID = "aa5df111"
+GAINS_TAX_WRAPPER_PARAM_ID = "aa5df112"
+
+# The Gains filters. The tax wrapper is the one of its own: a realized
+# gain in a taxable account is a tax bill, in a retirement account it is
+# not. No account filter: the tables name the accounts already.
+GAINS_FILTERS = {**range_filters("period"),
+                 "tax_wrapper": ("tax_wrapper", "string/=")}
+GAINS_PICKERS = [(GAINS_CURRENCY_PARAM_ID, "currency"),
+                 (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
+                 (GAINS_TAX_WRAPPER_PARAM_ID, "tax_wrapper")]
 
 SPEND_PICKERS = [(SPEND_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
@@ -3366,10 +3705,11 @@ def spending_privacy_defs(db_id, model_ids):
 
 def dashboard_defs():
     """dashboard name -> (description, filter mode, sibling dashboard
-    name, tiles). Every base dashboard gets a privacy twin: same layout
-    and filters, cards swapped for their share-normalized '(privacy)'
-    variants. The sibling name links the two views — ensure_dashboards
-    renders it as a switch link at the top of each dashboard."""
+    name, tiles). Every base dashboard but those in NO_PRIVACY_TWIN gets
+    a privacy twin: same layout and filters, cards swapped for their
+    share-normalized '(privacy)' variants. The sibling name links the
+    two views — ensure_dashboards renders it as a switch link at the top
+    of each dashboard. A dashboard without a twin has None there."""
     # The twin blurb names each mode's denominator; absolute amounts
     # never show on any of them.
     pdesc = {
@@ -3410,6 +3750,9 @@ def dashboard_defs():
         "redaction; the one card that named an account drops the column. ")}
     out = {}
     for name, (desc, mode, tiles) in base_dashboards().items():
+        if name in NO_PRIVACY_TWIN:
+            out[name] = (desc, mode, None, tiles)
+            continue
         pname = f"{name}{PRIVACY_SUFFIX}"
         out[name] = (desc, mode, pname, tiles)
         ptiles = [(c if c in PRIVACY_EXEMPT_CARDS else privacy_name(c),
@@ -3425,11 +3768,11 @@ def dashboard_parameters(model_ids, mode, name=""):
     holdings dashboards), 'returns' pairs it with a start-year picker
     (the returns dashboards), None means no filters. Every mode but None
     adds a required currency picker. The source picker draws its
-    dropdown values from the sources model. The Spending, Income and
-    Cash Flow dashboards are 'range' plus pickers of their own, so they
-    are matched by NAME rather than by mode — Cash Flow first, then
-    Income, then Spending, with the Wealth Overview as the plain 'range'
-    case. Spending and Income each carry one more picker than their
+    dropdown values from the sources model. The Gains, Spending, Income
+    and Cash Flow dashboards are 'range' plus pickers of their own, so
+    they are matched by NAME rather than by mode — Gains first, then
+    Cash Flow, then Income, then Spending, with the Wealth Overview as
+    the plain 'range' case. Spending and Income each carry one more picker than their
     twin, which has no account picker; Cash Flow's twin carries the same
     set, having no account picker to drop."""
     if mode is None:
@@ -3526,6 +3869,13 @@ def dashboard_parameters(model_ids, mode, name=""):
     time_range = {"id": TIME_PARAM_ID, "name": "Time range",
                   "slug": "time_range", "type": "date/all-options",
                   "sectionId": "date", "default": "past12months~"}
+    if name in GAINS_DASHBOARDS:
+        # The tax wrapper's values come off the accounts model, the
+        # vocabulary web_gains joins in from the same table.
+        return [currency_picker(GAINS_CURRENCY_PARAM_ID), time_range, source,
+                card_picker(GAINS_TAX_WRAPPER_PARAM_ID, "Tax wrapper",
+                            "tax_wrapper", "report_accounts_latest",
+                            "tax_wrapper")]
     if name in CASHFLOW_DASHBOARDS:
         # The Investing grain: net the section as one movement — the
         # question a reader opens with, "did the portfolio feed the
@@ -3981,11 +4331,12 @@ def text_dashcard(dc_id, text):
 def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
     """Create/refresh the pre-defined dashboards (and their privacy twins)
     with their global filters (see dashboard_parameters) linked to every
-    tile and a switch link to the sibling view on the top row, and archive
-    any retired (renamed-away) ones. Parameters and the dashcard list are
-    replaced wholesale on every run, so the layout converges to spec (a
-    tile added by hand to a pre-defined dashboard does not survive — the
-    dashboard description says to duplicate before customizing)."""
+    tile and, where there is a twin, a switch link to it on the top row,
+    and archive any retired (renamed-away) ones. Parameters and the
+    dashcard list are replaced wholesale on every run, so the layout
+    converges to spec (a tile added by hand to a pre-defined dashboard
+    does not survive — the dashboard description says to duplicate
+    before customizing)."""
     coll = coll_id if coll_id is not None else "root"
     _, items = req(base, f"/api/collection/{coll}/items?models=dashboard", session=sid)
     existing = {d.get("name"): d.get("id") for d in (items.get("data") or [])}
@@ -4027,7 +4378,8 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
                      "Switch to the privacy view — values as shares (%), "
                      "not amounts")
         icon = "🔓" if privacy else "🔒"
-        link = f"{icon} [{label}](/dashboard/{dash_ids[sibling]})"
+        link = (f"{icon} [{label}](/dashboard/{dash_ids[sibling]})"
+                if sibling else None)
 
         def tile_mappings(card, tcol, param_ids=param_ids):
             """The pickers this dashboard's tiles answer to, restricted to
@@ -4088,12 +4440,14 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
                                  and card in SPEND_ALL_CURRENCY_CARDS)]
             return maps
 
-        # The switch link occupies row 0, so the tiles shift down one row.
+        # The switch link occupies row 0, so the tiles shift down one row;
+        # a dashboard without a twin has no link and no shift.
         # The asset-class and vehicle filters render on the Top-positions
         # tile itself (inline_parameters) rather than in the dashboard's
         # filter bar — they only apply to that one widget.
-        dashcards = [text_dashcard(-99, link)]
-        dashcards += [{"id": -(i + 1), "card_id": card_ids[card], "row": row + 1,
+        dashcards = [text_dashcard(-99, link)] if link else []
+        shift = 1 if link else 0
+        dashcards += [{"id": -(i + 1), "card_id": card_ids[card], "row": row + shift,
                        "col": col, "size_x": sx, "size_y": sy, "series": [],
                        "visualization_settings": {},
                        "inline_parameters":

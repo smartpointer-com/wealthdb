@@ -115,7 +115,7 @@ wealthdb cashflow sankey 2025                        # the year's cash flow as a
 
 Everything is available from the command line, in tables, CSV or JSON,
 from a set of local dashboards (`wealthdb web`): net worth,
-allocation, returns, spending, income and cash flow, and to AI agents
+allocation, returns, gains, spending, income and cash flow, and to AI agents
 over MCP (`wealthdb mcp`). A privacy mode
 shows percentages instead of amounts, for a screen others may see.
 `wealthdb help` lists every command with its flags; the topic documents

@@ -9,7 +9,7 @@ from it.
 
 Related design: DESIGN.md §4.15 (the `gains` command), §7.1 (accrued
 income), §7.4 (cost basis), §10.13 (the report macros), §13.4 (the lot
-engine), and migration 0116.
+engine), and migrations 0116 and 0117.
 
 Every figure here is a sum or a difference of figures a source states.
 Gold computes no cost basis of its own; where a source states none, the
@@ -133,6 +133,10 @@ holds it; it simply has no boundary value.
 `realized` lists the lots, `lots` the open lots as of the window's end,
 and `coverage` the accounts. An open lot's value is the one its source
 states, else its position's value pro rata by quantity.
+
+The Metabase Gains dashboard reads the same rows, month by month. Its
+figures over a window sum the months in it, so they equal the monthly
+buckets summed. A figure at the window's end reads its last month.
 
 ## 6. Quality
 

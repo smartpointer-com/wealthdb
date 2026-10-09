@@ -97,11 +97,13 @@ the `report_cashflow` model over `web_cashflow` (migration 0084) — which
 backs the Cash Flow dashboard's Section picker rather than any card —
 and `_pct` privacy variants of the models the privacy
 surface reads. On top of the models, provisioning creates pre-defined
-questions and seven dashboards — **Wealth
+questions and eight dashboards — **Wealth
 Overview** and **Allocation** carry dashboard-level filters (a required
 currency picker, a time range resp. a required as-of day, and a source
 picker), **Returns** carries a
 required currency picker (returns are stored one row set per currency),
+**Gains** carries the time range and source picker, a required currency
+picker and a *Tax wrapper* picker,
 **Spending** carries the time range and source picker plus a required
 currency picker, an account picker and a category multi-select,
 **Income** carries the same five with a *type* picker in place of the
@@ -118,7 +120,9 @@ A tile that sums money in the chosen currency is native SQL over a gold
 column (gold migration 0114), and a dashboard picker selects rows but
 never a column. So each
 such tile reads a required `{{currency}}` variable, which picks the
-column with a CASE. Every Currency picker, and every card opened on its
+column with a CASE. The Gains tiles are the exception: `web_gains`
+(§8) carries a row set per currency, so there `{{currency}}` filters
+rows. Every Currency picker, and every card opened on its
 own, defaults to `default_currency` from wealthdb.cfg when that is a
 reporting currency, and to USD otherwise. `web/web` passes it to
 `provision.py` from `wealthdb web-config`. The
@@ -126,9 +130,11 @@ Wealth Overview's three headline figures read `web_sources_latest`
 (migration 0113), each source's latest snapshot, so they print what
 `wealthdb holdings sources` prints. A native tile has no "see these
 records" drill-through. That is the price of the picker.
-Each dashboard also gets a **privacy twin** (linked from the dashboard's top
-row): same layout and filters, but every card shows shares (%) instead of
-money. The twins' charts are native SQL over the gold `web_*` serving views
+Each dashboard but Gains also gets a **privacy twin** (linked from the
+dashboard's top row): same layout and filters, but every card shows
+shares (%) instead of money. Gains has none. Its tiles are gains on
+named positions. A twin would redact the names and normalise the money,
+and what would remain is the percent columns the tables carry already. The twins' charts are native SQL over the gold `web_*` serving views
 (migrations 0032, 0043, 0072 and 0084 — TIMESTAMP-cast reductions of the report macros to
 the grain each card reads, some folding cash in as a class of its own;
 Metabase syncs views like tables and assigns their columns field ids), with the
@@ -259,7 +265,7 @@ Four settings work together, each load-bearing:
   comes back on its own (metadata is safe on the H2 volume); a plain
   `web stop` still stops it for good.
 
-## 8. Materialized returns (computed in Go, served from a table)
+## 8. Materialized returns and gains
 
 The Returns dashboards can't be views or macros: MWR is XIRR (iterative
 root-finding), and the returns engine leans on things that only exist
@@ -339,9 +345,25 @@ of annual granularity (a finer curve would need per-month windows).
 The last point is the start of the current year, so the stretch from
 then to today is not drawn.
 
+**Gains** are materialized too, into `report_gains` (migration 0117),
+for a different reason. The gains figures are SQL (`gains_windows`,
+migration 0116), so a view would work. But one dashboard open fires two
+dozen tiles, and each would compute the whole history again. So
+`web-materialize` runs `gains_windows(0, today, CCY, 'month')` once per
+reporting currency and stores the rows, a few seconds per refresh.
+Each currency's rows are that call's output, less the figures in a
+holding's own currency. So the rows summed by month equal `wealthdb
+gains summary --period monthly -x CCY`, and a Go test holds that. The
+`web_gains` view labels the accounts and joins in their tax wrapper.
+
+The Gains dashboard reads it month by month. A figure over the window
+sums the months in it. A figure at the window's end reads the last
+month in the window. The time picker selects whole months: a custom day
+range takes the months it touches.
+
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*
-`_snapshot`, so returns are exactly as fresh as the holdings and
+`_snapshot`, so returns and gains are exactly as fresh as the holdings and
 `wealthdb load && wealthdb web refresh` remains the whole update flow.
 It is an engine-owned write to live gold — the same class as `load` and
 mutually exclusive with it under the engine's write mutex, an advisory
@@ -361,7 +383,7 @@ itself still never sees anything but the `:ro` snapshot (AGENTS.md §1).
 helpers with no Docker: the dual-stack `-p` flag construction, the
 read-only snapshot mount in the `docker run` args, the `.wal` guard,
 the generated-password complexity, and — against a stubbed engine —
-the `_materialize_returns` invocation plus `web_refresh`'s
+the `_materialize` invocation plus `web_refresh`'s
 materialize-then-snapshot ordering. It then runs
 [`test_provision.py`](test_provision.py), which asserts everything
 `provision.py` builds *before* it talks to the API — the definitions are
@@ -375,7 +397,7 @@ stubbed API) instead of half-provisioning. Whether Metabase *accepts* a
 payload needs a live instance: `demo/check_dashboards.py` runs every
 card of a running demo Metabase through its API (demo/README.md).
 The Go side (`web` config block,
-validation, the `web-config` emitter, `MaterializeReturns` and the
-`web-materialize` command) is covered by `go test ./...`
+validation, the `web-config` emitter, `MaterializeReturns`,
+`MaterializeGains` and the `web-materialize` command) is covered by `go test ./...`
 (`make test-wealthdb`). End-to-end (build → start → provision → query
 through the driver) is the manual smoke test in §3.

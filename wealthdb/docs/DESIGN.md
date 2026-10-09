@@ -2960,7 +2960,16 @@ their others. Shared pieces:
 The readers are `report_gains_buckets(from, to, ccy, period, grain)`,
 `report_gains_positions`, `report_gains_realized`, `report_lots` and
 `report_gains_coverage`. docs/GAINS.md defines every figure they
-return. They are single-currency; the dashboards have no gains views.
+return. They are single-currency.
+
+Migration 0117 serves the Metabase Gains dashboard. `report_gains`
+holds `gains_windows(0, today, CCY, 'month')` for every reporting
+currency, less the figures in a holding's own currency. It is a
+derived table like `report_returns` (§10.9), and `web-materialize`
+rewrites it at every web refresh. The `web_gains` view labels its
+accounts and joins in their tax wrapper. 0117 also gives
+`gains_windows` the cost basis of the lots realized, the denominator of
+a realized percent.
 
 ## 11. Repository layout
 

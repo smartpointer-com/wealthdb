@@ -5,9 +5,9 @@ and visualizing analytics over the **gold** DuckDB database. Optional,
 fully dockerized (no host Java/Metabase), read-only against your data,
 and reachable only over an SSH tunnel + Metabase's own login.
 
-It comes with seven dashboards: Wealth Overview, Allocation, Returns,
-Spending, Income, Cash Flow and Data Freshness. Each has a privacy
-twin that shows shares (%) instead of amounts.
+It comes with eight dashboards: Wealth Overview, Allocation, Returns,
+Gains, Spending, Income, Cash Flow and Data Freshness. Each but Gains
+has a privacy twin that shows shares (%) instead of amounts.
 
 Part of the **wealthdb** suite — see [the architecture
 overview](../DESIGN.md). Run it via the main wrapper:
