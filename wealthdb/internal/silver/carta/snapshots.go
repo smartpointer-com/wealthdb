@@ -32,7 +32,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	times, err := c.snapshotTimesInWindow(ctx, w, ledger.carryDates())
+	inKind, err := c.readInKind(ctx)
+	if err != nil {
+		return nil, err
+	}
+	times, err := c.snapshotTimesInWindow(ctx, w, append(ledger.carryDates(), inKind.PeriodEnds()...))
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +56,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	var lastHeld canonical.SnapshotBatch
 	prevHeld := false
 	for _, t := range times {
-		batch, err := c.buildBatch(ctx, t, meta, acct, ledger)
+		batch, err := c.buildBatch(ctx, t, meta, acct, ledger, inKind)
 		if err != nil {
 			return nil, err
 		}
@@ -70,6 +74,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		prevHeld = held
 		batches = append(batches, batch)
 	}
+	inKind.LogClamped(kindName)
 	return silver.NewSnapshotStream(batches), nil
 }
 
@@ -145,10 +150,11 @@ func normCcy(c string) string {
 }
 
 // snapshotTimesInWindow are the event dates on which any position changes —
-// the union of the position-bearing content tables and the days a fund's
-// carried value changes (dump_runs is the download time, not a holding event,
+// the union of the position-bearing content tables and the extra days a
+// position's value or book value changes: a fund's carried value, a K-1's
+// in-kind distribution (dump_runs is the download time, not a holding event,
 // so it is intentionally excluded).
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, carry []int64) ([]int64, error) {
+func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
 	const q = `
 SELECT DISTINCT snapshot_at FROM (
     SELECT snapshot_at FROM entities     WHERE snapshot_at BETWEEN ? AND ?
@@ -174,7 +180,7 @@ SELECT DISTINCT snapshot_at FROM (
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for _, t := range carry {
+	for _, t := range extra {
 		if t >= w.Start && t <= w.End && !seen[t] {
 			seen[t] = true
 			out = append(out, t)
@@ -223,8 +229,9 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 // before the fund's first NAV its called capital),
 // plus the single Carta account and one instrument per held company (so gold's
 // FK from positions is satisfied and the account's seen-range merges across
-// batches).
-func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string, ledger fundLedger) (canonical.SnapshotBatch, error) {
+// batches). A fund's book value is its capital paid in less the basis its
+// K-1s say left in kind by t (inKind).
+func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string, ledger fundLedger, inKind *silver.InKind) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	active := make(map[int64]string)                   // entity id -> holdings currency
 	classesNew := make(map[int64]canonical.AssetClass) // entity id -> exposure (asset_class)
@@ -233,10 +240,10 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
-	if err := c.appendFundAt(ctx, t, acct, ledger, &batch, active, classesNew, vehicles); err != nil {
+	if err := c.appendFundAt(ctx, t, acct, ledger, inKind, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
-	if err := appendFundCarryAt(t, acct, ledger, &batch, active, classesNew, vehicles); err != nil {
+	if err := appendFundCarryAt(t, acct, ledger, inKind, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
 	if len(active) == 0 {
@@ -337,9 +344,11 @@ func shareLot(secID int64, quantity, cost, mv sql.NullFloat64, acquired string,
 // (share-type lots only — an unexercised option is a different unit and would
 // also double-count the certificates it became, so it stays a 0-value lot in
 // the payload). MarketValue / BookValue sum every held lot — the collector's
-// per-date FMV valuation (collector DESIGN.md §5.1) and the cost basis. The
+// per-date FMV valuation (collector DESIGN.md §5.1) and the cash paid. The
 // per-lot detail rides in the position payload, and each held share
-// certificate is one open lot of the position (shareLot).
+// certificate is one open lot of the position (shareLot). The book value is
+// stamped by what it sums: its lots' cost where every costed line is a share
+// certificate (shareBasis), else the cash paid (cashPaidBasis).
 func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	exercise := `NULL, NULL, NULL`
 	if c.exercise {
@@ -371,9 +380,10 @@ SELECT entity_external_id, security_type, security_external_id,
 		ccy                         string
 		shareQty, mv, cost          decimal.Decimal
 		hasShareQty, hasMV, hasCost bool
-		hasEquity                   bool // any non-convertible lot (share/option/…)
-		hasStockLike                bool // any real share-settled lot (share/rsu/rsa/piu/equity_grant)
-		acquiredUnix                int64
+		hasEquity                   bool  // any non-convertible lot (share/option/…)
+		hasStockLike                bool  // any real share-settled lot (share/rsu/rsa/piu/equity_grant)
+		costsOther                  bool  // a costed line that is no share certificate
+		acquiredUnix                int64 // earliest date among the lines that are no share lot
 		hasAcquired                 bool
 		lots                        []lot
 		shareLots                   []canonical.PositionLotChange
@@ -419,21 +429,20 @@ SELECT entity_external_id, security_type, security_external_id,
 		if cost.Valid {
 			a.cost = a.cost.Add(decimal.NewFromFloat(cost.Float64))
 			a.hasCost = true
+			a.costsOther = a.costsOther || secType != "share"
 		}
 		l := lot{SecurityType: secType, SecurityID: secID, Label: label,
 			IssueDate: isDt, AcquiredOn: acqStr}
-		// The holding's acquisition date is the EARLIEST its held lots
-		// carry. A position here aggregates a company's whole cap-table
-		// line, so any later lot's date would say the oldest shares were
-		// acquired more recently than they were. A convertible is not
-		// re-issued on a split or transfer the way a certificate is, so
-		// where Carta states no acquisition date its issue date is the day
-		// it was bought.
+		// A holding without a dated share lot is acquired on the EARLIEST
+		// date its other held lines carry. A convertible is not re-issued
+		// on a split or transfer the way a certificate is, so where Carta
+		// states no acquisition date its issue date is the day it was
+		// bought.
 		acquired := acqStr
 		if acquired == "" && secType == "convertible" {
 			acquired = isDt
 		}
-		if acq, ok := flowDateUnix(acquired); ok && (!a.hasAcquired || acq < a.acquiredUnix) {
+		if acq, ok := flowDateUnix(acquired); ok && secType != "share" && (!a.hasAcquired || acq < a.acquiredUnix) {
 			a.acquiredUnix, a.hasAcquired = acq, true
 		}
 		if quantity.Valid {
@@ -485,9 +494,17 @@ SELECT entity_external_id, security_type, security_external_id,
 			change.MarketValue = &a.mv
 		}
 		if a.hasCost {
-			change.SetBookValue(&a.cost, shareBasis)
+			basis := shareBasis
+			if a.costsOther {
+				basis = cashPaidBasis
+			}
+			change.SetBookValue(&a.cost, basis)
 		}
-		if a.hasAcquired {
+		// A holding with share lots is acquired on its earliest lot's
+		// date: a later lot's date would say the oldest shares were
+		// acquired more recently than they were.
+		change.AcquisitionDate = canonical.EarliestLotDate(a.shareLots)
+		if change.AcquisitionDate == nil && a.hasAcquired {
 			change.AcquisitionDate = silver.DatePtrFromNullUnix(
 				sql.NullInt64{Int64: a.acquiredUnix, Valid: true})
 		}
@@ -506,10 +523,10 @@ SELECT entity_external_id, security_type, security_external_id,
 
 // appendFundAt forward-fills the fund LP positions as of t: each fund's latest
 // capital-account delta on/before t (one position per fund). MarketValue =
-// net_asset_value (the NAV at that quarter), BookValue = capital_contributed,
-// AcquisitionDate = the fund's first capital call. Money arrives as decimal
-// strings, parsed exactly.
-func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, ledger fundLedger, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
+// net_asset_value (the NAV at that quarter), BookValue = capital_contributed
+// less the basis distributed in kind by t (inKind), AcquisitionDate = the
+// fund's first capital call. Money arrives as decimal strings, parsed exactly.
+func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, ledger fundLedger, inKind *silver.InKind, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	const q = `
 SELECT entity_external_id, COALESCE(currency, 'USD'),
        COALESCE(net_asset_value, ''), COALESCE(capital_contributed, ''), payload
@@ -552,7 +569,9 @@ SELECT entity_external_id, COALESCE(currency, 'USD'),
 			change.MarketValue = &mv
 		}
 		if bv, err := canonical.NewDecimalFromString(contributed); err == nil && contributed != "" {
-			change.SetBookValue(&bv, fundBasis)
+			book, basis, extra := inKind.BookValue(change.PositionKey, t, &bv, fundBasis)
+			change.SetBookValue(book, basis)
+			change.Payload = silver.PayloadWith(payload, extra)
 		}
 		batch.Positions = append(batch.Positions, change)
 		active[entityID] = ccy

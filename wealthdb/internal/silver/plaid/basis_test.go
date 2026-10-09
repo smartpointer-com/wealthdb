@@ -1,9 +1,13 @@
 package plaid
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,7 +94,7 @@ func TestAHoldingsCostIsStatedOfUnknownMethod(t *testing.T) {
 // The position's acquisition date is its earliest lot's.
 func TestTaxLotsAreThePositionsLots(t *testing.T) {
 	path, db := lotsFixture(t)
-	hold(t, db, runAt(10), "acct-brk", "sec-a", 0, "8", "1200", "900")
+	hold(t, db, runAt(10), "acct-brk", "sec-a", 0, "9", "1200", "900")
 	taxLots(t, db, "sec-a", 0, `[
 		{"cost_basis":1000,"current_value":1500,"institution_lot_id":"LOT-1",
 		 "original_purchase_datetime":"2030-04-15T00:00:00.000Z","position_type":"LONG",
@@ -100,7 +104,7 @@ func TestTaxLotsAreThePositionsLots(t *testing.T) {
 		 "purchase_price":50,"quantity":-2},
 		{"cost_basis":null,"current_value":null,"institution_lot_id":null,
 		 "original_purchase_datetime":null,"position_type":null,
-		 "purchase_price":null,"quantity":null}]`)
+		 "purchase_price":null,"quantity":1}]`)
 	positions, lots := snapshotsOf(t, path)
 	if len(positions) != 1 || len(lots) != 3 {
 		t.Fatalf("positions = %d, lots = %d; want 1 and 3", len(positions), len(lots))
@@ -115,7 +119,7 @@ func TestTaxLotsAreThePositionsLots(t *testing.T) {
 	}{
 		{"1", "10", "1000", "1500", date(2030, 4, 15)},
 		{"2", "-2", "-100", "-300", date(2029, 2, 10)},
-		{"3", "", "", "", nil},
+		{"3", "1", "", "", nil},
 	}
 	for i, w := range want {
 		l := lots[i]
@@ -142,6 +146,46 @@ func TestTaxLotsAreThePositionsLots(t *testing.T) {
 	}
 	if !jsonHas(t, lots[0].Payload, "institution_lot_id", "LOT-1") {
 		t.Errorf("lot 1 payload = %s, want Plaid's element", lots[0].Payload)
+	}
+}
+
+// Lots that do not add up to their holding are not its lots: the
+// position carries none and no acquisition date, and the load counts
+// it. The quantities must sum within a millionth, and the costs, where
+// every one is stated, within a cent per lot.
+func TestTaxLotsThatDoNotAddUpAreLeftOut(t *testing.T) {
+	for _, c := range []struct {
+		name, lots string
+		kept       bool
+	}{
+		{"within tolerance",
+			`[{"quantity":6,"cost_basis":600.01},{"quantity":4.0000001,"cost_basis":400.01}]`, true},
+		{"a cost unstated",
+			`[{"quantity":6,"cost_basis":900},{"quantity":4,"cost_basis":null}]`, true},
+		{"a share short",
+			`[{"quantity":6,"cost_basis":600},{"quantity":3,"cost_basis":400}]`, false},
+		{"costs apart",
+			`[{"quantity":6,"cost_basis":600},{"quantity":4,"cost_basis":300}]`, false},
+		{"a quantity unstated",
+			`[{"quantity":10,"cost_basis":600},{"quantity":null,"cost_basis":400}]`, false},
+	} {
+		path, db := lotsFixture(t)
+		hold(t, db, runAt(10), "acct-brk", "sec-a", 0, "10", "1500", "1000")
+		taxLots(t, db, "sec-a", 0, c.lots)
+		var logged bytes.Buffer
+		log.SetOutput(&logged)
+		positions, lots := snapshotsOf(t, path)
+		log.SetOutput(os.Stderr)
+		if len(positions) != 1 {
+			t.Fatalf("%s: positions = %+v, want one", c.name, positions)
+		}
+		counted := strings.Contains(logged.String(), "1 position snapshot(s) carry no lots")
+		if c.kept && (len(lots) != 2 || counted) {
+			t.Errorf("%s: lots = %d, log %q; want both, none counted", c.name, len(lots), logged.String())
+		}
+		if !c.kept && (len(lots) != 0 || !counted) {
+			t.Errorf("%s: lots = %d, log %q; want none, counted", c.name, len(lots), logged.String())
+		}
 	}
 }
 

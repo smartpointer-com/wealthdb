@@ -35,12 +35,13 @@
 //     are not a share count). Silver dates are source ISO TEXT; the
 //     adapter converts to unix seconds (strftime).
 //
-//   - book_value is `cost_basis_remaining`, the stake still held at the
-//     price paid, plus the execution fee charged on the purchase in the
-//     same proportion: fee × shares held ÷ shares bought for an SPV, the
-//     whole fee for a fund while it is held. Stamped derived / average /
-//     included; a deal whose purchase states no fee keeps the cost alone,
-//     stamped stated / average / excluded (basis.go, docs/DESIGN.md §7.4).
+//   - book_value includes the execution fee charged on the purchase
+//     (basis.go, docs/DESIGN.md §7.4). An SPV's is `cost_basis_remaining`,
+//     the stake still held at the price paid, plus fee × shares held ÷
+//     shares bought (at most the whole fee): derived / average /
+//     included. A fund's is the capital paid in, gross (`offerings.basis`),
+//     plus the whole fee: derived / paid_in / included. A purchase that
+//     states no fee leaves it out, fees unknown.
 //
 //   - Transactions from the `cash_flows` ledger, as balanced double-entry
 //     pairs on the custody account: a purchase -> deposit + buy (spv) or

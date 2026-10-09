@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
@@ -78,22 +80,39 @@ func positionLots(pos canonical.PositionChange, lots []taxLot) []canonical.Posit
 			AcquisitionDate:      l.purchaseDate(),
 			Payload:              l.raw,
 		}
-		if l.CostBasis != nil {
-			lot.BasisOrigin = canonical.BasisStated
-		}
+		lot.SetBookValue(l.CostBasis, canonical.BasisStated)
 		out[i] = lot
 	}
 	return out
 }
 
-// earliestAcquisition is the earliest acquisition date among lots, or
-// nil where none states one.
-func earliestAcquisition(lots []canonical.PositionLotChange) *time.Time {
-	var first *time.Time
+// lotsAddUp reports whether lots add up to the position they sit
+// beside, the test fidelity's lots pass too: their quantities, signed,
+// sum to the position's within a millionth of it (at least 1e-6), and
+// their costs to its book value within a cent per lot where the book
+// value and every lot's cost are stated. A lot or a position that
+// states no quantity cannot be shown to add up.
+func lotsAddUp(lots []canonical.PositionLotChange, pos canonical.PositionChange) bool {
+	if pos.Quantity == nil || len(lots) == 0 {
+		return false
+	}
+	var qty, cost canonical.Decimal
+	costsStated := pos.BookValue != nil
 	for _, l := range lots {
-		if l.AcquisitionDate != nil && (first == nil || l.AcquisitionDate.Before(*first)) {
-			first = l.AcquisitionDate
+		if l.Quantity == nil {
+			return false
+		}
+		qty = qty.Add(*l.Quantity)
+		if l.BookValue == nil {
+			costsStated = false
+		} else {
+			cost = cost.Add(*l.BookValue)
 		}
 	}
-	return first
+	scale := decimal.Max(pos.Quantity.Abs(), decimal.NewFromInt(1))
+	if qty.Sub(*pos.Quantity).Abs().GreaterThan(decimal.New(1, -6).Mul(scale)) {
+		return false
+	}
+	perLot := decimal.New(1, -2).Mul(decimal.NewFromInt(int64(len(lots))))
+	return !costsStated || cost.Sub(*pos.BookValue).Abs().LessThanOrEqual(perLot)
 }

@@ -106,7 +106,7 @@ SELECT p.deal_external_id,
           FROM positions p2
          WHERE p2.deal_external_id = p.deal_external_id AND p2.as_of_date IS NOT NULL),
        COALESCE(o.payload, ''),
-       o.shares_original,
+       o.basis, o.shares_original,
        (SELECT SUM(cf.execution_fee) FROM cash_flows cf
          WHERE cf.deal_external_id = p.deal_external_id AND cf.kind = 'purchase')
   FROM positions p
@@ -128,11 +128,11 @@ SELECT p.deal_external_id,
 	for rows.Next() {
 		var (
 			deal, currency, kind, company, symbol, payl string
-			shares, cost, market, bought, fee           sql.NullFloat64
+			shares, cost, market, paidIn, bought, fee   sql.NullFloat64
 			acqUnix                                     sql.NullInt64
 		)
 		if err := rows.Scan(&deal, &currency, &shares, &cost, &market,
-			&kind, &company, &symbol, &acqUnix, &payl, &bought, &fee); err != nil {
+			&kind, &company, &symbol, &acqUnix, &payl, &paidIn, &bought, &fee); err != nil {
 			return batch, err
 		}
 		held = true
@@ -152,7 +152,8 @@ SELECT p.deal_external_id,
 			AcquisitionDate:      silver.DatePtrFromNullUnix(acqUnix),
 		}
 		spv := ac == canonical.AssetClassSPV
-		book, basis, feeShare := bookValue(spv, cost, shares, bought, fee)
+		book, basis, feeShare := bookValue(stake{spv: spv, cost: cost, paidIn: paidIn,
+			held: shares, bought: bought, fee: fee})
 		change.SetBookValue(book, basis)
 		if feeShare != nil {
 			change.Payload = silver.PayloadWith("{}", map[string]any{

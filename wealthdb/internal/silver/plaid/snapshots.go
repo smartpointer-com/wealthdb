@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
 	"slices"
 
@@ -121,6 +122,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		lastHeld    map[string]canonical.SnapshotBatch
 		newest      int64
 		snapshotted bool
+		unsummed    int
 	)
 	stated := map[string]statedBalance{}
 	for _, r := range runs {
@@ -132,7 +134,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 		newest, snapshotted = r.at, true
 		b := at(r.at)
-		cash, err := c.appendRun(ctx, b, r.at, secs, stated)
+		cash, err := c.appendRun(ctx, b, r.at, secs, stated, &unsummed)
 		if err != nil {
 			return nil, err
 		}
@@ -141,6 +143,10 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		held := heldByAccount(*b)
 		closePositions(b, lastHeld, held, r.at)
 		lastHeld = held
+	}
+	if unsummed > 0 {
+		log.Printf("plaid adapter: %d position snapshot(s) carry no lots: their tax lots "+
+			"do not add up to the holding's quantity and cost", unsummed)
 	}
 
 	latest, err := c.latestAccounts(ctx)
@@ -316,9 +322,10 @@ func (c *Connection) noteBalances(ctx context.Context, t int64, stated map[strin
 // appendRun adds one run's accounts, balances, mortgages and holdings to b,
 // and records in `stated` the figure each account stated. An account the
 // run lists without a figure restates the last one it stated, if any. It
-// returns the cash keys the run stated.
+// returns the cash keys the run stated, and counts in unsummed the
+// positions whose tax lots do not add up to them (appendHoldings).
 func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, t int64,
-	secs map[string]security, stated map[string]statedBalance) ([]cashKey, error) {
+	secs map[string]security, stated map[string]statedBalance, unsummed *int) ([]cashKey, error) {
 	accounts, err := c.accountsAt(ctx, t)
 	if err != nil {
 		return nil, err
@@ -352,7 +359,7 @@ func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, 
 	if err != nil {
 		return nil, err
 	}
-	return append(keys, appendHoldings(b, t, byID, holdings, secs)...), nil
+	return append(keys, appendHoldings(b, t, byID, holdings, secs, unsummed)...), nil
 }
 
 // balanceOf is one account's cash in one currency at t. Its payload says
@@ -417,9 +424,11 @@ type position struct {
 // appendHoldings adds the positions of the run's investment accounts, and
 // one CURRENT balance per account and currency for the cash among them. A
 // position holds the vested part of its holdings (holding.owned), and the
-// tax lots they state (positionLots). It returns the cash keys it stated.
+// tax lots they state where those add up to it (positionLots, lotsAddUp);
+// it counts in unsummed the positions whose lots do not. It returns the
+// cash keys it stated.
 func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]account,
-	holdings []holding, secs map[string]security) []cashKey {
+	holdings []holding, secs map[string]security, unsummed *int) []cashKey {
 	positions := map[[2]string]*position{}
 	var order [][2]string
 	cash := map[cashKey]canonical.Decimal{}
@@ -509,11 +518,15 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 		// included, and does not say which lots have vested. A position
 		// that holds the vested part at a cost pro rata would not be the
 		// sum of those lots, so it carries none. Nor does one whose
-		// holdings do not all state their lots.
+		// holdings do not all state their lots, or whose lots do not add
+		// up to it.
 		if p.lotsKnown && p.unvested == nil {
-			lots := positionLots(pos, p.lots)
-			pos.AcquisitionDate = earliestAcquisition(lots)
-			b.PositionLots = append(b.PositionLots, lots...)
+			if lots := positionLots(pos, p.lots); lotsAddUp(lots, pos) {
+				pos.AcquisitionDate = canonical.EarliestLotDate(lots)
+				b.PositionLots = append(b.PositionLots, lots...)
+			} else {
+				*unsummed++
+			}
 		}
 		b.Positions = append(b.Positions, pos)
 		if !seenInstrument[key] {

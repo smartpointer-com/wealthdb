@@ -156,7 +156,9 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 //
 // market_value resolution: prefer total_value; fall back to
 // valuation_chf when the row's currency is CHF; else compute
-// quantity × market_price at the row's price quote.
+// quantity × market_price at the row's price quote. A statement's
+// valuation_chf includes a bond's accrued interest, so a CHF bond's
+// market value read from it carries that interest.
 type positionPayload struct {
 	AssetClass   string             `json:"asset_class"`
 	Currency     string             `json:"currency"`

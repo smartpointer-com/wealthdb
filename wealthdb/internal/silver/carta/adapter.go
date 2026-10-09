@@ -28,11 +28,13 @@
 //
 //   - One POSITION per held company: the cap-table share / option lots
 //     aggregated (Quantity = the share count, MarketValue the per-date
-//     valuation, BookValue = cost; the per-lot detail in the payload),
-//     or the fund's capital account (MarketValue = NAV, BookValue =
-//     contributed). Forward-filled per event date (snapshots.go). Each
-//     held share certificate is also one POSITION LOT of its company's
-//     position, at the cash paid for it (docs/DESIGN.md §7.4).
+//     valuation, BookValue = the cash paid; the per-lot detail in the
+//     payload), or the fund's capital account (MarketValue = NAV,
+//     BookValue = contributed, less the basis a K-1 says left in kind).
+//     Forward-filled per event date (snapshots.go). Each held share
+//     certificate is also one POSITION LOT of its company's position, at
+//     the cash paid for it. Each book value is stamped by what it sums
+//     (basis.go, docs/DESIGN.md §7.4).
 //
 //   - TRANSACTIONS: the cash-flow ledger (silver migration 0003)
 //     projected as balanced double-entry pairs on the custody account

@@ -168,6 +168,15 @@ say what such an account holds.
   when one of its holdings states none, or when its book value is pro
   rata to a vested quantity (below): Plaid's lots are the whole
   holding's, and do not say which have vested.
+- **Lots must add up.** A position keeps its lots only when they sum to
+  it, the same test fidelity's lots pass:
+  - every lot states a quantity, and the quantities sum to the
+    position's within a millionth of it (at least 1e-6);
+  - where the book value and every lot's cost are stated, the costs sum
+    to the book value within a cent per lot.
+
+  A position whose lots fail carries none and no acquisition date. The
+  load logs how many position snapshots that left without lots.
 - **Vesting.** Shares not yet vested are not the holder's. Where Plaid
   states a vested quantity below the whole, the position holds the
   vested quantity. Its value is Plaid's vested value, else the price

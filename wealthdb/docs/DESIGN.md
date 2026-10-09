@@ -1889,12 +1889,12 @@ comment has the detail:
 | ubs | MT535 book cost, or the statement's cost value; a fund without one: capital called | stated or derived · average or paid_in · excluded | – | statement sales, export sales |
 | swissquote | quantity × average cost | derived · average · excluded | – | – |
 | viac | quantity × average acquisition price | derived · average · none | – | – |
-| plaid | the institution's cost | stated · unknown · unknown | tax lots | – |
-| carta | shares: their lots' cost; funds: capital paid in | derived or stated · lots or paid_in · none or included | share certificates | – |
+| plaid | the institution's cost | stated · unknown · unknown | tax lots that add up to the holding | – |
+| carta | cap table: the cash paid, its lots' cost where it holds only shares; funds: capital paid in, less in-kind distributions | derived or stated · lots or paid_in · none or included | share certificates | – |
 | angellist | capital paid in, less in-kind distributions | stated or derived · paid_in · included | – | – |
-| equityzen | price paid plus the execution fee, pro rata | derived · average · included | – | – |
+| equityzen | SPVs: shares held at the price paid, plus the execution fee pro rata; funds: capital paid in plus the fee | derived · average or paid_in · included, or unknown without a stated fee | – | – |
 | manual | the paid-in series, else the value at acquisition | stated · paid_in or acquisition_value · unknown | – | – |
-| synthetic | as generated | stated · average or paid_in · none or excluded | – | – |
+| synthetic | as generated | stated · average, paid_in or acquisition_value · none or excluded | – | – |
 
 cointracking, svb and relevate state no basis.
 

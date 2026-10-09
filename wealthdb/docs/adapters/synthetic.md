@@ -113,6 +113,11 @@ Position columns pass through:
     `stated`, `average`, `none`;
   - a `private_equity` `fund` or `spv`: the capital paid in, gross of
     the cash paid back: `stated`, `paid_in`, `none`;
+  - a `real_estate` `physical` property: the price paid for it, and a
+    `real_estate` `mortgage`: the principal borrowed, negative like the
+    loan's value. Each is the value on the day it was acquired:
+    `stated`, `acquisition_value`, `none`. A real-estate fund or ETF is
+    a holding;
   - `crypto`: its average cost, with the purchase fee left out and
     booked as a `fee` transaction of its own: `stated`, `average`,
     `excluded`.

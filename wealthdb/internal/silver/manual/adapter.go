@@ -32,8 +32,10 @@
 //     date), so gold's as-of query is correct at any historical date; a
 //     position drops out exactly at its closed_at. market_value is the
 //     forward-filled valuation. book_value is the forward-filled cost_basis
-//     entry for a position the optional paid-in series covers, else the
-//     valuation dated at acquired_at.
+//     entry for a position the optional paid-in series covers, stamped
+//     stated / paid_in / unknown, else the valuation dated at acquired_at,
+//     stamped stated / acquisition_value / unknown (docs/DESIGN.md §7.4):
+//     a figure entered by hand states nothing about fees.
 //
 //   - NO TRANSACTIONS. The wires that fund a purchase, pay a fee, or return a
 //     distribution are real movements in the bank accounts, already

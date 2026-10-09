@@ -614,7 +614,9 @@ It projects this silver into canonical `accounts` / `instruments` /
   `management_style = self_directed` (the fund-vs-equity split rides on each
   position's `asset_class`, since management_style is account-level).
 - **Valuation** — fund position: `market_value` = NAV, `book_value` =
-  contributed capital. Cap-table position: `quantity` + `book_value` = cost,
+  contributed capital, less the property a K-1 (box 19 code C) says left
+  in kind from its period end on. Cap-table position: `quantity` +
+  `book_value` = cost,
   `market_value` = the silver `market_value` (the valuation override's
   count-as-of × FMV-as-of, else the Carta-derived fallback — §5.1).
 - **Lots** — each held share certificate is one gold `position_lots` row

@@ -9,46 +9,58 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// The stamps on equityzen's book value (docs/DESIGN.md §7.4).
-var (
-	// feeBasis: the cost of the stake still held at the price paid, plus
-	// the same share of the execution fee EquityZen charged on top of the
-	// purchase.
-	feeBasis = canonical.Basis{
-		Origin: canonical.BasisDerived, Method: canonical.BasisMethodAverage, Fees: canonical.BasisFeesIncluded,
-	}
-	// costBasis: the cost of the stake still held at the price paid, for a
-	// deal whose purchase states no execution fee. The fee is not in it.
-	costBasis = canonical.Basis{
-		Origin: canonical.BasisStated, Method: canonical.BasisMethodAverage, Fees: canonical.BasisFeesExcluded,
-	}
-)
+// stake is what a deal's book value is computed from, as silver states
+// it: the SPV's cost of the shares still held at the price paid
+// (`cost_basis_remaining`, the collector's shares held × price paid), the
+// capital paid in (`offerings.basis`, the investment size), the shares
+// held and bought, and the execution fee charged on the purchase.
+type stake struct {
+	spv                             bool
+	cost, paidIn, held, bought, fee sql.NullFloat64
+}
 
-// bookValue is a deal's book value: `cost_basis_remaining`, the shares
-// still held at the price paid, plus the execution fee paid on the
-// purchase in the same proportion (purchase fees are part of basis). A
-// partial sale takes the same share of the fee as it takes of the cost,
-// so an SPV keeps fee × shares held ÷ shares bought. A fund has no share
-// count and nothing sold piecemeal, so it keeps the whole fee while it is
-// held. A purchase that states no fee, or an SPV with no shares bought to
-// divide by, leaves the cost as stated, without the fee. feeShare is the
-// part of the fee added, nil where none is.
-func bookValue(spv bool, cost, held, bought, fee sql.NullFloat64) (v *canonical.Decimal, b canonical.Basis, feeShare *canonical.Decimal) {
-	c := silver.DecimalPtrFromNullFloat(cost)
+// bookValue is a deal's book value and its stamp (docs/DESIGN.md §7.4),
+// with the part of the execution fee it adds (nil where none is added).
+// Purchase fees are part of basis.
+//
+//   - An SPV's is the shares still held at the price paid, plus the fee
+//     in the same proportion: fee × shares held ÷ shares bought, the
+//     ratio held at 1. A partial sale takes the same share of the fee as
+//     it takes of the cost. Stamped average.
+//   - A fund's is the capital paid in, gross, plus the whole fee: the
+//     private-market definition. The collector replays a fund's
+//     distributions like an SPV's sales, so its remaining cost would fall
+//     with capital paid back. Stamped paid_in.
+//
+// Both are collector or adapter arithmetic over stated figures, so the
+// origin is derived. A purchase that states no fee leaves the fee out
+// and its treatment unknown. An SPV whose shares bought are not stated
+// cannot apportion a stated fee, so it is excluded.
+func bookValue(d stake) (v *canonical.Decimal, b canonical.Basis, feeShare *canonical.Decimal) {
+	b = canonical.Basis{Origin: canonical.BasisDerived, Method: canonical.BasisMethodAverage}
+	base := d.cost
+	if !d.spv {
+		b.Method, base = canonical.BasisMethodPaidIn, d.paidIn
+	}
+	c := silver.DecimalPtrFromNullFloat(base)
 	if c == nil {
 		return nil, canonical.Basis{}, nil
 	}
-	if !fee.Valid {
-		return c, costBasis, nil
+	if !d.fee.Valid {
+		b.Fees = canonical.BasisFeesUnknown
+		return c, b, nil
 	}
-	share := decimal.NewFromFloat(fee.Float64)
-	if spv {
-		if !held.Valid || !bought.Valid || bought.Float64 <= 0 {
-			return c, costBasis, nil
+	share := decimal.NewFromFloat(d.fee.Float64)
+	if d.spv {
+		if !d.held.Valid || !d.bought.Valid || d.bought.Float64 <= 0 {
+			b.Fees = canonical.BasisFeesExcluded
+			return c, b, nil
 		}
-		share = share.Mul(decimal.NewFromFloat(held.Float64)).Div(decimal.NewFromFloat(bought.Float64))
+		ratio := decimal.NewFromFloat(d.held.Float64).Div(decimal.NewFromFloat(d.bought.Float64))
+		share = share.Mul(decimal.Min(ratio, decimal.NewFromInt(1)))
 	}
 	share = share.Round(2)
 	sum := c.Add(share)
-	return &sum, feeBasis, &share
+	b.Fees = canonical.BasisFeesIncluded
+	return &sum, b, &share
 }

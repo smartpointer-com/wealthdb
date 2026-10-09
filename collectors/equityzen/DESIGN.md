@@ -433,11 +433,12 @@ values. The only gold-schema change is migration `0015`, which widens the
   multi-company funds have none. No ISIN/CUSIP — adapter-scoped.
 - **Positions** map straight off the silver `positions` event rows:
   `market_value = market_value` (the collector's chosen mark — tender price
-  for SPVs, statement NAV for funds, cost otherwise), `book_value =
-  cost_basis_remaining` plus the purchase's `execution_fee` in the same
-  proportion (`shares_held ÷ shares_original` for an SPV, the whole fee for
-  a fund), `quantity = shares_held` for SPVs (NULL for funds — units are not
-  a share count). `acquisition_date` = the deal's first event.
+  for SPVs, statement NAV for funds, cost otherwise). `book_value` for an
+  SPV = `cost_basis_remaining` plus the purchase's `execution_fee` in the
+  same proportion (`shares_held ÷ shares_original`, at most 1); for a fund
+  = the capital paid in (`offerings.basis`) plus the whole fee.
+  `quantity = shares_held` for SPVs (NULL for funds — units are not a
+  share count). `acquisition_date` = the deal's first event.
 
 ### Adapter shape (six files, mirroring angellist)
 

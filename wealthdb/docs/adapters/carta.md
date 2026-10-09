@@ -37,6 +37,10 @@ One SQLite DB (`$XDG_DATA_HOME/wealthdb/carta/carta.db`). The relevant tables:
   quarterly statement** (a NAV time series): `net_asset_value`, `commitment`,
   `called_capital`, `capital_contributed`, `distributions`, `vintage_year`
   (decimal **strings**, parsed exactly).
+- `k1_capital_accounts` — one row per K-1 document of a fund (collector
+  migrations 0004 and 0005). The adapter reads its box 19 code C, the
+  property distributed in kind, and the period it covers (§5). An older
+  silver lacks the table and states none.
 - `vesting_schedules` / `vesting_events` / `documents` / `cap_calls` /
   `capital_events` — silver-only; not projected to gold (no canonical home —
   see §7).
@@ -118,26 +122,33 @@ see §6):
   valuation: held shares × the FMV in effect at the snapshot (a side-loaded
   valuation override when present, else the Carta-derived basis — see the
   collector `DESIGN.md` §5.1); options 0.
-- `book_value` = Σ every held lot's `cost`: the cash paid for each share
-  certificate (quantity × strike for an exercise) and each convertible's
-  principal. Stamped `derived` / `lots` / `none`: a sum of lots, and an
-  exercise or a purchase carries no fee (DESIGN.md §7.4). A certificate
-  born from an NSO exercise has the fair-market-value at exercise as its
-  tax basis; the book value stays the cash paid, and the exercise facts
-  ride in the lot's payload.
-- `acquisition_date` = the EARLIEST acquisition date the held lots carry.
-  Carta states it per lot as `original_acquisition_date`, which is not the
-  certificate's issue date: a certificate is re-issued whenever the holding
-  is restructured — a transfer, a split, a conversion — and the new one
-  is dated to the re-issue while the shares behind it are the same shares,
-  so the acquisition date can precede the platform's own coverage. A
-  position aggregates a company's whole cap-table line, so any later lot's
-  date would claim the oldest shares were acquired more recently than they
-  were. A convertible that states none contributes its issue date: a
-  SAFE or note is not re-issued on a split or transfer the way a share
-  certificate is, so its issue date is the day it was bought. Other lots
-  that state none contribute nothing, and a position whose lots all state
-  none carries no date.
+- `book_value` = Σ every held line's `cost`: the cash paid for each share
+  certificate (quantity × strike for an exercise), each convertible's
+  principal, and each award's or warrant's cost. An exercise or a
+  purchase carries no fee. The stamp says what the sum is (DESIGN.md
+  §7.4):
+  - every costed line is a share certificate: the sum of its lots,
+    `derived` / `lots` / `none`;
+  - any other line has a cost: the cash paid, `derived` / `paid_in` /
+    `none`.
+
+  A certificate born from an NSO exercise has the fair-market-value at
+  exercise as its tax basis. The book value stays the cash paid, and the
+  exercise facts ride in the lot's payload.
+- `acquisition_date` = the EARLIEST acquisition date of the share lots
+  (see below). Carta states it per lot as `original_acquisition_date`,
+  which is not the certificate's issue date: a certificate is re-issued
+  whenever the holding is restructured — a transfer, a split, a
+  conversion — and the new one is dated to the re-issue while the shares
+  behind it are the same shares, so the acquisition date can precede the
+  platform's own coverage. A later lot's date would claim the oldest
+  shares were acquired more recently than they were. A holding without a
+  dated share lot takes the earliest date its other lines carry. A
+  convertible that states none contributes its issue date: a SAFE or note
+  is not re-issued on a split or transfer the way a share certificate is,
+  so its issue date is the day it was bought. Other lines that state none
+  contribute nothing, and a position whose lines all state none carries
+  no date.
 - The per-lot detail (label, `security_type`, quantity, cost, market_value,
   issue date, acquisition date, strike) rides in the position payload under
   `lots`.
@@ -154,8 +165,8 @@ its company's position:
 The certificates' quantities sum to the position's. An option grant is not
 a lot: it holds no shares until it is exercised, and then the certificate
 it becomes is one. A convertible is not a lot either until it converts. So
-the lots' book values sum to the position's unless the company also holds
-a convertible.
+the lots' book values sum to the position's exactly when it is stamped
+`lots`.
 
 **Fund LP** (one position per held `fund_metrics` row → (`private_equity`,
 `fund`)):
@@ -165,6 +176,7 @@ a convertible.
   capital paid back. A row parsed from a capital-account statement takes
   the statement's inception-to-date contributions. Stamped `stated` /
   `paid_in` / `included`: the management fees are drawn from that capital.
+  An in-kind distribution reduces it (see below).
 - `acquisition_date` = the fund's first capital call.
 - `quantity` = NULL (an LP interest has no unit count).
 - `commitment` / `called_capital` / `distributions` / `vintage_year` ride
@@ -179,6 +191,21 @@ the capital paid in less any capital paid back (`market_value`). Its
 call notices and stamped `derived` / `paid_in` / `included`. Its payload
 carries `valuation_basis: called_capital`. Each fund cash event before the
 first NAV is a snapshot day.
+
+A K-1's box 19 code C (`k1_capital_accounts.property_distributions`) is
+property the fund distributed in kind. It moves basis out with the asset,
+so from the K-1's period end on the fund's book value is the paid-in
+figure less every such distribution so far:
+- the period end is the K-1's `period_end` for a fiscal year, else Dec 31
+  of its `tax_year`, and it is a snapshot day;
+- two documents of one fund and tax year are copies of one K-1, so the
+  later document counts;
+- the book value never goes below zero; the load counts the funds held
+  at zero;
+- a reduced book value is stamped `derived` / `paid_in` / `included`, and
+  its payload carries `paid_in` and `property_distributed`.
+
+Cash paid back (code A) does not reduce the book value.
 
 So an as-of query sees the held cap-table equity valued at its basis and the
 fund at the right quarter's NAV; after a cap-table exit, only the

@@ -1,8 +1,12 @@
 package angellist
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"log"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,7 +108,9 @@ func TestAPropertyDistributionReducesTheBookValueFromTheK1PeriodEnd(t *testing.T
 	byDay := inKindPositions(t, path)
 
 	stated := paidInBasis
-	derived := inKindBasis
+	derived := canonical.Basis{
+		Origin: canonical.BasisDerived, Method: canonical.BasisMethodPaidIn, Fees: canonical.BasisFeesIncluded,
+	}
 	for _, c := range []struct {
 		day, pos, book string
 		basis          canonical.Basis
@@ -153,18 +159,45 @@ func TestASilverWithoutPropertyDistributionsKeepsThePaidInBookValue(t *testing.T
 	}
 }
 
+// A K-1's period end is a snapshot day even where no position event
+// falls on it, so the reduction lands on its own date.
+func TestThePropertyDistributionCutLandsOnTheK1PeriodEnd(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seedInKind(t, db)
+	if _, err := db.Exec(`DELETE FROM position_snapshots WHERE event_type = 'statement'`); err != nil {
+		t.Fatal(err)
+	}
+	at, ok := inKindPositions(t, path)[day(t, "2021-12-31")]
+	if !ok {
+		t.Fatal("no snapshot on the K-1 period end")
+	}
+	for pos, want := range map[string]string{"s1": "6000.00", "s2": "5000.00", "s3": "0.00"} {
+		if p := at[pos]; p.BookValue == nil || p.BookValue.StringFixed(2) != want {
+			t.Errorf("%s book value %v on the period end, want %s", pos, p.BookValue, want)
+		}
+	}
+}
+
 // A fund name two offerings carry does not say which position the K-1
-// belongs to, so its property distribution reduces neither.
+// belongs to, so its property distribution reduces neither, and the load
+// names the fund.
 func TestAnAmbiguousK1FundReducesNoPosition(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seedInKind(t, db)
 	if _, err := db.Exec(`UPDATE offerings SET fund_name = 'Example SPV One, LP' WHERE position_external_id = 's2'`); err != nil {
 		t.Fatal(err)
 	}
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
 	at := inKindPositions(t, path)[day(t, "2022-06-30")]
 	for pos, want := range map[string]string{"s1": "10000.00", "s2": "5000.00"} {
 		if p := at[pos]; p.BookValue == nil || p.BookValue.StringFixed(2) != want || p.Basis != paidInBasis {
 			t.Errorf("%s book value %v stamped %+v, want %s stated paid-in", pos, p.BookValue, p.Basis, want)
 		}
+	}
+	if got := logged.String(); !strings.Contains(got, "1 K-1 fund(s)") ||
+		!strings.Contains(got, "Example SPV One, LP (on 2 offerings)") {
+		t.Errorf("log = %q, want the ambiguous fund named", got)
 	}
 }

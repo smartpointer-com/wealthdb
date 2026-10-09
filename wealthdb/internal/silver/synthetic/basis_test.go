@@ -20,6 +20,9 @@ func TestBasisFor(t *testing.T) {
 		{canonical.AssetClassPrivateEquity, canonical.VehicleFund, stamp(canonical.BasisMethodPaidIn, canonical.BasisFeesNone)},
 		{canonical.AssetClassPrivateEquity, canonical.VehicleSPV, stamp(canonical.BasisMethodPaidIn, canonical.BasisFeesNone)},
 		{canonical.AssetClassCrypto, canonical.VehiclePhysical, stamp(canonical.BasisMethodAverage, canonical.BasisFeesExcluded)},
+		{canonical.AssetClassRealEstate, canonical.VehiclePhysical, stamp(canonical.BasisMethodAcquisitionValue, canonical.BasisFeesNone)},
+		{canonical.AssetClassRealEstate, canonical.VehicleMortgage, stamp(canonical.BasisMethodAcquisitionValue, canonical.BasisFeesNone)},
+		{canonical.AssetClassRealEstate, canonical.VehicleETF, stamp(canonical.BasisMethodAverage, canonical.BasisFeesNone)},
 	}
 	for _, c := range cases {
 		if got := basisFor(c.ac, c.veh); got != c.want {

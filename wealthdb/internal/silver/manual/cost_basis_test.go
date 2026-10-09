@@ -80,8 +80,27 @@ func TestASilverWithoutTheCostBasisTableStillLoads(t *testing.T) {
 	}
 }
 
+// stampsOn returns the basis stamps of the positions at date.
+func stampsOn(t *testing.T, path, date string) map[string]canonical.Basis {
+	t.Helper()
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]canonical.Basis{}
+	for _, b := range collectSnapshots(t, conn, w) {
+		for _, p := range b.Positions {
+			if p.SnapshotAt == iso(t, date) {
+				got[p.PositionKey] = p.Basis
+			}
+		}
+	}
+	return got
+}
+
 // The stamp says which of the two figures a book value is: the paid-in
-// series, or the valuation at acquisition.
+// series, or the valuation at acquisition. Neither states its fees.
 func TestTheBookValueStampNamesItsSource(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
@@ -90,20 +109,33 @@ func TestTheBookValueStampNamesItsSource(t *testing.T) {
             ('pf-1', '2021-02-01', '50', 'USD', 'first call');`); err != nil {
 		t.Fatal(err)
 	}
-	conn := openAdapter(t, path)
-	w, _ := conn.ChangeWindow(context.Background(), -1)
-	want := map[string]canonical.BasisMethod{
+	got := stampsOn(t, path, "2023-01-01")
+	for pos, m := range map[string]canonical.BasisMethod{
 		"pf-1": canonical.BasisMethodPaidIn,
 		"re-1": canonical.BasisMethodAcquisitionValue,
+	} {
+		want := canonical.Basis{Origin: canonical.BasisStated, Method: m, Fees: canonical.BasisFeesUnknown}
+		if b, ok := got[pos]; !ok || b != want {
+			t.Errorf("%s stamp = %+v (seen %v), want %+v", pos, b, ok, want)
+		}
 	}
-	for _, b := range collectSnapshots(t, conn, w) {
-		for _, p := range b.Positions {
-			if p.SnapshotAt != iso(t, "2023-01-01") || want[p.PositionKey] == "" {
-				continue
-			}
-			if p.Basis.Method != want[p.PositionKey] || p.Basis.Origin != canonical.BasisStated {
-				t.Errorf("%s stamp = %+v, want stated %s", p.PositionKey, p.Basis, want[p.PositionKey])
-			}
+}
+
+// A silver without the cost_basis table stamps every book value as the
+// valuation at acquisition.
+func TestWithoutTheCostBasisTableEveryStampIsTheAcquisitionValue(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	if _, err := db.Exec(`DROP TABLE cost_basis`); err != nil {
+		t.Fatal(err)
+	}
+	got := stampsOn(t, path, "2023-01-01")
+	want := canonical.Basis{
+		Origin: canonical.BasisStated, Method: canonical.BasisMethodAcquisitionValue, Fees: canonical.BasisFeesUnknown,
+	}
+	for _, pos := range []string{"pf-1", "re-1"} {
+		if b, ok := got[pos]; !ok || b != want {
+			t.Errorf("%s stamp = %+v (seen %v), want %+v", pos, b, ok, want)
 		}
 	}
 }

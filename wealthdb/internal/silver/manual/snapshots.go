@@ -205,7 +205,7 @@ func (c *Connection) bookValueSQL() string {
 	if !c.costBasis {
 		return atAcquisition
 	}
-	return `CASE WHEN EXISTS (SELECT 1 FROM cost_basis cb WHERE cb.position_id = p.id)
+	return `CASE WHEN ` + seriesCovers + `
          THEN (SELECT cb.amount FROM cost_basis cb
                 WHERE cb.position_id = p.id
                   AND CAST(strftime('%s', cb.as_of_date) AS INTEGER) <= ?1
@@ -213,13 +213,17 @@ func (c *Connection) bookValueSQL() string {
          ELSE ` + atAcquisition + ` END`
 }
 
+// seriesCovers is the SQL predicate for whether the cost_basis series
+// covers position p.
+const seriesCovers = `EXISTS (SELECT 1 FROM cost_basis cb WHERE cb.position_id = p.id)`
+
 // paidInSQL is the SQL for whether bookValueSQL reads the cost_basis
 // series for the position, inside the same query.
 func (c *Connection) paidInSQL() string {
 	if !c.costBasis {
 		return `0`
 	}
-	return `EXISTS (SELECT 1 FROM cost_basis cb WHERE cb.position_id = p.id)`
+	return seriesCovers
 }
 
 // manualBasis stamps a manual book value: the capital paid in where the

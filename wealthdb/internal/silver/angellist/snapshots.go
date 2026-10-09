@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/shopspring/decimal"
 
@@ -24,15 +25,15 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	times, err := c.snapshotTimesInWindow(ctx, w)
+	k, err := c.readInKind(ctx)
+	if err != nil {
+		return nil, err
+	}
+	times, err := c.snapshotTimesInWindow(ctx, w, k.PeriodEnds())
 	if err != nil {
 		return nil, err
 	}
 	account, err := c.accountSlug(ctx)
-	if err != nil {
-		return nil, err
-	}
-	k, err := c.readInKind(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +45,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 		batches = append(batches, batch)
 	}
-	k.logClamped()
+	k.LogClamped(kindName)
 	// The funding account's current uninvested cash (so account value =
 	// positions + cash). Emitted as one CashBalanceChange dated at the last
 	// funding movement.
@@ -148,26 +149,39 @@ SELECT fa.balance_minor, fa.currency,
 
 // snapshotTimesInWindow are the position event dates in the window — the
 // distinct as_of_date of position_snapshots (the download time in dump_runs
-// is provenance, not a holding event, so it is excluded).
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
+// is provenance, not a holding event, so it is excluded) — and the days in
+// it a K-1's property distribution reduces a book value (inKind), so the
+// cut lands on its own date.
+func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, inKind []int64) ([]int64, error) {
 	const q = `
 SELECT DISTINCT as_of_date FROM position_snapshots
- WHERE as_of_date BETWEEN ? AND ?
- ORDER BY as_of_date`
+ WHERE as_of_date BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
 	}
 	defer rows.Close()
 	var out []int64
+	seen := map[int64]bool{}
 	for rows.Next() {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
 			return nil, err
 		}
+		seen[t] = true
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, t := range inKind {
+		if t >= w.Start && t <= w.End && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
 }
 
 // accountSlug is the single invest account's external id, from dump_runs
@@ -206,7 +220,7 @@ SELECT COALESCE(NULLIF(slug, ''), '') FROM (
 // basis, which can differ from the portal's figure; it rides in the payload
 // as tax_basis_contributed, so the book value does not move between the two
 // as the latest event changes.
-func (c *Connection) buildBatch(ctx context.Context, t int64, account string, k *inKind) (canonical.SnapshotBatch, error) {
+func (c *Connection) buildBatch(ctx context.Context, t int64, account string, k *silver.InKind) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	if account == "" {
 		return batch, nil
@@ -265,7 +279,7 @@ SELECT ps.position_external_id,
 			MarketValue:          minorPtr(marketMinor),
 			AcquisitionDate:      silver.DatePtrFromNullUnix(invDate),
 		}
-		book, basis, extra := k.bookValue(pid, t, contribMinor)
+		book, basis, extra := k.BookValue(pid, t, minorPtr(contribMinor), paidInBasis)
 		change.SetBookValue(book, basis)
 		if tax := minorPtr(taxMinor); tax != nil {
 			if extra == nil {

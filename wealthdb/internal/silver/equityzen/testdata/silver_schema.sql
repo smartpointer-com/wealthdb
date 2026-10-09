@@ -12,6 +12,7 @@ CREATE TABLE offerings (
     kind             TEXT,                      -- 'spv' | 'private_fund'
     company_name     TEXT,
     ticker_symbol    TEXT,                      -- EZ per-company symbol (SPVs; null for funds)
+    basis            REAL,                      -- investment size: the capital paid in
     shares_original  REAL,                      -- shares originally bought
     currency         TEXT NOT NULL DEFAULT 'USD',
     payload          TEXT
