@@ -219,15 +219,25 @@ func saleFigures(where, isin, valor string, day int64, quantity, value sql.NullF
 }
 
 // isReversal reports whether a booking text names a reversal. The bank
-// prints one as the text of the booking it reverses with the word
-// "Reversal" in front, or behind a separator after it, in any case.
+// prints one as the text of the booking it reverses with a reversal word
+// in front, or behind a separator after it, in any case. English
+// statements print "Reversal"; the German, French and Italian words are
+// the bank's usual terms for the same booking, read the same way.
 func isReversal(text string) bool {
 	for _, w := range strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) }) {
-		if strings.EqualFold(w, "reversal") {
+		if reversalWords[strings.ToLower(w)] {
 			return true
 		}
 	}
 	return false
+}
+
+// reversalWords are the words that mark a reversal booking, lower case.
+var reversalWords = map[string]bool{
+	"reversal": true,
+	"storno":   true, "stornierung": true, // German, Italian
+	"extourne": true, "annulation": true, // French
+	"annullamento": true, // Italian
 }
 
 // cancelReversed pairs each reversal with the sale it cancels: the

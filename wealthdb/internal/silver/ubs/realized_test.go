@@ -505,6 +505,9 @@ func TestIsReversal(t *testing.T) {
 		"REVERSAL EXAMPLE BOOKING":  true,
 		"Example Booking":           false,
 		"Irreversible Example Sale": false,
+		"Storno Beispielbuchung":    true,
+		"Exemple;Extourne":          true,
+		"Annullamento Esempio":      true,
 		"":                          false,
 	} {
 		if got := isReversal(text); got != want {

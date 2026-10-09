@@ -1216,9 +1216,11 @@ Each sale is one realized lot. UBS states no tax lots.
   export's valuation currency. The book value relies on the export
   computing the P/L against the same average cost the statement
   prints, so the value less the P/L is that cost.
-- **A reversal** is a booking whose text holds the word "Reversal",
-  in any case: in front of the text of the booking it reverses, or
-  behind a separator after it. Its sign is not what marks it.
+- **A reversal** is a booking whose text holds a reversal word, in
+  any case: in front of the text of the booking it reverses, or behind
+  a separator after it. The words are "Reversal" and its German, French
+  and Italian counterparts ("Storno", "Stornierung", "Extourne",
+  "Annulation", "Annullamento"). Its sign is not what marks it.
 - **A missing currency.** A sale printed without its reporting or
   valuation currency is no lot: a figure without its currency states
   nothing.
