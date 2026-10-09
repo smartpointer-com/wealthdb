@@ -7,7 +7,7 @@ realized lots. [DESIGN.md §7.4](DESIGN.md) defines that data and its
 per-source mapping; this file defines the figures the readers compute
 from it.
 
-Related design: DESIGN.md §4.16 (the `gains` command), §7.1 (accrued
+Related design: DESIGN.md §4.15 (the `gains` command), §7.1 (accrued
 income), §7.4 (cost basis), §10.13 (the report macros), §13.4 (the lot
 engine), and migration 0116.
 

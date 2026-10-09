@@ -118,6 +118,7 @@ wealthdb reload  <id> | -a            (RW)    Reset then load; -a builds a fresh
 wealthdb compact                      (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
 wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
+wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage.
 wealthdb transactions [flags]         (RO)    Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
@@ -222,6 +223,11 @@ currency, e.g. USD for a US equity) and `value_<CURRENCY>` (the
 converted value in the requested output currency). When the natural
 currency equals the output currency, the conversion is the identity
 and the value passes through unchanged.
+
+The cost basis columns are opt-in through `-C`: `cost_basis`,
+`unrealized_gain`, `unrealized_pct`, `basis_stamp`, `acquisition_date`,
+`accrued_interest`, `clean_value`, and the converted `cost_basis_<CCY>`
+and `unrealized_<CCY>`. docs/GAINS.md defines them.
 
 Internally: for each silver source, find the latest `snapshot_at` ≤
 `--as-of` by querying `MAX(snapshot_at)` on `positions` /
@@ -667,7 +673,28 @@ the Cash row included — sum to zero; both identities are structural.
 `wealthdb transactions` carries `cashflow_section`, `cashflow_class`
 and `cashflow_group` behind `-C`, beside the other two trios.
 
-### 4.15 Future subcommands (sketch only)
+### 4.15 `wealthdb gains <view>`
+
+What was gained or lost on what is held, realized and unrealized, over
+a window (docs/GAINS.md for the figures, §10.13 for the macros). The
+families' idiom: a positional view, a positional window with the
+trailing twelve months as its default, `--period` on the aggregate
+views, and the shared `-f`, `-C`, `-x`, `-p`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `<view>` | required | `summary` \| `sources` \| `portfolios` \| `accounts` (the holdings grains, which reconcile), `positions`, `realized`, `lots`, `coverage`. |
+| `[FROM [TO]]` | trailing twelve months | As §4.12. A positional year reads a calendar year: `wealthdb gains realized 2025`. `lots` reads the window's end. |
+| `--period` | `monthly` | As §4.12, on the four aggregate views; the others read the whole window. |
+| `--documents` | `primary` | `primary` \| `all`, on `realized` only: `all` lists every document's copy of a sale. Refused on the other views. |
+| `-r` | off | `realized` only: newest first. Refused on the other views. |
+| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` masks account ids, quantities and amounts; percentages, basis stamps, dates and security names stay legible. |
+
+Every aggregate and positions row carries a `quality` column naming
+each way its figures can be incomplete, and `coverage` gives a verdict
+per account.
+
+### 4.16 Future subcommands (sketch only)
 
 These are reserved namespaces; their final shape will be designed
 when implemented. The schema must not preclude them.
@@ -677,8 +704,6 @@ when implemented. The schema must not preclude them.
 - `wealthdb filter` / dedicated subcommands per asset_class
   (`wealthdb equities`, `wealthdb bonds`, `wealthdb fx`) — convenience
   views over `wealthdb holdings positions`.
-- `wealthdb pnl` — realised / unrealised P&L from `transactions` +
-  current positions.
 
 The point of mentioning them now is to ensure the schema carries
 the columns these will need (`asset_class`, `vehicle`,
@@ -1923,6 +1948,9 @@ its own document kinds and marks the best kind present
 no gain, the column is NULL and the gain is `proceeds − book_value +
 wash_sale_disallowed`.
 
+The readers of all three, `holdings positions`' cost basis columns and
+`wealthdb gains`, are defined in docs/GAINS.md.
+
 ## 8. Load semantics
 
 `wealthdb load` is structurally an **incremental view maintenance**
@@ -2276,7 +2304,8 @@ SELECT * FROM positions
 private-market sources, manual, the synthetic demo, and any position
 with stated lots, which takes its earliest lot's date (§7.4).
 Elsewhere it is NULL, so this filter sees those positions only
-(§13.3). `position_lots` answers the same question per lot.
+(§13.3). `position_lots` answers the same question per lot, and
+`wealthdb gains lots` lists it.
 
 ### 10.5 Net worth by bank
 
@@ -2911,6 +2940,22 @@ Four things differ from the two family sets:
 docs/CASHFLOW.md is the spec; it is written as a delta against
 SPENDING.md and INCOME.md and does not repeat what they own.
 
+### 10.13 Gains reports
+
+Migration 0116 adds the gains macros over what 0115 loads, and
+re-issues `report_positions` and `report_cash` with the cost basis
+columns; their earlier columns are unchanged. Shared pieces:
+`fx_rates_to(ccy)` and `fx_amount` (one conversion path, the order
+every single-currency report applies), `positions_at(instants)` (the
+point-in-time rule of §10.1 at several instants at once),
+`gains_position_lines`, `realized_lots_in` (the one place the realized
+gain formula lives) and `gains_events` (sells, in-kind moves and
+corporate actions). The readers are
+`report_gains_buckets(from, to, ccy, period, grain)`,
+`report_gains_positions`, `report_gains_realized`, `report_lots` and
+`report_gains_coverage`. docs/GAINS.md defines every figure they
+return. The multi-currency twins for the dashboards are not built yet.
+
 ## 11. Repository layout
 
 ```
@@ -3268,6 +3313,10 @@ engine could replay them: FIFO per account and instrument (per
 portfolio and coin for crypto), fees into the lot, a transfer's two
 sides paired (cointracking's `Group` and `Tx-ID`), income at its value
 on receipt. It would write `rebuilt` book values and lots.
+
+The readers need no change for it: a rebuilt book value carries
+`basis_origin = rebuilt`, and the `gains coverage` verdicts `no_basis`
+and `no_realized` are the gaps it closes.
 
 Open before it is built:
 

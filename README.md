@@ -88,7 +88,9 @@ it inside retirement plans" rather than a list of tickers.
 **Investment performance.** Time-weighted and money-weighted returns
 for each account, each portfolio, each provider and the whole, over any
 period. Money moved between the household's own accounts is not counted
-as gain or loss, and every figure carries its own caveats.
+as gain or loss, and every figure carries its own caveats. Realized and
+unrealized gains come from the cost basis and tax lots the providers
+state, with a note wherever a provider states none.
 
 **Income and spending.** What arrived — wages, interest, dividends,
 rent — and what left, grouped by category, across all cards and
@@ -105,6 +107,7 @@ A few of the questions it answers, and the commands behind them:
 ```sh
 wealthdb holdings global -d 2024-12-31 -x CHF        # net worth at the end of 2024, in CHF
 wealthdb returns portfolios 2025                     # how each portfolio did in 2025
+wealthdb gains realized 2025                         # every lot sold in 2025, with its gain
 wealthdb spending categories 2025 --period annual    # last year's spending by category
 wealthdb income summary 2025-01 2025-03 -C +withheld # Q1 income, with the tax withheld beside it
 wealthdb cashflow sankey 2025                        # the year's cash flow as a diagram
@@ -301,7 +304,8 @@ describes the household and how to query it from the command line.
   method and its conventions; **[SPENDING.md](wealthdb/docs/SPENDING.md)**,
   **[INCOME.md](wealthdb/docs/INCOME.md)** and
   **[CASHFLOW.md](wealthdb/docs/CASHFLOW.md)** — the three readings of
-  the enrichment engine; **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
+  the enrichment engine; **[GAINS.md](wealthdb/docs/GAINS.md)** —
+  realized and unrealized gains; **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
   the `asset_class` × `vehicle` classification.
 - **[AGENTS.md](AGENTS.md)** — agent ground rules shared across
   every component (security, PII, read-only access).

@@ -55,7 +55,8 @@ The gold engine of the suite. It reads the silver databases the
 [collectors](../collectors/) produce, one per source. It projects them
 into one canonical DuckDB schema. It reads that schema back as the
 suite's reports: holdings as of any date, time- and money-weighted
-returns, spending, income and the household's cash flow statement. The
+returns, realized and unrealized gains, spending, income and the
+household's cash flow statement. The
 repo-root [README](../README.md) describes what each report answers.
 
 It runs as a CLI and as an MCP server over the same reports
@@ -68,8 +69,8 @@ runs in one Docker image, with no host-side Go toolchain.
 The commands fall into four groups, the same as in `wealthdb help`:
 
 - **Reports** read the database and change nothing: `holdings`,
-  `returns`, `transactions`, `spending`, `income`, `cashflow`,
-  `status` and `snapshots`.
+  `returns`, `gains`, `transactions`, `spending`, `income`,
+  `cashflow`, `status` and `snapshots`.
 - **Set up and load** write it. `config` writes the config file and
   `init` creates the database. `load`, `reset` and `reload` bring a
   source's silver in or take it out. `compact` reclaims space.
@@ -117,6 +118,7 @@ wealthdb holdings positions -x CHF     # the same, in CHF
 wealthdb holdings positions -f csv     # CSV for scripting
 wealthdb returns accounts 2025         # per-account TWR for 2025, by quarter
 wealthdb returns global --method both  # whole-portfolio TWR and MWR since the first snapshot
+wealthdb gains summary 2025            # realized and unrealized gains in 2025, by month
 wealthdb status -v                     # how current each source is
 ```
 

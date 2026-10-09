@@ -84,6 +84,15 @@ rows at every grain, aggregates byte-identical to a no-card baseline),
 multi-currency loader), `TestReturnsCardExcludedFromValueSpine` (the
 `report_global` gap and the surviving payment leg).
 
+## The gain column
+
+Every row carries `gain = end value − start value − net flow`, the money
+the percentages describe: capital added is no gain, so a deposit leaves
+it unchanged. It is computed from the row's three figures and inherits
+their quality flags. It is not the `wealthdb gains` figure, which is the
+price gain on positions measured against a cost basis;
+[GAINS.md](GAINS.md) §7 relates the two.
+
 ## The math (`internal/returns`)
 
 - **All returns math is float64.** Money is exact (DECIMAL) up to the

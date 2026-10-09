@@ -68,6 +68,15 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 - **Best account by return** —
   `wealthdb returns accounts 2025 --period total -f json | jq 'map(select(.twr_pct != "n/a")) | sort_by(.twr_pct|tonumber) | reverse | .[0:3]'`
   (a return that cannot be computed is the string `"n/a"`; drop those rows first)
+- **Realized gains of a tax year** — `wealthdb gains summary 2025 --period total`
+  (read `realized`; `quality` names any sales no tax document covers)
+- **Every lot sold in a year** — `wealthdb gains realized 2025`
+- **Which holdings gained or lost the most** —
+  `wealthdb gains positions 2025 -f json | jq 'map(select(.gain_USD)) | sort_by(.gain_USD|tonumber) | reverse | .[0:5]'`
+- **Unrealized gain and cost basis of each holding now** —
+  `wealthdb holdings positions -C +cost_basis,unrealized_gain,unrealized_pct,basis_stamp`
+- **Where gains are unknown** — `wealthdb gains coverage 2025` (a `no_basis` or
+  `no_realized` verdict means the figures for that account are missing, not zero)
 - **Total spent in a window** — `wealthdb spending summary 2025 --period total`
 - **Spending by category** — `wealthdb spending categories 2025 --period total`
   (broad groups) or add `--level detailed` (groceries, restaurants, flights, …)
@@ -99,6 +108,7 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 | Every individual holding | `holdings positions` |
 | Trades, dividends, interest, fees, cash in and out over time | `transactions` |
 | How something **performed** over a period (return %) | `returns <view>` |
+| **What was gained or lost**, realized or unrealized; cost basis; tax lots | `gains <view>` |
 | **What was spent**, on what | `spending <view>` |
 | **What was received**, from whom | `income <view>` |
 | **Where the household's cash came from and went** | `cashflow <view>` |
@@ -108,6 +118,7 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 |---|---|
 | `holdings` | `global`, `sources`, `portfolios`, `accounts`, `positions` |
 | `returns` | `global`, `sources`, `portfolios`, `accounts` |
+| `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage` |
 | `spending` | `summary`, `categories`, `transactions` |
 | `income` | `summary`, `types`, `transactions` |
 | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage` |
@@ -136,8 +147,8 @@ source contributes its latest snapshot on or before that date.
 | `- today` | all time |
 
 Defaults when the window is omitted: `transactions` the past 30 days;
-`returns` since the first snapshot; `spending`, `income` and `cashflow` the
-trailing twelve months. "Last year" and "this year so far" are calendar
+`returns` since the first snapshot; `spending`, `income`, `cashflow` and
+`gains` the trailing twelve months. "Last year" and "this year so far" are calendar
 windows: resolve them from today's date and pass them explicitly (`2025`, or
 `2026-01-01 today`).
 
@@ -149,7 +160,7 @@ windows: resolve them from today's date and pass them explicitly (`2025`, or
 | `-x CCY` | output currency (default: the configured base currency) |
 | `-C COLS` | columns: names, `default`, `all`, or a delta like `-C +quality,-net_flow` |
 | `-p` | redact (see below) |
-| `--period` | bucket size, on `returns`, `spending`, `income`, `cashflow` |
+| `--period` | bucket size, on `returns`, `spending`, `income`, `cashflow`, `gains` |
 | `--level` | vocabulary grain, on `spending`, `income`, `cashflow` |
 
 `-C all` lists every available column for a view. Use the **registry name** in

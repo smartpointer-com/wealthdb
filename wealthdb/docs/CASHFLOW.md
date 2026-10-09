@@ -65,7 +65,7 @@ resolution negates anything.
 What is deliberately **not** here:
 
 - **Not a P&L.** Investing shows cash moved, not gain realised.
-  Selling at a loss is an inflow.
+  Selling at a loss is an inflow. The gains are [GAINS.md](GAINS.md)'s.
 - **Not returns.** "External to the thing being measured" and "across
   the household's cash edge" are different edges. The two agree on most
   rows and are allowed to disagree on the rest.
