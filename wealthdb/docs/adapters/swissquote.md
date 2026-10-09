@@ -26,8 +26,8 @@ the canonical gold schema. Implements the `silver.Adapter` /
 | --- | --- | --- |
 | `schema_meta` / `dump_runs` | meta only | Used by `Status` / `ChangeWindow`. |
 | `accounts` | `accounts` (kind=`brokerage`) | Customer ID as `account_external_id`. |
-| `positions` (`source='live'`) | `positions` | `position_key` = ISIN when known, else `symbol + '@' + currency`. See §4 for the `(asset_class, vehicle)` pair. |
-| `positions` (`source='pp:<doc_id>'`) | `positions` | Historical year-end snapshots reconstructed from Portfolio Performance PDFs (silver migration 0004). Same mapping as live — see §8. |
+| `positions` (`source='live'`) | `positions` | `position_key` = ISIN when known, else `symbol + '@' + currency`. See §4 for the `(asset_class, vehicle)` pair and §9 for the book value. |
+| `positions` (`source='pp:<doc_id>'`) | `positions` | Historical year-end snapshots reconstructed from Portfolio Performance PDFs (silver migration 0004). Same mapping as live — see §8 and §9. |
 | `currency_balances` | `cash_balances`; also derives `fx_rates` from `rate_to_chf` | See §5. |
 | `transactions` | `transactions` | See `transaction_type` mapping in §6. |
 | `documents` | — | PDFs are bronze-only; gold doesn't store binaries. |
@@ -141,7 +141,33 @@ no ISIN reachable anywhere in silver fall back to
 `symbol + '@' + currency` and live in gold alongside
 ISIN-keyed siblings under different identities.
 
-## 9. Open questions
+## 9. Cost basis
+
+Silver migration 0006 states each position's `average_cost` per unit,
+in the row's currency, and its `price_quote`. The adapter maps them
+as follows (DESIGN.md §7.4 has the stamp's meaning):
+
+- `book_value` is `quantity × average_cost`.
+- A statement prints a bond's prices in percent of nominal
+  (`price_quote = 'percent'`). Its quantity is the nominal, so the
+  product is divided by 100.
+- The stamp is `derived`, `average`, `excluded`. Swissquote's average
+  cost leaves the purchase fees out.
+- A row without an average cost has no book value and no stamp.
+- A silver without the 0006 columns still loads, with no book value.
+- No acquisition date: Swissquote states none.
+
+The same price quote applies to the market value. Where a row states
+no value in its own currency, the adapter computes
+`quantity × market_price`, divided by 100 for a percent quote.
+
+A live row also states its market value and its P&L in CHF
+(`market_value_chf`, `unrealized_gain_loss_chf`). Their difference is
+the cost in CHF at the rates of the purchases. Gold's book value is
+in the row's currency, so these figures stay in the payload
+(`total_value_chf`, `pl_nominal_chf`).
+
+## 10. Open questions
 
 - **Multi-currency positions.** Silver's PK treats `(symbol, USD)`
   and `(symbol, EUR)` as separate positions. Gold mirrors this:

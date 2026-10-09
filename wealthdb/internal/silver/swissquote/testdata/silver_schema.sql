@@ -35,6 +35,12 @@ CREATE TABLE positions (
     -- export rows, 'pp:<doc_id>' for rows reconstructed from a
     -- Portfolio Performance PDF (snapshot_at = PDF as-of date).
     source              TEXT    NOT NULL DEFAULT 'live',
+    -- swissquote v6 cost-basis columns, tolerated as optional like
+    -- the v3 ones.
+    average_cost             REAL,
+    price_quote              TEXT CHECK (price_quote IN ('unit', 'percent')),
+    market_value_chf         REAL,
+    unrealized_gain_loss_chf REAL,
     PRIMARY KEY (snapshot_at, account_external_id, symbol, currency)
 );
 

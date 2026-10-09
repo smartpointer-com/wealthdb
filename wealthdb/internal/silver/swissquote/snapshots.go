@@ -2,6 +2,7 @@ package swissquote
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -147,32 +148,29 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 // ---- positions -----------------------------------------------------------
 
 // positionPayload mirrors the Swissquote position payload fields
-// the silver loader extracts. Two shapes are handled:
+// the adapter reads. Two shapes are handled:
 //
-//	live (XLS export):   quantity, price, unit_cost, total_value,
-//	                     total_value_chf
-//	historical (PDF):    quantity, market_price, avg_price,
-//	                     valuation_chf  (no `total_value`)
+//	live (XLS export):   quantity, total_value
+//	historical (PDF):    quantity, market_price, valuation_chf
+//	                     (no `total_value`)
 //
 // market_value resolution: prefer total_value; fall back to
-// valuation_chf when the row's currency is CHF (the historical
-// positions here are all CHF); else compute from
-// quantity × market_price as a last resort.
+// valuation_chf when the row's currency is CHF; else compute
+// quantity × market_price at the row's price quote.
 type positionPayload struct {
 	AssetClass   string             `json:"asset_class"`
 	Currency     string             `json:"currency"`
-	Symbol       string             `json:"symbol"`
 	Quantity     *canonical.Decimal `json:"quantity"`
-	Price        *canonical.Decimal `json:"price"`
 	MarketPrice  *canonical.Decimal `json:"market_price"`
-	UnitCost     *canonical.Decimal `json:"unit_cost"`
 	TotalValue   *canonical.Decimal `json:"total_value"`
 	ValuationCHF *canonical.Decimal `json:"valuation_chf"`
 }
 
 // effectiveMarketValue resolves market_value across the two
 // payload shapes Swissquote silver produces. See positionPayload.
-func (p *positionPayload) effectiveMarketValue() *canonical.Decimal {
+// quote is the row's silver price_quote: a statement prices a bond in
+// percent of nominal.
+func (p *positionPayload) effectiveMarketValue(quote string) *canonical.Decimal {
 	if p.TotalValue != nil {
 		return p.TotalValue
 	}
@@ -180,7 +178,7 @@ func (p *positionPayload) effectiveMarketValue() *canonical.Decimal {
 		return p.ValuationCHF
 	}
 	if p.Quantity != nil && p.MarketPrice != nil {
-		v := p.Quantity.Mul(*p.MarketPrice)
+		v := atQuote(*p.Quantity, *p.MarketPrice, quote)
 		return &v
 	}
 	return nil
@@ -196,9 +194,15 @@ func (p *positionPayload) effectiveMarketValue() *canonical.Decimal {
 //
 // `name` and `isin` were promoted in silver migration 0003
 // (scraped from the Portfolio Overview DOM tooltip and FullQuote
-// link href respectively). Both are nullable — pre-migration
-// rows leave them NULL — and the adapter falls back via
-// hasColumn so older silvers still load.
+// link href respectively), `average_cost` and `price_quote` in
+// migration 0006. All are nullable, and a column an older silver
+// lacks reads as NULL, so that silver still loads.
+//
+// The book value is quantity × average_cost at the row's price
+// quote, stamped averageCostBasis; a row without an average cost
+// has none. The CHF cost figures of a live row (market value and
+// P&L in CHF) stay in the payload: gold's book value is in the
+// row's currency.
 //
 // Identity contract:
 //   - instrument_external_id / position_key = ISIN when known
@@ -216,28 +220,30 @@ func (p *positionPayload) effectiveMarketValue() *canonical.Decimal {
 //     per-bank identifier and gold's ix_instruments_isin is just
 //     unused for that row.
 func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	hasName, err := silver.HasColumn(ctx, c.db, "positions", "name")
-	if err != nil {
-		return err
+	// optional maps each column a later migration added to itself, or
+	// to NULL on a silver that lacks it.
+	optional := map[string]string{}
+	for _, col := range []string{"name", "isin", "average_cost", "price_quote"} {
+		has, err := silver.HasColumn(ctx, c.db, "positions", col)
+		if err != nil {
+			return err
+		}
+		optional[col] = "NULL"
+		if has {
+			optional[col] = col
+		}
 	}
-	hasISIN, err := silver.HasColumn(ctx, c.db, "positions", "isin")
-	if err != nil {
-		return err
-	}
-	isinBySymbol, err := c.buildISINBySymbol(ctx, hasISIN)
+	isinBySymbol, err := c.buildISINBySymbol(ctx, optional["isin"] != "NULL")
 	if err != nil {
 		return err
 	}
 
-	q := `SELECT snapshot_at, account_external_id, symbol, currency, payload, '', '' FROM positions WHERE snapshot_at BETWEEN ? AND ?`
-	switch {
-	case hasName && hasISIN:
-		q = `SELECT snapshot_at, account_external_id, symbol, currency, payload, COALESCE(name, ''), COALESCE(isin, '') FROM positions WHERE snapshot_at BETWEEN ? AND ?`
-	case hasName:
-		q = `SELECT snapshot_at, account_external_id, symbol, currency, payload, COALESCE(name, ''), '' FROM positions WHERE snapshot_at BETWEEN ? AND ?`
-	case hasISIN:
-		q = `SELECT snapshot_at, account_external_id, symbol, currency, payload, '', COALESCE(isin, '') FROM positions WHERE snapshot_at BETWEEN ? AND ?`
-	}
+	q := fmt.Sprintf(`
+SELECT snapshot_at, account_external_id, symbol, currency, payload,
+       COALESCE(%s, ''), COALESCE(%s, ''), %s, COALESCE(%s, '')
+  FROM positions
+ WHERE snapshot_at BETWEEN ? AND ?`,
+		optional["name"], optional["isin"], optional["average_cost"], optional["price_quote"])
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendPositions: %w", err)
@@ -248,9 +254,10 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 			snap                    int64
 			extID, symbol, currency string
 			payload                 string
-			name, isin              string
+			name, isin, quote       string
+			averageCost             sql.NullFloat64
 		)
-		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload, &name, &isin); err != nil {
+		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload, &name, &isin, &averageCost, &quote); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -290,7 +297,7 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 		})
 
 		instrIDCopy := positionKey
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    extID,
 			PositionKey:          positionKey,
@@ -299,9 +306,11 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 			Vehicle:              vehicle,
 			Currency:             currency,
 			Quantity:             p.Quantity,
-			MarketValue:          p.effectiveMarketValue(),
+			MarketValue:          p.effectiveMarketValue(quote),
 			Payload:              json.RawMessage(payload),
-		})
+		}
+		pos.SetBookValue(bookValue(p.Quantity, silver.DecimalPtrFromNullFloat(averageCost), quote), averageCostBasis)
+		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
 }
