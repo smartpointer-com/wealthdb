@@ -118,7 +118,7 @@ func TestReturnsCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
-		for _, want := range []string{"twr_%", "mwr_%", "Brokerage", "nonpositive_base", "nav_only"} {
+		for _, want := range []string{"twr_pct", "mwr_pct", "Brokerage", "nonpositive_base", "nav_only"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("stdout missing %q:\n%s", want, so)
 			}

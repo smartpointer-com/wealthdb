@@ -303,11 +303,11 @@ func TestIncomeColumnHeaders(t *testing.T) {
 	for _, c := range types {
 		got = append(got, c.header())
 	}
-	// share_%, spelled exactly as the spending view spells it. The two
+	// share_pct, spelled exactly as the spending view spells it. The two
 	// commands share their column machinery, so a header that differed
 	// would give one `-f csv` key on one and another on the other for
 	// the same quantity.
-	want = []string{"period", "type", "txn_count", "income_USD", "reversals_USD", "net_income_USD", "share_%"}
+	want = []string{"period", "type", "txn_count", "income_USD", "reversals_USD", "net_income_USD", "share_pct"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("type headers = %v, want %v", got, want)
 	}

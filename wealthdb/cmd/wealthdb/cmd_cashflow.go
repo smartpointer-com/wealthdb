@@ -22,7 +22,7 @@ import (
 // cmd_income.go's shape with five views instead of three, and the two
 // families' idiom unchanged: the grain in a positional view, everything
 // else in a flag, the window positional with the trailing twelve months
-// as its default, `share_%` rendered by the same percentage formatter.
+// as its default, `share_pct` rendered by the same percentage formatter.
 // What is its own is one flag — `--investing` — and three refusals.
 //
 // `coverage` is the odd one out: it does not aggregate, and it reports
@@ -252,7 +252,7 @@ func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold
 			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Giving) }},
 		// A rate is a proportion, not an amount: it survives -p, which
 		// is what makes the privacy twin of this report readable.
-		{Name: "savings_rate", Header: "savings_rate_%", Align: output.AlignRight,
+		{Name: "savings_rate", Header: "savings_rate_pct", Align: output.AlignRight,
 			Extract: func(r gold.CashflowSummaryRow) string { return formatPct(r.SavingsRate) }},
 		// The reconciliation memo. It is the one check that can catch a
 		// wrong POPULATION rather than wrong arithmetic — the pool's
@@ -309,7 +309,7 @@ func buildCashflowFlowColumnRegistry(outCcy, period string) []columnSpec[gold.Ca
 			Extract: func(r gold.CashflowFlowRow) string { return formatCents(r.Outflow) }},
 		{Name: "net", Header: "net_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.CashflowFlowRow) string { return formatCents(r.Net) }},
-		{Name: "share", Header: "share_%", Align: output.AlignRight,
+		{Name: "share", Header: "share_pct", Align: output.AlignRight,
 			Extract: func(r gold.CashflowFlowRow) string { return formatPct(r.Share) }},
 	}
 }
@@ -354,7 +354,7 @@ func buildCashflowSankeyColumnRegistry(outCcy string) []columnSpec[gold.Cashflow
 			Extract: func(r gold.CashflowSankeyRow) string { return strOrEmpty(r.Section) }},
 		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.CashflowSankeyRow) string { return formatCents(r.Value) }},
-		{Name: "share", Header: "share_%", Align: output.AlignRight,
+		{Name: "share", Header: "share_pct", Align: output.AlignRight,
 			Extract: func(r gold.CashflowSankeyRow) string { return formatPct(r.Share) }},
 	}
 }
@@ -541,7 +541,7 @@ Notes
 
   A NODE IS A NET, and the level decides what nets. A class with a
   large gross and a small net is one node, not two bands; inflow and
-  outflow beside it are the line-level gross under it. share_% is over
+  outflow beside it are the line-level gross under it. share_pct is over
   the hub at the level drawn, so a finer level can have a larger hub
   than a coarser one — that is what netting means.
 

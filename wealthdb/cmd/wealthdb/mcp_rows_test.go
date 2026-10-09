@@ -214,10 +214,10 @@ func TestColumnLookup(t *testing.T) {
 		{accounts, "total_value_outccy", "value", true, "total_value_USD", true},
 		// A misspelt name with the currency suffix still means the converted column.
 		{accounts, "total_value_outccy", "totl_value_usd", false, "total_value_USD", true},
-		{returns, "twr", "twrr", true, "twr_%", true},
-		{returns, "twr", "twr_%", true, "twr_%", false},
+		{returns, "twr", "twrr", true, "twr_pct", true},
+		{returns, "twr", "twr_pct", true, "twr_pct", false},
 		{returns, "twr", "end", true, "end_USD", true},
-		{returns, "twr", "return", true, "twr_%", true},
+		{returns, "twr", "return", true, "twr_pct", true},
 		{spending, "net_spend", "netspend", true, "net_spend_USD", true},
 		{spending, "net_spend", "amount", true, "net_spend_USD", true},
 	}
@@ -273,9 +273,9 @@ func TestColumnsParameter(t *testing.T) {
 		return strings.Join(hs, ",")
 	}
 	for expr, want := range map[string]string{
-		"":                              "period,category,txn_count,spend_USD,refunds_USD,net_spend_USD,share_%",
-		"category,share":                "category,share_%",
-		"+category_id,-period,-refunds": "category,txn_count,spend_USD,net_spend_USD,share_%,category_id",
+		"":                              "period,category,txn_count,spend_USD,refunds_USD,net_spend_USD,share_pct",
+		"category,share":                "category,share_pct",
+		"+category_id,-period,-refunds": "category,txn_count,spend_USD,net_spend_USD,share_pct,category_id",
 	} {
 		if got := headers(expr); got != want {
 			t.Errorf("columns %q = %s, want %s", expr, got, want)

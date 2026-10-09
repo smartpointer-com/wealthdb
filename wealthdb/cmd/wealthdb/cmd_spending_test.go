@@ -118,7 +118,7 @@ func TestSpendingColumnHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("category columns: %v", err)
 	}
-	wantCats := []string{"period", "category", "txn_count", "spend_EUR", "refunds_EUR", "net_spend_EUR", "share_%"}
+	wantCats := []string{"period", "category", "txn_count", "spend_EUR", "refunds_EUR", "net_spend_EUR", "share_pct"}
 	if got := headersOf(cats); strings.Join(got, ",") != strings.Join(wantCats, ",") {
 		t.Errorf("category headers = %v, want %v", got, wantCats)
 	}

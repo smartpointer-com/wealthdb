@@ -29,14 +29,14 @@ setup, no paths, no connection flags.
 5. **Read tables; parse JSON.** The default table is for reading. Add
    `-f json` only when you pipe into `jq`. JSON keys are the table headers,
    currency suffix included: `value_USD`, `net_spend_USD`, `total_value_USD`,
-   `net_USD`, `"twr_%"`. There is no `.value` or `.net_spend` key. Every money
+   `net_USD`, `twr_pct`. There is no `.value` or `.net_spend` key. Every money
    value is a decimal **string** (`"12345.67"`): `tonumber` before comparing
    or sorting. The output is one JSON **array**: start every filter with `.[] |` or
    `map(...)`; a bare `select(...)` fails with "Cannot index array". A column
    with no value is **omitted** from the object, so write
    `map(select(.value_USD))` before sorting on it, never compare to `""`. A
-   key with a `%` needs quotes: `."twr_%"`, `."share_%"`. A return that cannot
-   be computed is the string `"n/a"`, with the reason in `quality`.
+   return that cannot be computed is the string `"n/a"`, with the reason in
+   `quality`.
 6. **Signs.** In the line views (`transactions`, `spending transactions`,
    `cashflow transactions`) money leaving is **negative**: the biggest
    purchase is the most negative value. In `summary`, `categories` and `types`,
@@ -64,9 +64,9 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
   `wealthdb returns global 2025 --period total` / `wealthdb returns accounts 2025 --period total`
 - **Return of one account** —
   `wealthdb returns accounts 2025 --period total | grep -i 'joint brokerage'`
-  (the account column is `entity`; read `twr_%`, and `quality` if it is `n/a`)
+  (the account column is `entity`; read `twr_pct`, and `quality` if it is `n/a`)
 - **Best account by return** —
-  `wealthdb returns accounts 2025 --period total -f json | jq 'map(select(."twr_%" != "n/a")) | sort_by(."twr_%"|tonumber) | reverse | .[0:3]'`
+  `wealthdb returns accounts 2025 --period total -f json | jq 'map(select(.twr_pct != "n/a")) | sort_by(.twr_pct|tonumber) | reverse | .[0:3]'`
   (a return that cannot be computed is the string `"n/a"`; drop those rows first)
 - **Total spent in a window** — `wealthdb spending summary 2025 --period total`
 - **Spending by category** — `wealthdb spending categories 2025 --period total`
@@ -155,7 +155,7 @@ windows: resolve them from today's date and pass them explicitly (`2025`, or
 `-C all` lists every available column for a view. Use the **registry name** in
 `-C`, not the rendered header: ask for `value`, `net_flow`, `total_value_outccy`
 or `share`, and the header comes back as `value_USD`, `net_flow_CHF`,
-`total_value_CHF` or `share_%`, matching your `-x`.
+`total_value_CHF` or `share_pct`, matching your `-x`.
 
 **What `-p` redacts**, per column:
 
@@ -166,7 +166,7 @@ or `share`, and the header comes back as `value_USD`, `net_flow_CHF`,
 - Identifier-shaped account and transaction ids → partly masked. The mask only
   fires on a value that is alphanumeric **and** contains a digit, so an account
   column showing a nickname prints in full.
-- Categories, income types, cashflow sections/classes/groups and all `share_%`
+- Categories, income types, cashflow sections/classes/groups and all `share_pct`
   columns stay legible, so a redacted listing is still readable.
 
 Treat any other column as unredacted unless it actually prints `***`.

@@ -162,7 +162,7 @@ func TestCashflowCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
-		for _, want := range []string{"yield_USD", "savings_rate_%", "taxes_USD", "400.00", "900.00"} {
+		for _, want := range []string{"yield_USD", "savings_rate_pct", "taxes_USD", "400.00", "900.00"} {
 			if !strings.Contains(so, want) {
 				t.Errorf("the memo is missing %q:\n%s", want, so)
 			}

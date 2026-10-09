@@ -253,7 +253,7 @@ func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.S
 			Extract: func(r gold.SpendCategoryRow) string { return formatCents(r.NetSpend) }},
 		// A share is a ratio, not an amount — it stays visible under
 		// -p exactly as the returns percentages do.
-		{Name: "share", Header: "share_%", Align: output.AlignRight,
+		{Name: "share", Header: "share_pct", Align: output.AlignRight,
 			Extract: func(r gold.SpendCategoryRow) string { return formatPct(r.Share) }},
 	}
 }

@@ -732,8 +732,8 @@ The families' idiom, unchanged. Five views:
 | view | a row is | default columns |
 |---|---|---|
 | `summary` | a period bucket: the cash flow statement | period, operating_in, operating_out, operating, investing, financing, vehicles, net_cash_flow |
-| `flows` | a (bucket, node) pair at `--level`, netted at that level | period, section, class, group, txn_count, inflow, outflow, net, share_% |
-| `sankey` | an edge of the window's diagram | stage, source, target, value, share_% |
+| `flows` | a (bucket, node) pair at `--level`, netted at that level | period, section, class, group, txn_count, inflow, outflow, net, share_pct |
+| `sankey` | an edge of the window's diagram | stage, source, target, value, share_pct |
 | `transactions` | a cashflow line, oldest first | silver_source, date, account, kind, section, class, group, name, currency, net_amount, value |
 | `coverage` | an (account, currency, bucket): the ledger against the account's own balances | period, silver_source, account, currency, ledger, measured, gap, status |
 

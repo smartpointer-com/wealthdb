@@ -195,7 +195,7 @@ func buildIncomeTypeColumnRegistry(outCcy, period string) []columnSpec[gold.Inco
 			Extract: func(r gold.IncomeTypeRow) string { return formatCents(r.NetIncome) }},
 		// A share is a proportion, not an amount: it survives -p, which
 		// is what makes the privacy twin of this report readable.
-		{Name: "share", Header: "share_%", Align: output.AlignRight,
+		{Name: "share", Header: "share_pct", Align: output.AlignRight,
 			Extract: func(r gold.IncomeTypeRow) string { return formatPct(r.Share) }},
 	}
 }

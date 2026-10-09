@@ -287,8 +287,8 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 	if returns.ShouldAnnualize(p.Annualize, days) {
 		ann = f64(rate) // XIRR is already an annual rate
 	}
-	// The mwr_% column shows the PERIOD (cumulative-equivalent) figure so it is
-	// consistent with the twr_% column; mwr_ann_% holds the annualized XIRR.
+	// The mwr_pct column shows the PERIOD (cumulative-equivalent) figure so it is
+	// consistent with the twr_pct column; mwr_ann_pct holds the annualized XIRR.
 	// For a full-year window the two coincide.
 	return f64(returns.DeAnnualize(rate, days)), ann, q
 }

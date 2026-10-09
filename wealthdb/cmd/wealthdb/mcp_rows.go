@@ -284,13 +284,12 @@ func (l columnLookup) find(name string) (int, string, error) {
 			}
 		}
 	}
-	stem := strings.TrimSuffix(want, "_%")
 	for i, c := range l.cols {
-		if c.name == stem || l.stem(c) == stem {
+		if l.stem(c) == want {
 			return i, l.note(name, i, false), nil
 		}
 	}
-	if l.principal != "" && genericMoneyWords[stem] {
+	if l.principal != "" && genericMoneyWords[want] {
 		if i := l.byName(l.principal); i >= 0 {
 			return i, l.note(name, i, true), nil
 		}
@@ -299,7 +298,7 @@ func (l columnLookup) find(name string) (int, string, error) {
 	for _, c := range l.cols {
 		candidates = append(candidates, c.name, l.stem(c))
 	}
-	if guess, ok := nearMiss(stem, candidates); ok {
+	if guess, ok := nearMiss(want, candidates); ok {
 		for i, c := range l.cols {
 			if c.name == guess || l.stem(c) == guess {
 				return i, l.note(name, i, true), nil
@@ -318,11 +317,10 @@ func (l columnLookup) byName(name string) int {
 	return -1
 }
 
-// stem is a column's header without its currency or percent suffix,
-// lower case: what a model writes when it means the column.
+// stem is a column's header without its currency suffix, lower case:
+// what a model writes when it means the column.
 func (l columnLookup) stem(c reportColumn) string {
-	h := strings.ToLower(c.header)
-	return strings.TrimSuffix(strings.TrimSuffix(h, "_"+strings.ToLower(l.currency)), "_%")
+	return strings.TrimSuffix(strings.ToLower(c.header), "_"+strings.ToLower(l.currency))
 }
 
 func (l columnLookup) note(asked string, i int, always bool) string {
