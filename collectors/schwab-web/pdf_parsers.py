@@ -388,7 +388,11 @@ _TX_END_RE = re.compile(
 # keyword (same date as the previous row), or "(continued)" /
 # noise. We use a wide category whitelist rather than a closed
 # set, since Schwab adds new ones occasionally.
-_DATE_RE = re.compile(r"^(\d{2}/\d{2})\b")
+#
+# A row's date is printed without a year. A line that opens with a
+# full MM/DD/YY date is a description continuation instead — an
+# option's expiry wrapped onto a line of its own — and not a row.
+_DATE_RE = re.compile(r"^(\d{2}/\d{2})(?!/\d)\b")
 _CATEGORY_KEYWORDS = (
     "Sale", "Purchase", "Withdrawal", "Deposit",
     "Dividend", "Interest", "Reinvest", "Reinvestment",
@@ -469,21 +473,40 @@ def parse_transactions(text: str, statement_year: int | None = None) -> list[Tra
     Caller can pass a `statement_year` override; if None we read
     it from the period header in `text`.
     """
+    period = parse_statement_period(text)
     if statement_year is None:
-        period = parse_statement_period(text)
         if period is None:
             raise ValueError(
                 "could not find statement period header; pass "
                 "statement_year explicitly"
             )
         statement_year = period[1].year  # use end-of-period year
-    rows = _parse_transactions_new(text, statement_year)
+    # The period end dates a printed MM/DD across a year end
+    # (_row_date); a period from another year than the caller's is no
+    # anchor for it.
+    period_end = period[1] if period and period[1].year == statement_year else None
+    rows = _parse_transactions_new(text, statement_year, period_end)
     if rows:
         return rows
-    return _parse_transactions_legacy(text, statement_year)
+    return _parse_transactions_legacy(text, statement_year, period_end)
 
 
-def _parse_transactions_new(text: str, statement_year: int) -> list[TransactionRow]:
+def _row_date(mm: int, dd: int, statement_year: int,
+              period_end: date | None) -> date:
+    """The date of a row printed as MM/DD on a statement of
+    `statement_year`. A December statement lists the trades of its
+    last days with their settlement dates, which fall in January of
+    the NEXT year: a date more than half a year before the period end
+    belongs to the year after. Raises ValueError on an impossible
+    date."""
+    d = date(statement_year, mm, dd)
+    if period_end is not None and (period_end - d).days > 183:
+        d = date(statement_year + 1, mm, dd)
+    return d
+
+
+def _parse_transactions_new(text: str, statement_year: int,
+                            period_end: date | None = None) -> list[TransactionRow]:
     """2025+ parser — single "Transaction Details" section.
 
     Block-based: each "logical row" is the run of lines from one
@@ -510,7 +533,7 @@ def _parse_transactions_new(text: str, statement_year: int) -> list[TransactionR
         nonlocal block
         if not block:
             return
-        row = _parse_new_tx_block(block, statement_year, current_date)
+        row = _parse_new_tx_block(block, statement_year, current_date, period_end)
         if row is not None and row.amount is not None:
             rows.append(row)
         block = []
@@ -549,7 +572,7 @@ def _parse_transactions_new(text: str, statement_year: int) -> list[TransactionR
             if m_date:
                 mm, dd = m_date.group(1).split("/")
                 try:
-                    current_date = date(statement_year, int(mm), int(dd))
+                    current_date = _row_date(int(mm), int(dd), statement_year, period_end)
                 except ValueError:
                     pass
         elif block and len(" ".join(block)) < _NEW_TX_BLOCK_MAX_CHARS:
@@ -595,17 +618,21 @@ _NEW_TX_BLOCK_MAX_CHARS = 400
 # Per-row charge/fee notes that pypdfium2 emits on their own
 # line; pdfplumber concatenates them to the previous line with
 # no whitespace. Either way we don't want them confused with
-# the trailing numeric columns of the data row.
+# the trailing numeric columns of the data row. Two notes on one
+# line are separated by "; " ("Commission $0.65; Industry Fee
+# $0.01"); the separator goes with the note, or it would stick to
+# the row's amount and hide it from the numeric columns.
 _NEW_TX_NOISE_RE = re.compile(
     r"\s*(?:Industry\s+Fee|Commission|Accrued\s+Interest)"
-    r"\s*\$?\(?[\d,.]+\)?",
+    r"\s*\$?\(?[\d,.]+\)?;?",
     re.IGNORECASE,
 )
 
 
 def _parse_new_tx_block(block_lines: list[str],
                          statement_year: int,
-                         fallback_date: date | None) -> TransactionRow | None:
+                         fallback_date: date | None,
+                         period_end: date | None = None) -> TransactionRow | None:
     """Parse one transaction block (one logical row) into a
     TransactionRow. Returns None on unparseable input.
 
@@ -634,7 +661,7 @@ def _parse_new_tx_block(block_lines: list[str],
     if m_date:
         try:
             mm, dd = m_date.group(1).split("/")
-            row.date = date(statement_year, int(mm), int(dd))
+            row.date = _row_date(int(mm), int(dd), statement_year, period_end)
         except ValueError:
             row.date = fallback_date
         rest = rest[m_date.end():].lstrip()
@@ -910,25 +937,25 @@ _LEGACY_TX_KIND_RE = re.compile(
 _LEGACY_TX_KIND_LOOKUP = dict(_LEGACY_TX_KIND_PHRASES)
 
 
-def _parse_legacy_tx_date(token: str, statement_year: int) -> date | None:
+def _parse_legacy_tx_date(token: str, statement_year: int,
+                          period_end: date | None = None) -> date | None:
     """Parse a settle / trade date token like "12/15" or
-    "06/17/24". Returns None on malformed input."""
+    "06/17/24". A token without a year takes it from the statement
+    (_row_date). Returns None on malformed input."""
     parts = token.split("/")
     try:
         if len(parts) == 2:
-            mm, dd = int(parts[0]), int(parts[1])
-            yr = statement_year
-        elif len(parts) == 3:
+            return _row_date(int(parts[0]), int(parts[1]), statement_year, period_end)
+        if len(parts) == 3:
             mm, dd, yy = int(parts[0]), int(parts[1]), int(parts[2])
-            yr = 2000 + yy if yy < 100 else yy
-        else:
-            return None
-        return date(yr, mm, dd)
+            return date(2000 + yy if yy < 100 else yy, mm, dd)
+        return None
     except ValueError:
         return None
 
 
-def _parse_legacy_tx_row_line(line: str, statement_year: int):
+def _parse_legacy_tx_row_line(line: str, statement_year: int,
+                              period_end: date | None = None):
     """If `line` begins with a Settle Date + Trade Date pair,
     parse it into a TransactionRow with .amount / .date / .symbol
     populated from what we can recover. Continuation lines (no
@@ -938,7 +965,7 @@ def _parse_legacy_tx_row_line(line: str, statement_year: int):
     m = _LEGACY_TX_DATE_RE.match(line)
     if m is None:
         return None
-    settle = _parse_legacy_tx_date(m.group("settle"), statement_year)
+    settle = _parse_legacy_tx_date(m.group("settle"), statement_year, period_end)
     if settle is None:
         return None
     rest = m.group("rest")
@@ -1010,7 +1037,8 @@ def _parse_legacy_tx_row_line(line: str, statement_year: int):
 
 
 def _parse_transactions_legacy(text: str,
-                                 statement_year: int) -> list[TransactionRow]:
+                                 statement_year: int,
+                                 period_end: date | None = None) -> list[TransactionRow]:
     """Parse pre-2025 "Transaction Detail" / "Transaction Detail
     - <Category>" sections. Returns a list of TransactionRow."""
     lines = [ln.rstrip() for ln in text.split("\n")]
@@ -1062,7 +1090,7 @@ def _parse_transactions_legacy(text: str,
                             "Date Transaction", "Charges and",
                             "Interest Total")):
             continue
-        parsed = _parse_legacy_tx_row_line(line, statement_year)
+        parsed = _parse_legacy_tx_row_line(line, statement_year, period_end)
         if parsed is not None:
             if current_row is not None:
                 rows.append(current_row)

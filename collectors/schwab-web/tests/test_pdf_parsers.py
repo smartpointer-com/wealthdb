@@ -597,6 +597,45 @@ class TestToDict:
         assert d["term"] is None
 
 
+class TestRowDates:
+    """A row's printed date has no year; the statement supplies it."""
+
+    def test_an_option_expiry_on_its_own_line_is_not_a_row(self):
+        # An option's description wraps its expiry, MM/DD/YY, onto a
+        # line of its own. It belongs to the row above, which keeps its
+        # figures and its date; the next row is dated like it.
+        text = _wrap(
+            "02/10 Sale Short Sale SYN1 03/20/2026\n"
+            "10.00 C\n"
+            "SYNTHETICONE CALL $10 EXP\n"
+            "03/20/26\n"
+            "(1.0000) 1.0000 0.66 99.34\n"
+            "Commission $0.65; Industry Fee $0.01\n"
+            "Sale SYN2 SYNTHETICTWO (10.0000) 10.0000 0.01 99.99 5.00,(ST)\n"
+        )
+        rows = pp.parse_transactions(text)
+        assert [(r.date, r.amount) for r in rows] == [
+            (date(2026, 2, 10), 99.34), (date(2026, 2, 10), 99.99)]
+
+    def test_a_december_statement_dates_a_january_settlement_next_year(self):
+        text = (
+            "December 1 - 31, 2019\n"
+            "Transaction Detail\n"
+            "Settle\nDate\nTrade\nDate Transaction Description Quantity Price Total\n"
+            "Investments Activity\n"
+            "12/20 12/18 Sold ALPHACORP INC: ALPH (100.0000) 40.0000 4,000.00\n"
+            "01/02 12/30 Sold BETACORP INC: BETA (10.0000) 20.0000 200.00\n"
+            "Total Account Value 0.00\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2019)
+        assert [r.date for r in rows] == [date(2019, 12, 20), date(2020, 1, 2)]
+
+    def test_a_statement_without_a_period_keeps_the_year_it_is_given(self):
+        assert pp._row_date(1, 2, 2019, None) == date(2019, 1, 2)
+        assert pp._row_date(1, 2, 2019, date(2019, 3, 31)) == date(2019, 1, 2)
+        assert pp._row_date(1, 2, 2019, date(2019, 12, 31)) == date(2020, 1, 2)
+
+
 class TestStatementYearOverride:
     def test_explicit_year_overrides_period_header(self):
         text = _wrap(

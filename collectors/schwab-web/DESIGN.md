@@ -429,7 +429,11 @@ and with no extra system dependency).
   "Positions - X" / "Transaction Details"). Each tier is tried
   in turn. A transaction row prints its date as MM/DD; the year
   comes from the statement's manifest date, which the loader
-  passes as `statement_year`.
+  passes as `statement_year`. A date more than half a year before
+  the printed period end takes the next year: a December statement
+  lists its last trades by their January settlement dates. A line
+  that opens with a full MM/DD/YY date is an option's expiry
+  wrapped from the row above, not a row of its own.
 - **Some sale rows lose their amount**. Such rows are skipped
   during load with a warning rather than failing the whole
   statement; worth a follow-up parser pass.
