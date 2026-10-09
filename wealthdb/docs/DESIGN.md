@@ -84,10 +84,10 @@ spending, income, cash flow) read.
   are out of scope for v1 — gold operates on whatever each silver
   carries. These feeds are planned future work and will arrive via
   their own ingest path independent of any bank silver. See §13.8.
-- **Realized P&L, tax lots, performance attribution.** No command
-  computes them. Positions carry `book_value` and `acquisition_date`
-  where silver states them, and several silvers keep tax lots that
-  gold does not read (§13.4).
+- **Realized P&L, performance attribution, a lot engine.** No command
+  computes them. Gold carries the cost basis, open lots and realized
+  lots each source states (§7.4). A source that states none has no
+  basis until a lot engine rebuilds one (§13.4).
 - **Cross-silver instrument deduplication.** Two silvers may hold the
   "same" equity under different `instrument_external_id`s; gold keeps
   them separate at the row level. `instruments.isin` is the join key
@@ -1879,6 +1879,25 @@ Rules every adapter follows:
 - **`acquisition_date`** is the earliest acquisition the source
   states. A position with lots takes its earliest lot's date.
 
+Each source maps its basis this way; its adapter doc or package
+comment has the detail:
+
+| source | `book_value` | stamp (origin · method · fees) | open lots | realized lots |
+|---|---|---|---|---|
+| schwab | API: market value − open P/L; statements: the printed cost | derived or stated · lots · included | statement lots | 1099-B, year-end summary, gain/loss report |
+| fidelity | the printed cost | stated · lots · included | the positions page's lots | 1099-B, closed positions, statement sales |
+| ubs | MT535 book cost, or the statement's cost value; a fund without one: capital called | stated or derived · average or paid_in · excluded | – | statement sales, export sales |
+| swissquote | quantity × average cost | derived · average · excluded | – | – |
+| viac | quantity × average acquisition price | derived · average · none | – | – |
+| plaid | the institution's cost | stated · unknown · unknown | tax lots | – |
+| carta | shares: their lots' cost; funds: capital paid in | derived or stated · lots or paid_in · none or included | share certificates | – |
+| angellist | capital paid in, less in-kind distributions | stated or derived · paid_in · included | – | – |
+| equityzen | price paid plus the execution fee, pro rata | derived · average · included | – | – |
+| manual | the paid-in series, else the value at acquisition | stated · paid_in or acquisition_value · unknown | – | – |
+| synthetic | as generated | stated · average or paid_in · none or excluded | – | – |
+
+cointracking, svb and relevate state no basis.
+
 **Open lots** (`position_lots`) sit beside their position row: same
 source, snapshot, account and position key. A lot's `basis_origin`
 is set exactly when its `book_value` is. Its `term` and `covered` are
@@ -2244,9 +2263,11 @@ SELECT * FROM positions
    AND acquisition_date <= :now - INTERVAL 1 YEAR;
 ```
 
-`acquisition_date` is set only where silver states it (angellist,
-carta, equityzen, manual and the synthetic demo). Elsewhere it is
-NULL, so this filter sees those sources only (§13.3).
+`acquisition_date` is set only where silver states it: the
+private-market sources, manual, the synthetic demo, and any position
+with stated lots, which takes its earliest lot's date (§7.4).
+Elsewhere it is NULL, so this filter sees those positions only
+(§13.3). `position_lots` answers the same question per lot.
 
 ### 10.5 Net worth by bank
 
@@ -3229,39 +3250,39 @@ that walks `transactions` (filtered to `kind IN ('buy',
 'transfer_in')`) and writes the earliest matching date into each
 position row. FIFO vs LIFO is a deeper design point.
 
-### 13.4 Tax-lot tracking
+### 13.4 Lot engine
 
-Gold has no lot grain. `positions.book_value` carries a holding's
-cost where an adapter reads one, and per-lot detail rides in the
-payload at most. Per-lot positions (one row per buy, decremented by
-sells) are a different grain than `positions`; they would live in a
-separate `position_lots` table rather than reshape `positions`.
+Gold carries the basis and lots a source states (§7.4). Some sources
+state none: cointracking, svb, and schwab before its statements print
+lots. Their trade histories are in gold, so a lot
+engine could replay them: FIFO per account and instrument (per
+portfolio and coin for crypto), fees into the lot, a transfer's two
+sides paired (cointracking's `Group` and `Tx-ID`), income at its value
+on receipt. It would write `rebuilt` book values and lots.
 
-Silver already states more cost basis than gold reads. Each collector
-keeps the figures its source prints in columns (collectors/README.md,
-"load.py — silver"):
+Open before it is built:
 
-- realized lots in `closed_lots` and open lots in `open_lots`, with
-  shared column names: schwab-web (statements and year-end tax
-  documents, its DESIGN.md §9) and fidelity-web (1099-B, statements
-  and the positions page);
-- schwab-web's `cost_basis_methods`, the methods a Gain/Loss Report
-  prints;
-- per-holding cost, average cost or unrealized gain in schwab-api,
-  schwab-web, swissquote, ubs-psn, ubs-web and fidelity-web, of which
-  only the statement holdings of schwab-web and ubs-web reach
-  `book_value`;
-- per-trade quantity, price and fees in swissquote, and a statement's
-  trade list with the cost sold and the realized P/L in ubs-web
-  (`statement_trades`);
-- what a private holding paid in: ubs-web's capital calls and
-  contract notes (`advices`), carta's exercise FMV and fund
-  statement figures, and the K-1 basis lines of angellist and carta;
-- cointracking's trade `Group` and `Tx-ID`, which pair a transfer's
-  two sides.
+- the method: one setting, or the custodian's election per account;
+- a crypto deposit nothing pairs: zero basis, its value on receipt,
+  or flagged unknown;
+- opening balances the history does not reach, which need a `seeded`
+  basis;
+- corporate actions, which no feed states an allocation ratio for;
+- carryover basis on an in-kind move between sources.
 
-A lot table would read these, and reconcile the copies a sale leaves
-in several documents.
+Silver also states a few cost facts gold does not project yet:
+
+- schwab-web's `cost_basis_methods`, the method a Gain/Loss Report
+  prints per account;
+- carta's fair-market value at exercise, the tax basis of shares from
+  a non-qualified option (book value stays the cash paid);
+- the K-1 gain lines of angellist and carta, and carta's fund fee,
+  gain and carry lines;
+- ubs-web's `last_purchase_date`;
+- a basis in the reference currency (UBS's average buy rate,
+  Swissquote's CHF P&L);
+- the purchase fees UBS and Swissquote leave out of their basis, as
+  fee legs.
 
 ### 13.5 Adapter for `auto` kind
 
@@ -3326,10 +3347,7 @@ what each would need:
   source of truth for binaries; gold doesn't store them. Would
   only be projected if `wealthdb` ever needed to enumerate document
   metadata.
-- **Cost basis and lots** — the lot tables (`open_lots`,
-  `closed_lots`, `cost_basis_methods`), `ubs-web.statement_trades`
-  and `ubs-web.advices`, and the cost columns no adapter reads. §13.4
-  lists them; a lot table would project them.
+- **Cost facts not projected yet** — §13.4 lists them.
 
 Adding any of these is a localised change: one new gold table
 (or column), one adapter `Snapshots` / `Transactions` extension,

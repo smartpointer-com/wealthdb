@@ -183,10 +183,10 @@ does NOT expose the IRS-level tax categorisation.
 
 **As built**: the 1099-aware parser lives in silver
 (`tax_form_parsers.py`, §6a); sale lots land in `transactions`
-with `source='form_1099b'`, and the gold reader treats them as
-authoritative for sales within their covered tax years
-([INTEROP.md](INTEROP.md) §8). The api silver is NOT modified —
-the data simply isn't in the api.
+with `source='form_1099b'` and in `closed_lots`. Gold reads them
+from `closed_lots` as realized lots; the statement and history
+feeds book the sales themselves ([INTEROP.md](INTEROP.md) §8). The
+api silver is NOT modified — the data simply isn't in the api.
 
 ### 4.4 Schwab regenerates PDFs per download — sha256 dedup is byte-level only
 
@@ -441,14 +441,14 @@ and with no extra system dependency).
   event can land in silver from more than one feed:
   `statement_pdf` (parser-derived, multi-year via quarterly
   statements), `tx_history_json` (Schwab-rendered, ~4-year "All"
-  range), and `form_1099b` (authoritative sales within a tax
-  year). They get different synthetic `activity_id`s (their content
-  fields differ; the id does not depend on `source_sha256`), so all
-  rows insert without UNIQUE conflict. Gold
-  reconciles them: dedupe `statement_pdf` ↔ `tx_history_json` by
-  `(account, timestamp, amount, ±description)` preferring
-  tx_history_json; and treat `form_1099b` as authoritative-for-sales
-  within its covered tax year (see INTEROP.md §4 + §8).
+  range), and `form_1099b` (a tax year's sale lots). They get
+  different synthetic `activity_id`s (their content fields differ;
+  the id does not depend on `source_sha256`), so all rows insert
+  without UNIQUE conflict. Gold reconciles them: it dedupes
+  `statement_pdf` ↔ `tx_history_json` by `(account, timestamp,
+  amount, ±description)` preferring tx_history_json, and reads the
+  1099-B lots as realized lots rather than as transactions (see
+  INTEROP.md §4 + §8).
 - **The 1099 Composite yields its sales only** (`form_1099b`,
   §6a). The other 1099 sections (DIV / INT / OID / MISC) are not
   parsed. A tax year available only as a PDF (no XML/CSV twin on its
