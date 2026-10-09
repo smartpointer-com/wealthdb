@@ -55,8 +55,9 @@ class Built(unittest.TestCase):
             con = sqlite3.connect(cls.root / "silver" / f"{src}.db")
             con.row_factory = sqlite3.Row
             cls.rows[src] = {t: [dict(r) for r in con.execute(f"SELECT * FROM {t}")]
-                             for t in ("accounts", "portfolios", "instruments", "positions",
-                                       "cash_balances", "fx_rates", "transactions", "dump_runs", "meta")}
+                             for t in ("accounts", "portfolios", "instruments", "positions", "position_lots",
+                                       "cash_balances", "fx_rates", "transactions", "realized_lots",
+                                       "dump_runs", "meta")}
             con.close()
         cls.config = json.loads((cls.root / "wealthdb.cfg").read_text())
 
@@ -255,6 +256,64 @@ class TestPrivateMarkets(Built):
             self.assertEqual(Decimal(rows[day]["book_value"]), called, day)
             checked += 1
         self.assertGreaterEqual(checked, len(f["calls"]) + len(f["marks"]) - 2)
+
+
+class TestLots(Built):
+    def test_open_lots_add_up_to_their_position(self):
+        """A unit holding's lots sum to its quantity and its book value,
+        and date it by the oldest of them. Every lot has its position."""
+        lots = collections.defaultdict(list)
+        for src, lot in self.all("position_lots"):
+            lots[(src, lot["snapshot_at"], lot["account_id"], lot["position_key"])].append(lot)
+        checked = 0
+        for src, p in self.all("positions"):
+            own = lots.pop((src, p["snapshot_at"], p["account_id"], p["position_key"]), [])
+            if p["quantity"] is None:
+                self.assertEqual(own, [], p["position_key"])
+                continue
+            where = f'{p["account_id"]} {p["position_key"]} on {dates.day_of(p["snapshot_at"])}'
+            self.assertTrue(own, where)
+            self.assertEqual(sum(Decimal(lot["quantity"]) for lot in own), Decimal(p["quantity"]), where)
+            self.assertEqual(sum(Decimal(lot["book_value"]) for lot in own), Decimal(p["book_value"]), where)
+            self.assertEqual(min(lot["acquisition_date"] for lot in own), p["acquisition_date"], where)
+            checked += 1
+        self.assertEqual(dict(lots), {})
+        self.assertGreater(checked, 10000)
+
+    def test_every_sale_has_its_realized_lots(self):
+        """The lots one day's sales of an instrument relieve add up to the
+        quantity sold and the proceeds received."""
+        sold = collections.defaultdict(lambda: [Decimal(0), Decimal(0)])
+        for _, t in self.all("transactions"):
+            if t["kind"] == "sell":
+                key = (t["account_id"], t["instrument_id"], dates.day_of(t["occurred_at"]).isoformat())
+                sold[key][0] -= Decimal(t["quantity"])
+                sold[key][1] += Decimal(t["net_amount"])
+        realized = collections.defaultdict(lambda: [Decimal(0), Decimal(0)])
+        for _, r in self.all("realized_lots"):
+            key = (r["account_id"], r["instrument_id"], r["disposal_date"])
+            realized[key][0] += Decimal(r["quantity"])
+            realized[key][1] += Decimal(r["proceeds"])
+        self.assertGreater(len(sold), 10)
+        self.assertEqual(dict(realized), dict(sold))
+
+    def test_a_realized_lot_states_its_term_and_year(self):
+        for _, r in self.all("realized_lots"):
+            acquired, disposed = dates.parse(r["acquisition_date"]), dates.parse(r["disposal_date"])
+            self.assertLessEqual(acquired, disposed, r["realized_lot_id"])
+            self.assertEqual(r["term"], "long" if (disposed - acquired).days > 365 else "short", r["realized_lot_id"])
+            self.assertEqual(r["tax_year"], disposed.year, r["realized_lot_id"])
+
+    def test_one_document_kind_states_the_gain(self):
+        """A statement states each lot's gain, as proceeds less cost. A
+        Form 1099-B leaves it to that arithmetic downstream."""
+        stated = collections.defaultdict(set)
+        for _, r in self.all("realized_lots"):
+            gain = r["realized_gain_loss"]
+            stated[r["document_kind"]].add(gain is not None)
+            if gain is not None:
+                self.assertEqual(Decimal(gain), Decimal(r["proceeds"]) - Decimal(r["book_value"]), r["realized_lot_id"])
+        self.assertEqual(dict(stated), {"form_1099b": {False}, "statement": {True}})
 
 
 class TestVocabulary(Built):

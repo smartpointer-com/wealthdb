@@ -1,6 +1,7 @@
 package synthetic
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -14,11 +15,11 @@ import (
 )
 
 // Snapshots emits one batch per distinct snapshot_at in the window, in
-// ascending order. A batch carries that instant's positions, cash balances
-// and fx rates, and the dimension records they reference, all seen at that
-// instant: every account its positions or cash balances name, the portfolio
-// each of those accounts belongs to, and every instrument its positions
-// name, in the version in effect at the instant.
+// ascending order. A batch carries that instant's positions with their open
+// lots, cash balances and fx rates, and the dimension records they
+// reference, all seen at that instant: every account its positions or cash
+// balances name, the portfolio each of those accounts belongs to, and every
+// instrument its positions name, in the version in effect at the instant.
 //
 // Dimensions travel only on the snapshot stream, so every account, portfolio
 // and instrument the window's transactions reference is emitted here too, on
@@ -52,7 +53,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 		return b
 	}
-	if err := c.readPositions(ctx, w, at); err != nil {
+	lots, err := c.readPositionLots(ctx, w)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.readPositions(ctx, w, lots, at); err != nil {
 		return nil, err
 	}
 	if err := c.readCashBalances(ctx, w, at); err != nil {
@@ -215,8 +220,18 @@ SELECT %[1]s, MIN(occurred_at), MAX(occurred_at)
 
 // ---- facts ------------------------------------------------------------------
 
+// positionRef names one positions row.
+type positionRef struct {
+	snap         int64
+	account, key string
+}
+
+// readPositions reads the window's positions, each with its open lots
+// from lots, which it consumes. A position with lots states its book
+// value as their sum, and is stamped so. A lot left over names no
+// position, a defect in the silver like a dangling id.
 func (c *Connection) readPositions(ctx context.Context, w canonical.Window,
-	at func(int64) *canonical.SnapshotBatch) error {
+	lots map[positionRef][]canonical.PositionLotChange, at func(int64) *canonical.SnapshotBatch) error {
 	rows, err := c.db.QueryContext(ctx, `
 SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicle,
        currency, quantity, market_value, book_value, accrued_interest,
@@ -257,10 +272,91 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 			AcquisitionDate:      calendarDate(acquired),
 			Payload:              payloadWith(payload, extra),
 		}
-		pos.SetBookValue(silver.DecimalPtrOrNil(bookValue), basisFor(ac, veh))
+		ref := positionRef{snap, account, key}
+		own := lots[ref]
+		delete(lots, ref)
+		pos.SetBookValue(silver.DecimalPtrOrNil(bookValue), basisFor(ac, veh, len(own) > 0))
 		b.Positions = append(b.Positions, pos)
+		for _, l := range own {
+			l.InstrumentExternalID, l.Currency = pos.InstrumentExternalID, pos.Currency
+			b.PositionLots = append(b.PositionLots, l)
+		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(lots) > 0 {
+		ref := slices.MinFunc(slices.Collect(maps.Keys(lots)), func(a, b positionRef) int {
+			return cmp.Or(cmp.Compare(a.snap, b.snap), cmp.Compare(a.account, b.account), cmp.Compare(a.key, b.key))
+		})
+		return fmt.Errorf("synthetic: position lot (%d, %s, %s) has no positions row",
+			ref.snap, ref.account, ref.key)
+	}
+	return nil
+}
+
+// readPositionLots reads the window's open lots, keyed by the position
+// each belongs to, in lot_key order. The lot's book value is stamped
+// stated, like its position's. A term outside the vocabulary is
+// absent, with the raw value kept. A silver without the table states
+// no lots.
+func (c *Connection) readPositionLots(ctx context.Context,
+	w canonical.Window) (map[positionRef][]canonical.PositionLotChange, error) {
+	out := map[positionRef][]canonical.PositionLotChange{}
+	ok, err := silver.HasTables(ctx, c.db, "position_lots")
+	if err != nil || !ok {
+		return out, err
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT snapshot_at, account_id, position_key, lot_key, quantity, book_value,
+       acquisition_date, term, payload
+  FROM position_lots
+ WHERE snapshot_at BETWEEN ? AND ?
+ ORDER BY snapshot_at, account_id, position_key, lot_key`, w.Start, w.End)
+	if err != nil {
+		return nil, fmt.Errorf("synthetic position lots: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			ref                 positionRef
+			lotKey, payload     string
+			quantity, bookValue sql.NullString
+			acquired, term      sql.NullString
+		)
+		if err := rows.Scan(&ref.snap, &ref.account, &ref.key, &lotKey, &quantity, &bookValue,
+			&acquired, &term, &payload); err != nil {
+			return nil, err
+		}
+		var extra annotations
+		l := canonical.PositionLotChange{
+			SnapshotAt:        ref.snap,
+			AccountExternalID: ref.account,
+			PositionKey:       ref.key,
+			LotKey:            lotKey,
+			Quantity:          silver.DecimalPtrOrNil(quantity),
+			AcquisitionDate:   calendarDate(acquired),
+			Term:              lotTerm(term, &extra),
+		}
+		l.SetBookValue(silver.DecimalPtrOrNil(bookValue), canonical.BasisStated)
+		l.Payload = payloadWith(payload, extra)
+		out[ref] = append(out[ref], l)
+	}
+	return out, rows.Err()
+}
+
+// lotTerm is a lot's stated term, absent where the row states none or
+// one outside the vocabulary, with the raw value kept.
+func lotTerm(s sql.NullString, extra *annotations) canonical.LotTerm {
+	if s.String == "" {
+		return ""
+	}
+	t := canonical.LotTerm(s.String)
+	if !t.Valid() {
+		extra.keep("term", s.String)
+		return ""
+	}
+	return t
 }
 
 // readCashBalances reads the window's cash balances. The amount is the one

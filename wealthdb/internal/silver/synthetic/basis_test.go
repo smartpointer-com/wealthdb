@@ -13,20 +13,26 @@ func TestBasisFor(t *testing.T) {
 	cases := []struct {
 		ac   canonical.AssetClass
 		veh  canonical.Vehicle
+		lots bool
 		want canonical.Basis
 	}{
-		{canonical.AssetClassPublicEquity, canonical.VehicleETF, stamp(canonical.BasisMethodAverage, canonical.BasisFeesNone)},
-		{canonical.AssetClassMultiAsset, canonical.VehicleFund, stamp(canonical.BasisMethodAverage, canonical.BasisFeesNone)},
-		{canonical.AssetClassPrivateEquity, canonical.VehicleFund, stamp(canonical.BasisMethodPaidIn, canonical.BasisFeesNone)},
-		{canonical.AssetClassPrivateEquity, canonical.VehicleSPV, stamp(canonical.BasisMethodPaidIn, canonical.BasisFeesNone)},
-		{canonical.AssetClassCrypto, canonical.VehiclePhysical, stamp(canonical.BasisMethodAverage, canonical.BasisFeesExcluded)},
-		{canonical.AssetClassRealEstate, canonical.VehiclePhysical, stamp(canonical.BasisMethodAcquisitionValue, canonical.BasisFeesNone)},
-		{canonical.AssetClassRealEstate, canonical.VehicleMortgage, stamp(canonical.BasisMethodAcquisitionValue, canonical.BasisFeesNone)},
-		{canonical.AssetClassRealEstate, canonical.VehicleETF, stamp(canonical.BasisMethodAverage, canonical.BasisFeesNone)},
+		{canonical.AssetClassPublicEquity, canonical.VehicleETF, false, stamp(canonical.BasisMethodAverage, canonical.BasisFeesNone)},
+		{canonical.AssetClassPublicEquity, canonical.VehicleETF, true, stamp(canonical.BasisMethodLots, canonical.BasisFeesNone)},
+		{canonical.AssetClassMultiAsset, canonical.VehicleFund, false, stamp(canonical.BasisMethodAverage, canonical.BasisFeesNone)},
+		{canonical.AssetClassPrivateEquity, canonical.VehicleFund, false, stamp(canonical.BasisMethodPaidIn, canonical.BasisFeesNone)},
+		{canonical.AssetClassPrivateEquity, canonical.VehicleFund, true, stamp(canonical.BasisMethodPaidIn, canonical.BasisFeesNone)},
+		{canonical.AssetClassPrivateEquity, canonical.VehicleSPV, false, stamp(canonical.BasisMethodPaidIn, canonical.BasisFeesNone)},
+		{canonical.AssetClassCrypto, canonical.VehiclePhysical, false, stamp(canonical.BasisMethodAverage, canonical.BasisFeesExcluded)},
+		{canonical.AssetClassCrypto, canonical.VehiclePhysical, true, stamp(canonical.BasisMethodLots, canonical.BasisFeesIncluded)},
+		{canonical.AssetClassRealEstate, canonical.VehiclePhysical, false, stamp(canonical.BasisMethodAcquisitionValue, canonical.BasisFeesNone)},
+		{canonical.AssetClassRealEstate, canonical.VehicleMortgage, false, stamp(canonical.BasisMethodAcquisitionValue, canonical.BasisFeesNone)},
+		{canonical.AssetClassRealEstate, canonical.VehicleETF, false, stamp(canonical.BasisMethodAverage, canonical.BasisFeesNone)},
+		// A realized lot whose instrument has no row: a lot, no fee.
+		{"", "", true, stamp(canonical.BasisMethodLots, canonical.BasisFeesNone)},
 	}
 	for _, c := range cases {
-		if got := basisFor(c.ac, c.veh); got != c.want {
-			t.Errorf("basisFor(%s, %s) = %+v, want %+v", c.ac, c.veh, got, c.want)
+		if got := basisFor(c.ac, c.veh, c.lots); got != c.want {
+			t.Errorf("basisFor(%s, %s, %t) = %+v, want %+v", c.ac, c.veh, c.lots, got, c.want)
 		}
 		if err := c.want.Validate(); err != nil {
 			t.Errorf("test bug: %v", err)
@@ -55,7 +61,7 @@ func TestPositionsCarryTheBasisStamp(t *testing.T) {
 		}
 	}
 	fund := got["inst-fund"]
-	if dec(fund.BookValue) != "1000" || fund.Basis != basisFor(canonical.AssetClassPrivateEquity, canonical.VehicleFund) {
+	if dec(fund.BookValue) != "1000" || fund.Basis != basisFor(canonical.AssetClassPrivateEquity, canonical.VehicleFund, false) {
 		t.Errorf("fund book %s stamped %+v, want 1000 paid in", dec(fund.BookValue), fund.Basis)
 	}
 	if etf := got["inst-etf"]; etf.BookValue != nil || !etf.Basis.IsZero() {

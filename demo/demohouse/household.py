@@ -21,7 +21,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from . import dates, keyed
 from .book import Account, Book, market_value, unit_price
 from .market import Market
-from .money import CENT, ZERO, D, cents, q4, q8, text
+from .money import CENT, ZERO, D, cents, q4, text
 from .spec import name_on
 
 ONE = Decimal(1)
@@ -152,8 +152,7 @@ class Simulation:
                     r = keyed.rng(self.seed, "opening-basis", a["id"], iid)
                     basis = q4(value * (Decimal("0.72") + Decimal("0.2") * keyed.uniform(r)))
                     acquired = self.opening - dt.timedelta(days=400 + r.randrange(1500))
-                    h = self.book.add_units(a["id"], iid, D(qty), basis, day)
-                    h.acquired = acquired
+                    self.book.add_units(a["id"], iid, D(qty), basis, day, acquired=acquired)
         self._open_mortgage(day)
         self._open_home(day)
 
@@ -241,10 +240,20 @@ class Simulation:
         if qty <= 0:
             return None
         proceeds = cents(qty * per)
-        self.book.remove_units(aid, iid, qty)
+        pieces = self.book.remove_units(aid, iid, qty)
         name = name_on(inst, day)
-        return self._txn(aid, day, "sell", proceeds, ccy=inst["currency"], instrument=iid,
-                         qty=-qty, price=price, desc=desc or f"SOLD {qty.normalize():f} {name.upper()}")
+        row = self._txn(aid, day, "sell", proceeds, ccy=inst["currency"], instrument=iid,
+                        qty=-qty, price=price, desc=desc or f"SOLD {qty.normalize():f} {name.upper()}")
+        self.book.realize(row, pieces, self._tax_document(aid), name.upper())
+        return row
+
+    def _tax_document(self, aid):
+        """The document that states the account's sales: the one its
+        source names, else a Form 1099-B for a taxable account and the
+        statement for a tax-advantaged one, which gets no 1099-B."""
+        acct = self.book.account(aid)
+        named = self._sources[acct.source].get("tax_document")
+        return named or ("form_1099b" if acct.tax_wrapper.startswith("taxable_") else "statement")
 
     def _value_usd(self, aid):
         """An account's value in USD at today's prices and rates."""
@@ -649,8 +658,7 @@ class Simulation:
                 h = self.book.holding(aid, iid)
                 if not h or h.qty is None or not self._open_on(aid, day):
                     continue
-                added = q8(h.qty * (D(s["ratio"]) - 1))
-                h.qty = q8(h.qty + added)
+                added = self.book.split(aid, iid, D(s["ratio"]))
                 self._txn(aid, day, "corporate_action", ZERO, instrument=iid, qty=added, cash=False,
                           desc=f'STOCK SPLIT {s["ratio"]}-FOR-1 {name_on(self.inputs.instruments[iid], day).upper()}')
 
@@ -883,8 +891,11 @@ class Simulation:
             gross = (amount * D(share) / (ONE + fee_rate)).quantize(CENT, rounding=ROUND_FLOOR) - CENT
             row = self._buy(aid, day, iid, gross)
             if row:
-                self._txn(aid, day, "fee", -cents(-D(row["net_amount"]) * fee_rate), instrument=iid,
+                # The fee is a transaction of its own and part of the lot's cost.
+                fee = cents(-D(row["net_amount"]) * fee_rate)
+                self._txn(aid, day, "fee", -fee, instrument=iid,
                           desc=f'TRADING FEE {self.inputs.instruments[iid]["symbol"]}')
+                self.book.add_fee(aid, iid, fee)
 
     # ---- the multi-currency account ------------------------------------
 

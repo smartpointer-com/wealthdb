@@ -4,10 +4,11 @@
 // Every other kind reads a silver shaped by its source and decides what each
 // row means. This one reads a silver shaped by the canonical model itself:
 // one table per record type — portfolios, accounts, instruments, positions,
-// cash balances, fx rates, transactions — so a row is the change record it
-// becomes, column for column (testdata/silver_schema.sql is the schema's one
-// definition). No collector and no bronze stand behind it; a generator writes
-// it, and nothing about any one generator is known here.
+// open lots, cash balances, fx rates, transactions, realized lots — so a row
+// is the change record it becomes, column for column (testdata/silver_schema.sql
+// is the schema's one definition). No collector and no bronze stand behind
+// it; a generator writes it, and nothing about any one generator is known
+// here.
 //
 // The projection is therefore a pass-through with the cross-cutting guards
 // every adapter applies (docs/DESIGN.md §6.8): a value outside a canonical

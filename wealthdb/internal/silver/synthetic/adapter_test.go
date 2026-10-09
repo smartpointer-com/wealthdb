@@ -114,7 +114,7 @@ func insertTx(t *testing.T, db *sql.DB, x txn) {
 //   - acct-side and inst-bond are named only by run 2's transactions.
 func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
-	exec(t, db, `INSERT INTO meta (key, value) VALUES ('schema_version', '1')`)
+	exec(t, db, `INSERT INTO meta (key, value) VALUES ('schema_version', '2')`)
 	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
 		day(1), day(2), day(3), day(4))
 
@@ -967,6 +967,9 @@ func TestDanglingReferenceFailsTheLoad(t *testing.T) {
 			insertTx(t, db, txn{id: "t-ghost", at: day(1), account: "acct-brok", instrument: "inst-ghost",
 				kind: "dividend", net: "1"})
 		}},
+		{"position named by a lot", "inst-ghost", func(t *testing.T, db *sql.DB) {
+			exec(t, db, insertLot, day(1), "acct-brok", "inst-ghost", "1", "1", "10", nil, nil, "{}")
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path, db := newFixture(t)
@@ -978,5 +981,210 @@ func TestDanglingReferenceFailsTheLoad(t *testing.T) {
 				t.Errorf("Snapshots error = %v, want one naming %s", err, tc.ghost)
 			}
 		})
+	}
+}
+
+const (
+	insertLot = `INSERT INTO position_lots
+    (snapshot_at, account_id, position_key, lot_key, quantity, book_value, acquisition_date, term, payload)
+    VALUES (?,?,?,?,?,?,?,?,?)`
+	insertRealized = `INSERT INTO realized_lots
+    (realized_lot_id, account_id, instrument_id, description, document_kind, tax_year,
+     acquisition_date, disposal_date, currency, quantity, proceeds, book_value,
+     realized_gain_loss, term, payload)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+)
+
+// seedLots builds two runs of positions with open lots, every id and
+// figure invented: on day 2 an ETF of two lots, a coin of one lot whose
+// term is outside the vocabulary, and an ETF that states no lots; on
+// day 3 the first ETF with one lot left.
+func seedLots(t *testing.T, db *sql.DB) {
+	t.Helper()
+	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-03')`,
+		day(1), day(2), day(3), day(3))
+	exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES
+        ('acct-brok', 'brokerage', '{}'), ('acct-coin', 'crypto_exchange', '{}')`)
+	exec(t, db, `INSERT INTO instruments (instrument_id, valid_from, asset_class, vehicle, payload) VALUES
+        ('inst-eq',   ?, 'public_equity', 'etf',      '{}'),
+        ('inst-avg',  ?, 'public_equity', 'etf',      '{}'),
+        ('inst-coin', ?, 'crypto',        'physical', '{}')`, day(1), day(1), day(1))
+	exec(t, db, insertPosition, day(2), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
+		"USD", "15", "1800", "1600", nil, "2029-03-01", "{}")
+	exec(t, db, insertLot, day(2), "acct-brok", "inst-eq", "1", "10", "1000", "2029-03-01", "long", "{}")
+	exec(t, db, insertLot, day(2), "acct-brok", "inst-eq", "2", "5", "600", "2030-12-15", "short", `{"note":"x"}`)
+	exec(t, db, insertPosition, day(2), "acct-brok", "inst-avg", "inst-avg", "public_equity", "etf",
+		"USD", "1", "120", "100", nil, nil, "{}")
+	exec(t, db, insertPosition, day(2), "acct-coin", "inst-coin", "inst-coin", "crypto", "physical",
+		"EUR", "2", "1200", "1010.5", nil, "2030-11-01", "{}")
+	exec(t, db, insertLot, day(2), "acct-coin", "inst-coin", "1", "2", "1010.5", "2030-11-01", "soonish", "{}")
+	exec(t, db, insertPosition, day(3), "acct-brok", "inst-eq", "inst-eq", "public_equity", "etf",
+		"USD", "5", "610", "600", nil, "2030-12-15", "{}")
+	exec(t, db, insertLot, day(3), "acct-brok", "inst-eq", "2", "5", "600", "2030-12-15", "short", "{}")
+}
+
+func TestPositionLots(t *testing.T) {
+	path, db := newFixture(t)
+	seedLots(t, db)
+	conn := openConn(t, path)
+
+	batches := collectSnapshots(t, conn, window(t, conn, -1))
+	if len(batches) != 2 {
+		t.Fatalf("got %d batches, want 2", len(batches))
+	}
+	positions := map[string]canonical.PositionChange{}
+	for _, p := range batches[0].Positions {
+		positions[p.PositionKey] = p
+	}
+	lots := map[string]canonical.PositionLotChange{}
+	for _, l := range batches[0].PositionLots {
+		lots[l.PositionKey+"/"+l.LotKey] = l
+	}
+	if len(lots) != 3 {
+		t.Fatalf("day 2 lots = %v, want 3", lots)
+	}
+
+	// A position with lots is stamped as their sum, one without keeps
+	// the average, and crypto lots carry the fee they paid.
+	stamp := func(m canonical.BasisMethod, f canonical.BasisFees) canonical.Basis {
+		return canonical.Basis{Origin: canonical.BasisStated, Method: m, Fees: f}
+	}
+	for key, want := range map[string]canonical.Basis{
+		"inst-eq":   stamp(canonical.BasisMethodLots, canonical.BasisFeesNone),
+		"inst-avg":  stamp(canonical.BasisMethodAverage, canonical.BasisFeesNone),
+		"inst-coin": stamp(canonical.BasisMethodLots, canonical.BasisFeesIncluded),
+	} {
+		if got := positions[key].Basis; got != want {
+			t.Errorf("%s stamped %+v, want %+v", key, got, want)
+		}
+	}
+
+	first := lots["inst-eq/1"]
+	if first.SnapshotAt != day(2) || first.AccountExternalID != "acct-brok" || str(first.InstrumentExternalID) != "inst-eq" ||
+		first.Currency != "USD" || dec(first.Quantity) != "10" || dec(first.BookValue) != "1000" ||
+		first.BasisOrigin != canonical.BasisStated || first.Term != canonical.LotTermLong ||
+		first.AcquisitionDate == nil || first.AcquisitionDate.Format(time.DateOnly) != "2029-03-01" {
+		t.Errorf("lot inst-eq/1 = %+v", first)
+	}
+	if err := canonical.ValidateLotOrigin(first.BookValue, first.BasisOrigin); err != nil {
+		t.Errorf("lot inst-eq/1: %v", err)
+	}
+	if second := lots["inst-eq/2"]; second.Term != canonical.LotTermShort || payloadOf(t, second.Payload)["note"] != "x" {
+		t.Errorf("lot inst-eq/2 = %+v", second)
+	}
+	coin := lots["inst-coin/1"]
+	if coin.Currency != "EUR" || coin.Term != "" || payloadOf(t, coin.Payload)["source_term"] != "soonish" {
+		t.Errorf("coin lot: currency %s, term %q, payload %s; want EUR, no term, the raw term kept",
+			coin.Currency, coin.Term, coin.Payload)
+	}
+
+	// An incremental window carries only its own days' lots.
+	later := collectSnapshots(t, conn, window(t, conn, 1))
+	if len(later) != 1 || len(later[0].PositionLots) != 1 || later[0].PositionLots[0].LotKey != "2" {
+		t.Errorf("run 2 lots = %+v, want lot 2 alone", later)
+	}
+}
+
+// A silver from before the lot tables states no lots and no realized
+// lots, and loads as before.
+func TestSilverWithoutLotTables(t *testing.T) {
+	path, db := newFixture(t)
+	seedLots(t, db)
+	exec(t, db, `DROP TABLE position_lots`)
+	exec(t, db, `DROP TABLE realized_lots`)
+	conn := openConn(t, path)
+	for _, b := range collectSnapshots(t, conn, window(t, conn, -1)) {
+		if len(b.PositionLots) != 0 {
+			t.Errorf("lots without a table: %+v", b.PositionLots)
+		}
+		for _, p := range b.Positions {
+			if p.Basis.Method != canonical.BasisMethodAverage {
+				t.Errorf("%s stamped %+v without lots, want average", p.PositionKey, p.Basis)
+			}
+		}
+	}
+	got, err := conn.(silver.RealizedLotReader).RealizedLots(context.Background())
+	if err != nil || got != nil {
+		t.Errorf("RealizedLots = %v, %v; want none", got, err)
+	}
+}
+
+func TestRealizedLots(t *testing.T) {
+	path, db := newFixture(t)
+	seedLots(t, db)
+	exec(t, db, `INSERT INTO accounts (account_id, account_kind, payload) VALUES ('acct-mand', 'brokerage', '{}')`)
+	for _, r := range [][]any{
+		// One sale on the form and restated by a statement: the form
+		// counts it. The form states no gain; quantities are magnitudes.
+		{"r-1", "acct-brok", "inst-eq", "EXAMPLE INDEX FUND", "form_1099b", 2030, "2029-03-01", "2030-06-03",
+			"USD", "-4", "500", "400", nil, "long", `{"transaction_id":"t-9"}`},
+		{"r-2", "acct-brok", "inst-eq", "EXAMPLE INDEX FUND", "statement", 2030, "2029-03-01", "2030-06-03",
+			"USD", "4", "500", "400", "100", "long", "{}"},
+		{"r-3", "acct-coin", "inst-coin", "EXAMPLE COIN", "form_1099b", 2031, "2030-11-01", "2031-01-02",
+			"USD", "0.5", "300", "252.625", nil, "short", "{}"},
+		{"r-4", "acct-mand", "inst-eq", nil, "statement", 2030, "2030-01-10", "2030-09-01",
+			"USD", "2", "150", "200", "-50", "short", "{}"},
+		{"r-5", "acct-mand", nil, "EXAMPLE NOTE", "statement", 2030, nil, "2030-09-01",
+			"USD", "1000", "990", "1000", "-10", "maybe", "{}"},
+	} {
+		exec(t, db, insertRealized, r...)
+	}
+	conn := openConn(t, path)
+	got, err := conn.(silver.RealizedLotReader).RealizedLots(context.Background())
+	if err != nil {
+		t.Fatalf("RealizedLots: %v", err)
+	}
+	byID := map[string]canonical.RealizedLotChange{}
+	for _, r := range got {
+		byID[r.RealizedLotExternalID] = r
+	}
+	if len(byID) != 5 {
+		t.Fatalf("got %d realized lots, want 5", len(byID))
+	}
+	for id, want := range map[string]bool{"r-1": true, "r-2": false, "r-3": true, "r-4": true, "r-5": true} {
+		if byID[id].IsPrimary != want {
+			t.Errorf("%s primary = %t, want %t", id, byID[id].IsPrimary, want)
+		}
+	}
+
+	r1 := byID["r-1"]
+	if r1.AccountExternalID != "acct-brok" || str(r1.InstrumentExternalID) != "inst-eq" ||
+		str(r1.Description) != "EXAMPLE INDEX FUND" || r1.DocumentKind != canonical.RealizedForm1099B ||
+		r1.TaxYear != 2030 || r1.Currency != "USD" || dec(r1.Quantity) != "4" || dec(r1.Proceeds) != "500" ||
+		dec(r1.BookValue) != "400" || r1.RealizedGainLoss != nil || r1.Term != canonical.LotTermLong ||
+		r1.AcquisitionDate.Format(time.DateOnly) != "2029-03-01" ||
+		r1.DisposalDate.Format(time.DateOnly) != "2030-06-03" || payloadOf(t, r1.Payload)["transaction_id"] != "t-9" {
+		t.Errorf("r-1 = %+v", r1)
+	}
+	if r1.Basis != basisFor(canonical.AssetClassPublicEquity, canonical.VehicleETF, true) {
+		t.Errorf("r-1 stamped %+v", r1.Basis)
+	}
+	if dec(byID["r-2"].RealizedGainLoss) != "100" || dec(byID["r-4"].RealizedGainLoss) != "-50" {
+		t.Errorf("stated gains: r-2 %s, r-4 %s; want 100, -50",
+			dec(byID["r-2"].RealizedGainLoss), dec(byID["r-4"].RealizedGainLoss))
+	}
+	if b := byID["r-3"].Basis; b != basisFor(canonical.AssetClassCrypto, canonical.VehiclePhysical, true) {
+		t.Errorf("r-3 stamped %+v, want a crypto lot", b)
+	}
+	r5 := byID["r-5"]
+	if r5.InstrumentExternalID != nil || r5.AcquisitionDate != nil || r5.Term != "" ||
+		payloadOf(t, r5.Payload)["source_term"] != "maybe" || r5.Basis != basisFor("", "", true) {
+		t.Errorf("r-5 = %+v", r5)
+	}
+	for _, r := range got {
+		if err := canonical.ValidateBookValue(r.BookValue, r.Basis); err != nil {
+			t.Errorf("%s: %v", r.RealizedLotExternalID, err)
+		}
+	}
+}
+
+func TestRealizedLotDocumentKindFailsTheLoad(t *testing.T) {
+	path, db := newFixture(t)
+	exec(t, db, insertRealized, "r-odd", "acct-brok", nil, nil, "napkin", 2030, nil, "2030-06-03",
+		"USD", "1", "10", "9", nil, nil, "{}")
+	conn := openConn(t, path)
+	_, err := conn.(silver.RealizedLotReader).RealizedLots(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "r-odd") || !strings.Contains(err.Error(), "napkin") {
+		t.Errorf("RealizedLots error = %v, want one naming the row and its kind", err)
 	}
 }

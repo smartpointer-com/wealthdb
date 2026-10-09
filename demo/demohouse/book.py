@@ -10,6 +10,12 @@ flows that moved it.
 A snapshot is complete for its source: on a snapshot day every open
 account of the source is written, unless the findings switch silences
 it, because gold reads a source's latest snapshot as its whole state.
+
+A holding of units keeps its open lots. A buy adds a lot, and a sale
+relieves the oldest lots first. The holding's cost basis is the sum of
+its lots, and every snapshot writes the lots beside the position. A
+sale writes one realized lot per relieved piece, as the account's tax
+document states it.
 """
 
 import dataclasses
@@ -20,13 +26,29 @@ from . import dates
 from .money import D, ZERO, cents, mul, q4, q8, text
 
 
+# A lot sold more than this many days after its purchase is long-term.
+LONG_TERM_DAYS = 365
+
+
+@dataclasses.dataclass
+class Lot:
+    """Units bought together: their quantity, what they cost with any
+    fee paid on the purchase, and the day they were bought. The key is
+    unique within the account and instrument."""
+    key: str
+    qty: object
+    cost: object
+    acquired: dt.date
+
+
 @dataclasses.dataclass
 class Holding:
     instrument: str
     qty: object = None      # Decimal units, or None for a holding valued by marks
     value: object = None    # Decimal mark for a holding with no unit price
-    book: object = ZERO     # cost basis, instrument currency
-    acquired: dt.date = None
+    book: object = ZERO     # cost basis, instrument currency; a unit holding's is the sum of its lots
+    acquired: dt.date = None  # a unit holding's is its oldest open lot's
+    lots: list = dataclasses.field(default_factory=list)  # a unit holding's open lots, oldest first
 
 
 @dataclasses.dataclass
@@ -44,6 +66,7 @@ class Account:
     cash: dict = dataclasses.field(default_factory=dict)
     holdings: dict = dataclasses.field(default_factory=dict)
     seq: dict = dataclasses.field(default_factory=dict)
+    lot_seq: dict = dataclasses.field(default_factory=dict)  # instrument -> last lot number
 
     def balance(self, ccy=None):
         return self.cash.get(ccy or self.currency, ZERO)
@@ -60,7 +83,7 @@ class Book:
         self.instruments = instruments  # id -> catalogue entry (current version)
         self.accounts = {}
         self.sources = {}               # source id -> {"cadence", "accounts": [...]}
-        self.rows = {}                  # source id -> {"positions", "cash", "transactions"}
+        self.rows = {}                  # source id -> {"positions", "lots", "cash", "transactions", "realized"}
         self.portfolios = {}            # source id -> [portfolio rows]
         self.instrument_versions = {}   # source id -> {(instrument, valid_from): row}
         self.quiet = lambda aid, day: False  # a snapshot the source does not publish
@@ -69,7 +92,7 @@ class Book:
 
     def add_source(self, source, cadence):
         self.sources[source] = {"cadence": cadence, "accounts": []}
-        self.rows[source] = {"positions": [], "cash": [], "transactions": []}
+        self.rows[source] = {"positions": [], "lots": [], "cash": [], "transactions": [], "realized": []}
         self.portfolios[source] = []
         self.instrument_versions[source] = {}
 
@@ -147,28 +170,90 @@ class Book:
         h = self.holding(aid, instrument)
         return h.qty if h and h.qty is not None else ZERO
 
-    def add_units(self, aid, instrument, qty, cost, day):
+    def add_units(self, aid, instrument, qty, cost, day, acquired=None):
+        """Add one lot: `qty` units costing `cost`, bought on `acquired`
+        (by default `day`)."""
         acct = self.accounts[aid]
         h = acct.holdings.get(instrument)
-        if h is None or (h.qty is not None and h.qty == 0):
-            h = Holding(instrument=instrument, qty=ZERO, book=ZERO, acquired=day)
+        if h is None:
+            h = Holding(instrument=instrument)
             acct.holdings[instrument] = h
-        h.qty = q8(h.qty + qty)
-        h.book = q4(h.book + cost)
+        n = acct.lot_seq.get(instrument, 0) + 1
+        acct.lot_seq[instrument] = n
+        h.lots.append(Lot(key=str(n), qty=q8(qty), cost=q4(cost), acquired=acquired or day))
+        _restate(h)
         self.note_instrument(acct.source, instrument)
         return h
 
+    def add_fee(self, aid, instrument, fee):
+        """Add a fee paid on the latest purchase to that purchase's lot."""
+        h = self.accounts[aid].holdings[instrument]
+        h.lots[-1].cost = q4(h.lots[-1].cost + fee)
+        _restate(h)
+
+    def split(self, aid, instrument, ratio):
+        """Multiply every lot's units by `ratio` at unchanged cost.
+        Returns the units added."""
+        h = self.accounts[aid].holdings[instrument]
+        before = h.qty
+        for lot in h.lots:
+            lot.qty = q8(lot.qty * ratio)
+        _restate(h)
+        return h.qty - before
+
     def remove_units(self, aid, instrument, qty):
-        """Take units out; returns the cost basis that left with them."""
+        """Take units out, oldest lot first. Returns the relieved pieces
+        as lots, each with the cost that left with it."""
         h = self.accounts[aid].holdings[instrument]
         if qty > h.qty:
             raise ValueError(f"{aid}: selling {qty} {instrument}, holding {h.qty}")
-        basis = q4(mul(h.book, qty) / h.qty) if h.qty else ZERO
-        h.qty = q8(h.qty - qty)
-        h.book = q4(h.book - basis)
-        if h.qty == 0:
+        pieces, left = [], qty
+        while left > 0:
+            lot = h.lots[0]
+            if lot.qty <= left:
+                pieces.append(h.lots.pop(0))
+                left -= lot.qty
+                continue
+            cost = q4(mul(lot.cost, left) / lot.qty)
+            pieces.append(Lot(key=lot.key, qty=left, cost=cost, acquired=lot.acquired))
+            lot.qty, lot.cost, left = q8(lot.qty - left), lot.cost - cost, ZERO
+        if h.lots:
+            _restate(h)
+        else:
             del self.accounts[aid].holdings[instrument]
-        return basis
+        return pieces
+
+    def realize(self, sale, pieces, document_kind, description):
+        """Write the realized lots of `sale`, a sell transaction's row: one
+        per relieved piece, each with its share of the proceeds by
+        quantity. A statement states each lot's gain. A Form 1099-B
+        states proceeds and cost, and leaves the gain unstated."""
+        day = sale["_day"]
+        proceeds = D(sale["net_amount"])
+        total = sum((p.qty for p in pieces), ZERO)
+        left = proceeds
+        rows = self.rows[self.accounts[sale["account_id"]].source]["realized"]
+        for n, p in enumerate(pieces, 1):
+            share = left if n == len(pieces) else cents(proceeds * p.qty / total)
+            left -= share
+            rows.append({
+                "realized_lot_id": f'{sale["transaction_id"]}-{n}',
+                "account_id": sale["account_id"],
+                "instrument_id": sale["instrument_id"],
+                "description": description,
+                "document_kind": document_kind,
+                "tax_year": day.year,
+                "acquisition_date": p.acquired.isoformat(),
+                "disposal_date": day.isoformat(),
+                "currency": sale["currency"],
+                "quantity": text(p.qty, 8),
+                "proceeds": text(share),
+                "book_value": text(p.cost),
+                "realized_gain_loss": text(share - p.cost) if document_kind == "statement" else None,
+                "term": term(p.acquired, day),
+                "payload": json.dumps({"lot_key": p.key, "transaction_id": sale["transaction_id"]},
+                                      sort_keys=True, separators=(",", ":")),
+            })
 
     def set_mark(self, aid, instrument, value, day, book=None, acquired=None):
         """Hold (or re-mark) a holding valued by marks rather than units."""
@@ -226,11 +311,35 @@ class Book:
                 "accrued_interest": text(accrued) if accrued is not None else None,
                 "acquisition_date": h.acquired.isoformat() if h.acquired else None,
             })
+            for lot in h.lots:
+                rows["lots"].append({
+                    "snapshot_at": at,
+                    "account_id": acct.id,
+                    "position_key": key,
+                    "lot_key": lot.key,
+                    "quantity": text(lot.qty, 8),
+                    "book_value": text(lot.cost),
+                    "acquisition_date": lot.acquired.isoformat(),
+                    "term": term(lot.acquired, day),
+                })
         for ccy in sorted(acct.cash):
             rows["cash"].append({
                 "snapshot_at": at, "account_id": acct.id, "currency": ccy,
                 "balance_kind": "closing", "amount": text(acct.cash[ccy]),
             })
+
+
+def _restate(h):
+    """A unit holding's quantity, cost basis and acquisition date, from
+    its open lots."""
+    h.qty = q8(sum((lot.qty for lot in h.lots), ZERO))
+    h.book = q4(sum((lot.cost for lot in h.lots), ZERO))
+    h.acquired = min(lot.acquired for lot in h.lots)
+
+
+def term(acquired, day):
+    """A lot's holding period on `day`."""
+    return "long" if (day - acquired).days > LONG_TERM_DAYS else "short"
 
 
 def unit_price(inst, price):

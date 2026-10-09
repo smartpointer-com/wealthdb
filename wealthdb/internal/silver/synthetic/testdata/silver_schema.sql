@@ -1,4 +1,4 @@
--- Silver schema of the synthetic kind, version 1.
+-- Silver schema of the synthetic kind, version 2.
 --
 -- The one generic silver: one table per canonical record type, so a row
 -- here is the canonical change record it becomes, column for column. No
@@ -25,7 +25,8 @@ CREATE TABLE meta (
 
 -- One row per run. change_number is strictly increasing across runs and
 -- is what gold's watermark tracks; [window_start, window_end] (inclusive)
--- bounds every snapshot_at and occurred_at the run added.
+-- bounds every snapshot_at and occurred_at the run added, and the UTC
+-- midnight of every disposal_date.
 CREATE TABLE dump_runs (
     change_number INTEGER NOT NULL PRIMARY KEY,
     window_start  INTEGER NOT NULL,
@@ -88,6 +89,25 @@ CREATE TABLE positions (
     PRIMARY KEY (snapshot_at, account_id, position_key)
 );
 
+-- The open lots of a positions row: same snapshot_at, account_id and
+-- position_key. A lot takes its instrument and currency from that row.
+-- lot_key is unique within the position. book_value is the lot's cost,
+-- in the convention of the position's book_value; a position with lots
+-- has the sum of its lots' costs as its book_value. term is 'short' or
+-- 'long' on the snapshot's day, NULL where the writer does not state it.
+CREATE TABLE position_lots (
+    snapshot_at      INTEGER NOT NULL,
+    account_id       TEXT    NOT NULL,
+    position_key     TEXT    NOT NULL,
+    lot_key          TEXT    NOT NULL,
+    quantity         TEXT,
+    book_value       TEXT,
+    acquisition_date TEXT,              -- YYYY-MM-DD
+    term             TEXT,
+    payload          TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_at, account_id, position_key, lot_key)
+);
+
 CREATE TABLE cash_balances (
     snapshot_at  INTEGER NOT NULL,
     account_id   TEXT    NOT NULL,
@@ -135,3 +155,25 @@ CREATE TABLE transactions (
 );
 
 CREATE INDEX transactions_by_time ON transactions (occurred_at);
+
+-- One realized lot as one tax document states it. document_kind is a
+-- canonical.RealizedDocKind value (form_1099b, statement, ...). The
+-- quantity, proceeds and book_value are magnitudes in currency; the gain
+-- is signed, and NULL where the document does not state it.
+CREATE TABLE realized_lots (
+    realized_lot_id    TEXT    NOT NULL PRIMARY KEY,
+    account_id         TEXT    NOT NULL,
+    instrument_id      TEXT,
+    description        TEXT,
+    document_kind      TEXT    NOT NULL,
+    tax_year           INTEGER NOT NULL,
+    acquisition_date   TEXT,            -- YYYY-MM-DD
+    disposal_date      TEXT,            -- YYYY-MM-DD
+    currency           TEXT    NOT NULL,
+    quantity           TEXT,
+    proceeds           TEXT,
+    book_value         TEXT,
+    realized_gain_loss TEXT,
+    term               TEXT,
+    payload            TEXT    NOT NULL DEFAULT '{}'
+);

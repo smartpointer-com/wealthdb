@@ -44,12 +44,15 @@ Ids pass through unchanged. The adapter mints none and rewrites none.
 | `instrument_external_id` | `instruments.instrument_id` | `inst-eq` |
 | `position_key` | `positions.position_key` | `inst-eq` |
 | `transaction_external_id` | `transactions.transaction_id` | `t-0001` |
+| `lot_key` | `position_lots.lot_key` | `1` |
+| `realized_lot_external_id` | `realized_lots.realized_lot_id` | `t-0002-1` |
 
 A fact that names an account, a portfolio or an instrument must find
 its row in the dimension table. A dangling id fails the load with an
 error that names it. The silver is the canonical records themselves, so
 a dangling id is a defect in whatever wrote the file. Loading around it
-would leave gold holding a fact nothing describes.
+would leave gold holding a fact nothing describes. An open lot must
+find its positions row in the same way.
 
 ## 3. Coverage matrix
 
@@ -61,9 +64,11 @@ would leave gold holding a fact nothing describes.
 | `accounts` | `accounts` | Taxonomy from the row — see §4. |
 | `instruments` | `instruments` | One version per `valid_from` — see §6. |
 | `positions` | `positions` | One snapshot batch per distinct `snapshot_at` — see §5. |
+| `position_lots` | `position_lots` | In the batch of their position — see §5. |
 | `cash_balances` | `cash_balances` | In the same per-instant batches. |
 | `fx_rates` | `fx_rates` | In the same per-instant batches, already in gold's direction. |
 | `transactions` | `transactions` | Re-signed as a guard — see §7. |
+| `realized_lots` | `realized_lots` | Read whole on every load — see §11. |
 
 ## 4. Account taxonomy
 
@@ -89,7 +94,7 @@ apply on top, as for every source.
 `Snapshots` emits one batch per distinct `snapshot_at` in the window,
 in ascending order. The instants are the union over `positions`,
 `cash_balances` and `fx_rates`. A batch carries that instant's
-positions, cash balances and fx rates, complete.
+positions with their open lots, cash balances and fx rates, complete.
 
 A batch also carries the dimension records its facts reference, all
 seen at that instant:
@@ -110,8 +115,11 @@ Position columns pass through:
   `market_value` includes its accrued interest, and
   `accrued_interest` says how much it is (DESIGN.md §7.1).
 - A `book_value` follows one convention, which every writer of the
-  kind keeps. The adapter stamps it by the pair (DESIGN.md §7.4):
-  - a holding: its average cost, with no purchase fee:
+  kind keeps. The adapter stamps it by the pair, and by whether the
+  position states open lots (DESIGN.md §7.4):
+  - a holding with lots: the sum of its lots' costs:
+    `stated`, `lots`, `none`;
+  - a holding without lots: its average cost, with no purchase fee:
     `stated`, `average`, `none`;
   - a `private_equity` `fund` or `spv`: the capital paid in, gross of
     the cash paid back: `stated`, `paid_in`, `none`;
@@ -120,13 +128,31 @@ Position columns pass through:
     loan's value. Each is the value on the day it was acquired:
     `stated`, `acquisition_value`, `none`. A real-estate fund or ETF is
     a holding;
-  - `crypto`: its average cost, with the purchase fee left out and
-    booked as a `fee` transaction of its own: `stated`, `average`,
-    `excluded`.
+  - `crypto`: the only holding that pays a purchase fee. The fee is
+    booked as a `fee` transaction of its own. A lot's cost includes
+    it: `stated`, `lots`, `included`. An average cost leaves it out:
+    `stated`, `average`, `excluded`.
 
   A row without a book value carries no stamp.
 - `acquisition_date` is `YYYY-MM-DD`. It becomes that day's UTC
-  midnight. An unparseable one is absent.
+  midnight. An unparseable one is absent. A holding with lots is dated
+  by its oldest lot.
+
+Open lots (`position_lots`) belong to the positions row with the same
+`snapshot_at`, `account_id` and `position_key`:
+
+- A lot takes its instrument and currency from that row.
+- `lot_key` is unique within the position.
+- `quantity` and `book_value` are optional decimals. The book value is
+  the lot's cost, stamped `stated`. The lots of a position sum to its
+  quantity and its book value.
+- `acquisition_date` reads like the position's.
+- `term` is `short` or `long` on the snapshot's day. Any other value
+  is absent, and the raw value is kept as `payload.source_term`.
+- A lot whose position has no row fails the load, like a dangling id.
+
+A file without the `position_lots` table states no lots. Its holdings
+carry the average stamp.
 
 Cash balances and fx rates:
 
@@ -221,8 +247,8 @@ windows are cut.
 runs.
 
 A run's `[window_start, window_end]` (inclusive) bounds every
-`snapshot_at` and `occurred_at` it added. That is the contract the
-generator keeps.
+`snapshot_at` and `occurred_at` it added, and the UTC midnight of
+every `disposal_date`. That is the contract the generator keeps.
 
 `ChangeWindow(since)` is **incremental**. It reads the runs with
 `change_number > since`:
@@ -307,3 +333,33 @@ The vocabulary is **not categorical**:
   is not deferred to the model tier.
 - A value outside the taxonomy is not counted as vocabulary drift. It
   falls through untranslated, and later tiers place the row.
+
+## 11. Realized lots
+
+The connection implements `silver.RealizedLotReader`. `RealizedLots`
+reads the whole `realized_lots` table on every load, as DESIGN.md
+§7.4 describes. One row is one realized lot as one tax document
+states it.
+
+- `document_kind` is a `canonical.RealizedDocKind` value. Any other
+  value fails the load with an error that names the row. Gold has no
+  catch-all kind.
+- `quantity`, `proceeds` and `book_value` become magnitudes.
+  `realized_gain_loss` keeps its sign. Each is absent where the row
+  leaves it NULL.
+- The book value is the lot's cost. It is stamped as a lot, by the
+  instrument's pair in its latest version: `stated`, `lots`, and
+  `included` for `crypto` or `none` otherwise.
+- `term` reads like an open lot's.
+- `acquisition_date` and `disposal_date` read like a position's
+  `acquisition_date`.
+- `tax_year`, `currency`, `instrument_id` and `description` pass
+  through.
+
+The same sale may appear in several documents, one row each. Per
+account and tax year, the rows of the best-ranked kind present are
+primary (`silver.MarkPrimary`). The ranking is `form_1099b`,
+`year_end_summary`, `gain_loss_report`, `closed_positions`,
+`statement`, `trade`.
+
+A file without the table states no realized lots.

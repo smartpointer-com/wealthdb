@@ -19,7 +19,7 @@ import sqlite3
 from . import dates
 from .spec import SCHEMA_PATH
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 _TABLES = {
     "portfolios": ("portfolio_id", "display_name", "base_currency", "nickname", "payload"),
@@ -30,6 +30,8 @@ _TABLES = {
     "positions": ("snapshot_at", "account_id", "position_key", "instrument_id", "asset_class",
                   "vehicle", "currency", "quantity", "market_value", "book_value",
                   "accrued_interest", "acquisition_date", "payload"),
+    "position_lots": ("snapshot_at", "account_id", "position_key", "lot_key", "quantity", "book_value",
+                      "acquisition_date", "term", "payload"),
     "cash_balances": ("snapshot_at", "account_id", "currency", "balance_kind", "amount", "payload"),
     "fx_rates": ("snapshot_at", "base_currency", "quote_currency", "mid_rate", "bid_rate",
                  "ask_rate", "payload"),
@@ -37,11 +39,14 @@ _TABLES = {
                      "vehicle", "instrument_hint", "kind", "currency", "gross_amount", "net_amount",
                      "quantity", "price", "description", "memo", "counterparty",
                      "provider_category", "check_number", "payload"),
+    "realized_lots": ("realized_lot_id", "account_id", "instrument_id", "description", "document_kind",
+                      "tax_year", "acquisition_date", "disposal_date", "currency", "quantity", "proceeds",
+                      "book_value", "realized_gain_loss", "term", "payload"),
 }
 
 # The tables of dated facts. The rest are dimensions, which an append
 # re-sends whole and the file keeps once.
-FACT_TABLES = ("positions", "cash_balances", "fx_rates", "transactions")
+FACT_TABLES = ("positions", "position_lots", "cash_balances", "fx_rates", "transactions", "realized_lots")
 
 # The meta keys an append run requires to match before it may extend a file.
 IDENTITY_KEYS = ("schema_version", "generator_hash", "seed", "spec_hash", "catalogue_hash", "findings")
@@ -79,12 +84,14 @@ def source_rows(sim, source, as_of):
         "instruments": [dict(v, payload="{}") for (_, valid_from), v in
                         sorted(book.instrument_versions[source].items()) if valid_from <= end],
         "positions": [dict(p, payload="{}") for p in book.rows[source]["positions"]],
+        "position_lots": [dict(lot, payload="{}") for lot in book.rows[source]["lots"]],
         "cash_balances": [dict(c, payload="{}") for c in book.rows[source]["cash"]],
         "fx_rates": [dict(f, bid_rate=None, ask_rate=None, payload="{}")
                      for f in (sim.fx_rows if source == "fx" else [])],
         "transactions": [{k: v for k, v in t.items() if not k.startswith("_")}
                          | {"asset_class": None, "vehicle": None, "instrument_hint": None}
                          for t in book.rows[source]["transactions"]],
+        "realized_lots": book.rows[source]["realized"],
     }
     return rows
 
@@ -94,10 +101,12 @@ def _day_end(day):
 
 
 def _time_of(table, row):
-    if table in ("positions", "cash_balances", "fx_rates"):
+    if table in ("positions", "position_lots", "cash_balances", "fx_rates"):
         return row["snapshot_at"]
     if table == "transactions":
         return row["occurred_at"]
+    if table == "realized_lots":
+        return dates.epoch(dates.parse(row["disposal_date"]))
     return None
 
 

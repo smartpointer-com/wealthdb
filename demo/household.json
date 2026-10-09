@@ -30,7 +30,7 @@
       {"id": "tb-hsa-01", "tag": "HSA", "kind": "brokerage", "name": "Health savings account", "nickname": "HSA", "wrapper": "hsa", "style": "automated", "currency": "USD", "cash": "250.00",
        "holdings": {"tdf2050": "324"}}
     ]},
-    {"id": "aubervane", "institution": "Aubervane Private Wealth", "short": "AUBERVANE PW", "cadence": "business",
+    {"id": "aubervane", "institution": "Aubervane Private Wealth", "short": "AUBERVANE PW", "cadence": "business", "tax_document": "statement",
      "portfolio": {"id": "av-pf-01", "name": "Discretionary mandate", "currency": "USD"},
      "accounts": [
       {"id": "av-brk-01", "kind": "brokerage", "name": "Mandate account", "nickname": "Mandate", "wrapper": "taxable_joint", "style": "discretionary", "currency": "USD", "portfolio": "av-pf-01",

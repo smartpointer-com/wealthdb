@@ -1928,7 +1928,7 @@ comment has the detail:
 | angellist | capital paid in, less in-kind distributions | stated or derived · paid_in · included | – | – |
 | equityzen | SPVs: shares held at the price paid, plus the execution fee pro rata; funds: capital paid in plus the fee | derived · average or paid_in · included, or unknown without a stated fee | – | – |
 | manual | the paid-in series, else the value at acquisition | stated · paid_in or acquisition_value · unknown | – | – |
-| synthetic | as generated | stated · average, paid_in or acquisition_value · none or excluded | – | – |
+| synthetic | a holding: the sum of its lots, else its average cost; private markets: capital paid in; a home or mortgage: the value at acquisition | stated · lots, average, paid_in or acquisition_value · none, or for crypto included in lots and excluded from an average | each holding's lots, at cost | one row per lot a sale relieves, on a 1099-B or a statement |
 
 cointracking, svb and relevate state no basis.
 

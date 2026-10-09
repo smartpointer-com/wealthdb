@@ -79,6 +79,15 @@ One account is declared rather than collected: `kids-savings`, a
 children's savings account at a bank nothing collects. A monthly
 transfer to it is an own-account move that stays inside the household.
 
+Every holding counted in units keeps its tax lots: shares, fund
+units, bonds, gold and coins. A private fund, the SPV and the home are
+valued by marks and have none. A
+buy adds a lot at its cost, with the trading fee where there is one.
+A sale relieves the oldest lots first and writes one realized lot per
+piece it relieves. A taxable account at a US broker states its sales
+on a Form 1099-B, without the gain. The `aubervane` mandate and the
+tax-advantaged accounts state them on a statement, with the gain.
+
 The in-kind exit writes two rows into the equity-transfer ledger. Two
 payments are pinned. Three spending rules and one income rule place
 rows the provider does not file. A transfer-override row pairs each
@@ -97,7 +106,7 @@ config, no network. The code is in `demo/demohouse/`:
 | `spec.py` | loads the spec and the catalogue, and hashes them and the generator's code |
 | `keyed.py` | randomness keyed by (seed, stream, the draw's own keys), so adding days never changes an earlier day |
 | `market.py` | four price factors (stocks, bonds, gold, crypto), instrument prices, exchange rates |
-| `book.py` | the ledger: every balance is the running sum of its transactions |
+| `book.py` | the ledger: every balance is the running sum of its transactions, and every holding the sum of its lots |
 | `household.py` | the day-by-day simulation |
 | `silver.py` | writes a full build, or appends the new days to an earlier one |
 | `config.py` | renders `wealthdb.cfg` and the ledger CSVs |
