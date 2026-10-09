@@ -199,6 +199,8 @@ func TestColumnLookup(t *testing.T) {
 	accounts := holdingsReport(request{view: "accounts", currency: "USD"})
 	returns := returnsReport(request{currency: "USD", method: "both"}, nil)
 	spending := spendingReport(request{view: "categories", currency: "USD", period: "total"})
+	gainsBuckets := gainsReport(request{view: "summary", currency: "USD", period: "total"})
+	gainsLots := gainsReport(request{view: "lots", currency: "USD"})
 	cases := []struct {
 		rep       *report
 		principal string
@@ -218,6 +220,8 @@ func TestColumnLookup(t *testing.T) {
 		{returns, "twr", "twr_pct", true, "twr_pct", false},
 		{returns, "twr", "end", true, "end_USD", true},
 		{returns, "twr", "return", true, "twr_pct", true},
+		// market_value sorts by its output-currency twin, value.
+		{gainsLots, "unrealized_gain_outccy", "-market_value", true, "value_USD", true},
 		{spending, "net_spend", "netspend", true, "net_spend_USD", true},
 		{spending, "net_spend", "amount", true, "net_spend_USD", true},
 	}
@@ -230,6 +234,14 @@ func TestColumnLookup(t *testing.T) {
 		}
 		if got := c.rep.columns[i].header; got != c.want || (note != "") != c.noted {
 			t.Errorf("%s (sort %v) = %s, note %q; want %s, noted %v", c.name, c.sort, got, note, c.want, c.noted)
+		}
+	}
+	// A percentage name never lands on a money column, by a currency
+	// reading or by a typo.
+	pctLookup := columnLookup{cols: gainsBuckets.columns, currency: "USD", principal: "gain"}
+	for _, name := range []string{"unrealized_pct", "gain_pct"} {
+		if i, _, err := pctLookup.resolve(name, true); err == nil {
+			t.Errorf("%s resolved to %s; want an unknown-column error", name, gainsBuckets.columns[i].header)
 		}
 	}
 	// A currency suffix means the converted column, whichever currency

@@ -192,7 +192,7 @@ Treat any other column as unredacted unless it actually prints `***`.
 | `holdings sources` | as `accounts`, one row per institution (base columns blank when the source mixes currencies or wrappers) |
 | `holdings portfolios` | as `accounts`, with `portfolio` as the label column, plus one sentinel row per source for accounts the bank did not group |
 | `transactions` | `silver_source, date, account, kind, symbol, instrument_id, currency, net_amount, value` |
-| `returns <view>` | `silver_source, entity, period, start_value, end_value, net_flow, twr, mwr, quality` |
+| `returns <view>` | `silver_source, entity, period, start_value, end_value, net_flow, gain, twr, mwr, quality` |
 | `spending summary` | `period, txn_count, spend, refunds, net_spend` |
 | `spending categories` | the same plus `category` and `share` |
 | `spending transactions` | `silver_source, date, account, merchant, category, currency, net_amount, value` |
@@ -204,6 +204,13 @@ Treat any other column as unredacted unless it actually prints `***`.
 | `cashflow sankey` | `stage, source, target, value, share` |
 | `cashflow transactions` | `silver_source, date, account, kind, section, class, group, name, currency, net_amount, value` |
 | `cashflow coverage` | `period, silver_source, account, currency, ledger, measured, gap, status` |
+| `gains summary` | `period, realized, unrealized_start, unrealized_end, unrealized_change, gain, basis_coverage, quality` |
+| `gains sources`, `gains portfolios` | the same, after `silver_source` (and `portfolio`) |
+| `gains accounts` | `silver_source, account, tax_wrapper, period, realized, unrealized_end, unrealized_change, gain, basis_coverage, quality` |
+| `gains positions` | `silver_source, account, symbol, asset_class, currency, cost_basis_outccy, value, unrealized_end, realized, gain, basis_stamp` |
+| `gains realized` | `silver_source, date, account, symbol, quantity, acquired, term, currency, proceeds, cost_basis, gain, gain_outccy` |
+| `gains lots` | `silver_source, account, symbol, acquisition_date, held_days, term, quantity, cost_basis, market_value, unrealized_gain, currency` |
+| `gains coverage` | `silver_source, account, tax_wrapper, value, value_with_basis, basis_coverage, basis_stamps, open_lots, sells, realized_lots, documents, verdict` |
 
 `silver_source` is the institution (`schwab`, `ubs`, `fidelity`, …). Slice or
 group by these account attributes, available via `-C` where the view has them:

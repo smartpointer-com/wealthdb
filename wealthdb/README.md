@@ -163,6 +163,8 @@ and read-only sharing pattern.
   package layout.
 - **[docs/RETURNS-NOTES.md](docs/RETURNS-NOTES.md)** — TWR / MWR
   method and rationale.
+- **[docs/GAINS.md](docs/GAINS.md)** — realized and unrealized gains:
+  what each figure is, and the quality flags.
 - **[docs/SPENDING.md](docs/SPENDING.md)**,
   **[docs/INCOME.md](docs/INCOME.md)**,
   **[docs/CASHFLOW.md](docs/CASHFLOW.md)** — the enrichment engine's

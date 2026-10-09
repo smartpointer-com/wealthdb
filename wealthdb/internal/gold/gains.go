@@ -69,9 +69,9 @@ func GainsBuckets(ctx context.Context, db *sql.DB, from, to int64, outCcy, perio
 }
 
 // GainsPositionRow is one account and instrument over a window: its
-// holding at both ends and the lots realized in between. LotKey is set
-// only on a row the lots alone make, where no position line names the
-// instrument at either end.
+// holding at both ends, and the lots realized and the events in
+// between. LotKey is set only on a row the lots or events alone make,
+// where no position line names the instrument at either end.
 type GainsPositionRow struct {
 	SilverSourceID    string
 	AccountExternalID string
@@ -86,12 +86,12 @@ type GainsPositionRow struct {
 	Currency          *string
 
 	QuantityStart, QuantityEnd *string
-	// In the position's currency, at the window's end.
-	BookValue, MarketValue, UnrealizedGain *string
-	BookValueOutCcy, ValueOutCcy           *string
+	// At the window's end, in the position's currency.
+	BookValue, MarketValue *string
+	// The same, in the output currency.
+	BookValueOutCcy, ValueOutCcy *string
 
 	UnrealizedStart, UnrealizedEnd, UnrealizedChange *string
-	RealizedGain                                     *string // the lots' own currency
 	Realized, Gain                                   *string
 	UnrealizedRatio                                  *float64
 
@@ -111,8 +111,8 @@ func GainsPositions(ctx context.Context, db *sql.DB, from, to int64, outCcy stri
 				str(&r.AssetClass), str(&r.Vehicle), str(&r.Currency),
 				dec(&r.QuantityStart), dec(&r.QuantityEnd),
 				dec(&r.BookValue), dec(&r.BookValueOutCcy), dec(&r.MarketValue), dec(&r.ValueOutCcy),
-				dec(&r.UnrealizedGain), dec(&r.UnrealizedStart), dec(&r.UnrealizedEnd), dec(&r.UnrealizedChange),
-				dec(&r.RealizedGain), dec(&r.Realized), dec(&r.Gain), flt(&r.UnrealizedRatio),
+				dec(&r.UnrealizedStart), dec(&r.UnrealizedEnd), dec(&r.UnrealizedChange),
+				dec(&r.Realized), dec(&r.Gain), flt(&r.UnrealizedRatio),
 				str(&r.BasisStamp), str(&r.AcquisitionDate), &r.OpenLots, &r.Quality,
 			}
 		})
@@ -126,9 +126,8 @@ type RealizedLotRow struct {
 	DisplayName          *string
 	Nickname             *string
 	EffectiveDate        string // YYYY-MM-DD
-	Undated              bool
+	Undated              bool   // dated at its tax year's last day
 	InstrumentExternalID *string
-	InstrumentHint       *string
 	Symbol               *string
 	Description          *string
 	Quantity             *string
@@ -163,7 +162,7 @@ func RealizedLotsBetween(ctx context.Context, db *sql.DB, from, to int64, outCcy
 		return []any{
 			&r.SilverSourceID, &r.AccountExternalID, str(&r.DisplayName), str(&r.Nickname),
 			&r.EffectiveDate, &r.Undated,
-			str(&r.InstrumentExternalID), str(&r.InstrumentHint), str(&r.Symbol), str(&r.Description),
+			str(&r.InstrumentExternalID), str(&r.Symbol), str(&r.Description),
 			dec(&r.Quantity), str(&r.AcquisitionDate), &r.AcquiredVarious, i64(&r.HeldDays),
 			str(&r.Term), boolp(&r.Covered), str(&r.Form8949Box), &r.Currency,
 			dec(&r.Proceeds), dec(&r.BookValue), dec(&r.Gain), dec(&r.WashDisallowed), dec(&r.AccruedMarketDiscount),

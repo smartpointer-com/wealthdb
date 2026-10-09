@@ -299,13 +299,13 @@ func TestGainsPositionsAttachLotsToTheirHolding(t *testing.T) {
 		t.Errorf("AAA = %+v", r)
 	}
 	// The bond's accrued interest is income, not gain.
-	if r := byKey["BRK1/BND"]; !near(num(t, r.UnrealizedGain), 10) || !near(num(t, r.Gain), 0) || r.Quality != "corporate_actions=1" {
+	if r := byKey["BRK1/BND"]; !near(num(t, r.UnrealizedEnd), 10) || !near(num(t, r.Gain), 0) || r.Quality != "corporate_actions=1" {
 		t.Errorf("BND = %+v", r)
 	}
 	if r := byKey["BRK1/lot:ZZZ"]; r.Quality != "lots_without_gain=1;unmatched_lots=1" || r.Gain != nil {
 		t.Errorf("ZZZ = %+v", r)
 	}
-	if r := byKey["BRK2/CCC"]; r.UnrealizedGain != nil || r.Quality != "sells_without_documents=1" {
+	if r := byKey["BRK2/CCC"]; r.UnrealizedEnd != nil || r.Quality != "sells_without_documents=1" {
 		t.Errorf("CCC = %+v", r)
 	}
 }

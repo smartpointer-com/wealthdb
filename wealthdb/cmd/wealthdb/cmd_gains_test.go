@@ -168,6 +168,10 @@ func TestReportHeadersAreIdentifiers(t *testing.T) {
 			if !ident.MatchString(c.name) || !ident.MatchString(c.header) {
 				t.Errorf("%s: column %q header %q has a special character", name, c.name, c.header)
 			}
+			// A twin prints its currency, never the registry's suffix.
+			if strings.Contains(c.header, "outccy") {
+				t.Errorf("%s: column %q prints as %q", name, c.name, c.header)
+			}
 		}
 	}
 }

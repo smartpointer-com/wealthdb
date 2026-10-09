@@ -143,6 +143,42 @@ func accountLabel(displayName *string, id string) string {
 	return id
 }
 
+// moneyCol is a money column: two decimals, blank for nil, redacted as
+// money. header "" prints the name.
+func moneyCol[T any](name, header string, get func(T) *string) columnSpec[T] {
+	return columnSpec[T]{Name: name, Header: header, Align: output.AlignRight, Privacy: PrivacyMoney,
+		Extract: func(r T) string { return formatCents(get(r)) }}
+}
+
+// outCcyTwin is the output-currency twin of a money column in the
+// holding's own currency: named <name>_outccy, printed <name>_<CCY>.
+// MCP sorts read the twin (columnLookup.resolve).
+func outCcyTwin[T any](name, outCcy string, get func(T) *string) columnSpec[T] {
+	return moneyCol(name+"_outccy", name+"_"+outCcy, get)
+}
+
+// outCcyCol is a money figure only the output currency carries: its own
+// name, printed <name>_<CCY>.
+func outCcyCol[T any](name, outCcy string, get func(T) *string) columnSpec[T] {
+	return moneyCol(name, name+"_"+outCcy, get)
+}
+
+// quantityCol is a quantity column, redacted as a quantity.
+func quantityCol[T any](name string, get func(T) *string) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignRight, Privacy: PrivacyQuantity,
+		Extract: func(r T) string { return strOrEmpty(get(r)) }}
+}
+
+// textCol is a legible text column, blank for nil.
+func textCol[T any](name string, get func(T) *string) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string { return strOrEmpty(get(r)) }}
+}
+
+// countCol is a legible count.
+func countCol[T any](name string, get func(T) int64) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return fmt.Sprintf("%d", get(r)) }}
+}
+
 func joinColumnNames[T any](registry []columnSpec[T]) string {
 	return strings.Join(columnNames(registry), ", ")
 }

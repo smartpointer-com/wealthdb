@@ -17,7 +17,7 @@ registry, its default columns, and how to fetch its rows. The CLI picks
 columns with `-C` and writes a format; the server reads every column to
 filter and sort, then renders a page. Both take their cells from
 `rowsToTable`, so the same rows print the same strings.
-`TestMCPMatchesCLI` holds that for every view of the six report tools
+`TestMCPMatchesCLI` holds that for every view of the seven report tools
 and for the two dumps, with and without privacy. `status` and
 `snapshots` are tables on the server and prose in the CLI, so they have
 no CLI twin to compare with.
@@ -195,7 +195,7 @@ same parameter specs and column registries the tools use.
 
 ## 7. Testing
 
-- `TestMCPMatchesCLI`: every view of the six report tools and the two
+- `TestMCPMatchesCLI`: every view of the seven report tools and the two
   dumps, CLI csv equals MCP csv, with and without privacy, over seeded
   gold.
 - Protocol tests over the SDK's in-memory transport: initialize, the

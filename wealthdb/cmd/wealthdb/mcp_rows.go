@@ -24,7 +24,7 @@ import (
 var filterColumns = map[string][]string{
 	"source":      {"silver_source"},
 	"account":     {"account", "account_id", "account_nickname", "entity", "entity_id"},
-	"symbol":      {"symbol", "instrument_id", "position_key", "name"},
+	"symbol":      {"symbol", "instrument_id", "position_key", "name", "description"},
 	"category":    {"category", "category_id", "category_primary", "spend_detailed", "spend_primary", "detailed"},
 	"type":        {"type", "type_id", "income_type", "income_type_id", "income_primary", "income_primary_id"},
 	"kind":        {"kind"},
@@ -239,10 +239,19 @@ func (l columnLookup) resolve(name string, preferOutCcy bool) (int, string, erro
 	if err != nil || !preferOutCcy {
 		return i, note, err
 	}
-	if twin := l.byName(l.cols[i].name + "_outccy"); twin >= 0 {
+	if twin := l.byName(outCcyTwinName(l.cols[i].name)); twin >= 0 {
 		return twin, l.note(name, twin, true), nil
 	}
 	return i, note, nil
+}
+
+// outCcyTwinName is the name of a money column's output-currency twin:
+// <name>_outccy, and value for market_value, as on holdings.
+func outCcyTwinName(name string) string {
+	if name == "market_value" {
+		return "value"
+	}
+	return name + "_outccy"
 }
 
 // currencySuffixed splits a name that ends in a currency code.
@@ -259,9 +268,10 @@ func (l columnLookup) find(name string) (int, string, error) {
 	}
 	// A name with a currency suffix means a converted column, even when
 	// it is misspelt or names another currency: total_valu_usd is
-	// total_value_<CCY>, never the base-currency total_value. The
+	// total_value_<CCY>, never the base-currency total_value; _pct is
+	// the percentage suffix, not a currency. The
 	// result is in one currency, and the note says which.
-	if m := currencySuffixed.FindStringSubmatch(want); m != nil && ccy != "" {
+	if m := currencySuffixed.FindStringSubmatch(want); m != nil && m[2] != "pct" && ccy != "" {
 		var converted []string
 		for _, c := range l.cols {
 			if strings.HasSuffix(strings.ToLower(c.header), "_"+ccy) {
@@ -295,9 +305,14 @@ func (l columnLookup) find(name string) (int, string, error) {
 			return i, l.note(name, i, true), nil
 		}
 	}
+	// A typo is matched only to a column of its own kind: a name ending
+	// in _pct never lands on a money column.
+	pct := strings.HasSuffix(want, "_pct")
 	candidates := make([]string, 0, 2*len(l.cols))
 	for _, c := range l.cols {
-		candidates = append(candidates, c.name, l.stem(c))
+		if !pct || strings.HasSuffix(strings.ToLower(c.header), "_pct") {
+			candidates = append(candidates, c.name, l.stem(c))
+		}
 	}
 	if guess, ok := nearMiss(want, candidates); ok {
 		for i, c := range l.cols {

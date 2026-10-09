@@ -14,7 +14,7 @@ import (
 // row.
 func TestPositionCostBasisColumns(t *testing.T) {
 	t.Parallel()
-	names := []string{"cost_basis", "cost_basis_ccy", "unrealized_gain", "unrealized",
+	names := []string{"cost_basis", "cost_basis_outccy", "unrealized_gain", "unrealized_gain_outccy",
 		"unrealized_pct", "basis_stamp", "acquisition_date", "accrued_interest", "clean_value"}
 	for _, n := range names {
 		if slices.Contains(defaultColumns, n) {
@@ -35,8 +35,8 @@ func TestPositionCostBasisColumns(t *testing.T) {
 		AcquisitionDate: s("2021-03-04"), AccruedInterest: s("12"), CleanValue: s("900"),
 	}
 	for name, want := range map[string]string{
-		"cost_basis": "600.00", "cost_basis_ccy": "300.00", "unrealized_gain": "300.00",
-		"unrealized": "150.00", "unrealized_pct": "50.00", "basis_stamp": "stated/lots/included",
+		"cost_basis": "600.00", "cost_basis_outccy": "300.00", "unrealized_gain": "300.00",
+		"unrealized_gain_outccy": "150.00", "unrealized_pct": "50.00", "basis_stamp": "stated/lots/included",
 		"acquisition_date": "2021-03-04", "accrued_interest": "12.00", "clean_value": "900.00",
 	} {
 		c := byName[name]
@@ -47,12 +47,12 @@ func TestPositionCostBasisColumns(t *testing.T) {
 			t.Errorf("%s on a row without a basis = %q, want empty", name, got)
 		}
 	}
-	for name, header := range map[string]string{"cost_basis_ccy": "cost_basis_CHF", "unrealized": "unrealized_CHF"} {
+	for name, header := range map[string]string{"cost_basis_outccy": "cost_basis_CHF", "unrealized_gain_outccy": "unrealized_gain_CHF"} {
 		if got := byName[name].header(); got != header {
 			t.Errorf("%s header = %q, want %q", name, got, header)
 		}
 	}
-	for _, name := range []string{"cost_basis", "cost_basis_ccy", "unrealized_gain", "unrealized", "accrued_interest", "clean_value"} {
+	for _, name := range []string{"cost_basis", "cost_basis_outccy", "unrealized_gain", "unrealized_gain_outccy", "accrued_interest", "clean_value"} {
 		if byName[name].Privacy != PrivacyMoney {
 			t.Errorf("%s privacy = %v, want money", name, byName[name].Privacy)
 		}

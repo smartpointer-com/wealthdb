@@ -84,8 +84,8 @@ units, bonds, gold and coins. A private fund, the SPV and the home are
 valued by marks and have none. A
 buy adds a lot at its cost, with the trading fee where there is one.
 A sale relieves the oldest lots first and writes one realized lot per
-piece it relieves. A taxable account at a US broker states its sales
-on a Form 1099-B, without the gain. The `aubervane` mandate and the
+piece it relieves. A taxable account states its sales on a Form
+1099-B, without the gain. The `aubervane` mandate and the
 tax-advantaged accounts state them on a statement, with the gain.
 
 The in-kind exit writes two rows into the equity-transfer ledger. Two

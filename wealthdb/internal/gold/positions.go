@@ -39,9 +39,11 @@ type PositionRow struct {
 	ValueOutCcy *string
 	// The cost basis the source states (gold's book_value), in the
 	// position's currency and converted like ValueOutCcy, with the
-	// figures derived from it (migration 0116, docs/GAINS.md). All nil
-	// on a cash row and wherever the source states no basis, except
-	// CleanValue, which is MarketValue less AccruedInterest.
+	// figures derived from it (migration 0116, docs/GAINS.md). The
+	// basis fields are nil on a cash row and wherever the source states
+	// no basis, and the unrealized gain is nil too on a line no cost
+	// basis describes, such as a mortgage. AccruedInterest is the
+	// source's; CleanValue is MarketValue less it.
 	BookValue        *string
 	BookValueOutCcy  *string
 	AccruedInterest  *string

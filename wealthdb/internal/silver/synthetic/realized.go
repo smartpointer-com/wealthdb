@@ -103,24 +103,17 @@ type pair struct {
 	veh canonical.Vehicle
 }
 
-// instrumentPairs reads each instrument's pair in its latest version,
-// through the same guard as a position's.
+// instrumentPairs is each instrument's pair in its latest version, read
+// through readInstruments, the reader the snapshots use.
 func (c *Connection) instrumentPairs(ctx context.Context) (map[string]pair, error) {
-	rows, err := c.db.QueryContext(ctx, `
-SELECT instrument_id, asset_class, vehicle FROM instruments ORDER BY instrument_id, valid_from`)
-	if err != nil {
-		return nil, fmt.Errorf("synthetic instrument pairs: %w", err)
+	d := &dimensions{instruments: map[string][]instrumentVersion{}}
+	if err := c.readInstruments(ctx, d); err != nil {
+		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]pair{}
-	for rows.Next() {
-		var id, assetClass, vehicle string
-		if err := rows.Scan(&id, &assetClass, &vehicle); err != nil {
-			return nil, err
-		}
-		var ignored annotations
-		ac, veh := taxonomyPair(assetClass, vehicle, &ignored)
-		out[id] = pair{ac, veh}
+	out := make(map[string]pair, len(d.instruments))
+	for id, versions := range d.instruments {
+		latest := versions[len(versions)-1].change
+		out[id] = pair{latest.AssetClass, latest.Vehicle}
 	}
-	return out, rows.Err()
+	return out, nil
 }

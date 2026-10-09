@@ -84,10 +84,11 @@ spending, income, cash flow) read.
   are out of scope for v1 — gold operates on whatever each silver
   carries. These feeds are planned future work and will arrive via
   their own ingest path independent of any bank silver. See §13.8.
-- **Realized P&L, performance attribution, a lot engine.** No command
-  computes them. Gold carries the cost basis, open lots and realized
-  lots each source states (§7.4). A source that states none has no
-  basis until a lot engine rebuilds one (§13.4).
+- **Performance attribution, a lot engine.** No command computes
+  them. Gold carries the cost basis, open lots and realized lots each
+  source states (§7.4), and `wealthdb gains` reads them as stated
+  (docs/GAINS.md). A source that states none has no basis until a lot
+  engine rebuilds one (§13.4).
 - **Cross-silver instrument deduplication.** Two silvers may hold the
   "same" equity under different `instrument_external_id`s; gold keeps
   them separate at the row level. `instruments.isin` is the join key
@@ -226,8 +227,9 @@ and the value passes through unchanged.
 
 The cost basis columns are opt-in through `-C`: `cost_basis`,
 `unrealized_gain`, `unrealized_pct`, `basis_stamp`, `acquisition_date`,
-`accrued_interest`, `clean_value`, and the converted `cost_basis_<CCY>`
-and `unrealized_<CCY>`. docs/GAINS.md defines them.
+`accrued_interest`, `clean_value`, and the converted `cost_basis_outccy`
+and `unrealized_gain_outccy` (headers `cost_basis_<CCY>` and
+`unrealized_gain_<CCY>`). docs/GAINS.md defines them.
 
 Internally: for each silver source, find the latest `snapshot_at` ≤
 `--as-of` by querying `MAX(snapshot_at)` on `positions` /
@@ -1945,8 +1947,7 @@ tax year, the primary rows count each sale once: the adapter ranks
 its own document kinds and marks the best kind present
 (`silver.MarkPrimary`). A tax year's stated result is therefore
 `SUM(realized_gain_loss) WHERE is_primary`. Where a document prints
-no gain, the column is NULL and the gain is `proceeds − book_value +
-wash_sale_disallowed`.
+no gain, the column is NULL; docs/GAINS.md §2 derives one.
 
 The readers of all three, `holdings positions`' cost basis columns and
 `wealthdb gains`, are defined in docs/GAINS.md.
@@ -2942,19 +2943,24 @@ SPENDING.md and INCOME.md and does not repeat what they own.
 
 ### 10.13 Gains reports
 
-Migration 0116 adds the gains macros over what 0115 loads, and
-re-issues `report_positions` and `report_cash` with the cost basis
-columns; their earlier columns are unchanged. Shared pieces:
-`fx_rates_to(ccy)` and `fx_amount` (one conversion path, the order
-every single-currency report applies), `positions_at(instants)` (the
-point-in-time rule of §10.1 at several instants at once),
-`gains_position_lines`, `realized_lots_in` (the one place the realized
-gain formula lives) and `gains_events` (sells, in-kind moves and
-corporate actions). The readers are
-`report_gains_buckets(from, to, ccy, period, grain)`,
+Migration 0116 holds the gains macros over what 0115 loads, and gives
+`report_positions` and `report_cash` the cost basis columns after
+their others. Shared pieces:
+
+- `fx_rates_to(ccy)` and `fx_amount`: one conversion path, in the
+  order every single-currency report applies;
+- `positions_at(instants)`: the point-in-time rule of §10.1 at several
+  instants at once, and `gains_position_lines` over it;
+- `realized_lots_in`: the one place the realized-gain formula lives;
+- `gains_events`: sells, in-kind moves and corporate actions;
+- `gains_windows`: one row per bucket, account and instrument, which
+  every gains report sums, so the grains and the positions view
+  reconcile by construction.
+
+The readers are `report_gains_buckets(from, to, ccy, period, grain)`,
 `report_gains_positions`, `report_gains_realized`, `report_lots` and
 `report_gains_coverage`. docs/GAINS.md defines every figure they
-return. The multi-currency twins for the dashboards are not built yet.
+return. They are single-currency; the dashboards have no gains views.
 
 ## 11. Repository layout
 
@@ -2967,7 +2973,7 @@ wealthdb/
 ├── wealthdb-test                   — thin alias: `wealthdb-go test ...` (§12.5)
 ├── go.mod / go.sum
 ├── docs/
-│   ├── DESIGN.md · RETURNS-NOTES.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
+│   ├── DESIGN.md · RETURNS-NOTES.md · GAINS.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
 │   └── adapters/                   — per-bank adapter design (amex, carta, chase, cointracking, plaid, schwab, swissquote, synthetic, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand

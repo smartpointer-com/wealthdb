@@ -108,27 +108,21 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PositionRow) string { return formatCents(r.ValueOutCcy) }},
 		// The cost basis the source states (gold's book_value) and what
-		// follows from it, defined in docs/GAINS.md. Blank on a cash
-		// row and wherever the source states no basis; basis_stamp says
-		// which notion of basis the figure is.
-		{Name: "cost_basis", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PositionRow) string { return formatCents(r.BookValue) }},
-		{Name: "cost_basis_ccy", Header: "cost_basis_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PositionRow) string { return formatCents(r.BookValueOutCcy) }},
-		{Name: "unrealized_gain", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PositionRow) string { return formatCents(r.UnrealizedGain) }},
-		{Name: "unrealized", Header: "unrealized_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PositionRow) string { return formatCents(r.UnrealizedOutCcy) }},
+		// follows from it, defined in docs/GAINS.md. Blank on a cash row
+		// and wherever the source states no basis; the unrealized gain
+		// is blank too on a line no cost basis describes, such as a
+		// mortgage. basis_stamp says which notion of basis the figure
+		// is.
+		moneyCol("cost_basis", "", func(r gold.PositionRow) *string { return r.BookValue }),
+		outCcyTwin("cost_basis", outCcy, func(r gold.PositionRow) *string { return r.BookValueOutCcy }),
+		moneyCol("unrealized_gain", "", func(r gold.PositionRow) *string { return r.UnrealizedGain }),
+		outCcyTwin("unrealized_gain", outCcy, func(r gold.PositionRow) *string { return r.UnrealizedOutCcy }),
 		{Name: "unrealized_pct", Align: output.AlignRight,
 			Extract: func(r gold.PositionRow) string { return formatPctOrBlank(r.UnrealizedRatio) }},
-		{Name: "basis_stamp", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.BasisStamp) }},
-		{Name: "acquisition_date", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.AcquisitionDate) }},
-		{Name: "accrued_interest", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PositionRow) string { return formatCents(r.AccruedInterest) }},
-		{Name: "clean_value", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PositionRow) string { return formatCents(r.CleanValue) }},
+		textCol("basis_stamp", func(r gold.PositionRow) *string { return r.BasisStamp }),
+		textCol("acquisition_date", func(r gold.PositionRow) *string { return r.AcquisitionDate }),
+		moneyCol("accrued_interest", "", func(r gold.PositionRow) *string { return r.AccruedInterest }),
+		moneyCol("clean_value", "", func(r gold.PositionRow) *string { return r.CleanValue }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }},
 		{Name: "account_nickname", Align: output.AlignLeft,
@@ -190,11 +184,11 @@ Flags:
 Available columns:
   ` + joinColumnNames(registry) + `
 
-  (The 'value', 'cost_basis_ccy' and 'unrealized' columns render as
-   'value_<CCY>', 'cost_basis_<CCY>' and 'unrealized_<CCY>', reflecting
-   your -x/--currency choice.)
+  (The 'value', 'cost_basis_outccy' and 'unrealized_gain_outccy' columns
+   are in the -x/--currency output currency and print as 'value_<CCY>',
+   'cost_basis_<CCY>' and 'unrealized_gain_<CCY>'.)
 
-The cost basis columns are opt-in, e.g. -C +cost_basis,unrealized,basis_stamp.
+The cost basis columns are opt-in, e.g. -C +cost_basis,unrealized_gain,basis_stamp.
 unrealized_gain is the clean value (market value less accrued interest)
 less the cost basis; 'wealthdb gains' reads it over a window.
 

@@ -254,12 +254,14 @@ const qualityHelp = `The returns quality column gives the reason for every n/a a
 Other tags name their reason the same way.
 
 The gains quality column names each way a figure can be incomplete:
-- sells_without_documents=N: N sales have no tax document or statement lot, so realized is understated.
-- lots_without_gain=N: N realized lots state neither a gain nor a cost basis.
+- sells_without_documents=N: N sales have no tax document or statement lot, so realized misses them.
+- lots_without_gain=N: N realized lots state no gain, and not both proceeds and a cost basis.
 - undated_lots=N: N lots state only a tax year and count at its last day.
 - unmatched_lots=N: N lots name an instrument the account never held in a snapshot.
 - in_kind_moves=N: N securities moved in or out of the account without a sale; each brings or takes its whole unrealized gain.
 - corporate_actions=N: N mergers, splits or spin-offs turned one holding into another without a realized lot.
+- basis_changed=N: N holdings began or stopped carrying a cost basis inside the period; their change is left out.
+- accounts_unobserved=N: N accounts are missing from one end of the period while their source has a snapshot there; the snapshot left them out, or they closed.
 - paid_in_basis: a private holding's cost basis is the capital paid in; cash paid back is not realized gain.
 - onboarded_in_window=<source>: the source's data begins inside the period, so its start value is zero.
 - fx_missing=N: N figures had no exchange rate and are left out.`
