@@ -422,7 +422,7 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 
 Parses one or more bronze dump directories (as produced by
 `download.py`) and inserts them into a SQLite silver database.
-The schema is defined in `migrations/` (0001–0006); the loader
+The schema is defined in `migrations/` (0001–0007); the loader
 applies any pending migrations on startup before loading data, so
 the silver database is always at the latest schema version.
 
@@ -581,8 +581,10 @@ means the source states no figure. The `payload` keeps the full row.
   "Total value CHF" and "P&L Nominal CHF". Their difference is the
   position's CHF cost at the FX rates of its purchases.
 - Statement rows leave the two CHF columns NULL. The statement states
-  no P&L. Its CHF valuation includes a bond's accrued interest and
-  stays in `payload`.
+  no P&L. Its CHF valuation stays in `payload`.
+- `accrued_interest_chf` is a statement bond's accrued interest, the
+  CHF amount printed on its own line under the bond's row, on top of
+  the row's valuation. NULL on every other row.
 
 `transactions` takes these from the CSV export, on every row type:
 

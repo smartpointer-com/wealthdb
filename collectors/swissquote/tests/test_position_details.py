@@ -61,7 +61,7 @@ class MigrationSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "silver.db"
             conn = _apply_all_migrations(db_path)
-            self.assertEqual(load.current_schema_version(conn), 6)
+            self.assertEqual(load.current_schema_version(conn), 7)
             cols = [r["name"] for r in conn.execute(
                 "PRAGMA table_info(positions);")]
             self.assertIn("name", cols)

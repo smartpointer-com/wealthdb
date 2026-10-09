@@ -23,8 +23,7 @@
 --                             position's cost in CHF at the FX rates of
 --                             its purchases.
 --   Statement rows leave both CHF columns NULL. The statement states
---   no P&L, and its CHF valuation includes a bond's accrued interest;
---   that valuation stays in payload.
+--   no P&L; its CHF valuation stays in payload.
 --
 -- transactions (the CSV export's cells, on every row type)
 --   quantity          "Quantity".

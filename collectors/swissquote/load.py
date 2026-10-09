@@ -465,6 +465,11 @@ _PP_SECTION_RE = re.compile(
 )
 
 
+# A line holding nothing but one Swiss-locale amount: a bond's accrued
+# interest under its row.
+_PP_LONE_NUMBER_RE = re.compile(r"^-?[\d']+\.\d+$")
+
+
 def _pp_to_number(s: str) -> float:
     """Parse a Swiss-locale number like "1'234'567.89" or "106.150%"."""
     return float(s.replace("'", "").rstrip("%").strip())
@@ -555,10 +560,21 @@ def _pp_parse_asset_allocation(layout_text: str, pdf_path: Path) -> list[dict]:
     out: list[dict] = []
     current_class: str | None = None
     current_currency: str | None = None
+    # A bond's row is followed by a line holding one figure, its accrued
+    # interest, right under the valuation column ("Valuation in CHF incl.
+    # accrued interests"): a CHF amount on top of the row's valuation,
+    # which is the clean quantity × price. The section total adds the
+    # two.
+    accrual_due: dict | None = None
     for raw_line in layout_text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
+        if accrual_due is not None:
+            due, accrual_due = accrual_due, None
+            if _PP_LONE_NUMBER_RE.match(line):
+                due["accrued_interest_chf"] = _pp_to_number(line)
+                continue
 
         # Section header? Sets context for following rows.
         m = _PP_SECTION_RE.match(line)
@@ -605,10 +621,8 @@ def _pp_parse_asset_allocation(layout_text: str, pdf_path: Path) -> list[dict]:
         name = " ".join(before_tokens[1:]).strip()
 
         # The tail has 5 tokens: avg, market, date, valuation, %.
-        # Bonds also carry an accrued-interests value on a separate
-        # line (not on this one in layout mode) — we don't capture
-        # it here; the valuation column already includes it per the
-        # column-header text "Valuation in CHF incl. accrued interests".
+        # A bond's accrued interest follows on a line of its own
+        # (accrual_due, above).
         tail_tokens = after.split()
         if len(tail_tokens) < 5:
             raise SystemExit(
@@ -648,6 +662,8 @@ def _pp_parse_asset_allocation(layout_text: str, pdf_path: Path) -> list[dict]:
             "valuation_chf": _pp_to_number(valuation_raw),
             "account_pct": _pp_to_number(pct_raw),
         })
+        if percent:
+            accrual_due = out[-1]
 
     return out
 
@@ -715,17 +731,18 @@ def load_portfolio_performance_docs(
                 # price_quote is a column only; the payload keeps
                 # the parsed row without it.
                 fields = {k: v for k, v in pos.items() if k != "price_quote"}
-                # The statement states no P&L, and its CHF valuation
-                # includes accrued interest, so the CHF columns stay
-                # NULL.
+                # The statement states no P&L, so the CHF P&L columns
+                # stay NULL; a bond's accrued interest is its own column.
                 conn.execute(
                     "INSERT INTO positions("
                     " snapshot_at, account_external_id, symbol, currency,"
-                    " name, isin, average_cost, price_quote, payload, source) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    " name, isin, average_cost, price_quote,"
+                    " accrued_interest_chf, payload, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     (snapshot_at, account_id, symbol, currency,
                      pos["name"], pos["isin"], pos["avg_price"],
-                     pos["price_quote"], canonical_json(fields), source_tag),
+                     pos["price_quote"], pos.get("accrued_interest_chf"),
+                     canonical_json(fields), source_tag),
                 )
             conn.execute("COMMIT;")
             loaded += 1

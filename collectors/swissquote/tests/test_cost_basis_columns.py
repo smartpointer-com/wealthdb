@@ -257,6 +257,13 @@ class PositionColumnsTests(_DbCase):
         # fields.
         self.assertNotIn("price_quote", json.loads(row["payload"]))
 
+    def test_statement_bond_reads_its_accrued_interest(self):
+        rows = dict(self.conn.execute(
+            "SELECT isin, accrued_interest_chf FROM positions "
+            "WHERE source = 'pp:doc-0001';").fetchall())
+        self.assertEqual(rows["XX0000000001"], 25.0)
+        self.assertIsNone(rows["XX0000000003"])
+
     def test_statement_fund_row_per_unit(self):
         row = self.conn.execute(
             "SELECT average_cost, price_quote FROM positions "
@@ -299,7 +306,11 @@ class BackfillTests(_DbCase):
         self.load_fixtures()
         old = self._old_db()
         try:
-            load.apply_migrations(old, MIGRATIONS)
+            to_0006 = self.tmp / "migrations-0006"
+            to_0006.mkdir()
+            for f in MIGRATIONS.glob("000[1-6]_*.sql"):
+                shutil.copy(f, to_0006 / f.name)
+            load.apply_migrations(old, to_0006)
             self.assertEqual(load.current_schema_version(old), 6)
             for table, key, cols in (
                 ("transactions", "occurred_at", TX_COLUMNS),
@@ -322,6 +333,29 @@ class BackfillTests(_DbCase):
         finally:
             old.close()
 
+
+
+class AccruedMigrationTests(_DbCase):
+    """Migration 0007 drops the statement rows so the next load parses
+    every statement again; live rows stay."""
+
+    def test_statement_rows_are_parsed_again(self):
+        self.load_fixtures()
+        before = self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE source = 'live';").fetchone()[0]
+        self.conn.executescript(
+            (MIGRATIONS / "0007_accrued_interest.sql").read_text()
+            .replace("ALTER TABLE positions ADD COLUMN accrued_interest_chf REAL;", "")
+            .replace("VALUES (7,", "VALUES (70,"))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE source LIKE 'pp:%';").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE source = 'live';").fetchone()[0], before)
+        with mock.patch.object(load, "parse_portfolio_performance", _statement):
+            load.load_portfolio_performance_docs(self.conn, self.tmp)
+        self.assertEqual(self.conn.execute(
+            "SELECT accrued_interest_chf FROM positions WHERE source = 'pp:doc-0001'"
+            " AND isin = 'XX0000000001';").fetchone()[0], 25.0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,8 +26,8 @@ import load  # noqa: E402
 # pypdf's layout-mode extraction produced on a real Portfolio
 # Performance PDF: section header line, column-header line, one
 # blank/sub-header line for bonds ("incl. accrued interests"), then
-# one row per position. Bond accrued-interest figures sit on their
-# own line below the row and are tolerated (skipped) by the parser.
+# one row per position. A bond's accrued interest sits on its own line
+# below the row, on top of the row's clean valuation.
 SYNTHETIC_ASSET_ALLOCATION = """\
  2.   Asset allocation
 
@@ -102,6 +102,19 @@ class PortfolioPerformanceParserTests(unittest.TestCase):
         text = SYNTHETIC_ASSET_ALLOCATION.replace("101.000%", "101.000")
         with self.assertRaises(SystemExit):
             load._pp_parse_asset_allocation(text, Path("synthetic.pdf"))
+
+    def test_a_bond_reads_its_accrued_interest(self):
+        rows = {r["isin"]: r for r in load._pp_parse_asset_allocation(
+            SYNTHETIC_ASSET_ALLOCATION, Path("synthetic.pdf"))}
+        self.assertEqual(rows["XX0000000001"]["accrued_interest_chf"], 500.0)
+        self.assertNotIn("accrued_interest_chf", rows["XX0000000002"])
+
+    def test_a_bond_without_an_accrual_line_reads_none(self):
+        text = SYNTHETIC_ASSET_ALLOCATION.replace(
+            "\n                                                                                                                                                                       500.00\n", "\n")
+        rows = {r["isin"]: r for r in load._pp_parse_asset_allocation(text, Path("synthetic.pdf"))}
+        self.assertNotIn("accrued_interest_chf", rows["XX0000000001"])
+        self.assertEqual(len(rows), 4)
 
     def test_cash_rows_excluded(self):
         rows = load._pp_parse_asset_allocation(
