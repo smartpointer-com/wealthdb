@@ -19,8 +19,12 @@
 //     hasColumn-gated SELECT and the silver value takes
 //     precedence.
 //
-//   - Positions carry actual per-fund CHF amounts (silver.
-//     positions.amount). No derivation needed.
+//   - Positions carry the per-fund CHF market value (silver
+//     positions.market_value_chf). The book value is quantity ×
+//     acquisition_price, VIAC's average cost per unit in CHF,
+//     stamped derived / average / none (basis.go,
+//     docs/DESIGN.md §7.4). VIAC states no lots and no
+//     acquisition date.
 //
 //   - Transactions are already canonicalised at silver: the
 //     `kind` column carries 'buy' / 'sell' / 'fee' / 'interest'

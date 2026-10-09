@@ -107,6 +107,17 @@ Position columns pass through:
   `payload.source_asset_class` and `payload.source_vehicle`.
 - `quantity`, `market_value`, `book_value` and `accrued_interest` are
   optional decimals. An unparseable one is absent.
+- A `book_value` follows one convention, which every writer of the
+  kind keeps. The adapter stamps it by the pair (DESIGN.md §7.4):
+  - a holding: its average cost, with no purchase fee:
+    `stated`, `average`, `none`;
+  - a `private_equity` `fund` or `spv`: the capital paid in, gross of
+    the cash paid back: `stated`, `paid_in`, `none`;
+  - `crypto`: its average cost, with the purchase fee left out and
+    booked as a `fee` transaction of its own: `stated`, `average`,
+    `excluded`.
+
+  A row without a book value carries no stamp.
 - `acquisition_date` is `YYYY-MM-DD`. It becomes that day's UTC
   midnight. An unparseable one is absent.
 

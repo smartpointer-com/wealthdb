@@ -66,7 +66,7 @@ trade lands on the instrument its holding made.
 | `item_states` | none | Plaid's update times, kept for audit. |
 | `accounts` | `accounts`, `cash_balances`, `positions` | By kind — see §4 and §5. |
 | `securities` | `instruments` | Through the holdings and trades that name them. |
-| `holdings` | `positions`, `cash_balances` | Cash holdings are a balance. |
+| `holdings` | `positions`, `position_lots`, `cash_balances` | Cash holdings are a balance. |
 | `liabilities` | `cash_balances` | A card's statement closes. |
 | `transactions` | `transactions` | Cash and card accounts only. |
 | `investment_transactions` | `transactions` | Investment accounts only. |
@@ -154,7 +154,20 @@ say what such an account holds.
   `book_value` its `cost_basis` (a total). Two holdings of one
   instrument in one account are one position, summed; its payload
   lists both. The book value is left out when a holding states no
-  cost. Tax lots stay in the payload, and `acquisition_date` is unset.
+  cost. Its stamp is `stated`, `unknown`, `unknown`: Plaid passes on
+  the institution's figure and says neither how it was computed nor
+  whether fees are in it (DESIGN.md §7.4).
+- **Tax lots.** Each element of a holding's `tax_lots` is one open lot
+  of its position. The lot keys are the order of the lots, `1`, `2`
+  and so on, across the holdings of a summed position. A lot carries
+  Plaid's `quantity` (a short lot's is negative), its `cost_basis` as
+  a stated book value, its `current_value` as its market value, and
+  the day of its `original_purchase_datetime`. Plaid states no term
+  and no coverage. The element is the lot's payload. The position's
+  `acquisition_date` is its earliest lot's. A position has no lots
+  when one of its holdings states none, or when its book value is pro
+  rata to a vested quantity (below): Plaid's lots are the whole
+  holding's, and do not say which have vested.
 - **Vesting.** Shares not yet vested are not the holder's. Where Plaid
   states a vested quantity below the whole, the position holds the
   vested quantity. Its value is Plaid's vested value, else the price

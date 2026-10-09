@@ -815,9 +815,11 @@ class Simulation:
         return name_on(self.inputs.instruments[iid], day).upper()
 
     def _mark_fund(self, day, f):
+        """Value the fund at its NAV. Its book is the capital called, gross
+        of the cash it paid back: the private-market basis of
+        wealthdb/docs/DESIGN.md §7.4."""
         fund = self._fund
-        self.book.set_mark(f["account"], f["instrument"], fund["nav"], day,
-                           book=fund["called"] - fund["distributed"])
+        self.book.set_mark(f["account"], f["instrument"], fund["nav"], day, book=fund["called"])
 
     def _spv_exit(self, day, s, ex):
         """The SPV pays out in listed shares that land in the brokerage:

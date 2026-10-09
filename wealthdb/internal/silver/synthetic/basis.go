@@ -2,13 +2,20 @@ package synthetic
 
 import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 
-// basisFor stamps a demo book value. The generator books every holding
-// at its average cost, with no fees, and a private fund or vehicle at
-// the capital paid in (docs/DESIGN.md §7.4).
+// basisFor stamps a book value by the convention every synthetic writer
+// keeps (docs/adapters/synthetic.md §5, docs/DESIGN.md §7.4): a holding
+// at its average cost, a private fund or vehicle at the capital paid
+// in. Only crypto pays a purchase fee, booked as a fee transaction of
+// its own, so a crypto book leaves it out.
 func basisFor(ac canonical.AssetClass, veh canonical.Vehicle) canonical.Basis {
-	m := canonical.BasisMethodAverage
-	if ac == canonical.AssetClassPrivateEquity && (veh == canonical.VehicleFund || veh == canonical.VehicleSPV) {
-		m = canonical.BasisMethodPaidIn
+	b := canonical.Basis{
+		Origin: canonical.BasisStated, Method: canonical.BasisMethodAverage, Fees: canonical.BasisFeesNone,
 	}
-	return canonical.Basis{Origin: canonical.BasisStated, Method: m, Fees: canonical.BasisFeesNone}
+	switch {
+	case ac == canonical.AssetClassPrivateEquity && (veh == canonical.VehicleFund || veh == canonical.VehicleSPV):
+		b.Method = canonical.BasisMethodPaidIn
+	case ac == canonical.AssetClassCrypto:
+		b.Fees = canonical.BasisFeesExcluded
+	}
+	return b
 }

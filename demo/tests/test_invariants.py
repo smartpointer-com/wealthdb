@@ -229,7 +229,8 @@ class TestPrivateMarkets(Built):
         """A call adds its amount and a distribution takes its amount out,
         so no call or distribution day books a gain. A mark day values the
         called capital at the mark's multiple, less what came back. The
-        book value is always called less distributed."""
+        book value is always the capital called: a cash distribution does
+        not reduce it."""
         f = self.inputs.spec["private"]["fund"]
         src = next(s["id"] for s in self.inputs.spec["sources"]
                    if any(a["id"] == f["account"] for a in s["accounts"]))
@@ -248,7 +249,7 @@ class TestPrivateMarkets(Built):
             distributed += max(-moved, Decimal(0))
             want = called * marks[day] - distributed if day in marks else before + moved
             self.assertEqual(value[day], want, day)
-            self.assertEqual(Decimal(rows[day]["book_value"]), called - distributed, day)
+            self.assertEqual(Decimal(rows[day]["book_value"]), called, day)
             checked += 1
         self.assertGreaterEqual(checked, len(f["calls"]) + len(f["marks"]) - 2)
 

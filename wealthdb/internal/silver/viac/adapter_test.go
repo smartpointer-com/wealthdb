@@ -134,6 +134,12 @@ func TestSnapshotsTaxWrapperMapping(t *testing.T) {
 	if p.BookValue == nil || p.BookValue.String() != "1200" {
 		t.Errorf("book_value = %v, want 1200", p.BookValue)
 	}
+	wantBasis := canonical.Basis{
+		Origin: canonical.BasisDerived, Method: canonical.BasisMethodAverage, Fees: canonical.BasisFeesNone,
+	}
+	if p.Basis != wantBasis {
+		t.Errorf("basis = %+v, want %+v", p.Basis, wantBasis)
+	}
 
 	// Cash balance.
 	if len(batch.CashBalances) != 1 {

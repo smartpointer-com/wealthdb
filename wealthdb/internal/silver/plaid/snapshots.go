@@ -28,6 +28,7 @@ type holding struct {
 	price                       sql.NullString
 	vestedQuantity, vestedValue sql.NullString
 	currency, payload           string
+	lots                        []taxLot
 }
 
 // owned is the part of a holding its holder owns, and the quantity not yet
@@ -71,9 +72,9 @@ func (h holding) owned() (quantity, value, cost, unvested *canonical.Decimal) {
 //   - a mortgage: a negative (real estate, mortgage) position, as the
 //     outstanding principal;
 //   - an investment account: a position per instrument held, vested shares
-//     only, and a CURRENT balance per currency for the cash among its
-//     holdings. Plaid's balance of such an account is its total value, so
-//     it is never read as cash.
+//     only, with the tax lots Plaid states for it, and a CURRENT balance
+//     per currency for the cash among its holdings. Plaid's balance of
+//     such an account is its total value, so it is never read as cash.
 //
 // Gold reads a source's current state from its latest instant, so every
 // run restates every account. Where Plaid states no balance for an account
@@ -408,14 +409,15 @@ type position struct {
 	accountID, key, currency             string
 	sec                                  security
 	quantity, value, costBasis, unvested *canonical.Decimal
-	costKnown                            bool
+	costKnown, lotsKnown                 bool
+	lots                                 []taxLot
 	payloads                             []json.RawMessage
 }
 
 // appendHoldings adds the positions of the run's investment accounts, and
 // one CURRENT balance per account and currency for the cash among them. A
-// position holds the vested part of its holdings (holding.owned). It
-// returns the cash keys it stated.
+// position holds the vested part of its holdings (holding.owned), and the
+// tax lots they state (positionLots). It returns the cash keys it stated.
 func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]account,
 	holdings []holding, secs map[string]security) []cashKey {
 	positions := map[[2]string]*position{}
@@ -453,7 +455,8 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 		k := [2]string{a.id, instrumentKey(sec)}
 		p, ok := positions[k]
 		if !ok {
-			p = &position{accountID: a.id, key: k[1], currency: currency, sec: sec, costKnown: true}
+			p = &position{accountID: a.id, key: k[1], currency: currency, sec: sec,
+				costKnown: true, lotsKnown: true}
 			positions[k] = p
 			order = append(order, k)
 		}
@@ -463,6 +466,8 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 		p.unvested = addPtr(p.unvested, unvested)
 		p.costKnown = p.costKnown && cost != nil
 		p.costBasis = addPtr(p.costBasis, cost)
+		p.lotsKnown = p.lotsKnown && len(h.lots) > 0
+		p.lots = append(p.lots, h.lots...)
 		p.payloads = append(p.payloads, json.RawMessage(h.payload))
 	}
 
@@ -500,6 +505,16 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 			Payload:              silver.PayloadWith(string(payload), extra),
 		}
 		pos.SetBookValue(book, holdingBasis)
+		// Plaid states the lots of the whole holding, unvested shares
+		// included, and does not say which lots have vested. A position
+		// that holds the vested part at a cost pro rata would not be the
+		// sum of those lots, so it carries none. Nor does one whose
+		// holdings do not all state their lots.
+		if p.lotsKnown && p.unvested == nil {
+			lots := positionLots(pos, p.lots)
+			pos.AcquisitionDate = earliestAcquisition(lots)
+			b.PositionLots = append(b.PositionLots, lots...)
+		}
 		b.Positions = append(b.Positions, pos)
 		if !seenInstrument[key] {
 			seenInstrument[key] = true
@@ -805,7 +820,8 @@ func (c *Connection) latestAccounts(ctx context.Context) (map[string]account, er
 func (c *Connection) holdingsAt(ctx context.Context, t int64) ([]holding, error) {
 	rows, err := c.db.QueryContext(ctx, `
 SELECT account_id, security_id, quantity, institution_value, cost_basis,
-       institution_price, vested_quantity, vested_value, COALESCE(currency, ''), payload
+       institution_price, vested_quantity, vested_value, COALESCE(currency, ''),
+       tax_lots, payload
   FROM holdings WHERE snapshot_at = ? ORDER BY account_id, security_id, seq`, t)
 	if err != nil {
 		return nil, fmt.Errorf("plaid holdingsAt: %w", err)
@@ -813,11 +829,17 @@ SELECT account_id, security_id, quantity, institution_value, cost_basis,
 	defer rows.Close()
 	var out []holding
 	for rows.Next() {
-		var h holding
+		var (
+			h    holding
+			lots string
+		)
 		if err := rows.Scan(&h.accountID, &h.securityID, &h.quantity, &h.value,
 			&h.costBasis, &h.price, &h.vestedQuantity, &h.vestedValue, &h.currency,
-			&h.payload); err != nil {
+			&lots, &h.payload); err != nil {
 			return nil, err
+		}
+		if h.lots, err = parseTaxLots(lots); err != nil {
+			return nil, fmt.Errorf("plaid holdingsAt: holding %s of %s: %w", h.securityID, h.accountID, err)
 		}
 		out = append(out, h)
 	}
