@@ -134,12 +134,13 @@ Claude Desktop sends each result to Anthropic's hosted model. Put
 
 ## What a model can ask
 
-Eleven tools, every parameter optional:
+Twelve tools, every parameter optional:
 
 | Tool | Answers |
 | --- | --- |
 | `holdings` | what is held, where, and what it is worth, on a date |
 | `returns` | how investments performed, as time- and money-weighted returns |
+| `gains` | what was gained or lost, realized and unrealized |
 | `transactions` | the individual booked lines over a window |
 | `spending` | what was spent, on what |
 | `income` | what was received, from whom |

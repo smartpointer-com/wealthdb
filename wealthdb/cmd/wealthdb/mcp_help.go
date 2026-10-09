@@ -28,6 +28,7 @@ const instructionsBody = `wealthdb holds a household's complete financial pictur
 Pick the tool by the question:
 - what is held, where, and what it is worth (today or on a date); net worth; one account or one institution -> holdings
 - how investments performed, as a return % -> returns
+- what was gained or lost (P&L), realized or unrealized; a year's realized gains; a holding's cost basis -> gains
 - the individual booked lines (a trade, a deposit, a transfer, the largest transactions) -> transactions; totals of dividends, interest, salary or spending are income and spending
 - what was spent, on what -> spending
 - what was received, from whom -> income
@@ -41,7 +42,7 @@ Conventions:
 - One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets.
 - Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. Results are capped; the last line says how to get more or narrow.
 - Money columns are plain decimals in the currency named in the header (value_CHF). A blank cell means no value, not zero. In line views money leaving is negative; sort "-value" puts the largest amounts first whatever their sign.
-- In returns, read the quality column: an n/a always has its reason there. Returns are not additive across views.
+- In returns and gains, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
 - A holding before a source's first snapshot is missing history, not zero; snapshots shows where data begins.`
 
 const privacyNotice = "This endpoint redacts amounts, quantities, account numbers and the names taken off statements (merchants, payers, narratives); account names, holdings, categories and shares stay visible."
@@ -211,6 +212,8 @@ var toolNotes = map[string]string{
 Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 	"returns": `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views.
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
+	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind.
+Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
 	"transactions": `Money leaving an account is negative. kind is the booked kind: buy, sell, dividend, interest, fee, tax, deposit, withdrawal, purchase, refund, card_payment and others.
 Example: {from: "last month", to: "last month", kind: "dividend"}.`,
 	"spending": `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there.
@@ -227,7 +230,7 @@ Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
 
 const datesHelp = `Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; "today", "yesterday", "last month", "last year" and "3 months ago" also work (English, UTC).
 from snaps to the start of its unit, to and as_of to the end: from="2025", to="2025" is the calendar year; from="2025-06" alone runs to today; to alone runs from the start of the data.
-Defaults: holdings as of today; transactions the past 30 days; spending, income and cashflow the last twelve months; returns since the first snapshot.
+Defaults: holdings as of today; transactions the past 30 days; spending, income, cashflow and gains the last twelve months; returns since the first snapshot.
 Every result header states the dates it used, as ISO dates.`
 
 const qualityHelp = `The returns quality column gives the reason for every n/a and tags every approximation. Common tags:
@@ -248,7 +251,18 @@ const qualityHelp = `The returns quality column gives the reason for every n/a a
 - pre_fx_history: part of the window lies before the exchange-rate history begins.
 - flows_before_inception: money moved before the date the measurement starts; it counts in no window.
 - after_tax: the return is net of the fees and taxes paid.
-Other tags name their reason the same way.`
+Other tags name their reason the same way.
+
+The gains quality column names each way a figure can be incomplete:
+- sells_without_documents=N: N sales have no tax document or statement lot, so realized is understated.
+- lots_without_gain=N: N realized lots state neither a gain nor a cost basis.
+- undated_lots=N: N lots state only a tax year and count at its last day.
+- unmatched_lots=N: N lots name an instrument the account never held in a snapshot.
+- in_kind_moves=N: N securities moved in or out of the account without a sale; each brings or takes its whole unrealized gain.
+- corporate_actions=N: N mergers, splits or spin-offs turned one holding into another without a realized lot.
+- paid_in_basis: a private holding's cost basis is the capital paid in; cash paid back is not realized gain.
+- onboarded_in_window=<source>: the source's data begins inside the period, so its start value is zero.
+- fx_missing=N: N figures had no exchange rate and are left out.`
 
 func (s *mcpServer) privacyHelp() string {
 	if s.privacy {

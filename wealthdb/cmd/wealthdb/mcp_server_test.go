@@ -67,7 +67,7 @@ func TestMCPInitialize(t *testing.T) {
 	}
 }
 
-// TestMCPToolList: eleven tools, every one read-only, idempotent and
+// TestMCPToolList: twelve tools, every one read-only, idempotent and
 // closed-world, none with a required parameter, each view enum the
 // family's own.
 func TestMCPToolList(t *testing.T) {
@@ -104,7 +104,7 @@ func TestMCPToolList(t *testing.T) {
 		}
 	}
 	sort.Strings(names)
-	want := "cashflow,categorizations,describe,holdings,income,resolutions,returns,snapshots,spending,status,transactions"
+	want := "cashflow,categorizations,describe,gains,holdings,income,resolutions,returns,snapshots,spending,status,transactions"
 	if got := strings.Join(names, ","); got != want {
 		t.Errorf("tools = %s, want %s", got, want)
 	}

@@ -72,7 +72,7 @@ func (c goldenCase) fixedColumns() bool {
 func (c goldenCase) cliPrivacy() bool { return c.tool != "resolutions" }
 
 // TestMCPMatchesCLI is the server's contract made executable: for
-// every view of the six report tools and for the two dumps, the
+// every view of the seven report tools and for the two dumps, the
 // server's csv result equals `wealthdb … -f csv -C all` cell for cell,
 // over seeded gold, with and without privacy. The two front-ends share the report runner and rowsToTable,
 // so this holds by construction; the test keeps it holding.
@@ -93,6 +93,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 				"transactions", map[string]any{"from": "2026-05-01", "to": "2026-06-30", "currency": "CHF", "newest_first": true}},
 		)},
 		{setupReturnsGold(t), append(returnsCases(), holdingsCases()...)},
+		{setupGainsGold(t), gainsCases()},
 	}
 	for _, fx := range fixtures {
 		for _, privacy := range []bool{false, true} {

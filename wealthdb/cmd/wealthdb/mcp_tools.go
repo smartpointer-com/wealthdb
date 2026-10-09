@@ -108,7 +108,7 @@ var (
 	accountParam = stringParam("account", "Keep only rows whose account name, id or nickname contains this text (case-insensitive).")
 )
 
-// tools are the server's eleven tools, in the order describe lists them.
+// tools are the server's twelve tools, in the order describe lists them.
 func (s *mcpServer) tools() []toolSpec {
 	return []toolSpec{
 		{
@@ -147,6 +147,27 @@ func (s *mcpServer) tools() []toolSpec {
 				sourceParam, accountParam,
 			),
 			family: returnsFamily,
+		},
+		{
+			name: "gains", title: "Gains",
+			description: "What was gained or lost (P&L) on what is held, realized and unrealized, over a window (default: the last twelve months). " +
+				"view=summary: one row for the whole portfolio with realized, unrealized at the start and the end, the change, gain = realized + change, and the share of value with a cost basis. " +
+				"view=sources, portfolios, accounts: the same per institution, portfolio or account (with its tax wrapper); they add up to the summary. " +
+				"view=positions: per account and holding. view=realized: each realized lot, as the sale's tax document or statement states it. view=lots: the open lots at the window's end. view=coverage: per account, where the figures are blind. " +
+				"Read the quality column: it names every gap, such as sales without a tax document. " +
+				`Example: {view: "realized", from: "2025", to: "2025"}.`,
+			params: s.rowParams(true, true,
+				stringParam("view", "Which rows to return (default summary).", gainsFamily.views...),
+				stringParam("period", "Bucket size for summary, sources, portfolios and accounts (default total: one row for the whole window). monthly, quarterly or annual give a series.", reportPeriodNames...),
+				stringParam("documents", "realized only: primary (default; each sale once) or all (every document's copy of a sale).", "primary", "all"),
+				param{name: "newest_first", kind: paramBoolean, doc: "realized only: newest first (default false: oldest first)."},
+				sourceParam, accountParam,
+				stringParam("symbol", "positions, realized and lots: keep only rows whose symbol or name contains this text."),
+				stringParam("asset_class", "positions only: keep only this asset class (e.g. public_equity, fixed_income, private_equity)."),
+				stringParam("term", "realized only: short or long."),
+				stringParam("tax_wrapper", "accounts and coverage: keep only this tax wrapper (e.g. taxable_joint, roth_ira)."),
+			),
+			family: gainsFamily,
 		},
 		{
 			name: "transactions", title: "Transactions",
@@ -332,6 +353,51 @@ var returnsFamily = &family{
 		}
 		if req.inception != "full" {
 			h = append(h, "inception="+req.inception)
+		}
+		return h
+	},
+}
+
+var gainsFamily = &family{
+	views: gainsViews,
+	carries: map[string][]string{
+		"sources":    {"source"},
+		"portfolios": {"source"},
+		"accounts":   {"source", "account", "tax_wrapper"},
+		"positions":  {"source", "account", "symbol", "asset_class"},
+		"realized":   {"source", "account", "symbol", "term"},
+		"lots":       {"source", "account", "symbol"},
+		"coverage":   {"source", "account", "tax_wrapper"},
+	},
+	principal: byView(map[string]string{
+		"summary": "gain", "sources": "gain", "portfolios": "gain", "accounts": "gain",
+		"positions": "gain", "realized": "gain_ccy", "lots": "unrealized_gain", "coverage": "basis_coverage",
+	}),
+	window:   trailingYear,
+	currency: true,
+	narrow:   "from/to or a filter",
+	prepare: func(a *toolArgs, req *request, _ *[]string) error {
+		// The CLI's refusal: on another view the two would ask a
+		// question it cannot answer.
+		if req.view != "realized" && (a.has("documents") || a.has("newest_first")) {
+			return fmt.Errorf("gains: documents and newest_first belong to view=realized")
+		}
+		req.period = orDefault(a.str("period"), "total")
+		req.allDocuments = a.str("documents") == "all"
+		req.newestFirst = a.flag("newest_first", false)
+		return nil
+	},
+	build: func(_ *config.Config, req request, _ *toolArgs) *report { return gainsReport(req) },
+	header: func(req request) []string {
+		if _, ok := gainsGrains[req.view]; ok {
+			return []string{"period=" + req.period}
+		}
+		var h []string
+		if req.allDocuments {
+			h = append(h, "documents=all")
+		}
+		if req.newestFirst {
+			h = append(h, "newest first")
 		}
 		return h
 	},

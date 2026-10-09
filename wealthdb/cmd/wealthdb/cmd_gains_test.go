@@ -1,14 +1,93 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
+
+// setupGainsGold seeds a gold DB with what the gains views read: a
+// holding at two snapshots with a cost basis and open lots, a sale's
+// realized lots in two documents, a sell, and a USD→CHF rate. Every id
+// and figure is invented.
+func setupGainsGold(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	goldPath := filepath.Join(dir, "wealthdb.db")
+	db, err := gold.OpenFresh(goldPath)
+	if err != nil {
+		t.Fatalf("open gold: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+        INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
+            VALUES ('brk', 'schwab', '/tmp/brk.db', -1, 0, 0);
+        INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+            VALUES ('brk', 0, 'USD', 'CHF', 0.9);
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, tax_wrapper,
+                              first_seen_at, last_seen_at)
+            VALUES ('brk', 'ACC1', 'brokerage', 'Brokerage', 'taxable_joint', 1, 1);
+        INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, symbol, name,
+                                 currency, first_seen_at, last_seen_at) VALUES
+            ('brk', 'AAA', 'public_equity', 'AAA', 'Alpha', 'USD', 1, 1),
+            ('brk', 'BBB', 'public_equity', 'BBB', 'Beta',  'USD', 1, 1);
+        INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+                               instrument_external_id, asset_class, vehicle, currency, quantity,
+                               market_value, book_value, basis_origin, basis_method, basis_fees) VALUES
+            ('brk', 1000,   'ACC1', 'AAA', 'AAA', 'public_equity', 'stock', 'USD', 10, 1000, 600, 'stated', 'lots', 'included'),
+            ('brk', 1000,   'ACC1', 'BBB', 'BBB', 'public_equity', 'stock', 'USD', 5,  500,  400, 'stated', 'lots', 'included'),
+            ('brk', 200000, 'ACC1', 'AAA', 'AAA', 'public_equity', 'stock', 'USD', 10, 1300, 600, 'stated', 'lots', 'included');
+        INSERT INTO position_lots (silver_source_id, snapshot_at, account_external_id, position_key, lot_key,
+                                   currency, quantity, book_value, acquisition_date, term, basis_origin) VALUES
+            ('brk', 200000, 'ACC1', 'AAA', 'L1', 'USD', 4, 200, DATE '1969-01-01', 'long',  'stated'),
+            ('brk', 200000, 'ACC1', 'AAA', 'L2', 'USD', 6, 400, DATE '1969-12-01', 'short', 'stated');
+        INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
+                                   instrument_external_id, description, document_kind, tax_year,
+                                   acquired_various, disposal_date, currency, quantity, proceeds,
+                                   book_value, realized_gain_loss, term, basis_origin, basis_method,
+                                   basis_fees, is_primary) VALUES
+            ('brk', 'R1', 'ACC1', 'BBB', 'BETA', 'form_1099b',       1970, FALSE, DATE '1970-01-02', 'USD', 5, 550, 400, NULL, 'short', 'stated', 'lots', 'included', TRUE),
+            ('brk', 'R2', 'ACC1', 'BBB', 'BETA', 'year_end_summary', 1970, FALSE, DATE '1970-01-02', 'USD', 5, 550, 400, 150,  'short', 'stated', 'lots', 'included', FALSE);
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, instrument_external_id, kind, currency, net_amount)
+            VALUES ('brk', 'S1', 90000, 'ACC1', 'BBB', 'sell', 'USD', 550);
+    `); err != nil {
+		t.Fatalf("seed gains gold: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close gold: %v", err)
+	}
+	cfg := filepath.Join(dir, "wealthdb.cfg")
+	body := fmt.Sprintf(`{"gold_db": %q, "default_currency": "USD", "silver_sources": []}`, goldPath)
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	return cfg
+}
+
+// gainsCases runs every gains view over the fixture's year through both
+// front-ends, plus the realized view's own options.
+func gainsCases() []goldenCase {
+	var out []goldenCase
+	for _, v := range gainsViews {
+		out = append(out, goldenCase{"gains " + v, []string{"gains", v, "1970", "--period", "total"}, "gains",
+			map[string]any{"view": v, "from": "1970", "to": "1970"}})
+	}
+	return append(out,
+		goldenCase{"gains summary by quarter in CHF", []string{"gains", "summary", "1970", "--period", "quarterly", "-x", "CHF"}, "gains",
+			map[string]any{"view": "summary", "from": "1970", "to": "1970", "period": "quarterly", "currency": "CHF"}},
+		goldenCase{"gains realized, every document, newest first", []string{"gains", "realized", "1970", "--documents", "all", "-r"}, "gains",
+			map[string]any{"view": "realized", "from": "1970", "to": "1970", "documents": "all", "newest_first": true}})
+}
 
 func TestGainsCLIEndToEnd(t *testing.T) {
 	t.Parallel()
-	cfg := setupReturnsGold(t)
+	cfg := setupGainsGold(t)
 
 	for _, view := range gainsViews {
 		so, se, code := run(t, "-c", cfg, "gains", view, "-", "today", "-x", "CHF")

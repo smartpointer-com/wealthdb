@@ -35,11 +35,12 @@ var filterColumns = map[string][]string{
 	"group":       {"group", "group_id"},
 	"asset_class": {"asset_class"},
 	"tax_wrapper": {"tax_wrapper"},
+	"term":        {"term"},
 }
 
 // filterOrder is the order filters are applied and reported in.
 var filterOrder = []string{"source", "account", "symbol", "category", "type", "kind",
-	"merchant", "payer", "section", "class", "group", "asset_class", "tax_wrapper"}
+	"merchant", "payer", "section", "class", "group", "asset_class", "tax_wrapper", "term"}
 
 // genericMoneyWords name a view's principal column when no column of
 // the view carries the word itself: "-value" on spending categories is

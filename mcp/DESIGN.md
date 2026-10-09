@@ -138,7 +138,7 @@ the environment.
 
 ## 6. The tool API
 
-Eleven tools: six report families, `status`, `snapshots`, the two
+Twelve tools: seven report families, `status`, `snapshots`, the two
 enrichment dumps, and `describe`. The design rules:
 
 1. One tool per CLI family; `view` is an enum whose default is the
