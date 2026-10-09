@@ -304,10 +304,11 @@ type lot struct {
 // acquired it (not the certificate's issue date — see lot.AcquiredOn). A
 // certificate born from an option exercise carries the exercise's type,
 // date and fair-market-value per share in the payload, as silver states
-// them; the book value stays the cash paid. An option or a convertible is
-// not a lot: neither holds shares until it is exercised or converts, and
-// then the certificate it becomes is one. The caller sets the position's
-// keys and currency.
+// them, and its value at exercise (shares × that value), which the
+// position's book value counts instead of the cash paid (exerciseValue).
+// An option or a convertible is not a lot: neither holds shares until it
+// is exercised or converts, and then the certificate it becomes is one.
+// The caller sets the position's keys and currency.
 func shareLot(secID int64, quantity, cost, mv sql.NullFloat64, acquired string,
 	exType, exDate sql.NullString, exFMV sql.NullFloat64) canonical.PositionLotChange {
 	l := canonical.PositionLotChange{
@@ -332,10 +333,23 @@ func shareLot(secID int64, quantity, cost, mv sql.NullFloat64, acquired string,
 	if exFMV.Valid {
 		ex["exercise_fmv"] = exFMV.Float64
 	}
+	if v, ok := exerciseValue(quantity, exFMV); ok {
+		ex["value_at_exercise"] = v.String()
+	}
 	if len(ex) > 0 {
 		l.Payload = silver.PayloadWith("{}", ex)
 	}
 	return l
+}
+
+// exerciseValue is a certificate's value on the day it was exercised: its
+// shares at the fair-market value per share Carta states for the
+// exercise. False where silver states no such value.
+func exerciseValue(quantity, fmv sql.NullFloat64) (decimal.Decimal, bool) {
+	if !quantity.Valid || !fmv.Valid {
+		return decimal.Decimal{}, false
+	}
+	return decimal.NewFromFloat(quantity.Float64).Mul(decimal.NewFromFloat(fmv.Float64)), true
 }
 
 // appendCapTableAt forward-fills the cap-table holdings as of t and aggregates
@@ -343,12 +357,16 @@ func shareLot(secID int64, quantity, cost, mv sql.NullFloat64, acquired string,
 // on/before t, keeping only `held` lots, summed. Quantity is the share count
 // (share-type lots only — an unexercised option is a different unit and would
 // also double-count the certificates it became, so it stays a 0-value lot in
-// the payload). MarketValue / BookValue sum every held lot — the collector's
-// per-date FMV valuation (collector DESIGN.md §5.1) and the cash paid. The
-// per-lot detail rides in the position payload, and each held share
-// certificate is one open lot of the position (shareLot). The book value is
-// stamped by what it sums: its lots' cost where every costed line is a share
-// certificate (shareBasis), else the cash paid (cashPaidBasis).
+// the payload). MarketValue sums every held lot's per-date FMV valuation
+// (collector DESIGN.md §5.1). BookValue sums every held line at its value
+// when acquired: a certificate born from an exercise at its value at
+// exercise where Carta states one (exerciseValue), every other line at the
+// cash paid. The per-lot detail rides in the position payload, and each
+// held share certificate is one open lot of the position (shareLot), whose
+// own book value stays the cash paid. The book value is stamped by what it
+// sums: exerciseValueBasis where a value at exercise is in it, else its
+// lots' cost where every costed line is a share certificate (shareBasis),
+// else the cash paid (cashPaidBasis).
 func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	exercise := `NULL, NULL, NULL`
 	if c.exercise {
@@ -378,8 +396,9 @@ SELECT entity_external_id, security_type, security_external_id,
 	// exactly the sums of its share lots'.
 	type agg struct {
 		ccy                         string
-		shareQty, mv, cost          decimal.Decimal
-		hasShareQty, hasMV, hasCost bool
+		shareQty, mv, book          decimal.Decimal
+		hasShareQty, hasMV, hasBook bool
+		atExercise                  bool  // book counts a value at exercise
 		hasEquity                   bool  // any non-convertible lot (share/option/…)
 		hasStockLike                bool  // any real share-settled lot (share/rsu/rsa/piu/equity_grant)
 		costsOther                  bool  // a costed line that is no share certificate
@@ -426,9 +445,10 @@ SELECT entity_external_id, security_type, security_external_id,
 			a.mv = a.mv.Add(decimal.NewFromFloat(mv.Float64))
 			a.hasMV = true
 		}
-		if cost.Valid {
-			a.cost = a.cost.Add(decimal.NewFromFloat(cost.Float64))
-			a.hasCost = true
+		if v, ok := exerciseValue(quantity, exFMV); ok && secType == "share" {
+			a.book, a.hasBook, a.atExercise = a.book.Add(v), true, true
+		} else if cost.Valid {
+			a.book, a.hasBook = a.book.Add(decimal.NewFromFloat(cost.Float64)), true
 			a.costsOther = a.costsOther || secType != "share"
 		}
 		l := lot{SecurityType: secType, SecurityID: secID, Label: label,
@@ -493,12 +513,15 @@ SELECT entity_external_id, security_type, security_external_id,
 		if a.hasMV {
 			change.MarketValue = &a.mv
 		}
-		if a.hasCost {
+		if a.hasBook {
 			basis := shareBasis
-			if a.costsOther {
+			switch {
+			case a.atExercise:
+				basis = exerciseValueBasis
+			case a.costsOther:
 				basis = cashPaidBasis
 			}
-			change.SetBookValue(&a.cost, basis)
+			change.SetBookValue(&a.book, basis)
 		}
 		// A holding with share lots is acquired on its earliest lot's
 		// date: a later lot's date would say the oldest shares were

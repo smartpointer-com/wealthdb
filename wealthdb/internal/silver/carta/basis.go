@@ -13,6 +13,14 @@ import (
 // The stamps on carta's book values (docs/DESIGN.md §7.4). Neither an
 // exercise, a purchase nor a conversion carries a fee.
 var (
+	// exerciseValueBasis: a cap-table holding with a certificate born
+	// from an option exercise. Each such certificate counts at its value
+	// at exercise (shares × the fair-market value per share Carta
+	// states), every other line at the cash paid: the holding at its
+	// value when acquired. Its lots keep the cash paid.
+	exerciseValueBasis = canonical.Basis{
+		Origin: canonical.BasisDerived, Method: canonical.BasisMethodAcquisitionValue, Fees: canonical.BasisFeesNone,
+	}
 	// shareBasis: a cap-table holding whose every costed line is a
 	// share certificate: the sum of its lots' cost, the cash paid for
 	// each.

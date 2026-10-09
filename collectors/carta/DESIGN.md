@@ -615,14 +615,16 @@ It projects this silver into canonical `accounts` / `instruments` /
   position's `asset_class`, since management_style is account-level).
 - **Valuation** — fund position: `market_value` = NAV, `book_value` =
   contributed capital, less the property a K-1 (box 19 code C) says left
-  in kind from its period end on. Cap-table position: `quantity` +
-  `book_value` = cost,
-  `market_value` = the silver `market_value` (the valuation override's
-  count-as-of × FMV-as-of, else the Carta-derived fallback — §5.1).
+  in kind from its period end on. Cap-table position: `quantity`,
+  `book_value` = each line at its value when acquired (an exercised
+  certificate at shares × `exercise_fmv`, every other line at its
+  `cost`), `market_value` = the silver `market_value` (the valuation
+  override's count-as-of × FMV-as-of, else the Carta-derived fallback —
+  §5.1).
 - **Lots** — each held share certificate is one gold `position_lots` row
-  under its company's position: its quantity, `cost` as the book value,
-  `market_value`, and `original_acquisition_date`, with the exercise facts
-  of §5.3 in its payload. The book value stays the cash paid.
+  under its company's position: its quantity, `cost` (the cash paid) as
+  the book value, `market_value`, and `original_acquisition_date`, with
+  the exercise facts of §5.3 in its payload.
 - **Vesting / documents / cap_calls** — kept silver-only; gold has no
   canonical home for a vesting timeline or a document archive.
 

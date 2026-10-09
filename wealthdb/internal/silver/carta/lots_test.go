@@ -111,23 +111,25 @@ func TestEachHeldShareCertificateIsALotOfItsPosition(t *testing.T) {
 	if want := time.Date(2097, 1, 15, 0, 0, 0, 0, time.UTC); l.AcquisitionDate == nil || !l.AcquisitionDate.Equal(want) {
 		t.Errorf("lot 11 acquisition date = %v, want %v", l.AcquisitionDate, want)
 	}
-	if got := string(l.Payload); got != `{"exercise_date":"01/10/2097","exercise_fmv":2.5,"exercise_type":"NSO"}` {
+	if got := string(l.Payload); got != `{"exercise_date":"01/10/2097","exercise_fmv":2.5,"exercise_type":"NSO","value_at_exercise":"2500"}` {
 		t.Errorf("lot 11 payload = %s, want the exercise facts", got)
 	}
 	if l := lots["12"]; l.AcquisitionDate != nil || l.Payload != nil {
 		t.Errorf("lot 12 = %+v, want no acquisition date and no payload (none stated)", l)
 	}
 
-	var qty, book canonical.Decimal
+	var qty canonical.Decimal
 	for _, l := range lots {
-		qty, book = qty.Add(*l.Quantity), book.Add(*l.BookValue)
+		qty = qty.Add(*l.Quantity)
 	}
 	if p.Quantity == nil || !p.Quantity.Equal(qty) {
 		t.Errorf("position quantity = %v, want the lots' %v", p.Quantity, qty)
 	}
-	if p.BookValue == nil || !p.BookValue.Equal(book) || p.Basis != shareBasis {
-		t.Errorf("position book value = %v stamped %+v, want the lots' %v stamped %+v",
-			p.BookValue, p.Basis, book, shareBasis)
+	// The exercised certificate counts at its value at exercise (1000 ×
+	// 2.5), the bought one at its cash paid.
+	if p.BookValue == nil || p.BookValue.String() != "2600.2" || p.Basis != exerciseValueBasis {
+		t.Errorf("position book value = %v stamped %+v, want 2600.2 stamped %+v",
+			p.BookValue, p.Basis, exerciseValueBasis)
 	}
 	if want := time.Date(2097, 1, 15, 0, 0, 0, 0, time.UTC); p.AcquisitionDate == nil || !p.AcquisitionDate.Equal(want) {
 		t.Errorf("position acquisition date = %v, want its earliest lot's %v", p.AcquisitionDate, want)
@@ -135,13 +137,23 @@ func TestEachHeldShareCertificateIsALotOfItsPosition(t *testing.T) {
 }
 
 // A silver older than migration 0004 has no exercise columns: it still
-// loads, and its lots carry no exercise facts.
+// loads, its lots carry no exercise facts, and the holding counts the
+// cash paid.
 func TestASilverWithoutExerciseFactsStillEmitsLots(t *testing.T) {
-	lots, _ := lotFixture(t, false)
+	lots, p := lotFixture(t, false)
 	if len(lots) != 2 {
 		t.Fatalf("lots = %d, want 2", len(lots))
 	}
 	if l := lots["11"]; l.Payload != nil || l.BookValue == nil {
 		t.Errorf("lot 11 = %+v, want a book value and no payload", l)
+	}
+	// Without a value at exercise the holding counts its lots' cash paid.
+	var book canonical.Decimal
+	for _, l := range lots {
+		book = book.Add(*l.BookValue)
+	}
+	if p.BookValue == nil || !p.BookValue.Equal(book) || p.Basis != shareBasis {
+		t.Errorf("position book value = %v stamped %+v, want the lots' %v stamped %+v",
+			p.BookValue, p.Basis, book, shareBasis)
 	}
 }

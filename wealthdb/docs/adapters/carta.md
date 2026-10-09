@@ -122,19 +122,20 @@ see §6):
   valuation: held shares × the FMV in effect at the snapshot (a side-loaded
   valuation override when present, else the Carta-derived basis — see the
   collector `DESIGN.md` §5.1); options 0.
-- `book_value` = Σ every held line's `cost`: the cash paid for each share
-  certificate (quantity × strike for an exercise), each convertible's
-  principal, and each award's or warrant's cost. An exercise or a
-  purchase carries no fee. The stamp says what the sum is (DESIGN.md
-  §7.4):
-  - every costed line is a share certificate: the sum of its lots,
-    `derived` / `lots` / `none`;
-  - any other line has a cost: the cash paid, `derived` / `paid_in` /
-    `none`.
+- `book_value` = Σ every held line at its value when acquired:
+  - a certificate born from an option exercise: its value at exercise,
+    its shares × the `exercise_fmv` Carta states;
+  - every other line: its `cost`, the cash paid (quantity × price for a
+    bought certificate, a convertible's principal, an award's or a
+    warrant's cost).
 
-  A certificate born from an NSO exercise has the fair-market-value at
-  exercise as its tax basis. The book value stays the cash paid, and the
-  exercise facts ride in the lot's payload.
+  An exercise or a purchase carries no fee. The stamp says what the sum
+  is (DESIGN.md §7.4):
+  - a value at exercise is in it: `derived` / `acquisition_value` /
+    `none`;
+  - else every costed line is a share certificate: the sum of its lots,
+    `derived` / `lots` / `none`;
+  - else the cash paid, `derived` / `paid_in` / `none`.
 - `acquisition_date` = the EARLIEST acquisition date of the share lots
   (see below). Carta states it per lot as `original_acquisition_date`,
   which is not the certificate's issue date: a certificate is re-issued
@@ -156,17 +157,19 @@ see §6):
 Each held **share certificate** is also one row in `position_lots`, beside
 its company's position:
 - `lot_key` = the certificate's security id.
-- `quantity` = its shares; `book_value` = its `cost`, stamped `stated`;
-  `market_value` = its `market_value`.
+- `quantity` = its shares; `book_value` = its `cost`, the cash paid,
+  stamped `stated`; `market_value` = its `market_value`.
 - `acquisition_date` = its `original_acquisition_date`, where stated.
-- `payload` = `exercise_type`, `exercise_date` and `exercise_fmv`, where
-  stated.
+- `payload` = `exercise_type`, `exercise_date`, `exercise_fmv` and
+  `value_at_exercise`, where stated.
 
 The certificates' quantities sum to the position's. An option grant is not
 a lot: it holds no shares until it is exercised, and then the certificate
 it becomes is one. A convertible is not a lot either until it converts. So
 the lots' book values sum to the position's exactly when it is stamped
-`lots`.
+`lots`. A position stamped `acquisition_value` counts its exercised
+certificates at their value at exercise while their lots keep the cash
+paid.
 
 **Fund LP** (one position per held `fund_metrics` row → (`private_equity`,
 `fund`)):
@@ -317,9 +320,6 @@ as the observable range, with `LatestChangeNumber` = the newest dump.
   rides in the position payload), and its share certificates are its
   `position_lots`, mirroring how a public brokerage account holds one
   position per security with tax lots underneath.
-- **Exercise basis.** For a certificate born from an NSO exercise, the tax
-  basis is the fair-market-value at exercise, not the cash paid. The lot
-  payload carries it; whether the book value should is an open decision.
 - **Vesting in gold.** Deliberately silver-only. If a future need arises, a
   dedicated gold table (not the positions/transactions facts) would be the
   place.

@@ -1890,7 +1890,7 @@ comment has the detail:
 | swissquote | quantity × average cost | derived · average · excluded | – | – |
 | viac | quantity × average acquisition price | derived · average · none | – | – |
 | plaid | the institution's cost | stated · unknown · unknown | tax lots that add up to the holding | – |
-| carta | cap table: the cash paid, its lots' cost where it holds only shares; funds: capital paid in, less in-kind distributions | derived or stated · lots or paid_in · none or included | share certificates | – |
+| carta | cap table: an exercised certificate at its value at exercise, every other line at the cash paid; funds: capital paid in, less in-kind distributions | derived or stated · acquisition_value, lots or paid_in · none or included | share certificates, at the cash paid | – |
 | angellist | capital paid in, less in-kind distributions | stated or derived · paid_in · included | – | – |
 | equityzen | SPVs: shares held at the price paid, plus the execution fee pro rata; funds: capital paid in plus the fee | derived · average or paid_in · included, or unknown without a stated fee | – | – |
 | manual | the paid-in series, else the value at acquisition | stated · paid_in or acquisition_value · unknown | – | – |
@@ -3274,8 +3274,6 @@ Silver also states a few cost facts gold does not project yet:
 
 - schwab-web's `cost_basis_methods`, the method a Gain/Loss Report
   prints per account;
-- carta's fair-market value at exercise, the tax basis of shares from
-  a non-qualified option (book value stays the cash paid);
 - the K-1 gain lines of angellist and carta, and carta's fund fee,
   gain and carry lines;
 - ubs-web's `last_purchase_date`;
