@@ -146,9 +146,9 @@ SELECT p.deal_external_id,
 			Vehicle:              vehicle,
 			Currency:             currency,
 			MarketValue:          silver.DecimalPtrFromNullFloat(market),
-			BookValue:            silver.DecimalPtrFromNullFloat(cost),
 			AcquisitionDate:      silver.DatePtrFromNullUnix(acqUnix),
 		}
+		change.SetBookValue(silver.DecimalPtrFromNullFloat(cost), costBasis)
 		// quantity is a share count only for SPVs; a multi-company fund's
 		// LP interest has no meaningful unit count.
 		if ac == canonical.AssetClassSPV {

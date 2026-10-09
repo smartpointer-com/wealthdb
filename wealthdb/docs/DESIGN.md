@@ -1616,13 +1616,38 @@ CREATE TABLE positions (
     currency                TEXT    NOT NULL,        -- position's natural currency (ISO 4217)
     quantity                DECIMAL(28, 8),          -- units / nominal / face value
     market_value            DECIMAL(28, 4),          -- in `currency`
-    book_value              DECIMAL(28, 4),          -- in `currency`; NULL when source doesn't provide
+    book_value              DECIMAL(28, 4),          -- cost basis in `currency`; NULL when source doesn't provide
+    basis_origin            TEXT,                    -- the stamp on book_value (§7.4); NULL with it
+    basis_method            TEXT,
+    basis_fees              TEXT,
     accrued_interest        DECIMAL(28, 4),          -- bonds; NULL otherwise
-    acquisition_date        DATE,                    -- holding-period analysis; NULL when unknown
+    acquisition_date        DATE,                    -- earliest acquisition; NULL when unknown
     payload                 JSON,                    -- raw silver row(s) that produced this fact
     PRIMARY KEY (silver_source_id, snapshot_at, account_external_id, position_key),
     FOREIGN KEY (silver_source_id, account_external_id)
         REFERENCES accounts(silver_source_id, account_external_id)
+);
+
+-- A position's open lots, beside the position row with the same
+-- source, snapshot, account and position key (§7.4).
+CREATE TABLE position_lots (
+    silver_source_id        TEXT    NOT NULL,
+    snapshot_at             BIGINT  NOT NULL,
+    account_external_id     TEXT    NOT NULL,
+    position_key            TEXT    NOT NULL,
+    lot_key                 TEXT    NOT NULL,        -- unique within the position
+    instrument_external_id  TEXT,
+    currency                TEXT    NOT NULL,
+    quantity                DECIMAL(28, 8),          -- signed like positions.quantity
+    book_value              DECIMAL(28, 4),
+    market_value            DECIMAL(28, 4),
+    acquisition_date        DATE,
+    term                    TEXT,                    -- 'short' | 'long', as stated
+    covered                 BOOLEAN,
+    basis_origin            TEXT,                    -- NULL with book_value
+    source_document         TEXT,                    -- sha256 of the source document
+    payload                 JSON,
+    PRIMARY KEY (silver_source_id, snapshot_at, account_external_id, position_key, lot_key)
 );
 
 -- Per-account, per-currency cash balance at a snapshot. Separate from
@@ -1760,6 +1785,40 @@ CREATE INDEX ix_transactions_account_time
     ON transactions(silver_source_id, account_external_id, occurred_at);
 CREATE INDEX ix_transactions_kind_time
     ON transactions(kind, occurred_at);
+
+-- Realized lots, or sales where a document prints no lots: one row per
+-- lot per document (§7.4). Replaced whole per source on a load.
+CREATE TABLE realized_lots (
+    silver_source_id         TEXT    NOT NULL,
+    realized_lot_external_id TEXT    NOT NULL,
+    account_external_id      TEXT    NOT NULL,
+    instrument_external_id   TEXT,
+    instrument_hint          TEXT,                   -- the token the lookup failed on
+    description              TEXT,                   -- security as printed
+    document_kind            TEXT    NOT NULL,       -- form_1099b, year_end_summary, …
+    tax_year                 INTEGER NOT NULL,
+    acquisition_date         DATE,
+    acquired_various         BOOLEAN NOT NULL,
+    disposal_date            DATE,
+    settlement_date          DATE,
+    currency                 TEXT    NOT NULL,
+    quantity                 DECIMAL(28, 8),         -- magnitude
+    proceeds                 DECIMAL(28, 4),         -- magnitude
+    book_value               DECIMAL(28, 4),         -- magnitude
+    realized_gain_loss       DECIMAL(28, 4),         -- signed; NULL when not printed
+    wash_sale_disallowed     DECIMAL(28, 4),
+    accrued_market_discount  DECIMAL(28, 4),
+    term                     TEXT,
+    covered                  BOOLEAN,
+    form_8949_box            TEXT,
+    basis_origin             TEXT,                   -- the stamp on book_value; NULL with it
+    basis_method             TEXT,
+    basis_fees               TEXT,
+    is_primary               BOOLEAN NOT NULL,       -- counts each sale once per account and tax year
+    source_document          TEXT,
+    payload                  JSON,
+    PRIMARY KEY (silver_source_id, realized_lot_external_id)
+);
 ```
 
 ### 7.3 What's deliberately omitted
@@ -1779,6 +1838,62 @@ CREATE INDEX ix_transactions_kind_time
   `last_seen_at`. `payload` carries the rest.
 - **A separate `holdings_history` table.** Positions itself is the
   history — one row per (snapshot, account, position_key).
+
+### 7.4 Cost basis
+
+Gold carries the cost basis each source states. It does not compute
+one where a source states none; that is the lot engine's job (§13.4).
+
+Cost basis means different things in different sources. One source
+sums tax lots, another keeps a weighted average. Fees are in the
+figure or not. A sum across sources is only meaningful when each
+figure says what it is, so every `book_value` carries a stamp. The
+gold writer refuses a book value without one, and a stamp without a
+book value.
+
+| column | value | meaning |
+|---|---|---|
+| `basis_origin` | `stated` | one figure the source states, taken as is |
+| | `derived` | arithmetic over stated figures: quantity × average cost, market value − unrealized gain, a sum of lots, a figure converted at the source's own rate |
+| | `rebuilt` | replayed from trades by a lot engine |
+| | `seeded` | an opening basis entered by hand |
+| `basis_method` | `lots` | the sum of the source's tax lots, whatever method relieves them |
+| | `average` | a weighted average cost |
+| | `paid_in` | capital paid in, gross of capital paid back (private markets) |
+| | `acquisition_value` | the value on the acquisition date |
+| | `unknown` | the source does not say |
+| `basis_fees` | `included`, `excluded` | whether purchase fees are in the figure |
+| | `none` | the source charges no purchase fee |
+| | `unknown` | the source does not say |
+
+Rules every adapter follows:
+
+- **The position's currency.** `book_value` is in the row's
+  `currency`. An adapter converts only at a rate the source itself
+  states. Otherwise the book value is NULL and the source's figure
+  stays in the payload.
+- **NULL means not stated.** Never 0 for unknown.
+- **Private markets.** The book value is the capital paid in, gross of
+  capital paid back. An in-kind distribution moves basis out with the
+  asset; cash paid back does not.
+- **`acquisition_date`** is the earliest acquisition the source
+  states. A position with lots takes its earliest lot's date.
+
+**Open lots** (`position_lots`) sit beside their position row: same
+source, snapshot, account and position key. A lot's `basis_origin`
+is set exactly when its `book_value` is. Its `term` and `covered` are
+the source's own statement, not a computation.
+
+**Realized lots** (`realized_lots`) hold one row per lot per document.
+The same sale appears in several documents: a 1099-B, its correction,
+a year-end summary, a statement. Gold keeps every copy, as silver
+does, and marks one set `is_primary`. Within one source, account and
+tax year, the primary rows count each sale once: the adapter ranks
+its own document kinds and marks the best kind present
+(`silver.MarkPrimary`). A tax year's stated result is therefore
+`SUM(realized_gain_loss) WHERE is_primary`. Where a document prints
+no gain, the column is NULL and the gain is `proceeds − book_value +
+wash_sale_disallowed`.
 
 ## 8. Load semantics
 
@@ -1810,6 +1925,8 @@ continuous queries. We just trigger it manually.
 7. if window.HasChanges:
        DELETE FROM positions      WHERE silver_source_id = ?
                               AND snapshot_at BETWEEN window.Start AND window.End;
+       DELETE FROM position_lots  WHERE silver_source_id = ?
+                              AND snapshot_at BETWEEN window.Start AND window.End;
        DELETE FROM cash_balances  WHERE silver_source_id = ?
                               AND snapshot_at BETWEEN window.Start AND window.End;
        DELETE FROM fx_rates       WHERE silver_source_id = ?
@@ -1824,7 +1941,8 @@ continuous queries. We just trigger it manually.
            batch, more, err := stream.Next()
            fold dimensions: batch.Portfolios, batch.Accounts,
                             batch.Instruments (one record per entity — §8.4)
-           insert facts:    batch.Positions, batch.CashBalances, batch.FxRates
+           insert facts:    batch.Positions, batch.PositionLots,
+                            batch.CashBalances, batch.FxRates
            if not more: break
        upsert the folded dimension records
 
@@ -1833,6 +1951,9 @@ continuous queries. We just trigger it manually.
            batch, more, err := stream.Next()
            insert facts:   batch.Transactions
            if not more: break
+
+       DELETE FROM realized_lots  WHERE silver_source_id = ?;
+       insert plugin.RealizedLots()          -- when the plugin offers them
 
        INSERT INTO load_audit (silver_source_id, loaded_at,
                                change_number_before, change_number_after,
@@ -1902,6 +2023,8 @@ When `Snapshots(window)` is called, the plugin must emit, across
 all batches:
 - One `PositionChange` per silver position row whose `snapshot_at`
   is in `[window.Start, window.End]`.
+- One `PositionLotChange` per open lot of each such position, where
+  the source states lots.
 - One `CashBalanceChange` per silver cash-balance row similarly.
 - One `FxRateChange` per silver FX-rate row similarly.
 - `AccountChange` / `InstrumentChange` updates for every account
@@ -1912,6 +2035,13 @@ all batches:
 When `Transactions(window)` is called, the plugin emits one
 `TransactionChange` per silver event row whose `occurred_at` is in
 the window.
+
+A plugin whose silver states realized lots also implements
+`silver.RealizedLotReader`. `RealizedLots()` is not windowed: it
+returns every realized lot the source states, and the load replaces
+the source's `realized_lots` rows with them. A sale's tax document
+arrives months after the sale and restates it, so no window derived
+from dumps or event dates is sure to cover it.
 
 The plugin does **not** consult gold for "what's already there" —
 the windowed delete in step 7 has wiped the slot first. The plugin

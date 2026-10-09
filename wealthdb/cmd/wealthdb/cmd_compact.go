@@ -27,6 +27,7 @@ func init() {
 // between the live DB and the freshly rewritten temp aborts the swap.
 var compactParityTables = []string{
 	"positions", "transactions", "fx_rates", "cash_balances", "accounts",
+	"position_lots", "realized_lots",
 }
 
 // cmdCompact rewrites the live gold DB into a fresh, compact file and

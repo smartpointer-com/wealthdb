@@ -257,9 +257,9 @@ SELECT ps.position_external_id,
 			Vehicle:              vehicle,
 			Currency:             currency,
 			MarketValue:          minorPtr(marketMinor),
-			BookValue:            minorPtr(contribMinor),
 			AcquisitionDate:      silver.DatePtrFromNullUnix(invDate),
 		}
+		change.SetBookValue(minorPtr(contribMinor), paidInBasis)
 		if tax := minorPtr(taxMinor); tax != nil {
 			change.Payload = silver.PayloadWith("{}", map[string]any{
 				"tax_basis_contributed": tax.String()})

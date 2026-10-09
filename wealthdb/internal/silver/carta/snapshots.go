@@ -433,7 +433,7 @@ SELECT entity_external_id, security_type, security_external_id,
 		}
 		if a.hasCost {
 			d := canonical.Decimal(decimal.NewFromFloat(a.cost))
-			change.BookValue = &d
+			change.SetBookValue(&d, shareBasis)
 		}
 		if a.hasAcquired {
 			change.AcquisitionDate = silver.DatePtrFromNullUnix(
@@ -495,7 +495,7 @@ SELECT entity_external_id, COALESCE(currency, 'USD'),
 			change.MarketValue = &mv
 		}
 		if bv, err := canonical.NewDecimalFromString(contributed); err == nil && contributed != "" {
-			change.BookValue = &bv
+			change.SetBookValue(&bv, fundBasis)
 		}
 		batch.Positions = append(batch.Positions, change)
 		active[entityID] = ccy

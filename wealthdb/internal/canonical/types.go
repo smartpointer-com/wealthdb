@@ -105,15 +105,21 @@ type PositionChange struct {
 	PositionKey          string
 	InstrumentExternalID *string
 	// AssetClass (exposure) + Vehicle (wrapper): the 2-D taxonomy.
-	AssetClass      AssetClass
-	Vehicle         Vehicle
-	Currency        string
-	Quantity        *Decimal
-	MarketValue     *Decimal
+	AssetClass  AssetClass
+	Vehicle     Vehicle
+	Currency    string
+	Quantity    *Decimal
+	MarketValue *Decimal
+	// BookValue is the holding's cost basis in Currency, nil where the
+	// source states none. Basis stamps it: set both with SetBookValue
+	// (basis.go), and never one without the other.
 	BookValue       *Decimal
+	Basis           Basis
 	AccruedInterest *Decimal
 	// AcquisitionDate is a calendar date (no time component). Stored
-	// as DATE in DuckDB. Use time.Time at UTC midnight.
+	// as DATE in DuckDB. Use time.Time at UTC midnight. It is the
+	// earliest acquisition where the source states one; a position
+	// with lots takes its earliest lot's.
 	AcquisitionDate *time.Time
 	Payload         json.RawMessage
 }
@@ -284,14 +290,15 @@ type Window struct {
 // SnapshotBatch is one batch yielded by a SnapshotStream.Next call.
 // Adapters multiplex change records of different types into one
 // batch; gold applies them in the order: dimensions (portfolios,
-// accounts, instruments) before facts (positions, cash_balances,
-// fx_rates). Portfolios come first because accounts may reference
-// them by portfolio_external_id.
+// accounts, instruments) before facts (positions, position_lots,
+// cash_balances, fx_rates). Portfolios come first because accounts
+// may reference them by portfolio_external_id.
 type SnapshotBatch struct {
 	Portfolios   []PortfolioChange
 	Accounts     []AccountChange
 	Instruments  []InstrumentChange
 	Positions    []PositionChange
+	PositionLots []PositionLotChange
 	CashBalances []CashBalanceChange
 	FxRates      []FxRateChange
 }

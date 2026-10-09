@@ -464,13 +464,22 @@ func buildSourceSpec(
 	return spec, nil
 }
 
+// realizedLotsNote is the realized-lot count for a load line, empty for
+// a source that states none, so the line reads as it always has there.
+func realizedLotsNote(r *loader.LoadResult) string {
+	if r.RealizedLotsLoaded == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" + %d realized lot(s)", r.RealizedLotsLoaded)
+}
+
 func printLoadResult(w io.Writer, r *loader.LoadResult) {
 	switch {
 	case r.AlreadyUpToDate:
 		fmt.Fprintf(w, "load: %s: up-to-date (watermark %d)\n", r.SourceID, r.ChangeNumberAfter)
 	default:
-		fmt.Fprintf(w, "load: %s: %d snapshot row(s) + %d transaction(s) (watermark %d → %d)\n",
-			r.SourceID, r.SnapshotsLoaded, r.TransactionsLoaded,
+		fmt.Fprintf(w, "load: %s: %d snapshot row(s) + %d transaction(s)%s (watermark %d → %d)\n",
+			r.SourceID, r.SnapshotsLoaded, r.TransactionsLoaded, realizedLotsNote(r),
 			r.ChangeNumberBefore, r.ChangeNumberAfter)
 	}
 }

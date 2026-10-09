@@ -243,7 +243,7 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 		var extra annotations
 		ac, veh := taxonomyPair(assetClass, vehicle, &extra)
 		b := at(snap)
-		b.Positions = append(b.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    account,
 			PositionKey:          key,
@@ -253,11 +253,12 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 			Currency:             ccy,
 			Quantity:             silver.DecimalPtrOrNil(quantity),
 			MarketValue:          silver.DecimalPtrOrNil(marketValue),
-			BookValue:            silver.DecimalPtrOrNil(bookValue),
 			AccruedInterest:      silver.DecimalPtrOrNil(accrued),
 			AcquisitionDate:      calendarDate(acquired),
 			Payload:              payloadWith(payload, extra),
-		})
+		}
+		pos.SetBookValue(silver.DecimalPtrOrNil(bookValue), basisFor(ac, veh))
+		b.Positions = append(b.Positions, pos)
 	}
 	return rows.Err()
 }

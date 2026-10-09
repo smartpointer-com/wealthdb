@@ -276,7 +276,7 @@ SELECT snapshot_at, account_external_id, instrument_external_id,
 		if change.Quantity != nil {
 			if acq := silver.DecimalPtrOrNil(acquisitionPxStr); acq != nil {
 				bv := change.Quantity.Mul(*acq)
-				change.BookValue = &bv
+				change.SetBookValue(&bv, acquisitionBasis)
 			}
 		}
 		batch.Positions = append(batch.Positions, change)

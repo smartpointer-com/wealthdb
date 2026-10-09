@@ -164,8 +164,8 @@ func reloadFreshAndSwap(
 				}
 				continue
 			}
-			fmt.Fprintf(stdout, "reload: %s: %d snapshot row(s) + %d transaction(s) (watermark → %d)\n",
-				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, res.ChangeNumberAfter)
+			fmt.Fprintf(stdout, "reload: %s: %d snapshot row(s) + %d transaction(s)%s (watermark → %d)\n",
+				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res), res.ChangeNumberAfter)
 		}
 		if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 			fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
@@ -572,8 +572,8 @@ func reloadInPlace(
 			fmt.Fprintf(stdout, "reload: %s: reset; nothing to load (watermark %d)\n",
 				s.ID, res.ChangeNumberAfter)
 		default:
-			fmt.Fprintf(stdout, "reload: %s: reset + %d snapshot row(s) + %d transaction(s) (watermark → %d)\n",
-				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, res.ChangeNumberAfter)
+			fmt.Fprintf(stdout, "reload: %s: reset + %d snapshot row(s) + %d transaction(s)%s (watermark → %d)\n",
+				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res), res.ChangeNumberAfter)
 		}
 	}
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {

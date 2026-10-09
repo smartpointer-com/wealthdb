@@ -147,7 +147,7 @@ SELECT as_of_date, account_external_id, instrument_key,
 			LastSeenAt:           asOf,
 		})
 
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           asOf,
 			AccountExternalID:    hash,
 			PositionKey:          instrumentKey,
@@ -157,10 +157,11 @@ SELECT as_of_date, account_external_id, instrument_key,
 			Currency:             "USD",
 			Quantity:             silver.DecimalPtrFromNullFloat(quantity),
 			MarketValue:          silver.DecimalPtrFromNullFloat(marketValue),
-			BookValue:            silver.DecimalPtrFromNullFloat(costBasis),
 			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
 			Payload:              json.RawMessage(payload),
-		})
+		}
+		pos.SetBookValue(silver.DecimalPtrFromNullFloat(costBasis), statementBasis)
+		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
 }

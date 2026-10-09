@@ -12,12 +12,13 @@ import (
 
 // Writer wraps a *sql.Tx and inserts/upserts canonical *Change
 // records into the gold tables. The insert-only fact tables
-// (positions, cash_balances, fx_rates, transactions) go in as
-// multi-row VALUES chunks — DuckDB's per-statement cost dwarfs its
-// per-row cost, so one statement per row is the slowest way to feed
-// it. The dimension tables upsert row-by-row (the §8.4 guard needs
-// ON CONFLICT per row); callers keep those batches small by folding
-// duplicate emissions first — see ChangeAccumulator.
+// (positions, position_lots, cash_balances, fx_rates, transactions,
+// realized_lots) go in as multi-row VALUES chunks — DuckDB's
+// per-statement cost dwarfs its per-row cost, so one statement per
+// row is the slowest way to feed it. The dimension tables upsert
+// row-by-row (the §8.4 guard needs ON CONFLICT per row); callers keep
+// those batches small by folding duplicate emissions first — see
+// ChangeAccumulator.
 //
 // Caller owns the transaction lifecycle: BeginTx, call writer
 // methods, Commit or Rollback. A Writer is not goroutine-safe;
@@ -323,7 +324,8 @@ func validateOptionalTaxonomyPair(op string, i int, a canonical.AssetClass, v ca
 // InsertPositions inserts `positions` rows. Snapshot-grain: the
 // caller guarantees the window-DELETE step (per docs/DESIGN.md
 // §8.1) has already wiped overlapping rows, so a plain INSERT is
-// sufficient.
+// sufficient. A book value must carry its basis stamp, and a row
+// without one must carry none (canonical.ValidateBookValue).
 func (w *Writer) InsertPositions(ctx context.Context, batch []canonical.PositionChange) error {
 	if len(batch) == 0 {
 		return nil
@@ -332,24 +334,116 @@ func (w *Writer) InsertPositions(ctx context.Context, batch []canonical.Position
 		if err := validateTaxonomyPair("InsertPositions", i, batch[i].AssetClass, batch[i].Vehicle); err != nil {
 			return err
 		}
+		if err := canonical.ValidateBookValue(batch[i].BookValue, batch[i].Basis); err != nil {
+			return fmt.Errorf("InsertPositions row %d (%s): %w", i, batch[i].PositionKey, err)
+		}
 	}
 	const head = `
 INSERT INTO positions (
     silver_source_id, snapshot_at, account_external_id, position_key,
     instrument_external_id, asset_class, vehicle, currency,
-    quantity, market_value, book_value, accrued_interest,
-    acquisition_date, payload
+    quantity, market_value, book_value, basis_origin, basis_method, basis_fees,
+    accrued_interest, acquisition_date, payload
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "InsertPositions", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
 				r.SilverSourceID, r.SnapshotAt, r.AccountExternalID, r.PositionKey,
 				nullableString(r.InstrumentExternalID), string(r.AssetClass), string(r.Vehicle), r.Currency,
 				nullableDecimal(r.Quantity), nullableDecimal(r.MarketValue),
-				nullableDecimal(r.BookValue), nullableDecimal(r.AccruedInterest),
+				nullableDecimal(r.BookValue), nullableEnumValue(r.Basis.Origin),
+				nullableEnumValue(r.Basis.Method), nullableEnumValue(r.Basis.Fees),
+				nullableDecimal(r.AccruedInterest),
 				nullableTime(r.AcquisitionDate), nullableJSON(r.Payload))
+		})
+}
+
+// InsertPositionLots inserts `position_lots` rows. Snapshot-grain like
+// positions: the same window delete has wiped the overlap. A lot's
+// basis origin is set exactly when its book value is.
+func (w *Writer) InsertPositionLots(ctx context.Context, batch []canonical.PositionLotChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	for i := range batch {
+		r := &batch[i]
+		if (r.BookValue == nil) != (r.BasisOrigin == "") {
+			return fmt.Errorf("InsertPositionLots row %d (%s/%s): basis_origin %q does not match book_value",
+				i, r.PositionKey, r.LotKey, r.BasisOrigin)
+		}
+		if r.BasisOrigin != "" && !r.BasisOrigin.Valid() {
+			return fmt.Errorf("InsertPositionLots row %d: invalid basis_origin %q", i, r.BasisOrigin)
+		}
+		if r.Term != "" && !r.Term.Valid() {
+			return fmt.Errorf("InsertPositionLots row %d: invalid term %q", i, r.Term)
+		}
+	}
+	const head = `
+INSERT INTO position_lots (
+    silver_source_id, snapshot_at, account_external_id, position_key, lot_key,
+    instrument_external_id, currency, quantity, book_value, market_value,
+    acquisition_date, term, covered, basis_origin, source_document, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "InsertPositionLots", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.SnapshotAt, r.AccountExternalID, r.PositionKey, r.LotKey,
+				nullableString(r.InstrumentExternalID), r.Currency,
+				nullableDecimal(r.Quantity), nullableDecimal(r.BookValue), nullableDecimal(r.MarketValue),
+				nullableTime(r.AcquisitionDate), nullableEnumValue(r.Term), nullableBool(r.Covered),
+				nullableEnumValue(r.BasisOrigin), nullableString(r.SourceDocument), nullableJSON(r.Payload))
+		})
+}
+
+// InsertRealizedLots inserts `realized_lots` rows. The caller has
+// cleared the source's previous rows: the table is replaced whole on a
+// load (docs/DESIGN.md §8.1).
+func (w *Writer) InsertRealizedLots(ctx context.Context, batch []canonical.RealizedLotChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	for i := range batch {
+		r := &batch[i]
+		if !r.DocumentKind.Valid() {
+			return fmt.Errorf("InsertRealizedLots row %d: invalid document_kind %q", i, r.DocumentKind)
+		}
+		if r.Term != "" && !r.Term.Valid() {
+			return fmt.Errorf("InsertRealizedLots row %d: invalid term %q", i, r.Term)
+		}
+		if err := canonical.ValidateBookValue(r.BookValue, r.Basis); err != nil {
+			return fmt.Errorf("InsertRealizedLots row %d (%s): %w", i, r.RealizedLotExternalID, err)
+		}
+	}
+	const head = `
+INSERT INTO realized_lots (
+    silver_source_id, realized_lot_external_id, account_external_id,
+    instrument_external_id, instrument_hint, description, document_kind, tax_year,
+    acquisition_date, acquired_various, disposal_date, settlement_date, currency,
+    quantity, proceeds, book_value, realized_gain_loss, wash_sale_disallowed,
+    accrued_market_discount, term, covered, form_8949_box,
+    basis_origin, basis_method, basis_fees, is_primary, source_document, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "InsertRealizedLots", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.RealizedLotExternalID, r.AccountExternalID,
+				nullableString(r.InstrumentExternalID), nullableEnumValue(r.InstrumentHint),
+				nullableString(r.Description), string(r.DocumentKind), r.TaxYear,
+				nullableTime(r.AcquisitionDate), r.AcquiredVarious,
+				nullableTime(r.DisposalDate), nullableTime(r.SettlementDate), r.Currency,
+				nullableDecimal(r.Quantity), nullableDecimal(r.Proceeds), nullableDecimal(r.BookValue),
+				nullableDecimal(r.RealizedGainLoss), nullableDecimal(r.WashSaleDisallowed),
+				nullableDecimal(r.AccruedMarketDiscount), nullableEnumValue(r.Term),
+				nullableBool(r.Covered), nullableString(r.Form8949Box),
+				nullableEnumValue(r.Basis.Origin), nullableEnumValue(r.Basis.Method),
+				nullableEnumValue(r.Basis.Fees), r.IsPrimary,
+				nullableString(r.SourceDocument), nullableJSON(r.Payload))
 		})
 }
 
@@ -492,6 +586,13 @@ func nullableString(p *string) any {
 }
 
 func nullableDecimal(p *canonical.Decimal) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func nullableBool(p *bool) any {
 	if p == nil {
 		return nil
 	}

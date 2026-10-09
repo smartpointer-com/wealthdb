@@ -187,7 +187,7 @@ func appendFundCarryAt(t int64, acct string, ledger fundLedger, batch *canonical
 			return err
 		}
 		instKey := instrumentID(eid)
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           t,
 			AccountExternalID:    acct,
 			PositionKey:          positionKey(eid),
@@ -196,10 +196,11 @@ func appendFundCarryAt(t int64, acct string, ledger fundLedger, batch *canonical
 			Vehicle:              canonical.VehicleFund,
 			Currency:             b.ccy,
 			MarketValue:          &carried,
-			BookValue:            &book,
 			AcquisitionDate:      ledger.acquisitionDate(eid),
 			Payload:              payload,
-		})
+		}
+		pos.SetBookValue(&book, fundCarryBasis)
+		batch.Positions = append(batch.Positions, pos)
 		active[eid] = b.ccy
 		classesNew[eid] = canonical.AssetClassPrivateEquity
 		vehicles[eid] = canonical.VehicleFund

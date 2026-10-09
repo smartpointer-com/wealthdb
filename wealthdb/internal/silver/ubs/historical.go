@@ -271,7 +271,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			positionCcy = ccy
 		}
 		bookValue, posPayload := historicalBookValue(units, cost, ccy, positionCcy, payload)
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           asOf,
 			AccountExternalID:    accountID,
 			PositionKey:          isin,
@@ -281,10 +281,11 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			Currency:             positionCcy,
 			Quantity:             silver.DecimalPtrFromNullFloat(units),
 			MarketValue:          silver.DecimalPtrFromNullFloat(mv),
-			BookValue:            bookValue,
 			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
 			Payload:              posPayload,
-		})
+		}
+		pos.SetBookValue(bookValue, statementBasis)
+		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
 }
@@ -560,6 +561,12 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 		queries = append(queries, `SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_mortgages`)
 	}
 	return r.span(ctx, "historicalRange", queries)
+}
+
+// statementBasis stamps a statement row's book value: units at the
+// average cost, which UBS states without the purchase fees.
+var statementBasis = canonical.Basis{
+	Origin: canonical.BasisDerived, Method: canonical.BasisMethodAverage, Fees: canonical.BasisFeesExcluded,
 }
 
 // historicalBookValue returns a statement row's book value and the payload

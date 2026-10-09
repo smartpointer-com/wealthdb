@@ -91,7 +91,8 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
            AND CAST(strftime('%s', v.as_of_date) AS INTEGER) <= ?1
          ORDER BY CAST(strftime('%s', v.as_of_date) AS INTEGER) DESC
          LIMIT 1) AS market_value,
-       ` + c.bookValueSQL() + ` AS book_value
+       ` + c.bookValueSQL() + ` AS book_value,
+       ` + c.paidInSQL() + ` AS paid_in
   FROM positions p
  WHERE CAST(strftime('%s', p.acquired_at) AS INTEGER) <= ?1
    AND (p.closed_at IS NULL
@@ -110,9 +111,10 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 			id, acctID, kind, vehicle, currency, displayName, payload string
 			acqUnix                                                   int64
 			marketValue, bookValue                                    sql.NullString
+			paidIn                                                    bool
 		)
 		if err := rows.Scan(&id, &acctID, &kind, &vehicle, &currency, &displayName,
-			&acqUnix, &payload, &marketValue, &bookValue); err != nil {
+			&acqUnix, &payload, &marketValue, &bookValue, &paidIn); err != nil {
 			return batch, err
 		}
 		live = true
@@ -149,7 +151,7 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 		}
 		if bookValue.Valid {
 			if bv, err := canonical.NewDecimalFromString(signed(bookValue.String, neg)); err == nil {
-				pos.BookValue = &bv
+				pos.SetBookValue(&bv, manualBasis(paidIn))
 			}
 		}
 		batch.Positions = append(batch.Positions, pos)
@@ -209,6 +211,27 @@ func (c *Connection) bookValueSQL() string {
                   AND CAST(strftime('%s', cb.as_of_date) AS INTEGER) <= ?1
                 ORDER BY cb.as_of_date DESC LIMIT 1)
          ELSE ` + atAcquisition + ` END`
+}
+
+// paidInSQL is the SQL for whether bookValueSQL reads the cost_basis
+// series for the position, inside the same query.
+func (c *Connection) paidInSQL() string {
+	if !c.costBasis {
+		return `0`
+	}
+	return `EXISTS (SELECT 1 FROM cost_basis cb WHERE cb.position_id = p.id)`
+}
+
+// manualBasis stamps a manual book value: the capital paid in where the
+// cost_basis series covers the position, else the valuation entered for
+// the acquisition date. Both are figures entered as they are, with no
+// statement of fees.
+func manualBasis(paidIn bool) canonical.Basis {
+	m := canonical.BasisMethodAcquisitionValue
+	if paidIn {
+		m = canonical.BasisMethodPaidIn
+	}
+	return canonical.Basis{Origin: canonical.BasisStated, Method: m, Fees: canonical.BasisFeesUnknown}
 }
 
 // accountsFor is one AccountChange per account holding something at t.

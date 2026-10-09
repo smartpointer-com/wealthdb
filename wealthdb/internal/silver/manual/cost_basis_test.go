@@ -79,3 +79,31 @@ func TestASilverWithoutTheCostBasisTableStillLoads(t *testing.T) {
 		t.Errorf("pf-1 book value = %v, want 200.00 (the acquired_at valuation)", pf)
 	}
 }
+
+// The stamp says which of the two figures a book value is: the paid-in
+// series, or the valuation at acquisition.
+func TestTheBookValueStampNamesItsSource(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	if _, err := db.Exec(`
+        INSERT INTO cost_basis(position_id, as_of_date, amount, currency, notes) VALUES
+            ('pf-1', '2021-02-01', '50', 'USD', 'first call');`); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	want := map[string]canonical.BasisMethod{
+		"pf-1": canonical.BasisMethodPaidIn,
+		"re-1": canonical.BasisMethodAcquisitionValue,
+	}
+	for _, b := range collectSnapshots(t, conn, w) {
+		for _, p := range b.Positions {
+			if p.SnapshotAt != iso(t, "2023-01-01") || want[p.PositionKey] == "" {
+				continue
+			}
+			if p.Basis.Method != want[p.PositionKey] || p.Basis.Origin != canonical.BasisStated {
+				t.Errorf("%s stamp = %+v, want stated %s", p.PositionKey, p.Basis, want[p.PositionKey])
+			}
+		}
+	}
+}

@@ -487,7 +487,7 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 			book = p.costBasis
 		}
 		key := p.key
-		b.Positions = append(b.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           t,
 			AccountExternalID:    p.accountID,
 			PositionKey:          key,
@@ -497,9 +497,10 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 			Currency:             p.currency,
 			Quantity:             p.quantity,
 			MarketValue:          p.value,
-			BookValue:            book,
 			Payload:              silver.PayloadWith(string(payload), extra),
-		})
+		}
+		pos.SetBookValue(book, holdingBasis)
+		b.Positions = append(b.Positions, pos)
 		if !seenInstrument[key] {
 			seenInstrument[key] = true
 			b.Instruments = append(b.Instruments, instrumentChange(p.sec, key, t, t))

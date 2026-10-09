@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -59,13 +60,14 @@ type SourceSpec struct {
 	InstrumentOverrides map[string]InstrumentOverride
 	// TransactionInstruments links a row the adapter could not
 	// resolve, keyed by the token it looked up and failed on
-	// (canonical.TransactionChange.InstrumentHint).
+	// (canonical.TransactionChange.InstrumentHint, and the realized
+	// lot's field of the same name).
 	TransactionInstruments map[string]string
 	// Supersession ends this source's account at a date because
 	// another source carries it from there (config `supersession`),
 	// as Unix seconds at UTC midnight per account_external_id. Rows
 	// dated on or after it are dropped before they reach gold —
-	// positions, cash balances and transactions alike — so the two
+	// positions, lots, cash balances and transactions alike — so the two
 	// sources tile instead of double-counting. Dropping alone would
 	// not end the series: gold carries a key forward until something
 	// supersedes it, so one zero row is also written AT the date for
@@ -130,6 +132,9 @@ type LoadResult struct {
 	Window             canonical.Window
 	SnapshotsLoaded    int
 	TransactionsLoaded int
+	// RealizedLotsLoaded counts the realized_lots rows the load wrote;
+	// it is not part of load_audit, which records the windowed streams.
+	RealizedLotsLoaded int
 }
 
 // Loader holds the gold *sql.DB. One Loader per process; safe to
@@ -240,8 +245,14 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 		}
 		res.TransactionsLoaded = nTx
 
-		// Excluded accounts and portfolios are swept once both streams
-		// have drained — see deleteExcluded for why that is the only
+		nLots, err := replaceRealizedLots(ctx, tx, conn, spec)
+		if err != nil {
+			return nil, fmt.Errorf("Load(%s): realized lots: %w", spec.ID, err)
+		}
+		res.RealizedLotsLoaded = nLots
+
+		// Excluded accounts and portfolios are swept once every stream
+		// has drained — see deleteExcluded for why that is the only
 		// point at which the sweep can see what it has to remove.
 		if err := deleteExcluded(ctx, tx, spec.ID,
 			configExclusions(spec.Overrides, spec.PortfolioOverrides)); err != nil {
@@ -330,6 +341,7 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 		name, timeCol string
 	}{
 		{"positions", "snapshot_at"},
+		{"position_lots", "snapshot_at"},
 		{"cash_balances", "snapshot_at"},
 		{"fx_rates", "snapshot_at"},
 		{"transactions", "occurred_at"},
@@ -410,6 +422,10 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 			func(p canonical.PositionChange) (string, int64) {
 				return p.AccountExternalID, p.SnapshotAt
 			})
+		batch.PositionLots = dropSuperseded(batch.PositionLots, spec.Supersession,
+			func(l canonical.PositionLotChange) (string, int64) {
+				return l.AccountExternalID, l.SnapshotAt
+			})
 		batch.CashBalances = dropSuperseded(batch.CashBalances, spec.Supersession,
 			func(c canonical.CashBalanceChange) (string, int64) {
 				return c.AccountExternalID, c.SnapshotAt
@@ -421,6 +437,9 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		if err := writer.InsertPositions(ctx, batch.Positions); err != nil {
 			return total, err
 		}
+		if err := writer.InsertPositionLots(ctx, batch.PositionLots); err != nil {
+			return total, err
+		}
 		if err := writer.InsertCashBalances(ctx, batch.CashBalances); err != nil {
 			return total, err
 		}
@@ -428,7 +447,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 			return total, err
 		}
 
-		total += len(batch.Positions) + len(batch.CashBalances) + len(batch.FxRates)
+		total += len(batch.Positions) + len(batch.PositionLots) + len(batch.CashBalances) + len(batch.FxRates)
 
 		if !more {
 			positions, balances := closing.rows(spec.ID)
@@ -636,7 +655,8 @@ func (c *supersessionClosing) rows(sourceID string) ([]canonical.PositionChange,
 			p.SnapshotAt = cutoff
 			q, v := zero, zero
 			p.Quantity, p.MarketValue = &q, &v
-			p.BookValue, p.AccruedInterest, p.AcquisitionDate = nil, nil, nil
+			p.SetBookValue(nil, canonical.Basis{})
+			p.AccruedInterest, p.AcquisitionDate = nil, nil
 			p.Payload = json.RawMessage(supersessionMarkerPayload)
 			positions = append(positions, p)
 		}
@@ -682,6 +702,52 @@ func applyTransactions(ctx context.Context, tx *sql.Tx, conn silver.Connection, 
 			return total, nil
 		}
 	}
+}
+
+// replaceRealizedLots rewrites the source's realized_lots rows from the
+// adapter's RealizedLots, when the adapter offers them. The table is
+// not windowed (silver.RealizedLotReader says why), so the previous
+// rows go first, whole. The loader's statements apply as they do to
+// transactions: a config link names an instrument the adapter could
+// only hint at, and a lot disposed on or after a superseded account's
+// handover is the successor's to state. A lot with no disposal or
+// settlement date is kept; nothing places it past the handover.
+func replaceRealizedLots(ctx context.Context, tx *sql.Tx, conn silver.Connection, spec SourceSpec) (int, error) {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM realized_lots WHERE silver_source_id = ?`, spec.ID); err != nil {
+		return 0, fmt.Errorf("clear prior: %w", err)
+	}
+	reader, ok := conn.(silver.RealizedLotReader)
+	if !ok {
+		return 0, nil
+	}
+	lots, err := reader.RealizedLots(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for i := range lots {
+		r := &lots[i]
+		r.SilverSourceID = spec.ID
+		if r.InstrumentExternalID == nil && r.InstrumentHint != "" {
+			if id, ok := spec.TransactionInstruments[r.InstrumentHint]; ok && id != "" {
+				r.InstrumentExternalID = &id
+			}
+		}
+	}
+	lots = dropSuperseded(lots, spec.Supersession,
+		func(r canonical.RealizedLotChange) (string, int64) {
+			switch {
+			case r.DisposalDate != nil:
+				return r.AccountExternalID, r.DisposalDate.Unix()
+			case r.SettlementDate != nil:
+				return r.AccountExternalID, r.SettlementDate.Unix()
+			}
+			return r.AccountExternalID, math.MinInt64
+		})
+	if err := gold.NewWriter(tx).InsertRealizedLots(ctx, lots); err != nil {
+		return 0, err
+	}
+	return len(lots), nil
 }
 
 func insertLoadAudit(ctx context.Context, tx *sql.Tx, sourceID string, now, watermarkBefore int64, res *LoadResult) error {
@@ -732,6 +798,9 @@ func stampSnapshotBatch(b *canonical.SnapshotBatch, sourceID string) {
 	}
 	for i := range b.Positions {
 		b.Positions[i].SilverSourceID = sourceID
+	}
+	for i := range b.PositionLots {
+		b.PositionLots[i].SilverSourceID = sourceID
 	}
 	for i := range b.CashBalances {
 		b.CashBalances[i].SilverSourceID = sourceID
@@ -837,7 +906,7 @@ func deleteExcluded(ctx context.Context, tx *sql.Tx, sourceID string, e exclusio
 		return nil
 	}
 
-	for _, table := range []string{"positions", "cash_balances", "transactions"} {
+	for _, table := range []string{"positions", "position_lots", "cash_balances", "transactions", "realized_lots"} {
 		if err := exec("DELETE FROM "+table+" WHERE "+factWhere, args...); err != nil {
 			return fmt.Errorf("delete excluded from %s: %w", table, err)
 		}
