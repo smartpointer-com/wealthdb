@@ -1,6 +1,6 @@
 ---
 name: wealthdb-ro
-description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), categorised spending, categorised income, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, how something performed over a period, what was spent and on what, what was received and from whom, or where the household's cash came from and where it went.
+description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), realized and unrealized gains with their cost basis and tax lots, categorised spending, categorised income, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what was spent and on what, what was received and from whom, or where the household's cash came from and where it went.
 ---
 
 # wealthdb — portfolio queries (read-only)
@@ -14,7 +14,8 @@ setup, no paths, no connection flags.
 ## Hard rules
 
 1. **Run only these commands.** `holdings`, `transactions`, `returns`,
-   `spending`, `income`, `cashflow`, `status`, `snapshots`, `help`, `version`.
+   `gains`, `spending`, `income`, `cashflow`, `status`, `snapshots`, `help`,
+   `version`.
 2. **Anything else is forbidden**, whether or not it is listed here. `load`,
    `reload`, `reset`, `init`, `config`, `compact`, `categorize`,
    `resolve-symbols`, `web-config`, `web-materialize` and `wealthdb-collect`
@@ -70,9 +71,16 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
   (a return that cannot be computed is the string `"n/a"`; drop those rows first)
 - **Realized gains of a tax year** — `wealthdb gains summary 2025 --period total`
   (read `realized`; `quality` names any sales no tax document covers)
+- **Total unrealized gain right now** — `wealthdb gains summary --period total`
+  (read `unrealized_end`; the default window ends today). Never sum the
+  positions yourself: `summary`, `sources`, `portfolios`, `accounts` and
+  `positions` all add up to the same figures.
 - **Every lot sold in a year** — `wealthdb gains realized 2025`
 - **Which holdings gained or lost the most** —
   `wealthdb gains positions 2025 -f json | jq 'map(select(.gain_USD)) | sort_by(.gain_USD|tonumber) | reverse | .[0:5]'`
+  (one row per account and holding; a house or a plan fund is a holding too,
+  so add `select(.symbol)` for stocks and funds only, and a symbol held in
+  several accounts has several rows)
 - **Unrealized gain and cost basis of each holding now** —
   `wealthdb holdings positions -C +cost_basis,unrealized_gain,unrealized_pct,basis_stamp`
 - **Where gains are unknown** — `wealthdb gains coverage 2025` (a `no_basis` or
