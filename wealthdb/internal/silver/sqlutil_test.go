@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestJoinText pins the transaction-text composition rule the adapters
@@ -102,5 +105,27 @@ func TestHasTables(t *testing.T) {
 		if got != c.want {
 			t.Errorf("HasTables(%q) = %v, want %v", c.names, got, c.want)
 		}
+	}
+}
+
+func TestLotHelpers(t *testing.T) {
+	if d := ISODate(" 2024-03-05 "); d == nil || d.Format(time.DateOnly) != "2024-03-05" {
+		t.Errorf("ISODate = %v", d)
+	}
+	for _, s := range []string{"", "Various", "03/05/2024"} {
+		if ISODate(s) != nil {
+			t.Errorf("ISODate(%q) parsed", s)
+		}
+	}
+	neg := canonical.NewDecimalFromInt(-7)
+	if a := AbsPtr(&neg); a == nil || a.String() != "7" || neg.String() != "-7" {
+		t.Errorf("AbsPtr = %v (input %v)", a, neg)
+	}
+	if AbsPtr(nil) != nil {
+		t.Error("AbsPtr(nil) not nil")
+	}
+	d := time.Date(2023, 12, 29, 0, 0, 0, 0, time.UTC)
+	if TaxYearOf(nil, &d) != 2023 || TaxYearOf() != 0 {
+		t.Error("TaxYearOf")
 	}
 }

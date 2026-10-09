@@ -1,6 +1,9 @@
 package canonical
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestValidateBookValuePairsValueAndStamp(t *testing.T) {
 	v := NewDecimalFromInt(100)
@@ -47,9 +50,53 @@ func TestLotEnumsAdmitOnlyTheirValues(t *testing.T) {
 		}
 	}
 	if RealizedDocKind("1099b").Valid() {
-		t.Error("silver's old kind name accepted")
+		t.Error("a kind outside the vocabulary accepted")
 	}
 	if !LotTermShort.Valid() || !LotTermLong.Valid() || LotTerm("SHORT").Valid() {
 		t.Error("term vocabulary")
+	}
+}
+
+func TestParseLotTermReadsAnyCase(t *testing.T) {
+	for in, want := range map[string]LotTerm{
+		"SHORT": LotTermShort, " long ": LotTermLong, "Short": LotTermShort,
+		"": "", "ST": "", "various": "",
+	} {
+		if got := ParseLotTerm(in); got != want {
+			t.Errorf("ParseLotTerm(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLotStampsTravelWithTheValue(t *testing.T) {
+	v := NewDecimalFromInt(3)
+	var l PositionLotChange
+	l.SetBookValue(&v, BasisStated)
+	if err := ValidateLotOrigin(l.BookValue, l.BasisOrigin); err != nil || l.BasisOrigin != BasisStated {
+		t.Errorf("set: %v %q", err, l.BasisOrigin)
+	}
+	l.SetBookValue(nil, BasisStated)
+	if l.BookValue != nil || l.BasisOrigin != "" {
+		t.Errorf("nil value kept %v %q", l.BookValue, l.BasisOrigin)
+	}
+	if ValidateLotOrigin(&v, "") == nil || ValidateLotOrigin(nil, BasisStated) == nil {
+		t.Error("a mismatched origin passed")
+	}
+	var r RealizedLotChange
+	r.SetBookValue(nil, Basis{Origin: BasisStated, Method: BasisMethodLots, Fees: BasisFeesIncluded})
+	if !r.Basis.IsZero() {
+		t.Errorf("realized stamp without a value: %+v", r.Basis)
+	}
+}
+
+func TestEarliestLotDate(t *testing.T) {
+	early := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)
+	late := time.Date(2021, 1, 2, 0, 0, 0, 0, time.UTC)
+	lots := []PositionLotChange{{AcquisitionDate: &late}, {}, {AcquisitionDate: &early}}
+	if got := EarliestLotDate(lots); got == nil || !got.Equal(early) {
+		t.Errorf("EarliestLotDate = %v", got)
+	}
+	if EarliestLotDate([]PositionLotChange{{}}) != nil {
+		t.Error("a lot set with no dates gave one")
 	}
 }

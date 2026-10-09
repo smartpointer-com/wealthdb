@@ -289,10 +289,11 @@ type Window struct {
 
 // SnapshotBatch is one batch yielded by a SnapshotStream.Next call.
 // Adapters multiplex change records of different types into one
-// batch; gold applies them in the order: dimensions (portfolios,
-// accounts, instruments) before facts (positions, position_lots,
-// cash_balances, fx_rates). Portfolios come first because accounts
-// may reference them by portfolio_external_id.
+// batch. The loader writes each batch's facts (positions,
+// position_lots, cash_balances, fx_rates) as it arrives and folds the
+// dimensions (portfolios, accounts, instruments) to upsert once the
+// stream drains (docs/DESIGN.md §8.4); gold declares no foreign keys,
+// so the order within the load's transaction does not matter.
 type SnapshotBatch struct {
 	Portfolios   []PortfolioChange
 	Accounts     []AccountChange

@@ -19,7 +19,8 @@ import (
 // Every id and figure below is invented.
 
 // lotsKind borrows a kind gold's silver_sources CHECK admits and no
-// adapter this package's tests import registers.
+// adapter this package's tests import registers; importing the real
+// synthetic adapter here would make silver.Register panic on the name.
 const lotsKind = "synthetic"
 
 // lotsState is what the fake adapter serves on the next load.
@@ -192,9 +193,13 @@ func TestLotsAnswerToSupersessionAndExclusion(t *testing.T) {
 		Positions:    append(append(posA1, posA2...), posB...),
 		PositionLots: append(append(lotsA1, lotsA2...), lotsB...),
 	}
+	settledAfter := sale("settled-after", "A", nil)
+	settledAfter.SettlementDate = &after
+	laterYear := sale("later-year", "A", nil)
+	laterYear.TaxYear = 2025
 	lotsState.realized = []canonical.RealizedLotChange{
 		sale("before", "A", &before), sale("after", "A", &after), sale("undated", "A", nil),
-		sale("excluded", "B", &before),
+		settledAfter, laterYear, sale("excluded", "B", &before),
 	}
 	lotsLoad(t, l, loader.SourceSpec{
 		Supersession: map[string]int64{"A": handover},

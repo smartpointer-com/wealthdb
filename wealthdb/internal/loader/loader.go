@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -359,7 +358,7 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 }
 
 // applySnapshots drains conn.Snapshots into the gold writer.
-// Fact rows (positions, cash, fx) are written per batch, plus a
+// Fact rows (positions, lots, cash, fx) are written per batch, plus a
 // closing set once the stream drains (below); dimension rows
 // (portfolios, accounts, instruments) fold into a
 // gold.ChangeAccumulator and upsert once after the stream drains —
@@ -710,8 +709,8 @@ func applyTransactions(ctx context.Context, tx *sql.Tx, conn silver.Connection, 
 // rows go first, whole. The loader's statements apply as they do to
 // transactions: a config link names an instrument the adapter could
 // only hint at, and a lot disposed on or after a superseded account's
-// handover is the successor's to state. A lot with no disposal or
-// settlement date is kept; nothing places it past the handover.
+// handover is the successor's to state. A lot dated by neither its
+// disposal nor its settlement stands at the start of its tax year.
 func replaceRealizedLots(ctx context.Context, tx *sql.Tx, conn silver.Connection, spec SourceSpec) (int, error) {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM realized_lots WHERE silver_source_id = ?`, spec.ID); err != nil {
@@ -728,11 +727,7 @@ func replaceRealizedLots(ctx context.Context, tx *sql.Tx, conn silver.Connection
 	for i := range lots {
 		r := &lots[i]
 		r.SilverSourceID = spec.ID
-		if r.InstrumentExternalID == nil && r.InstrumentHint != "" {
-			if id, ok := spec.TransactionInstruments[r.InstrumentHint]; ok && id != "" {
-				r.InstrumentExternalID = &id
-			}
-		}
+		linkHint(&r.InstrumentExternalID, r.InstrumentHint, spec.TransactionInstruments)
 	}
 	lots = dropSuperseded(lots, spec.Supersession,
 		func(r canonical.RealizedLotChange) (string, int64) {
@@ -742,7 +737,7 @@ func replaceRealizedLots(ctx context.Context, tx *sql.Tx, conn silver.Connection
 			case r.SettlementDate != nil:
 				return r.AccountExternalID, r.SettlementDate.Unix()
 			}
-			return r.AccountExternalID, math.MinInt64
+			return r.AccountExternalID, time.Date(r.TaxYear, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
 		})
 	if err := gold.NewWriter(tx).InsertRealizedLots(ctx, lots); err != nil {
 		return 0, err
@@ -852,8 +847,8 @@ func configExclusions(accounts map[string]AccountOverride, portfolios map[string
 // It sweeps gold after the streams have drained rather than filtering
 // them, and both grains do, because neither is decidable earlier. A
 // portfolio's membership lives in the account dimension: a position, a
-// cash balance and a transaction each name an account and never a
-// portfolio, and an adapter may emit its facts before the dimension
+// lot, a cash balance and a transaction each name an account and never
+// a portfolio, and an adapter may emit its facts before the dimension
 // rows that would place them. An account is decidable per row, but a
 // filter reaches only the rows this load happens to write — an account
 // already in gold when the exclusion is added would sit there
@@ -1155,14 +1150,25 @@ func applyTransactionInstruments(txns []canonical.TransactionChange, links map[s
 		return
 	}
 	for i := range txns {
-		if txns[i].InstrumentExternalID != nil || txns[i].InstrumentHint == "" {
-			continue
-		}
-		if id, ok := links[txns[i].InstrumentHint]; ok && id != "" {
-			txns[i].InstrumentExternalID = &id
+		if linkHint(&txns[i].InstrumentExternalID, txns[i].InstrumentHint, links) {
 			txns[i].AssetClass, txns[i].Vehicle = "", ""
 		}
 	}
+}
+
+// linkHint sets an unresolved row's instrument from the config link for
+// the token the adapter failed on, and reports whether it did. A row the
+// adapter resolved, or whose token no link names, is left alone.
+func linkHint(instrument **string, hint string, links map[string]string) bool {
+	if *instrument != nil || hint == "" {
+		return false
+	}
+	id, ok := links[hint]
+	if !ok || id == "" {
+		return false
+	}
+	*instrument = &id
+	return true
 }
 
 func applyInstrumentOverrideTo(ac *canonical.AssetClass, veh *canonical.Vehicle, ov InstrumentOverride) {

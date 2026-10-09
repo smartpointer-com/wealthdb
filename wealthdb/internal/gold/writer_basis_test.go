@@ -101,17 +101,21 @@ func TestInsertPositionLotsRoundTrips(t *testing.T) {
 func TestInsertPositionLotsRefusesAMismatchedOrigin(t *testing.T) {
 	db, ctx := openMigrated(t)
 	bv := canonical.NewDecimalFromInt(1)
-	for _, l := range []canonical.PositionLotChange{
-		{PositionKey: "X", LotKey: "1", Currency: "USD", BookValue: &bv},
-		{PositionKey: "X", LotKey: "2", Currency: "USD", BasisOrigin: canonical.BasisStated},
-		{PositionKey: "X", LotKey: "3", Currency: "USD", Term: "SHORT"},
+	for _, c := range []struct {
+		lot  canonical.PositionLotChange
+		want string
+	}{
+		{canonical.PositionLotChange{PositionKey: "X", LotKey: "1", Currency: "USD", BookValue: &bv}, "does not match"},
+		{canonical.PositionLotChange{PositionKey: "X", LotKey: "2", Currency: "USD", BasisOrigin: canonical.BasisStated}, "does not match"},
+		{canonical.PositionLotChange{PositionKey: "X", LotKey: "3", Currency: "USD", Term: "SHORT"}, "invalid term"},
 	} {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := NewWriter(tx).InsertPositionLots(ctx, []canonical.PositionLotChange{l}); err == nil {
-			t.Errorf("lot %s accepted", l.LotKey)
+		err = NewWriter(tx).InsertPositionLots(ctx, []canonical.PositionLotChange{c.lot})
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("lot %s: err = %v, want %q", c.lot.LotKey, err, c.want)
 		}
 		_ = tx.Rollback()
 	}
@@ -149,16 +153,22 @@ func TestInsertRealizedLotsRoundTrips(t *testing.T) {
 func TestInsertRealizedLotsRefusesBadRows(t *testing.T) {
 	db, ctx := openMigrated(t)
 	cost := canonical.NewDecimalFromInt(1)
-	for _, r := range []canonical.RealizedLotChange{
-		{RealizedLotExternalID: "kind", DocumentKind: "1099b", Currency: "USD"},
-		{RealizedLotExternalID: "stamp", DocumentKind: canonical.RealizedTrade, Currency: "USD", BookValue: &cost},
+	for _, c := range []struct {
+		lot  canonical.RealizedLotChange
+		want string
+	}{
+		{canonical.RealizedLotChange{RealizedLotExternalID: "kind", DocumentKind: "1099b", TaxYear: 2024, Currency: "USD"}, "document_kind"},
+		{canonical.RealizedLotChange{RealizedLotExternalID: "year", DocumentKind: canonical.RealizedTrade, Currency: "USD"}, "no tax year"},
+		{canonical.RealizedLotChange{RealizedLotExternalID: "term", DocumentKind: canonical.RealizedTrade, TaxYear: 2024, Currency: "USD", Term: "LONG"}, "invalid term"},
+		{canonical.RealizedLotChange{RealizedLotExternalID: "stamp", DocumentKind: canonical.RealizedTrade, TaxYear: 2024, Currency: "USD", BookValue: &cost}, "stamp"},
 	} {
 		tx, err := db.BeginTx(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := NewWriter(tx).InsertRealizedLots(ctx, []canonical.RealizedLotChange{r}); err == nil {
-			t.Errorf("%s accepted", r.RealizedLotExternalID)
+		err = NewWriter(tx).InsertRealizedLots(ctx, []canonical.RealizedLotChange{c.lot})
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want %q", c.lot.RealizedLotExternalID, err, c.want)
 		}
 		_ = tx.Rollback()
 	}

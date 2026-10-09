@@ -3,6 +3,7 @@ package canonical
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -150,6 +151,23 @@ const (
 
 func (t LotTerm) Valid() bool { return t == LotTermShort || t == LotTermLong }
 
+// ParseLotTerm reads a source's printed term, "SHORT" or "long" in any
+// case or spacing. Any other label states no term: "".
+func ParseLotTerm(s string) LotTerm {
+	if t := LotTerm(strings.ToLower(strings.TrimSpace(s))); t.Valid() {
+		return t
+	}
+	return ""
+}
+
+// ValidateTerm reports a term that is set but not in the vocabulary.
+func ValidateTerm(t LotTerm) error {
+	if t != "" && !t.Valid() {
+		return fmt.Errorf("invalid term %q", t)
+	}
+	return nil
+}
+
 // PositionLotChange is one insert into gold's `position_lots` table: one
 // open lot of the position row with the same source, snapshot, account
 // and position key.
@@ -177,6 +195,41 @@ type PositionLotChange struct {
 	BasisOrigin    BasisOrigin
 	SourceDocument *string
 	Payload        json.RawMessage
+}
+
+// SetBookValue sets a lot's book value and the origin that stamps it
+// together. A nil value leaves both unset.
+func (l *PositionLotChange) SetBookValue(v *Decimal, origin BasisOrigin) {
+	if v == nil {
+		l.BookValue, l.BasisOrigin = nil, ""
+		return
+	}
+	l.BookValue, l.BasisOrigin = v, origin
+}
+
+// ValidateLotOrigin checks a lot's book value against its origin, the
+// lot's form of ValidateBookValue: a value carries a valid origin, and
+// no value carries none.
+func ValidateLotOrigin(v *Decimal, o BasisOrigin) error {
+	if (v == nil) != (o == "") {
+		return fmt.Errorf("basis_origin %q does not match book_value", o)
+	}
+	if o != "" && !o.Valid() {
+		return fmt.Errorf("invalid basis_origin %q", o)
+	}
+	return nil
+}
+
+// EarliestLotDate is the earliest acquisition date among lots, nil when
+// none states one: the position's acquisition_date where it has lots.
+func EarliestLotDate(lots []PositionLotChange) *time.Time {
+	var earliest *time.Time
+	for i := range lots {
+		if d := lots[i].AcquisitionDate; d != nil && (earliest == nil || d.Before(*earliest)) {
+			earliest = d
+		}
+	}
+	return earliest
 }
 
 // RealizedDocKind names the document a realized lot is read from.
@@ -242,4 +295,14 @@ type RealizedLotChange struct {
 	IsPrimary      bool
 	SourceDocument *string
 	Payload        json.RawMessage
+}
+
+// SetBookValue sets a realized lot's book value and its stamp together.
+// A nil value leaves both unset.
+func (r *RealizedLotChange) SetBookValue(v *Decimal, b Basis) {
+	if v == nil {
+		r.BookValue, r.Basis = nil, Basis{}
+		return
+	}
+	r.BookValue, r.Basis = v, b
 }

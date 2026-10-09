@@ -369,15 +369,11 @@ func (w *Writer) InsertPositionLots(ctx context.Context, batch []canonical.Posit
 	}
 	for i := range batch {
 		r := &batch[i]
-		if (r.BookValue == nil) != (r.BasisOrigin == "") {
-			return fmt.Errorf("InsertPositionLots row %d (%s/%s): basis_origin %q does not match book_value",
-				i, r.PositionKey, r.LotKey, r.BasisOrigin)
+		if err := canonical.ValidateLotOrigin(r.BookValue, r.BasisOrigin); err != nil {
+			return fmt.Errorf("InsertPositionLots row %d (%s/%s): %w", i, r.PositionKey, r.LotKey, err)
 		}
-		if r.BasisOrigin != "" && !r.BasisOrigin.Valid() {
-			return fmt.Errorf("InsertPositionLots row %d: invalid basis_origin %q", i, r.BasisOrigin)
-		}
-		if r.Term != "" && !r.Term.Valid() {
-			return fmt.Errorf("InsertPositionLots row %d: invalid term %q", i, r.Term)
+		if err := canonical.ValidateTerm(r.Term); err != nil {
+			return fmt.Errorf("InsertPositionLots row %d: %w", i, err)
 		}
 	}
 	const head = `
@@ -411,8 +407,11 @@ func (w *Writer) InsertRealizedLots(ctx context.Context, batch []canonical.Reali
 		if !r.DocumentKind.Valid() {
 			return fmt.Errorf("InsertRealizedLots row %d: invalid document_kind %q", i, r.DocumentKind)
 		}
-		if r.Term != "" && !r.Term.Valid() {
-			return fmt.Errorf("InsertRealizedLots row %d: invalid term %q", i, r.Term)
+		if r.TaxYear <= 0 {
+			return fmt.Errorf("InsertRealizedLots row %d (%s): no tax year", i, r.RealizedLotExternalID)
+		}
+		if err := canonical.ValidateTerm(r.Term); err != nil {
+			return fmt.Errorf("InsertRealizedLots row %d: %w", i, err)
 		}
 		if err := canonical.ValidateBookValue(r.BookValue, r.Basis); err != nil {
 			return fmt.Errorf("InsertRealizedLots row %d (%s): %w", i, r.RealizedLotExternalID, err)

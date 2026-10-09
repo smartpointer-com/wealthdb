@@ -302,3 +302,34 @@ func LoadClockChangeWindow(ctx context.Context, db *sql.DB, kind, spanExtrema st
 	}
 	return w, nil
 }
+
+// ISODate parses a silver date written YYYY-MM-DD, nil for anything
+// else: a blank, or text a source prints in a date's place ("Various").
+func ISODate(s string) *time.Time {
+	t, err := time.Parse(time.DateOnly, strings.TrimSpace(s))
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+
+// AbsPtr is the magnitude of a nullable figure: nil stays nil.
+func AbsPtr(d *canonical.Decimal) *canonical.Decimal {
+	if d == nil {
+		return nil
+	}
+	a := d.Abs()
+	return &a
+}
+
+// TaxYearOf is the year of the first date given, 0 when none is: the
+// tax year of a realized lot whose document prints none, from its
+// disposal date and failing that its settlement date.
+func TaxYearOf(dates ...*time.Time) int {
+	for _, d := range dates {
+		if d != nil {
+			return d.Year()
+		}
+	}
+	return 0
+}

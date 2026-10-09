@@ -2,14 +2,14 @@
 -- gold schema, migration 0115 — cost basis: the stamp on a book
 -- value, open lots and realized lots.
 --
--- `positions.book_value` has existed since 0001, and each adapter
--- that writes it means something of its own by it: a sum of tax lots
--- or a weighted average, with or without the purchase fees, printed
--- by the source or computed from what it prints. Nothing said which,
--- and a basis that answers for some sources and not others is worse
--- than none when nothing on the page says which. So a book value now
--- carries its stamp, all three columns set exactly when book_value
--- is (the gold writer enforces it, like the other gold enums):
+-- Each adapter that writes `positions.book_value` means something of
+-- its own by it: a sum of tax lots or a weighted average, with or
+-- without the purchase fees, printed by the source or computed from
+-- what it prints. A basis that answers for some sources and not
+-- others is worse than none when nothing on the page says which, so a
+-- book value carries its stamp, all three columns set exactly when
+-- book_value is (the gold writer enforces it, like the other gold
+-- enums):
 --
 --   basis_origin  stated | derived | rebuilt | seeded
 --   basis_method  lots | average | paid_in | acquisition_value | unknown
