@@ -8,12 +8,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -36,19 +37,27 @@ import (
 //
 // Which rows count each sale once (is_primary):
 //
-//   - A booking recurs in every statement whose period covers it. Its
-//     settlement number names it across statements, and the first
-//     statement that prints it keeps it; later copies are not primary.
-//   - A sale the bank reversed is not a sale. The list prints the
-//     reversal as a booking of its own, with the sale's figures and the
-//     units coming back, so the sale it cancels is found by those
-//     figures and is not primary.
+//   - A booking recurs in every statement whose period covers it. The
+//     portfolio and the settlement number name it across statements; a
+//     booking printed without a number is named by its figures and its
+//     booking text. The first statement that prints it keeps it, and
+//     later copies are not primary. A row without a reporting currency
+//     states no figure, so it is dropped before the first copy is
+//     chosen.
+//   - A sale the bank reversed is not a sale. The bank prints the
+//     reversal as a booking of its own: its booking text names it a
+//     reversal, and it carries the sale's figures with the units coming
+//     back. It cancels one sale with those figures, which is then not
+//     primary. A reversed purchase disposes of nothing and is no sale.
+//     The export's reversals cancel its own sales the same way.
 //   - The export restates sales the statements print, and reaches
 //     beyond the last of them. An export sale is primary only on a day
-//     no statement's list covers for its account. So the two kinds
-//     never state the same sale as primary, and both rank alike: a tax
-//     year a statement reaches only in part still counts the sales
-//     after its end.
+//     no statement's list covers for its account, so on one account and
+//     day only one kind can count. A sale both kinds state therefore
+//     counts once wherever both book it on the same account. A sale on
+//     a covered day that no list prints counts nowhere. Both kinds rank
+//     alike: a tax year a statement reaches only in part still counts
+//     the sales after its end.
 
 // RealizedLots implements silver.RealizedLotReader.
 func (c *Connection) RealizedLots(ctx context.Context) ([]canonical.RealizedLotChange, error) {
@@ -63,20 +72,20 @@ func (c *Connection) RealizedLots(ctx context.Context) ([]canonical.RealizedLotC
 	if err != nil {
 		return nil, err
 	}
-	lots, notPrimary, covered, err := c.web.statementSales(ctx, accounts, valors)
+	lots, statementCounts, covered, err := c.web.statementSales(ctx, accounts, valors)
 	if err != nil {
 		return nil, err
 	}
-	trades, uncovered, err := c.web.exportSales(ctx, accounts, valors, covered)
+	trades, tradeCounts, err := c.web.exportSales(ctx, accounts, valors, covered)
 	if err != nil {
 		return nil, err
 	}
 	lots = append(lots, trades...)
+	counts := map[string]bool{}
+	maps.Copy(counts, statementCounts)
+	maps.Copy(counts, tradeCounts)
 	silver.MarkPrimary(lots, realizedRank, func(r *canonical.RealizedLotChange) bool {
-		if r.DocumentKind == canonical.RealizedTrade {
-			return uncovered[r.RealizedLotExternalID]
-		}
-		return !notPrimary[r.RealizedLotExternalID]
+		return counts[r.RealizedLotExternalID]
 	})
 	return lots, nil
 }
@@ -85,8 +94,8 @@ var _ silver.RealizedLotReader = (*Connection)(nil)
 
 // realizedRank ranks the two kinds alike: they are not two documents
 // of one sale but two reaches in time, and eligibility already keeps
-// an export sale a statement prints from counting (see the file
-// comment).
+// an export sale from counting on a day a statement's list covers (see
+// the file comment).
 func realizedRank(k canonical.RealizedDocKind) int {
 	switch k {
 	case canonical.RealizedStatement, canonical.RealizedTrade:
@@ -188,37 +197,82 @@ type statementTrade struct {
 	costBasis, price, priceFxRate               sql.NullFloat64
 	priceGainPct, fxGainPct, realizedPct, value sql.NullFloat64
 	settlementAmount                            sql.NullFloat64
+	// booking names the booking the row prints, the same in every
+	// statement that prints it (see statementSales).
+	booking booking
 }
 
-// bookingKey names the booking a row prints, across statements.
-func (t statementTrade) bookingKey() string {
-	if t.settlementNo == "" {
-		return "row|" + t.token + "|" + strconv.FormatInt(t.seq, 10)
-	}
-	return t.account + "|" + t.settlementNo
-}
+// booking names one booking two ways: key is the same in every copy
+// that prints it, and figures is what a reversal shares with it.
+type booking struct{ key, figures string }
 
-// figuresKey is what a reversal shares with the sale it cancels: the
-// account, the security, the trade day, and the quantity and value
+// saleFigures is what a reversal shares with the sale it cancels: where
+// it was booked, the security, the trade day, and the quantity and value
 // with their signs dropped.
-func (t statementTrade) figuresKey() string {
+func saleFigures(where, isin, valor string, day int64, quantity, value sql.NullFloat64) string {
 	return strings.Join([]string{
-		t.account, t.isin, t.valor,
-		strconv.FormatInt(t.tradeDate.Int64, 10),
-		strconv.FormatFloat(math.Abs(t.quantity.Float64), 'f', 6, 64),
-		strconv.FormatFloat(math.Abs(t.value.Float64), 'f', 2, 64),
+		where, isin, normalizeValor(valor),
+		strconv.FormatInt(day, 10),
+		strconv.FormatFloat(math.Abs(quantity.Float64), 'f', 6, 64),
+		strconv.FormatFloat(math.Abs(value.Float64), 'f', 2, 64),
 	}, "|")
 }
 
+// isReversal reports whether a booking text names a reversal. The bank
+// prints one as the text of the booking it reverses with the word
+// "Reversal" in front, or behind a separator after it, in any case.
+func isReversal(text string) bool {
+	for _, w := range strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) }) {
+		if strings.EqualFold(w, "reversal") {
+			return true
+		}
+	}
+	return false
+}
+
+// cancelReversed pairs each reversal with the sale it cancels: the
+// first sale, in the order given, with the same figures that no
+// reversal has cancelled yet. A key given twice is one booking, so a
+// sale or a reversal two statements print counts once. It returns the
+// index of the cancelling reversal per cancelled sale's key.
+func cancelReversed(sales, reversals []booking) map[string]int {
+	open := map[string][]string{} // figures → sale keys not yet cancelled
+	seen := map[string]bool{}
+	for _, s := range sales {
+		if !seen[s.key] {
+			seen[s.key] = true
+			open[s.figures] = append(open[s.figures], s.key)
+		}
+	}
+	out := map[string]int{}
+	used := map[string]bool{}
+	for i, r := range reversals {
+		if used[r.key] || len(open[r.figures]) == 0 {
+			continue
+		}
+		used[r.key] = true
+		out[open[r.figures][0]] = i
+		open[r.figures] = open[r.figures][1:]
+	}
+	return out
+}
+
 // statementSales reads the sales the statements' transaction lists
-// print. It returns one realized lot per printed sale, the ids that
-// are not primary (a later copy of a booking, a reversed sale) and the
+// print. It returns one realized lot per printed sale, the ids that can
+// count (the first copy of a booking no reversal cancels) and the
 // periods the lists cover, per account.
 //
 // A sale is a booking with a negative quantity that prints a sale's
-// price and settles cash: that leaves out the corporate actions and
-// write-offs, which print neither, and a delivery free of payment,
-// which settles nothing.
+// price and settles cash, and whose booking text names no reversal:
+// that leaves out the corporate actions and write-offs, which print
+// neither, a delivery free of payment, which settles nothing, and a
+// reversed purchase.
+//
+// The portfolio and the settlement number name a booking across the
+// statements that print it. A row without a number falls back to its
+// figures and booking text, with its rank among the statement's rows of
+// the same figures and text, so two like bookings in one statement stay
+// two.
 func (r *webReader) statementSales(ctx context.Context, accounts realizedAccounts, valors map[string]string) ([]canonical.RealizedLotChange, map[string]bool, map[string][]listPeriod, error) {
 	ok, err := r.hasTable(ctx, "statement_trades")
 	if err != nil || !ok {
@@ -250,6 +304,8 @@ SELECT s.source_doc_token, s.seq, s.as_of_date, s.portfolio_external_id,
 	}
 	defer rows.Close()
 	var sales, reversals []statementTrade
+	nth := map[string]int{} // statement, figures and text → rows of them so far
+	skipped := 0
 	for rows.Next() {
 		var t statementTrade
 		if err := rows.Scan(&t.token, &t.seq, &t.asOf, &t.portfolio,
@@ -265,93 +321,81 @@ SELECT s.source_doc_token, s.seq, s.as_of_date, s.portfolio_external_id,
 		}
 		t.account = accounts.resolve(t.custody, t.portfolio)
 		t.isin = strings.TrimSpace(t.isin)
-		if t.quantity.Float64 < 0 {
-			sales = append(sales, t)
+		t.reportingCcy = strings.ToUpper(strings.TrimSpace(t.reportingCcy))
+		// The portfolio, not the resolved account: two copies of a
+		// booking must agree however each resolves.
+		t.booking.figures = saleFigures(t.portfolio, t.isin, t.valor, t.tradeDate.Int64, t.quantity, t.value)
+		if t.settlementNo != "" {
+			t.booking.key = "no|" + t.portfolio + "|" + t.settlementNo
 		} else {
+			like := t.booking.figures + "|" + t.bookingText
+			t.booking.key = "figures|" + like + "|" + strconv.Itoa(nth[t.token+"|"+like])
+			nth[t.token+"|"+like]++
+		}
+		reversal := isReversal(t.bookingText)
+		switch {
+		case reversal && t.quantity.Float64 > 0:
 			reversals = append(reversals, t)
+		case reversal || t.quantity.Float64 > 0:
+			// A purchase, or the reversal of one, disposes of nothing.
+		case t.reportingCcy == "":
+			// Proceeds and cost are in the reporting currency, and a
+			// figure without its currency is no figure.
+			skipped++
+		default:
+			sales = append(sales, t)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, nil, err
 	}
-
-	// The first copy of each booking is the one that can count.
-	kept := map[string]bool{}
-	notPrimary := map[string]bool{}
-	ids := make([]string, len(sales))
-	for i, t := range sales {
-		ids[i] = realizedID("statement", t.token, strconv.FormatInt(t.seq, 10))
-		if k := t.bookingKey(); kept[k] {
-			notPrimary[ids[i]] = true
-		} else {
-			kept[k] = true
-		}
-	}
-
-	// Each reversal, once however many statements print it, cancels
-	// one sale booking with the same figures.
-	reversedBy := map[string]statementTrade{} // sale booking key → its reversal
-	open := map[string][]string{}             // figures → sale booking keys not yet cancelled
-	for _, t := range sales {
-		k := t.bookingKey()
-		if fk := t.figuresKey(); !slices.Contains(open[fk], k) {
-			open[fk] = append(open[fk], k)
-		}
-	}
-	seenReversal := map[string]bool{}
-	for _, t := range reversals {
-		k := t.bookingKey()
-		if seenReversal[k] {
-			continue
-		}
-		seenReversal[k] = true
-		fk := t.figuresKey()
-		if len(open[fk]) == 0 {
-			continue
-		}
-		reversedBy[open[fk][0]] = t
-		open[fk] = open[fk][1:]
-	}
-
-	lots := make([]canonical.RealizedLotChange, 0, len(sales))
-	skipped := 0
-	for i, t := range sales {
-		currency := strings.ToUpper(strings.TrimSpace(t.reportingCcy))
-		if currency == "" {
-			// Proceeds and cost are in the reporting currency, and a
-			// figure without its currency is no figure.
-			skipped++
-			continue
-		}
-		var reversal *statementTrade
-		if r, ok := reversedBy[t.bookingKey()]; ok {
-			reversal = &r
-			notPrimary[ids[i]] = true
-		}
-		lot := canonical.RealizedLotChange{
-			RealizedLotExternalID: ids[i],
-			AccountExternalID:     t.account,
-			Description:           silver.StrPtrIfNonEmpty(t.name),
-			DocumentKind:          canonical.RealizedStatement,
-			TaxYear:               taxYear(t.tradeDate, t.valueDate, t.asOf),
-			DisposalDate:          silver.DatePtrFromNullUnix(t.tradeDate),
-			SettlementDate:        silver.DatePtrFromNullUnix(t.valueDate),
-			Currency:              currency,
-			Quantity:              absDecimal(t.quantity),
-			Proceeds:              absDecimal(t.value),
-			SourceDocument:        silver.StrPtrIfNonEmpty(t.document),
-			Payload:               t.payload(reversal),
-		}
-		lot.InstrumentExternalID, lot.InstrumentHint = realizedInstrument(valors, t.isin, t.valor)
-		if book := absDecimal(t.costBasis); book != nil {
-			lot.BookValue, lot.Basis = book, statedAverageBasis
-		}
-		lots = append(lots, lot)
-	}
 	if skipped > 0 {
 		log.Printf("ubs adapter: skipped %d statement sale(s) printed without a reporting currency", skipped)
 	}
-	return lots, notPrimary, covered, nil
+
+	reversedBy := cancelReversed(statementBookings(sales), statementBookings(reversals))
+	lots := make([]canonical.RealizedLotChange, 0, len(sales))
+	counts := map[string]bool{}
+	kept := map[string]bool{}
+	for _, t := range sales {
+		id := realizedID("statement", t.token, strconv.FormatInt(t.seq, 10))
+		var reversal *statementTrade
+		if i, ok := reversedBy[t.booking.key]; ok {
+			reversal = &reversals[i]
+		}
+		// The first copy of a booking is the one that can count.
+		if !kept[t.booking.key] && reversal == nil {
+			counts[id] = true
+		}
+		kept[t.booking.key] = true
+		lot := canonical.RealizedLotChange{
+			RealizedLotExternalID: id,
+			AccountExternalID:     t.account,
+			Description:           silver.StrPtrIfNonEmpty(t.name),
+			DocumentKind:          canonical.RealizedStatement,
+			DisposalDate:          silver.DatePtrFromNullUnix(t.tradeDate),
+			SettlementDate:        silver.DatePtrFromNullUnix(t.valueDate),
+			Currency:              t.reportingCcy,
+			Quantity:              silver.AbsPtr(silver.DecimalPtrFromNullFloat(t.quantity)),
+			Proceeds:              silver.AbsPtr(silver.DecimalPtrFromNullFloat(t.value)),
+			SourceDocument:        silver.StrPtrIfNonEmpty(t.document),
+			Payload:               t.payload(reversal),
+		}
+		statementDate := time.Unix(t.asOf, 0).UTC()
+		lot.TaxYear = silver.TaxYearOf(lot.DisposalDate, lot.SettlementDate, &statementDate)
+		lot.InstrumentExternalID, lot.InstrumentHint = realizedInstrument(valors, t.isin, t.valor)
+		lot.SetBookValue(silver.AbsPtr(silver.DecimalPtrFromNullFloat(t.costBasis)), statedAverageBasis)
+		lots = append(lots, lot)
+	}
+	return lots, counts, covered, nil
+}
+
+func statementBookings(rows []statementTrade) []booking {
+	out := make([]booking, len(rows))
+	for i, t := range rows {
+		out[i] = t.booking
+	}
+	return out
 }
 
 // listPeriods returns, per account, the periods the statements'
@@ -431,13 +475,26 @@ func (t statementTrade) payload(reversal *statementTrade) json.RawMessage {
 	return blob
 }
 
+// exportTrade is one row of the portfolio export that states a sale's
+// figures: a sale, or the reversal of one.
+type exportTrade struct {
+	txID, custody, portfolio, bookingType string
+	name, valor, isin, currency, payload  string
+	tradeDate                             sql.NullInt64
+	valueDate                             int64
+	quantity, value, pl                   sql.NullFloat64
+	booking                               booking
+}
+
 // exportSales reads the sales the portfolio export states a realized
-// P/L for, and returns them with the ids of those no statement's list
-// covers (the ones that can count).
+// P/L for, and returns them with the ids that can count: those no
+// reversal cancels and no statement's list covers.
 //
 // The export states the value and the realized P/L in its valuation
 // currency, whatever currency the trade and its cash moved in. The
-// cost is the value less the P/L.
+// cost is the value less the P/L. A sale and its reversal are told
+// apart the way the statements' lists tell them (statementSales); each
+// row is one booking, keyed by the export's own key.
 func (r *webReader) exportSales(ctx context.Context, accounts realizedAccounts, valors map[string]string, covered map[string][]listPeriod) ([]canonical.RealizedLotChange, map[string]bool, error) {
 	ok, err := r.hasTable(ctx, "portfolio_transactions")
 	if err != nil || !ok {
@@ -445,70 +502,105 @@ func (r *webReader) exportSales(ctx context.Context, accounts realizedAccounts, 
 	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT transaction_external_id, safekeeping_account_external_id, portfolio_external_id,
-       trade_date, value_date, COALESCE(security_name, ''), COALESCE(valor, ''),
+       booking_type, trade_date, value_date, COALESCE(security_name, ''), COALESCE(valor, ''),
        COALESCE(isin, ''), quantity, COALESCE(valuation_currency_iso, ''),
        trans_value, realized_pl, payload
   FROM portfolio_transactions
- WHERE quantity < 0 AND realized_pl IS NOT NULL
+ WHERE quantity <> 0
  ORDER BY value_date, transaction_external_id, safekeeping_account_external_id`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ubs-web export sales: %w", err)
 	}
 	defer rows.Close()
-	var lots []canonical.RealizedLotChange
-	uncovered := map[string]bool{}
+	var sales, reversals []exportTrade
 	skipped := 0
 	for rows.Next() {
-		var (
-			txID, custody, portfolio, name, valor, isin, currency, payload string
-			tradeDate                                                      sql.NullInt64
-			valueDate                                                      int64
-			quantity, value, pl                                            sql.NullFloat64
-		)
-		if err := rows.Scan(&txID, &custody, &portfolio, &tradeDate, &valueDate,
-			&name, &valor, &isin, &quantity, &currency, &value, &pl, &payload); err != nil {
+		var t exportTrade
+		if err := rows.Scan(&t.txID, &t.custody, &t.portfolio, &t.bookingType,
+			&t.tradeDate, &t.valueDate, &t.name, &t.valor, &t.isin, &t.quantity,
+			&t.currency, &t.value, &t.pl, &t.payload); err != nil {
 			return nil, nil, fmt.Errorf("ubs-web export sales scan: %w", err)
 		}
-		currency = strings.ToUpper(strings.TrimSpace(currency))
-		if currency == "" {
+		t.isin = strings.TrimSpace(t.isin)
+		t.currency = strings.ToUpper(strings.TrimSpace(t.currency))
+		t.booking = booking{
+			key:     t.txID + "|" + t.custody,
+			figures: saleFigures(t.custody, t.isin, t.valor, t.day(), t.quantity, t.value),
+		}
+		reversal := isReversal(t.bookingType)
+		switch {
+		case reversal && t.quantity.Float64 > 0:
+			reversals = append(reversals, t)
+		case reversal || t.quantity.Float64 > 0 || !t.pl.Valid:
+			// A purchase or its reversal disposes of nothing, and a
+			// disposal without a realized P/L states no cost.
+		case t.currency == "":
 			skipped++
-			continue
+		default:
+			sales = append(sales, t)
 		}
-		account := accounts.resolve(custody, portfolio)
-		valueAt := sql.NullInt64{Int64: valueDate, Valid: true}
-		lot := canonical.RealizedLotChange{
-			RealizedLotExternalID: realizedID("trade", txID, custody),
-			AccountExternalID:     account,
-			Description:           silver.StrPtrIfNonEmpty(name),
-			DocumentKind:          canonical.RealizedTrade,
-			TaxYear:               taxYear(tradeDate, valueAt, valueDate),
-			DisposalDate:          silver.DatePtrFromNullUnix(tradeDate),
-			SettlementDate:        silver.DatePtrFromNullUnix(valueAt),
-			Currency:              currency,
-			Quantity:              absDecimal(quantity),
-			Proceeds:              absDecimal(value),
-			RealizedGainLoss:      silver.DecimalPtrFromNullFloat(pl),
-			Payload:               json.RawMessage(payload),
-		}
-		lot.InstrumentExternalID, lot.InstrumentHint = realizedInstrument(valors, strings.TrimSpace(isin), valor)
-		if lot.Proceeds != nil {
-			if book := lot.Proceeds.Sub(*lot.RealizedGainLoss); !book.IsNegative() {
-				lot.BookValue, lot.Basis = &book, derivedAverageBasis
-			}
-		}
-		day := valueDate
-		if tradeDate.Valid {
-			day = tradeDate.Int64
-		}
-		if !coveredOn(covered[account], day) {
-			uncovered[lot.RealizedLotExternalID] = true
-		}
-		lots = append(lots, lot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
 	}
 	if skipped > 0 {
 		log.Printf("ubs adapter: skipped %d exported sale(s) stating no valuation currency", skipped)
 	}
-	return lots, uncovered, rows.Err()
+
+	reversedBy := cancelReversed(exportBookings(sales), exportBookings(reversals))
+	lots := make([]canonical.RealizedLotChange, 0, len(sales))
+	counts := map[string]bool{}
+	for _, t := range sales {
+		account := accounts.resolve(t.custody, t.portfolio)
+		payload := json.RawMessage(t.payload)
+		i, reversed := reversedBy[t.booking.key]
+		if reversed {
+			payload = silver.PayloadWith(t.payload, map[string]any{
+				"reversed": true, "reversed_by": reversals[i].txID,
+			})
+		}
+		lot := canonical.RealizedLotChange{
+			RealizedLotExternalID: realizedID("trade", t.txID, t.custody),
+			AccountExternalID:     account,
+			Description:           silver.StrPtrIfNonEmpty(t.name),
+			DocumentKind:          canonical.RealizedTrade,
+			DisposalDate:          silver.DatePtrFromNullUnix(t.tradeDate),
+			SettlementDate:        silver.DatePtrFromNullUnix(sql.NullInt64{Int64: t.valueDate, Valid: true}),
+			Currency:              t.currency,
+			Quantity:              silver.AbsPtr(silver.DecimalPtrFromNullFloat(t.quantity)),
+			Proceeds:              silver.AbsPtr(silver.DecimalPtrFromNullFloat(t.value)),
+			RealizedGainLoss:      silver.DecimalPtrFromNullFloat(t.pl),
+			Payload:               payload,
+		}
+		lot.TaxYear = silver.TaxYearOf(lot.DisposalDate, lot.SettlementDate)
+		lot.InstrumentExternalID, lot.InstrumentHint = realizedInstrument(valors, t.isin, t.valor)
+		if lot.Proceeds != nil {
+			if book := lot.Proceeds.Sub(*lot.RealizedGainLoss); !book.IsNegative() {
+				lot.SetBookValue(&book, derivedAverageBasis)
+			}
+		}
+		if !reversed && !coveredOn(covered[account], t.day()) {
+			counts[lot.RealizedLotExternalID] = true
+		}
+		lots = append(lots, lot)
+	}
+	return lots, counts, nil
+}
+
+// day is the trade day, else the value day.
+func (t exportTrade) day() int64 {
+	if t.tradeDate.Valid {
+		return t.tradeDate.Int64
+	}
+	return t.valueDate
+}
+
+func exportBookings(rows []exportTrade) []booking {
+	out := make([]booking, len(rows))
+	for i, t := range rows {
+		out[i] = t.booking
+	}
+	return out
 }
 
 func coveredOn(periods []listPeriod, day int64) bool {
@@ -535,27 +627,4 @@ func realizedInstrument(valors map[string]string, isin, valor string) (*string, 
 func realizedID(kind string, key ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(key, "\x1f")))
 	return kind + ":" + hex.EncodeToString(sum[:12])
-}
-
-// taxYear is the year of the first stated date: the trade, the value
-// date, the document.
-func taxYear(trade, value sql.NullInt64, document int64) int {
-	at := document
-	switch {
-	case trade.Valid:
-		at = trade.Int64
-	case value.Valid:
-		at = value.Int64
-	}
-	return time.Unix(at, 0).UTC().Year()
-}
-
-// absDecimal is a stated figure's magnitude, or nil when none is
-// stated.
-func absDecimal(f sql.NullFloat64) *canonical.Decimal {
-	if !f.Valid {
-		return nil
-	}
-	d := canonical.NewDecimalFromFloat(math.Abs(f.Float64))
-	return &d
 }

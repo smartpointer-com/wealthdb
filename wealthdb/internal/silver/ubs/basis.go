@@ -76,20 +76,23 @@ func psnBookValue(c holdingCost, positionCcy, payload string) (*canonical.Decima
 //
 // The statement's cost value is the units at their average cost and
 // average buy rate, printed in the portfolio's currency, which is the
-// position's: the book value as stated. A holding printed without one
-// keeps no book value. Its cost price, in the instrument's currency,
-// travels in the payload instead. Multiplying it out would be wrong for
-// a bond, whose cost price is a percent of the nominal.
+// position's: the book value as stated. A holding printed without one,
+// or without the portfolio's currency, keeps no book value. What it
+// does print travels in the payload instead: a cost value without its
+// currency, and the cost price with the instrument's currency. The cost
+// price is never multiplied out: that would be wrong for a bond, whose
+// cost price is a percent of the nominal.
 func statementBookValue(costBasis, costPrice sql.NullFloat64, instrumentCcy, portfolioCcy, payload string) (*canonical.Decimal, canonical.Basis, json.RawMessage) {
 	if costBasis.Valid && portfolioCcy != "" {
 		v := canonical.NewDecimalFromFloat(costBasis.Float64)
 		return &v, statedAverageBasis, json.RawMessage(payload)
 	}
-	if !costPrice.Valid {
-		return nil, canonical.Basis{}, json.RawMessage(payload)
+	out := spliceStringField(payload, costBasisKey, formatFloat(costBasis))
+	if costPrice.Valid {
+		out = spliceStringField(string(out), costPriceKey, formatFloat(costPrice))
+		out = spliceStringField(string(out), costCurrencyKey, instrumentCcy)
 	}
-	out := spliceStringField(payload, costPriceKey, formatFloat(costPrice))
-	return nil, canonical.Basis{}, spliceStringField(string(out), costCurrencyKey, instrumentCcy)
+	return nil, canonical.Basis{}, out
 }
 
 // The payload keys a stated cost travels under when it cannot become a

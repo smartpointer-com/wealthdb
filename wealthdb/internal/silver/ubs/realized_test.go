@@ -75,6 +75,9 @@ type stmtRow struct {
 	value             any
 	settlementNo      string
 	custody           string
+	// noCurrency prints the row without the statement's reporting
+	// currency.
+	noCurrency bool
 }
 
 func seedStmt(t *testing.T, r *webReader, row stmtRow) {
@@ -82,15 +85,19 @@ func seedStmt(t *testing.T, r *webReader, row stmtRow) {
 	if row.custody == "" {
 		row.custody = rlPrinted
 	}
+	var currency any = "CHF"
+	if row.noCurrency {
+		currency = nil
+	}
 	if _, err := r.db.Exec(`
         INSERT INTO statement_trades (source_doc_token, seq, as_of_date, portfolio_external_id,
             reporting_currency_iso, period_start, period_end, trade_date, value_date,
             booking_text, quantity, security_name, valor, isin, currency_iso,
             cost_price, cost_basis, transaction_price, realized_pl_pct, transaction_value,
             settlement_amount, settlement_currency_iso, settlement_no, custody_account, payload)
-        VALUES (?, ?, ?, ?, 'CHF', ?, ?, ?, ?, ?, ?, 'Example Holding', ?, ?, 'USD',
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Example Holding', ?, ?, 'USD',
                 ?, ?, ?, 5.0, ?, ?, 'USD', ?, ?, '{}')`,
-		row.doc, row.seq, row.end, rlPortfolio, row.periodStart, row.end,
+		row.doc, row.seq, row.end, rlPortfolio, currency, row.periodStart, row.end,
 		row.trade, row.trade+2*rlDay, row.booking, row.quantity, row.valor, row.isin,
 		row.costPrice, row.cost, row.price, row.value, row.settlement,
 		row.settlementNo, row.custody); err != nil {
@@ -320,24 +327,8 @@ func TestCustodyAccountCanonical(t *testing.T) {
 func TestExportSalesCountWhereNoStatementReaches(t *testing.T) {
 	web := newRealizedWeb(t)
 	seedStatementSales(t, web)
-	for _, row := range []struct {
-		id    string
-		trade int64
-	}{
-		{"ptx:inside", rlYear + 40*rlDay}, // the first quarter's sale again
-		{"ptx:after", rlYear + 200*rlDay}, // after the last statement
-	} {
-		if _, err := web.db.Exec(`
-            INSERT INTO portfolio_transactions (transaction_external_id, safekeeping_account_external_id,
-                portfolio_external_id, snapshot_at, trade_date, value_date, booking_type,
-                security_name, isin, quantity, settlement_currency_iso, valuation_currency_iso,
-                trans_value, realized_pl, payload)
-            VALUES (?, ?, ?, 1, ?, ?, 'Stock Market Spot Sale', 'Example Holding', ?, -10, 'USD', 'CHF',
-                    -1000, 100, '{"Booking":"x"}')`,
-			row.id, rlSafe, rlPortfolio, row.trade, row.trade+2*rlDay, rlStock); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedExport(t, web, "ptx:inside", exportSale, rlYear+40*rlDay, -10, -1000, 100) // the first quarter's sale again
+	seedExport(t, web, "ptx:after", exportSale, rlYear+200*rlDay, -10, -1000, 100) // after the last statement
 	got := realizedByDocSeq(t, &Connection{web: web, psn: newRealizedPSN(t)})
 
 	inside := got[realizedID("trade", "ptx:inside", rlSafe)]
@@ -361,6 +352,164 @@ func TestExportSalesCountWhereNoStatementReaches(t *testing.T) {
 	}
 	if after.Basis != derivedAverageBasis {
 		t.Errorf("basis = %+v, want derived/average/excluded", after.Basis)
+	}
+}
+
+const exportSale = "Stock Market Spot Sale"
+
+// seedExport adds one row of the portfolio export on the custody
+// account, valued in CHF.
+func seedExport(t *testing.T, r *webReader, id, booking string, trade int64, quantity, value float64, pl any) {
+	t.Helper()
+	if _, err := r.db.Exec(`
+        INSERT INTO portfolio_transactions (transaction_external_id, safekeeping_account_external_id,
+            portfolio_external_id, snapshot_at, trade_date, value_date, booking_type,
+            security_name, isin, quantity, settlement_currency_iso, valuation_currency_iso,
+            trans_value, realized_pl, payload)
+        VALUES (?, ?, ?, 1, ?, ?, ?, 'Example Holding', ?, ?, 'USD', 'CHF', ?, ?, '{"Booking":"x"}')`,
+		id, rlSafe, rlPortfolio, trade, trade+2*rlDay, booking, rlStock, quantity, value, pl); err != nil {
+		t.Fatalf("seed export row %s: %v", id, err)
+	}
+}
+
+// wantPrimary checks which lots there are and which of them count.
+func wantPrimary(t *testing.T, got map[string]canonical.RealizedLotChange, want map[string]bool) {
+	t.Helper()
+	if len(got) != len(want) {
+		names := make([]string, 0, len(got))
+		for k := range got {
+			names = append(names, k)
+		}
+		t.Fatalf("lots = %v, want %d", names, len(want))
+	}
+	for k, primary := range want {
+		l, ok := got[k]
+		if !ok {
+			t.Errorf("%s: no lot", k)
+		} else if l.IsPrimary != primary {
+			t.Errorf("%s: primary %v, want %v", k, l.IsPrimary, primary)
+		}
+	}
+}
+
+// TestABookingCountsOnceAcrossStatements: a booking two statements
+// print counts once, with a settlement number or without. A copy
+// printed without the reporting currency is no lot, so the next copy is
+// the one that counts. Two like bookings in one statement stay two.
+func TestABookingCountsOnceAcrossStatements(t *testing.T) {
+	web := newRealizedWeb(t)
+	unnumbered := func(doc string, seq int, start, end int64) stmtRow {
+		return stmtRow{doc: doc, seq: seq, periodStart: start, end: end,
+			trade: rlYear + 40*rlDay, booking: "Sale Spot", quantity: -10, isin: rlStock,
+			cost: 900.0, price: 110.0, settlement: 1100.0, value: -1000.0}
+	}
+	seedStmt(t, web, unnumbered("stmt-m2", 1, m2Start, m2End))
+	seedStmt(t, web, unnumbered("stmt-q1", 1, q1Start, q1End))
+	numbered := func(doc string, seq int, start, end int64) stmtRow {
+		return stmtRow{doc: doc, seq: seq, periodStart: start, end: end,
+			trade: rlYear + 45*rlDay, booking: "Sale Spot", quantity: -4, isin: rlStock,
+			cost: 360.0, price: 110.0, settlement: 440.0, value: -440.0, settlementNo: "SETTLE-1"}
+	}
+	first := numbered("stmt-m2", 2, m2Start, m2End)
+	first.noCurrency = true
+	seedStmt(t, web, first)
+	seedStmt(t, web, numbered("stmt-q1", 2, q1Start, q1End))
+	twin := func(seq int) stmtRow {
+		return stmtRow{doc: "stmt-q2", seq: seq, periodStart: q2Start, end: q2End,
+			trade: rlYear + 100*rlDay, booking: "Sale Spot", quantity: -1, isin: rlStock,
+			cost: 90.0, price: 110.0, settlement: 110.0, value: -110.0}
+	}
+	seedStmt(t, web, twin(1))
+	seedStmt(t, web, twin(2))
+
+	got := realizedByDocSeq(t, &Connection{web: web, psn: newRealizedPSN(t)})
+	wantPrimary(t, got, map[string]bool{
+		"stmt-m2/1": true,  // the unnumbered sale, first printed
+		"stmt-q1/1": false, // and again
+		"stmt-q1/2": true,  // the numbered sale's first copy with a currency
+		"stmt-q2/1": true,
+		"stmt-q2/2": true,
+	})
+	if l := got["stmt-q1/2"]; l.Currency != "CHF" {
+		t.Errorf("currency = %q, want CHF", l.Currency)
+	}
+}
+
+// TestAReversalIsReadFromItsBookingText: a priced purchase with a
+// sale's figures is no reversal and cancels nothing. A reversed
+// purchase sends units out, priced and settled, and is still no sale.
+func TestAReversalIsReadFromItsBookingText(t *testing.T) {
+	web := newRealizedWeb(t)
+	sale := stmtRow{doc: "stmt-q2", seq: 1, periodStart: q2Start, end: q2End,
+		trade: rlYear + 100*rlDay, booking: "Sale Spot", quantity: -10, isin: rlStock,
+		cost: 900.0, price: 110.0, settlement: 1100.0, value: -1000.0, settlementNo: "SETTLE-1"}
+	seedStmt(t, web, sale)
+	buy := sale
+	buy.seq, buy.booking, buy.settlementNo = 2, "Purchase Spot", "SETTLE-2"
+	buy.quantity, buy.value, buy.settlement, buy.cost = 10, 1000.0, -1100.0, nil
+	seedStmt(t, web, buy)
+	reversedBuy := buy
+	reversedBuy.seq, reversedBuy.booking, reversedBuy.settlementNo = 3, "Reversal Purchase Spot", "SETTLE-3"
+	reversedBuy.quantity, reversedBuy.value, reversedBuy.settlement = -10, -1000.0, 1100.0
+	seedStmt(t, web, reversedBuy)
+
+	got := realizedByDocSeq(t, &Connection{web: web, psn: newRealizedPSN(t)})
+	wantPrimary(t, got, map[string]bool{"stmt-q2/1": true})
+	var p map[string]any
+	if err := json.Unmarshal(got["stmt-q2/1"].Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p["reversed"]; ok {
+		t.Errorf("payload = %s, want the sale not reversed", got["stmt-q2/1"].Payload)
+	}
+}
+
+// TestAnExportReversalCancelsItsSale: the export's reversal cancels one
+// sale with its figures, which then does not count. The reversal is no
+// lot, and a later sale of the same figures still counts.
+func TestAnExportReversalCancelsItsSale(t *testing.T) {
+	web := newRealizedWeb(t)
+	day := rlYear + 200*rlDay
+	seedExport(t, web, "ptx:sold", exportSale, day, -10, -1000, 100)
+	seedExport(t, web, "ptx:reversal", exportSale+";Reversal", day, 10, 1000, -100)
+	seedExport(t, web, "ptx:resold", exportSale, day+3*rlDay, -10, -1000, 100)
+
+	got := realizedByDocSeq(t, &Connection{web: web, psn: newRealizedPSN(t)})
+	sold, resold := realizedID("trade", "ptx:sold", rlSafe), realizedID("trade", "ptx:resold", rlSafe)
+	wantPrimary(t, got, map[string]bool{sold: false, resold: true})
+	var p map[string]any
+	if err := json.Unmarshal(got[sold].Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p["reversed"] != true || p["reversed_by"] != "ptx:reversal" || p["Booking"] != "x" {
+		t.Errorf("payload = %s, want the export's own keys and reversed by ptx:reversal", got[sold].Payload)
+	}
+}
+
+// TestAnExportWithoutStatementListsCounts: a silver whose statements
+// print no transaction list still counts the export's sales.
+func TestAnExportWithoutStatementListsCounts(t *testing.T) {
+	web := newRealizedWeb(t)
+	if _, err := web.db.Exec(`DROP TABLE statement_trades`); err != nil {
+		t.Fatal(err)
+	}
+	seedExport(t, web, "ptx:sold", exportSale, rlYear+40*rlDay, -10, -1000, 100)
+	got := realizedByDocSeq(t, &Connection{web: web, psn: newRealizedPSN(t)})
+	wantPrimary(t, got, map[string]bool{realizedID("trade", "ptx:sold", rlSafe): true})
+}
+
+func TestIsReversal(t *testing.T) {
+	for text, want := range map[string]bool{
+		"Reversal Example Booking":  true,
+		"Example Booking;Reversal":  true,
+		"REVERSAL EXAMPLE BOOKING":  true,
+		"Example Booking":           false,
+		"Irreversible Example Sale": false,
+		"":                          false,
+	} {
+		if got := isReversal(text); got != want {
+			t.Errorf("isReversal(%q) = %v, want %v", text, got, want)
+		}
 	}
 }
 

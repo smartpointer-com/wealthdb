@@ -119,6 +119,38 @@ func TestCapitalCallsJoinOnlyAnUnambiguousFund(t *testing.T) {
 	}
 }
 
+// TestACallNoticeReadTwiceCountsOnce: silver keys an advice by its
+// document, so a notice that arrives twice is two rows, and the call
+// still adds once. A call is dated by its value date, whatever trade
+// date it prints.
+func TestACallNoticeReadTwiceCountsOnce(t *testing.T) {
+	ctx := context.Background()
+	web := newWebFixture(t)
+	addAdvices(t, web, `
+INSERT INTO advices (source_doc_token, kind, trade_date, value_date, instrument_isin, currency_iso, amount, payload) VALUES
+    ('c1', 'capital_call', NULL, 10 * 86400, '`+pmFund+`', 'USD', 100, '{}'),
+    ('c1-again', 'capital_call', NULL, 10 * 86400, '`+pmFund+`', 'USD', 100, '{}'),
+    ('c2', 'capital_call', 15 * 86400, 20 * 86400, '`+pmFund+`', 'USD', 50, '{}');`)
+	psn := newPaidInPSN(t)
+	byPortfolio, err := psn.safekeepingByPortfolio(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := web.paidInByISIN(ctx, psn, byPortfolio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := series[pmFund]
+	if !ok {
+		t.Fatalf("series = %v, want %s", series, pmFund)
+	}
+	for day, want := range map[int64]string{10: "100", 17: "100", 20: "150"} {
+		if got := s.at(day * pmDay); got == nil || got.String() != want {
+			t.Errorf("paid in at day %d = %v, want %s", day, got, want)
+		}
+	}
+}
+
 // TestThePaidInBasisReachesOnlyTheJoinedPositions: the stream sets the
 // basis on the fund's positions on its account and in its currency, and
 // leaves alone a position elsewhere, one in another currency, and one
@@ -172,39 +204,51 @@ func TestThePaidInBasisReachesOnlyTheJoinedPositions(t *testing.T) {
 	}
 }
 
-// TestAWebOnlySilverStampsTheStatementEra: with no PSN feed the
-// statement's fund rows sit on the portfolio overlay, which is then the
-// one holder, and they take the paid-in basis.
+// TestAWebOnlySilverStampsTheStatementEra drives the merged stream: with
+// no PSN feed the statement's fund rows sit on the portfolio overlay,
+// which is then the one holder, and Connection.Snapshots gives them the
+// paid-in basis.
 func TestAWebOnlySilverStampsTheStatementEra(t *testing.T) {
 	ctx := context.Background()
 	web := newWebFixture(t)
 	addAdvices(t, web, pmCalls)
+	// The live roster's tables, empty: the merged stream reads them.
 	if _, err := web.db.Exec(`
-        INSERT INTO historical_position_snapshots
-            (as_of_date, portfolio_external_id, account_external_id, instrument_isin,
-             currency_iso, units, market_value, market_value_currency, cost_price, source_doc_token, payload)
-        VALUES (12 * 86400, '` + pmPortfolio + `', '', '` + pmFund + `', 'USD', 1, 120, 'USD', NULL, 'tok', '{}')`); err != nil {
+CREATE TABLE dump_runs (snapshot_at INTEGER PRIMARY KEY, run_dir TEXT);
+CREATE TABLE portfolios (
+    snapshot_at INTEGER, portfolio_external_id TEXT, banking_relationship_id TEXT,
+    description TEXT, payload TEXT);
+CREATE TABLE accounts (
+    snapshot_at INTEGER, account_external_id TEXT, kind TEXT, currency_iso TEXT,
+    banking_relationship_id TEXT, portfolio_external_id TEXT, description TEXT, payload TEXT);
+CREATE TABLE positions (
+    snapshot_at INTEGER, instrument_isin TEXT, currency_iso TEXT, description TEXT);
+INSERT INTO historical_position_snapshots
+    (as_of_date, portfolio_external_id, account_external_id, instrument_isin,
+     currency_iso, units, market_value, market_value_currency, cost_price, source_doc_token, payload)
+VALUES (12 * 86400, '` + pmPortfolio + `', '', '` + pmFund + `', 'USD', 1, 120, 'USD', NULL, 'tok', '{}')`); err != nil {
 		t.Fatal(err)
 	}
-	series, err := web.paidInByISIN(ctx, nil, nil)
+	stream, err := (&Connection{web: web}).Snapshots(ctx, canonical.Window{Start: 0, End: 30 * pmDay, HasChanges: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hist, err := web.snapshotsHistorical(ctx, canonical.Window{Start: 0, End: 30 * pmDay, HasChanges: true},
-		nil, map[string]int64{}, map[string]int64{})
-	if err != nil {
-		t.Fatal(err)
+	defer stream.Close()
+	var positions []canonical.PositionChange
+	for {
+		batch, more, err := stream.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		positions = append(positions, batch.Positions...)
+		if !more {
+			break
+		}
 	}
-	s := &paidInStream{inner: hist, series: series}
-	defer s.Close()
-	batch, _, err := s.Next(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if len(positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(positions))
 	}
-	if len(batch.Positions) != 1 {
-		t.Fatalf("positions = %d, want 1", len(batch.Positions))
-	}
-	p := batch.Positions[0]
+	p := positions[0]
 	if p.AccountExternalID != overlayAccountID(pmPortfolio) {
 		t.Errorf("account = %q, want the portfolio overlay", p.AccountExternalID)
 	}

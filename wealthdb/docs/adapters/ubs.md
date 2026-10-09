@@ -828,7 +828,7 @@ that PSN already uses for forward contracts. Either way every gold
 | `currency_iso` | `instruments.currency` |
 | `units` | `positions.quantity` |
 | `market_value` | `positions.market_value` (in `market_value_currency`, typically portfolio base) |
-| `cost_basis` | `positions.book_value` (§12). Without it, the book value is NULL and `cost_price` travels in the payload with `cost_currency` |
+| `cost_basis` | `positions.book_value` (§12). Without it, or without `market_value_currency`, the book value is NULL and the cost figures travel in the payload |
 | `accrued_interest` | `positions.accrued_interest` |
 | `description` | `instruments.name` |
 | `sector` | (kept in payload only) |
@@ -1163,7 +1163,7 @@ method `average`, or `paid_in` for a private-markets fund, and the fees
 | PSN `holdings`, BOOK in another currency | `cost_basis` × `acquisition_fx_rate` (AEXR), when AEXR runs from BOOK's currency to the position's | derived, average, excluded |
 | PSN `holdings`, any other | NULL. `cost_basis`, `cost_currency` and the AEXR fields travel in the payload. | — |
 | Statement holding (`historical_position_snapshots`) | `cost_basis`, the statement's cost value, in `market_value_currency` | stated, average, excluded |
-| Statement holding without a cost value | NULL. `cost_price` and `cost_currency` travel in the payload. | — |
+| Statement holding without a cost value, or without `market_value_currency` | NULL. A cost value travels in the payload as `cost_basis`, and a cost price as `cost_price` with `cost_currency`, the instrument's currency. | — |
 | A private-markets fund's units | the capital calls in `advices` up to the snapshot (below) | derived, paid_in, excluded |
 
 - **AEXR.** One unit of the first currency is `rate` units of the
@@ -1188,10 +1188,14 @@ joins a position only when:
   its own.
 
 The book value at a snapshot is the sum of the called `amount` of every
-call dated on or before it. A snapshot before the first call has no
-book value. The placement fee and the equalisation interest are
-separate figures, and they stay out. A distribution paid back does not
-reduce the figure.
+call whose value date is on or before it. A snapshot before the first
+call has no book value. The placement fee and the equalisation
+interest are separate figures, and they stay out. A distribution paid
+back does not reduce the figure.
+
+Silver keys a notice by its document, so a notice that arrives twice
+is two rows. A call is therefore read once per fund, value date,
+currency and amount.
 
 ### Realized lots
 
@@ -1203,15 +1207,24 @@ Each sale is one realized lot. UBS states no tax lots.
 | `portfolio_transactions` | `trade` | `valuation_currency_iso` | \|`trans_value`\| | proceeds − `realized_pl` (derived, average, excluded) | `realized_pl` |
 
 - **A statement sale** has a negative quantity, a sale's price
-  (`transaction_price`) and a settlement amount. Corporate actions and
-  write-offs print no price. A delivery free of payment settles
+  (`transaction_price`) and a settlement amount, and its booking text
+  names no reversal. Corporate actions and write-offs print no price.
+  A delivery free of payment settles nothing. A reversed purchase
+  sends units out but is no sale.
+- **An export sale** has a negative quantity and a realized P/L, and
+  its booking type names no reversal. Its value and P/L are in the
+  export's valuation currency. The book value relies on the export
+  computing the P/L against the same average cost the statement
+  prints, so the value less the P/L is that cost.
+- **A reversal** is a booking whose text holds the word "Reversal",
+  in any case: in front of the text of the booking it reverses, or
+  behind a separator after it. Its sign is not what marks it.
+- **A missing currency.** A sale printed without its reporting or
+  valuation currency is no lot: a figure without its currency states
   nothing.
-- **An export sale** has a negative quantity and a realized P/L. Its
-  value and P/L are in the export's valuation currency. Measured
-  against the statements, the P/L equals the statement's proceeds less
-  its cost value, to the rounding unit.
 - **Dates.** The disposal date is the trade date and the settlement
-  date the value date. The tax year is the trade date's year.
+  date the value date. The tax year is the trade date's year, else
+  the value date's, else the statement date's.
 - **Account.** The custody account the list prints, in PSN's form: the
   branch padded to four digits and the account body to ten
   (`custodyAccountCanonical`). A custody account PSN does not report
@@ -1223,16 +1236,23 @@ Each sale is one realized lot. UBS states no tax lots.
 **Primary rows.** Within one account and tax year, the primary rows
 count each sale once:
 
-- A booking recurs in every statement whose period covers it, under
-  one settlement number. The earliest statement keeps it, and later
-  copies are not primary.
+- A booking recurs in every statement whose period covers it. The
+  portfolio and the settlement number name it across statements. A
+  booking without a number is named by its trade date, security,
+  quantity, value and booking text. The earliest statement that prints
+  it with a currency keeps it, and later copies are not primary.
 - A reversed sale is not primary. The list prints the reversal as a
   booking of its own, with the sale's figures and the units coming
-  back. It cancels one sale with the same account, security, trade
-  date, quantity and value. That sale's payload says `reversed`.
+  back. It cancels one sale with the same portfolio, security, trade
+  date, quantity and value, once however many statements print it.
+  That sale's payload says `reversed`. The export's reversals cancel
+  its own sales the same way, matched on the custody account.
 - An export sale is primary only on a day no statement's transaction
-  list covers for its account. Both kinds rank alike, so a tax year a
-  statement covers in part still counts the export's sales after it.
+  list covers for its account. So on one account and day only one kind
+  counts, and a sale both kinds state counts once where both book it on
+  the same account. A sale on a covered day that no list prints counts
+  nowhere. Both kinds rank alike, so a tax year a statement covers in
+  part still counts the export's sales after it.
 
 ## 13. Open questions
 

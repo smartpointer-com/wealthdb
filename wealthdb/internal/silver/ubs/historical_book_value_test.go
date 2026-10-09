@@ -37,6 +37,7 @@ func historicalPositions(t *testing.T, web *webReader) map[string]canonical.Posi
 
 type costPayload struct {
 	Kind         string `json:"kind"`
+	CostBasis    string `json:"cost_basis"`
 	CostPrice    string `json:"cost_price"`
 	CostCurrency string `json:"cost_currency"`
 }
@@ -69,7 +70,8 @@ func TestStatementCostValueIsTheBookValue(t *testing.T) {
             (1000, '0999AAAAAAAA02', '', 'CH0000000001', 'CHF', 10, 1200, 'CHF', 100, 1000, 'tok', '{"kind":"equity"}'),
             (1000, '0999AAAAAAAA02', '', 'US0000000002', 'USD', 10, 900,  'CHF', 80, 720, 'tok', '{"kind":"equity"}'),
             (1000, '0999AAAAAAAA02', '', 'XS0000000003', 'CHF', 10000, 10100, 'CHF', 101.5, 10150, 'tok', '{"kind":"bond"}'),
-            (1000, '0999AAAAAAAA02', '', 'XS0000000004', 'CHF', 10000, 10100, 'CHF', 99, NULL, 'tok', '{"kind":"bond"}');
+            (1000, '0999AAAAAAAA02', '', 'XS0000000004', 'CHF', 10000, 10100, 'CHF', 99, NULL, 'tok', '{"kind":"bond"}'),
+            (1000, '0999AAAAAAAA02', '', 'US0000000005', 'USD', 10, 900,  '', 80, 720, 'tok', '{"kind":"equity"}');
     `); err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +105,17 @@ func TestStatementCostValueIsTheBookValue(t *testing.T) {
 	}
 	if c := decodeCostPayload(t, bare); c.Kind != "bond" || c.CostPrice != "99" || c.CostCurrency != "CHF" {
 		t.Errorf("no cost value: payload = %s, want kind kept, cost_price 99, cost_currency CHF", bare.Payload)
+	}
+
+	// A cost value printed without the portfolio's currency is no book
+	// value, and it travels in the payload beside the cost price.
+	unpriced := got["US0000000005"]
+	if unpriced.BookValue != nil || !unpriced.Basis.IsZero() {
+		t.Errorf("no currency: book value %v basis %+v, want NULL and no stamp", unpriced.BookValue, unpriced.Basis)
+	}
+	want := costPayload{Kind: "equity", CostBasis: "720", CostPrice: "80", CostCurrency: "USD"}
+	if c := decodeCostPayload(t, unpriced); c != want {
+		t.Errorf("no currency: payload = %s, want %+v", unpriced.Payload, want)
 	}
 }
 

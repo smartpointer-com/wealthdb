@@ -50,16 +50,20 @@ func (s paidInSeries) at(t int64) *canonical.Decimal {
 // series for the one account that holds it. A fund whose calls are
 // not all dated and stated in one currency, or that more than one
 // account holds, has none.
+//
+// Silver keys an advice by its document, so a notice that arrives
+// twice is two rows. A call is therefore read once per fund, value
+// date, currency and amount.
 func (r *webReader) paidInByISIN(ctx context.Context, psn *psnReader, safekeepingByPortfolio map[string]string) (map[string]paidInSeries, error) {
 	ok, err := r.hasTable(ctx, "advices")
 	if err != nil || !ok {
 		return nil, err
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT instrument_isin, COALESCE(trade_date, value_date), currency_iso, amount
+SELECT DISTINCT instrument_isin, value_date, currency_iso, amount
   FROM advices
  WHERE kind = 'capital_call' AND instrument_isin IS NOT NULL AND instrument_isin <> ''
- ORDER BY 2`)
+ ORDER BY value_date`)
 	if err != nil {
 		return nil, fmt.Errorf("ubs-web capital calls: %w", err)
 	}
@@ -100,6 +104,9 @@ SELECT instrument_isin, COALESCE(trade_date, value_date), currency_iso, amount
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(series) == 0 {
+		return nil, nil
 	}
 
 	holders, err := r.fundHolders(ctx, psn, safekeepingByPortfolio, series)
