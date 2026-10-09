@@ -3,7 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strings"
 )
 
@@ -38,6 +37,20 @@ type PositionRow struct {
 	// currency by the report_positions / report_cash macro (flat
 	// nearest-rate FX in SQL). Nil when no FX path resolves.
 	ValueOutCcy *string
+	// The cost basis the source states (gold's book_value), in the
+	// position's currency and converted like ValueOutCcy, with the
+	// figures derived from it (migration 0116, docs/GAINS.md). All nil
+	// on a cash row and wherever the source states no basis, except
+	// CleanValue, which is MarketValue less AccruedInterest.
+	BookValue        *string
+	BookValueOutCcy  *string
+	AccruedInterest  *string
+	CleanValue       *string
+	UnrealizedGain   *string
+	UnrealizedOutCcy *string
+	UnrealizedRatio  *float64
+	BasisStamp       *string // origin/method/fees, e.g. stated/lots/included
+	AcquisitionDate  *string // YYYY-MM-DD
 }
 
 // PositionsAsOf returns the consolidated portfolio as of the given
@@ -53,44 +66,20 @@ func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) (
 }
 
 // scanPositionRows runs a report_positions / report_cash macro query
-// (both emit the same 17-column position shape) and scans the rows.
+// (both emit the same position shape) and scans the rows.
 func scanPositionRows(ctx context.Context, db *sql.DB, label, q string, args ...any) ([]PositionRow, error) {
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", label, err)
-	}
-	defer rows.Close()
-
-	var out []PositionRow
-	for rows.Next() {
-		var (
-			r                                             PositionRow
-			displayName, relID, nickname, category, instr sql.NullString
-			symbol, name, qty, mvalue, valueOut           sql.NullString
-			vehicle                                       sql.NullString
-		)
-		if err := rows.Scan(
+	return scanRows(ctx, db, label, q, args, func(r *PositionRow) []any {
+		return []any{
 			&r.SilverSourceID, &r.SnapshotAt, &r.AccountExternalID,
-			&displayName, &relID, &nickname, &category,
-			&r.PositionKey, &instr, &symbol, &name,
-			&r.AssetClass, &vehicle, &r.Currency, &qty, &mvalue, &valueOut,
-		); err != nil {
-			return nil, fmt.Errorf("%s scan: %w", label, err)
+			str(&r.DisplayName), str(&r.RelationshipID), str(&r.Nickname), str(&r.AccountCategory),
+			&r.PositionKey, str(&r.InstrumentExternalID), str(&r.Symbol), str(&r.Name),
+			&r.AssetClass, nonNull(&r.Vehicle), &r.Currency,
+			dec(&r.Quantity), dec(&r.MarketValue), dec(&r.ValueOutCcy),
+			dec(&r.BookValue), dec(&r.BookValueOutCcy), dec(&r.AccruedInterest), dec(&r.CleanValue),
+			dec(&r.UnrealizedGain), dec(&r.UnrealizedOutCcy), flt(&r.UnrealizedRatio),
+			str(&r.BasisStamp), str(&r.AcquisitionDate),
 		}
-		r.Vehicle = vehicle.String
-		r.DisplayName = nullStringToPtr(displayName)
-		r.RelationshipID = nullStringToPtr(relID)
-		r.Nickname = nullStringToPtr(nickname)
-		r.AccountCategory = nullStringToPtr(category)
-		r.InstrumentExternalID = nullStringToPtr(instr)
-		r.Symbol = nullStringToPtr(symbol)
-		r.Name = nullStringToPtr(name)
-		r.Quantity = trimmedDecimalPtr(qty)
-		r.MarketValue = trimmedDecimalPtr(mvalue)
-		r.ValueOutCcy = trimmedDecimalPtr(valueOut)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	})
 }
 
 func nullStringToPtr(n sql.NullString) *string {
