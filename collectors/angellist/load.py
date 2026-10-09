@@ -590,9 +590,10 @@ def build_k1_statement_snapshots(conn, fund_to_pid) -> None:
 
     Statement events derive wholly from k1_capital_accounts, so they are
     rebuilt from scratch each load: existing 'statement' rows are deleted
-    first. A pairing that shifts between loads (e.g. a company rename
-    healed by the alias matching) therefore leaves no stale marks on the
-    previously-paired position."""
+    first, and so is an SPV identity the pairing no longer makes. A pairing
+    that shifts between loads (e.g. a company rename healed by the alias
+    matching) therefore leaves no stale marks on the previously-paired
+    position, and no second offering carrying the fund's name."""
     if not fund_to_pid:
         return
     latest_run = conn.execute("SELECT MAX(snapshot_at) FROM dump_runs").fetchone()[0] or 0
@@ -611,6 +612,14 @@ def build_k1_statement_snapshots(conn, fund_to_pid) -> None:
     conn.execute("BEGIN")
     try:
         conn.execute("DELETE FROM position_snapshots WHERE event_type = 'statement'")
+        paired = {pid: fund for fund, pid in fund_to_pid.items()}
+        for pid, fund in conn.execute(
+                "SELECT position_external_id, fund_name FROM offerings "
+                "WHERE fund_name IS NOT NULL").fetchall():
+            if paired.get(pid) != fund:
+                conn.execute(
+                    "UPDATE offerings SET fund_name = NULL, fund_tax_id = NULL "
+                    "WHERE position_external_id = ?", (pid,))
         for fund, pid in fund_to_pid.items():
             cum_c = cum_d = 0
             ein = next((y["ein"] for y in fund_years.get(fund, []) if y["ein"]), None)

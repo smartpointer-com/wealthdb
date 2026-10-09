@@ -236,6 +236,33 @@ def test_k1_documents(tmp_path):
     c.close()
 
 
+def test_a_shifted_pairing_clears_the_old_fund_stamp(tmp_path):
+    """A pairing that moves to another position takes the SPV identity with
+    it: the offering an earlier pairing stamped no longer carries the
+    fund's name or EIN, so the fund names one offering."""
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    write_run(dest, "20240101T000000Z", [
+        positions_capture([pos_node("p1", "acme-co-s"),
+                           pos_node("p2", "other-co-s", name="Other Co")]),
+        dashboard_capture()])
+    write_k1_csv(tmp_path / "docs")
+    args = ["--bronze-dir", str(dest), "--silver-db", str(db),
+            "--documents-dir", str(tmp_path / "docs")]
+    assert load.main(args) == 0
+    # The stamp an earlier pairing left on another offering.
+    c = sqlite3.connect(db)
+    c.execute("UPDATE offerings SET fund_name = ?, fund_tax_id = '12-0000009' "
+              "WHERE position_external_id = 'p2'", (K1_ROW[1],))
+    c.commit()
+    c.close()
+    assert load.main(args) == 0   # bronze already loaded; the pairing pass reruns
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT position_external_id, fund_name, fund_tax_id FROM offerings "
+                     "ORDER BY position_external_id").fetchall() == [
+        ("p1", K1_ROW[1], "12-3456789"), ("p2", None, None)]
+    c.close()
+
+
 # A K-1 CSV with the basis and gain lines, between other tax lines as in a
 # real package. The long-term line spells its letter in capitals, which some
 # packages do. Rows: an in-kind exit year (property distribution + both

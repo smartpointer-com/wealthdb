@@ -277,8 +277,10 @@ the current label would split one fund across two instruments. Real
 offerings always beat funding-ledger-derived thin ones; multi-SPV
 companies disambiguate by investment year + cumulative contribution
 amount. Statement events are rebuilt from scratch on every load (they
-derive wholly from `k1_capital_accounts`), so a pairing that shifts leaves
-no stale marks behind. The mark basis (`fmv` / `tax_basis` / `cost`) is
+derive wholly from `k1_capital_accounts`), and an offering's
+`fund_name` / `fund_tax_id` is cleared where the pairing no longer makes
+it. So a pairing that shifts leaves no stale marks behind, and a fund
+name stays on one offering. The mark basis (`fmv` / `tax_basis` / `cost`) is
 recorded per event, never blended.
 
 ## Gold mapping (implemented)
@@ -308,8 +310,8 @@ forward-fill:
   `book_value` = the capital contributed as the portal states it, on the
   latest portal event ≤ the date (gross: cash distributions do not reduce
   it). A K-1's Line 19(c) property distribution does: from the K-1's
-  period end, the basis it states left in kind comes off the book value,
-  never below zero. A K-1's cumulative contributions are tax-basis capital
+  period end, which is a snapshot day, the basis it states left in kind
+  comes off the book value, never below zero. A K-1's cumulative contributions are tax-basis capital
   and can differ from the portal's figure, so they ride in the position
   payload as `tax_basis_contributed` instead; `quantity=NULL`;
   `acquisition_date=investment_date`.
