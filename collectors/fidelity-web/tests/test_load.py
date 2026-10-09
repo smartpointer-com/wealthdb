@@ -318,6 +318,25 @@ def test_activity_dedups_across_description_relabels(migrated, tmp_path):
     assert n == 1
 
 
+@pytest.mark.parametrize("order", [("", "00000ZZ96"), ("00000ZZ96", "")])
+def test_activity_dedups_across_a_blank_symbol(migrated, tmp_path, order):
+    """Fidelity prints a transaction's Symbol in one export and leaves it
+    blank in another, naming the security only in the Action text. Both
+    copies collapse onto one row, and the copy with the printed Symbol
+    is the one kept, whichever export loads last."""
+    dump = tmp_path / "20260101T120000Z"
+    (dump / "activity").mkdir(parents=True)
+    first, second = order
+    (dump / "activity" / "activity_20240301__20240331.csv").write_text(
+        _activity_csv(_bond_buy_row(first, "000000AB5")))
+    (dump / "activity" / "activity_20240302__20240401.csv").write_text(
+        _activity_csv(_bond_buy_row(second, "000000AB5")))
+    load._load_transactions(migrated, 1, dump)
+    rows = migrated.execute(
+        "SELECT instrument_key FROM transactions").fetchall()
+    assert rows == [("00000ZZ96",)]
+
+
 def test_activity_preserves_genuine_same_day_duplicates(migrated, tmp_path):
     """Two byte-identical rows within a single export are two real
     transactions (e.g. two same-day, same-amount fills) and must be
@@ -1250,10 +1269,9 @@ def test_a_blank_symbol_takes_the_cusip_without_moving_the_id(
     activity_id, instrument_key = migrated.execute(
         "SELECT activity_id, instrument_key FROM transactions").fetchone()
     assert instrument_key == "000000AB5"
-    # The id hashes the Symbol cell as exported (blank), so a row loaded
-    # before the instrument was read keeps its id.
+    # The id hashes no security column, so reading the CUSIP moves none.
     identity = load._activity_identity(
-        ACCT_TRUST, load.ts_from_mdy("03/04/2024"), "BUY", None, 1000.0,
+        ACCT_TRUST, load.ts_from_mdy("03/04/2024"), "BUY", 1000.0,
         99.5, -995.0, load.ts_from_mdy("03/06/2024"))
     assert activity_id == load._synthesise_activity_id(identity, 0)
 

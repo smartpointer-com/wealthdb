@@ -313,8 +313,8 @@ transaction's `instrument_key` from that text:
   (`YOU BOUGHT <CUSIP> (Cash)`).
 
 A token counts only when its check digit is valid. The activity id
-still hashes the `Symbol` cell as exported, so reading the CUSIP moves
-no id. Each load also fills rows loaded before with a blank `Symbol`
+hashes no security column (§3.3), so reading the CUSIP moves no id.
+Each load also fills rows loaded before with a blank `Symbol`
 (`_fill_instrument_keys`). A row whose text names no security keeps a
 NULL `instrument_key`.
 
@@ -322,11 +322,13 @@ NULL `instrument_key`.
 
 Fidelity activity CSVs do NOT carry a stable per-row identifier
 across exports. `activity_id` is a deterministic SHA-256 prefix
-over the row's structural columns (account, timestamp, kind,
-symbol, quantity, price, amount, settlement date) plus a per-file
-occurrence index. Free-text columns and the source-file hash are
-deliberately excluded — they vary between exports and would break
-cross-window dedup (migration 0005). Silver-internal only; gold
+over the row's economic columns (account, timestamp, kind,
+quantity, price, amount, settlement date) plus a per-file
+occurrence index. The text columns, the `Symbol` cell and the
+source-file hash are deliberately excluded: they vary between exports
+and would split one transaction into two rows. Fidelity fills `Symbol`
+in one export and leaves it blank in another, naming the security only
+in the Action text (migration 0014). Silver-internal only; gold
 does not attempt cross-source per-row matching on it.
 
 ### 3.4 `owner` dimension

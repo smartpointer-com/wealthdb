@@ -1136,11 +1136,15 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
             settlement = ts_from_mdy(ci.get("settlement date"))
             payload = normalize_payload(dict(row))
             identity = _activity_identity(
-                account_ext, ts, kind, symbol, quantity, price, amount,
-                settlement)
+                account_ext, ts, kind, quantity, price, amount, settlement)
             occ = occ_counter.get(identity, 0)
             occ_counter[identity] = occ + 1
             activity_id = _synthesise_activity_id(identity, occ)
+            if symbol is None and _stored_symbol(conn, activity_id):
+                # Another export printed this transaction's Symbol; that
+                # copy names the security the way the positions do, so it
+                # stays whatever order the exports load in.
+                continue
             conn.execute(
                 "INSERT OR REPLACE INTO transactions ("
                 "activity_id, timestamp, account_external_id, kind, "
@@ -1260,25 +1264,39 @@ def _classify_action(action):
     return action.split()[0].upper()
 
 
-def _activity_identity(account_ext, ts, kind, symbol, quantity, price,
-                       amount, settlement_ts):
-    """Structural fingerprint of one activity row: exactly the
-    parsed columns the transactions table stores, none of the
-    free-text ones.
+def _stored_symbol(conn, activity_id):
+    """The Symbol cell of the stored copy of an activity row, or ''."""
+    row = conn.execute(
+        "SELECT payload FROM transactions WHERE activity_id = ?",
+        (activity_id,)).fetchone()
+    if row is None:
+        return ""
+    return (_row_ci(json.loads(row[0])).get("symbol") or "").strip()
+
+
+def _activity_identity(account_ext, ts, kind, quantity, price, amount,
+                       settlement_ts):
+    """Structural fingerprint of one activity row: the parsed
+    economic columns, none of the text ones.
 
     Fidelity re-labels securities between exports — the same
     transaction's Action/Description text drifts (e.g. "SPONSORED
-    ADR" one month, an abbreviated form the next), so any text
-    column in the identity breaks cross-file dedup. The economics
-    of a transaction (who, when, what verb, which symbol, how many,
-    at what price, for how much, settling when) never drift, so
-    only those participate. Numbers enter parsed (not as raw CSV
-    strings) so formatting changes ("1,250.00" vs "1250.00") can't
-    split the key either.
+    ADR" one month, an abbreviated form the next) — and fills the
+    Symbol cell in one export and leaves it blank in another, the
+    security then named only inside the Action text. Any of those
+    columns in the identity splits one transaction into two rows. The
+    economics (who, when, what verb, how many, at what price, for how
+    much, settling when) do not drift, so only they participate.
+    Numbers enter parsed (not as raw CSV strings) so formatting changes
+    ("1,250.00" vs "1250.00") can't split the key either.
+
+    Two distinct transactions with the same economics on the same day
+    in one account still get two rows: the occurrence index of
+    _synthesise_activity_id tells them apart, and every export that
+    covers the day carries both.
     """
     return json.dumps(
-        [account_ext, ts, kind, symbol, quantity, price, amount,
-         settlement_ts],
+        [account_ext, ts, kind, quantity, price, amount, settlement_ts],
         separators=(",", ":"))
 
 
