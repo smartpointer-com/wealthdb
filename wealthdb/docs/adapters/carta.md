@@ -29,7 +29,10 @@ One SQLite DB (`$XDG_DATA_HOME/wealthdb/carta/carta.db`). The relevant tables:
   event date: `security_type`, `quantity`, `exercise_price` (strike), `cost`,
   `market_value` (the holder's per-date valuation — held shares × the FMV in
   effect at that snapshot; 0 for unexercised options and exited lines),
-  `position_status` (`held` | `exited`), `currency`.
+  `position_status` (`held` | `exited`), `currency`. A share certificate
+  born from an option exercise also states `exercise_type`,
+  `exercise_date` and `exercise_fmv` (collector migration 0004; an older
+  silver lacks the columns and states none).
 - `fund_metrics` — the LP capital account per fund entity, **one row per
   quarterly statement** (a NAV time series): `net_asset_value`, `commitment`,
   `called_capital`, `capital_contributed`, `distributions`, `vintage_year`
@@ -59,6 +62,7 @@ One SQLite DB (`$XDG_DATA_HOME/wealthdb/carta/carta.db`). The relevant tables:
 | accounts     | `dump_runs` (`individual_id`)                    | one custody account carrying the positions and the transaction pairs |
 | instruments  | `entities`                                       | one per held company |
 | positions    | `securities` (cap-table, lots aggregated) + `fund_metrics` (fund) | one per company, forward-filled — see §5 |
+| position_lots | `securities` (held share certificates)          | one per certificate, beside its company's position — see §5 |
 | transactions | `cash_flows`                                     | double-entry pairs on the custody account — see §7 |
 | cash_balances| —                                                | none; each transaction pair nets to 0, so no cash position is implied |
 | portfolios   | —                                                | not grouped at source (the engine rolls the accounts up under "(no portfolio)") |
@@ -114,7 +118,13 @@ see §6):
   valuation: held shares × the FMV in effect at the snapshot (a side-loaded
   valuation override when present, else the Carta-derived basis — see the
   collector `DESIGN.md` §5.1); options 0.
-- `book_value` = Σ every held lot's `cost` (the cost basis).
+- `book_value` = Σ every held lot's `cost`: the cash paid for each share
+  certificate (quantity × strike for an exercise) and each convertible's
+  principal. Stamped `derived` / `lots` / `none`: a sum of lots, and an
+  exercise or a purchase carries no fee (DESIGN.md §7.4). A certificate
+  born from an NSO exercise has the fair-market-value at exercise as its
+  tax basis; the book value stays the cash paid, and the exercise facts
+  ride in the lot's payload.
 - `acquisition_date` = the EARLIEST acquisition date the held lots carry.
   Carta states it per lot as `original_acquisition_date`, which is not the
   certificate's issue date: a certificate is re-issued whenever the holding
@@ -132,13 +142,29 @@ see §6):
   issue date, acquisition date, strike) rides in the position payload under
   `lots`.
 
+Each held **share certificate** is also one row in `position_lots`, beside
+its company's position:
+- `lot_key` = the certificate's security id.
+- `quantity` = its shares; `book_value` = its `cost`, stamped `stated`;
+  `market_value` = its `market_value`.
+- `acquisition_date` = its `original_acquisition_date`, where stated.
+- `payload` = `exercise_type`, `exercise_date` and `exercise_fmv`, where
+  stated.
+
+The certificates' quantities sum to the position's. An option grant is not
+a lot: it holds no shares until it is exercised, and then the certificate
+it becomes is one. A convertible is not a lot either until it converts. So
+the lots' book values sum to the position's unless the company also holds
+a convertible.
+
 **Fund LP** (one position per held `fund_metrics` row → (`private_equity`,
 `fund`)):
 - `market_value` = `net_asset_value` — the NAV of the latest quarterly
   statement on/before the as-of date (a real per-quarter time series).
 - `book_value` = `capital_contributed`: the capital paid in, gross of any
   capital paid back. A row parsed from a capital-account statement takes
-  the statement's inception-to-date contributions.
+  the statement's inception-to-date contributions. Stamped `stated` /
+  `paid_in` / `included`: the management fees are drawn from that capital.
 - `acquisition_date` = the fund's first capital call.
 - `quantity` = NULL (an LP interest has no unit count).
 - `commitment` / `called_capital` / `distributions` / `vintage_year` ride
@@ -149,7 +175,8 @@ by years — the interest has no valuation of its own. Leaving it out would
 book each call as a loss in the period it was paid and the first NAV as a
 gain, so from the first call until the first NAV the position is carried at
 the capital paid in less any capital paid back (`market_value`). Its
-`book_value` is the capital paid in alone, as on a NAV row, and its payload
+`book_value` is the capital paid in alone, as on a NAV row, summed from the
+call notices and stamped `derived` / `paid_in` / `included`. Its payload
 carries `valuation_basis: called_capital`. Each fund cash event before the
 first NAV is a snapshot day.
 
@@ -259,9 +286,13 @@ as the observable range, with `LatestChangeNumber` = the newest dump.
   back to the FMV-at-last-exercise — exact from the last exercise onward, but
   over-stating earlier dates (collector `DESIGN.md` §5.1).
 - **Per-company aggregation (done).** Each company is one gold position; its
-  share certs / option grants are aggregated into it as lots (the per-lot
-  detail rides in the position payload), mirroring how a public brokerage
-  account holds one position per security with tax lots underneath.
+  share certs / option grants are aggregated into it (the per-lot detail
+  rides in the position payload), and its share certificates are its
+  `position_lots`, mirroring how a public brokerage account holds one
+  position per security with tax lots underneath.
+- **Exercise basis.** For a certificate born from an NSO exercise, the tax
+  basis is the fair-market-value at exercise, not the cash paid. The lot
+  payload carries it; whether the book value should is an open decision.
 - **Vesting in gold.** Deliberately silver-only. If a future need arises, a
   dedicated gold table (not the positions/transactions facts) would be the
   place.

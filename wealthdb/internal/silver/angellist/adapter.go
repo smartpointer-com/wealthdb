@@ -3,8 +3,9 @@
 //
 // Single-source, USD adapter for a limited-partner book of SPVs and
 // fund deals. The collector does the valuation + lifecycle work and
-// stores a per-position EVENT timeline; this adapter only forward-fills
-// it. Notable shapes:
+// stores a per-position EVENT timeline; this adapter forward-fills it,
+// and takes the basis that left in kind off the book value. Notable
+// shapes:
 //
 //   - One account for the whole LP book (silver
 //     `dump_runs.invest_account_slug`). The holder owns many SPV stakes
@@ -29,9 +30,19 @@
 //     date, which is what gold's as-of query reads. market_value =
 //     `market_value_minor` (the collector's mark: current FMV, else the
 //     annual K-1 tax-basis NAV, else cost — never blended within a
-//     snapshot); book_value = `contributed_minor` (capital called).
-//     Money is minor units (cents); the adapter scales by 10^-2. quantity
-//     = NULL (LP interests have no unit quantity).
+//     snapshot). Money is minor units (cents); the adapter scales by
+//     10^-2. quantity = NULL (LP interests have no unit quantity).
+//
+//   - book_value is the capital paid in (docs/DESIGN.md §7.4): the
+//     portal's `contributed_minor`, gross of cash paid back, stamped
+//     stated / paid_in / included. A K-1 that states a Line 19(c)
+//     property distribution (`k1_capital_accounts`, silver migration
+//     0008) moves that basis out with the asset: from the K-1's period
+//     end (Dec 31 of its tax year) the book value is the paid-in figure
+//     less every such distribution so far, never below zero, stamped
+//     derived / paid_in / included (basis.go). The K-1 reaches its
+//     position through the fund name the collector's pairing stamps on
+//     the offering.
 //
 //   - Transactions + cash: the funding-account ledger
 //     (silver `funding_transactions`) is the dated cash flow. Each row maps

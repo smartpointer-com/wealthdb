@@ -29,11 +29,18 @@
 //     (silver migrations 0001/0002): for each event date the adapter emits
 //     each deal's latest event on/before it (by event_seq), dropping the
 //     is_open=0 (exited) ones — a COMPLETE portfolio per date, which is what
-//     gold's as-of query reads. market_value / book_value are the
-//     collector's marks (CLOSED-deal prices for SPVs; parsed capital-
-//     account-statement NAVs for funds). quantity = shares_held for SPVs,
-//     NULL for funds (units are not a share count). Silver dates are source
-//     ISO TEXT; the adapter converts to unix seconds (strftime).
+//     gold's as-of query reads. market_value is the collector's mark
+//     (CLOSED-deal prices for SPVs; parsed capital-account-statement NAVs
+//     for funds). quantity = shares_held for SPVs, NULL for funds (units
+//     are not a share count). Silver dates are source ISO TEXT; the
+//     adapter converts to unix seconds (strftime).
+//
+//   - book_value is `cost_basis_remaining`, the stake still held at the
+//     price paid, plus the execution fee charged on the purchase in the
+//     same proportion: fee × shares held ÷ shares bought for an SPV, the
+//     whole fee for a fund while it is held. Stamped derived / average /
+//     included; a deal whose purchase states no fee keeps the cost alone,
+//     stamped stated / average / excluded (basis.go, docs/DESIGN.md §7.4).
 //
 //   - Transactions from the `cash_flows` ledger, as balanced double-entry
 //     pairs on the custody account: a purchase -> deposit + buy (spv) or

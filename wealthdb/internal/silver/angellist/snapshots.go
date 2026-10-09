@@ -32,14 +32,19 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
+	k, err := c.readInKind(ctx)
+	if err != nil {
+		return nil, err
+	}
 	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
-		batch, err := c.buildBatch(ctx, t, account)
+		batch, err := c.buildBatch(ctx, t, account, k)
 		if err != nil {
 			return nil, err
 		}
 		batches = append(batches, batch)
 	}
+	k.logClamped()
 	// The funding account's current uninvested cash (so account value =
 	// positions + cash). Emitted as one CashBalanceChange dated at the last
 	// funding movement.
@@ -196,11 +201,12 @@ SELECT COALESCE(NULLIF(slug, ''), '') FROM (
 //
 // The value is the latest event's mark, whichever source states it. The book
 // value is the capital contributed as the portal states it, on its latest
-// event on/before t. A K-1 states cumulative contributions too, but on the
-// partnership's tax basis, which can differ from the portal's figure; it
-// rides in the payload as tax_basis_contributed, so the book value does not
-// move between the two as the latest event changes.
-func (c *Connection) buildBatch(ctx context.Context, t int64, account string) (canonical.SnapshotBatch, error) {
+// event on/before t, less the basis K-1s say left in kind by then (inKind).
+// A K-1 states cumulative contributions too, but on the partnership's tax
+// basis, which can differ from the portal's figure; it rides in the payload
+// as tax_basis_contributed, so the book value does not move between the two
+// as the latest event changes.
+func (c *Connection) buildBatch(ctx context.Context, t int64, account string, k *inKind) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	if account == "" {
 		return batch, nil
@@ -259,10 +265,16 @@ SELECT ps.position_external_id,
 			MarketValue:          minorPtr(marketMinor),
 			AcquisitionDate:      silver.DatePtrFromNullUnix(invDate),
 		}
-		change.SetBookValue(minorPtr(contribMinor), paidInBasis)
+		book, basis, extra := k.bookValue(pid, t, contribMinor)
+		change.SetBookValue(book, basis)
 		if tax := minorPtr(taxMinor); tax != nil {
-			change.Payload = silver.PayloadWith("{}", map[string]any{
-				"tax_basis_contributed": tax.String()})
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			extra["tax_basis_contributed"] = tax.String()
+		}
+		if extra != nil {
+			change.Payload = silver.PayloadWith("{}", extra)
 		}
 		batch.Positions = append(batch.Positions, change)
 

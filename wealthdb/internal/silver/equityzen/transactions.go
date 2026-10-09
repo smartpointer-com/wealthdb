@@ -52,7 +52,8 @@ SELECT c.cash_flow_external_id, c.deal_external_id,
 // cost bases derivable — excluding fees from the investment leg alone,
 // including them by adding the fee legs linked to it (see feePayload). Which
 // one is correct is jurisdiction-dependent, so the ledger records the fee as
-// a fact and leaves the choice to whatever reads it.
+// a fact and leaves the choice to whatever reads it. The position's book
+// value includes it, as gold's book values do (basis.go).
 //
 // A distribution's fee runs the other way: it is DEDUCTED from the
 // proceeds, and the bank credit is `amount − execution_fee` to the cent. The

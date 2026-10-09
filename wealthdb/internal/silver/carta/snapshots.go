@@ -291,6 +291,46 @@ type lot struct {
 	ExercisePrice *float64 `json:"exercise_price,omitempty"`
 }
 
+// shareLot is a held share certificate as an open lot of its company's
+// position, keyed by the certificate's id: its shares, the cash paid for
+// them as its book value, its per-date value and the date the holder
+// acquired it (not the certificate's issue date — see lot.AcquiredOn). A
+// certificate born from an option exercise carries the exercise's type,
+// date and fair-market-value per share in the payload, as silver states
+// them; the book value stays the cash paid. An option or a convertible is
+// not a lot: neither holds shares until it is exercised or converts, and
+// then the certificate it becomes is one. The caller sets the position's
+// keys and currency.
+func shareLot(secID int64, quantity, cost, mv sql.NullFloat64, acquired string,
+	exType, exDate sql.NullString, exFMV sql.NullFloat64) canonical.PositionLotChange {
+	l := canonical.PositionLotChange{
+		LotKey:      strconv.FormatInt(secID, 10),
+		Quantity:    silver.DecimalPtrFromNullFloat(quantity),
+		BookValue:   silver.DecimalPtrFromNullFloat(cost),
+		MarketValue: silver.DecimalPtrFromNullFloat(mv),
+	}
+	if l.BookValue != nil {
+		l.BasisOrigin = canonical.BasisStated
+	}
+	if acq, ok := flowDateUnix(acquired); ok {
+		l.AcquisitionDate = silver.DatePtrFromNullUnix(sql.NullInt64{Int64: acq, Valid: true})
+	}
+	ex := map[string]any{}
+	if exType.Valid && exType.String != "" {
+		ex["exercise_type"] = exType.String
+	}
+	if exDate.Valid && exDate.String != "" {
+		ex["exercise_date"] = exDate.String
+	}
+	if exFMV.Valid {
+		ex["exercise_fmv"] = exFMV.Float64
+	}
+	if len(ex) > 0 {
+		l.Payload = silver.PayloadWith("{}", ex)
+	}
+	return l
+}
+
 // appendCapTableAt forward-fills the cap-table holdings as of t and aggregates
 // them into ONE position per company: each security lot's latest delta
 // on/before t, keeping only `held` lots, summed. Quantity is the share count
@@ -298,13 +338,19 @@ type lot struct {
 // also double-count the certificates it became, so it stays a 0-value lot in
 // the payload). MarketValue / BookValue sum every held lot — the collector's
 // per-date FMV valuation (collector DESIGN.md §5.1) and the cost basis. The
-// per-lot detail rides in the position payload.
+// per-lot detail rides in the position payload, and each held share
+// certificate is one open lot of the position (shareLot).
 func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
-	const q = `
+	exercise := `NULL, NULL, NULL`
+	if c.exercise {
+		exercise = `exercise_type, exercise_date, exercise_fmv`
+	}
+	q := `
 SELECT entity_external_id, security_type, security_external_id,
        COALESCE(currency, 'USD'), quantity, cost, market_value,
        COALESCE(label, ''), COALESCE(issue_date, ''), exercise_price,
-       COALESCE(json_extract(payload, '$.original_acquisition_date'), '')
+       COALESCE(json_extract(payload, '$.original_acquisition_date'), ''),
+       ` + exercise + `
   FROM securities s
  WHERE position_status = 'held'
    AND snapshot_at = (SELECT MAX(snapshot_at) FROM securities s2
@@ -319,15 +365,18 @@ SELECT entity_external_id, security_type, security_external_id,
 	}
 	defer rows.Close()
 
+	// The sums are decimal so that a position's quantity and book value are
+	// exactly the sums of its share lots'.
 	type agg struct {
 		ccy                         string
-		shareQty, mv, cost          float64
+		shareQty, mv, cost          decimal.Decimal
 		hasShareQty, hasMV, hasCost bool
 		hasEquity                   bool // any non-convertible lot (share/option/…)
 		hasStockLike                bool // any real share-settled lot (share/rsu/rsa/piu/equity_grant)
 		acquiredUnix                int64
 		hasAcquired                 bool
 		lots                        []lot
+		shareLots                   []canonical.PositionLotChange
 	}
 	aggs := make(map[int64]*agg)
 	var order []int64
@@ -336,9 +385,12 @@ SELECT entity_external_id, security_type, security_external_id,
 			entityID, secID                   int64
 			secType, ccy, label, isDt, acqStr string
 			quantity, cost, mv, strike        sql.NullFloat64
+			exType, exDate                    sql.NullString
+			exFMV                             sql.NullFloat64
 		)
 		if err := rows.Scan(&entityID, &secType, &secID, &ccy,
-			&quantity, &cost, &mv, &label, &isDt, &strike, &acqStr); err != nil {
+			&quantity, &cost, &mv, &label, &isDt, &strike, &acqStr,
+			&exType, &exDate, &exFMV); err != nil {
 			return err
 		}
 		a := aggs[entityID]
@@ -353,16 +405,19 @@ SELECT entity_external_id, security_type, security_external_id,
 		if isStockVehicleType(secType) {
 			a.hasStockLike = true // share-settled ownership → stock vehicle (vs option/warrant/sar)
 		}
-		if secType == "share" && quantity.Valid {
-			a.shareQty += quantity.Float64
-			a.hasShareQty = true
+		if secType == "share" {
+			if quantity.Valid {
+				a.shareQty = a.shareQty.Add(decimal.NewFromFloat(quantity.Float64))
+				a.hasShareQty = true
+			}
+			a.shareLots = append(a.shareLots, shareLot(secID, quantity, cost, mv, acqStr, exType, exDate, exFMV))
 		}
 		if mv.Valid {
-			a.mv += mv.Float64
+			a.mv = a.mv.Add(decimal.NewFromFloat(mv.Float64))
 			a.hasMV = true
 		}
 		if cost.Valid {
-			a.cost += cost.Float64
+			a.cost = a.cost.Add(decimal.NewFromFloat(cost.Float64))
 			a.hasCost = true
 		}
 		l := lot{SecurityType: secType, SecurityID: secID, Label: label,
@@ -424,22 +479,24 @@ SELECT entity_external_id, security_type, security_external_id,
 			Payload:              json.RawMessage(payload),
 		}
 		if a.hasShareQty {
-			d := canonical.Decimal(decimal.NewFromFloat(a.shareQty))
-			change.Quantity = &d
+			change.Quantity = &a.shareQty
 		}
 		if a.hasMV {
-			d := canonical.Decimal(decimal.NewFromFloat(a.mv))
-			change.MarketValue = &d
+			change.MarketValue = &a.mv
 		}
 		if a.hasCost {
-			d := canonical.Decimal(decimal.NewFromFloat(a.cost))
-			change.SetBookValue(&d, shareBasis)
+			change.SetBookValue(&a.cost, shareBasis)
 		}
 		if a.hasAcquired {
 			change.AcquisitionDate = silver.DatePtrFromNullUnix(
 				sql.NullInt64{Int64: a.acquiredUnix, Valid: true})
 		}
 		batch.Positions = append(batch.Positions, change)
+		for _, l := range a.shareLots {
+			l.SnapshotAt, l.AccountExternalID, l.PositionKey = t, acct, change.PositionKey
+			l.InstrumentExternalID, l.Currency = &instKey, a.ccy
+			batch.PositionLots = append(batch.PositionLots, l)
+		}
 		active[eid] = a.ccy
 		classesNew[eid] = classNew
 		vehicles[eid] = vehicle

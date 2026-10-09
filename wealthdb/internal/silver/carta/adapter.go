@@ -30,7 +30,9 @@
 //     aggregated (Quantity = the share count, MarketValue the per-date
 //     valuation, BookValue = cost; the per-lot detail in the payload),
 //     or the fund's capital account (MarketValue = NAV, BookValue =
-//     contributed). Forward-filled per event date (snapshots.go).
+//     contributed). Forward-filled per event date (snapshots.go). Each
+//     held share certificate is also one POSITION LOT of its company's
+//     position, at the cash paid for it (docs/DESIGN.md §7.4).
 //
 //   - TRANSACTIONS: the cash-flow ledger (silver migration 0003)
 //     projected as balanced double-entry pairs on the custody account
@@ -45,6 +47,7 @@ package carta
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
@@ -59,16 +62,25 @@ type Adapter struct{}
 
 func (*Adapter) Kind() string { return kindName }
 
-func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "carta silver")
 	if err != nil {
 		return nil, err
 	}
-	return &Connection{db: db}, nil
+	exercise, err := silver.HasColumn(ctx, db, "securities", "exercise_fmv")
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("carta silver: %w", err)
+	}
+	return &Connection{db: db, exercise: exercise}, nil
 }
 
+// Connection reads one carta silver. exercise says whether its securities
+// carry the exercise facts (silver migration 0004): a silver last loaded
+// before that migration lacks them and reads as stating none.
 type Connection struct {
-	db *sql.DB
+	db       *sql.DB
+	exercise bool
 }
 
 func (c *Connection) Close() error {

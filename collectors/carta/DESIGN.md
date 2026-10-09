@@ -617,6 +617,10 @@ It projects this silver into canonical `accounts` / `instruments` /
   contributed capital. Cap-table position: `quantity` + `book_value` = cost,
   `market_value` = the silver `market_value` (the valuation override's
   count-as-of × FMV-as-of, else the Carta-derived fallback — §5.1).
+- **Lots** — each held share certificate is one gold `position_lots` row
+  under its company's position: its quantity, `cost` as the book value,
+  `market_value`, and `original_acquisition_date`, with the exercise facts
+  of §5.3 in its payload. The book value stays the cash paid.
 - **Vesting / documents / cap_calls** — kept silver-only; gold has no
   canonical home for a vesting timeline or a document archive.
 

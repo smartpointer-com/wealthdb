@@ -306,10 +306,12 @@ forward-fill:
   `market_value_minor` (current FMV → quarterly fund fair-value statement
   → annual tax-basis NAV → cost, never blended within a snapshot);
   `book_value` = the capital contributed as the portal states it, on the
-  latest portal event ≤ the date (gross: distributions do not reduce it). A
-  K-1's cumulative contributions are tax-basis capital and can differ from
-  the portal's figure, so they ride in the position payload as
-  `tax_basis_contributed` instead; `quantity=NULL`;
+  latest portal event ≤ the date (gross: cash distributions do not reduce
+  it). A K-1's Line 19(c) property distribution does: from the K-1's
+  period end, the basis it states left in kind comes off the book value,
+  never below zero. A K-1's cumulative contributions are tax-basis capital
+  and can differ from the portal's figure, so they ride in the position
+  payload as `tax_basis_contributed` instead; `quantity=NULL`;
   `acquisition_date=investment_date`.
 - **Transactions = the funding ledger** (`funding_transactions`). Each cash
   movement maps to a canonical kind by its source type:

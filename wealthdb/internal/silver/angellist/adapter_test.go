@@ -270,9 +270,6 @@ func batchDate(b canonical.SnapshotBatch) int64 {
 	return -1
 }
 
-// TestTransactionsDistributions verifies a K-1 cash distribution (linked to a
-// position via offerings.fund_name) becomes one positive 'distribution'
-// transaction at the tax year-end, and that Status reports the tx extrema.
 // TestTransactionsFunding verifies the funding-ledger → canonical mapping:
 // each AngelList type maps to the right TxKind, the source sign is preserved
 // (a refund is a POSITIVE contribution reversal), and Status reports the tx

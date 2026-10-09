@@ -1,7 +1,8 @@
 -- angellist silver schema for adapter tests — the tables the gold adapter
--- reads, mirroring the collector migrations through 0005 (event-sourced
--- offerings + position_snapshots). vehicles / k1_capital_accounts /
--- commitments / portfolio_timeseries are collector-internal and omitted.
+-- reads, mirroring the collector migrations through 0008 (event-sourced
+-- offerings + position_snapshots, the funding ledger, and the K-1 columns
+-- the book value reads). vehicles / commitments / portfolio_timeseries are
+-- collector-internal and omitted.
 
 CREATE TABLE schema_meta (
     silver_schema_version INTEGER PRIMARY KEY,
@@ -77,4 +78,17 @@ CREATE TABLE funding_transactions (
     payload            TEXT
 );
 
-INSERT INTO schema_meta (silver_schema_version) VALUES (6);
+CREATE TABLE k1_capital_accounts (
+    tax_year                     INTEGER NOT NULL,
+    fund_name                    TEXT    NOT NULL,
+    portfolio_company            TEXT,
+    final_k1                     INTEGER,
+    contributions_minor          INTEGER,
+    cash_distributions_minor     INTEGER,
+    ending_capital_minor         INTEGER,
+    property_distributions_minor INTEGER,   -- Line 19(c)
+    payload                      TEXT,
+    PRIMARY KEY (tax_year, fund_name)
+);
+
+INSERT INTO schema_meta (silver_schema_version) VALUES (8);

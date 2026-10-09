@@ -105,7 +105,10 @@ SELECT p.deal_external_id,
        (SELECT MIN(CAST(strftime('%s', p2.as_of_date) AS INTEGER))
           FROM positions p2
          WHERE p2.deal_external_id = p.deal_external_id AND p2.as_of_date IS NOT NULL),
-       COALESCE(o.payload, '')
+       COALESCE(o.payload, ''),
+       o.shares_original,
+       (SELECT SUM(cf.execution_fee) FROM cash_flows cf
+         WHERE cf.deal_external_id = p.deal_external_id AND cf.kind = 'purchase')
   FROM positions p
   JOIN offerings o ON o.deal_external_id = p.deal_external_id
  WHERE p.is_open = 1
@@ -121,18 +124,18 @@ SELECT p.deal_external_id,
 	}
 	defer rows.Close()
 
-	any := false
+	held := false
 	for rows.Next() {
 		var (
 			deal, currency, kind, company, symbol, payl string
-			shares, cost, market                        sql.NullFloat64
+			shares, cost, market, bought, fee           sql.NullFloat64
 			acqUnix                                     sql.NullInt64
 		)
 		if err := rows.Scan(&deal, &currency, &shares, &cost, &market,
-			&kind, &company, &symbol, &acqUnix, &payl); err != nil {
+			&kind, &company, &symbol, &acqUnix, &payl, &bought, &fee); err != nil {
 			return batch, err
 		}
-		any = true
+		held = true
 		ac := assetClassForKind(kind)
 		acNew, vehicle := taxonomyForKind(kind)
 		instKey := deal
@@ -148,10 +151,16 @@ SELECT p.deal_external_id,
 			MarketValue:          silver.DecimalPtrFromNullFloat(market),
 			AcquisitionDate:      silver.DatePtrFromNullUnix(acqUnix),
 		}
-		change.SetBookValue(silver.DecimalPtrFromNullFloat(cost), costBasis)
+		spv := ac == canonical.AssetClassSPV
+		book, basis, feeShare := bookValue(spv, cost, shares, bought, fee)
+		change.SetBookValue(book, basis)
+		if feeShare != nil {
+			change.Payload = silver.PayloadWith("{}", map[string]any{
+				"execution_fee_in_basis": feeShare.String()})
+		}
 		// quantity is a share count only for SPVs; a multi-company fund's
 		// LP interest has no meaningful unit count.
-		if ac == canonical.AssetClassSPV {
+		if spv {
 			change.Quantity = silver.DecimalPtrFromNullFloat(shares)
 		}
 		batch.Positions = append(batch.Positions, change)
@@ -180,7 +189,7 @@ SELECT p.deal_external_id,
 	if err := rows.Err(); err != nil {
 		return batch, err
 	}
-	if !any {
+	if !held {
 		return batch, nil // nothing held at t
 	}
 	batch.Accounts = append(batch.Accounts, custodyAccount(t))
