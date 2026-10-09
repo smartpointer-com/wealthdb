@@ -442,14 +442,25 @@ type holdingsPayloadShape struct {
 // market_value comes from the HOLD 19A subfield whose currency
 // matches the instrument's natural currency (falls back to first
 // HOLD entry when no exact match exists). See mt535.go for the
-// parser and docs/adapters/ubs.md §4 for the rationale.
+// parser and docs/adapters/ubs.md §4 for the rationale. The book
+// value is the holding's BOOK amount, which the collector promotes
+// to columns (psnBookValue); a silver older than those columns
+// states none.
 //
 // As of silver migration 0002 both holdings and safekeeping_
 // accounts use the same AcctId form for the safekeeping ID
 // (e.g. BBBBxxxxxxxxxxS1); no cross-table translation is needed.
 func (c *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta) error {
-	const q = `
-SELECT snapshot_at, safekeeping_external_id, isin, payload
+	hasCost, err := silver.HasColumn(ctx, c.db, "holdings", "cost_basis")
+	if err != nil {
+		return fmt.Errorf("appendHoldings: %w", err)
+	}
+	costCols := `NULL, NULL, NULL, NULL, NULL`
+	if hasCost {
+		costCols = `cost_basis, cost_currency, acquisition_fx_rate, acquisition_fx_from, acquisition_fx_to`
+	}
+	q := `
+SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
   FROM holdings
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -464,8 +475,10 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 			safekeepingID string
 			isin          string
 			payload       string
+			cost          holdingCost
 		)
-		if err := rows.Scan(&snap, &safekeepingID, &isin, &payload); err != nil {
+		if err := rows.Scan(&snap, &safekeepingID, &isin, &payload,
+			&cost.basis, &cost.currency, &cost.rate, &cost.from, &cost.to); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -535,7 +548,8 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 		}
 
 		isinCopy := isin
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		book, basis, posPayload := psnBookValue(cost, positionCcy, payload)
+		pos := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    safekeepingID,
 			PositionKey:          isin,
@@ -545,8 +559,10 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 			Currency:             positionCcy,
 			Quantity:             quantity,
 			MarketValue:          marketValue,
-			Payload:              json.RawMessage(payload),
-		})
+			Payload:              posPayload,
+		}
+		pos.SetBookValue(book, basis)
+		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
 }

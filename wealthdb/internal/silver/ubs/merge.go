@@ -28,6 +28,11 @@ import (
 //       under `payload.web` so web-only fields (cost_price,
 //       lending_value, market_value_base) stay queryable through
 //       PSN's faithful safekeeping + portfolio identity.
+//     - A paid-in fold (paidInStream) over the merged stream sets the
+//       basis of a private-markets fund's units, which neither feed
+//       states, from the capital calls web reads.
+//
+//   Realized lots (RealizedLots, realized.go) come from web alone.
 //
 //   Transactions
 //     - Hard cut at PSN-start per relationship, on the accounts the
@@ -264,7 +269,22 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 		streams = append(streams, s)
 	}
-	return silver.NewConcatSnapshotStream(streams), nil
+	merged := silver.NewConcatSnapshotStream(streams)
+	if c.web == nil {
+		return merged, nil
+	}
+	// A private-markets fund's units carry no stated cost on either
+	// feed; the capital calls web reads supply their paid-in basis, on
+	// whichever stream's era the position falls in (paid_in.go).
+	paidIn, err := c.web.paidInByISIN(ctx, c.psn, safekeepingByPortfolio)
+	if err != nil {
+		_ = merged.Close()
+		return nil, fmt.Errorf("ubs web paid-in basis: %w", err)
+	}
+	if len(paidIn) == 0 {
+		return merged, nil
+	}
+	return &paidInStream{inner: merged, series: paidIn}, nil
 }
 
 // Transactions applies a hard cut at PSN_start per relationship.

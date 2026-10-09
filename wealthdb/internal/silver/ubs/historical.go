@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -142,10 +141,20 @@ func (r *webReader) appendHistoricalSecurities(
 		return err
 	}
 
-	const q = `
+	// The cost value is a column of ubs-web migration 0013; an older
+	// silver states none.
+	hasCostBasis, err := silver.HasColumn(ctx, r.db, "historical_position_snapshots", "cost_basis")
+	if err != nil {
+		return fmt.Errorf("appendHistoricalSecurities: %w", err)
+	}
+	costBasisCol := `NULL`
+	if hasCostBasis {
+		costBasisCol = `cost_basis`
+	}
+	q := `
 SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
        units, market_value, market_value_currency,
-       cost_price, market_price, accrued_interest, description, payload
+       cost_price, ` + costBasisCol + `, accrued_interest, description, payload
   FROM historical_position_snapshots
  WHERE instrument_isin IS NOT NULL
    AND as_of_date BETWEEN ? AND ?`
@@ -161,14 +170,14 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 
 	for rows.Next() {
 		var (
-			asOf                            int64
-			portID, isin, ccy, mvCcy        string
-			descr                           sql.NullString
-			units, mv, cost, price, accrued sql.NullFloat64
-			payload                         string
+			asOf                                     int64
+			portID, isin, ccy, mvCcy                 string
+			descr                                    sql.NullString
+			units, mv, costPrice, costBasis, accrued sql.NullFloat64
+			payload                                  string
 		)
 		if err := rows.Scan(&asOf, &portID, &isin, &ccy, &units, &mv, &mvCcy,
-			&cost, &price, &accrued, &descr, &payload); err != nil {
+			&costPrice, &costBasis, &accrued, &descr, &payload); err != nil {
 			return err
 		}
 		// Drop rows whose portfolio has crossed over to PSN
@@ -188,14 +197,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		}
 		batch := getBatch(asOf)
 
-		// Prefer the real PSN safekeeping account so this security's
-		// history is continuous with the PSN-era holdings on the
-		// same account. Fall back to the synthetic overlay when no
-		// unambiguous mapping exists.
-		accountID, mapped := safekeepingByPortfolio[portID]
-		if !mapped {
-			accountID = overlayAccountID(portID)
-		}
+		accountID, mapped := statementSecuritiesAccount(safekeepingByPortfolio, portID)
 		if portKey := (snapshotKey{asOf, portID}); !emitted[portKey] {
 			emitted[portKey] = true
 			batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
@@ -270,7 +272,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		if positionCcy == "" {
 			positionCcy = ccy
 		}
-		bookValue, posPayload := historicalBookValue(units, cost, ccy, positionCcy, payload)
+		bookValue, basis, posPayload := statementBookValue(costBasis, costPrice, ccy, mvCcy, payload)
 		pos := canonical.PositionChange{
 			SnapshotAt:           asOf,
 			AccountExternalID:    accountID,
@@ -284,10 +286,23 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
 			Payload:              posPayload,
 		}
-		pos.SetBookValue(bookValue, statementBasis)
+		pos.SetBookValue(bookValue, basis)
 		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
+}
+
+// statementSecuritiesAccount names the account a statement's securities
+// for a portfolio are held on in gold. The real PSN safekeeping account
+// is preferred, so the security's history is continuous with the
+// PSN-era holdings on the same account; mapped reports that. Without
+// an unambiguous mapping the synthetic per-portfolio overlay holds
+// them.
+func statementSecuritiesAccount(safekeepingByPortfolio map[string]string, portfolio string) (account string, mapped bool) {
+	if account, ok := safekeepingByPortfolio[portfolio]; ok {
+		return account, true
+	}
+	return overlayAccountID(portfolio), false
 }
 
 // snapshotKey is one account or portfolio at one snapshot time.
@@ -562,37 +577,3 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 	}
 	return r.span(ctx, "historicalRange", queries)
 }
-
-// statementBasis stamps a statement row's book value: units at the
-// average cost, which UBS states without the purchase fees.
-var statementBasis = canonical.Basis{
-	Origin: canonical.BasisDerived, Method: canonical.BasisMethodAverage, Fees: canonical.BasisFeesExcluded,
-}
-
-// historicalBookValue returns a statement row's book value and the payload
-// its position carries.
-//
-// The statement prints the cost price in the instrument's currency, while the
-// position is stated in the portfolio's base currency. units × cost_price is a
-// book value only when the two currencies are the same. Otherwise the book
-// value stays NULL, since the average buy FX rate that would convert it is not
-// parsed, and the cost price travels in the payload with its currency.
-func historicalBookValue(units, cost sql.NullFloat64, instrumentCcy, positionCcy, payload string) (*canonical.Decimal, json.RawMessage) {
-	if !units.Valid || !cost.Valid {
-		return nil, json.RawMessage(payload)
-	}
-	if instrumentCcy != "" && instrumentCcy == positionCcy {
-		d := canonical.NewDecimalFromFloat(units.Float64 * cost.Float64)
-		return &d, json.RawMessage(payload)
-	}
-	price := strconv.FormatFloat(cost.Float64, 'f', -1, 64)
-	out := spliceStringField(payload, costPriceKey, price)
-	return nil, spliceStringField(string(out), costCurrencyKey, instrumentCcy)
-}
-
-// The payload keys a statement row's cost price travels under when it cannot
-// become a book value.
-const (
-	costPriceKey    = `"cost_price":`
-	costCurrencyKey = `"cost_currency":`
-)

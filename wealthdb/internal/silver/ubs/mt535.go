@@ -28,7 +28,9 @@ import (
 // holding cost (AHOD, equal to BOOK) and, when the instrument currency
 // differs from the reference currency, the average acquisition FX rate
 // (AEXR). Gold's positions table takes market value and quantity from
-// here; book cost and the narrative stay in the raw payload.
+// here. The collector parses BOOK, AVER and AEXR into columns of their
+// own (ubs-psn migration 0005), and the book value is read from those
+// (psnBookValue).
 
 var (
 	re19A = regexp.MustCompile(`^:([A-Z]{3,4})//([A-Z]{3})([0-9,]+?),?$`)

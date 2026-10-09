@@ -43,7 +43,7 @@ identifier dimensions show up in every gold row:
 | `safekeeping_accounts` | `accounts` (kind=`safekeeping`) | UBS safekeeping code as `account_external_id`. |
 | `portfolios` | `portfolios` | `PrtflId` as `portfolio_external_id` (the dedicated gold table, migration 0004). |
 | `instruments` | `instruments` | See §4 for the `(asset_class, vehicle)` derivation. |
-| `holdings` | `positions` | One securities holding per row. |
+| `holdings` | `positions` | One securities holding per row. The book value is the MT535 BOOK amount (§12). |
 | `cash_balances` | `cash_balances` | Direct one-to-one; UBS `balance_kind` enum carries over. From the MT940 statement feed, whose delivery is per-account: an account is in scope for statements or it is not, and one that is not receives none on any day. |
 | `cash_accounts.payload.BookBalAmt` | `cash_balances` (kind=`closing`) | The account master data states a daily book balance for EVERY cash account, so it fills the ones the statement feed never reaches (`appendBookBalances`). It IS the closing balance — measured, not assumed: on every (snapshot, account) the two feeds share it equals the MT940 closing figure to the cent and matches neither the opening nor the available one. Signed at the source, so no credit/debit indicator applies. A key the statement feed already emitted is skipped, so the pass is strictly additive. |
 | `pending_securities` | — | Most rows are "no activity" markers (`ACTI//N`). Deferred. |
@@ -55,9 +55,9 @@ identifier dimensions show up in every gold row:
 | `money_market_contracts` | `positions` — `(cash, time_deposit)` | Same. |
 | `otc_contracts` | `positions` — `(foreign_exchange, forward)`, or `(other, other)` for a non-FX underlying | Same. |
 | `events` | `transactions` | See `kind` mapping in §5. Two rows the feed does not carry as events are booked from them for the accounts the statement feed never reaches: the other leg of a conversion an MT940 line describes, and the cash an MT566 confirmation paid (§7, *The accounts the feed does not speak for*). |
-| `portfolio_transactions` (web) | `transactions` | A managed portfolio's securities settlements, booked on the cash account that paid. See §11. |
-| `statement_trades` (web) | — | The trade list a Statement of assets prints, with the cost sold and the realized P/L (ubs-web DESIGN.md §3.10). Deferred (DESIGN.md §13.4). |
-| `advices` (web) | — | What capital calls and contract notes state was paid (ubs-web DESIGN.md §3.9). Deferred (DESIGN.md §13.4). |
+| `portfolio_transactions` (web) | `transactions`; `realized_lots` | A managed portfolio's securities settlements, booked on the cash account that paid. See §11. Its sales with a realized P/L are also realized lots (§12). |
+| `statement_trades` (web) | `realized_lots` | The trade list a Statement of assets prints (ubs-web DESIGN.md §3.10). Each sale is a realized lot with the cost it drew on (§12). |
+| `advices` (web) | `positions.book_value` | The capital calls are the paid-in basis of a private-markets fund's units (§12). Contract notes are not read. |
 
 ## 4. `(asset_class, vehicle)` derivation for `holdings`
 
@@ -614,7 +614,7 @@ What the three leave: a conversion between two accounts the feed speaks
 for is two feed rows that share no reference, and the cash flow
 statement's amount join cannot cross currencies; the veto pairs them
 for returns, and the far account of each is still the matcher's
-affair (§12).
+affair (§13).
 
 ### The counter account, across both eras
 
@@ -813,11 +813,12 @@ overlap stream and PSN stream so chronologically the gold
 `historical_position_snapshots` rows where `instrument_isin IS NOT
 NULL`. UBS doesn't surface the safekeeping account reliably in
 the PDF text, so silver leaves `account_external_id = ''`. The
-adapter attaches each security position to the per-portfolio
+adapter attaches each security position to the PSN safekeeping
+account its portfolio maps to, where exactly one can hold it
+(`statementSecuritiesAccount`). Otherwise it uses the per-portfolio
 overlay account (`'<portfolio>:overlay'`, `account_kind=overlay`)
-that PSN already uses for forward contracts — preserving the
-invariant that every gold `positions` row is owned by an
-`accounts` row.
+that PSN already uses for forward contracts. Either way every gold
+`positions` row is owned by an `accounts` row.
 
 | Silver column | Gold mapping |
 | --- | --- |
@@ -827,7 +828,7 @@ invariant that every gold `positions` row is owned by an
 | `currency_iso` | `instruments.currency` |
 | `units` | `positions.quantity` |
 | `market_value` | `positions.market_value` (in `market_value_currency`, typically portfolio base) |
-| `cost_price * units` | `positions.book_value` when `currency_iso` equals the position currency; otherwise NULL, with `cost_price` and `cost_currency` in the payload |
+| `cost_basis` | `positions.book_value` (§12). Without it, the book value is NULL and `cost_price` travels in the payload with `cost_currency` |
 | `accrued_interest` | `positions.accrued_interest` |
 | `description` | `instruments.name` |
 | `sector` | (kept in payload only) |
@@ -1146,7 +1147,94 @@ No PSN cutoff applies, and none could: the cut arbitrates between two
 records of one booking, and this pass emits only where no rail
 recorded the booking at all.
 
-## 12. Open questions
+## 12. Cost basis and realized lots
+
+[../DESIGN.md](../DESIGN.md) §7.4 sets the rules for a book value and
+its stamp. UBS keeps every holding at its average cost and
+states that cost without the purchase fees. So every UBS stamp has the
+method `average`, or `paid_in` for a private-markets fund, and the fees
+`excluded`. The stamps live in `basis.go`.
+
+### The book value of a position
+
+| Source | Book value | Stamp |
+| --- | --- | --- |
+| PSN `holdings`, BOOK in the position's currency | `cost_basis`, the MT535 BOOK amount | stated, average, excluded |
+| PSN `holdings`, BOOK in another currency | `cost_basis` × `acquisition_fx_rate` (AEXR), when AEXR runs from BOOK's currency to the position's | derived, average, excluded |
+| PSN `holdings`, any other | NULL. `cost_basis`, `cost_currency` and the AEXR fields travel in the payload. | — |
+| Statement holding (`historical_position_snapshots`) | `cost_basis`, the statement's cost value, in `market_value_currency` | stated, average, excluded |
+| Statement holding without a cost value | NULL. `cost_price` and `cost_currency` travel in the payload. | — |
+| A private-markets fund's units | the capital calls in `advices` up to the snapshot (below) | derived, paid_in, excluded |
+
+- **AEXR.** One unit of the first currency is `rate` units of the
+  second. A PSN position's currency is the currency of its chosen HOLD
+  leg, which is usually BOOK's own, so the conversion is the exception.
+- **The cost price is never multiplied out.** A bond's cost price is a
+  percent of the nominal, so units × cost price would be a hundred
+  times its cost. The cost value is the statement's own figure.
+- **A silver older than the cost columns** states no book value. Both
+  feeds still load.
+
+**Capital calls.** Neither feed states a cost for a private-markets
+fund's units. MT535 carries no BOOK, and the statement prints a NAV in
+place of a cost. The capital calls are what was paid in
+(`paid_in.go`). A call names the fund's ISIN and no account, so it
+joins a position only when:
+
+- every call on the fund has a date and all share one currency;
+- one account holds the fund across both feeds: the PSN safekeeping
+  account, or the account a statement portfolio maps to;
+- the position is in the calls' currency and states no book value of
+  its own.
+
+The book value at a snapshot is the sum of the called `amount` of every
+call dated on or before it. A snapshot before the first call has no
+book value. The placement fee and the equalisation interest are
+separate figures, and they stay out. A distribution paid back does not
+reduce the figure.
+
+### Realized lots
+
+Each sale is one realized lot. UBS states no tax lots.
+
+| Source | `document_kind` | Currency | Proceeds | Book value | Gain |
+| --- | --- | --- | --- | --- | --- |
+| `statement_trades` | `statement` | `reporting_currency_iso` | \|`transaction_value`\| | `cost_basis` (stated, average, excluded) | NULL. The list prints only percentages, and they travel in the payload. |
+| `portfolio_transactions` | `trade` | `valuation_currency_iso` | \|`trans_value`\| | proceeds − `realized_pl` (derived, average, excluded) | `realized_pl` |
+
+- **A statement sale** has a negative quantity, a sale's price
+  (`transaction_price`) and a settlement amount. Corporate actions and
+  write-offs print no price. A delivery free of payment settles
+  nothing.
+- **An export sale** has a negative quantity and a realized P/L. Its
+  value and P/L are in the export's valuation currency. Measured
+  against the statements, the P/L equals the statement's proceeds less
+  its cost value, to the rounding unit.
+- **Dates.** The disposal date is the trade date and the settlement
+  date the value date. The tax year is the trade date's year.
+- **Account.** The custody account the list prints, in PSN's form: the
+  branch padded to four digits and the account body to ten
+  (`custodyAccountCanonical`). A custody account PSN does not report
+  falls back to the account the statement era uses for the portfolio.
+- **Instrument.** The ISIN, else the valor through the valor index
+  (§7, *The instrument, across both eras*). An unresolved valor is the
+  hint a config link closes.
+
+**Primary rows.** Within one account and tax year, the primary rows
+count each sale once:
+
+- A booking recurs in every statement whose period covers it, under
+  one settlement number. The earliest statement keeps it, and later
+  copies are not primary.
+- A reversed sale is not primary. The list prints the reversal as a
+  booking of its own, with the sale's figures and the units coming
+  back. It cancels one sale with the same account, security, trade
+  date, quantity and value. That sale's payload says `reversed`.
+- An export sale is primary only on a day no statement's transaction
+  list covers for its account. Both kinds rank alike, so a tax year a
+  statement covers in part still counts the export's sales after it.
+
+## 13. Open questions
 
 - **A conversion between two covered accounts.** Both legs are feed
   rows, the `/OCMT/` subfield on the paying one states the other, and
