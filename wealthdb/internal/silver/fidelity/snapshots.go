@@ -45,9 +45,14 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendAccounts(ctx, w, byTime, held); err != nil {
 		return nil, err
 	}
-	if err := c.appendPositionsAndCash(ctx, w, byTime); err != nil {
+	lots, err := c.readOpenLots(ctx)
+	if err != nil {
 		return nil, err
 	}
+	if err := c.appendPositionsAndCash(ctx, w, byTime, lots); err != nil {
+		return nil, err
+	}
+	lots.logSkipped()
 	if len(histTimes) > 0 {
 		// Project the master rows onto each historical date
 		// before emitting the historical positions — gold
@@ -301,7 +306,9 @@ func applyHeldKind(id string, held map[string]canonical.AccountKind, change *can
 //     cash_balance aggregate column populate uniformly across
 //     sources.
 //   - everything else → InstrumentChange (registers identity +
-//     name + asset class) plus PositionChange (the holding line).
+//     name + asset class) plus PositionChange (the holding line),
+//     whose book value is Fidelity's cost basis total, and its open
+//     lots where a fetch still describes it (lots.go).
 //
 // "Pending activity" rows (no instrument_key, description
 // "Pending activity") are skipped — Fidelity hasn't booked them
@@ -311,7 +318,7 @@ func applyHeldKind(id string, held map[string]canonical.AccountKind, change *can
 // `asset_class`, `currency`, and `is_core_position` are all
 // promoted columns on silver; the adapter relies on them directly
 // rather than re-deriving from instrument_key + description.
-func (c *Connection) appendPositionsAndCash(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *Connection) appendPositionsAndCash(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, lots *lotCarry) error {
 	// CAST decimals to VARCHAR so SQLite's REAL → float64 round-
 	// trip doesn't bleed precision before we parse into the
 	// shopspring/decimal-backed canonical.Decimal.
@@ -321,8 +328,9 @@ SELECT snapshot_at, account_external_id, instrument_key,
        COALESCE(asset_class, ''),
        currency,
        is_core_position,
-       CAST(quantity      AS VARCHAR),
-       CAST(current_value AS VARCHAR),
+       CAST(quantity         AS VARCHAR),
+       CAST(current_value    AS VARCHAR),
+       CAST(cost_basis_total AS VARCHAR),
        payload
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?`
@@ -337,11 +345,11 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			snap                                   int64
 			acct, key, desc, silverClass, currency string
 			isCore                                 int
-			qtyStr, valueStr                       sql.NullString
+			qtyStr, valueStr, costStr              sql.NullString
 			payload                                string
 		)
 		if err := rows.Scan(&snap, &acct, &key, &desc, &silverClass, &currency,
-			&isCore, &qtyStr, &valueStr, &payload); err != nil {
+			&isCore, &qtyStr, &valueStr, &costStr, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -389,7 +397,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 		})
 
 		instrumentKey := key
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    acct,
 			PositionKey:          key,
@@ -400,7 +408,10 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),
 			MarketValue:          silver.DecimalPtrOrNil(valueStr),
 			Payload:              json.RawMessage(payload),
-		})
+		}
+		pos.SetBookValue(silver.DecimalPtrOrNil(costStr), lotBasis)
+		lots.attach(batch, &pos)
+		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
 }

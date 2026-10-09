@@ -35,6 +35,7 @@ CREATE TABLE positions (
     is_core_position    INTEGER NOT NULL DEFAULT 0,
     quantity            REAL,
     current_value       REAL,
+    cost_basis_total    REAL,
     payload             TEXT    NOT NULL,
     PRIMARY KEY (snapshot_at, account_external_id, instrument_key)
 );

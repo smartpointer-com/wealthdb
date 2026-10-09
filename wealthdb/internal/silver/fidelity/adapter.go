@@ -38,6 +38,20 @@
 //     kind and an account whose historical rows type it by what it
 //     holds: a home loan's outstanding principal makes it a mortgage, a
 //     deposit account's balance a cash account (applyHeldKind).
+//
+//   - Cost basis (docs/DESIGN.md §7.4). A live holding's book value is
+//     Fidelity's cost basis total. A statement holding's is the cost
+//     basis the statement prints. Both are the sum of the holding's
+//     tax lots, fees included, as Fidelity states it (basis.go). The
+//     svb statements print none, so their holdings carry no book value.
+//
+//   - Open lots. A holding's lots come from the latest fetch of its lot
+//     table at or before the snapshot. They ride a snapshot only while
+//     their quantities and costs still sum to the holding's (lots.go).
+//
+//   - Realized lots. The 1099-B lots, the closed-positions page and the
+//     statements' sales each state realized lots. Per account and tax
+//     year, the best-ranked of them is primary (realized.go).
 package fidelity
 
 import (

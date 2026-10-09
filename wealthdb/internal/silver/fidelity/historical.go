@@ -248,22 +248,34 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 //
 // A row with no `instrument_key` is keyed by
 // syntheticHistoricalInstrumentKey. A row's key is also its symbol,
-// except a statement construct's (isStatementConstruct).
+// except a statement construct's (isStatementConstruct). The book value
+// is the cost basis the statement prints for the holding; the 529 and
+// DAF layouts, the core account and the svb statements print none.
 func (c *Connection) appendHistoricalPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	dafAccounts, err := c.dafAccountIDs(ctx)
 	if err != nil {
 		return err
 	}
-	const q = `
+	// The statement's cost basis (migration 0009); NULL before it.
+	hasCost, err := silver.HasColumn(ctx, c.db, "historical_position_snapshots", "cost_basis")
+	if err != nil {
+		return err
+	}
+	costCol := "NULL"
+	if hasCost {
+		costCol = "CAST(cost_basis AS VARCHAR)"
+	}
+	q := fmt.Sprintf(`
 SELECT as_of_date, account_external_id,
        COALESCE(instrument_key, ''),
        description,
        currency,
        CAST(quantity     AS VARCHAR),
        CAST(market_value AS VARCHAR),
+       %s,
        payload
   FROM historical_position_snapshots
- WHERE as_of_date BETWEEN ? AND ?`
+ WHERE as_of_date BETWEEN ? AND ?`, costCol)
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendHistoricalPositions: %w", err)
@@ -274,11 +286,11 @@ SELECT as_of_date, account_external_id,
 		var (
 			snap                           int64
 			acct, instrKey, desc, currency string
-			qtyStr, valueStr               sql.NullString
+			qtyStr, valueStr, costStr      sql.NullString
 			payload                        string
 		)
 		if err := rows.Scan(&snap, &acct, &instrKey, &desc, &currency,
-			&qtyStr, &valueStr, &payload); err != nil {
+			&qtyStr, &valueStr, &costStr, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -318,7 +330,7 @@ SELECT as_of_date, account_external_id,
 		})
 
 		instrumentKey := instrKey
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
+		pos := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    acct,
 			PositionKey:          instrKey,
@@ -329,7 +341,9 @@ SELECT as_of_date, account_external_id,
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),
 			MarketValue:          silver.DecimalPtrOrNil(valueStr),
 			Payload:              json.RawMessage(payload),
-		})
+		}
+		pos.SetBookValue(silver.DecimalPtrOrNil(costStr), lotBasis)
+		batch.Positions = append(batch.Positions, pos)
 	}
 	return rows.Err()
 }
