@@ -71,19 +71,11 @@ func holdingsReport(req request) *report {
 				return gold.SourcesAsOf(ctx, db, asOf, ccy)
 			})
 	case "portfolios":
-		// The portfolio column's redaction class depends on the
-		// source's kind, which only gold knows; the registry reads it
-		// through kindOf, filled before the rows are rendered.
-		kinds := map[string]string{}
-		kindOf := func(id string) string { return kinds[id] }
+		kindOf, loadKinds := sourceKinds()
 		return newReport(buildPortfolioColumnRegistry(ccy, kindOf), defaultPortfolioColumns,
 			func(ctx context.Context, db *sql.DB) ([]gold.PortfolioRow, error) {
-				sk, err := gold.SourceKinds(ctx, db)
-				if err != nil {
+				if err := loadKinds(ctx, db); err != nil {
 					return nil, err
-				}
-				for k, v := range sk {
-					kinds[k] = v
 				}
 				return gold.PortfoliosAsOf(ctx, db, asOf, ccy)
 			})
@@ -107,6 +99,22 @@ func holdingsReport(req request) *report {
 				return mergeSorted(rows, cash), nil
 			})
 	}
+}
+
+// sourceKinds is how a registry reads a source's kind, which only gold
+// knows: the portfolio column's redaction class depends on it.
+// kindOf answers from what load reads, and the report's fetch calls
+// load before any row is rendered.
+func sourceKinds() (kindOf func(string) string, load func(context.Context, *sql.DB) error) {
+	kinds := map[string]string{}
+	return func(id string) string { return kinds[id] },
+		func(ctx context.Context, db *sql.DB) error {
+			sk, err := gold.SourceKinds(ctx, db)
+			for k, v := range sk {
+				kinds[k] = v
+			}
+			return err
+		}
 }
 
 const holdingsUsage = `wealthdb holdings — what is held, where, and what it is worth, as of a date

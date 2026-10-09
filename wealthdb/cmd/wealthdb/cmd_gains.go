@@ -115,20 +115,12 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 func gainsReport(req request) *report {
 	ccy := req.currency
 	if grain, ok := gainsGrains[req.view]; ok {
-		// The portfolio column's redaction class depends on the
-		// source's kind, which only gold knows; the registry reads it
-		// through kindOf, filled before the rows are rendered.
-		kinds := map[string]string{}
-		kindOf := func(id string) string { return kinds[id] }
+		kindOf, loadKinds := sourceKinds()
 		return newReport(buildGainsBucketColumnRegistry(ccy, req.period, grain, kindOf), gainsBucketDefaults[grain],
 			func(ctx context.Context, db *sql.DB) ([]gold.GainsBucketRow, error) {
 				if grain == gold.GainsPortfolios {
-					sk, err := gold.SourceKinds(ctx, db)
-					if err != nil {
+					if err := loadKinds(ctx, db); err != nil {
 						return nil, err
-					}
-					for k, v := range sk {
-						kinds[k] = v
 					}
 				}
 				return gold.GainsBuckets(ctx, db, req.from, req.to, ccy, reportPeriods[req.period], grain)
@@ -163,15 +155,6 @@ func gainsReport(req request) *report {
 }
 
 // ---- column registries ---------------------------------------------------
-
-// accountLabel is the account column's text: the display name where
-// gold has one, else the external id.
-func accountLabel(displayName *string, id string) string {
-	if displayName != nil && *displayName != "" {
-		return *displayName
-	}
-	return id
-}
 
 // yesNo renders a stated flag, empty where the source states nothing.
 func yesNo(b *bool) string {

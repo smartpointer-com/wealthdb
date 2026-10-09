@@ -110,10 +110,7 @@ func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []c
 				if r.PortfolioExternalID == "" {
 					return "(no portfolio)"
 				}
-				if r.DisplayName != nil && *r.DisplayName != "" {
-					return *r.DisplayName
-				}
-				return r.PortfolioExternalID
+				return accountLabel(r.DisplayName, r.PortfolioExternalID)
 			}},
 		{Name: "portfolio_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PortfolioRow) string { return r.PortfolioExternalID }},

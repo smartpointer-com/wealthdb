@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -81,14 +80,7 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	level := fs.String("level", "group", "section | class | group — the grain a node is netted at (flows, sankey)")
 	investing := fs.String("investing", "whole", strings.Join(cashflowInvestingGrains, " | ")+" — net investing as one node or per asset class")
-	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
-	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
-	cols := fs.String("C", "default", "columns: comma-separated names, or 'default' / 'all'")
-	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
-	currency := fs.String("x", "", "output currency (default: config.default_currency)")
-	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	privacy := fs.Bool("p", false, "redact account IDs, names, and monetary amounts (the nodes stay visible)")
-	fs.BoolVar(privacy, "privacy", false, "redact account IDs, names, and monetary amounts (the nodes stay visible)")
+	rf := registerReportFlags(fs, "redact account IDs, names, and monetary amounts (the nodes stay visible)")
 
 	fs.Usage = func() { fmt.Fprintln(stderr, cashflowUsage()) }
 	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), reportValueFlags)
@@ -130,10 +122,6 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "cashflow: invalid --investing %q (want %s)",
 			*investing, strings.Join(cashflowInvestingGrains, " | "))
 	}
-	fmtChoice, err := output.Parse(*format)
-	if err != nil {
-		return errs.Newf(2, "cashflow: %s", err.Error())
-	}
 
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {
@@ -141,22 +129,15 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "cashflow: %s", err.Error())
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	fmtChoice, cfg, outCcy, err := rf.resolve(g, "cashflow")
 	if err != nil {
 		return err
-	}
-	outCcy := strings.ToUpper(*currency)
-	if outCcy == "" {
-		outCcy = cfg.DefaultCurrency
-	}
-	if len(outCcy) != 3 {
-		return errs.Newf(2, "cashflow: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
 	rep := cashflowReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
 		period: *period, level: *level, investing: *investing})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *cols, "cashflow", open, *privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, *rf.cols, "cashflow", open, *rf.privacy, fmtChoice, stdout)
 }
 
 // cashflowReport is one view of the cash flow family, the runner the
@@ -405,12 +386,7 @@ func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.Cas
 		{Name: "datetime", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowTransactionRow) string { return formatDateTime(r.OccurredAt) }},
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.CashflowTransactionRow) string {
-				if r.DisplayName != nil && *r.DisplayName != "" {
-					return *r.DisplayName
-				}
-				return r.AccountExternalID
-			}},
+			Extract: func(r gold.CashflowTransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.CashflowTransactionRow) string { return r.AccountExternalID }},
 		{Name: "account_kind", Align: output.AlignLeft,

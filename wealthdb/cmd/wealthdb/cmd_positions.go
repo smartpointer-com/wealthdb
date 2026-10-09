@@ -81,15 +81,8 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 			Extract: func(r gold.PositionRow) string { return r.SilverSourceID }},
 		{Name: "snapshot_date", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return formatDate(r.SnapshotAt) }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r gold.PositionRow) string {
-			// Display name preferred (Schwab accountNumber); fall
-			// back to the raw external_id when no display name is
-			// known (UBS IBAN, Swissquote customer ID).
-			if r.DisplayName != nil && *r.DisplayName != "" {
-				return *r.DisplayName
-			}
-			return r.AccountExternalID
-		}},
+		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+			Extract: func(r gold.PositionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PositionRow) string { return r.AccountExternalID }},
 		// position_key is the gold-side instrument identifier (CUSIP /

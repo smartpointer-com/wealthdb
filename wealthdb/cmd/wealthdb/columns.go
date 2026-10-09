@@ -133,6 +133,16 @@ func columnsByName[T any](names []string, registry []columnSpec[T]) ([]columnSpe
 	return out, nil
 }
 
+// accountLabel is an account or portfolio column's text: the display
+// name where gold has one (a Schwab account number, a UBS portfolio
+// label), else the external id.
+func accountLabel(displayName *string, id string) string {
+	if displayName != nil && *displayName != "" {
+		return *displayName
+	}
+	return id
+}
+
 func joinColumnNames[T any](registry []columnSpec[T]) string {
 	return strings.Join(columnNames(registry), ", ")
 }

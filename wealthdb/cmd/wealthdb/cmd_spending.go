@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -77,14 +76,7 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	level := fs.String("level", "primary", "primary | detailed — the category vocabulary (categories view)")
-	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
-	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
-	cols := fs.String("C", "default", "columns: comma-separated names, or 'default' / 'all'")
-	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
-	currency := fs.String("x", "", "output currency (default: config.default_currency)")
-	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	privacy := fs.Bool("p", false, "redact account IDs, counterparties, and monetary amounts (categories stay visible)")
-	fs.BoolVar(privacy, "privacy", false, "redact account IDs, counterparties, and monetary amounts (categories stay visible)")
+	rf := registerReportFlags(fs, "redact account IDs, counterparties, and monetary amounts (categories stay visible)")
 
 	fs.Usage = func() { fmt.Fprintln(stderr, spendingUsage()) }
 	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), reportValueFlags)
@@ -102,10 +94,6 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 	if !oneOf(*level, "primary", "detailed") {
 		return errs.Newf(2, "spending: invalid --level %q (want primary | detailed)", *level)
 	}
-	fmtChoice, err := output.Parse(*format)
-	if err != nil {
-		return errs.Newf(2, "spending: %s", err.Error())
-	}
 
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {
@@ -113,21 +101,14 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 		return errs.Newf(2, "spending: %s", err.Error())
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	fmtChoice, cfg, outCcy, err := rf.resolve(g, "spending")
 	if err != nil {
 		return err
-	}
-	outCcy := strings.ToUpper(*currency)
-	if outCcy == "" {
-		outCcy = cfg.DefaultCurrency
-	}
-	if len(outCcy) != 3 {
-		return errs.Newf(2, "spending: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
 	rep := spendingReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *cols, "spending", open, *privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, *rf.cols, "spending", open, *rf.privacy, fmtChoice, stdout)
 }
 
 // spendingReport is one view of the spending family, the runner the
@@ -275,12 +256,7 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 		// redact as one — the same class the account label takes
 		// everywhere else in the CLI.
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.SpendTransactionRow) string {
-				if r.DisplayName != nil && *r.DisplayName != "" {
-					return *r.DisplayName
-				}
-				return r.AccountExternalID
-			}},
+			Extract: func(r gold.SpendTransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.SpendTransactionRow) string { return r.AccountExternalID }},
 		{Name: "account_kind", Align: output.AlignLeft,

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -67,14 +66,7 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	level := fs.String("level", "detailed", "primary | detailed — the type vocabulary (types view)")
-	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
-	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
-	cols := fs.String("C", "default", "columns: comma-separated names, or 'default' / 'all'")
-	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
-	currency := fs.String("x", "", "output currency (default: config.default_currency)")
-	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	privacy := fs.Bool("p", false, "redact account IDs, payers, and monetary amounts (types stay visible)")
-	fs.BoolVar(privacy, "privacy", false, "redact account IDs, payers, and monetary amounts (types stay visible)")
+	rf := registerReportFlags(fs, "redact account IDs, payers, and monetary amounts (types stay visible)")
 
 	fs.Usage = func() { fmt.Fprintln(stderr, incomeUsage()) }
 	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), reportValueFlags)
@@ -92,10 +84,6 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 	if !oneOf(*level, "primary", "detailed") {
 		return errs.Newf(2, "income: invalid --level %q (want primary | detailed)", *level)
 	}
-	fmtChoice, err := output.Parse(*format)
-	if err != nil {
-		return errs.Newf(2, "income: %s", err.Error())
-	}
 
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {
@@ -103,21 +91,14 @@ func runIncomeView(ctx context.Context, g globalFlags, view string, args []strin
 		return errs.Newf(2, "income: %s", err.Error())
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	fmtChoice, cfg, outCcy, err := rf.resolve(g, "income")
 	if err != nil {
 		return err
-	}
-	outCcy := strings.ToUpper(*currency)
-	if outCcy == "" {
-		outCcy = cfg.DefaultCurrency
-	}
-	if len(outCcy) != 3 {
-		return errs.Newf(2, "income: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
 	rep := incomeReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *cols, "income", open, *privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, *rf.cols, "income", open, *rf.privacy, fmtChoice, stdout)
 }
 
 // incomeReport is one view of the income family, the runner the CLI
@@ -213,12 +194,7 @@ func buildIncomeTransactionColumnRegistry(outCcy string) []columnSpec[gold.Incom
 		{Name: "datetime", Align: output.AlignLeft,
 			Extract: func(r gold.IncomeTransactionRow) string { return formatDateTime(r.OccurredAt) }},
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.IncomeTransactionRow) string {
-				if r.DisplayName != nil && *r.DisplayName != "" {
-					return *r.DisplayName
-				}
-				return r.AccountExternalID
-			}},
+			Extract: func(r gold.IncomeTransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.IncomeTransactionRow) string { return r.AccountExternalID }},
 		{Name: "account_kind", Align: output.AlignLeft,

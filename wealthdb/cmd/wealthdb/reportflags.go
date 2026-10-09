@@ -34,7 +34,14 @@ func registerReportFlags(fs *flag.FlagSet, privacyUsage string) *reportFlags {
 // resolve validates the format, loads the config and settles the output
 // currency, prefixing errors with the command name. Call after fs.Parse.
 func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *config.Config, string, error) {
-	fmtChoice, err := output.Parse(*rf.format)
+	return resolveOutput(g, cmd, *rf.format, *rf.currency)
+}
+
+// resolveOutput is the output half of every report command's flags:
+// the format, the config, and the output currency (-x, else the
+// config's default_currency).
+func resolveOutput(g globalFlags, cmd, format, currency string) (output.Format, *config.Config, string, error) {
+	fmtChoice, err := output.Parse(format)
 	if err != nil {
 		return "", nil, "", errs.Newf(2, "%s: %s", cmd, err.Error())
 	}
@@ -42,7 +49,7 @@ func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *confi
 	if err != nil {
 		return "", nil, "", err
 	}
-	outCcy := strings.ToUpper(*rf.currency)
+	outCcy := strings.ToUpper(currency)
 	if outCcy == "" {
 		outCcy = cfg.DefaultCurrency
 	}

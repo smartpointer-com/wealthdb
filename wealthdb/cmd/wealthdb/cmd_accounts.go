@@ -71,12 +71,8 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 			}
 			return formatDate(a.SnapshotAt)
 		}},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(a gold.AccountRow) string {
-			if a.DisplayName != nil && *a.DisplayName != "" {
-				return *a.DisplayName
-			}
-			return a.AccountExternalID
-		}},
+		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+			Extract: func(a gold.AccountRow) string { return accountLabel(a.DisplayName, a.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return a.AccountExternalID }},
 		{Name: "account_kind", Align: output.AlignLeft,

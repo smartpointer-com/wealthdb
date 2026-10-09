@@ -64,14 +64,7 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	annualize := fs.String("annualize", "auto", "auto | always | never")
 	netting := fs.String("netting", "on", "on | off — net internal transfers at coarse grains (incl. cross-source matched pairs)")
 	inception := fs.String("inception", "full", "full | strict — aggregate since-inception handling")
-	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
-	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
-	cols := fs.String("C", "default", "columns: comma-separated names, or 'default' / 'all'")
-	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
-	currency := fs.String("x", "", "output currency (default: config.default_currency)")
-	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	privacy := fs.Bool("p", false, "redact entity IDs and monetary amounts (returns % stay visible)")
-	fs.BoolVar(privacy, "privacy", false, "redact entity IDs and monetary amounts (returns % stay visible)")
+	rf := registerReportFlags(fs, "redact entity IDs and monetary amounts (returns % stay visible)")
 
 	fs.Usage = func() { fmt.Fprintln(stderr, returnsUsage()) }
 	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), returnsValueFlags)
@@ -97,10 +90,6 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	if !oneOf(*inception, "full", "strict") {
 		return errs.Newf(2, "returns: invalid --inception %q", *inception)
 	}
-	fmtChoice, err := output.Parse(*format)
-	if err != nil {
-		return errs.Newf(2, "returns: %s", err.Error())
-	}
 
 	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), time.Now())
 	if err != nil {
@@ -108,22 +97,15 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 		return errs.Newf(2, "returns: %s", err.Error())
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	fmtChoice, cfg, outCcy, err := rf.resolve(g, "returns")
 	if err != nil {
 		return err
-	}
-	outCcy := strings.ToUpper(*currency)
-	if outCcy == "" {
-		outCcy = cfg.DefaultCurrency
-	}
-	if len(outCcy) != 3 {
-		return errs.Newf(2, "returns: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
 	rep := returnsReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
 		method: *method, period: *period, annualize: *annualize, netting: *netting == "on", inception: *inception}, cfg)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *cols, "returns", open, *privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, *rf.cols, "returns", open, *rf.privacy, fmtChoice, stdout)
 }
 
 // returnsReport is one view of the returns family, the runner the CLI

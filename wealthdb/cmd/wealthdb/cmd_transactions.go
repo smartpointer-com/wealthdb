@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -60,17 +59,10 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	fs := flag.NewFlagSet("wealthdb transactions", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
-	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
-	cols := fs.String("C", "default", "columns: comma-separated names, or 'default' / 'all'")
-	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
-	currency := fs.String("x", "", "output currency for the value column (default: config.default_currency)")
-	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
 	reverse := fs.Bool("r", false, "reverse-time order (newest first); default is oldest first")
 	fs.BoolVar(reverse, "reverse", false, "reverse-time order (newest first); default is oldest first")
 	privacyHelp := "redact account / tx IDs, statement narratives, quantities, prices, and monetary amounts in the output"
-	privacy := fs.Bool("p", false, privacyHelp)
-	fs.BoolVar(privacy, "privacy", false, privacyHelp)
+	rf := registerReportFlags(fs, privacyHelp)
 
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, transactionsUsage())
@@ -93,26 +85,14 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 		return errs.Newf(2, "transactions: %s", err.Error())
 	}
 
-	fmtChoice, err := output.Parse(*format)
-	if err != nil {
-		return errs.Newf(2, "transactions: %s", err.Error())
-	}
-
-	cfg, err := config.Load(g.ConfigPath)
+	fmtChoice, cfg, outCcy, err := rf.resolve(g, "transactions")
 	if err != nil {
 		return err
-	}
-	outCcy := strings.ToUpper(*currency)
-	if outCcy == "" {
-		outCcy = cfg.DefaultCurrency
-	}
-	if len(outCcy) != 3 {
-		return errs.Newf(2, "transactions: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
 	rep := transactionsReport(request{currency: outCcy, from: fromEpoch, to: toEpoch, newestFirst: *reverse})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, *cols, "transactions", open, *privacy, fmtChoice, stdout)
+	return writeReport(ctx, rep, *rf.cols, "transactions", open, *rf.privacy, fmtChoice, stdout)
 }
 
 // transactionsReport is the ledger over a window, the runner the CLI
@@ -139,12 +119,7 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 		{Name: "datetime", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return formatDateTime(r.OccurredAt) }},
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.TransactionRow) string {
-				if r.DisplayName != nil && *r.DisplayName != "" {
-					return *r.DisplayName
-				}
-				return r.AccountExternalID
-			}},
+			Extract: func(r gold.TransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.TransactionRow) string { return r.AccountExternalID }},
 		{Name: "kind", Align: output.AlignLeft,

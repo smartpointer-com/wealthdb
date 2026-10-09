@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
@@ -74,35 +73,13 @@ type holdingsValues struct {
 // errors with the command name passed in the spec. Call after
 // fs.Parse.
 func (hf *holdingsFlags) resolve(g globalFlags) (holdingsValues, error) {
-	spec := hf.spec
-
-	fmtChoice, err := output.Parse(*hf.format)
-	if err != nil {
-		return holdingsValues{}, errs.Newf(2, "%s: %s", spec.cmd, err.Error())
-	}
-
 	asOfEpoch, err := parseAsOf(*hf.asOf, time.Now())
 	if err != nil {
-		return holdingsValues{}, errs.Newf(2, "%s: %s", spec.cmd, err.Error())
+		return holdingsValues{}, errs.Newf(2, "%s: %s", hf.spec.cmd, err.Error())
 	}
-
-	cfg, err := config.Load(g.ConfigPath)
+	fmtChoice, cfg, outCcy, err := resolveOutput(g, hf.spec.cmd, *hf.format, *hf.currency)
 	if err != nil {
 		return holdingsValues{}, err
 	}
-
-	outCcy := strings.ToUpper(*hf.currency)
-	if outCcy == "" {
-		outCcy = cfg.DefaultCurrency
-	}
-	if len(outCcy) != 3 {
-		return holdingsValues{}, errs.Newf(2, "%s: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", spec.cmd, outCcy)
-	}
-
-	return holdingsValues{
-		fmtChoice: fmtChoice,
-		asOfEpoch: asOfEpoch,
-		cfg:       cfg,
-		outCcy:    outCcy,
-	}, nil
+	return holdingsValues{fmtChoice: fmtChoice, asOfEpoch: asOfEpoch, cfg: cfg, outCcy: outCcy}, nil
 }
