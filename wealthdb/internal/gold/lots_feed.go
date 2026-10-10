@@ -575,16 +575,11 @@ func statedLot(qty, cost float64, costKnown bool, acq sql.NullInt64) lots.Stated
 }
 
 // lotAliases maps an instrument a source keys by its CUSIP to the ticker
-// the source also keys it by, where its instruments carry both rows with
-// one symbol: a statement names a security by CUSIP and the trades by
-// ticker.
+// the source also keys it by (instrument_aliases, migration 0120): a
+// statement names a security by CUSIP and the trades by ticker.
 func (f *lotFeed) lotAliases(ctx context.Context, db *sql.DB) (map[[2]string]string, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT c.silver_source_id, c.instrument_external_id, c.symbol
-  FROM instruments c
-  JOIN instruments t ON t.silver_source_id = c.silver_source_id AND t.instrument_external_id = c.symbol
- WHERE c.cusip = c.instrument_external_id AND c.symbol <> c.instrument_external_id
-   AND `+inLotSources("c.silver_source_id"), f.ids)
+SELECT src, alias, k FROM instrument_aliases() WHERE `+inLotSources("src"), f.ids)
 	if err != nil {
 		return nil, fmt.Errorf("lots: read instrument aliases: %w", err)
 	}

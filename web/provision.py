@@ -711,7 +711,10 @@ RETIRED_CARD_NAMES = [
                       "Allocation by currency (USD)",
                       "Value by tax wrapper (USD)",
                       "Value by management style (USD)",
-                      "Top 100 positions (USD)"]
+                      "Top 100 positions (USD)",
+                      # The Gains dashboard splits its gain by what was
+                      # sold and what was kept.
+                      "Unrealized change"]
 
 # Dashboard names retired by renames ("Net Worth" undersold the income /
 # cost flow tiles); archived on provision so a re-run cleans them up.
@@ -1997,7 +2000,11 @@ def gains_question_defs(db_id):
     end = ("WITH w AS (\n  SELECT * FROM web_gains" + where + "),\n"
            "e AS (SELECT * FROM w\n"
            "       WHERE at_end AND period = (SELECT max(period) FROM w))\n")
-    gain = "coalesce(sum(realized), 0) + coalesce(sum(unrealized_change), 0)"
+    # The window's gain as the price move of what was sold and of what
+    # was kept, a sale counted from its month's start (web_gains); the
+    # total is their sum, as it is realized plus unrealized change.
+    gain_split = [("sold_gain", "sold"), ("held_change", "held")]
+    gain = " + ".join(f"coalesce(sum({c}), 0)" for c, _ in gain_split)
     position = "coalesce(symbol, name, instrument_key)"
 
     def native(name, display, desc, sql, viz):
@@ -2049,8 +2056,6 @@ def gains_question_defs(db_id):
                        "graph.metrics": [a for _, a in metrics],
                        "stackable.stack_type": "stacked"})
 
-    gain_split = [("realized", "realized"),
-                  ("unrealized_change", "unrealized_change")]
     term_split = [("realized_short", "short_term"),
                   ("realized_long", "long_term"),
                   ("realized_other", "term_unstated")]
@@ -2067,18 +2072,25 @@ def gains_question_defs(db_id):
             "value less cost basis, over the holdings that carry a cost "
             "basis. The end is the last month in the window.",
             end + "SELECT sum(unrealized_end) AS unrealized\n  FROM e", {}),
-        "Unrealized change": native("Unrealized change", "scalar",
-            "How far the unrealized gain moved over the window, summed month "
-            "by month. A sale moves gain out of it into realized; a purchase "
-            "adds none. In the "
+        "Gain on positions sold": native("Gain on positions sold", "scalar",
+            "What the positions sold over the window gained in the month of "
+            "their sale: from the month's start, or their purchase in it, to "
+            "the sale. Realized gain counts from the purchase; the gain of "
+            "the months before the sale is in the gain on positions held. In "
+            "the output currency.",
+            "SELECT sum(sold_gain) AS sold\n  FROM web_gains" + where, {}),
+        "Gain on positions held": native("Gain on positions held", "scalar",
+            "How far the unrealized gain of the positions kept moved over "
+            "the window, summed month by month. A position sold in a month "
+            "counts as sold in that month; a purchase adds no gain. In the "
             "output currency, so it includes the exchange-rate move on a "
             "gain held through the window.",
-            "SELECT sum(unrealized_change) AS unrealized_change\n"
-            "  FROM web_gains" + where, {}),
+            "SELECT sum(held_change) AS held\n  FROM web_gains" + where, {}),
         "Total gain": native("Total gain", "scalar",
-            "Realized gain plus unrealized change: the window's price gain "
-            "on what was held. Income, fees and taxes are not in it; the "
-            "Returns dashboard measures those.",
+            "The gain on positions sold plus the gain on positions held: "
+            "the window's price gain on what was held. It is also realized "
+            "gain plus the change in unrealized gain. Income, fees and "
+            "taxes are not in it; the Returns dashboard measures those.",
             f"SELECT {gain} AS gain\n  FROM web_gains" + where, {}),
         "Cost basis coverage": native("Cost basis coverage", "scalar",
             "Share of the value held at the window's end that carries a "
@@ -2091,17 +2103,17 @@ def gains_question_defs(db_id):
             "  FROM e\n WHERE end_applies",
             _percent_viz("basis_coverage")),
         "Gains by month": native("Gains by month", "combo",
-            "Each month's realized gain and unrealized change as stacked "
-            "bars, and their sum as a line. A sale moves a bar from one "
-            "series to the other and leaves the line where it was.",
-            "SELECT period AS month,\n       sum(realized) AS realized,\n"
-            "       sum(unrealized_change) AS unrealized_change,\n"
-            f"       {gain} AS gain\n"
+            "Each month's gain on positions sold and on positions held as "
+            "stacked bars, and their sum as a line. A sale counts as sold "
+            "for what it gained in its month; what it gained before is in "
+            "the held bars of the months before.",
+            "SELECT period AS month,\n" + ",\n".join(
+                f"       sum({c}) AS {a}" for c, a in gain_split) +
+            f",\n       {gain} AS gain\n"
             "  FROM web_gains" + where + "\n GROUP BY 1\n ORDER BY 1",
             {"graph.dimensions": ["month"],
-             "graph.metrics": ["realized", "unrealized_change", "gain"],
-             "series_settings": {"realized": {"display": "bar"},
-                                 "unrealized_change": {"display": "bar"},
+             "graph.metrics": [a for _, a in gain_split] + ["gain"],
+             "series_settings": {**{a: {"display": "bar"} for _, a in gain_split},
                                  "gain": {"display": "line"}},
              "stackable.stack_type": "stacked"}),
         "Realized gains by month, short vs long term": native(
@@ -2162,13 +2174,14 @@ def gains_question_defs(db_id):
             "largest loss as a share of the cost basis sold.",
             "realized < 0 AND cost_basis > 0", "realized_pct"),
         "Gain by source": split_bars("Gain by source",
-            "Each source's realized gain and unrealized change over the "
-            "window, stacked. Bars, not a ring: a ring cannot draw a loss.",
+            "Each source's gain on positions sold and on positions held over "
+            "the window, stacked. Bars, not a ring: a ring cannot draw a "
+            "loss.",
             "silver_source_id", "source", gain_split),
         "Gain by asset class": split_bars("Gain by asset class",
-            "Each asset class's realized gain and unrealized change over "
-            "the window, stacked. '(none)' holds the lots of a holding no "
-            "snapshot shows.",
+            "Each asset class's gain on positions sold and on positions held "
+            "over the window, stacked. '(none)' holds the lots of a holding "
+            "no snapshot shows.",
             "asset_class", "asset_class", gain_split),
         "Realized gains by tax wrapper": split_bars(
             "Realized gains by tax wrapper",
@@ -2478,13 +2491,14 @@ def base_dashboards():
             # totals, the tax years, the months, where the gains came
             # from, the monthly splits, then the positions, and last
             # what the figures miss.
-            # The held total first; then the window's realized gain and
-            # unrealized change side by side, which add up to the total
-            # gain beside them.
-            ("Unrealized gain", 0, 0, 5, 3, "period"),
-            ("Realized gain", 0, 5, 5, 3, "period"),
-            ("Unrealized change", 0, 10, 5, 3, "period"),
-            ("Total gain", 0, 15, 5, 3, "period"),
+            # The held total and the taxable realized gain first; then
+            # the gains on positions sold and held side by side, which
+            # add up to the total gain beside them.
+            ("Unrealized gain", 0, 0, 4, 3, "period"),
+            ("Realized gain", 0, 4, 4, 3, "period"),
+            ("Gain on positions sold", 0, 8, 4, 3, "period"),
+            ("Gain on positions held", 0, 12, 4, 3, "period"),
+            ("Total gain", 0, 16, 4, 3, "period"),
             ("Cost basis coverage", 0, 20, 4, 3, "period"),
             ("Realized gains by tax year", 3, 0, 24, 6, "period"),
             ("Gains by month", 9, 0, 24, 8, "period"),

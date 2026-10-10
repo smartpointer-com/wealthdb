@@ -367,6 +367,15 @@ sums the months in it. A figure at the window's end reads the last
 month in the window. The time picker selects whole months: a custom day
 range takes the months it touches.
 
+The dashboard splits the gain into the gain on positions sold and the
+gain on positions held (`sold_gain`, `held_change`, migration 0120).
+Realized gain and unrealized change add up to the same total. But a
+sale realizes its whole gain since purchase, and the same amount leaves
+the unrealized change, so each sale would show as two opposite bars. The
+sold part counts a sale only from its month's start
+(wealthdb/docs/GAINS.md §2). The realized gain keeps its own tile: it
+is the figure a tax return reads.
+
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*
 `_snapshot`, so returns and gains are exactly as fresh as the holdings and

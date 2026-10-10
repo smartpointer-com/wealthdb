@@ -1495,6 +1495,19 @@ _gm = open(os.path.join(_REPO, "wealthdb", "internal", "gold",
                         "gains_materialize.go"), encoding="utf-8").read()
 check("the gains materializer writes the same currency list",
       "gainsInsertSQL, computedAt, toEpoch, materializeCurrencies" in _gm)
+# The gain's split by what was sold and what was kept: the materializer
+# writes it, web_gains carries it, and the tiles that add up to the
+# total gain read it.
+_wg = _latest_definition("web_gains")
+_split_sql = {n: sql_of(CARDS[n][2]) or "" for n in
+              ("Gain on positions sold", "Gain on positions held", "Gains by month")}
+check("the Gains split is materialized, served and read",
+      "held_change_x, sold_gain_x" in _gm
+      and "AS held_change" in _wg and "AS sold_gain" in _wg
+      and "sum(sold_gain)" in _split_sql["Gain on positions sold"]
+      and "sum(held_change)" in _split_sql["Gain on positions held"]
+      and all(f"sum({c})" in _split_sql["Gains by month"] for c in ("sold_gain", "held_change")),
+      _split_sql)
 _fxv = _latest_definition("fx_reporting_value")
 check("the conversion helper names every reporting currency",
       all(f"'{c}'" in _fxv for c in p.REPORTING_CURRENCIES), _fxv[:200])

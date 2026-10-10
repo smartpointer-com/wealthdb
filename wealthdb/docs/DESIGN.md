@@ -3063,6 +3063,13 @@ on either, so they are found once. The single-currency macros are these
 over one-element lists. `web-materialize` writes `report_gains` from one
 call of `gains_windows_all`.
 
+Migration 0120 splits each row's gain by what prices did, for the Gains
+dashboard: `sold_gain_x` is what the lots sold in the bucket gained in
+it, and `held_change_x` the unrealized change with those lots left out
+(docs/GAINS.md §2). `report_gains` and `web_gains` carry both.
+`instrument_aliases()` maps a source's CUSIP key to the ticker it also
+keys the security by, so a document's lot finds its position's price.
+
 ## 11. Repository layout
 
 ```

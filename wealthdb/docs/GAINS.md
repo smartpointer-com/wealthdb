@@ -9,7 +9,7 @@ from it.
 
 Related design: DESIGN.md §4.15 (the `gains` command), §7.1 (accrued
 income), §7.4 (cost basis), §10.13 (the report macros), docs/LOTS.md
-(the lot engine), and migrations 0116 to 0118.
+(the lot engine), and migrations 0116 to 0120.
 
 Every figure here is a sum or a difference of figures a source states,
 or that the lot engine rebuilt from the trades where a source states
@@ -84,6 +84,44 @@ without a full cost basis. If the other side has one, the row says
 `basis_changed`. Either the source began or stopped stating a basis
 inside the bucket, or a rebuilt basis gained or lost a lot of unknown
 cost. The whole gain since purchase is not this bucket's.
+
+### Sold and held
+
+A sale realizes the whole gain since its purchase, and the same amount
+leaves the unrealized change. So in a bucket with a sale, `realized`
+and `unrealized_change` move apart. The Gains dashboard splits the gain
+by what prices did instead:
+
+    released    = Σ over the lots sold in the bucket and held at its start:
+                  quantity × start price − cost basis
+    sold_gain   = realized − released
+    held_change = unrealized_change + released
+    gain        = sold_gain + held_change
+
+- `sold_gain` is what the lots sold gained in the bucket: from its
+  start, or from their purchase in it, to the sale.
+- `held_change` is the change in unrealized gain with the sold lots left
+  out.
+- A lot was held at the start when it was bought before the bucket or
+  states no purchase date.
+- The start price is the clean value per unit of the instrument across
+  the source's accounts at the bucket's start, converted at the start's
+  rate. A document that names a security by its CUSIP takes the price
+  of its ticker.
+- Lots that sell more units than the source held at the start release
+  in proportion.
+- Nothing is released where the start is unknown: the source did not
+  hold the instrument, or a change is left out (above).
+
+The release sits on the lots' row. That can be another row than the
+position's: a lot keyed by its CUSIP, or a wallet of a pooled
+portfolio. Summed over the rows of a grain, the two splits add up to
+the same gain.
+
+The split depends on the bucket. Twelve monthly splits do not add up to
+the year's split, but their gains add up to the year's gain.
+`report_gains` carries both splits. The `gains` command prints realized
+and unrealized change, which statements reconcile to.
 
 ## 3. Time
 

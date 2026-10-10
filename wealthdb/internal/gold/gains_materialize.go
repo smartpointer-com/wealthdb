@@ -10,15 +10,15 @@ import (
 
 // gainsInsertSQL copies the monthly gains_windows rows of every
 // currency and reading it is given, from one evaluation
-// (gains_windows_all, migration 0119), into report_gains (migrations
-// 0117, 0118), by column name.
+// (gains_windows_all, migrations 0119, 0120), into report_gains
+// (migrations 0117, 0118, 0120), by column name.
 const gainsInsertSQL = `INSERT INTO report_gains BY NAME
     SELECT CAST(? AS BIGINT) AS computed_at, out_currency AS currency, missing_basis,
            b_from AS period_start,
            silver_source_id, account_external_id, k, symbol, name, asset_class, vehicle,
            book_x, value_x, unrealized_start_x, unrealized_end_x, unrealized_change_x,
            realized_x, realized_short_x, realized_long_x, realized_other_x, realized_book_x,
-           proceeds_x, wash_x,
+           proceeds_x, wash_x, held_change_x, sold_gain_x,
            at_end, end_applies, end_without_basis, end_unpriced, basis_changed, paid_in,
            account_unobserved, onboarded_source,
            n_lots, n_without_gain, n_undated, n_sells, n_undocumented, n_in_kind, n_corporate,
