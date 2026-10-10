@@ -175,3 +175,12 @@ func TestMaterializeGainsCopiesAReadingThatChangesNothing(t *testing.T) {
 	}
 	matchesBuckets(t, ctx, db)
 }
+
+func TestMigration0119DDLIsRerunnable(t *testing.T) {
+	db, ctx := openGainsFixture(t)
+	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
+	if _, err := MaterializeGains(ctx, db, gainsTo, 42); err != nil {
+		t.Fatal(err)
+	}
+	matchesBuckets(t, ctx, db)
+}

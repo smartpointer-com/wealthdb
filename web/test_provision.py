@@ -1494,7 +1494,7 @@ check("every wide serving view carries a value column per reporting currency",
 _gm = open(os.path.join(_REPO, "wealthdb", "internal", "gold",
                         "gains_materialize.go"), encoding="utf-8").read()
 check("the gains materializer writes the same currency list",
-      "range materializeCurrencies" in _gm)
+      "gainsInsertSQL, computedAt, toEpoch, materializeCurrencies" in _gm)
 _fxv = _latest_definition("fx_reporting_value")
 check("the conversion helper names every reporting currency",
       all(f"'{c}'" in _fxv for c in p.REPORTING_CURRENCIES), _fxv[:200])

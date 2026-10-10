@@ -8,12 +8,13 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
-// gainsInsertSQL copies one currency's monthly gains_windows rows,
-// under one reading of a missing cost basis, into report_gains
-// (migrations 0117, 0118), by column name.
+// gainsInsertSQL copies the monthly gains_windows rows of every
+// currency and reading it is given, from one evaluation
+// (gains_windows_all, migration 0119), into report_gains (migrations
+// 0117, 0118), by column name.
 const gainsInsertSQL = `INSERT INTO report_gains BY NAME
-    SELECT CAST(? AS BIGINT) AS computed_at, CAST(? AS VARCHAR) AS currency,
-           CAST(? AS VARCHAR) AS missing_basis, b_from AS period_start,
+    SELECT CAST(? AS BIGINT) AS computed_at, out_currency AS currency, missing_basis,
+           b_from AS period_start,
            silver_source_id, account_external_id, k, symbol, name, asset_class, vehicle,
            book_x, value_x, unrealized_start_x, unrealized_end_x, unrealized_change_x,
            realized_x, realized_short_x, realized_long_x, realized_other_x, realized_book_x,
@@ -23,7 +24,7 @@ const gainsInsertSQL = `INSERT INTO report_gains BY NAME
            n_lots, n_without_gain, n_undated, n_sells, n_undocumented, n_in_kind, n_corporate,
            n_fx_missing, n_rebuilt, n_seed, n_implied, n_blip, n_wash, n_fee_unvalued, n_assumed_zero,
            spliced, pooled, settlement
-      FROM gains_windows(0, CAST(? AS BIGINT), CAST(? AS VARCHAR), 'month', p_missing := CAST(? AS VARCHAR))`
+      FROM gains_windows_all(0, CAST(? AS BIGINT), 'month', CAST(? AS VARCHAR[]), CAST(? AS VARCHAR[]))`
 
 // gainsReadingsAgreeSQL is true when no position lacks a cost basis it
 // needs and no realized lot lacks the cost its gain needs: the two
@@ -36,8 +37,9 @@ SELECT NOT EXISTS (SELECT 1 FROM positions WHERE basis_missing(asset_class, vehi
 // MaterializeGains rewrites report_gains: for every reporting currency
 // and both readings of a missing cost basis, the monthly gains_windows
 // rows from the first data gold holds through toEpoch, the rows the
-// Metabase Gains dashboard sums. It returns the number of rows written.
-// One transaction, so a reader sees the old table or the new one.
+// Metabase Gains dashboard sums, all from one evaluation. It returns
+// the number of rows written. One transaction, so a reader sees the old
+// table or the new one.
 func MaterializeGains(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -51,25 +53,33 @@ func MaterializeGains(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 	if err := tx.QueryRowContext(ctx, gainsReadingsAgreeSQL).Scan(&agree); err != nil {
 		return 0, fmt.Errorf("MaterializeGains probe: %w", err)
 	}
-	n := 0
-	for _, ccy := range materializeCurrencies {
-		for _, missing := range lots.MissingBasisReadings {
-			q, args := gainsInsertSQL, []any{computedAt, ccy, string(missing), toEpoch, ccy, string(missing)}
-			if missing == lots.MissingZero && agree {
-				q, args = `INSERT INTO report_gains BY NAME
-    SELECT * REPLACE (CAST(? AS VARCHAR) AS missing_basis) FROM report_gains
-     WHERE currency = ? AND missing_basis = ?`, []any{string(missing), ccy, string(lots.MissingIgnore)}
-			}
-			res, err := tx.ExecContext(ctx, q, args...)
-			if err != nil {
-				return 0, fmt.Errorf("MaterializeGains %s %s: %w", ccy, missing, err)
-			}
-			k, err := res.RowsAffected()
-			if err != nil {
-				return 0, fmt.Errorf("MaterializeGains %s %s: %w", ccy, missing, err)
-			}
-			n += int(k)
+	readings := make([]string, 0, len(lots.MissingBasisReadings))
+	for _, r := range lots.MissingBasisReadings {
+		if !agree || r == lots.MissingIgnore {
+			readings = append(readings, string(r))
 		}
+	}
+	res, err := tx.ExecContext(ctx, gainsInsertSQL, computedAt, toEpoch, materializeCurrencies, readings)
+	if err != nil {
+		return 0, fmt.Errorf("MaterializeGains: %w", err)
+	}
+	k, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("MaterializeGains: %w", err)
+	}
+	n := int(k)
+	if agree {
+		res, err := tx.ExecContext(ctx, `INSERT INTO report_gains BY NAME
+    SELECT * REPLACE (CAST(? AS VARCHAR) AS missing_basis) FROM report_gains WHERE missing_basis = ?`,
+			string(lots.MissingZero), string(lots.MissingIgnore))
+		if err != nil {
+			return 0, fmt.Errorf("MaterializeGains copy: %w", err)
+		}
+		k, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("MaterializeGains copy: %w", err)
+		}
+		n += int(k)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("MaterializeGains commit: %w", err)

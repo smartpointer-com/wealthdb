@@ -9,21 +9,21 @@ import (
 // The lot engine's cross rates must bridge in the order the reports do,
 // or a figure the engine values and one a report converts disagree.
 func TestLotRatesBridgeInTheReportsOrder(t *testing.T) {
-	b, err := fs.ReadFile(migrationsFS, "migrations/0118_lot_engine.sql")
+	b, err := fs.ReadFile(migrationsFS, "migrations/0119_gains_one_pass.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := string(b)
-	at := strings.Index(body, "CREATE OR REPLACE MACRO fx_rates_to")
+	at := strings.Index(body, "CREATE OR REPLACE MACRO fx_rates_into")
 	if at < 0 {
-		t.Fatal("fx_rates_to not found")
+		t.Fatal("fx_rates_into not found")
 	}
 	body = body[at:]
 	prev := -1
 	for _, ccy := range lotRateBridges {
 		i := strings.Index(body, "to_ccy = '"+ccy+"'")
 		if i < 0 || i < prev {
-			t.Fatalf("fx_rates_to does not bridge through %v in this order", lotRateBridges)
+			t.Fatalf("fx_rates_into does not bridge through %v in this order", lotRateBridges)
 		}
 		prev = i
 	}

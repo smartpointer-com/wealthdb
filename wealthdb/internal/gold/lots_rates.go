@@ -13,7 +13,7 @@ import (
 const lotRateMaxAge = 7
 
 // lotRateBridges are the currencies a cross rate goes through, in the
-// order fx_rates_to (0118) tries them.
+// order fx_rates_into (0119) tries them.
 var lotRateBridges = []string{"CHF", "USD"}
 
 type dayRate struct {
@@ -23,7 +23,7 @@ type dayRate struct {
 
 // lotRates prices a currency or a coin in another on a day, from
 // fx_daily: directly, else through lotRateBridges in order, the order
-// fx_rates_to applies. Unlike the reports' rates, a rate older than
+// fx_rates_into applies. Unlike the reports' rates, a rate older than
 // lotRateMaxAge prices nothing.
 type lotRates struct {
 	pairs map[[2]string][]dayRate

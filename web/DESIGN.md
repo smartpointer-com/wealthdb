@@ -352,12 +352,13 @@ then to today is not drawn.
 for a different reason. The gains figures are SQL (`gains_windows`,
 migration 0116), so a view would work. But one dashboard open fires two
 dozen tiles, and each would compute the whole history again. So
-`web-materialize` runs `gains_windows(0, today, CCY, 'month')` once per
-reporting currency and per reading of a missing cost basis (`ignore`,
-`zero`; docs/GAINS.md §8) and stores the rows, a few seconds per refresh.
-Each run's rows are that call's output, less the figures in a holding's
-own currency. So the rows summed by month equal `wealthdb gains summary
---period monthly -x CCY --missing-basis M`, and a Go test holds that.
+`web-materialize` computes the monthly gains rows of every reporting
+currency under both readings of a missing cost basis (`ignore`, `zero`;
+docs/GAINS.md §8) in one evaluation (`gains_windows_all`, migration
+0119) and stores them, a second or two per refresh. The rows are that
+call's output, less the figures in a holding's own currency. So the
+rows summed by month equal `wealthdb gains summary --period monthly -x
+CCY --missing-basis M`, and a Go test holds that.
 The `web_gains` view labels the accounts and joins in their tax
 wrapper.
 

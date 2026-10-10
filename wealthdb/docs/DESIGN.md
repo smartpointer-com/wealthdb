@@ -3019,7 +3019,8 @@ their others. Shared pieces:
 The readers are `report_gains_buckets(from, to, ccy, period, grain)`,
 `report_gains_positions`, `report_gains_realized`, `report_lots` and
 `report_gains_coverage`. docs/GAINS.md defines every figure they
-return. They are single-currency.
+return. They are single-currency; 0119 adds the multi-currency forms
+the materializer reads.
 
 Migration 0117 serves the Metabase Gains dashboard. `report_gains`
 holds `gains_windows(0, today, CCY, 'month')` for every reporting
@@ -3052,6 +3053,15 @@ Migration 0118 adds the lot engine's ledger and its readers
 - `report_gains` holds a row set per currency and per reading of a
   missing cost basis, and `web_gains` exposes `missing_basis` for the
   dashboard's picker.
+
+Migration 0119 lets one evaluation serve several currencies and
+readings. `gains_windows_all`, `gains_position_lines_all`,
+`realized_lots_in_all` and `fx_rates_into` take lists of output
+currencies and readings, and each row names its own. The buckets, the
+events, the findings and what a holding is at an instant do not depend
+on either, so they are found once. The single-currency macros are these
+over one-element lists. `web-materialize` writes `report_gains` from one
+call of `gains_windows_all`.
 
 ## 11. Repository layout
 
