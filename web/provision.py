@@ -2478,8 +2478,11 @@ def base_dashboards():
             # totals, the tax years, the months, where the gains came
             # from, the monthly splits, then the positions, and last
             # what the figures miss.
-            ("Realized gain", 0, 0, 5, 3, "period"),
-            ("Unrealized gain", 0, 5, 5, 3, "period"),
+            # The held total first; then the window's realized gain and
+            # unrealized change side by side, which add up to the total
+            # gain beside them.
+            ("Unrealized gain", 0, 0, 5, 3, "period"),
+            ("Realized gain", 0, 5, 5, 3, "period"),
             ("Unrealized change", 0, 10, 5, 3, "period"),
             ("Total gain", 0, 15, 5, 3, "period"),
             ("Cost basis coverage", 0, 20, 4, 3, "period"),
