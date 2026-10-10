@@ -17,7 +17,7 @@ setup, no paths, no connection flags.
    `gains`, `spending`, `income`, `cashflow`, `status`, `snapshots`, `help`,
    `version`.
 2. **Anything else is forbidden**, whether or not it is listed here. `load`,
-   `reload`, `reset`, `init`, `config`, `compact`, `categorize`,
+   `reload`, `reset`, `init`, `config`, `compact`, `lots`, `categorize`,
    `resolve-symbols`, `web-config`, `web-materialize` and `wealthdb-collect`
    all write; `mcp-serve` and `mcp-config` serve other clients. If you think you need to write, you are wrong — just query.
 3. **One number for a whole window: add `--period total`.** The default is
@@ -81,10 +81,24 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
   (one row per account and holding; a house or a plan fund is a holding too,
   so add `select(.symbol)` for stocks and funds only, and a symbol held in
   several accounts has several rows)
-- **Unrealized gain and cost basis of each holding now** —
-  `wealthdb holdings positions -C +cost_basis,unrealized_gain,unrealized_pct,basis_stamp`
-- **Where gains are unknown** — `wealthdb gains coverage 2025` (a `no_basis` or
-  `no_realized` verdict means the figures for that account are missing, not zero)
+- **Cost basis and unrealized gain of a holding, and where the cost basis comes from** —
+  `wealthdb holdings positions -C +cost_basis,unrealized_gain,unrealized_pct,basis_stamp | grep -i btc`
+  (grep the ticker). `basis_stamp` is the whole explanation of where the
+  figure comes from: `stated/…` the institution states it; `derived/…`
+  wealthdb computed it from the institution's own figures (quantity ×
+  average cost, say); `rebuilt/<method>/…` wealthdb rebuilt it from the
+  account's buys and sales by that method (`fifo`: the oldest lots sold
+  first). `wealthdb gains lots | grep -i btc` lists the lots behind it.
+- **A missing cost basis counted as zero** — add `--missing-basis zero` to a
+  `gains` view (not `coverage` or `check`) or to `holdings positions`. A sale with no known cost then counts
+  its whole proceeds as gain; without the flag that gain is blank, not zero.
+- **Sales with no known cost basis** —
+  `wealthdb gains realized 2026 -f json | jq 'map(select(.cost_basis == null))'`
+- **Where gains are unknown, or rebuilt** — `wealthdb gains coverage 2025` (a
+  `no_basis` or `no_realized` verdict means the figures for that account are
+  missing, not zero; `basis_stamps` reads `rebuilt/…` where wealthdb rebuilt the
+  cost basis from the trades)
+- **Rebuilt cost basis against the statements** — `wealthdb gains check 2025`
 - **Total spent in a window** — `wealthdb spending summary 2025 --period total`
 - **Spending by category** — `wealthdb spending categories 2025 --period total`
   (broad groups) or add `--level detailed` (groceries, restaurants, flights, …)
@@ -126,7 +140,7 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 |---|---|
 | `holdings` | `global`, `sources`, `portfolios`, `accounts`, `positions` |
 | `returns` | `global`, `sources`, `portfolios`, `accounts` |
-| `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage` |
+| `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
 | `spending` | `summary`, `categories`, `transactions` |
 | `income` | `summary`, `types`, `transactions` |
 | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage` |
@@ -216,9 +230,10 @@ Treat any other column as unredacted unless it actually prints `***`.
 | `gains sources`, `gains portfolios` | the same, after `silver_source` (and `portfolio`) |
 | `gains accounts` | `silver_source, account, tax_wrapper, period, realized, unrealized_end, unrealized_change, gain, basis_coverage, quality` |
 | `gains positions` | `silver_source, account, symbol, asset_class, currency, cost_basis_outccy, value, unrealized_end, realized, gain, basis_stamp` |
-| `gains realized` | `silver_source, date, account, symbol, quantity, acquired, term, currency, proceeds, cost_basis, gain, gain_outccy` |
+| `gains realized` | `silver_source, date, account, symbol, disposal, quantity, acquired, term, currency, proceeds, cost_basis, gain, gain_outccy` |
 | `gains lots` | `silver_source, account, symbol, acquisition_date, held_days, term, quantity, cost_basis, market_value, unrealized_gain, currency` |
-| `gains coverage` | `silver_source, account, tax_wrapper, value, value_with_basis, basis_coverage, basis_stamps, open_lots, sells, realized_lots, documents, verdict` |
+| `gains coverage` | `silver_source, account, tax_wrapper, value, value_with_basis, basis_coverage, basis_stamps, open_lots, sells, sells_rebuilt, realized_lots, documents, verdict` |
+| `gains check` | `check, silver_source, account, tax_year, items, engine_cost, stated_cost, cost_delta, gain_delta` |
 
 `silver_source` is the institution (`schwab`, `ubs`, `fidelity`, …). Slice or
 group by these account attributes, available via `-C` where the view has them:
