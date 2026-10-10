@@ -456,6 +456,7 @@ func TestTransactionsKindMapping(t *testing.T) {
 	}{
 		{"TRADE", negative, "", canonical.TxKindBuy},
 		{"TRADE", positive, "", canonical.TxKindSell},
+		{"TRADE", zero, "System transfer", canonical.TxKindOther},
 		{"JOURNAL", zero, "", canonical.TxKindJournal},
 		// DIVIDEND_OR_INTEREST splits by description.
 		{"DIVIDEND_OR_INTEREST", positive, "VANGUARD S&P 500 ETF", canonical.TxKindDividend},

@@ -320,7 +320,8 @@ instruments that are never keys, and how its transactions read
   core money market fund is cash, and no key.
 - **schwab.** A corporate action reads by its stated action, else its
   description; rights redemptions, litigation proceeds and option
-  exchanges move no lot.
+  exchanges move no lot. A trade that moves no cash (a "System
+  transfer") moves no lot either.
 - **ubs, swissquote, viac.** Shadow, at the average method. They state
   an average cost and no lots, and a gap in a history would fill with
   seeds of unknown cost. `gains check` compares the ledger with the

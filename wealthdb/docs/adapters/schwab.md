@@ -129,13 +129,18 @@ real data, maps to the canonical gold `kind` taxonomy:
 
 | Schwab | Gold | Adapter notes |
 | --- | --- | --- |
-| `TRADE` | `buy` or `sell` | sign of `netAmount` (negative = buy) |
+| `TRADE` | `buy`, `sell` or `other` | sign of `netAmount` (negative = buy); zero is `other` (see below) |
 | `JOURNAL` | `journal` | catch-all internal cash move |
 | `DIVIDEND_OR_INTEREST` | `dividend` or `interest` | from `payload` subtype |
 | `WIRE_IN` / `CASH_RECEIPT` / `ELECTRONIC_FUND`(+) | `deposit` | |
 | `WIRE_OUT` / `CASH_DISBURSEMENT` / `ELECTRONIC_FUND`(−) | `withdrawal` | |
 | `RECEIVE_AND_DELIVER` | `corporate_action`, `journal`, `transfer_in` or `transfer_out` | see below |
 | `SMA_ADJUSTMENT` | `other` | margin-related, rare |
+
+A `TRADE` with a zero `netAmount` buys and sells nothing. Schwab books
+a "System transfer" this way. It restates a holding at its cost, and the
+shares stay in the account. The row is `other`, and the lot engine
+skips it.
 
 `RECEIVE_AND_DELIVER` carries a zero `netAmount`, so the adapter types
 it from the description and the security leg. Schwab books the legs of

@@ -25,3 +25,21 @@ func TestCorporateRuleReadsTheActionThenTheDescription(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyLeavesATradeWithoutCashAlone(t *testing.T) {
+	cases := []struct {
+		kind, typ string
+		qty       float64
+		want      lots.Action
+	}{
+		{"other", "TRADE", 10, lots.Ignore},
+		{"sell", "TRADE", -10, lots.Sell},
+		{"other", "MEMORANDUM", 10, lots.In},
+		{"corporate_action", "RECEIVE_AND_DELIVER", 10, lots.Corporate},
+	}
+	for _, c := range cases {
+		if got := classify(lots.Txn{Kind: c.kind, Type: c.typ, Quantity: c.qty}).Action; got != c.want {
+			t.Errorf("%s %s: %v, want %v", c.kind, c.typ, got, c.want)
+		}
+	}
+}

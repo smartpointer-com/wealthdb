@@ -11,6 +11,11 @@ import (
 // in the `kind` column) to a canonical TxKind. Sign-driven types
 // (TRADE, ELECTRONIC_FUND) split on the net amount.
 //
+// A TRADE that moves no cash buys and sells nothing: Schwab books a
+// "System transfer" that way, restating a holding at its cost while the
+// shares stay put. It is other, which the lot engine leaves alone
+// (lotpolicy.go).
+//
 // RECEIVE_AND_DELIVER carries a zero net amount, so it splits on the
 // description and on the security leg's quantity (nil when the row
 // has no security leg); settleDeliveries then refines it against the
@@ -32,8 +37,11 @@ func kindFor(rawType string, netAmount canonical.Decimal, quantity *canonical.De
 		// Schwab convention: buy → negative cash (money out), sell
 		// → positive cash. We invert because gold's TxKind is
 		// instrument-centric.
-		if netAmount.IsNegative() {
+		switch {
+		case netAmount.IsNegative():
 			return canonical.TxKindBuy
+		case netAmount.IsZero():
+			return canonical.TxKindOther
 		}
 		return canonical.TxKindSell
 
