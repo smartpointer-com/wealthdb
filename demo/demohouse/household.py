@@ -118,7 +118,7 @@ class Simulation:
         self._sources = {s["id"]: s for s in self.spec["sources"]}
         self._tags = {a["id"]: a["tag"] for s in self.spec["sources"] for a in s["accounts"] if "tag" in a}
         for src in self.spec["sources"]:
-            self.book.add_source(src["id"], src["cadence"])
+            self.book.add_source(src["id"], src["cadence"], src.get("states_basis", True))
             pf = src.get("portfolio")
             if pf:
                 self.book.add_portfolio(src["id"], pf["id"], pf["name"], pf["currency"])
@@ -244,7 +244,8 @@ class Simulation:
         name = name_on(inst, day)
         row = self._txn(aid, day, "sell", proceeds, ccy=inst["currency"], instrument=iid,
                         qty=-qty, price=price, desc=desc or f"SOLD {qty.normalize():f} {name.upper()}")
-        self.book.realize(row, pieces, self._tax_document(aid), name.upper())
+        if self.book.sources[self.book.account(aid).source]["states_basis"]:
+            self.book.realize(row, pieces, self._tax_document(aid), name.upper())
         return row
 
     def _tax_document(self, aid):
@@ -874,6 +875,15 @@ class Simulation:
         if day == dates.parse(c["sell"]["date"]):
             iid = c["sell"]["instrument"]
             self._sell(aid, day, iid, self.book.qty(aid, iid) * D(c["sell"]["fraction"]))
+        d = c["deposit"]
+        if day == dates.parse(d["date"]):
+            # Coins arrive from a wallet nothing tracks: no trade states
+            # what they cost.
+            qty = D(d["qty"])
+            value = cents(qty * self.market.price(d["instrument"]))
+            self.book.add_units(aid, d["instrument"], qty, value, day)
+            self._txn(aid, day, "transfer_in", value, instrument=d["instrument"], qty=qty, cash=False,
+                      desc="DEPOSIT FROM EXTERNAL WALLET")
         w = c["withdrawal"]
         if day == dates.parse(w["date"]):
             qty = D(w["qty"])

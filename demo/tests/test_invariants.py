@@ -268,7 +268,8 @@ class TestLots(Built):
         checked = 0
         for src, p in self.all("positions"):
             own = lots.pop((src, p["snapshot_at"], p["account_id"], p["position_key"]), [])
-            if p["quantity"] is None:
+            if p["quantity"] is None or p["book_value"] is None:
+                # A mark, or a source that states no basis: no lots.
                 self.assertEqual(own, [], p["position_key"])
                 continue
             where = f'{p["account_id"]} {p["position_key"]} on {dates.day_of(p["snapshot_at"])}'
@@ -284,8 +285,9 @@ class TestLots(Built):
         """The lots one day's sales of an instrument relieve add up to the
         quantity sold and the proceeds received."""
         sold = collections.defaultdict(lambda: [Decimal(0), Decimal(0)])
-        for _, t in self.all("transactions"):
-            if t["kind"] == "sell":
+        unstated = {s["id"] for s in self.inputs.spec["sources"] if not s.get("states_basis", True)}
+        for src, t in self.all("transactions"):
+            if t["kind"] == "sell" and src not in unstated:
                 key = (t["account_id"], t["instrument_id"], dates.day_of(t["occurred_at"]).isoformat())
                 sold[key][0] -= Decimal(t["quantity"])
                 sold[key][1] += Decimal(t["net_amount"])

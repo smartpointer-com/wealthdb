@@ -16,11 +16,11 @@ filter values a user ran a dashboard with and shows them to that user
 next time.
 
 Each card runs at its dashboard's defaults, once per time window with no
-source picked, and once per source over the full history. Five more
+source picked, and once per source over the full history. Six more
 pickers are varied one at a time around their defaults: currency,
-investing grain, section, start year and as-of day. The account,
-category, income type, asset class and vehicle pickers stay at their
-defaults.
+investing grain, section, start year, as-of day and the reading of a
+missing cost basis. The account, category, income type, asset class and
+vehicle pickers stay at their defaults.
 
 A run fails when Metabase reports an error. A card that returns no rows
 at its dashboard's defaults fails too. Empty runs under any other picker
@@ -105,6 +105,7 @@ def combos(params, sources, currencies, first_year, today):
         "section": [["operating_in"], ["operating_out"], ["investing"], ["financing"], ["vehicles"]],
         "start_year": [[y] for y in range(first_year, today.year + 1)],
         "as_of_day": [f"{first_year + 1}-12-31", today.isoformat()],
+        "missing_basis": [["ignore"], ["zero"]],
     }
     for slug, values in variations.items():
         p = by_slug.get(slug)

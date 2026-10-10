@@ -42,6 +42,7 @@ def render(spec):
         "returns_policy_overrides": spec["config"]["returns_policy_overrides"],
         "returns_transfer_matching": {"enabled": True, "tolerance_pct": 0},
         "inception_overrides": spec["config"]["inception_overrides"],
+        "lots": spec["config"]["lots"],
         "equity_transfers": "overrides/equity_transfers.csv",
         "spending": {
             "internal_transfer_matching": {"tolerance_pct": 0, "names": match_names(spec)},

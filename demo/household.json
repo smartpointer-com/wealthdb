@@ -40,7 +40,7 @@
     {"id": "emberwright", "institution": "Emberwright Ventures", "short": "EMBERWRIGHT VENTURES", "cadence": "daily", "accounts": [
       {"id": "ew-inv-01", "tag": "INVESTOR", "kind": "custody", "name": "Investor account", "nickname": "Venture investments", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "opens": "2025-01-15"}
     ]},
-    {"id": "tessarite", "institution": "Tessarite Digital", "short": "TESSARITE DIGITAL", "cadence": "daily", "accounts": [
+    {"id": "tessarite", "institution": "Tessarite Digital", "short": "TESSARITE DIGITAL", "cadence": "daily", "states_basis": false, "accounts": [
       {"id": "ts-exch-01", "tag": "EXCH", "kind": "crypto_exchange", "name": "Exchange account", "nickname": "Crypto", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD", "opens": "2025-07-07"}
     ]},
     {"id": "driftwren", "institution": "Driftwren Money", "short": "DRIFTWREN MONEY", "cadence": "daily", "accounts": [
@@ -180,7 +180,8 @@
              "monthly": {"from": "bc-chk-01", "day": 20, "amount": "250.00", "split": {"btc": "0.6", "eth": "0.4"}},
              "fee_rate": "0.005", "staking": {"instrument": "eth", "apy": "0.032"},
              "sell": {"date": "2026-02-09", "instrument": "eth", "fraction": "0.25"},
-             "withdrawal": {"date": "2026-06-22", "instrument": "btc", "qty": "0.05"}},
+             "withdrawal": {"date": "2026-06-22", "instrument": "btc", "qty": "0.05"},
+             "deposit": {"date": "2025-11-14", "instrument": "eth", "qty": "0.8"}},
 
   "homestead": {"account": "hs-home-01", "instrument": "home", "purchased": "2019-06-14", "price": "760000.00",
                 "appraisals": [{"date": "2023-01-15", "value": "845000.00"}, {"date": "2024-01-15", "value": "862000.00"},
@@ -206,6 +207,7 @@
   "config": {
     "account_overrides": {"quayvane": {"qv-ira-01": {"nickname": "Sam's rollover IRA"}}},
     "returns_policy_overrides": {"homestead": {"flow_regime": "nav_only"}, "tessarite": {"flow_regime": "crypto_partial"}},
+    "lots": {"sources": {"tessarite": {"mode": "fill"}}},
     "inception_overrides": {"sources": {"emberwright": "2025-03-31"}},
     "spending_rules": [
       {"match": "\\bTHIMBLEWOOD SAVINGS\\b", "category": "internal_transfer", "far": "kids-savings"},

@@ -157,6 +157,7 @@ class TestRollForward(unittest.TestCase):
             ("returns", "global", "--method", "both", "--period", "total"),
             ("spending", "transactions", "-", "today"), ("income", "transactions", "-", "today"),
             ("cashflow", "flows", "-", "today", "--level", "group"), ("cashflow", "coverage", "-", "today"),
+            ("gains", "positions", "-", "today", "-C", "all"), ("gains", "realized", "-", "today", "--documents", "all"),
             ("transactions", "-", "today", "-C", "all"),
         ]
         for args in reports:

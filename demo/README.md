@@ -54,6 +54,7 @@ demo -r income summary 2025 --period annual -C +withheld
 demo -r cashflow sankey 2025
 demo -r cashflow coverage 2025 --period quarterly
 demo -r transactions 2026-05-18 2026-05-18
+demo -r gains coverage 2025-07-01 today
 ```
 
 ## The household
@@ -70,7 +71,7 @@ History starts on 2023-07-01 and runs to the as-of date.
 | `tamberlow` | two 401(k) plans, a health savings account | payroll contributions that never touch household cash, HSA reimbursements |
 | `aubervane` | a discretionary mandate in one portfolio | four currencies, currency conversions, coupons, withholding, management fees |
 | `emberwright` | a venture fund interest and an SPV, in one account | capital calls, a distribution, NAV marks, an SPV that exits in listed shares |
-| `tessarite` | a crypto exchange account | the `crypto_partial` regime, staking income, a withdrawal to a wallet nothing tracks |
+| `tessarite` | a crypto exchange account | the `crypto_partial` regime, staking income, a deposit from and a withdrawal to a wallet nothing tracks, and no stated cost basis: the lot engine rebuilds it from the trades |
 | `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies |
 | `homestead` | the family home | a NAV-only holding valued by yearly appraisals |
 | `fx` | none | daily USD rates for EUR, GBP and CHF |
@@ -87,6 +88,13 @@ A sale relieves the oldest lots first and writes one realized lot per
 piece it relieves. A taxable account states its sales on a Form
 1099-B, without the gain. The `aubervane` mandate and the
 tax-advantaged accounts state them on a statement, with the gain.
+
+`tessarite` states neither a cost basis nor its lots, as many crypto
+exchanges do not. The config's `lots` block turns the lot engine on for
+it, so every load rebuilds its basis and its realized sale from the
+trades (`wealthdb gains coverage` shows it as `rebuilt/fifo/unknown`).
+The coins deposited from the untracked wallet have no known cost:
+`wealthdb gains summary --missing-basis zero` counts it as 0.
 
 The in-kind exit writes two rows into the equity-transfer ledger. Two
 payments are pinned. Three spending rules and one income rule place

@@ -82,7 +82,7 @@ class Book:
         self.market = market
         self.instruments = instruments  # id -> catalogue entry (current version)
         self.accounts = {}
-        self.sources = {}               # source id -> {"cadence", "accounts": [...]}
+        self.sources = {}               # source id -> {"cadence", "states_basis", "accounts": [...]}
         self.rows = {}                  # source id -> {"positions", "lots", "cash", "transactions", "realized"}
         self.portfolios = {}            # source id -> [portfolio rows]
         self.instrument_versions = {}   # source id -> {(instrument, valid_from): row}
@@ -90,8 +90,8 @@ class Book:
 
     # ---- structure -----------------------------------------------------
 
-    def add_source(self, source, cadence):
-        self.sources[source] = {"cadence": cadence, "accounts": []}
+    def add_source(self, source, cadence, states_basis=True):
+        self.sources[source] = {"cadence": cadence, "states_basis": states_basis, "accounts": []}
         self.rows[source] = {"positions": [], "lots": [], "cash": [], "transactions": [], "realized": []}
         self.portfolios[source] = []
         self.instrument_versions[source] = {}
@@ -288,6 +288,9 @@ class Book:
     def _snapshot_account(self, acct, day):
         rows = self.rows[acct.source]
         at = dates.epoch(day)
+        # A source that states no cost basis prints neither the basis nor
+        # the lots; the lot engine rebuilds both from its trades.
+        states = self.sources[acct.source]["states_basis"]
         for key in sorted(acct.holdings):
             h = acct.holdings[key]
             inst = self.instruments[h.instrument]
@@ -307,11 +310,11 @@ class Book:
                 "currency": inst["currency"],
                 "quantity": text(h.qty, 8) if h.qty is not None else None,
                 "market_value": text(value),
-                "book_value": text(h.book),
+                "book_value": text(h.book) if states else None,
                 "accrued_interest": text(accrued) if accrued is not None else None,
-                "acquisition_date": h.acquired.isoformat() if h.acquired else None,
+                "acquisition_date": h.acquired.isoformat() if h.acquired and states else None,
             })
-            for lot in h.lots:
+            for lot in h.lots if states else ():
                 rows["lots"].append({
                     "snapshot_at": at,
                     "account_id": acct.id,
