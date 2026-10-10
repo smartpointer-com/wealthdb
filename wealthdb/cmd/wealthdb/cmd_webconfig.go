@@ -43,6 +43,9 @@ func cmdWebConfig(_ context.Context, g globalFlags, _ []string, _ io.Reader, std
 	// dashboard's Currency picker opens on, when it is one of the
 	// reporting currencies.
 	fmt.Fprintf(stdout, "WEALTHDB_DEFAULT_CURRENCY=%s\n", shellSingleQuote(cfg.DefaultCurrency))
+	// Passed to provision.py's --missing-basis: the reading the Gains
+	// dashboard's Missing cost basis picker opens on.
+	fmt.Fprintf(stdout, "WEALTHDB_MISSING_BASIS=%s\n", shellSingleQuote(string(cfg.MissingBasis())))
 	return nil
 }
 

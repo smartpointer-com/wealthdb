@@ -24,7 +24,8 @@ const (
 	// quantity × average cost, market value − unrealized gain, a sum of
 	// lots, a figure converted at the source's own rate.
 	BasisDerived BasisOrigin = "derived"
-	// BasisRebuilt is a basis a lot engine replayed from trades.
+	// BasisRebuilt is a basis the lot engine (docs/LOTS.md) replayed
+	// from trades.
 	BasisRebuilt BasisOrigin = "rebuilt"
 	// BasisSeeded is an opening basis entered by hand.
 	BasisSeeded BasisOrigin = "seeded"
@@ -39,7 +40,8 @@ func (o BasisOrigin) Valid() bool {
 	return ok
 }
 
-// BasisMethod says how the source arrives at a holding's basis.
+// BasisMethod says how a holding's basis is arrived at: the source's
+// own way, or the lot engine's relief method.
 type BasisMethod string
 
 const (
@@ -58,11 +60,19 @@ const (
 	// BasisMethodUnknown is a basis whose source does not say how it
 	// was computed (an aggregator passing on the institution's figure).
 	BasisMethodUnknown BasisMethod = "unknown"
+	// The lot engine's relief methods, on a basis it rebuilt (origin
+	// rebuilt): first in first out, last in first out, highest cost and
+	// lowest cost first. A rebuilt average basis says average.
+	BasisMethodFIFO BasisMethod = "fifo"
+	BasisMethodLIFO BasisMethod = "lifo"
+	BasisMethodHIFO BasisMethod = "hifo"
+	BasisMethodLOFO BasisMethod = "lofo"
 )
 
 var basisMethodValues = map[BasisMethod]struct{}{
 	BasisMethodLots: {}, BasisMethodAverage: {}, BasisMethodPaidIn: {},
 	BasisMethodAcquisitionValue: {}, BasisMethodUnknown: {},
+	BasisMethodFIFO: {}, BasisMethodLIFO: {}, BasisMethodHIFO: {}, BasisMethodLOFO: {},
 }
 
 func (m BasisMethod) Valid() bool {

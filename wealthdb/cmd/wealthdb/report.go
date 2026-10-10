@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
@@ -64,9 +65,10 @@ type request struct {
 	method, annualize, inception string // returns
 	netting                      bool   // returns
 
-	withCash     bool // holdings positions
-	newestFirst  bool // transactions, gains realized
-	allDocuments bool // gains realized: every copy of a sale, not the primary set
+	withCash     bool              // holdings positions
+	newestFirst  bool              // transactions, gains realized
+	allDocuments bool              // gains realized: every copy of a sale, not the primary set
+	missing      lots.MissingBasis // gains, holdings positions: how a missing cost basis counts
 }
 
 // newReport wraps a typed registry and fetch function as a report.

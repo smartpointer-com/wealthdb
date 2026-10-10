@@ -71,7 +71,7 @@ var commandHelps = []commandHelp{
 	{name: "returns", args: "<view>", group: "report",
 		short: "how it performed over a window, as TWR / MWR %: global, sources, portfolios, accounts"},
 	{name: "gains", args: "<view>", group: "report",
-		short: "what was gained or lost (P&L), realized and unrealized, over a window: summary, sources, portfolios, accounts, positions, realized, lots, coverage"},
+		short: "what was gained or lost (P&L), realized and unrealized, over a window: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check"},
 	{name: "transactions", args: "[FROM [TO]]", group: "report",
 		short: "the individual booked lines over a window; totals by kind are the three reports below"},
 	{name: "spending", args: "<view>", group: "report",
@@ -91,6 +91,7 @@ var commandHelps = []commandHelp{
 	{name: "reset", args: "<id> | -a", group: "load", short: "remove a source's data from the database"},
 	{name: "reload", args: "<id> | -a", group: "load", short: "reset then load (use after upgrading wealthdb)"},
 	{name: "compact", args: "[--dry-run]", group: "load", short: "rewrite the database file to reclaim dead space"},
+	{name: "lots", args: "rebuild", group: "load", short: "replay the trades into lots: the cost basis no source states (load runs it too)"},
 
 	{name: "categorize", args: "[spending|income]", group: "enrich",
 		short: "categorise the merchants and payers no rule could place"},

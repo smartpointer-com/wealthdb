@@ -133,10 +133,16 @@ two canonical rows (`transactions.go`):
 
 The closing-balance invariant `balance(C) = SUM(quantity WHERE
 instrument = C) + SUM(net_amount WHERE currency = C)` ties the
-projected rows back to silver's replayed balances. Fees on Trade
-rows are internalised by CT into the trade amounts (no separate
-fee row — it would double-count); only the standalone "Other Fee"
-type produces a `fee` row.
+projected rows back to silver's replayed balances. CT puts a Trade
+row's fee in one of its own currencies inside the trade amounts, so
+it gets no row of its own, which would double-count it. Only the
+standalone "Other Fee" type produces a `fee` row.
+
+Every row's payload carries the CT fields the lot engine reads, under
+their silver column names, each only when set: `type`, `comment`,
+`buy_currency`, `sell_currency`, `fee_amount` and `fee_currency`. The
+kind alone cannot tell a deposit from an airdrop or a dust sweep; the
+type can. docs/LOTS.md §6 says how the lot engine reads them.
 
 ## 8. Change number
 

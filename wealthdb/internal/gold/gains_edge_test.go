@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 // Edge cases of the gains macros, each pinned by what docs/GAINS.md
@@ -45,7 +47,7 @@ func edgePos(snap int64, acct, key, instr, ccy string, qty, mv float64, bv strin
 
 func edgeTotal(t *testing.T, db *sql.DB, ctx context.Context, ccy string, grain GainsGrain) []GainsBucketRow {
 	t.Helper()
-	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, ccy, "total", grain)
+	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, ccy, "total", grain, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +106,7 @@ func TestGainsHintLotMeetsItsPosition(t *testing.T) {
             disposal_date, currency, quantity, proceeds, book_value, realized_gain_loss, is_primary) VALUES
             ('test-src', 'R1', 'A1', NULL, 'X', 'EX CORP', 'form_1099b', 1970, FALSE,
              DATE '1970-02-01', 'USD', 5, 550, 300, NULL, TRUE);`)
-	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD")
+	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD", lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +155,7 @@ func TestGainsPositionsAgreeWithTheAccount(t *testing.T) {
 		edgePos(200000, "A1", "X-2", "X", "USD", 10, 1100, "NULL")+
 		edgePos(200000, "A1", "Y", "Y", "USD", 10, 1050, "800"))
 	acct := edgeTotal(t, db, ctx, "USD", GainsAccounts)[0]
-	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD")
+	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD", lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +196,7 @@ func TestGainsLotsOnlyAndFxMissingCountOnce(t *testing.T) {
             ('test-src', 'R1', 'A1', 'X', 'form_1099b', 1970, FALSE, DATE '1970-02-01', 'USD', 5, 550, 300, NULL, TRUE);`+
 		edgePos(1000, "A2", "J", "J", "JPY", 1, 1000, "900")+
 		edgePos(200000, "A2", "J", "J", "JPY", 1, 1000, "900"))
-	rows, err := GainsBuckets(ctx, db, 0, gainsTo, "USD", "total", GainsAll)
+	rows, err := GainsBuckets(ctx, db, 0, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +279,7 @@ func TestGainsEveryPeriodAddsUpToTheTotal(t *testing.T) {
 	db, ctx := openGainsFixture(t)
 	total := edgeTotal(t, db, ctx, "USD", GainsAll)
 	for _, p := range []string{"week", "day", "quarter"} {
-		rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", p, GainsAll)
+		rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", p, GainsAll, lots.MissingIgnore)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -306,7 +308,7 @@ func TestGainsAnonymousLotCounts(t *testing.T) {
 	if !near(num(t, r.Realized), 250) || r.RealizedLots != 1 {
 		t.Errorf("realized %s lots %d, want 250 and 1", show(r.Realized), r.RealizedLots)
 	}
-	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD")
+	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD", lots.MissingIgnore)
 	if err != nil || len(rows) != 1 || rows[0].LotKey != nil || rows[0].Quality != "unmatched_lots=1" {
 		t.Errorf("positions = %+v err %v", rows, err)
 	}
@@ -321,7 +323,7 @@ func TestGainsWindowOpensAtTheFirstSell(t *testing.T) {
                                   account_external_id, instrument_external_id, kind, currency, net_amount)
             VALUES ('test-src', 'S1', 90000, 'A1', 'X', 'sell', 'USD', 100);`+
 		edgePos(200000, "A1", "Y", "Y", "USD", 1, 100, "80"))
-	rows, err := GainsBuckets(ctx, db, 0, gainsTo, "USD", "total", GainsAll)
+	rows, err := GainsBuckets(ctx, db, 0, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil || len(rows) != 1 || rows[0].Sells != 1 || !strings.Contains(rows[0].Quality, "sells_without_documents=1") {
 		t.Errorf("rows = %+v err %v", rows, err)
 	}
@@ -377,7 +379,7 @@ func TestGainsMixedCurrenciesLeaveNativeFiguresBlank(t *testing.T) {
 	edgeExec(t, db, ctx, edgeBase+
 		edgePos(200000, "A1", "X-USD", "X", "USD", 1, 100, "80")+
 		edgePos(200000, "A1", "X-CHF", "X", "CHF", 1, 100, "80"))
-	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD")
+	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD", lots.MissingIgnore)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows = %+v err %v", rows, err)
 	}
@@ -400,7 +402,7 @@ func TestOpenLotsLeaveOutAccruedInterest(t *testing.T) {
             currency, quantity, book_value, market_value, basis_origin) VALUES
             ('test-src', 1000, 'A1', 'B', 'L1', 'USD', 1, 500, 510, 'stated'),
             ('test-src', 1000, 'A1', 'B', 'L2', 'USD', 1, 500, NULL, 'stated');`)
-	lots, err := OpenLotsAsOf(ctx, db, 2000, "USD")
+	lots, err := OpenLotsAsOf(ctx, db, 2000, "USD", lots.MissingIgnore)
 	if err != nil || len(lots) != 2 {
 		t.Fatalf("lots = %+v err %v", lots, err)
 	}

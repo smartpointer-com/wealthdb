@@ -88,7 +88,7 @@ func holdingsReport(req request) *report {
 		withCash := req.withCash
 		return newReport(buildColumnRegistry(ccy), defaultColumns,
 			func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
-				rows, err := gold.PositionsAsOf(ctx, db, asOf, ccy)
+				rows, err := gold.PositionsAsOf(ctx, db, asOf, ccy, req.missing)
 				if err != nil || !withCash {
 					return rows, err
 				}

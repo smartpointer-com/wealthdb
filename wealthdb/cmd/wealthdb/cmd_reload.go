@@ -209,16 +209,13 @@ func reloadFreshAndSwap(
 					respelled, store.noun)
 			}
 		}
-		// Re-assert the deterministic verdicts of both families, AFTER the
-		// stores have been carried across: the signature-version re-key
-		// reads that store, and a pass that ran before the carry would
-		// see it empty and carry nothing forward. Before the CHECKPOINT,
-		// so the swapped-in file is enriched rather than needing a
-		// follow-up load to become correct.
-		if err := runEnrichmentPass(ctx, db, cfg, enrichment, stdout); err != nil {
-			fmt.Fprintf(stderr, "reload: %s\n", err.Error())
-			firstErr = errors.Join(firstErr, err)
-		}
+		// Run the gold passes (enrichment, then lots) AFTER the stores
+		// have been carried across: the signature-version re-key reads
+		// that store, and a pass that ran before the carry would see it
+		// empty and carry nothing forward. Before the CHECKPOINT, so the
+		// swapped-in file is enriched and its lots rebuilt rather than
+		// needing a follow-up load to become correct.
+		firstErr = errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "reload", stdout, stderr))
 		// Checkpoint then close so the temp file is complete and clean
 		// (no leftover WAL) before it is verified and swapped.
 		if _, err := db.ExecContext(ctx, "CHECKPOINT"); err != nil {
@@ -583,9 +580,6 @@ func reloadInPlace(
 		fmt.Fprintf(stderr, "reload: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}
-	if err := runEnrichmentPass(ctx, db, cfg, enrichment, stdout); err != nil {
-		fmt.Fprintf(stderr, "reload: %s\n", err.Error())
-		firstErr = errors.Join(firstErr, err)
-	}
+	firstErr = errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "reload", stdout, stderr))
 	return firstErr
 }

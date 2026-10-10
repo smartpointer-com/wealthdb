@@ -1,10 +1,9 @@
 // Package fidelity projects the fidelity-web silver SQLite
 // into canonical change records.
 //
-// Single-source web-only adapter (Fidelity retired ofx.fidelity.com
-// in 2026-05; the scraper is the only path). Mirrors the
-// swissquote adapter's single-path / USD-only shape, with these
-// fidelity-specific quirks:
+// A single-path adapter: the web scraper is Fidelity's only feed. It
+// mirrors the swissquote adapter's single-path / USD-only shape, with
+// these fidelity-specific quirks:
 //
 //   - Money-market core positions (silver flag
 //     `is_core_position=1`) emit as CashBalanceChange rather than
@@ -12,15 +11,15 @@
 //     as ordinary positions rows with a "**" suffix on the symbol;
 //     silver strips the suffix and promotes the channel signal to
 //     the flag. Gold convention is to route them into
-//     cash_balances so `wealthdb positions --with-cash` and the
-//     cash_balance aggregate column populate uniformly across
+//     cash_balances so `wealthdb holdings positions --with-cash` and
+//     the cash_balance aggregate column populate uniformly across
 //     sources.
 //
 //   - Portfolios. Fidelity's selector groups accounts under
 //     labelled sections; silver promotes the label as
 //     portfolio_external_id and a kind classifier ('529' /
-//     'trust_managed' / 'daf' / 'other'). We emit one
-//     PortfolioChange per silver portfolio so `wealthdb
+//     'trust_managed' / 'daf' / 'other'). The adapter emits one
+//     PortfolioChange per silver portfolio so `wealthdb holdings
 //     portfolios` rolls up each kind separately.
 //
 //   - Historical snapshots. Fidelity's positions UI is
@@ -43,7 +42,9 @@
 //     Fidelity's cost basis total. A statement holding's is the cost
 //     basis the statement prints. Both are the sum of the holding's
 //     tax lots, fees included, as Fidelity states it (basis.go). The
-//     svb statements print none, so their holdings carry no book value.
+//     svb statements print none, so their holdings carry no book value
+//     here; the lot engine rebuilds one from their trades
+//     (lotpolicy.go, docs/LOTS.md).
 //
 //   - Open lots. A holding's lots come from the latest fetch of its lot
 //     table at or before the snapshot. They ride a snapshot only while

@@ -6,6 +6,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 // Every id and figure below is invented.
@@ -130,7 +132,7 @@ func near(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
 
 func TestGainsSummaryHoldsTheIdentity(t *testing.T) {
 	db, ctx := openGainsFixture(t)
-	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll)
+	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +182,7 @@ func TestGainsSummaryHoldsTheIdentity(t *testing.T) {
 // the summary, and the monthly buckets add up to the total.
 func TestGainsGrainsAndBucketsReconcile(t *testing.T) {
 	db, ctx := openGainsFixture(t)
-	total, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll)
+	total, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +203,7 @@ func TestGainsGrainsAndBucketsReconcile(t *testing.T) {
 	}
 	wr, wc, wg, ws := sum(total)
 	for _, grain := range []GainsGrain{GainsSources, GainsPortfolios, GainsAccounts} {
-		rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", grain)
+		rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", grain, lots.MissingIgnore)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -210,7 +212,7 @@ func TestGainsGrainsAndBucketsReconcile(t *testing.T) {
 			t.Errorf("%s: realized %v change %v gain %v sells %d; summary %v %v %v %d", grain, r, c, g, s, wr, wc, wg, ws)
 		}
 	}
-	monthly, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "month", GainsAll)
+	monthly, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "month", GainsAll, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +226,7 @@ func TestGainsGrainsAndBucketsReconcile(t *testing.T) {
 
 func TestGainsPortfolioAndAccountRows(t *testing.T) {
 	db, ctx := openGainsFixture(t)
-	ports, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsPortfolios)
+	ports, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsPortfolios, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +244,7 @@ func TestGainsPortfolioAndAccountRows(t *testing.T) {
 		t.Errorf("ungrouped quality = %q, want the BRK2 sale flagged", ports[0].Quality)
 	}
 
-	accts, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAccounts)
+	accts, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAccounts, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +271,7 @@ func TestGainsPortfolioAndAccountRows(t *testing.T) {
 
 func TestGainsPositionsAttachLotsToTheirHolding(t *testing.T) {
 	db, ctx := openGainsFixture(t)
-	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD")
+	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD", lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +314,7 @@ func TestGainsPositionsAttachLotsToTheirHolding(t *testing.T) {
 
 func TestRealizedLotsPrimaryAllAndOrder(t *testing.T) {
 	db, ctx := openGainsFixture(t)
-	rows, err := RealizedLotsBetween(ctx, db, gainsFrom, gainsTo, "USD", false, SortAscending)
+	rows, err := RealizedLotsBetween(ctx, db, gainsFrom, gainsTo, "USD", false, SortAscending, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +334,7 @@ func TestRealizedLotsPrimaryAllAndOrder(t *testing.T) {
 	if r := rows[2]; !r.Undated || r.EffectiveDate != "1970-12-31" || r.GainOrigin != "stated" {
 		t.Errorf("AAA = %+v", r)
 	}
-	all, err := RealizedLotsBetween(ctx, db, gainsFrom, gainsTo, "USD", true, SortDescending)
+	all, err := RealizedLotsBetween(ctx, db, gainsFrom, gainsTo, "USD", true, SortDescending, lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +345,7 @@ func TestRealizedLotsPrimaryAllAndOrder(t *testing.T) {
 
 func TestOpenLotsValueAndUnrealized(t *testing.T) {
 	db, ctx := openGainsFixture(t)
-	rows, err := OpenLotsAsOf(ctx, db, 250000, "CHF")
+	rows, err := OpenLotsAsOf(ctx, db, 250000, "CHF", lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +385,7 @@ func TestGainsCoverageVerdicts(t *testing.T) {
 
 func TestPositionsCarryTheCostBasis(t *testing.T) {
 	db, ctx := openGainsFixture(t)
-	rows, err := PositionsAsOf(ctx, db, 250000, "CHF")
+	rows, err := PositionsAsOf(ctx, db, 250000, "CHF", lots.MissingIgnore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +412,10 @@ func TestPositionsCarryTheCostBasis(t *testing.T) {
 func TestMigration0116DDLIsRerunnable(t *testing.T) {
 	db, ctx := openGainsFixture(t)
 	rerunMigrationDDL(t, db, ctx, "0116_gains_reports.sql")
-	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll)
+	// 0117 and 0118 re-issue its macros, as Migrate would apply them.
+	rerunMigrationDDL(t, db, ctx, "0117_gains_dashboard.sql")
+	rerunMigrationDDL(t, db, ctx, "0118_lot_engine.sql")
+	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil || len(rows) != 1 || !near(num(t, rows[0].Gain), 365) {
 		t.Errorf("after replay: rows %v err %v", rows, err)
 	}

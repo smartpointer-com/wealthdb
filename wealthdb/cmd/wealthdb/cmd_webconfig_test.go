@@ -24,7 +24,8 @@ func TestWebConfigEmitsShellEnv(t *testing.T) {
 		"gold_db": "/Users/Shared/x/wealthdb.db",
 		"default_currency": "GBP",
 		"silver_sources": [],
-		"web": {"enabled": true, "port": 4444}
+		"web": {"enabled": true, "port": 4444},
+		"lots": {"missing_basis": "zero"}
 	}`)
 
 	var out, errb bytes.Buffer
@@ -37,6 +38,7 @@ func TestWebConfigEmitsShellEnv(t *testing.T) {
 		"WEALTHDB_WEB_PORT=4444",
 		`WEALTHDB_GOLD_DB='/Users/Shared/x/wealthdb.db'`,
 		`WEALTHDB_DEFAULT_CURRENCY='GBP'`,
+		`WEALTHDB_MISSING_BASIS='zero'`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
@@ -57,6 +59,9 @@ func TestWebConfigDefaultsWhenOmitted(t *testing.T) {
 		t.Fatalf("exit %d, stderr=%s", code, errb.String())
 	}
 	got := out.String()
+	if !strings.Contains(got, `WEALTHDB_MISSING_BASIS='ignore'`) {
+		t.Errorf("the missing basis defaults to ignore:\n%s", got)
+	}
 	if !strings.Contains(got, "WEALTHDB_WEB_ENABLED=0") {
 		t.Errorf("want disabled, got:\n%s", got)
 	}

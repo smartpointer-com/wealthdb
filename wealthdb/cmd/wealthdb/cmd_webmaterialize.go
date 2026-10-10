@@ -8,6 +8,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 func init() {
@@ -68,6 +69,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "gains: materialized %d rows (monthly x %d currencies)\n", n, len(gold.MaterializedCurrencies()))
+	fmt.Fprintf(stderr, "gains: materialized %d rows (monthly x %d currencies x %d readings of a missing cost basis)\n",
+		n, len(gold.MaterializedCurrencies()), len(lots.MissingBasisReadings))
 	return nil
 }

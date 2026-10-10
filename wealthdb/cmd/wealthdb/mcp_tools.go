@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 // toolSpec is one MCP tool: what the model reads about it, its
@@ -126,6 +127,7 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("symbol", "positions only: keep only holdings whose symbol or name contains this text."),
 				stringParam("asset_class", "positions only: keep only this asset class (e.g. public_equity, fixed_income, cash, real_estate, crypto)."),
 				stringParam("tax_wrapper", "accounts: keep only this tax wrapper (e.g. roth_ira, 401k, 529, taxable_joint)."),
+				missingBasisParam("positions only: how ", ""),
 			),
 			family: holdingsFamily,
 		},
@@ -153,7 +155,7 @@ func (s *mcpServer) tools() []toolSpec {
 			description: "What was gained or lost (P&L) on what is held, realized and unrealized, over a window (default: the last twelve months). " +
 				"view=summary: one row for the whole portfolio with realized, unrealized at the start and the end, the change, gain = realized + change, and the share of value with a cost basis. " +
 				"view=sources, portfolios, accounts: the same per institution, portfolio or account (with its tax wrapper); they add up to the summary. " +
-				"view=positions: per account and holding. view=realized: each realized lot, as the sale's tax document or statement states it. view=lots: the open lots at the window's end. view=coverage: per account, where the figures are blind. " +
+				"view=positions: per account and holding. view=realized: each realized lot, as the sale's tax document or statement states it, or as the lot engine rebuilt it from the trades. view=lots: the open lots at the window's end. view=coverage: per account, where the figures are blind. view=check: the lot engine against the stated lots and cost bases, per account. " +
 				"Read the quality column: it names every gap, such as sales without a tax document. " +
 				`Example: {view: "realized", from: "2025", to: "2025"}.`,
 			params: s.rowParams(true, true,
@@ -166,6 +168,7 @@ func (s *mcpServer) tools() []toolSpec {
 				stringParam("asset_class", "positions only: keep only this asset class (e.g. public_equity, fixed_income, private_equity)."),
 				stringParam("term", "realized and lots: short or long."),
 				stringParam("tax_wrapper", "accounts only: keep only this tax wrapper (e.g. taxable_joint, roth_ira)."),
+				missingBasisParam("Not on coverage and check. How ", " Under zero, quality says basis_assumed_zero=N."),
 			),
 			family: gainsFamily,
 		},
@@ -299,6 +302,13 @@ var holdingsFamily = &family{
 	currency: true,
 	narrow:   "a filter",
 	prepare: func(a *toolArgs, req *request, notes *[]string) error {
+		if req.view != "positions" && a.has("missing_basis") {
+			return fmt.Errorf("holdings: missing_basis belongs to view=positions")
+		}
+		var err error
+		if req.missing, err = missingBasisArg(a); err != nil {
+			return fmt.Errorf("holdings: %w", err)
+		}
 		req.withCash = req.view == "positions" && a.flag("with_cash", false)
 		// Cash is a position only when asked for; a filter for the cash
 		// class has asked.
@@ -308,13 +318,52 @@ var holdingsFamily = &family{
 		}
 		return nil
 	},
-	build: func(_ *config.Config, req request, _ *toolArgs) *report { return holdingsReport(req) },
-	header: func(req request) []string {
-		if req.withCash {
-			return []string{"with cash"}
-		}
-		return nil
+	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+		req.missing = missingOr(req.missing, cfg)
+		return holdingsReport(req)
 	},
+	header: func(req request) []string {
+		var h []string
+		if req.withCash {
+			h = append(h, "with cash")
+		}
+		if req.missing == lots.MissingZero {
+			h = append(h, "missing_basis=zero")
+		}
+		return h
+	},
+}
+
+// missingBasisParam is the missing_basis argument of the tools that
+// read a cost basis; scope opens its doc ("How ", or the views it
+// belongs to), and note follows the readings.
+func missingBasisParam(scope, note string) param {
+	return stringParam("missing_basis", scope+"a missing cost basis counts: ignore (the default; a figure that needs one is blank) "+
+		"or zero (it counts as 0)."+note+" The config's lots.missing_basis sets the default.",
+		lotNames(lots.MissingBasisReadings)...)
+}
+
+// lotNames spells a lots vocabulary as the strings a param's enum
+// lists.
+func lotNames[T ~string](vs []T) []string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = string(v)
+	}
+	return out
+}
+
+// missingBasisArg is the missing_basis argument, "" when absent: build
+// then takes the config's default (missingOr).
+func missingBasisArg(a *toolArgs) (lots.MissingBasis, error) {
+	if !a.has("missing_basis") {
+		return "", nil
+	}
+	m, err := lots.ParseMissingBasis(a.str("missing_basis"))
+	if err != nil {
+		return "", fmt.Errorf("missing_basis: %w", err)
+	}
+	return m, nil
 }
 
 var returnsFamily = &family{
@@ -368,10 +417,12 @@ var gainsFamily = &family{
 		"realized":   {"source", "account", "symbol", "term"},
 		"lots":       {"source", "account", "symbol", "term"},
 		"coverage":   {"source", "account"},
+		"check":      {"source", "account"},
 	},
 	principal: byView(map[string]string{
 		"summary": "gain", "sources": "gain", "portfolios": "gain", "accounts": "gain",
 		"positions": "gain", "realized": "gain_outccy", "lots": "unrealized_gain_outccy", "coverage": "value",
+		"check": "cost_delta",
 	}),
 	window:   trailingYear,
 	currency: true,
@@ -382,17 +433,30 @@ var gainsFamily = &family{
 		if req.view != "realized" && (a.has("documents") || a.has("newest_first")) {
 			return fmt.Errorf("gains: documents and newest_first belong to view=realized")
 		}
+		if !gainsReadsBasis(req.view) && a.has("missing_basis") {
+			return fmt.Errorf("gains: missing_basis does not apply to view=%s", req.view)
+		}
 		req.period = orDefault(a.str("period"), "total")
 		req.allDocuments = a.str("documents") == "all"
 		req.newestFirst = a.flag("newest_first", false)
+		var err error
+		if req.missing, err = missingBasisArg(a); err != nil {
+			return fmt.Errorf("gains: %w", err)
+		}
 		return nil
 	},
-	build: func(_ *config.Config, req request, _ *toolArgs) *report { return gainsReport(req) },
+	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+		req.missing = missingOr(req.missing, cfg)
+		return gainsReport(req)
+	},
 	header: func(req request) []string {
-		if _, ok := gainsGrains[req.view]; ok {
-			return []string{"period=" + req.period}
-		}
 		var h []string
+		if req.missing == lots.MissingZero {
+			h = append(h, "missing_basis=zero")
+		}
+		if _, ok := gainsGrains[req.view]; ok {
+			return append(h, "period="+req.period)
+		}
 		if req.allDocuments {
 			h = append(h, "documents=all")
 		}

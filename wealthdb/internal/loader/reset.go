@@ -3,6 +3,8 @@ package loader
 import (
 	"context"
 	"fmt"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // Reset removes everything gold has for the given silver source.
@@ -32,7 +34,9 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	//
 	// The two enrichment overlays go the same way: both are derived
 	// from the transactions being deleted and are recomputed by the
-	// next enrichment pass, which writes them in one transaction.
+	// next enrichment pass, which writes them in one transaction. So
+	// does the lot engine's ledger (gold.LotLedgerTables), which the
+	// next lot pass rewrites.
 	//
 	// Six tables deliberately survive a reset, two per family. The
 	// verdict stores — spend_merchant_categories and
@@ -42,10 +46,15 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	// The three account scopes and the cashflow wrapper boundary are
 	// configuration stamped into gold (the fx_priority precedent), not
 	// source data.
-	for _, stmt := range []string{
+	stmts := []string{
 		`DELETE FROM symbol_resolutions   WHERE silver_source_id = ?`,
 		`DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?`,
 		`DELETE FROM income_txn_enrichment WHERE silver_source_id = ?`,
+	}
+	for _, t := range gold.LotLedgerTables {
+		stmts = append(stmts, `DELETE FROM `+t+` WHERE silver_source_id = ?`)
+	}
+	for _, stmt := range append(stmts,
 		`DELETE FROM transactions         WHERE silver_source_id = ?`,
 		`DELETE FROM realized_lots        WHERE silver_source_id = ?`,
 		`DELETE FROM fx_rates             WHERE silver_source_id = ?`,
@@ -57,7 +66,7 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 		`DELETE FROM portfolios           WHERE silver_source_id = ?`,
 		`DELETE FROM load_audit           WHERE silver_source_id = ?`,
 		`DELETE FROM silver_sources       WHERE silver_source_id = ?`,
-	} {
+	) {
 		if _, err := tx.ExecContext(ctx, stmt, sourceID); err != nil {
 			return fmt.Errorf("Reset(%s): %w", sourceID, err)
 		}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 // PositionRow is one row of the consolidated positions output.
@@ -53,18 +55,22 @@ type PositionRow struct {
 	UnrealizedRatio  *float64
 	BasisStamp       *string // origin/method/fees, e.g. stated/lots/included
 	AcquisitionDate  *string // YYYY-MM-DD
+	// QuantityWithoutBasis is the quantity held without a cost basis,
+	// nil when the basis is complete or no basis applies.
+	QuantityWithoutBasis *string
 }
 
 // PositionsAsOf returns the consolidated portfolio as of the given
-// Unix-seconds timestamp, with market_value converted to outCcy.
-// For each silver source, the rows of the latest snapshot_at ≤ asOf
-// are returned, sorted by (silver_source_id, account_external_id,
-// position_key). FX (and everything else) is computed in SQL by the
-// report_positions table macro (see migrations 0020/0021); this is
-// just the scan. See docs/DESIGN.md §10.1.
-func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]PositionRow, error) {
+// Unix-seconds timestamp, with market_value converted to outCcy and a
+// missing cost basis read as missing says. For each silver source, the
+// rows of the latest snapshot_at ≤ asOf are returned, sorted by
+// (silver_source_id, account_external_id, position_key). FX (and
+// everything else) is computed in SQL by the report_positions table
+// macro (migration 0118); this is just the scan. See docs/DESIGN.md
+// §10.1.
+func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, missing lots.MissingBasis) ([]PositionRow, error) {
 	return scanPositionRows(ctx, db, "PositionsAsOf",
-		`SELECT * FROM report_positions(?, ?)`, asOf, outCcy)
+		`SELECT * FROM report_positions(?, ?, p_missing := ?)`, asOf, outCcy, string(missing))
 }
 
 // scanPositionRows runs a report_positions / report_cash macro query
@@ -79,7 +85,7 @@ func scanPositionRows(ctx context.Context, db *sql.DB, label, q string, args ...
 			dec(&r.Quantity), dec(&r.MarketValue), dec(&r.ValueOutCcy),
 			dec(&r.BookValue), dec(&r.BookValueOutCcy), dec(&r.AccruedInterest), dec(&r.CleanValue),
 			dec(&r.UnrealizedGain), dec(&r.UnrealizedOutCcy), flt(&r.UnrealizedRatio),
-			str(&r.BasisStamp), str(&r.AcquisitionDate),
+			str(&r.BasisStamp), str(&r.AcquisitionDate), dec(&r.QuantityWithoutBasis),
 		}
 	})
 }

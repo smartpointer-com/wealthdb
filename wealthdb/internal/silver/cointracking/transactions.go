@@ -3,6 +3,7 @@ package cointracking
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -27,8 +28,10 @@ import (
 //	balance(C) = SUM(Quantity  WHERE Instrument = C)
 //	           + SUM(NetAmount WHERE Currency   = C)
 //
-// A trade's fee is already inside its amounts, so only the standalone
-// "Other Fee" type produces a fee row.
+// A trade's fee in one of its own currencies is inside its amounts; one
+// in a third currency is not, and rides the payload (lotPayload) for
+// the lot engine to value. Only the standalone "Other Fee" type
+// produces a fee row.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
@@ -49,7 +52,7 @@ SELECT
     CAST(buy_amount  AS VARCHAR), COALESCE(buy_currency,  ''),
     CAST(sell_amount AS VARCHAR), COALESCE(sell_currency, ''),
     CAST(fee_amount  AS VARCHAR), COALESCE(fee_currency,  ''),
-    CAST(payload     AS VARCHAR)
+    CAST(payload     AS VARCHAR), COALESCE(comment, '')
   FROM transactions
  WHERE occurred_at BETWEEN to_timestamp(?) AND to_timestamp(?)
  ORDER BY occurred_at, transaction_external_id`
@@ -63,14 +66,19 @@ SELECT
 	for rows.Next() {
 		var (
 			txID, portfolioID, walletID, ctType       string
-			buyCcy, sellCcy, feeCcy                   string
+			buyCcy, sellCcy, feeCcy, comment          string
 			occurredAt                                int64
 			buyAmtStr, sellAmtStr, feeAmtStr, payload sql.NullString
 		)
 		if err := rows.Scan(&txID, &portfolioID, &walletID, &occurredAt,
 			&ctType, &buyAmtStr, &buyCcy, &sellAmtStr, &sellCcy,
-			&feeAmtStr, &feeCcy, &payload); err != nil {
+			&feeAmtStr, &feeCcy, &payload, &comment); err != nil {
 			return nil, err
+		}
+		payload, err = lotPayload(payload, ctType, comment,
+			buyCcy, sellCcy, feeAmtStr, feeCcy)
+		if err != nil {
+			return nil, fmt.Errorf("tx %s payload: %w", txID, err)
 		}
 		base := baseByPortfolio[portfolioID]
 		if base == "" {
@@ -86,7 +94,7 @@ SELECT
 			emitted, err = projectNonTrade(
 				txID, walletID, occurredAt, base, ctType,
 				buyAmtStr, buyCcy, sellAmtStr, sellCcy,
-				feeAmtStr, feeCcy, payload)
+				payload)
 		}
 		if err != nil {
 			return nil, err
@@ -166,9 +174,9 @@ func (c *Connection) projectTrade(
 		if err != nil {
 			return nil, err
 		}
-		sellRow := buildSplitLeg(txID, "s", walletID, occurredAt, base,
+		sellRow := buildSplitLeg(txID, sellLeg, walletID, occurredAt, base,
 			sellCcy, *sellAmt, canonical.TxKindSell, v, pl)
-		buyRow := buildSplitLeg(txID, "b", walletID, occurredAt, base,
+		buyRow := buildSplitLeg(txID, buyLeg, walletID, occurredAt, base,
 			buyCcy, *buyAmt, canonical.TxKindBuy, v, pl)
 		return []canonical.TransactionChange{sellRow, buyRow}, nil
 	}
@@ -208,6 +216,13 @@ func buildBaseLegTradeRow(
 // value) so they cancel in any base-currency SUM. V is nil when
 // neither side's price lookup resolved; both legs then emit
 // NetAmount=NULL.
+// sellLeg and buyLeg suffix the ids of a split trade's two legs
+// ("<id>:s", "<id>:b").
+const (
+	sellLeg = "s"
+	buyLeg  = "b"
+)
+
 func buildSplitLeg(
 	txID, suffix, walletID string, occurredAt int64, base, instrument string,
 	qty canonical.Decimal, kind canonical.TxKind, v *canonical.Decimal,
@@ -338,7 +353,6 @@ func projectNonTrade(
 	txID, walletID string, occurredAt int64, base string, ctType string,
 	buyAmtStr sql.NullString, buyCcy string,
 	sellAmtStr sql.NullString, sellCcy string,
-	feeAmtStr sql.NullString, feeCcy string,
 	payload sql.NullString,
 ) ([]canonical.TransactionChange, error) {
 	// Which CT silver column carries the currency + amount?
@@ -347,12 +361,9 @@ func projectNonTrade(
 	//     buy_currency / buy_amount.
 	//   - Outbound types (Withdrawal, Lost, Spend, Other Fee, …):
 	//     sell_currency / sell_amount. CT puts standalone fees on
-	//     the sell-side; the dedicated fee_amount / fee_currency
-	//     columns are reserved for fees ATTACHED to a Trade (which
-	//     this adapter doesn't emit as separate rows per the spec
-	//     — the fee is already internalised in the trade's amount).
-	_ = feeAmtStr
-	_ = feeCcy
+	//     the sell-side. A fee in a row's fee_amount / fee_currency
+	//     columns rides the payload (lotPayload), never a row of its
+	//     own.
 	var (
 		currency string
 		amount   canonical.Decimal
@@ -456,6 +467,42 @@ func projectNonTrade(
 	}
 
 	return []canonical.TransactionChange{out}, nil
+}
+
+// lotPayload is a row's payload: silver's own, with the row's
+// CoinTracking fields the lot engine reads (docs/LOTS.md §6) added
+// under their silver column names. The kind a row maps to cannot tell
+// a deposit from an airdrop or a dust sweep; the type can. Empty
+// fields are left out.
+func lotPayload(silverPayload sql.NullString, ctType, comment,
+	buyCcy, sellCcy string, feeAmt sql.NullString, feeCcy string) (sql.NullString, error) {
+	m := map[string]any{}
+	if silverPayload.Valid && silverPayload.String != "" {
+		if err := json.Unmarshal([]byte(silverPayload.String), &m); err != nil {
+			return sql.NullString{}, err
+		}
+	}
+	for k, v := range map[string]string{
+		"type": ctType, "comment": comment,
+		"buy_currency": buyCcy, "sell_currency": sellCcy, "fee_currency": feeCcy,
+	} {
+		if v != "" {
+			m[k] = v
+		}
+	}
+	if feeAmt.Valid && feeAmt.String != "" {
+		if d, err := canonical.NewDecimalFromString(feeAmt.String); err == nil && !d.IsZero() {
+			m["fee_amount"] = json.Number(d.String())
+		}
+	}
+	if len(m) == 0 {
+		return sql.NullString{}, nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return sql.NullString{}, err
+	}
+	return sql.NullString{String: string(b), Valid: true}, nil
 }
 
 // decimalOrNil parses a string-encoded decimal from silver.

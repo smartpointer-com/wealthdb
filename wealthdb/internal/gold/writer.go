@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -397,9 +398,12 @@ INSERT INTO position_lots (
 
 // InsertRealizedLots inserts `realized_lots` rows. The caller has
 // cleared the source's previous rows: the table is replaced whole on a
-// load (docs/DESIGN.md §8.1).
+// load (docs/DESIGN.md §8.1). The rows go in column by column
+// (colInsert): the lot engine writes one per sale and lot relieved, so
+// a trading history makes many.
 func (w *Writer) InsertRealizedLots(ctx context.Context, batch []canonical.RealizedLotChange) error {
-	if len(batch) == 0 {
+	n := len(batch)
+	if n == 0 {
 		return nil
 	}
 	for i := range batch {
@@ -417,33 +421,89 @@ func (w *Writer) InsertRealizedLots(ctx context.Context, batch []canonical.Reali
 			return fmt.Errorf("InsertRealizedLots row %d (%s): %w", i, r.RealizedLotExternalID, err)
 		}
 	}
-	const head = `
-INSERT INTO realized_lots (
-    silver_source_id, realized_lot_external_id, account_external_id,
-    instrument_external_id, instrument_hint, description, document_kind, tax_year,
-    acquisition_date, acquired_various, disposal_date, settlement_date, currency,
-    quantity, proceeds, book_value, realized_gain_loss, wash_sale_disallowed,
-    accrued_market_discount, term, covered, form_8949_box,
-    basis_origin, basis_method, basis_fees, is_primary, source_document, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "InsertRealizedLots", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.RealizedLotExternalID, r.AccountExternalID,
-				nullableString(r.InstrumentExternalID), nullableEnumValue(r.InstrumentHint),
-				nullableString(r.Description), string(r.DocumentKind), r.TaxYear,
-				nullableTime(r.AcquisitionDate), r.AcquiredVarious,
-				nullableTime(r.DisposalDate), nullableTime(r.SettlementDate), r.Currency,
-				nullableDecimal(r.Quantity), nullableDecimal(r.Proceeds), nullableDecimal(r.BookValue),
-				nullableDecimal(r.RealizedGainLoss), nullableDecimal(r.WashSaleDisallowed),
-				nullableDecimal(r.AccruedMarketDiscount), nullableEnumValue(r.Term),
-				nullableBool(r.Covered), nullableString(r.Form8949Box),
-				nullableEnumValue(r.Basis.Origin), nullableEnumValue(r.Basis.Method),
-				nullableEnumValue(r.Basis.Fees), r.IsPrimary,
-				nullableString(r.SourceDocument), nullableJSON(r.Payload))
-		})
+	text := func(f func(*canonical.RealizedLotChange) string) []string {
+		out := make([]string, n)
+		for i := range batch {
+			out[i] = f(&batch[i])
+		}
+		return out
+	}
+	years := make([]int64, n)
+	various, primary := make([]bool, n), make([]bool, n)
+	for i, r := range batch {
+		years[i], various[i], primary[i] = int64(r.TaxYear), r.AcquiredVarious, r.IsPrimary
+	}
+	var c colInsert
+	c.text("silver_source_id", text(func(r *canonical.RealizedLotChange) string { return r.SilverSourceID }))
+	c.text("realized_lot_external_id", text(func(r *canonical.RealizedLotChange) string { return r.RealizedLotExternalID }))
+	c.text("account_external_id", text(func(r *canonical.RealizedLotChange) string { return r.AccountExternalID }))
+	c.text("instrument_external_id", text(func(r *canonical.RealizedLotChange) string { return strText(r.InstrumentExternalID) }))
+	c.text("instrument_hint", text(func(r *canonical.RealizedLotChange) string { return r.InstrumentHint }))
+	c.text("description", text(func(r *canonical.RealizedLotChange) string { return strText(r.Description) }))
+	c.text("document_kind", text(func(r *canonical.RealizedLotChange) string { return string(r.DocumentKind) }))
+	c.int64s("tax_year", years)
+	c.typed("acquisition_date", "DATE", text(func(r *canonical.RealizedLotChange) string { return dateText(r.AcquisitionDate) }))
+	c.bools("acquired_various", various)
+	c.typed("disposal_date", "DATE", text(func(r *canonical.RealizedLotChange) string { return dateText(r.DisposalDate) }))
+	c.typed("settlement_date", "DATE", text(func(r *canonical.RealizedLotChange) string { return dateText(r.SettlementDate) }))
+	c.text("currency", text(func(r *canonical.RealizedLotChange) string { return r.Currency }))
+	for _, d := range []struct {
+		name string
+		f    func(*canonical.RealizedLotChange) *canonical.Decimal
+		typ  string
+	}{
+		{"quantity", func(r *canonical.RealizedLotChange) *canonical.Decimal { return r.Quantity }, "DECIMAL(28, 8)"},
+		{"proceeds", func(r *canonical.RealizedLotChange) *canonical.Decimal { return r.Proceeds }, "DECIMAL(28, 4)"},
+		{"book_value", func(r *canonical.RealizedLotChange) *canonical.Decimal { return r.BookValue }, "DECIMAL(28, 4)"},
+		{"realized_gain_loss", func(r *canonical.RealizedLotChange) *canonical.Decimal { return r.RealizedGainLoss }, "DECIMAL(28, 4)"},
+		{"wash_sale_disallowed", func(r *canonical.RealizedLotChange) *canonical.Decimal { return r.WashSaleDisallowed }, "DECIMAL(28, 4)"},
+		{"accrued_market_discount", func(r *canonical.RealizedLotChange) *canonical.Decimal { return r.AccruedMarketDiscount }, "DECIMAL(28, 4)"},
+	} {
+		c.typed(d.name, d.typ, text(func(r *canonical.RealizedLotChange) string { return decText(d.f(r)) }))
+	}
+	c.text("term", text(func(r *canonical.RealizedLotChange) string { return string(r.Term) }))
+	c.typed("covered", "BOOLEAN", text(func(r *canonical.RealizedLotChange) string { return boolText(r.Covered) }))
+	c.text("form_8949_box", text(func(r *canonical.RealizedLotChange) string { return strText(r.Form8949Box) }))
+	c.text("basis_origin", text(func(r *canonical.RealizedLotChange) string { return string(r.Basis.Origin) }))
+	c.text("basis_method", text(func(r *canonical.RealizedLotChange) string { return string(r.Basis.Method) }))
+	c.text("basis_fees", text(func(r *canonical.RealizedLotChange) string { return string(r.Basis.Fees) }))
+	c.bools("is_primary", primary)
+	c.text("source_document", text(func(r *canonical.RealizedLotChange) string { return strText(r.SourceDocument) }))
+	c.typed("payload", "JSON", text(func(r *canonical.RealizedLotChange) string { return string(r.Payload) }))
+	if err := c.exec(ctx, w.tx, "realized_lots"); err != nil {
+		return fmt.Errorf("InsertRealizedLots: %w", err)
+	}
+	return nil
+}
+
+// The text forms colInsert takes for a nullable value: "" for NULL.
+
+func strText(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func decText(p *canonical.Decimal) string {
+	if p == nil {
+		return ""
+	}
+	return p.String()
+}
+
+func dateText(p *time.Time) string {
+	if p == nil {
+		return ""
+	}
+	return p.UTC().Format(time.DateOnly)
+}
+
+func boolText(p *bool) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatBool(*p)
 }
 
 // InsertCashBalances inserts `cash_balances` rows.

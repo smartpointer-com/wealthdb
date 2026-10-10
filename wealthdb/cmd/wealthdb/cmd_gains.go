@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -11,15 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // `wealthdb gains <view>` — what was gained or lost, realized and
 // unrealized, over a window. docs/GAINS.md defines every figure; the
-// sums are gold's (migration 0116), and this file is the views, their
-// columns and the usage text.
+// sums are gold's (migrations 0116 to 0118), and this file is the views,
+// their columns and the usage text.
 //
 // The families' idiom: the grain in a positional view, the window
 // positional with the trailing twelve months as its default, --period
@@ -27,13 +30,14 @@ import (
 // families' transactions views ignore it. Two flags belong to the
 // `realized` view alone, --documents and -r, and are refused on every
 // other view rather than ignored: on another view they would ask a
-// question it cannot answer.
+// question it cannot answer. So is --missing-basis on `coverage` and
+// `check`, which count a missing cost rather than read it.
 func init() {
 	register("gains", cmdGains)
 }
 
 // gainsViews are the views, coarse to fine.
-var gainsViews = []string{"summary", "sources", "portfolios", "accounts", "positions", "realized", "lots", "coverage"}
+var gainsViews = []string{"summary", "sources", "portfolios", "accounts", "positions", "realized", "lots", "coverage", "check"}
 
 // gainsGrains maps the four aggregate views to their grain.
 var gainsGrains = map[string]gold.GainsGrain{
@@ -41,9 +45,10 @@ var gainsGrains = map[string]gold.GainsGrain{
 	"portfolios": gold.GainsPortfolios, "accounts": gold.GainsAccounts,
 }
 
-// gainsValueFlags are reportValueFlags plus --documents.
+// gainsValueFlags are reportValueFlags plus --documents and
+// --missing-basis.
 var gainsValueFlags = func() map[string]bool {
-	m := map[string]bool{"--documents": true}
+	m := map[string]bool{"--documents": true, "--missing-basis": true}
 	for k, v := range reportValueFlags {
 		m[k] = v
 	}
@@ -74,6 +79,7 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	documents := fs.String("documents", "primary", "primary | all — which copies of a sale the realized view lists")
+	missing := registerMissingBasisFlag(fs)
 	reverse := fs.Bool("r", false, "realized only: newest first")
 	fs.BoolVar(reverse, "reverse", false, "realized only: newest first")
 	rf := registerReportFlags(fs, "redact account ids, quantities and monetary amounts (percentages, stamps, dates and security names stay visible)")
@@ -87,6 +93,9 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 	}
 	if view != "realized" && isSet(fs, "documents", "r", "reverse") {
 		return errs.Newf(2, "gains: --documents and -r belong to the realized view")
+	}
+	if !gainsReadsBasis(view) && isSet(fs, "missing-basis") {
+		return errs.Newf(2, "gains: --missing-basis does not apply to the %s view", view)
 	}
 	if _, ok := reportPeriods[*period]; !ok {
 		return errs.Newf(2, "gains: invalid --period %q (want %s)", *period, strings.Join(reportPeriodNames, " | "))
@@ -103,9 +112,13 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 	if err != nil {
 		return err
 	}
+	missingBasis, err := resolveMissingBasis(*missing, cfg, "gains")
+	if err != nil {
+		return err
+	}
 
 	rep := gainsReport(request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		period: *period, allDocuments: *documents == "all", newestFirst: *reverse})
+		period: *period, allDocuments: *documents == "all", newestFirst: *reverse, missing: missingBasis})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, *rf.cols, "gains", open, *rf.privacy, fmtChoice, stdout)
 }
@@ -123,14 +136,14 @@ func gainsReport(req request) *report {
 						return nil, err
 					}
 				}
-				return gold.GainsBuckets(ctx, db, req.from, req.to, ccy, reportPeriods[req.period], grain)
+				return gold.GainsBuckets(ctx, db, req.from, req.to, ccy, reportPeriods[req.period], grain, req.missing)
 			})
 	}
 	switch req.view {
 	case "positions":
 		return newReport(buildGainsPositionColumnRegistry(ccy), defaultGainsPositionColumns,
 			func(ctx context.Context, db *sql.DB) ([]gold.GainsPositionRow, error) {
-				return gold.GainsPositions(ctx, db, req.from, req.to, ccy)
+				return gold.GainsPositions(ctx, db, req.from, req.to, ccy, req.missing)
 			})
 	case "realized":
 		order := gold.SortAscending
@@ -139,12 +152,17 @@ func gainsReport(req request) *report {
 		}
 		return newReport(buildRealizedLotColumnRegistry(ccy), defaultRealizedLotColumns,
 			func(ctx context.Context, db *sql.DB) ([]gold.RealizedLotRow, error) {
-				return gold.RealizedLotsBetween(ctx, db, req.from, req.to, ccy, req.allDocuments, order)
+				return gold.RealizedLotsBetween(ctx, db, req.from, req.to, ccy, req.allDocuments, order, req.missing)
 			})
 	case "lots":
 		return newReport(buildOpenLotColumnRegistry(ccy), defaultOpenLotColumns,
 			func(ctx context.Context, db *sql.DB) ([]gold.OpenLotRow, error) {
-				return gold.OpenLotsAsOf(ctx, db, req.to, ccy)
+				return gold.OpenLotsAsOf(ctx, db, req.to, ccy, req.missing)
+			})
+	case "check":
+		return newReport(buildGainsCheckColumnRegistry(ccy), defaultGainsCheckColumns,
+			func(ctx context.Context, db *sql.DB) ([]gold.GainsCheckRow, error) {
+				return gold.GainsCheck(ctx, db, req.from, req.to, ccy)
 			})
 	default: // coverage
 		return newReport(buildGainsCoverageColumnRegistry(ccy), defaultGainsCoverageColumns,
@@ -153,6 +171,36 @@ func gainsReport(req request) *report {
 			})
 	}
 }
+
+// registerMissingBasisFlag declares --missing-basis on a command that
+// reads a cost basis.
+func registerMissingBasisFlag(fs *flag.FlagSet) *string {
+	return fs.String("missing-basis", "", "ignore | zero — how a missing cost basis counts (default: config lots.missing_basis, else ignore)")
+}
+
+// resolveMissingBasis settles --missing-basis for cmd: the reading
+// asked for, else the config's default (missingOr).
+func resolveMissingBasis(asked string, cfg *config.Config, cmd string) (lots.MissingBasis, error) {
+	if asked == "" {
+		return missingOr("", cfg), nil
+	}
+	m, err := lots.ParseMissingBasis(asked)
+	if err != nil {
+		return "", errs.Newf(2, "%s: invalid --missing-basis %q (want %s)", cmd, asked,
+			strings.Join(lotNames(lots.MissingBasisReadings), " | "))
+	}
+	return m, nil
+}
+
+// missingOr is the reading a request asked for, else the config's
+// lots.missing_basis, else ignore.
+func missingOr(m lots.MissingBasis, cfg *config.Config) lots.MissingBasis {
+	return cmp.Or(m, cfg.MissingBasis())
+}
+
+// gainsReadsBasis reports whether a gains view reads a missing cost
+// basis under a reading. coverage and check count one instead.
+func gainsReadsBasis(view string) bool { return view != "coverage" && view != "check" }
 
 // ---- column registries ---------------------------------------------------
 //
@@ -344,6 +392,9 @@ func buildRealizedLotColumnRegistry(outCcy string) []columnSpec[gold.RealizedLot
 		moneyCol("wash_disallowed", "", func(r row) *string { return r.WashDisallowed }),
 		moneyCol("accrued_market_discount", "", func(r row) *string { return r.AccruedMarketDiscount }),
 		{Name: "gain_origin", Align: output.AlignLeft, Extract: func(r row) string { return r.GainOrigin }},
+		// What the lot realized: a sale, or a fee, spend, tender, cash
+		// in lieu or expiry, which a filter can set apart.
+		{Name: "disposal", Align: output.AlignLeft, Extract: func(r row) string { return r.Disposal }},
 		{Name: "currency", Align: output.AlignLeft, Extract: func(r row) string { return r.Currency }},
 		outCcyTwin("proceeds", outCcy, func(r row) *string { return r.ProceedsOutCcy }),
 		outCcyTwin("cost_basis", outCcy, func(r row) *string { return r.BookValueOutCcy }),
@@ -360,7 +411,7 @@ func buildRealizedLotColumnRegistry(outCcy string) []columnSpec[gold.RealizedLot
 }
 
 var defaultRealizedLotColumns = []string{
-	"silver_source", "date", "account", "symbol", "quantity", "acquired", "term",
+	"silver_source", "date", "account", "symbol", "disposal", "quantity", "acquired", "term",
 	"currency", "proceeds", "cost_basis", "gain", "gain_outccy",
 }
 
@@ -426,12 +477,44 @@ func buildGainsCoverageColumnRegistry(outCcy string) []columnSpec[gold.GainsCove
 		countCol("realized_lots", func(r row) int64 { return r.RealizedLots }),
 		textCol("documents", func(r row) *string { return r.Documents }),
 		{Name: "verdict", Align: output.AlignLeft, Extract: func(r row) string { return r.Verdict }},
+		countCol("sells_rebuilt", func(r row) int64 { return r.SellsRebuilt }),
+		countCol("positions_rebuilt", func(r row) int64 { return r.PositionsRebuilt }),
+		countCol("seed_lots", func(r row) int64 { return r.SeedLots }),
+		textCol("lot_mode", func(r row) *string { return r.LotMode }),
+		textCol("lot_methods", func(r row) *string { return r.LotMethods }),
 	}
 }
 
 var defaultGainsCoverageColumns = []string{
 	"silver_source", "account", "tax_wrapper", "value", "value_with_basis", "basis_coverage",
-	"basis_stamps", "open_lots", "sells", "realized_lots", "documents", "verdict",
+	"basis_stamps", "open_lots", "sells", "sells_rebuilt", "realized_lots", "documents", "verdict",
+}
+
+func buildGainsCheckColumnRegistry(outCcy string) []columnSpec[gold.GainsCheckRow] {
+	type row = gold.GainsCheckRow
+	type col = columnSpec[row]
+	return []col{
+		{Name: "check", Align: output.AlignLeft, Extract: func(r row) string { return r.Check }},
+		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
+		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+			Extract: func(r row) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
+		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+			Extract: func(r row) string { return r.AccountExternalID }},
+		textCol("account_nickname", func(r row) *string { return r.Nickname }),
+		textCol("tax_year", func(r row) *string { return r.Period }),
+		countCol("items", func(r row) int64 { return r.Items }),
+		quantityCol("quantity", func(r row) *string { return r.Quantity }),
+		outCcyCol("engine_cost", outCcy, func(r row) *string { return r.EngineCost }),
+		outCcyCol("stated_cost", outCcy, func(r row) *string { return r.StatedCost }),
+		outCcyCol("cost_delta", outCcy, func(r row) *string { return r.CostDelta }),
+		outCcyCol("engine_gain", outCcy, func(r row) *string { return r.EngineGain }),
+		outCcyCol("stated_gain", outCcy, func(r row) *string { return r.StatedGain }),
+		outCcyCol("gain_delta", outCcy, func(r row) *string { return r.GainDelta }),
+	}
+}
+
+var defaultGainsCheckColumns = []string{
+	"check", "silver_source", "account", "tax_year", "items", "engine_cost", "stated_cost", "cost_delta", "gain_delta",
 }
 
 func gainsUsage() string {
@@ -439,11 +522,12 @@ func gainsUsage() string {
 		return joinColumnNames(buildGainsBucketColumnRegistry("CCY", "monthly", grain, nil))
 	}
 	return "usage: wealthdb gains <view> [FROM [TO]] [--period P] [--documents D] [-r]\n" +
-		"                         [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
+		"                         [--missing-basis M] [-f FORMAT] [-C COLS] [-x CCY] [-p]\n" +
 		`
 What was gained or lost (P&L) on what is held, realized and unrealized,
 over a window. A realized gain is what a sale's tax document or
-statement states. An unrealized gain is a holding's clean value (market
+statement states, else what the lot engine rebuilt from the trades. An
+unrealized gain is a holding's clean value (market
 value less accrued interest) less its cost basis. The figures are only
 as complete as the sources: read the quality column, and the coverage
 view, before trusting a total. docs/GAINS.md defines every figure.
@@ -458,6 +542,10 @@ Views (coarse to fine)
   realized      one row per realized lot sold in the window, oldest first
   lots          one row per open lot, as of the window's end
   coverage      one row per account: where the figures are blind
+  check         the lot engine against what the sources state, per
+                account: realized lots by tax year, stated position
+                cost bases, adopted lot sets, lots moved in from
+                another source
 
   The four aggregate views reconcile: summary == Σ sources ==
   Σ portfolios == Σ accounts, bucket by bucket.
@@ -474,6 +562,13 @@ Flags
                   copy of a sale (a 1099-B, its correction, a year-end
                   summary) with the document and primary columns
   -r              realized only: newest first
+  --missing-basis M
+                  ignore (default) | zero: how a missing cost basis
+                  counts. ignore leaves a figure that needs one blank;
+                  zero counts it as 0, so an unrealized gain is the value
+                  less the known cost and a realized gain is the
+                  proceeds less it. The default is lots.missing_basis in
+                  the config, else ignore. Not on coverage and check.
   -f FORMAT       table | csv | csv_plain | json
   -C COLS         comma-separated names, 'default', 'all', or a
                   +ADD,-REMOVE delta on the default set
@@ -485,16 +580,20 @@ Notes
   gain = realized + unrealized_change. A sale moves gain from unrealized
   to realized; a purchase adds none.
 
-  The cost basis is what each source states, and basis_stamp says which
+  The cost basis is what each source states, else what the lot engine
+  rebuilt from the trades (docs/LOTS.md), and basis_stamp says which
   notion it is (origin/method/fees): a brokerage lot's tax basis, a
-  fund's capital paid in, an exercised option's value at exercise.
+  fund's capital paid in, a fifo basis the engine rebuilt.
 
   quality names each way a figure can be incomplete:
-  sells_without_documents=N, lots_without_gain=N, undated_lots=N,
-  unmatched_lots=N, in_kind_moves=N, corporate_actions=N,
-  basis_changed=N, accounts_unobserved=N, paid_in_basis,
-  onboarded_in_window=<source>, fx_missing=N. docs/GAINS.md §6 says
-  what each means.
+  sells_without_documents=N, sells_rebuilt=N, lots_without_gain=N,
+  undated_lots=N, unmatched_lots=N, in_kind_moves=N,
+  corporate_actions=N, basis_changed=N, accounts_unobserved=N,
+  paid_in_basis, onboarded_in_window=<source>, seed_lots=N,
+  implied_disposals=N, snapshot_blips=N, spliced, pooled,
+  dated_by_settlement, wash_sales_not_applied=N, fee_unvalued=N,
+  basis_assumed_zero=N, fx_missing=N. docs/GAINS.md §6 says what each
+  means.
 
 Available columns (per view):
   summary       ` + cols(gold.GainsAll) + `
@@ -505,6 +604,7 @@ Available columns (per view):
   realized      ` + joinColumnNames(buildRealizedLotColumnRegistry("CCY")) + `
   lots          ` + joinColumnNames(buildOpenLotColumnRegistry("CCY")) + `
   coverage      ` + joinColumnNames(buildGainsCoverageColumnRegistry("CCY")) + `
+  check         ` + joinColumnNames(buildGainsCheckColumnRegistry("CCY")) + `
 
   A money column in the holding's own currency has a twin in the output
   currency, <name>_outccy, which prints as <name>_<CCY> (value is
@@ -519,5 +619,6 @@ Default column sets:
   positions     ` + strings.Join(defaultGainsPositionColumns, ", ") + `
   realized      ` + strings.Join(defaultRealizedLotColumns, ", ") + `
   lots          ` + strings.Join(defaultOpenLotColumns, ", ") + `
-  coverage      ` + strings.Join(defaultGainsCoverageColumns, ", ")
+  coverage      ` + strings.Join(defaultGainsCoverageColumns, ", ") + `
+  check         ` + strings.Join(defaultGainsCheckColumns, ", ")
 }

@@ -1,7 +1,11 @@
 package gold
 
 import (
+	"context"
+	"database/sql"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 // The materialized rows summed by month are the gains report's monthly
@@ -20,48 +24,7 @@ func TestMaterializeGainsMatchesTheMonthlyBuckets(t *testing.T) {
 	if n == 0 || total != n || stamped != n {
 		t.Fatalf("materialized %d rows, table holds %d, %d stamped", n, total, stamped)
 	}
-	for _, ccy := range MaterializedCurrencies() {
-		want, err := GainsBuckets(ctx, db, 0, gainsTo, ccy, "month", GainsAll)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := db.QueryContext(ctx, `
-            SELECT period_start, SUM(realized_x), SUM(unrealized_start_x), SUM(unrealized_end_x),
-                   SUM(unrealized_change_x), SUM(proceeds_x),
-                   SUM(n_lots), SUM(n_sells), COUNT(*) FILTER (WHERE at_end)
-              FROM report_gains WHERE currency = ? GROUP BY 1 ORDER BY 1`, ccy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		i := 0
-		for got.Next() {
-			var start, lots, sells, positions int64
-			var sums [5]*float64
-			if err := got.Scan(&start, &sums[0], &sums[1], &sums[2], &sums[3], &sums[4], &lots, &sells, &positions); err != nil {
-				t.Fatal(err)
-			}
-			if i >= len(want) {
-				t.Fatalf("%s: more months materialized than the report has", ccy)
-			}
-			w := want[i]
-			ok := start == *w.PeriodStart && lots == w.RealizedLots && sells == w.Sells && positions == w.Positions
-			for j, r := range []*string{w.Realized, w.UnrealizedStart, w.UnrealizedEnd, w.UnrealizedChange, w.Proceeds} {
-				ok = ok && (sums[j] == nil) == (r == nil) && (r == nil || near(*sums[j], num(t, r)))
-			}
-			if !ok {
-				t.Errorf("%s month %d: materialized %d %v %d %d %d, report %+v",
-					ccy, i, start, sums, lots, sells, positions, w)
-			}
-			i++
-		}
-		if err := got.Err(); err != nil {
-			t.Fatal(err)
-		}
-		got.Close()
-		if i != len(want) {
-			t.Errorf("%s: %d months materialized, the report has %d", ccy, i, len(want))
-		}
-	}
+	matchesBuckets(t, ctx, db)
 
 	// A rerun replaces the table rather than adding to it.
 	if n2, err := MaterializeGains(ctx, db, gainsTo, 43); err != nil || n2 != n {
@@ -132,8 +95,83 @@ func TestMigration0117DDLIsRerunnable(t *testing.T) {
 		t.Fatal(err)
 	}
 	rerunMigrationDDL(t, db, ctx, "0117_gains_dashboard.sql")
+	rerunMigrationDDL(t, db, ctx, "0118_lot_engine.sql")
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_gains`).Scan(&n); err != nil || n == 0 {
 		t.Errorf("after replay: %d rows, err %v", n, err)
 	}
+}
+
+// matchesBuckets checks report_gains, summed by month, against the
+// gains report's monthly buckets in every currency and reading.
+func matchesBuckets(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	for _, ccy := range MaterializedCurrencies() {
+		for _, missing := range []lots.MissingBasis{lots.MissingIgnore, lots.MissingZero} {
+			want, err := GainsBuckets(ctx, db, 0, gainsTo, ccy, "month", GainsAll, missing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := db.QueryContext(ctx, `
+            SELECT period_start, SUM(realized_x), SUM(unrealized_start_x), SUM(unrealized_end_x),
+                   SUM(unrealized_change_x), SUM(proceeds_x),
+                   SUM(n_lots), SUM(n_sells), COUNT(*) FILTER (WHERE at_end)
+              FROM report_gains WHERE currency = ? AND missing_basis = ? GROUP BY 1 ORDER BY 1`, ccy, string(missing))
+			if err != nil {
+				t.Fatal(err)
+			}
+			i := 0
+			for got.Next() {
+				var start, lots, sells, positions int64
+				var sums [5]*float64
+				if err := got.Scan(&start, &sums[0], &sums[1], &sums[2], &sums[3], &sums[4], &lots, &sells, &positions); err != nil {
+					t.Fatal(err)
+				}
+				if i >= len(want) {
+					t.Fatalf("%s: more months materialized than the report has", ccy)
+				}
+				w := want[i]
+				ok := start == *w.PeriodStart && lots == w.RealizedLots && sells == w.Sells && positions == w.Positions
+				for j, r := range []*string{w.Realized, w.UnrealizedStart, w.UnrealizedEnd, w.UnrealizedChange, w.Proceeds} {
+					ok = ok && (sums[j] == nil) == (r == nil) && (r == nil || near(*sums[j], num(t, r)))
+				}
+				if !ok {
+					t.Errorf("%s %s month %d: materialized %d %v %d %d %d, report %+v",
+						ccy, missing, i, start, sums, lots, sells, positions, w)
+				}
+				i++
+			}
+			if err := got.Err(); err != nil {
+				t.Fatal(err)
+			}
+			got.Close()
+			if i != len(want) {
+				t.Errorf("%s %s: %d months materialized, the report has %d", ccy, missing, i, len(want))
+			}
+		}
+	}
+}
+
+// Where no cost basis is missing the zero reading is a copy of the
+// ignore reading, and still the report's buckets.
+func TestMaterializeGainsCopiesAReadingThatChangesNothing(t *testing.T) {
+	db, ctx := openGainsFixture(t)
+	if _, err := db.ExecContext(ctx, `
+        UPDATE positions SET book_value = 0 WHERE basis_missing(asset_class, vehicle, book_value);
+        UPDATE realized_lots SET book_value = 0 WHERE gain_needs_cost(realized_gain_loss, proceeds, book_value);
+        UPDATE lot_realized SET book_value = 0 WHERE gain_needs_cost(NULL, proceeds, book_value)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeGains(ctx, db, gainsTo, 42); err != nil {
+		t.Fatal(err)
+	}
+	var ignore, zero int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FILTER (WHERE missing_basis = 'ignore'),
+	        COUNT(*) FILTER (WHERE missing_basis = 'zero') FROM report_gains`).Scan(&ignore, &zero); err != nil {
+		t.Fatal(err)
+	}
+	if ignore == 0 || zero != ignore {
+		t.Fatalf("ignore rows %d, zero rows %d", ignore, zero)
+	}
+	matchesBuckets(t, ctx, db)
 }

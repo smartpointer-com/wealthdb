@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/version"
 )
 
@@ -212,7 +213,7 @@ var toolNotes = map[string]string{
 Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 	"returns": `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views.
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
-	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind.
+	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
 Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
 	"transactions": `Money leaving an account is negative. kind is the booked kind: buy, sell, dividend, interest, fee, tax, deposit, withdrawal, purchase, refund, card_payment and others.
 Example: {from: "last month", to: "last month", kind: "dividend"}.`,
@@ -254,7 +255,8 @@ const qualityHelp = `The returns quality column gives the reason for every n/a a
 Other tags name their reason the same way.
 
 The gains quality column names each way a figure can be incomplete:
-- sells_without_documents=N: N sales have no tax document or statement lot, so realized misses them.
+- sells_without_documents=N: N sales have no tax document or statement lot, and the lot engine rebuilt none, so realized misses them.
+- sells_rebuilt=N: N sales are realized as the lot engine rebuilt them from the trades; no document states them.
 - lots_without_gain=N: N realized lots state no gain, and not both proceeds and a cost basis.
 - undated_lots=N: N lots state only a tax year and count at its last day.
 - unmatched_lots=N: N lots name an instrument the account never held in a snapshot.
@@ -264,6 +266,15 @@ The gains quality column names each way a figure can be incomplete:
 - accounts_unobserved=N: N accounts are missing from one end of the period while their source has a snapshot there; the snapshot left them out, or they closed.
 - paid_in_basis: a private holding's cost basis is the capital paid in; cash paid back is not realized gain.
 - onboarded_in_window=<source>: the source's data begins inside the period, so its start value is zero.
+- seed_lots=N: the lot engine opened N lots of unknown cost for holdings the trades do not explain.
+- implied_disposals=N: N times a snapshot held less than the trades explain; the lots left with no proceeds.
+- snapshot_blips=N: N times a snapshot was off for less than 45 days; the lots stand as the trades left them.
+- spliced: a rebuilt cost basis holds a lot whose cost a statement stated later.
+- pooled: a rebuilt cost basis is a portfolio's pool, shared among its wallets by quantity.
+- dated_by_settlement: rebuilt sales are dated by settlement, so a term near one year can be off.
+- wash_sales_not_applied=N: N rebuilt losses fall within 30 days of a purchase; no wash sale rule was applied.
+- fee_unvalued=N: N fees in a third currency had no rate and are left out of the cost or proceeds.
+- basis_assumed_zero=N: under missing_basis=zero, N positions and lots took 0 for a cost no one states.
 - fx_missing=N: N figures had no exchange rate and are left out.`
 
 func (s *mcpServer) privacyHelp() string {
@@ -303,7 +314,7 @@ func (s *mcpServer) glossary(ctx context.Context) (string, error) {
 			note("tax_wrapper", strOrEmpty(a.TaxWrapper))
 			note("management_style", strOrEmpty(a.ManagementStyle))
 		}
-		positions, err := gold.PositionsAsOf(ctx, db, asOf, cfg.DefaultCurrency)
+		positions, err := gold.PositionsAsOf(ctx, db, asOf, cfg.DefaultCurrency, lots.MissingIgnore)
 		if err != nil {
 			return err
 		}

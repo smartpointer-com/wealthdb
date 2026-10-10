@@ -58,7 +58,7 @@ func lockGoldForWrite(goldPath, cmdName string) (*goldWriteLock, error) {
 		_ = f.Close()
 		return nil, errs.Newf(errs.ExitOpenFailed,
 			"'%s' cannot write %q: another wealthdb write command (load / reset / reload / compact / "+
-				"categorize / resolve-symbols / web-materialize) is running and holds %q. "+
+				"lots / categorize / resolve-symbols / web-materialize) is running and holds %q. "+
 				"Wait for it to finish and re-run.", cmdName, goldPath, path)
 	}
 	return &goldWriteLock{f: f}, nil

@@ -185,7 +185,7 @@ returns every row, so a model with a large context pays no round trips.
 models.
 
 Not exposed, because they write or prompt: `config`, `init`, `load`,
-`reset`, `reload`, `compact`, `categorize`, `resolve-symbols`,
+`reset`, `reload`, `compact`, `lots`, `categorize`, `resolve-symbols`,
 `categorizations --forget`, `web-*`, `mcp-config`. There is no SQL tool
 and no grouping beyond what the reports do.
 

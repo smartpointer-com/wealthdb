@@ -90,7 +90,9 @@ for each account, each portfolio, each provider and the whole, over any
 period. Money moved between the household's own accounts is not counted
 as gain or loss, and every figure carries its own caveats. Realized and
 unrealized gains come from the cost basis and tax lots the providers
-state, with a note wherever a provider states none.
+state. A crypto exchange or an old brokerage statement often states
+none. There a lot engine rebuilds them from the trades, first in first
+out by default. Every rebuilt figure says so.
 
 **Income and spending.** What arrived — wages, interest, dividends,
 rent — and what left, grouped by category, across all cards and
@@ -305,7 +307,9 @@ describes the household and how to query it from the command line.
   **[INCOME.md](wealthdb/docs/INCOME.md)** and
   **[CASHFLOW.md](wealthdb/docs/CASHFLOW.md)** — the three readings of
   the enrichment engine; **[GAINS.md](wealthdb/docs/GAINS.md)** —
-  realized and unrealized gains; **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
+  realized and unrealized gains; **[LOTS.md](wealthdb/docs/LOTS.md)** —
+  the lot engine that rebuilds a cost basis no provider states;
+  **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
   the `asset_class` × `vehicle` classification.
 - **[AGENTS.md](AGENTS.md)** — agent ground rules shared across
   every component (security, PII, read-only access).

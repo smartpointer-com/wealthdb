@@ -222,6 +222,12 @@ type Config struct {
 	// engine container) and reads a read-only *snapshot* of gold, so
 	// it never contends for the single-writer lock. See web/DESIGN.md.
 	Web *WebConfig `json:"web,omitempty"`
+	// Lots configures the lot engine: the method it relieves lots by,
+	// per source, portfolio or account, and the default reading of a
+	// missing cost basis. Absent block ⇒ each source kind's registered
+	// policy, fifo where it names no method, missing basis ignored. See
+	// LotsConfig and docs/LOTS.md.
+	Lots *LotsConfig `json:"lots,omitempty"`
 	// MCP configures the optional MCP server (`wealthdb mcp …`),
 	// which puts the read-only reports in front of AI agents. Absent
 	// or not enabled means `wealthdb mcp start` refuses with a pointer

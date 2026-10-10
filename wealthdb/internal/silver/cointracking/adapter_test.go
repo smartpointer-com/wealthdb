@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -209,5 +210,62 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	}
 	if acct.TaxWrapper == nil || *acct.TaxWrapper != canonical.TaxWrapperTaxablePersonal {
 		t.Errorf("tax_wrapper = %v, want taxable_personal", acct.TaxWrapper)
+	}
+}
+
+// The payload carries the CT fields the lot engine reads: the type, the
+// comment, the trade's currencies and its fee. The kind alone cannot
+// tell a deposit from an airdrop.
+func TestTransactionsCarryTheLotFields(t *testing.T) {
+	path := newFixtureSilver(t, `
+        INSERT INTO dump_runs VALUES (1000, 2, '/x/1', NULL);
+        INSERT INTO portfolios VALUES ('cu1', 1, 'aaa', 1000, NULL);
+        INSERT INTO wallets VALUES ('cu1', 'cu1:Kraken', 'Kraken', 1000, NULL);
+        INSERT INTO transactions (transaction_external_id, portfolio_external_id, wallet_external_id, snapshot_at,
+                                  occurred_at, type, buy_amount, buy_currency, sell_amount, sell_currency,
+                                  fee_amount, fee_currency, comment) VALUES
+            ('t1', 'cu1', 'cu1:Kraken', 1000, TIMESTAMP '2024-01-01 10:00:00', 'Trade',
+             2.0, 'BTC', 60000.0, 'USD', 0.01, 'BNB', NULL),
+            ('t2', 'cu1', 'cu1:Kraken', 1000, TIMESTAMP '2024-01-02 10:00:00', 'Airdrop',
+             5.0, 'ETH', NULL, NULL, 0, NULL, 'promo');
+        INSERT INTO portfolio_prices VALUES (DATE '2024-01-01', 'cu1', 'BTC', 'USD', 30000.0, 1000);
+    `)
+	conn := openAdapter(t, path)
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	payloads := map[string]map[string]any{}
+	for {
+		batch, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tx := range batch.Transactions {
+			var m map[string]any
+			if err := json.Unmarshal(tx.Payload, &m); err != nil {
+				t.Fatalf("%s payload %q: %v", tx.TransactionExternalID, tx.Payload, err)
+			}
+			payloads[tx.TransactionExternalID] = m
+		}
+		if !more {
+			break
+		}
+	}
+	trade, drop := payloads["t1"], payloads["t2"]
+	if trade["type"] != "Trade" || trade["fee_currency"] != "BNB" || trade["fee_amount"] != 0.01 ||
+		trade["buy_currency"] != "BTC" || trade["sell_currency"] != "USD" {
+		t.Errorf("trade payload %v", trade)
+	}
+	if drop["type"] != "Airdrop" || drop["comment"] != "promo" {
+		t.Errorf("airdrop payload %v", drop)
+	}
+	if _, ok := drop["fee_amount"]; ok {
+		t.Errorf("a zero fee is left out: %v", drop)
 	}
 }

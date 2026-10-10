@@ -73,7 +73,9 @@ The commands fall into four groups, the same as in `wealthdb help`:
   `cashflow`, `status` and `snapshots`.
 - **Set up and load** write it. `config` writes the config file and
   `init` creates the database. `load`, `reset` and `reload` bring a
-  source's silver in or take it out. `compact` reclaims space.
+  source's silver in or take it out. `compact` reclaims space. `lots
+  rebuild` replays the trades into lots where a source states no cost
+  basis; every load does it too.
 - **Enrich** asks the configured model. `categorize` places the
   merchants and payers no rule could place, and `resolve-symbols`
   fills in missing tickers. `categorizations` and `resolutions` list
@@ -119,6 +121,7 @@ wealthdb holdings positions -f csv     # CSV for scripting
 wealthdb returns accounts 2025         # per-account TWR for 2025, by quarter
 wealthdb returns global --method both  # whole-portfolio TWR and MWR since the first snapshot
 wealthdb gains summary 2025            # realized and unrealized gains in 2025, by month
+wealthdb gains check 2025              # the rebuilt cost basis against what the statements say
 wealthdb status -v                     # how current each source is
 ```
 
@@ -165,6 +168,8 @@ and read-only sharing pattern.
   method and rationale.
 - **[docs/GAINS.md](docs/GAINS.md)** — realized and unrealized gains:
   what each figure is, and the quality flags.
+- **[docs/LOTS.md](docs/LOTS.md)** — the lot engine: how a cost basis
+  no source states is rebuilt from the trades, and how far to trust it.
 - **[docs/SPENDING.md](docs/SPENDING.md)**,
   **[docs/INCOME.md](docs/INCOME.md)**,
   **[docs/CASHFLOW.md](docs/CASHFLOW.md)** — the enrichment engine's

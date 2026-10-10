@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 // setupGainsGold seeds a gold DB with what the gains views read: a
@@ -54,10 +55,16 @@ func setupGainsGold(t *testing.T) string {
             ('brk', 'R1', 'ACC1', 'BBB', 'BETA', 'form_1099b',       1970, FALSE, DATE '1970-01-02', 'USD', 5, 550, 400, NULL, 'short', 'stated', 'lots', 'included', TRUE),
             ('brk', 'R2', 'ACC1', 'BBB', 'BETA', 'year_end_summary', 1970, FALSE, DATE '1970-01-02', 'USD', 5, 550, 400, 150,  'short', 'stated', 'lots', 'included', FALSE);
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
-                                  account_external_id, instrument_external_id, kind, currency, net_amount)
-            VALUES ('brk', 'S1', 90000, 'ACC1', 'BBB', 'sell', 'USD', 550);
+                                  account_external_id, instrument_external_id, kind, currency, net_amount, quantity)
+            VALUES ('brk', 'B1', 500,   'ACC1', 'BBB', 'buy',  'USD', -380,  5),
+                   ('brk', 'S1', 90000, 'ACC1', 'BBB', 'sell', 'USD',  550, -5);
     `); err != nil {
 		t.Fatalf("seed gains gold: %v", err)
+	}
+	// The lot engine replays the trades: its realized lot sits beside the
+	// stated one, which wins and which the check view compares it with.
+	if _, err := gold.RebuildLots(context.Background(), db, gold.LotsOptions{Config: lots.Config{}}); err != nil {
+		t.Fatalf("lot pass: %v", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close gold: %v", err)
@@ -82,7 +89,9 @@ func gainsCases() []goldenCase {
 		goldenCase{"gains summary by quarter in CHF", []string{"gains", "summary", "1970", "--period", "quarterly", "-x", "CHF"}, "gains",
 			map[string]any{"view": "summary", "from": "1970", "to": "1970", "period": "quarterly", "currency": "CHF"}},
 		goldenCase{"gains realized, every document, newest first", []string{"gains", "realized", "1970", "--documents", "all", "-r"}, "gains",
-			map[string]any{"view": "realized", "from": "1970", "to": "1970", "documents": "all", "newest_first": true}})
+			map[string]any{"view": "realized", "from": "1970", "to": "1970", "documents": "all", "newest_first": true}},
+		goldenCase{"gains positions, a missing basis as zero", []string{"gains", "positions", "1970", "--missing-basis", "zero"}, "gains",
+			map[string]any{"view": "positions", "from": "1970", "to": "1970", "missing_basis": "zero"}})
 }
 
 func TestGainsCLIEndToEnd(t *testing.T) {
@@ -111,6 +120,10 @@ func TestGainsCLIEndToEnd(t *testing.T) {
 		{[]string{"gains", "lots", "-r"}, "belong to the realized view"},
 		{[]string{"gains", "realized", "--documents", "some"}, "invalid --documents"},
 		{[]string{"gains", "summary", "--period", "hourly"}, "invalid --period"},
+		{[]string{"gains", "summary", "--missing-basis", "half"}, "invalid --missing-basis"},
+		{[]string{"holdings", "positions", "--missing-basis", "half"}, "invalid --missing-basis"},
+		{[]string{"gains", "coverage", "--missing-basis", "zero"}, "does not apply to the coverage view"},
+		{[]string{"gains", "check", "--missing-basis", "ignore"}, "does not apply to the check view"},
 		{[]string{"gains", "nope"}, "unknown view"},
 		{[]string{"gains"}, "a view subcommand is required"},
 	} {

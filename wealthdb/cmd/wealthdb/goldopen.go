@@ -83,9 +83,9 @@ func gateGoldForWrite(g globalFlags, cfg *config.Config, cmdName, missingDBMsg s
 // openGoldForWrite gates as gateGoldForWrite does, then opens the gold
 // DB read-write (applying any outstanding migration on open). The
 // caller owns db.Close() and lock.unlock(). Used by the write commands
-// that mutate the live file directly (load, reset, web-materialize);
-// compact and reload rewrite via a swap and only need
-// gateGoldForWrite.
+// that mutate the live file directly (load, reset, lots,
+// web-materialize); compact and reload rewrite via a swap and only
+// need gateGoldForWrite.
 //
 // The open waits out a reader. DuckDB refuses a read-write attach
 // while any read-only handle is open, and a reader holds one for the

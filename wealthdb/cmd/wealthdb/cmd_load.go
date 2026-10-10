@@ -119,10 +119,7 @@ load semantics.`)
 		fmt.Fprintf(stderr, "load: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}
-	if err := runEnrichmentPass(ctx, db, cfg, enrichment, stdout); err != nil {
-		fmt.Fprintf(stderr, "load: %s\n", err.Error())
-		firstErr = errors.Join(firstErr, err)
-	}
+	firstErr = errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "load", stdout, stderr))
 	return firstErr
 }
 
@@ -172,6 +169,24 @@ func parseEnrichmentLedgers(cfg *config.Config) (enrichmentLedgers, error) {
 		return enrichmentLedgers{}, err
 	}
 	return l, nil
+}
+
+// runGoldPasses runs the passes a load or reload ends with, over all of
+// gold: the enrichment pass, then the lot pass. A pass that fails is
+// reported under verb and does not stop the next; the failures come
+// back joined.
+func runGoldPasses(ctx context.Context, db *sql.DB, cfg *config.Config, enrichment enrichmentLedgers, verb string, stdout, stderr io.Writer) error {
+	var failed error
+	for _, pass := range []func() error{
+		func() error { return runEnrichmentPass(ctx, db, cfg, enrichment, stdout) },
+		func() error { return runLotPass(ctx, db, cfg, false, stdout) },
+	} {
+		if err := pass(); err != nil {
+			fmt.Fprintf(stderr, "%s: %s\n", verb, err.Error())
+			failed = errors.Join(failed, err)
+		}
+	}
+	return failed
 }
 
 // runEnrichmentPass re-asserts every deterministic verdict in gold,

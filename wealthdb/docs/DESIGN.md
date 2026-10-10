@@ -84,11 +84,10 @@ spending, income, cash flow) read.
   are out of scope for v1 — gold operates on whatever each silver
   carries. These feeds are planned future work and will arrive via
   their own ingest path independent of any bank silver. See §13.8.
-- **Performance attribution, a lot engine.** No command computes
-  them. Gold carries the cost basis, open lots and realized lots each
-  source states (§7.4), and `wealthdb gains` reads them as stated
-  (docs/GAINS.md). A source that states none has no basis until a lot
-  engine rebuilds one (§13.4).
+- **Performance attribution.** No command computes it. Gold carries
+  the cost basis, open lots and realized lots each source states
+  (§7.4), the lot engine fills what a source leaves out (§7.5), and
+  `wealthdb gains` reads both (docs/GAINS.md).
 - **Cross-silver instrument deduplication.** Two silvers may hold the
   "same" equity under different `instrument_external_id`s; gold keeps
   them separate at the row level. `instruments.isin` is the join key
@@ -117,9 +116,10 @@ wealthdb load    <id> | -a            (RW)    Merge new silver snapshots into go
 wealthdb reset   <id> | -a            (RW)    Purge a silver source's data from gold.
 wealthdb reload  <id> | -a            (RW)    Reset then load; -a builds a fresh compact gold and swaps it in.
 wealthdb compact                      (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
+wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the cost basis no source states (docs/LOTS.md).
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
 wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
-wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage.
+wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
 wealthdb transactions [flags]         (RO)    Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
@@ -192,6 +192,7 @@ Prints the consolidated portfolio as of a date.
 | `-f`, `--format` | `table` | One of `table`, `csv`, `csv_plain`, `json`. |
 | `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). |
 | `--with-cash` | off | Also emit one synthetic row per account+currency with non-zero cash (`asset_class = 'cash'`). |
+| `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts (docs/GAINS.md §8). Under `zero` the cost basis is the part the lots know. |
 | `-p`, `--privacy` | off | Redact identifying and monetary columns (see below). |
 
 **Privacy classes.** `-p` is per-column, and every read-only view
@@ -226,9 +227,10 @@ currency equals the output currency, the conversion is the identity
 and the value passes through unchanged.
 
 The cost basis columns are opt-in through `-C`: `cost_basis`,
-`unrealized_gain`, `unrealized_pct`, `basis_stamp`, `acquisition_date`,
-`accrued_interest`, `clean_value`, and the converted `cost_basis_outccy`
-and `unrealized_gain_outccy` (headers `cost_basis_<CCY>` and
+`unrealized_gain`, `unrealized_pct`, `basis_stamp`,
+`quantity_without_basis`, `acquisition_date`, `accrued_interest`,
+`clean_value`, and the converted `cost_basis_outccy` and
+`unrealized_gain_outccy` (headers `cost_basis_<CCY>` and
 `unrealized_gain_<CCY>`). docs/GAINS.md defines them.
 
 Internally: for each silver source, find the latest `snapshot_at` ≤
@@ -391,7 +393,7 @@ outgoing file inside that window lands in the inode the rename
 unlinks, and both commands report success.
 
 So every write command — `load`, `reset`, `reload`, `compact`,
-`categorize`, `resolve-symbols`, `web-materialize` — takes an
+`lots`, `categorize`, `resolve-symbols`, `web-materialize` — takes an
 advisory `flock` for the whole command on a sidecar file,
 `<gold_db>.wealthdb.lock`. The sidecar is created on first use and
 left in place afterwards: it is an expected artefact beside the
@@ -433,7 +435,7 @@ crash.
 | RO subcommand on non-existent DB | 3 | `wealthdb: gold database '<path>' does not exist. Run 'wealthdb init' first (requires write access).` |
 | `init` on existing DB | 4 | `wealthdb: gold database '<path>' already exists. Use 'wealthdb reset -a' to clear data, or delete the file manually if you really want a fresh DB.` |
 | DuckDB open fails mid-run | 5 | the driver's own error, passed through whole and prefixed by the stage that hit it: `wealthdb: ping duckdb "<path>": <driver error>` (or `open duckdb` / `migrate gold`) |
-| Write subcommand while another holds the write mutex | 5 | `wealthdb: '<cmd>' cannot write '<path>': another wealthdb write command (load / reset / reload / compact / categorize / resolve-symbols / web-materialize) is running and holds '<path>.wealthdb.lock'. Wait for it to finish and re-run.` |
+| Write subcommand while another holds the write mutex | 5 | `wealthdb: '<cmd>' cannot write '<path>': another wealthdb write command (load / reset / reload / compact / lots / categorize / resolve-symbols / web-materialize) is running and holds '<path>.wealthdb.lock'. Wait for it to finish and re-run.` |
 | Silver DB unreadable during load | 6 (reserved) | not emitted today — a silver open failure returns a plain error and exits 1 |
 
 `<reason>` in row 1 is one of: `parent directory not writeable`,
@@ -685,18 +687,32 @@ views, and the shared `-f`, `-C`, `-x`, `-p`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `<view>` | required | `summary` \| `sources` \| `portfolios` \| `accounts` (the holdings grains, which reconcile), `positions`, `realized`, `lots`, `coverage`. |
+| `<view>` | required | `summary` \| `sources` \| `portfolios` \| `accounts` (the holdings grains, which reconcile), `positions`, `realized`, `lots`, `coverage`, `check` (the lot engine against the stated lots, docs/LOTS.md §9). |
 | `[FROM [TO]]` | trailing twelve months | As §4.12. A positional year reads a calendar year: `wealthdb gains realized 2025`. `lots` reads the window's end. |
 | `--period` | `monthly` | As §4.12, on the four aggregate views; the others read the whole window. |
 | `--documents` | `primary` | `primary` \| `all`, on `realized` only: `all` lists every document's copy of a sale. Refused on the other views. |
 | `-r` | off | `realized` only: newest first. Refused on the other views. |
+| `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts (docs/GAINS.md §8). Refused on `coverage` and `check`, which count a missing cost rather than read it. |
 | `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` masks account ids, quantities and amounts; percentages, basis stamps, dates and security names stay legible. |
 
 Every aggregate and positions row carries a `quality` column naming
 each way its figures can be incomplete, and `coverage` gives a verdict
 per account.
 
-### 4.16 Future subcommands (sketch only)
+### 4.16 `wealthdb lots rebuild [--force]`
+
+Runs the lot engine's pass (docs/LOTS.md): it replays every source
+whose lot policy is not off and rewrites the ledger, the rebuilt cost
+basis on positions and the engine's realized lots in one transaction.
+`load` and `reload` run the same pass after the enrichment pass, and it
+replays whenever the gold rows it reads, the config or the engine
+changed; this verb applies such a change without a load. The pass
+replays nothing when no input changed since the last one; `--force`
+replays anyway. It prints one line per source: mode,
+methods, lots, realized lots, positions filled, seeds, implied
+disposals, blips and anchors.
+
+### 4.17 Future subcommands (sketch only)
 
 These are reserved namespaces; their final shape will be designed
 when implemented. The schema must not preclude them.
@@ -825,6 +841,7 @@ Example config file:
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
+| `lots` | object | Optional. The lot engine (docs/LOTS.md §7): `method` (`fifo` default, `lifo`, `hifo`, `lofo`, `average`), the global method; `missing_basis` (`ignore` default, `zero`), the readers' default reading of a missing cost basis; `sources` keyed by `silver_source_id` with `method`, `mode` (`fill` \| `shadow` \| `off`) and `grain` (`account` \| `portfolio`) overriding the source kind's policy; `portfolios` and `accounts` keyed by `silver_source_id` to an external id to `{"method": …}`. The method in force for a key is its account's, else its portfolio's, else its source's, else the kind's own, else the global one. Every source id must name a configured source; a bad value fails the load. Absent ⇒ fifo and each kind's registered policy. |
 | `returns_transfer_matching` | object | Optional, off by default. Enables the cross-source transfer matcher: an external leg whose counterparty leg exists in ANOTHER source (opposite sign, same native currency, equal amount within `tolerance_pct`, within `window_days`) nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. Fields: `enabled` (bool), `window_days` (0–30, default 5), `tolerance_pct` (0–5, default 0.5). See §5.8. |
 | `cashflow` | object | Optional. Groups the cash flow statement's two knobs. It is deliberately small: cashflow adds no tier and buys nothing from a model, so the rules, pins and transfer overrides that decide what a row IS are the two families' — a verdict written there is what cashflow reads. See docs/CASHFLOW.md §7. |
 | `cashflow.accounts` | object | Optional. The cash POOL, and the only account gate cashflow applies. **Exclusion only** — `{"exclude": {"<source>": ["<account-id>"]}}` — because every account is pooled by default, so an `include` could fence nothing and the loader refuses the unknown field rather than ignoring it. It inherits neither family's scope on purpose: an account a family drops is not thereby outside the household's cash. |
@@ -1652,12 +1669,15 @@ CREATE TABLE positions (
     currency                TEXT    NOT NULL,        -- position's natural currency (ISO 4217)
     quantity                DECIMAL(28, 8),          -- units / nominal / face value
     market_value            DECIMAL(28, 4),          -- in `currency`, accrued income included (§7.1)
-    book_value              DECIMAL(28, 4),          -- cost basis in `currency`; NULL when source doesn't provide
+    book_value              DECIMAL(28, 4),          -- cost basis in `currency`; NULL unless its source states it or the lot engine rebuilds it whole
     basis_origin            TEXT,                    -- the stamp on book_value (§7.4); NULL with it
     basis_method            TEXT,
     basis_fees              TEXT,
     accrued_interest        DECIMAL(28, 4),          -- the accrued part of market_value; NULL when not stated
     acquisition_date        DATE,                    -- earliest acquisition; NULL when unknown
+    book_value_known        DECIMAL(28, 4),          -- lot engine: the cost of the lots that have one
+    quantity_without_basis  DECIMAL(28, 8),          -- lot engine: the quantity in lots that have none
+    open_lots               INTEGER,                 -- lot engine: the lot count
     payload                 JSON,                    -- raw silver row(s) that produced this fact
     PRIMARY KEY (silver_source_id, snapshot_at, account_external_id, position_key),
     FOREIGN KEY (silver_source_id, account_external_id)
@@ -1831,7 +1851,7 @@ CREATE TABLE realized_lots (
     instrument_external_id   TEXT,
     instrument_hint          TEXT,                   -- the token the lookup failed on
     description              TEXT,                   -- security as printed
-    document_kind            TEXT    NOT NULL,       -- form_1099b, year_end_summary, …
+    document_kind            TEXT    NOT NULL,       -- form_1099b, year_end_summary, …, engine
     tax_year                 INTEGER NOT NULL,
     acquisition_date         DATE,
     acquired_various         BOOLEAN NOT NULL,
@@ -1855,6 +1875,12 @@ CREATE TABLE realized_lots (
     payload                  JSON,
     PRIMARY KEY (silver_source_id, realized_lot_external_id)
 );
+
+-- The lot engine's ledger (lots, lot_disposals, lot_realized,
+-- lot_findings, lot_anchors) is the pass's output, rewritten whole by
+-- every pass; lot_runs keeps one row per pass and source. lot_realized
+-- holds the engine's realized lots in realized_lots' shape, and the
+-- view realized_lots_all reads both: docs/LOTS.md §5.
 ```
 
 ### 7.3 What's deliberately omitted
@@ -1877,8 +1903,9 @@ CREATE TABLE realized_lots (
 
 ### 7.4 Cost basis
 
-Gold carries the cost basis each source states. It does not compute
-one where a source states none; that is the lot engine's job (§13.4).
+Gold carries the cost basis each source states. Where a source states
+none, the lot engine rebuilds one from its trades, stamped `rebuilt`
+(docs/LOTS.md, §7.5).
 
 Cost basis means different things in different sources. One source
 sums tax lots, another keeps a weighted average. Fees are in the
@@ -1891,13 +1918,14 @@ book value.
 |---|---|---|
 | `basis_origin` | `stated` | one figure the source states, taken as is |
 | | `derived` | arithmetic over stated figures: quantity × average cost, market value − unrealized gain, a sum of lots, a figure converted at the source's own rate |
-| | `rebuilt` | replayed from trades by a lot engine |
+| | `rebuilt` | replayed from trades by the lot engine |
 | | `seeded` | an opening basis entered by hand |
 | `basis_method` | `lots` | the sum of the source's tax lots, whatever method relieves them |
 | | `average` | a weighted average cost |
 | | `paid_in` | capital paid in, gross of capital paid back (private markets) |
 | | `acquisition_value` | the value on the acquisition date |
 | | `unknown` | the source does not say |
+| | `fifo`, `lifo`, `hifo`, `lofo` | the lot engine's relief method, on a `rebuilt` basis (a rebuilt average says `average`) |
 | `basis_fees` | `included`, `excluded` | whether purchase fees are in the figure |
 | | `none` | the source charges no purchase fee |
 | | `unknown` | the source does not say |
@@ -1932,7 +1960,9 @@ comment has the detail:
 | manual | the paid-in series, else the value at acquisition | stated · paid_in or acquisition_value · unknown | – | – |
 | synthetic | a holding: the sum of its lots, else its average cost; private markets: capital paid in; a home or mortgage: the value at acquisition | stated · lots, average, paid_in or acquisition_value · none, or for crypto included in lots and excluded from an average | each holding's lots, at cost | one row per lot a sale relieves, on a 1099-B or a statement |
 
-cointracking, svb and relevate state no basis.
+cointracking, svb and relevate state no basis. The lot engine fills a
+missing basis on the kinds docs/LOTS.md §1 lists; relevate's stays
+blank.
 
 **Open lots** (`position_lots`) sit beside their position row: same
 source, snapshot, account and position key. A lot's `basis_origin`
@@ -1947,10 +1977,29 @@ tax year, the primary rows count each sale once: the adapter ranks
 its own document kinds and marks the best kind present
 (`silver.MarkPrimary`). A tax year's stated result is therefore
 `SUM(realized_gain_loss) WHERE is_primary`. Where a document prints
-no gain, the column is NULL; docs/GAINS.md §2 derives one.
+no gain, the column is NULL; docs/GAINS.md §2 derives one. The lot
+engine writes its own rows to `lot_realized`, `document_kind =
+engine`, one per sale and lot relieved; the readers read both tables
+through `realized_lots_all`. An engine row is primary only in a tax
+year no stated primary lot documents on the account or its portfolio
+(docs/LOTS.md §5.3).
 
 The readers of all three, `holdings positions`' cost basis columns and
 `wealthdb gains`, are defined in docs/GAINS.md.
+
+### 7.5 Lot engine
+
+The lot engine rebuilds what a source does not state from its trades:
+the open lots, a cost basis per position row and a realized lot per
+sale, stamped `rebuilt` (docs/LOTS.md). It is a pass over gold after
+the per-source loads (§8.1), shared by every source. A source kind
+registers a `lots.Policy` beside its adapter, as it registers a
+`ReturnsPolicy`, and no adapter computes a lot.
+
+The engine is pure (`internal/lots`). The feed, the writer and the pass
+are gold's (`lots_feed.go`, `lots_writer.go`, `lots_pass.go`). Stated
+figures always win. The engine fills the gaps and keeps its own figure
+beside a stated one for `gains check`.
 
 ## 8. Load semantics
 
@@ -2039,17 +2088,27 @@ and don't need transactional scope.
 in its own transaction. A failure in one source does not roll
 back already-completed sources.
 
-Two whole-file steps then run **after** the per-source loop, outside
-its transactions, because neither is a per-source fact: the
-config-driven FX source precedence is stamped into `silver_sources`
-(§13.2), and the deterministic spending pass re-asserts every spend
-verdict in gold (§10.10, docs/SPENDING.md §3 — an own-account move's
-two legs routinely arrive from two different sources, so neither is
-recognisable until both have landed). A failed FX stamp is a warning:
-it degrades a conversion. A failed spending pass is an error: it
+Four whole-file steps then run **after** the per-source loop, outside
+its transactions, because none is a per-source fact:
+
+1. The config-driven FX source precedence is stamped into
+   `silver_sources` (§13.2).
+2. The config's declared accounts are stamped into `accounts`
+   (`declared_accounts`, §5.1).
+3. The deterministic enrichment pass re-asserts every spend and income
+   verdict in gold (§10.10, docs/SPENDING.md §3). An own-account move's
+   two legs routinely arrive from two different sources, so neither is
+   recognisable until both have landed.
+4. The lot pass replays the trades into lots (docs/LOTS.md §2). A move
+   links two sources the same way.
+
+A failed FX stamp is a warning: it degrades a conversion. The other
+three fail as errors. A failed declaration stamp or enrichment pass
 leaves own-account moves counted as spending, which is a wrong answer
-rather than a degraded one. `reload` runs both the same way, on both
-its in-place and fresh-file paths.
+rather than a degraded one. A failed lot pass leaves the positions the
+load rewrote without a rebuilt basis, and nothing would say why.
+`reload` runs all four the same way, on both its in-place and
+fresh-file paths.
 
 ### 8.2 Why a windowed delete (not a full-replace)
 
@@ -2971,6 +3030,29 @@ accounts and joins in their tax wrapper. 0117 also gives
 `gains_windows` the cost basis of the lots realized, the denominator of
 a realized percent.
 
+Migration 0118 adds the lot engine's ledger and its readers
+(docs/LOTS.md §5):
+
+- `report_positions` and every gains reader but coverage and check
+  take `p_missing := 'ignore'` and read a missing cost under it,
+  through `gains_position_lines` and `realized_lots_in` or, in
+  `report_lots`, on the lot itself;
+- `basis_applies`, `stated_basis`, `basis_missing`, `gain_needs_cost`,
+  `documented_years`, `documented_txns`, `lot_obs_at` and
+  `lot_key_accounts` are the predicates and keys the readers and the
+  lot pass share;
+- `lots_at(instants)` gives the engine's lots open at each instant, and
+  `report_lots` lists them on a position the engine filled;
+- `lot_sources()` is each source's row of the last pass (mode, grain,
+  methods, counts), which `gains_windows` turns into quality flags;
+- `report_gains_check` compares the engine with the stated lots and
+  cost bases;
+- `fx_rates_to` builds its grid over the currencies gold's figures are
+  in, not every coin a crypto source prices;
+- `report_gains` holds a row set per currency and per reading of a
+  missing cost basis, and `web_gains` exposes `missing_basis` for the
+  dashboard's picker.
+
 ## 11. Repository layout
 
 ```
@@ -2982,7 +3064,7 @@ wealthdb/
 ├── wealthdb-test                   — thin alias: `wealthdb-go test ...` (§12.5)
 ├── go.mod / go.sum
 ├── docs/
-│   ├── DESIGN.md · RETURNS-NOTES.md · GAINS.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
+│   ├── DESIGN.md · RETURNS-NOTES.md · GAINS.md · LOTS.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
 │   └── adapters/                   — per-bank adapter design (amex, carta, chase, cointracking, plaid, schwab, swissquote, synthetic, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand
@@ -2993,10 +3075,11 @@ wealthdb/
 │   │   │                             fidelity firstcitizens fred manual plaid
 │   │   │                             raiffeisen_at relevate schwab swissquote
 │   │   │                             synthetic ubs viac
-│   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go
+│   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go, and lotpolicy.go where the lot engine replays the source
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   └── migrations/             — 0001…NNNN SQL, //go:embed-ed by schema.go
 │   ├── returns/                    — source-agnostic TWR/MWR math + pluggable per-source policy
+│   ├── lots/                       — the lot engine, pure (docs/LOTS.md) + pluggable per-source policy
 │   ├── spending/                   — the deterministic spend-enrichment pass (§10.10, docs/SPENDING.md)
 │   ├── loader/                     — the §8 silver→gold load orchestration (the only silver↔gold bridge)
 │   └── config/ · pathmode/ · wizard/ · output/ · errs/ · version/
@@ -3007,13 +3090,13 @@ wealthdb/
 import anything higher, never the reverse:
 
 ```
-canonical                    (zero deps)
+canonical, lots              (zero deps)
    ↑
 silver (interface)           imports canonical
    ↑
-silver/<source> adapters     import silver + canonical
+silver/<source> adapters     import silver + canonical + returns + lots (policies)
    ↑
-gold                         imports canonical — NOT silver
+gold                         imports canonical + returns + lots — NOT silver
    ↑
 loader                       imports gold + silver (the bridge)
    ↑
@@ -3317,31 +3400,12 @@ For holding-period queries to work across every source, the rest must
 be derived. Strategy: a `wealthdb backfill acquisitions` subcommand
 that walks `transactions` (filtered to `kind IN ('buy',
 'transfer_in')`) and writes the earliest matching date into each
-position row. FIFO vs LIFO is a deeper design point.
+position row. On the sources the lot engine fills, `lots_at` already
+gives each open lot's acquisition date.
 
-### 13.4 Lot engine
+### 13.4 Lot engine: open items
 
-Gold carries the basis and lots a source states (§7.4). Some sources
-state none: cointracking, svb, and schwab before its statements print
-lots. Their trade histories are in gold, so a lot
-engine could replay them: FIFO per account and instrument (per
-portfolio and coin for crypto), fees into the lot, a transfer's two
-sides paired (cointracking's `Group` and `Tx-ID`), income at its value
-on receipt. It would write `rebuilt` book values and lots.
-
-The readers need no change for it: a rebuilt book value carries
-`basis_origin = rebuilt`, and the `gains coverage` verdicts `no_basis`
-and `no_realized` are the gaps it closes.
-
-Open before it is built:
-
-- the method: one setting, or the custodian's election per account;
-- a crypto deposit nothing pairs: zero basis, its value on receipt,
-  or flagged unknown;
-- opening balances the history does not reach, which need a `seeded`
-  basis;
-- corporate actions, which no feed states an allocation ratio for;
-- carryover basis on an in-kind move between sources.
+The lot engine (§7.5) leaves out what docs/LOTS.md §11 lists.
 
 Silver also states a few cost facts gold does not project yet:
 

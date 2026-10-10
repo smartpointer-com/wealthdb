@@ -27,6 +27,7 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		withColumns:   true,
 		withCash:      true,
 	})
+	missing := registerMissingBasisFlag(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, positionsUsage())
 	}
@@ -47,8 +48,13 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	if err != nil {
 		return err
 	}
+	missingBasis, err := resolveMissingBasis(*missing, hv.cfg, "positions")
+	if err != nil {
+		return err
+	}
 
-	rep := holdingsReport(request{view: "positions", currency: hv.outCcy, asOf: hv.asOfEpoch, withCash: *hf.withCash})
+	rep := holdingsReport(request{view: "positions", currency: hv.outCcy, asOf: hv.asOfEpoch,
+		withCash: *hf.withCash, missing: missingBasis})
 	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
 	return writeReport(ctx, rep, *hf.cols, "positions", open, *hf.privacy, hv.fmtChoice, stdout)
 }
@@ -107,12 +113,13 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 			Extract: func(r gold.PositionRow) string { return formatCents(r.MarketValue) }},
 		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PositionRow) string { return formatCents(r.ValueOutCcy) }},
-		// The cost basis the source states (gold's book_value) and what
-		// follows from it, defined in docs/GAINS.md. Blank on a cash row
-		// and wherever the source states no basis; the unrealized gain
-		// is blank too on a line no cost basis describes, such as a
-		// mortgage. basis_stamp says which notion of basis the figure
-		// is.
+		// The cost basis (gold's book_value) the source states, else the
+		// one the lot engine rebuilt, and what follows from it, defined
+		// in docs/GAINS.md. Blank on a cash row and wherever no basis is
+		// known, unless --missing-basis zero counts the missing part as
+		// 0; the unrealized gain is blank too on a line no cost basis
+		// describes, such as a mortgage. basis_stamp says which notion of
+		// basis the figure is.
 		moneyCol("cost_basis", "", func(r gold.PositionRow) *string { return r.BookValue }),
 		outCcyTwin("cost_basis", outCcy, func(r gold.PositionRow) *string { return r.BookValueOutCcy }),
 		moneyCol("unrealized_gain", "", func(r gold.PositionRow) *string { return r.UnrealizedGain }),
@@ -120,6 +127,7 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 		{Name: "unrealized_pct", Align: output.AlignRight,
 			Extract: func(r gold.PositionRow) string { return formatPctOrBlank(r.UnrealizedRatio) }},
 		textCol("basis_stamp", func(r gold.PositionRow) *string { return r.BasisStamp }),
+		quantityCol("quantity_without_basis", func(r gold.PositionRow) *string { return r.QuantityWithoutBasis }),
 		textCol("acquisition_date", func(r gold.PositionRow) *string { return r.AcquisitionDate }),
 		moneyCol("accrued_interest", "", func(r gold.PositionRow) *string { return r.AccruedInterest }),
 		moneyCol("clean_value", "", func(r gold.PositionRow) *string { return r.CleanValue }),
@@ -161,6 +169,7 @@ func positionsUsage() string {
 	// time; show a placeholder for the dynamic column.
 	registry := buildColumnRegistry("CCY")
 	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
+                                  [--with-cash] [--missing-basis M]
 
 Print every individual holding as of a date: securities, funds and
 crypto, and the property, loans and private holdings recorded by
@@ -180,6 +189,9 @@ Flags:
   -p, --privacy            redact account IDs, share quantities, and monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
       --with-cash          also emit one row per account+currency with non-zero cash
+      --missing-basis M    ignore (default) | zero: how a missing cost basis counts;
+                           zero takes the part the lots know and counts the rest as 0
+                           (default: lots.missing_basis in the config, else ignore)
 
 Available columns:
   ` + joinColumnNames(registry) + `
@@ -191,6 +203,7 @@ Available columns:
 The cost basis columns are opt-in, e.g. -C +cost_basis,unrealized_gain,basis_stamp.
 unrealized_gain is the clean value (market value less accrued interest)
 less the cost basis; 'wealthdb gains' reads it over a window.
+quantity_without_basis is the quantity held with no known cost.
 
 Default column set:
   ` + strings.Join(defaultColumns, ", ")
