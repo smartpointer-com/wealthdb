@@ -1351,10 +1351,15 @@ check("...and every read of it is held to the picked currency",
           for q in _gn_sql.values()),
       [n for n, q in _gn_sql.items()
        if q.count("FROM web_gains") != q.count("AND currency = {{currency}}")])
-check("every Gains tile takes the four pickers",
+check("...and to the picked reading of a missing cost basis",
+      all(q.count("FROM web_gains") == q.count("AND missing_basis = {{missing_basis}}")
+          for q in _gn_sql.values()),
+      [n for n, q in _gn_sql.items()
+       if q.count("FROM web_gains") != q.count("AND missing_basis = {{missing_basis}}")])
+check("every Gains tile takes the five pickers",
       all(dict(p.NATIVE_PARAM_TARGETS[n]).keys() ==
           {p.GAINS_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-           p.GAINS_TAX_WRAPPER_PARAM_ID} for n in _gains_tiles),
+           p.GAINS_TAX_WRAPPER_PARAM_ID, p.GAINS_MISSING_PARAM_ID} for n in _gains_tiles),
       {n: [pid for pid, _t in p.NATIVE_PARAM_TARGETS.get(n, [])]
        for n in _gains_tiles})
 # The '(all sources)' line is the whole the Source picker narrows away
@@ -1376,9 +1381,13 @@ check("the Gains dashboard has no privacy twin",
 check("...and no card has a privacy variant",
       not [n for n in _gains_tiles if p.privacy_name(n) in CARDS])
 _gn_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Gains")]
-check("the Gains dashboard carries four pickers",
-      _gn_pickers == ["currency", "time_range", "source", "tax_wrapper"],
+check("the Gains dashboard carries five pickers",
+      _gn_pickers == ["currency", "time_range", "source", "tax_wrapper", "missing_basis"],
       _gn_pickers)
+_gn_missing = [q for q in p.dashboard_parameters(MID, "range", "Gains") if q["slug"] == "missing_basis"]
+check("...Missing cost basis is required, defaulting to ignore, and offers both readings",
+      _gn_missing and _gn_missing[0]["required"] and _gn_missing[0]["default"] == ["ignore"]
+      and _gn_missing[0]["values_source_config"]["values"] == ["ignore", "zero"], _gn_missing)
 _gbody = [d for d in layouts if d.get("name") == "Gains"]
 check("the Gains dashboard was laid out", len(_gbody) == 1)
 if _gbody:
@@ -1456,6 +1465,15 @@ check("the returns materializer writes exactly the reporting currencies",
       _go_ccys is not None and
       re.findall(r'"([A-Z]{3})"', _go_ccys.group(1)) == list(p.REPORTING_CURRENCIES),
       _go_ccys.group(1) if _go_ccys else "materializeCurrencies not found")
+# The readings of a missing cost basis are one contract too: the Go
+# vocabulary (lots.MissingBasisReadings) and the Gains picker here.
+_lots = open(os.path.join(_REPO, "wealthdb", "internal", "lots", "types.go"), encoding="utf-8").read()
+_go_readings = re.search(r"var MissingBasisReadings = \[\]MissingBasis\{([^}]*)\}", _lots)
+_consts = dict(re.findall(r'(Missing\w+)\s+MissingBasis = "(\w+)"', _lots))
+check("the Gains picker offers exactly the engine's readings of a missing cost basis",
+      _go_readings is not None and
+      [_consts.get(n.strip()) for n in _go_readings.group(1).split(",")] == list(p.MISSING_BASIS_READINGS),
+      _go_readings.group(1) if _go_readings else "MissingBasisReadings not found")
 
 
 def _latest_definition(name):

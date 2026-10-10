@@ -103,7 +103,9 @@ currency picker, a time range resp. a required as-of day, and a source
 picker), **Returns** carries a
 required currency picker (returns are stored one row set per currency),
 **Gains** carries the time range and source picker, a required currency
-picker and a *Tax wrapper* picker,
+picker, a *Tax wrapper* picker and a required *Missing cost basis*
+picker (ignore or zero, default `lots.missing_basis` from wealthdb.cfg,
+else ignore),
 **Spending** carries the time range and source picker plus a required
 currency picker, an account picker and a category multi-select,
 **Income** carries the same five with a *type* picker in place of the
@@ -121,10 +123,11 @@ column (gold migration 0114), and a dashboard picker selects rows but
 never a column. So each
 such tile reads a required `{{currency}}` variable, which picks the
 column with a CASE. The Gains tiles are the exception: `web_gains`
-(§8) carries a row set per currency, so there `{{currency}}` filters
-rows. Every Currency picker, and every card opened on its
-own, defaults to `default_currency` from wealthdb.cfg when that is a
-reporting currency, and to USD otherwise. `web/web` passes it to
+(§8) carries a row set per currency and per reading of a missing cost
+basis, so there `{{currency}}` and `{{missing_basis}}` filter rows.
+Every Currency picker, and every card opened on its own, defaults to
+`default_currency` from wealthdb.cfg when that is a reporting currency,
+and to USD otherwise. `web/web` passes it to
 `provision.py` from `wealthdb web-config`. The
 Wealth Overview's three headline figures read `web_sources_latest`
 (migration 0113), each source's latest snapshot, so they print what
@@ -350,11 +353,13 @@ for a different reason. The gains figures are SQL (`gains_windows`,
 migration 0116), so a view would work. But one dashboard open fires two
 dozen tiles, and each would compute the whole history again. So
 `web-materialize` runs `gains_windows(0, today, CCY, 'month')` once per
-reporting currency and stores the rows, a few seconds per refresh.
-Each currency's rows are that call's output, less the figures in a
-holding's own currency. So the rows summed by month equal `wealthdb
-gains summary --period monthly -x CCY`, and a Go test holds that. The
-`web_gains` view labels the accounts and joins in their tax wrapper.
+reporting currency and per reading of a missing cost basis (`ignore`,
+`zero`; docs/GAINS.md §8) and stores the rows, a few seconds per refresh.
+Each run's rows are that call's output, less the figures in a holding's
+own currency. So the rows summed by month equal `wealthdb gains summary
+--period monthly -x CCY --missing-basis M`, and a Go test holds that.
+The `web_gains` view labels the accounts and joins in their tax
+wrapper.
 
 The Gains dashboard reads it month by month. A figure over the window
 sums the months in it. A figure at the window's end reads the last

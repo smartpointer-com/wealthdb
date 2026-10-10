@@ -52,9 +52,11 @@ def main():
     ap.add_argument("--gold-path", required=True)
     ap.add_argument("--db-name", default="gold")
     ap.add_argument("--default-currency", default="USD")
+    ap.add_argument("--missing-basis", default=MISSING_BASIS_READINGS[0], choices=MISSING_BASIS_READINGS)
     a = ap.parse_args()
-    global DEFAULT_CURRENCY
+    global DEFAULT_CURRENCY, DEFAULT_MISSING_BASIS
     DEFAULT_CURRENCY = default_currency(a.default_currency)
+    DEFAULT_MISSING_BASIS = a.missing_basis
 
     if not wait_health(a.base):
         print("provision: Metabase did not become healthy in time", file=sys.stderr)
@@ -833,6 +835,22 @@ def currency_tag():
     run, so it is built on call."""
     return {"id": "ccy-tag", "name": "currency", "display-name": "Currency",
             "type": "text", "default": DEFAULT_CURRENCY, "required": True}
+
+
+# The readings of a missing cost basis, the default first
+# (lots.MissingBasisReadings), and the Gains dashboard's: wealthdb.cfg's
+# lots.missing_basis (main() sets it). report_gains carries a row set
+# per reading, as it does per currency.
+MISSING_BASIS_READINGS = ("ignore", "zero")
+DEFAULT_MISSING_BASIS = MISSING_BASIS_READINGS[0]
+
+
+def missing_basis_tag():
+    """The required {{missing_basis}} text variable of the Gains cards:
+    ignore leaves a gain that needs a missing cost basis out, zero counts
+    the missing cost as 0. Built on call, like currency_tag."""
+    return {"id": "mb-tag", "name": "missing_basis", "display-name": "Missing cost basis",
+            "type": "text", "default": DEFAULT_MISSING_BASIS, "required": True}
 
 
 # The Cash Flow dashboard's investing grain. Required with a `whole`
@@ -1961,12 +1979,14 @@ def gains_question_defs(db_id):
     is a row filter here, where the other families pick a value column
     with it. A figure over the window sums the months in it; a figure at
     the window's end reads its last month. docs/GAINS.md defines the
-    figures and the quality counters."""
-    tags = spend_tags("web_gains", GAINS_FILTERS)
+    figures and the quality counters. It carries a row set per reading
+    of a missing cost basis too, and {{missing_basis}} picks one the same
+    way (docs/GAINS.md §8)."""
+    tags = {**spend_tags("web_gains", GAINS_FILTERS), "missing_basis": missing_basis_tag()}
     note = (" Built for the Gains dashboard; opened standalone it runs in "
-            f"{DEFAULT_CURRENCY}, the currency variable's default, over every "
-            "month.")
-    ccy = "\n     AND currency = {{currency}}"
+            f"{DEFAULT_CURRENCY}, the currency variable's default, with a "
+            f"missing cost basis read as {DEFAULT_MISSING_BASIS}, over every month.")
+    ccy = "\n     AND currency = {{currency}}\n     AND missing_basis = {{missing_basis}}"
     where = _spend_where(tags) + ccy
     # The whole-portfolio line answers every picker but Source, so
     # narrowing the sources keeps the whole in view.
@@ -2037,9 +2057,10 @@ def gains_question_defs(db_id):
     return {
         "Realized gain": native("Realized gain", "scalar",
             "The gain or loss on what was sold over the window: the primary "
-            "realized lots, at the gain their document states or proceeds "
-            "less cost basis. A sale no document covers is not in it; the "
-            "coverage table counts those.",
+            "realized lots, at the gain their document states, the lot "
+            "engine's where no document states the sale, or proceeds less "
+            "cost basis. A sale neither covers is not in it; the coverage "
+            "table counts those.",
             "SELECT sum(realized) AS realized\n  FROM web_gains" + where, {}),
         "Unrealized gain": native("Unrealized gain", "scalar",
             "The gain or loss on what is held at the window's end: clean "
@@ -2157,8 +2178,9 @@ def gains_question_defs(db_id):
         "Realized gains by tax year": native("Realized gains by tax year", "table",
             "Per calendar year in the window: the realized gain by holding "
             "period, wash sales disallowed, proceeds and the cost basis "
-            "sold, with the lots behind it and the sells no document "
-            "covers. Every source's documents summed; not a tax return.",
+            "sold, with the lots behind it and the sells neither a document "
+            "nor the lot engine covers. The documents and the engine's "
+            "rebuilt lots summed; not a tax return.",
             "SELECT CAST(year(period) AS VARCHAR) AS tax_year,\n"
             "       sum(realized) AS realized,\n" + ",\n".join(
                 f"       sum({c}) AS {a}" for c, a in term_split) + ",\n"
@@ -2200,17 +2222,23 @@ def gains_question_defs(db_id):
             "value held at the window's end and the part with a cost basis, "
             "then the window's counters, each a way a gain can be missing "
             "or misplaced (docs/GAINS.md §6). Sells without documents are "
-            "missing from realized; in-kind moves and corporate actions "
-            "carry gain from before the window into unrealized change.",
+            "missing from realized; sells rebuilt are realized by the lot "
+            "engine from the trades; in-kind moves and corporate actions "
+            "carry gain from before the window into unrealized change. "
+            "Under Missing cost basis = zero the coverage is whole and "
+            "basis_assumed_zero counts the positions and lots it assumed.",
             end + ", t AS (\n"
             "  SELECT silver_source_id,\n"
             "         sum(sells) AS sells,\n"
             "         sum(sells_without_documents) AS sells_without_documents,\n"
+            "         sum(sells_rebuilt) AS sells_rebuilt,\n"
             "         sum(realized_lots) AS realized_lots,\n"
             "         sum(lots_without_gain) AS lots_without_gain,\n"
             "         sum(in_kind_moves) AS in_kind_moves,\n"
             "         sum(corporate_actions) AS corporate_actions,\n"
             "         count(*) FILTER (WHERE basis_changed) AS basis_changed,\n"
+            "         sum(seed_lots) AS seed_lots,\n"
+            "         sum(basis_assumed_zero) AS basis_assumed_zero,\n"
             "         sum(fx_missing) AS fx_missing\n"
             "    FROM w GROUP BY 1),\n"
             "v AS (\n"
@@ -2222,8 +2250,9 @@ def gains_question_defs(db_id):
             "    FROM e WHERE end_applies GROUP BY 1)\n"
             "SELECT silver_source_id AS source, v.value, v.value_with_basis,\n"
             "       v.basis_coverage, t.sells, t.sells_without_documents,\n"
-            "       t.realized_lots, t.lots_without_gain, t.in_kind_moves,\n"
-            "       t.corporate_actions, t.basis_changed, t.fx_missing\n"
+            "       t.sells_rebuilt, t.realized_lots, t.lots_without_gain,\n"
+            "       t.in_kind_moves, t.corporate_actions, t.basis_changed,\n"
+            "       t.seed_lots, t.basis_assumed_zero, t.fx_missing\n"
             "  FROM t FULL JOIN v USING (silver_source_id)\n ORDER BY 1",
             _percent_viz("basis_coverage")),
     }
@@ -2609,6 +2638,7 @@ CASHFLOW_PICKERS = [(CASHFLOW_CURRENCY_PARAM_ID, "currency"),
 # The Gains dashboard's own picker ids.
 GAINS_CURRENCY_PARAM_ID = "aa5df111"
 GAINS_TAX_WRAPPER_PARAM_ID = "aa5df112"
+GAINS_MISSING_PARAM_ID = "aa5df113"
 
 # The Gains filters. The tax wrapper is the one of its own: a realized
 # gain in a taxable account is a tax bill, in a retirement account it is
@@ -2617,7 +2647,8 @@ GAINS_FILTERS = {**range_filters("period"),
                  "tax_wrapper": ("tax_wrapper", "string/=")}
 GAINS_PICKERS = [(GAINS_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
-                 (GAINS_TAX_WRAPPER_PARAM_ID, "tax_wrapper")]
+                 (GAINS_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
+                 (GAINS_MISSING_PARAM_ID, "missing_basis")]
 
 SPEND_PICKERS = [(SPEND_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
@@ -3790,27 +3821,29 @@ def dashboard_parameters(model_ids, mode, name=""):
                     "value_field": ["field", field,
                                     {"base-type": "type/Text"}]}}
 
-    def currency_picker(pid):
-        """The required reporting-currency picker every filtered
-        dashboard carries.
-
-        Required with a default, because a card running with the
-        currency cleared would be wrong: a tile over a model with one
-        row per (line, reporting currency) would sum every currency,
-        and a native tile's {{currency}} variable needs a value. A
-        required parameter resets to its default rather than clearing.
-        The default is the configured one (DEFAULT_CURRENCY). The list
-        is static because the reporting currencies are the product's,
-        not the data's, and a card-backed list would re-scan the whole
-        population for a few known strings. `values_query_type` is what
+    def static_picker(pid, name, slug, default, values):
+        """A required single-value picker over a fixed list: the
+        product's own vocabulary, not the data's, so a card-backed list
+        would re-scan the whole population for a few known strings.
+        Required with a default, because a required parameter resets to
+        its default rather than clearing. `values_query_type` is what
         makes Metabase render a dropdown instead of a free-text box."""
-        return {"id": pid, "name": "Currency", "slug": "currency",
+        return {"id": pid, "name": name, "slug": slug,
                 "type": "string/=", "sectionId": "string",
-                "isMultiSelect": False, "default": [DEFAULT_CURRENCY],
+                "isMultiSelect": False, "default": [default],
                 "required": True,
                 "values_query_type": "list",
                 "values_source_type": "static-list",
-                "values_source_config": {"values": list(REPORTING_CURRENCIES)}}
+                "values_source_config": {"values": list(values)}}
+
+    def currency_picker(pid):
+        """The required reporting-currency picker every filtered
+        dashboard carries, defaulting to the configured currency
+        (DEFAULT_CURRENCY). A card running with the currency cleared
+        would be wrong: a tile over a model with one row per (line,
+        reporting currency) would sum every currency, and a native
+        tile's {{currency}} variable needs a value."""
+        return static_picker(pid, "Currency", "currency", DEFAULT_CURRENCY, REPORTING_CURRENCIES)
 
     source = card_picker(SOURCE_PARAM_ID, "Source", "source",
                          "report_sources_latest", "silver_source_id")
@@ -3871,11 +3904,16 @@ def dashboard_parameters(model_ids, mode, name=""):
                   "sectionId": "date", "default": "past12months~"}
     if name in GAINS_DASHBOARDS:
         # The tax wrapper's values come off the accounts model, the
-        # vocabulary web_gains joins in from the same table.
+        # vocabulary web_gains joins in from the same table. Missing cost
+        # basis is required, like the currency: report_gains holds a row
+        # set per reading, and a tile with the picker cleared would sum
+        # both.
+        missing = static_picker(GAINS_MISSING_PARAM_ID, "Missing cost basis", "missing_basis",
+                                DEFAULT_MISSING_BASIS, MISSING_BASIS_READINGS)
         return [currency_picker(GAINS_CURRENCY_PARAM_ID), time_range, source,
                 card_picker(GAINS_TAX_WRAPPER_PARAM_ID, "Tax wrapper",
                             "tax_wrapper", "report_accounts_latest",
-                            "tax_wrapper")]
+                            "tax_wrapper"), missing]
     if name in CASHFLOW_DASHBOARDS:
         # The Investing grain: net the section as one movement — the
         # question a reader opens with, "did the portfolio feed the
@@ -3883,13 +3921,8 @@ def dashboard_parameters(model_ids, mode, name=""):
         # per asset class, which is the step in. Required with a `whole`
         # default so a card never runs with it cleared, and a static list
         # because the two grains are the feature's, not the data's.
-        investing = {"id": CASHFLOW_INVESTING_PARAM_ID, "name": "Investing",
-                     "slug": "investing", "type": "string/=",
-                     "sectionId": "string", "isMultiSelect": False,
-                     "default": ["whole"], "required": True,
-                     "values_query_type": "list",
-                     "values_source_type": "static-list",
-                     "values_source_config": {"values": ["whole", "class"]}}
+        investing = static_picker(CASHFLOW_INVESTING_PARAM_ID, "Investing", "investing",
+                                  "whole", ("whole", "class"))
         # BOTH dashboards carry the same five: unlike the spending and
         # income pairs, the twin drops nothing, because none of these
         # pickers renders a dropdown of anything that identifies an

@@ -38,10 +38,11 @@ _resolve_knobs() {
 }
 
 # _load_config reads the resolved `web` settings (enabled, port), the
-# gold DB path and the default currency from wealthdb.cfg, via the
-# engine's `web-config` subcommand — the one component that parses +
-# validates the JSON. The default currency stays in
-# WEALTHDB_DEFAULT_CURRENCY, which _provision passes on.
+# gold DB path, the default currency and the default reading of a
+# missing cost basis from wealthdb.cfg, via the engine's `web-config`
+# subcommand — the one component that parses + validates the JSON. The default currency stays in
+# WEALTHDB_DEFAULT_CURRENCY and the default reading of a missing cost
+# basis in WEALTHDB_MISSING_BASIS, which _provision passes on.
 _load_config() {
     _require_docker
     local out
@@ -292,7 +293,8 @@ _provision() {
     echo "web: provisioning Metabase (admin + gold database + report models + dashboards)…" >&2
     if python3 "$HERE/provision.py" --base "http://127.0.0.1:$PORT" \
          --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold \
-         --default-currency "${WEALTHDB_DEFAULT_CURRENCY:-USD}"; then
+         --default-currency "${WEALTHDB_DEFAULT_CURRENCY:-USD}" \
+         --missing-basis "${WEALTHDB_MISSING_BASIS:-ignore}"; then
         PROV_LOGIN="log in as $email (password $pwhint)"
     else
         PROV_LOGIN="auto-provision incomplete — finish setup in the browser"
