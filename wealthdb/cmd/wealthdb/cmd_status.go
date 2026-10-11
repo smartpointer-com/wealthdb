@@ -9,6 +9,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -27,12 +28,17 @@ func cmdStatus(ctx context.Context, g globalFlags, subargs []string, _ io.Reader
 		fmt.Fprintln(stderr, `usage: wealthdb status [<silver_source_id>] [-v]
 
 Without <id>: one line per silver source in the config — kind,
-path, gold-side counts, watermark, silver-side change number, and
-a * if a `+"`wealthdb load`"+` would bring in new data.
+path, gold-side counts, the date its holdings were last observed,
+watermark, silver-side change number, and a * if a
+`+"`wealthdb load`"+` would bring in new data.
 
 With <id>: a detailed per-source block — counts per gold table,
-silver Status() extrema, the stored watermark, and the most
-recent load_audit rows.
+silver Status() extrema, when the source's holdings and its ledger
+were last observed, the stored watermark, and the most recent
+load_audit rows. A source is observed when a run reads it, whether
+or not anything changed: a portal that marks quarterly is observed
+through its latest download, its snapshot range through the
+quarter's end.
 
 -v additionally counts 'other'-bucketed rows per source (asset_
 class='other' positions, kind='other' transactions), the
@@ -111,6 +117,8 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 	fmt.Fprintf(stdout, "  high_watermark:  %s%s\n", formatWatermark(st.HighWatermark), advancedHint)
 	fmt.Fprintf(stdout, "  first_loaded:    %s\n", formatDateTime(st.FirstLoadedAt))
 	fmt.Fprintf(stdout, "  last_loaded:     %s\n", formatDateTime(st.LastLoadedAt))
+	fmt.Fprintf(stdout, "  observed:        holdings %s, ledger %s\n",
+		formatOptionalDate(st.ObservedSnapshotsThrough), formatOptionalDate(st.ObservedTransactionsThrough))
 	fmt.Fprintln(stdout, "  gold-side counts:")
 	fmt.Fprintf(stdout, "    positions:     %d\n", st.PositionsCount)
 	fmt.Fprintf(stdout, "    cash_balances: %d\n", st.CashBalancesCount)
@@ -130,6 +138,8 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 		fmt.Fprintf(stdout, "    LatestChangeNumber: %d\n", silverStatus.LatestChangeNumber)
 		fmt.Fprintf(stdout, "    snapshot range:     %s\n", formatRange(silverStatus.OldestSnapshotAt, silverStatus.LatestSnapshotAt))
 		fmt.Fprintf(stdout, "    tx range:           %s\n", formatRange(silverStatus.OldestTransactionAt, silverStatus.LatestTransactionAt))
+		fmt.Fprintf(stdout, "    observed:           holdings %s, ledger %s\n",
+			formatOptionalDate(silverStatus.ObservedSnapshotsThrough), formatOptionalDate(silverStatus.ObservedTransactionsThrough))
 	}
 
 	// Most-recent load audit.
@@ -199,53 +209,30 @@ func printOneLineStatus(ctx context.Context, db *sql.DB, src *config.SilverSourc
 			st.CashflowExcludedByKindCount, st.CashflowNoFarAccountCount)
 	}
 
-	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, watermark=%s%s%s\n",
-		src.ID, st.Kind, st.PositionsCount, st.TransactionsCount, formatWatermark(st.HighWatermark),
-		advanced, driftHint)
+	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, observed=%s, watermark=%s%s%s\n",
+		src.ID, st.Kind, st.PositionsCount, st.TransactionsCount, formatOptionalDate(st.ObservedSnapshotsThrough),
+		formatWatermark(st.HighWatermark), advanced, driftHint)
 }
 
 // probeSilverStatus opens the silver via the adapter and calls
 // Status(). Used both by overview and detailed views to flag
 // "silver has advanced past the stored watermark" without
 // requiring a load.
-func probeSilverStatus(ctx context.Context, src *config.SilverSource) (canonical_status, error) {
+func probeSilverStatus(ctx context.Context, src *config.SilverSource) (canonical.Status, error) {
 	adapter, err := silver.Get(src.Kind)
 	if err != nil {
-		return canonical_status{}, err
+		return canonical.Status{}, err
 	}
 	spec, err := src.ToSilverOpenSpec()
 	if err != nil {
-		return canonical_status{}, err
+		return canonical.Status{}, err
 	}
 	conn, err := adapter.Open(ctx, spec)
 	if err != nil {
-		return canonical_status{}, err
+		return canonical.Status{}, err
 	}
 	defer conn.Close()
-	s, err := conn.Status(ctx)
-	if err != nil {
-		return canonical_status{}, err
-	}
-	return canonical_status{
-		OldestSnapshotAt:    s.OldestSnapshotAt,
-		LatestSnapshotAt:    s.LatestSnapshotAt,
-		OldestTransactionAt: s.OldestTransactionAt,
-		LatestTransactionAt: s.LatestTransactionAt,
-		LatestChangeNumber:  s.LatestChangeNumber,
-	}, nil
-}
-
-// canonical_status is a local mirror of canonical.Status so this
-// file doesn't have to import canonical just for one type. (The
-// silver.Adapter API still depends on canonical, but the cmd
-// layer doesn't need to surface canonical types in its own
-// helpers.)
-type canonical_status struct {
-	OldestSnapshotAt    int64
-	LatestSnapshotAt    int64
-	OldestTransactionAt int64
-	LatestTransactionAt int64
-	LatestChangeNumber  int64
+	return conn.Status(ctx)
 }
 
 // formatRange renders an [oldest, latest] timestamp pair as

@@ -92,13 +92,8 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 		return b
 	}
 
-	out := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	out := canonical.UnknownStatus()
+	var feeds []canonical.Status
 	if c.psn != nil {
 		s, err := c.psn.Status(ctx)
 		if err != nil {
@@ -109,6 +104,7 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 		out.OldestTransactionAt = combine(out.OldestTransactionAt, s.OldestTransactionAt, min)
 		out.LatestTransactionAt = combine(out.LatestTransactionAt, s.LatestTransactionAt, max)
 		out.LatestChangeNumber = combine(out.LatestChangeNumber, s.LatestChangeNumber, max)
+		feeds = append(feeds, s)
 	}
 	if c.web != nil {
 		s, err := c.web.Status(ctx)
@@ -120,7 +116,11 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 		out.OldestTransactionAt = combine(out.OldestTransactionAt, s.OldestTransactionAt, min)
 		out.LatestTransactionAt = combine(out.LatestTransactionAt, s.LatestTransactionAt, max)
 		out.LatestChangeNumber = combine(out.LatestChangeNumber, s.LatestChangeNumber, max)
+		feeds = append(feeds, s)
 	}
+	// The report feed states the securities and the web feed the cash
+	// accounts: the source is observed only as far as both are.
+	out.ObservedSnapshotsThrough, out.ObservedTransactionsThrough = silver.MergeObserved(feeds, false)
 	return out, nil
 }
 

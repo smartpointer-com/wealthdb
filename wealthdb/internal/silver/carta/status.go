@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // contentSpan is the MIN/MAX snapshot_at across the position-bearing content
@@ -28,13 +29,7 @@ SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
 // live-time signal, one row per ingested bronze run, so an idle reload is a
 // no-op).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	var oldS, newS, latestRun sql.NullInt64
 	if err := c.db.QueryRowContext(ctx, contentSpan).Scan(&oldS, &newS); err != nil {
 		return s, fmt.Errorf("carta Status span: %w", err)
@@ -69,6 +64,9 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	} else if ok {
 		s.OldestTransactionAt = oldestTx
 		s.LatestTransactionAt = latestTx
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "carta", `SELECT MAX(snapshot_at) FROM dump_runs WHERE dry_run = 0`, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

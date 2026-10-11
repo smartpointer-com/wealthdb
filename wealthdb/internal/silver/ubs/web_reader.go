@@ -44,13 +44,7 @@ func (r *webReader) Close() error {
 // times come from `transactions.value_date`. The LatestChange-
 // Number is MAX of either (whichever advanced).
 func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
-	out := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	out := canonical.UnknownStatus()
 	// dump_runs always has at least one row per snapshot, even
 	// when transactions/documents tables are empty for that run.
 	err := r.db.QueryRowContext(ctx, `
@@ -80,7 +74,31 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 		out.LatestSnapshotAt = histHi
 	}
 	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
+	if err := r.observed(ctx, &out); err != nil {
+		return canonical.Status{}, err
+	}
 	return out, nil
+}
+
+// observed sets the watermarks from the runs: each run reads the
+// holdings, and the ledger over its window [window_since,
+// window_until], so the ledger is observed through the end of the
+// first gapless stretch of the windows. A silver from before the window
+// columns counts every run as reading both through its own time.
+func (r *webReader) observed(ctx context.Context, out *canonical.Status) error {
+	windows, err := silver.HasColumn(ctx, r.db, "dump_runs", "window_since")
+	if err != nil {
+		return err
+	}
+	if err := silver.ObserveByRuns(ctx, r.db, "ubs-web", `SELECT MAX(snapshot_at) FROM dump_runs`, out); err != nil {
+		return err
+	}
+	if !windows {
+		return nil
+	}
+	out.ObservedTransactionsThrough, err = silver.CoveredByRuns(ctx, r.db, "ubs-web", `
+SELECT window_since, COALESCE(window_until, snapshot_at) FROM dump_runs WHERE window_since IS NOT NULL`)
+	return err
 }
 
 // ChangeWindow returns the union of new snapshots and new

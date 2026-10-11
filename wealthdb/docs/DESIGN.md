@@ -243,15 +243,17 @@ conversion is a join against `fx_rates` per §10.6.
 Without `<id>`: one line per silver source from the config file,
 each with `silver_source_id`, `kind`, `path`, gold-side oldest/
 newest `snapshot_at`, position count at the latest snapshot,
-transaction count, stored `high_watermark`, and silver-side
+transaction count, the date its holdings were last observed (§6.4),
+stored `high_watermark`, and silver-side
 `LatestChangeNumber` (from `plugin.Status()`). A `*` flag marks
 sources where silver has advanced past the watermark — load
 candidates.
 
 With `<id>`: detailed report — per-table counts in gold for that
 silver source, full `plugin.Status()` (oldest/latest snapshot and
-transaction timestamps in silver, latest change number), the
-stored watermark, and the last few rows from `load_audit`.
+transaction timestamps in silver, latest change number, when the
+holdings and the ledger were last observed), the stored watermark,
+and the last few rows from `load_audit`.
 
 ### 4.8 `wealthdb snapshots <id> | -a`
 
@@ -1168,6 +1170,8 @@ type Status struct {
     OldestTransactionAt  int64  // Unix seconds UTC; -1 if silver has no transactions
     LatestTransactionAt  int64  // -1 if no transactions
     LatestChangeNumber   int64  // monotone, opaque to gold; valid values start at 0; -1 = "silver is empty / nothing observable yet"
+    ObservedSnapshotsThrough    int64  // when a run last read the holdings (§6.4); -1 if unknown
+    ObservedTransactionsThrough int64  // through when the ledger is held without a gap (§6.4); -1 if unknown
 }
 
 type Window struct {
@@ -1281,6 +1285,43 @@ What it does **not** guarantee:
 - Same `LatestChangeNumber` with different silver content. If
   silver is amended in place without bumping the change number,
   gold sees a no-op. Plugins must avoid this.
+
+#### Observed through
+
+Every fact in gold is dated by when it is true: a snapshot's as-of,
+a transaction's date. The two observed watermarks of `Status` say
+when the source was last looked at. A portal that marks its holdings
+quarterly and was read this morning is observed through this
+morning, while its latest snapshot is the quarter's end. A feed that
+stopped running is observed through its last run, however current
+its carried values look.
+
+- `ObservedSnapshotsThrough` is the latest run that read the
+  holdings, or the latest statement of a statement corpus.
+- `ObservedTransactionsThrough` is the end of the first gapless
+  stretch the runs' fetch windows cover, from the earliest window.
+  Windows that meet within a day join (`silver.CoveredThrough`).
+- A silver that records no fetch windows counts each run as reading
+  the ledger from the previous run or from the start of the history,
+  so both watermarks are its latest run (`silver.ObserveByRuns`).
+  That is every kind but these:
+
+| kind | holdings | ledger |
+|---|---|---|
+| fidelity (also svb) | runs that read the positions page; the latest statement of a corpus | the activity windows of the runs, and the span of the statements |
+| ubs | the earlier of the report feed and the web feed: each states a part of the holdings | the same; the web feed's windows |
+| schwab | the later of the api and web feeds: each reads every account | the same |
+| carta, viac | runs that are not dry runs | the same |
+| manual | the latest load of the book | the same |
+| synthetic | the end of the latest run's window | the run windows |
+
+The loader stamps both into `silver_sources` on every load, including
+one that finds no new data (§8.1): that a run found nothing new is
+itself the observation a freshness reader needs. The view
+`source_observed` reads them, NULL where a silver does not say;
+`wealthdb status`, the `holdings sources` column `observed_date`, the
+MCP `status` tool and the Data Freshness dashboard count staleness
+from it.
 
 ### 6.5 Pull-model batched iterator
 
@@ -1498,7 +1539,7 @@ CREATE TABLE schema_meta (
 --
 -- Each new adapter widens the silver_kind CHECK in its own migration
 -- (DuckDB cannot alter a constraint in place, so the migration renames
--- and recreates the table).
+-- and recreates the table, carrying every column below).
 CREATE TABLE silver_sources (
     silver_source_id    TEXT    PRIMARY KEY,
     silver_kind         TEXT    NOT NULL CHECK (silver_kind IN (
@@ -1511,7 +1552,9 @@ CREATE TABLE silver_sources (
     high_watermark      BIGINT  NOT NULL,            -- plugin's logical change number after the last load
     first_loaded_at     BIGINT  NOT NULL,
     last_loaded_at      BIGINT  NOT NULL,
-    fx_priority         INTEGER                      -- config's FX precedence, stamped on load; §10.6 / §13.2
+    fx_priority         INTEGER,                     -- config's FX precedence, stamped on load; §10.6 / §13.2
+    observed_snapshots_through    BIGINT DEFAULT -1, -- Status watermarks, stamped on every load; §6.4
+    observed_transactions_through BIGINT DEFAULT -1
 );
 
 -- Audit log of `wealthdb load` invocations that observed changes. One
@@ -2019,6 +2062,7 @@ continuous queries. We just trigger it manually.
 1. open silver via the plugin
 2. status     := plugin.Status()
 3. watermark  := silver_sources.high_watermark    (-1 if first load)
+   stamp silver_sources.observed_* := status.Observed*  (§6.4; also on a no-op)
 
 4. if status.LatestChangeNumber == watermark:
        no-op, exit (silver has not advanced)
@@ -3080,6 +3124,11 @@ at every load, which `gains_windows_all` maps every key through; and
 reads a cost basis the zero reading assumes at one boundary against one
 stated at the other as `basis_changed`.
 
+Migration 0122 adds `silver_sources.observed_snapshots_through` and
+`observed_transactions_through`, when the silver last observed the
+source's holdings and its ledger (§6.4), and the view
+`source_observed` that reads them.
+
 ## 11. Repository layout
 
 ```
@@ -3616,7 +3665,7 @@ Adapter-supplied values today:
   `safekeeping_accounts.AcctTpDesc` + `AcctSubTypeDesc`
   (concatenated as `"Type / Sub"` when the sub is present) for
   safekeeping legs. `tax_wrapper` is derived from `AcctTpCd`
-  via an explicit known-code switch (every observed PSN code
+  via an explicit known-code switch (every known PSN code
   maps to `taxable_personal`); unknown codes log a one-shot
   WARN and leave the column nil. UBS PSN doesn't expose a
   per-account nickname, so `nickname` stays NULL unless the

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // fx_rates.snapshot_at is the observation date (Unix s @ 00:00 UTC).
@@ -18,13 +19,7 @@ import (
 // to the latest loaded fetch run. fred records no transactions, so the
 // transaction range is the "no observable state" sentinel.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	var oldS, newS sql.NullInt64
 	if err := c.db.QueryRowContext(ctx,
 		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM fx_rates`).
@@ -45,6 +40,9 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	}
 	if latest.Valid {
 		s.LatestChangeNumber = latest.Int64
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "fred", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

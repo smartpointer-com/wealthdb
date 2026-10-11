@@ -26,9 +26,11 @@ const lotsKind = "synthetic"
 // lotsState is what the fake adapter serves on the next load.
 var lotsState struct {
 	changeNumber int64
-	window       canonical.Window
-	snapshots    canonical.SnapshotBatch
-	realized     []canonical.RealizedLotChange
+	// observed is the pair of observed watermarks Status reports.
+	observed  [2]int64
+	window    canonical.Window
+	snapshots canonical.SnapshotBatch
+	realized  []canonical.RealizedLotChange
 }
 
 type lotsAdapter struct{}
@@ -42,7 +44,8 @@ type lotsConn struct{}
 
 func (lotsConn) Close() error { return nil }
 func (lotsConn) Status(context.Context) (canonical.Status, error) {
-	return canonical.Status{LatestChangeNumber: lotsState.changeNumber}, nil
+	return canonical.Status{LatestChangeNumber: lotsState.changeNumber,
+		ObservedSnapshotsThrough: lotsState.observed[0], ObservedTransactionsThrough: lotsState.observed[1]}, nil
 }
 func (lotsConn) ChangeWindow(context.Context, int64) (canonical.Window, error) {
 	return lotsState.window, nil

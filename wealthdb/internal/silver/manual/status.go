@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Silver dates are source ISO TEXT (calendar dates); strftime('%s', …)
@@ -25,13 +26,7 @@ func (c *Connection) snapshotExtrema() string {
 // and a subsequent `wealthdb load` re-emits; an idle reload (no new load)
 // is a no-op.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	var oldS, newS sql.NullInt64
 	if err := c.db.QueryRowContext(ctx, c.snapshotExtrema()).Scan(&oldS, &newS); err != nil {
 		return s, fmt.Errorf("manual Status snapshot: %w", err)
@@ -63,6 +58,9 @@ SELECT MIN(CAST(strftime('%s', exit_date) AS INTEGER)), MAX(CAST(strftime('%s', 
 	}
 	if latestLoad.Valid {
 		s.LatestChangeNumber = latestLoad.Int64
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "manual", `SELECT MAX(CAST(load_at AS INTEGER)) FROM load_runs`, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

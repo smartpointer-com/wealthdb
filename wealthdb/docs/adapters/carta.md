@@ -305,6 +305,8 @@ sit years before the download (an exercise, an acquisition, a quarterly NAV) and
 must fall in-window to reach gold, and a fund's calls can precede its first
 statement. `Status` reports the content span widened by the fund carry days
 as the observable range, with `LatestChangeNumber` = the newest dump.
+The source is observed through the newest dump that is not a dry run
+(DESIGN.md §6.4).
 
 ## Open questions / future work
 

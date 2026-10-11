@@ -1596,6 +1596,27 @@ for _name, _tup in _FRESH.items():
     _q = _tup[-2]["query"]
     check(f"'{_name}' leaves the declared source out", _q.get("filter") == _declared_out, _q.get("filter"))
 
+# Freshness is the last read, not the latest snapshot: a source that
+# marks quarterly and was read today is current. Both sources models
+# carry the read (gold source_observed), and every freshness card
+# counts its days from it.
+_models = p.report_models()
+check("both sources models carry when a run last read each source",
+      all("source_observed" in _models[m][0] and "observed_at" in _models[m][0]
+          for m in ("report_sources_latest", "report_sources_latest_pct")),
+      [_models[m][0][:120] for m in ("report_sources_latest", "report_sources_latest_pct")])
+_observed = ["field", "observed_at", {"base-type": "type/DateTime"}]
+for _name, _tup in _FRESH.items():
+    _q = _tup[-2]["query"]
+    check(f"'{_name}' counts its days from the last read",
+          _q["expressions"]["days_stale"][1] == _observed, _q["expressions"].get("days_stale"))
+_fields = _QDEFS["Source freshness"][-2]["query"]["fields"]
+check("'Source freshness' shows the read, the snapshot and the days quiet",
+      _observed in _fields and ["expression", "days_quiet"] in _fields, _fields)
+_mig = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wealthdb", "internal",
+                         "gold", "migrations", "0122_observed_through.sql")).read()
+check("source_observed is a gold view", "CREATE OR REPLACE VIEW source_observed" in _mig)
+
 if FAILS:
     print(f"provision tests: {FAILS} failed")
 else:

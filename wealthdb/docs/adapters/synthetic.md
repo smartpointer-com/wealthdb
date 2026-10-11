@@ -250,6 +250,10 @@ A run's `[window_start, window_end]` (inclusive) bounds every
 `snapshot_at` and `occurred_at` it added, and the UTC midnight of
 every `disposal_date`. That is the contract the generator keeps.
 
+The holdings are observed through the latest `window_end`, and the
+ledger through the end of the first gapless stretch the windows
+cover (DESIGN.md §6.4).
+
 `ChangeWindow(since)` is **incremental**. It reads the runs with
 `change_number > since`:
 

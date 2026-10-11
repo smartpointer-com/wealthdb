@@ -195,6 +195,9 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 	if err != nil {
 		return nil, fmt.Errorf("Load(%s): upsert silver_sources: %w", spec.ID, err)
 	}
+	if err := stampObserved(ctx, tx, spec.ID, status); err != nil {
+		return nil, fmt.Errorf("Load(%s): stamp observed: %w", spec.ID, err)
+	}
 
 	res := &LoadResult{
 		SourceID:           spec.ID,
@@ -765,6 +768,26 @@ func insertLoadAudit(ctx context.Context, tx *sql.Tx, sourceID string, now, wate
 		res.Window.Start, res.Window.End,
 		res.SnapshotsLoaded, res.TransactionsLoaded,
 	)
+	return err
+}
+
+// stampObserved records when the silver last observed the source
+// (canonical.Status's observed watermarks), on every load, including one
+// that finds no new data: that a download found nothing new is itself
+// what a freshness reader needs. A value at or before the epoch is no
+// observation and is stored as -1.
+func stampObserved(ctx context.Context, tx *sql.Tx, sourceID string, st canonical.Status) error {
+	known := func(t int64) int64 {
+		if t <= 0 {
+			return -1
+		}
+		return t
+	}
+	_, err := tx.ExecContext(ctx, `
+        UPDATE silver_sources
+           SET observed_snapshots_through = ?, observed_transactions_through = ?
+         WHERE silver_source_id = ?
+    `, known(st.ObservedSnapshotsThrough), known(st.ObservedTransactionsThrough), sourceID)
 	return err
 }
 

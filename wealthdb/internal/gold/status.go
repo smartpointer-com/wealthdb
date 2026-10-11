@@ -10,16 +10,21 @@ import (
 // source. Used by `wealthdb status` for a quick
 // "what does gold currently know about this silver" view.
 type SourceStatus struct {
-	SilverSourceID    string
-	Kind              string
-	Path              string
-	HighWatermark     int64
-	FirstLoadedAt     int64
-	LastLoadedAt      int64
-	PositionsCount    int
-	CashBalancesCount int
-	TransactionsCount int
-	FxRatesCount      int
+	SilverSourceID string
+	Kind           string
+	Path           string
+	HighWatermark  int64
+	FirstLoadedAt  int64
+	LastLoadedAt   int64
+	// ObservedSnapshotsThrough / ObservedTransactionsThrough are when
+	// the silver last observed the source's holdings and its ledger
+	// (canonical.Status), -1 when unknown.
+	ObservedSnapshotsThrough    int64
+	ObservedTransactionsThrough int64
+	PositionsCount              int
+	CashBalancesCount           int
+	TransactionsCount           int
+	FxRatesCount                int
 	// OldestSnapshotAt / LatestSnapshotAt are -1 when the
 	// source has no snapshot-grain rows in gold.
 	OldestSnapshotAt int64
@@ -133,10 +138,12 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 	s := &SourceStatus{SilverSourceID: silverSourceID}
 
 	err := db.QueryRowContext(ctx,
-		`SELECT silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at
+		`SELECT silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at,
+		        COALESCE(observed_snapshots_through, -1), COALESCE(observed_transactions_through, -1)
 		   FROM silver_sources WHERE silver_source_id = ?`,
 		silverSourceID,
-	).Scan(&s.Kind, &s.Path, &s.HighWatermark, &s.FirstLoadedAt, &s.LastLoadedAt)
+	).Scan(&s.Kind, &s.Path, &s.HighWatermark, &s.FirstLoadedAt, &s.LastLoadedAt,
+		&s.ObservedSnapshotsThrough, &s.ObservedTransactionsThrough)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

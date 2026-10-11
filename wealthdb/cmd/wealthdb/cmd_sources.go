@@ -66,6 +66,14 @@ func buildSourceColumnRegistry(outCcy string) []columnSpec[gold.SourceRow] {
 			}
 			return formatDate(r.SnapshotAt)
 		}},
+		// The date through which the source's holdings were observed:
+		// later than snapshot_date where a run found nothing new.
+		{Name: "observed_date", Align: output.AlignLeft, Extract: func(r gold.SourceRow) string {
+			if r.ObservedAt == 0 {
+				return ""
+			}
+			return formatDate(r.ObservedAt)
+		}},
 		{Name: "base_currency", Align: output.AlignLeft,
 			Extract: func(r gold.SourceRow) string { return strOrEmpty(r.BaseCurrency) }},
 		// Source-level taxonomy rollups. Strict agree-or-NULL
@@ -109,6 +117,10 @@ rolling up every one of its accounts (positions + cash): the one
 row to read for "how much is at <institution>". Sum of
 total_value_<CCY> across all rows equals the same sum from
 'wealthdb holdings accounts', 'portfolios', and 'global'.
+
+snapshot_date is the date of the source's latest holdings.
+observed_date (opt-in) is the date through which they were observed:
+later than snapshot_date when a download found nothing new.
 
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)

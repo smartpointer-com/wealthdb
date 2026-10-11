@@ -15,13 +15,7 @@ import (
 // time. LatestChangeNumber = MAX(dump_runs.snapshot_at) so an
 // idle reload stays a no-op.
 func (c *psnReader) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(t) FROM (
@@ -68,6 +62,8 @@ SELECT
 	}
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
+		// A nightly report states the holdings and the day's events.
+		s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = latestRun.Int64, latestRun.Int64
 	}
 	return s, nil
 }

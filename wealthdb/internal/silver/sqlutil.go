@@ -223,7 +223,10 @@ func DatePtrFromNullUnix(n sql.NullInt64) *time.Time {
 
 // LoadClockStatus reports the content ranges and pins LatestChangeNumber
 // to MAX(dump_runs.snapshot_at). Each bronze dump loaded bumps it and a
-// subsequent `wealthdb load` re-emits; an idle reload is a no-op.
+// subsequent `wealthdb load` re-emits; an idle reload is a no-op. The
+// same run is the observed watermark of both streams: each dump reads
+// the holdings, and the ledger from the last run or the start of the
+// history.
 func LoadClockStatus(ctx context.Context, db *sql.DB, kind, spanExtrema string) (canonical.Status, error) {
 	return LoadClockStatusOver(ctx, db, kind, spanExtrema,
 		`SELECT MIN(posted_at), MAX(posted_at) FROM transactions`)
@@ -232,13 +235,7 @@ func LoadClockStatus(ctx context.Context, db *sql.DB, kind, spanExtrema string) 
 // LoadClockStatusOver is LoadClockStatus with the transaction range read by
 // ledgerExtrema, for a silver whose ledger is not one `transactions` table.
 func LoadClockStatusOver(ctx context.Context, db *sql.DB, kind, spanExtrema, ledgerExtrema string) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 
 	var oldS, newS sql.NullInt64
 	if err := db.QueryRowContext(ctx, spanExtrema).Scan(&oldS, &newS); err != nil {
@@ -269,6 +266,8 @@ func LoadClockStatusOver(ctx context.Context, db *sql.DB, kind, spanExtrema, led
 	}
 	if latestLoad.Valid {
 		s.LatestChangeNumber = latestLoad.Int64
+		s.ObservedSnapshotsThrough = latestLoad.Int64
+		s.ObservedTransactionsThrough = latestLoad.Int64
 	}
 	return s, nil
 }

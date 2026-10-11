@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // snapshotExtrema is the MIN/MAX snapshot_at over the three snapshot-grain
@@ -20,13 +21,7 @@ SELECT MIN(t), MAX(t) FROM (
 // LatestChangeNumber to MAX(dump_runs.change_number). Every field is the
 // "no observable state" sentinel until something is there to observe.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 
 	var oldS, newS sql.NullInt64
 	if err := c.db.QueryRowContext(ctx, snapshotExtrema).Scan(&oldS, &newS); err != nil {
@@ -58,6 +53,17 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	}
 	if latest.Valid {
 		s.LatestChangeNumber = latest.Int64
+	}
+	// A run writes its window whole: the holdings through its end, and
+	// the ledger over [window_start, window_end].
+	snap, err := silver.LatestRun(ctx, c.db, "synthetic", `SELECT MAX(window_end) FROM dump_runs`)
+	if err != nil {
+		return s, err
+	}
+	s.ObservedSnapshotsThrough = snap
+	if s.ObservedTransactionsThrough, err = silver.CoveredByRuns(ctx, c.db, "synthetic",
+		`SELECT window_start, window_end FROM dump_runs`); err != nil {
+		return s, err
 	}
 	return s, nil
 }

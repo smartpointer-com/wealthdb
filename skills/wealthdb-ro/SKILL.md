@@ -429,9 +429,11 @@ or a transaction kind with no canonical direction).
 
 ## Diagnostics (read-only, safe)
 
-- `wealthdb status` — one line per source: gold-side counts, the loaded
-  watermark, and a `*` if newer data is waiting. Not yours to load; it just
-  signals the data may be behind.
+- `wealthdb status` — one line per source: gold-side counts, the date its
+  holdings were last observed, the loaded watermark, and a `*` if newer data
+  is waiting. Not yours to load; it just signals the data may be behind. A
+  source is current through its last observation, not its latest snapshot:
+  a portal that marks quarterly shows an old snapshot and a recent read.
 - `wealthdb status <source>` — detail for one source; add `-v` for taxonomy and
   coverage counters.
 - `wealthdb snapshots <source>` (or `-a`) — the dates gold actually has data

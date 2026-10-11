@@ -13,13 +13,7 @@ import (
 // the change number is MAX(dump_runs.snapshot_at), or -1 if there
 // are no dump_runs at all.
 func (c *apiReader) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 
 	// One query that returns all five extrema. COALESCE(...,-1)
 	// gives us the canonical sentinel when a table is empty.
@@ -46,8 +40,10 @@ SELECT
 	if newT.Valid {
 		s.LatestTransactionAt = newT.Int64
 	}
-	// LatestChangeNumber == latest snapshot_at.
+	// LatestChangeNumber == latest snapshot_at. Each pull reads the
+	// holdings, and the ledger from its last pull, so it observes both.
 	s.LatestChangeNumber = s.LatestSnapshotAt
+	s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = s.LatestSnapshotAt, s.LatestSnapshotAt
 	return s, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Status reports the observable snapshot range. Relevate silver
@@ -23,13 +24,7 @@ import (
 // historical rows are deterministic outputs of the loader's PDF
 // parse step, not a separate change source.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), -1),
@@ -72,6 +67,9 @@ SELECT
 		if s.LatestSnapshotAt == -1 || histMax > s.LatestSnapshotAt {
 			s.LatestSnapshotAt = histMax
 		}
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "relevate", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

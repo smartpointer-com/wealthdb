@@ -182,6 +182,15 @@ is built over `PRIVACY_INCOME_FILTERS` like every other card there.
 Neither declares a currency variable, a share of rows being the same in
 every currency.
 
+**Data Freshness** counts a source's age from its last read, not from
+its latest snapshot: gold's `source_observed` (migration 0122) says
+when a run last read each source, whether or not anything changed
+(wealthdb/docs/DESIGN.md §6.4). A portal that marks its holdings
+quarterly and was read today is current. The table shows the read,
+the days since, the latest snapshot and the days the source has been
+quiet: read with nothing new. Both sources models carry the read as
+`observed_at`, so the privacy twin's table reads it too.
+
 The **Wealth Overview**'s "Investment income by month" card reads
 the same income base (migration 0072), so it and the Income dashboard
 agree to the cent. The first word is load-bearing twice: it says what

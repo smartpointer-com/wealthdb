@@ -177,6 +177,10 @@ transfer, a corporate action, an expiry) stays `other`.
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
 `dump_runs` is empty.
 
+Each feed is observed through its latest run. The source is observed
+through the later of the api and web feeds: each reads every account
+(DESIGN.md §6.4).
+
 ## 7. Web subsource (schwab-web)
 
 When the `schwab-web` subsource is configured, the adapter

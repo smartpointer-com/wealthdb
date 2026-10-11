@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Status reports the observable snapshot + transaction extrema and
@@ -20,13 +21,7 @@ import (
 // history reaches back to the contract's first year, well before
 // live scraping began.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(t) FROM (
@@ -61,6 +56,17 @@ SELECT
 	}
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
+	}
+	// A dry run reads nothing; a silver from before the column counts
+	// every run.
+	runs := `SELECT MAX(snapshot_at) FROM dump_runs`
+	if dry, err := silver.HasColumn(ctx, c.db, "dump_runs", "dry_run"); err != nil {
+		return s, err
+	} else if dry {
+		runs += ` WHERE NOT COALESCE(dry_run, 0)`
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "viac", runs, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

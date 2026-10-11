@@ -55,13 +55,7 @@ func (r *webReader) Close() error {
 // MAX(dump_runs.snapshot_at) — so a reload with no new dump is a
 // no-op even when historical content is present.
 func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
-	out := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	out := canonical.UnknownStatus()
 	if err := r.db.QueryRowContext(ctx, `
         SELECT COALESCE(MIN(snapshot_at), -1),
                COALESCE(MAX(snapshot_at), -1)
@@ -91,6 +85,9 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 		}
 	}
 	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
+	if err := silver.ObserveByRuns(ctx, r.db, "schwab-web", `SELECT MAX(snapshot_at) FROM dump_runs`, &out); err != nil {
+		return canonical.Status{}, err
+	}
 	return out, nil
 }
 

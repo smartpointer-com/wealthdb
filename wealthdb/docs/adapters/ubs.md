@@ -783,6 +783,13 @@ Where the lookup finds nothing, two weaker claims follow, in order:
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
 `dump_runs` is empty.
 
+The report feed is observed through its latest report. The web feed
+is observed through its latest run for the holdings, and for the
+ledger through the end of the first gapless stretch of the runs'
+windows (`window_since`, `window_until`). The source as a whole is
+observed through the earlier of the two feeds: the reports state the
+securities, the web feed the cash accounts (DESIGN.md §6.4).
+
 A new `dump_runs` row or event triggers a load. PSN delivers a report
 after the business day it covers, so a dump's holdings, balances and
 events are dated before the dump, and before the previous dump's time

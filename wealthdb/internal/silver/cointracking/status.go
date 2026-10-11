@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Status reports the observable snapshot + transaction extrema
@@ -15,13 +16,7 @@ import (
 // EXTRACT(epoch FROM …) coerces it to the int64 the canonical
 // Status expects.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), -1),
@@ -48,6 +43,9 @@ SELECT
 	}
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "cointracking", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

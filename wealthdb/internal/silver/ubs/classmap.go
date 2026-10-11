@@ -256,9 +256,8 @@ func privateMarketsPair(name string) (canonical.AssetClass, canonical.Vehicle) {
 // SDCA payload) to the canonical TaxWrapper enum. Per the
 // ubs-psn DESIGN.md §1 contract:
 //
-//   - Known codes map explicitly (currently all → taxable_personal;
-//     every observed PSN code so far is a private-banking
-//     product).
+//   - Known codes map explicitly (all → taxable_personal; every
+//     known PSN code is a private-banking product).
 //   - Unknown codes return "" so the caller leaves TaxWrapper nil,
 //     AND log a one-shot WARN to stderr.
 //     This is the alarm bell for "PSN started surfacing a code we
@@ -268,9 +267,9 @@ func privateMarketsPair(name string) (canonical.AssetClass, canonical.Vehicle) {
 //   - Empty code (silver payload missing AcctTpCd) is silent.
 //
 // The tables are deliberately not "default everything to
-// taxable_personal": every code observed so far is a
-// private-banking product, and the absence of pension codes in
-// observed silver proves nothing about how PSN would encode one.
+// taxable_personal": every known code is a private-banking
+// product, and the absence of a pension code from the known set
+// says nothing about how PSN would encode one.
 
 var knownCashAcctTpCd = map[string]canonical.TaxWrapper{
 	"OA155": canonical.TaxWrapperTaxablePersonal, // UBS current account for private clients

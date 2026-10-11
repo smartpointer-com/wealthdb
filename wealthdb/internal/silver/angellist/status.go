@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // contentExtrema yields the MIN/MAX content date — the position event
@@ -26,13 +27,7 @@ SELECT
 // advances the watermark, so idle reloads stay no-ops. Transaction extrema
 // come from the funding-account cash ledger.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	var oldest, latest, latestRun sql.NullInt64
 	if err := c.db.QueryRowContext(ctx, contentExtrema).
 		Scan(&oldest, &latest, &latestRun); err != nil {
@@ -60,6 +55,9 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	}
 	if txMax.Valid {
 		s.LatestTransactionAt = txMax.Int64
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "angellist", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

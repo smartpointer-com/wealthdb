@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Silver dates are source ISO TEXT (calendar dates); strftime('%s', …)
@@ -41,13 +42,7 @@ SELECT MIN(t), MAX(t) FROM (
 // LatestChangeNumber to MAX(dump_runs.snapshot_at) — a new download is the
 // only thing that advances the watermark, so idle reloads stay no-ops.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	var oldest, latest, latestRun sql.NullInt64
 	if err := c.db.QueryRowContext(ctx, snapshotExtrema).
 		Scan(&oldest, &latest, &latestRun); err != nil {
@@ -72,6 +67,9 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	}
 	if latestTx.Valid {
 		s.LatestTransactionAt = latestTx.Int64
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "equityzen", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

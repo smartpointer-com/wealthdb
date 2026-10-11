@@ -31,6 +31,12 @@ type SourceRow struct {
 	// 0 when the source has no data as of that date.
 	SnapshotAt int64
 
+	// ObservedAt is the instant through which the source's holdings
+	// were observed (silver_sources), capped at the as-of date: a quiet
+	// source is current through its latest run although its latest
+	// snapshot is older. 0 when unknown.
+	ObservedAt int64
+
 	// Aggregates in the source's rolled base currency (nil when the
 	// source's accounts have no agreed base currency).
 	PositionsValueBase *string
@@ -49,8 +55,12 @@ type SourceRow struct {
 // cash. All aggregation + FX is the report_sources macro; this is
 // the scan. Rows are ordered by silver_source_id.
 func SourcesAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]SourceRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_sources(?, ?)`, asOf, outCcy)
+	rows, err := db.QueryContext(ctx, `
+SELECT r.*, CASE WHEN o.observed_snapshots_through IS NULL THEN 0
+                 ELSE LEAST(o.observed_snapshots_through, CAST(? AS BIGINT)) END
+  FROM report_sources(?, ?) r
+  LEFT JOIN source_observed o USING (silver_source_id)
+ ORDER BY r.silver_source_id`, asOf, asOf, outCcy)
 	if err != nil {
 		return nil, fmt.Errorf("SourcesAsOf: %w", err)
 	}
@@ -65,7 +75,7 @@ func SourcesAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &baseCcy, &taxWrapper, &mgmtStyle, &r.SnapshotAt,
-			&pvb, &cvb, &tvb, &pvo, &cvo, &tvo,
+			&pvb, &cvb, &tvb, &pvo, &cvo, &tvo, &r.ObservedAt,
 		); err != nil {
 			return nil, fmt.Errorf("SourcesAsOf scan: %w", err)
 		}

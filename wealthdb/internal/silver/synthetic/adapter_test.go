@@ -300,11 +300,7 @@ func TestStatusEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := canonical.Status{
-		OldestSnapshotAt: -1, LatestSnapshotAt: -1,
-		OldestTransactionAt: -1, LatestTransactionAt: -1,
-		LatestChangeNumber: -1,
-	}
+	want := canonical.UnknownStatus()
 	if s != want {
 		t.Errorf("Status = %+v, want %+v", s, want)
 	}
@@ -325,7 +321,8 @@ func TestStatus(t *testing.T) {
 	want := canonical.Status{
 		OldestSnapshotAt: day(1), LatestSnapshotAt: day(4),
 		OldestTransactionAt: day(1), LatestTransactionAt: day(4),
-		LatestChangeNumber: 2,
+		LatestChangeNumber:       2,
+		ObservedSnapshotsThrough: day(4), ObservedTransactionsThrough: day(4),
 	}
 	if s != want {
 		t.Errorf("Status = %+v, want %+v", s, want)

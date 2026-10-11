@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Status reports the observable snapshot/transaction range and
@@ -18,13 +19,7 @@ import (
 // no new dump produces an empty window even when historical
 // positions are present.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.Status{
-		OldestSnapshotAt:    -1,
-		LatestSnapshotAt:    -1,
-		OldestTransactionAt: -1,
-		LatestTransactionAt: -1,
-		LatestChangeNumber:  -1,
-	}
+	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(t) FROM (
@@ -63,6 +58,9 @@ SELECT
 	}
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
+	}
+	if err := silver.ObserveByRuns(ctx, c.db, "swissquote", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

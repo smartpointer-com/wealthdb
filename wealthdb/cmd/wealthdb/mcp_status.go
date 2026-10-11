@@ -59,6 +59,11 @@ func statusColumns() []columnSpec[statusRow] {
 		{Name: "first_snapshot", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.OldestSnapshotAt })},
 		{Name: "latest_snapshot", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.LatestSnapshotAt })},
 		{Name: "latest_transaction", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.LatestTransactionAt })},
+		// When a run last read the source, whether or not anything had
+		// changed: a source that marks quarterly is current through its
+		// latest download, not its latest snapshot.
+		{Name: "observed_holdings", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.ObservedSnapshotsThrough })},
+		{Name: "observed_ledger", Align: output.AlignLeft, Extract: date(func(s *gold.SourceStatus) int64 { return s.ObservedTransactionsThrough })},
 		{Name: "last_loaded", Align: output.AlignLeft, Extract: func(r statusRow) string {
 			if r.st == nil {
 				return ""
@@ -76,7 +81,8 @@ func statusColumns() []columnSpec[statusRow] {
 }
 
 var defaultStatusColumns = []string{"silver_source", "kind", "state", "positions", "transactions",
-	"first_snapshot", "latest_snapshot", "latest_transaction", "last_loaded", "new_data"}
+	"first_snapshot", "latest_snapshot", "latest_transaction", "observed_holdings", "observed_ledger",
+	"last_loaded", "new_data"}
 
 // statusVerboseColumns are the counters status -v prints: what no
 // adapter or enrichment pass could place.
@@ -158,6 +164,8 @@ func statusDetail(ctx context.Context, db *sql.DB, cfg *config.Config, id string
 	add("transactions", fmt.Sprintf("%d", st.TransactionsCount))
 	add("snapshots", formatRange(st.OldestSnapshotAt, st.LatestSnapshotAt))
 	add("transaction_dates", formatRange(st.OldestTransactionAt, st.LatestTransactionAt))
+	add("observed_holdings", formatOptionalDate(st.ObservedSnapshotsThrough))
+	add("observed_ledger", formatOptionalDate(st.ObservedTransactionsThrough))
 	if verbose {
 		add("uncategorized_spending", fmt.Sprintf("%d", st.UncategorizedSpendCount))
 		add("uncategorized_income", fmt.Sprintf("%d", st.UncategorizedIncomeCount))

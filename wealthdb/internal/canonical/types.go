@@ -273,6 +273,27 @@ type Status struct {
 	OldestTransactionAt int64
 	LatestTransactionAt int64
 	LatestChangeNumber  int64
+	// ObservedSnapshotsThrough is the instant through which the silver's
+	// holdings reflect the source: the latest run that read them, or the
+	// end of the latest statement a corpus holds. A quiet source is
+	// observed through its latest run, however old its latest fact is.
+	ObservedSnapshotsThrough int64
+	// ObservedTransactionsThrough is the instant through which the
+	// silver holds the source's ledger without a gap: the end of the
+	// first gapless stretch its runs' fetch windows cover, where a
+	// silver records the windows, else its latest run.
+	ObservedTransactionsThrough int64
+}
+
+// UnknownStatus is a Status with every field at the -1 sentinel, the
+// start of every adapter's Status.
+func UnknownStatus() Status {
+	return Status{
+		OldestSnapshotAt: -1, LatestSnapshotAt: -1,
+		OldestTransactionAt: -1, LatestTransactionAt: -1,
+		LatestChangeNumber:       -1,
+		ObservedSnapshotsThrough: -1, ObservedTransactionsThrough: -1,
+	}
 }
 
 // Window is the return value of silver.Connection.ChangeWindow().

@@ -288,3 +288,52 @@ func TestSourcesHistoryCarryForward(t *testing.T) {
 		t.Errorf("history_multi latest total_value_chf = %v, want 1500", chfLatest)
 	}
 }
+
+// A source's observed date is when a run last read its holdings, capped
+// at the as-of date; NULL in silver_sources reads as 0.
+func TestSourcesAsOfCarriesTheObservedDate(t *testing.T) {
+	db, ctx := openMigrated(t)
+	usd := "USD"
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.UpsertAccounts(ctx, []canonical.AccountChange{{SilverSourceID: "test-src", AccountExternalID: "BROK1",
+			AccountKind: canonical.AccountKindBrokerage, BaseCurrency: &usd, FirstSeenAt: 1000, LastSeenAt: 1000}})
+	})
+	v := canonical.NewDecimalFromInt(200)
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertPositions(ctx, []canonical.PositionChange{{SilverSourceID: "test-src", SnapshotAt: 1000,
+			AccountExternalID: "BROK1", PositionKey: "Y", AssetClass: canonical.AssetClassPublicEquity,
+			Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: &v}})
+	})
+	read := func(asOf int64) SourceRow {
+		t.Helper()
+		rows, err := SourcesAsOf(ctx, db, asOf, "USD")
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("SourcesAsOf: %v %v", rows, err)
+		}
+		return rows[0]
+	}
+	if r := read(5000); r.ObservedAt != 0 || r.SnapshotAt != 1000 {
+		t.Errorf("unknown: %+v", r)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE silver_sources SET observed_snapshots_through = 4000 WHERE silver_source_id = 'test-src'`); err != nil {
+		t.Fatal(err)
+	}
+	if r := read(5000); r.ObservedAt != 4000 || r.SnapshotAt != 1000 {
+		t.Errorf("observed after the snapshot: %+v", r)
+	}
+	if r := read(3000); r.ObservedAt != 3000 {
+		t.Errorf("capped at the as-of date: %+v", r)
+	}
+}
+
+func TestMigration0122DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	if _, err := db.ExecContext(ctx, `UPDATE silver_sources SET observed_snapshots_through = 4000`); err != nil {
+		t.Fatal(err)
+	}
+	rerunMigrationDDL(t, db, ctx, "0122_observed_through.sql")
+	var got int64
+	if err := db.QueryRowContext(ctx, `SELECT observed_snapshots_through FROM source_observed`).Scan(&got); err != nil || got != 4000 {
+		t.Errorf("after replay: %d %v", got, err)
+	}
+}
