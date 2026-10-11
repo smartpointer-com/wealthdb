@@ -155,11 +155,16 @@ type lotFeed struct {
 	// findings are the feed's own, made outside the replay.
 	findings []lots.Finding
 	skipped  map[string]int
+	// stated lists the sources in stated mode, which the replay leaves
+	// alone: their sales realize against the stated basis in SQL
+	// (lotWriter.writeStated).
+	stated    []string
+	statedPol map[string]lots.Policy
 }
 
 // newLotFeed reads which sources a pass replays: every source whose
-// policy is not off. A move links sources, so a pass replays them all
-// together.
+// policy is fill or shadow. A move links sources, so a pass replays them
+// all together. A stated source is noted for the writer.
 func newLotFeed(ctx context.Context, db *sql.DB, cfg lots.Config) (*lotFeed, error) {
 	f := &lotFeed{
 		cfg:          cfg,
@@ -171,8 +176,21 @@ func newLotFeed(ctx context.Context, db *sql.DB, cfg lots.Config) (*lotFeed, err
 		walletTrades: map[lotWalletRef][]lotWalletTrade{},
 		documented:   map[[2]string]bool{},
 		skipped:      map[string]int{},
+		statedPol:    map[string]lots.Policy{},
 	}
 	return f, f.readSources(ctx, db)
+}
+
+// all lists the replayed and the stated sources: every source a pass
+// writes a run for.
+func (f *lotFeed) all() []string { return append(append([]string{}, f.ids...), f.stated...) }
+
+// policy is the policy a pass applies to source id.
+func (f *lotFeed) policy(id string) lots.Policy {
+	if s, ok := f.sources[id]; ok {
+		return s.pol
+	}
+	return f.statedPol[id]
 }
 
 // read reads the replayed sources' rows into events.
@@ -206,7 +224,12 @@ func (f *lotFeed) readSources(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 		p := f.cfg.PolicyFor(id, kind)
-		if p.Mode == lots.Off {
+		switch p.Mode {
+		case lots.Off:
+			continue
+		case lots.Stated:
+			f.stated = append(f.stated, id)
+			f.statedPol[id] = p
 			continue
 		}
 		f.sources[id] = &lotSource{id: id, kind: kind, pol: p}

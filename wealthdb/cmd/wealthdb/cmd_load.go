@@ -115,7 +115,7 @@ load semantics.`)
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "load: warning: could not stamp FX priorities: %s\n", err.Error())
 	}
-	if err := syncDeclaredAccounts(ctx, db, cfg, "load", stdout); err != nil {
+	if err := syncConfigRows(ctx, db, cfg, "load", stdout); err != nil {
 		fmt.Fprintf(stderr, "load: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}
@@ -123,20 +123,26 @@ load semantics.`)
 	return firstErr
 }
 
-// syncDeclaredAccounts stamps the config's declared accounts into the
-// accounts dimension, after the per-source loads and before the
-// enrichment pass that reads them. It is an error rather than a
-// warning, like the pass itself: a rule naming a declaration the
-// dimension does not hold would place its rows onto a far account the
-// statement cannot resolve, which is the hole the declarations exist
-// to close.
-func syncDeclaredAccounts(ctx context.Context, db *sql.DB, cfg *config.Config, verb string, stdout io.Writer) error {
+// syncConfigRows stamps the config's declared accounts into the
+// accounts dimension and its holding aliases into holding_aliases,
+// after the per-source loads and before the enrichment pass that reads
+// them. A failure is an error rather than a warning, like the pass
+// itself: a rule naming a declaration the dimension does not hold would
+// place its rows onto a far account the statement cannot resolve, which
+// is the hole the declarations exist to close.
+func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, verb string, stdout io.Writer) error {
 	n, err := gold.SyncDeclaredAccounts(ctx, db, cfg.DeclaredAccountChanges(time.Now().Unix()))
 	if err != nil {
 		return fmt.Errorf("declared accounts: %w", err)
 	}
 	if n > 0 {
 		fmt.Fprintf(stdout, "%s: %d declared account(s) stamped\n", verb, n)
+	}
+	if n, err = gold.SyncHoldingAliases(ctx, db, cfg.HoldingAliasRows()); err != nil {
+		return fmt.Errorf("holding aliases: %w", err)
+	}
+	if n > 0 {
+		fmt.Fprintf(stdout, "%s: %d holding alias(es) stamped\n", verb, n)
 	}
 	return nil
 }

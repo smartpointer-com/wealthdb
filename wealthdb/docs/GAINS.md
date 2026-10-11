@@ -9,7 +9,7 @@ from it.
 
 Related design: DESIGN.md §4.15 (the `gains` command), §7.1 (accrued
 income), §7.4 (cost basis), §10.13 (the report macros), docs/LOTS.md
-(the lot engine), and migrations 0116 to 0120.
+(the lot engine), and migrations 0116 to 0121.
 
 Every figure here is a sum or a difference of figures a source states,
 or that the lot engine rebuilt from the trades where a source states
@@ -63,8 +63,9 @@ For a realized lot:
 `assumed_zero` where a missing cost basis counts as 0 (§8). Only the
 primary lots count (DESIGN.md §7.4): a sale stated by a 1099-B, its
 correction and a year-end summary counts once. A sale no document
-states has the lot engine's lots as its primary set (docs/LOTS.md
-§5.3).
+states has the lot engine's lots as its primary set, or, on a source
+that states a paid-in basis, the engine's row against that basis
+(docs/LOTS.md §5.3).
 
 For a period bucket, per account and instrument, then summed to any
 grain:
@@ -83,7 +84,9 @@ The change is unknown, and left out, when one side holds the instrument
 without a full cost basis. If the other side has one, the row says
 `basis_changed`. Either the source began or stopped stating a basis
 inside the bucket, or a rebuilt basis gained or lost a lot of unknown
-cost. The whole gain since purchase is not this bucket's.
+cost. The whole gain since purchase is not this bucket's. Under the
+zero reading (§8) a basis assumed at one side and stated at the other
+is the same case.
 
 ### Sold and held
 
@@ -168,8 +171,12 @@ keys on an instrument:
   description;
 - a sell, transfer or corporate action on its instrument.
 
-They meet where they name the same instrument. A row the lots or events
-alone make shows their key as `position_key`. A lot whose instrument
+They meet where they name the same instrument. A source that keys one
+holding two ways, a statement's overview line until a daily feed lists
+it by ISIN, say, pairs them through `holding_aliases` in wealthdb.cfg
+(DESIGN.md §5.1): every key reads as its alias before the start and the
+end meet. A row the lots or events alone make shows their key as
+`position_key`. A lot whose instrument
 the account never held in any snapshot is counted as `unmatched_lots`:
 the document and the holdings do not share an identity. A position
 bought and sold inside the window is not unmatched when any snapshot
@@ -194,7 +201,7 @@ names one way the identity of §2 can fail.
 
 | flag | meaning |
 |---|---|
-| `sells_without_documents=N` | N sells have no primary lot of their tax year, on their account or on another account of the same portfolio, and none the lot engine rebuilt. Realized misses them, and gain with it. |
+| `sells_without_documents=N` | N sells have no primary lot of their tax year, on their account or on another account of the same portfolio, and none the lot engine rebuilt or realized against a stated basis. Realized misses them, and gain with it. |
 | `sells_rebuilt=N` | N sells have the lot engine's realized lots as their primary set: no document states them. |
 | `lots_without_gain=N` | N primary lots state no gain, and not both proceeds and a cost basis. |
 | `undated_lots=N` | N lots count at the last day of their tax year. |

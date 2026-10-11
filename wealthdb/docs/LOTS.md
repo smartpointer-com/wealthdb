@@ -24,13 +24,16 @@ says how the engine treats the source:
 | fidelity (also the svb collector's sources) | fill | every security the statements leave without a basis; the history before and between the stated lot sets |
 | schwab | fill | the same, around the statement lots |
 | ubs, swissquote, viac | shadow | the ledger only, at the average method; `gains check` compares it with the average cost the source states |
-| every other kind | off | nothing; private markets and hand-kept holdings state a paid-in basis already |
+| carta, equityzen, angellist, manual | stated | no book; a sale realizes against the paid-in basis the position states (§5.3) |
+| every other kind | off | nothing |
 
 The modes:
 
 - **fill** writes the ledger, the cost basis of every position row
   that states none, and a realized lot per sale.
 - **shadow** writes the ledger only.
+- **stated** writes a realized lot per sale, against the stated basis,
+  and no ledger.
 - **off** replays nothing.
 
 Config can change a source's mode and grain (§7).
@@ -41,8 +44,9 @@ The engine is a pass over gold, like the enrichment pass. `wealthdb
 load` and `wealthdb reload` run it after the enrichment pass.
 `wealthdb lots rebuild` runs it by hand.
 
-- One pass replays every source that is not off, together. A move links
-  two sources of one kind: securities that move between them carry
+- One pass replays every fill and shadow source, together, and realizes
+  the stated sources' sales. A move links two sources of one kind:
+  securities that move between them carry
   their cost with them (§3.4).
 - A pass replays nothing when no input changed since the last one: the
   rows the engine reads, the config, the engine's version. It still
@@ -267,7 +271,7 @@ cash merger, cash in lieu, an expiry) with known proceeds writes one
 `lot_realized` row per lot it relieved:
 
 - `document_kind` `engine`, `realized_lot_external_id` the sale's id,
-  `#`, and the lot's id;
+  `#`, and the lot's id; `transaction_external_id` the sale's;
 - the quantity, proceeds, cost, acquisition date and term; the gain is
   proceeds less cost;
 - `disposal` what it realized, NULL for a sale.
@@ -279,6 +283,17 @@ reports count a sale documented by (GAINS.md §6), so a sale is never
 both. It does not ask for the instrument, because a document can name
 a security by its CUSIP where the trades use its ticker. The engine's
 row stays beside the stated one, for the check (§9).
+
+On a stated source the engine replays nothing and writes one row per
+sale instead, against the cost basis the position states as of the last
+snapshot before the sale: the proceeds, less a fee the sale's own row
+names (`fee_for`), against that basis pro rata by quantity where the
+sale and the position both state one. A sale that states no quantity
+takes what of the basis the earlier such sales of the holding left: an
+SPV's payout takes the whole stake's basis, a later tranche of the same
+exit none. Its id is the sale's and `#stated`; it carries the
+position's stamp and acquisition date. A sale of a holding no snapshot shows before it
+writes nothing, and the gains reports count it as undocumented.
 
 The stated lots of the sale itself resolve a seed it relieves (§4):
 those naming its instrument within two days of it, on its own account
@@ -326,6 +341,11 @@ instruments that are never keys, and how its transactions read
   an average cost and no lots, and a gap in a history would fill with
   seeds of unknown cost. `gains check` compares the ledger with the
   stated cost (§9).
+- **carta, equityzen, angellist, manual.** Stated. Their basis is
+  capital paid in, which no lot book describes: an exercise, a buy-in,
+  a capital call. A sale realizes against it (§5.3). An SPV's payout is
+  its sale; a fund's distribution is not. A manual holding's exit is the
+  `exits.csv` row of its collector.
 
 ## 7. Config
 
@@ -336,6 +356,7 @@ The `lots` block of wealthdb.cfg (DESIGN.md §5.1):
   "method": "fifo",
   "missing_basis": "ignore",
   "sources":    { "<source>": { "method": "hifo", "mode": "fill", "grain": "portfolio" } },
+  "sources":    { "<source>": { "mode": "stated" } },
   "portfolios": { "<source>": { "<portfolio-id>": { "method": "lifo" } } },
   "accounts":   { "<source>": { "<account-id>": { "method": "lifo" } } }
 }

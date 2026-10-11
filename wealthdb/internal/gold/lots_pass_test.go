@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func lotFixture(t *testing.T, seed string) (*sql.DB, context.Context) {
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
-            VALUES ('lot-src', 'manual', '/tmp/lot.db', -1, 0, 0);
+            VALUES ('lot-src', 'fred', '/tmp/lot.db', -1, 0, 0);
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind, first_seen_at, last_seen_at) VALUES
             ('lot-src', 'A', 'brokerage', 1, 1), ('lot-src', 'B', 'brokerage', 1, 1);
         DELETE FROM silver_sources WHERE silver_source_id = 'test-src';`+seed); err != nil {
@@ -438,7 +439,7 @@ func TestLotPassPairsAcrossSourcesOfOneKindOnly(t *testing.T) {
 	for _, c := range []struct {
 		kindB string
 		want  float64
-	}{{"manual", 40}, {"equityzen", math.NaN()}} {
+	}{{"fred", 40}, {"equityzen", math.NaN()}} {
 		db, ctx := lotFixture(t, `
             INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
                 VALUES ('lot-b', '`+c.kindB+`', '/tmp/b.db', -1, 0, 0);
@@ -716,5 +717,84 @@ func TestLotNamesAreBasisStampValues(t *testing.T) {
 		if !canonical.BasisFees(f.String()).Valid() {
 			t.Errorf("fees %q is no basis_fees", f)
 		}
+	}
+}
+
+// statedSeed: a holding whose source states a paid-in basis and no lots.
+// Two snapshots state the basis; a partial sale of 6 of 10 units, with a
+// fee its row names, a later sale with no quantity of its own, and a
+// second tranche of that payout.
+const statedSeed = `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                  instrument_external_id, kind, currency, quantity, net_amount, payload) VALUES
+            ('lot-src', 's1', 400*86400 + 3600, 'A', 'XYZ', 'sell', 'USD', -6,   300, NULL),
+            ('lot-src', 'f1', 400*86400 + 3600, 'A', 'XYZ', 'fee',  'USD', NULL, -10, '{"fee_for": "s1"}'),
+            ('lot-src', 's2', 500*86400 + 3600, 'A', 'XYZ', 'sell', 'USD', NULL, 100, NULL),
+            ('lot-src', 's3', 500*86400 + 3600, 'A', 'ZZZ', 'sell', 'USD', -1,   50,  NULL),
+            ('lot-src', 's4', 600*86400 + 3600, 'A', 'XYZ', 'sell', 'USD', NULL, 5,   NULL);
+        INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+                               asset_class, vehicle, currency, quantity, market_value, book_value, acquisition_date,
+                               basis_origin, basis_method, basis_fees) VALUES
+            ('lot-src', 2*86400,   'A', 'XYZ', 'XYZ', 'private_equity', 'stock', 'USD', 10, 150, 100, DATE '1970-01-02', 'stated', 'paid_in', 'included'),
+            ('lot-src', 400*86400, 'A', 'XYZ', 'XYZ', 'private_equity', 'stock', 'USD', 4,  200, 40,  DATE '1970-01-02', 'stated', 'paid_in', 'included');`
+
+// In stated mode the engine builds no book: each sale realizes against
+// the basis the position states before it, pro rata by quantity where
+// the sale states one (s1: 6 of 10 units, basis 60, proceeds 300 less
+// the fee of 10), else what earlier such sales left (s2: the 4 units
+// left, basis 40; s4, a later tranche of that payout, none). A sale of
+// a holding no snapshot shows (s3) writes nothing and stays
+// undocumented.
+func TestStatedModeRealizesAgainstTheStatedBasis(t *testing.T) {
+	db, ctx := lotFixture(t, statedSeed)
+	stated := lots.Stated
+	cfg := lots.Config{Method: lots.FIFO, Sources: map[string]lots.SourceConfig{"lot-src": {Mode: &stated}}}
+	sum := rebuild(t, db, ctx, cfg, false)
+	if len(sum.Sources) != 1 || sum.Sources[0].Mode != "stated" || sum.Sources[0].RealizedLots != 3 || sum.Sources[0].Lots != 0 {
+		t.Fatalf("summary %+v", sum.Sources)
+	}
+	rows, err := db.QueryContext(ctx, `
+        SELECT realized_lot_external_id, transaction_external_id, quantity, proceeds, book_value, term, basis_stamp(basis_origin, basis_method, basis_fees),
+               is_primary, CAST(disposal_date AS VARCHAR), tax_year
+          FROM lot_realized ORDER BY disposal_date`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var id, txn, term, stamp, day string
+		var qty, proceeds, cost float64
+		var primary bool
+		var year int
+		if err := rows.Scan(&id, &txn, &qty, &proceeds, &cost, &term, &stamp, &primary, &day, &year); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s %s %g %g %g %s %s %v %s %d", id, txn, qty, proceeds, cost, term, stamp, primary, day, year))
+	}
+	want := []string{
+		"s1#stated s1 6 290 60 long stated/paid_in/included true 1971-02-05 1971",
+		"s2#stated s2 4 100 40 long stated/paid_in/included true 1971-05-16 1971",
+		"s4#stated s4 4 5 0 long stated/paid_in/included true 1971-08-24 1971",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("realized rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if n := queryFloat(t, db, `SELECT count(*) FROM lots`); n != 0 {
+		t.Errorf("a stated source has no lots: %v", n)
+	}
+	if s := queryString(t, db, `SELECT mode || '/' || methods FROM lot_sources()`); s != "stated/" {
+		t.Errorf("run %q", s)
+	}
+	// The sales the engine realized count as documented; the one it could
+	// not stays undocumented.
+	if n := queryFloat(t, db, `SELECT count(*) FROM gains_events(0, 1000*86400) WHERE event = 'sell' AND documented`); n != 3 {
+		t.Errorf("documented sells %v, want 3", n)
+	}
+	if n := queryFloat(t, db, `SELECT count(*) FROM gains_events(0, 1000*86400) WHERE event = 'sell' AND NOT documented AND NOT rebuilt`); n != 1 {
+		t.Errorf("undocumented sells %v, want 1", n)
+	}
+	if !rebuild(t, db, ctx, cfg, false).Unchanged {
+		t.Error("a second pass over the same inputs should replay nothing")
 	}
 }

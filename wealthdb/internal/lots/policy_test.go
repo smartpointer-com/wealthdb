@@ -37,7 +37,7 @@ func TestParseRoundTrips(t *testing.T) {
 			t.Errorf("%s: %v %v", m, got, err)
 		}
 	}
-	for _, m := range []Mode{Off, Shadow, Fill} {
+	for _, m := range []Mode{Off, Shadow, Fill, Stated} {
 		if got, err := ParseMode(m.String()); err != nil || got != m {
 			t.Errorf("%s: %v %v", m, got, err)
 		}

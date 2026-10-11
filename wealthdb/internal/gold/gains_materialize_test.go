@@ -178,10 +178,11 @@ func TestMaterializeGainsCopiesAReadingThatChangesNothing(t *testing.T) {
 	matchesBuckets(t, ctx, db)
 }
 
-func TestMigrations0119And0120DDLAreRerunnable(t *testing.T) {
+func TestMigrations0119To0121DDLAreRerunnable(t *testing.T) {
 	db, ctx := openGainsFixture(t)
 	rerunMigrationDDL(t, db, ctx, "0119_gains_one_pass.sql")
 	rerunMigrationDDL(t, db, ctx, "0120_gains_held_sold.sql")
+	rerunMigrationDDL(t, db, ctx, "0121_private_exits.sql")
 	if _, err := MaterializeGains(ctx, db, gainsTo, 42); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +200,9 @@ func TestMigrations0119And0120DDLAreRerunnable(t *testing.T) {
 //	     60, the 2 sold gain 100 over their start value of 200
 //	FFF  1 @ 100, cost 50 → gone; 3 sold for 360, cost 150: only the
 //	     unit held at the start releases its gain of 50
+//	HHH  valued by amount, no quantity: 500, cost 100 → gone; sold for
+//	     700 against its whole basis: the sale gained 200 over its start
+//	     value, and the start gain of 400 leaves the held change
 //
 // The fixture's own sales fall in the first bucket, which has no start
 // to release from: BBB's whole gain of 150 is sold gain there. Every
@@ -214,13 +218,15 @@ func TestMaterializedGainSplitsHeldAndSold(t *testing.T) {
             ('test-src', 'EEE',       'public_equity', 'EEE', 'C0000000X', 'Epsilon', 'USD', 1, 1),
             ('test-src', 'C0000000X', 'public_equity', 'EEE', 'C0000000X', 'Epsilon', 'USD', 1, 1),
             ('test-src', 'FFF',       'public_equity', 'FFF', NULL,        'Phi',     'USD', 1, 1),
-            ('test-src', 'GGG',       'public_equity', 'GGG', NULL,        'Eta',     'USD', 1, 1);
+            ('test-src', 'GGG',       'public_equity', 'GGG', NULL,        'Eta',     'USD', 1, 1),
+            ('test-src', 'HHH',       'private_equity', 'HHH', NULL,       'Theta',   'USD', 1, 1);
         INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
                                instrument_external_id, asset_class, vehicle, currency, quantity,
                                market_value, book_value, basis_origin, basis_method, basis_fees) VALUES
             ('test-src', 200000,  'BRK3', 'EEE', 'EEE', 'public_equity', 'stock', 'USD', 4, 400, 200, 'stated', 'lots', 'included'),
             ('test-src', 200000,  'BRK3', 'FFF', 'FFF', 'public_equity', 'stock', 'USD', 1, 100, 50,  'stated', 'lots', 'included'),
             ('test-src', 200000,  'BRK3', 'GGG', 'GGG', 'public_equity', 'stock', 'USD', 5, 500, 400, 'stated', 'lots', 'included'),
+            ('test-src', 200000,  'BRK3', 'HHH', 'HHH', 'private_equity', 'stock', 'USD', NULL, 500, 100, 'stated', 'paid_in', 'included'),
             ('test-src', 3974400, 'BRK3', 'EEE', 'EEE', 'public_equity', 'stock', 'USD', 2, 260, 100, 'stated', 'lots', 'included');
         INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
                                    instrument_external_id, document_kind, tax_year, acquisition_date,
@@ -231,7 +237,9 @@ func TestMaterializedGainSplitsHeldAndSold(t *testing.T) {
             ('test-src', 'R-FFF', 'BRK3', 'FFF',       'form_1099b', 1970, DATE '1969-06-01', FALSE,
              DATE '1970-02-10', 'USD', 3, 360, 150, 'short', TRUE),
             ('test-src', 'R-GGG', 'BRK3', 'GGG',       'form_1099b', 1970, DATE '1969-06-01', FALSE,
-             DATE '1970-02-10', 'USD', 5, 550, 400, 'short', TRUE)`); err != nil {
+             DATE '1970-02-10', 'USD', 5, 550, 400, 'short', TRUE),
+            ('test-src', 'R-HHH', 'BRK3', 'HHH',       'engine',     1970, DATE '1969-06-01', FALSE,
+             DATE '1970-02-10', 'USD', 1, 700, 100, 'short', TRUE)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
@@ -251,6 +259,7 @@ func TestMaterializedGainSplitsHeldAndSold(t *testing.T) {
 		{"USD", "1970-02-01", "GGG", 0, 50},
 		{"USD", "1970-02-01", "EEE", 60, 100},
 		{"USD", "1970-02-01", "FFF", 0, 160},
+		{"USD", "1970-02-01", "HHH", 0, 200},
 		{"CHF", "1970-02-01", "GGG", 0, 25}, // at 2 USD a franc
 		{"USD", "1970-01-01", "BBB", math.NaN(), 150},
 	} {

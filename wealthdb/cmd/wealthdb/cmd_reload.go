@@ -170,7 +170,7 @@ func reloadFreshAndSwap(
 		if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 			fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
 		}
-		if err := syncDeclaredAccounts(ctx, db, cfg, "reload", stdout); err != nil {
+		if err := syncConfigRows(ctx, db, cfg, "reload", stdout); err != nil {
 			fmt.Fprintf(stderr, "reload: %s\n", err.Error())
 			firstErr = errors.Join(firstErr, err)
 		}
@@ -576,7 +576,7 @@ func reloadInPlace(
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
 	}
-	if err := syncDeclaredAccounts(ctx, db, cfg, "reload", stdout); err != nil {
+	if err := syncConfigRows(ctx, db, cfg, "reload", stdout); err != nil {
 		fmt.Fprintf(stderr, "reload: %s\n", err.Error())
 		firstErr = errors.Join(firstErr, err)
 	}

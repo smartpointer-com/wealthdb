@@ -90,8 +90,12 @@ func runLotPass(ctx context.Context, db *sql.DB, cfg *config.Config, force bool,
 			// A source of a replayed kind that holds no securities.
 			continue
 		}
-		fmt.Fprintf(stdout, "lots: %s (%s, %s): %d lots, %d realized, %d positions filled, %d seeds, %d implied, %d blips, %d anchors\n",
-			s.SourceID, s.Mode, s.Methods, s.Lots, s.RealizedLots, s.PositionsFilled, s.Seeds, s.ImpliedDisposals, s.Blips, s.Anchors)
+		how := s.Mode
+		if s.Methods != "" {
+			how += ", " + s.Methods
+		}
+		fmt.Fprintf(stdout, "lots: %s (%s): %d lots, %d realized, %d positions filled, %d seeds, %d implied, %d blips, %d anchors\n",
+			s.SourceID, how, s.Lots, s.RealizedLots, s.PositionsFilled, s.Seeds, s.ImpliedDisposals, s.Blips, s.Anchors)
 	}
 	fmt.Fprintf(stdout, "lots: build %d in %s\n", sum.BuildID, sum.Took.Round(1e6))
 	return nil

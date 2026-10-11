@@ -49,6 +49,7 @@ func (c *Config) Validate() error {
 		c.validatePortfolioOverrides,
 		c.validateAccountOverrides,
 		c.validateDeclaredAccounts,
+		c.validateHoldingAliases,
 		c.validateInstrumentOverrides,
 		c.validateTransactionInstruments,
 		c.validateReturns,
@@ -228,6 +229,37 @@ func (c *Config) validateDeclaredAccounts(map[string]bool) error {
 		}
 		if d.Currency != "" && !IsLikelyISO4217(d.Currency) {
 			return fmt.Errorf("config: declared_accounts[%q]: currency %q is not a 3-letter ISO 4217 code", id, d.Currency)
+		}
+	}
+	return nil
+}
+
+// validateHoldingAliases checks holding_aliases: every entry names a
+// configured source and two different keys, no key is aliased twice in
+// one scope, and no alias points at a key that is itself aliased, so a
+// lookup is one step.
+func (c *Config) validateHoldingAliases(seenIDs map[string]bool) error {
+	seen := map[[3]string]bool{}
+	from := map[[2]string]bool{}
+	for i, a := range c.HoldingAliases {
+		switch {
+		case !seenIDs[a.Source]:
+			return fmt.Errorf("config: holding_aliases[%d]: no silver_sources[].id matches source %q", i, a.Source)
+		case a.Key == "" || a.As == "":
+			return fmt.Errorf("config: holding_aliases[%d]: key and as are required", i)
+		case a.Key == a.As:
+			return fmt.Errorf("config: holding_aliases[%d]: key %q is its own alias", i, a.Key)
+		}
+		scope := [3]string{a.Source, a.Account, a.Key}
+		if seen[scope] {
+			return fmt.Errorf("config: holding_aliases[%d]: key %q is aliased twice in source %q", i, a.Key, a.Source)
+		}
+		seen[scope] = true
+		from[[2]string{a.Source, a.Key}] = true
+	}
+	for i, a := range c.HoldingAliases {
+		if from[[2]string{a.Source, a.As}] {
+			return fmt.Errorf("config: holding_aliases[%d]: as %q is itself an aliased key in source %q", i, a.As, a.Source)
 		}
 	}
 	return nil

@@ -15,9 +15,14 @@ const (
 	// Fill: the replay also writes the positions and realized lots the
 	// source states nothing for.
 	Fill
+	// Stated: no replay. A sale realizes against the cost basis the
+	// source states on its position, as of the last snapshot before the
+	// sale: for a source whose basis is capital paid in, which no lot
+	// book describes, and whose sales no document states.
+	Stated
 )
 
-var modeNames = [...]string{"off", "shadow", "fill"}
+var modeNames = [...]string{"off", "shadow", "fill", "stated"}
 
 func (m Mode) String() string { return modeNames[m] }
 
@@ -142,6 +147,13 @@ type Policy struct {
 	// overrides at any grain but the global one: a source that states
 	// an average cost is checked against an average.
 	Method *Method
+}
+
+// StatedPolicy is the policy of a source that states a paid-in basis and
+// no lots (docs/LOTS.md §6): the engine builds no book for it and
+// realizes its sales against the stated basis.
+func StatedPolicy() Policy {
+	return Policy{Mode: Stated, Grain: GrainAccount, Fees: FeesUnknown}
 }
 
 // DefaultPolicy is the policy of a source kind that registers none:

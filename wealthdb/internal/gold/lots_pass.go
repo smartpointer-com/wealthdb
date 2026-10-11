@@ -45,9 +45,10 @@ type LotsSummary struct {
 // RebuildLots runs the lot engine over every source whose policy is not
 // off (docs/LOTS.md §2): it reads gold into events, replays them, and
 // rewrites the ledger, the rebuilt cost basis on positions and the
-// engine's realized lots in one transaction. It replays nothing when
-// every source's inputs, the config and the engine are as the last pass
-// found them, unless opt.Force.
+// engine's realized lots in one transaction; a stated source's sales
+// realize against its stated basis in the same pass. It replays nothing
+// when every source's inputs, the config and the engine are as the last
+// pass found them, unless opt.Force.
 func RebuildLots(ctx context.Context, db *sql.DB, opt LotsOptions) (*LotsSummary, error) {
 	start := time.Now()
 	f, err := newLotFeed(ctx, db, opt.Config)
@@ -83,10 +84,10 @@ func RebuildLots(ctx context.Context, db *sql.DB, opt LotsOptions) (*LotsSummary
 		return nil, fmt.Errorf("lots: next build: %w", err)
 	}
 	w := &lotWriter{tx: tx, f: f, res: &res, build: build, sums: map[string]*LotsSourceSummary{}}
-	for _, id := range f.ids {
-		s := f.sources[id]
-		w.sums[id] = &LotsSourceSummary{SourceID: id, Mode: s.pol.Mode.String(), Grain: s.pol.Grain.String(),
-			Fees: s.pol.Fees.String(), KeysSkipped: f.skipped[id]}
+	for _, id := range f.all() {
+		pol := f.policy(id)
+		w.sums[id] = &LotsSourceSummary{SourceID: id, Mode: pol.Mode.String(), Grain: pol.Grain.String(),
+			Fees: pol.Fees.String(), KeysSkipped: f.skipped[id]}
 	}
 	if err := w.write(ctx, prints); err != nil {
 		return nil, err
@@ -95,19 +96,20 @@ func RebuildLots(ctx context.Context, db *sql.DB, opt LotsOptions) (*LotsSummary
 		return nil, fmt.Errorf("lots: commit: %w", err)
 	}
 	out := &LotsSummary{BuildID: build, Took: time.Since(start)}
-	for _, id := range f.ids {
+	for _, id := range f.all() {
 		out.Sources = append(out.Sources, *w.sums[id])
 	}
 	return out, nil
 }
 
-// lotFingerprints is one fingerprint per replayed source: its rows in
-// every table the feed reads, the rows that tie sources together (the
-// rates, the portfolios), its policy and methods, and the engine
+// lotFingerprints is one fingerprint per replayed or stated source: its
+// rows in every table the feed reads, the rows that tie sources together
+// (the rates, the portfolios), its policy and methods, and the engine
 // version. A row the engine itself wrote does not count.
 func lotFingerprints(ctx context.Context, db *sql.DB, f *lotFeed, cfg lots.Config) (map[string]string, error) {
 	out := map[string]string{}
-	if len(f.ids) == 0 {
+	ids := f.all()
+	if len(ids) == 0 {
 		return out, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -133,7 +135,7 @@ WITH ids AS (SELECT unnest(?::VARCHAR[]) id),
 SELECT ids.id, concat_ws('/', t.n, t.h, p.n, p.h, l.n, l.h, r.n, r.h, i.h, a.h, x.n, x.h)
   FROM ids
   LEFT JOIN t ON t.s = ids.id LEFT JOIN p ON p.s = ids.id LEFT JOIN l ON l.s = ids.id
-  LEFT JOIN r ON r.s = ids.id LEFT JOIN i ON i.s = ids.id LEFT JOIN a ON a.s = ids.id, x`, f.ids)
+  LEFT JOIN r ON r.s = ids.id LEFT JOIN i ON i.s = ids.id LEFT JOIN a ON a.s = ids.id, x`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("lots: fingerprint: %w", err)
 	}
@@ -143,14 +145,14 @@ SELECT ids.id, concat_ws('/', t.n, t.h, p.n, p.h, l.n, l.h, r.n, r.h, i.h, a.h, 
 		if err := rows.Scan(&id, &content); err != nil {
 			return nil, err
 		}
-		s := f.sources[id]
+		p := f.policy(id)
 		pol, _ := json.Marshal(struct {
 			Mode, Grain string
 			Method      string
 			Source      any
 			Portfolios  any
 			Accounts    any
-		}{s.pol.Mode.String(), s.pol.Grain.String(), cfg.Method.String(), cfg.Sources[id], cfg.Portfolios[id], cfg.Accounts[id]})
+		}{p.Mode.String(), p.Grain.String(), cfg.Method.String(), cfg.Sources[id], cfg.Portfolios[id], cfg.Accounts[id]})
 		out[id] = fmt.Sprintf("v%d|%s|%s", lotsEngineVersion, pol, content)
 	}
 	return out, rows.Err()

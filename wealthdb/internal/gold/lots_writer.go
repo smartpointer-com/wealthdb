@@ -39,7 +39,7 @@ func (w *lotWriter) write(ctx context.Context, prints map[string]string) error {
 	for _, t := range LotLedgerTables {
 		clearSQL = append(clearSQL, `DELETE FROM `+t)
 	}
-	if len(w.f.ids) == 0 {
+	if len(w.f.all()) == 0 {
 		// A pass that replays no source leaves no run to read: the last
 		// runs would otherwise still name sources it no longer replays.
 		clearSQL = append(clearSQL, `DELETE FROM lot_runs`)
@@ -55,6 +55,7 @@ func (w *lotWriter) write(ctx context.Context, prints map[string]string) error {
 	}
 	for _, step := range []func(context.Context) error{
 		w.writeRealized, w.writeLots, w.writeDisposals, w.writeFindings, w.writeAnchors, w.writePositions,
+		w.writeStated,
 	} {
 		if err := step(ctx); err != nil {
 			return fmt.Errorf("lots: %w", err)
@@ -98,10 +99,10 @@ func currencyOr(c string) string {
 func (w *lotWriter) writeRealized(ctx context.Context) error {
 	w.realized = make([]string, len(w.res.Disposals))
 	var (
-		src, id, acct, inst, hint, acq, disposed, ccy, term, origin, method, fees, disposal []string
-		qty, proceeds, cost                                                                 []float64
-		years                                                                               []int64
-		various, primary                                                                    []bool
+		src, id, acct, inst, hint, acq, disposed, ccy, term, origin, method, fees, disposal, txn []string
+		qty, proceeds, cost                                                                      []float64
+		years                                                                                    []int64
+		various, primary                                                                         []bool
 	)
 	for i, d := range w.res.Disposals {
 		l := w.res.Lots[d.Lot]
@@ -115,6 +116,7 @@ func (w *lotWriter) writeRealized(ctx context.Context) error {
 		on := *dateOf(day)
 		src = append(src, info.src.id)
 		id = append(id, w.realized[i])
+		txn = append(txn, d.Txn)
 		acct = append(acct, d.Account)
 		if info.hint {
 			inst, hint = append(inst, ""), append(hint, info.inst)
@@ -171,7 +173,87 @@ func (w *lotWriter) writeRealized(ctx context.Context) error {
 	c.text("basis_fees", fees)
 	c.bools("is_primary", primary)
 	c.text("disposal", disposal)
+	c.text("transaction_external_id", txn)
 	return c.exec(ctx, w.tx, "lot_realized")
+}
+
+// writeStated realizes the sales of the stated-mode sources against the
+// cost basis their positions state (docs/LOTS.md §5.3): the proceeds
+// less the basis of the units sold, as of the last snapshot before the
+// sale, pro rata by quantity where the sale and the position both state
+// one. A sale that states no quantity relieves what of the basis the
+// earlier such sales of the key left: an SPV's payout takes the whole
+// stake's basis, and a later tranche of the same exit none. A fee the
+// sale's own row names (payload fee_for) comes off the proceeds. A sale
+// of a holding no snapshot shows before it writes nothing. The row is
+// primary unless a document covers the sale, as the engine's rows are.
+func (w *lotWriter) writeStated(ctx context.Context) error {
+	if len(w.f.stated) == 0 {
+		return nil
+	}
+	if _, err := w.tx.ExecContext(ctx, `
+INSERT INTO lot_realized (silver_source_id, realized_lot_external_id, account_external_id, instrument_external_id,
+    instrument_hint, document_kind, tax_year, acquisition_date, acquired_various, disposal_date, currency, quantity,
+    proceeds, book_value, term, basis_origin, basis_method, basis_fees, is_primary, disposal, transaction_external_id)
+WITH s AS (
+    SELECT t.silver_source_id AS src, t.transaction_external_id AS txn, t.occurred_at, t.account_external_id AS acct,
+           t.instrument_external_id, t.instrument_hint, COALESCE(t.instrument_external_id, t.instrument_hint) AS k,
+           t.currency, CAST(epoch_ms(t.occurred_at * 1000) AS DATE) AS day,
+           abs(CAST(t.quantity AS DOUBLE)) AS qty, CAST(t.net_amount AS DOUBLE) AS net
+      FROM transactions t
+     WHERE t.kind = 'sell' AND t.net_amount IS NOT NULL AND `+inLotSources("t.silver_source_id")+`
+       AND (t.instrument_external_id IS NOT NULL OR t.instrument_hint IS NOT NULL)),
+fees AS (
+    SELECT silver_source_id AS src, json_extract_string(payload, '$.fee_for') AS txn, SUM(CAST(net_amount AS DOUBLE)) AS fee
+      FROM transactions
+     WHERE kind = 'fee' AND json_extract_string(payload, '$.fee_for') IS NOT NULL AND `+inLotSources("silver_source_id")+`
+     GROUP BY ALL),
+p AS (
+    SELECT s.src, s.txn, CAST(p.quantity AS DOUBLE) AS quantity, p.book_value, p.basis_origin, p.basis_method,
+           p.basis_fees, p.acquisition_date,
+           row_number() OVER (PARTITION BY s.src, s.txn ORDER BY p.snapshot_at DESC) AS rn
+      FROM s
+      JOIN positions p ON p.silver_source_id = s.src AND p.account_external_id = s.acct
+       AND holding_key(p.instrument_external_id, p.position_key) = s.k AND lot_obs_at(p.snapshot_at) < s.occurred_at),
+r AS (
+    SELECT s.*, p.quantity AS held, p.basis_origin, p.basis_method, p.basis_fees, p.acquisition_date,
+           CASE WHEN s.qty IS NOT NULL AND p.quantity > 0
+                THEN p.book_value * LEAST(s.qty / p.quantity, 1)
+                ELSE GREATEST(p.book_value - COALESCE(MAX(p.book_value) FILTER (WHERE s.qty IS NULL)
+                         OVER (PARTITION BY s.src, s.acct, s.k ORDER BY s.occurred_at, s.txn
+                               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0), 0) END AS book_value,
+           COALESCE(f.fee, 0) AS fee, d.txn IS NULL AS is_primary
+      FROM s
+      JOIN p ON p.src = s.src AND p.txn = s.txn AND p.rn = 1
+      LEFT JOIN fees f ON f.src = s.src AND f.txn = s.txn
+      LEFT JOIN documented_txns() d ON d.src = s.src AND d.txn = s.txn)
+SELECT src, txn || '#stated', acct, instrument_external_id,
+       CASE WHEN instrument_external_id IS NULL THEN instrument_hint END,
+       'engine', year(day), acquisition_date, FALSE, day, currency,
+       CAST(COALESCE(qty, held, 1) AS DECIMAL(28, 8)),
+       CAST(net + fee AS DECIMAL(28, 4)), CAST(book_value AS DECIMAL(28, 4)),
+       CASE WHEN acquisition_date IS NULL THEN NULL
+            WHEN day > acquisition_date + INTERVAL 1 YEAR THEN 'long' ELSE 'short' END,
+       basis_origin, basis_method, basis_fees, is_primary, NULL, txn
+  FROM r`, w.f.stated, w.f.stated, w.f.stated); err != nil {
+		return fmt.Errorf("lots: stated: %w", err)
+	}
+	rows, err := w.tx.QueryContext(ctx, `
+SELECT silver_source_id, count(*) FROM lot_realized
+ WHERE realized_lot_external_id LIKE '%#stated' AND `+inLotSources("silver_source_id")+` GROUP BY 1`, w.f.stated)
+	if err != nil {
+		return fmt.Errorf("lots: stated: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return err
+		}
+		w.sums[id].RealizedLots, w.sums[id].Events = n, n
+	}
+	return rows.Err()
 }
 
 func (w *lotWriter) writeLots(ctx context.Context) error {
@@ -490,7 +572,7 @@ func (w *lotWriter) writeRuns(ctx context.Context, prints map[string]string) err
 		w.sums[w.f.info[e.Key].src.id].Events++
 	}
 	now := time.Now().Unix()
-	for _, id := range w.f.ids {
+	for _, id := range w.f.all() {
 		s := w.sums[id]
 		ms := make([]string, 0, len(methods[id]))
 		for m := range methods[id] {
@@ -498,7 +580,7 @@ func (w *lotWriter) writeRuns(ctx context.Context, prints map[string]string) err
 		}
 		slices.Sort(ms)
 		s.Methods = strings.Join(ms, ",")
-		s.DatedBySettlement = w.f.sources[id].pol.DatedBySettlement
+		s.DatedBySettlement = w.f.policy(id).DatedBySettlement
 		if _, err := w.tx.ExecContext(ctx, `
 INSERT INTO lot_runs (build_id, silver_source_id, built_at, mode, grain, methods, fees, events, lots, disposals,
     realized_lots, positions_filled, seeds, implied_disposals, blips, anchors, anchors_kept, seeds_resolved,

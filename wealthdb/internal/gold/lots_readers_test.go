@@ -205,7 +205,7 @@ func TestCheckCountsAHandoverOnce(t *testing.T) {
 	// their cost as 160. The handover carries 10 units and 150.
 	db, ctx := lotFixture(t, `
         INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
-            VALUES ('lot-b', 'manual', '/tmp/b.db', -1, 0, 0);
+            VALUES ('lot-b', 'fred', '/tmp/b.db', -1, 0, 0);
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind, first_seen_at, last_seen_at)
             VALUES ('lot-b', 'B', 'brokerage', 1, 1);
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,

@@ -57,6 +57,13 @@ type Config struct {
 	// untracked account is then income or spending, which is what the
 	// closed world the statement assumes says of it.
 	DeclaredAccounts map[string]DeclaredAccount `json:"declared_accounts,omitempty"`
+	// HoldingAliases name a holding a source keys two ways, so the gains
+	// reports read both keys as one: a statement that shows a holding
+	// as an overview line until a daily feed lists it by ISIN, say. The
+	// load writes them into gold's holding_aliases table whole; the
+	// gains reports map a key through it before pairing a bucket's
+	// start with its end (docs/GAINS.md §5). Absent ⇒ no aliases.
+	HoldingAliases []HoldingAlias `json:"holding_aliases,omitempty"`
 	// PortfolioOverrides is the portfolio-grain counterpart of
 	// AccountOverrides. Keyed by silver_source_id (outer) and then
 	// portfolio_external_id (inner). The override applies to every
@@ -478,6 +485,16 @@ type AccountOverride struct {
 	// that does hold something removes that money from every total,
 	// which is why the load prints what each exclusion dropped.
 	Exclude bool `json:"exclude,omitempty"`
+}
+
+// HoldingAlias is one entry of HoldingAliases: Key is read as As, in
+// Source, in Account or in every account when Account is empty.
+type HoldingAlias struct {
+	Source  string `json:"source"`
+	Account string `json:"account,omitempty"`
+	Key     string `json:"key"`
+	As      string `json:"as"`
+	Note    string `json:"note,omitempty"`
 }
 
 // DeclaredAccount is one `declared_accounts` entry: an account the
@@ -1092,6 +1109,16 @@ func (c *Config) DeclaredAccountChanges(now int64) []canonical.AccountChange {
 			row.BaseCurrency = &ccy
 		}
 		out = append(out, row)
+	}
+	return out
+}
+
+// HoldingAliasRows is the holding_aliases block as gold stores it.
+func (c *Config) HoldingAliasRows() []canonical.HoldingAlias {
+	out := make([]canonical.HoldingAlias, 0, len(c.HoldingAliases))
+	for _, a := range c.HoldingAliases {
+		out = append(out, canonical.HoldingAlias{SilverSourceID: a.Source, AccountExternalID: a.Account,
+			FromKey: a.Key, ToKey: a.As})
 	}
 	return out
 }
