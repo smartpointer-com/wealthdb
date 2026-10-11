@@ -34,13 +34,15 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 
+	// A security is keyed by its ISIN where it has one (instrumentKey).
 	const q = `
-SELECT transaction_external_id, occurred_at, account_external_id,
-       instrument_external_id, kind, currency,
-       CAST(net_amount AS VARCHAR),
-       payload
-  FROM transactions
- WHERE occurred_at BETWEEN ? AND ?`
+SELECT t.transaction_external_id, t.occurred_at, t.account_external_id,
+       COALESCE(NULLIF(i.isin, ''), t.instrument_external_id), t.kind, t.currency,
+       CAST(t.net_amount AS VARCHAR),
+       t.payload
+  FROM transactions t
+  LEFT JOIN instruments i ON i.instrument_external_id = t.instrument_external_id
+ WHERE t.occurred_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return nil, fmt.Errorf("relevate Transactions: %w", err)

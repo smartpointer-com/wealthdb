@@ -224,7 +224,7 @@ SELECT instrument_external_id,
 		}
 		acNew, veh := taxonomyFor(rawClass, name)
 		change := canonical.InstrumentChange{
-			InstrumentExternalID: extID,
+			InstrumentExternalID: instrumentKey(extID, isin),
 			AssetClass:           acNew,
 			Vehicle:              veh,
 			Currency:             &ccy,
@@ -234,11 +234,6 @@ SELECT instrument_external_id,
 		}
 		if isin != "" {
 			change.ISIN = &isin
-			// Relevate's `instrument_external_id` is a small
-			// internal numeric ID; we surface the ISIN as the
-			// Symbol too so resolve-symbols and the
-			// instruments display column have something
-			// recognisable to key on.
 			change.Symbol = &isin
 		}
 		if name != "" {
@@ -320,9 +315,7 @@ SELECT snapshot_at, account_external_id, currency,
 	}
 
 	// Now walk positions; per row, derive market value =
-	// securities_balance * allocation. The instrument
-	// identity uses ISIN when present (cross-bank join key),
-	// falling back to Relevate's internal numeric id.
+	// securities_balance * allocation.
 	const posQ = `
 SELECT snapshot_at, account_external_id,
        instrument_external_id,
@@ -350,17 +343,13 @@ SELECT snapshot_at, account_external_id,
 		if !ok {
 			continue
 		}
-		key := extID
-		if isin != "" {
-			key = isin
-		}
-		instrumentKey := extID // join to instruments table on numeric id
+		key := instrumentKey(extID, isin)
 		acNew, veh := taxonomyFor(rawClass, name)
 		change := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    acct,
 			PositionKey:          key,
-			InstrumentExternalID: &instrumentKey,
+			InstrumentExternalID: &key,
 			AssetClass:           acNew,
 			Vehicle:              veh,
 		}
@@ -375,4 +364,14 @@ SELECT snapshot_at, account_external_id,
 		batch.Positions = append(batch.Positions, change)
 	}
 	return prows.Err()
+}
+
+// instrumentKey is the identity a security keeps across feeds: its
+// ISIN, which the statements name it by too (historical.go), else the
+// site's own id, a row number that changes with the site's format.
+func instrumentKey(extID, isin string) string {
+	if isin != "" {
+		return isin
+	}
+	return extID
 }

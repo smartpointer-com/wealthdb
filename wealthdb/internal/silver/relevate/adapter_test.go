@@ -92,6 +92,15 @@ func TestSnapshotsDerivedMarketValue(t *testing.T) {
 	defer stream.Close()
 	batch, _, _ := stream.Next(context.Background())
 
+	// The instruments carry the same keys as the positions.
+	inst := map[string]bool{}
+	for _, i := range batch.Instruments {
+		inst[i.InstrumentExternalID] = true
+	}
+	if !inst["CH0000000001"] || !inst["I2"] || len(inst) != 2 {
+		t.Errorf("instrument keys = %v, want the ISIN and I2", inst)
+	}
+
 	// Account taxonomy.
 	if len(batch.Accounts) != 1 {
 		t.Fatalf("accounts = %d, want 1", len(batch.Accounts))
@@ -117,6 +126,9 @@ func TestSnapshotsDerivedMarketValue(t *testing.T) {
 	}
 	// I1 keyed by ISIN, Stocks→public_equity (fund wrapper), 1000×0.6 = 600.
 	i1 := byKey["CH0000000001"]
+	if i1.InstrumentExternalID == nil || *i1.InstrumentExternalID != "CH0000000001" {
+		t.Errorf("I1 instrument = %v, want its ISIN", i1.InstrumentExternalID)
+	}
 	if i1.AssetClass != canonical.AssetClassPublicEquity {
 		t.Errorf("I1 asset_class = %q, want public_equity", i1.AssetClass)
 	}
@@ -125,6 +137,9 @@ func TestSnapshotsDerivedMarketValue(t *testing.T) {
 	}
 	// I2 keyed by internal id (no ISIN), default label→multi_asset, 1000×0.4 = 400.
 	i2 := byKey["I2"]
+	if i2.InstrumentExternalID == nil || *i2.InstrumentExternalID != "I2" {
+		t.Errorf("I2 instrument = %v, want I2", i2.InstrumentExternalID)
+	}
 	if i2.AssetClass != canonical.AssetClassMultiAsset {
 		t.Errorf("I2 asset_class = %q, want multi_asset", i2.AssetClass)
 	}
