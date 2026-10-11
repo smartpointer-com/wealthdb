@@ -65,7 +65,7 @@ reclaimed and exits 0, never touching the CSVs or the derived silver DB.
 
 ## 2. Bronze: the CSV schema
 
-Four CSVs, one row per thing. The **stable columns are the same across all
+Five CSVs, one row per thing. The **stable columns are the same across all
 asset kinds**; everything kind-specific lives in a JSON `payload` column —
 not sparse per-kind columns. This is the repo's silver convention (promote
 stable filter/join fields, absorb drift in `payload`) applied one layer
@@ -147,14 +147,25 @@ owner and one wrapper.
 - The rows are running totals, not cash events: the calls themselves are
   bank wires, as below.
 
-**No transactions file.** The collector is positions + valuations only
-(§6). A cash-flow file would add nothing but duplication: every such event
-is a real wire in the bank accounts, already captured by the bank
-collectors. The one datum it would carry that positions/valuations don't —
-the acquisition date — already lives on the position (`acquired_at`).
+**exits.csv** — optional, what a position was sold for.
+`position_id, exit_date, proceeds, currency, notes`
+- One row per position: the proceeds on the day it left the book, gross of
+  any part an agent holds back (that part is an escrow position of its
+  own). A write-off is proceeds 0.
+- The position's `closed_at` is the exit date; `load` fills a blank one in
+  and rejects a different one.
+- The gold adapter projects the row as a `sell` on the exit date (§6), the
+  one datum the bank wires cannot carry: which position the money came
+  from, so the lot engine can realize the gain against its cost basis.
 
-**Conversion (convertible_note → equity)** is therefore modelled **purely
-position-side**, no transaction:
+**No cash-flow file.** Every other event — a purchase wire, a capital
+call, a fee, a distribution, the proceeds landing — is a real wire in the
+bank accounts, already captured by the bank collectors; a file here would
+only duplicate them. The acquisition date lives on the position
+(`acquired_at`).
+
+**Conversion (convertible_note → equity)** is modelled **purely
+position-side**, no exit and no transaction:
 - the convertible_note position gets `closed_at` = the conversion date (it
   drops out of as-of queries after that date);
 - a new `private_equity` position is opened with `acquired_at` = that date and
@@ -167,8 +178,9 @@ position-side**, no transaction:
 
 SQLite + JSON1, mirroring the bronze CSV shape one-to-one. Realized in
 [migrations/0001_initial.sql](migrations/0001_initial.sql), extended by
-[0003_accounts.sql](migrations/0003_accounts.sql) and
-[0004_cost_basis.sql](migrations/0004_cost_basis.sql).
+[0003_accounts.sql](migrations/0003_accounts.sql),
+[0004_cost_basis.sql](migrations/0004_cost_basis.sql) and
+[0005_exits.sql](migrations/0005_exits.sql).
 
 | Table | Grain | Notes |
 |---|---|---|
@@ -176,6 +188,7 @@ SQLite + JSON1, mirroring the bronze CSV shape one-to-one. Realized in
 | `positions` | `id` | `account_id` (NULL → the default account), `kind`, `display_name`, `currency`, `acquired_at`, `closed_at` (NULL = held), `notes`, `payload`. |
 | `valuations` | (`position_id`, `as_of_date`) | `value`, `currency`, `notes`, `payload`. The per-date mark series; the row dated at the position's `acquired_at` is the cost basis, unless `cost_basis` covers the position. |
 | `cost_basis` | (`position_id`, `as_of_date`) | `amount`, `currency`, `notes`. Optional (migration 0004): the capital paid in as of a date, gross of any paid back. |
+| `exits` | `position_id` | `exit_date`, `proceeds`, `currency`, `notes`. Optional (migration 0005): what the position brought on the day it left. |
 | `load_runs` | — (append-only) | Audit log: `load_at`, schema version, `bronze_dir`, row counts, `payload`. No idempotency gate (full rebuild each run). |
 | `schema_meta` | `silver_schema_version` | collectorkit migration bookkeeping. |
 
@@ -220,14 +233,18 @@ test pins the two copies together); a position naming an `account_id` no
 account declares. From `cost_basis.csv`, the same checks as a valuation:
 a `position_id` absent from `positions.csv`, a duplicate (position, date),
 a currency that disagrees with the position's, a negative or non-numeric
-`amount`. It **warns** but loads when a valuation predates the position's
-`acquired_at`.
+`amount`. From `exits.csv`: a `position_id` absent from `positions.csv`,
+two exits for one position, a currency that disagrees with the
+position's, negative or non-numeric `proceeds`, an exit before the
+position's `acquired_at`, or one on another day than a stated
+`closed_at`. It **warns** but loads when a valuation predates the
+position's `acquired_at`.
 
 ## 6. Gold mapping
 
 The gold adapter is in [`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
 registered in `cmd/wealthdb/main.go`. It follows the carta/equityzen
-structure, minus the transaction half.
+structure, with an exit as its only transaction.
 
 **Accounts — one per declared sleeve**, and one default account for every
 position that names none. A book with no `accounts.csv` therefore projects
@@ -249,7 +266,7 @@ exactly one account.
 - An account is emitted at a snapshot date only while it holds something
   then, so a sleeve that is fully closed stops appearing rather than
   lingering as an empty shell.
-- There is **no funding sentinel** — the adapter projects no transactions
+- There is **no funding sentinel** — the adapter projects no cash flow
   (below), so there is nothing to balance.
 
 **Instruments + positions.** One instrument per position (private assets have
@@ -288,15 +305,18 @@ correct at any historical date:
 lives in `internal/canonical/enums.go` + its `assetClassValues` map — no
 gold migration for the enum itself.
 
-**No transactions.** The adapter's `Transactions()` returns an empty stream;
-there is no `manual-funding` sentinel. Every cash flow a manual holding could
-record — a purchase wire, rent, a fee, sale proceeds — is a real movement in
-the bank accounts, already captured by the bank collectors; re-representing it
-on a sentinel only duplicates them. The one datum the acquisition transaction
-carried that positions/valuations don't (the acquisition date) already rides on
-the position. carta/equityzen *need* their double-entry ledgers (booked on
-their custody accounts) because those sources' cash is invisible to everything
-else; manual's is not.
+**One transaction: the exit.** `Transactions()` yields a `sell` per
+`exits` row, on the exit date, on the position's account, for the
+proceeds (id `exit:<position_id>`). It is the internal half of the sale:
+the cash lands in a bank account the banks book. The lot engine's
+`stated` mode realizes it against the position's book value as of the
+last snapshot before the sale (wealthdb docs/LOTS.md §6). There is no
+`manual-funding` sentinel and no other transaction: a purchase wire,
+rent, a fee, the proceeds landing are real movements in the bank
+accounts, already captured by the bank collectors; re-representing them
+on a sentinel only duplicates them. carta/equityzen *need* their
+double-entry ledgers (booked on their custody accounts) because those
+sources' cash is invisible to everything else; manual's is not.
 
 **One exception — value that arrives from another tracked vehicle, not from a
 bank.** Another source can book a withdrawal whose value reappears here as a

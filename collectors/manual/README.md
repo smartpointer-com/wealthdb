@@ -15,14 +15,15 @@ them and projects them into a SQLite silver.
 > gold adapter
 > ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/))
 > loads the manual source into gold, where it appears in
-> `wealthdb holdings positions`. The collector tracks **positions + valuations only**
-> (no transactions; see [DESIGN.md](DESIGN.md) §6).
+> `wealthdb holdings positions`. The collector tracks **positions,
+> valuations and exits**; cash stays with the banks (see
+> [DESIGN.md](DESIGN.md) §6).
 
 ## Tools
 
 | Script | Purpose |
 | --- | --- |
-| [`load.py`](load.py) | Validate `accounts.csv` / `positions.csv` / `valuations.csv` / `cost_basis.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
+| [`load.py`](load.py) | Validate `accounts.csv` / `positions.csv` / `valuations.csv` / `cost_basis.csv` / `exits.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
 | `login.py` | **N/A.** No source, no session. `./manual login` is a no-op that prints this. |
 | `download.py` | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
 
@@ -37,6 +38,7 @@ $XDG_DATA_HOME/wealthdb/manual/            <- hand-maintained data dir (outside 
 ├── positions.csv            one row per held asset
 ├── valuations.csv           periodic mark-to-market, one row per (asset, date)
 ├── cost_basis.csv           OPTIONAL: capital paid in so far, one row per (asset, date)
+├── exits.csv                OPTIONAL: what a sold asset brought, one row per asset
 └── manual.db                silver SQLite (written by load; safe to delete + rebuild)
 ```
 
@@ -48,7 +50,8 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 ```bash
 # 1. Create $XDG_DATA_HOME/wealthdb/manual/positions.csv + valuations.csv
 #    (and accounts.csv if the book spans more than one tax sleeve,
-#    cost_basis.csv if a commitment is paid in over time).
+#    cost_basis.csv if a commitment is paid in over time, exits.csv once
+#    something is sold).
 #    Copying examples/ (a synthetic sample covering every asset kind, incl.
 #    a note→equity conversion and a second sleeve) makes a good skeleton;
 #    replace the placeholder holdings with your real ones.
@@ -142,16 +145,24 @@ rows here takes its book value from them: the latest row on or before the
 date, and none before the first row. Positions without rows keep the
 valuation at `acquired_at`.
 
-> **No transactions.** The collector tracks positions + valuations only. The
-> wires that fund a purchase, pay a fee, or return a distribution are real
-> movements in the bank accounts — already captured by the bank collectors —
-> so a transactions ledger here would only duplicate them. The acquisition
-> date lives on the position (`acquired_at`). See [DESIGN.md](DESIGN.md) §6. A
-> note→equity **conversion** is recorded position-side: close the note
-> (`closed_at`) and open the equity with `payload.converted_from_position_id`.
-> The one exception is value arriving from **another tracked vehicle** with no
-> bank in between — sale proceeds an agent holds back — whose cash half lives
-> in the equity-transfer ledger, not here (DESIGN.md §6).
+**exits.csv** — optional. What a position brought on the day it left the
+book. Columns: `position_id`, `exit_date`, `proceeds`, `currency`, `notes`.
+One row per position. The proceeds are gross of any part an agent holds
+back; that part is an escrow position of its own. A write-off is proceeds
+0. The position's `closed_at` is the exit date: a blank one is filled in,
+a different one fails the load. Gold books the exit as a sale and
+realizes the gain against the position's cost basis.
+
+> **No cash ledger.** The wires that fund a purchase, pay a fee, or return
+> a distribution are real movements in the bank accounts — already captured
+> by the bank collectors — so recording them here would only duplicate
+> them. The acquisition date lives on the position (`acquired_at`); the
+> exit lives in `exits.csv`. See [DESIGN.md](DESIGN.md) §6. A note→equity
+> **conversion** is recorded position-side: close the note (`closed_at`)
+> and open the equity with `payload.converted_from_position_id`. Value
+> arriving from **another tracked vehicle** with no bank in between — sale
+> proceeds an agent holds back — has its cash half in the equity-transfer
+> ledger, not here (DESIGN.md §6).
 
 ### `payload` cheat-sheet
 
@@ -191,11 +202,15 @@ any date is the latest row on or before it, so marks carry forward: a
 property appraised every few years needs a row only when the appraisal
 lands, not one a year. Marks may be irregular and far apart.
 
-**Close it.** Set `closed_at` on the position. It drops out of the portfolio
-from that date — no row is deleted, so history before it stays intact. Pick
-the date the value actually leaves: for a sale, the day the cash arrives in
-whichever account wealthdb already tracks, so the holding hands over to that
-deposit with no gap and no overlap.
+**Sell it.** One row in `exits.csv` with the date and the proceeds; the
+position's `closed_at` follows. It drops out of the portfolio from that
+date — no row is deleted, so history before it stays intact. Pick the day
+the cash arrives in whichever account wealthdb already tracks, so the
+holding hands over to that deposit with no gap and no overlap. A holding
+written off is an exit with proceeds 0.
+
+**Close it without a sale.** Set `closed_at` on the position and add no
+exit: a note that converted, or a holding that moved elsewhere.
 
 **Convert a note to equity.** Close the note (`closed_at`) and open the
 equity with `payload.converted_from_position_id` naming the note. The load
@@ -252,12 +267,14 @@ non-zero exit, on any of these:
   canonical gold vocabulary;
 - a bad date, currency or number;
 - a `positions` `account_id` not present in `accounts.csv`;
-- a `valuations` or `cost_basis` `position_id` not present in
+- a `valuations`, `cost_basis` or `exits` `position_id` not present in
   `positions.csv`;
-- a `valuations` or `cost_basis` currency that disagrees with the
+- a `valuations`, `cost_basis` or `exits` currency that disagrees with the
   position's;
 - two rows for one (asset, date) in `valuations.csv`, or in
-  `cost_basis.csv`;
+  `cost_basis.csv`; two exits for one asset;
+- an exit dated before the asset was acquired, or on another day than
+  its `closed_at`;
 - a `converted_from_position_id` that names a position not in
   `positions.csv`;
 - a malformed JSON `payload`;

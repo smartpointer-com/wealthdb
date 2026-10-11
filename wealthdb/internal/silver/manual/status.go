@@ -12,18 +12,18 @@ import (
 // converts them to the canonical unix seconds the gold contract uses.
 
 // snapshotExtrema is the MIN/MAX holding event date (eventDates). The
-// earliest can be an acquisition years before the latest load. The manual
-// collector records no transactions, so the window spans only this snapshot
-// stream.
+// earliest can be an acquisition years before the latest load. An exit's
+// date is its position's closed_at, so the window spanning this stream
+// holds every transaction too.
 func (c *Connection) snapshotExtrema() string {
 	return `SELECT MIN(t), MAX(t) FROM (` + c.eventDates() + `)`
 }
 
-// Status reports the content snapshot range and pins LatestChangeNumber to
-// MAX(load_runs.load_at). The manual collector rebuilds silver from the CSVs
-// on every load, so each load bumps load_at and a subsequent `wealthdb load`
-// re-emits; an idle reload (no new load) is a no-op. The transaction range is
-// always the "no observable state" sentinel — manual projects no transactions.
+// Status reports the content snapshot range, the exits' date range, and
+// pins LatestChangeNumber to MAX(load_runs.load_at). The manual collector
+// rebuilds silver from the CSVs on every load, so each load bumps load_at
+// and a subsequent `wealthdb load` re-emits; an idle reload (no new load)
+// is a no-op.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	s := canonical.Status{
 		OldestSnapshotAt:    -1,
@@ -41,6 +41,19 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	}
 	if newS.Valid {
 		s.LatestSnapshotAt = newS.Int64
+	}
+	if c.exits {
+		var oldT, newT sql.NullInt64
+		if err := c.db.QueryRowContext(ctx, `
+SELECT MIN(CAST(strftime('%s', exit_date) AS INTEGER)), MAX(CAST(strftime('%s', exit_date) AS INTEGER)) FROM exits`).Scan(&oldT, &newT); err != nil {
+			return s, fmt.Errorf("manual Status exits: %w", err)
+		}
+		if oldT.Valid {
+			s.OldestTransactionAt = oldT.Int64
+		}
+		if newT.Valid {
+			s.LatestTransactionAt = newT.Int64
+		}
 	}
 
 	var latestLoad sql.NullInt64

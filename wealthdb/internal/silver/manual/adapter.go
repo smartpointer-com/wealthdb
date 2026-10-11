@@ -37,11 +37,12 @@
 //     stamped stated / acquisition_value / unknown (docs/DESIGN.md §7.4):
 //     a figure entered by hand states nothing about fees.
 //
-//   - NO TRANSACTIONS. The wires that fund a purchase, pay a fee, or return a
-//     distribution are real movements in the bank accounts, already
-//     captured by the bank collectors; recording them here too would only
-//     duplicate them (transactions.go returns an empty stream). See
-//     collectors/manual/DESIGN.md §6.
+//   - ONE TRANSACTION per exit: a `sell` for what a position brought on the
+//     day it left the book (exits.csv), which the lot engine realizes
+//     against its book value. The wires that fund a purchase, pay a fee,
+//     or return a distribution are real movements in the bank accounts,
+//     already captured by the bank collectors, so nothing else is
+//     recorded here (transactions.go). See collectors/manual/DESIGN.md §6.
 package manual
 
 import (
@@ -72,15 +73,21 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		db.Close()
 		return nil, fmt.Errorf("manual silver: %w", err)
 	}
-	return &Connection{db: db, costBasis: costBasis}, nil
+	exits, err := silver.HasTables(ctx, db, "exits")
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("manual silver: %w", err)
+	}
+	return &Connection{db: db, costBasis: costBasis, exits: exits}, nil
 }
 
-// Connection reads one manual silver. costBasis says whether it holds the
-// paid-in series table: a silver last loaded before that table existed lacks
-// it until the next load, and reads as a book with no series.
+// Connection reads one manual silver. costBasis and exits say whether it
+// holds the paid-in series and the exits tables: a silver last loaded
+// before a table existed lacks it until the next load, and reads as a
+// book without that series.
 type Connection struct {
-	db        *sql.DB
-	costBasis bool
+	db               *sql.DB
+	costBasis, exits bool
 }
 
 // eventDates is the SQL that lists every holding event date, as unix

@@ -36,8 +36,8 @@ def _write(d: Path, name: str, text: str) -> None:
 def test_load_examples(tmp_path):
     conn = _fresh_db(tmp_path)
     counts = loader.load(conn, EXAMPLES)
-    assert counts == {"accounts": 2, "positions": 8, "valuations": 17,
-                      "cost_basis": 3}
+    assert counts == {"accounts": 2, "positions": 9, "valuations": 18,
+                      "cost_basis": 3, "exits": 1}
 
     # Every position kind in the examples is an accepted kind.
     kinds = {r[0] for r in conn.execute(
@@ -63,9 +63,10 @@ def test_load_is_idempotent(tmp_path):
     loader.load(conn, EXAMPLES)
     loader.load(conn, EXAMPLES)
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
-    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 8
-    assert conn.execute("SELECT COUNT(*) FROM valuations").fetchone()[0] == 17
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 9
+    assert conn.execute("SELECT COUNT(*) FROM valuations").fetchone()[0] == 18
     assert conn.execute("SELECT COUNT(*) FROM cost_basis").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM exits").fetchone()[0] == 1
     # load_runs is an append-only audit log.
     assert conn.execute("SELECT COUNT(*) FROM load_runs").fetchone()[0] == 2
 
@@ -226,6 +227,50 @@ def test_cost_basis_rejects_bad_rows(tmp_path, row, err):
         loader.load(conn, tmp_path)
 
 
+def test_an_exit_closes_the_position_on_its_date(tmp_path):
+    # exits.csv is optional; a row says what a position was sold for. A
+    # blank closed_at takes the exit date; a stated one must agree.
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at,closed_at\n"
+           "spv-1,spv,SPV X,USD,2020-01-01,\n"
+           "spv-2,spv,SPV Y,USD,2020-01-01,2021-06-30\n")
+    _write(tmp_path, "exits.csv",
+           "position_id,exit_date,proceeds,currency,notes\n"
+           "spv-1,2022-03-01,150.25,USD,sold\n"
+           "spv-2,2021-06-30,0,USD,written off\n")
+    conn = _fresh_db(tmp_path)
+    assert loader.load(conn, tmp_path)["exits"] == 2
+    assert [tuple(r) for r in conn.execute(
+        "SELECT id, closed_at FROM positions ORDER BY id")] == [
+        ("spv-1", "2022-03-01"), ("spv-2", "2021-06-30")]
+    assert [tuple(r) for r in conn.execute(
+        "SELECT position_id, exit_date, proceeds, currency, notes FROM exits "
+        "ORDER BY position_id")] == [
+        ("spv-1", "2022-03-01", "150.25", "USD", "sold"),
+        ("spv-2", "2021-06-30", "0", "USD", "written off")]
+
+
+@pytest.mark.parametrize("row, err", [
+    ("spv-9,2022-03-01,100,USD", r"references a position not in positions\.csv"),
+    ("spv-1,2022-03-01,100,CHF", r"currency CHF != position"),
+    ("spv-1,2022-03-01,-5,USD", r"positive magnitude"),
+    ("spv-1,2019-12-31,100,USD", r"exit_date 2019-12-31 precedes acquired_at"),
+    ("spv-2,2021-07-01,100,USD", r"differs from closed_at 2021-06-30"),
+    ("spv-1,2022-03-01,100,USD\nspv-1,2022-03-01,200,USD",
+     r"row 3:position_id: duplicate exit for position spv-1"),
+])
+def test_exits_reject_bad_rows(tmp_path, row, err):
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at,closed_at\n"
+           "spv-1,spv,SPV X,USD,2020-01-01,\n"
+           "spv-2,spv,SPV Y,USD,2020-01-01,2021-06-30\n")
+    _write(tmp_path, "exits.csv",
+           "position_id,exit_date,proceeds,currency\n" + row + "\n")
+    conn = _fresh_db(tmp_path)
+    with pytest.raises(loader.LoadError, match=err):
+        loader.load(conn, tmp_path)
+
+
 def test_unknown_column_is_rejected(tmp_path):
     """A typo'd column name fails loudly rather than being silently ignored."""
     _write(tmp_path, "positions.csv",
@@ -337,7 +382,7 @@ def test_a_book_with_no_accounts_file_still_loads(tmp_path):
     counts = loader.load(conn, _write_book(
         tmp_path, accounts=None, positions=positions, valuations=valuations))
     assert counts == {"accounts": 1, "positions": 1, "valuations": 1,
-                      "cost_basis": 0}
+                      "cost_basis": 0, "exits": 0}
     assert conn.execute(
         "SELECT account_id FROM positions").fetchone()[0] == loader.DEFAULT_ACCOUNT_ID
     assert conn.execute(

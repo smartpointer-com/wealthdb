@@ -59,3 +59,11 @@ CREATE TABLE cost_basis (
     notes        TEXT,
     PRIMARY KEY (position_id, as_of_date)
 );
+
+CREATE TABLE exits (
+    position_id  TEXT NOT NULL PRIMARY KEY,
+    exit_date    TEXT NOT NULL,
+    proceeds     TEXT NOT NULL,
+    currency     TEXT NOT NULL,
+    notes        TEXT
+);

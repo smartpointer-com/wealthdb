@@ -18,13 +18,14 @@ banks. See DESIGN.md §6.
 
 There is therefore no `login` and no `download` step — only `load`:
 
-  1. Read accounts.csv / positions.csv / valuations.csv / cost_basis.csv.
-     accounts.csv is optional: without it every position lands in one
-     account. With it, a book can span tax sleeves — a holding under one
-     wrapper beside one held outright — without a second silver source per
-     sleeve. cost_basis.csv is optional too: a paid-in series for a
-     position whose cost is not the valuation at its acquired_at, such as
-     a fund commitment paid in over time.
+  1. Read accounts.csv / positions.csv / valuations.csv / cost_basis.csv /
+     exits.csv. accounts.csv is optional: without it every position lands
+     in one account. With it, a book can span tax sleeves — a holding
+     under one wrapper beside one held outright — without a second silver
+     source per sleeve. cost_basis.csv is optional too: a paid-in series
+     for a position whose cost is not the valuation at its acquired_at,
+     such as a fund commitment paid in over time. So is exits.csv: what a
+     position was sold for on the day it left the book.
   2. Validate aggressively (bad rows fail loudly with file:row:column
      context — never silently dropped).
   3. Rebuild the SQLite silver from the current CSVs (full truncate-reload,
@@ -162,6 +163,8 @@ VALUATIONS_REQUIRED = ["position_id", "as_of_date", "value", "currency"]
 VALUATIONS_OPTIONAL = ["notes", "payload"]
 COST_BASIS_REQUIRED = ["position_id", "as_of_date", "amount", "currency"]
 COST_BASIS_OPTIONAL = ["notes"]
+EXITS_REQUIRED = ["position_id", "exit_date", "proceeds", "currency"]
+EXITS_OPTIONAL = ["notes"]
 
 
 class LoadError(SystemExit):
@@ -442,6 +445,49 @@ def validate_cost_basis(rows: list[dict], positions: dict[str, dict],
     return out
 
 
+def validate_exits(rows: list[dict], positions: dict[str, dict],
+                   ) -> list[dict]:
+    """The optional exits: what a position was sold for on the day it left
+    the book, gross of any part held back. One row per position; the
+    position's closed_at is the exit date, and is filled in from it when
+    blank. A write-off is proceeds 0."""
+    fname = "exits.csv"
+    out: list[dict] = []
+    for r in rows:
+        n = r["_row"]
+        pid = _req(fname, n, "position_id", r["position_id"])
+        pos = positions.get(pid)
+        if pos is None:
+            _fail(fname, n, "position_id",
+                  "references a position not in positions.csv", pid)
+        if any(e["position_id"] == pid for e in out):
+            _fail(fname, n, "position_id", f"duplicate exit for position {pid}")
+        exit_date = _date(fname, n, "exit_date", r["exit_date"])
+        if exit_date < pos["acquired_at"]:
+            _fail(fname, n, "exit_date",
+                  f"exit_date {exit_date} precedes acquired_at "
+                  f"{pos['acquired_at']}")
+        if pos["closed_at"] is None:
+            pos["closed_at"] = exit_date
+        elif pos["closed_at"] != exit_date:
+            _fail(fname, n, "exit_date",
+                  f"exit_date {exit_date} differs from closed_at "
+                  f"{pos['closed_at']} of position {pid}")
+        ccy = _currency(fname, n, "currency", r["currency"])
+        if ccy != pos["currency"]:
+            _fail(fname, n, "currency",
+                  f"currency {ccy} != position {pid} currency "
+                  f"{pos['currency']}")
+        out.append({
+            "position_id": pid,
+            "exit_date": exit_date,
+            "proceeds": _decimal(fname, n, "proceeds", r["proceeds"]),
+            "currency": ccy,
+            "notes": r["notes"].strip() or None,
+        })
+    return out
+
+
 # ----------------------------------------------------------------------
 # SQLite silver.
 # ----------------------------------------------------------------------
@@ -467,12 +513,14 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
                                 VALUATIONS_REQUIRED, VALUATIONS_OPTIONAL)
     cost_basis_rows = _read_csv(bronze_dir / "cost_basis.csv",
                                 COST_BASIS_REQUIRED, COST_BASIS_OPTIONAL)
+    exits_rows = _read_csv(bronze_dir / "exits.csv",
+                           EXITS_REQUIRED, EXITS_OPTIONAL)
 
     if not positions_rows:
         log.warning("no positions.csv (or it is empty) in %s — nothing to "
                     "load", bronze_dir)
         return {"accounts": 0, "positions": 0, "valuations": 0,
-                "cost_basis": 0}
+                "cost_basis": 0, "exits": 0}
 
     # Validate everything BEFORE touching silver, so a bad row never leaves
     # a half-rebuilt DB.
@@ -480,6 +528,7 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
     positions = validate_positions(positions_rows, accounts)
     valuations = validate_valuations(valuations_rows, positions)
     cost_basis = validate_cost_basis(cost_basis_rows, positions)
+    exits = validate_exits(exits_rows, positions)
     # An account nothing is held in projects no gold account, so it is a
     # typo or a leftover rather than an empty sleeve worth carrying.
     held = {p["account_id"] for p in positions.values()}
@@ -489,6 +538,7 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
 
     conn.execute("BEGIN")
     try:
+        conn.execute("DELETE FROM exits")
         conn.execute("DELETE FROM cost_basis")
         conn.execute("DELETE FROM valuations")
         conn.execute("DELETE FROM positions")
@@ -526,10 +576,18 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
               c["currency"], c["notes"])
              for c in cost_basis],
         )
+        conn.executemany(
+            "INSERT INTO exits (position_id, exit_date, proceeds, "
+            "currency, notes) VALUES (?, ?, ?, ?, ?)",
+            [(e["position_id"], e["exit_date"].isoformat(), str(e["proceeds"]),
+              e["currency"], e["notes"])
+             for e in exits],
+        )
         counts = {"accounts": len(accounts),
                   "positions": len(positions),
                   "valuations": len(valuations),
-                  "cost_basis": len(cost_basis)}
+                  "cost_basis": len(cost_basis),
+                  "exits": len(exits)}
         conn.execute(
             "INSERT INTO load_runs (load_at, silver_schema_version, "
             "bronze_dir, positions_total, valuations_total, payload) "
@@ -576,9 +634,9 @@ def main(argv: list[str]) -> int:
         log.info("silver schema at version %d (%s)", version, silver_db)
         counts = load(conn, bronze_dir)
         log.info("loaded %d account(s), %d position(s), %d valuation(s), "
-                 "%d cost-basis row(s)", counts["accounts"],
+                 "%d cost-basis row(s), %d exit(s)", counts["accounts"],
                  counts["positions"], counts["valuations"],
-                 counts["cost_basis"])
+                 counts["cost_basis"], counts["exits"])
     finally:
         conn.close()
     return 0
