@@ -20,7 +20,13 @@ import (
 // snapshot (each position's latest snapshot on/before that date, keeping only
 // the is_open ones), which is what gold's as-of query reads (the latest
 // snapshot_at per source, all its positions). An exited position drops out
-// exactly at its exit date.
+// exactly at its exit date. A position the portal stopped listing drops out
+// at the first dump that omitted it (removals): that dump time is a snapshot
+// time too, where the roster is emitted without it and every other position
+// keeps its own mark date (ValuedAt). When the LAST position leaves, that
+// date gets the exit-day zero snapshot instead (silver.ClosureMarkerBatch) —
+// an empty batch would leave the pre-exit marks carried forward as phantom
+// value.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -29,7 +35,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	times, err := c.snapshotTimesInWindow(ctx, w, k.PeriodEnds())
+	removals, err := c.removals(ctx)
+	if err != nil {
+		return nil, err
+	}
+	times, err := c.snapshotTimesInWindow(ctx, w, append(k.PeriodEnds(), removals.Times()...))
 	if err != nil {
 		return nil, err
 	}
@@ -37,12 +47,25 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
+	// The held→empty transition is tracked within the walked window, so the
+	// closure marker depends on ChangeWindow spanning the full content history
+	// (it does — see status.go).
 	batches := make([]canonical.SnapshotBatch, 0, len(times))
+	var lastHeld canonical.SnapshotBatch
+	prevHeld := false
 	for _, t := range times {
-		batch, err := c.buildBatch(ctx, t, account, k)
+		batch, err := c.buildBatch(ctx, t, account, k, removals)
 		if err != nil {
 			return nil, err
 		}
+		held := len(batch.Positions) > 0
+		switch {
+		case held:
+			lastHeld = batch
+		case prevHeld:
+			batch = silver.ClosureMarkerBatch(lastHeld, t, custodyAccount(account, t))
+		}
+		prevHeld = held
 		batches = append(batches, batch)
 	}
 	k.LogClamped(kindName)
@@ -147,12 +170,46 @@ SELECT fa.balance_minor, fa.currency,
 	}, true
 }
 
+// removals are the open positions a complete dump no longer lists, each
+// with the time of the first such dump that omitted it (silver.Removals).
+// A dump stamps every position it lists (offerings.last_seen_at), and its
+// portfolio summary declares how many investments the portfolio holds: a
+// dump is complete when the positions known to be listed around its time
+// (first_seen_at ≤ dump ≤ last_seen_at) number what its summary declares.
+// A dump that captured no summary, or whose listing fell short of the
+// count, says nothing about the roster. A position whose latest row
+// already closes it (is_open = 0) leaves at that row's date and needs no
+// removal.
+func (c *Connection) removals(ctx context.Context) (silver.Removals, error) {
+	const q = `
+WITH complete AS (
+    SELECT d.snapshot_at AS t
+      FROM dump_runs d
+      JOIN portfolio_summary s ON s.snapshot_at = d.snapshot_at
+     WHERE s.total_investments_count IS NOT NULL
+       AND s.total_investments_count = (
+           SELECT COUNT(*) FROM offerings o
+            WHERE o.first_seen_at <= d.snapshot_at AND d.snapshot_at <= o.last_seen_at)),
+open AS (
+    SELECT position_external_id AS key FROM position_snapshots ps
+     WHERE is_open = 1
+       AND as_of_date = (SELECT MAX(as_of_date) FROM position_snapshots s2
+                          WHERE s2.position_external_id = ps.position_external_id))
+SELECT o.position_external_id, (SELECT MIN(t) FROM complete WHERE t > o.last_seen_at)
+  FROM offerings o
+  JOIN open ON open.key = o.position_external_id
+ WHERE o.last_seen_at IS NOT NULL
+   AND EXISTS (SELECT 1 FROM complete WHERE t > o.last_seen_at)`
+	return silver.QueryRemovals(ctx, c.db, "angellist", q)
+}
+
 // snapshotTimesInWindow are the position event dates in the window — the
 // distinct as_of_date of position_snapshots (the download time in dump_runs
-// is provenance, not a holding event, so it is excluded) — and the days in
-// it a K-1's property distribution reduces a book value (inKind), so the
-// cut lands on its own date.
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, inKind []int64) ([]int64, error) {
+// is provenance, not a holding event, so it is excluded) — and the extra
+// days in it on which the roster or a book value changes without a portal
+// event: a K-1's property distribution (inKind), a dump that stopped
+// listing a position (removals).
+func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
 	const q = `
 SELECT DISTINCT as_of_date FROM position_snapshots
  WHERE as_of_date BETWEEN ? AND ?`
@@ -174,7 +231,7 @@ SELECT DISTINCT as_of_date FROM position_snapshots
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for _, t := range inKind {
+	for _, t := range extra {
 		if t >= w.Start && t <= w.End && !seen[t] {
 			seen[t] = true
 			out = append(out, t)
@@ -208,25 +265,27 @@ SELECT COALESCE(NULLIF(slug, ''), '') FROM (
 
 // buildBatch materialises the full portfolio as of event date t: each
 // position's latest snapshot on/before t, keeping only is_open=1 (an exited
-// position's latest row is is_open=0, so it is dropped), plus the single
-// invest account and one instrument per held position (the SPV stake — gold's
-// position FK is satisfied and the account/instrument seen-range merges
-// across batches).
+// position's latest row is is_open=0, so it is dropped) and the positions
+// the portal still listed at t (removals), plus the single invest account
+// and one instrument per held position (the SPV stake — gold's position FK
+// is satisfied and the account/instrument seen-range merges across
+// batches).
 //
-// The value is the latest event's mark, whichever source states it. The book
-// value is the capital contributed as the portal states it, on its latest
-// event on/before t, less the basis K-1s say left in kind by then (inKind).
-// A K-1 states cumulative contributions too, but on the partnership's tax
-// basis, which can differ from the portal's figure; it rides in the payload
-// as tax_basis_contributed, so the book value does not move between the two
+// The value is the latest event's mark, whichever source states it, and
+// the position is valued at that event's date. The book value is the
+// capital contributed as the portal states it, on its latest event
+// on/before t, less the basis K-1s say left in kind by then (inKind). A K-1
+// states cumulative contributions too, but on the partnership's tax basis,
+// which can differ from the portal's figure; it rides in the payload as
+// tax_basis_contributed, so the book value does not move between the two
 // as the latest event changes.
-func (c *Connection) buildBatch(ctx context.Context, t int64, account string, k *silver.InKind) (canonical.SnapshotBatch, error) {
+func (c *Connection) buildBatch(ctx context.Context, t int64, account string, k *silver.InKind, removals silver.Removals) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	if account == "" {
 		return batch, nil
 	}
 	const q = `
-SELECT ps.position_external_id,
+SELECT ps.position_external_id, ps.as_of_date,
        COALESCE(ps.currency, o.currency, 'USD'),
        ps.market_value_minor,
        (SELECT contributed_minor FROM position_snapshots p
@@ -258,18 +317,23 @@ SELECT ps.position_external_id,
 	for rows.Next() {
 		var (
 			pid, currency, kind, company, payl  string
+			asOf                                int64
 			marketMinor, contribMinor, taxMinor sql.NullInt64
 			invDate                             sql.NullInt64
 		)
-		if err := rows.Scan(&pid, &currency, &marketMinor, &contribMinor, &taxMinor,
+		if err := rows.Scan(&pid, &asOf, &currency, &marketMinor, &contribMinor, &taxMinor,
 			&kind, &company, &invDate, &payl); err != nil {
 			return batch, err
+		}
+		if removals.Removed(pid, t) {
+			continue
 		}
 		held = true
 		instKey := pid
 		acNew, vehicle := taxonomyForKind(kind)
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
+			ValuedAt:             asOf,
 			AccountExternalID:    account,
 			PositionKey:          pid,
 			InstrumentExternalID: &instKey,
@@ -313,17 +377,21 @@ SELECT ps.position_external_id,
 	if !held {
 		return batch, nil // nothing held at t
 	}
+	batch.Accounts = append(batch.Accounts, custodyAccount(account, t))
+	return batch, nil
+}
 
-	// One account for the whole AngelList LP book. It custodies the
-	// holder's LP interests (not a brokerage), and the holder self-directs
-	// which SPVs / funds to back — we do NOT model the GP's management
-	// inside each vehicle. Mirrors the carta / equityzen private-market
-	// accounts; config overrides win on overlap.
+// custodyAccount is the one account for the whole AngelList LP book, as of
+// t. It custodies the holder's LP interests (not a brokerage), and the
+// holder self-directs which SPVs / funds to back — the GP's management
+// inside each vehicle is not modelled. Mirrors the carta / equityzen
+// private-market accounts; config overrides win on overlap.
+func custodyAccount(account string, t int64) canonical.AccountChange {
 	wrapper := canonical.TaxWrapperTaxablePersonal
 	style := canonical.ManagementStyleSelfDirected
 	cat := "AngelList LP"
 	usd := "USD"
-	batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+	return canonical.AccountChange{
 		AccountExternalID: account,
 		AccountKind:       canonical.AccountKindCustody,
 		BaseCurrency:      &usd,
@@ -332,8 +400,7 @@ SELECT ps.position_external_id,
 		ManagementStyle:   &style,
 		FirstSeenAt:       t,
 		LastSeenAt:        t,
-	})
-	return batch, nil
+	}
 }
 
 // ---- helpers ------------------------------------------------------

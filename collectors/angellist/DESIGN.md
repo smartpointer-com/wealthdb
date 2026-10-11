@@ -304,7 +304,18 @@ forward-fill:
 - **Positions are forward-filled** from `position_snapshots`: for each event
   date the adapter emits each position's latest snapshot ≤ it, dropping the
   is_open=0 (exited) ones — a complete portfolio per date, which is what
-  gold's as-of query reads. `market_value` = the collector's
+  gold's as-of query reads. A position the portal stopped listing drops
+  out at the first complete dump that omitted it: a dump stamps every
+  position it lists (`offerings.last_seen_at`), and it counts as complete
+  when the positions listed around it number the investments its
+  `portfolio_summary` declares. A dump with no summary, or one whose
+  listing fell short, says nothing about the roster. That dump time is a
+  snapshot time too, where the roster is emitted without the position and
+  every other position carries its own mark date as `valued_at`
+  (`silver.Removals`, wealthdb/docs/DESIGN.md §6.4). When the last open
+  position leaves, the date carries the exit-day zero snapshot
+  (`silver.ClosureMarkerBatch`) instead of an empty batch. `market_value`
+  = the collector's
   `market_value_minor` (current FMV → quarterly fund fair-value statement
   → annual tax-basis NAV → cost, never blended within a snapshot);
   `book_value` = the capital contributed as the portal states it, on the

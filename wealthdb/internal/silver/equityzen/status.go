@@ -54,6 +54,13 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	if latest.Valid {
 		s.LatestSnapshotAt = latest.Int64
 	}
+	// A dump that stopped listing a deal is a snapshot at the dump time
+	// (snapshots.go), which can lie after every mark.
+	removals, err := c.removals(ctx)
+	if err != nil {
+		return s, err
+	}
+	s.LatestSnapshotAt = removals.Reach(s.LatestSnapshotAt)
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
 	}
@@ -76,7 +83,8 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 
 // ChangeWindow triggers on a new download — any dump_run past `since`. When
 // triggered it re-emits the FULL event history: Start/End span both fact
-// streams. Re-emit-all is the natural unit because a new download can revise
+// streams and the latest dump that stopped listing a deal. Re-emit-all is
+// the natural unit because a new download can revise
 // any deal's marks at any past event date (a tender records, a statement NAV
 // finalises), and the adapter forward-fills complete per-event portfolios;
 // gold's deleteWindow over [Start,End] makes the re-emit idempotent.
@@ -103,6 +111,11 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 		w.Start = start.Int64
 		w.End = end.Int64
 		w.HasChanges = true
+		removals, err := c.removals(ctx)
+		if err != nil {
+			return w, err
+		}
+		w.End = removals.Reach(w.End)
 	}
 	return w, nil
 }

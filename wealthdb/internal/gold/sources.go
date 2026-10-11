@@ -31,6 +31,11 @@ type SourceRow struct {
 	// 0 when the source has no data as of that date.
 	SnapshotAt int64
 
+	// ValuedAt is the latest mark that snapshot rides on: the snapshot
+	// itself, unless the source dates a snapshot at a read later than
+	// its marks (positions.valued_at). 0 with SnapshotAt.
+	ValuedAt int64
+
 	// ObservedAt is the instant through which the source's holdings
 	// were observed (silver_sources), capped at the as-of date: a quiet
 	// source is current through its latest run although its latest
@@ -74,7 +79,7 @@ SELECT r.*, CASE WHEN o.observed_snapshots_through IS NULL THEN 0
 			pvb, cvb, tvb, pvo, cvo, tvo   sql.NullString
 		)
 		if err := rows.Scan(
-			&r.SilverSourceID, &baseCcy, &taxWrapper, &mgmtStyle, &r.SnapshotAt,
+			&r.SilverSourceID, &baseCcy, &taxWrapper, &mgmtStyle, &r.SnapshotAt, &r.ValuedAt,
 			&pvb, &cvb, &tvb, &pvo, &cvo, &tvo, &r.ObservedAt,
 		); err != nil {
 			return nil, fmt.Errorf("SourcesAsOf scan: %w", err)

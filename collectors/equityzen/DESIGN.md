@@ -453,7 +453,16 @@ values. The only gold-schema change is migration `0015`, which widens the
   in the window, emit a COMPLETE portfolio snapshot = each deal's latest
   event `≤ t` (by `event_seq`) **where `is_open = 1`** (so an exited deal
   drops out at its exit date), one `PositionChange` + one `InstrumentChange`
-  per held deal, plus the single account.
+  per held deal, plus the single account. A deal the portal stopped
+  listing drops out at the first complete dump that omitted it: a dump
+  stamps every deal it lists (`offerings.last_seen_at`), and it counts as
+  complete when its `run.json` says `status: complete` with the offerings
+  in scope and the deals listed around it number its `investments`. A
+  dump without a manifest, or one whose listing fell short, says nothing
+  about the roster. That dump time is a snapshot time too, where the
+  roster is emitted without the deal and every other deal carries its own
+  event date as `valued_at` (`silver.Removals`, wealthdb/docs/DESIGN.md
+  §6.4). An offering with no `last_seen_at` is never read as removed.
 - `transactions.go` — `cash_flows` → **double-entry pairs** on the custody
   account (the account carrying the value spine, so the returns engine sees
   the flows; EquityZen does not expose the real external funding account —

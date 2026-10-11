@@ -1,10 +1,10 @@
 package gold
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
-
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
@@ -123,5 +123,44 @@ func TestPositionsAsOfMultiSourceIndependentLatest(t *testing.T) {
 		if want, ok := wantSnap[r.SilverSourceID]; !ok || r.SnapshotAt != want {
 			t.Errorf("source %q snapshot_at = %d, want %d", r.SilverSourceID, r.SnapshotAt, want)
 		}
+	}
+}
+
+// TestPositionsAsOfCarriesTheValuedDate pins positions.valued_at: a
+// position states the instant its mark is from where that is not the
+// snapshot's own, and a position that states none is valued at the
+// snapshot.
+func TestPositionsAsOfCarriesTheValuedDate(t *testing.T) {
+	db, ctx := openMigrated(t)
+	inTx(t, db, ctx, func(w *Writer) error {
+		if err := w.UpsertAccounts(ctx, []canonical.AccountChange{{
+			SilverSourceID: "test-src", AccountExternalID: "ACC", AccountKind: canonical.AccountKindCustody,
+			FirstSeenAt: 1, LastSeenAt: 1,
+		}}); err != nil {
+			return err
+		}
+		mv := canonical.NewDecimalFromInt(100)
+		return w.InsertPositions(ctx, []canonical.PositionChange{
+			{SilverSourceID: "test-src", SnapshotAt: 1000, ValuedAt: 500, AccountExternalID: "ACC",
+				PositionKey: "marked", AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleSPV,
+				Currency: "USD", MarketValue: &mv},
+			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "ACC",
+				PositionKey: "unmarked", AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleSPV,
+				Currency: "USD", MarketValue: &mv},
+		})
+	})
+	rows, err := PositionsAsOf(ctx, db, 2000, "USD", lots.MissingIgnore)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("PositionsAsOf: %v %v", rows, err)
+	}
+	if rows[0].PositionKey != "marked" || rows[0].ValuedAt != 500 || rows[0].SnapshotAt != 1000 {
+		t.Errorf("marked = %+v, want valued at 500 in the snapshot at 1000", rows[0])
+	}
+	if rows[1].PositionKey != "unmarked" || rows[1].ValuedAt != 1000 {
+		t.Errorf("unmarked = %+v, want valued at the snapshot", rows[1])
+	}
+	var stored sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT valued_at FROM positions WHERE position_key = 'unmarked'`).Scan(&stored); err != nil || stored.Valid {
+		t.Errorf("an unstated mark date is stored as NULL: %v %v", stored, err)
 	}
 }

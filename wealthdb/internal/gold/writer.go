@@ -341,17 +341,17 @@ func (w *Writer) InsertPositions(ctx context.Context, batch []canonical.Position
 	}
 	const head = `
 INSERT INTO positions (
-    silver_source_id, snapshot_at, account_external_id, position_key,
+    silver_source_id, snapshot_at, valued_at, account_external_id, position_key,
     instrument_external_id, asset_class, vehicle, currency,
     quantity, market_value, book_value, basis_origin, basis_method, basis_fees,
     accrued_interest, acquisition_date, payload
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "InsertPositions", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
-				r.SilverSourceID, r.SnapshotAt, r.AccountExternalID, r.PositionKey,
+				r.SilverSourceID, r.SnapshotAt, nullableInstant(r.ValuedAt), r.AccountExternalID, r.PositionKey,
 				nullableString(r.InstrumentExternalID), string(r.AssetClass), string(r.Vehicle), r.Currency,
 				nullableDecimal(r.Quantity), nullableDecimal(r.MarketValue),
 				nullableDecimal(r.BookValue), nullableEnumValue(r.Basis.Origin),
@@ -663,6 +663,16 @@ func nullableTime(p *time.Time) any {
 		return nil
 	}
 	return *p
+}
+
+// nullableInstant maps the canonical "unset" instant (0 or less) to SQL
+// NULL, so a column such as positions.valued_at reads as "the snapshot's
+// own instant" where the adapter states none.
+func nullableInstant(t int64) any {
+	if t <= 0 {
+		return nil
+	}
+	return t
 }
 
 // nullableJSON forwards a json.RawMessage as []byte (DuckDB's JSON

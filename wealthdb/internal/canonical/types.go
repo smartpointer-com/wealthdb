@@ -99,8 +99,14 @@ type InstrumentChange struct {
 
 // PositionChange is one insert into gold's `positions` table.
 type PositionChange struct {
-	SilverSourceID       string
-	SnapshotAt           int64
+	SilverSourceID string
+	SnapshotAt     int64
+	// ValuedAt is the instant the mark is from, where it is not the
+	// snapshot's own. A portal that marks a holding on event dates and
+	// is read later states, at the read, a roster whose marks are
+	// older than the roster: the snapshot is dated at the read and each
+	// position at its mark. 0 means the mark is as of SnapshotAt.
+	ValuedAt             int64
 	AccountExternalID    string
 	PositionKey          string
 	InstrumentExternalID *string

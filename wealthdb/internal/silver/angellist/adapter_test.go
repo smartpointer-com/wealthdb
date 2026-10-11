@@ -469,3 +469,160 @@ func TestExitedInstruments(t *testing.T) {
 		t.Errorf("seen-range = [%d,%d], want [500,500]", foo.FirstSeenAt, foo.LastSeenAt)
 	}
 }
+
+// collectBatches drains a snapshot stream.
+func collectBatches(t *testing.T, conn silver.Connection) []canonical.SnapshotBatch {
+	t.Helper()
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var batches []canonical.SnapshotBatch
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		batches = append(batches, b)
+		if !more {
+			break
+		}
+	}
+	return batches
+}
+
+// TestAPositionADumpStopsListingLeavesAtThatDump pins the roster step: a
+// position a complete dump no longer lists leaves the stream at that dump's
+// time, which is a snapshot time where every other position keeps its own
+// mark date; the earlier snapshots still carry it. The dump time can lie
+// after every mark, so the status and the window reach it. A dump is
+// complete when the positions listed around it number what its summary
+// declares.
+func TestAPositionADumpStopsListingLeavesAtThatDump(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+        INSERT INTO dump_runs(snapshot_at, invest_account_slug) VALUES (1000, 'acct'), (2000, 'acct');
+        INSERT INTO portfolio_summary(snapshot_at, invest_account_slug, total_investments_count) VALUES
+            (1000, 'acct', 2), (2000, 'acct', 1);
+        INSERT INTO offerings(position_external_id, kind, company_name, investment_date, first_seen_at, last_seen_at) VALUES
+            ('p1', 'spv', 'SPV Alpha', 100, 1000, 2000),
+            ('p2', 'spv', 'SPV Beta',  100, 1000, 1000);
+        INSERT INTO position_snapshots(position_external_id, as_of_date, event_type,
+            status, is_open, currency, market_value_minor, valuation_basis,
+            contributed_minor, snapshot_at) VALUES
+            -- p1: listed by both dumps
+            ('p1', 100, 'investment', NULL,   1, 'USD', 40000, 'cost', 40000, 2000),
+            ('p1', 500, 'valuation',  'live', 1, 'USD', 90000, 'fmv',  40000, 2000),
+            -- p2: open on its latest row, last listed by the first dump
+            ('p2', 100, 'investment', NULL,   1, 'USD', 15000, 'cost', 15000, 1000),
+            ('p2', 300, 'valuation',  'live', 1, 'USD', 20000, 'fmv',  15000, 1000);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	s, err := conn.Status(context.Background())
+	if err != nil || s.LatestSnapshotAt != 2000 {
+		t.Errorf("Status latest snapshot = %d %v, want the dump that dropped p2", s.LatestSnapshotAt, err)
+	}
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	if w.End != 2000 {
+		t.Errorf("window end = %d, want the dump that dropped p2", w.End)
+	}
+	posByT := map[int64]map[string]canonical.PositionChange{}
+	for _, b := range collectBatches(t, conn) {
+		for _, p := range b.Positions {
+			if posByT[p.SnapshotAt] == nil {
+				posByT[p.SnapshotAt] = map[string]canonical.PositionChange{}
+			}
+			posByT[p.SnapshotAt][p.PositionKey] = p
+		}
+	}
+	if got := len(posByT); got != 4 {
+		t.Fatalf("snapshot times = %d, want the marks 100/300/500 and the dump 2000: %v", got, posByT)
+	}
+	if _, ok := posByT[500]["p2"]; !ok || len(posByT[500]) != 2 {
+		t.Errorf("t=500 still lists p2: %v", posByT[500])
+	}
+	if p := posByT[500]["p2"]; p.ValuedAt != 300 {
+		t.Errorf("t=500 p2 valued at %d, want its mark date 300", p.ValuedAt)
+	}
+	at := posByT[2000]
+	if len(at) != 1 {
+		t.Fatalf("t=2000 positions = %v, want p1 alone", at)
+	}
+	if p := at["p1"]; p.ValuedAt != 500 || p.MarketValue == nil || p.MarketValue.StringFixed(2) != "900.00" {
+		t.Errorf("t=2000 p1 = %+v, want its mark of 500 unchanged", p)
+	}
+}
+
+// TestAnIncompleteDumpRemovesNothing pins the gate on the roster step: a
+// dump without a portfolio summary, and a dump whose listing fell short of
+// the count its summary declares, say nothing about the roster, so every
+// position stays and the stream ends at the marks.
+func TestAnIncompleteDumpRemovesNothing(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+        INSERT INTO dump_runs(snapshot_at, invest_account_slug) VALUES (1000, 'acct'), (2000, 'acct'), (3000, 'acct');
+        -- 2000 captured no summary; 3000 declares two investments and listed one.
+        INSERT INTO portfolio_summary(snapshot_at, invest_account_slug, total_investments_count) VALUES
+            (1000, 'acct', 2), (3000, 'acct', 2);
+        INSERT INTO offerings(position_external_id, kind, company_name, investment_date, first_seen_at, last_seen_at) VALUES
+            ('p1', 'spv', 'SPV Alpha', 100, 1000, 3000),
+            ('p2', 'spv', 'SPV Beta',  100, 1000, 1000);
+        INSERT INTO position_snapshots(position_external_id, as_of_date, event_type,
+            status, is_open, currency, market_value_minor, valuation_basis,
+            contributed_minor, snapshot_at) VALUES
+            ('p1', 100, 'investment', NULL, 1, 'USD', 40000, 'cost', 40000, 3000),
+            ('p2', 100, 'investment', NULL, 1, 'USD', 15000, 'cost', 15000, 1000);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	if s, err := conn.Status(context.Background()); err != nil || s.LatestSnapshotAt != 100 {
+		t.Errorf("Status latest snapshot = %d %v, want the mark alone", s.LatestSnapshotAt, err)
+	}
+	batches := collectBatches(t, conn)
+	if len(batches) != 1 || len(batches[0].Positions) != 2 {
+		t.Fatalf("batches = %+v, want the one mark-dated snapshot with both positions", batches)
+	}
+}
+
+// TestTheLastPositionADumpStopsListingClosesTheBook pins the closure marker
+// on a roster removal: when a complete dump drops the only open position,
+// that dump's snapshot replays it at zero value instead of being empty.
+func TestTheLastPositionADumpStopsListingClosesTheBook(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+        INSERT INTO dump_runs(snapshot_at, invest_account_slug) VALUES (1000, 'acct'), (2000, 'acct');
+        INSERT INTO portfolio_summary(snapshot_at, invest_account_slug, total_investments_count) VALUES
+            (1000, 'acct', 1), (2000, 'acct', 0);
+        INSERT INTO offerings(position_external_id, kind, company_name, investment_date, first_seen_at, last_seen_at) VALUES
+            ('p9', 'spv', 'Solo SPV', 100, 1000, 1000);
+        INSERT INTO position_snapshots(position_external_id, as_of_date, event_type,
+            status, is_open, currency, market_value_minor, valuation_basis,
+            contributed_minor, snapshot_at) VALUES
+            ('p9', 100, 'investment', NULL, 1, 'USD', 15000, 'cost', 15000, 1000);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	batches := collectBatches(t, openAdapter(t, path))
+	if len(batches) != 2 {
+		t.Fatalf("batches = %d, want the held snapshot and the closure marker", len(batches))
+	}
+	marker := batches[1]
+	if len(marker.Positions) != 1 || len(marker.Accounts) != 1 || len(marker.Instruments) != 1 {
+		t.Fatalf("marker shape = %d pos / %d accts / %d insts, want 1/1/1", len(marker.Positions), len(marker.Accounts), len(marker.Instruments))
+	}
+	p := marker.Positions[0]
+	if p.PositionKey != "p9" || p.SnapshotAt != 2000 || p.MarketValue == nil || !p.MarketValue.IsZero() {
+		t.Errorf("marker position = %+v, want p9 at zero value at the dump time", p)
+	}
+	if marker.Accounts[0].AccountExternalID != "acct" {
+		t.Errorf("marker account = %q, want the invest account", marker.Accounts[0].AccountExternalID)
+	}
+}

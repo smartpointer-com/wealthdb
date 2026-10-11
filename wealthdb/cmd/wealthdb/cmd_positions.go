@@ -87,6 +87,10 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 			Extract: func(r gold.PositionRow) string { return r.SilverSourceID }},
 		{Name: "snapshot_date", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return formatDate(r.SnapshotAt) }},
+		// The date the mark is from: the snapshot date, unless a read
+		// dated the snapshot after the marks it found unchanged.
+		{Name: "valued_date", Align: output.AlignLeft,
+			Extract: func(r gold.PositionRow) string { return formatDate(r.ValuedAt) }},
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PositionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
@@ -204,6 +208,8 @@ The cost basis columns are opt-in, e.g. -C +cost_basis,unrealized_gain,basis_sta
 unrealized_gain is the clean value (market value less accrued interest)
 less the cost basis; 'wealthdb gains' reads it over a window.
 quantity_without_basis is the quantity held with no known cost.
+valued_date (opt-in) is the date the mark is from: the snapshot date,
+unless a download dated the snapshot after marks it found unchanged.
 
 Default column set:
   ` + strings.Join(defaultColumns, ", ")

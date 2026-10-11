@@ -66,6 +66,14 @@ func buildSourceColumnRegistry(outCcy string) []columnSpec[gold.SourceRow] {
 			}
 			return formatDate(r.SnapshotAt)
 		}},
+		// The date of the latest mark the snapshot rides on: earlier than
+		// snapshot_date where a read dated the snapshot after the marks.
+		{Name: "valued_date", Align: output.AlignLeft, Extract: func(r gold.SourceRow) string {
+			if r.ValuedAt == 0 {
+				return ""
+			}
+			return formatDate(r.ValuedAt)
+		}},
 		// The date through which the source's holdings were observed:
 		// later than snapshot_date where a run found nothing new.
 		{Name: "observed_date", Align: output.AlignLeft, Extract: func(r gold.SourceRow) string {
@@ -119,6 +127,9 @@ total_value_<CCY> across all rows equals the same sum from
 'wealthdb holdings accounts', 'portfolios', and 'global'.
 
 snapshot_date is the date of the source's latest holdings.
+valued_date (opt-in) is the date of the latest mark among them:
+earlier than snapshot_date when a download found a holding gone
+while the marks stayed.
 observed_date (opt-in) is the date through which they were observed:
 later than snapshot_date when a download found nothing new.
 

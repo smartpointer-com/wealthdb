@@ -17,10 +17,13 @@ CREATE TABLE dump_runs (
 );
 
 CREATE TABLE portfolio_summary (
-    snapshot_at         INTEGER PRIMARY KEY,
-    invest_account_slug TEXT,
-    currency            TEXT,
-    payload             TEXT
+    snapshot_at              INTEGER PRIMARY KEY,
+    invest_account_slug      TEXT,
+    currency                 TEXT,
+    total_funds_count        INTEGER,
+    total_investments_count  INTEGER,       -- the investments the dump's dashboard declares
+    total_startups_count     INTEGER,
+    payload                  TEXT
 );
 
 CREATE TABLE offerings (

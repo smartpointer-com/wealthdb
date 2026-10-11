@@ -39,6 +39,13 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	if latest.Valid {
 		s.LatestSnapshotAt = latest.Int64
 	}
+	// A dump that stopped listing a position is a snapshot at the dump
+	// time (snapshots.go), which can lie after every mark.
+	removals, err := c.removals(ctx)
+	if err != nil {
+		return s, err
+	}
+	s.LatestSnapshotAt = removals.Reach(s.LatestSnapshotAt)
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
 	}
@@ -65,7 +72,8 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 // ChangeWindow triggers on a new download — any dump_run past `since`.
 // When triggered it re-emits the FULL event history: Start is the
 // earliest position event date (an inception / early K-1 year), End the
-// latest. Re-emit-all is the natural unit here because a new download can
+// latest, or the latest dump that stopped listing a position when that
+// is later. Re-emit-all is the natural unit here because a new download can
 // revise any position's marks at any past event date (a K-1 finalises, a
 // statement restates), and the adapter forward-fills complete per-event
 // portfolios; gold's deleteWindow over [Start,End] makes the re-emit
@@ -89,5 +97,10 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 	if latest.Valid {
 		w.End = latest.Int64
 	}
+	removals, err := c.removals(ctx)
+	if err != nil {
+		return w, err
+	}
+	w.End = removals.Reach(w.End)
 	return w, nil
 }

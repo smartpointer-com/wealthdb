@@ -672,3 +672,71 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 			got.Format("2006-01-02"), want.Format("2006-01-02"))
 	}
 }
+
+// TestACompanyADumpStopsListingLeavesAtThatDump pins the roster step: the
+// manifest of each complete dump names the entities the run read, and a
+// company the latest such dump no longer names leaves the stream, with its
+// lots, at that dump's time. The others keep the date of the delta they are
+// built from, and a dry run says nothing about the roster.
+func TestACompanyADumpStopsListingLeavesAtThatDump(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	dHeld := unixDate(t, "2023-01-01")
+	stmts := fmt.Sprintf(`
+INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, dry_run, payload) VALUES
+    (1700000000, 3, 'run1', 'IND1', 0, '{"entities":[{"corporation_id":100},{"corporation_id":200}]}'),
+    (1800000000, 3, 'run2', 'IND1', 0, '{"entities":[{"corporation_id":100}]}'),
+    (1900000000, 3, 'run3', 'IND1', 1, '{"entities":[]}');
+INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload) VALUES
+    (%d, 100, 'IND1', 0, 'ACME Inc', '{}'),
+    (%d, 200, 'IND1', 0, 'Beta Inc', '{}');
+INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
+    quantity, cost, market_value, position_status, currency, payload) VALUES
+    (%d, 100, 'share', 1, 1000, 500, 5000, 'held', '$', '{}'),
+    (%d, 200, 'share', 2,  100,  50,  500, 'held', '$', '{}');`,
+		dHeld, dHeld, dHeld, dHeld)
+	if _, err := db.Exec(stmts); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	s, err := conn.Status(context.Background())
+	if err != nil || s.LatestSnapshotAt != 1800000000 {
+		t.Errorf("Status latest snapshot = %d %v, want the dump that dropped the company", s.LatestSnapshotAt, err)
+	}
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	if w.End != 1800000000 {
+		t.Errorf("window end = %d, want the dump that dropped the company", w.End)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var batches []canonical.SnapshotBatch
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		batches = append(batches, b)
+		if !more {
+			break
+		}
+	}
+	if len(batches) != 2 {
+		t.Fatalf("batches = %d, want the held snapshot and the dump's roster", len(batches))
+	}
+	if len(batches[0].Positions) != 2 || len(batches[0].PositionLots) != 2 {
+		t.Errorf("held snapshot = %d positions / %d lots, want both companies", len(batches[0].Positions), len(batches[0].PositionLots))
+	}
+	roster := batches[1]
+	if len(roster.Positions) != 1 || len(roster.PositionLots) != 1 || len(roster.Instruments) != 1 {
+		t.Fatalf("roster = %d positions / %d lots / %d instruments, want the listed company alone", len(roster.Positions), len(roster.PositionLots), len(roster.Instruments))
+	}
+	p := roster.Positions[0]
+	if p.PositionKey != positionKey(100) || p.SnapshotAt != 1800000000 || p.ValuedAt != dHeld {
+		t.Errorf("roster position = %+v, want entity 100 at the dump time, valued at its delta", p)
+	}
+	if roster.PositionLots[0].PositionKey != positionKey(100) {
+		t.Errorf("roster lot = %+v, want the listed company's", roster.PositionLots[0])
+	}
+}

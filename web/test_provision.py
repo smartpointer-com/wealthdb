@@ -1610,12 +1610,23 @@ for _name, _tup in _FRESH.items():
     _q = _tup[-2]["query"]
     check(f"'{_name}' counts its days from the last read",
           _q["expressions"]["days_stale"][1] == _observed, _q["expressions"].get("days_stale"))
+_valued = ["field", "valued_at", {"base-type": "type/DateTime"}]
 _fields = _QDEFS["Source freshness"][-2]["query"]["fields"]
-check("'Source freshness' shows the read, the snapshot and the days quiet",
-      _observed in _fields and ["expression", "days_quiet"] in _fields, _fields)
-_mig = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wealthdb", "internal",
-                         "gold", "migrations", "0122_observed_through.sql")).read()
+check("'Source freshness' shows the read, the latest mark and the days quiet",
+      _observed in _fields and _valued in _fields and ["expression", "days_quiet"] in _fields, _fields)
+_quiet = _QDEFS["Source freshness"][-2]["query"]["expressions"]["days_quiet"]
+check("the days quiet run from the latest mark, not the snapshot a read dated",
+      _quiet[1] == _valued and _quiet[2] == _observed, _quiet)
+check("both sources models render valued_at as a timestamp",
+      all("epoch_ms(valued_at * 1000) AS valued_at" in _models[m][0]
+          for m in ("report_sources_latest", "report_sources_latest_pct")),
+      [_models[m][0][:200] for m in ("report_sources_latest", "report_sources_latest_pct")])
+_migdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wealthdb", "internal",
+                       "gold", "migrations")
+_mig = open(os.path.join(_migdir, "0122_observed_through.sql")).read()
 check("source_observed is a gold view", "CREATE OR REPLACE VIEW source_observed" in _mig)
+_mig = open(os.path.join(_migdir, "0123_valued_at.sql")).read()
+check("the sources reports carry valued_at", "AS valued_at" in _mig and "report_sources_multi" in _mig)
 
 if FAILS:
     print(f"provision tests: {FAILS} failed")

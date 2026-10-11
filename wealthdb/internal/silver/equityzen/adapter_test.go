@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -661,5 +662,136 @@ func TestSnapshotsEmitClosureMarker(t *testing.T) {
 	}
 	if marker.Accounts[0].AccountExternalID != accountKey {
 		t.Errorf("marker account = %q, want the custody account", marker.Accounts[0].AccountExternalID)
+	}
+}
+
+// A complete dump's manifest: status complete, the offerings in scope,
+// and the number of investments it listed.
+func manifest(investments int) string {
+	return fmt.Sprintf(`{"status":"complete","scope":"offerings+positions+cash_flows","investments":%d}`, investments)
+}
+
+// TestADealADumpStopsListingLeavesAtThatDump pins the roster step: a deal
+// whose offerings.last_seen_at is an earlier dump than a later complete one
+// leaves the stream at the first such dump, a snapshot time where the other
+// deals keep their own mark dates; an offering that predates the column is
+// never read as removed. A dump is complete when its manifest says so and
+// the deals listed around it number what the manifest declares.
+func TestADealADumpStopsListingLeavesAtThatDump(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+        INSERT INTO dump_runs(snapshot_at, payload) VALUES (1700000000, '` + manifest(3) + `'), (1800000000, '` + manifest(2) + `');
+        INSERT INTO offerings(deal_external_id, kind, company_name, currency, last_seen_at) VALUES
+            ('d1', 'spv', 'Acme SPV',  'USD', 1800000000),
+            ('d2', 'spv', 'Gamma SPV', 'USD', 1700000000),
+            ('d3', 'spv', 'Old SPV',   'USD', 1800000000);
+        INSERT INTO positions(deal_external_id, event_seq, as_of_date, event_type,
+            is_open, shares_held, cost_basis_remaining, market_value) VALUES
+            ('d1', 0, '2022-01-01', 'investment', 1, 100, 1000, 1000),
+            ('d2', 0, '2022-03-01', 'investment', 1,  50,  500,  500),
+            ('d3', 0, '2022-02-01', 'investment', 1,  10,  100,  100);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	s, err := conn.Status(context.Background())
+	if err != nil || s.LatestSnapshotAt != 1800000000 {
+		t.Errorf("Status latest snapshot = %d %v, want the dump that dropped d2", s.LatestSnapshotAt, err)
+	}
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	if w.End != 1800000000 {
+		t.Errorf("window end = %d, want the dump that dropped d2", w.End)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	posByT := map[int64]map[string]canonical.PositionChange{}
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range b.Positions {
+			if posByT[p.SnapshotAt] == nil {
+				posByT[p.SnapshotAt] = map[string]canonical.PositionChange{}
+			}
+			posByT[p.SnapshotAt][p.PositionKey] = p
+		}
+		if !more {
+			break
+		}
+	}
+	if got := len(posByT); got != 4 {
+		t.Fatalf("snapshot times = %d, want the three investments and the dump: %v", got, posByT)
+	}
+	if at := posByT[iso(t, "2022-03-01")]; len(at) != 3 {
+		t.Errorf("before the dump every deal is listed: %v", at)
+	}
+	at := posByT[1800000000]
+	if len(at) != 2 {
+		t.Fatalf("t=dump positions = %v, want d1 and d3", at)
+	}
+	if p := at["d1"]; p.ValuedAt != iso(t, "2022-01-01") {
+		t.Errorf("d1 valued at %d, want its event date", p.ValuedAt)
+	}
+	if p := at["d3"]; p.ValuedAt != iso(t, "2022-02-01") {
+		t.Errorf("d3 valued at %d, want its event date", p.ValuedAt)
+	}
+}
+
+// TestAnIncompleteDumpRemovesNothing pins the gate on the roster step: a
+// dump without a manifest, one that is not complete, and one whose listing
+// fell short of the investments its manifest declares say nothing about
+// the roster; nor does any dump about an offering that predates
+// last_seen_at.
+func TestAnIncompleteDumpRemovesNothing(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+        INSERT INTO dump_runs(snapshot_at, payload) VALUES
+            (1700000000, '` + manifest(2) + `'),
+            (1750000000, NULL),
+            (1760000000, '{"status":"in-progress","scope":"offerings","investments":1}'),
+            (1800000000, '` + manifest(2) + `');
+        INSERT INTO offerings(deal_external_id, kind, company_name, currency, last_seen_at) VALUES
+            ('d1', 'spv', 'Acme SPV',  'USD', 1800000000),
+            ('d2', 'spv', 'Gamma SPV', 'USD', 1700000000),
+            ('d3', 'spv', 'Old SPV',   'USD', NULL);
+        INSERT INTO positions(deal_external_id, event_seq, as_of_date, event_type,
+            is_open, shares_held, cost_basis_remaining, market_value) VALUES
+            ('d1', 0, '2022-01-01', 'investment', 1, 100, 1000, 1000),
+            ('d2', 0, '2022-03-01', 'investment', 1,  50,  500,  500),
+            ('d3', 0, '2022-02-01', 'investment', 1,  10,  100,  100);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	s, err := conn.Status(context.Background())
+	if err != nil || s.LatestSnapshotAt != iso(t, "2022-03-01") {
+		t.Errorf("Status latest snapshot = %d %v, want the latest mark alone", s.LatestSnapshotAt, err)
+	}
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	n := 0
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if len(b.Positions) == 0 || b.Positions[0].SnapshotAt > iso(t, "2022-03-01") {
+			t.Errorf("batch %+v, want mark-dated snapshots only", b.Positions)
+		}
+		if !more {
+			break
+		}
+	}
+	if n != 3 {
+		t.Errorf("batches = %d, want the three investments", n)
 	}
 }

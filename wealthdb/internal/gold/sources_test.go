@@ -337,3 +337,59 @@ func TestMigration0122DDLIsRerunnable(t *testing.T) {
 		t.Errorf("after replay: %d %v", got, err)
 	}
 }
+
+// TestSourcesAsOfCarriesTheValuedDate pins the sources report's
+// valued_at: the latest mark the source's latest snapshot rides on,
+// which is the snapshot itself where no position states an older one.
+func TestSourcesAsOfCarriesTheValuedDate(t *testing.T) {
+	db, ctx := openMigrated(t)
+	usd := "USD"
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.UpsertAccounts(ctx, []canonical.AccountChange{{SilverSourceID: "test-src", AccountExternalID: "CUST",
+			AccountKind: canonical.AccountKindCustody, BaseCurrency: &usd, FirstSeenAt: 1000, LastSeenAt: 1000}})
+	})
+	v := canonical.NewDecimalFromInt(200)
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertPositions(ctx, []canonical.PositionChange{
+			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "CUST", PositionKey: "A",
+				AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleSPV, Currency: "USD", MarketValue: &v},
+			{SilverSourceID: "test-src", SnapshotAt: 3000, ValuedAt: 400, AccountExternalID: "CUST", PositionKey: "A",
+				AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleSPV, Currency: "USD", MarketValue: &v},
+			{SilverSourceID: "test-src", SnapshotAt: 3000, ValuedAt: 700, AccountExternalID: "CUST", PositionKey: "B",
+				AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleSPV, Currency: "USD", MarketValue: &v},
+		})
+	})
+	read := func(asOf int64) SourceRow {
+		t.Helper()
+		rows, err := SourcesAsOf(ctx, db, asOf, "USD")
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("SourcesAsOf: %v %v", rows, err)
+		}
+		return rows[0]
+	}
+	if r := read(2000); r.SnapshotAt != 1000 || r.ValuedAt != 1000 {
+		t.Errorf("no mark date stated: %+v, want valued at the snapshot", r)
+	}
+	if r := read(5000); r.SnapshotAt != 3000 || r.ValuedAt != 700 {
+		t.Errorf("marks older than the snapshot: %+v, want the latest mark", r)
+	}
+}
+
+func TestMigration0123DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	usd := "USD"
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.UpsertAccounts(ctx, []canonical.AccountChange{{SilverSourceID: "test-src", AccountExternalID: "CUST",
+			AccountKind: canonical.AccountKindCustody, BaseCurrency: &usd, FirstSeenAt: 1000, LastSeenAt: 1000}})
+	})
+	v := canonical.NewDecimalFromInt(200)
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertPositions(ctx, []canonical.PositionChange{{SilverSourceID: "test-src", SnapshotAt: 1000,
+			ValuedAt: 400, AccountExternalID: "CUST", PositionKey: "A", AssetClass: canonical.AssetClassPrivateEquity,
+			Vehicle: canonical.VehicleSPV, Currency: "USD", MarketValue: &v}})
+	})
+	rerunMigrationDDL(t, db, ctx, "0123_valued_at.sql")
+	if r, err := SourcesAsOf(ctx, db, 5000, "USD"); err != nil || len(r) != 1 || r[0].ValuedAt != 400 {
+		t.Errorf("after replay: %+v %v", r, err)
+	}
+}

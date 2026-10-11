@@ -58,6 +58,10 @@ type PositionRow struct {
 	// QuantityWithoutBasis is the quantity held without a cost basis,
 	// nil when the basis is complete or no basis applies.
 	QuantityWithoutBasis *string
+	// ValuedAt is the instant the mark is from: the snapshot's own,
+	// unless the source dates its snapshot at a later read than the
+	// mark (positions.valued_at, migration 0123).
+	ValuedAt int64
 }
 
 // PositionsAsOf returns the consolidated portfolio as of the given
@@ -86,6 +90,7 @@ func scanPositionRows(ctx context.Context, db *sql.DB, label, q string, args ...
 			dec(&r.BookValue), dec(&r.BookValueOutCcy), dec(&r.AccruedInterest), dec(&r.CleanValue),
 			dec(&r.UnrealizedGain), dec(&r.UnrealizedOutCcy), flt(&r.UnrealizedRatio),
 			str(&r.BasisStamp), str(&r.AcquisitionDate), dec(&r.QuantityWithoutBasis),
+			&r.ValuedAt,
 		}
 	})
 }

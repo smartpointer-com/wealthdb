@@ -1323,6 +1323,45 @@ itself the observation a freshness reader needs. The view
 MCP `status` tool and the Data Freshness dashboard count staleness
 from it.
 
+**The roster a read states.** A portal that marks its holdings on
+event dates writes nothing to its silver when it drops a holding whose
+marks are unchanged. Without more, the holding would persist in gold
+until the next data date. What such a read does state is a roster:
+the holdings the portal still lists. The adapters for these portals
+(angellist, carta, equityzen) read the roster each dump listed
+(`silver.Removals`) and add the time of the first complete dump that
+omitted a holding to their snapshot times. At that time they emit the
+roster without it, every other position at the mark it had: the
+snapshot is dated at the read, each position's `valued_at` at its
+mark. Gold ends the holding at the read and invents no mark for it.
+`positions.valued_at` is NULL where the mark is the snapshot's own,
+as it is for every source that reads live values; `holdings
+positions` and `holdings sources` show it as `valued_date`, and the
+Data Freshness dashboard counts a source's quiet days from it.
+
+Absence is evidence only inside what a run read. Some collectors do
+not cover every account or asset class on every run: ubs-psn carries
+the securities and ubs-web the cash and the mortgages; a fidelity-web
+run has a mode; a statement backfill covers one account. Gold already
+holds that line: migration 0051 resolves the active snapshot per
+account per day, the returns spine ends an account only when a later
+run re-covered everything it was last seen with and left it out, and
+the supported way to end a holding is a closure row
+(`silver.ClosureMarkerBatch`). So an adapter reads a holding as
+removed only from a dump it can show read the whole portfolio, never
+from absence alone. Each adapter checks that against what the dump
+itself declares: angellist counts the positions a dump listed against
+the investments its portfolio summary declares; equityzen counts the
+deals against its manifest's `investments`, on a manifest whose
+status is complete and whose scope has the offerings; carta reads the
+roster from its manifest's entity list, never from a dry run or an
+empty list. A dump that captured no summary or no manifest, or whose
+listing fell short of the declared count, says nothing about the
+roster: a download that broke half-way, or a loader that could not
+read it, must not end a holding. A collector with partial runs must
+record, per dump, the coverage the run declares beside the roster
+before it may feed `silver.Removals`.
+
 ### 6.5 Pull-model batched iterator
 
 The plugin yields batches of canonical records via `Next` calls.
@@ -1705,6 +1744,7 @@ CREATE INDEX ix_instruments_symbol ON instruments(symbol);
 CREATE TABLE positions (
     silver_source_id        TEXT    NOT NULL,
     snapshot_at             BIGINT  NOT NULL,
+    valued_at               BIGINT,                  -- the instant the mark is from; NULL = snapshot_at (§6.4)
     account_external_id     TEXT    NOT NULL,
     position_key            TEXT    NOT NULL,        -- adapter-chosen, see comment above
     instrument_external_id  TEXT,                    -- NULL for one-off contracts not in `instruments`
@@ -3128,6 +3168,12 @@ Migration 0122 adds `silver_sources.observed_snapshots_through` and
 `observed_transactions_through`, when the silver last observed the
 source's holdings and its ledger (§6.4), and the view
 `source_observed` that reads them.
+
+Migration 0123 adds `positions.valued_at`, the instant a position's
+mark is from where a read dated the snapshot later (§6.4);
+`positions_at`, `report_positions` and `report_cash` carry it, and
+`report_sources` / `report_sources_multi` gain `valued_at`, the latest
+mark a source's latest snapshot rides on.
 
 ## 11. Repository layout
 

@@ -187,9 +187,12 @@ its latest snapshot: gold's `source_observed` (migration 0122) says
 when a run last read each source, whether or not anything changed
 (wealthdb/docs/DESIGN.md §6.4). A portal that marks its holdings
 quarterly and was read today is current. The table shows the read,
-the days since, the latest snapshot and the days the source has been
-quiet: read with nothing new. Both sources models carry the read as
-`observed_at`, so the privacy twin's table reads it too.
+the days since, the latest mark and the days the source has been
+quiet: read with nothing new. The mark is `valued_at` (migration
+0123), not the snapshot: a read that found a holding gone dates a
+snapshot at the read while the marks keep their dates. Both sources
+models carry the read as `observed_at` and the mark as `valued_at`, so
+the privacy twin's table reads them too.
 
 The **Wealth Overview**'s "Investment income by month" card reads
 the same income base (migration 0072), so it and the Income dashboard

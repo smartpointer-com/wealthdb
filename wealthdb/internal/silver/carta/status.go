@@ -56,6 +56,13 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 			s.LatestSnapshotAt = t
 		}
 	}
+	// A dump that stopped listing a company is a snapshot at the dump
+	// time (snapshots.go), which can lie after every mark.
+	removals, err := c.removals(ctx)
+	if err != nil {
+		return s, err
+	}
+	s.LatestSnapshotAt = removals.Reach(s.LatestSnapshotAt)
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
 	}
@@ -139,6 +146,11 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 			w.Start = min(w.Start, oldest)
 			w.End = max(w.End, latest)
 		}
+		removals, err := c.removals(ctx)
+		if err != nil {
+			return w, err
+		}
+		w.End = removals.Reach(w.End)
 	}
 	if newCN.Valid {
 		w.NewChangeNumber = newCN.Int64

@@ -111,6 +111,15 @@ replayed at zero value, so gold's value spine and as-of holdings register the
 closure on the exit day itself rather than carrying the pre-exit marks
 forward as phantom value.
 
+A company the portal stopped listing leaves the same way, at the first
+complete dump that omitted it. Each dump's manifest (`dump_runs.payload`,
+`entities[].corporation_id`) names the entities the run read, and a run
+reads the whole portfolio; a dry run, or a manifest naming no entity, says
+nothing about the roster. That dump time is a snapshot time: the roster is
+emitted without the company and its lots, and every other position carries
+the date of the delta or NAV it is built from as `valued_at`
+(`silver.Removals`, wealthdb/docs/DESIGN.md §6.4).
+
 **Cap-table** (the held `securities` lots of one company → one position, whose
 (`asset_class`, `vehicle`) pair is derived from the aggregated security types —
 see §6):

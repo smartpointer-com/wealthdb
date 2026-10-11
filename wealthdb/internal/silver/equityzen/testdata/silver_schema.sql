@@ -4,7 +4,8 @@
 -- columns). Dates are source ISO TEXT, as in the real silver.
 
 CREATE TABLE dump_runs (
-    snapshot_at INTEGER NOT NULL PRIMARY KEY   -- unix seconds (download time)
+    snapshot_at INTEGER NOT NULL PRIMARY KEY,  -- unix seconds (download time)
+    payload     TEXT                           -- run.json manifest
 );
 
 CREATE TABLE offerings (
@@ -15,6 +16,7 @@ CREATE TABLE offerings (
     basis            REAL,                      -- investment size: the capital paid in
     shares_original  REAL,                      -- shares originally bought
     currency         TEXT NOT NULL DEFAULT 'USD',
+    last_seen_at     INTEGER,                   -- snapshot_at of the most recent run that listed it
     payload          TEXT
 );
 

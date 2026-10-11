@@ -402,14 +402,16 @@ def report_models():
     BASE3 = ("positions_value_base", "cash_balance_base", "total_value_base")
 
     L = f"({MAX_BIGINT})"   # _multi _latest macro arg (as-of = latest snapshot)
-    # Each source's latest snapshot, with the instant a run last read it
+    # Each source's latest snapshot, the latest mark it rides on
+    # (valued_at, gold migration 0123) and the instant a run last read it
     # (gold source_observed, migration 0122): a quiet source is observed
-    # through its latest download although its latest snapshot is older.
+    # through its latest download although its latest mark is older.
     # Unknown reads as the snapshot itself.
     sources_latest = (
         "(SELECT r.*, GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at),"
         f" r.snapshot_at) AS observed_at FROM report_sources_multi{L} r"
         " LEFT JOIN source_observed o USING (silver_source_id)) s")
+    SOURCES_TS = ["snapshot_at", "valued_at", "observed_at"]
     return {
         "report_global_latest": (
             wrap(f"report_global_multi{L}", ["min_snapshot_at", "max_snapshot_at"]),
@@ -417,11 +419,12 @@ def report_models():
             f"total value in {_ccy_words()} (one column set per currency), with the "
             "min/max snapshot date span. Mirrors `wealthdb holdings global`."),
         "report_sources_latest": (
-            wrap(sources_latest, ["snapshot_at", "observed_at"]),
+            wrap(sources_latest, SOURCES_TS),
             "One row per silver source as of the latest snapshot: positions + cash "
             f"totalled in the source's base currency and in {_ccy_slash()}, with rolled-up "
-            "tax wrapper / management style, and observed_at, when a run last read "
-            "the source. Mirrors `wealthdb holdings sources`."),
+            "tax wrapper / management style, valued_at, the latest mark the snapshot "
+            "rides on, and observed_at, when a run last read the source. Mirrors "
+            "`wealthdb holdings sources`."),
         "report_portfolios_latest": (
             wrap(f"report_portfolios_multi{L}", ["snapshot_at"]),
             "One row per portfolio as of the latest snapshot: positions + cash totalled "
@@ -506,7 +509,7 @@ def report_models():
         # card is native SQL over the web_* serving views
         # (privacy_card_defs), whose denominators follow the pickers.
         "report_sources_latest_pct": (
-            pct_wrap(sources_latest, V3, ["snapshot_at", "observed_at"], BASE3),
+            pct_wrap(sources_latest, V3, SOURCES_TS, BASE3),
             "Privacy variant of report_sources_latest: totals as % of the "
             "latest global net worth (per currency); base-currency columns "
             "dropped."),
@@ -1276,12 +1279,14 @@ def question_defs(db_id, mid):
 
     register_native_targets("Top 100 positions", pos_tags, POSITION_PICKERS)
 
-    # A source is as stale as its last read, not its latest snapshot: a
+    # A source is as stale as its last read, not its latest mark: a
     # portal that marks quarterly and was read today is current, and
-    # the days since its latest snapshot are days it has been quiet.
+    # the days since its latest mark are days it has been quiet. The
+    # mark, not the snapshot: a read that found a holding gone dates a
+    # snapshot at the read while the marks keep their dates.
     days_stale = ["datetime-diff", _f("observed_at", "type/DateTime"),
                   ["now"], "day"]
-    days_quiet = ["datetime-diff", _f("snapshot_at", "type/DateTime"),
+    days_quiet = ["datetime-diff", _f("valued_at", "type/DateTime"),
                   _f("observed_at", "type/DateTime"), "day"]
     # The declared accounts (config `declared_accounts`) sit under their
     # own reserved source, which has no feed and so no snapshot: its
@@ -1977,7 +1982,7 @@ def question_defs(db_id, mid):
             {}),
         "Source freshness": ("table",
             "Per source: when a run last read it and the days since, its "
-            "latest snapshot and the days it has been quiet (read with "
+            "latest mark and the days it has been quiet (read with "
             f"nothing new), and the value riding on it ({DEFAULT_CURRENCY}).",
             _mbql(db_id, mid["report_sources_latest"],
                   {"expressions": {"days_stale": days_stale, "days_quiet": days_quiet},
@@ -1985,7 +1990,7 @@ def question_defs(db_id, mid):
                    "fields": [_f("silver_source_id", "type/Text"),
                               _f("observed_at", "type/DateTime"),
                               ["expression", "days_stale"],
-                              _f("snapshot_at", "type/DateTime"),
+                              _f("valued_at", "type/DateTime"),
                               ["expression", "days_quiet"],
                               _dec(f"total_value_{DEFAULT_CURRENCY.lower()}")],
                    "order-by": [["desc", ["expression", "days_stale"]]]}),
