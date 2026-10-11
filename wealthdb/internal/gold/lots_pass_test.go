@@ -798,3 +798,38 @@ func TestStatedModeRealizesAgainstTheStatedBasis(t *testing.T) {
 		t.Error("a second pass over the same inputs should replay nothing")
 	}
 }
+
+// A `lots.basis` rule costs a receipt nothing pairs and a seed; it is
+// part of the inputs, so changing it replays.
+func TestLotPassCostsUnknownLotsFromTheConfigBasis(t *testing.T) {
+	db, ctx := lotFixture(t, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                  instrument_external_id, kind, currency, quantity, net_amount) VALUES
+            ('lot-src', 'j1', 1*86400 + 3600,   'A', 'XYZ', 'journal', 'USD', 100, NULL),
+            ('lot-src', 's1', 400*86400 + 3600, 'A', 'XYZ', 'sell',    'USD', -120, 36000);
+        INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+                               instrument_external_id, asset_class, vehicle, currency, quantity, market_value) VALUES
+            ('lot-src', 2*86400,   'A', 'XYZ', 'XYZ', 'public_equity', 'stock', 'USD', 120, 24000),
+            ('lot-src', 450*86400, 'A', 'XYZ', 'XYZ', 'public_equity', 'stock', 'USD', 0, 0);`)
+	cfg := fillCfg(lots.FIFO)
+	cfg.Basis = []lots.BasisRule{{Source: "lot-src", Instrument: "XYZ", Basis: lots.Basis{PerUnit: 0.25, AcqDay: lots.DayOf(-86400 * 365)}}}
+	rebuild(t, db, ctx, cfg, false)
+	if got := queryString(t, db, `SELECT string_agg(origin || ':' || cost || ':' || cost_origin, ',' ORDER BY origin) FROM lots`); got != "seed:5.0000:config,transfer_in:25.0000:config" {
+		t.Errorf("lots %q", got)
+	}
+	var cost float64
+	var term string
+	if err := db.QueryRow(`SELECT SUM(book_value), string_agg(DISTINCT term, ',') FROM lot_realized`).Scan(&cost, &term); err != nil {
+		t.Fatal(err)
+	}
+	if !feq(cost, 30) || term != "long" {
+		t.Errorf("the sale relieved %v %s, want 30 long", cost, term)
+	}
+	if !rebuild(t, db, ctx, cfg, false).Unchanged {
+		t.Error("the same basis replays nothing")
+	}
+	cfg.Basis[0].Basis.PerUnit = 0.3
+	if rebuild(t, db, ctx, cfg, false).Unchanged {
+		t.Error("a changed basis replays")
+	}
+}

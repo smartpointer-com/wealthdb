@@ -63,7 +63,9 @@ A key is an instrument held in one account of one source. A pooled
 source keys on the portfolio instead of the account (§6). A key's open
 lots are its book.
 
-The feed reads gold into events, per key, in time order:
+The feed reads gold into events, per key, in time order. At one
+instant what arrives from outside opens before anything leaves, so a
+receipt and a transfer out of the same day do not seed.
 
 | event | from |
 |---|---|
@@ -115,7 +117,8 @@ Each snapshot is compared with the book, within max(1e-8, 1e-6 ×
 quantity):
 
 - **The snapshot holds more.** A **seed** opens for the difference: a
-  lot of unknown cost and unknown date.
+  lot of unknown cost and unknown date, unless config states its basis
+  (§7).
 - **The snapshot holds less.** An **implied disposal** relieves the
   difference, seeds first. It has no proceeds and realizes nothing.
 - **A blip.** Quantity an implied disposal took that comes back within
@@ -163,7 +166,8 @@ fall within 7 days of each other and their quantities within 5%:
 
 A transfer in nothing pairs opens a lot of unknown cost and unknown
 date. A row of the equity-transfer ledger (DESIGN.md §13.10) that
-states a cost basis opens at that cost instead. A transfer out nothing
+states a cost basis opens at that cost instead, and a basis config
+states for the instrument (§7) costs what neither does. A transfer out nothing
 pairs relieves lots with no proceeds.
 
 ### 3.5 Corporate actions
@@ -331,8 +335,10 @@ instruments that are never keys, and how its transactions read
   unknown: the statements do not say whether commission is in an
   amount. Dated by settlement: a row's date is its settlement or
   effective date, so a term near the one-year line can be off. A
-  corporate action reads by the action its description opens with. The
-  core money market fund is cash, and no key.
+  corporate action reads by the action its description opens with. An
+  option leg ("PUT (XYZ)", "CALL (XYZ)"), which the statements book
+  on the underlying's key, moves no lot of the stock. The core money
+  market fund is cash, and no key.
 - **schwab.** A corporate action reads by its stated action, else its
   description; rights redemptions, litigation proceeds and option
   exchanges move no lot. A trade that moves no cash (a "System
@@ -357,10 +363,23 @@ The `lots` block of wealthdb.cfg (DESIGN.md §5.1):
   "missing_basis": "ignore",
   "sources":    { "<source>": { "method": "hifo", "mode": "fill", "grain": "portfolio" } },
   "sources":    { "<source>": { "mode": "stated" } },
+  "basis":      [ { "source": "<source>", "account": "<account-id>", "instrument": "<instrument-id>",
+                    "per_unit": 0.25, "acquired": "2020-01-15", "note": "…" } ],
   "portfolios": { "<source>": { "<portfolio-id>": { "method": "lifo" } } },
   "accounts":   { "<source>": { "<account-id>": { "method": "lifo" } } }
 }
 ```
+
+`basis` states the cost basis of an instrument's lots the engine opens
+without one in a source: a seed, a receipt nothing pairs, a transfer in
+with no ledger cost. Shares that reach a custodian from a transfer
+agent arrive with no cost; the holder knows it, often from the lots
+the custodian states later. Each lot costs quantity × `per_unit`, in
+the instrument's currency, and takes `acquired` as its acquisition
+date when it has none, so its term is right. `account` scopes a rule
+to one key account; absent, it covers the source. A lot so costed
+carries the cost origin `config`. A trade's cost, a ledger cost and a
+stated lot are never replaced.
 
 The method in force for a key is its account's, else its portfolio's,
 else its source's, else the source kind's own (`average` for the shadow

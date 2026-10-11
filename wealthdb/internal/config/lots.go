@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
@@ -26,6 +27,24 @@ type LotsConfig struct {
 	Sources      map[string]LotsSourceConfig            `json:"sources,omitempty"`
 	Portfolios   map[string]map[string]LotsMethodConfig `json:"portfolios,omitempty"`
 	Accounts     map[string]map[string]LotsMethodConfig `json:"accounts,omitempty"`
+	// Basis states the cost basis of an instrument's lots the engine
+	// opens without one in a source: a seed, a receipt nothing pairs, a
+	// transfer in with no ledger cost. Shares that reach a custodian
+	// from a transfer agent arrive with no cost; the holder knows it.
+	Basis []LotsBasisConfig `json:"basis,omitempty"`
+}
+
+// LotsBasisConfig is one `lots.basis` entry: PerUnit in the
+// instrument's currency, Acquired the acquisition date (YYYY-MM-DD) a
+// lot without one takes, Account one key account or "" for every
+// account of the source.
+type LotsBasisConfig struct {
+	Source     string  `json:"source"`
+	Account    string  `json:"account,omitempty"`
+	Instrument string  `json:"instrument"`
+	PerUnit    float64 `json:"per_unit"`
+	Acquired   string  `json:"acquired,omitempty"`
+	Note       string  `json:"note,omitempty"`
 }
 
 // LotsSourceConfig overrides one source's method and its registered
@@ -101,6 +120,18 @@ func (c *Config) LotsEngine() (lots.Config, error) {
 	if out.Accounts, err = lotsMethods("accounts", l.Accounts); err != nil {
 		return out, err
 	}
+	for i, b := range l.Basis {
+		rule := lots.BasisRule{Source: b.Source, Account: b.Account, Instrument: b.Instrument,
+			Basis: lots.Basis{PerUnit: b.PerUnit, AcqDay: lots.NoDay}}
+		if b.Acquired != "" {
+			d, err := time.Parse("2006-01-02", b.Acquired)
+			if err != nil {
+				return out, fmt.Errorf("config: lots.basis[%d].acquired: %w", i, err)
+			}
+			rule.Basis.AcqDay = lots.DayOf(d.Unix())
+		}
+		out.Basis = append(out.Basis, rule)
+	}
 	return out, nil
 }
 
@@ -153,6 +184,22 @@ func (c *Config) validateLots(seenIDs map[string]bool) error {
 				return fmt.Errorf("config: lots.%s[%q]: no silver_sources[].id matches", grain.name, id)
 			}
 		}
+	}
+	seen := map[[3]string]bool{}
+	for i, b := range l.Basis {
+		switch {
+		case !seenIDs[b.Source]:
+			return fmt.Errorf("config: lots.basis[%d]: no silver_sources[].id matches source %q", i, b.Source)
+		case b.Instrument == "":
+			return fmt.Errorf("config: lots.basis[%d]: instrument is required", i)
+		case !(b.PerUnit >= 0):
+			return fmt.Errorf("config: lots.basis[%d]: per_unit must be 0 or more", i)
+		}
+		k := [3]string{b.Source, b.Account, b.Instrument}
+		if seen[k] {
+			return fmt.Errorf("config: lots.basis[%d]: a second basis for %q in source %q", i, b.Instrument, b.Source)
+		}
+		seen[k] = true
 	}
 	_, err := c.LotsEngine()
 	return err

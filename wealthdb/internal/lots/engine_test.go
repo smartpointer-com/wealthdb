@@ -650,3 +650,60 @@ func TestABlipRestoresTheLotsThemselves(t *testing.T) {
 		balanced(t, r)
 	}
 }
+
+// At one instant a receipt applies before a departure: shares that
+// arrive and move on the same day carry their lot, and nothing seeds.
+func TestASameDayReceiptMovesWithoutSeeding(t *testing.T) {
+	evs := []Event{
+		{At: at(10), Kind: Depart, Key: 0, Txn: "o1", Qty: 100, Transit: 1},
+		{At: at(10), Kind: Arrive, Key: 1, Txn: "i1", Transit: 1},
+		{At: at(10), Kind: Acquire, Key: 0, Txn: "r1", Qty: 100, Value: 700, HasValue: true, Origin: OriginTransferIn, CostOrigin: CostTrade},
+		obs(1, 20, 100, 0),
+	}
+	r := run(t, []Method{FIFO, FIFO}, evs...)
+	for _, f := range r.Findings {
+		if f.Kind == FindSeed {
+			t.Errorf("seeded: %+v", f)
+		}
+	}
+	var onB float64
+	for _, l := range r.Lots {
+		if l.Key == 1 && l.CostKnown {
+			onB += l.Cost
+		}
+	}
+	if !near(onB, 700) {
+		t.Errorf("the receiving key holds cost %v, want 700", onB)
+	}
+}
+
+// A key's Basis costs the lots the engine opens without a cost, a seed
+// and a receipt nothing pairs, at quantity × the unit cost with the
+// stated acquisition date; a trade keeps its own cost.
+func TestABasisCostsTheLotsNothingElseCan(t *testing.T) {
+	keys := []KeySpec{{ID: "A", Method: FIFO, Basis: &Basis{PerUnit: 0.5, AcqDay: 100}}}
+	evs := []Event{
+		{At: at(300), Kind: Acquire, Key: 0, Txn: "in1", Qty: 40, AcqDay: NoDay, Origin: OriginTransferIn},
+		buy(0, 310, "b1", 10, 90),
+		obs(0, 320, 70, 0), // 20 more than the trades explain: a seed
+		sell(0, 330, "s1", 70, 7000),
+	}
+	SortEvents(evs)
+	r := Run(keys, evs)
+	got := map[Origin][3]float64{}
+	for _, l := range r.Lots {
+		got[l.Origin] = [3]float64{l.Cost, float64(l.AcqDay), float64(l.CostOrigin)}
+	}
+	for origin, want := range map[Origin][3]float64{
+		OriginTransferIn: {20, 100, float64(CostConfig)},
+		OriginSeed:       {10, 100, float64(CostConfig)},
+		OriginBuy:        {90, 310, float64(CostTrade)},
+	} {
+		if g := got[origin]; !near(g[0], want[0]) || g[1] != want[1] || g[2] != want[2] {
+			t.Errorf("%v lot: cost %v day %v origin %v, want %v", origin, g[0], g[1], CostOrigin(g[2]), want)
+		}
+	}
+	if c := sales(r)["s1"]; !near(c, 120) {
+		t.Errorf("the sale relieved %v, want 120", c)
+	}
+}

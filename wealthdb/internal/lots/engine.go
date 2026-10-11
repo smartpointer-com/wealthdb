@@ -19,6 +19,16 @@ type KeySpec struct {
 	Method Method
 	// Fees stamps the cost of the lots the key opens.
 	Fees Fees
+	// Basis, when set, costs every lot the key opens without a cost.
+	Basis *Basis
+}
+
+// Basis is the cost basis config states for a key's lots the engine
+// cannot cost otherwise (docs/LOTS.md §7): per unit, and the
+// acquisition date a lot without one takes (NoDay for none).
+type Basis struct {
+	PerUnit float64
+	AcqDay  int32
 }
 
 // StatedLot is a lot a source states: a lot of an anchor, or a realized
@@ -37,6 +47,9 @@ type StatedLot struct {
 // because it shows the second's trades.
 type EventKind uint8
 
+// At one instant the kinds apply in this order: what arrives from
+// outside opens before anything leaves, so a receipt and a transfer out
+// of the same day do not seed.
 const (
 	// Flight marks Key in flight from At until the Land that follows: a
 	// transfer whose receipt is recorded before its departure moves at
@@ -45,6 +58,8 @@ const (
 	Flight EventKind = iota
 	// Land ends a Flight on Key.
 	Land
+	// Acquire opens a lot of Qty costing Value (unknown when !HasValue).
+	Acquire
 	// Depart relieves Qty from Key by Key's method and holds the lots in
 	// transit under Transit.
 	Depart
@@ -62,8 +77,6 @@ const (
 	// Adjust lowers the cost of Key's open lots by Value, pro rata by
 	// quantity: a return of capital.
 	Adjust
-	// Acquire opens a lot of Qty costing Value (unknown when !HasValue).
-	Acquire
 	// Dispose relieves Qty from Key by its method, for proceeds Value
 	// (unknown when !HasValue). Lots, when set, are the realized lots a
 	// source states for the sale: a seed the sale relieves takes its
@@ -362,6 +375,7 @@ func (e *engine) open(l Lot, detached bool) int32 {
 	if !(l.Qty > 0) {
 		return -1
 	}
+	e.stateBasis(&l)
 	if !l.CostKnown {
 		l.Cost = 0
 	}
@@ -383,10 +397,27 @@ func (e *engine) open(l Lot, detached bool) int32 {
 // place opens l on its key's book; an average book folds it into the
 // pool of its kind instead (merge).
 func (e *engine) place(l Lot, ev *Event) int32 {
+	e.stateBasis(&l)
 	if e.books[l.Key].method == Average {
 		return e.merge(l, ev)
 	}
 	return e.open(l, false)
+}
+
+// stateBasis costs a lot its key's Basis covers: a lot opened without a
+// cost takes quantity × the unit cost, and one without an acquisition
+// date takes the date.
+func (e *engine) stateBasis(l *Lot) {
+	b := e.keys[l.Key].Basis
+	if b == nil {
+		return
+	}
+	if !l.CostKnown {
+		l.Cost, l.CostKnown, l.CostOrigin = l.Qty*b.PerUnit, true, CostConfig
+	}
+	if l.AcqDay == NoDay && b.AcqDay != NoDay {
+		l.AcqDay = b.AcqDay
+	}
 }
 
 // carriedOrigin is the cost origin of a lot that takes its cost from

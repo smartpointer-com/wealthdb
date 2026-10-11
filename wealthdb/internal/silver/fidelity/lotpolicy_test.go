@@ -27,3 +27,24 @@ func TestCorporateRuleReadsTheAction(t *testing.T) {
 		t.Errorf("classified %+v", c)
 	}
 }
+
+// An option leg keyed on its underlying moves no lot of the stock,
+// whatever its kind; the stock's own rows read as usual.
+func TestAnOptionLegOnTheStockMovesNoLot(t *testing.T) {
+	for desc, kind := range map[string]string{
+		"YOU BOUGHT PUT (XYZ) EXAMPLE CORP CL A":           "buy",
+		"YOU SOLD CALL (XYZ) EXAMPLE CORP CL A":            "sell",
+		"INTER BROKER DELIVER PUT (XYZ) EXAMPLE CORP CL A": "journal",
+		"EXPIRED CALL (XYZ) EXAMPLE CORP CL A":             "corporate_action",
+	} {
+		if c := classify(lots.Txn{Kind: kind, Description: desc, Quantity: -3}); c.Action != lots.Ignore {
+			t.Errorf("%q: %+v, want ignored", desc, c)
+		}
+	}
+	if c := classify(lots.Txn{Kind: "sell", Description: "YOU SOLD EXAMPLE CORP CL A @ 100.00", Quantity: -3}); c.Action != lots.Sell {
+		t.Errorf("a share sale: %+v", c)
+	}
+	if c := classify(lots.Txn{Kind: "corporate_action", Description: "CALLED BOND EXAMPLE 4.5% 2030"}); c.Action != lots.Corporate {
+		t.Errorf("a call of a bond is no option leg: %+v", c)
+	}
+}

@@ -13,7 +13,7 @@ import (
 // lotsEngineVersion enters every input fingerprint. A change to what the
 // engine, the feed or a registered policy makes of the same input bumps
 // it, so the next pass replays.
-const lotsEngineVersion = 1
+const lotsEngineVersion = 2
 
 // LotsOptions configure a lot pass.
 type LotsOptions struct {
@@ -146,13 +146,20 @@ SELECT ids.id, concat_ws('/', t.n, t.h, p.n, p.h, l.n, l.h, r.n, r.h, i.h, a.h, 
 			return nil, err
 		}
 		p := f.policy(id)
+		var basis []lots.BasisRule
+		for _, r := range cfg.Basis {
+			if r.Source == id {
+				basis = append(basis, r)
+			}
+		}
 		pol, _ := json.Marshal(struct {
 			Mode, Grain string
 			Method      string
 			Source      any
 			Portfolios  any
 			Accounts    any
-		}{p.Mode.String(), p.Grain.String(), cfg.Method.String(), cfg.Sources[id], cfg.Portfolios[id], cfg.Accounts[id]})
+			Basis       []lots.BasisRule
+		}{p.Mode.String(), p.Grain.String(), cfg.Method.String(), cfg.Sources[id], cfg.Portfolios[id], cfg.Accounts[id], basis})
 		out[id] = fmt.Sprintf("v%d|%s|%s", lotsEngineVersion, pol, content)
 	}
 	return out, rows.Err()

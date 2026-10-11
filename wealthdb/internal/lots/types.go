@@ -105,9 +105,12 @@ const (
 	// later: an anchor's lots, or the realized lots of the sale that
 	// relieved it.
 	CostResolved
+	// CostConfig is a cost the config states for a lot the engine opens
+	// without one (Basis).
+	CostConfig
 )
 
-var costOriginNames = [...]string{"", "trade", "carried", "fmv", "stated", "resolved"}
+var costOriginNames = [...]string{"", "trade", "carried", "fmv", "stated", "resolved", "config"}
 
 func (c CostOrigin) String() string { return costOriginNames[c] }
 

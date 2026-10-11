@@ -273,6 +273,36 @@ type Config struct {
 	Sources    map[string]SourceConfig
 	Portfolios map[string]map[string]Method
 	Accounts   map[string]map[string]Method
+	// Basis lists the cost bases config states for lots the engine
+	// opens without one (BasisFor).
+	Basis []BasisRule
+}
+
+// BasisRule is one `lots.basis` entry: the unit cost, and the
+// acquisition date, of Instrument's lots in Source that the engine
+// cannot cost otherwise; Account "" covers every key account of the
+// source.
+type BasisRule struct {
+	Source, Account, Instrument string
+	Basis                       Basis
+}
+
+// BasisFor is the rule for a key, its account's over the source's.
+func (c Config) BasisFor(source, account, instrument string) *Basis {
+	var any *Basis
+	for i := range c.Basis {
+		r := &c.Basis[i]
+		if r.Source != source || r.Instrument != instrument {
+			continue
+		}
+		switch r.Account {
+		case account:
+			return &r.Basis
+		case "":
+			any = &r.Basis
+		}
+	}
+	return any
 }
 
 // SourceConfig overrides a source's registered policy; nil fields keep

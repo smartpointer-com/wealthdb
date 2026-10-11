@@ -325,6 +325,7 @@ func (f *lotFeed) key(s *lotSource, acct, inst string, hint bool) int32 {
 		ID:     s.id + "\x00" + ka + "\x00" + inst,
 		Method: f.cfg.MethodFor(s.id, portfolio, account, s.pol.Method),
 		Fees:   s.pol.Fees,
+		Basis:  f.cfg.BasisFor(s.id, ka, inst),
 	})
 	f.info = append(f.info, lotKeyInfo{src: s, acct: ka, inst: inst, hint: hint})
 	f.keyOf[ref] = k
