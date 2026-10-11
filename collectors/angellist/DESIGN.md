@@ -72,7 +72,7 @@ Per the repo convention (don't reverse-engineer JS-derived state — the
 cointracking lesson), `download` therefore runs a **headless Camoufox with
 the injected cookie, navigates the venture LP routes, and captures the
 GraphQL the SPA fetches and signs itself**. This is robust and read-only.
-URLs are built from `ViewerQuery` (`currentUser.slug` = userSlug,
+URLs are built from `Viewer` (`currentUser.slug` = userSlug,
 `currentUser.investAccounts[i].slugName` = investAccountSlug) — slugs are
 **never hardcoded**.
 
@@ -80,12 +80,18 @@ Routes + operations captured (per invest account):
 
 | Route | Operations | Data |
 | --- | --- | --- |
-| `/v/<u>/i/<a>/portfolio/dashboard` | `PortfolioDashboardQuery` | totals, IRR/TVPI/DPI, NAV time series |
-| (same) | `PositionsTableQuery` | funded positions per vehicle — **infinite-scroll paginated**, ~20/page; download scrolls until `totalCount` |
-| (same) | `ActivityQuery` | activity feed (VenturePosts) — see note below |
-| `/v/<u>/i/<a>/commitments` | `OpenInvestmentsQuery` | unfunded commitments |
-| `/v/<u>/i/<a>/taxes-and-documents` | `AccountDocumentsQuery` | K-1 + financial-statement document list (PDF/CSV URLs) |
-| `/v/<u>/i/<a>/funding-accounts` | `InvestmentEntityQuery` | the dated funding-account cash ledger + balance |
+| `/v/<u>/i/<a>/portfolio/dashboard` | `PortfolioDashboard` | totals, IRR/TVPI/DPI, NAV time series |
+| (same) | `PositionsTable` | funded positions per vehicle — **infinite-scroll paginated**, ~20/page; download scrolls until `totalCount` |
+| (same) | `Activity` | activity feed (VenturePosts) — see note below |
+| `/v/<u>/i/<a>/commitments` | `OpenInvestments` | unfunded commitments |
+| `/v/<u>/i/<a>/taxes-and-documents` | `AccountDocuments` | K-1 + financial-statement document list (PDF/CSV URLs) |
+| `/v/<u>/i/<a>/funding-accounts` | `InvestmentEntity` | the dated funding-account cash ledger + balance |
+
+The portal spells an operation with or without a `Query` suffix
+(`PositionsTableQuery` and `PositionsTable` are the same query). Bronze
+keeps the name as captured; `download` and `load` compare names through
+`graphql_ops.op_name`, which drops the suffix, so a dump under either
+spelling loads.
 
 ## Bronze
 
@@ -186,7 +192,7 @@ columns carry the full node. Schema in
   amount, payment, remaining-to-fund, opportunity/syndicate, deadlines.
   Bank/wire details are deliberately **not** promoted to columns.
 - **`funding_accounts`** + **`funding_transactions`** (migration 0006) — the
-  funding account's dated cash ledger from `InvestmentEntityQuery`: one row
+  funding account's dated cash ledger from `InvestmentEntity`: one row
   per cash movement with a SIGNED `amount_minor`, `occurred_at`, and raw
   `type` (deposit / withdrawal / investment / disbursement / refund /
   transfer), plus the current `balance_minor`. Keyed by the AngelList
@@ -195,7 +201,7 @@ columns carry the full node. Schema in
 
 ### Cash flows
 
-The **funding-accounts page** (`InvestmentEntityQuery.investmentEntity`) is
+The **funding-accounts page** (`InvestmentEntity.investmentEntity`) is
 the dated cash ledger: every deposit / withdrawal (external bank ↔ funding
 account), investment / refund (capital ↔ an SPV), and disbursement (a deal
 pays out), each with a SIGNED `amount` and a real date, plus the current cash
@@ -219,7 +225,7 @@ AngelList's API/UI exposes only **current** per-position values plus the
 per-SPV historical **capital account** (contributions, distributions,
 ending capital — tax basis) lives in the **Schedule K-1 tax documents**
 (PDF + a structured **CSV**) and quarterly financial statements on the
-Taxes & Documents page (`AccountDocumentsQuery`: `taxDocuments[]` with
+Taxes & Documents page (`AccountDocuments`: `taxDocuments[]` with
 `pdfUrl`/`csvUrl` + completeness fields `documentType` /
 `k1Count`/`totalK1Count` / `updatedAt`; `financialDocuments[]`).
 

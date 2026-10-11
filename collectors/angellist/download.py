@@ -14,16 +14,19 @@ The injected session lands on the authenticated portal with no
 re-challenge. We navigate the LP read-only surfaces and capture the
 venture GraphQL the SPA fires:
 
-  ViewerQuery               currentUser: identity + invest accounts
-  PortfolioDashboardQuery   portfolio summary
-  PositionsTableQuery       funded holdings per SPV / fund
-  ActivityQuery             activity feed (unstructured VenturePosts)
-  OpenInvestmentsQuery      unfunded commitments
-  AccountDocumentsQuery     tax-document list (K-1 + financial-statement URLs)
-  InvestmentEntityQuery     the dated funding-account cash ledger + balance
-  (+ PositionFiltersQuery, InvestAccountInvestmentEntitiesQuery as fired)
+  Viewer               currentUser: identity + invest accounts
+  PortfolioDashboard   portfolio summary
+  PositionsTable       funded holdings per SPV / fund
+  Activity             activity feed (unstructured VenturePosts)
+  OpenInvestments      unfunded commitments
+  AccountDocuments     tax-document list (K-1 + financial-statement URLs)
+  InvestmentEntity     the dated funding-account cash ledger + balance
+  (+ PositionFilters, InvestAccountInvestmentEntities as fired)
 
-URL shape (slugs derived from ViewerQuery, never hardcoded):
+The portal spells each operation with or without a `Query` suffix; every
+comparison goes through graphql_ops.op_name, which drops it.
+
+URL shape (slugs derived from Viewer, never hardcoded):
   /v/<userSlug>/i/<investAccountSlug>/portfolio/dashboard
   /v/<userSlug>/i/<investAccountSlug>/commitments
   /v/<userSlug>/i/<investAccountSlug>/taxes-and-documents
@@ -58,6 +61,9 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, debugcap, launch
 
+from graphql_ops import (COMMITMENT_OPS, DOCS_OPS, FUNDING_OPS, PORTFOLIO_OPS,
+                         VIEWER_OP, op_name)
+
 log = logging.getLogger("angellist.download")
 
 VENTURE = "https://venture.angellist.com"
@@ -66,14 +72,8 @@ GRAPHQL_RE = re.compile(r"/venture/graphql")
 DEFAULT_COOKIES = Path("/secrets/angellist-cookies.json")
 DEFAULT_BRONZE_DIR = Path("/data")
 
-# Ops we want per invest account, and the route that fires them.
-PORTFOLIO_OPS = {
-    "PortfolioDashboardQuery", "PositionsTableQuery", "ActivityQuery",
-    "PositionFiltersQuery", "InvestAccountInvestmentEntitiesQuery",
-}
-COMMITMENT_OPS = {"OpenInvestmentsQuery"}
-DOCS_OPS = {"AccountDocumentsQuery"}
-FUNDING_OPS = {"InvestmentEntityQuery"}
+# The ops wanted per invest account live in graphql_ops (PORTFOLIO_OPS and
+# friends); every captured name is compared through op_name.
 
 # The positions table is infinite-scroll paginated (~20/page). Scroll
 # every scrollable element to the bottom to trigger the next page until
@@ -131,10 +131,10 @@ def download_documents(cookies, captures, docs_dir, dry_run):
 
     ad = None
     for c in captures:
-        if c.get("op") == "AccountDocumentsQuery":
+        if op_name(c.get("op")) == "AccountDocuments":
             ad = ((c.get("data") or {}).get("invest") or {}).get("accountDocuments")
     if not ad:
-        log.info("documents: no AccountDocumentsQuery captured — skipping")
+        log.info("documents: no AccountDocuments query captured — skipping")
         return
 
     targets = []  # (url, incomplete)
@@ -320,7 +320,7 @@ def main(argv: list[str]) -> int:
                     "errors": payload.get("errors") if isinstance(payload, dict) else None,
                 }
                 captures.append(entry)
-                latest_by_op[op] = entry
+                latest_by_op[op_name(op)] = entry
         except Exception as exc:
             log.debug("on_response capture error: %r", exc)
 
@@ -375,13 +375,13 @@ def main(argv: list[str]) -> int:
                           wait_until="domcontentloaded", timeout=45_000)
             except Exception as exc:
                 log.warning("bootstrap goto failed: %s", exc)
-            wait_for_ops(page, {"ViewerQuery"}, args.settle + 12)
+            wait_for_ops(page, {VIEWER_OP}, args.settle + 12)
             # The identity gate: an expired cookie or a bot wall renders
             # here, and every later route depends on the slugs this page
             # yields, so it is the first thing worth seeing.
             capture(page, "10-bootstrap")
 
-            viewer = latest_by_op.get("ViewerQuery", {}).get("data")
+            viewer = latest_by_op.get(VIEWER_OP, {}).get("data")
             cu = (viewer or {}).get("currentUser") if viewer else None
             if not cu:
                 # Fallback: the SPA may have redirected us straight onto a
@@ -429,7 +429,7 @@ def main(argv: list[str]) -> int:
                 def pos_state():
                     ids, total, more = set(), None, True
                     for c in captures:
-                        if c["op"] != "PositionsTableQuery":
+                        if op_name(c["op"]) != "PositionsTable":
                             continue
                         conn = (((c.get("data") or {}).get("invest") or {})
                                 .get("portfolio", {}) or {}).get("positions") or {}
@@ -490,7 +490,7 @@ def main(argv: list[str]) -> int:
                 except Exception as exc:
                     log.warning("funding goto failed for %s: %s", aslug, exc)
                 # The funding-accounts route loads the funding account detail
-                # (InvestmentEntityQuery), whose `transactions` is the full
+                # (InvestmentEntity), whose `transactions` is the full
                 # dated cash ledger (deposits / withdrawals / investments /
                 # disbursements / refunds) — the source of dated cash flows.
                 wait_for_ops(page, FUNDING_OPS, args.settle + 10)
@@ -545,9 +545,9 @@ def main(argv: list[str]) -> int:
     # and leaves no prunable shell — no status="dry-run" is needed.)
     bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
     # viewer.json for identity convenience
-    if "ViewerQuery" in latest_by_op:
+    if VIEWER_OP in latest_by_op:
         bronze.atomic_write_json(run_dir / "viewer.json",
-                                 latest_by_op["ViewerQuery"]["data"])
+                                 latest_by_op[VIEWER_OP]["data"])
     # captures.jsonl: every exchange, append-only
     with open(run_dir / "captures.jsonl", "w", encoding="utf-8") as fp:
         for c in captures:

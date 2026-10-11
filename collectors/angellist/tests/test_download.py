@@ -130,3 +130,13 @@ def test_no_documents_help_promises_a_skip(capsys):
     out = capsys.readouterr().out
     assert "--no-documents" in out
     assert "NOT YET IMPLEMENTED" not in out
+
+
+def test_op_name_drops_the_portals_optional_suffix():
+    from graphql_ops import PORTFOLIO_OPS, op_name
+    assert op_name("PositionsTableQuery") == "PositionsTable"
+    assert op_name("PositionsTable") == "PositionsTable"
+    assert op_name(None) == ""
+    # The op sets are spelled without the suffix, so a wait on them matches
+    # a capture under either spelling.
+    assert "PositionsTable" in PORTFOLIO_OPS and not any(o.endswith("Query") for o in PORTFOLIO_OPS)

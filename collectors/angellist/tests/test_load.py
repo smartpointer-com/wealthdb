@@ -817,3 +817,20 @@ def test_force_rebuild_equals_incremental(tmp_path):
     after = _dump_silver(db)
 
     assert after == before
+
+
+def test_load_reads_operations_named_without_the_query_suffix(tmp_path):
+    """The portal names an operation with or without a `Query` suffix; a run
+    captured under the shorter names loads the same positions and summary."""
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    caps = [positions_capture([pos_node("p1", "acme-co-s"),
+                               pos_node("p2", "acme-fund-f", total=None)]),
+            dashboard_capture(), commitments_capture()]
+    for c in caps:
+        c["op"] = c["op"].removesuffix("Query")
+    write_run(dest, "20240101T000000Z", caps)
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 2
+    assert c.execute("SELECT COUNT(*) FROM portfolio_summary").fetchone()[0] == 1
+    assert c.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1

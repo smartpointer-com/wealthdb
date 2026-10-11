@@ -49,6 +49,7 @@ from collectorkit import bronze, cli, silver
 from collectorkit.money import parse_money_cents
 
 import statements
+from graphql_ops import op_name
 
 log = logging.getLogger("angellist.load")
 
@@ -106,9 +107,11 @@ def put_snapshot(conn, pid, as_of, event_type, currency, *, market, basis,
 # --------------------------------------------------------------------------
 
 def _by_op(captures: list[dict]) -> dict[str, list[dict]]:
+    """Captures grouped by operation, keyed without the portal's optional
+    ``Query`` suffix (graphql_ops.op_name)."""
     out: dict[str, list[dict]] = {}
     for c in captures:
-        out.setdefault(c.get("op"), []).append(c)
+        out.setdefault(op_name(c.get("op")), []).append(c)
     return out
 
 
@@ -134,14 +137,14 @@ def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> None:
     try:
         # Portfolio summary first — its dataDate is AngelList's "as of" for
         # the current marks, and dates the current valuation event.
-        pdq = ops.get("PortfolioDashboardQuery")
+        pdq = ops.get("PortfolioDashboard")
         summary = (((_invest(pdq[0].get("data")).get("portfolio", {}) or {})
                     .get("summary")) or {}) if pdq else {}
         data_date = summary.get("dataDate") or snapshot_at
 
-        # --- positions: union edges across all PositionsTableQuery pages ---
+        # --- positions: union edges across all PositionsTable pages ---
         nodes: dict[str, dict] = {}
-        for c in ops.get("PositionsTableQuery", []):
+        for c in ops.get("PositionsTable", []):
             conn_pos = (_invest(c.get("data")).get("portfolio", {}) or {}).get("positions") or {}
             for e in conn_pos.get("edges", []):
                 n = e.get("node") or {}
@@ -273,7 +276,7 @@ def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> None:
                 )
 
         # --- open commitments ---
-        oiq = ops.get("OpenInvestmentsQuery")
+        oiq = ops.get("OpenInvestments")
         n_commit = 0
         if oiq:
             for o in _invest(oiq[0].get("data")).get("openInvestments", []) or []:
@@ -316,14 +319,14 @@ def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> None:
 
 
 def load_funding(conn, captures, snapshot_at: int) -> int:
-    """Parse InvestmentEntityQuery into the funding-account cash ledger:
+    """Parse the InvestmentEntity query into the funding-account cash ledger:
     `funding_accounts` (current cash balance) + `funding_transactions` (the
     dated, SIGNED deposits / withdrawals / investments / disbursements /
     refunds). This is the real dated cash-flow source; it reconciles exactly
     to the balance. Idempotent by transaction id."""
     entity = None
     for c in captures:
-        if c.get("op") == "InvestmentEntityQuery":
+        if op_name(c.get("op")) == "InvestmentEntity":
             entity = _invest(c.get("data")).get("investmentEntity") or entity
     if not entity:
         return 0
