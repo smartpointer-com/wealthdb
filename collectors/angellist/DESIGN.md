@@ -320,7 +320,10 @@ forward-fill:
   deposit→`deposit`, withdrawal/transfer→`withdrawal` (external bank ↔
   account), investment→`contribution` and refund→`contribution` (a positive
   reversal — returned un-deployed capital, kept out of `distribution` so DPI
-  stays clean), disbursement→`distribution`. `contribution` is a canonical
+  stays clean), disbursement→`sell` on an SPV (its one stake is sold, and
+  the lot engine realizes the proceeds against the paid-in basis) and
+  →`distribution` on a fund (capital returned; the fund goes on).
+  `contribution` is a canonical
   TxKind added for this; AngelList's amounts are authoritatively signed and
   reconcile to the balance, so they're used directly (the source sign wins).
   Each contribution / distribution / refund carries `instrument_external_id`

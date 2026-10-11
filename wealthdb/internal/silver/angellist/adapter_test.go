@@ -278,6 +278,8 @@ func TestTransactionsFunding(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	if _, err := db.Exec(`
         INSERT INTO dump_runs(snapshot_at, invest_account_slug) VALUES (1000, 'acct');
+        INSERT INTO offerings(position_external_id, kind, company_name) VALUES
+            ('pos-x', 'spv', 'X'), ('pos-f', 'fund', 'F');
         INSERT INTO funding_transactions(transaction_external_id, occurred_at, type,
             amount_minor, currency, description, syndicate_name, position_external_id) VALUES
             ('t1', 100, 'deposit',       500000, 'USD', 'Deposit from bank',        NULL,    NULL),
@@ -285,7 +287,8 @@ func TestTransactionsFunding(t *testing.T) {
             ('t3', 300, 'disbursement',  120000, 'USD', 'Disbursement - X',         NULL,    'pos-x'),
             ('t4', 400, 'refund',         50000, 'USD', 'Refund (oversubscribed)',  'Y SPV', NULL),
             ('t5', 500, 'withdrawal',    -80000, 'USD', 'Withdrawal to bank',       NULL,    NULL),
-            ('t6', 600, 'transfer',      -20000, 'USD', 'Transfer to bank',         NULL,    NULL);
+            ('t6', 600, 'transfer',      -20000, 'USD', 'Transfer to bank',         NULL,    NULL),
+            ('t7', 600, 'disbursement',   30000, 'USD', 'Distribution - F',         NULL,    'pos-f');
     `); err != nil {
 		t.Fatal(err)
 	}
@@ -306,8 +309,8 @@ func TestTransactionsFunding(t *testing.T) {
 	for _, tx := range batch.Transactions {
 		by[tx.TransactionExternalID] = tx
 	}
-	if len(by) != 6 {
-		t.Fatalf("transactions = %d, want 6", len(batch.Transactions))
+	if len(by) != 7 {
+		t.Fatalf("transactions = %d, want 7", len(batch.Transactions))
 	}
 	// (id, want kind, want signed net)
 	cases := []struct {
@@ -315,10 +318,12 @@ func TestTransactionsFunding(t *testing.T) {
 	}{
 		{"funding:t1", string(canonical.TxKindDeposit), "5000.00"},
 		{"funding:t2", string(canonical.TxKindContribution), "-3000.00"},
-		{"funding:t3", string(canonical.TxKindDistribution), "1200.00"},
+		{"funding:t3", string(canonical.TxKindSell), "1200.00"}, // an SPV pays out: its stake is sold
+
 		{"funding:t4", string(canonical.TxKindContribution), "500.00"}, // refund: + reversal
 		{"funding:t5", string(canonical.TxKindWithdrawal), "-800.00"},
-		{"funding:t6", string(canonical.TxKindWithdrawal), "-200.00"}, // transfer → withdrawal
+		{"funding:t6", string(canonical.TxKindWithdrawal), "-200.00"},  // transfer → withdrawal
+		{"funding:t7", string(canonical.TxKindDistribution), "300.00"}, // a fund pays out and goes on
 	}
 	for _, c := range cases {
 		tx, ok := by[c.id]
@@ -337,10 +342,13 @@ func TestTransactionsFunding(t *testing.T) {
 		}
 	}
 
-	// the resolved SPV instrument rides on contribution/distribution; bank
-	// flows (deposit/withdrawal) carry none.
+	// the resolved SPV instrument rides on contribution/sell/distribution;
+	// bank flows (deposit/withdrawal) carry none.
 	if iid := by["funding:t3"].InstrumentExternalID; iid == nil || *iid != "pos-x" {
 		t.Errorf("t3 (disbursement) instrument = %v, want pos-x", iid)
+	}
+	if iid := by["funding:t7"].InstrumentExternalID; iid == nil || *iid != "pos-f" {
+		t.Errorf("t7 (disbursement) instrument = %v, want pos-f", iid)
 	}
 	if iid := by["funding:t2"].InstrumentExternalID; iid == nil || *iid != "pos-x" {
 		t.Errorf("t2 (investment) instrument = %v, want pos-x", iid)
