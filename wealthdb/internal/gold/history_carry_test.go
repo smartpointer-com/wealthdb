@@ -218,11 +218,11 @@ func TestHistoryCarriesAccountsAcrossPartialRuns(t *testing.T) {
 }
 
 // TestHistoryZeroObservationWins pins the rule carry-forward depends
-// on: a balance of zero is an observation, not an absence. The line
-// bases used to drop `amount <> 0` rows as noise, which was harmless
-// while a day resolved to one snapshot per source and is a bug under
-// carry-forward — an account paid down to zero would keep contributing
-// its last non-zero balance for ever.
+// on: a balance of zero is an observation, not an absence. Dropping
+// zero-amount rows as noise would be harmless if a day resolved to one
+// snapshot per source, and is a bug under carry-forward — an account
+// paid down to zero would keep contributing its last non-zero balance
+// for ever.
 func TestHistoryZeroObservationWins(t *testing.T) {
 	db, ctx := openMigrated(t)
 	const src = "zero-src"

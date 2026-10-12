@@ -1,10 +1,15 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 )
 
 // globalFlags collects the parsed top-level (pre-subcommand)
@@ -52,4 +57,82 @@ func parseGlobal(args []string, errOut io.Writer) (globalFlags, []string, error)
 		return g, nil, err
 	}
 	return g, fs.Args(), nil
+}
+
+// parseFlags parses a subcommand's args into fs, the one way every
+// subcommand reads its flags. Flags may follow positionals (see
+// reorderFlagsFirst), and a fused -C delta is split first. On -h it
+// returns flag.ErrHelp, which the dispatcher reads as success: flag has
+// already printed the usage. Any other failure is a usage error naming
+// cmd, after flag has printed the detail.
+func parseFlags(fs *flag.FlagSet, args []string, cmd string) error {
+	err := fs.Parse(reorderFlagsFirst(fs, splitFusedColumnsFlag(args)))
+	if err == nil || errors.Is(err, flag.ErrHelp) {
+		return err
+	}
+	return errs.Newf(2, "%s: bad flags", cmd)
+}
+
+// noPositionals refuses positional arguments on a command that takes
+// none.
+func noPositionals(fs *flag.FlagSet, cmd string) error {
+	if fs.NArg() == 0 {
+		return nil
+	}
+	fs.Usage()
+	return errs.Newf(2, "%s: unexpected positional argument %q", cmd, fs.Arg(0))
+}
+
+// reorderFlagsFirst moves the flag tokens of args, each with the value
+// it consumes, ahead of the positionals, keeping the relative order
+// within each group. Go's flag package stops at the first positional,
+// so without this `transactions 2025 -f csv` would read `-f csv` as two
+// more dates. A flag fs declares consumes the next token unless it is
+// boolean; the --flag=value form is one token. `-` alone (the open end
+// of a range) and `--` are positionals.
+func reorderFlagsFirst(fs *flag.FlagSet, args []string) []string {
+	flags := make([]string, 0, len(args))
+	positional := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			// Everything after the terminator is positional, even
+			// a token that looks like a flag.
+			positional = append(positional, args[i:]...)
+			break
+		}
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			positional = append(positional, a)
+			continue
+		}
+		flags = append(flags, a)
+		if strings.Contains(a, "=") {
+			continue
+		}
+		if takesValue(fs, strings.TrimLeft(a, "-")) && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, positional...)
+}
+
+// takesValue reports whether fs declares name as a flag that consumes
+// the next token: any flag but a boolean one.
+func takesValue(fs *flag.FlagSet, name string) bool {
+	f := fs.Lookup(name)
+	if f == nil {
+		return false
+	}
+	b, ok := f.Value.(interface{ IsBoolFlag() bool })
+	return !ok || !b.IsBoolFlag()
+}
+
+// checkChoice refuses a flag value outside its vocabulary, naming the
+// values it takes.
+func checkChoice(cmd, flagName, value string, allowed ...string) error {
+	if slices.Contains(allowed, value) {
+		return nil
+	}
+	return errs.Newf(2, "%s: invalid --%s %q (want %s)", cmd, flagName, value, strings.Join(allowed, " | "))
 }

@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-// AccountChange is one upsert into gold's `accounts` table.
-// Nullable columns are *T; non-nullable columns are T.
 // DeclaredSourceID is the silver_source_id of the accounts a
 // deployment DECLARES rather than collects (config `declared_accounts`):
 // the holder's own accounts at institutions the product does not
@@ -17,6 +15,8 @@ import (
 // rather than blanking a real source's.
 const DeclaredSourceID = "declared"
 
+// AccountChange is one upsert into gold's `accounts` table.
+// Nullable columns are *T; non-nullable columns are T.
 type AccountChange struct {
 	SilverSourceID    string
 	AccountExternalID string

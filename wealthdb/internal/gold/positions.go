@@ -70,7 +70,7 @@ type PositionRow struct {
 // rows of the latest snapshot_at ≤ asOf are returned, sorted by
 // (silver_source_id, account_external_id, position_key). FX (and
 // everything else) is computed in SQL by the report_positions table
-// macro (migration 0118); this is just the scan. See docs/DESIGN.md
+// macro (migration 0123); this is just the scan. See docs/DESIGN.md
 // §10.1.
 func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, missing lots.MissingBasis) ([]PositionRow, error) {
 	return scanPositionRows(ctx, db, "PositionsAsOf",
@@ -126,13 +126,4 @@ func trimTrailingZeros(s string) string {
 	// "100." → "100"; leave "0" alone (which has no '.').
 	s = strings.TrimRight(s, ".")
 	return s
-}
-
-// sixAggPtrs trims the six aggregate value columns every report_*
-// macro projects — positions / cash / total, each in base and out
-// currency — returning them in that order for the caller to assign to
-// its row struct.
-func sixAggPtrs(pvb, cvb, tvb, pvo, cvo, tvo sql.NullString) (*string, *string, *string, *string, *string, *string) {
-	return trimmedDecimalPtr(pvb), trimmedDecimalPtr(cvb), trimmedDecimalPtr(tvb),
-		trimmedDecimalPtr(pvo), trimmedDecimalPtr(cvo), trimmedDecimalPtr(tvo)
 }

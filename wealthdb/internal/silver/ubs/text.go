@@ -48,9 +48,8 @@ var cardReferenceRe = regexp.MustCompile(`^\d{4,}-\d\s+\d{1,2}/\d{2}$`)
 // alone ("e-banking payment order") unless something precedes it, when it
 // holds "<lead>; <booking type>" — the lead first, the type last — so the
 // split is at the LAST "; ": the type is what follows it. A column
-// without the separator is all booking type and is returned untouched, so
-// a row without a lead projects byte for byte as before; the `;Reversal`
-// suffix has no space and stays on the type.
+// without the separator is all booking type and is returned untouched;
+// the `;Reversal` suffix has no space and stays on the type.
 //
 // The lead is the payer's message and becomes the row's memo — EXCEPT
 // where it is the bank's own card reference, which a card-booked entry
@@ -59,7 +58,7 @@ var cardReferenceRe = regexp.MustCompile(`^\d{4,}-\d\s+\d{1,2}/\d{2}$`)
 // may key on it (docs/SPENDING.md §3). So a card reference yields no
 // memo. Nothing is lost by dropping it — the raw column survives whole
 // in the row's payload — and nothing else moves: the booking type is
-// still what follows the separator, so the row categorises as it did.
+// still what follows the separator.
 func splitBookingType(descKind string) (message, bookingType string) {
 	i := strings.LastIndex(descKind, "; ")
 	if i < 0 {
@@ -238,9 +237,9 @@ const codeOnlyMaxRunes = 5
 // MT940 :86: block writes its subfields as `?20`, `?21`, … after the
 // booking code, so an entry the bank filled in nothing for arrives as
 // the code with the introducer and nothing behind it. Left in, that
-// one rune made the column read as composed of more than one thing,
-// so the code beat the Account-Statement narrative that had the payee
-// — the opposite of what this test exists to decide.
+// one rune would make the column read as composed of more than one
+// thing, so the code would beat the Account-Statement narrative that
+// has the payee — the opposite of what this test exists to decide.
 //
 // It decides only which of two records of the SAME entry carries the
 // narrative (richerText). It never decides what a row is: no kind,
@@ -271,8 +270,8 @@ func isCodeOnly(s string) bool {
 // code (isOwnChargeCode). That name is code-shaped by this test, so an
 // export twin that names a real party wins over it, and one that also
 // names the bank leaves the row of record's own. The Account-Statement
-// export records the same entry
-// with the payee, the printed booking type and the cost note. A column
+// export records the same entry with the payee, the printed booking
+// type and the cost note. A column
 // that is a bare code — or absent — therefore gives way to one
 // carrying more, and a column that already says something is kept: the
 // row of record does not move, only the text it left as a code.

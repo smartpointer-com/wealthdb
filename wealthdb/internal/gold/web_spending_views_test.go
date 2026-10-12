@@ -133,12 +133,12 @@ func accountsOnDay(t *testing.T, db *sql.DB, ctx context.Context, day int64) []s
 }
 
 // TestAccountHistoryKeepsBothClocks pins the account-history macros
-// against the fixture that used to defeat them (gold migration 0051).
-// A card's balances arrive on the statement clock while the same
-// source's deposit accounts are re-dumped constantly. Resolving the
-// active snapshot per (source, ACCOUNT, day) reports both accounts on
-// every day; one active snapshot per source reported only whichever of
-// them happened to snapshot last.
+// against a fixture that defeats a per-source resolution (gold
+// migration 0051). A card's balances arrive on the statement clock
+// while the same source's deposit accounts are re-dumped constantly.
+// Resolving the active snapshot per (source, ACCOUNT, day) reports
+// both accounts on every day; one active snapshot per source would
+// report only whichever of them happened to snapshot last.
 func TestAccountHistoryKeepsBothClocks(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedCardBalanceFixture(t, db, ctx)

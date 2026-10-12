@@ -158,9 +158,9 @@ type Config struct {
 	// returns. Keyed by grain: portfolios[source_id] and accounts[source_id]
 	// each map to a list of external ids. An excluded account is also omitted
 	// from its portfolio's row; an excluded portfolio still shows its own row.
-	// Returns only — holdings / net-worth are unaffected (a proper owner
-	// dimension is future work). Absent ⇒ nothing excluded. See docs/DESIGN.md
-	// §5.5 and internal/gold groupAccounts.
+	// Returns only — holdings / net-worth are unaffected. Absent ⇒
+	// nothing excluded. See docs/DESIGN.md §5.5 and internal/gold
+	// groupAccounts.
 	ReturnsExclude *ReturnsExclude `json:"returns_exclude,omitempty"`
 	// ReturnsHide suppresses accounts' or portfolios' OWN return rows at
 	// every grain while their values and flows keep contributing to every
@@ -516,12 +516,10 @@ type DeclaredAccount struct {
 // All fields are optional; the canonical-enum-typed ones are
 // validated at config-load time.
 //
-// Today only the `taxable_personal` → portfolio-specific wrapper
-// override is wired through (the main use case: a CT portfolio
-// held inside an IRA / 401k / trust / Stiftung wrapper where the
-// adapter's `taxable_personal` default is wrong for every wallet
-// in the portfolio). Other dimensions (nickname, management_style)
-// can be added here if a use case emerges.
+// TaxWrapper restates the wrapper of every account in the portfolio,
+// for a portfolio held inside a wrapper (retirement, trust or
+// foundation), where the adapter's `taxable_personal` default is wrong
+// for every wallet in it.
 type PortfolioOverride struct {
 	TaxWrapper string `json:"tax_wrapper,omitempty"`
 	// Exclude drops the portfolio and every account inside it — the
@@ -816,8 +814,7 @@ type SpendingRule struct {
 
 // SpendingRuleScope narrows a rule to part of the ledger. Every field
 // is optional and an omitted one does not constrain; a rule with no
-// scope, or an empty one, matches everywhere — which is what every
-// rule written before this existed does.
+// scope, or an empty one, matches everywhere.
 //
 // It exists because a pattern specific enough for one booking is
 // rarely specific enough for the whole future. `^\s*closing\s*$` is

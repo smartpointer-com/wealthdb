@@ -116,7 +116,7 @@ SELECT a.account_external_id,
 		})
 
 		if bal.Valid && sourceLatest >= w.Start && sourceLatest <= w.End {
-			batch.CashBalances = append(batch.CashBalances, cashBalance(
+			batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
 				sourceLatest, id, currency, canonical.BalanceKindCurrent,
 				signedBalance(bal.Float64, card), `{"basis":"roster"}`))
 		}
@@ -172,7 +172,7 @@ SELECT account_external_id, posted_at, balance FROM (
 		if err := rows.Scan(&id, &postedAt, &bal); err != nil {
 			return err
 		}
-		batch.CashBalances = append(batch.CashBalances, cashBalance(
+		batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
 			postedAt, id, currencyOf(facts, id), canonical.BalanceKindClosing,
 			signedBalance(bal, isCard(facts, id)), `{"basis":"running_balance"}`))
 	}
@@ -229,7 +229,7 @@ SELECT sb.account_external_id, sb.period_end, sb.closing
 		}
 		// Every row here is a card's by the product guard above, so the
 		// printed owed-positive figure is unconditionally negated.
-		batch.CashBalances = append(batch.CashBalances, cashBalance(
+		batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
 			periodEnd, id, currencyOf(facts, id), canonical.BalanceKindClosing,
 			signedBalance(closing, true), `{"basis":"statement_closing"}`))
 	}
@@ -250,17 +250,4 @@ func signedBalance(amount float64, card bool) canonical.Decimal {
 		return d.Neg()
 	}
 	return d
-}
-
-// cashBalance builds a CashBalanceChange.
-func cashBalance(snap int64, accountID, currency string, kind canonical.BalanceKind,
-	amount canonical.Decimal, payload string) canonical.CashBalanceChange {
-	return canonical.CashBalanceChange{
-		SnapshotAt:        snap,
-		AccountExternalID: accountID,
-		Currency:          currency,
-		BalanceKind:       kind,
-		Amount:            amount,
-		Payload:           json.RawMessage(payload),
-	}
 }

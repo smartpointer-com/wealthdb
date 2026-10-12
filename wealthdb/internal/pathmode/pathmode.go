@@ -69,11 +69,11 @@ func Detect(path string, forceReadOnly, subcommandIsInit bool) (Decision, error)
 		return Decision{Mode: ModeReadOnly, Reason: ReasonExplicitFlag, DBExists: pathExists(path)}, nil
 	}
 
-	st, err := os.Stat(path)
+	_, err := os.Stat(path)
 	switch {
 	case err == nil:
-		// DB file exists; probe writeability.
-		_ = st // intentionally not reading flags from st; permission probe is more robust
+		// DB file exists; probe writeability with access(2) rather than
+		// reading mode bits, which miss ACLs and read-only mounts.
 		return decidePermissionMode(path), nil
 
 	case errors.Is(err, os.ErrNotExist):

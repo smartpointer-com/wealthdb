@@ -142,13 +142,12 @@ func TestIncomePromptSpeaksOfPayers(t *testing.T) {
 		t.Error("a delta appears as a choosable taxonomy row in the income prompt")
 	}
 
-	// The word "merchant" appears NOWHERE. The prompt used to announce
-	// the spending family's output contract on an income run — three
-	// columns named merchant_signature, merchant_name, spend_detailed —
-	// three lines after asking for payers, so one batch told the model
-	// three different things about the columns it had to emit. A
-	// substring test is the right shape here precisely because the
-	// failure was a stray literal.
+	// The word "merchant" appears NOWHERE. An income prompt that named
+	// the spending family's output columns (merchant_signature,
+	// merchant_name, spend_detailed) a few lines after asking for payers
+	// would tell the model two different things about the columns it
+	// has to emit. A substring test is the right shape here, because
+	// the failure it guards against is a stray literal.
 	if strings.Contains(strings.ToLower(p), "merchant") {
 		t.Errorf("the income prompt says \"merchant\":\n%s", p)
 	}

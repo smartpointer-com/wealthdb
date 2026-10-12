@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -144,7 +145,7 @@ func cmdHelp(ctx context.Context, g globalFlags, subargs []string, stdin io.Read
 	name := subargs[0]
 	// A holdings view is addressed as `wealthdb holdings <view>`; its
 	// help is the view's own, reached the way the command reaches it.
-	if _, ok := holdingsViews[name]; ok {
+	if slices.Contains(holdingsViews, name) {
 		return cmdHoldings(ctx, g, []string{name, "-h"}, stdin, stdout, stderr)
 	}
 	for _, c := range commandHelps {

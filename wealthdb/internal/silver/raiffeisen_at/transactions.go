@@ -39,7 +39,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
-	ccy, err := c.accountCurrencies(ctx)
+	ccy, err := silver.ReadAccountCurrencies(ctx, c.db, "EUR")
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ SELECT txn_id, posted_at, account_external_id, amount,
 			OccurredAt:            posted,
 			AccountExternalID:     id,
 			Kind:                  txKind(category, desc, amt),
-			Currency:              currencyOf(ccy, id),
+			Currency:              ccy.Of(id),
 			GrossAmount:           &amt,
 			NetAmount:             &amt,
 			Description:           description,

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -27,15 +26,11 @@ Creates the gold DuckDB file at the path given by the gold_db
 field in the config file, runs all migrations, and exits. Fails
 if the file already exists.`)
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "init: bad flags")
+	if err := parseFlags(fs, subargs, "init"); err != nil {
+		return err
 	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return errs.Newf(2, "init: unexpected positional argument %q", fs.Arg(0))
+	if err := noPositionals(fs, "init"); err != nil {
+		return err
 	}
 
 	cfg, err := config.Load(g.ConfigPath)

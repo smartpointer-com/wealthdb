@@ -3,7 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
 )
 
 // The read side of the spending reports (migration 0042). Three
@@ -110,31 +109,10 @@ type SpendTransactionRow struct {
 // verbatim, so validating it belongs to the caller — an unrecognised
 // part raises rather than bucketing wrongly.
 func SpendingSummary(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period string) ([]SpendSummaryRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_spending_summary(?, ?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy, period)
-	if err != nil {
-		return nil, fmt.Errorf("SpendingSummary: %w", err)
-	}
-	defer rows.Close()
-
-	var out []SpendSummaryRow
-	for rows.Next() {
-		var (
-			r                        SpendSummaryRow
-			bucket                   sql.NullInt64
-			spend, refunds, netSpend sql.NullString
-		)
-		if err := rows.Scan(&bucket, &r.TxnCount, &spend, &refunds, &netSpend); err != nil {
-			return nil, fmt.Errorf("SpendingSummary scan: %w", err)
-		}
-		r.PeriodStart = nullInt64ToPtr(bucket)
-		r.Spend = trimmedDecimalPtr(spend)
-		r.Refunds = trimmedDecimalPtr(refunds)
-		r.NetSpend = trimmedDecimalPtr(netSpend)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "SpendingSummary", `SELECT * FROM report_spending_summary(?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, period}, func(r *SpendSummaryRow) []any {
+			return []any{i64(&r.PeriodStart), &r.TxnCount, dec(&r.Spend), dec(&r.Refunds), dec(&r.NetSpend)}
+		})
 }
 
 // SpendingCategories returns one row per (period bucket, category)
@@ -142,37 +120,13 @@ func SpendingSummary(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, 
 // (group by the coarse buckets) or 'detailed'; like `period` it
 // reaches the macro verbatim and the caller validates it.
 func SpendingCategories(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period, level string) ([]SpendCategoryRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_spending_categories(?, ?, ?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy, period, level)
-	if err != nil {
-		return nil, fmt.Errorf("SpendingCategories: %w", err)
-	}
-	defer rows.Close()
-
-	var out []SpendCategoryRow
-	for rows.Next() {
-		var (
-			r                        SpendCategoryRow
-			bucket                   sql.NullInt64
-			spend, refunds, netSpend sql.NullString
-			share                    sql.NullFloat64
-		)
-		if err := rows.Scan(&bucket, &r.Category, &r.CategoryLabel, &r.TxnCount,
-			&spend, &refunds, &netSpend, &share); err != nil {
-			return nil, fmt.Errorf("SpendingCategories scan: %w", err)
-		}
-		r.PeriodStart = nullInt64ToPtr(bucket)
-		r.Spend = trimmedDecimalPtr(spend)
-		r.Refunds = trimmedDecimalPtr(refunds)
-		r.NetSpend = trimmedDecimalPtr(netSpend)
-		if share.Valid {
-			v := share.Float64
-			r.Share = &v
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "SpendingCategories", `SELECT * FROM report_spending_categories(?, ?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, period, level}, func(r *SpendCategoryRow) []any {
+			return []any{
+				i64(&r.PeriodStart), &r.Category, &r.CategoryLabel, &r.TxnCount,
+				dec(&r.Spend), dec(&r.Refunds), dec(&r.NetSpend), flt(&r.Share),
+			}
+		})
 }
 
 // SpendingTransactions returns the spending population at transaction
@@ -180,63 +134,15 @@ func SpendingCategories(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int6
 // outCcy at occurred_at. Ordered by (occurred_at, silver_source_id,
 // transaction_external_id) by the macro.
 func SpendingTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string) ([]SpendTransactionRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_spending_transactions(?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy)
-	if err != nil {
-		return nil, fmt.Errorf("SpendingTransactions: %w", err)
-	}
-	defer rows.Close()
-
-	var out []SpendTransactionRow
-	for rows.Next() {
-		var (
-			r                                    SpendTransactionRow
-			acctKind, displayName                sql.NullString
-			nickname, category                   sql.NullString
-			signature, merchant                  sql.NullString
-			primary, detailed, provenance        sql.NullString
-			spendLabel, primaryLabel             sql.NullString
-			providerDetailed, providerLabel      sql.NullString
-			netAmount, description, counterparty sql.NullString
-			valueOut                             sql.NullString
-		)
-		if err := rows.Scan(
-			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
-			&r.AccountExternalID, &acctKind, &displayName, &nickname, &category,
-			&r.Kind, &signature, &merchant, &primary, &detailed,
-			&spendLabel, &primaryLabel,
-			&provenance, &providerDetailed, &providerLabel, &r.Currency, &netAmount,
-			&description, &counterparty, &valueOut,
-		); err != nil {
-			return nil, fmt.Errorf("SpendingTransactions scan: %w", err)
-		}
-		r.AccountKind = nullStringToPtr(acctKind)
-		r.DisplayName = nullStringToPtr(displayName)
-		r.Nickname = nullStringToPtr(nickname)
-		r.AccountCategory = nullStringToPtr(category)
-		r.MerchantSignature = nullStringToPtr(signature)
-		r.MerchantName = nullStringToPtr(merchant)
-		r.SpendPrimary = nullStringToPtr(primary)
-		r.SpendDetailed = nullStringToPtr(detailed)
-		r.SpendLabel = nullStringToPtr(spendLabel)
-		r.SpendPrimaryLabel = nullStringToPtr(primaryLabel)
-		r.Provenance = nullStringToPtr(provenance)
-		r.ProviderSpendDetailed = nullStringToPtr(providerDetailed)
-		r.ProviderSpendLabel = nullStringToPtr(providerLabel)
-		r.Description = nullStringToPtr(description)
-		r.Counterparty = nullStringToPtr(counterparty)
-		r.NetAmount = trimmedDecimalPtr(netAmount)
-		r.ValueOutCcy = trimmedDecimalPtr(valueOut)
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-func nullInt64ToPtr(n sql.NullInt64) *int64 {
-	if !n.Valid {
-		return nil
-	}
-	v := n.Int64
-	return &v
+	return scanRows(ctx, db, "SpendingTransactions", `SELECT * FROM report_spending_transactions(?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy}, func(r *SpendTransactionRow) []any {
+			return []any{
+				&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
+				&r.AccountExternalID, str(&r.AccountKind), str(&r.DisplayName), str(&r.Nickname), str(&r.AccountCategory),
+				&r.Kind, str(&r.MerchantSignature), str(&r.MerchantName), str(&r.SpendPrimary), str(&r.SpendDetailed),
+				str(&r.SpendLabel), str(&r.SpendPrimaryLabel),
+				str(&r.Provenance), str(&r.ProviderSpendDetailed), str(&r.ProviderSpendLabel), &r.Currency, dec(&r.NetAmount),
+				str(&r.Description), str(&r.Counterparty), dec(&r.ValueOutCcy),
+			}
+		})
 }

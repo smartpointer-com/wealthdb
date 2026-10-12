@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -14,40 +16,71 @@ func init() {
 	register("holdings", cmdHoldings)
 }
 
-// holdingsViews are the point-in-time portfolio views, grouped under
-// `wealthdb holdings` so the top-level command surface stays small as
-// more report families land (e.g. the sibling `wealthdb returns`). They
-// share one flag idiom (-d / -f / -x / -p, plus -C on all
-// but global) and their totals reconcile: global == Σ sources ==
-// Σ portfolios == Σ accounts == positions --with-cash.
-var holdingsViews = map[string]subcommandHandler{
-	"positions":  cmdPositions,
-	"accounts":   cmdAccounts,
-	"portfolios": cmdPortfolios,
-	"sources":    cmdSources,
-	"global":     cmdGlobal,
+// holdingsViews are the point-in-time portfolio views, coarsest first,
+// grouped under `wealthdb holdings`. They share one flag idiom (-d / -f
+// / -x / -p, plus -C on all but global) and their totals reconcile:
+// global == Σ sources == Σ portfolios == Σ accounts == positions
+// --with-cash.
+var holdingsViews = []string{"global", "sources", "portfolios", "accounts", "positions"}
+
+// holdingsViewUsage is each view's own -h text.
+var holdingsViewUsage = map[string]func() string{
+	"global":     globalCmdUsage,
+	"sources":    sourcesUsage,
+	"portfolios": portfoliosUsage,
+	"accounts":   accountsUsage,
+	"positions":  positionsUsage,
 }
 
-// cmdHoldings routes `wealthdb holdings <view> ...` to the matching
-// view handler, passing the post-view args through unchanged so each
-// view parses its own flags exactly as it did when top-level.
-func cmdHoldings(ctx context.Context, g globalFlags, subargs []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	if len(subargs) == 0 {
-		fmt.Fprint(stderr, holdingsUsage)
-		return errs.Newf(2, "holdings: a view subcommand is required")
+// cmdHoldings routes `wealthdb holdings <view> ...` to the view's run.
+func cmdHoldings(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
+	view, rest, err := routeView("holdings", subargs, holdingsViews, func() string { return holdingsUsage }, stderr)
+	if err != nil {
+		return err
 	}
-	view, rest := subargs[0], subargs[1:]
-	switch view {
-	case "-h", "--help", "help":
-		fmt.Fprint(stderr, holdingsUsage)
-		return nil
+	return runHoldingsView(ctx, g, view, rest, stdout, stderr)
+}
+
+// runHoldingsView parses one view's flags and writes it. Errors name
+// the view alone ("positions: ..."), as its usage line does.
+func runHoldingsView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("wealthdb holdings "+view, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
+	fs.StringVar(asOf, "as-of", "", "as-of date (YYYY-MM-DD; default today UTC)")
+	rf := registerReportFlags(fs, view != "global")
+	var withCash *bool
+	var missing *string
+	if view == "positions" {
+		withCash = fs.Bool("with-cash", false, "also emit one row per account and currency with non-zero cash")
+		missing = registerMissingBasisFlag(fs)
 	}
-	h, ok := holdingsViews[view]
-	if !ok {
-		fmt.Fprint(stderr, holdingsUsage)
-		return errs.Newf(2, "holdings: unknown view %q", view)
+	fs.Usage = func() { fmt.Fprintln(stderr, holdingsViewUsage[view]()) }
+	if err := parseFlags(fs, args, view); err != nil {
+		return err
 	}
-	return h(ctx, g, rest, stdin, stdout, stderr)
+	if err := noPositionals(fs, view); err != nil {
+		return err
+	}
+
+	asOfEpoch, err := parseAsOf(*asOf, time.Now())
+	if err != nil {
+		return errs.Newf(2, "%s: %s", view, err.Error())
+	}
+	fmtChoice, cfg, outCcy, err := rf.resolve(g, view)
+	if err != nil {
+		return err
+	}
+	req := request{view: view, currency: outCcy, asOf: asOfEpoch}
+	if view == "positions" {
+		req.withCash = *withCash
+		if req.missing, err = resolveMissingBasis(*missing, cfg, view); err != nil {
+			return err
+		}
+	}
+
+	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	return writeReport(ctx, holdingsReport(req), *rf.cols, view, open, *rf.privacy, fmtChoice, stdout)
 }
 
 // holdingsReport is one holdings view as of req.asOf, the runner the
@@ -138,5 +171,4 @@ source contributes its latest snapshot on or before the as-of date
 
 There are no row filters: pick the view, then filter the output (grep
 on the table, or -f json and jq). Run 'wealthdb holdings <view> -h'
-for a view's columns.
-`
+for a view's columns.`

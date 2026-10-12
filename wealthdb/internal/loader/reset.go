@@ -80,23 +80,7 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 }
 
 // ListSourceIDs returns every silver_source_id currently
-// registered in gold. Used by `wealthdb reset -a` and
-// `wealthdb load -a`.
+// registered in gold. Used by `wealthdb reset -a`.
 func (l *Loader) ListSourceIDs(ctx context.Context) ([]string, error) {
-	rows, err := l.gold.QueryContext(ctx,
-		`SELECT silver_source_id FROM silver_sources ORDER BY silver_source_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []string
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
+	return gold.ListSilverSources(ctx, l.gold)
 }

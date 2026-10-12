@@ -400,7 +400,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 	// closure. The real pre-debut / closure-drain flows were subsumed above, so
 	// no near-day dedup is needed: onboarding books the FULL debut value, and the
 	// closure loop below books whatever value remains the day before the closure
-	// day (in practice only a final-day zeroing — see that loop's comment).
+	// day (in effect only a final-day zeroing — see that loop's comment).
 	//
 	// OnboardScope splits the onboarding GRAIN — the AMOUNT booked when a
 	// constituent debuts after winFrom:
@@ -463,7 +463,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		}
 	}
 
-	// Explicit closure, unchanged by OnboardScope / ConduitKinds. In practice the
+	// Explicit closure, unchanged by OnboardScope / ConduitKinds. In effect the
 	// synthetic books value only when an account zeroes on the spine's final day
 	// (valueAt(cd-1) is ~0 anywhere inside a longer zero tail), so the zeroing
 	// value DROP is the usual exit signal and this outflow is its final-day
@@ -507,8 +507,9 @@ func groupDebutDays(grp []*accountData, winFrom, winTo int64) []int64 {
 // first value NET OF same-day sibling FUNDING drops only — NOT the raw aggregate
 // calendar delta (the group's total value on day minus its total on day-1).
 //
-// The raw delta absorbed EVERY value movement across ALL group accounts on the
-// debut day, so it double-counted two things that are not new onboarding capital:
+// The raw delta would absorb EVERY value movement across ALL group accounts on
+// the debut day, and so double-count two things that are not new onboarding
+// capital:
 //
 //   - a same-day external cash deposit into a sibling conduit — already booked as
 //     its own nonTransfer flow, so sweeping it into the step-up counts it twice;
@@ -975,9 +976,8 @@ func regimeFlags(assets []*accountData, winFrom, winTo int64) []string {
 	// Aggregate the per-asset conditions first, then emit in a fixed order, so
 	// the flag list is deterministic regardless of asset-iteration order. These
 	// flags are a display SET — order carries no meaning — and emitting them in
-	// iteration order made a multi-asset entity's flag ordering depend on which
-	// constituent happened to be visited first (non-deterministic for e.g.
-	// cointracking).
+	// iteration order would make a multi-asset entity's flag ordering depend on
+	// which constituent happened to be visited first.
 	var crypto, journal, unknown, clamped, dropped, capRiskFlowless bool
 	for _, a := range assets {
 		crypto = crypto || (a.policy.Regime == returns.RegimeCryptoPartial && a.cryptoExcluded)

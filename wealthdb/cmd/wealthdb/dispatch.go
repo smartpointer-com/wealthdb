@@ -53,7 +53,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	err = handler(ctx, g, subargs, stdin, stdout, stderr)
-	if err == nil {
+	// A subcommand answers -h by printing its usage and returning
+	// flag.ErrHelp: a request that was answered, as at the top level.
+	if err == nil || errors.Is(err, flag.ErrHelp) {
 		return 0
 	}
 

@@ -1,87 +1,34 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
-// cmdAccounts is the accounts-grain view of the portfolio. One row
-// per registered account with the account's promoted columns plus
-// derived aggregates: total non-cash positions value, cash value,
-// and grand total, each expressed both in the account's own
-// base_currency (when known) and in the requested output
-// currency. See cmd_positions.go for the parallel positions-grain
-// view.
-func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb holdings accounts", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
-		cmd:           "accounts",
-		currencyUsage: "output currency for the _<CCY> aggregate columns (default: config.default_currency)",
-		privacyUsage:  "redact account IDs / monetary amounts in the output",
-		withColumns:   true,
-	})
-	fs.Usage = func() {
-		fmt.Fprintln(stderr, accountsUsage())
-	}
-	if err := fs.Parse(splitFusedColumnsFlag(subargs)); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "accounts: bad flags")
-	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return errs.Newf(2, "accounts: unexpected positional argument %q", fs.Arg(0))
-	}
-
-	hv, err := hf.resolve(g)
-	if err != nil {
-		return err
-	}
-
-	rep := holdingsReport(request{view: "accounts", currency: hv.outCcy, asOf: hv.asOfEpoch})
-	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
-	return writeReport(ctx, rep, *hf.cols, "accounts", open, *hf.privacy, hv.fmtChoice, stdout)
-}
-
 // ---- column registry -----------------------------------------------------
 
+// buildAccountColumnRegistry is the accounts view: one row per account
+// with its taxonomy and its positions, cash and total value, each in
+// the account's own base_currency and in the output currency.
 func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
-	suffix := "_" + outCcy
 	return []columnSpec[gold.AccountRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.SilverSourceID }},
-		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(a gold.AccountRow) string {
-			// SnapshotAt is 0 only when the silver source has
-			// produced no observations at all — show nothing
-			// in that genuinely-unknown case.
-			if a.SnapshotAt == 0 {
-				return ""
-			}
-			return formatDate(a.SnapshotAt)
-		}},
+		// SnapshotAt is 0 only when the silver source has produced no
+		// observations at all, which shows as a blank.
+		dateCol("snapshot_date", func(a gold.AccountRow) int64 { return a.SnapshotAt }),
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return accountLabel(a.DisplayName, a.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return a.AccountExternalID }},
 		{Name: "account_kind", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.AccountKind }},
-		// Defaults applied at render time so the rendered cell is
-		// never blank when the adapter / overrides haven't
-		// classified the account. The underlying column stays NULL — gold's
-		// distinguishes "unknown" from "explicitly default" via
-		// the database, the CLI surfaces the conventional default.
+		// Defaults applied at render time, so the cell is never blank
+		// when neither the adapter nor an override classified the
+		// account. The column itself stays NULL, so gold still tells
+		// "unknown" from "explicitly the default".
 		{Name: "tax_wrapper", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string {
 				if a.TaxWrapper != nil {
@@ -96,38 +43,27 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 				}
 				return "self_directed"
 			}},
-		{Name: "base_currency", Align: output.AlignLeft,
-			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.BaseCurrency) }},
+		textCol("base_currency", func(a gold.AccountRow) *string { return a.BaseCurrency }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.RelationshipID) }},
-		{Name: "account_nickname", Align: output.AlignLeft,
-			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.Nickname) }},
-		{Name: "account_category", Align: output.AlignLeft,
-			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.AccountCategory) }},
+		textCol("account_nickname", func(a gold.AccountRow) *string { return a.Nickname }),
+		textCol("account_category", func(a gold.AccountRow) *string { return a.AccountCategory }),
 		{Name: "portfolio_external_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.PortfolioExternalID) }},
 
-		// Base-currency aggregates. The header has no _<CCY>
-		// suffix because each row's value is in its OWN
-		// base_currency — there's no single column-wide currency
-		// to advertise. Blank when the account's base_currency is
-		// nil.
-		{Name: "positions_value", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(a gold.AccountRow) string { return formatCents(a.PositionsValueBase) }},
-		{Name: "cash_balance", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(a gold.AccountRow) string { return formatCents(a.CashBalanceBase) }},
-		{Name: "total_value", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(a gold.AccountRow) string { return formatCents(a.TotalValueBase) }},
+		// Base-currency aggregates. The header has no _<CCY> suffix
+		// because each row's value is in its OWN base_currency: there
+		// is no single column-wide currency to advertise. Blank when
+		// the account's base_currency is nil.
+		moneyCol("positions_value", "", func(a gold.AccountRow) *string { return a.PositionsValueBase }),
+		moneyCol("cash_balance", "", func(a gold.AccountRow) *string { return a.CashBalanceBase }),
+		moneyCol("total_value", "", func(a gold.AccountRow) *string { return a.TotalValueBase }),
 
-		// Output-currency aggregates. Single column-wide currency
-		// (the -x/--currency choice) so the header carries
-		// the suffix.
-		{Name: "positions_value_outccy", Header: "positions_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(a gold.AccountRow) string { return formatCents(a.PositionsValueOutCcy) }},
-		{Name: "cash_balance_outccy", Header: "cash_balance" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(a gold.AccountRow) string { return formatCents(a.CashBalanceOutCcy) }},
-		{Name: "total_value_outccy", Header: "total_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(a gold.AccountRow) string { return formatCents(a.TotalValueOutCcy) }},
+		// Output-currency aggregates, one column-wide currency (the
+		// -x/--currency choice), so the header carries the suffix.
+		outCcyTwin("positions_value", outCcy, func(a gold.AccountRow) *string { return a.PositionsValueOutCcy }),
+		outCcyTwin("cash_balance", outCcy, func(a gold.AccountRow) *string { return a.CashBalanceOutCcy }),
+		outCcyTwin("total_value", outCcy, func(a gold.AccountRow) *string { return a.TotalValueOutCcy }),
 	}
 }
 

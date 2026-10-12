@@ -216,9 +216,8 @@ const (
 
 	// US charitable. The charitable wrapper marks assets held for
 	// charitable purposes (donor-advised funds foremost — the
-	// container itself is AccountKindDonorAdvisedFund); the value
-	// was renamed from the never-emitted 'daf' so the wrapper names
-	// the tax treatment rather than duplicating the account kind.
+	// container itself is AccountKindDonorAdvisedFund). The wrapper
+	// names the tax treatment rather than duplicating the account kind.
 	TaxWrapperCharitable TaxWrapper = "charitable"
 
 	// US custodial-for-minors.

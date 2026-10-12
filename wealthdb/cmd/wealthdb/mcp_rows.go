@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -278,7 +279,7 @@ func (l columnLookup) find(name string) (int, string, error) {
 				converted = append(converted, l.stem(c))
 			}
 		}
-		stem, ok := m[1], contains(converted, m[1])
+		stem, ok := m[1], slices.Contains(converted, m[1])
 		if !ok {
 			stem, ok = nearMiss(m[1], converted)
 		}
@@ -448,26 +449,29 @@ func escalate(views []string, carries map[string][]string, view string, filters 
 		}
 	}
 	for _, v := range views[start:] {
-		all := true
-		for _, f := range filters {
-			if !contains(carries[v], f) {
-				all = false
-				break
-			}
-		}
-		if all {
+		if carriesAll(carries, v, filters) {
 			return v, true
 		}
 	}
 	return view, false
 }
 
+// carriesAll reports whether view carries every one of filters.
+func carriesAll(carries map[string][]string, view string, filters []string) bool {
+	for _, f := range filters {
+		if !slices.Contains(carries[view], f) {
+			return false
+		}
+	}
+	return true
+}
+
 // thousands renders n with comma separators, for the paging line.
 func thousands(n int) string {
-	s := strconv.Itoa(n)
 	if n < 0 {
 		return "-" + thousands(-n)
 	}
+	s := strconv.Itoa(n)
 	for i := len(s) - 3; i > 0; i -= 3 {
 		s = s[:i] + "," + s[i:]
 	}

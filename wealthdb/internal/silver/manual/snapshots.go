@@ -6,16 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // defaultAccountKey is the account a position falls into when the book
-// declares none — the one account every manual position was in before
-// accounts.csv existed. The id is kept stable so a deployment that never adds
-// accounts sees no change in gold.
+// declares none, so a book without accounts.csv holds one account under this
+// stable id.
 const defaultAccountKey = "manual"
 
 // Snapshots reconstructs the per-date portfolio from the silver's positions +
@@ -50,24 +48,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // (eventDates; silver ISO TEXT → unix seconds). load_runs.load_at is the load
 // time, not a holding event, so it is excluded.
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	q := `
-SELECT DISTINCT t FROM (` + c.eventDates() + `)
+	return silver.SnapshotTimes(ctx, c.db, w, nil, `
+SELECT DISTINCT t FROM (`+c.eventDates()+`)
 WHERE t BETWEEN ? AND ?
-ORDER BY t`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+ORDER BY t`,
+		w.Start, w.End)
 }
 
 // buildBatch materialises the full portfolio as of event date t: every
@@ -119,7 +104,6 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 		}
 		live = true
 		held[acctID] = true
-		ac := assetClassFor(kind)
 		acNew, veh := taxonomyFor(kind, vehicle)
 		instKey := id
 
@@ -131,7 +115,7 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 			AssetClass:           acNew,
 			Vehicle:              veh,
 			Currency:             currency,
-			AcquisitionDate:      acqDate(acqUnix),
+			AcquisitionDate:      silver.DatePtrFromNullUnix(sql.NullInt64{Int64: acqUnix, Valid: true}),
 			Payload:              json.RawMessage(payload),
 			// Quantity stays nil: manual holdings are valued by amount, not a
 			// unit count (real estate, a loan, a whole-company stake, an LP
@@ -143,7 +127,7 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 		// kind" — so both are negated here, matching the gold convention
 		// that liability positions carry a negative market_value and net
 		// against assets in rollups.
-		neg := ac == canonical.AssetClassMortgage
+		neg := kind == "mortgage"
 		if marketValue.Valid {
 			if mv, err := canonical.NewDecimalFromString(signed(marketValue.String, neg)); err == nil {
 				pos.MarketValue = &mv
@@ -240,8 +224,7 @@ func manualBasis(paidIn bool) canonical.Basis {
 
 // accountsFor is one AccountChange per account holding something at t.
 //
-// The declared taxonomy wins; the defaults are the ones the single hard-coded
-// account always carried. No base_currency on any of them: a manual book's
+// The declared taxonomy wins over accountChange's defaults. No base_currency on any of them: a manual book's
 // positions may span currencies, and the account is a sleeve rather than a
 // denominated container.
 func (c *Connection) accountsFor(ctx context.Context, held map[string]bool, t int64) ([]canonical.AccountChange, error) {
@@ -276,8 +259,8 @@ SELECT id, COALESCE(display_name, ''), COALESCE(account_kind, ''),
 			continue
 		}
 		// A position naming an account the book does not declare. load.py
-		// refuses that, so reaching here means silver predates accounts.csv
-		// (or was written by hand): project the defaults rather than drop the
+		// refuses that, so reaching here means a silver without accounts.csv
+		// (or one written by hand): project the defaults rather than drop the
 		// account and take its positions down with it.
 		out = append(out, accountChange(id, "Manual", "", "", "", t))
 	}
@@ -287,12 +270,11 @@ SELECT id, COALESCE(display_name, ''), COALESCE(account_kind, ''),
 	return out, nil
 }
 
-// accountChange builds one account, filling each empty field with the value
-// the single pre-accounts manual account carried. account_kind 'other' is the
-// default because a directly-held asset has no institutional container;
-// self_directed because the holder decides what to hold; taxable_personal
-// because that is the common case and a sleeve is the exception worth
-// declaring.
+// accountChange builds one account, filling each empty or unknown field with
+// a default: display name "Manual"; account_kind 'other', because a
+// directly-held asset has no institutional container; self_directed, because
+// the holder decides what to hold; taxable_personal, because that is the
+// common case and a sleeve is the exception worth declaring.
 func accountChange(id, name, kind, wrapper, style string, t int64) canonical.AccountChange {
 	if name == "" {
 		name = "Manual"
@@ -328,12 +310,4 @@ func signed(magnitude string, neg bool) string {
 		return "-" + magnitude
 	}
 	return magnitude
-}
-
-// acqDate converts a unix-seconds timestamp to a UTC-midnight calendar date
-// (gold stores AcquisitionDate as DATE).
-func acqDate(unix int64) *time.Time {
-	t := time.Unix(unix, 0).UTC()
-	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-	return &d
 }

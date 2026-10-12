@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"sort"
 
 	"github.com/shopspring/decimal"
 
@@ -72,7 +72,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	// The funding account's current uninvested cash (so account value =
 	// positions + cash). Emitted as one CashBalanceChange dated at the last
 	// funding movement.
-	if cb, ok := c.fundingCashBalance(ctx, account); ok {
+	cb, ok, err := c.fundingCashBalance(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
 		batches = append(batches, canonical.SnapshotBatch{
 			CashBalances: []canonical.CashBalanceChange{cb},
 		})
@@ -136,11 +140,15 @@ SELECT o.position_external_id, COALESCE(o.company_name, ''), COALESCE(o.kind, ''
 
 // fundingCashBalance is the funding account's current uninvested cash as a
 // CashBalanceChange, dated at the latest funding movement (the balance is the
-// running total after it). ok=false when there is no funding ledger (older
-// silver) or no account.
-func (c *Connection) fundingCashBalance(ctx context.Context, account string) (canonical.CashBalanceChange, bool) {
+// running total after it). ok=false when there is no funding ledger (a silver
+// that predates it, or no row) or no account.
+func (c *Connection) fundingCashBalance(ctx context.Context, account string) (canonical.CashBalanceChange, bool, error) {
 	if account == "" {
-		return canonical.CashBalanceChange{}, false
+		return canonical.CashBalanceChange{}, false, nil
+	}
+	has, err := silver.HasTables(ctx, c.db, "funding_accounts", "funding_transactions")
+	if err != nil || !has {
+		return canonical.CashBalanceChange{}, false, err
 	}
 	var (
 		balMinor sql.NullInt64
@@ -151,11 +159,15 @@ func (c *Connection) fundingCashBalance(ctx context.Context, account string) (ca
 SELECT fa.balance_minor, fa.currency,
        (SELECT MAX(occurred_at) FROM funding_transactions)
   FROM funding_accounts fa LIMIT 1`
-	if err := c.db.QueryRowContext(ctx, q).Scan(&balMinor, &ccy, &asOf); err != nil {
-		return canonical.CashBalanceChange{}, false
+	err = c.db.QueryRowContext(ctx, q).Scan(&balMinor, &ccy, &asOf)
+	if errors.Is(err, sql.ErrNoRows) {
+		return canonical.CashBalanceChange{}, false, nil
+	}
+	if err != nil {
+		return canonical.CashBalanceChange{}, false, fmt.Errorf("angellist funding balance: %w", err)
 	}
 	if !balMinor.Valid || !asOf.Valid {
-		return canonical.CashBalanceChange{}, false
+		return canonical.CashBalanceChange{}, false, nil
 	}
 	cur := "USD"
 	if ccy.Valid && ccy.String != "" {
@@ -166,8 +178,8 @@ SELECT fa.balance_minor, fa.currency,
 		AccountExternalID: account,
 		Currency:          cur,
 		BalanceKind:       canonical.BalanceKindCurrent,
-		Amount:            canonical.Decimal(decimal.New(balMinor.Int64, -2)),
-	}, true
+		Amount:            *minorPtr(balMinor),
+	}, true, nil
 }
 
 // removals are the open positions a complete dump no longer lists, each
@@ -210,35 +222,10 @@ SELECT o.position_external_id, (SELECT MIN(t) FROM complete WHERE t > o.last_see
 // event: a K-1's property distribution (inKind), a dump that stopped
 // listing a position (removals).
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
-	const q = `
+	return silver.SnapshotTimes(ctx, c.db, w, extra, `
 SELECT DISTINCT as_of_date FROM position_snapshots
- WHERE as_of_date BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	seen := map[int64]bool{}
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		seen[t] = true
-		out = append(out, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, t := range extra {
-		if t >= w.Start && t <= w.End && !seen[t] {
-			seen[t] = true
-			out = append(out, t)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out, nil
+ WHERE as_of_date BETWEEN ? AND ?`,
+		w.Start, w.End)
 }
 
 // accountSlug is the single invest account's external id, from dump_runs
@@ -387,20 +374,10 @@ SELECT ps.position_external_id, ps.as_of_date,
 // inside each vehicle is not modelled. Mirrors the carta / equityzen
 // private-market accounts; config overrides win on overlap.
 func custodyAccount(account string, t int64) canonical.AccountChange {
-	wrapper := canonical.TaxWrapperTaxablePersonal
-	style := canonical.ManagementStyleSelfDirected
+	a := silver.CustodyAccount(account, t)
 	cat := "AngelList LP"
-	usd := "USD"
-	return canonical.AccountChange{
-		AccountExternalID: account,
-		AccountKind:       canonical.AccountKindCustody,
-		BaseCurrency:      &usd,
-		AccountCategory:   &cat,
-		TaxWrapper:        &wrapper,
-		ManagementStyle:   &style,
-		FirstSeenAt:       t,
-		LastSeenAt:        t,
-	}
+	a.AccountCategory = &cat
+	return a
 }
 
 // ---- helpers ------------------------------------------------------

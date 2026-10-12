@@ -72,37 +72,3 @@ func (c *Connection) Close() error {
 	c.db = nil
 	return err
 }
-
-// accountCurrencies maps each account_external_id (IBAN) to its ISO currency,
-// read from the latest accounts snapshot. Austrian Raiffeisen retail is EUR,
-// but the currency is read rather than assumed; a missing/blank value falls
-// back to EUR.
-func (c *Connection) accountCurrencies(ctx context.Context) (map[string]string, error) {
-	const q = `
-SELECT a.account_external_id, COALESCE(a.currency, '')
-  FROM accounts a
- WHERE a.snapshot_at = (SELECT MAX(a2.snapshot_at) FROM accounts a2
-                         WHERE a2.account_external_id = a.account_external_id)`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var id, ccy string
-		if err := rows.Scan(&id, &ccy); err != nil {
-			return nil, err
-		}
-		out[id] = ccy
-	}
-	return out, rows.Err()
-}
-
-// currencyOf returns the account's currency, defaulting to EUR.
-func currencyOf(m map[string]string, accountID string) string {
-	if ccy := m[accountID]; ccy != "" {
-		return ccy
-	}
-	return "EUR"
-}

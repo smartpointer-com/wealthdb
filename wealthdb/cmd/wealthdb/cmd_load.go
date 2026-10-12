@@ -33,11 +33,12 @@ Merge new silver snapshots into gold for one silver source, or
 for all configured sources (-a). See docs/DESIGN.md §8 for the
 load semantics.`)
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "load: bad flags")
+	if err := parseFlags(fs, subargs, "load"); err != nil {
+		return err
+	}
+	id, err := sourceArg(fs, *all, "load")
+	if err != nil {
+		return err
 	}
 
 	cfg, err := config.Load(g.ConfigPath)
@@ -53,43 +54,21 @@ load semantics.`)
 	if err != nil {
 		return err
 	}
-
-	// Resolve which sources to load.
-	var specs []loader.SourceSpec
-	switch {
-	case *all && fs.NArg() > 0:
-		fs.Usage()
-		return errs.Newf(2, "load: '-a' and a positional id are mutually exclusive")
-	case *all:
-		for _, s := range cfg.SilverSources {
-			spec, err := buildSourceSpec(s, cfg, ledger)
-			if err != nil {
-				return err
-			}
-			specs = append(specs, spec)
-		}
-		if len(specs) == 0 {
-			return fmt.Errorf("load: -a passed but no silver sources are configured")
-		}
-	case fs.NArg() == 1:
-		id := fs.Arg(0)
-		s, ok := cfg.Lookup(id)
-		if !ok {
-			return fmt.Errorf("load: silver source %q not found in config", id)
-		}
-		spec, err := buildSourceSpec(*s, cfg, ledger)
+	targets, err := selectSources(cfg, id, "load")
+	if err != nil {
+		return err
+	}
+	specs := make([]loader.SourceSpec, 0, len(targets))
+	for _, s := range targets {
+		spec, err := buildSourceSpec(s, cfg, ledger)
 		if err != nil {
 			return err
 		}
-		specs = []loader.SourceSpec{spec}
-	default:
-		fs.Usage()
-		return errs.Newf(2, "load: expected one silver_source_id or -a")
+		specs = append(specs, spec)
 	}
 
 	// load mutates the live gold file: gate for write, then open RW.
-	db, lock, err := openGoldForWrite(g, cfg, "load",
-		"gold database %q does not exist. Run 'wealthdb init' first (requires write access).")
+	db, lock, err := openGoldForWrite(g, cfg, "load", defaultMissingGoldMsg)
 	if err != nil {
 		return err
 	}
@@ -109,18 +88,57 @@ load semantics.`)
 		}
 		printLoadResult(stdout, res)
 	}
-	// Persist the config-driven FX source precedence into gold so the
-	// SQL FX layer (fx_daily) honours it. Re-stamps all sources, so a
-	// single-source load keeps the column globally correct.
+	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, "load", stdout, stderr))
+	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "load", stdout, stderr))
+}
+
+// sourceArg reads the `<silver_source_id> | -a` argument the
+// per-source commands share: the one id named, or "" for -a.
+func sourceArg(fs *flag.FlagSet, all bool, cmd string) (string, error) {
+	switch {
+	case all && fs.NArg() > 0:
+		fs.Usage()
+		return "", errs.Newf(2, "%s: '-a' and a positional id are mutually exclusive", cmd)
+	case all:
+		return "", nil
+	case fs.NArg() == 1:
+		return fs.Arg(0), nil
+	}
+	fs.Usage()
+	return "", errs.Newf(2, "%s: expected one silver_source_id or -a", cmd)
+}
+
+// selectSources is the configured sources a load or reload covers:
+// every one for id "" (-a), else the one id names.
+func selectSources(cfg *config.Config, id, cmd string) ([]config.SilverSource, error) {
+	if id == "" {
+		if len(cfg.SilverSources) == 0 {
+			return nil, fmt.Errorf("%s: -a passed but no silver sources are configured", cmd)
+		}
+		return cfg.SilverSources, nil
+	}
+	s, ok := cfg.Lookup(id)
+	if !ok {
+		return nil, fmt.Errorf("%s: silver source %q not found in config", cmd, id)
+	}
+	return []config.SilverSource{*s}, nil
+}
+
+// stampConfig writes what gold takes from the config once the sources
+// are in: the FX source precedence, which the SQL FX layer (fx_daily)
+// reads, and the declared accounts and holding aliases. The precedence
+// re-stamps every source, so a single-source load keeps it globally
+// correct; failing to stamp it degrades a conversion and is a warning.
+// A failure to sync the rows is an error (syncConfigRows).
+func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, verb string, stdout, stderr io.Writer) error {
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
-		fmt.Fprintf(stderr, "load: warning: could not stamp FX priorities: %s\n", err.Error())
+		fmt.Fprintf(stderr, "%s: warning: could not stamp FX priorities: %s\n", verb, err.Error())
 	}
-	if err := syncConfigRows(ctx, db, cfg, "load", stdout); err != nil {
-		fmt.Fprintf(stderr, "load: %s\n", err.Error())
-		firstErr = errors.Join(firstErr, err)
+	if err := syncConfigRows(ctx, db, cfg, verb, stdout); err != nil {
+		fmt.Fprintf(stderr, "%s: %s\n", verb, err.Error())
+		return err
 	}
-	firstErr = errors.Join(firstErr, runGoldPasses(ctx, db, cfg, enrichment, "load", stdout, stderr))
-	return firstErr
+	return nil
 }
 
 // syncConfigRows stamps the config's declared accounts into the
@@ -252,8 +270,7 @@ func runEnrichmentPass(ctx context.Context, db *sql.DB, cfg *config.Config, ledg
 //
 // It is its own function so the SEQUENCE is testable. The pass writes
 // two overlays in one transaction and this is how a reader learns
-// either happened; with the two calls inline, dropping the second left
-// the whole suite green.
+// either happened, so a test pins that both blocks print.
 //
 // The override ledger's line sits under spending because there is ONE
 // matcher and one ledger, and both families read its verdicts — printed
@@ -486,7 +503,7 @@ func buildSourceSpec(
 }
 
 // realizedLotsNote is the realized-lot count for a load line, empty for
-// a source that states none, so the line reads as it always has there.
+// a source that states none.
 func realizedLotsNote(r *loader.LoadResult) string {
 	if r.RealizedLotsLoaded == 0 {
 		return ""

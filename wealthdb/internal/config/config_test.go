@@ -323,6 +323,31 @@ func TestLoadExpandsHomeEnv(t *testing.T) {
 	}
 }
 
+// TestExpandHome pins the home-prefix forms the config loader and the
+// setup wizard share, and that any other path passes through untouched.
+func TestExpandHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for in, want := range map[string]string{
+		"~":             home,
+		"~/a/b.db":      filepath.Join(home, "a", "b.db"),
+		"$HOME/a.db":    filepath.Join(home, "a.db"),
+		"~other/a.db":   "~other/a.db",
+		"$HOMEDIR/a.db": "$HOMEDIR/a.db",
+		"/abs/a.db":     "/abs/a.db",
+		"relative/a.db": "relative/a.db",
+		"":              "",
+	} {
+		got, err := ExpandHome(in)
+		if err != nil {
+			t.Fatalf("ExpandHome(%q): %v", in, err)
+		}
+		if got != want {
+			t.Errorf("ExpandHome(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestLoadResolvesRelative(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wealthdb.cfg")

@@ -388,3 +388,40 @@ func TestHistoricalRangeSpansEveryTable(t *testing.T) {
 		t.Errorf("pre-migration silver: (%d, %d, %v), want (-1, -1, nil)", lo, hi, err)
 	}
 }
+
+// A historical row dated after the latest dump widens the snapshot range
+// but not the change number: ChangeWindow never advances the watermark
+// to a historical date, so counting one would leave the source reading
+// as behind after every load.
+func TestStatusChangeNumberIgnoresHistoricalDates(t *testing.T) {
+	ctx := context.Background()
+	r := newWebFixture(t)
+	for _, q := range []string{
+		`CREATE TABLE dump_runs (snapshot_at INTEGER)`,
+		`CREATE TABLE transactions (value_date INTEGER)`,
+		`INSERT INTO dump_runs VALUES (1000)`,
+		`INSERT INTO transactions VALUES (900)`,
+		`INSERT INTO historical_mortgages (as_of_date) VALUES (5000)`,
+	} {
+		if _, err := r.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := r.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.LatestSnapshotAt != 5000 {
+		t.Errorf("LatestSnapshotAt = %d, want 5000", s.LatestSnapshotAt)
+	}
+	if s.LatestChangeNumber != 1000 {
+		t.Errorf("LatestChangeNumber = %d, want 1000", s.LatestChangeNumber)
+	}
+	w, err := r.ChangeWindow(ctx, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.NewChangeNumber != s.LatestChangeNumber {
+		t.Errorf("ChangeWindow advances to %d, Status reports %d", w.NewChangeNumber, s.LatestChangeNumber)
+	}
+}

@@ -15,36 +15,24 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	times, err := c.snapshotTimesInWindow(ctx, w)
+	// Live and historical times merge: a Quartalsbericht date that also
+	// has a live dump_run gets one batch, populated by both readers.
+	histTimes, err := c.historicalSnapshotTimes(ctx, w)
 	if err != nil {
 		return nil, err
 	}
-	histTimes, err := c.historicalSnapshotTimes(ctx, w.Start, w.End)
+	times, err := c.snapshotTimesInWindow(ctx, w, histTimes)
 	if err != nil {
 		return nil, err
 	}
-	// Union live + historical; the same snapshot_at may appear in
-	// both (a Quartalsbericht date that also has a live dump_run),
-	// in which case both readers populate the SAME batch.
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times)+len(histTimes))
-	all := make([]int64, 0, len(times)+len(histTimes))
+	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
 	for _, t := range times {
-		if _, ok := byTime[t]; !ok {
-			byTime[t] = &canonical.SnapshotBatch{}
-			all = append(all, t)
-		}
+		byTime[t] = &canonical.SnapshotBatch{}
 	}
-	for _, t := range histTimes {
-		if _, ok := byTime[t]; !ok {
-			byTime[t] = &canonical.SnapshotBatch{}
-			all = append(all, t)
-		}
-	}
-
 	if err := c.appendAccounts(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendInstruments(ctx, w, byTime); err != nil {
+	if err := c.appendInstruments(ctx, byTime); err != nil {
 		return nil, err
 	}
 	// Cash + positions share a SQL pass: the per-fund market
@@ -63,65 +51,35 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	// Sort the combined snapshot list for deterministic output.
-	sortInt64sAsc(all)
-	out := make([]canonical.SnapshotBatch, 0, len(all))
-	for _, t := range all {
+	out := make([]canonical.SnapshotBatch, 0, len(times))
+	for _, t := range times {
 		out = append(out, *byTime[t])
 	}
 	return silver.NewSnapshotStream(out), nil
 }
 
-// sortInt64sAsc — small in-place ascending sort, same shape as the
-// UBS historical helper. Snapshot lists are tiny (low dozens), so
-// the O(n²) constant is fine and keeps the function self-contained.
-func sortInt64sAsc(xs []int64) {
-	for i := 1; i < len(xs); i++ {
-		for j := i; j > 0 && xs[j-1] > xs[j]; j-- {
-			xs[j-1], xs[j] = xs[j], xs[j-1]
-		}
-	}
-}
-
 // snapshotTimesInWindow unions dump_runs with the content
-// tables. dump_runs is the live-time signal but the content
-// tables drive the batch dispatch — if a future Relevate dump
-// ever lands content rows whose snapshot_at differs from the
-// dump_run's (it doesn't today, but defensive), this keeps the
-// byTime dispatch aware of them.
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	const q = `
+// tables, plus the extra (historical) times. dump_runs is the
+// live-time signal but the content tables drive the batch
+// dispatch, so a content row whose snapshot_at differs from its
+// dump_run's still gets a batch.
+func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
+	return silver.SnapshotTimes(ctx, c.db, w, extra, `
 SELECT DISTINCT snapshot_at FROM (
     SELECT snapshot_at FROM dump_runs     WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM accounts      WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM positions     WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM cash_balances WHERE snapshot_at BETWEEN ? AND ?
 )
-ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q,
-		w.Start, w.End, w.Start, w.End,
-		w.Start, w.End, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+ORDER BY snapshot_at`,
+		w.Start, w.End, w.Start, w.End, w.Start, w.End, w.Start, w.End)
 }
 
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	// Silver may or may not carry a promoted `management_style`
-	// column (the relevate loader was updated to stamp it
-	// per-account after the gold-side adapter shipped). Read
-	// the silver value when present; fall back to the adapter
-	// default ('automated') otherwise. Relevate's robo-style
+	// A silver may carry a promoted per-account
+	// `management_style` column. Read the silver value when
+	// present; fall back to the adapter default ('automated')
+	// otherwise. Relevate's robo-style
 	// strategy menu maps to canonical 'automated': the holder
 	// picks a strategy from a fixed list, then an algorithm
 	// allocates and rebalances with no human in the loop.
@@ -193,7 +151,7 @@ SELECT snapshot_at, account_external_id, currency_code,
 	return rows.Err()
 }
 
-func (c *Connection) appendInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *Connection) appendInstruments(ctx context.Context, byTime map[int64]*canonical.SnapshotBatch) error {
 	// Relevate's instruments table has no snapshot_at; the most-
 	// recent observation is what we have. Emit each instrument
 	// against every snapshot in the window so the gold per-column

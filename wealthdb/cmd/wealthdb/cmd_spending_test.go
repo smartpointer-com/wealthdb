@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,15 +62,26 @@ func TestParseSpendingWindowPositional(t *testing.T) {
 }
 
 // TestSpendingFlagReordering pins that every value-consuming spending
-// flag is declared, so a flag may follow the positional window without
-// its value being read as a date.
+// flag is read from the flag set, so a flag may follow the positional
+// window without its value being read as a date, and a boolean flag
+// consumes nothing.
 func TestSpendingFlagReordering(t *testing.T) {
 	t.Parallel()
-	args := []string{"2026-05", "--period", "total", "--level", "detailed", "-f", "csv", "-x", "CHF"}
-	got := reorderFlagsFirst(args, reportValueFlags)
-	want := []string{"--period", "total", "--level", "detailed", "-f", "csv", "-x", "CHF", "2026-05"}
+	fs := flag.NewFlagSet("spending", flag.ContinueOnError)
+	fs.String("period", "", "")
+	fs.String("level", "", "")
+	registerReportFlags(fs, true)
+	args := []string{"2026-05", "--period", "total", "-p", "--level", "detailed", "-f", "csv", "-x", "CHF", "-", "--format=json"}
+	got := reorderFlagsFirst(fs, args)
+	want := []string{"--period", "total", "-p", "--level", "detailed", "-f", "csv", "-x", "CHF", "--format=json", "2026-05", "-"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("reorderFlagsFirst = %v, want %v", got, want)
+	}
+	// After the terminator nothing is a flag.
+	got = reorderFlagsFirst(fs, []string{"-p", "2026-05", "--", "-f", "x"})
+	want = []string{"-p", "2026-05", "--", "-f", "x"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("reorderFlagsFirst after -- = %v, want %v", got, want)
 	}
 }
 
@@ -644,6 +656,7 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 			{"categories", "--level", "granular"},
 			{"summary", "-C", "nope"},
 			{"summary", "-x", "DOLLARS"},
+			{"summary", "-x", "U5D"},
 		} {
 			if _, _, code := run(t, append([]string{"-c", cfg, "spending"}, bad...)...); code != 2 {
 				t.Errorf("%v exit=%d, want 2", bad, code)

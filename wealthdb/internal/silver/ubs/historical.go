@@ -98,7 +98,7 @@ func (r *webReader) snapshotsHistorical(
 // appendHistoricalSecurities emits security positions from
 // `historical_position_snapshots` (rows where instrument_isin IS
 // NOT NULL). UBS PDFs don't surface the safekeeping account
-// reliably, so silver leaves account_external_id=” on these
+// reliably, so silver leaves account_external_id empty on these
 // rows. We attach them to the per-portfolio overlay account
 // pattern PSN already uses for forward contracts (account_kind=
 // 'overlay', '<portfolio>:overlay'), preserving the invariant
@@ -489,8 +489,7 @@ func (r *webReader) appendHistoricalMortgages(
 	}
 	const q = `
 SELECT as_of_date, account_external_id, currency_iso,
-       outstanding_balance, product_name, rate_type,
-       collateral_description, payload
+       outstanding_balance, product_name, collateral_description, payload
   FROM historical_mortgages
  WHERE as_of_date BETWEEN ? AND ?`
 	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
@@ -500,16 +499,15 @@ SELECT as_of_date, account_external_id, currency_iso,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			asOf                              int64
-			extID, currency, payload          string
-			outstanding                       sql.NullFloat64
-			productName, rateType, collateral sql.NullString
+			asOf                     int64
+			extID, currency, payload string
+			outstanding              sql.NullFloat64
+			productName, collateral  sql.NullString
 		)
 		if err := rows.Scan(&asOf, &extID, &currency, &outstanding,
-			&productName, &rateType, &collateral, &payload); err != nil {
+			&productName, &collateral, &payload); err != nil {
 			return err
 		}
-		_ = rateType // surfaced via payload
 
 		// Peek — never create. Skip mortgage rows whose as_of_date
 		// has no real portfolio snapshot behind it (e.g. the
@@ -546,11 +544,6 @@ SELECT as_of_date, account_external_id, currency_iso,
 			FirstSeenAt:          asOf,
 			LastSeenAt:           asOf,
 		})
-		var mv *canonical.Decimal
-		if outstanding.Valid {
-			d := canonical.NewDecimalFromFloat(outstanding.Float64)
-			mv = &d
-		}
 		batch.Positions = append(batch.Positions, canonical.PositionChange{
 			SnapshotAt:           asOf,
 			AccountExternalID:    extID,
@@ -559,7 +552,7 @@ SELECT as_of_date, account_external_id, currency_iso,
 			AssetClass:           canonical.AssetClassRealEstate,
 			Vehicle:              canonical.VehicleMortgage,
 			Currency:             currency,
-			MarketValue:          mv,
+			MarketValue:          silver.DecimalPtrFromNullFloat(outstanding),
 			Payload:              json.RawMessage(payload),
 		})
 	}

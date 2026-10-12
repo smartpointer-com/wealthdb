@@ -95,7 +95,10 @@ SELECT transaction_external_id, occurred_at, account_external_id,
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}
-	return silver.NewTransactionStream(out), rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return silver.NewTransactionStream(out), nil
 }
 
 // humaniseType reads VIAC's type as words: `FEE_CHARGE` is "Fee charge".

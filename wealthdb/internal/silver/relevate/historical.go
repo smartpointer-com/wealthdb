@@ -28,8 +28,8 @@ import (
 //     security.id, only ISIN — so historical positions use ISIN
 //     as the instrument key.
 //
-// snapshotsHistorical does NOT spawn its own SnapshotStream. The
-// caller (Connection.Snapshots) merges historical batches into the
+// The historical readers do NOT spawn their own SnapshotStream.
+// The caller (Connection.Snapshots) merges historical rows into the
 // same byTime map the live readers populate, so a snapshot_at that
 // has BOTH live and historical content gets a single combined
 // batch.
@@ -42,35 +42,44 @@ func (c *Connection) hasHistoricalTables(ctx context.Context) (bool, error) {
 }
 
 // historicalSnapshotTimes returns the distinct snapshot_at values
-// present in either historical table within [start, end]. Returns
+// present in either historical table within the window. Returns
 // nil when migration 0002 hasn't been applied.
-func (c *Connection) historicalSnapshotTimes(
-	ctx context.Context, start, end int64,
-) ([]int64, error) {
+func (c *Connection) historicalSnapshotTimes(ctx context.Context, w canonical.Window) ([]int64, error) {
 	ok, err := c.hasHistoricalTables(ctx)
 	if err != nil || !ok {
 		return nil, err
 	}
-	const q = `
+	return silver.SnapshotTimes(ctx, c.db, w, nil, `
 SELECT DISTINCT snapshot_at FROM (
     SELECT snapshot_at FROM historical_position_snapshots WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM historical_cash_balances    WHERE snapshot_at BETWEEN ? AND ?
-)
-ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q, start, end, start, end)
-	if err != nil {
-		return nil, fmt.Errorf("historicalSnapshotTimes: %w", err)
+)`,
+		w.Start, w.End, w.Start, w.End)
+}
+
+// historicalAccount is the account a historical row attributes to on
+// a date with no live dump_run: the live appendAccounts decisions
+// without the display name and category the PDFs do not state.
+func historicalAccount(acct string, snap int64) canonical.AccountChange {
+	wrapper := canonical.TaxWrapperVestedBenefits
+	style := canonical.ManagementStyleAutomated
+	chf := "CHF"
+	return canonical.AccountChange{
+		AccountExternalID: acct,
+		AccountKind:       canonical.AccountKindBrokerage,
+		BaseCurrency:      &chf,
+		TaxWrapper:        &wrapper,
+		ManagementStyle:   &style,
+		FirstSeenAt:       snap,
+		LastSeenAt:        snap,
 	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+}
+
+// snapKey names one id at one snapshot, for emitting a dimension
+// record once per batch.
+type snapKey struct {
+	snap int64
+	id   string
 }
 
 // historicalRange returns MIN/MAX snapshot_at across the two
@@ -149,14 +158,12 @@ SELECT snapshot_at, account_external_id, isin,
 	}
 	defer rows.Close()
 
-	wrapper := canonical.TaxWrapperVestedBenefits
-	style := canonical.ManagementStyleAutomated
 	chf := "CHF"
 
 	// Dedup so AccountChange + InstrumentChange aren't emitted
 	// once per holding within the same snapshot.
-	accountEmitted := map[[2]int64]bool{}
-	instrumentEmitted := map[[2]int64]bool{}
+	accountEmitted := map[snapKey]bool{}
+	instrumentEmitted := map[snapKey]bool{}
 
 	for rows.Next() {
 		var (
@@ -177,21 +184,9 @@ SELECT snapshot_at, account_external_id, isin,
 		}
 
 		// One AccountChange per (snap, account).
-		acctKey := [2]int64{snap, int64(strHash(acct))}
-		if !accountEmitted[acctKey] {
-			accountEmitted[acctKey] = true
-			w := wrapper
-			s := style
-			baseCcy := chf
-			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-				AccountExternalID: acct,
-				AccountKind:       canonical.AccountKindBrokerage,
-				BaseCurrency:      &baseCcy,
-				TaxWrapper:        &w,
-				ManagementStyle:   &s,
-				FirstSeenAt:       snap,
-				LastSeenAt:        snap,
-			})
+		if k := (snapKey{snap, acct}); !accountEmitted[k] {
+			accountEmitted[k] = true
+			batch.Accounts = append(batch.Accounts, historicalAccount(acct, snap))
 		}
 
 		// The (asset_class, vehicle) pair, shared by the instrument
@@ -199,9 +194,8 @@ SELECT snapshot_at, account_external_id, isin,
 		acNew, veh := taxonomyFor(asset, secName)
 
 		// One InstrumentChange per (snap, ISIN).
-		instKey := [2]int64{snap, int64(strHash(isin))}
-		if !instrumentEmitted[instKey] {
-			instrumentEmitted[instKey] = true
+		if k := (snapKey{snap, isin}); !instrumentEmitted[k] {
+			instrumentEmitted[k] = true
 			isinCopy := isin
 			nameCopy := secName
 			ic := canonical.InstrumentChange{
@@ -275,10 +269,7 @@ SELECT snapshot_at, account_external_id, currency, SUM(amount)
 	}
 	defer rows.Close()
 
-	wrapper := canonical.TaxWrapperVestedBenefits
-	style := canonical.ManagementStyleAutomated
-	chf := "CHF"
-	accountEmitted := map[[2]int64]bool{}
+	accountEmitted := map[snapKey]bool{}
 
 	for rows.Next() {
 		var (
@@ -298,21 +289,9 @@ SELECT snapshot_at, account_external_id, currency, SUM(amount)
 			continue
 		}
 
-		acctKey := [2]int64{snap, int64(strHash(acct))}
-		if !accountEmitted[acctKey] {
-			accountEmitted[acctKey] = true
-			w := wrapper
-			s := style
-			baseCcy := chf
-			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-				AccountExternalID: acct,
-				AccountKind:       canonical.AccountKindBrokerage,
-				BaseCurrency:      &baseCcy,
-				TaxWrapper:        &w,
-				ManagementStyle:   &s,
-				FirstSeenAt:       snap,
-				LastSeenAt:        snap,
-			})
+		if k := (snapKey{snap, acct}); !accountEmitted[k] {
+			accountEmitted[k] = true
+			batch.Accounts = append(batch.Accounts, historicalAccount(acct, snap))
 		}
 
 		amt := canonical.NewDecimalFromFloat(amount.Float64)
@@ -325,21 +304,4 @@ SELECT snapshot_at, account_external_id, currency, SUM(amount)
 		})
 	}
 	return rows.Err()
-}
-
-// strHash is FNV-1a 64-bit — same one UBS's historical reader
-// uses, copied here so the relevate package stays self-contained.
-// Used to compress account / ISIN string keys into the dedup
-// (int64, int64) tuples without allocating a per-call map.
-func strHash(s string) uint64 {
-	const (
-		offset64 uint64 = 14695981039346656037
-		prime64  uint64 = 1099511628211
-	)
-	h := offset64
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= prime64
-	}
-	return h
 }

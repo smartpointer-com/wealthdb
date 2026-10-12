@@ -13,7 +13,7 @@ import (
 // alongside every snapshot they walk — tens of thousands of
 // emissions folding onto a few hundred entities — and each
 // single-row upsert costs a full DuckDB statement, so upserting per
-// emission dominated load time.
+// emission would dominate load time.
 //
 // Add applies records in arrival order with exactly the §8.4 guard
 // semantics the SQL applies: per column, the newest non-nil
@@ -96,9 +96,8 @@ func (a *ChangeAccumulator) AddBatch(b *canonical.SnapshotBatch) error {
 }
 
 // Flush upserts the folded records, portfolios before accounts
-// (accounts name their parent portfolio) before instruments —
-// the same relative order the per-batch path used. Records keep
-// their first-arrival order within each dimension.
+// (accounts name their parent portfolio) before instruments.
+// Records keep their first-arrival order within each dimension.
 func (a *ChangeAccumulator) Flush(ctx context.Context, w *Writer) error {
 	if err := w.UpsertPortfolios(ctx, a.portfolios); err != nil {
 		return err

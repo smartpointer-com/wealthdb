@@ -1,63 +1,15 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
-
-func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb holdings positions", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
-		cmd:           "positions",
-		currencyUsage: "output currency for the value column (default: config.default_currency)",
-		privacyUsage:  "redact account IDs / share quantities / monetary amounts in the output",
-		withColumns:   true,
-		withCash:      true,
-	})
-	missing := registerMissingBasisFlag(fs)
-	fs.Usage = func() {
-		fmt.Fprintln(stderr, positionsUsage())
-	}
-	if err := fs.Parse(splitFusedColumnsFlag(subargs)); err != nil {
-		// flag.Parse already printed usage to stderr; suppress
-		// further error text for the standard -h case.
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "positions: bad flags")
-	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return errs.Newf(2, "positions: unexpected positional argument %q", fs.Arg(0))
-	}
-
-	hv, err := hf.resolve(g)
-	if err != nil {
-		return err
-	}
-	missingBasis, err := resolveMissingBasis(*missing, hv.cfg, "positions")
-	if err != nil {
-		return err
-	}
-
-	rep := holdingsReport(request{view: "positions", currency: hv.outCcy, asOf: hv.asOfEpoch,
-		withCash: *hf.withCash, missing: missingBasis})
-	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
-	return writeReport(ctx, rep, *hf.cols, "positions", open, *hf.privacy, hv.fmtChoice, stdout)
-}
 
 // writeFormatted dispatches to the right output.Write* function
 // for the chosen format.
@@ -100,10 +52,8 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 		// -p / --privacy. See columns.go for the per-class contract.
 		{Name: "position_key", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return r.PositionKey }},
-		{Name: "symbol", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.Symbol) }},
-		{Name: "name", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.Name) }},
+		textCol("symbol", func(r gold.PositionRow) *string { return r.Symbol }),
+		textCol("name", func(r gold.PositionRow) *string { return r.Name }),
 		// asset_class is the 2-D exposure; vehicle the wrapper.
 		{Name: "asset_class", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return r.AssetClass }},
@@ -111,12 +61,9 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 			Extract: func(r gold.PositionRow) string { return r.Vehicle }},
 		{Name: "currency", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return r.Currency }},
-		{Name: "quantity", Align: output.AlignRight, Privacy: PrivacyQuantity,
-			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.Quantity) }},
-		{Name: "market_value", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PositionRow) string { return formatCents(r.MarketValue) }},
-		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PositionRow) string { return formatCents(r.ValueOutCcy) }},
+		quantityCol("quantity", func(r gold.PositionRow) *string { return r.Quantity }),
+		moneyCol("market_value", "", func(r gold.PositionRow) *string { return r.MarketValue }),
+		outCcyCol("value", outCcy, func(r gold.PositionRow) *string { return r.ValueOutCcy }),
 		// The cost basis (gold's book_value) the source states, else the
 		// one the lot engine rebuilt, and what follows from it, defined
 		// in docs/GAINS.md. Blank on a cash row and wherever no basis is
@@ -137,10 +84,8 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 		moneyCol("clean_value", "", func(r gold.PositionRow) *string { return r.CleanValue }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }},
-		{Name: "account_nickname", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.Nickname) }},
-		{Name: "account_category", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.AccountCategory) }},
+		textCol("account_nickname", func(r gold.PositionRow) *string { return r.Nickname }),
+		textCol("account_category", func(r gold.PositionRow) *string { return r.AccountCategory }),
 	}
 }
 

@@ -147,9 +147,9 @@ func open(path string, mode Mode, audit bool, options map[string]string) (*sql.D
 //     builds without .git in the build context, raw `go install`
 //     with -buildvcs=false, etc.; we can't compare so we don't
 //     block.
-//   - the binary_versions table is empty or doesn't exist — DB
-//     hasn't been opened since this feature was introduced, or
-//     the schema is older than migration 0012.
+//   - the binary_versions table is empty or doesn't exist — no
+//     stamped binary has opened the DB read-write yet, or the
+//     schema is older than migration 0012.
 //
 // Otherwise: if the binary's commit_at is strictly less than the
 // DB's recorded max, returns a wrapped ErrStaleBinary with a
@@ -181,9 +181,9 @@ SELECT MAX(binary_commit_at), arg_max(binary_commit, binary_commit_at)
 
 The database has been written by a newer wealthdb binary. The
 current binary may misread newer schema or silently drop fields
-it doesn't know about. Rebuild from source:
+it doesn't know about. Rebuild from source, from the repository root:
 
-  cd <wealthdb-repo>/wealthdb && go install ./cmd/wealthdb`,
+  make build-wealthdb`,
 		path, ErrStaleBinary,
 		shortSHA(bi.Commit), binDate,
 		shortSHA(maxCommit.String), dbDate)

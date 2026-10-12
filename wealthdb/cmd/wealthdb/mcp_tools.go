@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,7 +71,7 @@ func stringParam(name, doc string, enum ...string) param {
 // rowParams are a report tool's parameters: the window, the tool's own
 // (extra), the currency, and the shape of the result. The order is the
 // order a model reads them in.
-func (s *mcpServer) rowParams(window, currency bool, extra ...param) []param {
+func (s *mcpServer) rowParams(window bool, extra ...param) []param {
 	var ps []param
 	if window {
 		ps = append(ps,
@@ -78,9 +79,7 @@ func (s *mcpServer) rowParams(window, currency bool, extra ...param) []param {
 			stringParam("to", "Window end: "+dateDoc+" Snaps to the end of the unit. Default: today."))
 	}
 	ps = append(ps, extra...)
-	if currency {
-		ps = append(ps, stringParam("currency", "3-letter output currency, e.g. USD or CHF. Default: the configured currency."))
-	}
+	ps = append(ps, stringParam("currency", "3-letter output currency, e.g. USD or CHF. Default: the configured currency."))
 	return append(ps, s.shapeParams()...)
 }
 
@@ -119,7 +118,7 @@ func (s *mcpServer) tools() []toolSpec {
 				"view=portfolios: one row per portfolio. view=accounts: one row per account with its kind, tax wrapper and value. " +
 				"view=positions: every individual holding with symbol, quantity and value. " +
 				`Example: {view: "global", as_of: "2025-12-31", currency: "CHF"}.`,
-			params: s.rowParams(false, true,
+			params: s.rowParams(false,
 				stringParam("view", "Which rows to return (default global).", holdingsFamily.views...),
 				stringParam("as_of", "As-of date: "+dateDoc+" Default: today."),
 				param{name: "with_cash", kind: paramBoolean, doc: "positions only: also list cash as one row per account and currency."},
@@ -138,7 +137,7 @@ func (s *mcpServer) tools() []toolSpec {
 				"By default one row per entity for the whole window; period adds buckets. Read the quality column: an n/a always has its reason there. " +
 				"Default window: since the first snapshot. " +
 				`Example: {view: "accounts", from: "2025", to: "2025", period: "total"}.`,
-			params: s.rowParams(true, true,
+			params: s.rowParams(true,
 				stringParam("view", "Grain (default global).", returnsFamily.views...),
 				stringParam("method", "twr, mwr or both (default both).", "twr", "mwr", "both"),
 				stringParam("period", "Bucket size (default total: one row per entity for the whole window). monthly, quarterly or annual add one row per bucket.",
@@ -158,7 +157,7 @@ func (s *mcpServer) tools() []toolSpec {
 				"view=positions: per account and holding. view=realized: each realized lot, as the sale's tax document or statement states it, or as the lot engine rebuilt it from the trades. view=lots: the open lots at the window's end. view=coverage: per account, where the figures are blind. view=check: the lot engine against the stated lots and cost bases, per account. " +
 				"Read the quality column: it names every gap, such as sales without a tax document. " +
 				`Example: {view: "realized", from: "2025", to: "2025"}.`,
-			params: s.rowParams(true, true,
+			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", gainsFamily.views...),
 				stringParam("period", "Bucket size for summary, sources, portfolios and accounts (default total: one row for the whole window). monthly, quarterly or annual give a series.", reportPeriodNames...),
 				stringParam("documents", "realized only: primary (default; each sale once) or all (every document's copy of a sale).", "primary", "all"),
@@ -177,7 +176,7 @@ func (s *mcpServer) tools() []toolSpec {
 			description: "Every booked transaction over a window (default: the past 30 days): trades, dividends, interest, fees, deposits, withdrawals, transfers. " +
 				"One row per line with date, account, kind, symbol, amount and its value in the output currency. Oldest first unless newest_first. " +
 				`Example: {from: "2026-03", to: "2026-03", sort: "-value", limit: 10}.`,
-			params: s.rowParams(true, true,
+			params: s.rowParams(true,
 				param{name: "newest_first", kind: paramBoolean, doc: "Newest first (default false: oldest first)."},
 				sourceParam, accountParam,
 				stringParam("kind", "Keep only this transaction kind (e.g. buy, sell, dividend, interest, fee, deposit, withdrawal, purchase)."),
@@ -192,7 +191,7 @@ func (s *mcpServer) tools() []toolSpec {
 				"view=transactions: the spending lines with merchant and category. " +
 				"spend and refunds are positive amounts; net_spend = spend - refunds. Own-account moves (card payments, transfers) and mortgage payments are never spending: they are in cashflow. " +
 				`Example: {view: "categories", from: "2025", to: "2025", period: "total"}.`,
-			params: s.rowParams(true, true,
+			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", spendingFamily.views...),
 				stringParam("period", "Bucket size (default total: the whole window as one row per category). monthly, quarterly or annual give a series.", reportPeriodNames...),
 				stringParam("level", "Category vocabulary of the categories view: primary (default, broad groups) or detailed.", "primary", "detailed"),
@@ -208,7 +207,7 @@ func (s *mcpServer) tools() []toolSpec {
 				"view=summary: one row per period. view=types: one row per period and income type, with its share. " +
 				"view=transactions: the income lines with payer and type. Amounts are gross as booked; income and reversals are positive, net_income = income - reversals. " +
 				`Example: {view: "types", from: "2025", to: "2025", period: "total"}.`,
-			params: s.rowParams(true, true,
+			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", incomeFamily.views...),
 				stringParam("period", "Bucket size (default total: the whole window as one row per type). monthly, quarterly or annual give a series.", reportPeriodNames...),
 				stringParam("level", "Type vocabulary of the types view: detailed (default) or primary.", "primary", "detailed"),
@@ -227,7 +226,7 @@ func (s *mcpServer) tools() []toolSpec {
 				"To split the vehicles into retirement, education and health, use view=flows with a class filter; mortgage and loan payments are the Mortgage class under financing. " +
 				"Positive is cash arriving, negative is cash leaving. " +
 				`Example: {view: "flows", from: "2025", to: "2025", level: "class", period: "total"}.`,
-			params: s.rowParams(true, true,
+			params: s.rowParams(true,
 				stringParam("view", "Which rows to return (default summary).", cashflowFamily.views...),
 				stringParam("period", "Bucket size (default total: the whole window as one row per node). monthly, quarterly or annual give a series. Not for sankey.", reportPeriodNames...),
 				stringParam("level", "Node grain for flows and sankey: section, class or group (default group).", "section", "class", "group"),
@@ -287,7 +286,7 @@ func (s *mcpServer) tools() []toolSpec {
 // ---- families ------------------------------------------------------------
 
 var holdingsFamily = &family{
-	views: []string{"global", "sources", "portfolios", "accounts", "positions"},
+	views: holdingsViews,
 	carries: map[string][]string{
 		"sources":    {"source"},
 		"portfolios": {"source"},
@@ -367,7 +366,7 @@ func missingBasisArg(a *toolArgs) (lots.MissingBasis, error) {
 }
 
 var returnsFamily = &family{
-	views: []string{"global", "sources", "portfolios", "accounts"},
+	views: returnsViews,
 	carries: map[string][]string{
 		"sources":    {"source"},
 		"portfolios": {"source"},
@@ -487,7 +486,7 @@ var transactionsFamily = &family{
 }
 
 var spendingFamily = &family{
-	views: []string{"summary", "categories", "transactions"},
+	views: spendingViews,
 	carries: map[string][]string{
 		"categories":   {"category"},
 		"transactions": {"source", "account", "category", "merchant"},
@@ -516,7 +515,7 @@ var spendingFamily = &family{
 }
 
 var incomeFamily = &family{
-	views: []string{"summary", "types", "transactions"},
+	views: incomeViews,
 	carries: map[string][]string{
 		"types":        {"type"},
 		"transactions": {"source", "account", "type", "payer"},
@@ -535,7 +534,7 @@ var incomeFamily = &family{
 }
 
 var cashflowFamily = &family{
-	views: []string{"summary", "flows", "sankey", "transactions", "coverage"},
+	views: cashflowViews,
 	carries: map[string][]string{
 		"flows":        {"section", "class", "group"},
 		"sankey":       {"section"},
@@ -921,11 +920,7 @@ func (s *mcpServer) paging(a *toolArgs) (limit int, capped bool, offset int, err
 // them all, else which views carry each.
 func filterViewError(tool string, fam *family, view string, named []string) error {
 	for _, v := range fam.views {
-		takesAll := true
-		for _, f := range named {
-			takesAll = takesAll && contains(fam.carries[v], f)
-		}
-		if takesAll {
+		if carriesAll(fam.carries, v, named) {
 			return fmt.Errorf("%s: the %s view has no %s filter; the %s view has: call view=%s, or use search",
 				tool, view, strings.Join(named, ", "), v, v)
 		}
@@ -934,7 +929,7 @@ func filterViewError(tool string, fam *family, view string, named []string) erro
 	for _, f := range named {
 		var vs []string
 		for _, v := range fam.views {
-			if contains(fam.carries[v], f) {
+			if slices.Contains(fam.carries[v], f) {
 				vs = append(vs, v)
 			}
 		}
@@ -990,14 +985,8 @@ func finerViews(fam *family, view string, named []string) []string {
 	var out []string
 	after := false
 	for _, v := range fam.views {
-		if after {
-			takesAll := true
-			for _, f := range named {
-				takesAll = takesAll && contains(fam.carries[v], f)
-			}
-			if takesAll {
-				out = append(out, v)
-			}
+		if after && carriesAll(fam.carries, v, named) {
+			out = append(out, v)
 		}
 		after = after || v == view
 	}

@@ -69,20 +69,20 @@ func fundExposure(name string) canonical.AssetClass {
 }
 
 // Instrument-key and description shapes for the statement-history
-// classifier. Ported from fidelity's classifyHistoricalPair (that
-// source's statement PDFs share Schwab's lack of a structured type
-// code, so shape heuristics are all there is), pared to the shapes
-// Schwab statements actually surface: a CUSIP for bonds/options, an
+// classifier. Schwab statements carry no structured type code, so
+// shape heuristics are all there is: a CUSIP for bonds/options, an
 // OCC option symbol, a coupon-bearing fixed-income line, a word-ETF
 // or money-market description, and the 4-letter-plus-X mutual-fund
 // ticker. First match wins; the fall-through is a plain stock, the
 // overwhelming majority of statement lines.
-// The shared, cross-adapter shapes (option / CUSIP / bond-coupon /
+//
+// The shapes shared with fidelity (option / CUSIP / bond-coupon /
 // money-market ticker / ETF / mutual-fund / ETF-issuer) live in
 // silver.Stmt*Re. Only Schwab's own money-market description shape,
 // which lacks fidelity's "NET CASH POSITION" arm, is declared here.
 //
-// Money-market sweeps ("… GOVERNMENT MONEY MARKET", "… CASH RESERVES").
+// histMoneyMktRe matches money-market sweeps ("… GOVERNMENT MONEY
+// MARKET", "… CASH RESERVES").
 var histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b`)
 
 // taxonomyHistorical derives the (exposure, vehicle) pair for a
@@ -152,17 +152,15 @@ func isCashAssetType(rawAssetType string) bool {
 	}
 }
 
-// taxWrapperFor maps the verbatim Schwab statement registration
-// label (silver column `accounts.account_registration` populated
-// by schwab-web from statement-PDF parsing — see that
-// repo's silver migration 0003) to the canonical TaxWrapper
-// enum. The Trader API doesn't expose this; statement PDFs are
-// the only source on the Schwab side.
+// schwabRegistrationToWrapper maps the verbatim Schwab statement
+// registration label (silver column `accounts.account_registration`,
+// parsed by schwab-web from statement PDFs; that collector's silver
+// migration 0003) to the canonical TaxWrapper enum. The Trader API
+// doesn't expose this; statement PDFs are the only source on the
+// Schwab side.
 //
-// Known labels harvested from observed statement sets;
-// extend as new variants surface (a future load run with an
-// unseen label leaves TaxWrapper nil, which renders as
-// taxable_personal — the safe default).
+// An unknown label leaves TaxWrapper nil, which renders as
+// taxable_personal — the safe default.
 var schwabRegistrationToWrapper = map[string]canonical.TaxWrapper{
 	// Taxable personal brokerage variants.
 	"Schwab One International® Account": canonical.TaxWrapperTaxablePersonal,
@@ -184,9 +182,8 @@ var schwabRegistrationToWrapper = map[string]canonical.TaxWrapper{
 
 	// Education savings. Schwab uses the bare "Education
 	// Savings" label for Coverdell ESAs on statements; 529s
-	// don't typically live at Schwab retail (Schwab routes
-	// 529s through state plans), so a future "529 College
-	// Savings Plan" label would need adding.
+	// usually sit with state plans rather than Schwab retail,
+	// and their label maps in case a statement prints it.
 	"Education Savings":        canonical.TaxWrapperCoverdellESA,
 	"Coverdell ESA":            canonical.TaxWrapperCoverdellESA,
 	"529 College Savings Plan": canonical.TaxWrapper529,

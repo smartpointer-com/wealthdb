@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,37 +19,16 @@ func init() {
 	register("returns", cmdReturns)
 }
 
-// returnsViews are the grains `wealthdb returns <view>` supports — the four
-// reconciling levels (no positions grain: per-position gain/loss is a separate
-// future task that needs cost basis).
-var returnsViews = map[string]bool{
-	"accounts": true, "portfolios": true, "sources": true, "global": true,
-}
+// returnsViews are the grains `wealthdb returns <view>` supports,
+// coarsest first: the four reconciling levels. Per-position gains are
+// the gains report's.
+var returnsViews = []string{"global", "sources", "portfolios", "accounts"}
 
-// returnsValueFlags are the flag tokens that consume the next arg, so the
-// positional [FROM [TO]] window may appear before or after flags.
-var returnsValueFlags = map[string]bool{
-	"-f": true, "--format": true, "-C": true, "--columns": true,
-	"-x": true, "--currency": true, "--method": true, "--period": true,
-	"--annualize": true, "--netting": true, "--inception": true,
-}
-
-// cmdReturns routes `wealthdb returns <view> ...` to the shared runner, mirroring
-// the cmd_holdings family dispatcher.
+// cmdReturns routes `wealthdb returns <view> ...` to the view's run.
 func cmdReturns(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	if len(subargs) == 0 {
-		fmt.Fprintln(stderr, returnsUsage())
-		return errs.Newf(2, "returns: a view subcommand is required")
-	}
-	view, rest := subargs[0], subargs[1:]
-	switch view {
-	case "-h", "--help", "help":
-		fmt.Fprintln(stderr, returnsUsage())
-		return nil
-	}
-	if !returnsViews[view] {
-		fmt.Fprintln(stderr, returnsUsage())
-		return errs.Newf(2, "returns: unknown view %q (want accounts | portfolios | sources | global)", view)
+	view, rest, err := routeView("returns", subargs, returnsViews, returnsUsage, stderr)
+	if err != nil {
+		return err
 	}
 	return runReturnsView(ctx, g, view, rest, stdout, stderr)
 }
@@ -58,39 +36,30 @@ func cmdReturns(ctx context.Context, g globalFlags, subargs []string, _ io.Reade
 func runReturnsView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb returns "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	method := fs.String("method", "twr", "twr | mwr | both")
 	period := fs.String("period", "quarterly", "monthly | quarterly | annual | total")
 	annualize := fs.String("annualize", "auto", "auto | always | never")
 	netting := fs.String("netting", "on", "on | off — net internal transfers at coarse grains (incl. cross-source matched pairs)")
 	inception := fs.String("inception", "full", "full | strict — aggregate since-inception handling")
-	rf := registerReportFlags(fs, "redact entity IDs and monetary amounts (returns % stay visible)")
-
+	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, returnsUsage()) }
-	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), returnsValueFlags)
-	if err := fs.Parse(reordered); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
+	if err := parseFlags(fs, args, "returns"); err != nil {
+		return err
+	}
+	for _, c := range []struct {
+		flag, value string
+		allowed     []string
+	}{
+		{"method", *method, []string{"twr", "mwr", "both"}},
+		{"period", *period, []string{"monthly", "quarterly", "annual", "total"}},
+		{"annualize", *annualize, []string{"auto", "always", "never"}},
+		{"netting", *netting, []string{"on", "off"}},
+		{"inception", *inception, []string{"full", "strict"}},
+	} {
+		if err := checkChoice("returns", c.flag, c.value, c.allowed...); err != nil {
+			return err
 		}
-		return errs.Newf(2, "returns: bad flags")
 	}
-
-	if !oneOf(*method, "twr", "mwr", "both") {
-		return errs.Newf(2, "returns: invalid --method %q", *method)
-	}
-	if !oneOf(*period, "monthly", "quarterly", "annual", "total") {
-		return errs.Newf(2, "returns: invalid --period %q", *period)
-	}
-	if !oneOf(*annualize, "auto", "always", "never") {
-		return errs.Newf(2, "returns: invalid --annualize %q", *annualize)
-	}
-	if !oneOf(*netting, "on", "off") {
-		return errs.Newf(2, "returns: invalid --netting %q", *netting)
-	}
-	if !oneOf(*inception, "full", "strict") {
-		return errs.Newf(2, "returns: invalid --inception %q", *inception)
-	}
-
 	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
@@ -185,15 +154,6 @@ func parseReturnsWindow(args []string, now time.Time) (int64, int64, error) {
 	return parseDateRange(args, now)
 }
 
-func oneOf(v string, allowed ...string) bool {
-	for _, a := range allowed {
-		if v == a {
-			return true
-		}
-	}
-	return false
-}
-
 // ---- column registry -----------------------------------------------------
 
 func buildReturnColumnRegistry(outCcy string) []columnSpec[gold.ReturnRow] {
@@ -207,15 +167,14 @@ func buildReturnColumnRegistry(outCcy string) []columnSpec[gold.ReturnRow] {
 		{Name: "period", Align: output.AlignLeft,
 			Extract: func(r gold.ReturnRow) string { return r.Period }},
 		{Name: "start_date", Align: output.AlignLeft,
-			Extract: func(r gold.ReturnRow) string { return formatDate(r.StartDay * 86400) }},
+			Extract: func(r gold.ReturnRow) string { return formatEpochDay(r.StartDay) }},
 		{Name: "end_date", Align: output.AlignLeft,
-			Extract: func(r gold.ReturnRow) string { return formatDate(r.EndDay * 86400) }},
+			Extract: func(r gold.ReturnRow) string { return formatEpochDay(r.EndDay) }},
 		{Name: "start_value", Header: "start_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.ReturnRow) string { return formatCents(r.StartValue) }},
 		{Name: "end_value", Header: "end_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.ReturnRow) string { return formatCents(r.EndValue) }},
-		{Name: "net_flow", Header: "net_flow_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.ReturnRow) string { return formatCents(r.NetFlow) }},
+		outCcyCol("net_flow", outCcy, func(r gold.ReturnRow) *string { return r.NetFlow }),
 		{Name: "gain", Header: "gain_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.ReturnRow) string { return formatCents(r.Gain()) }},
 		{Name: "twr", Header: "twr_pct", Align: output.AlignRight,

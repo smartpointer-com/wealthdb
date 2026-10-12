@@ -16,7 +16,6 @@ import (
 // EXTRACT(epoch FROM …) coerces it to the int64 the canonical
 // Status expects.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), -1),
@@ -25,24 +24,9 @@ SELECT
     COALESCE((SELECT CAST(EXTRACT(epoch FROM MAX(occurred_at)) AS BIGINT) FROM transactions), -1),
     COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1)
 `
-	var oldS, newS, oldT, newT, latestRun sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q).Scan(&oldS, &newS, &oldT, &newT, &latestRun); err != nil {
-		return s, fmt.Errorf("cointracking Status: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	if oldT.Valid {
-		s.OldestTransactionAt = oldT.Int64
-	}
-	if newT.Valid {
-		s.LatestTransactionAt = newT.Int64
-	}
-	if latestRun.Valid {
-		s.LatestChangeNumber = latestRun.Int64
+	s, err := silver.ContentStatus(ctx, c.db, "cointracking", q)
+	if err != nil {
+		return s, err
 	}
 	if err := silver.ObserveByRuns(ctx, c.db, "cointracking", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
 		return s, err

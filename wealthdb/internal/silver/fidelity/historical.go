@@ -34,36 +34,19 @@ func (c *Connection) hasHistoricalTable(ctx context.Context) (bool, error) {
 }
 
 // historicalSnapshotTimes returns the distinct as_of_date values
-// in `historical_position_snapshots` that fall inside the window.
-// Called by snapshotTimesInWindow so the byTime dispatch in
-// Snapshots() carries a batch slot per historical date too.
+// in `historical_position_snapshots` that fall inside the window,
+// so the byTime dispatch in Snapshots() carries a batch slot per
+// historical date too.
 func (c *Connection) historicalSnapshotTimes(ctx context.Context, w canonical.Window) ([]int64, error) {
 	ok, err := c.hasHistoricalTable(ctx)
-	if err != nil {
+	if err != nil || !ok {
 		return nil, err
 	}
-	if !ok {
-		return nil, nil
-	}
-	const q = `
+	return silver.SnapshotTimes(ctx, c.db, w, nil, `
 SELECT DISTINCT as_of_date
   FROM historical_position_snapshots
- WHERE as_of_date BETWEEN ? AND ?
- ORDER BY as_of_date`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("historicalSnapshotTimes: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+ WHERE as_of_date BETWEEN ? AND ?`,
+		w.Start, w.End)
 }
 
 // dafAccountIDs returns the set of account ids grouped under a
@@ -195,10 +178,11 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// For each historical date in the window, emit one
-	// AccountChange + one PortfolioChange per seed row. Without
-	// the per-date emission, the byTime dispatch in Snapshots()
-	// would have no master data for the historical timestamps.
+	// For each snapshot in the window, emit one AccountChange +
+	// one PortfolioChange per seed row. Without the per-date
+	// emission, the byTime dispatch in Snapshots() would have no
+	// master data for the historical-only timestamps; on a live
+	// timestamp the seed row joins the live one.
 	for snap, batch := range byTime {
 		for _, r := range seedRows {
 			change := canonical.AccountChange{
@@ -219,10 +203,7 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 			}
 			batch.Accounts = append(batch.Accounts, change)
 			if r.portfolioID.Valid && r.portfolioID.String != "" {
-				display := r.portfolioID.String
-				if r.portfolioKind.String != "" && r.portfolioKind.String != "other" {
-					display = fmt.Sprintf("%s (%s)", r.portfolioID.String, r.portfolioKind.String)
-				}
+				display := portfolioDisplay(r.portfolioID.String, r.portfolioKind.String)
 				batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
 					PortfolioExternalID: r.portfolioID.String,
 					DisplayName:         &display,

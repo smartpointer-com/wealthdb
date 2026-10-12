@@ -12,17 +12,16 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/pathmode"
 )
 
-// defaultMissingGoldMsg is the ExitMissingDB message the read and
-// write helpers use when the gold DB doesn't exist yet. A few
-// commands vary it (see openGoldForRead's optional argument and the
-// missingDBMsg parameter of the write helpers).
+// defaultMissingGoldMsg is the ExitMissingDB message for a gold DB
+// that doesn't exist yet: openGoldForRead's default, and what most
+// write commands pass as their missingDBMsg. A few commands vary it
+// ("Nothing to reset", "Nothing to compact").
 const defaultMissingGoldMsg = "gold database %q does not exist. Run 'wealthdb init' first (requires write access)."
 
-// openGoldForRead opens the gold DB for a read-side subcommand
-// (holdings views / transactions). It picks
-// read-write when the filesystem allows it — so an outstanding
-// migration is applied on open — and read-only when -r is set or
-// the path isn't writable. Returns a clear ExitMissingDB error
+// openGoldForRead opens the gold DB for a read-side subcommand. It
+// picks read-write when the filesystem allows it — so an outstanding
+// migration is applied on open — and read-only when -r is set or the
+// path isn't writable. Returns a clear ExitMissingDB error
 // when the DB doesn't exist yet. missingDBMsg optionally overrides
 // the ExitMissingDB message (a format string taking the DB path)
 // for commands whose wording differs. The caller owns db.Close().
@@ -108,6 +107,43 @@ func openGoldForWrite(g globalFlags, cfg *config.Config, cmdName, missingDBMsg s
 	return db, lock, nil
 }
 
+// openGoldForOverlay opens gold for a command that writes an overlay
+// store and has a dry run: categorize, categorizations --forget and
+// resolve-symbols. A dry run is a pure read. It opens read-only and
+// takes no lock, so readers keep the file while a model answers. A real
+// run needs a writable gold and holds the write mutex for the whole
+// command, so a rebuild-and-swap cannot land between what it reads and
+// what it stores. The lock is nil on a dry run; unlock tolerates that.
+// dryRunHint ends the read-only rejection: what a dry run shows instead.
+func openGoldForOverlay(ctx context.Context, g globalFlags, goldPath, cmdName, missingDBMsg, dryRunHint string, dryRun bool) (*sql.DB, *goldWriteLock, error) {
+	dec, err := pathmode.Detect(goldPath, g.ForceReadOnly, false)
+	if err != nil {
+		return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)
+	}
+	if !dec.DBExists {
+		return nil, nil, errs.Newf(errs.ExitMissingDB, missingDBMsg, goldPath)
+	}
+	mode := gold.ModeReadOnly
+	var lock *goldWriteLock
+	if !dryRun {
+		if dec.Mode != pathmode.ModeReadWrite {
+			return nil, nil, errs.Newf(errs.ExitRWNeeded,
+				"'%s' requires write access to the gold database, but '%s' is read-only (detected: %s). "+
+					"Pass --dry-run if you only want to %s.", cmdName, goldPath, dec.Reason, dryRunHint)
+		}
+		if lock, err = lockGoldForWrite(goldPath, cmdName); err != nil {
+			return nil, nil, err
+		}
+		mode = gold.ModeReadWrite
+	}
+	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(goldPath, mode) })
+	if err != nil {
+		lock.unlock()
+		return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)
+	}
+	return db, lock, nil
+}
+
 // goldLockLadder is the wait before each attempt to open gold past
 // another process's DuckDB file lock: four tries over nine seconds.
 // It outlasts a reader's single report and gives up well before a
@@ -117,21 +153,34 @@ var goldLockLadder = []time.Duration{0, time.Second, 3 * time.Second, 5 * time.S
 // retryGoldLock runs open, retrying on goldLockLadder while it fails
 // with DuckDB's file-lock conflict. Any other error returns at once.
 func retryGoldLock(ctx context.Context, open func() (*sql.DB, error)) (*sql.DB, error) {
+	var db *sql.DB
+	err := retryOn(ctx, goldLockLadder, isGoldLockConflict, func() (err error) {
+		db, err = open()
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
+// retryOn runs fn after each wait of ladder until it succeeds or fails
+// with an error retryable refuses, and returns the last error.
+func retryOn(ctx context.Context, ladder []time.Duration, retryable func(error) bool, fn func() error) error {
 	var err error
-	for _, wait := range goldLockLadder {
+	for _, wait := range ladder {
 		if wait > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return ctx.Err()
 			case <-time.After(wait):
 			}
 		}
-		var db *sql.DB
-		if db, err = open(); err == nil || !isGoldLockConflict(err) {
-			return db, err
+		if err = fn(); err == nil || !retryable(err) {
+			return err
 		}
 	}
-	return nil, err
+	return err
 }
 
 // isGoldLockConflict reports whether err is DuckDB refusing to attach
@@ -154,18 +203,5 @@ func isGoldLockConflict(err error) bool {
 // one, and the caller reports it rather than holding the answers
 // forever.
 func retryFlush(ctx context.Context, flush func() error) error {
-	var err error
-	for i, wait := range []time.Duration{0, time.Second, 3 * time.Second} {
-		if i > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(wait):
-			}
-		}
-		if err = flush(); err == nil {
-			return nil
-		}
-	}
-	return err
+	return retryOn(ctx, []time.Duration{0, time.Second, 3 * time.Second}, func(error) bool { return true }, flush)
 }

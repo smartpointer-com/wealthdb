@@ -18,9 +18,10 @@
 //
 //   - One instrument + position per SPV stake (silver `offerings`, one
 //     row per AngelList position id — the SPV, not the company; SPVs are
-//     never merged). asset_class from offerings.kind: single-company
-//     SPVs/RUVs -> spv, multi-company funds -> private_fund (both
-//     illiquid, non-quotable). Instrument name = the underlying company;
+//     never merged). The taxonomy pair from offerings.kind: exposure
+//     private_equity for both, vehicle spv for a single-company SPV/RUV and
+//     fund for a multi-company fund (both illiquid, non-quotable).
+//     Instrument name = the underlying company;
 //     the SPV legal name + EIN ride in offerings. No ISIN / symbol.
 //
 //   - Positions are forward-filled from the event-sourced
@@ -50,8 +51,9 @@
 //     (silver `funding_transactions`) is the dated cash flow. Each row maps
 //     to a canonical kind by its source type — deposit/withdrawal (external
 //     bank ↔ account), investment→contribution and refund→contribution
-//     (a positive reversal), disbursement→distribution, transfer→withdrawal
-//     — using the source-signed amount (it reconciles to the balance). The
+//     (a positive reversal), disbursement→sell on an SPV and distribution
+//     on a fund, transfer→withdrawal — using the source-signed amount (it
+//     reconciles to the balance). The
 //     account's current uninvested cash is one CashBalanceChange
 //     (BalanceKind=current), so account value = positions + cash.
 package angellist

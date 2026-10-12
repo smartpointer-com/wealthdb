@@ -217,14 +217,19 @@ SELECT d.snapshot_at, h.status IN ('fetched', 'absent', 'not_linked')
 // heldByAccount is each account's positions in b, with the instruments
 // they name.
 func heldByAccount(b canonical.SnapshotBatch) map[string]canonical.SnapshotBatch {
+	instruments := make(map[string]canonical.InstrumentChange, len(b.Instruments))
+	for _, i := range b.Instruments {
+		if _, seen := instruments[i.InstrumentExternalID]; !seen {
+			instruments[i.InstrumentExternalID] = i
+		}
+	}
 	out := map[string]canonical.SnapshotBatch{}
 	for _, p := range b.Positions {
 		h := out[p.AccountExternalID]
 		h.Positions = append(h.Positions, p)
-		for _, i := range b.Instruments {
-			if p.InstrumentExternalID != nil && i.InstrumentExternalID == *p.InstrumentExternalID {
+		if p.InstrumentExternalID != nil {
+			if i, ok := instruments[*p.InstrumentExternalID]; ok {
 				h.Instruments = append(h.Instruments, i)
-				break
 			}
 		}
 		out[p.AccountExternalID] = h
@@ -265,8 +270,8 @@ func closedCash(last, now []cashKey, t int64) []canonical.CashBalanceChange {
 	var out []canonical.CashBalanceChange
 	for _, k := range last {
 		if !slices.Contains(now, k) {
-			out = append(out, balanceOf(t, k.account, k.currency, canonical.BalanceKindCurrent,
-				canonical.NewDecimalFromInt(0), silver.ClosureMarkerPayload))
+			out = append(out, silver.CashBalance(t, k.account, k.currency, canonical.BalanceKindCurrent,
+				canonical.NewDecimalFromInt(0), string(silver.ClosureMarkerPayload)))
 		}
 	}
 	return out
@@ -348,11 +353,11 @@ func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, 
 			appendMortgage(b, t, a, s)
 			continue
 		}
-		payload := json.RawMessage(`{"basis":"roster"}`)
+		payload := `{"basis":"roster"}`
 		if s.at != t {
-			payload = json.RawMessage(fmt.Sprintf(`{"basis":"carried","stated_at":%d}`, s.at))
+			payload = fmt.Sprintf(`{"basis":"carried","stated_at":%d}`, s.at)
 		}
-		b.CashBalances = append(b.CashBalances, balanceOf(t, a.id, s.currency, s.kind, s.amount, payload))
+		b.CashBalances = append(b.CashBalances, silver.CashBalance(t, a.id, s.currency, s.kind, s.amount, payload))
 		keys = append(keys, cashKey{a.id, s.currency})
 	}
 	holdings, err := c.holdingsAt(ctx, t)
@@ -360,20 +365,6 @@ func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, 
 		return nil, err
 	}
 	return append(keys, appendHoldings(b, t, byID, holdings, secs, unsummed)...), nil
-}
-
-// balanceOf is one account's cash in one currency at t. Its payload says
-// what the figure was read from.
-func balanceOf(t int64, accountID, currency string, kind canonical.BalanceKind,
-	amount canonical.Decimal, payload json.RawMessage) canonical.CashBalanceChange {
-	return canonical.CashBalanceChange{
-		SnapshotAt:        t,
-		AccountExternalID: accountID,
-		Currency:          currency,
-		BalanceKind:       kind,
-		Amount:            amount,
-		Payload:           payload,
-	}
 }
 
 // appendMortgage adds a mortgage's outstanding principal as a negative
@@ -535,8 +526,8 @@ func appendHoldings(b *canonical.SnapshotBatch, t int64, accounts map[string]acc
 		}
 	}
 	for _, k := range cashOrder {
-		b.CashBalances = append(b.CashBalances, balanceOf(t, k.account, k.currency,
-			canonical.BalanceKindCurrent, cash[k], json.RawMessage(`{"basis":"holdings"}`)))
+		b.CashBalances = append(b.CashBalances, silver.CashBalance(t, k.account, k.currency,
+			canonical.BalanceKindCurrent, cash[k], `{"basis":"holdings"}`))
 	}
 	return cashOrder
 }
@@ -614,8 +605,8 @@ SELECT account_id, last_statement_issue_date, last_statement_balance FROM (
 		}
 		b := at(issued)
 		b.Accounts = append(b.Accounts, accountChange(a, issued, issued))
-		b.CashBalances = append(b.CashBalances, balanceOf(issued, id, currency,
-			canonical.BalanceKindClosing, amount.Neg(), json.RawMessage(`{"basis":"statement_closing"}`)))
+		b.CashBalances = append(b.CashBalances, silver.CashBalance(issued, id, currency,
+			canonical.BalanceKindClosing, amount.Neg(), `{"basis":"statement_closing"}`))
 	}
 	return rows.Err()
 }

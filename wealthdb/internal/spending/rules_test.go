@@ -8,6 +8,20 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
+// RuleCategory applies the built-in spending rules with no provider
+// translation in hand, and returns the category and the issuer label.
+func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
+	detailed, label, _, ok = rulePlacement(builtinRules, signature, counterparty, description, providerCategory, "")
+	return detailed, label, ok
+}
+
+// matchRule runs matchRuleIn over the built-in table and returns the
+// rule itself: two built-in rules may assign one detailed value, so a
+// test asserting the value alone cannot say which of them matched.
+func matchRule(signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
+	return matchRuleIn(builtinRules, signature, counterparty, description, providerCategory, "")
+}
+
 // TestRuleCategory pins the built-in tier pattern by pattern, on a
 // narrative written around each one rather than on the pattern itself:
 // a narrative is what fails when a pattern is misspelled or dropped,

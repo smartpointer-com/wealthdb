@@ -72,8 +72,8 @@ type lotCarry struct {
 
 // readOpenLots reads every open lot silver holds, once per Snapshots
 // call: the fetch a position takes can predate the load window. A
-// silver without the table (before migration 0011, and the svb
-// silvers, which state no lots) carries none.
+// silver without the table (before migration 0011) carries none, and
+// the svb silvers, which state no lots, leave it empty.
 func (c *Connection) readOpenLots(ctx context.Context) (*lotCarry, error) {
 	carry := &lotCarry{fetches: map[holding][]lotFetch{}}
 	ok, err := silver.HasTables(ctx, c.db, "open_lots")

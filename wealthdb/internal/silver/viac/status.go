@@ -17,11 +17,9 @@ import (
 // snapshots reconstructed from the Reporting PDFs (silver schema v3:
 // positions/cash_balances rows tagged source='report:<docid>',
 // keyed on each report's period-end date), not just the live dump
-// timestamps — so `wealthdb status` reflects that viac holdings
-// history reaches back to the contract's first year, well before
-// live scraping began.
+// timestamps — so `wealthdb status` shows the holdings history as
+// far back as the reports reach, before the first live dump.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(t) FROM (
@@ -38,24 +36,9 @@ SELECT
     COALESCE((SELECT MAX(occurred_at) FROM transactions), -1),
     COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),  -1)
 `
-	var oldS, newS, oldT, newT, latestRun sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q).Scan(&oldS, &newS, &oldT, &newT, &latestRun); err != nil {
-		return s, fmt.Errorf("viac Status: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	if oldT.Valid {
-		s.OldestTransactionAt = oldT.Int64
-	}
-	if newT.Valid {
-		s.LatestTransactionAt = newT.Int64
-	}
-	if latestRun.Valid {
-		s.LatestChangeNumber = latestRun.Int64
+	s, err := silver.ContentStatus(ctx, c.db, "viac", q)
+	if err != nil {
+		return s, err
 	}
 	// A dry run reads nothing; a silver from before the column counts
 	// every run.
@@ -81,10 +64,10 @@ SELECT
 // (e.g. 2021-12-31), so a delta window of (since, now] would never
 // cover them. A full-history window means gold's windowed
 // delete-then-reinsert refreshes every viac snapshot on each load
-// that has new work — correct, idempotent, and cheap at this data
-// size. Idle reloads (no new dump/txn) still no-op via the watermark:
-// NewChangeNumber stays MAX(dump_runs.snapshot_at), and the
-// historical snapshots' past dates never advance it.
+// that has new work — correct and idempotent, and cheap while a silver
+// holds only a few snapshots. Idle reloads (no new dump/txn) still no-op
+// via the watermark: NewChangeNumber stays MAX(dump_runs.snapshot_at),
+// and the historical snapshots' past dates never advance it.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 	const q = `

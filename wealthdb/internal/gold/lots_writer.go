@@ -235,7 +235,7 @@ SELECT src, txn || '#stated', acct, instrument_external_id,
        CASE WHEN acquisition_date IS NULL THEN NULL
             WHEN day > acquisition_date + INTERVAL 1 YEAR THEN 'long' ELSE 'short' END,
        basis_origin, basis_method, basis_fees, is_primary, NULL, txn
-  FROM r`, w.f.stated, w.f.stated, w.f.stated); err != nil {
+  FROM r`, w.f.stated, w.f.stated); err != nil {
 		return fmt.Errorf("lots: stated: %w", err)
 	}
 	rows, err := w.tx.QueryContext(ctx, `

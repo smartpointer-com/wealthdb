@@ -14,7 +14,7 @@ import (
 // and the right answer follows from what the product already knows
 // about its own accounts rather than from anyone's preference. A
 // per-deployment override list would let a wrong local rule quietly
-// break the arithmetic these three protect; a merchant that needs
+// break the arithmetic these protect; a merchant that needs
 // special handling belongs in the merchant store, where a verdict is
 // per-merchant and visible.
 //
@@ -291,12 +291,8 @@ func valuesUnderPrimary(primary string) map[string]bool {
 // Two rules assign one detailed value, deliberately: a security-level
 // pass-through and an account's management fee are both what holding
 // the assets costs, and the extension exists to keep them together.
-// RuleCategory names no rule — it returns the category and the issuer
-// label a card bill carries — so a test asserting the value alone
-// cannot say which of the two fired, and would keep passing if a
-// phrase moved between them. The tests use the unexported matchRule
-// over the same inputs for that; the exported signature stays as it
-// is, because provenance in gold is the tier, not the rule.
+// Provenance in gold is the tier, not the rule, so nothing but the
+// tests asks which of the two fired.
 var builtinRules = []spendRule{
 	{
 		// A card bill leaving a cash account that the matcher did not pair
@@ -440,16 +436,17 @@ var builtinRules = []spendRule{
 	},
 }
 
-// RuleCategory applies the built-in rule tier to a row: its merchant
+// rulePlacement applies a built-in rule table to a row: its merchant
 // signature and the two raw narrative fields it was built from, each
 // tested on its own — the description up to its memo separator, never
-// the memo behind it. It returns the detailed category, the label the
-// match carries, and whether any rule fired; which rule fired is not
-// carried, because provenance in gold is the tier rather than the
-// individual rule. Rule order outranks field order — a row whose
-// signature fits a later rule and whose description fits an earlier
-// one gets the earlier verdict — and a row with no text anywhere never
-// fires.
+// the memo behind it. It returns the detailed category, the issuer
+// label a card bill carries, the cashflow class a rule stands for
+// where it places an own-account move it did not pair, and whether any
+// rule fired; which rule fired is not carried, because provenance in
+// gold is the tier rather than the individual rule. Rule order
+// outranks field order — a row whose signature fits a later rule and
+// whose description fits an earlier one gets the earlier verdict — and
+// a row with no text anywhere never fires.
 //
 // The label is the ISSUER a card bill was paid to, and it is empty for
 // everything else: every other built-in has no issuer table, and
@@ -465,21 +462,11 @@ var builtinRules = []spendRule{
 // placed a category from it would be the provider tier wearing the rule
 // tier's provenance and outranking it. Reading it to decline a row is
 // the opposite move: it lets the tier below, which owns that filing,
-// have the row. RuleCategory asks with no translation in hand.
-func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
-	detailed, label, _, ok = rulePlacement(builtinRules, signature, counterparty, description, providerCategory, "")
-	return detailed, label, ok
-}
-
-// rulePlacement is everything a built-in rule places: the category, the
-// issuer label a card bill carries, and the cashflow class a rule
-// stands for where it places an own-account move it did not pair.
+// have the row.
 //
-// One function so the three are read from ONE match. RuleCategory asks
-// the narrow question every caller but the enrichment pass asks, and
-// delegates here rather than calling the matcher a second time: two
-// entry points running the rule table separately is exactly how a
-// label and a class would come to disagree about which rule fired.
+// One function so the three are read from ONE match: two entry points
+// running the rule table separately is exactly how a label and a class
+// would come to disagree about which rule fired.
 func rulePlacement(rules []spendRule, signature, counterparty, description, providerCategory, filed string) (detailed, label, farClass string, ok bool) {
 	r, fields, ok := matchRuleIn(rules, signature, counterparty, description, providerCategory, filed)
 	if !ok {
@@ -540,19 +527,9 @@ func IncomeRuleCategory(kind, signature, counterparty, description, providerCate
 	return r.detailed, "", true
 }
 
-// matchRule runs matchRuleIn over the BUILT-IN table and is for the
-// tests only: two built-in rules may assign one detailed value — a
-// security-level pass-through and an account's management fee are both
-// what holding the assets costs — so a test asserting the value alone
-// cannot say which of them matched, and would keep passing if a phrase
-// moved from one to the other. Provenance in gold stays the tier rather
-// than the rule, which is why no exported signature returns this.
-func matchRule(signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
-	return matchRuleIn(builtinRules, signature, counterparty, description, providerCategory, "")
-}
-
 // matchRuleIn matches one narrative against a named rule table and
-// returns the rule that fired. It is the core RuleCategory calls, and
+// returns the rule that fired. It is the core both families' built-in
+// tiers call, and
 // taking the table as an argument is what lets the two families share
 // the narrative-field machinery — the memo split, the refusal pass, the
 // token/phrase/shape matching — and differ only by which rules they
@@ -616,8 +593,8 @@ func newNarrativeField(s string) (narrativeField, bool) {
 // lives under has no reason to reach it.
 //
 // On the outflow side it exists for three populations neither the
-// matcher nor the model can ever reach. One is own-money movement whose receiving side is
-// booked nowhere in gold — a wire to the holder's account at a bank
+// matcher nor the model can ever reach. One is own-money movement
+// whose receiving side is booked nowhere in gold — a wire to the holder's account at a bank
 // the product does not track, a transfer to an exchange it does — so
 // the outgoing leg is one-legged forever. Another is capital deployed
 // to a destination the product does not track — a subscription the

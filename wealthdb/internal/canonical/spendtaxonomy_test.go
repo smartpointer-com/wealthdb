@@ -751,16 +751,16 @@ func TestIncomeLabels(t *testing.T) {
 			t.Errorf("no expected label for income value %q", c.Detailed)
 			continue
 		}
-		if got := IncomeLabel(c.Detailed); got != w {
-			t.Errorf("IncomeLabel(%s) = %q, want %q", c.Detailed, got, w)
+		if got := SpendLabel(c.Detailed); got != w {
+			t.Errorf("SpendLabel(%s) = %q, want %q", c.Detailed, got, w)
 		}
 		delete(want, c.Detailed)
 	}
 	for v := range want {
 		t.Errorf("expected a label for %q, which the taxonomy does not hold", v)
 	}
-	if got := IncomePrimaryLabel("INCOME"); got != "Income" {
-		t.Errorf("IncomePrimaryLabel(INCOME) = %q, want %q", got, "Income")
+	if got := SpendPrimaryLabel("INCOME"); got != "Income" {
+		t.Errorf("SpendPrimaryLabel(INCOME) = %q, want %q", got, "Income")
 	}
 	// The shared deltas are expected above by the labels they read on
 	// the spending side, which is the contract: one row in the
@@ -830,5 +830,13 @@ func TestModelNotes(t *testing.T) {
 	}
 	if ModelNote("INCOME_SALARY") != "" {
 		t.Error("a value with no note must read as none")
+	}
+}
+
+// TestHumaniseEmptyWord pins that a doubled or trailing underscore
+// labels as an empty word rather than panicking on it.
+func TestHumaniseEmptyWord(t *testing.T) {
+	if got, want := humanise("FOO__BAR_"), "Foo  bar "; got != want {
+		t.Errorf("humanise = %q, want %q", got, want)
 	}
 }

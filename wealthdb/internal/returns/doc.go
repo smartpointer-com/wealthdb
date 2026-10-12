@@ -28,7 +28,7 @@ package returns
 //
 // Amount uses gold's value_outccy sign: deposit / transfer_in / distribution are
 // positive (capital in); withdrawal / transfer_out / contribution are negative
-// (capital out). This is exactly canonicalSign — see CapitalDirection.
+// (capital out). This is exactly canonical.ApplyCanonicalSign.
 type Flow struct {
 	Day    int64
 	Amount float64

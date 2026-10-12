@@ -62,5 +62,8 @@ SELECT e.position_id, COALESCE(p.account_id, '`+defaultAccountKey+`'),
 		}
 		batch.Transactions = append(batch.Transactions, tx)
 	}
-	return silver.NewTransactionStream(batch), rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("manual Transactions: %w", err)
+	}
+	return silver.NewTransactionStream(batch), nil
 }

@@ -42,7 +42,12 @@ func (r *webReader) Close() error {
 // Status mirrors the canonical.Status contract using web silver
 // columns. Snapshot times come from `dump_runs`; transaction
 // times come from `transactions.value_date`. The LatestChange-
-// Number is MAX of either (whichever advanced).
+// Number is MAX of either (whichever advanced): the value
+// ChangeWindow advances the watermark to. The historical tables
+// widen the snapshot range but not the change number, since
+// ChangeWindow never advances to their dates; a future-dated
+// maturity notice would otherwise keep the source from ever
+// reading as up to date.
 func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	out := canonical.UnknownStatus()
 	// dump_runs always has at least one row per snapshot, even
@@ -61,6 +66,7 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	if err != nil {
 		return canonical.Status{}, fmt.Errorf("ubs-web Status transactions: %w", err)
 	}
+	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
 	// Historical (PDF) snapshots extend OldestSnapshotAt back —
 	// PDFs cover dates that pre-date the first live web dump.
 	histLo, histHi, err := r.historicalRange(ctx)
@@ -73,7 +79,6 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	if histHi > out.LatestSnapshotAt {
 		out.LatestSnapshotAt = histHi
 	}
-	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
 	if err := r.observed(ctx, &out); err != nil {
 		return canonical.Status{}, err
 	}
@@ -526,8 +531,9 @@ func (p *webTxPass) project(row webTxRow) (canonical.TransactionChange, bool) {
 	returnsInternal := p.returnsInternal(row, kind, pl, pdfBackfill)
 
 	// The verdict is stamped here, before the sign is pinned: a
-	// payload that cannot carry it degrades to the older demotion,
-	// and the sign must then be read off the kind the row ENDS with.
+	// payload that cannot carry it demotes the kind instead
+	// (markReturnsInternal), and the sign must then be read off the
+	// kind the row ENDS with.
 	rowPayload := withBankRef(withCounterAccount(
 		withResolvedMortgage(json.RawMessage(row.payload), statedMortgage, pl.CounterAccount),
 		pl.CounterAccount), webBankRef(row.txID))
@@ -737,8 +743,8 @@ func (c psnCut) excludes(account string, at int64) bool {
 // It is the bank's own statement of where the money went, and it is the
 // strongest evidence of an own-account move there is — stronger than a
 // narrative regex, and available on rows whose other leg the product does not
-// collect at all. Left in the free text it reached gold as prose and nothing
-// could read it.
+// collect at all. Left in the free text it would reach gold as prose that
+// nothing reads.
 //
 // The IBAN alone is taken, never the purpose or the payee: those name a
 // person, and this value is compared against the relationship's own account
@@ -891,7 +897,7 @@ func withCounterAccount(payload json.RawMessage, iban string) json.RawMessage {
 // touches no derived value at all: it rewrites the parser's own answer
 // from the mortgage's NAME to the mortgage's ID — the same fact, in the
 // spelling every consumer joins on. A name nothing can join to is not
-// an answer worth protecting, and leaving it made the field look
+// an answer worth protecting, and leaving it would make the field look
 // resolved while resolving to nothing.
 //
 // Surgical on purpose. The stamp occurs in the narrative lines too,
@@ -1013,9 +1019,8 @@ func spliceStringField(payload, key, value string) json.RawMessage {
 
 // returnsFlowInternal is the payload key carrying the conduit verdict to the
 // returns engine. It is the vehicle for the "silver-side pre-tagging" the UBS
-// ReturnsPolicy's ExternalOnly describes; the tag used to be a rewritten
-// `kind`, which the spending population reads too and therefore could not
-// share.
+// ReturnsPolicy's ExternalOnly describes. It is a payload key rather than a
+// rewritten `kind` because the spending population reads the kind too.
 const returnsFlowInternal = `"returns_flow":"internal"`
 
 // withReturnsFlow stamps the conduit verdict onto a row's payload. Only an
@@ -1041,15 +1046,14 @@ func withReturnsFlow(payload string, internal bool) (json.RawMessage, bool) {
 	// Not an object — absent, or malformed enough that decoding failed.
 	// The verdict has nowhere to live, and a row that silently loses it
 	// would be counted as owner capital. Report the failure so the caller
-	// falls back to the older, cruder carrier: the kind itself.
+	// falls back to the cruder carrier: the kind itself.
 	return json.RawMessage(payload), false
 }
 
 // markReturnsInternal stamps the conduit verdict on a row, degrading to the
 // kind when the payload cannot hold it. Losing the verdict would let conduit
 // churn into the return, which is the worse error of the two: a row demoted
-// to `other` is merely absent from spending, where the older behaviour left
-// every such row anyway.
+// to `other` is merely absent from spending.
 func markReturnsInternal(payload json.RawMessage, kind canonical.TxKind) (json.RawMessage, canonical.TxKind) {
 	if out, ok := withReturnsFlow(string(payload), true); ok {
 		return out, kind
@@ -1375,8 +1379,8 @@ func (r *webReader) webOffsetLegs(ctx context.Context, cut psnCut, suppressed ma
 		// difference: the two web eras write the amount columns to
 		// different conventions, and only the adapter's own projection
 		// resolves them (the rule `bookingKey` names for the era fold).
-		// Differencing the raw columns read every export-era withdrawal
-		// as a positive figure, where it could mirror nothing.
+		// Differencing the raw columns would read every export-era
+		// withdrawal as a positive figure, where it could mirror nothing.
 		hint := webKindHint(row.descKind, row.counterparty)
 		kind, _, netAmount := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
 		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal || netAmount == nil {
@@ -1388,7 +1392,7 @@ func (r *webReader) webOffsetLegs(ctx context.Context, cut psnCut, suppressed ma
 		}
 		legs = append(legs, offsetLeg{
 			vetoKey: row.emittedID(), txID: row.txID, acct: row.account,
-			amt: netAmount.InexactFloat64(), day: row.valueDate / 86400, ccy: row.currency,
+			amt: netAmount.InexactFloat64(), day: utcDay(row.valueDate), ccy: row.currency,
 			statedCcy: statedCcy, statedAmt: statedAmt,
 		})
 		return nil
@@ -1433,7 +1437,7 @@ func (r *psnReader) offsetLegs(ctx context.Context, coverage psnCashCoverage) ([
 		}
 		legs = append(legs, offsetLeg{
 			vetoKey: row.eventID, psnLeg: true, txID: row.eventID, acct: acct,
-			amt: amt, day: row.at / 86400, ccy: ccy,
+			amt: amt, day: utcDay(row.at), ccy: ccy,
 			statedCcy: statedCcy, statedAmt: statedAmt,
 		})
 		return nil
@@ -1451,7 +1455,7 @@ func (r *psnReader) offsetLegs(ctx context.Context, coverage psnCashCoverage) ([
 		amt, _ := m.tx.NetAmount.Float64()
 		legs = append(legs, offsetLeg{
 			vetoKey: m.tx.TransactionExternalID, psnLeg: true, txID: m.tx.TransactionExternalID,
-			acct: m.tx.AccountExternalID, amt: amt, day: m.tx.OccurredAt / 86400, ccy: m.tx.Currency,
+			acct: m.tx.AccountExternalID, amt: amt, day: utcDay(m.tx.OccurredAt), ccy: m.tx.Currency,
 		})
 	}
 	return legs, nil
@@ -1519,18 +1523,17 @@ func pairSameDayOffsets(legs []offsetLeg, consumed map[string]bool, record func(
 // CURRENCY, and returns the legs it consumed so the phases after it do not
 // pair them with anything else.
 //
-// It is the veto's blind spot, closed. The two phases below it bucket by
-// (day, currency) and match equal, opposite amounts, so neither can see a
-// movement whose two legs are denominated differently — the veto's own note
-// about FX legs says exactly that. And the gate the veto backstops
+// The two phases after it bucket by (day, currency) and match equal,
+// opposite amounts, so neither can see a movement whose two legs are
+// denominated differently. And the gate the veto backstops
 // (pdfCashIsExternal) reads a statement-era arrival credit as an interbank
 // arrival on its booking type alone, because the intra-relationship shapes
 // that booking could smuggle in are supposed to be peeled off HERE. A
 // conversion between two accounts of one relationship is precisely such a
-// shape, and until now nothing peeled it: the paying leg was demoted by the
-// gate's conservative default while its receiving twin was promoted to
-// external, which is the one-sided demotion the whole mechanism exists to
-// prevent — a phantom arrival of owner capital, counted as return.
+// shape. Left unpaired, the paying leg is demoted by the gate's conservative
+// default while its receiving twin is promoted to external, which is the
+// one-sided demotion the whole mechanism exists to prevent — a phantom
+// arrival of owner capital, counted as return.
 //
 // The link it reads is the bank's own: on one of the two rows the statement
 // writes what the other row holds, its currency and its figure
@@ -1747,22 +1750,12 @@ func populateCutoffMap(
 // the source's sign, so there the two eras can still disagree and such a
 // pair simply does not fold: the fold never guesses.
 //
-// Reversal rows bypass the sign helper, which would otherwise mask the
-// bank's correction by forcing the amount back to the base kind's normal
-// direction — and a correction forced back into its base direction is not a
-// correction, it is a SECOND COPY of the thing it cancels. Their kind still
-// maps to the underlying canonical kind so they net against the originals
-// when summed.
-//
-// A reversal announces itself in one of two ways, and both are read here.
-// The export names it in the booking type (`<base>;Reversal`). The
-// statement does not: it prints a NEGATIVE FIGURE IN THE COLUMN THE
-// ORIGINAL WAS PRINTED IN — a negative in the debit column is money coming
-// back, a negative in the credit column is money going out again. That
-// reading is only available in the statement era, which is why the caller
-// has to say which era the row belongs to: the export's amount columns
-// already carry the direction in their sign, so there a negative debit is
-// an ordinary payment out and means nothing of the kind.
+// Reversal rows (webReversal) bypass the sign helper, which would otherwise
+// mask the bank's correction by forcing the amount back to the base kind's
+// normal direction — and a correction forced back into its base direction is
+// not a correction, it is a SECOND COPY of the thing it cancels. Their kind
+// still maps to the underlying canonical kind so they net against the
+// originals when summed.
 func webProjectedNet(descKind string, statementEra bool, debit, credit sql.NullFloat64) (canonical.TxKind, canonical.Decimal, *canonical.Decimal) {
 	var net canonical.Decimal
 	if credit.Valid {
@@ -1810,7 +1803,7 @@ func webReversal(descKind string, statementEra bool, debit, credit sql.NullFloat
 // there for the kind as well as for the payee (projectWebTxText), a
 // custody price or a safe-box rental is a fee and not a withdrawal.
 // When neither text is a type the booking type is returned as given,
-// so the direction decides exactly as before.
+// and the direction decides.
 func webKindHint(descKind, counterparty sql.NullString) string {
 	if isBookingType(descKind.String) {
 		return descKind.String
@@ -2234,12 +2227,11 @@ func webDescription(captionDesc *string, bookingType string, p webTxPayload) *st
 		// Description1 names the PRODUCT ("UBS Call Deposit; Serial
 		// no. …") and the booking type carries the only fact that
 		// separates one of its rows from another — a principal
-		// movement from the interest it pays. Dropping the type here
-		// left every row of a deposit reading identically, which is
-		// what made the export era unreadable to any tier that works
+		// movement from the interest it pays. Without the type every
+		// row of a deposit reads identically to any tier that works
 		// from the narrative: not ambiguous, IDENTICAL. Prepending it
-		// gives the row the same shape the statement era already
-		// composes, so one spelling reaches both eras.
+		// gives the row the same shape the statement era composes,
+		// so one spelling reaches both eras.
 		if isDepositProductBooking(bookingType) {
 			return silver.StrPtrIfNonEmpty(silver.JoinText(bookingType, *captionDesc))
 		}
@@ -2414,9 +2406,8 @@ func tickerFromDescription(desc string) *string {
 //     negative contribution
 //
 // No PSN cutoff: PSN doesn't surface mortgages at all, so every web
-// snapshot's mortgage rows pass through. Migration 0004 of the
-// ubs-web silver created the table; if it's absent on an older
-// silver, the COUNT-zero path skips cleanly.
+// snapshot's mortgage rows pass through. A silver without the
+// `mortgages` table emits none.
 func (r *webReader) appendWebMortgages(ctx context.Context,
 	w canonical.Window,
 	byTime map[int64]*canonical.SnapshotBatch) error {
@@ -2530,11 +2521,6 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
 			return nil, err
 		}
 		idCopy := extID
-		var mv *canonical.Decimal
-		if outstanding.Valid {
-			d := canonical.NewDecimalFromFloat(outstanding.Float64)
-			mv = &d
-		}
 		out = append(out, canonical.PositionChange{
 			AccountExternalID:    extID,
 			PositionKey:          extID,
@@ -2542,7 +2528,7 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
 			AssetClass:           canonical.AssetClassRealEstate,
 			Vehicle:              canonical.VehicleMortgage,
 			Currency:             currency,
-			MarketValue:          mv,
+			MarketValue:          silver.DecimalPtrFromNullFloat(outstanding),
 			Payload:              json.RawMessage(payload),
 		})
 	}

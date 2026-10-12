@@ -26,8 +26,8 @@ type Defaults struct {
 }
 
 // Result is what the wizard hands back to the caller. The config
-// is fully validated and path-expanded; the caller serialises it
-// to JSON and writes it to ConfigPath.
+// holds each answer as typed, with paths unexpanded; the caller
+// serialises it to JSON and writes it to ConfigPath.
 type Result struct {
 	Config     config.Config
 	ConfigPath string
@@ -35,7 +35,7 @@ type Result struct {
 
 // Run drives the first-time setup conversation. configPath is
 // where the resulting wealthdb.cfg will be written; the caller
-// has already confirmed that file doesn't exist.
+// has already confirmed that file is absent or empty.
 //
 // stdin is line-buffered internally; pass an unbuffered reader.
 // stdout receives prompts and progress lines.
@@ -176,11 +176,7 @@ func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds [
 		"  Path to silver SQLite",
 		"",
 		func(s string) error {
-			expanded := expandLeadingHome(s)
-			if err := probeSilverDB(expanded); err != nil {
-				return err
-			}
-			return nil
+			return probeSilverDB(expandLeadingHome(s))
 		},
 	)
 	if err != nil {
@@ -225,25 +221,13 @@ func probeSilverDB(path string) error {
 	return nil
 }
 
-// expandLeadingHome handles `~/...` and `$HOME/...` exactly like
-// config.expandPath (kept local to avoid exposing the package-
-// internal helper). For wizard input we don't try to resolve
-// relative paths — users typing into a prompt are expected to
-// give absolute or home-anchored paths.
+// expandLeadingHome expands a leading `~` or `$HOME` the way the
+// config loader does. Relative paths stay as typed: a prompt answer is
+// expected to be absolute or home-anchored. A home directory that
+// cannot be read leaves the input unchanged for the probe to reject.
 func expandLeadingHome(s string) string {
-	switch {
-	case s == "~":
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-	case strings.HasPrefix(s, "~/"):
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, s[2:])
-		}
-	case strings.HasPrefix(s, "$HOME/"):
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, s[len("$HOME/"):])
-		}
+	if p, err := config.ExpandHome(s); err == nil {
+		return p
 	}
 	return s
 }

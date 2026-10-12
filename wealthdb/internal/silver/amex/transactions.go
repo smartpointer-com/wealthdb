@@ -39,7 +39,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
-	ccy, err := c.accountCurrencies(ctx)
+	ccy, err := silver.ReadAccountCurrencies(ctx, c.db, "USD")
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ SELECT txn_id, posted_at, account_external_id, amount,
 		}
 		currency := rowCcy
 		if currency == "" {
-			currency = currencyOf(ccy, id)
+			currency = ccy.Of(id)
 		}
 		net := canonical.ApplyCanonicalSign(kind, &amt)
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{

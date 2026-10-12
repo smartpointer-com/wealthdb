@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,19 +21,7 @@ func init() {
 // spendingViews are the grains `wealthdb spending <view>` supports —
 // the three reports migration 0042 defines over the spending
 // population, coarsest first.
-var spendingViews = map[string]bool{
-	"summary": true, "categories": true, "transactions": true,
-}
-
-// reportValueFlags are the flag tokens that consume the next arg, so
-// the positional [FROM [TO]] window may appear before or after flags
-// (the returns / transactions convention). Shared by every report
-// family: the flag idiom is the CLI's, not one command's.
-var reportValueFlags = map[string]bool{
-	"-f": true, "--format": true, "-C": true, "--columns": true,
-	"-x": true, "--currency": true, "--period": true, "--level": true,
-	"--investing": true,
-}
+var spendingViews = []string{"summary", "categories", "transactions"}
 
 // reportPeriods maps the CLI's bucket vocabulary onto the date_trunc
 // parts the report macros bucket by. The names are the returns
@@ -50,22 +37,11 @@ var reportPeriods = map[string]string{
 // for usage text and error messages.
 var reportPeriodNames = []string{"daily", "weekly", "monthly", "quarterly", "annual", "total"}
 
-// cmdSpending routes `wealthdb spending <view> ...` to the shared
-// runner, mirroring the returns dispatcher.
+// cmdSpending routes `wealthdb spending <view> ...` to the view's run.
 func cmdSpending(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	if len(subargs) == 0 {
-		fmt.Fprintln(stderr, spendingUsage())
-		return errs.Newf(2, "spending: a view subcommand is required")
-	}
-	view, rest := subargs[0], subargs[1:]
-	switch view {
-	case "-h", "--help", "help":
-		fmt.Fprintln(stderr, spendingUsage())
-		return nil
-	}
-	if !spendingViews[view] {
-		fmt.Fprintln(stderr, spendingUsage())
-		return errs.Newf(2, "spending: unknown view %q (want summary | categories | transactions)", view)
+	view, rest, err := routeView("spending", subargs, spendingViews, spendingUsage, stderr)
+	if err != nil {
+		return err
 	}
 	return runSpendingView(ctx, g, view, rest, stdout, stderr)
 }
@@ -73,26 +49,18 @@ func cmdSpending(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 func runSpendingView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb spending "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	level := fs.String("level", "primary", "primary | detailed — the category vocabulary (categories view)")
-	rf := registerReportFlags(fs, "redact account IDs, counterparties, and monetary amounts (categories stay visible)")
-
+	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, spendingUsage()) }
-	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), reportValueFlags)
-	if err := fs.Parse(reordered); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "spending: bad flags")
+	if err := parseFlags(fs, args, "spending"); err != nil {
+		return err
 	}
-
-	if _, ok := reportPeriods[*period]; !ok {
-		return errs.Newf(2, "spending: invalid --period %q (want %s)",
-			*period, strings.Join(reportPeriodNames, " | "))
+	if err := checkChoice("spending", "period", *period, reportPeriodNames...); err != nil {
+		return err
 	}
-	if !oneOf(*level, "primary", "detailed") {
-		return errs.Newf(2, "spending: invalid --level %q (want primary | detailed)", *level)
+	if err := checkChoice("spending", "level", *level, "primary", "detailed"); err != nil {
+		return err
 	}
 
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
@@ -192,14 +160,10 @@ func buildSpendSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.Sp
 			Extract: func(r gold.SpendSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.SpendSummaryRow) string { return periodStart(r.PeriodStart) }},
-		{Name: "txn_count", Align: output.AlignRight,
-			Extract: func(r gold.SpendSummaryRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
-		{Name: "spend", Header: "spend_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.SpendSummaryRow) string { return formatCents(r.Spend) }},
-		{Name: "refunds", Header: "refunds_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.SpendSummaryRow) string { return formatCents(r.Refunds) }},
-		{Name: "net_spend", Header: "net_spend_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.SpendSummaryRow) string { return formatCents(r.NetSpend) }},
+		countCol("txn_count", func(r gold.SpendSummaryRow) int64 { return r.TxnCount }),
+		outCcyCol("spend", outCcy, func(r gold.SpendSummaryRow) *string { return r.Spend }),
+		outCcyCol("refunds", outCcy, func(r gold.SpendSummaryRow) *string { return r.Refunds }),
+		outCcyCol("net_spend", outCcy, func(r gold.SpendSummaryRow) *string { return r.NetSpend }),
 	}
 }
 
@@ -224,14 +188,10 @@ func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.S
 			Extract: func(r gold.SpendCategoryRow) string { return r.CategoryLabel }},
 		{Name: "category_id", Align: output.AlignLeft,
 			Extract: func(r gold.SpendCategoryRow) string { return r.Category }},
-		{Name: "txn_count", Align: output.AlignRight,
-			Extract: func(r gold.SpendCategoryRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
-		{Name: "spend", Header: "spend_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.SpendCategoryRow) string { return formatCents(r.Spend) }},
-		{Name: "refunds", Header: "refunds_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.SpendCategoryRow) string { return formatCents(r.Refunds) }},
-		{Name: "net_spend", Header: "net_spend_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.SpendCategoryRow) string { return formatCents(r.NetSpend) }},
+		countCol("txn_count", func(r gold.SpendCategoryRow) int64 { return r.TxnCount }),
+		outCcyCol("spend", outCcy, func(r gold.SpendCategoryRow) *string { return r.Spend }),
+		outCcyCol("refunds", outCcy, func(r gold.SpendCategoryRow) *string { return r.Refunds }),
+		outCcyCol("net_spend", outCcy, func(r gold.SpendCategoryRow) *string { return r.NetSpend }),
 		// A share is a ratio, not an amount — it stays visible under
 		// -p exactly as the returns percentages do.
 		{Name: "share", Header: "share_pct", Align: output.AlignRight,
@@ -259,12 +219,9 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 			Extract: func(r gold.SpendTransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.SpendTransactionRow) string { return r.AccountExternalID }},
-		{Name: "account_kind", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.AccountKind) }},
-		{Name: "account_nickname", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Nickname) }},
-		{Name: "account_category", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.AccountCategory) }},
+		textCol("account_kind", func(r gold.SpendTransactionRow) *string { return r.AccountKind }),
+		textCol("account_nickname", func(r gold.SpendTransactionRow) *string { return r.Nickname }),
+		textCol("account_category", func(r gold.SpendTransactionRow) *string { return r.AccountCategory }),
 		{Name: "kind", Align: output.AlignLeft,
 			Extract: func(r gold.SpendTransactionRow) string { return r.Kind }},
 		// merchant_name redacts as free text, like the narrative it
@@ -290,15 +247,11 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 		// Same class as counterparty.
 		{Name: "merchant_signature", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.MerchantSignature) }},
-		{Name: "spend_primary", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.SpendPrimary) }},
-		{Name: "spend_detailed", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.SpendDetailed) }},
+		textCol("spend_primary", func(r gold.SpendTransactionRow) *string { return r.SpendPrimary }),
+		textCol("spend_detailed", func(r gold.SpendTransactionRow) *string { return r.SpendDetailed }),
 		// The same two values as they read (migration 0058).
-		{Name: "category", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.SpendLabel) }},
-		{Name: "category_primary", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.SpendPrimaryLabel) }},
+		textCol("category", func(r gold.SpendTransactionRow) *string { return r.SpendLabel }),
+		textCol("category_primary", func(r gold.SpendTransactionRow) *string { return r.SpendPrimaryLabel }),
 		// The ISSUER's own classification of the line, mapped into our
 		// vocabulary and kept beside ours (migration 0057). Off by
 		// default: it is a second opinion, it disagrees with ours by
@@ -310,10 +263,8 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 		// everywhere else in the product — `transactions.provider_category`
 		// (migration 0038), the field a config rule matches — means the
 		// issuer's RAW string. These two are our translation of it.
-		{Name: "issuer_category", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.ProviderSpendLabel) }},
-		{Name: "issuer_category_id", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.ProviderSpendDetailed) }},
+		textCol("issuer_category", func(r gold.SpendTransactionRow) *string { return r.ProviderSpendLabel }),
+		textCol("issuer_category_id", func(r gold.SpendTransactionRow) *string { return r.ProviderSpendDetailed }),
 		// Which tier decided the category (matcher / rule / provider /
 		// signature-only / model / manual) — vocabulary, not data.
 		// Five of the six are stamped on the overlay row by the
@@ -322,8 +273,7 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 		// overlay. spend_txn_categories() resolves it at the point the
 		// two scopes meet (migration 0050), which is the only place the
 		// store's verdict is distinguishable from the backlog.
-		{Name: "provenance", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Provenance) }},
+		textCol("provenance", func(r gold.SpendTransactionRow) *string { return r.Provenance }),
 		// The counterparty is the adapter's merchant field, published
 		// unfiltered: on a card row it is a shop, on a transfer it is
 		// a person. Nothing upstream separates the two, so it takes
@@ -338,10 +288,8 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Description) }},
 		{Name: "currency", Align: output.AlignLeft,
 			Extract: func(r gold.SpendTransactionRow) string { return r.Currency }},
-		{Name: "net_amount", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.SpendTransactionRow) string { return formatCents(r.NetAmount) }},
-		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.SpendTransactionRow) string { return formatCents(r.ValueOutCcy) }},
+		moneyCol("net_amount", "", func(r gold.SpendTransactionRow) *string { return r.NetAmount }),
+		outCcyCol("value", outCcy, func(r gold.SpendTransactionRow) *string { return r.ValueOutCcy }),
 		{Name: "tx_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.SpendTransactionRow) string { return r.TransactionExternalID }},
 	}

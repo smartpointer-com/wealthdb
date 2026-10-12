@@ -1,15 +1,8 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
@@ -48,58 +41,16 @@ func portfolioNamePrivacy(kindOf func(string) string) func(gold.PortfolioRow) Pr
 	}
 }
 
-// cmdPortfolios is the portfolio-grain rollup. One row per
-// registered portfolio plus one sentinel row per silver_source
-// that aggregates orphan accounts (no portfolio). The invariant
-// is: sum(portfolios.total_value_<CCY>) == sum(accounts.total_value_<CCY>)
-// == positions --with-cash total.
-func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb holdings portfolios", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
-		cmd:           "portfolios",
-		currencyUsage: "output currency for the _<CCY> aggregate columns (default: config.default_currency)",
-		privacyUsage:  "redact portfolio / account IDs and monetary amounts in the output",
-		withColumns:   true,
-	})
-	fs.Usage = func() {
-		fmt.Fprintln(stderr, portfoliosUsage())
-	}
-	if err := fs.Parse(splitFusedColumnsFlag(subargs)); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "portfolios: bad flags")
-	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return errs.Newf(2, "portfolios: unexpected positional argument %q", fs.Arg(0))
-	}
-
-	hv, err := hf.resolve(g)
-	if err != nil {
-		return err
-	}
-
-	rep := holdingsReport(request{view: "portfolios", currency: hv.outCcy, asOf: hv.asOfEpoch})
-	open := func() (*sql.DB, error) { return openGoldForRead(g, hv.cfg) }
-	return writeReport(ctx, rep, *hf.cols, "portfolios", open, *hf.privacy, hv.fmtChoice, stdout)
-}
-
 // ---- column registry -----------------------------------------------------
 
+// buildPortfolioColumnRegistry is the portfolios view: one row per
+// portfolio plus one sentinel row per source for the accounts it did
+// not group, so that Σ total_value_<CCY> equals the accounts view's.
 func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []columnSpec[gold.PortfolioRow] {
-	suffix := "_" + outCcy
 	return []columnSpec[gold.PortfolioRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.PortfolioRow) string { return r.SilverSourceID }},
-		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(r gold.PortfolioRow) string {
-			if r.SnapshotAt == 0 {
-				return ""
-			}
-			return formatDate(r.SnapshotAt)
-		}},
+		dateCol("snapshot_date", func(r gold.PortfolioRow) int64 { return r.SnapshotAt }),
 		{Name: "portfolio", Align: output.AlignLeft,
 			Privacy:     PrivacyAccountID,
 			PrivacyFunc: portfolioNamePrivacy(kindOf),
@@ -114,12 +65,10 @@ func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []c
 			}},
 		{Name: "portfolio_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PortfolioRow) string { return r.PortfolioExternalID }},
-		{Name: "base_currency", Align: output.AlignLeft,
-			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.BaseCurrency) }},
+		textCol("base_currency", func(r gold.PortfolioRow) *string { return r.BaseCurrency }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.RelationshipID) }},
-		{Name: "portfolio_nickname", Align: output.AlignLeft,
-			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.Nickname) }},
+		textCol("portfolio_nickname", func(r gold.PortfolioRow) *string { return r.Nickname }),
 		// Portfolio-level taxonomy rollups. Strict semantics in
 		// the gold layer: tax_wrapper non-nil only when every
 		// component account agrees AND none is unclassified;
@@ -129,24 +78,16 @@ func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []c
 		// not the same as the accounts table's render-time
 		// default fallback, where blank would silently show
 		// taxable_personal / self_directed.
-		{Name: "tax_wrapper", Align: output.AlignLeft,
-			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.TaxWrapper) }},
-		{Name: "management_style", Align: output.AlignLeft,
-			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.ManagementStyle) }},
+		textCol("tax_wrapper", func(r gold.PortfolioRow) *string { return r.TaxWrapper }),
+		textCol("management_style", func(r gold.PortfolioRow) *string { return r.ManagementStyle }),
 
-		{Name: "positions_value", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PortfolioRow) string { return formatCents(r.PositionsValueBase) }},
-		{Name: "cash_balance", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PortfolioRow) string { return formatCents(r.CashBalanceBase) }},
-		{Name: "total_value", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PortfolioRow) string { return formatCents(r.TotalValueBase) }},
+		moneyCol("positions_value", "", func(r gold.PortfolioRow) *string { return r.PositionsValueBase }),
+		moneyCol("cash_balance", "", func(r gold.PortfolioRow) *string { return r.CashBalanceBase }),
+		moneyCol("total_value", "", func(r gold.PortfolioRow) *string { return r.TotalValueBase }),
 
-		{Name: "positions_value_outccy", Header: "positions_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PortfolioRow) string { return formatCents(r.PositionsValueOutCcy) }},
-		{Name: "cash_balance_outccy", Header: "cash_balance" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PortfolioRow) string { return formatCents(r.CashBalanceOutCcy) }},
-		{Name: "total_value_outccy", Header: "total_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.PortfolioRow) string { return formatCents(r.TotalValueOutCcy) }},
+		outCcyTwin("positions_value", outCcy, func(r gold.PortfolioRow) *string { return r.PositionsValueOutCcy }),
+		outCcyTwin("cash_balance", outCcy, func(r gold.PortfolioRow) *string { return r.CashBalanceOutCcy }),
+		outCcyTwin("total_value", outCcy, func(r gold.PortfolioRow) *string { return r.TotalValueOutCcy }),
 	}
 }
 

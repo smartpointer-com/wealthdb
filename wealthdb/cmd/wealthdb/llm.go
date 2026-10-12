@@ -64,6 +64,34 @@ type invalidRow struct {
 	Reason string
 }
 
+// printInvalidSample prints the first few rows an attempt rejected,
+// each with its reason, under the caller's count line.
+func printInvalidSample(w io.Writer, invalid []invalidRow) {
+	for _, iv := range invalid[:min(5, len(invalid))] {
+		fmt.Fprintf(w, "    %v — %s\n", iv.Raw, iv.Reason)
+	}
+}
+
+// printUnsampled prints, one line each, the items a stratified sample
+// left out, under an "... and N more:" line. The tail is already in
+// memory, so it is printed rather than pointed at: no other surface
+// lists what a model run left unanswered.
+func printUnsampled[T any](w io.Writer, items, sample []T, key func(T) string, line func(T) string) {
+	if len(items) <= len(sample) {
+		return
+	}
+	inSample := make(map[string]bool, len(sample))
+	for _, it := range sample {
+		inSample[key(it)] = true
+	}
+	fmt.Fprintf(w, "    ... and %d more:\n", len(items)-len(sample))
+	for _, it := range items {
+		if !inSample[key(it)] {
+			fmt.Fprintln(w, line(it))
+		}
+	}
+}
+
 // splitBatches cuts a model pass's candidates into consecutive runs of
 // at most size, one model call each. A backlog sent whole in a single
 // call dies on callLLM's five-minute ceiling: no local model answers a

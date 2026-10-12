@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-// TestUsageListsEverySubcommand is the reason the listing is
-// generated rather than written out: a subcommand registers itself
-// from its own file's init(), so a new one used to reach the
-// dispatcher without reaching the help, and nothing said so. The
-// check runs both ways — a listed command that nothing serves is the
-// same defect seen from the other side.
+// TestUsageListsEverySubcommand holds the generated listing against
+// the dispatch table. A subcommand registers itself from its own
+// file's init(), so without this check a new one could reach the
+// dispatcher without reaching the help. The check runs both ways — a
+// listed command that nothing serves is the same defect seen from the
+// other side.
 func TestUsageListsEverySubcommand(t *testing.T) {
 	t.Parallel()
 	listed := map[string]commandHelp{}
@@ -71,7 +71,7 @@ func TestEveryListedCommandSaysWhatItDoes(t *testing.T) {
 // as unknown.
 func TestHelpForAViewIsTheViewsOwnHelp(t *testing.T) {
 	t.Parallel()
-	for view := range holdingsViews {
+	for _, view := range holdingsViews {
 		got := runUsage(t, "help", view)
 		want := runUsage(t, "holdings", view, "-h")
 		if got != want {
@@ -81,9 +81,8 @@ func TestHelpForAViewIsTheViewsOwnHelp(t *testing.T) {
 }
 
 // TestHelpForACommandIsItsOwnHelp pins that the two ways of asking
-// about one command print the same full text. They used to differ:
-// `help` printed a one-line blurb and `-h` the detail, and readers had
-// to be told which to use.
+// about one command, `help <name>` and `<name> -h`, print the same
+// full text.
 func TestHelpForACommandIsItsOwnHelp(t *testing.T) {
 	t.Parallel()
 	for _, c := range commandHelps {
@@ -111,9 +110,8 @@ func runUsage(t *testing.T, args ...string) string {
 }
 
 // TestTheThreeHelpPathsPrintTheSameThing pins that the three ways in
-// agree to the byte. They used to disagree twice over: two hand-kept
-// lists that had drifted apart on membership, and `help` printing
-// both of them one after the other.
+// agree to the byte: the bare invocation, --help and `help` all print
+// the one generated listing.
 func TestTheThreeHelpPathsPrintTheSameThing(t *testing.T) {
 	t.Parallel()
 	bare := runUsage(t)
@@ -126,8 +124,7 @@ func TestTheThreeHelpPathsPrintTheSameThing(t *testing.T) {
 }
 
 // TestUsageNamesEveryCommandOnce pins that each command appears in
-// the rendered listing exactly once, which is what the second copy
-// of the list used to break.
+// the rendered listing exactly once.
 func TestUsageNamesEveryCommandOnce(t *testing.T) {
 	t.Parallel()
 	out := runUsage(t)

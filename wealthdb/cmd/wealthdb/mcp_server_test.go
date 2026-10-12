@@ -117,8 +117,8 @@ func TestMCPToolList(t *testing.T) {
 func TestMCPCoversEveryCLIView(t *testing.T) {
 	t.Parallel()
 	cli := map[string][]string{
-		"holdings": keys(holdingsViews), "returns": keys(returnsViews), "spending": keys(spendingViews),
-		"income": keys(incomeViews), "cashflow": keys(cashflowViews),
+		"holdings": sorted(holdingsViews), "returns": sorted(returnsViews), "spending": sorted(spendingViews),
+		"income": sorted(incomeViews), "cashflow": sorted(cashflowViews), "gains": sorted(gainsViews),
 	}
 	s := newTestMCP("", false)
 	seen := map[string]bool{}
@@ -152,11 +152,8 @@ func TestMCPCoversEveryCLIView(t *testing.T) {
 	}
 }
 
-func keys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
+func sorted(views []string) []string {
+	out := append([]string{}, views...)
 	sort.Strings(out)
 	return out
 }
@@ -209,6 +206,25 @@ func TestMCPMissingGold(t *testing.T) {
 	}
 	if msg := s.scrubPaths("open " + filepath.Join(dir, "none.db") + " in " + cfg); strings.Contains(msg, dir) {
 		t.Errorf("a path survived the scrub: %s", msg)
+	}
+}
+
+// TestMCPScrubPathsLongestFirst: a path that extends another keeps
+// its own label, whatever order the scrub meets them in.
+func TestMCPScrubPathsLongestFirst(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "wealthdb.cfg")
+	gold := cfg + ".gold"
+	body := `{"gold_db": "` + gold + `", "default_currency": "USD", "silver_sources": []}`
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestMCP(cfg, false)
+	for range 20 {
+		if got, want := s.scrubPaths("open "+gold+" in "+cfg), "open <gold> in <config>"; got != want {
+			t.Fatalf("scrubPaths = %q, want %q", got, want)
+		}
 	}
 }
 

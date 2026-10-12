@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -52,11 +51,8 @@ be quietly wrong, and — for a source holding more than one account
 kind — how fresh each kind's data is, so a card population that
 stops updating behind a current deposit population is visible.`)
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "status: bad flags")
+	if err := parseFlags(fs, subargs, "status"); err != nil {
+		return err
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
@@ -77,18 +73,18 @@ stops updating behind a current deposit population is visible.`)
 	if fs.NArg() == 1 {
 		return runStatusDetailed(ctx, db, cfg, fs.Arg(0), *verbose, stdout)
 	}
-	return runStatusOverview(ctx, db, cfg, *verbose, stdout)
+	runStatusOverview(ctx, db, cfg, *verbose, stdout)
+	return nil
 }
 
-func runStatusOverview(ctx context.Context, db *sql.DB, cfg *config.Config, verbose bool, stdout io.Writer) error {
+func runStatusOverview(ctx context.Context, db *sql.DB, cfg *config.Config, verbose bool, stdout io.Writer) {
 	if len(cfg.SilverSources) == 0 {
 		fmt.Fprintln(stdout, "status: no silver sources configured")
-		return nil
+		return
 	}
 	for i := range cfg.SilverSources {
 		printOneLineStatus(ctx, db, &cfg.SilverSources[i], verbose, stdout)
 	}
-	return nil
 }
 
 func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id string, verbose bool, stdout io.Writer) error {
@@ -262,10 +258,9 @@ func formatDateTime(epoch int64) string {
 // printStatusVerbose is `status -v`'s extra block: the taxonomy drift
 // counters and one section per enrichment family.
 //
-// Its own function so the SEQUENCE is testable. Both families' backlogs
-// are reported here and the income section is one Fprintln and one
-// Fprintf; deleting them leaves every other test in the suite green,
-// which is the same gap the load summary had.
+// Its own function so the SEQUENCE is testable: both families'
+// backlogs are reported here, and a test pins that each section
+// prints.
 func printStatusVerbose(stdout io.Writer, st *gold.SourceStatus) {
 	fmt.Fprintln(stdout, "  taxonomy drift (what no adapter could map):")
 	fmt.Fprintf(stdout, "    asset_class='other':     %d positions\n", st.OtherAssetClassCount)

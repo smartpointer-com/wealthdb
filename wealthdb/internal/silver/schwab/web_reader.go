@@ -51,9 +51,12 @@ func (r *webReader) Close() error {
 // than dump times). Transaction-time extrema come from
 // transactions.timestamp, without the form_1099b rows the
 // transaction stream leaves out (Transactions says why).
-// LatestChangeNumber stays a live-time concept —
-// MAX(dump_runs.snapshot_at) — so a reload with no new dump is a
-// no-op even when historical content is present.
+// LatestChangeNumber is the latest dump or transaction time, the
+// value ChangeWindow advances the watermark to. The historical
+// period ends widen the snapshot range but not the change number:
+// ChangeWindow never advances to them, so a silver whose latest
+// period end is past its latest dump and transaction would never
+// read as up to date.
 func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	out := canonical.UnknownStatus()
 	if err := r.db.QueryRowContext(ctx, `
@@ -68,6 +71,7 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
           FROM transactions WHERE source <> ?`, sourceFORM1099B).Scan(&out.OldestTransactionAt, &out.LatestTransactionAt); err != nil {
 		return canonical.Status{}, fmt.Errorf("schwab-web Status transactions: %w", err)
 	}
+	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
 	ok, err := r.hasHistoricalTables(ctx)
 	if err != nil {
 		return canonical.Status{}, err
@@ -84,7 +88,6 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 			out.LatestSnapshotAt = histHi
 		}
 	}
-	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
 	if err := silver.ObserveByRuns(ctx, r.db, "schwab-web", `SELECT MAX(snapshot_at) FROM dump_runs`, &out); err != nil {
 		return canonical.Status{}, err
 	}
@@ -455,7 +458,7 @@ const (
 // overlap (statements reach back years further than the ~2-year tx-history
 // export) and record
 // the same external capital flow with a settlement-vs-trade-date offset
-// (observed ~3 days) and sub-dollar rounding. A twin is matched within this
+// (a few days) and sub-dollar rounding. A twin is matched within this
 // window — the same tolerance the gold returns layer uses to net internal
 // transfers (±3 days, 0.5% / $1).
 const (
@@ -623,9 +626,9 @@ func absInt64(v int64) int64 {
 // Reinvested dividends land as two separate transactions on
 // Schwab statements: the cash-income side ("Reinvest Dividend")
 // and the share-purchase side ("Reinvest" / "Reinvest Shares").
-// We map them to dividend and buy respectively so the canonical
+// They map to dividend and buy respectively so the canonical
 // single-entry sums stay correct (the two cancel out, net zero
-// cash impact). See sign.go for the per-kind sign rules.
+// cash impact). See canonical/sign.go for the per-kind sign rules.
 //
 // Options trades use Schwab's open/close legs: Buy to Open and
 // Buy to Close both leave cash (acquiring a long position or
@@ -677,7 +680,7 @@ func absInt64(v int64) int64 {
 // is gold's question, not this adapter's — which is why the answer here is a
 // DIRECTION and never a verdict.
 //
-// A row with no amount, or a zero one, keeps the old answer either way: the
+// A row with no amount, or a zero one, stays a journal either way: the
 // sign is the whole of the evidence, and a directionless row has no right
 // answer.
 func webKind(s string, netAmount *canonical.Decimal, description *string, payload string) canonical.TxKind {

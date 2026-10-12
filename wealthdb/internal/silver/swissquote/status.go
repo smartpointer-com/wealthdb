@@ -19,7 +19,6 @@ import (
 // no new dump produces an empty window even when historical
 // positions are present.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(t) FROM (
@@ -40,24 +39,9 @@ SELECT
     COALESCE((SELECT MAX(occurred_at) FROM transactions), -1),
     COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),    -1)
 `
-	var oldS, newS, oldT, newT, latestRun sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q).Scan(&oldS, &newS, &oldT, &newT, &latestRun); err != nil {
-		return s, fmt.Errorf("swissquote Status: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	if oldT.Valid {
-		s.OldestTransactionAt = oldT.Int64
-	}
-	if newT.Valid {
-		s.LatestTransactionAt = newT.Int64
-	}
-	if latestRun.Valid {
-		s.LatestChangeNumber = latestRun.Int64
+	s, err := silver.ContentStatus(ctx, c.db, "swissquote", q)
+	if err != nil {
+		return s, err
 	}
 	if err := silver.ObserveByRuns(ctx, c.db, "swissquote", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
 		return s, err

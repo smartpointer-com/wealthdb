@@ -209,7 +209,8 @@ type settlementFold struct {
 
 // settlementKey is the identity the two rails' id schemes cannot
 // express: one cash account, one currency, one figure, one settlement
-// day. The magnitude is unsigned because the two rails state direction
+// day (UTC; both rails date the settlement to the day and neither
+// carries a time of day on it). The magnitude is unsigned because the two rails state direction
 // differently — the confirmation in its side, the statement in its
 // debit/credit mark — and a fold that disagreed with either about the
 // sign would pair nothing.
@@ -218,17 +219,6 @@ type settlementKey struct {
 	currency string
 	amount   string
 	day      int64
-}
-
-// unixDay is the UTC day a timestamp falls in. Both rails date the
-// settlement to the day and neither carries a time of day on it.
-func unixDay(ts int64) int64 {
-	const day = 86400
-	d := ts / day
-	if ts < 0 && ts%day != 0 {
-		d--
-	}
-	return d
 }
 
 func newSettlementKey(account, currency string, amount *canonical.Decimal, settlementUnix int64) (settlementKey, bool) {
@@ -243,7 +233,7 @@ func newSettlementKey(account, currency string, amount *canonical.Decimal, settl
 		account:  account,
 		currency: strings.ToUpper(strings.TrimSpace(currency)),
 		amount:   abs.String(),
-		day:      unixDay(settlementUnix),
+		day:      utcDay(settlementUnix),
 	}, true
 }
 

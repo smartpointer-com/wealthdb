@@ -3,7 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
 )
 
 // SourceRow is one row of the `wealthdb sources` output: every
@@ -12,7 +11,7 @@ import (
 // `portfolios` (finer) and `wealthdb global` (the whole portfolio).
 //
 // Aggregation, the base/taxonomy rollup, FX, and ordering are all
-// the report_sources macro (migration 0025); this is the scan.
+// the report_sources macro (migration 0123); this is the scan.
 // sum(sources.total_<CCY>) == sum(accounts.total_<CCY>) ==
 // sum(portfolios.total_<CCY>) by construction.
 type SourceRow struct {
@@ -60,37 +59,18 @@ type SourceRow struct {
 // cash. All aggregation + FX is the report_sources macro; this is
 // the scan. Rows are ordered by silver_source_id.
 func SourcesAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]SourceRow, error) {
-	rows, err := db.QueryContext(ctx, `
+	return scanRows(ctx, db, "SourcesAsOf", `
 SELECT r.*, CASE WHEN o.observed_snapshots_through IS NULL THEN 0
                  ELSE LEAST(o.observed_snapshots_through, CAST(? AS BIGINT)) END
   FROM report_sources(?, ?) r
   LEFT JOIN source_observed o USING (silver_source_id)
- ORDER BY r.silver_source_id`, asOf, asOf, outCcy)
-	if err != nil {
-		return nil, fmt.Errorf("SourcesAsOf: %w", err)
-	}
-	defer rows.Close()
-
-	var out []SourceRow
-	for rows.Next() {
-		var (
-			r                              SourceRow
-			baseCcy, taxWrapper, mgmtStyle sql.NullString
-			pvb, cvb, tvb, pvo, cvo, tvo   sql.NullString
-		)
-		if err := rows.Scan(
-			&r.SilverSourceID, &baseCcy, &taxWrapper, &mgmtStyle, &r.SnapshotAt, &r.ValuedAt,
-			&pvb, &cvb, &tvb, &pvo, &cvo, &tvo, &r.ObservedAt,
-		); err != nil {
-			return nil, fmt.Errorf("SourcesAsOf scan: %w", err)
+ ORDER BY r.silver_source_id`, []any{asOf, asOf, outCcy}, func(r *SourceRow) []any {
+		return []any{
+			&r.SilverSourceID, str(&r.BaseCurrency), str(&r.TaxWrapper), str(&r.ManagementStyle),
+			&r.SnapshotAt, &r.ValuedAt,
+			dec(&r.PositionsValueBase), dec(&r.CashBalanceBase), dec(&r.TotalValueBase),
+			dec(&r.PositionsValueOutCcy), dec(&r.CashBalanceOutCcy), dec(&r.TotalValueOutCcy),
+			&r.ObservedAt,
 		}
-		r.BaseCurrency = nullStringToPtr(baseCcy)
-		r.TaxWrapper = nullStringToPtr(taxWrapper)
-		r.ManagementStyle = nullStringToPtr(mgmtStyle)
-		r.PositionsValueBase, r.CashBalanceBase, r.TotalValueBase,
-			r.PositionsValueOutCcy, r.CashBalanceOutCcy, r.TotalValueOutCcy =
-			sixAggPtrs(pvb, cvb, tvb, pvo, cvo, tvo)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	})
 }

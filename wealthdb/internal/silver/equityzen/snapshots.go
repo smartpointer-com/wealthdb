@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -113,38 +112,13 @@ SELECT o.deal_external_id, (SELECT MIN(t) FROM complete WHERE t > o.last_seen_at
 // in it on which the roster changes without an event: a dump that stopped
 // listing a deal (removals).
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
-	const q = `
+	return silver.SnapshotTimes(ctx, c.db, w, extra, `
 SELECT DISTINCT CAST(strftime('%s', as_of_date) AS INTEGER) AS t
   FROM positions
  WHERE as_of_date IS NOT NULL
    AND CAST(strftime('%s', as_of_date) AS INTEGER) BETWEEN ? AND ?
- ORDER BY t`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	seen := map[int64]bool{}
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		seen[t] = true
-		out = append(out, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, t := range extra {
-		if t >= w.Start && t <= w.End && !seen[t] {
-			seen[t] = true
-			out = append(out, t)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out, nil
+ ORDER BY t`,
+		w.Start, w.End)
 }
 
 // buildBatch materialises the full portfolio as of event date t: each deal's
@@ -199,7 +173,6 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
 			continue
 		}
 		held = true
-		ac := assetClassForKind(kind)
 		acNew, vehicle := taxonomyForKind(kind)
 		instKey := deal
 
@@ -215,7 +188,7 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
 			MarketValue:          silver.DecimalPtrFromNullFloat(market),
 			AcquisitionDate:      silver.DatePtrFromNullUnix(acqUnix),
 		}
-		spv := ac == canonical.AssetClassSPV
+		spv := vehicle == canonical.VehicleSPV
 		book, basis, feeShare := bookValue(stake{spv: spv, cost: cost, paidIn: paidIn,
 			held: shares, bought: bought, fee: fee})
 		change.SetBookValue(book, basis)
@@ -264,21 +237,11 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
 // custodyAccount is the single EquityZen account's change record as of t.
 // management_style is self_directed: the holder chooses which interests to
 // buy/hold/sell — the GP management happening inside each vehicle is not
-// modelled. The per-position asset_class (spv / private_fund) carries the
-// vehicle distinction.
+// modelled. The per-position vehicle (spv / fund) carries the packaging
+// distinction.
 func custodyAccount(t int64) canonical.AccountChange {
-	wrapper := canonical.TaxWrapperTaxablePersonal
-	style := canonical.ManagementStyleSelfDirected
+	a := silver.CustodyAccount(accountKey, t)
 	name := "EquityZen"
-	usd := "USD"
-	return canonical.AccountChange{
-		AccountExternalID: accountKey,
-		AccountKind:       canonical.AccountKindCustody,
-		DisplayName:       &name,
-		BaseCurrency:      &usd,
-		TaxWrapper:        &wrapper,
-		ManagementStyle:   &style,
-		FirstSeenAt:       t,
-		LastSeenAt:        t,
-	}
+	a.DisplayName = &name
+	return a
 }

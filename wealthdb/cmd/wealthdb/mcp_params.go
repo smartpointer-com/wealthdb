@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -159,10 +160,10 @@ func decodeParam(p param, raw json.RawMessage) (v any, given bool, err error) {
 		return s, true, nil
 	}
 	low := strings.ToLower(s)
-	if alias, ok := enumAliases[low]; ok && contains(p.enum, alias) {
+	if alias, ok := enumAliases[low]; ok && slices.Contains(p.enum, alias) {
 		low = alias
 	}
-	if !contains(p.enum, low) {
+	if !slices.Contains(p.enum, low) {
 		return nil, false, fmt.Errorf("%q is not one of its values; use %s", s, orList(p.enum))
 	}
 	return low, true, nil
@@ -206,15 +207,6 @@ func (a *toolArgs) flag(name string, def bool) bool {
 		return b
 	}
 	return def
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 // orList renders a vocabulary for a message: "a, b or c".

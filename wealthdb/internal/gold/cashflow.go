@@ -3,7 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
 )
 
 // The cashflow readers: spending.go and income.go with five grains
@@ -57,13 +56,14 @@ type CashflowSummaryRow struct {
 	// The reconciliation memo, off by default and never read by
 	// NetCashFlow. CashMeasured is the pool's observed value at the
 	// bucket's end minus at its start; FXEffect is the revaluation part
-	// of that change; Unexplained is what is left, a native-currency
+	// of that change; CashFlowMeasured is the net flow over the same
+	// measured accounts; Unexplained is what is left, a native-currency
 	// mismatch that is near zero when every line is placed and every
 	// own-account move paired.
 	//
 	// Near zero, NOT zero: balances are snapshot-grain and carried
 	// forward, so a bucket boundary falling between two snapshots reads
-	// a stale balance and the miss reverses next bucket. All three are
+	// a stale balance and the miss reverses next bucket. All four are
 	// nil together on a bucket whose boundary has no observed snapshot
 	// — a figure computed from part of the pool would be worse than
 	// none.
@@ -166,185 +166,55 @@ type CashflowTransactionRow struct {
 // [fromEpoch, toEpoch], valued in outCcy. `period` is handed to the
 // macro verbatim, so validating it belongs to the caller.
 func CashflowSummary(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period string) ([]CashflowSummaryRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_cashflow_summary(?, ?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy, period)
-	if err != nil {
-		return nil, fmt.Errorf("CashflowSummary: %w", err)
-	}
-	defer rows.Close()
-
-	var out []CashflowSummaryRow
-	for rows.Next() {
-		var (
-			r                                     CashflowSummaryRow
-			bucket                                sql.NullInt64
-			opIn, opOut, operating                sql.NullString
-			investing, financing, vehicles, netCF sql.NullString
-			yieldCol, taxes, fees, giving         sql.NullString
-			savingsRate                           sql.NullFloat64
-			measured, fxEffect, unexplained       sql.NullString
-			flowMeasured                          sql.NullString
-		)
-		if err := rows.Scan(&bucket, &r.TxnCount, &opIn, &opOut, &operating,
-			&investing, &financing, &vehicles, &netCF,
-			&yieldCol, &taxes, &fees, &giving, &savingsRate,
-			&measured, &fxEffect, &flowMeasured, &unexplained); err != nil {
-			return nil, fmt.Errorf("CashflowSummary scan: %w", err)
-		}
-		r.PeriodStart = nullInt64ToPtr(bucket)
-		r.OperatingIn = trimmedDecimalPtr(opIn)
-		r.OperatingOut = trimmedDecimalPtr(opOut)
-		r.Operating = trimmedDecimalPtr(operating)
-		r.Investing = trimmedDecimalPtr(investing)
-		r.Financing = trimmedDecimalPtr(financing)
-		r.Vehicles = trimmedDecimalPtr(vehicles)
-		r.NetCashFlow = trimmedDecimalPtr(netCF)
-		r.Yield = trimmedDecimalPtr(yieldCol)
-		r.Taxes = trimmedDecimalPtr(taxes)
-		r.Fees = trimmedDecimalPtr(fees)
-		r.Giving = trimmedDecimalPtr(giving)
-		r.SavingsRate = nullFloatToPtr(savingsRate)
-		r.CashMeasured = trimmedDecimalPtr(measured)
-		r.FXEffect = trimmedDecimalPtr(fxEffect)
-		r.CashFlowMeasured = trimmedDecimalPtr(flowMeasured)
-		r.Unexplained = trimmedDecimalPtr(unexplained)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "CashflowSummary", `SELECT * FROM report_cashflow_summary(?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, period}, func(r *CashflowSummaryRow) []any {
+			return []any{
+				i64(&r.PeriodStart), &r.TxnCount, dec(&r.OperatingIn), dec(&r.OperatingOut), dec(&r.Operating),
+				dec(&r.Investing), dec(&r.Financing), dec(&r.Vehicles), dec(&r.NetCashFlow),
+				dec(&r.Yield), dec(&r.Taxes), dec(&r.Fees), dec(&r.Giving), flt(&r.SavingsRate),
+				dec(&r.CashMeasured), dec(&r.FXEffect), dec(&r.CashFlowMeasured), dec(&r.Unexplained),
+			}
+		})
 }
 
 // CashflowFlows returns the (bucket, node) breakdown. `level` is
 // `section`, `class` or `group` and `investing` is `whole` or `class`;
 // both are handed to the macro verbatim.
 func CashflowFlows(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period, level, investing string) ([]CashflowFlowRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_cashflow_flows(?, ?, ?, ?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy, period, level, investing)
-	if err != nil {
-		return nil, fmt.Errorf("CashflowFlows: %w", err)
-	}
-	defer rows.Close()
-
-	var out []CashflowFlowRow
-	for rows.Next() {
-		var (
-			r                    CashflowFlowRow
-			bucket               sql.NullInt64
-			class, classLabel    sql.NullString
-			grp, groupLabel      sql.NullString
-			inflow, outflow, net sql.NullString
-			share                sql.NullFloat64
-		)
-		if err := rows.Scan(&bucket, &r.Section, &class, &classLabel, &grp, &groupLabel,
-			&r.TxnCount, &inflow, &outflow, &net, &share); err != nil {
-			return nil, fmt.Errorf("CashflowFlows scan: %w", err)
-		}
-		r.PeriodStart = nullInt64ToPtr(bucket)
-		r.Class = nullStringToPtr(class)
-		r.ClassLabel = nullStringToPtr(classLabel)
-		r.Group = nullStringToPtr(grp)
-		r.GroupLabel = nullStringToPtr(groupLabel)
-		r.Inflow = trimmedDecimalPtr(inflow)
-		r.Outflow = trimmedDecimalPtr(outflow)
-		r.Net = trimmedDecimalPtr(net)
-		r.Share = nullFloatToPtr(share)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "CashflowFlows", `SELECT * FROM report_cashflow_flows(?, ?, ?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, period, level, investing}, func(r *CashflowFlowRow) []any {
+			return []any{
+				i64(&r.PeriodStart), &r.Section, str(&r.Class), str(&r.ClassLabel), str(&r.Group), str(&r.GroupLabel),
+				&r.TxnCount, dec(&r.Inflow), dec(&r.Outflow), dec(&r.Net), flt(&r.Share),
+			}
+		})
 }
 
 // CashflowSankey returns the window's edge list. It takes no period:
 // a diagram is a window, not a series.
 func CashflowSankey(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, level, investing string) ([]CashflowSankeyRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_cashflow_sankey(?, ?, ?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy, level, investing)
-	if err != nil {
-		return nil, fmt.Errorf("CashflowSankey: %w", err)
-	}
-	defer rows.Close()
-
-	var out []CashflowSankeyRow
-	for rows.Next() {
-		var (
-			r       CashflowSankeyRow
-			section sql.NullString
-			value   sql.NullString
-			share   sql.NullFloat64
-		)
-		if err := rows.Scan(&r.Stage, &r.Source, &r.Target, &r.SourceID, &r.TargetID,
-			&section, &value, &share); err != nil {
-			return nil, fmt.Errorf("CashflowSankey scan: %w", err)
-		}
-		r.Section = nullStringToPtr(section)
-		r.Value = trimmedDecimalPtr(value)
-		r.Share = nullFloatToPtr(share)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "CashflowSankey", `SELECT * FROM report_cashflow_sankey(?, ?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, level, investing}, func(r *CashflowSankeyRow) []any {
+			return []any{
+				&r.Stage, &r.Source, &r.Target, &r.SourceID, &r.TargetID,
+				str(&r.Section), dec(&r.Value), flt(&r.Share),
+			}
+		})
 }
 
 // CashflowTransactions returns the cashflow lines themselves, oldest
 // first.
 func CashflowTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string) ([]CashflowTransactionRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_cashflow_transactions(?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy)
-	if err != nil {
-		return nil, fmt.Errorf("CashflowTransactions: %w", err)
-	}
-	defer rows.Close()
-
-	var out []CashflowTransactionRow
-	for rows.Next() {
-		var (
-			r                                    CashflowTransactionRow
-			acctKind, displayName                sql.NullString
-			nickname, category                   sql.NullString
-			name, verdict                        sql.NullString
-			spendDetailed, incomeDetailed        sql.NullString
-			provenance                           sql.NullString
-			netAmount, description, counterparty sql.NullString
-			valueOut                             sql.NullString
-		)
-		if err := rows.Scan(
-			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
-			&r.AccountExternalID, &acctKind, &displayName, &nickname, &category,
-			&r.Kind, &r.Section, &r.Class, &r.ClassLabel, &r.Group, &r.GroupLabel,
-			&name, &verdict, &spendDetailed, &incomeDetailed, &provenance,
-			&r.Currency, &netAmount, &description, &counterparty, &valueOut,
-		); err != nil {
-			return nil, fmt.Errorf("CashflowTransactions scan: %w", err)
-		}
-		r.AccountKind = nullStringToPtr(acctKind)
-		r.DisplayName = nullStringToPtr(displayName)
-		r.Nickname = nullStringToPtr(nickname)
-		r.AccountCategory = nullStringToPtr(category)
-		r.Name = nullStringToPtr(name)
-		r.Verdict = nullStringToPtr(verdict)
-		r.SpendDetailed = nullStringToPtr(spendDetailed)
-		r.IncomeDetailed = nullStringToPtr(incomeDetailed)
-		r.Provenance = nullStringToPtr(provenance)
-		r.Description = nullStringToPtr(description)
-		r.Counterparty = nullStringToPtr(counterparty)
-		r.NetAmount = trimmedDecimalPtr(netAmount)
-		r.ValueOutCcy = trimmedDecimalPtr(valueOut)
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// nullFloatToPtr is the float twin of nullInt64ToPtr, for the two rate
-// columns this feature reports — a share and a savings rate. Both are
-// proportions rather than amounts, which is what lets them survive the
-// privacy twin.
-func nullFloatToPtr(n sql.NullFloat64) *float64 {
-	if !n.Valid {
-		return nil
-	}
-	v := n.Float64
-	return &v
+	return scanRows(ctx, db, "CashflowTransactions", `SELECT * FROM report_cashflow_transactions(?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy}, func(r *CashflowTransactionRow) []any {
+			return []any{
+				&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
+				&r.AccountExternalID, str(&r.AccountKind), str(&r.DisplayName), str(&r.Nickname), str(&r.AccountCategory),
+				&r.Kind, &r.Section, &r.Class, &r.ClassLabel, &r.Group, &r.GroupLabel,
+				str(&r.Name), str(&r.Verdict), str(&r.SpendDetailed), str(&r.IncomeDetailed), str(&r.Provenance),
+				&r.Currency, dec(&r.NetAmount), str(&r.Description), str(&r.Counterparty), dec(&r.ValueOutCcy),
+			}
+		})
 }
 
 // CashflowCoverageRow is one (account, currency, period) of the coverage
@@ -383,31 +253,11 @@ type CashflowCoverageRow struct {
 
 // CashflowCoverage reads the per-account coverage report.
 func CashflowCoverage(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, period string) ([]CashflowCoverageRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_cashflow_coverage(?, ?, ?)`, fromEpoch, toEpoch, period)
-	if err != nil {
-		return nil, fmt.Errorf("CashflowCoverage: %w", err)
-	}
-	defer rows.Close()
-
-	var out []CashflowCoverageRow
-	for rows.Next() {
-		var (
-			r                CashflowCoverageRow
-			periodStart      sql.NullInt64
-			ledger, unsigned sql.NullString
-			measured, gap    sql.NullString
-		)
-		if err := rows.Scan(&periodStart, &r.SourceID, &r.Account, &r.AccountKind,
-			&r.Currency, &r.TxnCount, &ledger, &unsigned, &measured, &gap, &r.Status); err != nil {
-			return nil, fmt.Errorf("CashflowCoverage scan: %w", err)
-		}
-		r.PeriodStart = nullInt64ToPtr(periodStart)
-		r.Ledger = trimmedDecimalPtr(ledger)
-		r.UnsignedVolume = trimmedDecimalPtr(unsigned)
-		r.Measured = trimmedDecimalPtr(measured)
-		r.Gap = trimmedDecimalPtr(gap)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "CashflowCoverage", `SELECT * FROM report_cashflow_coverage(?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, period}, func(r *CashflowCoverageRow) []any {
+			return []any{
+				i64(&r.PeriodStart), &r.SourceID, &r.Account, &r.AccountKind,
+				&r.Currency, &r.TxnCount, dec(&r.Ledger), dec(&r.UnsignedVolume), dec(&r.Measured), dec(&r.Gap), &r.Status,
+			}
+		})
 }

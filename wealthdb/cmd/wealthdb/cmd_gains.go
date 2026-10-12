@@ -4,11 +4,9 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 	"time"
 
@@ -45,30 +43,10 @@ var gainsGrains = map[string]gold.GainsGrain{
 	"portfolios": gold.GainsPortfolios, "accounts": gold.GainsAccounts,
 }
 
-// gainsValueFlags are reportValueFlags plus --documents and
-// --missing-basis.
-var gainsValueFlags = func() map[string]bool {
-	m := map[string]bool{"--documents": true, "--missing-basis": true}
-	for k, v := range reportValueFlags {
-		m[k] = v
-	}
-	return m
-}()
-
 func cmdGains(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	if len(subargs) == 0 {
-		fmt.Fprintln(stderr, gainsUsage())
-		return errs.Newf(2, "gains: a view subcommand is required")
-	}
-	view, rest := subargs[0], subargs[1:]
-	switch view {
-	case "-h", "--help", "help":
-		fmt.Fprintln(stderr, gainsUsage())
-		return nil
-	}
-	if !slices.Contains(gainsViews, view) {
-		fmt.Fprintln(stderr, gainsUsage())
-		return errs.Newf(2, "gains: unknown view %q (want %s)", view, strings.Join(gainsViews, " | "))
+	view, rest, err := routeView("gains", subargs, gainsViews, gainsUsage, stderr)
+	if err != nil {
+		return err
 	}
 	return runGainsView(ctx, g, view, rest, stdout, stderr)
 }
@@ -76,20 +54,15 @@ func cmdGains(ctx context.Context, g globalFlags, subargs []string, _ io.Reader,
 func runGainsView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb gains "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	documents := fs.String("documents", "primary", "primary | all — which copies of a sale the realized view lists")
 	missing := registerMissingBasisFlag(fs)
 	reverse := fs.Bool("r", false, "realized only: newest first")
 	fs.BoolVar(reverse, "reverse", false, "realized only: newest first")
-	rf := registerReportFlags(fs, "redact account ids, quantities and monetary amounts (percentages, stamps, dates and security names stay visible)")
-
+	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, gainsUsage()) }
-	if err := fs.Parse(reorderFlagsFirst(splitFusedColumnsFlag(args), gainsValueFlags)); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "gains: bad flags")
+	if err := parseFlags(fs, args, "gains"); err != nil {
+		return err
 	}
 	if view != "realized" && isSet(fs, "documents", "r", "reverse") {
 		return errs.Newf(2, "gains: --documents and -r belong to the realized view")
@@ -97,11 +70,11 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 	if !gainsReadsBasis(view) && isSet(fs, "missing-basis") {
 		return errs.Newf(2, "gains: --missing-basis does not apply to the %s view", view)
 	}
-	if _, ok := reportPeriods[*period]; !ok {
-		return errs.Newf(2, "gains: invalid --period %q (want %s)", *period, strings.Join(reportPeriodNames, " | "))
+	if err := checkChoice("gains", "period", *period, reportPeriodNames...); err != nil {
+		return err
 	}
-	if !oneOf(*documents, "primary", "all") {
-		return errs.Newf(2, "gains: invalid --documents %q (want primary | all)", *documents)
+	if err := checkChoice("gains", "documents", *documents, "primary", "all"); err != nil {
+		return err
 	}
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
 	if err != nil {

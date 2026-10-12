@@ -104,8 +104,7 @@ func countPairsBy(pairs []gold.TransferMatchPair, by gold.TransferMatchPhase) in
 
 // matchedPartners flattens pairs to a map from each matched leg to the
 // leg it was paired with. Membership answers "was this an own-account
-// move?" exactly as the flattened set did; the value answers "to
-// where?".
+// move?"; the value answers "to where?".
 //
 // A leg reaches this map once. MatchTransferLegs pairs each leg with
 // at most one partner, so there is no case where a second pair would
@@ -149,8 +148,8 @@ var cardReceiptRe = regexp.MustCompile(`(?i)payment\s+(received\s+)?thank\s+you`
 
 // cardPaymentRe matches a bank-side payment to a card, by the issuer wording
 // that names one. It is deliberately not exhaustive: a payment this misses is
-// simply unclassified, and an unclassified leg constrains nothing and pairs as
-// it always did. Only the receipt side must be right.
+// simply unclassified, and an unclassified leg constrains nothing and pairs on
+// amount and day alone. Only the receipt side must be right.
 var cardPaymentRe = regexp.MustCompile(`(?i)\b(` +
 	`payment\s+to\s+\w+\s+card\b` +
 	`|credit\s+crd\s+(autopay|epay)` +
@@ -167,7 +166,7 @@ var reversalRe = regexp.MustCompile(`(?i)\b(refund|reversal|reversed|cancel+ed|c
 
 // legRail classifies a matcher leg's narrative as a payment rail and says what
 // rail, if any, its partner must carry. Both are empty for the vast majority
-// of legs, which therefore pair exactly as they did before.
+// of legs, which then pair on amount and day alone.
 func legRail(counterparty, description string) (rail, partner string) {
 	both := counterparty + " " + description
 	if cardReceiptRe.MatchString(both) {

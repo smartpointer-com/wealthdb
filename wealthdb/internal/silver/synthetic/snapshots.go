@@ -8,7 +8,6 @@ import (
 	"maps"
 	"slices"
 	"sort"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -269,7 +268,7 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 			Quantity:             silver.DecimalPtrOrNil(quantity),
 			MarketValue:          silver.DecimalPtrOrNil(marketValue),
 			AccruedInterest:      silver.DecimalPtrOrNil(accrued),
-			AcquisitionDate:      calendarDate(acquired),
+			AcquisitionDate:      silver.ISODate(acquired.String),
 			Payload:              payloadWith(payload, extra),
 		}
 		ref := positionRef{snap, account, key}
@@ -335,7 +334,7 @@ SELECT snapshot_at, account_id, position_key, lot_key, quantity, book_value,
 			PositionKey:       ref.key,
 			LotKey:            lotKey,
 			Quantity:          silver.DecimalPtrOrNil(quantity),
-			AcquisitionDate:   calendarDate(acquired),
+			AcquisitionDate:   silver.ISODate(acquired.String),
 			Term:              lotTerm(term, &extra),
 		}
 		l.SetBookValue(silver.DecimalPtrOrNil(bookValue), canonical.BasisStated)
@@ -461,20 +460,6 @@ SELECT snapshot_at, base_currency, quote_currency, mid_rate, bid_rate, ask_rate,
 		})
 	}
 	return rows.Err()
-}
-
-// calendarDate reads a 'YYYY-MM-DD' column as that day's UTC midnight, the
-// shape gold stores an acquisition date in. An absent or unreadable date is
-// nil.
-func calendarDate(s sql.NullString) *time.Time {
-	if !s.Valid || s.String == "" {
-		return nil
-	}
-	d, err := time.Parse(time.DateOnly, s.String)
-	if err != nil {
-		return nil
-	}
-	return &d
 }
 
 // ---- dimensions -------------------------------------------------------------

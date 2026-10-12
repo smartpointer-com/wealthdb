@@ -77,8 +77,8 @@ func (r *webReader) snapshotsHistorical(
 }
 
 // appendHistoricalPositions emits one PositionChange per row in
-// `historical_position_snapshots`, plus one InstrumentChange per
-// distinct (snapshot, instrument_key) — Schwab statements
+// `historical_position_snapshots`, plus an InstrumentChange for
+// its instrument_key (one per row; gold upserts) — Schwab statements
 // surface CUSIPs in some sections and tickers in others, so the
 // instrument_key is used as both the gold instrument_external_id
 // and the position_key. The (asset_class, vehicle) pair is derived
@@ -212,8 +212,8 @@ SELECT as_of_date, account_external_id, instrument_key,
 // appendHistoricalCashBalances emits opening + closing balance
 // rows from `historical_cash_balances`. period_start anchors the
 // opening; period_end anchors the closing. NULL-valued sides are
-// skipped — the silver loader preserves NULL distinct from a
-// real zero balance (see schwab-web's migration 0002 fix).
+// skipped — the silver keeps NULL distinct from a real zero
+// balance.
 //
 // total_debits / total_credits are kept in the silver row's
 // payload (forwarded through PositionChange's payload field) but

@@ -104,3 +104,19 @@ func (c *nonNullCell) apply() { *c.dst = c.String }
 
 // nonNull scans a nullable text column into a string, "" for NULL.
 func nonNull(dst *string) *nonNullCell { return &nonNullCell{dst: dst} }
+
+func nullFloatToPtr(n sql.NullFloat64) *float64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Float64
+	return &v
+}
+
+func nullInt64ToPtr(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
+	return &v
+}

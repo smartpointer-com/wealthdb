@@ -105,22 +105,22 @@ func TestRegimeString(t *testing.T) {
 	}
 }
 
-// TestCapitalDirectionMatchesCanonical pins the documentary direction map to the
-// canonical sign that value_outccy already carries: for every
-// fixed-direction external kind, CapitalDirection == sign(ApplyCanonicalSign).
-func TestCapitalDirectionMatchesCanonical(t *testing.T) {
-	kinds := []canonical.TxKind{
-		canonical.TxKindDeposit, canonical.TxKindTransferIn, canonical.TxKindDistribution,
-		canonical.TxKindWithdrawal, canonical.TxKindTransferOut, canonical.TxKindContribution,
+// TestExternalKindSignsMatchCanonical pins the Flow.Amount sign convention
+// to the canonical sign that value_outccy already carries: capital-in kinds
+// are positive and capital-out kinds negative under ApplyCanonicalSign.
+func TestExternalKindSignsMatchCanonical(t *testing.T) {
+	want := map[canonical.TxKind]int{
+		canonical.TxKindDeposit: +1, canonical.TxKindTransferIn: +1, canonical.TxKindDistribution: +1,
+		canonical.TxKindWithdrawal: -1, canonical.TxKindTransferOut: -1, canonical.TxKindContribution: -1,
 	}
 	one := canonical.NewDecimalFromInt(1)
-	for _, k := range kinds {
+	for k, dir := range want {
 		signed := canonical.ApplyCanonicalSign(k, &one)
 		if signed == nil {
 			t.Fatalf("%s: ApplyCanonicalSign returned nil", k)
 		}
-		if got, want := CapitalDirection(k), signed.Sign(); got != want {
-			t.Errorf("%s: CapitalDirection=%d, canonical sign=%d", k, got, want)
+		if got := signed.Sign(); got != dir {
+			t.Errorf("%s: canonical sign=%d, want %d", k, got, dir)
 		}
 	}
 }

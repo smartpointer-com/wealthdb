@@ -79,49 +79,47 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 			return op(a, b)
 		}
 	}
-	min := func(a, b int64) int64 {
-		if a < b {
-			return a
-		}
-		return b
-	}
-	max := func(a, b int64) int64 {
-		if a > b {
-			return a
-		}
-		return b
-	}
+	lower := func(a, b int64) int64 { return min(a, b) }
+	upper := func(a, b int64) int64 { return max(a, b) }
 
 	out := canonical.UnknownStatus()
 	var feeds []canonical.Status
-	if c.psn != nil {
-		s, err := c.psn.Status(ctx)
+	for _, sub := range c.subsources() {
+		s, err := sub.status(ctx)
 		if err != nil {
-			return canonical.Status{}, fmt.Errorf("ubs psn status: %w", err)
+			return canonical.Status{}, fmt.Errorf("ubs %s status: %w", sub.name, err)
 		}
-		out.OldestSnapshotAt = combine(out.OldestSnapshotAt, s.OldestSnapshotAt, min)
-		out.LatestSnapshotAt = combine(out.LatestSnapshotAt, s.LatestSnapshotAt, max)
-		out.OldestTransactionAt = combine(out.OldestTransactionAt, s.OldestTransactionAt, min)
-		out.LatestTransactionAt = combine(out.LatestTransactionAt, s.LatestTransactionAt, max)
-		out.LatestChangeNumber = combine(out.LatestChangeNumber, s.LatestChangeNumber, max)
-		feeds = append(feeds, s)
-	}
-	if c.web != nil {
-		s, err := c.web.Status(ctx)
-		if err != nil {
-			return canonical.Status{}, fmt.Errorf("ubs web status: %w", err)
-		}
-		out.OldestSnapshotAt = combine(out.OldestSnapshotAt, s.OldestSnapshotAt, min)
-		out.LatestSnapshotAt = combine(out.LatestSnapshotAt, s.LatestSnapshotAt, max)
-		out.OldestTransactionAt = combine(out.OldestTransactionAt, s.OldestTransactionAt, min)
-		out.LatestTransactionAt = combine(out.LatestTransactionAt, s.LatestTransactionAt, max)
-		out.LatestChangeNumber = combine(out.LatestChangeNumber, s.LatestChangeNumber, max)
+		out.OldestSnapshotAt = combine(out.OldestSnapshotAt, s.OldestSnapshotAt, lower)
+		out.LatestSnapshotAt = combine(out.LatestSnapshotAt, s.LatestSnapshotAt, upper)
+		out.OldestTransactionAt = combine(out.OldestTransactionAt, s.OldestTransactionAt, lower)
+		out.LatestTransactionAt = combine(out.LatestTransactionAt, s.LatestTransactionAt, upper)
+		out.LatestChangeNumber = combine(out.LatestChangeNumber, s.LatestChangeNumber, upper)
 		feeds = append(feeds, s)
 	}
 	// The report feed states the securities and the web feed the cash
 	// accounts: the source is observed only as far as both are.
 	out.ObservedSnapshotsThrough, out.ObservedTransactionsThrough = silver.MergeObserved(feeds, false)
 	return out, nil
+}
+
+// subsource is one configured reader's Status and ChangeWindow, named
+// for error messages.
+type subsource struct {
+	name         string
+	status       func(context.Context) (canonical.Status, error)
+	changeWindow func(context.Context, int64) (canonical.Window, error)
+}
+
+// subsources lists the configured readers, PSN first.
+func (c *Connection) subsources() []subsource {
+	var out []subsource
+	if c.psn != nil {
+		out = append(out, subsource{"psn", c.psn.Status, c.psn.ChangeWindow})
+	}
+	if c.web != nil {
+		out = append(out, subsource{"web", c.web.Status, c.web.ChangeWindow})
+	}
+	return out
 }
 
 // ChangeWindow produces a window covering any subsource that has
@@ -131,26 +129,10 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 // reports changes.
 func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
 	out := canonical.Window{NewChangeNumber: sinceN}
-	if c.psn != nil {
-		w, err := c.psn.ChangeWindow(ctx, sinceN)
+	for _, sub := range c.subsources() {
+		w, err := sub.changeWindow(ctx, sinceN)
 		if err != nil {
-			return canonical.Window{}, fmt.Errorf("ubs psn ChangeWindow: %w", err)
-		}
-		if w.HasChanges {
-			if !out.HasChanges {
-				out.Start, out.End = w.Start, w.End
-			} else {
-				out.Start = min(out.Start, w.Start)
-				out.End = max(out.End, w.End)
-			}
-			out.HasChanges = true
-		}
-		out.NewChangeNumber = max(out.NewChangeNumber, w.NewChangeNumber)
-	}
-	if c.web != nil {
-		w, err := c.web.ChangeWindow(ctx, sinceN)
-		if err != nil {
-			return canonical.Window{}, fmt.Errorf("ubs web ChangeWindow: %w", err)
+			return canonical.Window{}, fmt.Errorf("ubs %s ChangeWindow: %w", sub.name, err)
 		}
 		if w.HasChanges {
 			if !out.HasChanges {

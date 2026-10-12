@@ -25,25 +25,9 @@ func expandPath(p, baseDir string) (string, error) {
 	}
 
 	// Step 1: explicit ~ / $HOME prefix expansion.
-	switch {
-	case p == "~":
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("expandPath: read $HOME: %w", err)
-		}
-		p = home
-	case strings.HasPrefix(p, "~/"):
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("expandPath: read $HOME: %w", err)
-		}
-		p = filepath.Join(home, p[2:])
-	case strings.HasPrefix(p, "$HOME/"):
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("expandPath: read $HOME: %w", err)
-		}
-		p = filepath.Join(home, p[len("$HOME/"):])
+	p, err := ExpandHome(p)
+	if err != nil {
+		return "", fmt.Errorf("expandPath: %w", err)
 	}
 
 	// Step 2: generic env-var expansion for the rest. Unlike
@@ -71,4 +55,24 @@ func expandPath(p, baseDir string) (string, error) {
 	}
 
 	return filepath.Clean(p), nil
+}
+
+// ExpandHome replaces a bare `~`, or a leading `~/` or `$HOME/`, with the home
+// directory and returns any other path unchanged.
+func ExpandHome(p string) (string, error) {
+	var rest string
+	switch {
+	case p == "~":
+	case strings.HasPrefix(p, "~/"):
+		rest = p[2:]
+	case strings.HasPrefix(p, "$HOME/"):
+		rest = p[len("$HOME/"):]
+	default:
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("read $HOME: %w", err)
+	}
+	return filepath.Join(home, rest), nil
 }

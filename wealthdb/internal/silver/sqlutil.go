@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -78,6 +79,37 @@ func HasTables(ctx context.Context, db *sql.DB, names ...string) (bool, error) {
 		return false, fmt.Errorf("HasTables(%s): %w", strings.Join(names, ", "), err)
 	}
 	return n == len(names), nil
+}
+
+// SnapshotTimes are the times a snapshot stream emits a batch at: the
+// unix-seconds values q yields (one per row, bound by args) together with
+// each extra time inside w, distinct and ascending. extra carries the days
+// a holding changes without a row of its own, such as a removal.
+func SnapshotTimes(ctx context.Context, db *sql.DB, w canonical.Window, extra []int64,
+	q string, args ...any) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot times: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var t int64
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, t := range extra {
+		if t >= w.Start && t <= w.End {
+			out = append(out, t)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
 }
 
 // DecimalPtrOrNil parses a string-encoded decimal from a silver
@@ -268,6 +300,25 @@ func LoadClockStatusOver(ctx context.Context, db *sql.DB, kind, spanExtrema, led
 		s.LatestChangeNumber = latestLoad.Int64
 		s.ObservedSnapshotsThrough = latestLoad.Int64
 		s.ObservedTransactionsThrough = latestLoad.Int64
+	}
+	return s, nil
+}
+
+// ContentStatus runs q, which yields one row: the oldest and latest
+// snapshot, the oldest and latest transaction, and the latest change
+// number, each NULL or -1 where there is none. It returns the Status
+// those describe, its observed watermarks still unknown.
+func ContentStatus(ctx context.Context, db *sql.DB, kind, q string) (canonical.Status, error) {
+	s := canonical.UnknownStatus()
+	var v [5]sql.NullInt64
+	if err := db.QueryRowContext(ctx, q).Scan(&v[0], &v[1], &v[2], &v[3], &v[4]); err != nil {
+		return s, fmt.Errorf("%s Status: %w", kind, err)
+	}
+	for i, dst := range []*int64{&s.OldestSnapshotAt, &s.LatestSnapshotAt,
+		&s.OldestTransactionAt, &s.LatestTransactionAt, &s.LatestChangeNumber} {
+		if v[i].Valid {
+			*dst = v[i].Int64
+		}
 	}
 	return s, nil
 }

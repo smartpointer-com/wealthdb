@@ -109,20 +109,10 @@ func positionKey(entityID int64) string  { return instrumentID(entityID) }
 // vs (private_equity, stock) vs (private_debt, convertible_note)), not here;
 // the account is self-directed — the holder controls what the portfolio holds.
 func custodyAccount(acct string, t int64) canonical.AccountChange {
-	wrapper := canonical.TaxWrapperTaxablePersonal
-	style := canonical.ManagementStyleSelfDirected
-	usd := "USD"
+	a := silver.CustodyAccount(acct, t)
 	name := "Carta"
-	return canonical.AccountChange{
-		AccountExternalID: acct,
-		AccountKind:       canonical.AccountKindCustody,
-		TaxWrapper:        &wrapper,
-		ManagementStyle:   &style,
-		BaseCurrency:      &usd,
-		DisplayName:       &name,
-		FirstSeenAt:       t,
-		LastSeenAt:        t,
-	}
+	a.DisplayName = &name
+	return a
 }
 
 // accountKey is the gold account_external_id for the single Carta account: the
@@ -201,39 +191,13 @@ SELECT CAST(l.eid AS TEXT),
 // (dump_runs is otherwise the download time, not a holding event, so it is
 // excluded).
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
-	const q = `
+	return silver.SnapshotTimes(ctx, c.db, w, extra, `
 SELECT DISTINCT snapshot_at FROM (
     SELECT snapshot_at FROM entities     WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM securities   WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM fund_metrics WHERE snapshot_at BETWEEN ? AND ?
-)`
-	rows, err := c.db.QueryContext(ctx, q,
+)`,
 		w.Start, w.End, w.Start, w.End, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	seen := make(map[int64]bool)
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		seen[t] = true
-		out = append(out, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, t := range extra {
-		if t >= w.Start && t <= w.End && !seen[t] {
-			seen[t] = true
-			out = append(out, t)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out, nil
 }
 
 // entInfo is the stable per-entity metadata (name + fund flag + raw payload)
@@ -655,9 +619,8 @@ SELECT entity_external_id, snapshot_at, COALESCE(currency, 'USD'),
 		ccy = normCcy(ccy)
 		instKey := instrumentID(entityID)
 		// 2-D taxonomy: a fund LP interest is private_equity exposure held via
-		// the fund vehicle (TAXONOMY.md — legacy private_fund dissolves to
-		// private_equity/infrastructure/hedge_fund × fund; a Carta fund
-		// investment is read as a venture/PE feeder → private_equity).
+		// the fund vehicle (TAXONOMY.md: a Carta fund investment is read as a
+		// venture/PE feeder).
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
 			ValuedAt:             navAt,

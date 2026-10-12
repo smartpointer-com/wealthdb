@@ -57,8 +57,8 @@ const ProvenanceManual = "manual"
 type Options struct {
 	// Include and Exclude are the config-declared account-scope
 	// overrides, keyed by silver_source_id. Include pulls an account
-	// already-included account in; Exclude fences an account
-	// out. They are stamped into spend_account_scope at the start of
+	// into the population; Exclude fences an account out. They are
+	// stamped into spend_account_scope at the start of
 	// the pass, so the report macros need no runtime config injection.
 	Include map[string][]string
 	Exclude map[string][]string
@@ -124,9 +124,8 @@ type IncomeOptions struct {
 // observability: a build that stops reaching rows it used to reach
 // shows up here before it shows up in a chart.
 type Result struct {
-	// The spending family's counters, embedded so that every caller
-	// and test that read them before the income family existed reads
-	// them unchanged.
+	// The spending family's counters, embedded so a caller reads them
+	// at the top level.
 	FamilyResult
 
 	// Income is the same counters for the income family.
@@ -1008,6 +1007,35 @@ type enrichmentRow struct {
 	statedAssetClass string
 }
 
+// farRuleReaches reports whether one of the far-naming rules fires on
+// a row, so the loop that emits such rows outside the population emits
+// only those: every other pool row is some other tier's, or nobody's.
+func farRuleReaches(farRules []Rule, r candidate) bool {
+	_, ok := ConfigRuleCategory(farRules, r.ruleRow())
+	return ok
+}
+
+// rulesWithFar is the subset of a rule list that names a far account.
+func rulesWithFar(rules []Rule) []Rule {
+	var out []Rule
+	for _, r := range rules {
+		if r.Far != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// ruleRow is the candidate as the config rule tier reads it.
+func (r candidate) ruleRow() RuleRow {
+	return RuleRow{
+		Counterparty: r.counterparty, Description: r.description,
+		ProviderCategory: r.providerCategory,
+		Source:           r.key.source, Portfolio: r.portfolio,
+		Account: r.account, OccurredAt: r.occurredAt,
+	}
+}
+
 // assignCategories applies the deterministic tiers to every reachable
 // row.
 //
@@ -1042,30 +1070,6 @@ type enrichmentRow struct {
 //     about one transaction, written for exactly the row where every
 //     tier below has nothing to go on — or got it wrong.
 //
-// farRuleReaches reports whether one of the far-naming rules fires on
-// a row, so the loop that emits such rows outside the population emits
-// only those: every other pool row is some other tier's, or nobody's.
-func farRuleReaches(farRules []Rule, r candidate) bool {
-	_, ok := ConfigRuleCategory(farRules, RuleRow{
-		Counterparty: r.counterparty, Description: r.description,
-		ProviderCategory: r.providerCategory,
-		Source:           r.key.source, Portfolio: r.portfolio,
-		Account: r.account, OccurredAt: r.occurredAt,
-	})
-	return ok
-}
-
-// rulesWithFar is the subset of a rule list that names a far account.
-func rulesWithFar(rules []Rule) []Rule {
-	var out []Rule
-	for _, r := range rules {
-		if r.Far != "" {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 // Rows outside a family's population get a verdict only when the
 // matcher paired them, a pin named them, or the other family's rule
 // said where they went; nothing else has any business categorising a
@@ -1126,24 +1130,14 @@ func assignCategories(
 				if len(fam.farCols) > 0 {
 					row.farClass = farClass
 				}
-			} else if placement, ok := ConfigRuleCategory(rules, RuleRow{
-				Counterparty: r.counterparty, Description: r.description,
-				ProviderCategory: r.providerCategory,
-				Source:           r.key.source, Portfolio: r.portfolio,
-				Account: r.account, OccurredAt: r.occurredAt,
-			}); ok {
+			} else if placement, ok := ConfigRuleCategory(rules, r.ruleRow()); ok {
 				row.detailed, row.provenance = placement.Category, ProvenanceRule
 				row.statedAssetClass = placement.AssetClass
 				if placement.Far != "" && len(fam.farCols) > 0 {
 					row.farSource, row.farAccount = canonical.DeclaredSourceID, placement.Far
 				}
 			}
-		} else if placement, ok := ConfigRuleCategory(farRules, RuleRow{
-			Counterparty: r.counterparty, Description: r.description,
-			ProviderCategory: r.providerCategory,
-			Source:           r.key.source, Portfolio: r.portfolio,
-			Account: r.account, OccurredAt: r.occurredAt,
-		}); ok {
+		} else if placement, ok := ConfigRuleCategory(farRules, r.ruleRow()); ok {
 			// The other family's word on a row outside this population:
 			// the verdict is that family's to place on its own overlay,
 			// and only where the money went is written here.
@@ -1257,10 +1251,9 @@ func assignCategories(
 }
 
 // insertEnrichment writes the overlay: the whole population, plus the
-// pinned rows outside it and — on the family that emits them — the
-// matched legs, through gold.InsertChunked
-// — the same multi-row VALUES batching gold's writer gives the fact
-// tables. This is the pass's one bulk write and it runs after every
+// pinned rows outside it and, on the family that emits them, the
+// matched legs. It goes through gold.InsertChunked, the same multi-row
+// VALUES batching gold's writer gives the fact tables. This is the pass's one bulk write and it runs after every
 // load, so the shape matters: DuckDB's per-statement cost dwarfs its
 // per-row cost, and a statement per row is the slowest way to feed it.
 //

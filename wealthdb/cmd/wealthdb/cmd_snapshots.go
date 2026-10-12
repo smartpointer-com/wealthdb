@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -32,11 +30,12 @@ snapshot line per source is printed.
 Useful for "I expected to see a snapshot from yesterday and I
 don't" debugging.`)
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "snapshots: bad flags")
+	if err := parseFlags(fs, subargs, "snapshots"); err != nil {
+		return err
+	}
+	id, err := sourceArg(fs, *all, "snapshots")
+	if err != nil {
+		return err
 	}
 
 	cfg, err := config.Load(g.ConfigPath)
@@ -50,25 +49,15 @@ don't" debugging.`)
 	}
 	defer db.Close()
 
-	var ids []string
-	switch {
-	case *all && fs.NArg() > 0:
-		fs.Usage()
-		return errs.Newf(2, "snapshots: '-a' and a positional id are mutually exclusive")
-	case *all:
-		ids, err = gold.ListSilverSources(ctx, db)
-		if err != nil {
+	ids := []string{id}
+	if *all {
+		if ids, err = gold.ListSilverSources(ctx, db); err != nil {
 			return err
 		}
 		if len(ids) == 0 {
 			fmt.Fprintln(stdout, "snapshots: no silver sources registered in gold yet")
 			return nil
 		}
-	case fs.NArg() == 1:
-		ids = []string{fs.Arg(0)}
-	default:
-		fs.Usage()
-		return errs.Newf(2, "snapshots: expected one silver_source_id or -a")
 	}
 
 	// Column width for the source id — pad to the longest id so
@@ -92,31 +81,16 @@ don't" debugging.`)
 }
 
 // printSnapshotDates emits the per-day snapshot lines for one
-// source. times is oldest-first (gold.ListSnapshotTimes order) and
-// grouped by calendar date — multiple intra-day dumps (common when
-// reloading bronze) compress to a single line with a (×N) suffix.
-// For sub-day forensics, use `wealthdb status <id>` instead. With
-// latestOnly, only the newest day's line is printed.
+// source. times is oldest-first (gold.ListSnapshotTimes order);
+// multiple intra-day dumps (common when reloading bronze) compress to a
+// single line with a (×N) suffix. For sub-day forensics, use `wealthdb
+// status <id>` instead. With latestOnly, only the newest day's line is
+// printed.
 func printSnapshotDates(stdout io.Writer, idWidth int, id string, times []int64, latestOnly bool) {
-	if len(times) == 0 {
+	days := snapshotDays(id, times, latestOnly)
+	if len(days) == 0 {
 		fmt.Fprintf(stdout, "%-*s  (no snapshots)\n", idWidth, id)
 		return
-	}
-	type day struct {
-		date  string
-		count int
-	}
-	var days []day
-	for _, t := range times {
-		d := formatDate(t)
-		if n := len(days); n > 0 && days[n-1].date == d {
-			days[n-1].count++
-			continue
-		}
-		days = append(days, day{date: d, count: 1})
-	}
-	if latestOnly {
-		days = days[len(days)-1:]
 	}
 	for _, d := range days {
 		if d.count > 1 {
@@ -125,4 +99,28 @@ func printSnapshotDates(stdout io.Writer, idWidth int, id string, times []int64,
 			fmt.Fprintf(stdout, "%-*s  %s\n", idWidth, id, d.date)
 		}
 	}
+}
+
+// snapshotRow is one day a source has data for.
+type snapshotRow struct {
+	source, date string
+	count        int // snapshots taken that day
+}
+
+// snapshotDays groups a source's oldest-first snapshot times by
+// calendar date, one row per day; latestOnly keeps the newest day.
+func snapshotDays(id string, times []int64, latestOnly bool) []snapshotRow {
+	var days []snapshotRow
+	for _, t := range times {
+		d := formatDate(t)
+		if n := len(days); n > 0 && days[n-1].date == d {
+			days[n-1].count++
+			continue
+		}
+		days = append(days, snapshotRow{source: id, date: d, count: 1})
+	}
+	if latestOnly && len(days) > 0 {
+		days = days[len(days)-1:]
+	}
+	return days
 }

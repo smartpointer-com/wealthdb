@@ -58,7 +58,7 @@ type TransferLeg struct {
 	// none, which is the common case. RailPartner is the rail this leg
 	// DEMANDS of whatever it pairs with, and is what actually constrains the
 	// matching (railsCompatible). A caller that fills neither — the returns
-	// engine — matches exactly as it did before these existed.
+	// engine — matches on amount, day and the other fields alone.
 	//
 	// The two are separate because the demand is not symmetric. A card's
 	// record of being paid is unmistakably a card receipt and can insist its
@@ -128,7 +128,7 @@ type TransferLeg struct {
 	// window pair on amount alone, and on a busy account that is usually two
 	// unrelated movements — a payment out and a transfer in — which the pair
 	// then deletes together. A caller that fills neither leaves every
-	// same-account pair open, which is where AllowSameOwner stood before.
+	// same-account pair open under AllowSameOwner.
 	Signature string
 	Reversal  bool
 
@@ -860,8 +860,8 @@ func namesCompatible(d, c TransferLeg) bool {
 
 // railsCompatible enforces the partner rail a leg demands, in both
 // directions. A leg that demands nothing (RailPartner empty) constrains
-// nothing, so a caller that classifies no leg — the returns engine — pairs
-// exactly as it did before this existed.
+// nothing, so a caller that classifies no leg — the returns engine — is not
+// constrained by rails at all.
 //
 // The asymmetry is the point. A rail is often written on ONE side of a
 // movement only: a card's record of being paid says "payment thank you", while

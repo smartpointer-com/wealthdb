@@ -329,8 +329,7 @@ var ubsCardCategories = map[string]string{
 	"Equipment rental and leasing services":            "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
 	"Professional Services - Not Elsewhere Classified": "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
 
-	// Values the issuer has published since the map was last reviewed.
-	// Each is the issuer's own MCC description; where its bucket is
+	// More of the issuer's own MCC descriptions. Where a bucket is
 	// coarser than the taxonomy's the translation targets that
 	// primary's OTHER_* value, on the same rule as the block above.
 
@@ -358,9 +357,8 @@ var ubsCardCategories = map[string]string{
 	"Airports, Airport terminals":                 "TRAVEL_OTHER_TRAVEL",
 	// Card schemes assign codes to individual airlines and hotel chains,
 	// so a few of the issuer's descriptions are brand names rather than
-	// lines of business. They are ordinary published vocabulary — the
-	// block above has held several since it was written — and are
-	// translated like any other value.
+	// lines of business. They are ordinary published vocabulary, as the
+	// brand block above is, and are translated like any other value.
 	"The Ritz Carlton Hotels":                 "TRAVEL_LODGING",
 	"Westin Hotels":                           "TRAVEL_LODGING",
 	"Hoteles Melia":                           "TRAVEL_LODGING",
@@ -465,7 +463,7 @@ var raiffeisenIncomeCategories = map[string]string{
 // vocabulary's own catch-all, which is a translation this family has a
 // word for. It is translated in raiffeisenIncomeCategories above and
 // declined by ProviderIncomeCategoryClaims — sharing one map between
-// the two sides made that translation unreachable.
+// the two sides would make that translation unreachable.
 //
 // Everything else the vocabulary publishes is IN, and that is the
 // second requirement. The vocabulary is categorical, so a value outside
@@ -825,6 +823,7 @@ func taxonomyIdentity(family canonical.Family) map[string]string {
 // contributes no provider verdicts at all, which is the correct
 // default: a source that publishes no categories, or whose vocabulary
 // has never been reviewed, must not be read as if it had.
+//
 // The key is the silver kind, optionally narrowed to one account kind
 // with a "/" — `"ubs/card"` before `"ubs"`. A source whose products
 // publish different vocabularies needs the narrower key: UBS files a
@@ -929,17 +928,23 @@ func ProviderCategory(silverKind, accountKind, providerCategory string) (detaile
 	if !mapped {
 		return "", false, false
 	}
+	return v.translate(v.translations, v.untranslatable, providerCategory)
+}
+
+// translate looks one provider category up in one side's translations,
+// with that side's reviewed-and-left set as the escape.
+func (v providerVocabulary) translate(translations map[string]string, untranslatable map[string]bool, providerCategory string) (detailed string, ok, drift bool) {
 	key := providerCategoryKey(providerCategory)
 	if key == "" {
 		// No value published for this row — not a vocabulary gap.
 		return "", false, false
 	}
-	if v.untranslatable[key] {
+	if untranslatable[key] {
 		// A value this vocabulary reviewed and left alone: not drift,
 		// and left for the model tier.
 		return "", false, false
 	}
-	detailed, ok = v.translations[key]
+	detailed, ok = translations[key]
 	return detailed, ok, !ok && v.categorical
 }
 
@@ -953,15 +958,7 @@ func ProviderIncomeCategory(silverKind, accountKind, providerCategory string) (d
 	if !mapped || v.income == nil {
 		return "", false, false
 	}
-	key := providerCategoryKey(providerCategory)
-	if key == "" {
-		return "", false, false
-	}
-	if v.incomeUntranslatable[key] {
-		return "", false, false
-	}
-	detailed, ok = v.income[key]
-	return detailed, ok, !ok && v.categorical
+	return v.translate(v.income, v.incomeUntranslatable, providerCategory)
 }
 
 // ProviderIncomeCategoryClaims is ProviderCategoryClaims for the income

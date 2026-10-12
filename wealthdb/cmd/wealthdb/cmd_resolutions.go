@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -44,15 +43,11 @@ The model_name column tells you each row's provenance:
   - 'manual-override'        — from cfg.symbol_resolution.overrides
   - anything else            — LLM model that emitted the row`)
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "resolutions: bad flags")
+	if err := parseFlags(fs, subargs, "resolutions"); err != nil {
+		return err
 	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return errs.Newf(2, "resolutions: unexpected positional argument %q", fs.Arg(0))
+	if err := noPositionals(fs, "resolutions"); err != nil {
+		return err
 	}
 
 	fmtChoice, err := output.Parse(*format)

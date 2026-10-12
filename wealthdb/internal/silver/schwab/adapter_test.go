@@ -560,3 +560,30 @@ func TestADividendClawbackKeepsItsSign(t *testing.T) {
 		}
 	}
 }
+
+// A description two positions state under different keys resolves to
+// neither, even when the instruments table states it too; a description
+// only the instruments table states still resolves. Keys are invented.
+func TestDescriptionResolverKeepsAmbiguityAcrossTables(t *testing.T) {
+	_, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, payload) VALUES
+            (1000, 'ACC', 'EXMPL0001', '{"instrument":{"assetType":"EQUITY","cusip":"EXMPL0001","description":"EXAMPLE HOLDINGS INC"}}'),
+            (2000, 'ACC', 'EXMPL0002', '{"instrument":{"assetType":"EQUITY","cusip":"EXMPL0002","description":"EXAMPLE HOLDINGS INC"}}');
+        INSERT INTO instruments(snapshot_at, symbol, payload) VALUES
+            (1000, 'EXA', '{"cusip":"EXMPL0003","description":"EXAMPLE HOLDINGS INC"}'),
+            (1000, 'OTH', '{"cusip":"EXMPL0004","description":"OTHER EXAMPLE CORP"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (&apiReader{db: seed}).buildDescriptionToInstrumentKey(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key, ok := got[normalizeSchwabDescription("EXAMPLE HOLDINGS INC")]; ok {
+		t.Errorf("ambiguous description resolved to %q, want no key", key)
+	}
+	if key := got[normalizeSchwabDescription("OTHER EXAMPLE CORP")]; key != "EXMPL0004" {
+		t.Errorf("instruments-only description = %q, want EXMPL0004", key)
+	}
+}

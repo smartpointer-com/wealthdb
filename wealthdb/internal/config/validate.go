@@ -19,7 +19,7 @@ import (
 var IDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // symbolOverrideShapeRe matches the ticker shape we'll accept in
-// `symbol_overrides[].symbol`. Same surface form the runtime
+// `symbol_resolution.overrides[].symbol`. Same surface form the runtime
 // validator in cmd_resolve_symbols uses for LLM responses (kept
 // in sync intentionally — overrides are held to the same shape
 // rules so they don't sneak past the read-time COALESCE as
@@ -172,8 +172,8 @@ func (c *Config) validateSymbolResolution(seenIDs map[string]bool) error {
 }
 
 // validatePortfolioOverrides checks portfolio_overrides: same shape rules as
-// account_overrides but keyed by portfolio_external_id. tax_wrapper is the
-// only dimension wired through today.
+// account_overrides but keyed by portfolio_external_id, with tax_wrapper and
+// exclude as the only fields.
 func (c *Config) validatePortfolioOverrides(seenIDs map[string]bool) error {
 	for sourceID, perPortfolio := range c.PortfolioOverrides {
 		if !seenIDs[sourceID] {
@@ -200,11 +200,6 @@ func (c *Config) validatePortfolioOverrides(seenIDs map[string]bool) error {
 	return nil
 }
 
-// validateAccountOverrides checks account_overrides: every outer key must
-// name a declared silver source (catches typos early); every inner key must
-// be non-empty (an empty account_external_id can't match anything and is
-// almost always user error); typed fields validate against the canonical
-// enums.
 // validateDeclaredAccounts checks declared_accounts: every id is a
 // well-formed key, and the kind and the wrapper — the two fields the
 // statement reads — are both present and both in their enums. The
@@ -272,6 +267,11 @@ func (c *Config) declares(id string) bool {
 	return ok
 }
 
+// validateAccountOverrides checks account_overrides: every outer key must
+// name a declared silver source (catches typos early); every inner key must
+// be non-empty (an empty account_external_id can't match anything and is
+// almost always user error); typed fields validate against the canonical
+// enums.
 func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 	for sourceID, perAccount := range c.AccountOverrides {
 		if !seenIDs[sourceID] {
@@ -365,7 +365,7 @@ func (c *Config) validateReturns(seenIDs map[string]bool) error {
 	// source (catches typos early); portfolio/account ids must be
 	// non-empty; every value must parse as YYYY-MM-DD. Portfolio /
 	// account ids can't be checked against gold here (no DB access at
-	// load), so a typo'd inner key silently no-ops — a known v1 gap.
+	// load), so a typo'd inner key silently no-ops.
 	if o := c.InceptionOverrides; o != nil {
 		for sourceID, d := range o.Sources {
 			if !seenIDs[sourceID] {
@@ -715,6 +715,7 @@ func incomeRuleList(rules []IncomeRule) []ruleEntry {
 // model-emittable restriction belongs to the model tier, which guards
 // what the model may say; a rule is the holder's own local input, and
 // the model never sees it.
+//
 // `investingValue` is the one value of this family's vocabulary whose
 // cash flow section is `investing` — `investment` for spending,
 // `capital_return` for income. An `asset_class` on any other value is
@@ -804,20 +805,6 @@ func compileSpendScope(sc *SpendingRuleScope) (CompiledSpendScope, error) {
 	return out, nil
 }
 
-// validateMatchKnobs bounds one transfer matcher's knobs. Both matchers
-// (returns_transfer_matching, spending.internal_transfer_matching) run
-// on the same core and are checked whether or not their block is
-// enabled or even reachable, so a mis-typed value fails at load rather
-// than lying in wait: the window cap keeps it from pairing unrelated
-// month-apart flows, the tolerance cap from pairing unrelated amounts.
-// There is no income twin — one matcher runs, and income reads its
-// verdicts.
-//
-// Both knobs bound the matcher's banded passes — the named pass and the
-// amount pass — which are the phases that guess. A pair the holder stated
-// in the override ledger, or one the source asserted by stamping a
-// reference on both legs, spends neither: neither is a guess, so there is
-// no band to widen or narrow around it.
 // validateMatchNames compiles each spending matcher name and checks that it
 // names a declared source: a name for a source that does not exist would
 // silently name nothing.
@@ -840,6 +827,20 @@ func validateMatchNames(names []SpendingMatchName, seenIDs map[string]bool) erro
 	return nil
 }
 
+// validateMatchKnobs bounds one transfer matcher's knobs. Both matchers
+// (returns_transfer_matching, spending.internal_transfer_matching) run
+// on the same core and are checked whether or not their block is
+// enabled or even reachable, so a mis-typed value fails at load rather
+// than lying in wait: the window cap keeps it from pairing unrelated
+// month-apart flows, the tolerance cap from pairing unrelated amounts.
+// There is no income twin — one matcher runs, and income reads its
+// verdicts.
+//
+// Both knobs bound the matcher's banded passes — the named pass and the
+// amount pass — which are the phases that guess. A pair the holder stated
+// in the override ledger, or one the source asserted by stamping a
+// reference on both legs, spends neither: neither is a guess, so there is
+// no band to widen or narrow around it.
 func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) error {
 	if windowDays != nil && (*windowDays < 0 || *windowDays > 30) {
 		return fmt.Errorf("config: %s.window_days %d out of range [0, 30]", block, *windowDays)
@@ -852,8 +853,8 @@ func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) er
 
 // validateIDListNested checks one grain map of an id-list block — the
 // returns_exclude / returns_hide grains, and the include / exclude sides
-// of spending.accounts and income.accounts: every source id must be declared, every listed id
-// non-empty.
+// of the spending, income and cashflow `accounts` blocks: every source
+// id must be declared, every listed id non-empty.
 func validateIDListNested(block, grain string, m map[string][]string, seenIDs map[string]bool) error {
 	for sourceID, ids := range m {
 		if !seenIDs[sourceID] {

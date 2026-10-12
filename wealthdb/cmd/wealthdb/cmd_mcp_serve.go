@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -70,14 +71,11 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	allInterfaces := fs.Bool("all-interfaces", false, "allow --http to listen beyond loopback (inside a container whose publish is loopback-only)")
 	verbose := fs.Bool("v", false, "log filter values and other call detail at debug level")
 	fs.Usage = func() { fmt.Fprintln(stderr, mcpServeUsage) }
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "mcp-serve: bad flags")
+	if err := parseFlags(fs, subargs, "mcp-serve"); err != nil {
+		return err
 	}
-	if fs.NArg() != 0 {
-		return errs.Newf(2, "mcp-serve: unexpected argument %q", fs.Arg(0))
+	if err := noPositionals(fs, "mcp-serve"); err != nil {
+		return err
 	}
 	if *stdio == (*httpAddr != "") {
 		return errs.Newf(2, "mcp-serve: pass exactly one of --stdio and --http ADDR")
@@ -383,7 +381,9 @@ func (s *mcpServer) withGold(ctx context.Context, cfg *config.Config, fn func(*s
 
 // scrubPaths takes the config file's path and the paths it names out
 // of a message bound for the model: a path names the machine's user and
-// layout, and is no help to an answer.
+// layout, and is no help to an answer. The longest path is replaced
+// first, so a path that extends another (a gold file beside the config,
+// named after it) keeps its own label.
 func (s *mcpServer) scrubPaths(msg string) string {
 	paths := map[string]string{s.configPath: "<config>"}
 	if cfg, err := config.Load(s.configPath); err == nil {
@@ -392,10 +392,15 @@ func (s *mcpServer) scrubPaths(msg string) string {
 			paths[src.Path] = "<silver " + src.ID + ">"
 		}
 	}
-	for p, label := range paths {
+	order := make([]string, 0, len(paths))
+	for p := range paths {
 		if p != "" {
-			msg = strings.ReplaceAll(msg, p, label)
+			order = append(order, p)
 		}
+	}
+	sort.Slice(order, func(i, j int) bool { return len(order[i]) > len(order[j]) })
+	for _, p := range order {
+		msg = strings.ReplaceAll(msg, p, paths[p])
 	}
 	return msg
 }

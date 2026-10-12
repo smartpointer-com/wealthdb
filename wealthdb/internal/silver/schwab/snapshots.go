@@ -24,9 +24,9 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	// build batches in chronological order. We use dump_runs as
 	// the authoritative list — every silver row's snapshot_at must
 	// correspond to a dump_runs entry.
-	snapshotTimes, err := c.snapshotTimesInWindow(ctx, w)
+	snapshotTimes, err := dumpTimesInWindow(ctx, c.db, w)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("schwab api: %w", err)
 	}
 
 	// One batch per snapshot_at. The map gives O(1) routing as we
@@ -63,16 +63,16 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	return silver.NewSnapshotStream(batches), nil
 }
 
-// snapshotTimesInWindow returns the distinct dump_runs.snapshot_at
-// values in [w.Start, w.End], in chronological order.
-func (c *apiReader) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
+// dumpTimesInWindow returns the distinct dump_runs.snapshot_at values
+// of a silver (either feed) in [w.Start, w.End], in chronological order.
+func dumpTimesInWindow(ctx context.Context, db *sql.DB, w canonical.Window) ([]int64, error) {
 	const q = `
 SELECT snapshot_at FROM dump_runs
  WHERE snapshot_at BETWEEN ? AND ?
  ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	rows, err := db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
+		return nil, fmt.Errorf("dump_runs in window: %w", err)
 	}
 	defer rows.Close()
 
@@ -80,7 +80,7 @@ SELECT snapshot_at FROM dump_runs
 	for rows.Next() {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
-			return nil, fmt.Errorf("snapshotTimesInWindow scan: %w", err)
+			return nil, fmt.Errorf("dump_runs in window scan: %w", err)
 		}
 		out = append(out, t)
 	}
@@ -152,14 +152,11 @@ func (c *apiReader) appendAccounts(ctx context.Context, w canonical.Window, byTi
 	return rows.Err()
 }
 
-// schwabBalancePayload covers the fields we currently extract
-// from account_balances rows. Schwab's full balance object has
-// many fields; we only need the cash component for the gold
-// cash_balances table.
+// schwabBalancePayload covers the field read from account_balances
+// rows. Schwab's full balance object has many fields; only the cash
+// component reaches the gold cash_balances table.
 type schwabBalancePayload struct {
 	CashBalance *canonical.Decimal `json:"cashBalance"`
-	// Some balance subtypes nest the value differently; we expand
-	// this struct as new shapes appear.
 }
 
 // appendAccountBalances emits CashBalanceChange rows from

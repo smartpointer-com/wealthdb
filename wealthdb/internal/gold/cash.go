@@ -18,9 +18,9 @@ import (
 //
 // Rows reuse PositionRow (so cmd/wealthdb's column extractors apply
 // unchanged); the report_cash macro sets the synthetic fields
-// (asset_class='cash', position_key='cash:<CCY>', symbol=<CCY>,
-// name='Cash <CCY>', quantity NULL, market_value = the amount). See
-// migration 0021.
+// (asset_class='cash', vehicle='demand_deposit',
+// position_key='cash:<CCY>', symbol=<CCY>, name='Cash <CCY>', quantity
+// NULL, market_value = the amount). See migration 0123.
 func CashAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]PositionRow, error) {
 	return scanPositionRows(ctx, db, "CashAsOf",
 		`SELECT * FROM report_cash(?, ?)`, asOf, outCcy)

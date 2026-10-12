@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -31,24 +30,22 @@ Interactive first-time setup. Walks you through:
   - one or more silver sources (id / kind / path)
 
 Refuses to clobber an existing config file (use a different -c
-path, or delete the old file). Requires an interactive TTY;
+path, or delete the old file); an empty file counts as absent. Requires an interactive TTY;
 pipe-driven invocations are rejected to avoid silently producing
 empty configs.`)
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "config: bad flags")
+	if err := parseFlags(fs, subargs, "config"); err != nil {
+		return err
 	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return errs.Newf(2, "config: unexpected positional argument %q", fs.Arg(0))
+	if err := noPositionals(fs, "config"); err != nil {
+		return err
 	}
 
 	// Refuse to clobber. Same exit code as `init`-on-existing
-	// (DESIGN.md §4.10 row 4).
-	if _, err := os.Stat(g.ConfigPath); err == nil {
+	// (DESIGN.md §4.10 row 4). An empty file holds nothing to clobber:
+	// it is what the host-side wrapper creates so it can bind-mount
+	// the path before any config exists.
+	if fi, err := os.Stat(g.ConfigPath); err == nil && fi.Size() > 0 {
 		return errs.Newf(errs.ExitInitExisting,
 			"config file %q already exists. Delete or move it first, or pass -c <other-path>.", g.ConfigPath)
 	}

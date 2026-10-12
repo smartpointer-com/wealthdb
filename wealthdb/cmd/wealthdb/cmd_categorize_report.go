@@ -307,28 +307,17 @@ func printCategorizeSummary(
 
 	if len(leftovers) > 0 {
 		sample := stratifiedSample(leftovers, canaryListLimit, merchantCandidate.DominantSource)
+		line := func(c merchantCandidate) string {
+			return fmt.Sprintf("    %s [%s, %d txn(s)]", c.Signature, c.DominantSource(), c.Txns)
+		}
 		fmt.Fprintf(w, "  sample of uncategorised %s (%d of %d, mixed across sources):\n", fam.plural(), len(sample), len(leftovers))
 		for _, c := range sample {
-			fmt.Fprintf(w, "    %s [%s, %d txn(s)]\n", c.Signature, c.DominantSource(), c.Txns)
+			fmt.Fprintln(w, line(c))
 		}
-		// The tail is already in memory, so it is printed rather
-		// than pointed at: the sample is the readable head, and
-		// everything it left out follows one signature per line.
-		// No other surface lists this set — the dry-run plan walks
-		// the verdicts the model ACCEPTED, and pays a full model
-		// pass to do it.
-		if len(leftovers) > len(sample) {
-			inSample := make(map[string]bool, len(sample))
-			for _, c := range sample {
-				inSample[c.Signature] = true
-			}
-			fmt.Fprintf(w, "    ... and %d more:\n", len(leftovers)-len(sample))
-			for _, c := range leftovers {
-				if !inSample[c.Signature] {
-					fmt.Fprintf(w, "    %s [%s, %d txn(s)]\n", c.Signature, c.DominantSource(), c.Txns)
-				}
-			}
-		}
+		// The sample is the readable head, and everything it left out
+		// follows one signature per line: the dry-run plan walks only
+		// the verdicts the model ACCEPTED.
+		printUnsampled(w, leftovers, sample, func(c merchantCandidate) string { return c.Signature }, line)
 	}
 	printSpendCanaries(w, canaries)
 }
@@ -386,10 +375,8 @@ func printSpendCanaries(w io.Writer, c *spendCanaries) {
 		// the expected shape of a pair the source asserted and the alarming
 		// shape of one the amounts alone produced.
 		fmt.Fprintf(w, "    (%s)\n", p.By)
-		fmt.Fprintf(w, "    %s  %s %s %.2f %s [%s]\n",
-			formatEpochDay(p.Debit.Day), p.Debit.Source, p.Debit.Account, p.Debit.Amount, p.Debit.Currency, p.Debit.Signature)
-		fmt.Fprintf(w, "    %s  %s %s %.2f %s [%s]\n",
-			formatEpochDay(p.Credit.Day), p.Credit.Source, p.Credit.Account, p.Credit.Amount, p.Credit.Currency, p.Credit.Signature)
+		printLeg(w, p.Debit)
+		printLeg(w, p.Credit)
 	}
 	if c.PairsOutsideSpending > 0 {
 		fmt.Fprintf(w, "    %d pair(s) matched outside the spending population, not listed\n", c.PairsOutsideSpending)
@@ -404,8 +391,7 @@ func printSpendCanaries(w io.Writer, c *spendCanaries) {
 			if i == canaryListLimit {
 				break
 			}
-			fmt.Fprintf(w, "    %s  %s %s %.2f %s [%s]\n",
-				formatEpochDay(l.Day), l.Source, l.Account, l.Amount, l.Currency, l.Signature)
+			printLeg(w, l)
 		}
 	}
 
@@ -420,4 +406,10 @@ func printSpendCanaries(w io.Writer, c *spendCanaries) {
 				formatEpochDay(s.Credit.Day), s.Credit.Source, s.Credit.Amount, s.Credit.Currency)
 		}
 	}
+}
+
+// printLeg is one transfer leg of a canary listing: day, source,
+// account, amount, currency and signature.
+func printLeg(w io.Writer, l spending.Leg) {
+	fmt.Fprintf(w, "    %s  %s %s %.2f %s [%s]\n", formatEpochDay(l.Day), l.Source, l.Account, l.Amount, l.Currency, l.Signature)
 }

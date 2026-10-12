@@ -314,3 +314,51 @@ func TestTransactionsCarryTheBanksFiling(t *testing.T) {
 		}
 	}
 }
+
+// TestQuietAccountCurrentAtSourceLatest pins the CURRENT balance of an
+// account whose roster row did not change at the latest load to that load.
+// Silver content-dedups an unchanged roster row, and gold's cash_chosen keeps
+// only rows at the source's latest snapshot, so a stamp at the account's own
+// older row would drop it from the latest net-worth view.
+func TestQuietAccountCurrentAtSourceLatest(t *testing.T) {
+	path, db := newFixture(t)
+	seed(t, db)
+	quietLoad := loadUnix - 7*86400
+	if _, err := db.Exec(`INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?)`,
+		quietLoad, "acct-2", "Savings", "", "…8888", nil, 250.00, "{}"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	conn := openConn(t, path)
+	ctx := context.Background()
+	stream, err := conn.Snapshots(ctx, fullWindow(t, conn))
+	if err != nil {
+		t.Fatalf("Snapshots: %v", err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	var found bool
+	for _, cb := range batch.CashBalances {
+		if cb.AccountExternalID != "acct-2" {
+			continue
+		}
+		found = true
+		if cb.BalanceKind != canonical.BalanceKindCurrent || cb.SnapshotAt != loadUnix {
+			t.Errorf("quiet account: %s balance at %d, want current at the source's latest %d",
+				cb.BalanceKind, cb.SnapshotAt, loadUnix)
+		}
+		if cb.Amount.String() != "250" || cb.Currency != "USD" {
+			t.Errorf("quiet account: %s %s, want 250 USD", cb.Amount.String(), cb.Currency)
+		}
+	}
+	if !found {
+		t.Fatal("quiet account: no CURRENT balance")
+	}
+	for _, a := range batch.Accounts {
+		if a.AccountExternalID == "acct-2" && a.LastSeenAt != quietLoad {
+			t.Errorf("quiet account LastSeenAt = %d, want its own latest row %d", a.LastSeenAt, quietLoad)
+		}
+	}
+}

@@ -28,9 +28,9 @@ func init() {
 // the Metabase Returns and Gains dashboards are as fresh as the
 // holdings. Hidden from `wealthdb help`; it's plumbing for `wealthdb
 // web`, not a user-facing command (diagnostic knobs stay on `wealthdb
-// returns` and `wealthdb gains`). A concurrent
-// `wealthdb load` holds DuckDB's single writer lock, so the open fails
-// cleanly here and the wrapper aborts before the snapshot is touched.
+// returns` and `wealthdb gains`). A concurrent write command holds the
+// gold write mutex, so the gate fails cleanly here and the wrapper
+// aborts before the snapshot is touched.
 func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Reader, _, stderr io.Writer) error {
 	cfg, err := config.Load(g.ConfigPath)
 	if err != nil {
@@ -38,9 +38,8 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	}
 
 	// Materialization mutates the live gold file: gate for write, then
-	// open RW (mirrors cmd_load).
-	db, lock, err := openGoldForWrite(g, cfg, "web-materialize",
-		"gold database %q does not exist. Run 'wealthdb init' first (requires write access).")
+	// open RW.
+	db, lock, err := openGoldForWrite(g, cfg, "web-materialize", defaultMissingGoldMsg)
 	if err != nil {
 		return err
 	}

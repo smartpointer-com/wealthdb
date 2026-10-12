@@ -26,7 +26,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendAccounts(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendInstruments(ctx, w, byTime); err != nil {
+	if err := c.appendInstruments(ctx, byTime); err != nil {
 		return nil, err
 	}
 	if err := c.appendPositions(ctx, w, byTime); err != nil {
@@ -48,38 +48,21 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // case where a content row has a snapshot_at that doesn't match
 // any dump_run.
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	const q = `
+	return silver.SnapshotTimes(ctx, c.db, w, nil, `
 SELECT DISTINCT snapshot_at FROM (
     SELECT snapshot_at FROM dump_runs     WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM accounts      WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM positions     WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM cash_balances WHERE snapshot_at BETWEEN ? AND ?
 )
-ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q,
-		w.Start, w.End, w.Start, w.End,
-		w.Start, w.End, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+ORDER BY snapshot_at`,
+		w.Start, w.End, w.Start, w.End, w.Start, w.End, w.Start, w.End)
 }
 
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	// silver may or may not carry a promoted `management_style`
-	// column (forward-compat with a future viac loader
-	// update). When present, the silver value wins; otherwise
-	// the default is `automated` — every observed VIAC product
-	// is robo-managed.
+	// A silver may carry a promoted `management_style` column.
+	// When present, the silver value wins; otherwise the default
+	// is `automated` — every VIAC product is robo-managed.
 	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
 	if err != nil {
 		return err
@@ -160,7 +143,7 @@ func productCategory(productCode string) string {
 	return ""
 }
 
-func (c *Connection) appendInstruments(_ context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *Connection) appendInstruments(ctx context.Context, byTime map[int64]*canonical.SnapshotBatch) error {
 	// silver.instruments has no snapshot_at; emit the latest-
 	// known row per ISIN against every snapshot in the window.
 	// gold's per-column upsert plus LEAST/GREATEST on
@@ -171,7 +154,7 @@ SELECT instrument_external_id, COALESCE(isin, ''),
        COALESCE(asset_class, ''),
        first_seen_at, last_seen_at, payload
   FROM instruments`
-	rows, err := c.db.QueryContext(context.Background(), q)
+	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {
 		return fmt.Errorf("appendInstruments: %w", err)
 	}

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -15,22 +14,17 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	times, err := c.snapshotTimesInWindow(ctx, w)
-	if err != nil {
-		return nil, err
-	}
 	histTimes, err := c.historicalSnapshotTimes(ctx, w)
 	if err != nil {
 		return nil, err
 	}
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times)+len(histTimes))
+	times, err := c.snapshotTimesInWindow(ctx, w, histTimes)
+	if err != nil {
+		return nil, err
+	}
+	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
 	for _, t := range times {
 		byTime[t] = &canonical.SnapshotBatch{}
-	}
-	for _, t := range histTimes {
-		if _, ok := byTime[t]; !ok {
-			byTime[t] = &canonical.SnapshotBatch{}
-		}
 	}
 
 	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
@@ -66,51 +60,32 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 	}
 
-	// Sorted union of live + historical times so batches stream
-	// in chronological order (important for gold's earlier-wins
+	// times is the sorted union of live + historical times, so batches
+	// stream in chronological order (important for gold's earlier-wins
 	// FirstSeenAt accounting on instruments + accounts).
-	allTimes := make([]int64, 0, len(byTime))
-	for t := range byTime {
-		allTimes = append(allTimes, t)
-	}
-	slices.Sort(allTimes)
-	out := make([]canonical.SnapshotBatch, 0, len(allTimes))
-	for _, t := range allTimes {
+	out := make([]canonical.SnapshotBatch, 0, len(times))
+	for _, t := range times {
 		out = append(out, *byTime[t])
 	}
 	return silver.NewSnapshotStream(out), nil
 }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at
-// values across dump_runs and the snapshot-typed content tables.
-// All four are typically the same set (Fidelity dumps create a
-// dump_runs row and same-timestamp positions/accounts/portfolios
-// rows), but the union is defensive against partial dumps.
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	const q = `
+// values across dump_runs and the snapshot-typed content tables,
+// plus the extra (historical) times. All four tables typically hold
+// the same set (Fidelity dumps create a dump_runs row and
+// same-timestamp positions/accounts/portfolios rows), but the union
+// is defensive against partial dumps.
+func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
+	return silver.SnapshotTimes(ctx, c.db, w, extra, `
 SELECT DISTINCT snapshot_at FROM (
     SELECT snapshot_at FROM dump_runs  WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM positions  WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM accounts   WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL SELECT snapshot_at FROM portfolios WHERE snapshot_at BETWEEN ? AND ?
 )
-ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q,
-		w.Start, w.End, w.Start, w.End,
-		w.Start, w.End, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+ORDER BY snapshot_at`,
+		w.Start, w.End, w.Start, w.End, w.Start, w.End, w.Start, w.End)
 }
 
 func (c *Connection) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
@@ -136,15 +111,7 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 		if !ok {
 			continue
 		}
-		// Promote the silver `kind` ('529' / 'trust_managed' /
-		// 'other') as the portfolio's DisplayName so the
-		// `wealthdb portfolios` output shows something more
-		// meaningful than the bare label. Real label remains the
-		// PortfolioExternalID for joins.
-		display := extID
-		if kind != "" && kind != "other" {
-			display = fmt.Sprintf("%s (%s)", extID, kind)
-		}
+		display := portfolioDisplay(extID, kind)
 		batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
 			PortfolioExternalID: extID,
 			DisplayName:         &display,
@@ -155,6 +122,18 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 		})
 	}
 	return rows.Err()
+}
+
+// portfolioDisplay is a portfolio's DisplayName: its label with the
+// silver `kind` ('529' / 'trust_managed' / 'daf') promoted beside it,
+// so the `wealthdb portfolios` output shows something more meaningful
+// than the bare label. The label stays the PortfolioExternalID for
+// joins.
+func portfolioDisplay(id, kind string) string {
+	if kind != "" && kind != "other" {
+		return fmt.Sprintf("%s (%s)", id, kind)
+	}
+	return id
 }
 
 // appendAccounts joins each silver account against its portfolio
@@ -170,13 +149,11 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 //     override can pin per-account values.
 //
 // ManagementStyle comes from silver's promoted column
-// `accounts.management_style` (added in fidelity-web silver
-// migration 0003, with 0006 correcting the 529 value — '529' →
-// 'automated' (a model-portfolio plan, not free selection),
-// 'trust_managed' → 'discretionary', 'other'/NULL → NULL). Pre-v3
-// silvers don't have the column; the adapter degrades gracefully
-// via a PRAGMA-based hasColumn probe and falls back to deriving
-// the style from portfolios.kind in the same shape.
+// `accounts.management_style` (fidelity-web silver migrations 0003
+// and 0006: '529' → 'automated' (a model-portfolio plan, not free
+// selection), 'trust_managed' → 'discretionary', 'other'/NULL →
+// NULL). A silver without the column falls back to deriving the
+// style from portfolios.kind in the same shape.
 //
 // All taxonomy columns stay nil for accounts whose portfolio has
 // no classification or no portfolio at all; the gold COALESCE

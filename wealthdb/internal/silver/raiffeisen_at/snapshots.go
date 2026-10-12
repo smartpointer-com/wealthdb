@@ -19,7 +19,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	ccy, err := c.accountCurrencies(ctx)
+	ccy, err := silver.ReadAccountCurrencies(ctx, c.db, "EUR")
 	if err != nil {
 		return nil, err
 	}
@@ -36,19 +36,27 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // appendAccounts emits one AccountChange (AccountKind cash) per deposit account
 // from its latest roster snapshot, plus a CURRENT cash balance when the roster
 // captured a live balance.
+//
+// The CURRENT balance is stamped at the SOURCE's latest roster snapshot, not
+// at the account's own. Silver content-dedups an unchanged roster row, so a
+// quiet account's MAX(snapshot_at) falls behind the source's; gold's
+// cash_chosen keeps only the rows carrying the source's single
+// MAX(snapshot_at), so an account stamped at its own would drop out of the
+// latest net-worth view once another account changed. The figure is still
+// that account's latest known balance, as of this load.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window,
-	ccy map[string]string, batch *canonical.SnapshotBatch) error {
+	ccy silver.AccountCurrencies, batch *canonical.SnapshotBatch) error {
 	const q = `
 SELECT a.account_external_id,
        COALESCE(a.account_type, ''), COALESCE(a.nickname, ''), COALESCE(a.mask, ''),
        a.balance,
-       a.snapshot_at,
        (SELECT MIN(snapshot_at) FROM accounts a2 WHERE a2.account_external_id = a.account_external_id),
-       (SELECT MAX(snapshot_at) FROM accounts a3 WHERE a3.account_external_id = a.account_external_id),
+       a.snapshot_at,
+       (SELECT MAX(snapshot_at) FROM accounts),
        a.payload
   FROM accounts a
- WHERE a.snapshot_at = (SELECT MAX(snapshot_at) FROM accounts a4
-                         WHERE a4.account_external_id = a.account_external_id)
+ WHERE a.snapshot_at = (SELECT MAX(snapshot_at) FROM accounts a3
+                         WHERE a3.account_external_id = a.account_external_id)
  ORDER BY a.account_external_id`
 	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {
@@ -62,12 +70,12 @@ SELECT a.account_external_id,
 		var (
 			id, accType, nickname, mask, payload string
 			bal                                  sql.NullFloat64
-			snap, firstSeen, lastSeen            int64
+			firstSeen, lastSeen, sourceLatest    int64
 		)
-		if err := rows.Scan(&id, &accType, &nickname, &mask, &bal, &snap, &firstSeen, &lastSeen, &payload); err != nil {
+		if err := rows.Scan(&id, &accType, &nickname, &mask, &bal, &firstSeen, &lastSeen, &sourceLatest, &payload); err != nil {
 			return err
 		}
-		currency := currencyOf(ccy, id)
+		currency := ccy.Of(id)
 		acc := canonical.AccountChange{
 			AccountExternalID: id,
 			AccountKind:       canonical.AccountKindCash,
@@ -82,9 +90,9 @@ SELECT a.account_external_id,
 		}
 		batch.Accounts = append(batch.Accounts, acc)
 
-		if bal.Valid && snap >= w.Start && snap <= w.End {
-			batch.CashBalances = append(batch.CashBalances, cashBalance(
-				snap, id, currency, canonical.BalanceKindCurrent,
+		if bal.Valid && sourceLatest >= w.Start && sourceLatest <= w.End {
+			batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
+				sourceLatest, id, currency, canonical.BalanceKindCurrent,
 				canonical.NewDecimalFromFloat(bal.Float64), `{"basis":"roster"}`))
 		}
 	}
@@ -112,7 +120,7 @@ func displayName(nickname, accType, mask string) string {
 // table). Unlike the US siblings the transaction history has no per-row
 // balance, so this dedicated series is the source of the closing marks.
 func (c *Connection) appendDailyBalances(ctx context.Context, w canonical.Window,
-	ccy map[string]string, batch *canonical.SnapshotBatch) error {
+	ccy silver.AccountCurrencies, batch *canonical.SnapshotBatch) error {
 	const q = `
 SELECT account_external_id, balance_date, balance
   FROM daily_balances
@@ -132,23 +140,9 @@ SELECT account_external_id, balance_date, balance
 		if err := rows.Scan(&id, &day, &balance); err != nil {
 			return err
 		}
-		batch.CashBalances = append(batch.CashBalances, cashBalance(
-			day, id, currencyOf(ccy, id), canonical.BalanceKindClosing,
+		batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
+			day, id, ccy.Of(id), canonical.BalanceKindClosing,
 			canonical.NewDecimalFromFloat(balance), `{"basis":"daily_balance"}`))
 	}
 	return rows.Err()
-}
-
-// cashBalance builds a CashBalanceChange. The collector rounds money to cents
-// before storing, so the REAL→Decimal step is exact at display precision.
-func cashBalance(snap int64, accountID, currency string, kind canonical.BalanceKind,
-	amount canonical.Decimal, payload string) canonical.CashBalanceChange {
-	return canonical.CashBalanceChange{
-		SnapshotAt:        snap,
-		AccountExternalID: accountID,
-		Currency:          currency,
-		BalanceKind:       kind,
-		Amount:            amount,
-		Payload:           json.RawMessage(payload),
-	}
 }

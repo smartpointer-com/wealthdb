@@ -53,28 +53,6 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 // silver, so the latest fetch's revisions win). NewChangeNumber advances to
 // the latest fetch so an idle reload doesn't re-trigger.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
-
-	var latest sql.NullInt64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT MAX(snapshot_at) FROM dump_runs`).Scan(&latest); err != nil {
-		return w, fmt.Errorf("fred ChangeWindow load: %w", err)
-	}
-	if !latest.Valid || latest.Int64 <= since {
-		return w, nil // no new fetch since the watermark
-	}
-
-	var start, end sql.NullInt64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM fx_rates`).
-		Scan(&start, &end); err != nil {
-		return w, fmt.Errorf("fred ChangeWindow span: %w", err)
-	}
-	w.NewChangeNumber = latest.Int64
-	if start.Valid && end.Valid {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
-	}
-	return w, nil
+	return silver.LoadClockChangeWindow(ctx, c.db, "fred",
+		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM fx_rates`, since)
 }

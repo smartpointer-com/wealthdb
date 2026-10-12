@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -176,7 +177,7 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 		var cols []string
 		for _, c := range rep.columns {
 			name := c.header
-			if contains(rep.defaults, c.name) {
+			if slices.Contains(rep.defaults, c.name) {
 				name += "*"
 			}
 			cols = append(cols, name)

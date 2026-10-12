@@ -13,10 +13,10 @@ import (
 
 // Writer wraps a *sql.Tx and inserts/upserts canonical *Change
 // records into the gold tables. The insert-only fact tables
-// (positions, position_lots, cash_balances, fx_rates, transactions,
-// realized_lots) go in as multi-row VALUES chunks — DuckDB's
-// per-statement cost dwarfs its per-row cost, so one statement per
-// row is the slowest way to feed it. The dimension tables upsert
+// (positions, position_lots, cash_balances, fx_rates, transactions)
+// go in as multi-row VALUES chunks, and realized_lots column by column
+// (colInsert) — DuckDB's per-statement cost dwarfs its per-row cost,
+// so one statement per row is the slowest way to feed it. The dimension tables upsert
 // row-by-row (the §8.4 guard needs ON CONFLICT per row); callers keep
 // those batches small by folding duplicate emissions first — see
 // ChangeAccumulator.
@@ -89,10 +89,10 @@ func (w *Writer) UpsertAccounts(ctx context.Context, batch []canonical.AccountCh
 	//     api side's accountNumber);
 	//   - older branch: an older record's value still fills a
 	//     column that is NULL so far. Without this, a full rebuild
-	//     dropped attributes only an older observation carries —
+	//     would drop attributes only an older observation carries —
 	//     schwab-web's statement-derived tax_wrapper (dated at its
-	//     silver snapshot) lost to newer wrapper-less api rows and
-	//     silently fell back to the taxable_personal render default.
+	//     silver snapshot) would lose to newer wrapper-less api rows
+	//     and silently fall back to the taxable_personal render default.
 	const q = `
 INSERT INTO accounts (
     silver_source_id, account_external_id, account_kind,

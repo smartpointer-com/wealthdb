@@ -3,7 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
 )
 
 // The income readers: spending.go in the other direction.
@@ -110,121 +109,37 @@ type IncomeTransactionRow struct {
 // [fromEpoch, toEpoch], valued in outCcy. `period` is handed to the
 // macro verbatim, so validating it belongs to the caller.
 func IncomeSummary(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period string) ([]IncomeSummaryRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_income_summary(?, ?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy, period)
-	if err != nil {
-		return nil, fmt.Errorf("IncomeSummary: %w", err)
-	}
-	defer rows.Close()
-
-	var out []IncomeSummaryRow
-	for rows.Next() {
-		var (
-			r                                      IncomeSummaryRow
-			bucket                                 sql.NullInt64
-			income, reversals, netIncome, withheld sql.NullString
-		)
-		if err := rows.Scan(&bucket, &r.TxnCount, &income, &reversals, &netIncome, &withheld); err != nil {
-			return nil, fmt.Errorf("IncomeSummary scan: %w", err)
-		}
-		r.PeriodStart = nullInt64ToPtr(bucket)
-		r.Income = trimmedDecimalPtr(income)
-		r.Reversals = trimmedDecimalPtr(reversals)
-		r.NetIncome = trimmedDecimalPtr(netIncome)
-		r.Withheld = trimmedDecimalPtr(withheld)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "IncomeSummary", `SELECT * FROM report_income_summary(?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, period}, func(r *IncomeSummaryRow) []any {
+			return []any{
+				i64(&r.PeriodStart), &r.TxnCount, dec(&r.Income), dec(&r.Reversals), dec(&r.NetIncome), dec(&r.Withheld),
+			}
+		})
 }
 
 // IncomeTypes returns the (bucket, type) breakdown. `level` is
 // `primary` or `detailed` and is handed to the macro verbatim.
 func IncomeTypes(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period, level string) ([]IncomeTypeRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_income_types(?, ?, ?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy, period, level)
-	if err != nil {
-		return nil, fmt.Errorf("IncomeTypes: %w", err)
-	}
-	defer rows.Close()
-
-	var out []IncomeTypeRow
-	for rows.Next() {
-		var (
-			r                            IncomeTypeRow
-			bucket                       sql.NullInt64
-			income, reversals, netIncome sql.NullString
-			share                        sql.NullFloat64
-		)
-		if err := rows.Scan(&bucket, &r.Type, &r.TypeLabel, &r.TxnCount,
-			&income, &reversals, &netIncome, &share); err != nil {
-			return nil, fmt.Errorf("IncomeTypes scan: %w", err)
-		}
-		r.PeriodStart = nullInt64ToPtr(bucket)
-		r.Income = trimmedDecimalPtr(income)
-		r.Reversals = trimmedDecimalPtr(reversals)
-		r.NetIncome = trimmedDecimalPtr(netIncome)
-		if share.Valid {
-			v := share.Float64
-			r.Share = &v
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "IncomeTypes", `SELECT * FROM report_income_types(?, ?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, period, level}, func(r *IncomeTypeRow) []any {
+			return []any{
+				i64(&r.PeriodStart), &r.Type, &r.TypeLabel, &r.TxnCount,
+				dec(&r.Income), dec(&r.Reversals), dec(&r.NetIncome), flt(&r.Share),
+			}
+		})
 }
 
 // IncomeTransactions returns the income lines themselves, oldest first.
 func IncomeTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string) ([]IncomeTransactionRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_income_transactions(?, ?, ?)`,
-		fromEpoch, toEpoch, outCcy)
-	if err != nil {
-		return nil, fmt.Errorf("IncomeTransactions: %w", err)
-	}
-	defer rows.Close()
-
-	var out []IncomeTransactionRow
-	for rows.Next() {
-		var (
-			r                                    IncomeTransactionRow
-			acctKind, displayName                sql.NullString
-			nickname, category                   sql.NullString
-			signature, payer                     sql.NullString
-			primary, detailed, provenance        sql.NullString
-			incomeLabel, primaryLabel            sql.NullString
-			providerDetailed, providerLabel      sql.NullString
-			netAmount, description, counterparty sql.NullString
-			valueOut                             sql.NullString
-		)
-		if err := rows.Scan(
-			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
-			&r.AccountExternalID, &acctKind, &displayName, &nickname, &category,
-			&r.Kind, &signature, &payer, &primary, &detailed,
-			&incomeLabel, &primaryLabel,
-			&provenance, &providerDetailed, &providerLabel, &r.Currency, &netAmount,
-			&description, &counterparty, &valueOut,
-		); err != nil {
-			return nil, fmt.Errorf("IncomeTransactions scan: %w", err)
-		}
-		r.AccountKind = nullStringToPtr(acctKind)
-		r.DisplayName = nullStringToPtr(displayName)
-		r.Nickname = nullStringToPtr(nickname)
-		r.AccountCategory = nullStringToPtr(category)
-		r.PayerSignature = nullStringToPtr(signature)
-		r.PayerName = nullStringToPtr(payer)
-		r.IncomePrimary = nullStringToPtr(primary)
-		r.IncomeDetailed = nullStringToPtr(detailed)
-		r.IncomeLabel = nullStringToPtr(incomeLabel)
-		r.IncomePrimaryLabel = nullStringToPtr(primaryLabel)
-		r.Provenance = nullStringToPtr(provenance)
-		r.ProviderIncomeDetailed = nullStringToPtr(providerDetailed)
-		r.ProviderIncomeLabel = nullStringToPtr(providerLabel)
-		r.Description = nullStringToPtr(description)
-		r.Counterparty = nullStringToPtr(counterparty)
-		r.NetAmount = trimmedDecimalPtr(netAmount)
-		r.ValueOutCcy = trimmedDecimalPtr(valueOut)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "IncomeTransactions", `SELECT * FROM report_income_transactions(?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy}, func(r *IncomeTransactionRow) []any {
+			return []any{
+				&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
+				&r.AccountExternalID, str(&r.AccountKind), str(&r.DisplayName), str(&r.Nickname), str(&r.AccountCategory),
+				&r.Kind, str(&r.PayerSignature), str(&r.PayerName), str(&r.IncomePrimary), str(&r.IncomeDetailed),
+				str(&r.IncomeLabel), str(&r.IncomePrimaryLabel),
+				str(&r.Provenance), str(&r.ProviderIncomeDetailed), str(&r.ProviderIncomeLabel), &r.Currency, dec(&r.NetAmount),
+				str(&r.Description), str(&r.Counterparty), dec(&r.ValueOutCcy),
+			}
+		})
 }

@@ -289,7 +289,7 @@ type BasisRule struct {
 
 // BasisFor is the rule for a key, its account's over the source's.
 func (c Config) BasisFor(source, account, instrument string) *Basis {
-	var any *Basis
+	var fallback *Basis
 	for i := range c.Basis {
 		r := &c.Basis[i]
 		if r.Source != source || r.Instrument != instrument {
@@ -299,10 +299,10 @@ func (c Config) BasisFor(source, account, instrument string) *Basis {
 		case account:
 			return &r.Basis
 		case "":
-			any = &r.Basis
+			fallback = &r.Basis
 		}
 	}
-	return any
+	return fallback
 }
 
 // SourceConfig overrides a source's registered policy; nil fields keep

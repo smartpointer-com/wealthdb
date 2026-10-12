@@ -49,7 +49,7 @@ SELECT account_external_id, occurred_at, transaction_type,
 		kind := kindFor(txType)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: syntheticTxID(extID, occurredAt, txType,
-				nullStringOrEmpty(symbol), currency, netDec),
+				symbol.String, currency, netDec),
 			OccurredAt:        occurredAt,
 			AccountExternalID: extID,
 			Kind:              kind,
@@ -85,7 +85,10 @@ SELECT account_external_id, occurred_at, transaction_type,
 
 		out.Transactions = append(out.Transactions, tx)
 	}
-	return silver.NewTransactionStream(out), rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return silver.NewTransactionStream(out), nil
 }
 
 // narrative is the row's narrative for gold: the booking type, which is
@@ -134,11 +137,4 @@ func extractTradeFields(payload string) (*canonical.Decimal, *canonical.Decimal,
 		return nil, nil, false
 	}
 	return p.Quantity, price, true
-}
-
-func nullStringOrEmpty(s sql.NullString) string {
-	if s.Valid {
-		return s.String
-	}
-	return ""
 }

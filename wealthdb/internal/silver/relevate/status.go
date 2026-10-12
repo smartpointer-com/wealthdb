@@ -11,10 +11,9 @@ import (
 
 // Status reports the observable snapshot range. Relevate silver
 // has no transactions surfaced yet (silver.transactions is
-// schema-ready but empty in practice — Relevate doesn't expose
-// a transaction-history endpoint, so the deposits_endpoint
-// source produces zero rows today). The transaction-extrema
-// fields stay at the -1 sentinel until that changes.
+// schema-ready; the deposits_endpoint source yields rows only if
+// Relevate exposes a transaction-history endpoint). The
+// transaction-extrema fields stay at the -1 sentinel until then.
 //
 // OldestSnapshotAt / LatestSnapshotAt span both live (dump_runs)
 // and historical (Quartalsbericht-derived) tables — that's the
@@ -24,7 +23,6 @@ import (
 // historical rows are deterministic outputs of the loader's PDF
 // parse step, not a separate change source.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), -1),
@@ -33,24 +31,9 @@ SELECT
     COALESCE((SELECT MAX(occurred_at) FROM transactions), -1),
     COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),  -1)
 `
-	var oldS, newS, oldT, newT, latestRun sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q).Scan(&oldS, &newS, &oldT, &newT, &latestRun); err != nil {
-		return s, fmt.Errorf("relevate Status: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	if oldT.Valid {
-		s.OldestTransactionAt = oldT.Int64
-	}
-	if newT.Valid {
-		s.LatestTransactionAt = newT.Int64
-	}
-	if latestRun.Valid {
-		s.LatestChangeNumber = latestRun.Int64
+	s, err := silver.ContentStatus(ctx, c.db, "relevate", q)
+	if err != nil {
+		return s, err
 	}
 
 	// Fold the historical tables into the snapshot range.

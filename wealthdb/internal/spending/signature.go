@@ -1,9 +1,7 @@
 // Package spending turns gold transactions into categorised spend and
 // categorised income.
 //
-// Two families, one engine. The name is the older of the two and is
-// kept: renaming a package that a dozen files import buys nothing a
-// doc comment cannot say. What runs is one enrichment pass over each
+// Two families, one engine. What runs is one enrichment pass over each
 // family's population (enrich.go), driven by a family descriptor
 // (family.go) that carries the names — which macro, which store, which
 // taxonomy column — where the two differ, with a hook only where the
@@ -595,8 +593,8 @@ var ibanShaped = regexp.MustCompile(`^[A-Z]{2}[0-9]{2}[A-Z0-9]+$`)
 // bank writes one of those on nearly every domestic e-banking
 // narrative) and the word `No.` in front of an invoice number. Each
 // of those is two letters and two digits at a token start followed by
-// more, and each one used to fence an ordinary tradesman's bill out
-// of candidacy.
+// more, and each would fence an ordinary tradesman's bill out of
+// candidacy.
 //
 // So the run must also be exactly as long as that country's IBAN and
 // must satisfy the ISO 7064 mod-97 check. A real IBAN passes both by
@@ -1050,9 +1048,9 @@ const brandMinLetters = 5
 //
 // isWord refuses those, because the token is not all letters, and the
 // refusal it feeds is about WASTE rather than privacy: the cost of
-// being wrong here is one model call on a code, while the cost of the
-// old reading was a merchant the model could have named in one look
-// sitting in the catch-all instead.
+// being wrong here is one model call on a code, while the cost of
+// refusing is a merchant the model could have named in one look sitting
+// in the catch-all instead.
 func isBrandWithReference(tok string) bool {
 	n := 0
 	for n < len(tok) && tok[n] >= 'A' && tok[n] <= 'Z' {

@@ -15,8 +15,8 @@ import (
 func (c *apiReader) Status(ctx context.Context) (canonical.Status, error) {
 	s := canonical.UnknownStatus()
 
-	// One query that returns all five extrema. COALESCE(...,-1)
-	// gives us the canonical sentinel when a table is empty.
+	// One query that returns all four extrema. COALESCE(...,-1)
+	// gives the canonical sentinel when a table is empty.
 	const q = `
 SELECT
     COALESCE((SELECT MIN(snapshot_at) FROM dump_runs),    -1),

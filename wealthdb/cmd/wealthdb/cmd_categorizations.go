@@ -11,9 +11,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {
@@ -118,19 +116,12 @@ clean way to keep it from carrying anywhere; forgetting it after
 merely tidies the store. model_name is the model that emitted the
 verdict.`)
 	}
-	if err := fs.Parse(reorderFlagsFirst(subargs, categorizeValueFlags)); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "categorizations: bad flags")
+	if err := parseFlags(fs, subargs, "categorizations"); err != nil {
+		return err
 	}
-	// The optional family positional. More than one is a typo rather
-	// than a selection, and an unknown one is rejected by the resolver
-	// below — the old blanket "no positionals" guard predates the
-	// selector and would have made it unreachable.
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return errs.Newf(2, "categorizations: unexpected positional argument %q", fs.Arg(1))
+	families, err := categorizeFamilyArg(fs, "categorizations")
+	if err != nil {
+		return err
 	}
 
 	if len(forget) > 0 {
@@ -148,17 +139,11 @@ verdict.`)
 		if dumpFlag != "" {
 			return errs.Newf(2, "categorizations: %s applies to the dump, not to --forget", dumpFlag)
 		}
-		forgetFamilies, ok := resolveCategorizeFamilies(fs.Arg(0))
-		if !ok {
-			fs.Usage()
-			return errs.Newf(2, "categorizations: unknown family %q (want spending | income, or neither for both)",
-				strings.Join(fs.Args(), " "))
-		}
 		cfg, err := config.Load(g.ConfigPath)
 		if err != nil {
 			return err
 		}
-		return forgetCategorizations(ctx, g, cfg, forgetFamilies, forget, *dryRun, stdout)
+		return forgetCategorizations(ctx, g, cfg, families, forget, *dryRun, stdout)
 	}
 	if *dryRun {
 		return errs.Newf(2, "categorizations: --dry-run applies to --forget only")
@@ -168,14 +153,6 @@ verdict.`)
 	if err != nil {
 		return errs.Newf(2, "categorizations: %s", err.Error())
 	}
-
-	families, ok := resolveCategorizeFamilies(fs.Arg(0))
-	if !ok {
-		fs.Usage()
-		return errs.Newf(2, "categorizations: unknown family %q (want spending | income, or neither for both)",
-			strings.Join(fs.Args(), " "))
-	}
-
 	cfg, err := config.Load(g.ConfigPath)
 	if err != nil {
 		return err
@@ -255,7 +232,7 @@ type categorizationRow struct {
 // categorizationColumns is the dump's column registry, so the stores
 // redact under -p by the same classes the report views use.
 //
-// The three leading columns are named for neither family. One dump now
+// The three leading columns are named for neither family. One dump
 // carries both stores, and a header saying `merchant_signature` over a
 // payer's row would be wrong on half the output; `family` is what says
 // which vocabulary a row's value belongs to.
@@ -278,8 +255,7 @@ func categorizationColumns() []columnSpec[categorizationRow] {
 			Extract: func(r categorizationRow) string { return r.Name }},
 		{Name: "detailed", Align: output.AlignLeft,
 			Extract: func(r categorizationRow) string { return r.Detailed }},
-		{Name: "signature_version", Align: output.AlignRight,
-			Extract: func(r categorizationRow) string { return fmt.Sprintf("%d", r.Version) }},
+		countCol("signature_version", func(r categorizationRow) int64 { return int64(r.Version) }),
 		{Name: "assigned_at", Align: output.AlignLeft,
 			Extract: func(r categorizationRow) string { return formatDate(r.AssignedAt) }},
 		{Name: "model_name", Align: output.AlignLeft,
@@ -295,45 +271,21 @@ type rowQuerier interface {
 
 // forgetCategorizations removes the named verdicts from each family's
 // store, matched by exact signature, in one transaction: the list is
-// removed whole or not at all — and with no family named, from both. Its gate and its dry-run shape follow
-// resolve-symbols and categorize — the read-only rejection names the
-// dry run, and the dry run opens gold read-only so it takes no write
-// lock. A miss is reported on stdout beside the removals and is not an
-// error: a run may be clearing a key an earlier --forget already
-// emptied, or one the last re-key moved on from.
+// removed whole or not at all — and with no family named, from both.
+// Its gate and its dry-run shape are categorize's and resolve-symbols'
+// (openGoldForOverlay): a real removal holds the write mutex, so it
+// cannot land in an inode a concurrent 'compact' or 'reload -a' is
+// about to unlink, and the dry run opens gold read-only. A miss is
+// reported on stdout beside the removals and is not an error: a run
+// may be clearing a key an earlier --forget already emptied, or one the
+// last re-key moved on from.
 func forgetCategorizations(ctx context.Context, g globalFlags, cfg *config.Config, families []categorizeFamily, signatures []string, dryRun bool, stdout io.Writer) error {
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
+	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "categorizations --forget",
+		"gold database %q does not exist. Run 'wealthdb init' first.", "see what would be removed", dryRun)
 	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
+		return err
 	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB, "gold database %q does not exist. Run 'wealthdb init' first.", cfg.GoldDB)
-	}
-	if !dryRun && dec.Mode != pathmode.ModeReadWrite {
-		return errs.Newf(errs.ExitRWNeeded,
-			"'categorizations --forget' requires write access to the gold database, but '%s' is read-only (detected: %s). "+
-				"Pass --dry-run if you only want to see what would be removed.", cfg.GoldDB, dec.Reason)
-	}
-	openMode := gold.ModeReadWrite
-	if dryRun {
-		openMode = gold.ModeReadOnly
-	}
-	// Only the real removal takes the gold write mutex; the dry run
-	// stays a pure read, as its rejection message promises. Without
-	// it, a removal committed while 'compact' or 'reload -a' is
-	// rebuilding lands in the inode the swap unlinks and is reported
-	// as done.
-	if !dryRun {
-		lock, err := lockGoldForWrite(cfg.GoldDB, "categorizations --forget")
-		if err != nil {
-			return err
-		}
-		defer lock.unlock()
-	}
-	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, openMode) })
-	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
-	}
+	defer lock.unlock()
 	defer db.Close()
 
 	var (

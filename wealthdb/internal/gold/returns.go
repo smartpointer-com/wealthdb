@@ -788,7 +788,7 @@ func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[strin
 
 // flowTxnRow is the lean projection of report_transactions the returns engine
 // needs: only the fields attachOneFlow and the transfer matcher read, not the
-// 20-column display row TransactionsBetween builds. Selecting just these lets
+// wide display row TransactionsBetween builds. Selecting just these lets
 // DuckDB prune the macro's account/instrument LEFT JOINs, which the flow path
 // never consults.
 type flowTxnRow struct {
@@ -855,11 +855,10 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 	}
 	// The silver-side pre-tag ExternalOnly describes: an adapter that can
 	// tell owner capital from conduit churn says so on the row. It is read
-	// only under ExternalOnly, so a source that tags nothing is unaffected,
-	// and it replaces the older convention of rewriting the row's KIND —
-	// which the spending population reads too, and which therefore could
-	// not carry a returns-only verdict without erasing the row from
-	// spending as well.
+	// only under ExternalOnly, so a source that tags nothing is unaffected.
+	// It is a tag rather than a rewritten KIND because the spending
+	// population reads the kind too, so a kind could not carry a
+	// returns-only verdict without erasing the row from spending as well.
 	if a.rpolicy.ExternalOnly && returnsInternal {
 		return false
 	}
@@ -874,15 +873,6 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 	val, ok := parseFloatPtr(valueOut)
 	if !ok {
 		return false // unresolved FX on the flow — skip (documented limitation)
-	}
-	// ExternalOnly gates the ClassifyFlow hook: a non-nil hook may drop a
-	// flow as internal; ExternalOnly without a hook is inert here — a
-	// silver-side pre-tagging contract (see ReturnsPolicy.ExternalOnly).
-	// Source-scoped via a.rpolicy.
-	if a.rpolicy.ExternalOnly && a.rpolicy.ClassifyFlow != nil {
-		if a.rpolicy.ClassifyFlow(returns.FlowCtx{Kind: kind, Amount: canonical.NewDecimalFromFloat(val)}) == returns.FlowInternal {
-			return false
-		}
 	}
 	day := occurredAt / 86400
 	if kind == canonical.TxKindJournal {

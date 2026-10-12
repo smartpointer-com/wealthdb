@@ -74,7 +74,7 @@ func kindFor(silverKind, narrative string, creditDebit, txnType string) canonica
 //
 // The codes are SWIFT's, not UBS's, and only the ones the feed
 // actually carries are mapped; anything else falls through to the
-// direction, which is what the whole function did before. NRTI is a
+// direction. NRTI is a
 // RETURNED ITEM, not interest — the resemblance to NINT is a trap the
 // SWIFT names set, and a returned item is a reversal whose kind the
 // direction already gets right.
@@ -85,16 +85,16 @@ func kindFor(silverKind, narrative string, creditDebit, txnType string) canonica
 // positive amount and a direction that means the opposite of what it
 // spells. Reading a type code off it would state a kind confidently
 // against an unflipped sign — a clawback booked as income. The
-// direction-only fallback is right for these and always has been.
+// direction-only fallback is right for these.
 //
 // NSEC is the important one. The cash leg of a trade settles on the
-// cash account, and the account-statement feed has always booked that
-// leg as a buy or a sell — the direction says which. Where the MT940
-// feed is the only witness the narrative is often empty, so the leg
-// used to land as a plain withdrawal or deposit: spending counted it
-// as money leaving the household, and returns counted it as capital,
-// because deposits and withdrawals are external and never netted.
-// Neither is true of a trade settling inside the portfolio.
+// cash account, and the account-statement feed books that leg as a
+// buy or a sell — the direction says which. Where the MT940 feed is
+// the only witness the narrative is often empty, and without the code
+// the leg would land as a plain withdrawal or deposit: spending would
+// count it as money leaving the household, and returns would count it
+// as capital, because deposits and withdrawals are external and never
+// netted. Neither is true of a trade settling inside the portfolio.
 func txnTypeKind(txnType, creditDebit string) (canonical.TxKind, bool) {
 	if isReversalMark(creditDebit) {
 		return "", false
@@ -148,7 +148,7 @@ func isOwnChargeCode(txnType, creditDebit string) bool {
 // The NARRATIVE decides wherever it says anything: it is the only
 // witness that separates a transaction tax from a custody price, and
 // its prefix matching is case-insensitive over the first run of
-// letters. Conservative by design — only observed prefixes are
+// letters. Conservative by design — only known prefixes are
 // recognised, so no semantics are invented from ambiguous text.
 //
 // The :61: TYPE CODE is the floor beneath it (txnTypeKind), for the

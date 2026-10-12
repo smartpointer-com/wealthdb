@@ -22,7 +22,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	ccy, err := c.accountCurrencies(ctx)
+	ccy, err := silver.ReadAccountCurrencies(ctx, c.db, "USD")
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // latest known balance; the stamp says "as of this load", which is exactly what
 // an unchanged roster row asserts.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window,
-	ccy map[string]string, batch *canonical.SnapshotBatch) error {
+	ccy silver.AccountCurrencies, batch *canonical.SnapshotBatch) error {
 	const q = `
 SELECT a.account_external_id,
        COALESCE(a.display_name, ''), COALESCE(a.mask, ''),
@@ -83,7 +83,7 @@ SELECT a.account_external_id,
 		if display == "" {
 			display = mask
 		}
-		currency := currencyOf(ccy, id)
+		currency := ccy.Of(id)
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: id,
 			AccountKind:       canonical.AccountKindCard,
@@ -97,7 +97,7 @@ SELECT a.account_external_id,
 		})
 
 		if bal.Valid && sourceLatest >= w.Start && sourceLatest <= w.End {
-			batch.CashBalances = append(batch.CashBalances, cashBalance(
+			batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
 				sourceLatest, id, currency, canonical.BalanceKindCurrent,
 				signedBalance(bal.Float64), `{"basis":"roster"}`))
 		}
@@ -117,7 +117,7 @@ SELECT a.account_external_id,
 // is asserted either way — a period whose rows were refused is precisely one
 // that needs its anchor.
 func (c *Connection) appendStatementBalances(ctx context.Context, w canonical.Window,
-	ccy map[string]string, batch *canonical.SnapshotBatch) error {
+	ccy silver.AccountCurrencies, batch *canonical.SnapshotBatch) error {
 	const q = `
 SELECT account_external_id, period_end, closing
   FROM statement_balances
@@ -138,8 +138,8 @@ SELECT account_external_id, period_end, closing
 		if err := rows.Scan(&id, &periodEnd, &closing); err != nil {
 			return err
 		}
-		batch.CashBalances = append(batch.CashBalances, cashBalance(
-			periodEnd, id, currencyOf(ccy, id), canonical.BalanceKindClosing,
+		batch.CashBalances = append(batch.CashBalances, silver.CashBalance(
+			periodEnd, id, ccy.Of(id), canonical.BalanceKindClosing,
 			signedBalance(closing), `{"basis":"statement_closing"}`))
 	}
 	return rows.Err()
@@ -155,17 +155,4 @@ SELECT account_external_id, period_end, closing
 // is exact at display precision.
 func signedBalance(amount float64) canonical.Decimal {
 	return canonical.NewDecimalFromFloat(amount).Neg()
-}
-
-// cashBalance builds a CashBalanceChange.
-func cashBalance(snap int64, accountID, currency string, kind canonical.BalanceKind,
-	amount canonical.Decimal, payload string) canonical.CashBalanceChange {
-	return canonical.CashBalanceChange{
-		SnapshotAt:        snap,
-		AccountExternalID: accountID,
-		Currency:          currency,
-		BalanceKind:       kind,
-		Amount:            amount,
-		Payload:           json.RawMessage(payload),
-	}
 }

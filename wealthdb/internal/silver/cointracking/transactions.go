@@ -101,7 +101,10 @@ SELECT
 		}
 		out.Transactions = append(out.Transactions, emitted...)
 	}
-	return silver.NewTransactionStream(out), rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return silver.NewTransactionStream(out), nil
 }
 
 // portfolioBaseCurrencies maps every portfolio_external_id seen
@@ -211,11 +214,6 @@ func buildBaseLegTradeRow(
 	}
 }
 
-// buildSplitLeg constructs one leg of a 2-leg split trade. Both
-// legs share the same |NetAmount| (= V, the trade's base-currency
-// value) so they cancel in any base-currency SUM. V is nil when
-// neither side's price lookup resolved; both legs then emit
-// NetAmount=NULL.
 // sellLeg and buyLeg suffix the ids of a split trade's two legs
 // ("<id>:s", "<id>:b").
 const (
@@ -223,6 +221,11 @@ const (
 	buyLeg  = "b"
 )
 
+// buildSplitLeg constructs one leg of a 2-leg split trade. Both
+// legs share the same |NetAmount| (= V, the trade's base-currency
+// value) so they cancel in any base-currency SUM. V is nil when
+// neither side's price lookup resolved; both legs then emit
+// NetAmount=NULL.
 func buildSplitLeg(
 	txID, suffix, walletID string, occurredAt int64, base, instrument string,
 	qty canonical.Decimal, kind canonical.TxKind, v *canonical.Decimal,
@@ -281,7 +284,7 @@ func (c *Connection) lookupTradeValue(
 
 // lookupUnitPrice returns the per-unit price of `instrument` in
 // `base` currency as of `occurredAt`. Hierarchy mirrors
-// snapshots.go's appendPositions:
+// snapshots.go's appendPositionsAcrossSnapshots:
 //
 //  1. portfolio_prices for (portfolio, instrument, base) — the
 //     latest entry on or before the trade date.
@@ -344,11 +347,10 @@ SELECT CAST(price_usd AS VARCHAR)
 
 // projectNonTrade maps a non-Trade silver row to its canonical
 // counterpart (at most one row). Direction (inbound vs outbound)
-// is determined by the CT type via classifyCTType; Currency
-// always = the portfolio's base for valuation context; Instrument
-// is set only when the currency that moved is NOT the base
-// (position event); NetAmount is set only when the currency
-// equals the base (real cash flow).
+// is determined by the CT type via classifyCTType; Currency is the
+// asset that moved and NetAmount the signed amount of it; Instrument
+// and Quantity are set only when that asset is NOT the base
+// (position event).
 func projectNonTrade(
 	txID, walletID string, occurredAt int64, base string, ctType string,
 	buyAmtStr sql.NullString, buyCcy string,

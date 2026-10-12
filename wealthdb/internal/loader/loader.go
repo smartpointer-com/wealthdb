@@ -36,10 +36,9 @@ type SourceSpec struct {
 	// PSN SFTP relationship_id under a single label.
 	Relationships []silver.RelationshipPair
 	// Overrides is the per-account_external_id override map for
-	// this source — nickname / category values from the
-	// config-file `account_overrides` block. Loader applies these
-	// after adapters have stamped their own values; config wins on
-	// overlap. nil or empty entries are no-ops.
+	// this source, from the config-file `account_overrides` block.
+	// Loader applies these after adapters have stamped their own
+	// values; config wins on overlap. nil or empty entries are no-ops.
 	Overrides map[string]AccountOverride
 	// PortfolioOverrides is the per-portfolio_external_id override
 	// map for this source. Applied to every account whose
@@ -52,7 +51,7 @@ type SourceSpec struct {
 	// config.SilverSource.TaxableWrapper.
 	TaxableWrapper string
 	// InstrumentOverrides is the per-instrument_external_id
-	// override map for this source — asset_class values from the
+	// override map for this source — the taxonomy pair from the
 	// config-file `instrument_overrides` block. Applied after the
 	// adapter has classified, to the instrument dimension and to
 	// every position row referencing the instrument.
@@ -103,8 +102,7 @@ type AccountOverride struct {
 }
 
 // PortfolioOverride is the loader's view of one config-file
-// portfolio_overrides entry. TaxWrapper is the only dimension
-// wired through today; empty = no override.
+// portfolio_overrides entry. An empty TaxWrapper means no override.
 type PortfolioOverride struct {
 	TaxWrapper string
 	// Exclude drops the portfolio and every account inside it. See
@@ -308,7 +306,7 @@ func upsertSilverSource(ctx context.Context, tx *sql.Tx, spec SourceSpec, now in
 		spec.ID,
 	).Scan(&existing)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		_, err := tx.ExecContext(ctx, `
             INSERT INTO silver_sources(
                 silver_source_id, silver_kind, silver_path,
@@ -962,8 +960,8 @@ func ids(in []string) []any {
 }
 
 // applyPortfolioOverrides patches each AccountChange whose
-// PortfolioExternalID appears in the overrides map. Today only
-// tax_wrapper is wired through. Accounts without a
+// PortfolioExternalID appears in the overrides map. Only tax_wrapper
+// patches a column; Exclude is deleteExcluded's. Accounts without a
 // PortfolioExternalID (the orphan / standalone-account form most
 // non-portfolio-shaped adapters use) are skipped — no key to
 // match against.

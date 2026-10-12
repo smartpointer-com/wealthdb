@@ -65,11 +65,10 @@ type Pin struct {
 // list is accepted only if this format knows it: `note`, a free-text
 // annotation kept for the ledger's own readability, and `asset_class`,
 // the exposure a pin may state beside an investing verdict. Anything
-// else fails the parse. Tolerating the unknown was harmless while the
-// only extra column was decorative; with a column that CHANGES the
-// answer, a misspelled header would be a silent no-op that still
-// applied its verdict, and there is no diagnostic anywhere downstream
-// that would show it.
+// else fails the parse: a column CHANGES the answer, so a misspelled
+// header would be a silent no-op that still applied its verdict, and
+// there is no diagnostic anywhere downstream that would show it.
+//
 // The value column is the family's: `spend_detailed` in the spending
 // ledger, `income_detailed` in the income one. Everything else about
 // the format is shared, because a pin identifies a transaction the same
@@ -95,6 +94,7 @@ func ParsePinLedger(path string) ([]Pin, error) {
 // column and validated against a different vocabulary. A spending
 // value in the income ledger is refused at config load, which is the
 // only place a person's typo can still be cheap to fix.
+//
 // `investingValue` is the one value of this family's vocabulary whose
 // cash flow section is `investing`, and the only one an `asset_class`
 // may accompany.
@@ -295,6 +295,7 @@ type pinnedRow struct {
 // counts the same way — a source not loaded yet has no accounts at
 // all — while an AMBIGUOUS nickname is an error, because that is a
 // configuration fault whatever the load state.
+//
 // The family NAME prefixes every error, because both families call it
 // with their own ledger: an ambiguous nickname reported as `spending:`
 // sends a reader to the wrong file.

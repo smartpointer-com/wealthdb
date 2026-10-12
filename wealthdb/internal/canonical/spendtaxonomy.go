@@ -663,8 +663,7 @@ var spendLabelOverrides = map[string]string{
 //
 // One rule for both families: a label is read off a value's spelling,
 // which does not depend on which family holds it, and a delta both
-// families read has one label as it has one row. IncomeLabel is the
-// income side's name for this function.
+// families read has one label as it has one row.
 //
 // The label is presentation only. The value stays the join key, the name
 // a rule and a pin write, and what the model gauntlet validates — so a
@@ -704,19 +703,13 @@ func SpendPrimaryLabel(primary string) string {
 	return humanise(primary)
 }
 
-// IncomeLabel and IncomePrimaryLabel are the income side's names for
-// the one labelling rule, so income code reads its own vocabulary's
-// name rather than the outflow side's.
-func IncomeLabel(detailed string) string { return SpendLabel(detailed) }
-
-// IncomePrimaryLabel labels an income primary. There is one vendored
-// income primary, INCOME, and a delta is its own.
-func IncomePrimaryLabel(primary string) string { return SpendPrimaryLabel(primary) }
-
 func humanise(s string) string {
 	words := strings.Split(strings.ToLower(s), "_")
 	for i, w := range words {
-		if i == 0 && w != "" {
+		if w == "" {
+			continue
+		}
+		if i == 0 {
 			w = strings.ToUpper(w[:1]) + w[1:]
 		}
 		if fixed, ok := spendLabelAcronyms[strings.ToUpper(w[:1])+w[1:]]; ok {
@@ -741,8 +734,7 @@ func humanise(s string) string {
 // `other` names a movement the taxonomy has no merchant word for, and
 // is a deliberate verdict about what the row IS.
 //
-// Family-fenced like the validity predicates, so that adding the income
-// side changed no answer this gave before it existed: `INCOME_OTHER` is
+// Family-fenced like the validity predicates: `INCOME_OTHER` is
 // income's catch-all and not spending's.
 func CatchAllSpendDetailed(s string) bool {
 	return ValidSpendDetailed(s) && catchAllSpelling(s)

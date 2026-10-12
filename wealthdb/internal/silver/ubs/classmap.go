@@ -118,7 +118,7 @@ func taxonomyPairForInstrument(cfi, uacAsstClsCd, name string) (canonical.AssetC
 	case 'F':
 		return canonical.AssetClassPublicEquity, canonical.VehicleFuture
 	case 'J':
-		// Forwards — FX forwards in practice; the forward wrapper
+		// Forwards — FX forwards in the common case; the forward wrapper
 		// pairs only with foreign_exchange in the taxonomy.
 		return canonical.AssetClassForeignExchange, canonical.VehicleForward
 	default:
@@ -294,64 +294,28 @@ var knownSafekeepingAcctTpCd = map[string]canonical.TaxWrapper{
 var unknownAcctTpCdSeen sync.Map
 
 func taxWrapperForCashAcctTp(code, desc string) canonical.TaxWrapper {
-	if w, ok := knownCashAcctTpCd[code]; ok {
-		return w
-	}
-	if code == "" {
-		return ""
-	}
-	if _, seen := unknownAcctTpCdSeen.LoadOrStore("cash:"+code, true); !seen {
-		log.Printf("warn: ubs adapter: unknown cash AcctTpCd %q (AcctTpDesc=%q); leaving tax_wrapper unset. If this is a pension-shaped account, extend internal/silver/ubs/classmap.go.", code, desc)
-	}
-	return ""
+	return taxWrapperForAcctTp(knownCashAcctTpCd, "cash", code, desc)
 }
 
 func taxWrapperForSafekeepingAcctTp(code, desc string) canonical.TaxWrapper {
-	if w, ok := knownSafekeepingAcctTpCd[code]; ok {
+	return taxWrapperForAcctTp(knownSafekeepingAcctTpCd, "safekeeping", code, desc)
+}
+
+// taxWrapperForAcctTp looks code up in one side's table, warning once
+// per process for a non-empty code the table does not know.
+func taxWrapperForAcctTp(known map[string]canonical.TaxWrapper, side, code, desc string) canonical.TaxWrapper {
+	if w, ok := known[code]; ok {
 		return w
 	}
 	if code == "" {
 		return ""
 	}
-	if _, seen := unknownAcctTpCdSeen.LoadOrStore("safekeeping:"+code, true); !seen {
-		log.Printf("warn: ubs adapter: unknown safekeeping AcctTpCd %q (AcctTpDesc=%q); leaving tax_wrapper unset. If this is a pension-shaped account, extend internal/silver/ubs/classmap.go.", code, desc)
+	if _, seen := unknownAcctTpCdSeen.LoadOrStore(side+":"+code, true); !seen {
+		log.Printf("warn: ubs adapter: unknown %s AcctTpCd %q (AcctTpDesc=%q); leaving tax_wrapper unset. If this is a pension-shaped account, extend internal/silver/ubs/classmap.go.", side, code, desc)
 	}
 	return ""
 }
 
-// managementStyleForSafekeepingSubType maps the silver-side
-// `safekeeping_accounts.payload.AcctSubTypeDesc` string to the
-// canonical ManagementStyle. UBS's safekeeping sub-type tags the
-// mandate type directly:
-//
-//	"managed securities account"              → discretionary
-//	                                            (UBS Vermögens-
-//	                                             verwaltung — the
-//	                                             bank places trades
-//	                                             under limited POA)
-//	"securities account with dvisory agreement" → advisory
-//	                                              (UBS Anlage-
-//	                                               beratung; note
-//	                                               the missing 'a'
-//	                                               is the actual
-//	                                               string in UBS's
-//	                                               payload)
-//	"securities account with advisory agreement" → advisory
-//	                                               (if UBS ever
-//	                                                fixes the typo)
-//
-// Unknown sub-types return "" so the caller leaves
-// ManagementStyle nil; the render-time default surfaces
-// self_directed. One-shot WARN per unique unknown string, same
-// dedup mechanism as the AcctTpCd switch. Empty sub-type
-// (cash-only safekeeping accounts that have no mandate
-// designation) is silent.
-//
-// Cash accounts have no AcctSubTypeDesc — they're transactional
-// accounts independent of any investment mandate — so the cash
-// side legitimately leaves management_style nil, and the portfolio
-// rollup picks up the discretionary / advisory tag from the
-// safekeeping account in the same portfolio.
 // propagateManagementStyleByPortfolio walks the per-snapshot
 // AccountChange slice to lift the mandate type the safekeeping
 // account carries onto its sibling cash / overlay accounts in
@@ -411,12 +375,44 @@ func propagateManagementStyleByPortfolio(accounts []canonical.AccountChange, man
 			continue
 		}
 		if s, ok := styleByPortfolio[*a.PortfolioExternalID]; ok {
-			s := s
 			a.ManagementStyle = &s
 		}
 	}
 }
 
+// managementStyleForSafekeepingSubType maps the silver-side
+// `safekeeping_accounts.payload.AcctSubTypeDesc` string to the
+// canonical ManagementStyle. UBS's safekeeping sub-type tags the
+// mandate type directly:
+//
+//	"managed securities account"              → discretionary
+//	                                            (UBS Vermögens-
+//	                                             verwaltung — the
+//	                                             bank places trades
+//	                                             under limited POA)
+//	"securities account with dvisory agreement" → advisory
+//	                                              (UBS Anlage-
+//	                                               beratung; note
+//	                                               the missing 'a'
+//	                                               is the actual
+//	                                               string in UBS's
+//	                                               payload)
+//	"securities account with advisory agreement" → advisory
+//	                                               (if UBS ever
+//	                                                fixes the typo)
+//
+// Unknown sub-types return "" so the caller leaves
+// ManagementStyle nil; the render-time default surfaces
+// self_directed. One-shot WARN per unique unknown string, same
+// dedup mechanism as the AcctTpCd switch. Empty sub-type
+// (cash-only safekeeping accounts that have no mandate
+// designation) is silent.
+//
+// Cash accounts have no AcctSubTypeDesc — they're transactional
+// accounts independent of any investment mandate — so the cash
+// side legitimately leaves management_style nil, and the portfolio
+// rollup picks up the discretionary / advisory tag from the
+// safekeeping account in the same portfolio.
 func managementStyleForSafekeepingSubType(subType string) canonical.ManagementStyle {
 	switch subType {
 	case "managed securities account":

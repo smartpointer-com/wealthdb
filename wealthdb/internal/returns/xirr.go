@@ -1,8 +1,10 @@
 package returns
 
 import (
+	"cmp"
 	"errors"
 	"math"
+	"slices"
 )
 
 // Sentinel errors returned by XIRR so callers can map them to quality flags
@@ -189,7 +191,7 @@ func bisect(npv func(float64) float64, lo, hi float64) float64 {
 // non-unique (Descartes' rule of signs) — callers flag mwr_nonunique.
 func MWRSignChanges(v0, v1 float64, startDay, endDay int64, flows []Flow) int {
 	cfs := investorCFs(v0, v1, startDay, endDay, flows)
-	stableSortByDay(cfs)
+	slices.SortStableFunc(cfs, func(a, b datedCF) int { return cmp.Compare(a.day, b.day) })
 
 	changes := 0
 	prevSign := 0
@@ -210,13 +212,4 @@ func MWRSignChanges(v0, v1 float64, startDay, endDay int64, flows []Flow) int {
 		prevSign = s
 	}
 	return changes
-}
-
-// stableSortByDay is a tiny insertion sort (cash-flow vectors are short).
-func stableSortByDay(cfs []datedCF) {
-	for i := 1; i < len(cfs); i++ {
-		for j := i; j > 0 && cfs[j-1].day > cfs[j].day; j-- {
-			cfs[j-1], cfs[j] = cfs[j], cfs[j-1]
-		}
-	}
 }

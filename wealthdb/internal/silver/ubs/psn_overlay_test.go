@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 )
 
 // Which safekeeping account a printed Statement of assets belongs to is
@@ -154,5 +155,17 @@ func TestNoPSNReaderMapsNothing(t *testing.T) {
 	got, err := r.safekeepingByPortfolio(context.Background())
 	if err != nil || got != nil {
 		t.Errorf("got (%v, %v), want (nil, nil)", got, err)
+	}
+}
+
+// utcDay is UTC midnight of the day a timestamp falls in, flooring
+// before the epoch as the calendar does.
+func TestUTCDayMatchesCalendarMidnight(t *testing.T) {
+	for _, ts := range []int64{0, 1, 86399, 86400, 1700000000, -1, -86400, -86401} {
+		u := time.Unix(ts, 0).UTC()
+		want := time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC).Unix()
+		if got := utcDay(ts); got != want {
+			t.Errorf("utcDay(%d) = %d, want %d", ts, got, want)
+		}
 	}
 }

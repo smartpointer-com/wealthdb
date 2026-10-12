@@ -95,61 +95,71 @@ func (c *Connection) Close() error {
 	return firstErr
 }
 
+// feed is a configured subsource, named for error messages, with what
+// the orchestrator asks of each.
+type feed struct {
+	name  string
+	clock interface {
+		Status(context.Context) (canonical.Status, error)
+		ChangeWindow(context.Context, int64) (canonical.Window, error)
+	}
+}
+
+// feeds lists the configured subsources, api first.
+func (c *Connection) feeds() []feed {
+	var out []feed
+	if c.api != nil {
+		out = append(out, feed{"api", c.api})
+	}
+	if c.web != nil {
+		out = append(out, feed{"web", c.web})
+	}
+	return out
+}
+
 // Status combines per-subsource Status. Sentinel-aware (-1 means
 // "no observable state"). Matches the UBS orchestrator.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	combine := func(a, b int64, op func(int64, int64) int64) int64 {
-		switch {
-		case a == -1:
-			return b
-		case b == -1:
-			return a
-		default:
-			return op(a, b)
-		}
-	}
-	min := func(a, b int64) int64 {
-		if a < b {
-			return a
-		}
-		return b
-	}
-	max := func(a, b int64) int64 {
-		if a > b {
-			return a
-		}
-		return b
-	}
 	out := canonical.UnknownStatus()
-	var feeds []canonical.Status
-	if c.api != nil {
-		s, err := c.api.Status(ctx)
+	var statuses []canonical.Status
+	for _, f := range c.feeds() {
+		s, err := f.clock.Status(ctx)
 		if err != nil {
-			return canonical.Status{}, fmt.Errorf("schwab api status: %w", err)
+			return canonical.Status{}, fmt.Errorf("schwab %s status: %w", f.name, err)
 		}
-		out.OldestSnapshotAt = combine(out.OldestSnapshotAt, s.OldestSnapshotAt, min)
-		out.LatestSnapshotAt = combine(out.LatestSnapshotAt, s.LatestSnapshotAt, max)
-		out.OldestTransactionAt = combine(out.OldestTransactionAt, s.OldestTransactionAt, min)
-		out.LatestTransactionAt = combine(out.LatestTransactionAt, s.LatestTransactionAt, max)
-		out.LatestChangeNumber = combine(out.LatestChangeNumber, s.LatestChangeNumber, max)
-		feeds = append(feeds, s)
-	}
-	if c.web != nil {
-		s, err := c.web.Status(ctx)
-		if err != nil {
-			return canonical.Status{}, fmt.Errorf("schwab web status: %w", err)
-		}
-		out.OldestSnapshotAt = combine(out.OldestSnapshotAt, s.OldestSnapshotAt, min)
-		out.LatestSnapshotAt = combine(out.LatestSnapshotAt, s.LatestSnapshotAt, max)
-		out.OldestTransactionAt = combine(out.OldestTransactionAt, s.OldestTransactionAt, min)
-		out.LatestTransactionAt = combine(out.LatestTransactionAt, s.LatestTransactionAt, max)
-		out.LatestChangeNumber = combine(out.LatestChangeNumber, s.LatestChangeNumber, max)
-		feeds = append(feeds, s)
+		out.OldestSnapshotAt = earliest(out.OldestSnapshotAt, s.OldestSnapshotAt)
+		out.LatestSnapshotAt = latest(out.LatestSnapshotAt, s.LatestSnapshotAt)
+		out.OldestTransactionAt = earliest(out.OldestTransactionAt, s.OldestTransactionAt)
+		out.LatestTransactionAt = latest(out.LatestTransactionAt, s.LatestTransactionAt)
+		out.LatestChangeNumber = latest(out.LatestChangeNumber, s.LatestChangeNumber)
+		statuses = append(statuses, s)
 	}
 	// Each feed reads every account of the source: it is observed
 	// through the later of the two.
-	out.ObservedSnapshotsThrough, out.ObservedTransactionsThrough = silver.MergeObserved(feeds, true)
+	out.ObservedSnapshotsThrough, out.ObservedTransactionsThrough = silver.MergeObserved(statuses, true)
 	return out, nil
+}
+
+// earliest and latest fold two extrema, either of which may be the
+// -1 "no observable state" sentinel.
+func earliest(a, b int64) int64 {
+	switch {
+	case a == -1:
+		return b
+	case b == -1:
+		return a
+	}
+	return min(a, b)
+}
+
+func latest(a, b int64) int64 {
+	switch {
+	case a == -1:
+		return b
+	case b == -1:
+		return a
+	}
+	return max(a, b)
 }
 
 // ChangeWindow yields a window covering whichever subsource has
@@ -157,26 +167,10 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 // HasChanges is true when at least one subsource reports changes.
 func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
 	out := canonical.Window{NewChangeNumber: sinceN}
-	if c.api != nil {
-		w, err := c.api.ChangeWindow(ctx, sinceN)
+	for _, f := range c.feeds() {
+		w, err := f.clock.ChangeWindow(ctx, sinceN)
 		if err != nil {
-			return canonical.Window{}, fmt.Errorf("schwab api ChangeWindow: %w", err)
-		}
-		if w.HasChanges {
-			if !out.HasChanges {
-				out.Start, out.End = w.Start, w.End
-			} else {
-				out.Start = min(out.Start, w.Start)
-				out.End = max(out.End, w.End)
-			}
-			out.HasChanges = true
-		}
-		out.NewChangeNumber = max(out.NewChangeNumber, w.NewChangeNumber)
-	}
-	if c.web != nil {
-		w, err := c.web.ChangeWindow(ctx, sinceN)
-		if err != nil {
-			return canonical.Window{}, fmt.Errorf("schwab web ChangeWindow: %w", err)
+			return canonical.Window{}, fmt.Errorf("schwab %s ChangeWindow: %w", f.name, err)
 		}
 		if w.HasChanges {
 			if !out.HasChanges {
@@ -206,13 +200,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 
 	streams := make([]silver.SnapshotStream, 0, 3)
 
-	if c.web != nil {
-		hist, err := c.web.snapshotsHistorical(ctx, w, bridge)
-		if err != nil {
-			return nil, fmt.Errorf("schwab web Snapshots (historical): %w", err)
-		}
-		streams = append(streams, hist)
+	hist, err := c.web.snapshotsHistorical(ctx, w, bridge)
+	if err != nil {
+		return nil, fmt.Errorf("schwab web Snapshots (historical): %w", err)
 	}
+	streams = append(streams, hist)
 	if c.api != nil {
 		// api's Snapshots also surfaces accounts. We rely on the
 		// per-column upsert in gold to merge web's nickname (emitted
@@ -223,13 +215,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 		streams = append(streams, s)
 	}
-	if c.web != nil {
-		s, err := c.snapshotsWebDimensions(ctx, w, bridge)
-		if err != nil {
-			return nil, fmt.Errorf("schwab web Snapshots (dimensions): %w", err)
-		}
-		streams = append(streams, s)
+	dims, err := c.snapshotsWebDimensions(ctx, w, bridge)
+	if err != nil {
+		return nil, fmt.Errorf("schwab web Snapshots (dimensions): %w", err)
 	}
+	streams = append(streams, dims)
 	return silver.NewConcatSnapshotStream(streams), nil
 }
 
@@ -241,27 +231,16 @@ func (c *Connection) snapshotsWebDimensions(
 	w canonical.Window,
 	bridge map[string]string,
 ) (silver.SnapshotStream, error) {
-	if !w.HasChanges || c.web == nil {
+	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	const q = `SELECT snapshot_at FROM dump_runs WHERE snapshot_at BETWEEN ? AND ? ORDER BY snapshot_at`
-	rows, err := c.web.db.QueryContext(ctx, q, w.Start, w.End)
+	times, err := dumpTimesInWindow(ctx, c.web.db, w)
 	if err != nil {
-		return nil, fmt.Errorf("schwab web dump_runs in window: %w", err)
+		return nil, fmt.Errorf("schwab web: %w", err)
 	}
-	defer rows.Close()
-	byTime := make(map[int64]*canonical.SnapshotBatch)
-	times := make([]int64, 0)
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
+	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
+	for _, t := range times {
 		byTime[t] = &canonical.SnapshotBatch{}
-		times = append(times, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	if err := c.web.snapshotsDimensions(ctx, w, byTime, bridge); err != nil {
 		return nil, err
@@ -277,9 +256,10 @@ func (c *Connection) snapshotsWebDimensions(
 	return silver.NewSnapshotStream(batches), nil
 }
 
-// Transactions emits api transactions unfiltered and (when web
-// is configured) web transactions strictly older than each
-// account's api-coverage-start.
+// Transactions emits the api transactions alone when web is not
+// configured. With web, each account's history splits at its
+// api-coverage-start: web emits the rows strictly before it, api
+// the rows from it on.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if c.web == nil {
 		return c.api.Transactions(ctx, w)
@@ -298,13 +278,11 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	}
 
 	streams := make([]silver.TransactionStream, 0, 2)
-	if c.web != nil {
-		s, err := c.web.transactionsBeforeAPIStart(ctx, w, bridge, apiStart, symbolBridge)
-		if err != nil {
-			return nil, fmt.Errorf("schwab web Transactions: %w", err)
-		}
-		streams = append(streams, s)
+	webTxs, err := c.web.transactionsBeforeAPIStart(ctx, w, bridge, apiStart, symbolBridge)
+	if err != nil {
+		return nil, fmt.Errorf("schwab web Transactions: %w", err)
 	}
+	streams = append(streams, webTxs)
 	if c.api != nil {
 		s, err := c.api.Transactions(ctx, w)
 		if err != nil {

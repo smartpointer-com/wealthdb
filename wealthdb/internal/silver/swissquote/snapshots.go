@@ -51,7 +51,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // in Snapshots() aware of every snapshot the adapter is about to
 // emit a batch for.
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	const q = `
+	return silver.SnapshotTimes(ctx, c.db, w, nil, `
 SELECT DISTINCT snapshot_at FROM (
     SELECT snapshot_at FROM dump_runs         WHERE snapshot_at BETWEEN ? AND ?
     UNION ALL
@@ -59,21 +59,8 @@ SELECT DISTINCT snapshot_at FROM (
     UNION ALL
     SELECT snapshot_at FROM currency_balances WHERE snapshot_at BETWEEN ? AND ?
 )
-ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End, w.Start, w.End, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+ORDER BY snapshot_at`,
+		w.Start, w.End, w.Start, w.End, w.Start, w.End)
 }
 
 // ---- accounts ------------------------------------------------------------

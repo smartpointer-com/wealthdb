@@ -5,7 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"time"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // PSN-side overlay helpers. The orchestrator pre-fetches PSN
@@ -59,7 +60,7 @@ func (r *psnReader) taxPairByISIN(ctx context.Context) (map[string]taxPair, erro
 // narrowed to the accounts PSN has ever reported a holding for. When
 // that narrowing would leave nothing (PSN carries no holdings yet, or
 // none for this portfolio) it is not applied, so a portfolio whose one
-// account is quiet maps exactly as it did before.
+// account is quiet still maps to that account.
 //
 // Opening dates are deliberately NOT used to narrow this. The roster
 // dates every opening, which makes them look like the discriminator,
@@ -198,46 +199,24 @@ func (r *psnReader) holdingsSnapshotRange(ctx context.Context) (first, last int6
 	return lo.Int64, hi.Int64, true, nil
 }
 
-// instrumentMetaByISIN builds the same isin→meta lookup as
-// appendInstruments, minus the in-window InstrumentChange emission the
-// overlay path doesn't need. It duplicates that loop on purpose:
-// sharing it would drag appendInstruments' byTime pipeline into the
-// overlay for no real gain. Keep the taxonomy mapping here in sync with
-// appendInstruments if it ever changes.
+// instrumentMetaByISIN is appendInstruments' isin→meta lookup on its
+// own, without the in-window InstrumentChange emission the overlay
+// path doesn't need.
 func (r *psnReader) instrumentMetaByISIN(ctx context.Context) (map[string]instrumentMeta, error) {
 	if r == nil {
 		return nil, nil
 	}
-	const q = `SELECT snapshot_at, isin, payload FROM instruments ORDER BY snapshot_at ASC`
-	rows, err := r.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("psn instrumentMetaByISIN: %w", err)
-	}
-	defer rows.Close()
-	out := make(map[string]instrumentMeta)
-	for rows.Next() {
-		var snap int64
-		var isin, payload string
-		if err := rows.Scan(&snap, &isin, &payload); err != nil {
-			return nil, err
-		}
-		var p instrumentPayload
-		_ = json.Unmarshal([]byte(payload), &p)
-		acNew, vehicle := taxonomyPairForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best())
-		out[isin] = instrumentMeta{
-			AssetClass: acNew,
-			Vehicle:    vehicle,
-			Currency:   p.GacInstrRskCcyIsoCd,
-		}
-	}
-	return out, rows.Err()
+	return r.appendInstruments(ctx, canonical.Window{}, nil)
 }
 
 // utcDay rounds a Unix-seconds timestamp DOWN to UTC midnight.
-// Used to bucket cross-source snapshots that fall on the same
-// business day but at different wall-clock times.
+// Used to bucket records that fall on the same UTC day but at
+// different wall-clock times.
 func utcDay(epoch int64) int64 {
-	t := time.Unix(epoch, 0).UTC()
-	t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-	return t.Unix()
+	const day = 86400
+	d := epoch / day
+	if epoch < 0 && epoch%day != 0 {
+		d--
+	}
+	return d * day
 }

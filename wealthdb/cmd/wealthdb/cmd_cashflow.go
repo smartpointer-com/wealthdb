@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -44,31 +43,19 @@ func init() {
 	register("cashflow", cmdCashflow)
 }
 
-var cashflowViews = map[string]bool{
-	"summary": true, "flows": true, "sankey": true, "transactions": true,
-	"coverage": true,
-}
+// cashflowViews are the grains `wealthdb cashflow <view>` supports,
+// coarsest first.
+var cashflowViews = []string{"summary", "flows", "sankey", "transactions", "coverage"}
 
 // cashflowInvestingGrains is the `--investing` vocabulary: net the
 // section as one movement, or per asset class.
 var cashflowInvestingGrains = []string{"whole", "class"}
 
-// cmdCashflow routes `wealthdb cashflow <view> ...` to the shared
-// runner.
+// cmdCashflow routes `wealthdb cashflow <view> ...` to the view's run.
 func cmdCashflow(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	if len(subargs) == 0 {
-		fmt.Fprintln(stderr, cashflowUsage())
-		return errs.Newf(2, "cashflow: a view subcommand is required")
-	}
-	view, rest := subargs[0], subargs[1:]
-	switch view {
-	case "-h", "--help", "help":
-		fmt.Fprintln(stderr, cashflowUsage())
-		return nil
-	}
-	if !cashflowViews[view] {
-		fmt.Fprintln(stderr, cashflowUsage())
-		return errs.Newf(2, "cashflow: unknown view %q (want summary | flows | sankey | transactions | coverage)", view)
+	view, rest, err := routeView("cashflow", subargs, cashflowViews, cashflowUsage, stderr)
+	if err != nil {
+		return err
 	}
 	return runCashflowView(ctx, g, view, rest, stdout, stderr)
 }
@@ -76,19 +63,13 @@ func cmdCashflow(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 func runCashflowView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb cashflow "+view, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
 	level := fs.String("level", "group", "section | class | group — the grain a node is netted at (flows, sankey)")
 	investing := fs.String("investing", "whole", strings.Join(cashflowInvestingGrains, " | ")+" — net investing as one node or per asset class")
-	rf := registerReportFlags(fs, "redact account IDs, names, and monetary amounts (the nodes stay visible)")
-
+	rf := registerReportFlags(fs, true)
 	fs.Usage = func() { fmt.Fprintln(stderr, cashflowUsage()) }
-	reordered := reorderFlagsFirst(splitFusedColumnsFlag(args), reportValueFlags)
-	if err := fs.Parse(reordered); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "cashflow: bad flags")
+	if err := parseFlags(fs, args, "cashflow"); err != nil {
+		return err
 	}
 	// The refusals have to be asked before the values are validated:
 	// `coverage -x` is refused for the same reason the report has no
@@ -111,16 +92,14 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 		}
 	}
 
-	if _, ok := reportPeriods[*period]; !ok {
-		return errs.Newf(2, "cashflow: invalid --period %q (want %s)",
-			*period, strings.Join(reportPeriodNames, " | "))
+	if err := checkChoice("cashflow", "period", *period, reportPeriodNames...); err != nil {
+		return err
 	}
-	if !oneOf(*level, "section", "class", "group") {
-		return errs.Newf(2, "cashflow: invalid --level %q (want section | class | group)", *level)
+	if err := checkChoice("cashflow", "level", *level, "section", "class", "group"); err != nil {
+		return err
 	}
-	if !oneOf(*investing, cashflowInvestingGrains...) {
-		return errs.Newf(2, "cashflow: invalid --investing %q (want %s)",
-			*investing, strings.Join(cashflowInvestingGrains, " | "))
+	if err := checkChoice("cashflow", "investing", *investing, cashflowInvestingGrains...); err != nil {
+		return err
 	}
 
 	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), time.Now())
@@ -200,37 +179,25 @@ func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold
 			Extract: func(r gold.CashflowSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
 		{Name: "period_start", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowSummaryRow) string { return periodStart(r.PeriodStart) }},
-		{Name: "txn_count", Align: output.AlignRight,
-			Extract: func(r gold.CashflowSummaryRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
+		countCol("txn_count", func(r gold.CashflowSummaryRow) int64 { return r.TxnCount }),
 		// The two halves of operating. NOT named `income` and
 		// `spending`: those are two other reports whose numbers differ
 		// from these by construction, and a column a reader cannot
 		// safely compare to the report it is named after is a trap.
 		// The flows view already spells them this way.
-		{Name: "operating_in", Header: "operating_in_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.OperatingIn) }},
-		{Name: "operating_out", Header: "operating_out_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.OperatingOut) }},
-		{Name: "operating", Header: "operating_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Operating) }},
-		{Name: "investing", Header: "investing_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Investing) }},
-		{Name: "financing", Header: "financing_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Financing) }},
-		{Name: "vehicles", Header: "vehicles_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Vehicles) }},
-		{Name: "net_cash_flow", Header: "net_cash_flow_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.NetCashFlow) }},
+		outCcyCol("operating_in", outCcy, func(r gold.CashflowSummaryRow) *string { return r.OperatingIn }),
+		outCcyCol("operating_out", outCcy, func(r gold.CashflowSummaryRow) *string { return r.OperatingOut }),
+		outCcyCol("operating", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Operating }),
+		outCcyCol("investing", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Investing }),
+		outCcyCol("financing", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Financing }),
+		outCcyCol("vehicles", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Vehicles }),
+		outCcyCol("net_cash_flow", outCcy, func(r gold.CashflowSummaryRow) *string { return r.NetCashFlow }),
 		// The yield class alone: for a household whose money comes from
 		// wealth rather than wages, the figure the report is opened for.
-		{Name: "yield", Header: "yield_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Yield) }},
-		{Name: "taxes", Header: "taxes_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Taxes) }},
-		{Name: "fees", Header: "fees_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Fees) }},
-		{Name: "giving", Header: "giving_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Giving) }},
+		outCcyCol("yield", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Yield }),
+		outCcyCol("taxes", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Taxes }),
+		outCcyCol("fees", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Fees }),
+		outCcyCol("giving", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Giving }),
 		// A rate is a proportion, not an amount: it survives -p, which
 		// is what makes the privacy twin of this report readable.
 		{Name: "savings_rate", Header: "savings_rate_pct", Align: output.AlignRight,
@@ -239,19 +206,15 @@ func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold
 		// wrong POPULATION rather than wrong arithmetic — the pool's
 		// balances are observed, and the statement's cash section is
 		// not — and it is never read by net_cash_flow.
-		{Name: "cash_measured", Header: "cash_measured_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.CashMeasured) }},
-		{Name: "fx_effect", Header: "fx_effect_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.FXEffect) }},
+		outCcyCol("cash_measured", outCcy, func(r gold.CashflowSummaryRow) *string { return r.CashMeasured }),
+		outCcyCol("fx_effect", outCcy, func(r gold.CashflowSummaryRow) *string { return r.FXEffect }),
 		// The flow term the residual is taken against, so the four
 		// memo columns close on their face. It is the flow over the
 		// MEASURED slice, pool-internal moves included, and so is not
 		// net_cash_flow — printing the residual without it left a
 		// reader's own arithmetic short.
-		{Name: "cash_flow_measured", Header: "cash_flow_measured_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.CashFlowMeasured) }},
-		{Name: "unexplained", Header: "unexplained_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSummaryRow) string { return formatCents(r.Unexplained) }},
+		outCcyCol("cash_flow_measured", outCcy, func(r gold.CashflowSummaryRow) *string { return r.CashFlowMeasured }),
+		outCcyCol("unexplained", outCcy, func(r gold.CashflowSummaryRow) *string { return r.Unexplained }),
 	}
 }
 
@@ -272,24 +235,18 @@ func buildCashflowFlowColumnRegistry(outCcy, period string) []columnSpec[gold.Ca
 		// are the keys behind them, and they carry the whole node key
 		// rather than the leaf alone — a gift given and a gift received
 		// are two nodes, and only the full key tells them apart.
-		{Name: "class", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowFlowRow) string { return strOrEmpty(r.ClassLabel) }},
-		{Name: "group", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowFlowRow) string { return strOrEmpty(r.GroupLabel) }},
+		textCol("class", func(r gold.CashflowFlowRow) *string { return r.ClassLabel }),
+		textCol("group", func(r gold.CashflowFlowRow) *string { return r.GroupLabel }),
 		{Name: "section_id", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowFlowRow) string { return r.Section }},
 		{Name: "class_id", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowFlowRow) string { return nodeKey(r.Section, r.Class, nil) }},
 		{Name: "group_id", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowFlowRow) string { return nodeKey(r.Section, r.Class, r.Group) }},
-		{Name: "txn_count", Align: output.AlignRight,
-			Extract: func(r gold.CashflowFlowRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
-		{Name: "inflow", Header: "inflow_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowFlowRow) string { return formatCents(r.Inflow) }},
-		{Name: "outflow", Header: "outflow_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowFlowRow) string { return formatCents(r.Outflow) }},
-		{Name: "net", Header: "net_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowFlowRow) string { return formatCents(r.Net) }},
+		countCol("txn_count", func(r gold.CashflowFlowRow) int64 { return r.TxnCount }),
+		outCcyCol("inflow", outCcy, func(r gold.CashflowFlowRow) *string { return r.Inflow }),
+		outCcyCol("outflow", outCcy, func(r gold.CashflowFlowRow) *string { return r.Outflow }),
+		outCcyCol("net", outCcy, func(r gold.CashflowFlowRow) *string { return r.Net }),
 		{Name: "share", Header: "share_pct", Align: output.AlignRight,
 			Extract: func(r gold.CashflowFlowRow) string { return formatPct(r.Share) }},
 	}
@@ -318,8 +275,7 @@ func nodeKey(section string, class, group *string) string {
 
 func buildCashflowSankeyColumnRegistry(outCcy string) []columnSpec[gold.CashflowSankeyRow] {
 	return []columnSpec[gold.CashflowSankeyRow]{
-		{Name: "stage", Align: output.AlignRight,
-			Extract: func(r gold.CashflowSankeyRow) string { return fmt.Sprintf("%d", r.Stage) }},
+		countCol("stage", func(r gold.CashflowSankeyRow) int64 { return r.Stage }),
 		// Node names are vocabulary, never a merchant, a payer, an
 		// account or an instrument — which is why the privacy twin of
 		// this view needs normalisation alone and no redaction.
@@ -331,10 +287,8 @@ func buildCashflowSankeyColumnRegistry(outCcy string) []columnSpec[gold.Cashflow
 			Extract: func(r gold.CashflowSankeyRow) string { return r.SourceID }},
 		{Name: "target_id", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowSankeyRow) string { return r.TargetID }},
-		{Name: "section", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowSankeyRow) string { return strOrEmpty(r.Section) }},
-		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowSankeyRow) string { return formatCents(r.Value) }},
+		textCol("section", func(r gold.CashflowSankeyRow) *string { return r.Section }),
+		outCcyCol("value", outCcy, func(r gold.CashflowSankeyRow) *string { return r.Value }),
 		{Name: "share", Header: "share_pct", Align: output.AlignRight,
 			Extract: func(r gold.CashflowSankeyRow) string { return formatPct(r.Share) }},
 	}
@@ -362,8 +316,7 @@ func buildCashflowCoverageColumnRegistry(period string) []columnSpec[gold.Cashfl
 			Extract: func(r gold.CashflowCoverageRow) string { return r.AccountKind }},
 		{Name: "currency", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowCoverageRow) string { return r.Currency }},
-		{Name: "txn_count", Align: output.AlignRight,
-			Extract: func(r gold.CashflowCoverageRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
+		countCol("txn_count", func(r gold.CashflowCoverageRow) int64 { return r.TxnCount }),
 		{Name: "ledger", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Ledger) }},
 		{Name: "unsigned", Align: output.AlignRight, Privacy: PrivacyMoney,
@@ -389,12 +342,9 @@ func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.Cas
 			Extract: func(r gold.CashflowTransactionRow) string { return accountLabel(r.DisplayName, r.AccountExternalID) }},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.CashflowTransactionRow) string { return r.AccountExternalID }},
-		{Name: "account_kind", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.AccountKind) }},
-		{Name: "account_nickname", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Nickname) }},
-		{Name: "account_category", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.AccountCategory) }},
+		textCol("account_kind", func(r gold.CashflowTransactionRow) *string { return r.AccountKind }),
+		textCol("account_nickname", func(r gold.CashflowTransactionRow) *string { return r.Nickname }),
+		textCol("account_category", func(r gold.CashflowTransactionRow) *string { return r.AccountCategory }),
 		{Name: "kind", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowTransactionRow) string { return r.Kind }},
 		{Name: "section", Align: output.AlignLeft,
@@ -418,20 +368,14 @@ func buildCashflowTransactionColumnRegistry(outCcy string) []columnSpec[gold.Cas
 			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Name) }},
 		// The family's own value behind the node, and the two overlays
 		// it could have come from.
-		{Name: "detailed", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Verdict) }},
-		{Name: "spend_detailed", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.SpendDetailed) }},
-		{Name: "income_detailed", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.IncomeDetailed) }},
-		{Name: "provenance", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Provenance) }},
+		textCol("detailed", func(r gold.CashflowTransactionRow) *string { return r.Verdict }),
+		textCol("spend_detailed", func(r gold.CashflowTransactionRow) *string { return r.SpendDetailed }),
+		textCol("income_detailed", func(r gold.CashflowTransactionRow) *string { return r.IncomeDetailed }),
+		textCol("provenance", func(r gold.CashflowTransactionRow) *string { return r.Provenance }),
 		{Name: "currency", Align: output.AlignLeft,
 			Extract: func(r gold.CashflowTransactionRow) string { return r.Currency }},
-		{Name: "net_amount", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowTransactionRow) string { return formatCents(r.NetAmount) }},
-		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowTransactionRow) string { return formatCents(r.ValueOutCcy) }},
+		moneyCol("net_amount", "", func(r gold.CashflowTransactionRow) *string { return r.NetAmount }),
+		outCcyCol("value", outCcy, func(r gold.CashflowTransactionRow) *string { return r.ValueOutCcy }),
 		{Name: "counterparty", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Counterparty) }},
 		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,

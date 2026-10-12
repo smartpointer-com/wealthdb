@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/loader"
 )
 
@@ -43,11 +41,12 @@ Use case: a silver was rebuilt from bronze (re-parse, new
 migration, data correction) and you want gold to re-sync from
 scratch for that source.`)
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "reset: bad flags")
+	if err := parseFlags(fs, subargs, "reset"); err != nil {
+		return err
+	}
+	id, err := sourceArg(fs, *all, "reset")
+	if err != nil {
+		return err
 	}
 
 	cfg, err := config.Load(g.ConfigPath)
@@ -66,34 +65,20 @@ scratch for that source.`)
 
 	ld := loader.New(db)
 
-	// Build the target list. Order: explicit id wins; then -a;
-	// then complain.
-	// registered is what gold knows about; it decides whether the
-	// cross-source caveat below applies. Only the single-id path needs
-	// it — '-a' resets exactly the registered set and prints no caveat.
-	var ids, registered []string
-	switch {
-	case *all && fs.NArg() > 0:
-		fs.Usage()
-		return errs.Newf(2, "reset: '-a' and a positional id are mutually exclusive")
-	case *all:
-		ids, err = ld.ListSourceIDs(ctx)
-		if err != nil {
-			return err
-		}
-		if len(ids) == 0 {
+	// registered is what gold knows about. '-a' resets exactly that
+	// set; for a single id it decides whether the cross-source caveat
+	// below applies.
+	registered, err := ld.ListSourceIDs(ctx)
+	if err != nil {
+		return err
+	}
+	ids := []string{id}
+	if *all {
+		if len(registered) == 0 {
 			fmt.Fprintln(stdout, "reset: nothing to do (no silver sources registered in gold)")
 			return nil
 		}
-	case fs.NArg() == 1:
-		ids = []string{fs.Arg(0)}
-		registered, err = ld.ListSourceIDs(ctx)
-		if err != nil {
-			return err
-		}
-	default:
-		fs.Usage()
-		return errs.Newf(2, "reset: expected one silver_source_id or -a")
+		ids = registered
 	}
 
 	var firstErr error

@@ -216,26 +216,3 @@ func FlowPolicyForRegime(r Regime) FlowPolicy {
 	}
 	return BankFlowPolicy()
 }
-
-// CapitalDirection returns the effect of an external flow kind on the entity's
-// capital base: +1 = capital in, -1 = capital out, 0 = source-signed / not a
-// pinned-direction kind.
-//
-// This map is documentary and is, by construction, identical to the canonical
-// sign that value_outccy already carries on the cash/funding account where these
-// legs are recorded: for every external kind,
-// Flow.Amount == CapitalDirection(kind)·|amount|, so Modified-Dietz F_i =
-// +Flow.Amount and XIRR cf = -Flow.Amount hold without per-kind special-casing.
-// It exists as a guard/assert against a hypothetical future fund-perspective
-// adapter; it changes zero numbers today. policy_test.go pins it to
-// canonical.ApplyCanonicalSign.
-func CapitalDirection(k canonical.TxKind) int {
-	switch k {
-	case canonical.TxKindDeposit, canonical.TxKindTransferIn, canonical.TxKindDistribution:
-		return +1
-	case canonical.TxKindWithdrawal, canonical.TxKindTransferOut, canonical.TxKindContribution:
-		return -1
-	default:
-		return 0
-	}
-}

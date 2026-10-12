@@ -9,13 +9,9 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// Snapshots emits one batch per ChangeWindow, stamped at the
-// window's End (= latest dump_run snapshot_at in the window). The
-// silver replay reconstructs every prior balance from the full
-// trade history on each load, so emitting historical snapshots
-// would mostly duplicate what gold already has from the previous
-// load. Gold sees one snapshot per silver-load-cycle, with the
-// latest balances computed live from `transactions`.
+// Snapshots emits one batch per distinct positions_daily.as_of_date: the
+// silver replay reconstructs every day's balances from the full trade
+// history on each load. The dimensions ride the latest batch.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil

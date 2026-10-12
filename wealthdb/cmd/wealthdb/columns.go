@@ -9,9 +9,8 @@ import (
 )
 
 // columnSpec describes one named output column. T is the row
-// type the Extract function takes — gold.PositionRow,
-// gold.TransactionRow, gold.AccountRow, gold.PortfolioRow in this
-// codebase.
+// type the Extract function takes, such as gold.PositionRow or
+// gold.TransactionRow.
 type columnSpec[T any] struct {
 	Name    string
 	Header  string // empty ⇒ same as Name (use for dynamic headers like value_<CCY>)
@@ -81,8 +80,8 @@ func (c columnSpec[T]) header() string {
 	return c.Name
 }
 
-// resolveColumns implements the standard -C / --columns parsing
-// shared by positions / accounts / portfolios / transactions:
+// resolveColumns implements the -C / --columns parsing every report
+// shares:
 //
 //   - empty / "default" → the per-command defaults list
 //   - "all"             → every registered column
@@ -174,6 +173,17 @@ func textCol[T any](name string, get func(T) *string) columnSpec[T] {
 	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string { return strOrEmpty(get(r)) }}
 }
 
+// dateCol is a date column, blank where the epoch is 0: a source that
+// has produced no observations at all.
+func dateCol[T any](name string, get func(T) int64) columnSpec[T] {
+	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string {
+		if epoch := get(r); epoch != 0 {
+			return formatDate(epoch)
+		}
+		return ""
+	}}
+}
+
 // countCol is a legible count.
 func countCol[T any](name string, get func(T) int64) columnSpec[T] {
 	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return fmt.Sprintf("%d", get(r)) }}
@@ -193,9 +203,9 @@ func columnNames[T any](registry []columnSpec[T]) []string {
 }
 
 // rowsToTable assembles an output.Table from a typed row slice
-// and a column set. All four readout subcommands funnel their
-// data through this on the way to the formatter. The `format`
-// drives privacy mode's per-format behaviour:
+// and a column set. Every report funnels its rows through this on
+// the way to the formatter. The `format` drives privacy mode's
+// per-format behaviour:
 //
 //   - table        — redacted cells render as visible placeholders
 //     ("****1234" / "***" / "*****.**") so the

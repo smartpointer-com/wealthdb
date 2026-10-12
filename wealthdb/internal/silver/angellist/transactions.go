@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/shopspring/decimal"
-
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
@@ -54,8 +52,8 @@ func kindForFundingType(t, offering string) canonical.TxKind {
 // out) and they reconcile to the funding balance, so they are used directly
 // (the source sign wins — e.g. a refund is a positive `contribution`
 // reversal — so ApplyCanonicalSign is intentionally bypassed). The K-1
-// annual Line 19(a) distribution is NOT emitted here: it was redundant with
-// these dated disbursements.
+// annual Line 19(a) distribution is NOT emitted here: it would restate these
+// dated disbursements.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
@@ -89,11 +87,7 @@ SELECT ft.transaction_external_id, ft.occurred_at, COALESCE(ft.type, ''),
 			if err := rows.Scan(&id, &occurred, &ftype, &amtMinor, &ccy, &desc, &synd, &posID, &offering); err != nil {
 				return nil, err
 			}
-			var net *canonical.Decimal
-			if amtMinor.Valid {
-				d := canonical.Decimal(decimal.New(amtMinor.Int64, -2)) // source-signed
-				net = &d
-			}
+			net := minorPtr(amtMinor) // source-signed
 			tx := canonical.TransactionChange{
 				TransactionExternalID: "funding:" + id,
 				OccurredAt:            occurred,

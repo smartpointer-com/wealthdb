@@ -265,17 +265,6 @@ func TestIncomeFlagReordering(t *testing.T) {
 	if n := strings.Count(strings.TrimSpace(after), "\n"); n < 1 {
 		t.Fatalf("the report has no rows to judge:\n%s", after)
 	}
-
-	// Every flag the income parser declares that takes a value must be
-	// in the shared table. One missing from it silently eats the
-	// positional, and the table is shared with spending — so a flag
-	// added to one command's parser has to be added here or it breaks
-	// the other's positional.
-	for _, f := range []string{"--period", "--level", "-f", "--format", "-C", "--columns", "-x", "--currency"} {
-		if !reportValueFlags[f] {
-			t.Errorf("%s consumes a value but is not in reportValueFlags", f)
-		}
-	}
 }
 
 // TestIncomeColumnHeaders pins the default column sets and the money

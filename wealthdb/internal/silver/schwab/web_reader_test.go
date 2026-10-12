@@ -1,6 +1,7 @@
 package schwab
 
 import (
+	"context"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -275,5 +276,40 @@ func TestSpliceSpanReachesPastTheAPICutoff(t *testing.T) {
 	got := builtIDs(spliceNonExternalToJSON(in, map[string]int64{"A": 120}))
 	if got["p-settle"] || !got["j-trade"] {
 		t.Errorf("with the export reaching day 120 the statement copy should go: %v", got)
+	}
+}
+
+// The web change number is the one ChangeWindow advances to: a statement
+// period end later than every dump and transaction widens the snapshot
+// range but leaves the change number, so the silver reads as up to date
+// once loaded.
+func TestWebChangeNumberIgnoresHistoricalPeriodEnds(t *testing.T) {
+	f := newMergedFixture(t)
+	dump, periodEnd := utcDay("2024-01-10"), utcDay("2024-01-31")
+	if _, err := f.web.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (?1, 1, '/x/1');
+        INSERT INTO historical_cash_balances(period_end, period_start, account_external_id, currency_iso,
+                                             opening_balance, closing_balance, source_sha256, payload) VALUES
+            (?2, ?1, '5678', 'USD', 1, 2, 'sha-s', '{}');
+    `, dump, periodEnd); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	r := &webReader{db: f.web}
+	ctx := context.Background()
+
+	s, err := r.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.LatestSnapshotAt != periodEnd {
+		t.Errorf("LatestSnapshotAt = %d, want the period end %d", s.LatestSnapshotAt, periodEnd)
+	}
+	w, err := r.ChangeWindow(ctx, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.LatestChangeNumber != w.NewChangeNumber || w.NewChangeNumber != dump {
+		t.Errorf("change number = %d, window advances to %d; want both the dump %d",
+			s.LatestChangeNumber, w.NewChangeNumber, dump)
 	}
 }

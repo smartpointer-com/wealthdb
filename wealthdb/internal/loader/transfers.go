@@ -23,9 +23,10 @@ import (
 // adapter-emitted rows.
 const transferIDPrefix = "xfer:"
 
-// transferColumns are the equity-transfer ledger CSV columns. Lookup is
-// by header name, so users may reorder them; `quantity`, `cost_basis`,
-// `instrument`, and `note` are optional.
+// requiredTransferCols are the equity-transfer ledger CSV columns every
+// file must carry. Lookup is by header name, so the columns may come in
+// any order; `quantity`, `cost_basis`, `instrument`, and `note` are
+// optional.
 var requiredTransferCols = []string{"silver_source_id", "account", "occurred_at", "direction", "value", "currency"}
 
 // TransferEntry is one row of the equity-transfer ledger. Value is the market

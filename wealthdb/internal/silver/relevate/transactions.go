@@ -13,12 +13,12 @@ import (
 // Transactions reads silver.transactions and projects them as
 // canonical TransactionChange events.
 //
-// Today the only populating source is `credit_note_pdf` — the
+// The populating source is `credit_note_pdf` — the
 // Gutschriftsanzeige PDFs the loader parses for Pillar-2
 // contribution events. The `deposits_endpoint` source is plumbed
-// but produces no rows in the observed corpus (Relevate's web
-// app exposes no transaction history); if it ever does, the
-// query picks the rows up too.
+// but yields no rows, since Relevate's web app exposes no
+// transaction history; if it ever does, the query picks the rows
+// up too.
 //
 // Silver `kind` mapping → canonical TxKind:
 //   - 'contribution' → TxKindDeposit. Pillar-2 vocabulary calls

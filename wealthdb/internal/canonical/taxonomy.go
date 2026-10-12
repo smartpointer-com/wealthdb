@@ -143,11 +143,11 @@ func (v Vehicle) Valid() bool {
 	return ok
 }
 
-// TaxonomyPair is a validated (exposure, vehicle) combination. Not
-// every cross-product is meaningful; ValidTaxonomyPair enumerates the
-// combinations the adapters may emit, and the verification harness
-// rejects anything outside it (a novel pair must be added here first,
-// with a taxonomy-doc update). Keyed by exposure → set of vehicles.
+// validTaxonomyPairs holds the admitted (exposure, vehicle)
+// combinations, keyed by exposure → set of vehicles. Not every
+// cross-product is meaningful; ValidTaxonomyPair gates what the
+// adapters and the gold writer may emit, so a novel pair must be added
+// here first, with a taxonomy-doc update.
 var validTaxonomyPairs = map[AssetClass]map[Vehicle]struct{}{
 	AssetClassPublicEquity: setOf(VehicleStock, VehicleETF, VehicleFund,
 		VehicleOption, VehicleFuture, VehicleRight, VehicleStructuredProduct),

@@ -23,8 +23,8 @@ import (
 //     (cash<->securities settlements, inter-account transfers, FX, mandate
 //     funding) is not a flow. The external/internal split is emitted PRE-TAGGED
 //     on the transaction in web_reader.go (pdfCashIsExternal, PII-free own-IBAN
-//     rule): internal rows are demoted to a non-flow kind and never reach the
-//     flow set, so no ClassifyFlow hook / FlowCtx payload is needed here.
+//     rule): an internal row carries a `returns_flow: internal` payload key,
+//     and the engine drops it from the flow set.
 //   - Inception = InceptionFirstRealSnapshot: anchor UBS's return window at its
 //     first real position snapshot rather than the sparse cash-only pre-history,
 //     killing the tiny-base artifact of a window opened years early.

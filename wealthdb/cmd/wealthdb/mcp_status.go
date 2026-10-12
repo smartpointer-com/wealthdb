@@ -205,17 +205,11 @@ func statusDetail(ctx context.Context, db *sql.DB, cfg *config.Config, id string
 	return strings.TrimRight(b.String(), "\n"), nil
 }
 
-// snapshotRow is one day a source has data for.
-type snapshotRow struct {
-	source, date string
-	count        int // snapshots taken that day
-}
-
 func snapshotColumns() []columnSpec[snapshotRow] {
 	return []columnSpec[snapshotRow]{
 		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r snapshotRow) string { return r.source }},
 		{Name: "date", Align: output.AlignLeft, Extract: func(r snapshotRow) string { return r.date }},
-		{Name: "snapshots", Align: output.AlignRight, Extract: func(r snapshotRow) string { return fmt.Sprintf("%d", r.count) }},
+		countCol("snapshots", func(r snapshotRow) int64 { return int64(r.count) }),
 	}
 }
 
@@ -236,19 +230,7 @@ func snapshotsReport(latestOnly bool) *report {
 			if err != nil {
 				return nil, err
 			}
-			var days []snapshotRow
-			for _, t := range times {
-				d := formatDate(t)
-				if n := len(days); n > 0 && days[n-1].date == d {
-					days[n-1].count++
-					continue
-				}
-				days = append(days, snapshotRow{source: id, date: d, count: 1})
-			}
-			if latestOnly && len(days) > 0 {
-				days = days[len(days)-1:]
-			}
-			out = append(out, days...)
+			out = append(out, snapshotDays(id, times, latestOnly)...)
 		}
 		return out, nil
 	})

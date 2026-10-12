@@ -14,8 +14,8 @@ import (
 //
 // The engine consumes these knobs: OnboardScope (returns_compute.go,
 // per-entity-once onboarding), Inception (entityWindow, first-real-snapshot
-// anchor), ConduitKinds via IsConduit (returns.go), the ClassifyFlow/ExternalOnly
-// hook path (attachFlows in returns.go), AccountsGrain (returns.go, blanking
+// anchor), ConduitKinds via IsConduit (returns.go), ExternalOnly
+// (attachOneFlow in returns.go), AccountsGrain (returns.go, blanking
 // or hiding the per-account display for sweep/conduit sources),
 // CapitalCallRisk (regimeFlags in returns_compute.go, tagging flow-less
 // windows), and ClosureScope (entityFlows, ledger-exact vs subsumed
@@ -65,21 +65,12 @@ type ReturnsPolicy struct {
 	// ConduitKinds: account kinds that are plumbing (e.g. UBS cash), not a
 	// return-bearing unit. Empty by default.
 	ConduitKinds []canonical.AccountKind
-	// ExternalOnly: count only boundary-crossing flows. It gates the ClassifyFlow
-	// hook in the engine (attachFlows): a source that ships ClassifyFlow drops
-	// flows the hook calls internal. A source that pre-tags external/internal in
-	// silver (UBS demotes internal rows to a non-flow kind) leaves ClassifyFlow
-	// nil, so this flag is then a silver-side contract and inert in the engine.
-	// False by default (the flow set is governed by Flow.external / Flow.
-	// transferLike).
+	// ExternalOnly: count only boundary-crossing flows. The engine
+	// (attachOneFlow) then drops every row the silver tagged internal (UBS
+	// marks conduit churn with a `returns_flow: internal` payload key).
+	// False by default (the flow set is governed by Flow.external /
+	// Flow.transferLike).
 	ExternalOnly bool
-
-	// ---- escape hatches; optional, nil => default behavior ----
-
-	// ClassifyFlow, if non-nil, overrides external-vs-internal flow
-	// classification under ExternalOnly. nil => the FlowPolicy
-	// kind-set rule (UBS pre-tags in silver instead, so it ships nil).
-	ClassifyFlow func(FlowCtx) FlowClass
 }
 
 // OnboardScope selects the grain at which synthetic onboarding fires.
@@ -172,24 +163,6 @@ const (
 	// InceptionFirstRealSnapshot anchors at the first real value snapshot.
 	// Consumed by the engine (entityWindow) and set live by UBS.
 	InceptionFirstRealSnapshot
-)
-
-// FlowCtx is the input to the optional ClassifyFlow hook. Shape is
-// provisional; the hook is nil in every default policy.
-type FlowCtx struct {
-	Kind   canonical.TxKind
-	Amount canonical.Decimal
-}
-
-// FlowClass is the result of ClassifyFlow: external (boundary-crossing) vs.
-// internal.
-type FlowClass int
-
-const (
-	// FlowInternal is a within-entity move (not owner capital).
-	FlowInternal FlowClass = iota
-	// FlowExternal is boundary-crossing owner capital.
-	FlowExternal
 )
 
 // DefaultReturnsPolicy returns the baseline policy: the given FlowPolicy plus

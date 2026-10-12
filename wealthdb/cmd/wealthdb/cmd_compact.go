@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -51,15 +50,11 @@ re-merge. Concurrent readers keep the old file until they close.
 --dry-run builds the compacted file, reports the reclaimable bytes,
 then discards it without touching the live DB.`)
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "compact: bad flags")
+	if err := parseFlags(fs, subargs, "compact"); err != nil {
+		return err
 	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return errs.Newf(2, "compact: unexpected positional argument %q", fs.Arg(0))
+	if err := noPositionals(fs, "compact"); err != nil {
+		return err
 	}
 
 	cfg, err := config.Load(g.ConfigPath)

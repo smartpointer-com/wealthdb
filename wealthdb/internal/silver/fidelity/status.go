@@ -16,10 +16,9 @@ import (
 // no-op even when historical content is present. The observed
 // watermarks are observed().
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
 	hasHist, err := c.hasHistoricalTable(ctx)
 	if err != nil {
-		return s, err
+		return canonical.UnknownStatus(), err
 	}
 	histClause := "SELECT NULL AS t WHERE 0"
 	if hasHist {
@@ -41,24 +40,9 @@ SELECT
     COALESCE((SELECT MAX(timestamp) FROM transactions), -1),
     COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),  -1)
 `, histClause, histClause)
-	var oldS, newS, oldT, newT, latestRun sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q).Scan(&oldS, &newS, &oldT, &newT, &latestRun); err != nil {
-		return s, fmt.Errorf("fidelity Status: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	if oldT.Valid {
-		s.OldestTransactionAt = oldT.Int64
-	}
-	if newT.Valid {
-		s.LatestTransactionAt = newT.Int64
-	}
-	if latestRun.Valid {
-		s.LatestChangeNumber = latestRun.Int64
+	s, err := silver.ContentStatus(ctx, c.db, "fidelity", q)
+	if err != nil {
+		return s, err
 	}
 	if err := c.observed(ctx, hasHist, &s); err != nil {
 		return s, err

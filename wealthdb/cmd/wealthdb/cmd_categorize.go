@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,7 +16,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/pathmode"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/spending"
 )
 
@@ -135,9 +133,7 @@ type merchantAnchor struct {
 
 // categorization is one validated verdict, ready to upsert into the
 // running family's verdict store. MerchantName holds the counterparty's
-// name whichever family that is — a merchant's or a payer's — and keeps
-// the older spelling because every field of this struct is written and
-// read in one file and a rename would buy nothing.
+// name whichever family that is: a merchant's or a payer's.
 type categorization struct {
 	Signature    string
 	MerchantName string
@@ -167,17 +163,12 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, categorizeUsage())
 	}
-	if err := fs.Parse(reorderFlagsFirst(subargs, categorizeValueFlags)); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "categorize: bad flags")
+	if err := parseFlags(fs, subargs, "categorize"); err != nil {
+		return err
 	}
-	families, ok := resolveCategorizeFamilies(strings.Join(fs.Args(), " "))
-	if !ok {
-		fs.Usage()
-		return errs.Newf(2, "categorize: unknown family %q (want spending | income, or neither for both)",
-			strings.Join(fs.Args(), " "))
+	families, err := categorizeFamilyArg(fs, "categorize")
+	if err != nil {
+		return err
 	}
 	if *batch < 1 {
 		fs.Usage()
@@ -209,48 +200,28 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		}
 	}
 
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
-	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", cfg.GoldDB)
-	}
-	if !*dryRun && dec.Mode != pathmode.ModeReadWrite {
-		return errs.Newf(errs.ExitRWNeeded,
-			"'categorize' requires write access to the gold database, but '%s' is read-only (detected: %s). "+
-				"Pass --dry-run if you only want to see the plan.", cfg.GoldDB, dec.Reason)
-	}
 	// A dry run is a PURE READ: it opens read-only, takes no write
 	// lock, and a parallel `wealthdb transactions` can read the file
-	// while the model is responding.
+	// while the model is responding. A real run holds the gold write
+	// mutex end to end. The verdicts it buys are the one thing in gold
+	// with no other source of truth, and 'compact' / 'reload -a' carry
+	// the verdict stores by a read taken at the start of a rebuild that
+	// ends in a rename — anything stored after that read would be
+	// swapped away and still reported as stored.
 	openMode := gold.ModeReadWrite
 	var enrichment enrichmentLedgers
 	if *dryRun {
 		openMode = gold.ModeReadOnly
-	} else {
+	} else if enrichment, err = parseEnrichmentLedgers(cfg); err != nil {
 		// Only a real run applies the ledgers, and it reads them before
 		// gold is opened read-write (parseEnrichmentLedgers).
-		if enrichment, err = parseEnrichmentLedgers(cfg); err != nil {
-			return err
-		}
-		// A real run holds the gold write mutex end to end. The
-		// verdicts it buys are the one thing in gold with no other
-		// source of truth, and 'compact' / 'reload -a' carry the
-		// verdict stores by a read taken at the start of a rebuild
-		// that ends in a rename — anything stored after that read
-		// would be swapped away and still reported as stored.
-		lock, err := lockGoldForWrite(cfg.GoldDB, "categorize")
-		if err != nil {
-			return err
-		}
-		defer lock.unlock()
+		return err
 	}
-	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, openMode) })
+	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "categorize", defaultMissingGoldMsg, "see the plan", *dryRun)
 	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
+		return err
 	}
+	defer lock.unlock()
 	// The handle is released before the model round-trips begin (see
 	// below) and re-taken per flush. dbOpen keeps the deferred close
 	// correct on the paths that return early.
@@ -1047,11 +1018,11 @@ func estimateTokens(s string) int { return (len(s) + 3) / 4 }
 // printCategorizeBatchPlan says what a run will cost before the first
 // call is made: how many batches, how big, how many anchors the first
 // carries, how large its prompt is, and how many calls the run can
-// spend. On a run measured in tens of minutes this is what the
-// preview is read before deciding to wait. A dry run asks the model
-// exactly as a real run does — that is the precedent's shape, and
-// the only way to see verdicts without writing them — so there the
-// plan is the one cost signal that arrives before any call.
+// spend. On a long run the preview is what is read before deciding
+// to wait. A dry run asks the model exactly as a real run does — that
+// is the precedent's shape, and the only way to see verdicts without
+// writing them — so there the plan is the one cost signal that
+// arrives before any call.
 func printCategorizeBatchPlan(w io.Writer, fam categorizeFamily, batches [][]merchantCandidate, size int, anchors []merchantAnchor, level string, maxAttempts int, dryRun bool) {
 	if len(batches) == 0 {
 		return
@@ -1221,13 +1192,7 @@ func categorizeBatch(
 		}
 		fmt.Fprintf(stdout, "categorize: batch %d/%d attempt %d: %d invalid row(s) — sample:\n",
 			index, count, attempts, len(invalid))
-		sampleN := 5
-		if len(invalid) < sampleN {
-			sampleN = len(invalid)
-		}
-		for _, iv := range invalid[:sampleN] {
-			fmt.Fprintf(stdout, "    %v — %s\n", iv.Raw, iv.Reason)
-		}
+		printInvalidSample(stdout, invalid)
 		if attempts == maxAttempts {
 			break
 		}
@@ -1363,9 +1328,7 @@ Emit nothing outside that list. In particular NEVER emit %s: those are assigned 
 
 	// The output contract, in this family's nouns. fam.outputContract()
 	// is the SAME string the gauntlet quotes when it rejects a row, so
-	// the instruction and the complaint cannot disagree — an income
-	// batch that asked for payer columns and then named merchant ones
-	// three lines later told the model three different things at once.
+	// the instruction and the complaint cannot disagree.
 	fmt.Fprintf(&b, `
 Output format:
 - CSV with columns: %[1]s
@@ -1463,8 +1426,9 @@ func formatCandidateTransactionCSV(cands []merchantCandidate) string {
 	return b.String()
 }
 
+// formatEpochDay renders a day number (days since the epoch) as a date.
 func formatEpochDay(day int64) string {
-	return time.Unix(day*gold.SecondsPerDay, 0).UTC().Format("2006-01-02")
+	return formatDate(day * gold.SecondsPerDay)
 }
 
 // ---- persistence -------------------------------------------------------------

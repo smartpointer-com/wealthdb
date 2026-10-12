@@ -3,7 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
 )
 
 // TransactionRow is one row of the gold transactions readout.
@@ -108,12 +107,8 @@ const (
 // converted to outCcy at occurred_at. Sorted by occurred_at (asc or
 // desc per `order`), then (silver_source_id,
 // transaction_external_id) as a stable tiebreaker. The query and FX
-// are the report_transactions table macro (migration 0021, re-issued
-// with account_kind in 0039, with the merchant / spend-category
-// columns in 0042, with the payer / income-category columns in 0071,
-// and with check_number in 0075 — the last named column before the FX
-// tail); the macro emits ascending, so the descending case re-sorts
-// here.
+// are the report_transactions table macro (migration 0099); the macro
+// emits ascending, so the descending case re-sorts here.
 //
 // `SELECT *` with a positional Scan: any column added to the macro
 // must be added to TransactionRow and to the scan list below in the
@@ -123,67 +118,16 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 	if order == SortDescending {
 		q += ` ORDER BY occurred_at DESC, silver_source_id, transaction_external_id`
 	}
-
-	rows, err := db.QueryContext(ctx, q, fromEpoch, toEpoch, outCcy)
-	if err != nil {
-		return nil, fmt.Errorf("TransactionsBetween: %w", err)
-	}
-	defer rows.Close()
-
-	var out []TransactionRow
-	for rows.Next() {
-		var (
-			r                                      TransactionRow
-			acctKind                               sql.NullString
-			displayName, relID, nickname, category sql.NullString
-			instr, symbol, name, assetClass        sql.NullString
-			grossStr, netStr, qtyStr, priceStr     sql.NullString
-			description, valueOut                  sql.NullString
-			merchant, spendPrimary, spendDetailed  sql.NullString
-			payer, incomePrimary, incomeDetailed   sql.NullString
-			checkNumber, instrumentHint            sql.NullString
-			cfSection, cfClass, cfGroup            sql.NullString
-		)
-		if err := rows.Scan(
-			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
-			&r.AccountExternalID,
-			&acctKind, &displayName, &relID, &nickname, &category,
-			&instr, &symbol, &name, &assetClass,
+	return scanRows(ctx, db, "TransactionsBetween", q, []any{fromEpoch, toEpoch, outCcy}, func(r *TransactionRow) []any {
+		return []any{
+			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt, &r.AccountExternalID,
+			str(&r.AccountKind), str(&r.DisplayName), str(&r.RelationshipID), str(&r.Nickname), str(&r.AccountCategory),
+			str(&r.InstrumentExternalID), str(&r.Symbol), str(&r.Name), str(&r.AssetClass),
 			&r.Kind, &r.Currency,
-			&grossStr, &netStr, &qtyStr, &priceStr,
-			&description, &merchant, &spendPrimary, &spendDetailed,
-			&payer, &incomePrimary, &incomeDetailed, &checkNumber, &instrumentHint,
-			&cfSection, &cfClass, &cfGroup, &valueOut,
-		); err != nil {
-			return nil, fmt.Errorf("TransactionsBetween scan: %w", err)
+			dec(&r.GrossAmount), dec(&r.NetAmount), dec(&r.Quantity), dec(&r.Price),
+			str(&r.Description), str(&r.MerchantName), str(&r.SpendPrimary), str(&r.SpendDetailed),
+			str(&r.PayerName), str(&r.IncomePrimary), str(&r.IncomeDetailed), str(&r.CheckNumber), str(&r.InstrumentHint),
+			str(&r.CashflowSection), str(&r.CashflowClass), str(&r.CashflowGroup), dec(&r.ValueOutCcy),
 		}
-		r.Description = nullStringToPtr(description)
-		r.MerchantName = nullStringToPtr(merchant)
-		r.SpendPrimary = nullStringToPtr(spendPrimary)
-		r.SpendDetailed = nullStringToPtr(spendDetailed)
-		r.PayerName = nullStringToPtr(payer)
-		r.IncomePrimary = nullStringToPtr(incomePrimary)
-		r.IncomeDetailed = nullStringToPtr(incomeDetailed)
-		r.CheckNumber = nullStringToPtr(checkNumber)
-		r.InstrumentHint = nullStringToPtr(instrumentHint)
-		r.CashflowSection = nullStringToPtr(cfSection)
-		r.CashflowClass = nullStringToPtr(cfClass)
-		r.CashflowGroup = nullStringToPtr(cfGroup)
-		r.AccountKind = nullStringToPtr(acctKind)
-		r.DisplayName = nullStringToPtr(displayName)
-		r.RelationshipID = nullStringToPtr(relID)
-		r.Nickname = nullStringToPtr(nickname)
-		r.AccountCategory = nullStringToPtr(category)
-		r.InstrumentExternalID = nullStringToPtr(instr)
-		r.Symbol = nullStringToPtr(symbol)
-		r.Name = nullStringToPtr(name)
-		r.AssetClass = nullStringToPtr(assetClass)
-		r.GrossAmount = trimmedDecimalPtr(grossStr)
-		r.NetAmount = trimmedDecimalPtr(netStr)
-		r.Quantity = trimmedDecimalPtr(qtyStr)
-		r.Price = trimmedDecimalPtr(priceStr)
-		r.ValueOutCcy = trimmedDecimalPtr(valueOut)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	})
 }

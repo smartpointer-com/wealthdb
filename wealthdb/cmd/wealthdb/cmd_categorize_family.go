@@ -1,11 +1,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 )
 
 // The two families `wealthdb categorize` asks a model about, and
@@ -135,18 +137,6 @@ var incomeCategorizeFamily = categorizeFamily{
 	categorizationKey: func(c *config.Config) string { return c.IncomeCategorizationKey() },
 }
 
-// categorizeValueFlags are the flag tokens that consume the next arg on
-// the two categorize commands, so the optional family positional may
-// appear before or after flags — the idiom every other command with a
-// positional already uses. Without the reordering, Go's flag package
-// stops at the first non-flag token and every flag after the family
-// name reads as another positional.
-var categorizeValueFlags = map[string]bool{
-	"--batch": true, "--max-attempts": true, "--max-anchors": true,
-	"-f": true, "--format": true, "-d": true, "--detailed": true,
-	"--forget": true,
-}
-
 // categorizeFamilies is the order a run with no positional walks:
 // spending, then income. Two plans, two summaries, one model.
 var categorizeFamilies = []categorizeFamily{spendingCategorizeFamily, incomeCategorizeFamily}
@@ -163,6 +153,22 @@ func resolveCategorizeFamilies(arg string) ([]categorizeFamily, bool) {
 		}
 	}
 	return nil, false
+}
+
+// categorizeFamilyArg reads the optional family positional of the two
+// categorize commands: none runs both, one name runs that family alone,
+// and anything else is a usage error.
+func categorizeFamilyArg(fs *flag.FlagSet, cmd string) ([]categorizeFamily, error) {
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return nil, errs.Newf(2, "%s: unexpected positional argument %q", cmd, fs.Arg(1))
+	}
+	families, ok := resolveCategorizeFamilies(fs.Arg(0))
+	if !ok {
+		fs.Usage()
+		return nil, errs.Newf(2, "%s: unknown family %q (want spending | income, or neither for both)", cmd, fs.Arg(0))
+	}
+	return families, nil
 }
 
 // candidateKindFilter renders candidateKinds as a SQL predicate on the
@@ -228,10 +234,7 @@ func (f categorizeFamily) plural() string {
 // It is ONE string with two readers — the prompt's output-format block
 // and the gauntlet's wrong-arity rejection — so a model that is told
 // what to emit and then told it emitted the wrong thing hears the same
-// column names both times. They used to differ in the first column
-// (`signature` in the rejection, `merchant_signature` in the prompt),
-// which is the smaller half of the same defect that had an income
-// prompt asking for merchant columns.
+// column names both times.
 func (f categorizeFamily) outputContract() string {
 	return fmt.Sprintf("%[1]s_signature,%[1]s_name,%[2]s", f.counterparty, f.valueColumn)
 }

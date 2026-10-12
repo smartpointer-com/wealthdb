@@ -1,4 +1,4 @@
-// Package ubs projects the ubs-psn silver SQLite into
+// Package ubs projects the ubs-web and ubs-psn silver SQLites into
 // canonical change records. See docs/adapters/ubs.md for the
 // mapping contract.
 package ubs
@@ -23,9 +23,9 @@ func (*Adapter) Kind() string { return kindName }
 
 // Open attaches the configured UBS silvers.
 //
-// Single-file mode (spec.Path set): legacy form — treats the
-// file as a PSN silver. Used by tests and by users who only have
-// the PSN feed configured at the top level.
+// Single-file mode (spec.Path set): the file is read as a PSN
+// silver, for a source configured with the PSN feed alone at the
+// top level.
 //
 // Subsources mode: kind is "ubs-web" or "ubs-psn"; each entry is
 // optional but at least one must be present. The returned
@@ -35,7 +35,7 @@ func (*Adapter) Kind() string { return kindName }
 func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	c := &Connection{relationships: spec.Relationships}
 
-	// Single-path form (legacy + tests).
+	// Single-path form: a PSN silver.
 	if spec.Path != "" {
 		db, err := silver.OpenReadOnlySQLite(spec.Path, "ubs (single path)")
 		if err != nil {

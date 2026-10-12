@@ -168,6 +168,12 @@ SELECT period_end, account_external_id, COALESCE(currency_iso, ''),
 		if err := rows.Scan(&periodEnd, &extID, &ccy, &due); err != nil {
 			return err
 		}
+		currency := strings.ToUpper(strings.TrimSpace(ccy))
+		if currency == "" {
+			// Same rule as the roster balance: no unit, no row.
+			skipped++
+			continue
+		}
 		batch, ok := byTime[periodEnd]
 		if !ok {
 			// A period end is a billing date, not a dump time, so it
@@ -176,12 +182,6 @@ SELECT period_end, account_external_id, COALESCE(currency_iso, ''),
 			// the bank drew it, never at the date it was fetched.
 			batch = &canonical.SnapshotBatch{}
 			byTime[periodEnd] = batch
-		}
-		currency := strings.ToUpper(strings.TrimSpace(ccy))
-		if currency == "" {
-			// Same rule as the roster balance: no unit, no row.
-			skipped++
-			continue
 		}
 		batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
 			SnapshotAt:        periodEnd,

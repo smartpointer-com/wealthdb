@@ -130,11 +130,11 @@ ORDER BY snapshot_at`
 
 // ---- accounts ------------------------------------------------------------
 
-// cashAccountPayload covers the UBS SDCA fields the adapter still
-// reads out of payload JSON. AcctCcyIsoCd (currency), AcctTpCd
-// (product code), and AcctTpDesc (category) aren't promoted in
-// silver, so they stay here. PrtflId moved to a promoted column
-// in silver migration 0002 — read directly from the SELECT.
+// cashAccountPayload covers the UBS SDCA fields the adapter reads
+// out of payload JSON. AcctCcyIsoCd (currency), AcctTpCd (product
+// code), and AcctTpDesc (category) aren't promoted in silver, so
+// they stay here. PrtflId is a promoted column, read directly from
+// the SELECT.
 type cashAccountPayload struct {
 	AcctCcyIsoCd string `json:"AcctCcyIsoCd"`
 	AcctTpCd     string `json:"AcctTpCd"`
@@ -279,8 +279,8 @@ SELECT snapshot_at, relationship_id, account_external_id,
 }
 
 func (c *psnReader) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	// base_currency is promoted in silver migration 0002 — read
-	// directly. The payload still carries the full PrtflKey (with
+	// base_currency is a promoted column, read directly. The
+	// payload carries the full PrtflKey (with
 	// PrtflElmntData, performance, etc.) for forensics.
 	const q = `
 SELECT snapshot_at, relationship_id, portfolio_external_id,
@@ -333,7 +333,6 @@ type instrumentMeta struct {
 
 type instrumentPayload struct {
 	InstrCtgyCFI        string          `json:"InstrCtgyCFI"`
-	InstrCtgyCFIDesc    string          `json:"InstrCtgyCFIDesc"`
 	InstrNm             instrumentNames `json:"InstrNm"`
 	GacInstrRskCcyIsoCd string          `json:"GacInstrRskCcyIsoCd"`
 	// UacAsstClsCd is UBS's internal asset-class code, used as a
@@ -362,7 +361,8 @@ func (n instrumentNames) Best() string {
 // appendInstruments emits InstrumentChange for any instruments
 // row in the window AND returns a (isin → meta) lookup populated
 // from the **most-recent** instrument row across the whole silver
-// DB (not just the window). UBS silver's loader applies content-
+// DB (not just the window). A nil byTime emits nothing and only
+// builds the lookup (instrumentMetaByISIN). UBS silver's loader applies content-
 // dedup, so most snapshots don't carry a fresh instruments row;
 // looking up by (snapshot_at, isin) would fail for the holding's
 // snapshot most of the time. Latest-known-per-ISIN is the right
@@ -444,12 +444,12 @@ type holdingsPayloadShape struct {
 // HOLD entry when no exact match exists). See mt535.go for the
 // parser and docs/adapters/ubs.md §4 for the rationale. The book
 // value is the holding's BOOK amount, which the collector promotes
-// to columns (psnBookValue); a silver older than those columns
-// states none.
+// to columns (psnBookValue); a silver without those columns states
+// none.
 //
-// As of silver migration 0002 both holdings and safekeeping_
-// accounts use the same AcctId form for the safekeeping ID
-// (e.g. BBBBxxxxxxxxxxS1); no cross-table translation is needed.
+// Holdings and safekeeping_accounts use the same AcctId form for the
+// safekeeping ID (e.g. BBBBxxxxxxxxxxS1); no cross-table translation
+// is needed.
 func (c *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta) error {
 	hasCost, err := silver.HasColumn(ctx, c.db, "holdings", "cost_basis")
 	if err != nil {
@@ -572,12 +572,11 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
 type cashBalancePayload struct {
 	Amount      canonical.Decimal `json:"amount"`
 	CreditDebit string            `json:"credit_debit"`
-	CurrencyISO string            `json:"currency_iso"`
 }
 
-// As of silver migration 0002 cash_balances.account_external_id
-// is the IBAN, matching cash_accounts.account_external_id; no
-// cross-table translation is needed.
+// cash_balances.account_external_id is the IBAN, matching
+// cash_accounts.account_external_id; no cross-table translation is
+// needed.
 func (c *psnReader) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
@@ -608,7 +607,8 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 		}
 
 		amount := p.Amount
-		if strings.ToUpper(p.CreditDebit) == "D" || strings.ToUpper(p.CreditDebit) == "DBIT" || strings.ToUpper(p.CreditDebit) == "DEBIT" {
+		switch strings.ToUpper(p.CreditDebit) {
+		case "D", "DBIT", "DEBIT":
 			amount = amount.Neg()
 		}
 
@@ -846,7 +846,7 @@ SELECT snapshot_at, contract_external_id, payload
 	defer rows.Close()
 	// Track which (snapshot, portfolio) overlay accounts we've
 	// already emitted to avoid one AccountChange per forward.
-	overlayEmitted := map[[2]string]bool{}
+	overlayEmitted := map[snapshotKey]bool{}
 	for rows.Next() {
 		var (
 			snap       int64
@@ -872,7 +872,7 @@ SELECT snapshot_at, contract_external_id, payload
 			ccy = "XXX"
 		}
 		overlayID := overlayAccountID(p.PrtflId)
-		key := [2]string{fmt.Sprintf("%d", snap), p.PrtflId}
+		key := snapshotKey{snap, p.PrtflId}
 		if !overlayEmitted[key] {
 			overlayEmitted[key] = true
 			pid := p.PrtflId

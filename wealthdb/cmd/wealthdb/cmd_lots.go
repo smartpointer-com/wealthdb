@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -36,7 +35,7 @@ func cmdLots(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, 
 	if len(subargs) == 0 || subargs[0] != "rebuild" {
 		fmt.Fprintln(stderr, lotsUsage)
 		if len(subargs) > 0 && (subargs[0] == "-h" || subargs[0] == "--help" || subargs[0] == "help") {
-			return nil
+			return flag.ErrHelp
 		}
 		return errs.Newf(2, "lots: the verb is 'rebuild'")
 	}
@@ -44,22 +43,17 @@ func cmdLots(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, 
 	fs.SetOutput(stderr)
 	force := fs.Bool("force", false, "replay even when no input changed")
 	fs.Usage = func() { fmt.Fprintln(stderr, lotsUsage) }
-	if err := fs.Parse(subargs[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errs.Newf(2, "lots: bad flags")
+	if err := parseFlags(fs, subargs[1:], "lots"); err != nil {
+		return err
 	}
-	if fs.NArg() > 0 {
-		fs.Usage()
-		return errs.Newf(2, "lots: unexpected argument %q", fs.Arg(0))
+	if err := noPositionals(fs, "lots"); err != nil {
+		return err
 	}
 	cfg, err := config.Load(g.ConfigPath)
 	if err != nil {
 		return err
 	}
-	db, lock, err := openGoldForWrite(g, cfg, "lots",
-		"gold database %q does not exist. Run 'wealthdb init' first (requires write access).")
+	db, lock, err := openGoldForWrite(g, cfg, "lots", defaultMissingGoldMsg)
 	if err != nil {
 		return err
 	}

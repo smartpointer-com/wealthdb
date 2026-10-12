@@ -3,14 +3,13 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
 )
 
 // AccountRow is one row of the `accounts` subcommand's output: the
 // gold `accounts` row's promoted columns plus derived aggregate
 // columns (positions / cash / total in the account's base currency
 // and in the requested output currency), computed by the
-// report_accounts table macro (migrations 0020/0021).
+// report_accounts table macro (migration 0024).
 //
 // All decimals come back as their canonical string form. Aggregate
 // pointers are nil when:
@@ -62,41 +61,15 @@ type AccountRow struct {
 // exactly once. All aggregation + FX is the report_accounts macro;
 // this is the scan. See docs/DESIGN.md.
 func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]AccountRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_accounts(?, ?)`, asOf, outCcy)
-	if err != nil {
-		return nil, fmt.Errorf("AccountsAsOf: %w", err)
-	}
-	defer rows.Close()
-
-	var out []AccountRow
-	for rows.Next() {
-		var (
-			a                                               AccountRow
-			displayName, baseCcy, relID, nickname, category sql.NullString
-			portfolio, taxWrapper, mgmtStyle                sql.NullString
-			pvb, cvb, tvb, pvo, cvo, tvo                    sql.NullString
-		)
-		if err := rows.Scan(
-			&a.SilverSourceID, &a.AccountExternalID, &a.AccountKind,
-			&displayName, &baseCcy, &relID, &nickname, &category,
-			&portfolio, &taxWrapper, &mgmtStyle, &a.SnapshotAt,
-			&pvb, &cvb, &tvb, &pvo, &cvo, &tvo,
-		); err != nil {
-			return nil, fmt.Errorf("AccountsAsOf scan: %w", err)
-		}
-		a.DisplayName = nullStringToPtr(displayName)
-		a.BaseCurrency = nullStringToPtr(baseCcy)
-		a.RelationshipID = nullStringToPtr(relID)
-		a.Nickname = nullStringToPtr(nickname)
-		a.AccountCategory = nullStringToPtr(category)
-		a.PortfolioExternalID = nullStringToPtr(portfolio)
-		a.TaxWrapper = nullStringToPtr(taxWrapper)
-		a.ManagementStyle = nullStringToPtr(mgmtStyle)
-		a.PositionsValueBase, a.CashBalanceBase, a.TotalValueBase,
-			a.PositionsValueOutCcy, a.CashBalanceOutCcy, a.TotalValueOutCcy =
-			sixAggPtrs(pvb, cvb, tvb, pvo, cvo, tvo)
-		out = append(out, a)
-	}
-	return out, rows.Err()
+	return scanRows(ctx, db, "AccountsAsOf", `SELECT * FROM report_accounts(?, ?)`,
+		[]any{asOf, outCcy}, func(a *AccountRow) []any {
+			return []any{
+				&a.SilverSourceID, &a.AccountExternalID, &a.AccountKind,
+				str(&a.DisplayName), str(&a.BaseCurrency), str(&a.RelationshipID), str(&a.Nickname),
+				str(&a.AccountCategory), str(&a.PortfolioExternalID), str(&a.TaxWrapper), str(&a.ManagementStyle),
+				&a.SnapshotAt,
+				dec(&a.PositionsValueBase), dec(&a.CashBalanceBase), dec(&a.TotalValueBase),
+				dec(&a.PositionsValueOutCcy), dec(&a.CashBalanceOutCcy), dec(&a.TotalValueOutCcy),
+			}
+		})
 }

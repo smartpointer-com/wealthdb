@@ -20,7 +20,9 @@ import (
 //
 // Match is exact-after-normalisation only (uppercase, strip
 // non-alphanumerics, drop trailing " ETF"/" INC"/" CO"/" LTD"/
-// " FUND"/" TRUST"). Conservative: dividends whose description
+// " FUND"/" TRUST"). A description the positions state under two
+// keys resolves to neither, whatever the instruments table says.
+// Conservative: dividends whose description
 // doesn't have a normalised-exact twin in positions land with
 // no instrument link rather than risking a mismatch. Heavily
 // truncated Schwab descriptions ("ISHARES TREASURY FLOATNGRATE
@@ -34,9 +36,18 @@ func (c *apiReader) buildDescriptionToInstrumentKey(ctx context.Context) (map[st
 	if err := c.scanInstrumentDescriptions(ctx, out); err != nil {
 		return nil, err
 	}
+	// Drop the ambiguity sentinels so the caller sees a clean map.
+	for k, v := range out {
+		if v == "" {
+			delete(out, k)
+		}
+	}
 	return out, nil
 }
 
+// scanPositionDescriptions records each position description's key,
+// or the "" sentinel when two positions state it under different keys
+// (possible across ticker reuse).
 func (c *apiReader) scanPositionDescriptions(ctx context.Context, out map[string]string) error {
 	const q = `SELECT DISTINCT payload FROM positions`
 	rows, err := c.db.QueryContext(ctx, q)
@@ -66,27 +77,18 @@ func (c *apiReader) scanPositionDescriptions(ctx context.Context, out map[string
 		if norm == "" {
 			continue
 		}
-		// First writer wins — keep the implementation simple. If
-		// the same description maps to multiple keys (rare; only
-		// possible across ticker reuse), neither resolves.
 		if existing, ok := out[norm]; ok && existing != key {
 			out[norm] = "" // ambiguous; sentinel
 			continue
 		}
 		out[norm] = key
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	// Drop ambiguous sentinels so the caller sees a clean map.
-	for k, v := range out {
-		if v == "" {
-			delete(out, k)
-		}
-	}
-	return nil
+	return rows.Err()
 }
 
+// scanInstrumentDescriptions adds the instruments table's descriptions
+// the positions do not state, keyed by CUSIP else symbol; the first
+// row wins.
 func (c *apiReader) scanInstrumentDescriptions(ctx context.Context, out map[string]string) error {
 	exists, err := silver.HasTables(ctx, c.db, "instruments")
 	if err != nil || !exists {

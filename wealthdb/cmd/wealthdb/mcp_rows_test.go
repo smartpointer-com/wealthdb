@@ -88,22 +88,20 @@ func TestNearMiss(t *testing.T) {
 
 // ---- the row layer -------------------------------------------------------
 
-func sp(s string) *string { return &s }
-
 // testSpendLines is a spending-transactions result set built from typed
 // rows, so the filter, sort and lookup tests run over the real registry
 // without a database.
 func testSpendLines(t *testing.T, privacy bool) *resultSet {
 	t.Helper()
 	rows := []gold.SpendTransactionRow{
-		{SilverSourceID: "bank", MerchantName: sp("Corner Market"), SpendLabel: sp("Groceries"),
-			SpendDetailed: sp("FOOD_AND_DRINK_GROCERIES"), ValueOutCcy: sp("-42.10"), DisplayName: sp("Everyday")},
-		{SilverSourceID: "card", MerchantName: sp("Heron Air"), SpendLabel: sp("Flights"),
-			SpendDetailed: sp("TRAVEL_FLIGHTS"), ValueOutCcy: sp("-900.00"), DisplayName: sp("Rewards card")},
-		{SilverSourceID: "card", MerchantName: sp("Corner Market"), SpendLabel: sp("Groceries"),
-			SpendDetailed: sp("FOOD_AND_DRINK_GROCERIES"), ValueOutCcy: sp("15.00"), DisplayName: sp("Rewards card")},
-		{SilverSourceID: "bank", MerchantName: sp("Paper | Ink"), SpendLabel: sp("Office supplies"),
-			SpendDetailed: sp("GENERAL_MERCHANDISE_OFFICE_SUPPLIES"), DisplayName: sp("Everyday")},
+		{SilverSourceID: "bank", MerchantName: strp("Corner Market"), SpendLabel: strp("Groceries"),
+			SpendDetailed: strp("FOOD_AND_DRINK_GROCERIES"), ValueOutCcy: strp("-42.10"), DisplayName: strp("Everyday")},
+		{SilverSourceID: "card", MerchantName: strp("Heron Air"), SpendLabel: strp("Flights"),
+			SpendDetailed: strp("TRAVEL_FLIGHTS"), ValueOutCcy: strp("-900.00"), DisplayName: strp("Rewards card")},
+		{SilverSourceID: "card", MerchantName: strp("Corner Market"), SpendLabel: strp("Groceries"),
+			SpendDetailed: strp("FOOD_AND_DRINK_GROCERIES"), ValueOutCcy: strp("15.00"), DisplayName: strp("Rewards card")},
+		{SilverSourceID: "bank", MerchantName: strp("Paper | Ink"), SpendLabel: strp("Office supplies"),
+			SpendDetailed: strp("GENERAL_MERCHANDISE_OFFICE_SUPPLIES"), DisplayName: strp("Everyday")},
 	}
 	rep := newReport(buildSpendTransactionColumnRegistry("USD"), defaultSpendTransactionColumns,
 		func(context.Context, *sql.DB) ([]gold.SpendTransactionRow, error) { return rows, nil })

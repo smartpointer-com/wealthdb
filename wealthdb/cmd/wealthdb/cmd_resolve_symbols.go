@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,7 +16,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {
@@ -98,9 +96,6 @@ var cusipShapeRe = regexp.MustCompile(`^[A-Z0-9]{9}$`)
 // the new tickers up via LEFT JOIN + COALESCE.
 func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	opts, err := parseResolveSymbolsFlags(subargs, stderr)
-	if errors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
@@ -112,11 +107,14 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	if err != nil {
 		return err
 	}
-	db, release, err := openGoldForResolve(cfg.GoldDB, g.ForceReadOnly, opts)
+	// A dry run reads only. Every other run holds the write mutex for
+	// the whole command, so a rebuild-and-swap cannot land between the
+	// override sync and the resolutions the run persists.
+	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "resolve-symbols", defaultMissingGoldMsg, "see the plan", opts.dryRun)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer lock.unlock()
 	// Released before the model round-trips (see below) and re-taken
 	// to persist. dbOpen keeps the deferred close correct on the
 	// paths that return early.
@@ -211,15 +209,11 @@ func parseResolveSymbolsFlags(subargs []string, stderr io.Writer) (resolveSymbol
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, resolveSymbolsUsage())
 	}
-	if err := fs.Parse(subargs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return o, err
-		}
-		return o, errs.Newf(2, "resolve-symbols: bad flags")
+	if err := parseFlags(fs, subargs, "resolve-symbols"); err != nil {
+		return o, err
 	}
-	if fs.NArg() != 0 {
-		fs.Usage()
-		return o, errs.Newf(2, "resolve-symbols: unexpected positional argument %q", fs.Arg(0))
+	if err := noPositionals(fs, "resolve-symbols"); err != nil {
+		return o, err
 	}
 	if o.batch < 1 {
 		fs.Usage()
@@ -248,46 +242,6 @@ func resolveModel(cfg *config.Config, cfgPath string, opts resolveSymbolsOpts) (
 		return nil, errs.Newf(2, "resolve-symbols: %s", err.Error())
 	}
 	return modelCfg, nil
-}
-
-// openGoldForResolve opens gold for the run and returns what releases it
-// afterwards. A dry run reads only: it opens read-only and takes no lock,
-// so a parallel `wealthdb transactions` / `positions` call can read the DB
-// while the model is answering. Every other run writes, so it needs a
-// writable gold and holds the gold write mutex for the whole command —
-// a rebuild-and-swap cannot then land between the override sync and the
-// resolutions the run persists.
-func openGoldForResolve(goldPath string, forceReadOnly bool, opts resolveSymbolsOpts) (*sql.DB, func(), error) {
-	dec, err := pathmode.Detect(goldPath, forceReadOnly, false)
-	if err != nil {
-		return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	if !dec.DBExists {
-		return nil, nil, errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", goldPath)
-	}
-	if opts.dryRun {
-		db, err := gold.Open(goldPath, gold.ModeReadOnly)
-		if err != nil {
-			return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)
-		}
-		return db, func() {}, nil
-	}
-	if dec.Mode != pathmode.ModeReadWrite {
-		return nil, nil, errs.Newf(errs.ExitRWNeeded,
-			"'resolve-symbols' requires write access to the gold database, but '%s' is read-only (detected: %s). "+
-				"Pass --dry-run if you only want to see the plan.", goldPath, dec.Reason)
-	}
-	lock, err := lockGoldForWrite(goldPath, "resolve-symbols")
-	if err != nil {
-		return nil, nil, err
-	}
-	db, err := retryGoldLock(context.Background(), func() (*sql.DB, error) { return gold.Open(goldPath, gold.ModeReadWrite) })
-	if err != nil {
-		lock.unlock()
-		return nil, nil, errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	return db, lock.unlock, nil
 }
 
 // syncOverridesStep syncs the cfg overrides into symbol_resolutions, or
@@ -553,7 +507,7 @@ SELECT silver_source_id, instrument_external_id, name, currency
 	// by-name: one row per (silver_source_id, description), so each
 	// unique label is asked about once rather than once per dividend
 	// payment. MIN(currency) picks one currency where a description
-	// spans several accounts or currencies (very rare in practice).
+	// spans several accounts or currencies (the pick is arbitrary then).
 	//
 	// Filter on instrument-related kinds only. The cash kinds
 	// (deposit, withdrawal, fee, tax, fx_*, journal, other) seldom
@@ -762,9 +716,7 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 	// (source, kind) groups so the sample shows the full mix,
 	// not just the head of the list.
 	if len(unresolved) > 0 {
-		key := func(c candidate) string {
-			return c.SilverSourceID + "\x00" + c.LookupKind + "\x00" + c.LookupValue
-		}
+		key := func(c candidate) string { return candKey(c.SilverSourceID, c.LookupKind, c.LookupValue) }
 		line := func(c candidate) string {
 			label := c.LookupValue
 			if c.LookupKind == "instrument_external_id" && c.HintName != "" {
@@ -774,23 +726,13 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 		}
 		sample := stratifiedSample(unresolved, 10, candidateGroup)
 		fmt.Fprintf(w, "  sample of unresolved candidates (%d of %d, mixed across source × kind):\n", len(sample), len(unresolved))
-		inSample := make(map[string]bool, len(sample))
 		for _, c := range sample {
-			inSample[key(c)] = true
 			fmt.Fprintln(w, line(c))
 		}
-		// The tail is in memory, so it is printed rather than pointed
-		// at: the dry-run plan walks what the model RESOLVED, and
-		// symbol_resolutions holds the resolved rows — neither is this
+		// The dry-run plan walks what the model RESOLVED, and
+		// symbol_resolutions holds the resolved rows: neither is this
 		// list.
-		if len(unresolved) > len(sample) {
-			fmt.Fprintf(w, "    ... and %d more:\n", len(unresolved)-len(sample))
-			for _, c := range unresolved {
-				if !inSample[key(c)] {
-					fmt.Fprintln(w, line(c))
-				}
-			}
-		}
+		printUnsampled(w, unresolved, sample, key, line)
 		fmt.Fprintln(w, "  notes:")
 		fmt.Fprintln(w, "    - Some unresolved rows are expected: cash-interest descriptions, currency/FX placeholders,")
 		fmt.Fprintln(w, "      bullion, structured products, and private funds don't have tickers.")
@@ -926,13 +868,7 @@ func resolveWithLLM(
 			return validUnion, attempts, totalInvalid, nil
 		}
 		fmt.Fprintf(stdout, "resolve-symbols: attempt %d: %d invalid row(s) — sample:\n", attempts, len(invalid))
-		sampleN := 5
-		if len(invalid) < sampleN {
-			sampleN = len(invalid)
-		}
-		for _, iv := range invalid[:sampleN] {
-			fmt.Fprintf(stdout, "    %v — %s\n", iv.Raw, iv.Reason)
-		}
+		printInvalidSample(stdout, invalid)
 		if attempts == maxAttempts {
 			break
 		}
