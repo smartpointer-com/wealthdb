@@ -37,6 +37,11 @@ Allowed — once mapped, only these surfaces may be navigated or clicked:
   the transactions / activity history (exercises, share sales, RSU
   settlements); and the documents / tax centre (read + download of legal
   docs, 3921s, 1099-Bs, board consents).
+- A fund LP holding's own capital account. It lives on the
+  `fund-admin.app.carta.com` host but is the LP-facing partner view, not
+  the GP console: `GET /partner-portfolios/{id}/app/init` (yields the
+  portfolio uuid) and `GET /v2/partners/{uuid}/metrics/` (the LP's NAV,
+  contributed capital and sharing date). Nothing else on that host.
 - Date-range / period filter inputs and "Apply" / "Search" buttons on the
   above pages.
 - Export / download buttons that produce CSV / XLS / PDF copies of
@@ -61,7 +66,7 @@ Forbidden — do not navigate to, click, or scrape:
   the holder role — the same person may also administer a company's cap
   table (issuer admin), or be a fund admin/LP. Any "Company" / "Cap table" /
   "Issue securities" / "Manage equity" / "409A" / "Board" / "Fund admin"
-  console is **out of scope** — this collector observes the portfolio
+  (GP) console is **out of scope** — this collector observes the portfolio
   holder's own *holdings* only. Treat admin/issuer surfaces as forbidden even if the
   login surfaces them; never use an elevated role to read or change
   anything.

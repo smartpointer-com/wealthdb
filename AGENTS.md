@@ -235,7 +235,10 @@ Underneath, each component also builds directly:
   No guessed code lifetimes, staleness thresholds, carry-forward or
   auto-restart logic: the provider's error is the only reliable
   signal, and re-running is the recovery path.
-- **A step that waits for a human sets no tight deadline.** An MFA
-  prompt, a browser the human drives, a VNC session: default to an
-  hour or more, or wait for an idle/close signal instead of a wall
-  clock. A short default assumes someone is waiting at the screen.
+- **An MFA wait defaults to five minutes.** That covers a typed code,
+  a push approval and a VNC login through the challenge. No provider
+  is known to keep a code or a push valid longer, so a longer wait
+  only delays the failure. A provider that states a shorter lifetime
+  sets the default to it.
+- **An `explore` session waits for its browser to close**, not for a
+  wall clock.

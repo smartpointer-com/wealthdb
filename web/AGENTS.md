@@ -62,9 +62,14 @@ port-forward; auth is Metabase's own login.
   to a degraded shape when a view the cards need is missing.
 - The gold DuckDB connection is added at runtime by `provision.py`,
   never baked into the image.
-- This component has **no credentials**. Don't add a `~/.secrets/*`
-  mount or any secret env. Metabase manages its own admin account in
-  its H2 metadata DB (under `$XDG_DATA_HOME`, outside the repo).
+- This component holds **no source credentials**. Its one secret is the
+  Metabase admin password. `web/web` reads it on the host, from
+  `WEALTHDB_WEB_ADMIN_PASSWORD` or `~/.secrets/wealthdb-web.env`, and
+  hands it to `provision.py` in that variable. An unset password is
+  generated and saved at 0600. Never mount `~/.secrets/` into the
+  container and never pass a secret on a command line. Metabase keeps
+  the admin account in its H2 metadata DB (under `$XDG_DATA_HOME`,
+  outside the repo).
 
 ## 4. The driver is fragile — keep all three invariants
 

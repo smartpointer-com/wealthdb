@@ -120,7 +120,7 @@ collectors/README.md (the collector contract: anatomy, verbs, CLI
 conventions, collectorkit), NEW-COLLECTOR-PROMPT.md (the build
 playbook — its "Fleet lessons" bind this build), and the docs + source
 of the template collectors: <newest validated sibling(s) of the same
-archetype — read their AGENTS.md and DESIGN.md "Observed" sections>.
+archetype — read their AGENTS.md and DESIGN.md source-behaviour sections>.
 Copy the newest sibling's shape, including the site half of its explore
 harness (the recording is collectorkit.explore's), and diverge only
 where a capture proves this source differs.
@@ -128,8 +128,9 @@ where a capture proves this source differs.
 ## What is already known (user-provided — do not re-derive, do verify)
 
 Treat every item as a hypothesis to confirm during explore; record
-confirmations and refutations in DESIGN.md "Observed" sections. Wrong
-entries are cheap when framed this way — correct them and move on.
+confirmations and refutations in the DESIGN.md source-behaviour
+sections. Wrong entries are cheap when framed this way — correct them
+and move on.
 
 - 2FA: <push approval in the bank's app / SMS or email OTP / TOTP /
   QR scan / unknown — observe>.
@@ -185,10 +186,11 @@ entries are cheap when framed this way — correct them and move on.
    names. Verify make build-<name> and make test-<name> resolve via
    the root Makefile's auto-discovery.
 2. **Explore** (live, user-triggered) — verify the knowns and answer
-   the open questions, recorded as dated DESIGN.md "Observed"
-   sections: bot-defense stack, and which endpoints carry the sensor
-   headers (that one observation decides browser-for-login-only vs
-   browser-everywhere); web technology; login form shape; the 2FA
+   the open questions, recorded in DESIGN.md sections that state the
+   source's behaviour as fact (no dates, no session counts): bot-defense
+   stack, and which endpoints carry the sensor headers (that one fact
+   decides browser-for-login-only vs browser-everywhere); web
+   technology; login form shape; the 2FA
    challenge's network/DOM shape and its completion signal; session
    persistence and device trust across browser restarts (script a
    second short run without --fresh, the flag that starts from an
@@ -214,7 +216,7 @@ entries are cheap when framed this way — correct them and move on.
    credential — a cheap
    read-only authenticated probe returning success; NEVER by URL or
    SPA route (pre- and post-auth pages share URLs; this false
-   positive has bitten three collectors). Never fire any
+   positive is common). Never fire any
    authenticated-surface request mid-challenge — it can invalidate
    the challenge server-side. Give every browser-event dependency a
    poll-based twin and pump the event loop in every wait. Bronze runs
@@ -273,8 +275,8 @@ entries are cheap when framed this way — correct them and move on.
 ## Working rules (non-negotiable)
 
 - NEVER start a live session unprompted. Logins fire real 2FA at the
-  user's device, and repeated attempts trip fraud lockouts (a
-  sibling collector was soft-blocked after ~6 rapid logins in a day).
+  user's device, and repeated attempts trip fraud lockouts (repeated
+  rapid logins at one provider have led to a soft block).
   Every live run is explicitly requested with the user present.
   Treat each failed login as a burned experiment: diagnose from
   captures, respect multi-hour cooldowns, never fire logins in quick
@@ -403,18 +405,17 @@ as hard rules rather than advice.
 ### Authentication and sessions
 
 - **Authenticate on proof of a working credential, never on the URL.**
-  SPAs serve the same URL logged-out and logged-in; three collectors
-  in a row declared victory on a pre-login shell and scraped nothing.
+  SPAs serve the same URL logged-out and logged-in, so a check on the
+  URL declares victory on a pre-login shell and scrapes nothing.
   The only trustworthy signal is a cheap read-only authenticated
   request succeeding. Harvest tokens from two independent places
   (request headers and the token response body) so one dropped browser
   event cannot lose them.
-- **Never touch an authenticated-only endpoint mid-challenge.** One
-  collector's login loop probed its roster endpoint every few seconds
-  for progress; during the login→2FA transition that probe invalidated
-  the challenge server-side — SMS sent, UI frozen, and an evening of
-  misdirected debugging before the probe was gated onto post-login
-  routes only.
+- **Never touch an authenticated-only endpoint mid-challenge.** A login
+  loop that probes an authenticated-only endpoint for progress can
+  invalidate the challenge server-side during the login→2FA
+  transition: the SMS is sent and the UI freezes. Gate such a probe
+  onto post-login routes only.
 - **Session persistence and device trust are independent axes.**
   Measure both (close the browser, rerun without `--fresh`). Trust
   that persists while the session cookie dies means a separate `login`
@@ -426,8 +427,8 @@ as hard rules rather than advice.
 - **First logins on a fresh profile may offer different 2FA factors**
   than later ones (unrecognised-device paths). Validate the untrusted
   path deliberately with `--fresh`, not by waiting for natural expiry.
-  The explore harness's `--fresh` wipes the profile; move a profile
-  aside by hand to keep it.
+  `--fresh` wipes the profile. That is the fleet convention for every
+  verb that offers it.
 - **No cleverness in auth flows.** Submit exactly what the human
   entered, surface the provider's own error text verbatim, fail fast.
   Guessed provider policy (code lifetimes, reuse, prefixes) is
@@ -448,12 +449,11 @@ as hard rules rather than advice.
   the same URL, and that `OPTIONS` answers `200` with an EMPTY BODY about a
   second before the real response. A watcher keyed on the URL alone reads
   the preflight as the outcome, and what that costs depends only on where
-  it sits: `amex` reported a sign-in refusal the provider never made, the
-  same shape in two siblings would have declared a *successful* login
-  instead, and in a fourth it sat on a document download, where the empty
-  body decoded to no file and failed every row. This is the response-side twin of
-  "authenticate on a read, never on a URL" — an OPTIONS response is never an
-  outcome.
+  it sits: it can report a sign-in refusal the provider never made,
+  declare a *successful* login, or sit on a document download, where the
+  empty body decodes to no file and fails every row. This is the
+  response-side twin of "authenticate on a read, never on a URL" — an
+  OPTIONS response is never an outcome.
 - **Web components need the real inner control.** Zero-box hosts with
   open shadow roots ignore native `.click()`, dispatched events,
   keyboard, and coordinate clicks; the working click is a real
@@ -500,8 +500,8 @@ as hard rules rather than advice.
   lot step is the reference (its DESIGN.md §8.3.1).
 - **Logins are budgeted.** Banks rate-limit: a handful of rapid
   attempts has triggered multi-hour fraud holds (pushes silently stop
-  arriving; logins stall before the challenge), and about seven sign-ins
-  in twenty minutes provoked a captcha at `amex`. Recognize the tell,
+  arriving; logins stall before the challenge), and a handful of
+  sign-ins in a short window can provoke a captcha. Recognize the tell,
   stop unprompted, and let the user time the single retry. Captcha
   reputation typically accrues per account, not per session —
   parallelism does not scale past the gate, and it decays only with
@@ -528,9 +528,8 @@ as hard rules rather than advice.
   overview tiles what its layout chose to show, which can be a strict
   subset of what the login holds, and a collector keyed on those anchors
   under-collects **silently** — no error, no gap, just fewer accounts
-  than exist. One build discovered this only because a hand-driven
-  capture recorded the roster response beside the page that had listed
-  a fraction of it.
+  than exist. A hand-driven capture that records the roster response
+  beside the page that listed a fraction of it shows the gap.
 - **Cap captured response bodies generously.** A body truncated at a
   round number loses its tail, and the tail of a ledger response is
   exactly what says how far the history reaches — the one measurement

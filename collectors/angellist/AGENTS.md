@@ -95,8 +95,10 @@ per N runs".
 The auth path is `login` (a bring-your-own-cookie bootstrap): the user logs
 into a genuine Firefox **by hand** (that is what clears AngelList's invisible
 anti-bot challenge). The
-tooling **types no credentials and runs no automated login** — it only
-lifts the resulting cookie. Per root [AGENTS.md](../../AGENTS.md) §3: never
+tooling **runs no automated login** — it only lifts the resulting
+cookie. `explore` may pre-fill the login form from the env file to save
+typing (`--no-prefill` skips it); the human still submits it and answers
+the challenge. Per root [AGENTS.md](../../AGENTS.md) §3: never
 bypass, downgrade, or "temporarily disable" 2FA; never add a `--password`
 flag; never persist a password to disk. Do **not** try to automate the
 venture SPA login (bot-walled by design) or to forge/replay the

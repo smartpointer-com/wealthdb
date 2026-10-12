@@ -13,6 +13,8 @@ concrete surface for relevate:
 Allowed surfaces — these are the only Relevate endpoints the
 toolkit may call:
 
+- `GET /auth/ui/app/auth/flow/b2c/password?lang=en` (the login page,
+  fetched once to prime the session cookies).
 - `POST /auth/rest/public/authentication/applications/b2c/access`
   (flow-init probe; expected 401), `POST .../password/check`
   (credentials), `POST .../mtan/otp/check` (OTP verification),
@@ -43,6 +45,25 @@ Forbidden — do not call, navigate to, or replay:
 - Account opening / closing flows.
 - Any `POST` / `PUT` / `DELETE` other than the three auth POSTs
   above and Airlock's logout `DELETE /auth/rest/public/authentication`.
+
+## 2. Which verbs sign in
+
+Root [AGENTS.md](../../AGENTS.md) §2 sorts verbs into those allowed
+without asking and those that are real sessions. For relevate:
+
+- `login` signs in and sends an mTAN to the user's phone. It is a real
+  session.
+- `login --check` and `download --dry-run` never sign in. Both load the
+  stored session state and call the session-alive probe. The dry run
+  then reads the two listing endpoints (the investment overview and the
+  document index), logs what a real run would fetch, and writes nothing
+  to bronze. Both are allowed without asking.
+  - `login --check` prints `ALIVE` (exit 0), `DEAD` (exit 2) or
+    `MISSING` (exit 1, no state file).
+  - `download --dry-run` exits 1 with a dead session and 64 with no
+    state file.
+- A real `download` reuses the stored session and never signs in, but it
+  fetches everything. Run it only when asked.
 
 ## Authentication & private data
 
