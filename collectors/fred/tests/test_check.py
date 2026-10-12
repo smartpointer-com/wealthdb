@@ -79,6 +79,22 @@ def test_unreachable_endpoint_returns_nonzero(monkeypatch):
     assert download._check_credential("https://example.invalid", "SYNTHETIC") == 1
 
 
+@pytest.mark.parametrize("answer", [
+    ValueError("Expecting value: line 1 column 1 (char 0)"),
+    ["not", "an", "object"],
+])
+def test_a_body_that_is_not_a_json_object_returns_nonzero(monkeypatch,
+                                                          answer):
+    # A proxy's HTML page or a bare list is a failed probe, not a crash.
+    def fetch(*a, **k):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(download, "fetch_observations", fetch)
+    assert download._check_credential("https://example.invalid", "SYNTHETIC") == 1
+
+
 def test_unexpected_body_returns_nonzero(monkeypatch):
     # A 200 that isn't an observations document is not a pass.
     monkeypatch.setattr(download, "fetch_observations",
@@ -87,6 +103,8 @@ def test_unexpected_body_returns_nonzero(monkeypatch):
 
 
 def test_main_check_probes_and_writes_nothing(monkeypatch, tmp_path):
+    # Run from an empty dir, so a stray relative write would land in it.
+    monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(download, "fetch_observations",
                         lambda *a, **k: calls.append(a) or {"observations": []})
@@ -125,6 +143,51 @@ def test_env_file_env_var_is_honoured(tmp_path, monkeypatch):
                         seen.update(key=key) or {"observations": []})
     assert download.main(["--check"]) == 0
     assert seen["key"] == "FROM_ENV_VAR_FILE"
+
+
+def test_env_file_is_read_by_bash_like_the_wrappers_source(tmp_path,
+                                                          monkeypatch):
+    # The wrapper sources the same file through bash. A value with a
+    # comment or a reference must read the same here, or the direct run
+    # would overwrite the wrapper's key with another one.
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.delenv("FRED_ENV_FILE", raising=False)
+    # Set first, so the fixture restores it after the file writes over it.
+    monkeypatch.setenv("FRED_PART", "inherited")
+    env = tmp_path / "fred.env"
+    env.write_text("FRED_PART=SYNTHETIC\n"
+                   'export FRED_API_KEY="${FRED_PART}_KEY"  # note\n')
+    seen = {}
+    monkeypatch.setattr(download, "fetch_observations",
+                        lambda base, sid, key, s, e, timeout=90:
+                        seen.update(key=key) or {"observations": []})
+    assert download.main(["--check", "--env-file", str(env)]) == 0
+    assert seen["key"] == "SYNTHETIC_KEY"
+
+
+def test_env_file_wins_over_the_inherited_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("FRED_API_KEY", "INHERITED")
+    monkeypatch.delenv("FRED_ENV_FILE", raising=False)
+    env = tmp_path / "fred.env"
+    env.write_text("FRED_API_KEY=FROM_FILE\n")
+    seen = {}
+    monkeypatch.setattr(download, "fetch_observations",
+                        lambda base, sid, key, s, e, timeout=90:
+                        seen.update(key=key) or {"observations": []})
+    assert download.main(["--check", "--env-file", str(env)]) == 0
+    assert seen["key"] == "FROM_FILE"
+
+
+def test_env_file_with_a_syntax_error_never_shows_its_line(tmp_path,
+                                                          monkeypatch):
+    # bash quotes the offending line; that line may hold the key.
+    monkeypatch.delenv("FRED_ENV_FILE", raising=False)
+    env = tmp_path / "fred.env"
+    env.write_text("FRED_API_KEY=SYNTHETIC-VALUE)x\n")
+    with pytest.raises(SystemExit) as caught:
+        download.main(["--check", "--env-file", str(env)])
+    assert "at line 1" in str(caught.value)
+    assert "SYNTHETIC-VALUE" not in str(caught.value)
 
 
 def test_missing_env_file_is_an_error(tmp_path, monkeypatch):

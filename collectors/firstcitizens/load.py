@@ -16,8 +16,8 @@ ledger — signed amount, per-row balance, id — comes from one payload
 export can carry slightly fewer rows than the JSON (a pending/edge item it
 omits), so it is never the source of record. Statements are ingested as
 documents (PDFs belong in bronze) but are not a transaction source: the
-history reaches the account's full post-SVB-migration lifetime, deeper than
-the ~2 years of statements, so there is no older tail to reconstruct.
+history reaches back further than the statement listing, so there is no
+older tail to reconstruct.
 
 Bronze run-dir layout consumed:
 
@@ -45,12 +45,11 @@ from pathlib import Path
 from collectorkit import bronze, cli, silver
 from collectorkit.money import parse_money
 
+import q2client
+
 log = logging.getLogger("firstcitizens.load")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-
-# Re-export so tests + siblings can call load.apply_migrations directly.
-apply_migrations = silver.apply_migrations
 
 # transactions.source tag. The JSON `accountHistory` ledger is the single
 # source of record (no export join), so there is exactly one value.
@@ -317,18 +316,6 @@ def _statement_date_from_name(name: str) -> int | None:
 # Per-run loader
 # ============================================================
 
-_SAFE_STEM_RE = re.compile(r"[^\w.-]+")
-
-
-def _safe_stem(value: str) -> str:
-    """The filesystem-safe stem download.py derives an account id / statement
-    dir name from (kept in sync with download.safe_stem). Re-implemented here
-    rather than imported so the browserless `load` runtime never pulls in
-    login.py's Playwright dependency."""
-    stem = _SAFE_STEM_RE.sub("-", str(value)).strip("-.")
-    return stem or "item"
-
-
 def _read_accounts(run_dir: Path) -> list[dict]:
     path = run_dir / "accounts.json"
     if not path.is_file():
@@ -360,8 +347,12 @@ def _read_history(path: Path) -> tuple[str | None, list]:
 
 
 def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
-    """Load one bronze run dir. Returns True if ingested, False if skipped
-    (non-complete dump, or already loaded). Idempotent."""
+    """Load one bronze run dir in one transaction. Returns True if ingested,
+    False if skipped (no run.json yet, a non-complete dump, or already
+    loaded). Idempotent."""
+    if not (run_dir / "run.json").is_file():
+        log.info("skip %s (no run.json — still writing?)", run_dir.name)
+        return False
     status = bronze.run_status(run_dir / "run.json")
     if not bronze.is_loadable_status(status):
         log.info("skip %s (status=%s)", run_dir.name, status)
@@ -375,34 +366,38 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
         return False
 
     accounts = _read_accounts(run_dir)
-    for acct in accounts:
-        _insert_account(conn, snapshot_at, acct)
     # Map a statement dir's safe-stemmed name back to the raw account id, so a
     # document links to the same account_external_id the roster + history use.
-    stem_to_id = {_safe_stem(a.get("id", "")): str(a.get("id", ""))
+    stem_to_id = {q2client.safe_stem(a.get("id", "")): str(a.get("id", ""))
                   for a in accounts if a.get("id")}
 
-    hist_dir = run_dir / "history"
-    if hist_dir.is_dir():
-        for hist in sorted(hist_dir.glob("*.json")):
-            acct_id, txs = _read_history(hist)
-            if not acct_id:
-                acct_id = stem_to_id.get(hist.stem, hist.stem)
-            for tx in history_rows(acct_id, txs):
-                _insert_transaction(conn, acct_id, tx)
+    # One transaction per dump: a failure part-way leaves silver as it was,
+    # with no dump_runs row, so the next load retries the whole dump.
+    with silver.transaction(conn):
+        for acct in accounts:
+            _insert_account(conn, snapshot_at, acct)
 
-    stmt_dir = run_dir / "statements"
-    if stmt_dir.is_dir():
-        for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
-            acct_id = stem_to_id.get(acct_dir.name, acct_dir.name)
-            for pdf in sorted(acct_dir.glob("*.pdf")):
-                _insert_document(conn, snapshot_at, acct_id, pdf)
+        hist_dir = run_dir / "history"
+        if hist_dir.is_dir():
+            for hist in sorted(hist_dir.glob("*.json")):
+                acct_id, txs = _read_history(hist)
+                if not acct_id:
+                    acct_id = stem_to_id.get(hist.stem, hist.stem)
+                for tx in history_rows(acct_id, txs):
+                    _insert_transaction(conn, acct_id, tx)
 
-    conn.execute(
-        "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
-        " run_dir) VALUES (?,?,?)",
-        (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
-    conn.commit()
+        stmt_dir = run_dir / "statements"
+        if stmt_dir.is_dir():
+            for acct_dir in sorted(p for p in stmt_dir.iterdir()
+                                   if p.is_dir()):
+                acct_id = stem_to_id.get(acct_dir.name, acct_dir.name)
+                for pdf in sorted(acct_dir.glob("*.pdf")):
+                    _insert_document(conn, snapshot_at, acct_id, pdf)
+
+        conn.execute(
+            "INSERT OR REPLACE INTO dump_runs (snapshot_at,"
+            " silver_schema_version, run_dir) VALUES (?,?,?)",
+            (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
     log.info("loaded %s (%d accounts)", run_dir.name, len(accounts))
     return True
 

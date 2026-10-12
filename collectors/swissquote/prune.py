@@ -76,8 +76,7 @@ def main(argv=None):
 
 
 def validate_target(path, bronze_dir):
-    """Back-compat shim for the local test suite: bind the shared
-    validator to this collector's config."""
+    """The shared target validator, bound to this collector's config."""
     return prune.validate_target(path, bronze_dir, CONFIG)
 
 

@@ -465,7 +465,7 @@ def test_closed_lot_row_reads_the_term_from_its_gain_column(
 @pytest.fixture
 def migrated():
     c = sqlite3.connect(":memory:")
-    load.apply_migrations(c, MIGRATIONS_DIR)
+    load.silver.apply_migrations(c, MIGRATIONS_DIR)
     yield c
     c.close()
 

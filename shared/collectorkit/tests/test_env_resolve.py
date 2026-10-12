@@ -1,7 +1,5 @@
-"""Coverage for envfile.resolve_env_file / load_env — the
-first-existing-candidate resolver adopted by viac / schwab-web /
-fidelity-web. Synthetic fixtures only."""
-import os
+"""Coverage for envfile.resolve_env_file, the first-existing-candidate
+resolver. Synthetic fixtures only."""
 
 from collectorkit import envfile
 
@@ -38,14 +36,3 @@ def test_directory_candidate_skipped(tmp_path):
 def test_none_when_no_candidate(tmp_path):
     assert envfile.resolve_env_file(None, [tmp_path / "a", tmp_path / "b"]) is None
 
-
-def test_load_env_sources_first_existing(tmp_path, monkeypatch):
-    monkeypatch.delenv("P9_SENTINEL", raising=False)
-    c1, c2 = tmp_path / "a.env", tmp_path / "b.env"
-    c2.write_text("P9_SENTINEL=xyz\n")
-    assert envfile.load_env(None, [c1, c2]) == c2
-    assert os.environ.get("P9_SENTINEL") == "xyz"
-
-
-def test_load_env_none_when_absent(tmp_path):
-    assert envfile.load_env(None, [tmp_path / "a", tmp_path / "b"]) is None

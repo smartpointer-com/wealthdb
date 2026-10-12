@@ -38,10 +38,10 @@ RATE_LIMIT_DELAY_S = 0.2  # Conservative; service has no published cap.
 
 PROVIDER = "frankfurter"
 
-# Fiat tickers we'd ever want to convert. Matches the FIAT_TICKERS
-# in binance.py (which uses the same set to EXCLUDE these from
-# Binance lookup); frankfurter is the destination for them. USD is
-# trivially 1.0 and is excluded here so we don't waste API calls.
+# Fiat tickers we'd ever want to convert. binance.py excludes the
+# same set, plus USD, from its lookup; frankfurter is the destination
+# for them. USD is trivially 1.0 and is excluded here so we don't
+# waste API calls.
 SUPPORTED_FIATS: set[str] = {
     "EUR", "CHF", "GBP", "JPY", "AUD", "CAD", "NZD",
     "SEK", "NOK", "DKK", "PLN", "CZK", "HUF",
@@ -93,7 +93,7 @@ class FrankfurterClient:
         # The result rate is "USD per 1 base" — exactly the
         # price_usd of one unit of the base fiat.
         #
-        # We extend the query start by ~7 days so we have a published
+        # We extend the query start by 10 days so we have a published
         # rate to forward-fill from if the requested from_date is
         # itself a weekend / ECB holiday.
         padded_from = from_date - timedelta(days=10)

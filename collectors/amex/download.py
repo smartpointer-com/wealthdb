@@ -108,8 +108,8 @@ def clamp_since(since: date | None, until: date) -> tuple[date | None, bool]:
         return None, False
     # The floor is the source's own `startDateForSearch` — 24 CALENDAR
     # months, not 24 thirty-day ones (DESIGN.md §E). Counting 30-day months
-    # lands about ten days short, which made `--lookback 2y` warn about a
-    # window the source honours and moved the manifest's `since` away from
+    # would land about ten days short, so `--lookback 2y` would warn about a
+    # window the source honours and move the manifest's `since` away from
     # what was asked for. No safety hedge either way: over-asking by a day
     # is harmless because the server truncates the window silently, and the
     # seam is MIN(posted_at) over the rows that landed, not this date.
@@ -396,8 +396,12 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
                 "transactions": 0, "expected": None, "complete": False}
             continue
         if dry_run:
-            merged = _paginate(context, acct["account_token"],
-                               since=since, until=until)
+            try:
+                merged = _paginate(context, acct["account_token"],
+                                   since=since, until=until)
+            except RuntimeError as exc:
+                log.warning("  [dry-run] %s: %s", shown, exc)
+                continue
             pagination = merged.get("paginationMode") or pagination
             log.info("  [dry-run] %s: %s row(s) in window (total %s); "
                      "would fetch %s exports + statements", shown,
@@ -455,7 +459,7 @@ def resolve_two_factor(cli_mfa: bool | None, *, vnc: bool = False,
                        isatty: bool = False) -> str:
     """Which mode a passcode challenge is answered in.
 
-    Since `login` folded into this verb (DESIGN.md §L), a challenge is a
+    With `login` folded into this verb (DESIGN.md §L), a challenge is a
     routine event on any run rather than an exceptional one — so the default
     is **auto**: drive it from the terminal when stdin is a TTY, and keep the
     unattended contract when it is not, where a cron run fails loudly rather

@@ -1,7 +1,7 @@
 """Unit tests for download.py's browserless surface: the bronze-run helpers
-(filename sanitising, the manifest), export-format resolution, and argument
-parsing. The REST fetch itself needs a live authenticated session and is
-validated separately (DESIGN.md §4.2).
+(history pagination, the statement window, the manifest), export-format
+resolution, and argument parsing. The REST fetch itself needs a live
+authenticated session and is validated separately (DESIGN.md §4.2).
 
 Synthetic values only.
 """
@@ -81,17 +81,6 @@ def test_statement_in_window():
     assert not download._statement_in_window("06/30/2026", since)  # before
     assert download._statement_in_window("06/30/2026", None)       # no window → keep
     assert download._statement_in_window("not-a-date", since)      # unparseable → keep
-
-
-# ============================================================
-# safe_stem
-# ============================================================
-
-def test_safe_stem_sanitises():
-    assert download.safe_stem("7000001") == "7000001"
-    assert download.safe_stem("07/31/2026") == "07-31-2026"
-    assert download.safe_stem("../evil") == "evil"
-    assert download.safe_stem("") == "item"
 
 
 # ============================================================

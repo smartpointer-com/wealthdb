@@ -4,7 +4,8 @@
 Parses the bronze captured by download.py into the source-shaped SQLite
 silver DB, the input contract to the gold engine. Idempotent: bronze runs
 already recorded in `dump_runs` are skipped; --force deletes the silver DB
-and rebuilds it from all bronze.
+and rebuilds it from all bronze. A run that never finished (no run.json, or
+a status other than "complete") is skipped too: `prune` reclaims it.
 
 Per bronze run (`$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/`):
 
@@ -242,25 +243,19 @@ def _cash_flow_rows(snapshot_at: int, node: dict) -> list[tuple]:
 # ---- content-hash parse cache -------------------------------------------
 #
 # The same statement/K-1 PDF is hardlinked into every later dump, so a full
-# reload finds each blob many times over. Both the
-# content hash and the pdftotext parse are functions of the blob content
-# alone, so they are memoized process-wide and computed once per distinct
-# blob rather than once per (dump, document).
+# reload finds each blob many times over. Both the content hash and the
+# pdftotext parse are functions of the blob content alone, so each is
+# computed once per distinct blob rather than once per (dump, document):
+# bronze.sha256_file memoizes the hash by file identity, and the parse is
+# cached here by that hash.
 
-_HASH_MEMO: dict[tuple[int, int], str] = {}   # (st_dev, st_ino) -> sha256 hex
 _PARSE_CACHE: dict[str, dict] = {}            # sha256 hex -> {kind, cap, k1}
 
 
 def _content_hash(blob: Path) -> str:
-    """sha256 of a bronze blob, memoized by (device, inode) so blobs
-    hardlinked across dumps are read and hashed once."""
-    st = blob.stat()
-    key = (st.st_dev, st.st_ino)
-    h = _HASH_MEMO.get(key)
-    if h is None:
-        h = bronze.sha256_file(blob)[0]
-        _HASH_MEMO[key] = h
-    return h
+    """sha256 of a bronze blob; hardlinked copies are read and hashed once
+    (bronze.sha256_file's memo)."""
+    return bronze.sha256_file(blob)[0]
 
 
 def _parse_pdf(blob: Path, chash: str) -> dict:
@@ -268,7 +263,7 @@ def _parse_pdf(blob: Path, chash: str) -> dict:
     {"kind", "cap", "k1"} — the text classification plus both parsers'
     output. All three are pure functions of the extracted text, so the
     cached result equals a fresh parse; the caller selects cap vs k1 by
-    document type exactly as before."""
+    document type."""
     cached = _PARSE_CACHE.get(chash)
     if cached is None:
         text = statements.pdf_text(blob)
@@ -371,7 +366,19 @@ def load_run(conn: sqlite3.Connection, run_dir: Path, force: bool) -> dict:
         "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,)
     ).fetchone()
     if already is not None and not force:
-        return {"name": run_dir.name, "skipped": True}
+        return {"name": run_dir.name, "skipped": True,
+                "reason": "already loaded"}
+    # A walk that crashed or is still running holds a partial capture: its
+    # list nodes would replace the positions a complete run replayed from the
+    # full ledger, and its dump_runs row would count as an observation.
+    manifest_path = run_dir / "run.json"
+    if not manifest_path.is_file():
+        return {"name": run_dir.name, "skipped": True,
+                "reason": "no run.json (still writing, or crashed)"}
+    status = bronze.run_status(manifest_path)
+    if not bronze.is_loadable_status(status):
+        return {"name": run_dir.name, "skipped": True,
+                "reason": f"run.json status={status!r} (partial dump)"}
 
     # deal_id -> (stage, node, body); prefer the rich detail node, fall back
     # to the list node for any offering whose detail is absent.
@@ -468,8 +475,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path, force: bool) -> dict:
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
                 stats["cash_flows"] += 1
 
-        manifest_path = run_dir / "run.json"
-        manifest = canonical_json(read_json(manifest_path)) if manifest_path.exists() else None
+        manifest = canonical_json(read_json(manifest_path))
         conn.execute(
             "INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, "
             "payload) VALUES (?,?,?,?)",
@@ -508,7 +514,7 @@ def main(argv: list[str]) -> int:
     for run_dir in runs:
         stats = load_run(conn, run_dir, args.force)
         if stats.get("skipped"):
-            log.info("  %s: skipped (already loaded)", stats["name"])
+            log.info("  %s: skipped (%s)", stats["name"], stats["reason"])
         else:
             log.info("  %s: offerings=%d position-events=%d cash_flows=%d "
                      "tax_documents=%d capital_account_statements=%d k1_documents=%d",

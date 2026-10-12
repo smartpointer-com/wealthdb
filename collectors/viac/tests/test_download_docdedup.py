@@ -459,7 +459,7 @@ def test_fetch_pdf_report_changed_keeps_fresh(tmp_path):
 
 def test_fetch_pdf_non_200_raises(tmp_path):
     # A non-200 propagates out of fetch_pdf (walk() catches it and tallies a
-    # document error) — the same hard-failure semantics as before docdedup.
+    # document error).
     run = tmp_path / CUR
     run.mkdir()
     skip = _skip(tmp_path, run)

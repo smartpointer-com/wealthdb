@@ -102,6 +102,28 @@ def _is_incomplete(taxdoc):
     return isinstance(k1, int) and isinstance(total, int) and k1 < total
 
 
+def _exchanges(body, payload) -> list[dict]:
+    """The capture entries for one venture GraphQL POST: one per named
+    operation in the request `body`, each with its result from `payload`.
+    A batched request (a list body) is answered with a list of results in
+    the same order; a single request with one result object."""
+    items = body if isinstance(body, list) else [body]
+    results = payload if isinstance(payload, list) else [payload] * len(items)
+    entries = []
+    for item, result in zip(items, results, strict=False):
+        op = item.get("operationName") if isinstance(item, dict) else None
+        if not op:
+            continue
+        result = result if isinstance(result, dict) else {}
+        entries.append({
+            "op": op,
+            "variables": item.get("variables", {}),
+            "data": result.get("data"),
+            "errors": result.get("errors"),
+        })
+    return entries
+
+
 def _resolve_documents_dir(documents_dir: Path | None, bronze_dir: Path) -> Path:
     """The documents dir is a bronze-ROOT sibling of the run dirs, so its
     default derives from --bronze-dir — scoping one scopes the other. The
@@ -165,9 +187,10 @@ def download_documents(cookies, captures, docs_dir, dry_run):
     fetched = skipped = 0
     for url, incomplete in targets:
         try:
-            resp = urllib.request.urlopen(
-                urllib.request.Request(url, headers=headers), timeout=120)
-            raw = resp.read()
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=headers),
+                    timeout=120) as resp:
+                raw = resp.read()
             if resp.headers.get("content-encoding") == "gzip":
                 try:
                     raw = gzip.decompress(raw)
@@ -304,23 +327,9 @@ def main(argv: list[str]) -> int:
             pd = req.post_data
             if not pd:
                 return
-            body = json.loads(pd)
-            for item in (body if isinstance(body, list) else [body]):
-                op = item.get("operationName")
-                if not op:
-                    continue
-                try:
-                    payload = response.json()
-                except Exception:
-                    payload = json.loads(response.text())
-                entry = {
-                    "op": op,
-                    "variables": item.get("variables", {}),
-                    "data": payload.get("data") if isinstance(payload, dict) else None,
-                    "errors": payload.get("errors") if isinstance(payload, dict) else None,
-                }
+            for entry in _exchanges(json.loads(pd), response.json()):
                 captures.append(entry)
-                latest_by_op[op_name(op)] = entry
+                latest_by_op[op_name(entry["op"])] = entry
         except Exception as exc:
             log.debug("on_response capture error: %r", exc)
 

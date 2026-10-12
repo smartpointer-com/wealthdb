@@ -174,7 +174,7 @@ def test_list_pending_loads_complete_and_legacy_statusless(tmp_path):
 
 def test_list_pending_skips_run_dir_without_manifest(tmp_path):
     # No run.json at all (still-writing / crashed before the marker) is
-    # skipped, as before.
+    # skipped.
     bronze = tmp_path / "bronze"
     (bronze / "20240106T000000Z").mkdir(parents=True)
     conn, _ = _fresh_db(tmp_path)
@@ -303,7 +303,7 @@ def _load_wealth(tmp_path, summary):
 
 
 def test_wealth_history_reads_the_tagged_decimal_envelope(tmp_path):
-    # The shape VIAC switched to; loading it used to abort the whole dump
+    # The tagged envelope must load as a number, not abort the whole dump
     # with "type 'dict' is not supported".
     conn = _load_wealth(tmp_path, _wealth_summary(_enveloped))
     rows = [tuple(r) for r in conn.execute(
@@ -373,3 +373,19 @@ def test_the_raised_message_never_carries_the_value():
     with pytest.raises(ValueError) as exc:
         loader.viac_decimal({"__type": "VIAC_TOTAL", "__value": secret})
     assert secret not in str(exc.value)
+
+
+def test_a_dump_that_raises_mid_load_rolls_back_whole(tmp_path):
+    # A non-SQL error (here an unknown decimal shape) must roll the dump's
+    # transaction back too: no half-written rows, no open transaction left
+    # on the connection, and no dump_runs row, so the dump stays pending.
+    run_dir = _seed_bronze(tmp_path / "bronze")
+    _write_json(run_dir / "wealth" / "summary.json", _wealth_summary(
+        lambda s: {"__type": "VIAC_MONEY", "__value": s}))
+    conn, version = _fresh_db(tmp_path)
+    with pytest.raises(ValueError):
+        loader.load_one_dump(conn, run_dir, version)
+    assert not conn.in_transaction
+    for table in ("accounts", "positions", "dump_runs"):
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0

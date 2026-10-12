@@ -34,9 +34,6 @@ import urllib.parse
 # surfaces the `?code=…` in its address bar, which we scrape.
 DEFAULT_CALLBACK_URL = "https://127.0.0.1:8182"
 
-# Host the authorize page is served from (the page we navigate to first).
-AUTHORIZE_URL_PREFIX = "https://api.schwabapi.com/v1/oauth/authorize"
-
 
 def is_callback_url(url: str, callback_url: str) -> bool:
     """True once the browser has navigated to the OAuth callback — i.e.
@@ -70,9 +67,9 @@ def is_gateway_notice_url(url: str) -> bool:
 
 
 # Where the notice page renders its message: a #msgLabel span inside
-# the <lms-information> element (observed live). The content arrives
-# via an async fetch seconds after the route change, so extraction
-# polls for these before falling back to whole-body text.
+# the <lms-information> element. The content arrives via an async
+# fetch seconds after the route change, so extraction polls for these
+# before falling back to whole-body text.
 NOTICE_MESSAGE_SELECTORS = ("#msgLabel", "lms-information")
 
 # Case-insensitive substrings that mark a notice page as an account
@@ -155,7 +152,7 @@ MFA_CONTINUE_BUTTON_CANDIDATES = (
 # Account-link / consent steps
 # ============================================================
 #
-# After login + 2FA the OAuth grant walks several pages (observed live):
+# After login + 2FA the OAuth grant walks several pages:
 #   1. "Trader API End User Terms and Conditions" — an agreement checkbox
 #      + Continue.
 #   2. "Select your Schwab accounts to link" — one checkbox per account
@@ -186,8 +183,8 @@ ACCOUNT_CHECKBOX_SELECTOR = "input[type='checkbox'], [role='checkbox']"
 # only ever clicked on a page login.classify_page has positively placed
 # in the consent flow (Terms / account-link / review): the selectors are
 # generic enough to match a challenge page's own Continue, which is
-# exactly the click that must never fire (see DESIGN.md §3.1's incident
-# note).
+# exactly the click that must never fire (see DESIGN.md §3.1,
+# "Failure discipline").
 ADVANCE_BUTTON_CANDIDATES = (
     "button:has-text('Continue')",
     "button:has-text('Done')",

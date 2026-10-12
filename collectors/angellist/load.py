@@ -384,7 +384,8 @@ def _vehicle_name_map(conn):
 
 
 def _parse_k1_csv(conn, path, year, doc_id, name_to_vehicle) -> int:
-    rows = list(csv.reader(path.open(newline="", encoding="utf-8-sig")))
+    with path.open(newline="", encoding="utf-8-sig") as fp:
+        rows = list(csv.reader(fp))
     if not rows:
         return 0
     h = rows[0]
@@ -934,6 +935,17 @@ def main(argv: list[str]) -> int:
             continue
         if snap in already:
             log.debug("skip already-loaded %s", run_dir.name)
+            continue
+        # A dump whose walk never finished (no run.json, or a status other
+        # than complete) may hold a truncated captures.jsonl; prune
+        # reclaims it instead.
+        run_json = run_dir / "run.json"
+        if not run_json.is_file():
+            log.info("skipping %s — no run.json", run_dir.name)
+            continue
+        status = bronze.run_status(run_json)
+        if not bronze.is_loadable_status(status):
+            log.info("skipping %s — run.json status=%s", run_dir.name, status)
             continue
         load_snapshot(conn, snap, run_dir)
         n += 1

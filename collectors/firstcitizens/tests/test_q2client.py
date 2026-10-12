@@ -235,3 +235,14 @@ def test_parse_statement_list():
         {"period": "07/31/2026", "doc_id": "DOC1"},
         {"period": "06/30/2026", "doc_id": "DOC2"},
     ]
+
+
+# ============================================================
+# safe_stem
+# ============================================================
+
+def test_safe_stem_sanitises():
+    assert q2client.safe_stem("7000001") == "7000001"
+    assert q2client.safe_stem("07/31/2026") == "07-31-2026"
+    assert q2client.safe_stem("../evil") == "evil"
+    assert q2client.safe_stem("") == "item"

@@ -43,10 +43,10 @@ The categories:
   (a crashed dump), or its ``status`` is anything other
   than ``"complete"`` (an ``"in-progress"`` marker from a crashed walk,
   or a ``"dry-run"`` shell — though ``--dry-run`` never creates a run
-  dir here). ``load`` would otherwise keep re-ingesting whatever partial
-  artefacts such a dir holds (a crashed dump with a present-but-partial
-  ``account_numbers.json`` still loads a truncated snapshot); after
-  pruning one, the next ``load --force`` rebuild reflects the removal.
+  dir here). ``load`` skips a dump whose status is not ``"complete"``,
+  but a statusless one is a load input: left in place, a crashed dump's
+  partial artefacts would load as a truncated snapshot. After pruning
+  one, the next ``load --force`` rebuild reflects the removal.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` at the

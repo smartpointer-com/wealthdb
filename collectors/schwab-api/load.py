@@ -35,10 +35,6 @@ log = logging.getLogger("schwab-load")
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 SNAPSHOT_DIR_RE = re.compile(r"^(\d{8}T\d{6}Z)$")
 
-# Recover the LOGICAL (uncompressed) bronze name from an on-disk path;
-# shared with the downloader so both agree on artefact resolution.
-_logical_bronze_path = _txartefacts.logical_bronze_path
-
 # Balance kinds inside securitiesAccount, mapping silver-column value -> source key.
 SECURITIES_ACCOUNT_BALANCE_KINDS = (
     ("initial",   "initialBalances"),
@@ -60,7 +56,7 @@ def parse_snapshot_at(dump_dir_name: str) -> int:
 
 
 def parse_schwab_timestamp(s: str) -> int:
-    """Parse Schwab's `time` field (e.g. '2026-04-09T21:18:56+0000') to Unix seconds.
+    """Parse Schwab's `time` field (e.g. '2024-01-01T12:00:00+0000') to Unix seconds.
 
     Schwab emits a numeric-only offset (`+0000`); Python's fromisoformat needs
     `+00:00`. We normalise before parsing."""
@@ -606,7 +602,13 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     """Load a single dump directory. Returns a stats dict.
 
     Atomic: if any step raises, the entire dump is rolled back and
-    dump_runs is *not* written. Re-running will retry the dump."""
+    dump_runs is *not* written. Re-running will retry the dump.
+
+    A dump whose run.json status is not loadable (an "in-progress"
+    marker from a crashed or still-running download) is skipped and
+    left pending: its artefacts are partial, and loading them would
+    record the dump as done with, say, account rows built without their
+    positions."""
     name = dump_dir.name
     snapshot_at = parse_snapshot_at(name)
 
@@ -614,7 +616,12 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
         "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,)
     ).fetchone()
     if already is not None:
-        return {"name": name, "skipped": True}
+        return {"name": name, "skipped": True, "reason": "already loaded"}
+
+    status = bronze.run_status(dump_dir / "run.json")
+    if not bronze.is_loadable_status(status):
+        return {"name": name, "skipped": True,
+                "reason": f"run.json status={status}"}
 
     log.info("Loading dump %s (snapshot_at=%d)", name, snapshot_at)
 
@@ -709,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
     for d in dumps:
         stats = load_dump(conn, d)
         if stats.get("skipped"):
-            log.info("  %s: skipped (already loaded)", stats["name"])
+            log.info("  %s: skipped (%s)", stats["name"], stats["reason"])
         else:
             log.info(
                 "  %s: accounts=%d user_pref=%d positions=%d balances=%d "

@@ -33,7 +33,6 @@ import contextlib
 import hashlib
 import json
 import logging
-import os
 import re
 import signal
 import tempfile
@@ -50,8 +49,8 @@ log = logging.getLogger("schwab-web.download")
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 60_000
 # A pagination swap re-fetches the page's rows server-side, which on
-# wide date ranges (Last5Years / All) regularly outlives the old 10s
-# wait — hence its own, longer budget.
+# wide date ranges (Last5Years / All) regularly takes well over 10s —
+# hence its own, longer budget.
 PAGE_SWAP_TIMEOUT_MS = 30_000
 
 # More-detail walk pacing. A modal-heavy page costs ~1-2 min at
@@ -73,16 +72,17 @@ MAX_DETAIL_RECOVERIES = 2
 WEDGED_ROW_FAILS = 3
 RECOVERY_DEADLINE_S = 180
 
-# Bronze run-directory naming: <bronze-dir>/<UTC-timestamp>/
-RUN_DIR_FMT = "%Y%m%dT%H%M%SZ"
-
 # ============================================================
 # Helpers
 # ============================================================
 
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
-    """HTML + best-effort screenshot. See login.maybe_screenshot
-    for the Firefox "fonts never load" rationale."""
+    """Capture page state at a navigation landmark: always save the
+    rendered HTML (fast — no font/animation wait), and best-effort
+    a viewport screenshot (Firefox `page.screenshot()` against
+    schwab.com tends to block on "waiting for fonts to load" which
+    never resolves, so it is capped tightly and misses are accepted).
+    Never raises."""
     if screenshot_dir is None:
         return
     try:
@@ -91,6 +91,9 @@ def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
         log.warning("could not create screenshot dir %s: %s", screenshot_dir, e)
         return
     ts = bronze.ts_slug()
+    # HTML first. page.content() can fail with "page is navigating
+    # and changing" on Angular SPAs; fall back to evaluate, which
+    # reads the DOM with no such guard.
     try:
         html_path = screenshot_dir / f"{ts}-{label}.html"
         try:
@@ -730,6 +733,20 @@ def _safe(s: str, fallback: str = "x") -> str:
     out = _FN_SAFE.sub("-", s).strip("-")
     return out or fallback
 
+
+def _save_download(download, target_dir: Path, fallback: str) -> Path:
+    """Save a Playwright download under its filename-safe suggested
+    name (`fallback` when it suggests none) in `target_dir`, suffixed
+    `.N` when that name is taken. Returns the written path."""
+    name = _safe(download.suggested_filename or fallback, fallback)
+    target = target_dir / name
+    i = 2
+    while target.exists():
+        target = target_dir / f"{Path(name).stem}.{i}{Path(name).suffix}"
+        i += 1
+    download.save_as(str(target))
+    return target
+
 def _overlay_open(page) -> bool:
     """Whether a modal overlay or dialog is up AND visible, asked
     through Playwright's selector engine — the same view its
@@ -891,19 +908,7 @@ def _fetch_one_format(page, button, fmt: str, target_dir: Path,
         # off the non-tax hot path.
         if is_tax_form:
             _confirm_export_tax_modal(page)
-    download = dl_info.value
-    suggested = download.suggested_filename or f"document.{fmt}"
-    suggested_safe = _safe(suggested, f"document.{fmt}")
-    target = target_dir / suggested_safe
-    if target.exists():
-        stem = target.stem
-        ext = target.suffix
-        i = 2
-        while (target.parent / f"{stem}.{i}{ext}").exists():
-            i += 1
-        target = target.parent / f"{stem}.{i}{ext}"
-    download.save_as(str(target))
-    return target
+    return _save_download(dl_info.value, target_dir, f"document.{fmt}")
 
 def download_one(page, row: dict, target_dir: Path) -> list[dict]:
     """Fetch every available format for `row` into target_dir.
@@ -960,18 +965,11 @@ def download_one(page, row: dict, target_dir: Path) -> list[dict]:
         if target is None:
             continue
 
-        h = hashlib.sha256()
-        size = 0
-        with target.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 64), b""):
-                h.update(chunk)
-                size += len(chunk)
-        # Schwab has been observed serving a CSV from a row whose
-        # download button was labelled "PDF" (one known case: a
-        # stray 1099 Composite CSV slotted into a Brokerage
-        # Statement row). When that happens, trust the actual
-        # file extension over the button label so the manifest
-        # doesn't lie to the loader.
+        sha256, size = bronze.sha256_file(target)
+        # A download button's label can disagree with the file it
+        # serves: a row labelled "PDF" can serve a CSV. Trust the
+        # actual file extension over the label, so the manifest
+        # matches what the loader reads.
         actual_ext = target.suffix.lstrip(".").lower()
         if actual_ext and actual_ext != fmt:
             log.warning(
@@ -990,7 +988,7 @@ def download_one(page, row: dict, target_dir: Path) -> list[dict]:
             "format": recorded_fmt,
             "filename": target.name,
             "size": size,
-            "sha256": h.hexdigest(),
+            "sha256": sha256,
         })
         # Tiny breather between same-row formats.
         page.wait_for_timeout(100)
@@ -1147,7 +1145,7 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
         # the same text as the modal's Export button, so scope by
         # visibility: when the modal is closed, only one Export
         # button is visible (the main-page one).
-        if not _click_visible_export_button(page, in_modal=False):
+        if not _click_main_export_button(page):
             log.warning("tx-history …%s: main Export button not visible",
                         account_suffix)
             break
@@ -1201,18 +1199,8 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
                     modal.get_by_role(
                         "button", name="Export", exact=True,
                     ).first.click()
-                download = dl_info.value
-                suggested = download.suggested_filename or f"transactions.{ext}"
-                suggested_safe = _safe(suggested, f"transactions.{ext}")
-                target = out_dir / suggested_safe
-                if target.exists():
-                    stem = target.stem
-                    sfx = target.suffix
-                    i = 2
-                    while (target.parent / f"{stem}.{i}{sfx}").exists():
-                        i += 1
-                    target = target.parent / f"{stem}.{i}{sfx}"
-                download.save_as(str(target))
+                target = _save_download(dl_info.value, out_dir,
+                                        f"transactions.{ext}")
                 break
             except Exception as e:
                 if attempt < DOWNLOAD_MAX_ATTEMPTS:
@@ -1236,17 +1224,12 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
         if target is None:
             continue
 
-        h = hashlib.sha256()
-        size = 0
-        with target.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 64), b""):
-                h.update(chunk)
-                size += len(chunk)
+        sha256, size = bronze.sha256_file(target)
         entries.append({
             "format": ext,
             "filename": target.name,
             "size": size,
-            "sha256": h.hexdigest(),
+            "sha256": sha256,
         })
         page.wait_for_timeout(300)
     return entries
@@ -1306,10 +1289,8 @@ def _scroll_tx_table(page) -> None:
     last_height = -1
     for _ in range(40):
         new_height = page.evaluate(
-            """() => {
-                const row = document.querySelector(
-                    'sdps-table-row.sdps-tables__row--body'
-                );
+            """(rowSelector) => {
+                const row = document.querySelector(rowSelector);
                 if (!row) return 0;
                 let el = row.parentElement;
                 while (el && el !== document.body) {
@@ -1322,7 +1303,8 @@ def _scroll_tx_table(page) -> None:
                 }
                 window.scrollTo(0, document.body.scrollHeight);
                 return document.body.scrollHeight;
-            }"""
+            }""",
+            schwab.TX_ROW_SELECTOR,
         )
         if new_height == last_height:
             return
@@ -1545,20 +1527,12 @@ def _scrape_more_details(page, account_suffix: str,
              if wire_skips else "")
     return details
 
-def _click_visible_export_button(page, in_modal: bool) -> bool:
-    """Click the first visible "Export" button. When in_modal is
-    False, the modal hasn't opened yet so only the main-page
-    Export button is visible; when True, scope to the dialog.
+def _click_main_export_button(page) -> bool:
+    """Click the main-page "Export" button, which opens the export
+    modal. Called while the modal is closed, so it is the only visible
+    "Export" button. False when it is not visible or the click fails.
     """
-    if in_modal:
-        modal = page.locator(
-            '[role="dialog"][aria-labelledby="export-modal-modal-title"]'
-        )
-        btn = modal.get_by_role("button", name="Export", exact=True).first
-    else:
-        btn = page.get_by_role(
-            "button", name="Export", exact=True,
-        ).first
+    btn = page.get_by_role("button", name="Export", exact=True).first
     try:
         if btn.count() == 0 or not btn.is_visible():
             return False
@@ -1649,8 +1623,8 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     each row, clicks the row's "More" link if present, and
     captures the per-row detail modal contents (Settle Date,
     CUSIP, Principal, Commission, Industry Fee, etc.) into a
-    sidecar `more-details.json`. On by default; `--no-more-detail`
-    opts out of the ~1 extra click per transaction (several
+    sidecar `more-details.json`. The CLI turns this on unless
+    `--no-more-detail`, which opts out of the ~1 extra click per transaction (several
     thousand for a multi-year backfill). The silver loader
     merges these details into the transaction's payload when the
     sidecar is present (see load._load_more_details).
@@ -1662,11 +1636,10 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     page.wait_for_timeout(1500)
 
     # `date_range` from the CLI uses Statements' option values;
-    # tx-history exposes a disjoint set (different option names,
-    # different granularities). Map each Statements value to the
-    # tx-history value with the closest matching coverage; the
-    # rare in-tx-only values (CurrentMonth, PreviousMonth, etc.)
-    # pass through verbatim.
+    # tx-history exposes a different set (no 3-month or multi-year
+    # presets). Map each Statements value to the tx-history value
+    # with the closest covering range; a value without an entry
+    # passes through verbatim.
     _STATEMENT_TO_TX_RANGE = {
         "Today":        "Today",
         "Last7Days":    "Last7Days",
@@ -1828,9 +1801,8 @@ def _open_run_dir(dest_root: Path, run_ts: str, *, dry_run: bool):
     Dry run:   a throwaway ``TemporaryDirectory`` that is NOT under
     ``dest_root``. The read-only walk still runs and still fires its
     manifest + tx-export writes (so the session and the export surfaces
-    get verified), but nothing lands under the bronze root — honouring
-    the repo-wide "``download --dry-run`` persists nothing to bronze"
-    contract (root AGENTS.md §2). The scratch tree is removed on exit,
+    get verified), but nothing lands under the bronze root. The scratch
+    tree is removed on exit,
     even on crash, by the context manager. Because a dry-run never
     writes under ``dest_root``, `load` simply never sees a dump to skip
     — the status guard still matters only for a crashed *real* run.
@@ -1876,11 +1848,11 @@ def walk(page, dest_root: Path, *, mode: str = "all",
     a partial dump out of silver.
     """
     run_ts = bronze.ts_slug()
-    # A `--dry-run` walks the same read-only surfaces but must persist
-    # nothing under the bronze root (root AGENTS.md §2): `_open_run_dir`
-    # hands it a throwaway temp dir instead of `<dest_root>/<run_ts>/`,
-    # so the manifest + any fired tx exports land in scratch and are
-    # reclaimed on exit. A real run gets the bronze run dir as before.
+    # A `--dry-run` walks the same read-only surfaces but persists
+    # nothing under the bronze root: `_open_run_dir` hands it a
+    # throwaway temp dir instead of `<dest_root>/<run_ts>/`, so the
+    # manifest + any fired tx exports land in scratch and are reclaimed
+    # on exit.
     with _open_run_dir(dest_root, run_ts, dry_run=dry_run) as run_dir:
         if dry_run:
             log.info("dry-run: nothing written to bronze "
@@ -1968,8 +1940,9 @@ def walk(page, dest_root: Path, *, mode: str = "all",
             run_summary["transactions"] = tx_entries
             _write_manifest(run_dir, run_summary)
 
-        # Terminal status flip: `_write_manifest` is tmp+os.replace, so
-        # this atomically overwrites the in-progress marker. A
+        # Terminal status flip: `_write_manifest` writes a tmp file and
+        # renames it, so this atomically overwrites the in-progress
+        # marker. A
         # `--dry-run` is recorded as `"dry-run"` (a non-complete shell);
         # everything else is `"complete"`. On a dry-run the whole
         # manifest lives in scratch, so `load`/`prune` never meet it.
@@ -1980,8 +1953,4 @@ def walk(page, dest_root: Path, *, mode: str = "all",
         return run_summary
 
 def _write_manifest(run_dir: Path, summary: dict) -> None:
-    path = run_dir / "run.json"
-    tmp = run_dir / "run.json.tmp"
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(summary, fh, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    bronze.atomic_write_json(run_dir / "run.json", summary)

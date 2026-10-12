@@ -413,8 +413,8 @@ def _capture_invoices(api: CardApi, cards_dir: Path, account_id: str,
                     detail_failures, len(invoice_ids), short[:8])
     return {
         "invoices_file": list_name,
-        "invoice_details_file": f"invoice-details_{short}.json",
-        "statements_file": f"statements_{short}.json",
+        "invoice_details_file": detail_name,
+        "statements_file": statements_name,
         "invoice_count": len(details),
         "invoice_ids_seen": len(invoice_ids),
         "invoice_detail_failures": detail_failures,

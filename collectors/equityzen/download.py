@@ -148,15 +148,30 @@ def _slug(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 
 
-def _deal_ids_from(body: dict) -> list[str]:
-    edges = (((body or {}).get("data") or {}).get("buyer") or {}) \
-        .get("buyerDeals", {}).get("edges") or []
+def _buyer_deal_nodes(body) -> list[dict]:
+    """The `data.buyer.buyerDeals.edges[].node` dicts of a getBuyerInvestments
+    or getMyInvestmentDetails response body. A missing or null level at any
+    depth yields no nodes rather than an error."""
+    cur = body
+    for key in ("data", "buyer", "buyerDeals", "edges"):
+        cur = cur.get(key) if isinstance(cur, dict) else None
+    return [e["node"] for e in cur or []
+            if isinstance(e, dict) and isinstance(e.get("node"), dict)]
+
+
+def _deal_ids_from(body) -> list[str]:
     out = []
-    for e in edges:
-        did = (((e or {}).get("node") or {}).get("deal") or {}).get("id")
+    for node in _buyer_deal_nodes(body):
+        did = (node.get("deal") or {}).get("id")
         if did:
             out.append(did)
     return out
+
+
+def _offering_documents(node: dict) -> list[dict]:
+    """The document nodes of one offering's detail node that carry an id."""
+    return [d for d in (node.get("documents") or [])
+            if isinstance(d, dict) and d.get("id")]
 
 
 # --- documentType → docdedup class (mode selection) ------------------------
@@ -248,11 +263,10 @@ def extract_equityzen(run_dir, manifest):
 
 
 # A document node that carries no downloadUrl yields no blob BY DESIGN — load
-# records a null local_path for it, exactly as before. That is not a fetch
-# failure, so it gets its own outcome and is NOT counted among `errors`.
+# records a null local_path for it. That is not a fetch failure, so it gets its
+# own outcome and its own audit bucket in the shared docdedup counters, and is
+# NOT counted among `errors`.
 NO_BLOB = "no-blob"
-# A document node that carries no downloadUrl is a null-blob-by-design, not a
-# fetch failure — it gets its own audit bucket via the shared docdedup counters.
 _AUDIT_EXTRA = {NO_BLOB: "no_blob"}
 
 
@@ -271,7 +285,7 @@ def _process_document(skip, *, deal_slug: str, doc: dict, target_dir: Path,
 
     A node with no ``downloadUrl`` was never going to yield a blob, so it returns
     :data:`NO_BLOB` (a null-blob-by-design — load records a null local_path for
-    it, exactly as before — NOT a fetch failure) without touching the
+    it — NOT a fetch failure) without touching the
     fetch/dedup path. Otherwise it dispatches to :func:`docdedup.process` by the
     document's class: link-mode for the executed-once legal/offering docs,
     fetch-verify for the parsed/restatement-prone docs, plain fetch for anything
@@ -451,9 +465,13 @@ def main(argv: list[str]) -> int:
             if not url:
                 return None
             full = url if url.startswith("http") else BASE + url
+            # Logged without the query string: a download URL can carry a
+            # signed token.
+            shown = full.split("?", 1)[0]
             try:
                 resp = context.request.get(full, timeout=timeout_ms)
                 if not resp.ok:
+                    log.warning("blob fetch %s -> HTTP %d", shown, resp.status)
                     return None
                 body = resp.body()
                 ct = resp.headers.get("content-type", "").lower()
@@ -462,7 +480,8 @@ def main(argv: list[str]) -> int:
                 bronze.atomic_write_bytes(path, body)
                 return path
             except Exception as exc:
-                log.debug("blob fetch failed for %s: %r", full, exc)
+                log.warning("blob fetch %s failed: %s", shown,
+                            debugcap.safe_error(exc))
                 return None
 
         # 2) Per-offering detail (positions + cash flows) + document blobs.
@@ -492,10 +511,8 @@ def main(argv: list[str]) -> int:
             bronze.atomic_write_json(run / "offerings" / slug / "detail.json", cap["body"])
             doc_counts = _empty_doc_counts()
             if args.documents:
-                edges = (((cap["body"] or {}).get("data") or {}).get("buyer") or {}) \
-                    .get("buyerDeals", {}).get("edges") or []
-                node = edges[0].get("node") if edges else {}
-                docs = [d for d in (node.get("documents") or []) if d.get("id")]
+                nodes = _buyer_deal_nodes(cap["body"])
+                docs = _offering_documents(nodes[0] if nodes else {})
                 doc_counts["total"] = len(docs)
                 for doc in docs:
                     status = _process_document(
@@ -510,7 +527,7 @@ def main(argv: list[str]) -> int:
             offerings_meta.append({"slug": slug, "detail": True,
                                    "documents": doc_counts})
 
-        # 4) Manifest — slugs + counts only. `status` is the completeness
+        # 3) Manifest — slugs + counts only. `status` is the completeness
         # signal prune keys on: this terminal write atomically overwrites the
         # in-progress marker dropped at run-dir creation.
         manifest = {

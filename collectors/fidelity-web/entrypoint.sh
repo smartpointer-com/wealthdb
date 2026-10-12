@@ -73,7 +73,7 @@ case "${1:-help}" in
         # One-time backlog sweep: replace plain HTML/CSV bronze
         # (balances/performance HTML, positions/activity/statement CSV)
         # inside complete dumps with verified .zst twins (the form
-        # download now writes). No browser, no Xvfb. Manual only —
+        # download writes). No browser, no Xvfb. Manual only —
         # never schedule; review --dry-run first. Also reachable
         # host-side via the wrapper.
         shift

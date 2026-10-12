@@ -58,10 +58,8 @@ ARTIFACT_INSTRUMENTS = "instruments.json"
 
 # Per-run manifest carrying the normalized status lifecycle
 # ("in-progress" at run-dir creation, atomically overwritten with
-# "complete" at the end). It is the forward completeness signal `prune`
-# keys on; `load` never reads it (its artefact set is
-# account_numbers/user_preference/accounts_positions/transactions_*/
-# open_orders/instruments), so adding it is inert to silver.
+# "complete" at the end). It is the completeness signal `prune` and
+# `load` key on: a dump whose status is not "complete" is never loaded.
 RUN_MANIFEST = "run.json"
 
 # Schwab caps the transactions endpoint window at 1 year per request. We
@@ -164,8 +162,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     # --lookback — the shared contract's one window flag; it names a
     # start and the window runs from there to today. Schwab caps each
-    # transactions call at 1 year; the loader chunks longer ranges
-    # automatically via TRANSACTION_WINDOW_DAYS.
+    # transactions call at 1 year; run() chunks longer ranges via
+    # TRANSACTION_WINDOW_DAYS.
     cli.add_standard_args(p, verb="download")
     p.add_argument(
         "--no-instruments",
@@ -595,10 +593,9 @@ def run(args: argparse.Namespace) -> int:
         log.info("Dry run complete. No artefacts written.")
         return 0
 
-    # Default the transaction window to 90 days if not specified —
-    # collectorkit's shared default lookback (resolve_lookback). Wider
-    # explicit windows are split into <=365-day chunks downstream to
-    # respect Schwab's per-request cap.
+    # Without --lookback the window is collectorkit's shared default
+    # (resolve_lookback). Wider windows are split into <=365-day chunks
+    # below to respect Schwab's per-request cap.
     today = datetime.now(timezone.utc).date()
     since, until = cli.resolve_lookback(args)
     log.info("Transaction window: %s -> %s", since, until)

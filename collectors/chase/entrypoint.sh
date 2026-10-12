@@ -20,7 +20,7 @@ source /opt/entrypoint-lib.sh
 
 case "${1:-help}" in
     explore)
-        # Discovery harness (retained): Camoufox over VNC + trace capture.
+        # Discovery harness: Camoufox over VNC + trace capture.
         start_xvfb
         start_x11vnc explore
         shift
@@ -87,7 +87,7 @@ Usage:
 
 Subcommands:
   explore     Discovery harness: Camoufox over VNC + HAR/trace/click log
-              under /debug. See DESIGN.md "Observed".
+              under /debug. See DESIGN.md "Source behaviour".
   download    One-shot login + scrape (deposit accounts + credit cards), 2FA
               driven from the TERMINAL — no VNC. Pre-fills + submits the form,
               prompts for the code on stdin (push / SMS / voice), then

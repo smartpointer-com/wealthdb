@@ -249,6 +249,27 @@ def test_a_run_loads_accounts_and_transactions(db, tmp_path):
     assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
 
 
+def test_a_failed_load_leaves_silver_unchanged(db, tmp_path, monkeypatch):
+    # One dump is one transaction: a failure part-way rolls back the rows
+    # already written and records no dump_runs row, so the next load retries.
+    run = write_run(tmp_path / "bronze", "20260312T000000Z",
+                    activity={KEY_A: _activity([_tx(1), _tx(2)])})
+
+    def boom(*_args, **_kwargs):
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(load, "_insert_account", boom)
+    with pytest.raises(OSError):
+        load.load_run(db, run)
+    for table in ("accounts", "transactions", "statement_balances",
+                  "dump_runs"):
+        assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+    monkeypatch.undo()
+    assert load.load_run(db, run) is True
+    assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
+
+
 def test_reloading_the_same_run_is_a_no_op(db, tmp_path):
     run = write_run(tmp_path / "bronze", "20260312T000000Z",
                     activity={KEY_A: _activity([_tx(1)])})

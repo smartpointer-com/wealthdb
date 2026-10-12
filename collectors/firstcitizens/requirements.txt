@@ -5,15 +5,13 @@
 # juggler patches target one Playwright minor — a mismatched Playwright
 # crashes the camoufox-launched Firefox.
 #
-# collectorkit (the shared cli/envfile/launch helpers) is also installed
-# in the base image as an editable package; explore.py imports it
-# directly.
+# collectorkit (the shared cli/envfile/launch/silver helpers) is also
+# installed in the base image as an editable package.
 
 # pytest is bundled in the image so tests run inside the container with
 # `./firstcitizens sh -c "cd /app && pytest"` (what
 # `make test-firstcitizens` does), no host-side Python toolchain required.
 pytest>=8,<9
 
-# Nothing else yet: Phase 1 is the discovery harness only. Parser deps
-# (statement PDFs, OFX/QFX exports) are chosen in Phase 3, once real
-# captures show what the exports actually contain.
+# Nothing else: load.py reads the accountHistory JSON with the stdlib, and
+# indexes statement PDFs without parsing them.

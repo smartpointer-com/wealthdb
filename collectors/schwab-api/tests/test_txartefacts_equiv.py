@@ -149,7 +149,7 @@ def test_entry_points_agree(tmp_path):
     for label, run_dir in _build_variants(tmp_path):
         expected = _orig_load_transaction_files(run_dir)
         assert loader.transaction_files(run_dir) == expected, label
-        # download.py now calls _txartefacts.transaction_files directly for
-        # symbol harvesting; assert that binding is the shared helper.
+        # download.py harvests symbols through _txartefacts directly;
+        # assert that binding is the shared helper.
         assert (download._txartefacts.transaction_files(run_dir)
                 == expected), label

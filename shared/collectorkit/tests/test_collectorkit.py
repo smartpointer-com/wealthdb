@@ -583,12 +583,6 @@ class LookbackTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             cli.resolve_lookback(ns)
 
-    def test_default_days_override(self):
-        from datetime import timedelta
-        ns = _build_parser().parse_args([])
-        since, until = cli.resolve_lookback(ns, default_days=30)
-        self.assertEqual(until - since, timedelta(days=30))
-
 
 class DefaultDataRootTest(unittest.TestCase):
     def _resolve(self, xdg):

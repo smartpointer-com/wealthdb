@@ -5,7 +5,7 @@
 # build/test Docker-only.
 #
 # Why host-side load needs a venv (unlike a pure-stdlib loader): bronze
-# HTML/CSV artefacts are now zstd-compressed, and load.py decompresses
+# HTML/CSV artefacts are zstd-compressed, and load.py decompresses
 # them IN Python (fidelity-web's silver is SQLite, not DuckDB — there is
 # no engine to stream .zst natively), so the host interpreter needs the
 # `zstandard` package. The venv also carries pdfplumber for the 529 /

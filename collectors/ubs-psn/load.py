@@ -407,7 +407,7 @@ def load_sdcl(conn, snapshot_at, relationship_id, entities):
         if _strip_ns(elem.tag) != "ClntInfo":
             continue
         parsed = elem_to_dict(elem)["ClntInfo"]
-        client_id = _find_text({"ClntInfo": parsed}, "ClntInfo", "ClntId")
+        client_id = _find_text(parsed, "ClntId")
         if not client_id:
             log.warning("SDCL entity missing ClntId — skipping")
             continue
@@ -961,12 +961,11 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
 
     # Which statement this is, in the bank's own terms: the :28C:
     # statement number over the period the statement covers. The number
-    # alone climbs and then restarts on the bank's own cycle (two digits
-    # so far, and back to 1 at some point past 99), and the period alone
-    # is only as trustworthy as the two balance lines, so the mark
-    # carries both — it has to identify one statement for as long as
-    # silver keeps its rows, not merely until the number comes round
-    # again. It is derived from the statement's own content, so every
+    # alone climbs and then restarts on the bank's own cycle, and the
+    # period alone is only as trustworthy as the two balance lines, so
+    # the mark carries both — it has to identify one statement for as
+    # long as silver keeps its rows, not merely until the number comes
+    # round again. It is derived from the statement's own content, so every
     # delivery of the same statement (queue pull and dated archive copy
     # alike) computes the same mark and deletes the same rows.
     period_start = opening["date_unix"] if opening else closing["date_unix"]
@@ -976,7 +975,7 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
         # half is the period, and UBS closes a Z40 statement every day, so
         # without :28C: two statements it issued for the same account and
         # day are indistinguishable and the second would delete the first's
-        # rows and re-insert only its own. Every Z40 seen so far carries the
+        # rows and re-insert only its own. A Z40 statement carries the
         # tag, so this is a shout rather than a fallback: the merge would
         # otherwise be silent, and a loud line in the load log is what makes
         # it findable if UBS ever stops sending it.
@@ -996,17 +995,14 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
     # UBS does not give every entry its own :61: bank reference: when it
     # charges for a transfer it books the charge (NCHG) under the same
     # reference as the transfer (NTRF) it belongs to. Keyed on the
-    # reference alone, the second of the two entries REPLACEd the first
-    # and one real booking — the charge, in every observed pair —
-    # silently vanished. So the reference names the *pair*, and an entry
-    # needs its position within the pair to be told apart from its
-    # sibling. The sibling's position is what the statement prints, and a
-    # re-delivered statement prints the same lines in the same order, so
-    # the position is as stable across re-loads as the reference is.
-    # First occurrence keeps the bare id — as the sibling ubs-web
-    # statement loader does with its split bundles (_stmt_txn_id) — so
-    # no id minted before this fix moves, and a re-load rewrites those
-    # rows in place instead of leaving them behind as duplicates.
+    # reference alone, the second entry would REPLACE the first. So the
+    # reference names the *pair*, and an entry's position within the
+    # pair tells it apart from its sibling. A re-delivered statement
+    # prints the same lines in the same order, so the position is as
+    # stable across re-loads as the reference is. The first occurrence
+    # keeps the bare id, as the ubs-web statement loader does with its
+    # split bundles (_stmt_txn_id), so a single-entry reference keeps
+    # the plain reference-based id.
     occurrence: dict[str, int] = {}
     for parsed_61, narrative in movements:
         # event_external_id: prefer the bank reference; fall back to a deterministic

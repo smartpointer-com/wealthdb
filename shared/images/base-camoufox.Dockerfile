@@ -1,5 +1,4 @@
-# Shared base for the camoufox-using collectors (the private-market
-# scrapers, schwab-web / schwab-api, fidelity-web, cointracking).
+# Shared base for the camoufox-using collectors.
 # Layers camoufox-pinned Playwright and a pre-fetched Firefox bundle
 # onto base-playwright, which already carries Xvfb/x11vnc and the shared
 # entrypoint bootstrap (/opt/entrypoint-lib.sh) that each collector's
@@ -15,7 +14,7 @@
 # That command builds on whatever wealthdb/base-playwright:latest is
 # already local, so it must be preceded by a base-playwright rebuild —
 # Xvfb/x11vnc, /opt/entrypoint-lib.sh and the baked-in collectorkit all
-# live one layer down now, and a stale parent yields a camoufox image
+# live one layer down, and a stale parent yields a camoufox image
 # whose collectors start without them or redact with an old collectorkit
 # while their unit tests still pass. `make base-images` (or `make all`,
 # or any `make build-<name>`) builds the pair in order and is the way in.
@@ -28,8 +27,8 @@ FROM wealthdb/base-playwright:latest
 # The browser build, camoufox-py, and Playwright are a matched set: the
 # browser's juggler patches target a specific Playwright protocol, and
 # base-playwright's bundled Playwright is much newer and crashes
-# camoufox-launched Firefox — so Playwright is pinned back here for both
-# collectors. Bump CAMOUFOX_BUILD deliberately and re-validate the
+# camoufox-launched Firefox — so Playwright is pinned back here for every
+# collector built on this image. Bump CAMOUFOX_BUILD deliberately and re-validate the
 # collectors against their sources' bot detection; camoufox-py's own
 # fetch constraint spans Firefox majors, which is why the build is
 # pinned explicitly below (see fetch-camoufox.py).

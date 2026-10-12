@@ -349,51 +349,6 @@ def test_link_fetch_failed(tmp_path):
     assert status == docdedup.FETCH_FAILED
 
 
-def test_docref_carries_optional_size():
-    # The size-guard field for label-keyed callers; default None (guard off).
-    assert docdedup.DocRef(key=(DEAL, DOC1), doc_date=None,
-                           relpath="p", size=1234).size == 1234
-    assert docdedup.DocRef(key=(DEAL, DOC1), doc_date=None, relpath="p").size is None
-
-
-def test_link_size_guard_mismatch_falls_through_to_fetch(tmp_path):
-    # A mis-keyed cross-account collision: the prior file under this key is a
-    # DIFFERENT size than the current doc expects → do not link the wrong file;
-    # fall through to a real fetch (belt-and-braces for label-keyed adopters).
-    a = _run(tmp_path, OLD_A, {f"documents/{DEAL}/{DOC1}.pdf": BODY})
-    cur = bronze.run_dir(tmp_path, OLD_B)
-    cur.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, extract_disk, exclude_run=cur)
-    calls: list = []
-    target_dir = cur / "documents" / DEAL
-    status = docdedup.link_or_fetch(
-        skip, (DEAL, DOC1), target_dir=target_dir, stem=DOC1,
-        fetch=_stub_fetch(target_dir / f"{DOC1}.pdf", BODY2, calls),
-        expected_size=len(BODY) + 99)               # deliberately wrong size
-    assert status == docdedup.FETCHED               # collision → fetched
-    assert len(calls) == 1
-    linked = target_dir / f"{DOC1}.pdf"
-    assert _ino(linked) != _ino(a / f"documents/{DEAL}/{DOC1}.pdf")
-    assert linked.read_bytes() == BODY2
-
-
-def test_link_size_guard_match_links(tmp_path):
-    # A correct expected_size passes the guard → the prior is hardlinked as usual.
-    a = _run(tmp_path, OLD_A, {f"documents/{DEAL}/{DOC1}.pdf": BODY})
-    cur = bronze.run_dir(tmp_path, OLD_B)
-    cur.mkdir()
-    skip = docdedup.SkipSet.derive(tmp_path, extract_disk, exclude_run=cur)
-    calls: list = []
-    target_dir = cur / "documents" / DEAL
-    status = docdedup.link_or_fetch(
-        skip, (DEAL, DOC1), target_dir=target_dir, stem=DOC1,
-        fetch=_stub_fetch(target_dir / f"{DOC1}.pdf", BODY, calls),
-        expected_size=len(BODY))                    # correct size → link
-    assert status == docdedup.LINKED
-    assert calls == []
-    assert _ino(target_dir / f"{DOC1}.pdf") == _ino(a / f"documents/{DEAL}/{DOC1}.pdf")
-
-
 # ============================================================
 # fetch-verify-dedup
 # ============================================================

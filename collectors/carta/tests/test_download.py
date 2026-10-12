@@ -683,3 +683,50 @@ def test_captable_with_access_requests_post_money(tmp_path):
         tmp_path, {"captable_access_level": "summary cap table"})
     assert captable_ok is True and n_vest == 0
     assert [u for u in api.urls if "post-money-list" in u]
+
+
+# ---------------------------------------------------------------------------
+# Api failure records: what run.json keeps of a failed GET
+# ---------------------------------------------------------------------------
+
+class _FailingRequest:
+    """Request stand-in whose GET raises the way Playwright's does: a first
+    line naming the failure, then a call log that echoes the request
+    headers, the session cookie among them. Synthetic values only."""
+
+    def get(self, url, **kw):
+        raise RuntimeError(
+            f"APIRequestContext.get: connect ECONNRESET\nCall log:\n"
+            f"  - → GET {url}\n    - cookie: sessionid=SYNTHETIC-SECRET\n")
+
+
+class _StatusRequest:
+    def __init__(self, status):
+        self.status = status
+
+    def get(self, url, **kw):
+        resp = _FakeResponse({})
+        resp.status = self.status
+        return resp
+
+
+class _ReqContext:
+    def __init__(self, request):
+        self.request = request
+
+
+def test_api_error_record_drops_the_call_log():
+    api = download.Api(_ReqContext(_FailingRequest()))
+    assert api.get(f"{download.APP}/api/x/?page=2") == (None, None)
+    (err,) = api.errors
+    assert "SYNTHETIC-SECRET" not in json.dumps(err)
+    assert "ECONNRESET" in err["error"]
+    # Carta's own API URL keeps its query: ids and page numbers only.
+    assert err["url"] == f"{download.APP}/api/x/?page=2"
+
+
+def test_api_error_record_drops_a_signed_url_query():
+    api = download.Api(_ReqContext(_StatusRequest(403)))
+    assert api.get(f"{SIGNED_URL}?Signature=SYNTHETIC-SIG",
+                   expect="bytes") == (403, None)
+    assert api.errors == [{"url": SIGNED_URL, "status": 403}]

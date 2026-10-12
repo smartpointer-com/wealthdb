@@ -36,16 +36,14 @@ from collectorkit import bronze, cli, debugcap, launch, session
 
 import cards  # local module
 import landmarks as ubs  # local module
+# The session login.py mints is the one this walk reuses: same state file,
+# same UA (UBS's anti-bot heuristics must see a single session), same
+# screenshot convention.
+from login import (  # local module
+    DEFAULT_STATE_PATH, LEGACY_STATE_PATH, USER_AGENT, maybe_screenshot,
+)
 
 log = logging.getLogger("ubs-web.download")
-
-# Hold the UA constant across login.py and download.py so UBS's
-# anti-bot heuristics see a single session.
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/151.0.0.0 Safari/537.36"
-)
 
 # The walk's passes, in the order it runs them. `--only` names one.
 PASSES = ("positions", "transactions", "portfolio-transactions",
@@ -63,13 +61,6 @@ PORTFOLIO_SCOPE_TIMEOUT_MS = 90_000
 PANEL_SETTLE_MS = 2_500
 # How long the header's portfolio switcher takes to open or settle.
 SWITCHER_SETTLE_MS = 1_000
-
-# Canonical storageState location — must match login.py, which
-# mints the file there (the wrapper's /secrets mount).
-DEFAULT_STATE_PATH = Path("/secrets/ubs-web-state.json")
-# Fallback state location (underscore) — read when the canonical file is absent,
-# so a session stored under this name keeps working. login writes the canonical name.
-LEGACY_STATE_PATH = Path("/secrets/ubs_web_state.json")
 
 # The --lookback window resolves through collectorkit.cli (default
 # DEFAULT_LOOKBACK_DAYS = 90). Important context for UBS: every
@@ -170,19 +161,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 # ============================================================
-# Screenshot / trace helpers
-# ============================================================
-
-def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
-    if screenshot_dir is None:
-        return
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-    path = screenshot_dir / f"{bronze.ts_slug()}-{label}.png"
-    page.screenshot(path=str(path), full_page=True)
-    log.debug("wrote screenshot %s", path)
-
-
-# ============================================================
 # Playwright plumbing
 # ============================================================
 
@@ -255,54 +233,31 @@ def enumerate_accounts(page, screenshot_dir: Path | None) -> list[dict]:
         ) from e
     maybe_screenshot(page, screenshot_dir, "home-rendered")
 
-    # Cash accounts only: the card area is a separate family of surfaces
-    # and silver models no card yet. `explore.py` is where that surface
-    # is being mapped.
+    # Cash accounts only: the card area is read from its own API
+    # (`cards.py`), not from homepage anchors.
     accounts: dict[str, dict] = {}
-    for selector, kind in (
-        (ubs.HOME_CASH_ACCOUNT_LINK_SELECTOR, "cash"),
-    ):
-        rows = page.evaluate(
-            """(sel) => Array.from(document.querySelectorAll(sel))
-                 .map(a => ({
-                     href: a.getAttribute('href'),
-                     label: (a.closest('[role="region"], section, div') || a.parentElement)
-                              ?.innerText?.trim()?.replace(/\\s+/g, ' ')?.slice(0, 200) || '',
-                 }))""",
-            selector,
-        )
-        for row in rows:
-            href = row["href"] or ""
-            account_id = _extract_account_id(href)
-            if not account_id:
-                continue
-            if account_id in accounts:
-                continue
-            accounts[account_id] = {
-                "account_id": account_id,
-                "kind": kind,
-                "route": _href_to_route(href),
-                "label": row["label"],
-            }
+    rows = page.evaluate(
+        """(sel) => Array.from(document.querySelectorAll(sel))
+             .map(a => ({
+                 href: a.getAttribute('href'),
+                 label: (a.closest('[role="region"], section, div') || a.parentElement)
+                          ?.innerText?.trim()?.replace(/\\s+/g, ' ')?.slice(0, 200) || '',
+             }))""",
+        ubs.HOME_CASH_ACCOUNT_LINK_SELECTOR,
+    )
+    for row in rows:
+        href = row["href"] or ""
+        account_id = _extract_query_param(href, "accountId")
+        if not account_id or account_id in accounts:
+            continue
+        accounts[account_id] = {
+            "account_id": account_id,
+            "kind": "cash",
+            "route": _href_to_route(href),
+            "label": row["label"],
+        }
     log.info("discovered %d cash account(s)", len(accounts))
     return list(accounts.values())
-
-
-def _extract_account_id(href: str) -> str | None:
-    """Pull accountId=… out of a hash-fragment query."""
-    # Hash-fragment URLs do not parse cleanly with urlsplit's query
-    # field, so we do it manually.
-    if "#" in href:
-        _, frag = href.split("#", 1)
-    else:
-        frag = href
-    if "?" not in frag:
-        return None
-    _, qs = frag.split("?", 1)
-    for kv in qs.split("&"):
-        if kv.startswith("accountId="):
-            return kv[len("accountId="):]
-    return None
 
 
 def _href_to_route(href: str) -> str:
@@ -618,9 +573,9 @@ def _click_custom_radio(page, screenshot_dir: Path | None,
 
     The "subsequent-open staleness" problem (DatePicker remembers
     previous values, so React doesn't see the new fill as a change)
-    is worked around by the caller: each MT940 bisect window does a
-    full `page.goto` to the account URL first, so the popover is
-    always re-mounted in a fresh state.
+    is worked around by the caller: each bisect window does a full
+    `page.goto` to the account URL first, so the popover is always
+    re-mounted in a fresh state.
     """
     try:
         page.locator(
@@ -805,9 +760,9 @@ def _export_mt940(page, account: dict, out_dir: Path,
     # Wait for Export to become enabled.
     try:
         page.wait_for_function(
-            "() => { const b = document.querySelector("
-            "  '[data-testid=\"export-button\"]'); "
+            "(sel) => { const b = document.querySelector(sel); "
             "  return b && !b.disabled; }",
+            arg=ubs.MT940_DIALOG_EXPORT_BUTTON,
             timeout=LANDMARK_TIMEOUT_MS,
         )
     except Exception:
@@ -862,8 +817,8 @@ def _dismiss_open_overlays(page, max_attempts: int = 3) -> None:
             pass
         # If still open, click any Close / Cancel button inside.
         for sel in (
-            'dialog[open] [aria-label="Close"]',
-            'dialog[open] [data-testid="cancel-download-button"]',
+            ubs.MT940_DIALOG_CLOSE_BUTTON,
+            f"dialog[open] {ubs.MT940_DIALOG_CANCEL_BUTTON}",
             'dialog[open] button:has-text("Cancel")',
             'dialog[open] button:has-text("Close")',
         ):
@@ -1346,7 +1301,8 @@ def _enumerate_portfolios(page,
 
 def _extract_query_param(href: str, name: str) -> str | None:
     """Pull a query-string param out of a URL whose query lives in
-    the hash fragment (SPA-style)."""
+    the hash fragment (SPA-style), which urlsplit's query field does
+    not reach."""
     if "#" in href:
         _, frag = href.split("#", 1)
     else:
@@ -1463,7 +1419,7 @@ def export_portfolio_transactions(page, run_dir: Path,
         # beside the real portfolios, and those answer for a portfolio
         # already fetched. What came back says which it was.
         if meta["portfolio"] and meta["portfolio"] in harvested:
-            Path(out_dir / meta["filename"]).unlink(missing_ok=True)
+            (out_dir / meta["filename"]).unlink(missing_ok=True)
             continue
         if meta["portfolio"]:
             harvested.add(meta["portfolio"])
@@ -1490,7 +1446,7 @@ def _portfolio_switcher_options(page) -> list[str]:
         return []
     # The first option is the banking relationship the portfolios hang
     # from, which is not one of them.
-    return [t for t in dict.fromkeys(titles)][1:]
+    return list(dict.fromkeys(titles))[1:]
 
 
 def _switch_portfolio(page, title: str) -> bool:

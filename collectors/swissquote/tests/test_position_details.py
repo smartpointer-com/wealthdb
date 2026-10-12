@@ -33,7 +33,7 @@ MIGRATIONS = ROOT / "migrations"
 
 def _apply_all_migrations(db_path: Path) -> sqlite3.Connection:
     conn = load.open_db(db_path)
-    load.apply_migrations(conn, MIGRATIONS)
+    load.silver.apply_migrations(conn, MIGRATIONS)
     return conn
 
 
@@ -61,7 +61,7 @@ class MigrationSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "silver.db"
             conn = _apply_all_migrations(db_path)
-            self.assertEqual(load.current_schema_version(conn), 7)
+            self.assertEqual(load.silver.current_schema_version(conn), 7)
             cols = [r["name"] for r in conn.execute(
                 "PRAGMA table_info(positions);")]
             self.assertIn("name", cols)

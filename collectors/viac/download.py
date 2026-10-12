@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-viac Phase 3: bronze scrape (pure httpx, no browser).
+viac bronze scrape (pure httpx, no browser).
 
 Reads the session-state file produced by login.py, walks the
 VIAC REST API, and writes a timestamped bronze dump to disk.
@@ -56,8 +56,8 @@ per document class so the fetch-avoidance never serves a stale figure:
   - PARSED / restatement-prone documents — the `INVESTMENT_REPORTING`
     period-end statements load.py parses for historical holdings, every
     `TAX` document (the Pillar-3a `Bescheinigung` certificates), and the
-    data-bearing `SECURITY_FUSION` PDF (its old→new ISIN map is slated for
-    a parser pass) — are ALWAYS fetched and content-compared against the
+    data-bearing `SECURITY_FUSION` PDF (its old→new ISIN map lives only in
+    the PDF) — are ALWAYS fetched and content-compared against the
     prior copy: a byte-identical one is hardlinked (disk reclaimed), a
     changed one keeps its fresh bytes, so a re-issued/corrected statement
     is never missed;
@@ -144,8 +144,8 @@ _REPORT_SUBTYPES = frozenset({
     "MANUAL_INVESTMENT_REPORTING",
 })
 # The SECURITY_FUSION PDF is data-bearing — its old→new ISIN fusion map is
-# the ONLY copy (the JSON tx carries amountInChf:0) and a parser pass is
-# planned (DESIGN.md §9) — so it is fetch-verified, never linked. Aliased to
+# the ONLY copy (the JSON tx carries amountInChf:0) — so it is
+# fetch-verified, never linked. Aliased to
 # the gate's always-download set on purpose: a TRANSACTION subtype worth
 # fetching because its data lives only in the PDF is by that same token one
 # to fetch-verify, not to trust a link for.
@@ -467,7 +467,7 @@ def fetch_pdf(client: ViacClient, doc: dict, docid: str, target: Path,
         # docdedup's fetch closure: stream the blob to `target` (with the
         # transient-error retry) and return its path. A non-transient error
         # (non-200, exhausted retries) propagates to the walk, which tallies
-        # it as a document error — same failure semantics as before docdedup.
+        # it as a document error.
         target.parent.mkdir(parents=True, exist_ok=True)
         log.debug("GET %s", path)
         with_retry(_stream_to_disk, label=f"GET {path}")
@@ -631,10 +631,7 @@ def walk(client: ViacClient, dest_root: Path, *,
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
 
     # Resolve the shared --lookback contract once into the concrete
     # [since..today] window; pass the dates into walk(). Documents are

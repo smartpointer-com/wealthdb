@@ -133,8 +133,12 @@ def slug_entity(entity: dict) -> str:
 
 class Api:
     """Thin wrapper over the browser context's authenticated request API.
-    Records every call (url, status) so the manifest can report coverage and
-    failures without aborting the run on a single 404/403."""
+    Records every failed call (url, status or error) so the manifest can
+    report failures without aborting the run on a single 404/403. A
+    recorded URL keeps its query only on Carta's own API hosts: the signed
+    document URLs carry their token there. A recorded error is
+    debugcap.safe_error's rendering, which drops the request headers (the
+    session cookie) a Playwright error appends."""
 
     def __init__(self, context):
         self._rc = context.request
@@ -148,12 +152,14 @@ class Api:
             resp = self._rc.get(url, headers=API_HEADERS,
                                  timeout=REQUEST_TIMEOUT_MS)
         except Exception as exc:  # network / browser error
-            log.warning("GET %s failed: %s", _short(url), exc)
-            self.errors.append({"url": url, "error": repr(exc)})
+            error = debugcap.safe_error(exc)
+            log.warning("GET %s failed: %s", _short(url), error)
+            self.errors.append({"url": _recorded_url(url), "error": error})
             return None, None
         if resp.status // 100 != 2:
             log.warning("GET %s -> HTTP %d", _short(url), resp.status)
-            self.errors.append({"url": url, "status": resp.status})
+            self.errors.append({"url": _recorded_url(url),
+                                "status": resp.status})
             return resp.status, None
         if expect == "bytes":
             return resp.status, resp.body()
@@ -168,6 +174,15 @@ class Api:
 def _short(url: str) -> str:
     """URL with the query string dropped — keeps logs free of tokens."""
     return url.split("?", 1)[0]
+
+
+def _recorded_url(url: str) -> str:
+    """`url` as run.json records a failure: whole on Carta's own API hosts,
+    whose query carries only ids and page numbers; without its query
+    anywhere else, such as a signed document URL."""
+    if url.startswith((f"{APP}/", f"{FUND_ADMIN}/")):
+        return url
+    return _short(url)
 
 
 def write_json(path: Path, obj) -> None:
@@ -240,8 +255,7 @@ def list_investments(api: Api, firm_id: str, iid: str) -> list[dict]:
 # Per-entity capture
 # --------------------------------------------------------------------------
 
-def capture_exercises(api: Api, corp_id: str, grant_ids: set[str],
-                      edir: Path) -> int:
+def capture_exercises(api: Api, grant_ids: set[str], edir: Path) -> int:
     """For each option grant, read its modal HTML, enumerate the exercise
     requests, and download each one's exercise-detail (`edr`) attachment — an
     xlsx carrying the exercise date, shares, exercise price, and
@@ -328,7 +342,7 @@ def capture_captable(api: Api, iid: str, corp_id: str, edir: Path,
             write_json(edir / "vesting" / f"grant_{gid}.json", vest)
             n_vest += 1
     if not is_fund:
-        capture_exercises(api, corp_id, grant_ids, edir)
+        capture_exercises(api, grant_ids, edir)
     return n_vest, captable_ok
 
 
@@ -466,13 +480,11 @@ def extract_carta(run_dir: Path, manifest):
                               relpath=str(f.relative_to(run_dir)))
 
 
-# A received-document row with no document_url or no id was never going to yield
-# a blob BY DESIGN — the loader records nothing for it, exactly as before. That
-# is not a fetch failure, so it gets its own outcome and is NOT counted among
-# `errors`.
+# A received-document row with no document_url or no id yields no blob BY
+# DESIGN — the loader records nothing for it. That is not a fetch failure, so
+# it gets its own outcome and its own audit bucket in the shared docdedup
+# counters, and is NOT counted among `errors`.
 NO_BLOB = "no-blob"
-# A document row with no document_url / id is a null-blob-by-design, not a fetch
-# failure — its own audit bucket via the shared docdedup counters.
 _AUDIT_EXTRA = {NO_BLOB: "no_blob"}
 
 
@@ -731,8 +743,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--dry-run", action="store_true",
-        help=("Bootstrap + list investments only; write just run_dir/bootstrap "
-              "and log the work-list. No holdings/fund/document fetch."),
+        help=("Bootstrap + list investments only and log the work-list; "
+              "writes nothing. No holdings/fund/document fetch."),
     )
     p.add_argument(
         "--documents-force", action="store_true",

@@ -1,17 +1,17 @@
 #!/bin/bash
 # Container entrypoint. Dispatches a single positional subcommand
 # to the corresponding Python script under /app/. The browser-
-# driving subcommands (login, vnc-login, download) start an Xvfb
-# virtual X11 display first so Firefox can run headed (Schwab's
-# anti-bot detection flags headless markers, so we don't have
-# the option of running without a display).
+# driving subcommands (download, vnc-login) start an Xvfb virtual
+# X11 display first so Firefox can run headed (Schwab's anti-bot
+# detection flags headless markers, so running without a display
+# is not an option).
 #
-# Xvfb is started directly rather than via `xvfb-run`. The Ubuntu
-# Noble xvfb-run script's SIGUSR1 ready-signaling hangs when the
-# parent shell is non-root: it sets the parent SIGUSR1 handler to
-# `:` rather than SIG_IGN, so Xvfb declines to send the ready
-# signal and the parent waits forever. Socket-existence polling
-# is a version-independent ready signal.
+# start_xvfb starts Xvfb directly rather than via `xvfb-run`. The
+# Ubuntu Noble xvfb-run script's SIGUSR1 ready-signaling hangs when
+# the parent shell is non-root: it sets the parent SIGUSR1 handler to
+# `:` rather than SIG_IGN, so Xvfb declines to send the ready signal
+# and the parent waits forever. Socket-existence polling is a
+# version-independent ready signal.
 
 set -euo pipefail
 

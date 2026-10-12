@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 from urllib.parse import urlparse
 
-# The chase.com origin gate lives with the prefill it was first written for.
+# The chase.com origin gate, shared with explore's login pre-fill.
 from explore import HOST_RE
 
 __all__ = ["HOST_RE", "chase_frames", "visible_in_frames", "locate",

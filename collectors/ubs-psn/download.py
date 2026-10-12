@@ -80,6 +80,13 @@ ORDER_TYPES = (
 
 log = logging.getLogger("ubs-psn")
 
+# Run-dir names an unexpectedly-named queue entry may not land under: the
+# run's own metadata, and every order type's queue file, which a stray
+# entry in another order type's dir would otherwise overwrite (or be
+# overwritten by).
+_RESERVED_RUN_DIR_NAMES = frozenset(
+    {"run.json", "listing.json"} | {f"{ot}.zip" for ot in ORDER_TYPES})
+
 
 def sha256_fingerprint(key: paramiko.PKey) -> str:
     """OpenSSH-style base64 SHA-256 fingerprint (no SHA256: prefix, no padding)."""
@@ -341,9 +348,10 @@ def download_all(sftp: paramiko.SFTPClient, run_dir: Path,
     choice. The server filename is trusted only as far as it lands
     safely: a listed name that is not a plain basename (path
     separators, an absolute path, ``..``) would escape the run dir, and
-    one that collides with ``run.json`` / ``listing.json`` would
-    clobber the run's own metadata — such entries are refused with a
-    warning and left on the server (a skipped fetch consumes nothing).
+    one that collides with ``run.json`` / ``listing.json``, any order
+    type's queue file, or a file already fetched would clobber what the
+    run holds — such entries are refused with a warning and left on the
+    server (a skipped fetch consumes nothing).
     Dot-prefixed entries are the dated archive trail that ``--recover``
     replays; a normal pull never touches them (the undotted queue file
     is deleted server-side by its own fetch, the archive copies are
@@ -374,7 +382,8 @@ def download_all(sftp: paramiko.SFTPClient, run_dir: Path,
                 continue
             if name != f"{ot}.zip":
                 if (not name or name != Path(name).name
-                        or name in ("run.json", "listing.json")):
+                        or name in _RESERVED_RUN_DIR_NAMES
+                        or (run_dir / name).exists()):
                     log.warning("Refusing unexpected file in download/%s/: "
                                 "%r is not a safe run-dir basename — "
                                 "leaving it on the server.", ot, name)

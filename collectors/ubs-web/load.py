@@ -36,6 +36,7 @@ import csv
 import functools
 import hashlib
 import io
+import itertools
 import json
 import logging
 import os
@@ -177,6 +178,13 @@ TXN_DATA_HEADER = (
 )
 TXN_HEADER_FROM = "From:"
 TXN_HEADER_IBAN = "IBAN:"
+# The metadata block sits within the first lines of the file.
+TXN_HEADER_SCAN_LINES = 15
+
+
+def _txn_header_value(line: str) -> str | None:
+    """The value of a `<Label>:;<value>;` metadata line."""
+    return line.split(";", 1)[1].rstrip(";").strip() or None
 
 
 # ============================================================
@@ -203,15 +211,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     if args.supplied_documents_dir is None:
         args.supplied_documents_dir = args.bronze_dir / SUPPLIED_DOCUMENTS_DIRNAME
     return args
-
-
-# ============================================================
-# Migrations
-# ============================================================
-
-# Schema versioning + the migration runner now live in
-# collectorkit.silver (transaction-model agnostic). The silver
-# connection is created inline in main() with default isolation.
 
 
 # ============================================================
@@ -647,10 +646,16 @@ def _parse_mortgage_term(s: str | None) -> tuple[int | None, int | None]:
 def _mortgage_rate_type(description_1: str | None) -> str | None:
     """Map the Description 1 product name to 'fixed' / 'variable'.
     Returns None when neither cue is present so the row stays
-    honest about an unknown rate basis."""
+    honest about an unknown rate basis.
+
+    The same reading as `pdf_parsers._mortgage_rate_type_from_product`,
+    so a mortgage gets one rate type from both feeds: a SARON mortgage
+    is UBS's variable-rate product."""
     if not description_1:
         return None
     low = description_1.lower()
+    if "saron" in low:
+        return "variable"
     if "fixed-rate" in low or "fixed rate" in low or "festhypothek" in low:
         return "fixed"
     if "variable" in low or "variabel" in low or "variabler" in low:
@@ -796,8 +801,8 @@ def parse_grouped_decimal(s: str | None) -> float | None:
     counted in — a quantity in pieces ("4'000 p"), a price per unit
     ("250.75 a"), a bond or deposit quoted in percent ("100%"). The
     number is the same number whatever unit it is stated in, so the
-    annotation is read and dropped; refusing it left a real trade with
-    no quantity at all.
+    annotation is read and dropped; refusing it would leave a real trade
+    with no quantity at all.
 
     An FX leg states a PAIR in one cell ("50'000 / -45'000.5": bought
     the one, sold the other), and that is not a figure this returns.
@@ -873,9 +878,9 @@ def portfolio_txn_id(account: str, row: dict) -> str:
     valuation is not one of them: each scope values the same booking in
     its own reporting currency, so "Trans. value" (and the currency
     beside it) differ between a portfolio's own export and a
-    consolidated view's, and hashing them gave one booking two ids —
-    which defeated the dedupe below and let a trade reach the ledger
-    twice."""
+    consolidated view's, and hashing them would give one booking two
+    ids — which defeats the dedupe below and lets a trade reach the
+    ledger twice."""
     ref = (row.get("External reference") or "").strip()
     if ref:
         return f"ptx:{ref}"
@@ -1006,15 +1011,14 @@ def _load_transactions(conn: sqlite3.Connection, snapshot_at: int,
 #     third-party charge under the number of the payment it belongs to,
 #     so a payment and its fee share one number.
 #
-# Keying silver on the bare number therefore made the rows of such a
-# group overwrite each other, and an ON CONFLICT upsert cannot tell
-# that from a re-load of the same row: no parse failed, nothing was
-# logged, and the survivor looked like a complete account. A deposit
-# product's whole ledger reduced to whichever row the export printed
-# last.
+# Keyed on the bare number, the rows of such a group would overwrite
+# each other, and an ON CONFLICT upsert cannot tell that from a re-load
+# of the same row: no parse fails, nothing is logged, and the survivor
+# looks like a complete account. A deposit product's whole ledger
+# reduces to whichever row the export printed last.
 #
-# The fix follows the statement era, which has always suffixed the
-# rows of a split movement (`_stmt_txn_id`). One row of the group keeps
+# So the ids follow the statement era, which suffixes the rows of a
+# split movement (`_stmt_txn_id`). One row of the group keeps
 # UBS's bare number — the advice pass needs it, since an advice is
 # keyed by the number that carries it to its twin leg (see the note at
 # the head of this module) — and the rest take a suffix.
@@ -1175,18 +1179,25 @@ def _assign_export_txn_ids(rows: list[dict],
     return ids
 
 
+# The head every write to `transactions` shares; each era closes it with
+# its own conflict action.
+_TXN_INSERT = (
+    "INSERT INTO transactions ("
+    "transaction_external_id, account_external_id, snapshot_at, "
+    "trade_date, booking_date, value_date, currency_iso, "
+    "amount_debit, amount_credit, counterparty, "
+    "description_kind, payload"
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT(transaction_external_id, account_external_id) "
+)
+
+
 def _upsert_export_transaction(conn: sqlite3.Connection, snapshot_at: int,
                                txn_id: str, row: dict) -> None:
     """Write one parsed export row under the id `_assign_export_txn_ids`
     gave it."""
     conn.execute(
-        "INSERT INTO transactions ("
-        "transaction_external_id, account_external_id, snapshot_at, "
-        "trade_date, booking_date, value_date, currency_iso, "
-        "amount_debit, amount_credit, counterparty, "
-        "description_kind, payload"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(transaction_external_id, account_external_id) "
+        _TXN_INSERT +
         "DO UPDATE SET "
         "snapshot_at = excluded.snapshot_at, "
         "trade_date = excluded.trade_date, "
@@ -1214,9 +1225,9 @@ def _parse_transactions_csv(csv_path: Path) -> list[dict]:
     # Locate the data header by literal match (UBS may add fields).
     header_idx = None
     iban = None
-    for i, ln in enumerate(lines[:15]):
+    for i, ln in enumerate(lines[:TXN_HEADER_SCAN_LINES]):
         if ln.startswith(TXN_HEADER_IBAN):
-            iban = ln.split(";", 1)[1].rstrip(";").strip() or None
+            iban = _txn_header_value(ln)
         if ln.startswith("Trade date;"):
             header_idx = i
             break
@@ -1269,18 +1280,6 @@ def _parse_transactions_csv(csv_path: Path) -> list[dict]:
             "description1": description1,
         })
     return rows
-
-
-# ----------------------------------------------------------------
-# Documents
-# ----------------------------------------------------------------
-
-# Extract the doc type from a listing-row label of the form
-# "<doctype> <DD.MM.YYYY> <DD Month YYYY> P. <name> <...>".
-DOC_LABEL_RE = re.compile(
-    r"^\s*\W*\s*(?P<type>[A-Za-z][A-Za-z _]+?)\s+"
-    r"(?P<date>\d{2}\.\d{2}\.\d{4})\b"
-)
 
 
 # ----------------------------------------------------------------
@@ -1554,6 +1553,18 @@ def _refresh_invoice_coverage(conn: sqlite3.Connection) -> None:
         "  FROM card_transactions t"
         "  WHERE t.account_external_id = card_invoices.account_external_id"
         ")")
+
+
+# ----------------------------------------------------------------
+# Documents
+# ----------------------------------------------------------------
+
+# Extract the doc type from a listing-row label of the form
+# "<doctype> <DD.MM.YYYY> <DD Month YYYY> P. <name> <...>".
+DOC_LABEL_RE = re.compile(
+    r"^\s*\W*\s*(?P<type>[A-Za-z][A-Za-z _]+?)\s+"
+    r"(?P<date>\d{2}\.\d{2}\.\d{4})\b"
+)
 
 
 def _load_documents(conn: sqlite3.Connection, snapshot_at: int,
@@ -1940,19 +1951,30 @@ _HIST_POSITION_COLUMNS = (
 )
 
 
-def _insert_hist_positions(conn: sqlite3.Connection,
-                           rows: list[dict]) -> int:
+def _upsert_each(conn: sqlite3.Connection, table: str, columns, rows,
+                 before=None) -> int:
+    """Upsert `rows` one at a time, so a row the table refuses costs only
+    itself. `before(conn, row)` runs ahead of each row's write. Returns
+    how many were written."""
     n = 0
     for r in rows:
         try:
-            if r["instrument_isin"] is None:
-                _replace_hist_cash_row(conn, r)
-            silver.upsert_rows(conn, "historical_position_snapshots",
-                               _HIST_POSITION_COLUMNS, [r])
+            if before is not None:
+                before(conn, r)
+            silver.upsert_rows(conn, table, columns, [r])
             n += 1
         except sqlite3.IntegrityError as e:
-            log.debug("hist position insert failed: %s", e)
+            log.debug("%s insert failed: %s", table, e)
     return n
+
+
+def _insert_hist_positions(conn: sqlite3.Connection,
+                           rows: list[dict]) -> int:
+    def clear_cash(c: sqlite3.Connection, r: dict) -> None:
+        if r["instrument_isin"] is None:
+            _replace_hist_cash_row(c, r)
+    return _upsert_each(conn, "historical_position_snapshots",
+                        _HIST_POSITION_COLUMNS, rows, before=clear_cash)
 
 
 # The columns `pdf_parsers` fills on every `advices` row: one capital call
@@ -1995,15 +2017,8 @@ _HIST_CASH_BALANCE_COLUMNS = (
 
 def _insert_hist_cash_balances(conn: sqlite3.Connection,
                                rows: list[dict]) -> int:
-    n = 0
-    for r in rows:
-        try:
-            silver.upsert_rows(conn, "historical_cash_balances",
-                               _HIST_CASH_BALANCE_COLUMNS, [r])
-            n += 1
-        except sqlite3.IntegrityError as e:
-            log.debug("hist cash insert failed: %s", e)
-    return n
+    return _upsert_each(conn, "historical_cash_balances",
+                        _HIST_CASH_BALANCE_COLUMNS, rows)
 
 
 def _mt940_floors_by_account(dump_dir: Path) -> dict[str, int]:
@@ -2022,15 +2037,19 @@ def _mt940_floors_by_account(dump_dir: Path) -> dict[str, int]:
     for csv_path in sorted(root.glob("*/transactions/cash_*.csv")):
         iban = None
         frm = None
+        # Only the metadata block is read: this walks every export in the
+        # tree once per dump loaded.
         try:
-            lines = csv_path.read_text(encoding="utf-8-sig").splitlines()
+            with csv_path.open(encoding="utf-8-sig") as f:
+                lines = [ln.rstrip("\r\n")
+                         for ln in itertools.islice(f, TXN_HEADER_SCAN_LINES)]
         except OSError:
             continue
-        for ln in lines[:15]:
+        for ln in lines:
             if ln.startswith(TXN_HEADER_IBAN):
-                iban = ln.split(";", 1)[1].rstrip(";").strip() or None
-            elif ln.startswith("From:"):
-                frm = ln.split(";", 1)[1].rstrip(";").strip() or None
+                iban = _txn_header_value(ln)
+            elif ln.startswith(TXN_HEADER_FROM):
+                frm = _txn_header_value(ln)
         acct = iban_canonical(iban)
         floor = ts_from_iso(frm)
         if not acct or not floor:
@@ -2109,13 +2128,7 @@ def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
                 (_stmt_batch_txn_id(account, r), account))
         try:
             conn.execute(
-                "INSERT INTO transactions ("
-                "transaction_external_id, account_external_id, snapshot_at, "
-                "trade_date, booking_date, value_date, currency_iso, "
-                "amount_debit, amount_credit, counterparty, "
-                "description_kind, payload"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(transaction_external_id, account_external_id) "
+                _TXN_INSERT +
                 "DO UPDATE SET "
                 "snapshot_at = excluded.snapshot_at, "
                 "booking_date = excluded.booking_date, "
@@ -2220,13 +2233,7 @@ def _insert_advice_transactions(conn: sqlite3.Connection, snapshot_at: int,
             continue
         claimed.add((account, txn_id))
         cur = conn.execute(
-            "INSERT INTO transactions ("
-            "transaction_external_id, account_external_id, snapshot_at, "
-            "trade_date, booking_date, value_date, currency_iso, "
-            "amount_debit, amount_credit, counterparty, "
-            "description_kind, payload"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(transaction_external_id, account_external_id) "
+            _TXN_INSERT +
             "DO NOTHING",
             (
                 txn_id, account, snapshot_at,
@@ -2319,15 +2326,8 @@ _HIST_MORTGAGE_COLUMNS = (
 
 def _insert_hist_mortgages(conn: sqlite3.Connection,
                            rows: list[dict]) -> int:
-    n = 0
-    for r in rows:
-        try:
-            silver.upsert_rows(conn, "historical_mortgages",
-                               _HIST_MORTGAGE_COLUMNS, [r])
-            n += 1
-        except sqlite3.IntegrityError as e:
-            log.debug("hist mortgage insert failed: %s", e)
-    return n
+    return _upsert_each(conn, "historical_mortgages",
+                        _HIST_MORTGAGE_COLUMNS, rows)
 
 
 def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
@@ -2347,23 +2347,23 @@ def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
 def _derive_documents_without_a_new_dump(
         conn: sqlite3.Connection, dumps: list[Path], parse_cache: dict,
         *, supplied: int = 0) -> None:
-    """Derive the document-backed slice when no new dump has arrived to
-    carry the work — because the PARSERS have changed, or because a
+    """Derive the document-backed slice when no dump loaded this run
+    walked the archive — because the PARSERS have changed, or because a
     supplied document was indexed this run.
 
     The archive walk lives inside the per-dump load, because a dump is
     what indexes its own PDFs. What the walk DERIVES, though, is the
     whole cumulative archive, and `_document_generation` exists so that
-    a changed parser re-derives it. In steady state — every dump loaded,
-    no new one yet — that fingerprint could never be read: the walk sat
-    behind the already-loaded skip, so a parser improvement took effect
-    only on whichever night a new dump happened to arrive, and until
-    then the same bronze produced different silver depending on when it
-    was loaded.
+    a changed parser re-derives it. The walk sits behind the
+    already-loaded skip, and a dump with no `documents/` directory (a
+    `--only` pass) skips it too. Without this push a parser change would
+    take effect only once a dump carrying an archive arrived, and until
+    then the same bronze would produce different silver depending on
+    when it was loaded.
 
     A supplied document reaches the table the same way and needs the same
-    push: it is indexed before the dump loop, and on a night when every
-    dump is already loaded nothing downstream would read it.
+    push: it is indexed before the dump loop, and when no loaded dump
+    walks the archive nothing downstream would read it.
 
     Runs against the newest dump that has an archive directory. Which
     dump is immaterial to what is derived — the file paths come from the
@@ -2377,7 +2377,7 @@ def _derive_documents_without_a_new_dump(
     newest = next((d for d in reversed(dumps) if (d / "documents").is_dir()), None)
     if newest is None:
         return
-    log.info("%s and no new dump carries the change; deriving the archive "
+    log.info("%s and no loaded dump walked the archive; deriving it "
              "against %s",
              "the document parsers have changed" if stale
              else f"{supplied} supplied document(s) were indexed",
@@ -2428,6 +2428,9 @@ def main(argv: list[str]) -> int:
         n_supplied = 0
 
     n_loaded = n_skipped = 0
+    # Whether a loaded dump ran the archive walk, which only a dump with
+    # a `documents/` directory does.
+    walked = False
     # Shared across dumps: parse each archived document once, replay the
     # cached rows for the later dumps that re-list it.
     parse_cache: dict = {}
@@ -2441,10 +2444,11 @@ def main(argv: list[str]) -> int:
             load_dump(conn, dump_dir, schema_version, parse_cache)
             conn.execute("COMMIT")
             n_loaded += 1
+            walked = walked or (dump_dir / "documents").is_dir()
         except Exception:  # noqa: BLE001 — log + rollback + continue
             conn.execute("ROLLBACK")
             log.exception("load failed for %s; skipped", dump_dir.name)
-    if not n_loaded:
+    if not walked:
         _derive_documents_without_a_new_dump(conn, dumps, parse_cache,
                                              supplied=n_supplied)
     conn.close()

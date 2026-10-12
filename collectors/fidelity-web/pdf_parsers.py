@@ -64,9 +64,9 @@ PARSER_VERSION = "1"
 # Per-account blocks
 # ============================================================
 #
-# The statement period parser, month map and the ``Account #``
-# header regex (``_ACCOUNT_HEADER_RE``) are shared with the
-# supplied-statement parser — see pdf_common.
+# The statement period parser and the ``Account #`` header regex
+# (``_ACCOUNT_HEADER_RE``) are shared with the supplied-statement
+# parser — see pdf_common.
 # ``parse_account_blocks`` below splits on
 # a fresh header per 529 account (one section per account); the next
 # header of the same shape ends it.

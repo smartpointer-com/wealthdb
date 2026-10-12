@@ -13,7 +13,8 @@ map, so the real download_all / recover_all loops run under test:
     is warned about and fetched too, dot-prefixed archive copies are
     never touched by a normal pull
   * a listed name that would escape the run dir or clobber the run's
-    own metadata files is refused, never fetched
+    own metadata files or another order type's queue file is refused,
+    never fetched
   * every run records the full pre-pull listing in listing.json (host
     key + per-order-type entries), before the first fetch
   * every fetched file is validated as a zip by content, never by its
@@ -251,6 +252,24 @@ def test_unsafe_listing_name_is_refused(tmp_path, monkeypatch, caplog):
     # listing.json is still the pre-pull record, not fetched zip bytes.
     listing = json.loads((d / "listing.json").read_text())
     assert listing["order_types"]["ZAH"]["status"] == "listed"
+
+
+def test_stray_entry_named_like_another_queue_file_is_refused(
+        tmp_path, monkeypatch, caplog):
+    # A stray entry named after another order type's queue file would
+    # overwrite that file in the flat run dir (or be overwritten by it).
+    # Both queue files are consumed by their fetch, so the stray entry is
+    # left on the server instead.
+    client = _fake_client({
+        "download/ZAG": {"ZAH.zip": _zip_bytes("stray.txt")},
+        "download/ZAH": {"ZAH.zip": _zip_bytes("queue.txt")},
+    })
+    with caplog.at_level(logging.WARNING, logger="ubs-psn"):
+        assert _run_main(tmp_path, monkeypatch, client) == 0
+    assert _fetched_remotes(client) == ["download/ZAH/ZAH.zip"]
+    d = _run_dirs(tmp_path)[0]
+    assert zipfile.ZipFile(d / "ZAH.zip").namelist() == ["queue.txt"]
+    assert _meta(d)["downloaded"] == 1
 
 
 def test_dry_run_creates_no_run_dir(tmp_path, monkeypatch):

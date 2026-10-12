@@ -85,7 +85,7 @@ def _patch_session(monkeypatch) -> _FakeSession:
     sess = _FakeSession()
     monkeypatch.setattr(
         download, "new_session_from_state", lambda state_path: (sess, None))
-    monkeypatch.setattr(download, "probe_session_alive", lambda session: True)
+    monkeypatch.setattr(download, "step_probe", lambda session: True)
     return sess
 
 

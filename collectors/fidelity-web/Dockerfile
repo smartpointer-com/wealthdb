@@ -21,7 +21,7 @@ RUN pip install -r requirements.txt
 # debug-artefact/incomplete-dump cleaner, and recompress.py the
 # one-time HTML/CSV → .zst backlog sweep (all also reachable
 # host-side via the wrapper). The other modules are what those scripts
-# import; tests/test_dockerfile.py keeps the list complete.
+# import.
 COPY download.py explore.py load.py prune.py recompress.py lot_parsers.py pdf_parsers.py pdf_parsers_supplied.py pdf_parsers_daf.py pdf_parsers_1099.py pdf_common.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/

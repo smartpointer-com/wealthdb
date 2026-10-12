@@ -40,13 +40,10 @@ host-side, and where containers reach bronze through a Docker-VM file share
 still hold guest dentry-cache entries for the paths the download container
 just wrote — the swept files then ``open()`` as ENOENT until the guest
 cache expires (a few seconds). Swept-after-load reclaims the same bytes
-with no reader left to race. It is an interim reclaim of the byte-dup each
-re-download creates, which becomes redundant once download-avoidance stops
-the re-fetch at the source. Its safety comes from a different place than
-prune's: it never removes content,
-only re-backs a byte-identical duplicate onto the canonical copy, and it
-does so under the same envelope prune uses plus a verify-before-replace
-step:
+with no reader left to race. Its safety comes from a different place than
+prune's: it never removes content, only re-backs a byte-identical duplicate
+onto the canonical copy, and it does so under the same envelope prune uses
+plus a verify-before-replace step:
 
 * **Complete, quiescent dumps only.** Non-complete / in-progress / dry-run
   dumps and anything touched within ``--min-age-hours`` are skipped, so a
@@ -555,11 +552,7 @@ def main(argv=None) -> int:
     # falling back to the XDG default. The wrappers append /<collector>;
     # dedup sweeps the whole root, so it uses the root itself.
     data_root = os.environ.get("WEALTHDB_DATA_ROOT")
-    if data_root:
-        default_data = Path(data_root)
-    else:
-        xdg = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
-        default_data = Path(xdg) / "wealthdb"
+    default_data = Path(data_root) if data_root else cli.default_data_root()
     # `dedup` is not one of the STANDARD_VERBS, so it takes the common
     # flags directly rather than through the standard group.
     cli.add_common_args(p)

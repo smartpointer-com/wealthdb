@@ -18,10 +18,9 @@ pytest>=8,<9
 # cointracking-only exception). SQLite ships with CPython, so no driver
 # dependency is needed here. See DESIGN.md §"Why SQLite, not DuckDB".
 
-# login.py + download.py drive a browser (Camoufox for stealth, with
-# vanilla Playwright Firefox as a possible fallback). Both browser stacks
-# are pre-installed in the base-camoufox image; nothing to add here until
-# explore tells us which engine the Carta holder UI needs.
+# login.py + download.py drive Camoufox, which the base-camoufox image
+# provides; the Dockerfile adds vanilla Playwright Firefox as a fallback
+# engine. Nothing is added here.
 
 # Document downloads (3921 / 1099-B / legal-doc PDFs) are fetched through
 # Playwright's authenticated request API using the live session cookie —

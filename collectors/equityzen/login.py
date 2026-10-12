@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""equityzen session minter — headless, CLI-driven login with a stdin TOTP
-prompt (no VNC).
+"""equityzen session minter — CLI-driven login with a stdin TOTP prompt
+(no VNC).
 
-Drives EquityZen's investor-portal login entirely headless: fills the
+Drives EquityZen's investor-portal login from the CLI: fills the
 email + password form (the `submitLogIn` GraphQL mutation), prompts for the
 6-digit authenticator code on stdin, submits it (the `loginTotp` mutation),
 and persists the authenticated session to the Camoufox profile dir so

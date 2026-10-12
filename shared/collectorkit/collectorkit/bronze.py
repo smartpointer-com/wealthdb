@@ -82,11 +82,11 @@ def run_status(run_json_path: Path) -> str | None:
     ``status="in-progress"`` at run-dir creation and atomically overwrites it
     with ``"complete"`` / ``"dry-run"`` at the end, so a present status other
     than ``"complete"`` marks a crashed / still-running / dry-run dump whose
-    partial artefacts must not be ingested. A statusless manifest predates the
-    lifecycle and stays loadable (its mere presence historically meant the walk
-    finished); an unreadable/corrupt manifest also returns ``None`` so the
-    caller keeps it pending and surfaces any real error at load time rather
-    than skipping it silently here.
+    partial artefacts must not be ingested. A statusless manifest stays
+    loadable (a download that writes no status writes its manifest only
+    once the walk finished); an unreadable/corrupt manifest also returns
+    ``None`` so the caller keeps it pending and surfaces any real error at
+    load time rather than skipping it silently here.
     """
     return (read_manifest(run_json_path) or {}).get("status")
 
@@ -171,8 +171,6 @@ def atomic_write_json(path: Path, obj) -> None:
     """Pretty-print `obj` as JSON (sorted keys) and write it atomically."""
     text = json.dumps(obj, indent=2, sort_keys=True, default=str) + "\n"
     atomic_write_bytes(Path(path), text.encode("utf-8"))
-
-
 
 
 # Process-lifetime memo for sha256_file, keyed by file identity + version

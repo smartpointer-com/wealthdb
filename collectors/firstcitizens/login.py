@@ -46,13 +46,12 @@ from collectorkit.launch import page_url, pump, wait_for
 import auth_dialog
 import q2client
 # Reuse explore's validated, frame-aware, origin-gated login pre-fill rather
-# than a second copy — same collector, same selectors.
-from explore import _maybe_prefill_login, USER_ENV, PASS_ENV
+# than a second copy — same collector, same selectors, same secrets paths.
+from explore import (DEFAULT_ENV_FILE, DEFAULT_PROFILE_DIR, PASS_ENV, USER_ENV,
+                     _maybe_prefill_login)
 
 log = logging.getLogger("firstcitizens.login")
 
-DEFAULT_PROFILE_DIR = Path("/secrets/firstcitizens-profile")
-DEFAULT_ENV_FILE = Path("/secrets/firstcitizens.env")
 DEFAULT_STATE_PATH = Path("/secrets/firstcitizens-state.json")
 
 # The three ways a 2FA challenge is answered (DESIGN.md §4.2):
@@ -68,7 +67,7 @@ OUTCOME_TIMEOUT_S = 120
 class NeedsLogin(RuntimeError):
     """Raised by authenticate(two_factor='none') when the device is no longer
     trusted and a 2FA challenge appeared — `download` cannot answer it, so it
-    surfaces this to tell the operator to run `login`."""
+    surfaces this as a pointer to `login`."""
 
 
 # --- browser plumbing -----------------------------------------------------
@@ -331,7 +330,7 @@ def _register_device(page) -> None:
             log.info("registered this device for future unattended runs")
 
 
-def _drive_mfa_cli(page, watch: _LogonWatch, args) -> bool:
+def _drive_mfa_cli(page, args) -> bool:
     """Drive the Q2 Secure Access Code screens from the terminal: pick the
     delivery method (read from the on-screen buttons), send the code, read it
     from stdin, submit it, and register the device. Selectors are pinned from
@@ -380,6 +379,35 @@ def _drive_mfa_cli(page, watch: _LogonWatch, args) -> bool:
 
 # --- the shared authenticate() -------------------------------------------
 
+# How often the REST auth probe may fire while waiting for the outcome.
+PROBE_INTERVAL_S = 3
+
+
+def _await_outcome(context, page, watch: _LogonWatch) -> str | None:
+    """Poll a submitted login until it reaches an outcome: "authed", "mfa",
+    or None when neither appears within OUTCOME_TIMEOUT_S.
+
+    The SPA route is the signal (free, event-safe). A REST `GET /accounts`
+    probe backs it up ONLY once off the login flow: firing that probe while
+    still on a `/login*` route poisons the challenge session server-side, so
+    the later Secure-Access-Code click sends but the SPA never advances. So
+    the probe is gated on having left `/login`."""
+    last_probe = 0.0
+    deadline = time.monotonic() + OUTCOME_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _authed_cheap(page, watch):
+            return "authed"
+        if _is_mfa(page, watch):
+            return "mfa"
+        now = time.monotonic()
+        if now - last_probe >= PROBE_INTERVAL_S and "/login" not in page_url(page):
+            last_probe = now
+            if _probe_authenticated(context):
+                return "authed"
+        pump(page)
+    return None
+
+
 def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
                  mfa_timeout: int = 600, args=None) -> bool:
     """Take a submitted login to an authenticated session.
@@ -396,29 +424,7 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
     * 2FA challenge + `none` → raise NeedsLogin (download's case);
     * no outcome within the window → return False.
     """
-    # Detect the outcome from the SPA route (free, event-safe). A REST
-    # `GET /accounts` probe backs it up ONLY once off the login flow — firing
-    # that probe while still on a `/login*` route poisons the challenge
-    # session server-side, so the later Secure-Access-Code click sends but
-    # the SPA never advances (root cause of the CLI-2FA no-navigation bug,
-    # diagnosed 2026-08-15). So the probe is gated on having left `/login`.
-    state, last_probe = None, 0.0
-    deadline = time.monotonic() + OUTCOME_TIMEOUT_S
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if _authed_cheap(page, watch):
-            state = "authed"
-            break
-        if _is_mfa(page, watch):
-            state = "mfa"
-            break
-        if now - last_probe >= 3 and "/login" not in page_url(page):
-            last_probe = now
-            if _probe_authenticated(context):
-                state = "authed"
-                break
-        pump(page)
-
+    state = _await_outcome(context, page, watch)
     if state is None:
         log.error("no login outcome after submit (neither signed in nor a "
                   "2FA challenge within %ds). Retry with --debug for a DOM "
@@ -437,7 +443,7 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
 
     if two_factor == TWOFACTOR_CLI:
         try:
-            if not _drive_mfa_cli(page, watch, args):
+            if not _drive_mfa_cli(page, args):
                 return False
         except auth_dialog.ChallengeError as exc:
             log.error("2FA dialog ended: %s — retry with vnc-login.", exc)
@@ -455,8 +461,6 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
 
 
 # --- verbs ----------------------------------------------------------------
-
-
 
 def _capture(page, args, name: str) -> None:
     """DOM + screenshot to --screenshot-dir, only under --debug (for pinning
@@ -480,7 +484,7 @@ def _load_credentials(env_file: Path) -> tuple[str, str]:
     return username, password
 
 
-def _reveal_prefill_submit(context, page, args) -> bool:
+def _reveal_prefill_submit(page, args) -> bool:
     """Front half of every login: open the modal, prefill, submit. Returns
     True once the form is submitted (a _LogonWatch is attached first so the
     SPA's logonUser is captured)."""
@@ -504,7 +508,7 @@ def drive_to_auth(context, page, args, *, two_factor: str) -> bool:
     authenticated session. Raises NeedsLogin when an unattended run
     (`two_factor=none`) meets a 2FA challenge (download's case)."""
     watch = _LogonWatch().attach(context)
-    if not _reveal_prefill_submit(context, page, args):
+    if not _reveal_prefill_submit(page, args):
         return False
     ok = authenticate(context, page, watch, two_factor=two_factor,
                       mfa_timeout=args.mfa_timeout, args=args)
@@ -538,27 +542,17 @@ def run_check(args: argparse.Namespace) -> int:
     now required or no session."""
     with camoufox(args.profile_dir) as (context, page):
         watch = _LogonWatch().attach(context)
-        if not _reveal_prefill_submit(context, page, args):
+        if not _reveal_prefill_submit(page, args):
             log.info("session state UNKNOWN — could not submit the form")
             return 1
-        deadline = time.monotonic() + OUTCOME_TIMEOUT_S
-        last_probe = 0.0
-        while time.monotonic() < deadline:
-            if _authed_cheap(page, watch):
-                log.info("device TRUSTED — logon skipped 2FA")
-                return 0
-            if _is_mfa(page, watch):
-                log.info("device trust EXPIRED — logon now requires 2FA "
-                         "(run login)")
-                return 1
-            # Off the login flow only — probing /accounts mid-login poisons
-            # the challenge (see authenticate).
-            if time.monotonic() - last_probe >= 3 and "/login" not in page_url(page):
-                last_probe = time.monotonic()
-                if _probe_authenticated(context):
-                    log.info("device TRUSTED — logon skipped 2FA")
-                    return 0
-            pump(page)
+        state = _await_outcome(context, page, watch)
+        if state == "authed":
+            log.info("device TRUSTED — logon skipped 2FA")
+            return 0
+        if state == "mfa":
+            log.info("device trust EXPIRED — logon now requires 2FA "
+                     "(run login)")
+            return 1
         log.info("session state UNKNOWN — no outcome within %ds",
                  OUTCOME_TIMEOUT_S)
         return 1

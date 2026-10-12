@@ -104,9 +104,9 @@ PARSER_VERSION = "1"
 # Per-account blocks
 # ============================================================
 #
-# The statement period parser, month map and the ``Account #``
-# header regex (``_ACCOUNT_HEADER_RE``) are shared with the 529
-# parser — see pdf_common. ``parse_account_blocks`` below glues the
+# The statement period parser and the ``Account #`` header regex
+# (``_ACCOUNT_HEADER_RE``) are shared with the 529 parser — see
+# pdf_common. ``parse_account_blocks`` below glues the
 # header Fidelity re-stamps on every page of an account section.
 
 
@@ -658,7 +658,7 @@ def parse_holdings_block(account_text, *, expected_signature=None):
        gets its own branch.
     3. Description = tokens before the numeric tail. If no
        ticker is parenthesised at the end of that description,
-       glue forward across non-data continuation lines (up to 3)
+       glue forward across non-data continuation lines (up to 4)
        until a ticker appears.
     4. If still no ticker, look ahead a few lines for a
        ``CUSIP:`` marker — bonds carry it on the metadata line

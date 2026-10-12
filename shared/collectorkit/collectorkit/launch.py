@@ -68,10 +68,8 @@ from pathlib import Path
 
 log = logging.getLogger("collectorkit.launch")
 
-# Validated against Firefox 135, the build camoufox-py 0.4.11 downloads
-# (see shared/images/base-camoufox.Dockerfile). Playwright forwards this
-# dict verbatim to the launch; Camoufox passes **launch_options through to
-# Playwright, so the same dict works for both.
+# Playwright forwards this dict verbatim to the launch; Camoufox passes
+# **launch_options through to Playwright, so the same dict works for both.
 FIREFOX_PREFS: dict[str, bool | int] = {
     # --- Password manager ------------------------------------------
     # A saved credential in the persistent profile autofills on top of a
@@ -229,11 +227,10 @@ def redirect_startup_cache(profile_dir: Path,
     builds, no concurrent-run corruption across two different profiles. The
     cache root and the per-profile dir are created 0700.
 
-    Idempotent and self-migrating. `startupCache` is regenerable, so:
+    Idempotent. `startupCache` is regenerable, so:
 
-      * an existing real dir (the pre-relocation state) is
-        removed and replaced with the symlink, so the first run after this
-        change migrates each profile with no manual cleanup;
+      * an existing real dir is removed and replaced with the symlink, with
+        no manual cleanup;
       * an already-correct symlink is left as is;
       * a symlink pointing elsewhere is repointed.
 
@@ -241,8 +238,7 @@ def redirect_startup_cache(profile_dir: Path,
     `/cache/startupcache` mount), so on the macOS host the symlink reads as
     *dangling* — a pointer, not data. No cache bytes land in `.secrets`, and
     Firefox in-container follows it to the mounted host cache; `du -sh
-    ~/.secrets` no longer counts it. That is expected, not a defect to
-    "fix".
+    ~/.secrets` does not count it. That is expected, not a defect to "fix".
     """
     if cache_root is None:
         cache_root = startup_cache_root()
@@ -275,8 +271,8 @@ def prepare_profile_dir(profile_dir: Path, mode: int = PROFILE_DIR_MODE,
     stays in the profile; only the build-scoped startupCache moves. A chmod
     that fails (the profile is bind-mounted and owned elsewhere) is logged,
     not raised. The relocation is best-effort too: if the cache root is
-    unwritable, Firefox falls back to writing startupCache in the profile as
-    before, so a run is never aborted over it.
+    unwritable, Firefox writes startupCache inside the profile, so a run is
+    never aborted over it.
     """
     profile_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -294,6 +290,27 @@ def prepare_profile_dir(profile_dir: Path, mode: int = PROFILE_DIR_MODE,
 # ---- the sign-in browser -----------------------------------------------------
 
 
+def headed_camoufox(profile_dir: Path, **options):
+    """An unentered Camoufox on the persistent `profile_dir`, with the fleet's
+    sign-in fingerprint: headed under the entrypoint's Xvfb, a macOS profile,
+    a humanized cursor, a geoip-matched fingerprint and the hardened prefs.
+    `options` add Camoufox keywords of their own (a HAR path, WebRTC
+    blocking)."""
+    from camoufox.sync_api import Camoufox
+
+    return Camoufox(
+        persistent_context=True,
+        user_data_dir=str(profile_dir),
+        os="macos",
+        window=(1280, 800),
+        headless=False,
+        humanize=True,
+        geoip=True,
+        firefox_user_prefs=firefox_prefs(),
+        **options,
+    )
+
+
 @contextlib.contextmanager
 def persistent_camoufox(profile_dir: Path):
     """Headed Camoufox on a persistent profile, as the fleet's sign-ins run
@@ -307,19 +324,8 @@ def persistent_camoufox(profile_dir: Path):
     sign-in — the fingerprint should match where the traffic comes from —
     and why a `login --check` that must stay offline cannot come through
     here."""
-    from camoufox.sync_api import Camoufox
-
     prepare_profile_dir(profile_dir)
-    cam = Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        humanize=True,
-        geoip=True,
-        firefox_user_prefs=firefox_prefs(),
-    )
+    cam = headed_camoufox(profile_dir)
     context = cam.__enter__()
     try:
         page = context.pages[0] if context.pages else context.new_page()
@@ -362,4 +368,3 @@ def page_url(page) -> str:
         return page.url or ""
     except Exception:
         return ""
-

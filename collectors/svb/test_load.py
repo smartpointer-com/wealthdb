@@ -1353,6 +1353,31 @@ def test_parser_logic_change_invalidates_cache(tmp_path, monkeypatch):
     assert sorted(calls) == sorted(_DISTINCT_STEMS), "changed fingerprint must re-parse"
 
 
+def test_parse_cache_keeps_only_the_current_runs_entries(tmp_path, monkeypatch):
+    """Entries keyed by an older fingerprint, or by a statement that left the
+    archive, are dropped when the sidecar is rewritten instead of piling up
+    with every parser edit."""
+    bronze, _calls = _distinct_bronze(tmp_path, monkeypatch)
+    cache_dir = tmp_path / "cache"
+    B.build(tmp_path / "a.db", bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=cache_dir, max_workers=1)
+    assert len(B._load_parse_cache(cache_dir)) == len(_DISTINCT_STEMS)
+
+    monkeypatch.setattr(B, "_parser_logic_fingerprint", lambda: "different-fingerprint")
+    B.build(tmp_path / "b.db", bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=cache_dir, max_workers=1)
+    entries = B._load_parse_cache(cache_dir)
+    assert len(entries) == len(_DISTINCT_STEMS)
+    assert all(":different-fingerprint:" in k for k in entries)
+
+    # A warm run over a smaller archive drops the departed statement's entry.
+    pdfs = B.discover_statements(bronze)
+    pdfs[0].unlink()
+    B.build(tmp_path / "c.db", bronze, signatures=(), migrations_dir=MIGRATIONS,
+            cache_dir=cache_dir, max_workers=1)
+    assert len(B._load_parse_cache(cache_dir)) == len(_DISTINCT_STEMS) - 1
+
+
 def test_parse_worker_is_picklable():
     """The pool target must be module-level so it pickles under spawn."""
     import pickle

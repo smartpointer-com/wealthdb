@@ -138,8 +138,8 @@ def parse_transactions(pages: list[dict],
     ids coincide.
 
     Rows are deduplicated on ``_id``: overlapping fetch windows return
-    the same row more than once, and every repeat observed carried
-    identical content, so the first wins and the rest are dropped.
+    the same row more than once, and repeats carry identical content,
+    so the first wins and the rest are dropped.
 
     The second return is a COUNT of RESERVED rows per account, not a
     sum. Their magnitude comes from the roster instead
@@ -190,9 +190,9 @@ def _keyed_by_content(rows: list[dict]) -> list[dict]:
     same `_id` — but it cannot survive the session, so it is spent here
     and discarded.
 
-    Order does not enter, and since the merchant left the key it takes
-    work to keep it that way: members of a group are no longer identical
-    in every stored fact, so which one takes occurrence 0 would otherwise
+    Order does not enter, and with the merchant outside the key it takes
+    work to keep it that way: members of a group are not identical in
+    every stored fact, so which one takes occurrence 0 would otherwise
     follow the order the API happened to page them in. Nothing promises
     that order. Sorting the group on the facts outside the key fixes the
     assignment, which gives the invariant the whole scheme rests on: a
@@ -482,8 +482,9 @@ def stable_account_ids(roster: dict) -> dict[str, str]:
     on one and every download appends a second copy of the history.
 
     `accountNumber` is the identity that does hold still. An account
-    without one keeps its handle: the row is worth having on the old
-    terms, and the orphan check will say so if the ledger disagrees.
+    without one keeps its handle: the row is worth having even keyed on
+    a session handle, and the orphan check will say so if the ledger
+    disagrees.
     """
     return {node["id"]: node.get("accountNumber") or node["id"]
             for node in _walk(roster, _is_account_node)}

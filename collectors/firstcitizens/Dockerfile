@@ -1,15 +1,12 @@
-# Headed-browser (Camoufox) discovery harness for the First Citizens Bank
-# retail web UI (firstcitizens.com: checking + savings). Builds on the
-# shared base-camoufox image, which provides Firefox/Xvfb/x11vnc OS deps,
+# Headed-browser (Camoufox) collector for the First Citizens Bank retail
+# deposit accounts (checking + savings). Builds on the shared
+# base-camoufox image, which provides Firefox/Xvfb/x11vnc OS deps,
 # camoufox + the matching Playwright pin, the pre-fetched Firefox bundle
 # at /opt/camoufox-cache, and the collectorkit shared package.
 #
-# Camoufox from the start, not vanilla Playwright: the bot-defense stack
-# is unmapped, but every US sibling (chase, fidelity-web, schwab-web)
-# measured Akamai-class defense blocking vanilla engines outright — the
-# vanilla rungs are skipped rather than re-measured, and Camoufox costs
-# nothing if First Citizens turns out lenient. No fallback engine is
-# installed until a real capture shows one is needed.
+# Camoufox, not vanilla Playwright: Akamai Bot Manager gates the logon
+# (DESIGN.md §3), as it does for every US sibling (chase, fidelity-web,
+# schwab-web). No fallback engine is installed.
 FROM wealthdb/base-camoufox:latest
 
 WORKDIR /app

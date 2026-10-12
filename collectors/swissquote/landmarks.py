@@ -85,7 +85,6 @@ def is_profile_validation_url(url: str) -> bool:
     return "sq-profile-validation-plugin" in url
 
 
-
 # Trading Platform — hash-routed SPA. Append a route fragment to land
 # on a specific page. Reachable once F5 has issued a session cookie;
 # unlike LOGIN_TRIGGER_URL this URL does NOT trigger login interception
@@ -141,25 +140,17 @@ MFA_OPERATION_CODE_SELECTOR = ".SmartL3__operation"
 #
 #     <ctx>/api/thirdlevel/smartL3/check-challenge/<urlId>?queryRedirectBaseUrl=true
 #
-# observed ~4s apart at ~80ms each, where <ctx> is the MFA page URL up to the
-# '#'. Nothing in the page's traffic is held open, and the verdict is in the
-# RESPONSE BODY rather than in the timing.
+# polled about every 4s (each call takes ~80ms), where <ctx> is the MFA page
+# URL up to the '#'. Nothing in the page's traffic is held open, and the
+# verdict is in the RESPONSE BODY rather than in the timing. login.py
+# therefore watches for the page to navigate itself, with a re-navigation
+# backstop.
 #
-# This used to be ridden directly: a sibling route,
-# /api/thirdlevel/smartL3/feedback/listen/<urlId>, was a genuine long poll the
-# server held until the phone answered, so an early return meant approval and
-# login could detect it instantly without re-firing the push. A capture from
-# 2026-06-12 shows the SPA itself calling that route and being answered 200.
-# By 2026-09-27 it answered 404 and the SPA had stopped calling it, so the
-# long-poll detector was removed; login now watches for the page to navigate
-# itself, with a re-navigation backstop.
-#
-# Reviving instant detection means polling check-challenge and PARSING ITS
-# BODY — which nothing here records yet. The bundle cannot be read to work out
-# the shape: every path under /sq-thirdlevel-plugin/ answers 401
-# unauthenticated, static assets included. `login.py --screenshot-dir DIR`
-# lists the page's own calls with durations, which is what identified the
-# above; a body capture would be the next step.
+# Instant detection would mean polling check-challenge and PARSING ITS BODY,
+# whose shape nothing here records. The bundle cannot be read to work it out:
+# every path under /sq-thirdlevel-plugin/ answers 401 unauthenticated, static
+# assets included. `login.py --screenshot-dir DIR` lists the page's own calls
+# with durations; a body capture would be the next step.
 
 
 # ============================================================

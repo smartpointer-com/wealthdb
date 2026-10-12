@@ -94,7 +94,7 @@ def test_debug_flag():
 
 
 def test_debug_help_promises_bronze_captures(capsys):
-    # Guards against the flag regressing to the warn-only stub it was.
+    # Guards against the flag regressing to a warn-only stub.
     with pytest.raises(SystemExit):
         download.parse_args(["--help"])
     out = capsys.readouterr().out
@@ -140,3 +140,28 @@ def test_op_name_drops_the_portals_optional_suffix():
     # The op sets are spelled without the suffix, so a wait on them matches
     # a capture under either spelling.
     assert "PositionsTable" in PORTFOLIO_OPS and not any(o.endswith("Query") for o in PORTFOLIO_OPS)
+
+
+def test_exchanges_single_request():
+    body = {"operationName": "ViewerQuery", "variables": {"a": 1}}
+    payload = {"data": {"currentUser": {"slug": "u"}}, "errors": None}
+    assert download._exchanges(body, payload) == [{
+        "op": "ViewerQuery", "variables": {"a": 1},
+        "data": {"currentUser": {"slug": "u"}}, "errors": None}]
+
+
+def test_exchanges_batched_request_pairs_each_operation_with_its_result():
+    # A batched POST is answered with one result per operation, in order;
+    # an item without an operation name is skipped, and a missing or
+    # non-object result captures no data.
+    body = [{"operationName": "Activity"}, {"query": "{x}"},
+            {"operationName": "OpenInvestments", "variables": {"v": 2}}]
+    payload = [{"data": {"n": 1}}, {"data": {"n": 2}},
+               {"errors": [{"message": "denied"}]}]
+    assert download._exchanges(body, payload) == [
+        {"op": "Activity", "variables": {}, "data": {"n": 1}, "errors": None},
+        {"op": "OpenInvestments", "variables": {"v": 2}, "data": None,
+         "errors": [{"message": "denied"}]},
+    ]
+    assert download._exchanges({"operationName": "Viewer"}, None) == [
+        {"op": "Viewer", "variables": {}, "data": None, "errors": None}]

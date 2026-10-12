@@ -55,8 +55,7 @@ Credentials:
   container. The login script sources /secrets/ubs-web.env automatically
   (= \$HOME/.secrets/ubs-web.env on the host), so dropping a single line
   UBS_CONTRACT_NUMBER=<your-contract-no> into that file is enough. The
-  bank-level ubs.env is still read as a legacy fallback when no
-  ubs-web.env exists.
+  bank-level ubs.env is read as a fallback when no ubs-web.env exists.
 EOF
     exit 0
 fi

@@ -6,7 +6,7 @@
 # crashes the camoufox-launched Firefox.
 #
 # collectorkit (the shared cli/envfile/launch helpers) is also installed
-# in the base image as an editable package; explore.py imports it
+# in the base image as an editable package; the modules import it
 # directly.
 
 # pytest is bundled in the image so tests run inside the container with

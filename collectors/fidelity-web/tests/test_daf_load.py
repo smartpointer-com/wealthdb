@@ -34,7 +34,7 @@ CONTRIB_ID = "C2000002"
 def migrated():
     c = sqlite3.connect(":memory:")
     c.execute("PRAGMA foreign_keys = ON")
-    load.apply_migrations(c, MIGRATIONS_DIR)
+    load.silver.apply_migrations(c, MIGRATIONS_DIR)
     yield c
     c.close()
 
@@ -208,16 +208,6 @@ def test_daf_mode_dump_writes_no_retail_master(migrated, tmp_path):
         (DAF_ACCT,)).fetchone() == (2,)
 
 
-def test_daf_skipped_below_schema_v7(migrated, tmp_path):
-    # The gate keeps the DAF load off on a pre-v7 schema even if the
-    # tables exist (they do in the migrated fixture).
-    _load(migrated, _write_daf_dump(tmp_path, "20260101T120000Z"),
-          schema_version=6)
-    assert migrated.execute(
-        "SELECT COUNT(*) FROM accounts WHERE account_external_id = ?",
-        (DAF_ACCT,)).fetchone() == (0,)
-
-
 def _write_retail_positions(dump: Path, acct: str) -> None:
     (dump / "positions").mkdir(exist_ok=True)
     (dump / "positions" / "positions_summary.csv").write_text(
@@ -238,6 +228,27 @@ def test_gate_daf_failure_skips_all_positions(migrated, tmp_path):
     (dump / "run.json").write_text(json.dumps({
         "status": "complete", "cli_config": {"mode": "all"},
         "daf_results": {"status": "error", "error": "SSO bounced"},
+    }))
+    load.load_dump(migrated, dump, 7)
+    assert migrated.execute(
+        "SELECT COUNT(*) FROM positions").fetchone() == (0,)
+    # A dump whose positions the gate held back did not observe them.
+    assert migrated.execute(
+        "SELECT positions_present FROM dump_runs").fetchone() == (0,)
+
+
+def test_gate_failed_daf_account_skips_all_positions(migrated, tmp_path):
+    # The phase as a whole finished, but one giving account's pools
+    # were not fetched: the observation is partial all the same.
+    retail = "100000001"
+    dump = tmp_path / "20260101T120000Z"
+    dump.mkdir()
+    _write_retail_positions(dump, retail)
+    (dump / "run.json").write_text(json.dumps({
+        "status": "complete", "cli_config": {"mode": "all"},
+        "daf_results": {"status": "complete", "per_account": {
+            "acct0": {"status": "error",
+                      "error": "pool balances not fetched"}}},
     }))
     load.load_dump(migrated, dump, 7)
     assert migrated.execute(

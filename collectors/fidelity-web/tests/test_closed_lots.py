@@ -30,7 +30,7 @@ ACCT = "100000001"
 @pytest.fixture
 def migrated():
     c = sqlite3.connect(":memory:")
-    load.apply_migrations(c, MIGRATIONS_DIR)
+    load.silver.apply_migrations(c, MIGRATIONS_DIR)
     yield c
     c.close()
 
@@ -241,13 +241,12 @@ def test_a_form_that_names_no_account_is_skipped(migrated, tmp_path, stub_1099):
 def test_the_pass_reads_every_dump_only_when_its_parser_moved(
         migrated, tmp_path, stub_1099):
     dumps, pending = ["d1", "d2"], ["d2"]
-    assert load._dumps_for_1099s(migrated, dumps, pending, 10) == (dumps, True)
+    assert load._dumps_for_1099s(migrated, dumps, pending) == (dumps, True)
 
     load.silver.stamp_generation(
         migrated, load.CONSOLIDATED_1099_GENERATION_SCOPE,
         load._CONSOLIDATED_1099_PARSER_VERSION)
-    assert load._dumps_for_1099s(migrated, dumps, pending, 10) == (pending, False)
-    assert load._dumps_for_1099s(migrated, dumps, pending, 9) == ([], False)
+    assert load._dumps_for_1099s(migrated, dumps, pending) == (pending, False)
 
 
 def test_a_completed_pass_stamps_its_generation(migrated, tmp_path, stub_1099):
@@ -296,7 +295,7 @@ def test_migration_0010_refiles_1099s_catalogued_as_statements(tmp_path):
     for f in sorted(MIGRATIONS_DIR.glob("000*.sql")):
         (old / f.name).write_text(f.read_text(encoding="utf-8"))
     conn = sqlite3.connect(":memory:")
-    load.apply_migrations(conn, old)
+    load.silver.apply_migrations(conn, old)
     for sha, name in (("a", "Consolidated_Form_1099__1.pdf"),
                       ("b", "Form_1099_Q_Instructions.pdf"),
                       ("c", "Statement_Jan_March_2026.pdf")):
@@ -307,7 +306,7 @@ def test_migration_0010_refiles_1099s_catalogued_as_statements(tmp_path):
             (sha, name, name))
     conn.commit()
 
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
 
     assert conn.execute(
         "SELECT content_sha256, doc_kind FROM documents ORDER BY 1"
@@ -382,15 +381,15 @@ def test_migration_0013_sends_the_1099_pass_over_every_dump(tmp_path):
         if mig.name < "0013":
             shutil.copy(mig, old)
     conn = sqlite3.connect(":memory:")
-    load.apply_migrations(conn, old)
+    load.silver.apply_migrations(conn, old)
     for scope in (load.CONSOLIDATED_1099_GENERATION_SCOPE,
                   load.SUPPLIED_GENERATION_SCOPE):
         load.silver.stamp_generation(conn, scope, "generation")
     conn.commit()
 
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
 
-    assert load._dumps_for_1099s(conn, ["d1", "d2"], ["d2"], 13) == (
+    assert load._dumps_for_1099s(conn, ["d1", "d2"], ["d2"]) == (
         ["d1", "d2"], True)
     assert conn.execute("SELECT scope FROM parser_generations").fetchall() == [
         (load.SUPPLIED_GENERATION_SCOPE,)]
@@ -468,13 +467,13 @@ def test_migration_0012_renames_rows_written_before_it(tmp_path):
         if mig.name < "0011":
             shutil.copy(mig, old)
     conn = sqlite3.connect(":memory:")
-    load.apply_migrations(conn, old)
+    load.silver.apply_migrations(conn, old)
     conn.execute(
         "INSERT INTO closed_lots (lot_id, document_kind, account_external_id, "
         "description, action, date_sold, gain_loss, term, source_sha256, "
         "payload) VALUES ('1099b_x', '1099b', ?, 'EXAMPLE CORP', 'Sale', "
         "'2025-03-04', -5.0, 'long', 'sha', '{}')", (ACCT,))
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
     assert conn.execute(
         "SELECT lot_id, document_kind, security_name, disposed_date, "
         "realized_gain_loss, term FROM closed_lots").fetchall() == [

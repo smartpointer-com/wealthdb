@@ -11,6 +11,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
@@ -262,3 +264,34 @@ def test_non_complete_run_skipped(tmp_path):
     conn = _load(tmp_path)
     assert load.load_run(conn, run) is False
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+
+
+def test_run_without_run_json_skipped(tmp_path):
+    # A run dir whose manifest is not yet written is still being written.
+    bronze_dir = tmp_path / "bronze"
+    run = _write_bronze_run(bronze_dir, "20260801T120000Z")
+    (run / "run.json").unlink()
+    conn = _load(tmp_path)
+    assert load.load_run(conn, run) is False
+    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+
+
+def test_failed_load_leaves_silver_unchanged(tmp_path, monkeypatch):
+    # One dump is one transaction: a failure part-way rolls back the rows
+    # already written and records no dump_runs row, so the next load retries.
+    bronze_dir = tmp_path / "bronze"
+    run = _write_bronze_run(bronze_dir, "20260801T120000Z")
+    conn = _load(tmp_path)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("synthetic read failure")
+
+    monkeypatch.setattr(load, "_insert_document", boom)
+    with pytest.raises(OSError):
+        load.load_run(conn, run)
+    for table in ("accounts", "transactions", "documents", "dump_runs"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+    monkeypatch.undo()
+    assert load.load_run(conn, run) is True
+    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 3

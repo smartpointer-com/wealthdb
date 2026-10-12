@@ -37,8 +37,9 @@ if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0
     cat <<EOF
 equityzen — host wrapper
 
-\`explore\` + \`login\` + \`download\` + \`load\` are implemented (not yet
-wired into the suite). See DESIGN.md and README.md.
+Implemented end-to-end: \`login\` (Camoufox SPA login + CLI TOTP) ->
+\`download\` (GraphQL capture + document archive) -> \`load\` (silver
+offerings, event-sourced positions, cash flows). See DESIGN.md and README.md.
 
 Subcommands:
   build               Build the Docker image (\`docker build\`).
@@ -65,16 +66,17 @@ Subcommands:
                       test (writes nothing); document blobs + tax-centre
                       metadata are recorded by default, --no-documents skips them.
   load [args...]      Ingest bronze snapshots into the SQLite silver:
-                      offerings, positions, cash_flows, tax_documents.
+                      offerings, positions, cash_flows, tax_documents,
+                      capital_account_statements, k1_documents.
                       --force deletes the silver DB and rebuilds from all bronze.
   prune [args...]     Reclaim bronze disk: delete non-complete dumps
                       (crashed downloads with no terminal run.json), and
                       strip screenshots/ (the download --debug captures)
                       from complete dumps, whose load inputs are never
                       touched. --dry-run prints the plan; --min-age-hours
-                      (default 1) protects an in-flight download. Runs in the
-                      container like \`load\`, so the single-writer guard
-                      refuses it while a \`login\` / \`download\` is live.
+                      (default 1) protects an in-flight download. Runs
+                      host-side (pure file walk; no container), so it can
+                      reclaim disk while a download is mid-flight.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.
 

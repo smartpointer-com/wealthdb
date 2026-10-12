@@ -185,7 +185,7 @@ Subcommands:
               event-sourced position_snapshots, vehicles, k1_capital_accounts,
               tax_documents, portfolio_summary / timeseries, commitments,
               funding_accounts + funding_transactions. Pass --force to
-              re-load snapshots already in dump_runs.
+              delete the silver DB and rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed / interrupted downloads
               that never wrote a terminal run.json) from the bronze tree.
               --dry-run prints the plan first.

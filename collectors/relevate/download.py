@@ -55,7 +55,6 @@ per-document payloads.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import sys
@@ -65,46 +64,26 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    import requests
-    from requests.exceptions import RequestException
-except ModuleNotFoundError:  # pragma: no cover
-    # The HTTP stack drives the live REST walk, not the pure-Python
-    # download-avoidance helpers (docdedup wiring, class mapping, extract
-    # hook). Guarding the import lets that logic be imported and unit-tested
-    # host-side without the collector's full container deps, the same way the
-    # browser collectors defer their heavy imports into the run path.
-    requests = None  # type: ignore[assignment]
-
-    class RequestException(Exception):  # type: ignore[no-redef]
-        """Fallback so ``except RequestException`` still resolves when the real
-        ``requests`` is absent (the HTTP paths are never entered then)."""
+import requests
+from requests.exceptions import RequestException
 
 from collectorkit import cli, debugcap, docdedup, parse, session as ck_session
 
 # doc_kind_from_filename is the SAME fileName -> kind derivation load.py parses
 # on, so the download-avoidance mode is chosen off the exact label load reads
 # figures from (a parsed kind can never be mis-linked). See _document_class.
-from load import doc_kind_from_filename
-# The one state-file → cookie-jar rehydrator; login.py owns the state
-# file's schema, so its reader is imported rather than duplicated.
-from login import state_into_jar
+# slug_for_account names the bronze portfolio dir load.py reads back.
+from load import doc_kind_from_filename, slug_for_account
+# login.py owns the portal constants, the session probe and the state
+# file's schema, so they are imported rather than duplicated.
+from login import (
+    BASE, DEFAULT_STATE_PATH, SEC_CH_UA, USER_AGENT, state_into_jar,
+    step_probe,
+)
 
-BASE = "https://portal.pens-expert.ch"
-PROBE = f"{BASE}/auth/rest/protected/self-service/ui/configuration/portal"
 DASHBOARD_REFERER = f"{BASE}/dashboard/"
 
-DEFAULT_STATE_PATH = Path("/secrets/relevate-state.json")
 DEFAULT_BRONZE_DIR = Path("/data")
-
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/147.0.0.0 Safari/537.36"
-)
-SEC_CH_UA = (
-    '"Not_A Brand";v="99", "Chromium";v="147", "Google Chrome";v="147"'
-)
 
 # Endpoints. Note the inconsistent casing of "Portfolio" vs
 # "portfolio" — observed on the wire; do NOT normalise.
@@ -201,15 +180,6 @@ def new_session_from_state(
     })
     state_into_jar(state.get("cookies", []), session.cookies)
     return session, state.get("minted_at")
-
-
-def probe_session_alive(session: requests.Session) -> bool:
-    try:
-        resp = session.get(PROBE, timeout=15, allow_redirects=False)
-    except RequestException as exc:
-        logger.warning("session probe failed: %s", exc)
-        return False
-    return resp.status_code == 200
 
 
 # ----------------------------------------------------------------------
@@ -332,10 +302,6 @@ class Manifest:
 # ----------------------------------------------------------------------
 # Fetch helpers
 # ----------------------------------------------------------------------
-
-
-def account_slug(external_id: str) -> str:
-    return hashlib.sha256(external_id.encode("utf-8")).hexdigest()[:16]
 
 
 # Stands in for callers with no run dir to write into. A disabled trace
@@ -558,7 +524,7 @@ def fetch_portfolio(
             {k: v for k, v in portfolio.items() if k in ("id", "externalId")},
         )
         return
-    slug = account_slug(str(external_id))
+    slug = slug_for_account(str(external_id))
     pdir = run_dir / "portfolios" / slug
     pdir.mkdir(parents=True, exist_ok=True)
 
@@ -588,7 +554,7 @@ def fetch_portfolio(
         "first_investment_date": first_investment_date,
         "portfolio_type_id": portfolio.get("portfolioTypeId"),
         "portfolio_status_id": portfolio.get("portfolioStatusId"),
-        "deposits_year_window": list(year_window) if year_window else None,
+        "deposits_year_window": list(year_window),
     })
 
     for year in range(year_window[0], year_window[1] + 1):
@@ -918,18 +884,17 @@ def do_download(args: argparse.Namespace) -> int:
     year_from, year_to = since.year, until.year
 
     try:
-        sess, state_minted_at = new_session_from_state(args.state_path)
+        session, state_minted_at = new_session_from_state(args.state_path)
     except FileNotFoundError as exc:
         logger.error("%s", exc)
         return 64
 
-    if not probe_session_alive(sess):
+    if not step_probe(session):
         logger.error(
             "session probe failed — run `./relevate login` "
             "to mint a fresh session.",
         )
         return 1
-    session = sess  # restore local name for the rest of the function
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -962,7 +927,7 @@ def do_download(args: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     logger.info("bronze run dir: %s", run_dir)
 
-    manifest = Manifest(run_dir, mode=args.mode, dry_run=args.dry_run)
+    manifest = Manifest(run_dir, mode=args.mode, dry_run=False)
     manifest.set_state_minted_at(state_minted_at)
     manifest.set_windows(since=since, until=until,
                          documents_since=since,
@@ -1106,11 +1071,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
+    cli.configure_logging(args.verbose)
     return do_download(args)
 
 

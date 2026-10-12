@@ -5,8 +5,8 @@
 # - `explore`: drives Camoufox over VNC for discovery — needs Xvfb
 #   + x11vnc started below.
 # - `login`: headless Playwright Firefox driving the SPA login form,
-#   2FA code on stdin. No Xvfb, no VNC (Playwright manages its own
-#   headless display).
+#   2FA code on stdin. No Xvfb, no VNC (headless Firefox needs no
+#   display).
 # - `download`: headless Playwright Firefox per-portfolio loop, same
 #   persistent profile as `login`. No Xvfb, no VNC.
 # - `load`: pure DuckDB + Python, no browser.
@@ -29,8 +29,8 @@ source /opt/entrypoint-lib.sh
 
 case "${1:-help}" in
     explore)
-        # Discovery harness. Drives Camoufox over VNC, records the
-        # all clicks + every network fetch into /debug/<ts>/
+        # Discovery harness. Drives Camoufox over VNC, records every
+        # click + every network fetch into /debug/<ts>/
         # so login.py + download.py can be written from real traces.
         start_xvfb
         start_x11vnc explore
@@ -45,9 +45,8 @@ case "${1:-help}" in
         ;;
     download)
         # Headless Playwright Firefox per-portfolio loop.
-        # No Xvfb / no VNC — Playwright handles its own headless
-        # X (Firefox runs against an in-process Xwayland/Xvfb
-        # equivalent that Playwright manages). Uses the same
+        # No Xvfb / no VNC — headless Firefox needs no display.
+        # Uses the same
         # persistent profile as login.py so authentication carries
         # over for free.
         shift
@@ -83,15 +82,15 @@ case "${1:-help}" in
     recompress)
         # One-time backlog sweep: replace plain cu_<id>/*.csv in
         # complete dumps with verified .csv.zst twins (the form
-        # download now writes). No browser, no Xvfb. Manual only —
+        # download writes). No browser, no Xvfb. Manual only —
         # never schedule; review --dry-run first.
         shift
         exec python3 /app/recompress.py "$@"
         ;;
     fetch-prices)
         # USDT-denominated price backfill from Binance public spot
-        # API. --missing for gap-fill (same set as `load --fetch-
-        # prices`), no-flag for full re-fetch (corruption recovery).
+        # API. --missing for gap-fill (the same fill `load` runs by
+        # default), no-flag for full re-fetch (corruption recovery).
         # Always re-fetches the latest priced day because that row
         # was an intraday snapshot when first written.
         shift

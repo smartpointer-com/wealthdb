@@ -935,3 +935,18 @@ def test_verbose_does_not_change_what_is_deleted(tmp_path):
     run_main(CFG, quiet)
     assert sorted(p.name for p in loud.iterdir()) == \
            sorted(p.name for p in quiet.iterdir())
+
+
+def test_a_dump_the_recheck_spares_is_not_counted_as_freed(tmp_path, capsys,
+                                                           monkeypatch):
+    # A non-complete dump that finalised between planning and the rmtree is
+    # skipped; the summary must not report its bytes, its path or a removed
+    # dump.
+    make_dump(tmp_path, OLD_TS, status="in-progress", age_s=STALE_S)
+    monkeypatch.setattr(prune, "_recheck_target", lambda *a, **k: False)
+    run_main(CFG, tmp_path)
+    out = capsys.readouterr().out
+    assert "changed since planning" in out
+    assert "freed: 0 B (0 files, 0 paths)" in out
+    assert "non-complete dump(s) removed" not in out
+    assert (tmp_path / OLD_TS).is_dir()

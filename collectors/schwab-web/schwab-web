@@ -80,8 +80,9 @@ Override mounts via env:
 
 Credentials:
   The Login ID is read from \$SCHWAB_LOGIN_ID inside the container;
-  the password from \$SCHWAB_PASSWORD (or prompted interactively
-  when not set). The login script sources /secrets/schwab-web.env
+  the password from \$SCHWAB_PASSWORD. When either is unset, the
+  form is not pre-filled and Log In is driven by hand over
+  vnc-login. The login script sources /secrets/schwab-web.env
   automatically (= \$HOME/.secrets/schwab-web.env on the host).
 
   Use SINGLE QUOTES around values containing \$, \!, backtick, or
@@ -90,8 +91,7 @@ Credentials:
   mangles the password before it reaches the container:
     SCHWAB_LOGIN_ID='your-login-id'
     SCHWAB_PASSWORD='your-password-with-\$pecial-chars'
-  chmod 600 the file. Password may also be left out and supplied
-  interactively at \`login\` time.
+  chmod 600 the file.
 EOF
     exit 0
 fi

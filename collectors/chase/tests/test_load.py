@@ -32,9 +32,12 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+from collectorkit import silver  # noqa: E402
 import statement_parser as sp  # noqa: E402
 
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
@@ -378,7 +381,8 @@ def _make_run(root: Path, slug: str, *, status="complete", card=False,
 
 
 def _conn():
-    c = sqlite3.connect(":memory:")
+    # Manual transaction control, as `silver.open_db` opens the real DB.
+    c = sqlite3.connect(":memory:", isolation_level=None)
     load.apply_migrations(c, MIGRATIONS)
     return c
 
@@ -412,6 +416,30 @@ def test_load_run_is_idempotent():
         assert load.load_run(conn, run) is True
         assert load.load_run(conn, run) is False       # already loaded
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 4
+
+
+def test_failed_load_run_leaves_silver_unchanged(tmp_path, monkeypatch):
+    # One dump is one transaction: a failure part-way rolls back the rows
+    # already written, records no dump_runs row and raises no post-pass
+    # flag, so the next load retries the whole dump.
+    run = _make_run(tmp_path, "20260801T120000Z")
+    conn = silver.open_db(tmp_path / "chase.db")
+    load.apply_migrations(conn, MIGRATIONS)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("synthetic read failure")
+
+    monkeypatch.setattr(load, "_insert_document", boom)
+    with pytest.raises(OSError):
+        load.load_run(conn, run)
+    for table in ("accounts", "transactions", "documents", "dump_runs"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert load._post_passes_pending(conn) is False
+
+    monkeypatch.undo()
+    assert load.load_run(conn, run) is True
+    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 4
+    assert load._post_passes_pending(conn) is True
 
 
 def test_load_run_skips_in_progress():
@@ -2697,3 +2725,33 @@ def test_a_cheque_no_statement_covers_yet_is_tried_again(tmp_path, monkeypatch):
     assert load.annotate_export_cheques(conn, tree) == 0
     assert calls == []                  # named for a period ending too early
     assert "cheque_statement_read" not in _cheque_row(conn)[1]
+
+
+def test_the_cheque_pass_walks_no_bronze_when_nothing_is_owed(tmp_path,
+                                                             monkeypatch):
+    # The pass runs on every load; with every cheque already read it must
+    # cost one query, not a walk of the whole bronze tree.
+    conn = _conn()
+    _seed_export_cheque(conn, _epoch(2098, 4, 3), -800.0, "2002")
+    conn.execute("UPDATE transactions SET payload = ? WHERE fitid = 'FCHK'",
+                 (json.dumps({"cheque_statement_read": True}),))
+
+    def no_walk(_bronze_dir):
+        raise AssertionError("walked the bronze tree")
+    monkeypatch.setattr(load, "card_account_ids_in_tree", no_walk)
+    assert load.annotate_export_cheques(conn, tmp_path) == 0
+
+
+def test_the_cheque_pass_leaves_a_card_accounts_rows_alone(tmp_path,
+                                                          monkeypatch):
+    conn = _conn()
+    _seed_export_cheque(conn, _epoch(2098, 4, 3), -800.0, "2002")
+    tree = _statement_tree(tmp_path, "2098-04-17.pdf")
+    calls = []
+    _cheque_statement(monkeypatch, [
+        (date(2098, 4, 3), "-800.00", "Check # 2002 Acme Tax Office", "2002"),
+    ], calls)
+    monkeypatch.setattr(load, "card_account_ids_in_tree", lambda _t: {EXT})
+    assert load.annotate_export_cheques(conn, tree) == 0
+    assert calls == []
+    assert _cheque_row(conn) == ("CHECK 2002", {"memo": None})

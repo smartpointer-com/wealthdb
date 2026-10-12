@@ -21,16 +21,15 @@ from __future__ import annotations
 import argparse
 import getpass
 import logging
-import re
 import os
+import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import landmarks as sq  # local module: DOM landmarks + URL constants
-
-import subprocess
 
 from collectorkit import cli, debugcap, envfile, launch, session
 
@@ -40,7 +39,9 @@ log = logging.getLogger("swissquote.login")
 # `HeadlessChrome` and either block or add extra anti-bot steps; this
 # string matches the Chrome major version that Playwright 1.62 ships,
 # so it's plausible without being deceptive about capabilities. The
-# only signal we strip is the "Headless" qualifier.
+# only signal we strip is the "Headless" qualifier. download.py uses
+# the same UA: the anti-bot heuristics may key on it across requests
+# within a session, so it is held constant.
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -140,7 +141,8 @@ def resolve_password() -> str:
     return getpass.getpass("Swissquote password: ")
 
 
-def _screenshot(page, screenshot_dir: Path | None, name: str) -> None:
+def screenshot(page, screenshot_dir: Path | None, name: str) -> None:
+    """Full-page screenshot into `screenshot_dir`; a no-op when unset."""
     if not screenshot_dir:
         return
     screenshot_dir.mkdir(parents=True, exist_ok=True)
@@ -233,11 +235,10 @@ def merge_api_sample(seen: dict, sample) -> dict:
 def report_api_calls(seen: dict, screenshot_dir: Path | None) -> None:
     """Log what the MFA page called, longest call first, and save it.
 
-    This exists because the approval fast-path hangs off one endpoint whose
-    path has already moved once, and when it 404s there is nothing to go on:
-    the page's own calls were never recorded. They are now — id-masked, so a
-    line can be pasted into a report, and ordered by duration, because the
-    call the page is WAITING on is the one to poll.
+    The page's approval channel is its own status endpoint, whose route
+    can move. The list is what re-derives it: id-masked, so a line can be
+    pasted into a report, and ordered by duration, because the call the
+    page is WAITING on is the one to poll.
     """
     if not seen:
         return
@@ -288,8 +289,10 @@ def _announce_operation_code(page, *, waiting_note: str = "") -> None:
     print(msg, flush=True)
 
 
-def _new_context(p, *, storage_state: Path | None):
-    """Construct a Chromium browser + context with our standard knobs.
+def new_context(p, *, storage_state: Path | None,
+                accept_downloads: bool = False):
+    """Construct a Chromium browser + context with our standard knobs,
+    shared with download.py.
 
     --no-sandbox is required because the container runs as a non-root
     UID without the user-namespace privileges Chromium normally uses
@@ -316,6 +319,8 @@ def _new_context(p, *, storage_state: Path | None):
         "timezone_id": "Europe/Zurich",
         "viewport": {"width": 1440, "height": 900},
     }
+    if accept_downloads:
+        ctx_kwargs["accept_downloads"] = True
     if storage_state is not None and storage_state.is_file():
         ctx_kwargs["storage_state"] = str(storage_state)
     context = browser.new_context(**ctx_kwargs)
@@ -342,11 +347,11 @@ def _maybe_start_trace(context, enabled: bool):
         context.tracing.start(screenshots=True, snapshots=False, sources=True)
 
 
-def _maybe_stop_trace(context, enabled: bool, trace_path: Path):
-    if enabled:
-        trace_path.parent.mkdir(parents=True, exist_ok=True)
-        context.tracing.stop(path=str(trace_path))
-        log.info("Wrote Playwright trace: %s", trace_path)
+def stop_trace(context, trace_path: Path) -> None:
+    """Stop a running trace and write its bundle to `trace_path`."""
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    context.tracing.stop(path=str(trace_path))
+    log.info("Wrote Playwright trace: %s", trace_path)
 
 
 def check_session(args: argparse.Namespace) -> int:
@@ -363,7 +368,7 @@ def check_session(args: argparse.Namespace) -> int:
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     with sync_playwright() as p:
-        browser, context = _new_context(p, storage_state=state_path)
+        browser, context = new_context(p, storage_state=state_path)
         _maybe_start_trace(context, args.trace)
         page = context.new_page()
         try:
@@ -377,7 +382,7 @@ def check_session(args: argparse.Namespace) -> int:
                 )
             except PWTimeout:
                 pass
-            _screenshot(page, args.screenshot_dir, f"check_{ts}_after_goto")
+            screenshot(page, args.screenshot_dir, f"check_{ts}_after_goto")
 
             # Authentication signal: asking for the protected eBanking
             # root settles on a post-auth SPA — either that root or the
@@ -398,8 +403,8 @@ def check_session(args: argparse.Namespace) -> int:
                 return 1
         finally:
             if args.trace:
-                _maybe_stop_trace(
-                    context, args.trace,
+                stop_trace(
+                    context,
                     args.screenshot_dir / f"trace_check_{ts}.zip",
                 )
             context.close()
@@ -417,7 +422,7 @@ def login(args: argparse.Namespace) -> int:
     args.state_path.parent.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as p:
-        browser, context = _new_context(p, storage_state=None)
+        browser, context = new_context(p, storage_state=None)
         _maybe_start_trace(context, args.trace)
         page = context.new_page()
         try:
@@ -426,7 +431,7 @@ def login(args: argparse.Namespace) -> int:
             # the login form. We follow the redirect chain to settle.
             page.goto(sq.LOGIN_TRIGGER_URL, wait_until="domcontentloaded")
             log.info("Landed at %s", page.url)
-            _screenshot(page, args.screenshot_dir, f"login_{ts}_01_form")
+            screenshot(page, args.screenshot_dir, f"login_{ts}_01_form")
             if sq.F5_AUTH_PATH not in page.url:
                 # Surprise: we expected /my.policy. Either the cookie
                 # is still valid (rare on a fresh state-less context)
@@ -469,7 +474,7 @@ def login(args: argparse.Namespace) -> int:
                     f'text="{sq.MFA_PAGE_TEXT_LANDMARK}"',
                     timeout=5000,
                 )
-                _screenshot(page, args.screenshot_dir, f"login_{ts}_03_mfa")
+                screenshot(page, args.screenshot_dir, f"login_{ts}_03_mfa")
                 _dump_html(page, args.screenshot_dir, f"login_{ts}_03_mfa")
                 _announce_operation_code(
                     page,
@@ -496,10 +501,9 @@ def login(args: argparse.Namespace) -> int:
             # landed that routes straight through; if it has not, F5
             # re-issues the push.
             #
-            # There is no long-poll to ride any more: the held feedback
-            # channel this used to use answers 404, and what replaced it is
-            # a short poll whose verdict is in the response body. Reviving
-            # instant detection means reading that body — see landmarks.py.
+            # No endpoint holds the request open until approval, so there is
+            # no long poll to ride; instant detection would mean reading the
+            # short poll's response body — see landmarks.py.
             deadline = time.monotonic() + args.mfa_timeout
             last_logged_url = None
             last_heartbeat = 0.0
@@ -522,7 +526,7 @@ def login(args: argparse.Namespace) -> int:
                 if sq.is_post_auth_url(url):
                     break
                 if sq.is_profile_validation_url(url):
-                    _screenshot(
+                    screenshot(
                         page, args.screenshot_dir,
                         f"login_{ts}_04_profile_validation",
                     )
@@ -548,10 +552,7 @@ def login(args: argparse.Namespace) -> int:
                 # routes to the post-auth URL; otherwise F5 re-issues the
                 # push, so the fresh code is re-printed to keep the terminal
                 # in sync with the phone.
-                if (
-                    time.monotonic() - last_repoke > MFA_APPROVAL_PROBE_SECONDS
-                    and "sq-thirdlevel-plugin" in url
-                ):
+                if time.monotonic() - last_repoke > MFA_APPROVAL_PROBE_SECONDS:
                     log.info("probing for approval (re-navigating to the "
                              "trigger URL)")
                     try:
@@ -565,7 +566,7 @@ def login(args: argparse.Namespace) -> int:
                     last_repoke = time.monotonic()
                 time.sleep(0.25)
             else:
-                _screenshot(
+                screenshot(
                     page, args.screenshot_dir, f"login_{ts}_04_mfa_timeout",
                 )
                 report_api_calls(api_calls, args.screenshot_dir)
@@ -588,7 +589,7 @@ def login(args: argparse.Namespace) -> int:
             except PWTimeout:
                 pass
             log.info("Settled at %s", page.url)
-            _screenshot(page, args.screenshot_dir, f"login_{ts}_05_landed")
+            screenshot(page, args.screenshot_dir, f"login_{ts}_05_landed")
 
             log.info("Persisting session state to %s", args.state_path)
             context.storage_state(path=str(args.state_path))
@@ -597,8 +598,8 @@ def login(args: argparse.Namespace) -> int:
             return 0
         finally:
             if args.trace:
-                _maybe_stop_trace(
-                    context, args.trace,
+                stop_trace(
+                    context,
                     args.screenshot_dir / f"trace_login_{ts}.zip",
                 )
             context.close()

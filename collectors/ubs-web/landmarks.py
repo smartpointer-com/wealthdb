@@ -305,8 +305,8 @@ DOC_LINK_SELECTOR = 'a[href*="/api/v1/digital-banking/files/"]'
 #
 # The class is CSS-modules generated: a stable `UWR_FilterItem_
 # filter-content_` prefix plus a build hash that rotates whenever
-# UBS redeploys the docs micro-frontend (observed 2026-07: _GXm9A
-# → _TzYzX). Match on the stable prefix only, never a full class.
+# UBS redeploys the docs micro-frontend. Match on the stable prefix
+# only, never a full class.
 DOC_FILTER_BUTTON_SELECTOR = 'button[class*="UWR_FilterItem_filter-content_"]'
 DOC_FILTER_INDEX_PERIOD = 0
 
@@ -333,7 +333,6 @@ POSITIONS_BUTTON_CSV_SELECTOR = (
 )
 
 
-
 # ============================================================
 # Portfolio securities transactions
 # (#/assets/asset-view/securitiesTransactions)
@@ -343,10 +342,9 @@ POSITIONS_BUTTON_CSV_SELECTOR = (
 # as cash tiles. A managed portfolio's own movements — every securities
 # trade, the corporate actions against its holdings — live here
 # instead, on a legacy `/assetview/` application the SPA hosts in child
-# frames. Before this route existed as a landmark those movements
-# reached silver only through the annual Account Statement PDF, which
-# is published once a year and therefore leaves the current year's
-# trades unreadable until the following January.
+# frames. The only other record of them is the annual Account
+# Statement PDF, which leaves the current year's trades unreadable
+# until the following January.
 
 
 def portfolio_overview_url_for_portfolio(

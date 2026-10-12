@@ -88,7 +88,8 @@ SEL_OTP_INPUT = "[data-testid='otp-input-{i}']"
 # widget takes — a vendor iframe, or an element naming itself — and it is used
 # only to ABORT with the right instruction, never to drive anything. A false
 # positive costs one run that says "use vnc-login" when the terminal would
-# have done; a false negative costs the 30-second wait it costs today.
+# have done; a false negative costs the 30-second wait for the passcode
+# screen.
 SEL_CAPTCHA = ", ".join((
     "iframe[src*='recaptcha']",
     "iframe[src*='hcaptcha']",
@@ -102,8 +103,8 @@ SEL_CAPTCHA = ", ".join((
 # The device-registration step that plants the `device-id` cookie carrying
 # the trust (DESIGN.md §G). It has no data-testid, so it is matched by its
 # label — and the label is matched loosely, across several spellings and
-# case-insensitively, because a single exact string missed it on the first
-# live run (§M) and a miss costs a passcode on every subsequent run.
+# case-insensitively, because a single exact string can miss it (§M) and a
+# miss costs a passcode on every subsequent run.
 #
 # Playwright's :has-text is substring and case-insensitive, so one entry
 # covers "Add This Device" / "Add this device"; the alternatives cover the

@@ -108,11 +108,13 @@ CLICK_RECORDER_JS = r"""
   };
   document.addEventListener('click', (e) => {
     const t = e.target;
-    // Redact password-input values so they never end up in the
-    // trace / click log.
+    // Never log a form VALUE. innerText is empty on INPUT/TEXTAREA, so a
+    // button or link keeps its label while a field contributes nothing —
+    // which keeps a filled username, a typed one-time code, or a password
+    // field a show-password toggle flipped to type=text out of the click log.
     const safeText = (t && t.tagName === 'INPUT' && t.type === 'password')
       ? '<redacted>'
-      : (t.innerText || t.value || '').toString().slice(0, 80);
+      : (t.innerText || '').toString().slice(0, 80);
     const data = {
       kind: 'click',
       ts: new Date().toISOString(),
@@ -172,8 +174,8 @@ CLICK_RECORDER_JS = r"""
     }
   };
   detect();
-  // MutationObserver covers SPAs that mount the form after initial load.
-  // We attach to documentElement so we see the whole subtree.
+  // MutationObserver covers SPAs that mount the form after initial load;
+  // observing documentElement sees the whole subtree.
   const target = document.documentElement || document;
   if (target && typeof MutationObserver !== 'undefined') {
     new MutationObserver(detect).observe(target,
@@ -257,7 +259,11 @@ def _maybe_prefill_login(page, username: str, password: str,
                         "want %d) — type it manually in the VNC session",
                         kind, len(got or ""), len(value))
             except Exception as exc:
-                log.debug("prefill %s field failed: %r", kind, exc)
+                # safe_error, never %r: a failed fill() renders the typed
+                # value verbatim inside Playwright's Call log block, so -v
+                # would print the password to stderr.
+                log.debug("prefill %s field failed: %s", kind,
+                          debugcap.safe_error(exc))
         # The first chase.com frame carrying both fields is the login
         # form; other frames (marketing embeds) don't get a second pass.
         break

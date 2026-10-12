@@ -132,8 +132,8 @@ def _add_lookback_arg(parser: argparse.ArgumentParser) -> None:
     ``add_standard_args(verb="download")``.
 
     The default is deliberately handled in :func:`resolve_lookback` rather
-    than as an argparse ``default=``, so a collector can still tell "user
-    passed nothing" apart from "user passed the default".
+    than as an argparse ``default=``, so a collector can still tell an
+    absent flag apart from one that names the default.
     """
     parser.add_argument(
         "--lookback", type=lookback_value, default=None,
@@ -159,15 +159,13 @@ def lookback_start(value: str, *, today: date) -> date:
     return date.fromisoformat(value)
 
 
-def resolve_lookback(args: argparse.Namespace, *,
-                     default_days: int = DEFAULT_LOOKBACK_DAYS,
-                     ) -> tuple[date, date]:
+def resolve_lookback(args: argparse.Namespace) -> tuple[date, date]:
     """Translate ``--lookback`` into the concrete ``(since, until)`` window.
 
     ``until`` is always today (UTC): the window runs from the requested
     starting point to now, and there is no flag to pull it back. ``since``
     is the ``--lookback`` value resolved against today, or
-    ``today - default_days`` when the flag is absent.
+    ``today - DEFAULT_LOOKBACK_DAYS`` when the flag is absent.
 
     ``--lookback all`` evaluates to ``today − 30 years`` (wider than any
     realistic Swiss / US retail brokerage history) so loaders never have to
@@ -175,7 +173,7 @@ def resolve_lookback(args: argparse.Namespace, *,
     """
     today = _today_utc()
     if args.lookback is None:
-        return today - timedelta(days=default_days), today
+        return today - timedelta(days=DEFAULT_LOOKBACK_DAYS), today
     since = lookback_start(args.lookback, today=today)
     if since > today:
         raise SystemExit(

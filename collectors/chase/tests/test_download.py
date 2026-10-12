@@ -1012,3 +1012,52 @@ def test_build_manifest_carries_per_product_coverage():
     assert m["status"] == "complete"
     assert m["coverage"]["card"]["complete"] is False
     assert m["coverage"]["dda"]["complete"] is True
+
+
+# ============================================================
+# Route open + roster discovery against a stub page
+# ============================================================
+
+class _NavPage(_StubPage):
+    """A stub page that records its navigations."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.navs: list[str] = []
+
+    def goto(self, route, *_a, **_k):
+        self.navs.append(f"goto {route}")
+
+    def reload(self, *_a, **_k):
+        self.navs.append("reload")
+
+
+def test_open_reloads_once_when_the_control_does_not_render(monkeypatch):
+    seen = iter([False, True])
+    monkeypatch.setattr(download, "_wait_visible",
+                        lambda *_a, **_k: next(seen))
+    page = _NavPage()
+    assert download._open(page, "R", "#sel", 1, 1000) is True
+    assert page.navs == ["goto R", "reload"]
+
+
+def test_open_skips_the_reload_when_the_control_renders(monkeypatch):
+    monkeypatch.setattr(download, "_wait_visible", lambda *_a, **_k: True)
+    page = _NavPage()
+    assert download._open(page, "R", "#sel", 1, 1000) is True
+    assert page.navs == ["goto R"]
+
+
+def test_open_reports_a_control_that_never_renders(monkeypatch):
+    monkeypatch.setattr(download, "_wait_visible", lambda *_a, **_k: False)
+    page = _NavPage()
+    assert download._open(page, "R", "#sel", 1, 1000) is False
+    assert page.navs == ["goto R", "reload"]
+
+
+def test_discover_accounts_tolerates_a_non_object_roster_body():
+    # A roster URL can answer `null` or a bare list; the capture hook keeps
+    # whatever it got, and discovery must reduce that to "no accounts"
+    # rather than abort the walk.
+    assert download._discover_accounts(_NavPage(), [None, [1, 2], 3],
+                                       1000) == []

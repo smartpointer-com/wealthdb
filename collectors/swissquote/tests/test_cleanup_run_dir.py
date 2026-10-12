@@ -23,6 +23,7 @@ Run from the repo root inside the container:
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -79,12 +80,51 @@ class CleanupIncompleteRunDirTests(unittest.TestCase):
             self.assertFalse(removed)
             self.assertTrue(run_dir.exists())  # completed dump preserved
 
+    def test_removes_dir_with_undecodable_marker(self):
+        # A run.json that is not UTF-8 is no evidence of completeness.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "20260101T120000Z"
+            run_dir.mkdir()
+            (run_dir / "run.json").write_bytes(b'{"status": "\xff"}')
+            self.assertTrue(download.cleanup_incomplete_run_dir(run_dir))
+            self.assertFalse(run_dir.exists())
+
     def test_noop_when_dir_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
             # Failure before mkdir (or a dry run): nothing to remove.
             run_dir = Path(tmp) / "never_created"
             removed = download.cleanup_incomplete_run_dir(run_dir)
             self.assertFalse(removed)
+
+
+class CollectExistingDocIdsTests(unittest.TestCase):
+    """Only a complete dump's documents count as already downloaded: load
+    never reads an incomplete dump, so a document held only there must be
+    fetched again."""
+
+    @staticmethod
+    def _dump(root: Path, slug: str, status: str, doc_id: str) -> None:
+        docs = root / slug / "documents"
+        docs.mkdir(parents=True)
+        (docs / f"{doc_id}.pdf").write_bytes(b"%PDF-1.4 synthetic")
+        (root / slug / "run.json").write_text(
+            json.dumps({"status": status}), encoding="utf-8")
+
+    def test_skips_documents_of_incomplete_dumps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._dump(root, "20260101T120000Z", "complete", "AAAA-0001")
+            self._dump(root, "20260102T120000Z", "in-progress", "AAAA-0002")
+            (root / "20260103T120000Z" / "documents").mkdir(parents=True)
+            (root / "20260103T120000Z" / "documents" / "AAAA-0003.pdf"
+             ).write_bytes(b"%PDF-1.4 synthetic")       # no run.json
+            self.assertEqual(download.collect_existing_doc_ids(root),
+                             {"AAAA-0001"})
+
+    def test_missing_bronze_dir_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                download.collect_existing_doc_ids(Path(tmp) / "nope"), set())
 
 
 if __name__ == "__main__":

@@ -53,20 +53,19 @@ PASS_ENV = "RAIFFEISEN_AT_PASSWORD"
 EVENT_PREFIX = "__RAIFFEISEN_AT_EVENT__ "
 
 # Pre-fill is restricted to raiffeisen.at (and subdomains — the entry
-# point mein.elba.raiffeisen.at is one, and a group SSO host would be
-# another) so credentials never leak into an embedded third-party frame.
-# If the first capture shows the login form rendering on a different
-# host, the credentials are typed by hand that run and the gate is
-# widened to the observed host afterwards — never pre-emptively.
+# point mein.elba.raiffeisen.at and the sso.raiffeisen.at login app are
+# both under it) so credentials never leak into an embedded third-party
+# frame. A login form on any other host is typed by hand; the gate is
+# never widened pre-emptively.
 HOST_RE = re.compile(r"(^|\.)raiffeisen\.at$", re.I)
 
-# Locators tried in order. Deliberately broad — no real captures exist yet
-# (this harness produces them), so they anchor on standard HTML
-# conventions plus German attribute hooks: Mein ELBA logins are keyed on
-# a Verfüger number or user name (which one the form asks for is a
-# DESIGN.md §3 question), so `verfueger` / `benutzer` id/name substrings
-# lead and the generic/email conventions trail as defence. Display-text
-# selectors are avoided throughout (German UI; ids/roles only).
+# Locators tried in order. Deliberately broad, so the harness can record a
+# login form whose shape is not pinned: they anchor on standard HTML
+# conventions plus German attribute hooks (`verfueger` / `benutzer`
+# id/name substrings lead, the generic/email conventions trail as
+# defence). login.py drives the mapped form with its own selectors
+# (elba_client). Display-text selectors are avoided throughout (German
+# UI; ids/roles only).
 USER_SELECTOR = (
     "input[autocomplete='username'], "
     "input[name*='verfueger' i], "
@@ -91,10 +90,9 @@ PWD_SELECTOR = "input[type='password']"
 #      renders a login form (may be after the initial DOM), signal Python
 #      via a console.log() sentinel so the Python side can fill it.
 #      Host-gated so neither detector can fire on a third-party frame;
-#      there is no path gate because no captures exist yet to name the
-#      logon routes — the Python side only fills when username + password
-#      fields co-exist in one frame, which is what keeps credentials out
-#      of lone fields. Init scripts run in every frame, so an embedded
+#      there is no path gate — the Python side only fills when username +
+#      password fields co-exist in one frame, which is what keeps
+#      credentials out of lone fields. Init scripts run in every frame, so an embedded
 #      sign-in iframe is covered too.
 CLICK_RECORDER_JS = r"""
 (() => {

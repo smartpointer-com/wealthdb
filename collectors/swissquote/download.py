@@ -34,29 +34,18 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import landmarks as sq  # local module
+import login  # local module: the shared browser knobs + state paths
+from load import dump_is_complete  # local module
 
-from collectorkit import bronze, cli, debugcap, launch, session
+from collectorkit import bronze, cli, debugcap, session
 
 log = logging.getLogger("swissquote.download")
 
-# Same UA as login.py — Swissquote's anti-bot heuristics may key on
-# the UA across requests within a session, so we hold it constant.
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/151.0.0.0 Safari/537.36"
-)
-
-NAV_TIMEOUT_MS = 60_000
-LANDMARK_TIMEOUT_MS = 30_000
+LANDMARK_TIMEOUT_MS = login.LANDMARK_TIMEOUT_MS
 DOWNLOAD_TIMEOUT_MS = 60_000
 
-# Canonical storageState location — must match login.py, which
-# mints the file there (the wrapper's /secrets mount).
-DEFAULT_STATE_PATH = Path("/secrets/swissquote-state.json")
-# Fallback state location (underscore) — read when the canonical file is absent,
-# so a session stored under this name keeps working. login writes the canonical name.
-LEGACY_STATE_PATH = Path("/secrets/swissquote_state.json")
+# The storageState login.py mints (the wrapper's /secrets mount).
+DEFAULT_STATE_PATH = login.DEFAULT_STATE_PATH
 
 # The --lookback default is resolved through
 # collectorkit.cli.resolve_lookback (default
@@ -125,41 +114,8 @@ def _new_context(p, state_path: Path):
         raise SystemExit(
             f"No state file at {state_path}. Run login.py first."
         )
-    browser = p.chromium.launch(
-        headless=True,
-        # See login.py for rationale on the anti-detection knobs.
-        args=launch.chromium_args(
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-        ),
-    )
-    context = browser.new_context(
-        storage_state=str(state_path),
-        user_agent=USER_AGENT,
-        locale="en-CH",
-        timezone_id="Europe/Zurich",
-        viewport={"width": 1440, "height": 900},
-        accept_downloads=True,
-    )
-    context.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', "
-        "{ get: () => undefined });"
-    )
-    context.set_default_timeout(NAV_TIMEOUT_MS)
-    return browser, context
-
-
-def _screenshot(page, screenshot_dir: Path | None, name: str) -> None:
-    if not screenshot_dir:
-        return
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-    path = screenshot_dir / f"{name}.png"
-    try:
-        page.screenshot(path=str(path), full_page=True)
-        log.info("Screenshot: %s", path)
-    except Exception as e:  # noqa: BLE001 - debug aid only
-        log.warning("Screenshot %s failed: %s", path, e)
+    return login.new_context(p, storage_state=state_path,
+                             accept_downloads=True)
 
 
 # JS run in the page to clear any active Pendo in-app guide. Tries
@@ -204,13 +160,6 @@ def dismiss_guide_overlays(page) -> None:
 def _maybe_start_trace(context, enabled: bool):
     if enabled:
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
-
-
-def _maybe_stop_trace(context, enabled: bool, trace_path: Path) -> None:
-    if enabled:
-        trace_path.parent.mkdir(parents=True, exist_ok=True)
-        context.tracing.stop(path=str(trace_path))
-        log.info("Wrote Playwright trace: %s", trace_path)
 
 
 def _verify_session(page) -> None:
@@ -361,8 +310,7 @@ def scrape_accounts(page, run_dir: Path) -> list[dict]:
     those strings into structured entries and write them to
     `accounts.json` in the run dir.
 
-    The list also drives silver's `accounts.account_product` column
-    (added in migration 0002 as `account_type`, renamed in 0005).
+    The list also drives silver's `accounts.account_product` column.
     For single-account customers the result is one entry; the schema
     supports multi-account customers natively (the wealthdb gold
     adapter maps these to `tax_wrapper`: "Trading"/"Savings" →
@@ -545,12 +493,18 @@ def collect_existing_doc_ids(bronze_dir: Path) -> set[str]:
     already in bronze, avoiding redundant HTTP fetches. The silver
     loader also dedups by content_sha256, so this is a bandwidth
     optimisation, not a correctness mechanism.
+
+    Only complete dumps count: `load` never reads the documents of an
+    incomplete one (a crashed walk kept under --debug, or a walk still
+    running), so skipping a document held only there would keep it out
+    of silver.
     """
     seen: set[str] = set()
     if not bronze_dir.is_dir():
         return seen
-    for pdf in bronze_dir.glob("*/documents/*.pdf"):
-        seen.add(pdf.stem)
+    for run_dir in bronze.iter_run_dirs(bronze_dir):
+        if dump_is_complete(run_dir):
+            seen.update(pdf.stem for pdf in run_dir.glob("documents/*.pdf"))
     return seen
 
 
@@ -663,40 +617,6 @@ def fetch_document(context, doc: dict, target: Path) -> None:
 # Orchestration
 # ============================================================
 
-def dump_is_complete(run_dir: Path) -> bool:
-    """Whether ``run_dir`` holds a completed dump, per the run.json
-    status lifecycle.
-
-    A successful walk writes ``{"status": "in-progress"}`` when it
-    creates the run dir, then atomically overwrites run.json with the
-    terminal manifest carrying ``status == "complete"``. So:
-
-    * ``status == "complete"``            -> complete;
-    * any other status (``"in-progress"``) -> not complete (a crashed
-      or still-running walk);
-    * a statusless run.json                -> complete (predates the
-      status field, where the manifest was written only at the end so
-      its presence alone marked completion);
-    * no run.json / unreadable / corrupt   -> not complete.
-
-    Both the crash-cleanup trap and load's dump selection key on this
-    so an in-progress or crashed dump is never mistaken for a finished
-    one. It mirrors the legacy fallback ``prune`` uses
-    (``legacy_complete = lambda rd, m: m is not None``).
-    """
-    try:
-        raw = (run_dir / "run.json").read_text(encoding="utf-8")
-    except OSError:
-        return False  # absent, or unreadable (e.g. run.json is a dir)
-    try:
-        meta = json.loads(raw)
-    except ValueError:
-        return False  # corrupt bytes — not evidence of completeness
-    if not isinstance(meta, dict):
-        return False
-    return bronze.is_loadable_status(meta.get("status"))
-
-
 def cleanup_incomplete_run_dir(run_dir: Path) -> bool:
     """Remove a partial dump dir that is not a completed dump.
 
@@ -760,12 +680,12 @@ def run(args: argparse.Namespace) -> int:
 
     with sync_playwright() as p:
         browser, context = _new_context(p, session.resolve_state_path(
-            args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH))
+            args.state_path, DEFAULT_STATE_PATH, login.LEGACY_STATE_PATH))
         _maybe_start_trace(context, args.trace)
         page = context.new_page()
         try:
             _verify_session(page)
-            _screenshot(page, args.screenshot_dir, "00_session_verified")
+            login.screenshot(page, args.screenshot_dir, "00_session_verified")
 
             if args.dry_run:
                 log.info("Dry run — confirming landmarks only")
@@ -776,7 +696,7 @@ def run(args: argparse.Namespace) -> int:
                 page.wait_for_selector(
                     sq.TXN_EXPORT_DROPDOWN_TRIGGER, timeout=LANDMARK_TIMEOUT_MS,
                 )
-                _screenshot(page, args.screenshot_dir, "01_transactions_dry")
+                login.screenshot(page, args.screenshot_dir, "01_transactions_dry")
 
                 page.goto(
                     sq.TRADING_PLATFORM_BASE_URL + sq.ROUTE_PORTFOLIO_OVERVIEW,
@@ -788,7 +708,7 @@ def run(args: argparse.Namespace) -> int:
                 page.wait_for_selector(
                     sq.LIST_OF_ASSETS_EXPORT_BUTTON, timeout=LANDMARK_TIMEOUT_MS,
                 )
-                _screenshot(page, args.screenshot_dir, "02_portfolio_dry")
+                login.screenshot(page, args.screenshot_dir, "02_portfolio_dry")
 
                 log.info("Dry run complete; no artefacts written.")
                 return 0
@@ -819,7 +739,7 @@ def run(args: argparse.Namespace) -> int:
             page.wait_for_selector(
                 sq.POSITIONS_EXPORT_BUTTON, timeout=LANDMARK_TIMEOUT_MS,
             )
-            _screenshot(page, args.screenshot_dir, "10_portfolio_page")
+            login.screenshot(page, args.screenshot_dir, "10_portfolio_page")
             # The DOM the export buttons and the position rows are matched
             # against — scrape_position_details reads long name + ISIN
             # straight out of it, and nothing else records what it saw.
@@ -844,7 +764,7 @@ def run(args: argparse.Namespace) -> int:
             page.wait_for_selector(
                 sq.TXN_EXPORT_DROPDOWN_TRIGGER, timeout=LANDMARK_TIMEOUT_MS,
             )
-            _screenshot(page, args.screenshot_dir, "20_transactions_page")
+            login.screenshot(page, args.screenshot_dir, "20_transactions_page")
             capture(page, "20_transactions_page")
 
             # Single CSV covering the whole window — no chunking.
@@ -853,11 +773,11 @@ def run(args: argparse.Namespace) -> int:
 
             # --- Documents -------------------------------------------
             navigate_to_documents(page)
-            _screenshot(page, args.screenshot_dir, "30_documents_page_default")
+            login.screenshot(page, args.screenshot_dir, "30_documents_page_default")
             log.info("Widening documents Period filter to %s..%s",
                      since, until)
             set_documents_period(page, since, until)
-            _screenshot(page, args.screenshot_dir, "31_documents_page_wide")
+            login.screenshot(page, args.screenshot_dir, "31_documents_page_wide")
             # Taken after the Period filter is widened and before the list
             # is read: discover_documents scrapes this DOM, so it is the
             # evidence for a discovery that comes back empty or short.
@@ -881,7 +801,7 @@ def run(args: argparse.Namespace) -> int:
                     "date": doc.get("date"),
                     "target_user": doc.get("target_user"),
                 })
-            _screenshot(page, args.screenshot_dir, "32_after_docs")
+            login.screenshot(page, args.screenshot_dir, "32_after_docs")
 
             customer_id = customer_id or customer_id_from_docs
             if not customer_id:
@@ -943,8 +863,8 @@ def run(args: argparse.Namespace) -> int:
             raise
         finally:
             if args.trace:
-                _maybe_stop_trace(
-                    context, args.trace,
+                login.stop_trace(
+                    context,
                     args.screenshot_dir / f"trace_download_{run_ts_str}.zip",
                 )
             context.close()

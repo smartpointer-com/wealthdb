@@ -102,15 +102,6 @@ def resolve_env_file(arg_path, candidates) -> Path | None:
     return None
 
 
-def load_env(arg_path, candidates) -> Path | None:
-    """Resolve (flag → candidates) and source an env file. Returns the path
-    that was sourced, or None if none was found."""
-    path = resolve_env_file(arg_path, candidates)
-    if path is not None and source_env_file(path):
-        return path
-    return None
-
-
 def _strip_outer_quotes(s: str) -> str:
     """Strip a matched pair of leading+trailing single or double quotes
     from ``s``. Single-side strips (e.g. ``"foo``) are left alone — they

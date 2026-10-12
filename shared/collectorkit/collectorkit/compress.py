@@ -182,8 +182,7 @@ def read_text_and_sha(path: Path, encoding: str = "utf-8",
 
 
 def compress_file(path: Path, *, level: int = DEFAULT_LEVEL,
-                  remove_original: bool = True,
-                  preserve_mtime: bool = True) -> Path:
+                  remove_original: bool = True) -> Path:
     """Compress ``path`` to ``<path>.zst`` and (by default) remove the
     original. Returns the compressed path.
 
@@ -196,8 +195,8 @@ def compress_file(path: Path, *, level: int = DEFAULT_LEVEL,
        Only a verified copy costs the original its place on disk; on
        any failure the original survives untouched and the temp/final
        artefacts of this attempt are cleaned up.
-    3. With ``preserve_mtime`` the original's mtime is carried over,
-       keeping "when was this downloaded" visible on the artefact.
+    3. The original's mtime is carried over, keeping "when was this
+       downloaded" visible on the artefact.
 
     An existing ``<path>.zst`` is overwritten (the rename is atomic),
     which makes re-running after an interrupted attempt idempotent.
@@ -213,8 +212,7 @@ def compress_file(path: Path, *, level: int = DEFAULT_LEVEL,
     try:
         with path.open("rb") as src, tmp.open("wb") as dst:
             cctx.copy_stream(src, dst, read_size=_CHUNK)
-        if preserve_mtime:
-            os.utime(tmp, (st.st_atime, st.st_mtime))
+        os.utime(tmp, (st.st_atime, st.st_mtime))
         tmp.replace(final)
     except BaseException:
         tmp.unlink(missing_ok=True)

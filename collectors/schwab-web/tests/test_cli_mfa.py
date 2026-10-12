@@ -255,3 +255,30 @@ def test_ambiguous_mid_transition_state_never_resubmits(monkeypatch):
                                        pwd_still_present=False)
     assert login._submit_login_form(page) == "failed"
     assert not any(b.click.called for b in buttons)
+
+
+# ============================================================
+# --trace on the download path
+# ============================================================
+
+def test_download_path_records_and_saves_a_trace(monkeypatch, tmp_path):
+    import contextlib
+
+    opened: list = []
+    context = MagicMock()
+    context.new_page.return_value.goto.side_effect = RuntimeError("stop")
+
+    @contextlib.contextmanager
+    def fake_context(profile_dir, trace):
+        opened.append(trace)
+        yield context
+
+    monkeypatch.setattr(login, "open_camoufox_context", fake_context)
+    monkeypatch.delenv(login.LOGIN_ID_ENV, raising=False)
+    monkeypatch.delenv(login.PASSWORD_ENV, raising=False)
+    rc = login.run_manual(tmp_path / "profile", tmp_path / "debug",
+                          bronze_dir=tmp_path / "bronze", mfa_timeout_s=1,
+                          trace=True)
+    assert rc == 1
+    assert opened == [True]
+    context.tracing.stop.assert_called_once()

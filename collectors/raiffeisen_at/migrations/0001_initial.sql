@@ -5,7 +5,7 @@
 -- (Mein ELBA) retail relationship. Like the chase / firstcitizens siblings it
 -- is a cash silver — accounts, a transaction ledger, a daily-balance series,
 -- and a statement/document inventory; no positions, instruments, or tax-lot
--- detail. See ../DESIGN.md §3-Observed for the REST source shapes these
+-- detail. See ../DESIGN.md §3-Surface for the REST source shapes these
 -- columns are parsed from.
 --
 -- Migration discipline: every schema change lands as a new numbered file

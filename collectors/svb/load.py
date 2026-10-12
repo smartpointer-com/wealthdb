@@ -134,6 +134,13 @@ def holdings_known(parsed: dict, acct: dict) -> bool:
     return bool(acct.get("holdings")) or parsed.get("stated_total") == 0
 
 
+_INSERT_SNAPSHOT = (
+    "INSERT OR REPLACE INTO historical_position_snapshots ("
+    "as_of_date, account_external_id, description, instrument_key, "
+    "quantity, price, market_value, percent_of_total, currency, "
+    "source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+
+
 # A loan statement states the balance at the END of its statement date,
 # after that day's payments have posted. Gold's mortgage split reads a
 # mortgage snapshot as the balance BEFORE the day's instalments post — it
@@ -170,10 +177,7 @@ def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
         if not holdings:
             if holdings_known(parsed, acct):
                 conn.execute(
-                    "INSERT OR REPLACE INTO historical_position_snapshots ("
-                    "as_of_date, account_external_id, description, instrument_key, "
-                    "quantity, price, market_value, percent_of_total, currency, "
-                    "source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    _INSERT_SNAPSHOT,
                     (
                         as_of, aid, _ZERO_DESC, None, None, None, 0.0, None, "USD",
                         sha, json.dumps({"description": _ZERO_DESC,
@@ -204,10 +208,7 @@ def insert_statement(conn: sqlite3.Connection, parsed: dict, sha: str) -> int:
                     i += 1
             seen.add(uniq)
             conn.execute(
-                "INSERT OR REPLACE INTO historical_position_snapshots ("
-                "as_of_date, account_external_id, description, instrument_key, "
-                "quantity, price, market_value, percent_of_total, currency, "
-                "source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                _INSERT_SNAPSHOT,
                 (
                     as_of, aid, uniq, key,
                     h.get("quantity"), h.get("price"), h.get("market_value"),
@@ -811,10 +812,7 @@ def insert_derived_marks(conn: sqlite3.Connection, workbook: Path | None) -> int
     fill = derived_marks.gaps_to_fill(marks, covered)
     for mark in fill:
         conn.execute(
-            "INSERT OR REPLACE INTO historical_position_snapshots ("
-            "as_of_date, account_external_id, description, instrument_key, "
-            "quantity, price, market_value, percent_of_total, currency, "
-            "source_sha256, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            _INSERT_SNAPSHOT,
             (
                 ts_from_iso(mark.as_of), mark.account_external_id,
                 derived_marks.DERIVED_DESC, None, None, None,
@@ -991,17 +989,22 @@ def parse_statements(pdfs: list[Path], shas: list[str], *,
     statements with identical content are still each parsed rather than one
     shadowing the other) are replayed directly; misses are parsed — in a process
     pool when more than one needs parsing and ``max_workers`` allows it, else in
-    process — and their results folded back into the sidecar.
+    process — and the sidecar is rewritten to hold this run's entries only, so
+    entries keyed by an older fingerprint or a statement that left the archive
+    do not accumulate.
     """
     logic_fp = _parser_logic_fingerprint()
     cached = _load_parse_cache(cache_dir)
 
     parsed: list[dict | None] = [None] * len(pdfs)
     misses: list[int] = []
+    fresh: dict[str, dict] = {}
     for i, sha in enumerate(shas):
-        hit = cached.get(_cache_key(sha, logic_fp, signatures))
+        key = _cache_key(sha, logic_fp, signatures)
+        hit = cached.get(key)
         if hit is not None:
             parsed[i] = hit
+            fresh[key] = hit
         else:
             misses.append(i)
 
@@ -1015,11 +1018,11 @@ def parse_statements(pdfs: list[Path], shas: list[str], *,
                                         repeat(signatures)))
         else:
             outputs = [_parse_statement(p, signatures) for p in paths]
-        fresh = dict(cached)
         for i, out in zip(misses, outputs, strict=True):
             parsed[i] = out
             if not out.get("_error"):
                 fresh[_cache_key(shas[i], logic_fp, signatures)] = out
+    if fresh.keys() != cached.keys():
         _save_parse_cache(cache_dir, fresh)
 
     return parsed  # type: ignore[return-value]

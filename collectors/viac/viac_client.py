@@ -2,9 +2,8 @@
 """
 Shared HTTP client for VIAC's REST API.
 
-VIAC's web portal is a JSON-over-cookies SPA backend. Phase 1
-discovery (see DESIGN.md) established that after the mTAN-gated
-login flow, the session is held entirely in a single httpOnly
+VIAC's web portal is a JSON-over-cookies SPA backend. After the
+mTAN-gated login flow (see DESIGN.md), the session is held entirely in a single httpOnly
 cookie (`AL_SESS-S`) plus a CSRF token in `CSRFT<N>-S` that the
 SPA echoes back as an `x-csrft<N>` request header on every
 state-mutating verb (POST / PUT / PATCH / DELETE).

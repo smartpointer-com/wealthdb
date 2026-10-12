@@ -22,16 +22,16 @@ prune engine) with ubs-web's configuration. Two things are reclaimed:
   whatever partial artefacts such a dir holds; after pruning one, the
   next ``load --force`` rebuild reflects the removal.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
+Completeness signal: the ``run.json`` ``status`` field the walk
 writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with ``"complete"`` / ``"dry-run"`` at the end). Dumps that predate
-the ``status`` field carry a full manifest with no ``status`` key.
+with the terminal status at the end; only ``"complete"`` counts as
+complete). Legacy dumps carry a full manifest with no ``status`` key.
 ubs-web's ``write_run_json`` runs only at the end of a real walk and
-records a ``dry_run`` bool, so a statusless manifest is a pre-change
-dump that is complete iff it is present **and** not a ``--dry-run``
-shell — hence the legacy predicate checks ``not m.get("dry_run")`` on
-top of ``m is not None`` (a legacy ``--dry-run`` shell has a
-full-looking manifest and must not be classed complete). An
+records a ``dry_run`` bool, so a statusless manifest is a legacy dump
+that is complete iff it is present **and** not a ``--dry-run`` shell —
+hence the legacy predicate checks ``not m.get("dry_run")`` on top of
+``m is not None`` (a legacy ``--dry-run`` shell has a full-looking
+manifest and must not be classed complete). An
 unreadable or corrupt ``run.json`` is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
@@ -55,13 +55,12 @@ from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
-    # Forward convention: status_classification resolves "complete" →
-    # COMPLETE and "in-progress"/"dry-run" → NON_COMPLETE before the
-    # legacy fallback is consulted. The fallback fires only for a
-    # statusless (pre-change) manifest: ubs-web's write_run_json ran
-    # once, at the end of a real walk, and recorded a dry_run bool, so a
-    # legacy dump is complete iff its manifest is present AND it was not
-    # a --dry-run shell. The extra `not m.get("dry_run")` vs
+    # status_classification resolves "complete" → COMPLETE and any other
+    # status → NON_COMPLETE before the legacy fallback is consulted. The
+    # fallback fires only for a statusless (legacy) manifest: ubs-web's
+    # write_run_json ran once, at the end of a real walk, and recorded a
+    # dry_run bool, so a legacy dump is complete iff its manifest is
+    # present AND it was not a --dry-run shell. The extra `not m.get("dry_run")` vs
     # fidelity-web's bare `m is not None` is load-bearing here: ubs-web's
     # run.json always carries dry_run, so a legacy --dry-run shell has a
     # full-looking manifest and must NOT be kept forever as "complete".

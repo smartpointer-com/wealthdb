@@ -42,14 +42,14 @@ from urllib.parse import urlparse
 
 from collectorkit import cli, debugcap, explore
 
+import q2client
+
 log = logging.getLogger("firstcitizens.explore")
 
-# Where the sign-in actually lives is a §3 open question: the public site
-# is www.firstcitizens.com, but the digital-banking app may sit on a
-# dedicated subdomain (or even a vendor host) behind a redirect. Starting
-# at the public homepage records whatever redirect chain exists; --url can
-# point straight at the observed entry once a capture names it.
-DEFAULT_URL = "https://www.firstcitizens.com/"
+# The public homepage, whose modal carries the sign-in form; starting there
+# records the whole redirect chain into the digital-banking app. --url can
+# point straight at another entry.
+DEFAULT_URL = q2client.START_URL
 DEFAULT_PROFILE_DIR = Path("/secrets/firstcitizens-profile")
 DEFAULT_ENV_FILE = Path("/secrets/firstcitizens.env")
 USER_ENV = "FIRSTCITIZENS_USERNAME"
@@ -57,17 +57,16 @@ PASS_ENV = "FIRSTCITIZENS_PASSWORD"
 EVENT_PREFIX = "__FIRSTCITIZENS_EVENT__ "
 
 # Pre-fill is restricted to firstcitizens.com (and subdomains) so
-# credentials never leak into an embedded third-party frame. If the first
-# capture shows the login form rendering on a different host, the
-# credentials are typed by hand that run and the gate is widened to the
-# observed host afterwards — never pre-emptively.
+# credentials never leak into an embedded third-party frame. A login form
+# rendering on another host gets its credentials typed by hand; the gate is
+# widened to an observed host only after a capture shows it — never
+# pre-emptively.
 HOST_RE = re.compile(r"(^|\.)firstcitizens\.com$", re.I)
 
-# Locators tried in order. Deliberately broad — no real captures exist yet
-# (this harness produces them), so they anchor on standard HTML
-# conventions rather than any one observed id. US retail sign-ins are
-# username-keyed (not an email), hence the name/id substring hooks lead
-# and the email conventions trail as defence.
+# Locators tried in order. Deliberately broad: they anchor on standard HTML
+# conventions rather than any one observed id, so a reworked form still
+# pre-fills. US retail sign-ins are username-keyed (not an email), hence the
+# name/id substring hooks lead and the email conventions trail as defence.
 USER_SELECTOR = (
     "input[autocomplete='username'], "
     "input[name*='user' i], "
@@ -88,8 +87,8 @@ PWD_SELECTOR = "input[type='password']"
 #      a login form (SPA: may be after the initial DOM), signal Python via
 #      a console.log() sentinel so the Python side can fill it. Host-gated
 #      so neither detector can fire on a third-party frame; there is no
-#      path gate because no captures exist yet to name the logon routes —
-#      the Python side only fills when username + password fields co-exist
+#      path gate, so the detectors see the form wherever it mounts — the
+#      Python side only fills when username + password fields co-exist
 #      in one frame, which is what keeps credentials out of lone fields.
 #      Init scripts run in every frame, so an embedded sign-in iframe is
 #      covered too.
@@ -205,17 +204,16 @@ def _maybe_prefill_login(page, username: str, password: str,
 
     Frame-aware: the form is looked for in every frame whose host is under
     firstcitizens.com — covering both a form in the main frame and one
-    embedded in a same-brand iframe (which entry shape the site uses is a
-    §3 open question). Both fields must co-exist in the SAME frame before
-    either is touched, so the password can never land in a standalone
-    field (a 2FA code entry is a lone input). Each fill is verified by
-    read-back, with one clear-and-retry, so a stray autofill can never
-    concatenate onto a correct value; the field is marked done regardless
-    of the outcome so later DOM mutations never trigger a re-fill that
-    fights a hand-typed value. A field that already has content is marked
-    done untouched. Never submits — Sign in + 2FA are driven manually in
-    the VNC session. Returns True iff at least one field was newly filled
-    and verified."""
+    embedded in a same-brand iframe. Both fields must co-exist in the SAME
+    frame before either is touched, so the password can never land in a
+    standalone field (a 2FA code entry is a lone input). Each fill is
+    verified by read-back, with one clear-and-retry, so a stray autofill can
+    never concatenate onto a correct value; the field is marked done
+    regardless of the outcome so later DOM mutations never trigger a re-fill
+    that fights a hand-typed value. A field that already has content is marked
+    done untouched. Never submits: that is login.py's step, or the human's
+    in an explore session. Returns True iff at least one field was newly
+    filled and verified."""
     did = False
     for frame in page.frames:
         try:
@@ -259,7 +257,7 @@ def _maybe_prefill_login(page, username: str, password: str,
                 else:
                     log.warning(
                         "pre-fill of %s field did not stick (got len %d, "
-                        "want %d) — type it manually in the VNC session",
+                        "want %d) — type it by hand",
                         kind, len(got or ""), len(value))
             except Exception as exc:
                 log.debug("prefill %s field failed: %r", kind, exc)

@@ -646,8 +646,8 @@ def _parse_option_block(lines, idx):
             break
         look += 1
     if occ is None:
-        # Not a recognisable option block after all; consume only
-        # the opener so the caller can re-examine following lines.
+        # Not a recognisable option block after all; the caller reads
+        # the opener as an ordinary line instead.
         return None, 0
     return SvbwaHoldingRow(
         description=desc,

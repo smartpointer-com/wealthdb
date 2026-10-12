@@ -4,12 +4,11 @@ Charitable) surface.
 
 Launches Camoufox in the container's Xvfb display on the standard
 Fidelity signin page and records every action taken in the VNC session,
-so the DAF walk phases can be written from real traces. The scripted
-`download` walk never visits the DAF (it is auto-excluded by account-id
-length — DESIGN.md §1.2/§3.1); this harness exists to map that surface,
-which sits behind a different web UI (expected: an SSO hop from the
-account selector's `Fidelity Charitable® Giving` link into the Fidelity
-Charitable portal — observed host and chain are §12 open questions).
+so DAF surfaces can be mapped from real traces. The DAF sits behind a
+different web UI, reached by an SSO hop from the retail session into
+the charitable SPA (DESIGN.md §12); the `download` walk's `daf` phase
+drives its JSON API, and this harness maps a surface before it joins
+that phase's allow-list (AGENTS.md §1a).
 
 It records the HAR, the network and click logs, downloads, and a DOM
 snapshot of every distinct screen of each Fidelity-family frame (the
@@ -48,9 +47,9 @@ from collectorkit import cli, debugcap, explore
 log = logging.getLogger("fidelity-web.explore")
 
 # The standard signin — the same entry download.py drives. The DAF hop
-# is taken from the post-auth account selector, so recording starts on
-# known ground and captures the full redirect chain from there. --url
-# can point straight at the DAF portal once a capture names its host.
+# is taken from the post-auth session, so recording starts on known
+# ground and captures the full redirect chain from there. --url can
+# point straight at the DAF portal instead.
 DEFAULT_URL = "https://digital.fidelity.com/prgw/digital/signin/"
 # The download.py profile dir, on purpose: the Akamai trust + Fidelity
 # device-trust cookies it holds are what let a scripted signin through,
@@ -64,9 +63,8 @@ EVENT_PREFIX = "__FIDELITY_EVENT__ "
 # DOM/network observation covers the whole Fidelity family: the retail
 # hosts (digital.fidelity.com, digitalservices.fidelity.com, …) plus
 # the Fidelity Charitable public/portal hosts, wherever the SSO chain
-# lands. Which of these actually serves the DAF UI is a §12 open
-# question — the gate is deliberately wide so the answer is captured
-# rather than filtered out.
+# lands. The gate is deliberately wide so a surface on a new host is
+# captured rather than filtered out.
 OBSERVE_HOST_RE = re.compile(
     r"(^|\.)(fidelity\.com|fidelitycharitable\.(org|com))$", re.I)
 
@@ -82,8 +80,9 @@ PREFILL_HOST_RE = re.compile(r"(^|\.)fidelity\.com$", re.I)
 # remember-my-username <select> on returning ones. Generic conventions
 # trail as defence in case the form drifts.
 USER_SELECTOR = (
+    "input#dom-username-input, "
+    "input[autocomplete~=username], "
     "input#userId-input, "
-    "input[autocomplete='username'], "
     "input[name='userId'], "
     "input[aria-labelledby='dom-username-label'], "
     "input[name*='user' i], "

@@ -10,12 +10,11 @@ which PDFs to parse, then writes the results into
 
 Library choice: pypdf with `extract_text(extraction_mode='layout')`.
 The Quartalsbericht is iText-produced with a column-aligned
-tabular layout that pypdf's layout-mode preserves reliably. The
-PDF library bake-off in /tmp showed all candidates (pdfplumber,
-pypdf, pypdfium2) extract the same row counts; pypdf was picked
-for project consistency (Swissquote uses it), pure-Python install
-(no native deps in the Docker image), and adequate speed (~30 ms
-per PDF).
+tabular layout that pypdf's layout-mode preserves reliably.
+pdfplumber, pypdf and pypdfium2 all extract the same row counts;
+pypdf is used for consistency with Swissquote, a pure-Python
+install (no native deps in the Docker image), and adequate speed
+(~30 ms per PDF).
 """
 
 from __future__ import annotations
@@ -64,8 +63,7 @@ PORTFOLIO_DETAIL_END = re.compile(
 
 # Position row: after the security name + ISIN, the right side has
 # currency (3 chars), units, performance%, allocation%, allocation in CHF.
-# A few PDFs miss the units column (zero-unit position?) — handle both
-# 5-column and 4-column tails with a relaxed alternation.
+# All five columns are required; a row missing one is not a position.
 POSITION_TAIL = re.compile(
     rf"\s+(?P<ccy>[A-Z]{{3}})"
     rf"\s+(?P<units>{NUM_RE_SOURCE})"
@@ -308,8 +306,8 @@ def _parse_quarterly_report_text(text: str, source_sha256: str) -> dict:
         # 3. 'Accrued interest' row.
         m_accrued = ACCRUED_TAIL.match(line)
         if m_accrued is not None:
-            # Accrued interest is reported in CHF on the observed
-            # corpus (portfolio reference currency).
+            # Accrued interest is reported in CHF (portfolio reference
+            # currency).
             cash.append({
                 "balance_kind": "accrued_interest",
                 "currency":     "CHF",
@@ -328,8 +326,8 @@ def _parse_quarterly_report_text(text: str, source_sha256: str) -> dict:
         # Anything else under Portfolio Detail is wraparound text
         # we don't need (security-name wrap, totals, footnote refs).
 
-    # Currency is always CHF in the observed corpus; assert from the
-    # cash row when present, else from the first position.
+    # Currency is CHF (the portfolio reference currency); assert from
+    # the cash row when present, else from the first position.
     currency = "CHF"
     if cash:
         currency = cash[0]["currency"]
@@ -358,7 +356,7 @@ def parse_quarterly_report(pdf_path: Path) -> dict:
         {
           "as_of_date":           int,            # Unix-seconds UTC at quarter-end midnight
           "account_external_id":  str,            # 'NNNN.NNNNNN.N' from page-1 'Reference no.'
-          "currency":             str,            # 'CHF' in the observed corpus
+          "currency":             str,            # 'CHF' (portfolio reference currency)
           "source_sha256":        str,            # hex digest of the PDF bytes
           "positions": [
               {

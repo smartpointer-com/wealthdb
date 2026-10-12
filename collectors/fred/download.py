@@ -87,7 +87,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--env-file", type=Path, default=None,
-        help="KEY=VALUE credentials env file, sourced before the API key is "
+        help="Credentials env file, sourced as bash before the API key is "
              "resolved (also honours the FRED_ENV_FILE env var). The wrapper "
              "already sources <secrets-dir>/fred.env, so this is for running "
              "download.py directly.",
@@ -174,17 +174,21 @@ def fetch_observations(base_url: str, series_id: str, api_key: str,
 
 def _source_env_file(explicit: Path | None) -> None:
     """Source an explicit --env-file (or $FRED_ENV_FILE) before credentials
-    are resolved, so a direct `download.py` run needs no wrapper. The wrapper
-    already sources <secrets-dir>/fred.env; this one is sourced last, so its
-    values win. A path that was asked for but is absent is an error, not a
-    silent fallback to whatever the environment happened to hold."""
+    are resolved, so a direct `download.py` run needs no wrapper. The file
+    is a bash script, sourced through bash as the wrapper sources it, so
+    both read the same values. This one is sourced last, so its values win.
+    A path that was asked for but is absent is an error, not a silent
+    fallback to whatever the environment happened to hold."""
     path = explicit or (Path(os.environ["FRED_ENV_FILE"])
                         if os.environ.get("FRED_ENV_FILE") else None)
     if path is None:
         return
     if not path.is_file():
         raise SystemExit(f"--env-file does not exist: {path}")
-    envfile.load_env_file(path, ("FRED_API_KEY",), logger=log)
+    try:
+        envfile.source_env_file(path, prefer_file=True)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
 
 
 def _check_credential(base_url: str, api_key: str) -> int:
@@ -209,12 +213,17 @@ def _check_credential(base_url: str, api_key: str) -> int:
             return 1
         log.error("probe failed: HTTP %d %s", e.code, e.reason)
         return 1
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except OSError as e:
+        # URLError, TimeoutError and the socket/TLS errors.
         log.error("probe could not reach FRED: %s", e)
         return 1
-    if "observations" not in doc:
+    except ValueError as e:
+        log.error("unexpected FRED response (not JSON): %s", e)
+        return 1
+    if not isinstance(doc, dict) or "observations" not in doc:
         log.error("unexpected FRED response (no observations): %s",
-                  sorted(doc)[:5])
+                  sorted(doc)[:5] if isinstance(doc, dict)
+                  else type(doc).__name__)
         return 1
     log.info("credential accepted — FRED answered the %s probe", probe_series)
     return 0
@@ -303,17 +312,19 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run:
             bronze.atomic_write_json(run / f"{sid}.json", doc)
 
+    # A run with zero usable series is a failure worth a non-zero exit, a
+    # dry run included.
+    rc = 0 if manifest["series"] else 5
     if args.dry_run:
         log.info("dry run: %d rates across %d series, %d failures "
                  "(nothing written)", total, len(manifest["series"]), failures)
-        return 0
+        return rc
 
     manifest["status"] = "complete"
     bronze.atomic_write_json(run / "run.json", manifest)
     log.info("wrote %d series (%d rates, %d failures) to %s",
              len(manifest["series"]), total, failures, run)
-    # A run with zero usable series is a failure worth a non-zero exit.
-    return 0 if manifest["series"] else 5
+    return rc
 
 
 if __name__ == "__main__":

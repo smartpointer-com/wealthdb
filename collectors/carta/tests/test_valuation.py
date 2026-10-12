@@ -123,9 +123,12 @@ def test_valued_count_and_price_over_time(migrated, tmp_path):
     fmv = [(_ts("2021-01-01"), 1.0), (_ts("2022-01-01"), 2.0),
            (_ts("2024-01-01"), 5.0)]
     cancel = _ts("2025-01-01")
-    load.load_securities_valued(migrated, 42, edir,
-                                fmv_timeline=fmv, cancel_ts=cancel,
-                                exercises={})
+    n = load.load_securities_valued(migrated, 42, edir,
+                                    fmv_timeline=fmv, cancel_ts=cancel,
+                                    exercises={})
+    # The count covers every delta row written, the exit rows included.
+    assert n == migrated.execute(
+        "SELECT COUNT(*) FROM securities").fetchone()[0]
 
     # only cert-1 held (cert-2 issued 2023), FMV 1.0
     assert _holdings_as_of(migrated, _ts("2021-06-01")) == (1000, 1000.0)

@@ -305,7 +305,7 @@ def _csv_yielded_nothing(text: str, rows: list) -> bool:
 def parse_csv(text: str) -> list[dict]:
     """Parse the Chase DEPOSIT activity CSV into dicts with keys posted_at,
     amount, description, kind, balance, check_number. Column names follow the
-    observed header (DESIGN.md §E): Details, Posting Date, Description,
+    export header (DESIGN.md §E): Details, Posting Date, Description,
     Amount, Type, Balance, Check or Slip #, matched case-insensitively
     (`_csv_key`). Rows without a parseable date + amount are skipped, and a
     header with no post-date column at all is reported and yields none."""
@@ -342,11 +342,11 @@ def parse_card_csv(text: str) -> list[dict]:
     meaning and the QFX `<DTPOSTED>`.
 
     Amounts stay provider-verbatim: spend negative, anything reducing the
-    balance owed positive. `Category` is empty on payments and `Memo` on every
-    observed row; both reduce to None. Columns are matched
-    case-insensitively (`_csv_key`); rows without a parseable post date +
-    amount are skipped, and a header with no post-date column at all is
-    reported and yields none."""
+    balance owed positive. `Category` and `Memo` can be empty; an empty
+    value reduces to None. Columns are matched case-insensitively
+    (`_csv_key`); rows without a parseable post date + amount are skipped,
+    and a header with no post-date column at all is reported and yields
+    none."""
     header, table = _csv_table(text)
     if not _has_date_column("card", "Post Date", header):
         return []
@@ -438,8 +438,8 @@ def is_card_export(qfx_text: str, csv_text: str) -> bool:
 # a row a run saw CSV-only — a pending item, with the CSV's own `Type`,
 # `Description` and no running balance — keeps those fields when a later run
 # carries the same event in the QFX. That is the same row, described by the
-# other file, rather than the second copy the FITID key used to insert; the
-# ledger is right either way, and only the pending row's own balance is lost.
+# other file, rather than a second copy; the ledger is right either way, and
+# only the pending row's own balance is lost.
 # The card ledger cannot settle for that — each of its two exports is the
 # ONLY source of several of its columns — so it is written by
 # `_upsert_card_transaction` instead, which repairs the stored row from
@@ -451,13 +451,13 @@ def _join_key(posted_at: int, amount: float) -> tuple:
     (post date, amount rounded to cents) — the amount is rounded so float
     noise never splits a match, and the CHECK NUMBER IS DELIBERATELY NOT IN
     THE KEY. The two exports disagree about it: a row can carry a check number
-    in the CSV that the QFX omits, and keying on it then failed the join
-    outright — the QFX row was emitted, the same CSV row was emitted AGAIN as
-    an unmatched leftover, and the withdrawal was double-counted in a ledger
-    that feeds the spending base. Content-derived ids do not save it from
-    that: two rows the join failed to pair are two rows, and the occurrence
-    index dutifully gives them distinct ids. The check number breaks ties
-    inside a bucket instead (`_pick_csv_match`)."""
+    in the CSV that the QFX omits, and keying on it would fail the join
+    outright — the QFX row emitted, the same CSV row emitted AGAIN as an
+    unmatched leftover, and the withdrawal double-counted in a ledger that
+    feeds the spending base. Content-derived ids do not save it from that:
+    two rows the join failed to pair are two rows, and the occurrence index
+    dutifully gives them distinct ids. The check number breaks ties inside a
+    bucket instead (`_pick_csv_match`)."""
     return (posted_at, round(amount, 2))
 
 
@@ -839,8 +839,8 @@ def _upsert_card_transaction(conn, account_external_id: str,
     Which export backs an incoming row is STATED by the join that built it
     (`merge_card_transactions` stamps `_csv_backed` / `_qfx_backed`), never
     sniffed off a payload cell: a card CSV row may legitimately leave `Type`
-    or `Category` blank, and a writer that read provenance off those refused
-    to adopt the very columns the row did carry. Each side's columns are
+    or `Category` blank, and a writer that read provenance off those would
+    refuse the very columns the row did carry. Each side's columns are
     offered only by a row that side backs, so a later CSV-only run never
     overwrites an un-mangled descriptor with the mangled one.
 
@@ -1213,10 +1213,10 @@ def load_statement_transactions(conn: sqlite3.Connection, bronze_dir: Path) -> i
     # The LATEST seam over the deposit accounts: a statement period spans at
     # most ~5 weeks, so a filename date this far past it can only cover days
     # some export already owns for every account.
-    deepest_seam = max(deposit_seams.values())
+    latest_seam = max(deposit_seams.values())
     pool = _deposit_statements_in_tree(
         bronze_dir, card_ids,
-        lambda name_date: name_date < deepest_seam + _STATEMENT_SPAN)
+        lambda name_date: name_date < latest_seam + _STATEMENT_SPAN)
     imported = skipped = 0
     for ext_id, seam in sorted(deposit_seams.items()):
         # Per account: the statements whose period OPENED before its seam —
@@ -1274,8 +1274,8 @@ def _names_a_payee(description: str | None) -> bool:
 def annotate_export_cheques(conn: sqlite3.Connection, bronze_dir: Path) -> int:
     """Give each export-era cheque the payee its statement prints, and
     return how many rows took one. Cheap when there is nothing to do: the
-    statements are opened only for rows still owed a read."""
-    card_ids = card_account_ids_in_tree(bronze_dir)
+    statements are opened only for rows still owed a read, and the bronze
+    tree is walked for its card set only when some row is."""
     todo = []
     for fitid, acct, posted, amount, check, desc, payload in conn.execute(
             "SELECT fitid, account_external_id, posted_at, amount, "
@@ -1283,12 +1283,19 @@ def annotate_export_cheques(conn: sqlite3.Connection, bronze_dir: Path) -> int:
             f"WHERE {_EXPORT_SOURCES_SQL} AND upper(description) LIKE 'CHECK%'",
             EXPORT_SOURCES):
         m = _BARE_CHEQUE_RE.match(desc or "")
-        if acct in card_ids or not m:
+        if not m:
             continue
         body = _payload_dict(payload)
         if body.get("cheque_statement_read"):
             continue
-        todo.append((fitid, posted, amount, (check or m.group(1)).strip(), body))
+        todo.append((fitid, acct, posted, amount,
+                     (check or m.group(1)).strip(), body))
+    if not todo:
+        return 0
+    card_ids = card_account_ids_in_tree(bronze_dir)
+    todo = [(fitid, posted, amount, number, body)
+            for fitid, acct, posted, amount, number, body in todo
+            if acct not in card_ids]
     if not todo:
         return 0
     days = [posted for _, posted, *_ in todo]
@@ -1370,8 +1377,8 @@ def annotate_export_cheques(conn: sqlite3.Connection, bronze_dir: Path) -> int:
 
 def _latest_account_row(conn, account_external_id: str) -> dict:
     """The most recent roster observation for an account, as a dict of its
-    promoted columns plus its payload fields. Empty when the account has
-    never been observed."""
+    promoted columns plus its payload fields. Empty when the account has no
+    roster observation."""
     row = conn.execute(
         "SELECT balance, pending_charges, payload FROM accounts "
         "WHERE account_external_id = ? ORDER BY snapshot_at DESC LIMIT 1",
@@ -1589,9 +1596,7 @@ def load_card_statements(conn: sqlite3.Connection, bronze_dir: Path) -> int:
     bounds nothing: it records the period balances and imports no
     transactions at all, because the export that eventually lands would put
     its own copy of the same rows beside them. The card heals on the load
-    after its export arrives. A silver DB built before this gate can already
-    hold such a card's statement rows and nothing here withdraws them: it
-    must be rebuilt with `load --force` before that card's export lands.
+    after its export arrives.
 
     Every period balance recorded also records whether that period's
     TRANSACTIONS are in silver at all
@@ -1945,11 +1950,11 @@ def card_account_ids_in_tree(bronze_dir: Path) -> set[str]:
 
     This is the ROUTING set — which statement PDFs go to the card parser
     rather than the deposit one — and there the union is the safe direction.
-    A run whose accounts.json is missing or unreadable used to feed a card's
-    statement PDFs to the deposit parser, which has a different period line, a
-    different sign convention and no card in its balance chain; folding each
-    run's roster in as a second POSITIVE signal also catches a card whose
-    export failed in every run present. Mis-routing a statement costs a parse,
+    The file signal keeps a run whose accounts.json is missing or unreadable
+    from feeding a card's statement PDFs to the deposit parser, which has a
+    different period line, a different sign convention and no card in its
+    balance chain; folding each run's roster in as a second POSITIVE signal
+    also catches a card whose export failed in every run present. Mis-routing a statement costs a parse,
     and the file signal is all but sufficient on its own anyway.
 
     `derive_card_balances` deliberately does NOT use this set: it rewrites
@@ -1977,8 +1982,8 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
         return False
 
     # EVERY roster record is ingested, including one from a run whose
-    # run.json scores its product's coverage short. DO NOT re-add a coverage
-    # gate here. Two reasons:
+    # run.json scores its product's coverage short. There is deliberately no
+    # coverage gate here, for two reasons:
     #
     #   * Silver ingest is purely ADDITIVE. `accounts` is monotemporal (a new
     #     snapshot row per run, PK (snapshot_at, account_external_id)),
@@ -1992,68 +1997,70 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     #     than pruning part of it. A partial run therefore just lands fewer
     #     rows, and the next run completes them — withholding a snapshot buys
     #     no protection, it only loses an observation.
-    #   * Withholding actively broke things. Coverage is composite: it also
-    #     requires the statement pass, so ONE flaky statement PDF withheld the
-    #     whole accounts snapshot — and balances come from the roster, not from
-    #     statements, so gold went on projecting the previous run's balance
-    #     indefinitely. Worse, a snapshot could be withheld while the product's
-    #     transactions were still admitted, and the gold adapter classifies a
-    #     transaction by looking its account's product up in `accounts`: with
-    #     no roster row there, a card's spend projected into the deposit
-    #     ledger.
+    #   * Withholding breaks things. Coverage is composite: it also requires
+    #     the statement pass, so ONE flaky statement PDF would withhold the
+    #     whole accounts snapshot — and balances come from the roster, not
+    #     from statements, so gold would go on projecting the previous run's
+    #     balance indefinitely. Worse, a snapshot could be withheld while the
+    #     product's transactions were still admitted, and the gold adapter
+    #     classifies a transaction by looking its account's product up in
+    #     `accounts`: with no roster row there, a card's spend projects into
+    #     the deposit ledger.
     #
     # Closure semantics belong to GOLD, which is where "this observation is the
     # complete set" is actually decided (it merges per account, newest
     # observation wins, absence never wins). run.json's `coverage` block only
     # records which product fell short; nothing gates on it.
     accounts = _read_accounts(run_dir)
-    for acct in accounts:
-        _insert_account(conn, snapshot_at, acct)
+    # One transaction per dump: a failure part-way leaves silver as it was,
+    # with no dump_runs row, so the next load retries the whole dump.
+    with silver.transaction(conn):
+        for acct in accounts:
+            _insert_account(conn, snapshot_at, acct)
 
-    tx_dir = run_dir / "transactions"
-    drifted: list[str] = []
-    if tx_dir.is_dir():
-        for ext_id, qfx_text, csv_text in _export_pairs(tx_dir):
-            if is_card_export(qfx_text, csv_text):
-                csv_rows = parse_card_csv(csv_text)
-                # The card ledger's own writer: each export is authoritative
-                # over columns the other does not carry, so a row already in
-                # silver is repaired rather than ignored.
-                for tx in merge_card_transactions(ext_id, parse_qfx(qfx_text),
-                                                  csv_rows):
-                    _upsert_card_transaction(conn, ext_id, tx)
-            else:
-                csv_rows = parse_csv(csv_text)
-                for tx in merge_transactions(ext_id, parse_qfx(qfx_text),
-                                             csv_rows):
-                    _insert_transaction(conn, ext_id, tx)
-            if _csv_yielded_nothing(csv_text, csv_rows):
-                # Not "the header has drifted": a value-level drift — a post
-                # date printed DD/MM/YYYY — parses to nothing just the same,
-                # off a header that is perfectly good.
-                log.warning("%s: the export CSV carries data lines but parsed "
-                            "to no rows — its header or its date format has "
-                            "drifted, so this run's ledger for it is QFX-only",
-                            ext_id)
-                drifted.append(ext_id)
+        tx_dir = run_dir / "transactions"
+        drifted: list[str] = []
+        if tx_dir.is_dir():
+            for ext_id, qfx_text, csv_text in _export_pairs(tx_dir):
+                if is_card_export(qfx_text, csv_text):
+                    csv_rows = parse_card_csv(csv_text)
+                    # The card ledger's own writer: each export is authoritative
+                    # over columns the other does not carry, so a row already in
+                    # silver is repaired rather than ignored.
+                    for tx in merge_card_transactions(ext_id, parse_qfx(qfx_text),
+                                                      csv_rows):
+                        _upsert_card_transaction(conn, ext_id, tx)
+                else:
+                    csv_rows = parse_csv(csv_text)
+                    for tx in merge_transactions(ext_id, parse_qfx(qfx_text),
+                                                 csv_rows):
+                        _insert_transaction(conn, ext_id, tx)
+                if _csv_yielded_nothing(csv_text, csv_rows):
+                    # Not "the header has drifted": a value-level drift — a post
+                    # date printed DD/MM/YYYY — parses to nothing just the same,
+                    # off a header that is perfectly good.
+                    log.warning("%s: the export CSV carries data lines but parsed "
+                                "to no rows — its header or its date format has "
+                                "drifted, so this run's ledger for it is QFX-only",
+                                ext_id)
+                    drifted.append(ext_id)
 
-    stmt_dir = run_dir / "statements"
-    if stmt_dir.is_dir():
-        for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
-            for pdf in sorted(acct_dir.glob("*.pdf")):
-                _insert_document(conn, snapshot_at, acct_dir.name, pdf)
+        stmt_dir = run_dir / "statements"
+        if stmt_dir.is_dir():
+            for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
+                for pdf in sorted(acct_dir.glob("*.pdf")):
+                    _insert_document(conn, snapshot_at, acct_dir.name, pdf)
 
-    # "This run is ingested" and "the tree-wide post passes are owed" commit
-    # TOGETHER. The passes are owed by a single flag rather than a marker per
-    # run, and a flag written after this commit — even one statement later —
-    # leaves a window in which an interrupt strands a run permanently
-    # ingested with the passes never owed and nothing left able to notice.
-    _write_post_passes_pending(conn, True)
-    conn.execute(
-        "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
-        " run_dir) VALUES (?,?,?)",
-        (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
-    conn.commit()
+        # "This run is ingested" and "the tree-wide post passes are owed" commit
+        # TOGETHER. The passes are owed by a single flag rather than a marker per
+        # run, and a flag written after this commit — even one statement later —
+        # leaves a window in which an interrupt strands a run permanently
+        # ingested with the passes never owed and nothing left able to notice.
+        _write_post_passes_pending(conn, True)
+        conn.execute(
+            "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
+            " run_dir) VALUES (?,?,?)",
+            (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
     log.info("loaded %s (%d accounts%s)", run_dir.name, len(accounts),
              f", {len(drifted)} export CSV(s) parsed to no rows"
              if drifted else "")
@@ -2171,11 +2178,11 @@ def main(argv: list[str]) -> int:
         #
         # The flag is cleared only once all three have returned, so a load
         # that dies inside one of them — a poppler failure, an interrupt —
-        # re-runs them on the next ordinary load, where before they were gated
-        # on `loaded` alone and a tree with nothing new to ingest skipped them
-        # forever, leaving silver permanently without its pre-export backfill
-        # and its reconstructed card balances. A clean load leaves the flag
-        # down, so a no-op reload still skips the PDF parsing they cost.
+        # re-runs them on the next ordinary load, even one with nothing new
+        # to ingest; gating them on `loaded` alone would leave silver
+        # permanently without its pre-export backfill and its reconstructed
+        # card balances. A clean load leaves the flag down, so a no-op reload
+        # still skips the PDF parsing they cost.
         # A moved statement parser owes the passes a run just as an
         # unfinished load does, and it is the case nothing else would raise:
         # a parser-only change lands no bronze run, so the pending flag stays

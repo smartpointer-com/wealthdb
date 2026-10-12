@@ -103,6 +103,13 @@ def test_js_redacts_password_values():
     assert "type === 'password'" in explore.CLICK_RECORDER_JS
 
 
+def test_the_click_recorder_never_logs_a_form_value():
+    # innerText is always empty on INPUT/TEXTAREA, so a button or link keeps
+    # its label while no field value can contribute anything — which keeps a
+    # filled username or a typed one-time code out of the click log.
+    assert ".value" not in explore.CLICK_RECORDER_JS
+
+
 # ============================================================
 # Login pre-fill — stub Playwright objects, no browser
 # ============================================================
@@ -280,3 +287,23 @@ def test_prefill_tracks_fills_per_page():
     page2 = StubPage(chase_frame(user=StubField(), pwd=StubField()))
     assert explore._maybe_prefill_login(page1, USERNAME, PASSWORD, filled)
     assert explore._maybe_prefill_login(page2, USERNAME, PASSWORD, filled)
+
+
+class FailingField(StubField):
+    """A field whose fill() raises the way Playwright does: the message ends
+    in a Call log block that reproduces the value being typed."""
+
+    def fill(self, v, timeout=None):
+        self.fill_calls.append(v)
+        raise RuntimeError(f"Timeout 2000ms exceeded.\nCall log:\n"
+                           f"  - fill(\"{v}\")")
+
+
+def test_a_failed_fill_never_logs_the_typed_value(caplog):
+    page = StubPage(chase_frame(user=FailingField(), pwd=FailingField()))
+    with caplog.at_level("DEBUG", logger="chase.explore"):
+        assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD,
+                                                set())
+    assert "prefill pwd field failed" in caplog.text
+    assert PASSWORD not in caplog.text
+    assert USERNAME not in caplog.text

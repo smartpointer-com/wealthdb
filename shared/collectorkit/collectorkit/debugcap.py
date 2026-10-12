@@ -14,7 +14,8 @@ one helper per kind rather than one shape for all:
     the screenshots' NEVER-commit contract.
   * :func:`tee_debug_log` — the run's full DEBUG log, beside the captures.
 
-The contract, identical for both:
+The contract for the bronze-resident pair, :func:`capture_page` and
+:class:`HttpTrace`:
 
   * Captures land in ``<run>/screenshots/`` — the same subdir name the
     fleet's `prune` already nominates via ``debug_subdirs``, so a complete
@@ -56,6 +57,8 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
+
+from collectorkit.cli import LOG_FORMAT
 
 # The subdir every collector's `prune` already nominates as debug artefacts.
 # Keeping the name identical fleet-wide is what lets prune reclaim captures
@@ -523,8 +526,7 @@ def secret_variants(secret: str) -> tuple[str, ...]:
     angle brackets. A redactor that only knows the raw string therefore
     masks the username — which is usually alphanumeric and survives
     encoding unchanged — while writing a password full of punctuation to
-    disk in full. That is not hypothetical: it is how a real
-    password reached a debug capture in cleartext.
+    disk in full.
 
     Returned longest-first, so a longer spelling is masked before a shorter
     one can match inside it. Duplicates are dropped, which is the common
@@ -904,8 +906,7 @@ def tee_debug_log(debug_dir: Path | None, console_level: int, *,
         log.warning("could not open the debug log file: %s", e)
         return None
     handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
     root = logging.getLogger()
     # Pin existing (console) handlers to their current verbosity, then open
     # the root to DEBUG so the file sees everything.

@@ -29,19 +29,18 @@ order, otherwise the named single phase):
   ``scrape_lots``.
 
 * ``activity`` — Navigate to Activity & Orders once, drive the
-  page-level timepicker filter (preset 'Past 90 days' for the
-  rolling default; Custom-tab + per-window bisection for a
-  historic ``--lookback`` backfill), then for each window
-  click the Download trigger and grab the CSV. The export is
+  page-level timepicker's Custom tab once per window of the
+  ``--lookback`` range, and for each window click the Download
+  trigger and grab the CSV. The export is
   consolidated across all visible accounts — the
   ``Account Number`` column inside the CSV is the per-row
   account discriminator; clicking the account-selector before
   the export does NOT scope it.
 
-* ``documents`` — Visit the Statements sub-page and walk the
-  per-row download buttons; visit the Tax-forms sub-page and walk
-  the direct download anchors across every year in the TimeFilter
-  select. Prospectuses + supplementary material are out of scope
+* ``documents`` — In the document center, walk the Statements and
+  the Tax forms types across every TimeFilter year from the
+  ``--lookback`` start year, and fetch each '(pdf)' row's document
+  through the page's own download response. Prospectuses + supplementary material are out of scope
   (DESIGN.md §8.5).
 
 * ``balances`` — Persist ``balances.html``. Fidelity offers no
@@ -51,6 +50,11 @@ order, otherwise the named single phase):
 
 * ``performance`` — Persist ``performance.html``. Pure Highcharts
   UI with no structured export.
+
+When the login carries a Fidelity Charitable donor-advised fund, the
+``positions`` and ``all`` modes also run the DAF phase over the
+charitable API (``scrape_daf``): the pool snapshot under
+``positions``, the full history, exports and documents under ``all``.
 
 Anti-bot posture: rung 3 of DESIGN.md §6 — Camoufox with
 ``os='macos'`` + ``humanize=True`` + ``geoip=True``, behind Xvfb.
@@ -64,8 +68,8 @@ Modes:
                landing URL to verify the session is alive. No
                credential submit, no 2FA, no MFA push.
   --vnc        pre-fill the credentials, then HAND OFF to a VNC
-               session (x11vnc on 127.0.0.1:5900, started by
-               entrypoint.sh), where Log In and 2FA are completed
+               session (x11vnc, started by entrypoint.sh on a host
+               port the wrapper prints), where Log In and 2FA are completed
                by hand. The script polls for the post-auth URL and
                (when no walk phases are requested) exits once it
                lands.
@@ -130,9 +134,9 @@ URL_DOCUMENTS = "https://digital.fidelity.com/ftgw/digital/portfolio/documents"
 URL_BALANCES = "https://digital.fidelity.com/ftgw/digital/portfolio/balances"
 URL_PERFORMANCE = "https://digital.fidelity.com/ftgw/digital/portfolio/performance"
 POST_AUTH_PREFIX = "https://digital.fidelity.com/ftgw/digital/portfolio/"
-# Fidelity migrated the document center off the portfolio host onto
-# a separate "Enterprise Document Center" SPA. Navigating to
-# URL_DOCUMENTS now 302s here, so the documents phase accepts this
+# The document center is a separate "Enterprise Document Center" SPA
+# off the portfolio host. Navigating to URL_DOCUMENTS 302s there, so
+# the documents phase accepts this
 # prefix as a valid post-auth landing (it is NOT a session-timeout
 # bounce, which would redirect to the /prgw/digital/signin login).
 DOCCENTER_PREFIX = "https://digitalservices.fidelity.com/navigate/ent-documentcenter/"
@@ -303,9 +307,7 @@ def account_key(account_external_id):
     """First 16 hex chars of sha256(id) — the on-disk filename
     discriminator per DESIGN §2. Keeps ``ls`` of a bronze dir from
     leaking real Fidelity account numbers."""
-    return hashlib.sha256(
-        account_external_id.encode("ascii")
-    ).hexdigest()[:16]
+    return bronze.short_token(account_external_id)
 
 
 def parse_exclude_list(value):
@@ -579,8 +581,7 @@ def phase_coverage(run_json, requested_window=None):
     `complete` is the field a caller acts on: True when every attempt
     the phase made succeeded, False when any did not. A phase the run
     never requested has no entry at all, so "not asked for" is never
-    confused with "asked for and came back empty" — which is the
-    distinction the activity phase lost, run after run.
+    confused with "asked for and came back empty".
     """
     coverage = {}
     for name, key in PHASE_RESULT_KEYS:
@@ -717,16 +718,18 @@ def capture(page, capture_dir, label):
             )
         # Scrubbed: a capture taken on the sign-in page serializes the
         # form with the typed password in a `value` attribute.
-        (capture_dir / f"{ts}-{label}.html").write_text(
-            debugcap.scrub_dom(html), encoding="utf-8",
-        )
+        html_path = capture_dir / f"{ts}-{label}.html"
+        html_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
+        log.debug("wrote HTML %s", html_path)
     except Exception as e:
         log.warning("html capture %s: %s", label, e)
     try:
+        png_path = capture_dir / f"{ts}-{label}.png"
         page.screenshot(
-            path=str(capture_dir / f"{ts}-{label}.png"),
+            path=str(png_path),
             full_page=False, timeout=5_000, animations="disabled",
         )
+        log.debug("wrote screenshot %s", png_path)
     except Exception as e:
         log.debug("png capture %s: %s", label, e)
 
@@ -738,7 +741,7 @@ def dump_dom_inventory(page, capture_dir, label):
 
     page.content() only serialises the light DOM of the top
     document, so SPAs that render lists inside shadow DOM or nested
-    iframes (e.g. Fidelity's new Enterprise Document Center) come
+    iframes (e.g. Fidelity's Enterprise Document Center) come
     back empty in an ordinary capture. This walks shadow roots and
     same-origin iframe documents and records each element's tag /
     id / data-testid / role / aria-label / name / type / href and a
@@ -1558,12 +1561,12 @@ def scrape_lots(page, bronze_dir, accounts, prev_index, *, refresh=False,
 # open-state probe.
 # The activity time filter, in both generations Fidelity has served.
 #
-# 2026-07: the page moved onto the `fds-*` design system and the
-# inline time-period pill (`ap143528-timeperiod-filter`) became a
-# `<filter-by-time>` button that expands a panel. The button carries
-# the open state on `aria-expanded`, which is the semantic signal and
-# survives another renaming of the panel itself; the legacy radio
-# probe stays as the fallback for a partial rollback.
+# The time-period control is a `<filter-by-time>` button (the `fds-*`
+# design system) that expands a panel. The button carries the open
+# state on `aria-expanded`, which is the semantic signal and survives
+# a renaming of the panel itself. The older inline pill
+# (`ap143528-timeperiod-filter`) and its radio probe stay as the
+# fallback for a partial rollback.
 SEL_TIMEPICKER_PILL = (
     "[data-testid='filter-by-time-button'], "
     "[data-testid='ap143528-timeperiod-filter']"
@@ -1580,10 +1583,9 @@ SEL_TIMEPICKER_OPEN = (
 # (`from-date-too-old-error`, `date-range-too-large-error`).
 SEL_ACTIVITY_FROM_DATE = "#input-from-date, #customized-timeperiod-from-date"
 SEL_ACTIVITY_TO_DATE = "#input-to-date, #customized-timeperiod-to-date"
-# Apply is now an unlabelled submit button, so it is addressed through
-# the form the date inputs sit in rather than by name: both the form id
-# and the button id are generated per render, and the label the older
-# generation carried is gone.
+# Apply is an unlabelled submit button, so it is addressed through the
+# form the date inputs sit in rather than by name: both the form id and
+# the button id are generated per render.
 SEL_ACTIVITY_APPLY = (
     "form:has(#input-from-date) button[type='submit'], "
     "button[aria-label='Apply Customized Time Period']"
@@ -1997,7 +1999,7 @@ def _select_activity_custom_range(page, since_date, until_date,
     # filter's rows under this window's name. That is worse than
     # failing: the file lands, the run reports ok, and the rows are
     # silently the wrong ones. A control that does not carry a label
-    # (an older generation) returns None and is trusted as before.
+    # (an older generation) returns None and is trusted.
     deadline = time.monotonic() + 20.0
     shown = None
     while time.monotonic() < deadline:
@@ -2028,126 +2030,6 @@ def _select_activity_custom_range(page, since_date, until_date,
     return range_tag
 
 
-def _select_activity_page_timeperiod(page, preferred_values,
-                                       capture_dir, label_suffix):
-    """Drive the **page-level** time-period filter pill on the
-    Activity & Orders page (``[data-testid='ap143528-timeperiod-
-    filter']``) and select the radio with the largest preferred
-    ``pvd-value`` (day-count string, e.g. ``'90'`` for Past 90
-    days).
-
-    This must be done BEFORE opening the Download popover —
-    although the popover contains its own timepicker control,
-    that control shares the page-level ``#timeperiod-select-
-    container`` dropdown, and clicking a radio in the dropdown is
-    treated as 'outside the Download popover' which dismisses it.
-    Setting the time-period on the page first means the Download
-    popover (when opened later) picks up the new range with no
-    cross-element interaction.
-
-    Returns the value selected (as ``"past_<N>_days"``) or
-    ``None`` if the pill is absent or no preferred value matches.
-    Both the pill and the radios dispatch via JS — Camoufox marks
-    them as 'outside viewport' even when on-screen."""
-    pill = page.locator("[data-testid='ap143528-timeperiod-filter']")
-    if pill.count() == 0:
-        # Fallback: the in-popover button if the page-level pill
-        # isn't rendered for some reason.
-        pill = page.locator("#timeperiod-select-button")
-        if pill.count() == 0:
-            log.debug(
-                "neither page-level timeperiod pill nor "
-                "#timeperiod-select-button found"
-            )
-            return None
-    try:
-        pill.first.evaluate(
-            "el => { (el.querySelector('button') || el).click(); }"
-        )
-    except Exception as e:
-        log.debug("activity timeperiod pill click: %s", e)
-        return None
-    time.sleep(1.0)
-    capture(
-        page, capture_dir,
-        f"activity-page-timeperiod-open-{label_suffix}",
-    )
-    for value in preferred_values:
-        sel = f"helios-radio[pvd-value='{value}']"
-        try:
-            loc = page.locator(sel).first
-            if loc.count() == 0:
-                continue
-            # Inside <helios-radio> sits the actual <input
-            # type="radio">. Clicking the input fires the SPA's
-            # change handler that re-filters the activity table.
-            loc.evaluate(
-                "el => { "
-                "  const inp = el.querySelector('input[type=radio]'); "
-                "  if (inp) inp.click(); else el.click(); "
-                "}"
-            )
-            time.sleep(0.5)
-            # The radio selection alone is NOT enough — there's an
-            # 'Apply Recent Time Period' submit button at the bottom
-            # of the dropdown that has to be clicked to commit the
-            # change. Without it the pill stays on its prior title
-            # and the export uses the prior range.
-            apply_btn = page.locator(
-                "button[aria-label='Apply Recent Time Period']"
-            )
-            if apply_btn.count() == 0:
-                # Fallback (e.g. user picked Custom tab elsewhere):
-                # any visible Apply button at the bottom of the
-                # picker.
-                apply_btn = page.locator(
-                    "button[aria-label^='Apply']"
-                )
-            try:
-                apply_btn.first.evaluate("el => el.click()")
-                log.debug("clicked Apply on time-period picker")
-            except Exception as e:
-                log.warning(
-                    "Apply button click failed: %s; the radio "
-                    "selection won't commit", e,
-                )
-            # Wait for the table re-fetch.
-            try:
-                page.wait_for_load_state(
-                    "networkidle", timeout=15_000,
-                )
-            except Exception:
-                time.sleep(6.0)
-            capture(
-                page, capture_dir,
-                f"activity-timeperiod-applied-{label_suffix}",
-            )
-            try:
-                applied_title = page.locator(
-                    "#timeperiod-select-button"
-                ).first.get_attribute("title")
-                log.info(
-                    "activity timeperiod set to value=%s; "
-                    "pill title after Apply: %r",
-                    value, applied_title,
-                )
-            except Exception:
-                log.info(
-                    "activity timeperiod set to value=%s "
-                    "(could not verify pill title)", value,
-                )
-            return f"past_{value}_days"
-        except Exception as e:
-            log.debug(
-                "timeperiod value=%s: %s", value, e,
-            )
-    log.info(
-        "no preferred timeperiod radio matched %r; leaving default",
-        preferred_values,
-    )
-    return None
-
-
 def _click_activity_download(page, capture_dir, label_suffix):
     """Activity's Download is a two-step popover: the visible button
     (``aria-label='Download'`` with ``aria-controls='downloadContent'``)
@@ -2157,8 +2039,9 @@ def _click_activity_download(page, capture_dir, label_suffix):
     The time-period for the export is whatever the **page-level**
     timepicker filter has selected at the time of the click — that
     has to be set BEFORE this function (via
-    ``_select_activity_page_timeperiod``); see the helper's
-    docstring for why."""
+    ``_select_activity_custom_range``): the popover's own timepicker
+    shares the page-level dropdown, and a click in that dropdown
+    counts as outside the popover and dismisses it."""
     trigger_sel = "button[aria-label='Download']"
     trigger = page.locator(trigger_sel).first
     if trigger.count() == 0:
@@ -2174,7 +2057,7 @@ def _click_activity_download(page, capture_dir, label_suffix):
     #
     # The state is read from BOTH generations of the control: the
     # native `disabled` on the button itself, and `fds-disabled` on
-    # the custom element that now wraps it. Reading only the native
+    # the custom element that wraps it. Reading only the native
     # one reports "enabled" for a busy button, because the custom
     # element never sets the native attribute.
     deadline = time.monotonic() + 20.0
@@ -2196,9 +2079,9 @@ def _click_activity_download(page, capture_dir, label_suffix):
     # wait for the ITEM rather than for a constant: a wide window
     # keeps the table re-fetching well past any sleep, and the click
     # that lands too early opens nothing. A popover that never opened
-    # used to surface as "no CSV item" — the same message as a
-    # renamed item — so the two are told apart here and the trigger
-    # gets one more press before we give up.
+    # would read as "no CSV item" — the same message as a renamed
+    # item — so the two are told apart here and the trigger gets one
+    # more press before giving up.
     for attempt in (1, 2):
         trigger.click(timeout=10_000)
         opened_by = time.monotonic() + 15.0
@@ -2263,13 +2146,6 @@ def _click_activity_download(page, capture_dir, label_suffix):
         page, capture_dir, f"activity-csv-no-match-{label_suffix}",
     )
     raise RuntimeError("no CSV item in activity Download popover")
-
-
-# Preferred day-count radios on the activity timepicker's 'Recent'
-# tab (under ``#timeperiod-select-container``), longest first.
-# Each option is a ``<helios-radio pvd-value="<N>">`` whose inner
-# ``<input type=radio>`` is the actual control.
-ACTIVITY_TIMEPERIOD_PREFERENCE = ("90", "60", "30")
 
 
 def _activity_csv_for_window(page, since_date, until_date,
@@ -2386,19 +2262,10 @@ def scrape_activity(page, since_date, until_date,
     discriminated by the ``Account Number`` column. So we drive
     the page once per date-window, not per-account.
 
-    * If ``since_date`` and ``until_date`` are both supplied:
-      bisect the range into ≤``MAX_ACTIVITY_WINDOW_DAYS``-day
-      windows via ``make_activity_windows`` and drive the Custom
-      timepicker tab for each — one CSV per window.
-
-    * Otherwise: use the longest preset that
-      ``ACTIVITY_TIMEPERIOD_PREFERENCE`` matches (typically 'Past
-      90 days') for a single CSV at Fidelity's rolling default.
-
-    The preset path is the fast option for routine recurring
-    dumps; the Custom-range path serves a one-off historic
-    backfill over an explicit ``--lookback <PRESET|YYYY-MM-DD>``
-    window, which runs from that start to today. Bounded by whatever
+    The resolved ``--lookback`` window [since_date..until_date] is
+    bisected into ≤``MAX_ACTIVITY_WINDOW_DAYS``-day windows via
+    ``make_activity_windows``, and the Custom timepicker tab is
+    driven for each — one CSV per window. Bounded by whatever
     the Custom tab publishes in its date inputs' ``min``/``max``,
     and where it publishes neither — which the current generation of
     the panel does not — by ``ACTIVITY_RETENTION_FLOOR_DAYS``."""
@@ -2413,64 +2280,35 @@ def scrape_activity(page, since_date, until_date,
         log.exception("activity-nav failed")
         return [{"ok": False, "error": f"navigate: {e}"}]
 
-    # Custom-range path — historic backfill, one CSV per window.
-    if since_date is not None and until_date is not None:
-        # Pre-flight: clamp the requested range to whatever
-        # Fidelity exposes in its Custom-tab min/max attributes
-        # (typically ~5 years of retention). Without this clamp,
-        # a `--lookback all` against a 30-year requested window
-        # would chunk into ~120 same-empty-CSV iterations before
-        # the cursor reaches the available range.
-        fmin, fmax = _probe_activity_date_bounds(page, capture_dir)
-        since_date, until_date = clamp_activity_window(
-            since_date, until_date, fmin, fmax, date.today())
-        if until_date < since_date:
-            log.info(
-                "activity backfill: requested range falls entirely "
-                "outside Fidelity's available window (probed %s..%s); "
-                "skipping activity phase",
-                fmin and fmin.isoformat(),
-                fmax and fmax.isoformat(),
-            )
-            return []
-        windows = make_activity_windows(since_date, until_date)
+    # Pre-flight: clamp the requested range to whatever
+    # Fidelity exposes in its Custom-tab min/max attributes
+    # (typically ~5 years of retention). Without this clamp,
+    # a `--lookback all` against a 30-year requested window
+    # would chunk into ~120 same-empty-CSV iterations before
+    # the cursor reaches the available range.
+    fmin, fmax = _probe_activity_date_bounds(page, capture_dir)
+    since_date, until_date = clamp_activity_window(
+        since_date, until_date, fmin, fmax, date.today())
+    if until_date < since_date:
         log.info(
-            "activity backfill: windows=%d (since=%s until=%s)",
-            len(windows),
-            since_date.isoformat(), until_date.isoformat(),
+            "activity backfill: requested range falls entirely "
+            "outside Fidelity's available window (probed %s..%s); "
+            "skipping activity phase",
+            fmin and fmin.isoformat(),
+            fmax and fmax.isoformat(),
         )
-        for (w_start, w_end) in windows:
-            results.append(_activity_csv_for_window(
-                page, w_start, w_end, bronze_dir, capture_dir,
-            ))
-        return mark_outside_retention(results)
-
-    # Preset path — single rolling CSV.
-    selected_range = _select_activity_page_timeperiod(
-        page, ACTIVITY_TIMEPERIOD_PREFERENCE,
-        capture_dir, "default",
+        return []
+    windows = make_activity_windows(since_date, until_date)
+    log.info(
+        "activity backfill: windows=%d (since=%s until=%s)",
+        len(windows),
+        since_date.isoformat(), until_date.isoformat(),
     )
-    try:
-        dl = _click_activity_download(
-            page, capture_dir, "default",
-        )
-        suffix = (selected_range or "default").lower().replace(" ", "_")
-        csv_path = activity_dir / f"activity_{suffix}.csv"
-        dl.save_as(str(csv_path))
-        log.info(
-            "saved activity/%s (%d bytes, range=%r)",
-            csv_path.name, csv_path.stat().st_size, selected_range,
-        )
-        final = compress.compress_best_effort(csv_path, log)
-        results.append({
-            "timeperiod": selected_range or "default",
-            "file": str(final.relative_to(bronze_dir)),
-            "ok": True,
-        })
-    except Exception as e:
-        log.exception("activity download failed")
-        results.append({"ok": False, "error": str(e)})
-    return results
+    for (w_start, w_end) in windows:
+        results.append(_activity_csv_for_window(
+            page, w_start, w_end, bronze_dir, capture_dir,
+        ))
+    return mark_outside_retention(results)
 
 
 # ---------------------------------------------------------------------------
@@ -2499,8 +2337,8 @@ def _statement_label_year(label: str) -> int | None:
 # Enterprise Document Center (digitalservices.fidelity.com/navigate/
 # ent-documentcenter) — statements + tax forms.
 #
-# Fidelity migrated the document center off the portfolio host onto a
-# Stencil/PVD component SPA. Statements and Tax forms share one shape:
+# The document center is a Stencil/PVD component SPA on its own host.
+# Statements and Tax forms share one shape:
 #   * a left-rail nav link picks the document TYPE (relative hrefs:
 #     'statements' = Personal statements, 'tax-forms'); the default
 #     landing is an empty "Interested party statements". The Stencil
@@ -2793,18 +2631,15 @@ def _doccenter_walk_type(page, context, rel_href, label, tag,
     return results
 
 
-def scrape_statements(page, context, docs_dir, capture_dir,
-                       min_year=None, target_days=None):
+def scrape_statements(page, context, docs_dir, capture_dir, min_year=None):
     """Walk the Enterprise Document Center's personal Statements.
     Switches to the Personal statements type (rail link -> relative
     href 'statements'), then iterates the TimeFilter years from the
     current year back to ``min_year``, downloading each '(pdf)'
-    document (quarterly statements + year-end investment reports) via
-    its popup PDF.
-
-    ``target_days`` is kept for signature compatibility; the new UI
-    filters by whole year, so the effective floor is ``min_year``
-    (derived by walk() from the ``--lookback`` window's start year)."""
+    document (quarterly statements + year-end investment reports)
+    (_doccenter_download_row). The page filters by whole year, so the
+    floor is ``min_year`` (derived by walk() from the ``--lookback``
+    window's start year)."""
     return _doccenter_walk_type(
         page, context, "statements", "Personal", "statements",
         docs_dir, capture_dir, min_year)
@@ -2814,29 +2649,26 @@ def scrape_tax_forms(page, context, docs_dir, capture_dir, min_year=None):
     """Walk the Enterprise Document Center's Tax forms: switch to the
     tax-forms type, iterate the TimeFilter years >= ``min_year``, and
     download each '(pdf)' form (Consolidated 1099s, one per account
-    group). Same row + popup mechanism as statements."""
+    group). Same row mechanism as statements."""
     return _doccenter_walk_type(
         page, context, "tax-forms", "Tax forms", "tax-forms",
         docs_dir, capture_dir, min_year)
 
 
 def scrape_documents(page, context, bronze_dir, capture_dir,
-                      min_year=None, target_days=None, explore=False):
+                      min_year=None, explore=False):
     """Walk Statements + Tax forms in the document center. Each
     sub-page is exercised independently so a failure in one
-    category doesn't block the other. ``context`` is needed for the
-    popup-PDF-via-context.request fallback path on statements.
+    category doesn't block the other. ``context`` is needed to close
+    any popup tab a document click spawns.
 
-    ``min_year`` (forwarded to both sub-scrapers) drops rows / year
+    ``min_year`` (forwarded to both sub-scrapers) drops year
     selections older than that — see walk()'s default-derivation
-    from the ``--lookback`` window's start year. ``target_days`` is the requested
-    documents window length, used to pick the Statements page's
-    ``Time Period`` filter (narrowest exposed option that covers
-    the window; ``None`` widens to the full archive).
+    from the ``--lookback`` window's start year.
 
     ``explore`` (``--explore``) additionally writes a shadow-DOM-
     and iframe-piercing element inventory at each landmark — the
-    new Enterprise Document Center renders its content where an
+    Enterprise Document Center renders its content where an
     ordinary HTML capture can't see it."""
     docs_dir = bronze_dir / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
@@ -2872,7 +2704,6 @@ def scrape_documents(page, context, bronze_dir, capture_dir,
         results["statements"] = scrape_statements(
             page, context, docs_dir, capture_dir,
             min_year=min_year,
-            target_days=target_days,
         )
     except Exception as e:
         log.exception("statements walk failed")
@@ -3400,6 +3231,14 @@ def _daf_scrape_account(page, jwt, account, since_date, daf_root, *,
         len((pools[0] or {}).get("poolInfoList") or [])
         if isinstance(pools, list) and pools else 0
     )
+    # Without the master or the pools the account's holdings were not
+    # observed, which the loader's completeness gate must see.
+    missing = [name for name, obj in (("account master", master),
+                                      ("pool balances", pools))
+               if obj is None]
+    if missing:
+        result["status"] = "error"
+        result["error"] = f"{' and '.join(missing)} not fetched"
     if positions_only:
         # The --mode positions slice stops here: master + pool only.
         # History / exports / documents belong to the full phase.
@@ -3560,22 +3399,46 @@ def scrape_daf(page, bronze_dir, capture_dir, since_date, *,
             log.exception("DAF account scrape failed")
             per_account[account_key(nbr)] = {"status": "error",
                                              "error": str(e)}
-    return {"status": "dry-run" if dry_run else "complete",
-            "accounts": len(accounts),
-            "per_account": per_account}
+    failed = sum(1 for r in per_account.values()
+                 if r.get("status") == "error")
+    result = {"status": "dry-run" if dry_run else "complete",
+              "accounts": len(accounts),
+              "per_account": per_account}
+    if failed:
+        result["status"] = "error"
+        result["error"] = f"{failed} giving account(s) failed"
+    return result
 
 
 # ---------------------------------------------------------------------------
 # walk() — orchestrates the per-phase scrapes against a live session
 # ---------------------------------------------------------------------------
 
+# The phases whose result is a list of attempts; the rest report a
+# status dict (PHASE_OK_STATUS).
+_LIST_PHASES = ("positions", "activity")
+
+
+def _run_phase(name, fn, *args, **kwargs):
+    """Run one phase's scrape function. An exception it raises becomes
+    a failed result in the phase's own shape, so the walk goes on to
+    the later phases, finishes its manifest, and `phase_coverage`
+    reports the gap."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        log.exception("%s phase failed", name)
+        if name in _LIST_PHASES:
+            return [{"ok": False, "error": str(e)}]
+        return {"status": "error", "error": str(e)}
+
+
 def walk(context, page, config):
     """Run the requested phase(s) against a logged-in session.
     Called from ``run_oneshot()`` after ``login()`` lands on the
     post-auth URL. Dispatches to the per-phase scrape functions
-    based on ``config['mode']``. Each phase has its own
-    try/except inside its dispatcher; a failure in one phase does
-    not block the others."""
+    based on ``config['mode']``. Each phase runs under _run_phase,
+    so a failure in one phase does not block the others."""
     dest_root = Path(config.get("dest") or "/data")
     dry_run = config.get("dry_run", "false").lower() == "true"
     debug = config.get("debug", "false").lower() == "true"
@@ -3648,9 +3511,9 @@ def walk(context, page, config):
             )
         dimensions = enumerate_account_dimensions(page)
     all_accounts = sorted({d["account_id"] for d in dimensions})
-    # Auto-exclude non-9-digit accounts (the Fidelity Charitable
-    # DAF uses a 7-digit id and is out of scope per DESIGN §1.3 /
-    # §3.5).
+    # Auto-exclude non-9-digit accounts from the retail phases: the
+    # Fidelity Charitable DAF uses a 7-digit id, and the DAF phase
+    # reads it from the charitable API's own roster instead.
     auto_excluded = {a for a in all_accounts if len(a) != 9}
     excluded |= auto_excluded
     in_scope = [a for a in all_accounts if a not in excluded]
@@ -3706,11 +3569,7 @@ def walk(context, page, config):
         documents_since = (
             datetime.now(timezone.utc).date() - timedelta(days=90)
         )
-    documents_until = parse_iso_date(config.get("until"))
-    if documents_until is None:
-        documents_until = datetime.now(timezone.utc).date()
     docs_min_year = documents_since.year
-    docs_target_days = max(1, (documents_until - documents_since).days)
 
     run_json = {
         "snapshot_at": slug,
@@ -3761,36 +3620,35 @@ def walk(context, page, config):
         return
 
     if mode in ("all", "positions"):
-        run_json["positions_results"] = scrape_positions(
-            page, bronze_dir, capture_dir,
+        run_json["positions_results"] = _run_phase(
+            "positions", scrape_positions, page, bronze_dir, capture_dir,
         )
-        try:
-            run_json["lots_results"] = scrape_lots(
-                page, bronze_dir, in_scope,
-                previous_lot_index(dest_root, slug),
-                refresh=config.get("refresh_lots", "false").lower() == "true",
-            )
-        except Exception as e:
-            log.exception("lots phase failed")
-            run_json["lots_results"] = {"status": "error", "error": str(e)}
+        run_json["lots_results"] = _run_phase(
+            "lots", scrape_lots,
+            page, bronze_dir, in_scope,
+            previous_lot_index(dest_root, slug),
+            refresh=config.get("refresh_lots", "false").lower() == "true",
+        )
     if mode in ("all", "activity"):
-        run_json["activity_results"] = scrape_activity(
+        run_json["activity_results"] = _run_phase(
+            "activity", scrape_activity,
             page, since_date, until_date,
             bronze_dir, capture_dir,
         )
     if mode in ("all", "documents"):
-        run_json["documents_results"] = scrape_documents(
+        run_json["documents_results"] = _run_phase(
+            "documents", scrape_documents,
             page, context, bronze_dir, capture_dir,
             min_year=docs_min_year,
-            target_days=docs_target_days,
             explore=config.get("explore", "false").lower() == "true",
         )
     if mode in ("all", "balances"):
-        run_json["balances_results"] = scrape_balances(
-            page, bronze_dir, capture_dir,
+        run_json["balances_results"] = _run_phase(
+            "balances", scrape_balances, page, bronze_dir, capture_dir,
         )
     if mode in ("all", "performance"):
-        run_json["performance_results"] = scrape_performance(
+        run_json["performance_results"] = _run_phase(
+            "performance", scrape_performance,
             page, bronze_dir, capture_dir,
         )
     if mode in ("all", "positions") and _login_has_daf(dimensions):
@@ -3801,7 +3659,8 @@ def walk(context, page, config):
         # emptied. --mode all runs the full DAF phase (events, exports,
         # documents); --mode positions runs the master + pool slice.
         # There is deliberately no DAF-only mode for the same reason.
-        daf_results = scrape_daf(
+        daf_results = _run_phase(
+            "daf", scrape_daf,
             page, bronze_dir, capture_dir, since_date,
             positions_only=(mode == "positions"),
         )
@@ -3961,46 +3820,16 @@ def open_page(context):
 
 
 def maybe_capture(page, screenshot_dir, label):
-    """Save HTML + PNG at a navigation landmark. Never raises.
+    """Save HTML + PNG at a login-flow landmark. Never raises.
 
-    Differs from ``capture(page, capture_dir, label)`` above (used by
-    the walk phases): this is the login-/session-flow variant that
-    writes to a user-supplied ``--screenshot-dir`` rather than the
-    bronze dir's ``screenshots/`` subdir. Both are opt-in and cover
-    disjoint phases — the walk captures via ``--debug`` into
-    ``<run>/screenshots/``, the pre-walk login / MFA / ``--check`` /
-    logout captures via ``--screenshot-dir`` into that host path."""
-    if screenshot_dir is None:
-        return
-    try:
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        log.warning("create screenshot dir %s: %s", screenshot_dir, e)
-        return
-    ts = bronze.ts_slug()
-    try:
-        html_path = screenshot_dir / f"{ts}-{label}.html"
-        try:
-            html = page.content()
-        except Exception:
-            html = page.evaluate(
-                "() => document.documentElement.outerHTML"
-            )
-        # Scrubbed: this is the login-flow capture, and one of its
-        # landmarks is the sign-in form immediately after prefill.
-        html_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
-        log.debug("wrote HTML %s", html_path)
-    except Exception as e:
-        log.warning("html capture %s failed: %s", label, e)
-    try:
-        png_path = screenshot_dir / f"{ts}-{label}.png"
-        page.screenshot(
-            path=str(png_path),
-            full_page=False, timeout=5_000, animations="disabled",
-        )
-        log.debug("wrote screenshot %s", png_path)
-    except Exception as e:
-        log.debug("screenshot %s failed (HTML saved): %s", label, e)
+    The same capture as ``capture`` (used by the walk phases), into a
+    different place: this login-/session-flow variant writes to the
+    user-supplied ``--screenshot-dir`` rather than the bronze dir's
+    ``screenshots/`` subdir. Both are opt-in and cover disjoint phases
+    — the walk captures via ``--debug`` into ``<run>/screenshots/``,
+    the pre-walk login / MFA / ``--check`` / logout captures via
+    ``--screenshot-dir`` into that host path."""
+    capture(page, screenshot_dir, label)
 
 
 def stop_trace_if_active(context, trace, screenshot_dir, label) -> bool:
@@ -4066,7 +3895,7 @@ def wait_for_signin_or_iua(page, timeout_s):
     return (None, None)
 
 
-def accept_iua(page, accept_loc):
+def accept_iua(accept_loc):
     accept_loc.click()
     log.info("clicked I Accept on International Usage Agreement")
 
@@ -4334,7 +4163,7 @@ def login(page, args, username, password):
             "clicking I Accept"
         )
         maybe_capture(page, args.screenshot_dir, "01a-iua-page")
-        accept_iua(page, iua_loc)
+        accept_iua(iua_loc)
         try:
             page.locator(SEL_PASSWORD_INPUT).wait_for(
                 state="visible", timeout=30_000,
@@ -4368,9 +4197,9 @@ def login(page, args, username, password):
         sys.stderr.write("\n" + "=" * 60 + "\n")
         sys.stderr.write(
             "READY: Camoufox is up and the login form is pre-filled.\n"
-            "Connect with your VNC client now (127.0.0.1:5900, "
-            "password printed at the top of this output by "
-            "entrypoint.sh). Then in the VNC window:\n"
+            "Connect with your VNC client now (the host port and "
+            "password are printed at the top of this output). Then "
+            "in the VNC window:\n"
             "  1. Click 'Log in'.\n"
             "  2. Complete the 2FA challenge.\n"
             "  3. Wait for the post-auth landing page to load.\n"
@@ -4629,9 +4458,9 @@ def parse_args(argv):
               "none)."),
     )
     p.add_argument(
-        "--mfa-timeout", type=float, default=600.0,
+        "--mfa-timeout", type=float, default=3600.0,
         help="Seconds to wait for the human login + MFA over VNC. "
-             "Default 600 (10 min).",
+             "Default 3600 (1 h).",
     )
     p.add_argument(
         "--trust-this-browser",
@@ -4645,7 +4474,8 @@ def parse_args(argv):
     )
     p.add_argument(
         "--nav-timeout", type=float, default=60.0,
-        help="Per-navigation timeout in seconds. Default 60.",
+        help=("Seconds to wait for the post-auth landing URL after "
+              "a scripted 2FA submit. Default 60."),
     )
     # --- Walk args ---
     p.add_argument(

@@ -339,6 +339,27 @@ def test_scrape_daf_dry_run_reads_but_writes_nothing(tmp_path):
     assert not any("/download" in url for _m, url in page.request.calls)
 
 
+def test_scrape_daf_an_unfetched_pool_is_an_error(tmp_path):
+    # Without its pool balances the account's holdings were not
+    # observed: the account and the phase both report an error, so the
+    # loader holds the dump's positions back.
+    routes = _full_daf_routes()
+    routes["/poolBalances"] = lambda q: (500, {}, b"")
+    page = FakePage(FakeRequestCtx(routes))
+
+    def _hop(url, wait_until=None, timeout=None):
+        page._url = download.DAF_SPA_URL
+    page.goto = _hop
+
+    res = download.scrape_daf(page, tmp_path, None, None,
+                              positions_only=True)
+
+    acct = next(iter(res["per_account"].values()))
+    assert acct["status"] == "error"
+    assert acct["error"] == "pool balances not fetched"
+    assert res["status"] == "error"
+
+
 def test_scrape_daf_no_daf_when_sso_bounces(tmp_path):
     # SSO nav lands back on the signin page -> _daf_navigate_sso False ->
     # scrape_daf returns no-daf and writes nothing.

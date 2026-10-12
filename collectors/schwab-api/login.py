@@ -29,7 +29,7 @@ Modes:
   - --check            Inspect the existing token file's age. No browser,
                        no network.
 
-Failure discipline (see DESIGN.md §3.1's incident note): one credential
+Failure discipline (see DESIGN.md §3.1): one credential
 submission and at most one 2FA submission per run; every page-advancing
 click is classification-gated and budgeted; Schwab's terminal notice
 pages (account lockout among them) stop the run immediately with the
@@ -131,9 +131,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.set_defaults(cli_mfa=True)
     p.add_argument(
-        "--mfa-timeout", type=float, default=600.0,
+        "--mfa-timeout", type=float, default=3600.0,
         help="Seconds to wait for the human MFA + consent redirect to the "
-             "callback URL (default 600 — time to complete login over VNC).",
+             "callback URL (default 3600 — time to complete login over VNC).",
     )
     p.add_argument(
         "--mfa-page-timeout", type=float, default=300.0,
@@ -199,10 +199,6 @@ def source_env_files(explicit: Path | None = None) -> None:
         if not lead.exists():
             raise SystemExit(f"--env-file does not exist: {lead}")
         envfile.load_env_file(lead, _CRED_OVERRIDE_VARS, logger=log)
-
-
-# Credential resolution (value-with-env-fallback) is
-# collectorkit.envfile.resolve_credential; call sites use it directly.
 
 
 # ============================================================
@@ -318,6 +314,12 @@ def stop_trace_if_active(context, trace: bool, screenshot_dir: Path | None,
     log.info("trace saved to %s", trace_path)
 
 
+def _scopes(page) -> list:
+    """The page itself, then each of its child frames: every place a
+    login, 2FA or error element may render."""
+    return [page, *[f for f in page.frames if f.parent_frame is not None]]
+
+
 def _live_url(page) -> str:
     """page.url can lag behind a client-side redirect; read it live."""
     try:
@@ -375,9 +377,7 @@ def prefill_login(page, login_id: str | None, password: str | None,
         return
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        scopes = [page, *[f for f in page.frames
-                          if f.parent_frame is not None]]
-        for scope in scopes:
+        for scope in _scopes(page):
             if _fill_first(scope, lm.LOGIN_ID_INPUT_CANDIDATES, login_id):
                 # Password may share the page or be a later step; fill it
                 # if present, but a found login id alone counts as success.
@@ -397,7 +397,7 @@ def _prompt_for_mfa_code() -> str:
 class LoginFlowError(RuntimeError):
     """Terminal login-flow failure: the run stops, reports, and exits
     nonzero. Re-running login is the recovery path — there are no in-run
-    retries (see DESIGN.md §3.1's incident note)."""
+    retries (see DESIGN.md §3.1, "Failure discipline")."""
 
     exit_code = 8
 
@@ -450,9 +450,7 @@ def _visible_error_text(page) -> str:
     """Visible error text across the page and its frames, one message
     per line — Schwab's own words, logged verbatim on a rejection."""
     texts: list[str] = []
-    scopes = [page, *[f for f in page.frames
-                      if f.parent_frame is not None]]
-    for scope in scopes:
+    for scope in _scopes(page):
         try:
             found = scope.evaluate(_ERROR_TEXT_JS)
         except Exception:
@@ -530,9 +528,7 @@ def _heading_present(page, heading: str) -> bool:
 def _scan_for_mfa_input(page):
     """The first visible 2FA code input across the page + frames, or
     None. One non-blocking sweep — polling is the caller's job."""
-    scopes = [page, *[f for f in page.frames
-                      if f.parent_frame is not None]]
-    for scope in scopes:
+    for scope in _scopes(page):
         for sel in lm.MFA_CODE_INPUT_CANDIDATES:
             try:
                 loc = scope.locator(sel).first
@@ -544,9 +540,7 @@ def _scan_for_mfa_input(page):
 
 
 def _login_form_present(page) -> bool:
-    scopes = [page, *[f for f in page.frames
-                      if f.parent_frame is not None]]
-    for scope in scopes:
+    for scope in _scopes(page):
         for sel in lm.PASSWORD_INPUT_CANDIDATES:
             try:
                 loc = scope.locator(sel).first
@@ -584,7 +578,7 @@ def classify_page(page, callback_url: str) -> str:
 class AdvanceGuard:
     """Budget + progress guard for the consent-drive loop.
 
-    Two invariants (DESIGN.md §3.1 incident note): a page that did not
+    Two invariants (DESIGN.md §3.1, "Failure discipline"): a page that did not
     change since the last advance click is never clicked again, and a
     page that stops changing at all — clicked or not — fails the run
     after STALL_LIMIT_S instead of spinning. CLICK_BUDGET caps total
@@ -750,7 +744,8 @@ def select_all_link_accounts(page, screenshot_dir=None, seen=None) -> int:
 
 
 # Structural signature of the live DOM (tag#id.class[type]), ignoring text
-# so a 2FA countdown doesn't re-trigger a capture. Used by --explore.
+# so a 2FA countdown neither re-triggers an --explore capture nor reads as
+# progress to the consent drive's AdvanceGuard (_page_signature).
 _STRUCT_SIG_JS = (
     "() => Array.from(document.querySelectorAll('*')).map(e => "
     "e.tagName + '#' + (e.id || '') + '.' + (e.getAttribute('class') || '') "
@@ -811,9 +806,10 @@ def _drive_consent(page, guard: AdvanceGuard, callback_url: str) -> None:
 # ============================================================
 
 def _token_writer(token_path: Path):
+    """schwab-py's token_write_func: write the bundle atomically, owner-only
+    from the first byte, so the refresh token is never world-readable."""
     def _write(token, *args, **kwargs):
-        with open(token_path, "w") as f:
-            json.dump(token, f)
+        session.save_state(token_path, token, indent=None)
     return _write
 
 
@@ -960,7 +956,6 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
     if not args.token_path.is_file():
         log.error("flow completed but no token file at %s", args.token_path)
         return 4
-    session.secure_file(args.token_path)
     issued = read_token_creation_time(args.token_path) or datetime.now(
         timezone.utc)
     renew_by = datetime.fromtimestamp(
@@ -998,9 +993,9 @@ def _attempt_cli_mfa(page, args: argparse.Namespace) -> None:
     """Submit the login form once, resolve the 2FA challenge with at
     most ONE code submission, and return with the flow ready for the
     consent wait. Any ambiguity is terminal (LoginFlowError /
-    TerminalPageError) rather than a fallthrough: the incident in
-    DESIGN.md §3.1 came from driving the consent pages while the
-    challenge was still unresolved."""
+    TerminalPageError) rather than a fallthrough: driving the consent
+    pages while the challenge is unresolved is what DESIGN.md §3.1,
+    "Failure discipline", forbids."""
     if not _click_first(page, lm.LOGIN_SUBMIT_CANDIDATES):
         log.warning("login submit button not found; complete login over VNC")
         return

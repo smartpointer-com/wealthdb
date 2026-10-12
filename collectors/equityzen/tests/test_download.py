@@ -3,7 +3,7 @@
 Exercises the pieces the live document walk builds on — the per-document class
 mapping, the disk-driven extract hook, and the (deal-slug, doc-slug) keying —
 plus the end-to-end mode dispatch with an injected stub fetch (no network, no
-Camoufox). Asserts each document class behaves per the corrected Move 1 mapping:
+Camoufox). Asserts each document class behaves per the class mapping:
 
   * executed-once legal / offering docs (SUB_AGT, TERMSHEET, …) → LINKED from a
     prior run, fetch avoided (safe: not parsed by load.py);
@@ -402,3 +402,37 @@ def test_debug_help_promises_bronze_captures(capsys):
     assert "--debug" in out
     assert "gates nothing" not in out
     assert "NOT YET IMPLEMENTED" not in out
+
+
+# ---------------------------------------------------------------------------
+# Response-body walking: the buyerDeals edges
+# ---------------------------------------------------------------------------
+
+def _deals_body(*edges):
+    return {"data": {"buyer": {"buyerDeals": {"edges": list(edges)}}}}
+
+
+def test_deal_ids_from_reads_every_edge():
+    body = _deals_body({"node": {"deal": {"id": "D1"}}},
+                       {"node": {"deal": {"id": "D2"}}},
+                       {"node": {"deal": {}}})
+    assert download._deal_ids_from(body) == ["D1", "D2"]
+
+
+@pytest.mark.parametrize("body", [
+    None, {}, {"data": None}, {"data": {"buyer": None}},
+    {"data": {"buyer": {"buyerDeals": None}}},
+    {"data": {"buyer": {"buyerDeals": {"edges": None}}}},
+    _deals_body(None, {"node": None}, {"node": "x"}),
+])
+def test_a_null_level_yields_no_nodes(body):
+    # GraphQL nulls a field it cannot resolve; the walk reads that as
+    # "nothing here", never as an error.
+    assert download._buyer_deal_nodes(body) == []
+    assert download._deal_ids_from(body) == []
+
+
+def test_offering_documents_keeps_the_documents_with_an_id():
+    node = {"documents": [{"id": "A"}, {"id": None}, None, {"id": "B"}]}
+    assert [d["id"] for d in download._offering_documents(node)] == ["A", "B"]
+    assert download._offering_documents({"documents": None}) == []

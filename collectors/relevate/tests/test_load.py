@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
@@ -103,6 +105,44 @@ def test_load_accounts_positions_cash(tmp_path):
     assert bals["securities"] == 1000.0
 
     assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
+
+
+def test_state_minted_at_keeps_the_time_of_day(tmp_path):
+    # The login session's mint time is a full timestamp; the column holds
+    # its Unix seconds, not the midnight of its day.
+    run_dir = _seed_bronze(tmp_path / "bronze")
+    _write_json(run_dir / "run.json", {
+        "utc": RUN_SLUG, "state_minted_at": "2024-01-01T12:34:56+00:00"})
+    conn, version = _fresh_db(tmp_path)
+    loader.load_one_dump(conn, run_dir, version)
+    minted = conn.execute(
+        "SELECT state_minted_at FROM dump_runs").fetchone()[0]
+    assert minted == 1704112496
+
+
+def test_iso_timestamp_to_epoch():
+    assert loader.iso_timestamp_to_epoch("2024-01-01T12:34:56+00:00") == 1704112496
+    assert loader.iso_timestamp_to_epoch("2024-01-01T13:34:56+01:00") == 1704112496
+    assert loader.iso_timestamp_to_epoch("2024-01-01T12:34:56") == 1704112496
+    assert loader.iso_timestamp_to_epoch(None) is None
+    assert loader.iso_timestamp_to_epoch("not a time") is None
+
+
+def test_a_dump_that_raises_mid_load_rolls_back_whole(tmp_path):
+    # A non-SQL error must roll the dump's transaction back too: no
+    # half-written rows, no transaction left open on the connection, and
+    # no dump_runs row, so the dump stays pending.
+    run_dir = _seed_bronze(tmp_path / "bronze")
+    slug = loader.slug_for_account(ACC)
+    (run_dir / "portfolios" / slug / "performance.json").write_text(
+        "{not json", encoding="utf-8")
+    conn, version = _fresh_db(tmp_path)
+    with pytest.raises(json.JSONDecodeError):
+        loader.load_one_dump(conn, run_dir, version)
+    assert not conn.in_transaction
+    for table in ("accounts", "positions", "dump_runs"):
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
 
 # ============================================================

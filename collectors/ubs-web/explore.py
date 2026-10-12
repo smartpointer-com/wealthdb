@@ -4,11 +4,10 @@ UBS Switzerland e-banking discovery harness.
 
 Launches headed Chromium on the container's Xvfb display and serves it over
 VNC, so a UBS netbanking session can be driven **by hand** while everything
-it produces is recorded. `download.py` covers cash accounts, portfolios and
-the eDocuments archive; the surfaces it does not reach — the card area, the
-per-transaction detail view, the card invoice archive — have to be walked
-before they can be automated, and a walk a human improvises reaches pages no
-scripted one would think to visit.
+it produces is recorded. `download.py` covers cash accounts, portfolios, the
+eDocuments archive and the card API; a surface it does not reach has to be
+walked before it can be automated, and a walk a human improvises reaches
+pages no scripted one would think to visit.
 
 The harness **never navigates and never clicks**. It opens the login entry
 point once, and every action from there is driven by hand. That is the whole
@@ -59,12 +58,13 @@ from urllib.parse import urlparse
 
 from collectorkit import cli, debugcap, envfile, explore, launch, session
 
-# The state-file locations and the user agent are download.py's, imported
+import landmarks as ubs
+
+# The state-file locations and the user agent are login.py's, imported
 # rather than restated: a session minted or reused here is the one
 # `download` picks up, and UBS's anti-bot heuristics must see one UA
 # across all three scripts.
-from download import DEFAULT_STATE_PATH, LEGACY_STATE_PATH, USER_AGENT
-import landmarks as ubs
+from login import DEFAULT_STATE_PATH, LEGACY_STATE_PATH, USER_AGENT
 
 log = logging.getLogger("ubs-web.explore")
 
@@ -79,8 +79,8 @@ UBS_HOST_RE = re.compile(r'(^|\.)ubs\.com$', re.I)
 EVENT_PREFIX = "__UBS_EXPLORE__ "
 
 DEFAULT_ENV_FILE = Path("/secrets/ubs-web.env")
-# The bank-level env file ubs-web falls back to (README: shared with a
-# future ubs-* sibling).
+# The bank-level env file ubs-web falls back to (shared with any ubs-*
+# sibling).
 LEGACY_ENV_FILE = Path("/secrets/ubs.env")
 CONTRACT_ENV = "UBS_CONTRACT_NUMBER"
 
@@ -200,10 +200,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # Helpers
 # ============================================================
 
-
-
-
-
 def is_ubs_host(url: str) -> bool:
     """Whether `url` is served by UBS — the frames worth snapshotting."""
     try:
@@ -213,17 +209,10 @@ def is_ubs_host(url: str) -> bool:
     return bool(UBS_HOST_RE.search(host))
 
 
-
-
 def resolve_env_file(explicit: Path | None) -> Path | None:
     """The env file to source: the explicit one, else ubs-web's, else the
     bank-level fallback the README documents. None when none exists."""
-    if explicit is not None:
-        return explicit
-    for candidate in (DEFAULT_ENV_FILE, LEGACY_ENV_FILE):
-        if candidate.is_file():
-            return candidate
-    return None
+    return envfile.resolve_env_file(explicit, (DEFAULT_ENV_FILE, LEGACY_ENV_FILE))
 
 
 def _looks_authenticated(context) -> bool:
@@ -240,8 +229,6 @@ def _looks_authenticated(context) -> bool:
         return any(ubs.is_post_auth_url(page.url) for page in context.pages)
     except Exception:  # noqa: BLE001 — a dead context is not authenticated
         return False
-
-
 
 
 def prefill_contract(page, contract: str, filled: set) -> bool:

@@ -31,11 +31,6 @@ from zoneinfo import ZoneInfo
 
 from collectorkit import bronze, cli, silver
 
-# Re-export for backward compatibility with existing tests that call
-# load.apply_migrations(...) / load.current_schema_version(...) directly.
-apply_migrations = silver.apply_migrations
-current_schema_version = silver.current_schema_version
-
 log = logging.getLogger("swissquote.load")
 
 # All transaction times in Swissquote CSVs are wall-clock Europe/Zurich
@@ -68,7 +63,7 @@ canonical_json = silver.canonical_json
 # Bronze scanner
 # ============================================================
 
-def _dump_is_complete(run_dir: Path) -> bool:
+def dump_is_complete(run_dir: Path) -> bool:
     """Whether ``run_dir`` holds a completed dump, per download.py's
     run.json status lifecycle.
 
@@ -79,24 +74,16 @@ def _dump_is_complete(run_dir: Path) -> bool:
     * ``status == "complete"``             -> complete (load it);
     * any other status (``"in-progress"``)  -> not complete (a crashed
       or still-running walk — do NOT ingest its partial artefacts);
-    * a statusless run.json                 -> complete (predates the
-      status field, where the manifest was written only at the end so
-      its presence alone marked completion);
+    * a statusless run.json                 -> complete (a dump from
+      before the status field, whose manifest was written only at the
+      end, so its presence alone marked completion);
     * no run.json / unreadable / corrupt    -> not complete.
 
-    Twin of download.dump_is_complete.
+    The loader's dump selection and download.py's crash-cleanup trap
+    both key on this, so a dump the trap keeps is a dump load ingests.
     """
-    try:
-        raw = (run_dir / "run.json").read_text(encoding="utf-8")
-    except OSError:
-        return False  # absent, or unreadable (e.g. run.json is a dir)
-    try:
-        meta = json.loads(raw)
-    except ValueError:
-        return False  # corrupt bytes — not evidence of completeness
-    if not isinstance(meta, dict):
-        return False
-    return bronze.is_loadable_status(meta.get("status"))
+    meta = bronze.read_manifest(run_dir / "run.json")
+    return meta is not None and bronze.is_loadable_status(meta.get("status"))
 
 
 def find_pending_dumps(
@@ -107,7 +94,7 @@ def find_pending_dumps(
     A dump is complete only once its run.json carries
     ``status == "complete"`` — the terminal manifest download.py writes
     atomically at the end of a successful walk (a legacy statusless
-    run.json counts too; see `_dump_is_complete`). A timestamp-named
+    run.json counts too; see `dump_is_complete`). A timestamp-named
     dir with no run.json, or one still carrying the in-progress marker
     download.py drops at run-dir creation, is a crashed/interrupted or
     still-running download; ingesting its partial artefacts would leak
@@ -128,7 +115,7 @@ def find_pending_dumps(
         ts = _run_dir_to_epoch(child.name)
         if ts in loaded:
             continue
-        if not _dump_is_complete(child):
+        if not dump_is_complete(child):
             log.warning(
                 "Skipping incomplete dump %s (run.json absent or "
                 "status != 'complete' — likely a crashed, interrupted, "
@@ -1011,11 +998,7 @@ def load_one_dump(
 
     run_meta_path = run_dir / "run.json"
     if not run_meta_path.is_file():
-        raise SystemExit(
-            f"Missing run.json in {run_dir}. The dump is incomplete "
-            f"or was produced by a version of download.py that did "
-            f"not write metadata."
-        )
+        raise SystemExit(f"Missing run.json in {run_dir}: incomplete dump.")
     run_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
     customer_id = run_meta.get("customer_id")
     if not customer_id:
@@ -1024,10 +1007,9 @@ def load_one_dump(
             f"be loaded without knowing which account it belongs to."
         )
 
-    # Account list — either from the accounts.json bronze artefact
-    # (current download.py), or synthesised from customer_id for
-    # older dumps that predate the scrape. The bronze key was
-    # `account_type` before migration 0005's rename; read either.
+    # Account list — from the accounts.json bronze artefact, or, for a
+    # dump without one, a single account synthesised from customer_id.
+    # Older dumps name the product `account_type`; read either key.
     accounts_path = run_dir / "accounts.json"
     if accounts_path.is_file():
         account_entries = json.loads(accounts_path.read_text(encoding="utf-8"))

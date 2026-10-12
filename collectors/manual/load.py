@@ -212,6 +212,8 @@ def _decimal(fname, rownum, col, value, *, non_negative=True) -> Decimal:
         d = Decimal(raw)
     except (InvalidOperation, ValueError):
         _fail(fname, rownum, col, "not a number", value)
+    if not d.is_finite():
+        _fail(fname, rownum, col, "not a finite number", value)
     if non_negative and d < 0:
         _fail(fname, rownum, col,
               "must be a positive magnitude (direction comes from kind)",
@@ -256,9 +258,17 @@ def _read_csv(path: Path, required: list[str], optional: list[str],
             _fail(fname, "header", ",".join(unknown),
                   f"unexpected column(s); allowed are {sorted(allowed)}")
         # DictReader rows: enumerate from 2 (row 1 is the header) so the
-        # number a user sees in their spreadsheet matches the error.
-        return [{"_row": i, **{k: (row.get(k) or "") for k in allowed}}
-                for i, row in enumerate(reader, start=2)]
+        # number shown in the spreadsheet matches the error. DictReader puts
+        # cells past the header's width under the key None; a non-blank one
+        # would otherwise be dropped unread.
+        rows = []
+        for i, row in enumerate(reader, start=2):
+            extra = [v for v in row.get(None) or [] if v.strip()]
+            if extra:
+                _fail(fname, i, "-", "more cells than the header has columns",
+                      extra)
+            rows.append({"_row": i, **{k: (row.get(k) or "") for k in allowed}})
+        return rows
 
 
 # ----------------------------------------------------------------------
@@ -366,11 +376,34 @@ def validate_positions(rows: list[dict], accounts: dict[str, dict],
     # are the whole record of a conversion.
     for pid, p in out.items():
         src = p["payload"].get("converted_from_position_id")
-        if src and src not in out:
+        if src and (not isinstance(src, str) or src not in out):
             _fail(fname, row_of[pid], "payload",
                   "converted_from_position_id references a position not in "
                   "positions.csv", src)
     return out
+
+
+def _position_ref(fname: str, r: dict, positions: dict[str, dict],
+                  ) -> tuple[str, dict]:
+    """(position_id, position) a per-position row names, checked to exist."""
+    n = r["_row"]
+    pid = _req(fname, n, "position_id", r["position_id"])
+    pos = positions.get(pid)
+    if pos is None:
+        _fail(fname, n, "position_id",
+              "references a position not in positions.csv", pid)
+    return pid, pos
+
+
+def _position_currency(fname: str, r: dict, pid: str, pos: dict) -> str:
+    """A per-position row's currency, checked to be the position's."""
+    n = r["_row"]
+    ccy = _currency(fname, n, "currency", r["currency"])
+    if ccy != pos["currency"]:
+        _fail(fname, n, "currency",
+              f"currency {ccy} != position {pid} currency "
+              f"{pos['currency']}")
+    return ccy
 
 
 def _dated_row(fname: str, r: dict, positions: dict[str, dict],
@@ -382,22 +415,13 @@ def _dated_row(fname: str, r: dict, positions: dict[str, dict],
     position's. `seen` collects the (position, date) keys checked so far;
     `what` names the series in the duplicate error."""
     n = r["_row"]
-    pid = _req(fname, n, "position_id", r["position_id"])
-    pos = positions.get(pid)
-    if pos is None:
-        _fail(fname, n, "position_id",
-              "references a position not in positions.csv", pid)
+    pid, pos = _position_ref(fname, r, positions)
     as_of = _date(fname, n, "as_of_date", r["as_of_date"])
     if (pid, as_of) in seen:
         _fail(fname, n, "as_of_date",
               f"duplicate {what} for position {pid} on {as_of}")
     seen.add((pid, as_of))
-    ccy = _currency(fname, n, "currency", r["currency"])
-    if ccy != pos["currency"]:
-        _fail(fname, n, "currency",
-              f"currency {ccy} != position {pid} currency "
-              f"{pos['currency']}")
-    return pid, pos, as_of, ccy
+    return pid, pos, as_of, _position_currency(fname, r, pid, pos)
 
 
 def validate_valuations(rows: list[dict], positions: dict[str, dict],
@@ -453,15 +477,13 @@ def validate_exits(rows: list[dict], positions: dict[str, dict],
     blank. A write-off is proceeds 0."""
     fname = "exits.csv"
     out: list[dict] = []
+    seen: set[str] = set()
     for r in rows:
         n = r["_row"]
-        pid = _req(fname, n, "position_id", r["position_id"])
-        pos = positions.get(pid)
-        if pos is None:
-            _fail(fname, n, "position_id",
-                  "references a position not in positions.csv", pid)
-        if any(e["position_id"] == pid for e in out):
+        pid, pos = _position_ref(fname, r, positions)
+        if pid in seen:
             _fail(fname, n, "position_id", f"duplicate exit for position {pid}")
+        seen.add(pid)
         exit_date = _date(fname, n, "exit_date", r["exit_date"])
         if exit_date < pos["acquired_at"]:
             _fail(fname, n, "exit_date",
@@ -473,11 +495,7 @@ def validate_exits(rows: list[dict], positions: dict[str, dict],
             _fail(fname, n, "exit_date",
                   f"exit_date {exit_date} differs from closed_at "
                   f"{pos['closed_at']} of position {pid}")
-        ccy = _currency(fname, n, "currency", r["currency"])
-        if ccy != pos["currency"]:
-            _fail(fname, n, "currency",
-                  f"currency {ccy} != position {pid} currency "
-                  f"{pos['currency']}")
+        ccy = _position_currency(fname, r, pid, pos)
         out.append({
             "position_id": pid,
             "exit_date": exit_date,

@@ -16,10 +16,8 @@ reclaimed:
   (the walk crashed before writing the in-progress marker or the terminal
   manifest, or ``--debug`` captured a page and the walk then failed the
   auth gate) or its ``status`` is anything other than ``"complete"`` (an
-  ``"in-progress"`` marker left by a crashed walk). ``load`` would
-  otherwise keep re-ingesting whatever partial ``investments.json`` /
-  ``offerings/`` such a dir holds; after pruning one, the next
-  ``load --force`` rebuild reflects the removal. ``--dry-run`` never
+  ``"in-progress"`` marker left by a crashed walk). ``load`` skips such
+  dirs; ``prune`` reclaims them once quiescent. ``--dry-run`` never
   creates a run dir, so there is no dry-run shell to reclaim.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``

@@ -124,8 +124,8 @@ def test_watch_harvests_bearer_from_token_response():
 
 def test_probe_authenticated_requires_a_bearer():
     # Without a harvested Bearer the probe never fires (produkte 401s on
-    # cookies alone — the live 2026-08-15 failure), so it is False before
-    # any token is in hand — no context call is even attempted.
+    # cookies alone), so it is False before any token is in hand — no
+    # context call is even attempted.
     w = login._Watch()
     assert w.bearer is None
     assert login._probe_authenticated(context=None, watch=w) is False

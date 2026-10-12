@@ -14,10 +14,9 @@ backfill.
 Design notes:
 
 PDF text extraction goes through pypdfium2 (Python bindings to
-Google's PDFium, the renderer Chrome uses). pdfplumber/pdfminer
-worked but were CPU-bound on pure-Python loops — pypdfium2 is
-roughly 5-10x faster on Schwab statements because it pushes the
-text-layout work into PDFium's C++ core.
+Google's PDFium, the renderer Chrome uses), which does the
+text-layout work in C++ and so stays fast across hundreds of
+statements.
 
 Schwab's tabular layout in the source PDF survives reasonably
 well into the line stream because each row starts at the same x
@@ -106,10 +105,9 @@ _REG_ACCOUNT_NUMBER_INLINE_RE = re.compile(
 )
 # Substrings that mark a plausible registration label. Used to
 # filter out lines that happen to end in " of" (e.g. disclosure
-# prose) but aren't the registration header. The Schwab labels
-# observed so far, plus the catalogue of
-# registrations the wealthdb adapter expects to see — see
-# DESIGN.md §8.
+# prose) but aren't the registration header. The known Schwab
+# labels, plus the catalogue of registrations the wealthdb adapter
+# expects to see — see DESIGN.md §8.
 _REG_KEYWORDS = (
     "Account",
     "IRA",
@@ -215,10 +213,9 @@ def _augment_custodial_subtype(label: str, lines: list[str]) -> str:
     resolution. Doing it here keeps wealthdb's gold adapter
     out of bronze and gives it a single column to key off.
 
-    If neither marker is present (defensive — no Schwab
-    statement we've observed lacks one for a custodial
-    account) or the registration isn't custodial, `label` is
-    returned unchanged.
+    If neither marker is present (defensive — no known Schwab
+    statement lacks one for a custodial account) or the
+    registration isn't custodial, `label` is returned unchanged.
     """
     if "Custodial" not in label:
         return label
@@ -365,8 +362,8 @@ _TX_DETAILS_HEADER_RE = re.compile(
     r"^\s*Transaction\s*Details\b", re.IGNORECASE,
 )
 _TX_END_RE = re.compile(
-    # Match in either pdfplumber's tight form ("TotalTransactions",
-    # "Pending/Open Activity") or pypdfium2's spaced form ("Total
+    # Match in either the tight form ("TotalTransactions",
+    # "Pending/Open Activity") or the spaced form ("Total
     # Transactions", "Pending / Open Activity"). The whitespace
     # tolerance matters: without it, custodial-account statements
     # (which don't emit a Pending block and only show "Total
@@ -514,8 +511,7 @@ def _parse_transactions_new(text: str, statement_year: int,
 
     Block-based: each "logical row" is the run of lines from one
     row-start (a date or category-keyword line) to the next.
-    With pdfplumber the whole row lands on one line; with
-    pypdfium2 the same row often spans 3-5 lines (header line,
+    A row can sit on one line or span 3-5 (header line,
     description continuation, numeric columns, "(ST)" / "(LT)"
     realised-gain tag, "Industry Fee $X.XX" charge note). The
     block parser handles both shapes by joining the block lines
@@ -618,10 +614,10 @@ _NEW_TX_ROW_STOP_RE = re.compile(
 _NEW_TX_BLOCK_MAX_CHARS = 400
 
 
-# Per-row charge/fee notes that pypdfium2 emits on their own
-# line; pdfplumber concatenates them to the previous line with
-# no whitespace. Either way we don't want them confused with
-# the trailing numeric columns of the data row. Two notes on one
+# Per-row charge/fee notes, on their own line or glued to the
+# previous line with no whitespace. Either way they must not be
+# confused with the trailing numeric columns of the data row. Two
+# notes on one
 # line are separated by "; " ("Commission $0.65; Industry Fee
 # $0.01"); the separator goes with the note, or it would stick to
 # the row's amount and hide it from the numeric columns.
@@ -1160,9 +1156,8 @@ _POSITIONS_HEADER_RE = re.compile(
 )
 # Footer terminator: "TotalEquities", "Total Equities",
 # "TotalExchangeTradedFunds", "Total Exchange Traded Funds", etc.
-# pdfplumber emits the squashed form (no spaces between Total
-# and the section); pypdfium2 emits the spaced form. Accept
-# both. The first total is parenthesised when it is negative
+# Both the squashed form (no spaces between Total and the
+# section) and the spaced form are accepted. The first total is parenthesised when it is negative
 # ("Total Options ($1,000.00)", a short option), and Fixed Income
 # prints a quantity total before it ("Total Fixed Income
 # 10,000.0000 $9,900.00"). A footer that fails to match leaves the
@@ -2252,8 +2247,8 @@ def _parse_cash_summary_new(text: str) -> dict | None:
         # Inside the section: capture every line, the data line
         # may be the next non-blank or two-down because Schwab
         # sometimes splits the column-header line across two
-        # rows. We give up once we hit "OtherActivity" or
-        # "Transaction Details" or an empty stretch.
+        # rows. Capture stops at "Transaction Details", at a blank
+        # line after the first captured one, or after five lines.
         if not line:
             if captured:
                 break
@@ -2563,8 +2558,9 @@ def parse_account_value(text: str) -> float | None:
 
 
 def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
-    """Open a Schwab brokerage statement PDF and return a dict
-    with the statement period and the extracted transactions.
+    """Open a Schwab brokerage statement PDF and return a dict with
+    the statement period, transactions, positions, cash summary,
+    account value, registration label and account number.
 
     `statement_year` dates the MM/DD activity rows of a statement
     whose period header does not read (parse_transactions); a printed
@@ -2603,7 +2599,7 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
 # other custodians or accounts. The brokerage statements show such a
 # move only as an unexplained position drop; the letter itemises it.
 #
-# Three observed layout families, all OUT, all single-confirmation:
+# Three known layout families, all OUT, all single-confirmation:
 #   1. Wire transfer(s) — cash leaving by wire. Recipient rendered as
 #      "To the account of <NAME> at <BANK>" + a cash amount.
 #   2. Transfer(s) to Schwab accounts of third parties — CASH to
@@ -2733,8 +2729,8 @@ def parse_distribution_text(text: str, filename: str | None = None) -> list[dict
     joined = "\n".join(lines)
 
     date_iso = _distribution_date(lines, filename)
-    # Every observed letter is a distribution OUT ("moved money out of
-    # the account"); detect an inbound variant defensively.
+    # A distribution letter is an outbound move ("moved money out of
+    # the account"); an inbound variant is detected defensively.
     direction = "in" if re.search(r"\b(received into|moved money in|"
                                   r"deposited into)\b", joined, re.I) else "out"
 

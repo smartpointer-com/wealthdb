@@ -361,6 +361,28 @@ class SessionTest(_Tmp):
         self.assertEqual([e["kind"] for e in self._events()],
                          ["download", "download"])
 
+    def test_event_urls_mask_credential_query_parameters(self):
+        # A download link or a sign-in hop can carry a one-time token in its
+        # query string; the click log masks it by name, as the network log
+        # does.
+        download = _Download("statement.pdf")
+        download.url = "https://www.example.com/file?id=7&token=one-time-tok"
+        with contextlib.ExitStack() as stack:
+            s = self._session(stack, redact=debugcap.secret_redactor())
+            context = _Context()
+            s.attach(context)
+            page = context.new_page()
+            page.main_frame = types.SimpleNamespace(
+                url="https://www.example.com/next?auth=hop-secret")
+            s._save_download(download)
+            (on_nav,) = page.handlers["framenavigated"]
+            on_nav(page.main_frame)
+        text = (self.root / "debug" / "clicks.jsonl").read_text()
+        self.assertNotIn("one-time-tok", text)
+        self.assertNotIn("hop-secret", text)
+        self.assertEqual([e["kind"] for e in self._events()],
+                         ["download", "navigation"])
+
     def test_a_detected_login_form_is_filled_through_the_hook(self):
         filled = []
         with contextlib.ExitStack() as stack:

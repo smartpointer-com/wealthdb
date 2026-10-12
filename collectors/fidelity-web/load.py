@@ -59,10 +59,6 @@ import pdf_parsers_1099
 import pdf_parsers_daf
 import pdf_parsers_supplied
 
-# Re-export for backward compatibility with existing tests that call
-# load.apply_migrations(...) directly.
-apply_migrations = silver.apply_migrations
-
 log = logging.getLogger("fidelity-web.load")
 
 
@@ -214,8 +210,9 @@ DAF_PORTFOLIO_LABEL = "Fidelity Charitable® Giving"
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__.strip())
-    # load.py runs HOST-SIDE for fidelity-web (the wrapper's PYTHONPATH
-    # shortcut), so the defaults are host paths — not /data.
+    # load.py runs HOST-SIDE for fidelity-web (the wrapper runs it with
+    # the collector's .venv python), so the defaults are host paths —
+    # not /data.
     p.add_argument("--silver-db", type=Path,
                    default=cli.default_data_root() / "fidelity-web" / "fidelity-web.db",
                    help="Path to the silver SQLite database "
@@ -308,8 +305,7 @@ def main(argv=None):
             signature = _read_signature_sidecar(supplied_dir)
 
         pending = [d for d in dumps if not already_loaded(conn, d)]
-        dumps_1099, rederive_1099s = _dumps_for_1099s(
-            conn, dumps, pending, schema_version)
+        dumps_1099, rederive_1099s = _dumps_for_1099s(conn, dumps, pending)
 
         cache = ParseCache(
             args.parse_cache_dir or _default_parse_cache_dir())
@@ -333,19 +329,16 @@ def main(argv=None):
                     coord.enqueue(
                         coord.sha_for(path), _STATEMENT_PARSER_VERSION,
                         _parse_statement_pdf_worker, str(path))
-                if schema_version >= 7:
-                    for path in _daf_statement_pdf_candidates(dump):
-                        coord.enqueue(
-                            coord.sha_for(path),
-                            _DAF_STATEMENT_PARSER_VERSION,
-                            _parse_daf_statement_pdf_worker, str(path))
-            if schema_version >= 4:
-                supplied_version = _supplied_parser_version(signature)
-                for path in _supplied_pdf_candidates(supplied_dir):
+                for path in _daf_statement_pdf_candidates(dump):
                     coord.enqueue(
-                        coord.sha_for(path), supplied_version,
-                        _parse_supplied_statement_pdf_worker,
-                        (str(path), signature))
+                        coord.sha_for(path), _DAF_STATEMENT_PARSER_VERSION,
+                        _parse_daf_statement_pdf_worker, str(path))
+            supplied_version = _supplied_parser_version(signature)
+            for path in _supplied_pdf_candidates(supplied_dir):
+                coord.enqueue(
+                    coord.sha_for(path), supplied_version,
+                    _parse_supplied_statement_pdf_worker,
+                    (str(path), signature))
             coord.dispatch()
 
             loaded = 0
@@ -369,8 +362,7 @@ def main(argv=None):
                 _load_consolidated_1099s(
                     conn, dumps_1099, rederive=rederive_1099s, coord=coord)
             _load_supplied_statements_oneshot(
-                conn, supplied_dir, schema_version,
-                signature=signature, coord=coord,
+                conn, supplied_dir, signature=signature, coord=coord,
             )
         validate(conn)
     finally:
@@ -498,11 +490,11 @@ def parse_decimal(s):
 
 def _row_ci(row):
     """Case-insensitive view of a CSV row, keyed on casefolded header
-    names. Fidelity re-cased its positions-export headers in 2026-07
-    ('Account Number' → 'Account number', 'Last Price' → 'Last price',
-    …) which silently zeroed the positions load for weeks; casefolded
-    lookups read both eras identically. The original row (source-cased
-    keys) still lands in payload."""
+    names. Fidelity's exports have shipped the same headers in more
+    than one casing ('Account Number' / 'Account number', 'Last Price'
+    / 'Last price', …), and an exact-case lookup reads a re-cased file
+    as empty; casefolded lookups read every casing identically. The
+    original row (source-cased keys) still lands in payload."""
     return {(k or "").strip().casefold(): v for k, v in row.items()
             if k is not None}
 
@@ -545,17 +537,21 @@ def load_dump(conn, dump_dir, schema_version, coord=None):
     log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
     run_meta = _read_run_json(dump_dir)
-    _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta)
-
-    portfolio_count, account_count = _load_master(
-        conn, snapshot_at, dump_dir, run_meta,
-    )
-
     # Positions are all-or-nothing per dump — see
     # _positions_completeness_gate for the invariant and its signals.
+    # The gate runs first: a dump whose positions it holds back does not
+    # count as one that observed them.
     merged = _parse_positions(dump_dir)
     skip_positions, skip_reason = _positions_completeness_gate(
-        dump_dir, run_meta, merged, schema_version)
+        dump_dir, run_meta, merged)
+    _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta,
+                     positions_present=(0 if skip_positions else
+                                        _phase_present(dump_dir, "positions")))
+
+    portfolio_count, account_count = _load_master(
+        conn, snapshot_at, run_meta,
+    )
+
     if skip_positions:
         log.warning(
             "%s: skipping ALL positions from this dump — %s "
@@ -565,23 +561,19 @@ def load_dump(conn, dump_dir, schema_version, coord=None):
         pos_count = 0
     else:
         pos_count = _load_positions(conn, snapshot_at, merged)
-    lot_step = (_read_lot_step(dump_dir, run_meta)
-                if schema_version >= 11 else None)
+    lot_step = _read_lot_step(dump_dir, run_meta)
     lot_count = (_load_open_lots(conn, snapshot_at, dump_dir.name, lot_step)
                  if lot_step else 0)
     closed_lot_count = (_load_closed_positions(conn, dump_dir.name, lot_step)
-                        if lot_step and schema_version >= 12 else 0)
-    txn_count = _load_transactions(conn, snapshot_at, dump_dir)
-    doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
+                        if lot_step else 0)
+    txn_count = _load_transactions(conn, dump_dir)
+    doc_count = _load_documents(conn, snapshot_at, dump_dir)
     hist_pos_count = _load_historical_from_pdfs(conn, dump_dir, coord)
 
-    # Donor-Advised Fund phase (schema v7+ allows portfolios.kind='daf').
-    daf = {}
-    daf_hist_count = 0
-    if schema_version >= 7:
-        daf = _load_daf(conn, snapshot_at, dump_dir,
-                        skip_positions=skip_positions)
-        daf_hist_count = _load_daf_historical(conn, dump_dir, coord)
+    # Donor-Advised Fund phase.
+    daf = _load_daf(conn, snapshot_at, dump_dir,
+                    skip_positions=skip_positions)
+    daf_hist_count = _load_daf_historical(conn, dump_dir, coord)
 
     log.info(
         "loaded %s: portfolios=%d accounts=%d positions=%d open_lots=%d "
@@ -613,9 +605,8 @@ def _phase_present(dump_dir, subdir):
     The directory alone does not answer that. Every walk mkdirs its
     phase directory before its first navigation, so a phase that
     exported nothing leaves an empty directory behind and a flag read
-    off ``is_dir()`` records a 1 for it. Fifty-five consecutive
-    activity failures were recorded as `activity_present=1` that way —
-    exactly the column an audit would have trusted to notice them.
+    off ``is_dir()`` would record a 1 for it — hiding a failed phase in
+    exactly the column an audit would trust to notice it.
 
     Whether the phase covered its whole window is a different question
     and lives in run.json's `coverage` block; this flag answers only
@@ -626,7 +617,8 @@ def _phase_present(dump_dir, subdir):
     return int(any(d.iterdir()))
 
 
-def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta):
+def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta,
+                     *, positions_present):
     cfg = run_meta.get("cli_config", {}) or {}
     window = run_meta.get("activity_window") or {}
     # balances / performance presence is recoverable from the
@@ -644,7 +636,7 @@ def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta):
             cfg.get("mode"),
             ts_from_iso(window.get("since")),
             ts_from_iso(window.get("until")),
-            _phase_present(dump_dir, "positions"),
+            positions_present,
             _phase_present(dump_dir, "activity"),
             _phase_present(dump_dir, "documents"),
         ),
@@ -657,7 +649,7 @@ def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta):
 # and per-account nicknames the bronze fetch read at walk-start).
 # ------------------------------------------------------------
 
-def _load_master(conn, snapshot_at, dump_dir, run_meta):
+def _load_master(conn, snapshot_at, run_meta):
     # A dump only vouches for the accounts its phases covered. A
     # mode='daf' dump ran no retail phase — its account_dimensions is
     # an enumeration-only capture of the account selector — so writing
@@ -723,9 +715,7 @@ def _load_master(conn, snapshot_at, dump_dir, run_meta):
 
 def account_key(account_external_id):
     """Mirrors download.account_key() — first 16 hex of sha256."""
-    return hashlib.sha256(
-        account_external_id.encode("ascii"),
-    ).hexdigest()[:16]
+    return bronze.short_token(account_external_id)
 
 
 # ------------------------------------------------------------
@@ -781,9 +771,8 @@ def _load_positions(conn, snapshot_at, merged):
         summary = views.get("summary", {})
         dividend = views.get("dividend", {})
         # Case-insensitive views for lookups (payload keeps the
-        # source-cased rows); 'Dist. yield' / 'Distribution yield …'
-        # were renamed to 'rate' spellings in the same 2026-07 format
-        # change that re-cased every header.
+        # source-cased rows). The distribution column appears as both
+        # 'Dist. yield' and 'Dist. rate' (_ci_get takes either).
         ci_sum = _row_ci(summary)
         ci_div = _row_ci(dividend)
         ci_pri = ci_sum or ci_div
@@ -1052,32 +1041,34 @@ def _iter_positions_rows(csv_path):
 ACTIVITY_FILE_RE = re.compile(r"^activity_.*\.csv$")
 
 
-def _load_transactions(conn, snapshot_at, dump_dir):
-    act_dir = dump_dir / "activity"
-    if not act_dir.is_dir():
-        return 0
-    # Collect LOGICAL activity names (strip any .zst/.gz), then resolve
-    # each to its on-disk variant — so a plain + .zst twin that coexist
-    # (a recompress interrupted between verify and unlink) ingest once,
-    # with the plain original winning. ACTIVITY_FILE_RE matches the
-    # logical `activity_*.csv` name.
+def _resolved_bronze_files(directory, matches):
+    """The on-disk file of each LOGICAL name (any .zst/.gz stripped) in
+    `directory` that `matches(logical_path)` accepts, sorted by name.
+    A plain + .zst twin that coexist (a recompress interrupted between
+    verify and unlink) resolve to one file, the plain original."""
     logical_names = set()
-    for path in act_dir.iterdir():
+    for path in directory.iterdir():
         if not path.is_file():
             continue
         logical = _logical_bronze_path(path)
-        if ACTIVITY_FILE_RE.match(logical.name):
+        if matches(logical):
             logical_names.add(logical.name)
-    inserted = 0
-    for name in sorted(logical_names):
-        resolved = compress.resolve_variant(act_dir / name)
-        if resolved is None:
-            continue
-        inserted += _ingest_activity_csv(conn, snapshot_at, resolved)
-    return inserted
+    resolved = (compress.resolve_variant(directory / name)
+                for name in sorted(logical_names))
+    return [p for p in resolved if p is not None]
 
 
-def _ingest_activity_csv(conn, snapshot_at, csv_path):
+def _load_transactions(conn, dump_dir):
+    act_dir = dump_dir / "activity"
+    if not act_dir.is_dir():
+        return 0
+    # ACTIVITY_FILE_RE matches the logical `activity_*.csv` name.
+    return sum(_ingest_activity_csv(conn, path)
+               for path in _resolved_bronze_files(
+                   act_dir, lambda p: ACTIVITY_FILE_RE.match(p.name)))
+
+
+def _ingest_activity_csv(conn, csv_path):
     # source_sha256 is the DECOMPRESSED content hash, not the on-disk
     # file's hash: a .csv.zst and its plain twin must produce identical
     # transactions rows (the convergence invariant), and source_sha256
@@ -1108,10 +1099,9 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
     # than the file sha256 + global CSV row index — is the dedup key.
     occ_counter: dict[str, int] = {}
     for row in reader:
-            # Case-insensitive lookups (_row_ci): the 2026-07 format
-            # change re-cased the positions headers and silently
-            # zeroed that load for weeks — the activity headers were
-            # spared then, but the same drift is one release away.
+            # Case-insensitive lookups (_row_ci): a re-cased header
+            # must not read as an empty column (the drift the
+            # positions export has already shown).
             # Values (which the activity identity hashes) are
             # untouched, so ids are stable across header re-casings.
             ci = _row_ci(row)
@@ -1396,7 +1386,7 @@ def _synthesise_activity_id(identity, occurrence):
 TAX_FORM_YEAR_RE = re.compile(r"^(\d{4})-")
 
 
-def _load_documents(conn, snapshot_at, dump_dir, run_meta):
+def _load_documents(conn, snapshot_at, dump_dir):
     """Index every PDF / HTML capture in the dump dir into the
     documents table. Dedups on content_sha256; the first dump that
     surfaced a given file's bytes wins the snapshot_at column."""
@@ -1412,21 +1402,11 @@ def _load_documents(conn, snapshot_at, dump_dir, run_meta):
                 _classify_documents_pdf(pdf.name),
             )
         # Statement CSV companions ARE compressible: a `.csv.zst` has
-        # suffix `.zst`, so match on the LOGICAL name (strip any
-        # .zst/.gz) and resolve the on-disk variant (plain wins). The
-        # decompressed-hash path keeps the documents row identical to a
-        # plain-CSV load.
-        csv_logical = set()
-        for other in docs_dir.iterdir():
-            if not other.is_file():
-                continue
-            logical = _logical_bronze_path(other)
-            if logical.suffix.lower() == ".csv":
-                csv_logical.add(logical.name)
-        for name in sorted(csv_logical):
-            resolved = compress.resolve_variant(docs_dir / name)
-            if resolved is None:
-                continue
+        # suffix `.zst`, so match on the LOGICAL name and resolve the
+        # on-disk variant (plain wins). The decompressed-hash path keeps
+        # the documents row identical to a plain-CSV load.
+        for resolved in _resolved_bronze_files(
+                docs_dir, lambda p: p.suffix.lower() == ".csv"):
             inserted += _ingest_document(
                 conn, snapshot_at, resolved,
                 {"doc_kind": "statement", "file_format": "csv"},
@@ -1486,8 +1466,7 @@ def _ingest_document(conn, snapshot_at, path, classification, *,
     """Index one bronze artefact into the documents table.
 
     PDFs (``compressible=False``, the default — PDFs are never
-    compressed) are hashed and sized by their raw on-disk bytes, exactly
-    as before.
+    compressed) are hashed and sized by their raw on-disk bytes.
 
     Compressible artefacts (HTML / CSV, which download + recompress may
     have written as ``<name>.zst``) are keyed on their DECOMPRESSED
@@ -1635,8 +1614,7 @@ def _daf_pool_count(dump_dir):
     return n
 
 
-def _positions_completeness_gate(dump_dir, run_meta, merged,
-                                 schema_version):
+def _positions_completeness_gate(dump_dir, run_meta, merged):
     """Decide whether this dump's positions may enter silver at all.
     Returns (skip, reason); (False, None) means the observation is
     complete and both retail and DAF pool rows load.
@@ -1651,9 +1629,11 @@ def _positions_completeness_gate(dump_dir, run_meta, merged,
     Partiality signals:
       * mode='daf' — the retired DAF-only mode; such legacy dumps
         cover a single account and are partial by construction.
-      * daf_results.status='error' — the walk expected a DAF (the
-        account selector enumerated one) but the charitable phase
-        failed; loading the retail rows alone would zero the pool.
+      * daf_results.status='error', or an error in its per_account
+        map — the walk expected a DAF (the account selector
+        enumerated one) but the charitable phase, or one giving
+        account of it, failed; loading the rest alone would zero the
+        missing pools.
       * retail rows parse to zero while the dump carries DAF pool
         rows and the roster says retail accounts were in scope — the
         retail export failed (or its format drifted); loading the
@@ -1663,10 +1643,12 @@ def _positions_completeness_gate(dump_dir, run_meta, merged,
     if mode == "daf":
         return True, "legacy mode=daf dump covers only the DAF"
     daf_res = run_meta.get("daf_results")
-    if merged and isinstance(daf_res, dict) \
-            and daf_res.get("status") == "error":
-        return True, "the DAF phase failed while retail positions landed"
-    pool_rows = _daf_pool_count(dump_dir) if schema_version >= 7 else 0
+    pool_rows = _daf_pool_count(dump_dir)
+    if isinstance(daf_res, dict) and (merged or pool_rows) and (
+            daf_res.get("status") == "error"
+            or any(isinstance(r, dict) and r.get("status") == "error"
+                   for r in (daf_res.get("per_account") or {}).values())):
+        return True, "the DAF phase failed while other positions landed"
     if not merged and pool_rows and (run_meta.get("accounts_in_scope")
                                      or []):
         return True, ("retail positions parsed to zero rows while the "
@@ -2166,10 +2148,7 @@ def _statement_pdf_candidates(dump_dir):
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
         return []
-    return [
-        p for p in sorted(docs_dir.glob("Statement*.pdf"))
-        if not p.name.lower().endswith(".csv")
-    ]
+    return sorted(docs_dir.glob("Statement*.pdf"))
 
 
 def _load_historical_from_pdfs(conn, dump_dir, coord=None):
@@ -2362,7 +2341,7 @@ def _supplied_pdf_candidates(supplied_dir):
     ]
 
 
-def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
+def _load_supplied_statements_oneshot(conn, supplied_dir, *,
                                       signature=None, coord=None):
     """Load every monthly supplied statement from ``supplied_dir``:
     its holdings into ``historical_position_snapshots`` and its
@@ -2392,12 +2371,6 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
         # out-of-band statements — debug, not info, so it isn't
         # noise on every run.
         log.debug("supplied-statements: %s not a directory; skipping", supplied_dir)
-        return
-    if schema_version < 4:
-        log.info(
-            "supplied-statements: silver schema=%d < 4 (no historical "
-            "table); skipping", schema_version,
-        )
         return
     if signature is None:
         signature = _read_signature_sidecar(supplied_dir)
@@ -2456,8 +2429,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
                 continue
             if owed_a_purge:
                 dropped = _drop_supplied_activity(conn)
-                dropped_lots = (_drop_supplied_closed_lots(conn)
-                                if schema_version >= 10 else 0)
+                dropped_lots = _drop_supplied_closed_lots(conn)
                 log.info(
                     "supplied-statements: the parser has changed since these "
                     "rows were written; dropped %d activity row(s) and %d "
@@ -2470,8 +2442,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
                 conn, path, result, sha, claims=claims)
             activity += act_in
             activity_dup += act_dup
-            if schema_version >= 10:
-                sales += _insert_supplied_closed_lots(conn, path, result, sha)
+            sales += _insert_supplied_closed_lots(conn, path, result, sha)
         synth = _synthesize_missing_account_masters(conn)
         if not owed_a_purge:
             # Either the generation had not moved, or it had and the
@@ -2521,7 +2492,7 @@ class _FeedClaims:
 
     Only rows the feed ABSORBED are recorded. A row that found no feed
     match is simply inserted, and its id converges on a re-sighting
-    through INSERT OR REPLACE exactly as before, so the ledger can never
+    through INSERT OR REPLACE, so the ledger can never
     suppress an insert.
     """
 
@@ -2562,8 +2533,8 @@ def _unclaimed_feed_match(conn, account_external_id, amount, ts, claims,
     the payment the feed never carried would vanish.
 
     Candidates come back closest-in-time first, then by id, because
-    with claiming the pick is no longer arbitrary: which row is taken
-    now decides what the next statement row can still find.
+    with claiming the pick is not arbitrary: which row is taken
+    decides what the next statement row can still find.
     """
     for (feed_id,) in conn.execute(
         "SELECT activity_id FROM transactions "
@@ -2708,10 +2679,8 @@ def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
             if not desc:
                 continue
             mv = holding.get("market_value")
-            total = parsed.get("portfolio_total")  # supplied parser emits none
-            pct = None
-            if mv is not None and total:
-                pct = mv / total
+            # The supplied statements print no portfolio total, so the
+            # holding's share of it stays NULL.
             try:
                 conn.execute(
                     "INSERT OR REPLACE INTO historical_position_snapshots ("
@@ -2725,7 +2694,7 @@ def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
                         holding.get("instrument_key"),
                         holding.get("quantity"),
                         holding.get("price"),
-                        mv, pct,
+                        mv, None,
                         holding.get("cost_basis"),
                         holding.get("unrealized_gain"),
                         "USD", sha,
@@ -3031,14 +3000,12 @@ def _replace_1099_lots(conn, parsed, sha):
     return len(parsed.get("lots", []))
 
 
-def _dumps_for_1099s(conn, dumps, pending, schema_version):
+def _dumps_for_1099s(conn, dumps, pending):
     """Which dumps the 1099 pass reads, and whether it re-derives:
     ``(dumps, rederive)``. It reads the dumps this run loads, or every
     dump in bronze when its generation is stale: its parser has changed
     since the lots silver holds were written, or no generation is
     stamped (none was yet, or migration 0013 dropped it)."""
-    if schema_version < 10:
-        return [], False
     if silver.stale_generation(conn, CONSOLIDATED_1099_GENERATION_SCOPE,
                                _CONSOLIDATED_1099_PARSER_VERSION):
         return list(dumps), True
@@ -3137,9 +3104,6 @@ SELECT h.account_external_id, MAX(h.as_of_date)
         return 0
     payload = normalize_payload({"source": "supplied-statement-synthetic"})
     inserted = 0
-    portfolio_payload = normalize_payload({
-        "source": "supplied-statement-synthetic",
-    })
     for aid, latest_as_of in missing:
         # Portfolio master too: the historical projection joins
         # accounts → portfolios on (snapshot_at, portfolio_external_id),
@@ -3152,7 +3116,7 @@ SELECT h.account_external_id, MAX(h.as_of_date)
                 "snapshot_at, portfolio_external_id, kind, payload"
                 ") VALUES (?, ?, ?, ?)",
                 (latest_as_of, _SUPPLIED_SYNTHETIC_PORTFOLIO,
-                 _SUPPLIED_SYNTHETIC_KIND, portfolio_payload),
+                 _SUPPLIED_SYNTHETIC_KIND, payload),
             )
             conn.execute(
                 "INSERT OR IGNORE INTO accounts ("

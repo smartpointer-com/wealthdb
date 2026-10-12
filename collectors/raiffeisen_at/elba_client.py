@@ -3,7 +3,7 @@
 download.py.
 
 Mein ELBA is an Angular SPA over a per-widget REST/JSON API (DESIGN.md
-§3-Observed). Two origins are in play:
+§3-Surface). Two origins are in play:
 
   * `sso.raiffeisen.at` — the OIDC login app and its `kunde-login-ui`
     REST API (region list, identify, pushTAN). login.py drives the login
@@ -114,10 +114,10 @@ SEL_PROFILE_CARD_CLICK = "app-user-entry .clickable"
 
 # The Vergleichswert (comparison code) shown on the pushTAN screen and in the
 # app — logged at sign-in so the right challenge can be confirmed against the
-# app. Primary source is the pushtan POST response (`displayText`), but the pinned
-# Camoufox can drop that response event (it did on the first live login), so
-# the DOM read below is the reliable fallback: the pushTAN screen shows the
-# code in a large display paragraph.
+# app. Primary source is the pushtan POST response (`displayText`), but the
+# pinned Camoufox can drop that response event, so the DOM read below is the
+# reliable fallback: the pushTAN screen shows the code in a large display
+# paragraph.
 SEL_VERGLEICHSWERT = "p.rds-display-1"
 
 
@@ -395,8 +395,7 @@ def dokument_download_url(system_id: str, dokument_id: str,
     Documents that carry a `versionsId` (the older KDM-system Kontoauszüge)
     put it in the path — `…/<systemId>/<dokumentenId>/<versionsId>/download`
     — and 422 without it; documents with no version (the newer EAZ ones) use
-    the plain `…/<systemId>/<dokumentenId>/download` (measured 2026-08-15,
-    DESIGN.md §E)."""
+    the plain `…/<systemId>/<dokumentenId>/download` (DESIGN.md §E)."""
     base = f"{DOCS_API}/dokumente/{quote(system_id)}/{quote(dokument_id)}"
     if version_id not in (None, ""):
         base += f"/{quote(str(version_id))}"

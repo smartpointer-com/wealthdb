@@ -33,7 +33,7 @@ MIGRATIONS = ROOT / "migrations"
 
 def _apply_all_migrations(db_path: Path):
     conn = load.open_db(db_path)
-    load.apply_migrations(conn, MIGRATIONS)
+    load.silver.apply_migrations(conn, MIGRATIONS)
     return conn
 
 
@@ -105,6 +105,18 @@ class FindPendingDumpsTests(unittest.TestCase):
             d = bronze / "20260101T120000Z"
             d.mkdir()
             (d / "run.json").write_text("{not valid json", encoding="utf-8")
+            self.assertEqual(load.find_pending_dumps(conn, bronze), [])
+            conn.close()
+
+    def test_skips_run_json_that_is_not_utf8(self):
+        # Undecodable bytes are as corrupt as bad JSON: skipped, not a
+        # crash of the whole load.
+        with tempfile.TemporaryDirectory() as tmp:
+            bronze = Path(tmp)
+            conn = _apply_all_migrations(bronze / "swissquote.db")
+            d = bronze / "20260101T120000Z"
+            d.mkdir()
+            (d / "run.json").write_bytes(b'{"status": "\xff\xfe"}')
             self.assertEqual(load.find_pending_dumps(conn, bronze), [])
             conn.close()
 

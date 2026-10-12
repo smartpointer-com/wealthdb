@@ -64,9 +64,6 @@ log = logging.getLogger("raiffeisen_at.load")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
-# Re-export so tests + siblings can call load.apply_migrations directly.
-apply_migrations = silver.apply_migrations
-
 # transactions.source / daily_balances.source tags. The kontoumsaetze JSON is
 # the live source of record; supplied transaction listings fill the days no
 # download covers (DESIGN.md §I). LIVE_SOURCES is the one place that says which
@@ -149,7 +146,7 @@ def _amount_and_currency(row: dict) -> tuple[float | None, str | None]:
 
 def _hash_txn_id(iban: str, posted_at: int, amount: float,
                  description: str | None) -> str:
-    """Stable synthetic id for a row with no `id` (never observed, but
+    """Stable synthetic id for a row with no `id` (not expected, but
     tolerated so a malformed row is not silently dropped). Deterministic, so
     re-loads converge on it."""
     basis = "|".join([iban, str(posted_at), f"{amount:.2f}",
@@ -346,7 +343,7 @@ _DATE_YMD_RE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
 
 def _statement_date_from_name(name: str) -> int | None:
     """Best-effort statement date from a filename like
-    `2026-08-01_EAZ_....pdf`. None when no date is embedded."""
+    `2024-01-01_EAZ_....pdf`. None when no date is embedded."""
     m = _DATE_YMD_RE.search(name)
     if not m:
         return None
@@ -360,11 +357,14 @@ def _statement_date_from_name(name: str) -> int | None:
 # Per-run loader
 # ============================================================
 
-def _read_json(path: Path):
+def _read_json(path: Path, *, quiet: bool = False):
+    """The parsed JSON at `path`, or None (with a warning unless `quiet`)
+    when it is missing or not valid JSON."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        log.warning("%s: missing or not valid JSON; skipping", path.name)
+        if not quiet:
+            log.warning("%s: missing or not valid JSON; skipping", path.name)
         return None
 
 
@@ -470,13 +470,6 @@ def _printed_epoch(listing: listing_parser.Listing) -> int:
     return int(listing.printed_at.replace(tzinfo=timezone.utc).timestamp())
 
 
-def _read_json_quiet(path: Path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
 # ---- what each download covered ---------------------------------------------
 
 def run_windows(run_dir: Path) -> list[tuple[str, str, int, int]]:
@@ -493,13 +486,13 @@ def run_windows(run_dir: Path) -> list[tuple[str, str, int, int]]:
         run_day = _day(bronze.parse_run_ts(run_dir.name))
     except ValueError:
         return []
-    manifest = _read_json_quiet(run_dir / "run.json")
+    manifest = _read_json(run_dir / "run.json", quiet=True)
     manifest = manifest if isinstance(manifest, dict) else {}
     since = _iso_day(manifest.get("since"))
     until = _iso_day(manifest.get("until")) or run_day
     out = []
     for hist in sorted((run_dir / "history").glob("*.json")):
-        data = _read_json_quiet(hist)
+        data = _read_json(hist, quiet=True)
         if not isinstance(data, dict):
             continue
         iban = str(data.get("iban") or hist.stem).strip()
@@ -516,7 +509,7 @@ def run_windows(run_dir: Path) -> list[tuple[str, str, int, int]]:
         if start and start <= until:
             out.append((iban, "transactions", _epoch_day(start), _epoch_day(until)))
     for balf in sorted((run_dir / "balances").glob("*.json")):
-        data = _read_json_quiet(balf)
+        data = _read_json(balf, quiet=True)
         if not isinstance(data, dict):
             continue
         von, bis = _iso_day(data.get("von")), _iso_day(data.get("bis")) or until

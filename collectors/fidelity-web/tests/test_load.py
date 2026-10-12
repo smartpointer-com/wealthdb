@@ -42,7 +42,7 @@ def conn():
 
 @pytest.fixture
 def migrated(conn):
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
     return conn
 
 
@@ -155,7 +155,7 @@ def _write_dump(root: Path, ts: str) -> Path:
 # ============================================================
 
 def test_apply_migrations_creates_schema(conn):
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
     cur = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     )
@@ -282,7 +282,7 @@ def test_activity_dedups_across_overlapping_windows(migrated, tmp_path):
     )
     (dump / "activity" / "activity_20240401__20240630.csv").write_text(win_a)
     (dump / "activity" / "activity_20240501__20240731.csv").write_text(win_b)
-    load._load_transactions(migrated, 1, dump)
+    load._load_transactions(migrated, dump)
     n = migrated.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     # 2 distinct transactions (06/01 + 06/15), not 3.
     assert n == 2
@@ -313,7 +313,7 @@ def test_activity_dedups_across_description_relabels(migrated, tmp_path):
         _activity_csv(row_a))
     (dump / "activity" / "activity_20240501__20240731.csv").write_text(
         _activity_csv(row_b))
-    load._load_transactions(migrated, 1, dump)
+    load._load_transactions(migrated, dump)
     n = migrated.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     assert n == 1
 
@@ -331,7 +331,7 @@ def test_activity_dedups_across_a_blank_symbol(migrated, tmp_path, order):
         _activity_csv(_bond_buy_row(first, "000000AB5")))
     (dump / "activity" / "activity_20240302__20240401.csv").write_text(
         _activity_csv(_bond_buy_row(second, "000000AB5")))
-    load._load_transactions(migrated, 1, dump)
+    load._load_transactions(migrated, dump)
     rows = migrated.execute(
         "SELECT instrument_key FROM transactions").fetchall()
     assert rows == [("00000ZZ96",)]
@@ -350,7 +350,7 @@ def test_activity_preserves_genuine_same_day_duplicates(migrated, tmp_path):
     (dump / "activity" / "activity_20240401__20240630.csv").write_text(twice)
     # A second window file with the same pair of identical rows.
     (dump / "activity" / "activity_20240501__20240731.csv").write_text(twice)
-    load._load_transactions(migrated, 1, dump)
+    load._load_transactions(migrated, dump)
     n = migrated.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     # Both genuine copies survive (2), but the re-download doesn't
     # inflate them to 4.
@@ -375,9 +375,7 @@ def test_supplied_statements_default_dir_missing_is_noop(migrated, tmp_path):
     # not existing must be a clean no-op — deployments with no
     # out-of-band statements never create it.
     missing = tmp_path / "supplied-statements"
-    # schema_version 4 so the historical table exists; the guard is
-    # the directory check, not the schema.
-    load._load_supplied_statements_oneshot(migrated, missing, 4)
+    load._load_supplied_statements_oneshot(migrated, missing)
     n = migrated.execute(
         "SELECT COUNT(*) FROM historical_position_snapshots"
     ).fetchone()[0]
@@ -688,7 +686,7 @@ def test_activity_coexisting_plain_and_zst_ingests_once(migrated, tmp_path):
     assert csv.exists()
     assert csv.with_name(csv.name + ".zst").is_file()
 
-    load._load_transactions(migrated, 1, dump)
+    load._load_transactions(migrated, dump)
     n = migrated.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     assert n == 1
 
@@ -1198,7 +1196,7 @@ def test_cost_basis_backfills_rows_loaded_before_migration_0009(conn, tmp_path):
     old.mkdir()
     for f in sorted(MIGRATIONS_DIR.glob("000[1-8]_*.sql")):
         (old / f.name).write_text(f.read_text(encoding="utf-8"))
-    load.apply_migrations(conn, old)
+    load.silver.apply_migrations(conn, old)
     for desc, payload in (
         ("EXAMPLE CORP COM", {"cost_basis": 420.0, "unrealized_gain": 80.0}),
         ("EXAMPLE LOSS CO", {"cost_basis": 300.0, "unrealized_gain": -25.5}),
@@ -1212,7 +1210,7 @@ def test_cost_basis_backfills_rows_loaded_before_migration_0009(conn, tmp_path):
             (desc, json.dumps(payload)))
     conn.commit()
 
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
 
     assert _basis_rows(conn) == [
         ("EXAMPLE CORP COM", 420.0, 80.0),
@@ -1265,7 +1263,7 @@ def test_a_blank_symbol_takes_the_cusip_without_moving_the_id(
     (dump / "activity").mkdir(parents=True)
     (dump / "activity" / "activity_20240301__20240331.csv").write_text(
         _activity_csv(_bond_buy_row("", "000000AB5")))
-    load._load_transactions(migrated, 1, dump)
+    load._load_transactions(migrated, dump)
     activity_id, instrument_key = migrated.execute(
         "SELECT activity_id, instrument_key FROM transactions").fetchone()
     assert instrument_key == "000000AB5"
@@ -1281,7 +1279,7 @@ def test_a_printed_symbol_wins_over_the_action_text(migrated, tmp_path):
     (dump / "activity").mkdir(parents=True)
     (dump / "activity" / "activity_20240301__20240331.csv").write_text(
         _activity_csv(_bond_buy_row("00000ZZ96", "000000AB5")))
-    load._load_transactions(migrated, 1, dump)
+    load._load_transactions(migrated, dump)
     assert migrated.execute(
         "SELECT instrument_key FROM transactions").fetchone()[0] == "00000ZZ96"
 
@@ -1298,7 +1296,7 @@ def test_migration_0014_reloads_the_feed_onto_one_row_per_activity(
     for f in sorted(MIGRATIONS_DIR.glob("*.sql")):
         if f.name < "0014":
             (old / f.name).write_text(f.read_text(encoding="utf-8"))
-    load.apply_migrations(conn, old)
+    load.silver.apply_migrations(conn, old)
 
     bronze = tmp_path / "bronze"
     dumps = []
@@ -1308,7 +1306,8 @@ def test_migration_0014_reloads_the_feed_onto_one_row_per_activity(
         (dump / "activity" / "activity_20240301__20240331.csv").write_text(
             _activity_csv(_bond_buy_row(symbol, "000000AB5")))
         dumps.append(dump)
-        load._insert_dump_run(conn, load.ts_from_dir(ts), 13, dump, {})
+        load._insert_dump_run(conn, load.ts_from_dir(ts), 13, dump, {},
+                              positions_present=0)
 
     # The bond buy as the old scheme filed it: one row per Symbol cell.
     def old_id(symbol):
@@ -1337,7 +1336,7 @@ def test_migration_0014_reloads_the_feed_onto_one_row_per_activity(
                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", stmt_row)
     conn.commit()
 
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
 
     assert conn.execute(
         f"SELECT {columns} FROM transactions").fetchall() == [stmt_row]

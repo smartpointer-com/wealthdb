@@ -11,11 +11,13 @@ cointracking / fidelity-web login pattern, with two carta specifics:
     The explore phase confirmed Camoufox clears it; vanilla Playwright
     Firefox would risk a block. Run headed under the container's Xvfb (the
     entrypoint starts it), no VNC — 2FA is entered on stdin, not by hand.
-  * **Single-step form + single-field 2FA.** Email + password render on one
-    screen (`input[type=email]` + `input[type=password]`); submit is
-    `#login-btn`. The 2FA code is one `#two-factor-code-input`; ticking
-    `#enable-bypass` ("remember this device") plants a device-trust cookie
-    so later logins skip the 2FA push. Submit is `#verify-challenge-btn`.
+  * **Two-step form + single-field 2FA.** The email screen submits via
+    `#email-next-btn`, then the password screen via
+    `#password-continue-btn`; a single-step form with both fields on one
+    screen is handled too. The 2FA code is one `#two-factor-code-input`;
+    ticking `#enable-bypass` ("remember this device") plants a device-trust
+    cookie so later logins skip the 2FA push. Submit is
+    `#verify-challenge-btn`.
 
 CLI surface (shared with the other carta subcommands):
 
@@ -58,13 +60,13 @@ PASS_ENV = "CARTA_PASSWORD"
 DEFAULT_PROFILE_DIR = Path("/secrets/carta-profile")
 DEFAULT_ENV_FILE = Path("/secrets/carta.env")
 
-# Login-form selectors, matched to the two-step flow observed 2026-08-01:
-# step 1 takes the email (#username) behind #email-next-btn, step 2 renders
-# #email-display + #password behind #password-continue-btn — and neither
-# button is type=submit. The field selectors keep the generic fallbacks so
-# a single-step variant of the form still matches; on drift the error
-# paths dump a page_summary. The 2FA ids are the concrete ids from the
-# explore click log (pre-dating the two-step flow; unverified against it).
+# Login-form selectors for the two-step flow: step 1 takes the email
+# (#username) behind #email-next-btn, step 2 renders #email-display +
+# #password behind #password-continue-btn — and neither button is
+# type=submit. The field selectors keep the generic fallbacks so a
+# single-step variant of the form still matches; on drift the error paths
+# dump a page_summary. The 2FA ids are the concrete ids from the explore
+# click log, with generic fallbacks.
 USER_SELECTOR = (
     "input[type='email'], "
     "input[autocomplete='username'], "

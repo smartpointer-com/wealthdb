@@ -54,7 +54,7 @@ class LoadTransactionsCsvTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self.conn = load.open_db(self.tmp / "swissquote.db")
-        load.apply_migrations(self.conn, MIGRATIONS)
+        load.silver.apply_migrations(self.conn, MIGRATIONS)
 
     def tearDown(self):
         self.conn.close()

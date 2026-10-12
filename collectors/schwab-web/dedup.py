@@ -44,22 +44,15 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pdf_parsers as pp
 from collectorkit import bronze, dedup, prune
-from load import _doc_kind, _format_from_filename, canonical_json, parse_doc_date
-
-
-def _read_manifest(run_dir: Path) -> dict | None:
-    try:
-        meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return meta if isinstance(meta, dict) else None
+from load import (
+    _account_documents, _format_from_filename, canonical_json, parse_doc_date,
+)
 
 
 def build_statement_catalog(bronze_dir: Path) -> dict[str, tuple[str, int]]:
@@ -85,28 +78,23 @@ def build_statement_catalog(bronze_dir: Path) -> dict[str, tuple[str, int]]:
     for run_dir in bronze.iter_run_dirs(bronze_dir):
         if run_dir.is_symlink():
             continue
-        manifest = _read_manifest(run_dir)
+        manifest = bronze.read_manifest(run_dir / "run.json")
         if manifest is None:
             continue
-        for acct in manifest.get("statements", []):
-            suffix = acct.get("suffix")
-            if not suffix:
+        for suffix, doc in _account_documents(manifest, "statement"):
+            filename = doc.get("filename")
+            # A filename AND a manifest sha256 — load skips a doc missing
+            # either (load.py), so requiring both keeps this congruent.
+            if not filename or not doc.get("sha256"):
                 continue
-            for doc in acct.get("documents", []):
-                filename = doc.get("filename")
-                # A filename AND a manifest sha256 — load skips a doc missing
-                # either (load.py), so requiring both keeps this congruent.
-                if not filename or not doc.get("sha256"):
-                    continue
-                if (_doc_kind(doc) != "statement"
-                        or _format_from_filename(filename) != "pdf"):
-                    continue
-                doc_date = parse_doc_date(doc.get("date") or "")
-                if doc_date is None:
-                    continue  # load skips an undated statement too
-                year = datetime.fromtimestamp(doc_date, tz=timezone.utc).year
-                path = run_dir / "statements" / suffix / filename
-                catalog[str(path)] = (f"{suffix}/{doc_date}/{filename}", year)
+            if _format_from_filename(filename) != "pdf":
+                continue
+            doc_date = parse_doc_date(doc.get("date") or "")
+            if doc_date is None:
+                continue  # load skips an undated statement too
+            year = datetime.fromtimestamp(doc_date, tz=timezone.utc).year
+            path = run_dir / "statements" / suffix / filename
+            catalog[str(path)] = (f"{suffix}/{doc_date}/{filename}", year)
     return catalog
 
 

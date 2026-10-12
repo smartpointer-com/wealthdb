@@ -10,9 +10,10 @@
 #                      (schwab-web.env), auto-submits, prompts for the 2FA
 #                      code on stdin, drives the consent / account-link pages
 #                      (ticking every account), and writes the token to
-#                      <secrets>/schwab-api-token.json. Traces to the debug
-#                      dir. --check inspects the token; --manual is the
-#                      paste-the-URL fallback.
+#                      <secrets>/schwab-api-token.json. --trace
+#                      --screenshot-dir /debug captures diagnostics to the
+#                      debug dir. --check inspects the token; --manual is
+#                      the paste-the-URL fallback.
 #   vnc-login [args..] Manual fallback: drive login / 2FA / consent yourself
 #                      over VNC (use if `login`'s selectors drift).
 #   download [args...] Fetch accounts / positions / transactions to bronze.
@@ -27,7 +28,7 @@
 #                      accounts_positions / transactions_NNN /
 #                      open_orders / instruments) inside complete dumps
 #                      with sha256-verified .json.zst twins — the form
-#                      download now writes. run.json is never compressed.
+#                      download writes. run.json is never compressed.
 #                      Host-side; manual only, never scheduled; --dry-run
 #                      prints the plan first, verify with `load --force`.
 #
@@ -85,11 +86,11 @@ case "$cmd" in
         # are siblings of `load`: pure file walks, no container, run
         # under the same venv (collectorkit is editable-installed there,
         # so `from collectorkit import prune` resolves with no PYTHONPATH
-        # hack). `recompress` is the one-time manual sweep converting the
-        # pre-compression backlog to the .json.zst form download now
-        # writes. `prune` walks the bronze tree plus the trace cache the
-        # containerised `login` writes — DEBUG_DIR resolves the same there
-        # as it does in wrapper-lib, so both halves name one dir. The
+        # hack). `recompress` is the manual sweep converting plain-JSON
+        # dumps to the .json.zst form download writes. `prune` walks the
+        # bronze tree plus the trace cache the containerised `login`
+        # writes — DEBUG_DIR resolves the same there as it does in
+        # wrapper-lib, so both halves name one dir. The
         # default dir flags come first so an explicit flag in the
         # forwarded args overrides them (argparse last-wins); in-flight
         # dumps and captures are protected by the verb's own age guard.

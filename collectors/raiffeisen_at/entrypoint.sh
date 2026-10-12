@@ -7,8 +7,8 @@
 # one-shot: login + REST fetch in one Firefox lifetime, the pushTAN approved
 # on the phone (no code to type, no VNC). `login` has nothing durable to
 # persist, so it folds into `download` (except `login --check`, a read-only
-# session probe). `vnc-login` is the by-hand fallback. `load` is Phase 4.
-# `prune` is a pure file walk.
+# session probe). `vnc-login` is the by-hand fallback. `load` builds the
+# silver. `prune` is a pure file walk.
 #
 # Xvfb is started directly (not via xvfb-run) — the Noble xvfb-run's SIGUSR1
 # ready-signalling hangs under a non-root parent; socket-existence polling is
@@ -21,8 +21,8 @@ source /opt/entrypoint-lib.sh
 
 case "${1:-help}" in
     explore)
-        # Discovery harness (retained): Camoufox over VNC + HAR/network log/
-        # click log/DOM snapshots under /debug.
+        # Discovery harness: Camoufox over VNC + HAR/network log/click log/
+        # DOM snapshots under /debug.
         start_xvfb
         start_x11vnc explore
         shift
@@ -87,7 +87,7 @@ Usage:
 
 Subcommands:
   explore     Discovery harness: Camoufox over VNC + HAR/network log/click
-              log/DOM snapshots under /debug. See DESIGN.md §3-Observed.
+              log/DOM snapshots under /debug. See DESIGN.md §3-Surface.
   download    One-shot login + REST fetch (deposit accounts), the pushTAN
               approved on your phone — no VNC, nothing to type. Fills the
               region/Verfüger/PIN form (or clicks the saved-user card),

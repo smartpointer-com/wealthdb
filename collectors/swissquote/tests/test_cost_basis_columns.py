@@ -131,7 +131,7 @@ class _DbCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self.conn = load.open_db(self.tmp / "swissquote.db")
-        load.apply_migrations(self.conn, MIGRATIONS)
+        load.silver.apply_migrations(self.conn, MIGRATIONS)
 
     def tearDown(self):
         self.conn.close()
@@ -290,8 +290,8 @@ class BackfillTests(_DbCase):
         for f in MIGRATIONS.glob("000[1-5]_*.sql"):
             shutil.copy(f, old_migrations / f.name)
         old = load.open_db(self.tmp / "old.db")
-        load.apply_migrations(old, old_migrations)
-        self.assertEqual(load.current_schema_version(old), 5)
+        load.silver.apply_migrations(old, old_migrations)
+        self.assertEqual(load.silver.current_schema_version(old), 5)
         for table, cols in (("transactions", self.OLD_TX),
                             ("positions", self.OLD_POSITION)):
             names = ", ".join(cols)
@@ -310,8 +310,8 @@ class BackfillTests(_DbCase):
             to_0006.mkdir()
             for f in MIGRATIONS.glob("000[1-6]_*.sql"):
                 shutil.copy(f, to_0006 / f.name)
-            load.apply_migrations(old, to_0006)
-            self.assertEqual(load.current_schema_version(old), 6)
+            load.silver.apply_migrations(old, to_0006)
+            self.assertEqual(load.silver.current_schema_version(old), 6)
             for table, key, cols in (
                 ("transactions", "occurred_at", TX_COLUMNS),
                 ("positions", "source, symbol", POSITION_COLUMNS),

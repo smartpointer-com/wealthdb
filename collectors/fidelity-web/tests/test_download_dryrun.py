@@ -101,3 +101,39 @@ def test_real_run_writes_run_dir(tmp_path, monkeypatch):
     meta = json.loads(run_json.read_text())
     assert meta["status"] == "complete"
     assert meta["account_dimensions"]  # master data present on a real run
+
+
+def test_a_phase_that_raises_does_not_stop_the_walk(tmp_path, monkeypatch):
+    # A navigation timeout in the first phase must not cost the later
+    # phases or leave the dump in progress.
+    ran = []
+
+    def boom(*_a, **_k):
+        raise RuntimeError("navigation timeout")
+
+    def stub(name):
+        def scrape(*_a, **_k):
+            ran.append(name)
+            return {"status": "stubbed"}
+        return scrape
+
+    monkeypatch.setattr(download, "scrape_positions", boom)
+    monkeypatch.setattr(download, "scrape_lots", boom)
+    for name in ("scrape_activity", "scrape_documents", "scrape_balances",
+                 "scrape_performance"):
+        monkeypatch.setattr(download, name, stub(name))
+
+    dest = tmp_path / "bronze"
+    dest.mkdir()
+    download.walk(context=None, page=FakePage(),
+                  config={"dest": str(dest), "mode": "all",
+                          "dry_run": "false"})
+
+    meta = json.loads(next(dest.iterdir()).joinpath("run.json").read_text())
+    assert meta["status"] == "complete"
+    assert meta["positions_results"] == [
+        {"ok": False, "error": "navigation timeout"}]
+    assert meta["lots_results"]["status"] == "error"
+    assert ran == ["scrape_activity", "scrape_documents", "scrape_balances",
+                   "scrape_performance"]
+    assert meta["coverage"]["positions"]["complete"] is False

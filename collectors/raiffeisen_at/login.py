@@ -179,8 +179,8 @@ def _resp_json(resp) -> tuple[int, object]:
 def _probe_authenticated(context, watch: _Watch) -> bool:
     """The definitive signed-in signal: a `GET produkte` with the harvested
     Bearer returns 200 with a JSON array. It requires the Bearer (produkte
-    401s on cookies alone — the live 2026-08-15 failure), so this is only
-    ever true once a working token has been harvested. A polled call, not an
+    401s on cookies alone), so this is only ever true once a working token
+    has been harvested. A polled call, not an
     event, so it survives the pinned Camoufox dropping `.on()` events."""
     if not watch.bearer:
         return False
@@ -364,8 +364,8 @@ def _drive_to_pushtan(context, page, watch: _Watch, args) -> bool:
     # Wait for the login screen to render — the form (cold) or the saved-user
     # card (warm). The initial URL is the bare app shell that bounces to the
     # sso login app, so it is NEVER treated as authed here (the shared-URL
-    # trap that broke the first live run — DESIGN.md §A); a genuinely-live
-    # session is caught by the Bearer probe instead.
+    # trap, DESIGN.md §A); a genuinely-live session is caught by the Bearer
+    # probe instead.
     if not wait_for(lambda: _form_present(page) or _profile_card_present(page)
                     or _probe_authenticated(context, watch),
                     page, OUTCOME_TIMEOUT_S):
@@ -411,8 +411,7 @@ def authenticate(context, page, watch: _Watch, *, args, cli_mfa: bool,
         # Announce the Vergleichswert once the pushTAN screen is up — it is
         # compared against the code in the app. Prefer the captured
         # displayText; fall back to reading it off the screen (the pinned
-        # Camoufox can drop the pushtan response event — it did on the first
-        # live login).
+        # Camoufox can drop the pushtan response event).
         wait_for(lambda: watch.pushtan_display is not None
                  or elba.is_pushtan_url(page_url(page))
                  or _probe_authenticated(context, watch), page, 30)
@@ -465,8 +464,6 @@ def _wait_for_auth(context, page, watch: _Watch, timeout_s: int) -> bool:
 
 
 # --- diagnostics ----------------------------------------------------------
-
-
 
 def _capture(page, args, name: str) -> None:
     """DOM + screenshot to --screenshot-dir, only under --debug (for pinning

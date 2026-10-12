@@ -139,6 +139,13 @@ def test_debug_traces_a_transport_fault(monkeypatch, tmp_path):
 
 # --- --dry-run --------------------------------------------------------------
 
+def test_dry_run_with_no_usable_series_exits_nonzero(monkeypatch, tmp_path):
+    # As a real run does: a dry run that fetched nothing is no success.
+    assert _run(monkeypatch, tmp_path, "--dry-run",
+                resp=urllib.error.URLError("no route to host")) == 5
+    assert not list(tmp_path.iterdir())
+
+
 def test_dry_run_with_debug_writes_no_bronze(monkeypatch, tmp_path):
     # A dry-run creates no run dir, so the trace has nowhere to land:
     # HttpTrace(None) swallows the records rather than crashing on a

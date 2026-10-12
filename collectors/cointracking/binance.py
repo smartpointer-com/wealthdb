@@ -42,6 +42,8 @@ from typing import Any
 
 import requests
 
+from frankfurter import SUPPORTED_FIATS
+
 log = logging.getLogger("cointracking.binance")
 
 BASE_URL = "https://api.binance.com"
@@ -75,13 +77,8 @@ STABLECOINS: set[str] = {
 }
 
 # Fiat tickers — held as cash in some portfolios, but have no
-# crypto USD price.
-FIAT_TICKERS: set[str] = {
-    "USD", "EUR", "CHF", "GBP", "JPY", "AUD", "CAD", "NZD",
-    "SGD", "HKD", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF",
-    "RUB", "INR", "CNY", "KRW", "TWD", "THB", "BRL", "MXN",
-    "ZAR", "TRY", "ILS",
-}
+# crypto USD price. Frankfurter prices them instead.
+FIAT_TICKERS: set[str] = SUPPORTED_FIATS | {"USD"}
 
 
 class BinanceClient:
@@ -121,8 +118,7 @@ class BinanceClient:
 
     def exchange_info(self) -> dict:
         """Full symbol metadata. Symbols field has {symbol, status,
-        baseAsset, quoteAsset, …}. Cached for the lifetime of the
-        client; call once per process."""
+        baseAsset, quoteAsset, …}. Not cached; call once per process."""
         return self._request("/api/v3/exchangeInfo")
 
     def ohlcv_historical(

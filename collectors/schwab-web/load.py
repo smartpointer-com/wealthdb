@@ -24,13 +24,12 @@ Idempotency:
     sha256-independent — re-parsing the same statement (even from
     a Schwab-regenerated PDF with a new sha256) converges to the
     same rows via INSERT OR IGNORE.
-  * `parsed_documents` marks each logical statement, 1099 and
-    realized-lot report (account + doc_date + filename, the
-    `logical_doc_key`) parsed under the current parser generation,
-    so re-downloads of the same logical document are skipped,
-    whatever rows its parse yielded. The distribution letters and
-    tx-history exports are skipped once they have transaction
-    rows. Use --reparse to force re-ingestion of a logical
+  * `parsed_documents` marks each logical statement, 1099,
+    realized-lot report and distribution letter (account + doc_date +
+    filename, the `logical_doc_key`) parsed under the current parser
+    generation, so re-downloads of the same logical document are
+    skipped, whatever rows its parse yielded. Tx-history exports are
+    skipped once they have transaction rows. Use --reparse to force re-ingestion of a logical
     document (deletes by logical_doc_key, then re-inserts).
   * The statement snapshot tables are keyed by account and the
     period end a statement prints; the first statement to write a
@@ -65,11 +64,6 @@ import pdf_parsers as pp
 import tax_form_parsers as tf
 from numparse import parse_amount
 
-# Re-export for backward compatibility with existing tests that call
-# load.apply_migrations(...) / load._current_schema_version(...) directly.
-apply_migrations = silver.apply_migrations
-_current_schema_version = silver.current_schema_version
-
 # `parser_generations` (migration 0005) records which generation of the
 # document parsers produced the rows in hand. A stale one implies
 # `--reparse` for the whole invocation — the single lever the run gate, the
@@ -90,10 +84,6 @@ _SNAPSHOT_TABLES = ("historical_position_snapshots", "historical_cash_balances",
                     "open_lots")
 
 log = logging.getLogger("schwab-web.load")
-
-# Bronze run-dir names look like `20260520T120000Z`. Parsed into
-# Unix seconds UTC for snapshot_at.
-_RUN_TS_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$")
 
 # Manifest doc dates come from the Schwab UI as MM/DD/YYYY. We
 # convert to Unix seconds UTC at midnight.
@@ -287,13 +277,11 @@ def canonical_json(obj) -> str:
 
 
 def parse_snapshot_at(dump_dir_name: str) -> int:
-    """Parse `YYYYMMDDTHHMMSSZ` → Unix seconds UTC."""
-    m = _RUN_TS_RE.match(dump_dir_name)
-    if not m:
+    """Parse a bronze run-dir name `YYYYMMDDTHHMMSSZ` → Unix seconds UTC;
+    ValueError for any other name."""
+    if not bronze.RUN_DIR_RE.match(dump_dir_name):
         raise ValueError(f"bad bronze dir name: {dump_dir_name!r}")
-    yyyy, mm, dd, h, mn, s = (int(x) for x in m.groups())
-    return int(datetime(yyyy, mm, dd, h, mn, s,
-                        tzinfo=timezone.utc).timestamp())
+    return bronze.parse_run_ts(dump_dir_name)
 
 
 def parse_doc_date(s: str) -> int | None:
@@ -347,10 +335,7 @@ def discover_bronze_runs(bronze_dir: Path) -> list[Path]:
     the run-ts format. Sorted by name (== chronological)."""
     if not bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
-    return sorted(
-        p for p in bronze_dir.iterdir()
-        if p.is_dir() and _RUN_TS_RE.match(p.name)
-    )
+    return list(bronze.iter_run_dirs(bronze_dir))
 
 
 def already_loaded(conn: sqlite3.Connection, snapshot_at: int) -> bool:
@@ -429,13 +414,14 @@ def _synthesize_activity_id(account_external_id: str,
     §3). Depends ONLY on transaction content + its ordinal position within
     the logical statement — NOT on the source document's sha256.
 
-    `index` is the 0-based position of this transaction within the parsed
-    list for a single logical statement (same account + period). It is
-    stable because PDFium's text extraction is deterministic for the same
-    logical PDF content, and tx-history JSON exports preserve Schwab's
-    server-side ordering. This disambiguates genuinely-distinct transactions
-    that share the same (date, amount, description, symbol) — e.g. two
-    identical $50 fees booked on the same day.
+    `index` is a 0-based ordinal within the source document: a document
+    row's position in the parsed list (stable because PDFium's text
+    extraction is deterministic for the same logical PDF content), or for
+    a tx-history export the count of earlier rows sharing the hashed
+    fields (_insert_tx_history_transactions). It disambiguates
+    genuinely-distinct transactions that share the same (date, amount,
+    description, symbol) — e.g. two identical $50 fees booked on the same
+    day.
 
     Hex SHA-256, first 32 chars (128 bits — collision probability is
     negligible at our scale)."""
@@ -478,15 +464,19 @@ def _upsert_account(conn: sqlite3.Connection, snapshot_at: int,
     manifest walk (see _apply_account_number). Carrying the most
     recent row's value forward here keeps an unchanged account
     content-deduping against its number-bearing row, and keeps a
-    label/nickname change from shedding the key.
+    label/nickname change from shedding the key. The registration label,
+    also harvested from statements, carries forward the same way.
 
     Returns True if a row was inserted, False if dedup skipped it."""
     row = conn.execute(
-        "SELECT payload FROM accounts WHERE account_external_id = ? "
-        "ORDER BY snapshot_at DESC LIMIT 1",
+        "SELECT payload, account_registration FROM accounts"
+        " WHERE account_external_id = ?"
+        " ORDER BY snapshot_at DESC LIMIT 1",
         (account_external_id,),
     ).fetchone()
+    registration = None
     if row is not None:
+        registration = row[1]
         prev_number = json.loads(row[0]).get("account_number_full")
         if prev_number is not None:
             payload_dict = dict(payload_dict,
@@ -497,9 +487,10 @@ def _upsert_account(conn: sqlite3.Connection, snapshot_at: int,
     nickname = payload_dict.get("nickname")
     conn.execute(
         "INSERT OR REPLACE INTO accounts"
-        " (snapshot_at, account_external_id, nickname, payload)"
-        " VALUES (?, ?, ?, ?)",
-        (snapshot_at, account_external_id, nickname, payload),
+        " (snapshot_at, account_external_id, nickname, payload,"
+        "  account_registration)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (snapshot_at, account_external_id, nickname, payload, registration),
     )
     return True
 
@@ -754,13 +745,10 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 continue
             doc_kind = _doc_kind(doc)
             # The downloader writes the format from the row's
-            # `Click to Download <FORMAT>` aria-label, but Schwab
-            # has been observed to render a row whose label says
-            # "PDF" while the actual download is a CSV (one known
-            # case: a stray 1099 Composite CSV slotted into a
-            # Brokerage Statement row). Trust the file extension
-            # on disk over the manifest claim, so a mis-labelled
-            # row doesn't get handed to pypdfium2.
+            # `Click to Download <FORMAT>` aria-label, but a row
+            # labelled "PDF" can serve a CSV. Trust the file
+            # extension on disk over the manifest claim, so a
+            # mis-labelled row doesn't get handed to pypdfium2.
             claimed_fmt = (doc.get("format") or "").lower()
             fmt = _format_from_filename(filename)
             if claimed_fmt and claimed_fmt != fmt:
@@ -923,8 +911,9 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         # carry the account type by definition (the forms are
         # only ever issued for IRA / ESA accounts).
         null_rows = conn.execute(
-            "SELECT DISTINCT account_external_id FROM accounts "
-            "WHERE account_registration IS NULL"
+            "SELECT account_external_id FROM accounts"
+            " GROUP BY account_external_id"
+            " HAVING COUNT(account_registration) = 0"
         ).fetchall()
         for (suffix,) in null_rows:
             reg = _registration_from_tax_forms(conn, suffix)
@@ -943,8 +932,8 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     # (recorded in the statement walk above) but skipped there for row
     # parsing; these passes add their rows. They iterate the same
     # manifest["statements"] documents and gate on the logical_doc_key
-    # (parse markers, or transaction rows for the letters), so they're
-    # idempotent across runs and sha256 re-downloads.
+    # parse markers, so they're idempotent across runs and sha256
+    # re-downloads.
     _load_distribution_letters(conn, run_dir, manifest, reparse, stats,
                                seen_logical_docs)
     _load_1099b_forms(conn, run_dir, manifest, reparse, stats,
@@ -1100,8 +1089,16 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
     pairs are merged into the row's `payload` JSON under a
     nested `_more` key — silver consumers can pluck e.g.
     `json_extract(payload, '$._more.Settle Date')`.
+
+    The ordinal in the activity_id counts only the earlier rows of the
+    export that share the row's hashed fields (date, amount,
+    description, symbol), not its position in the file. Exports of
+    overlapping windows place one row at different positions, but list
+    the rows of one day the same way, so the row keeps one id across
+    them while two genuine same-day twins stay apart.
     """
     inserted = 0
+    ordinals: dict[tuple, int] = {}
     for idx, tx in enumerate(transactions):
         date_str = tx.get("Date") or ""
         timestamp = parse_doc_date(date_str)
@@ -1119,8 +1116,11 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
             "description": tx.get("Description"),
             "symbol": tx.get("Symbol"),
         }
+        twin_key = tuple(normalised.values())
+        ordinal = ordinals.get(twin_key, 0)
+        ordinals[twin_key] = ordinal + 1
         activity_id = _synthesize_activity_id(
-            account_external_id, normalised, idx,
+            account_external_id, normalised, ordinal,
         )
         # Merge any matching More-modal detail into payload.
         payload_dict = dict(tx)
@@ -1228,10 +1228,9 @@ def _insert_parsed_transactions(conn: sqlite3.Connection,
 
 def _gate_logical_doc(conn: sqlite3.Connection, ldk: str,
                       reparse: bool) -> bool:
-    """The load gate of the documents that carry no parse marker (the
-    distribution letters and the tx-history exports): True when the
-    document is to be parsed, on `--reparse` or while it has no
-    transaction rows. Deletes nothing.
+    """The load gate of the tx-history exports, which carry no parse
+    marker: True when the export is to be parsed, on `--reparse` or
+    while it has no transaction rows. Deletes nothing.
 
     The delete-on-reparse is intentionally NOT done here: the caller
     must parse first and only delete on a *successful* parse (via
@@ -1288,8 +1287,9 @@ def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
     statement walk; this pass only adds the transaction rows. Each
     letter is one logical document (no format twins), so the
     logical_doc_key uses the filename directly. A letter is parsed once
-    per invocation (`seen_logical_docs`), and while it has no
-    transaction rows or on `--reparse`."""
+    per invocation (`seen_logical_docs`), and once per parser
+    generation: its parse marker skips it on later loads unless
+    `--reparse`, also when it yields no rows."""
     for suffix, doc in _account_documents(manifest, "letter"):
         filename = doc.get("filename") or ""
         if (not filename.startswith("3rd-Party-Distribution")
@@ -1303,8 +1303,9 @@ def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
             continue
         ldk = _logical_doc_key(suffix, doc_date, filename)
         seen_key = (ldk, "third_party_distribution")
-        if seen_key in seen_logical_docs or not _gate_logical_doc(
-                conn, ldk, reparse):
+        if seen_key in seen_logical_docs or (
+                not reparse and _is_parsed(conn, ldk,
+                                           "third_party_distribution")):
             continue
         seen_logical_docs.add(seen_key)
         try:
@@ -1316,12 +1317,13 @@ def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
         # Delete only after a successful parse, so a failure can't
         # drop the prior rows with no replacement.
         _reparse_delete(conn, ldk, reparse, stats)
+        sha256 = doc.get("sha256") or ""
         n = _insert_parsed_transactions(
-            conn, suffix, rows, "third_party_distribution",
-            doc.get("sha256") or "", ldk,
+            conn, suffix, rows, "third_party_distribution", sha256, ldk,
         )
         stats["transactions_inserted"] += n
         stats["distribution_transactions_inserted"] += n
+        _mark_parsed(conn, ldk, "third_party_distribution", sha256)
 
 
 def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
@@ -1561,10 +1563,8 @@ def _reconcile_account_numbers(conn: sqlite3.Connection,
     """Settle `accounts.payload.account_number_full` against the
     full bronze evidence, for two kinds of account:
 
-    - accounts still lacking the key — rows ingested before the
-      account-number parser existed, statements skipped by the
-      dump-run / logical-doc gates on every later load, or headers
-      that conflicted;
+    - accounts still lacking the key — statements skipped by the
+      dump-run / logical-doc gates, or headers that conflicted;
     - accounts in `verify` — those whose key this invocation's
       in-run harvest set from a previously-absent state. Such a
       key rests only on the statements parsed this time, so it is
@@ -1960,6 +1960,10 @@ def run_load(args: argparse.Namespace) -> int:
         # that committed (a rolled-back run's stats are discarded
         # with it). Fed to the reconcile pass below.
         pinned_accounts: set[str] = set()
+        # Any run or the reconcile pass rolled back: the generation is
+        # then left unstamped, so the next load re-walks in full rather
+        # than skipping a run whose rows a purge removed.
+        failed = False
         pending = [
             r for r in runs
             if reparse or not already_loaded(conn, parse_snapshot_at(r.name))
@@ -2024,14 +2028,15 @@ def run_load(args: argparse.Namespace) -> int:
                 except Exception:
                     conn.rollback()
                     seen_logical_docs = seen_before  # undo this run's marks
+                    failed = True
                     log.exception("load failed for %s; rolled back", run_dir.name)
 
         # Settle account_number_full against the full bronze
-        # evidence: accounts loaded before the account-number
-        # parser existed never passed through the in-run harvest
-        # (their runs are dump_runs-skipped above), and a key the
-        # harvest pinned this invocation rests only on the
-        # statements parsed this time. Header-only re-read from
+        # evidence: an account whose statements this invocation did
+        # not parse never passed through the in-run harvest (its runs
+        # are dump_runs-skipped above), and a key the harvest pinned
+        # this invocation rests only on the statements parsed this
+        # time. Header-only re-read from
         # bronze for both; no-op once every account carries a
         # verified key and no new pin happened.
         try:
@@ -2043,11 +2048,16 @@ def run_load(args: argparse.Namespace) -> int:
                          n_reconciled)
         except Exception:
             conn.rollback()
+            failed = True
             log.exception("account-number reconcile failed; rolled back")
 
-        silver.stamp_generation(conn, DOCUMENT_GENERATION_SCOPE,
-                                DOCUMENT_GENERATION)
-        conn.commit()
+        if failed:
+            log.warning("parser generation left unstamped after a failure; "
+                        "the next load re-walks the archive")
+        else:
+            silver.stamp_generation(conn, DOCUMENT_GENERATION_SCOPE,
+                                    DOCUMENT_GENERATION)
+            conn.commit()
 
         _log_registration_histogram(conn)
         _log_account_number_coverage(conn)

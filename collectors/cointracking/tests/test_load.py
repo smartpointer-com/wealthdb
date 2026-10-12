@@ -794,3 +794,123 @@ def test_load_backfills_rows_loaded_under_an_older_schema(tmp_path):
                   "FROM transactions t, dump_runs r") == [
         ("GroupA", "TX-0001", "2024-01-15 10:00:00",
          datetime(2024, 1, 15, 10, 0), _schema_version())]
+
+
+def test_wallet_display_name_keeps_a_colon_in_the_exchange_name(tmp_path):
+    # The namespace prefix is stripped at the first ':' only; the rest of
+    # the Exchange name is the display name.
+    run_dir, manifest = _seed(tmp_path / "bronze", [
+        _row("Deposit", buy="1", buy_cur="BTC", exchange="Wallet: Cold A")])
+    conn = _fresh_db(tmp_path)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1,
+                               timezones={})
+    loader.ingest_portfolios_and_wallets(conn, manifest, 1, timezones={})
+    assert conn.execute(
+        "SELECT wallet_external_id, display_name FROM wallets").fetchall() == [
+        (f"cu_{CU}:Wallet: Cold A", "Wallet: Cold A")]
+
+
+def test_a_failed_snapshot_leaves_silver_as_the_last_one_did(tmp_path):
+    # The second export's cu_2 trades.csv lacks a column, so its snapshot
+    # fails after the cu_1 rows were already replaced. The whole snapshot
+    # rolls back: silver keeps the first export's rows and records only
+    # the first snapshot as loaded.
+    bronze = tmp_path / "bronze"
+    _seed_export(bronze, "20240201T000000Z", {
+        "1": [_row("Deposit", buy="1", buy_cur="BTC")],
+        "2": [_row("Deposit", buy="2", buy_cur="ETH")]})
+    argv = _silver_argv(tmp_path)
+    assert loader.main(argv) == 0
+    db = tmp_path / "silver" / "cointracking.duckdb"
+    before = _dump_silver_state(db)
+
+    run2 = _seed_export(bronze, "20240301T000000Z", {
+        "1": [_row("Deposit", buy="5", buy_cur="BTC")],
+        "2": [_row("Deposit", buy="6", buy_cur="ETH")]})
+    (run2 / "cu_2" / "trades.csv").write_text(
+        '"Type","Buy","Cur."\n"Deposit","6","ETH"\n', encoding="utf-8")
+    assert loader.main(argv) == 0
+
+    assert _dump_silver_state(db) == before
+    assert _query(tmp_path, "SELECT COUNT(*) FROM dump_runs") == [(1,)]
+
+
+# ---- price fill -------------------------------------------------------
+
+D1, D2, D3 = date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)
+
+
+def _held(conn, sym: str, days) -> None:
+    for d in days:
+        conn.execute(
+            "INSERT INTO positions_daily VALUES (?, 'cu_1', 'cu_1:ExchangeA', "
+            "?, 1, 1)", [d, sym])
+
+
+def _price_rows(conn, source: str) -> dict[date, Decimal]:
+    return dict(conn.execute(
+        "SELECT as_of_date, price_usd FROM coin_prices WHERE source = ?",
+        [source]).fetchall())
+
+
+class _Coins:
+    """A price client that returns `rows`, or raises when given none."""
+
+    def __init__(self, rows=None):
+        self.rows = rows
+
+    def ohlcv_historical(self, coin_id, from_ts, to_ts):
+        if self.rows is None:
+            raise RuntimeError("provider down")
+        return self.rows
+
+    fetch_fiat_to_usd = ohlcv_historical
+
+
+def _coin_db(tmp_path):
+    conn = _fresh_db(tmp_path)
+    _held(conn, "BTC", (D1, D2, D3))
+    conn.execute("INSERT INTO coin_mapping VALUES "
+                 "('BTC', 'binance', 'BTCUSDT', NULL, 0)")
+    conn.execute("INSERT INTO coin_prices VALUES (?, 'BTC', 100, 'binance', 0)",
+                 [D3])
+    return conn
+
+
+def test_a_failed_price_fetch_keeps_the_stored_price(tmp_path):
+    conn = _coin_db(tmp_path)
+    assert loader.fetch_coin_prices(conn, _Coins(), "missing") == (0, 0)
+    assert _price_rows(conn, "binance") == {D3: Decimal(100)}
+
+
+def test_the_missing_fill_replaces_the_latest_priced_day(tmp_path):
+    # The stored latest day was an intraday price; the fill replaces it
+    # with the fetched close and adds the held days still unpriced. A day
+    # outside the held range is not stored.
+    conn = _coin_db(tmp_path)
+    client = _Coins([(D1, 1.0), (D2, 2.0), (D3, 3.0), (date(2024, 1, 4), 4.0)])
+    assert loader.fetch_coin_prices(conn, client, "missing") == (1, 3)
+    assert _price_rows(conn, "binance") == {
+        D1: Decimal(1), D2: Decimal(2), D3: Decimal(3)}
+
+
+def test_a_failed_fx_fetch_keeps_the_stored_rate(tmp_path):
+    conn = _fresh_db(tmp_path)
+    _held(conn, "EUR", (D1, D2))
+    conn.execute(
+        "INSERT INTO coin_prices VALUES (?, 'EUR', 1.1, 'frankfurter', 0)", [D2])
+    assert loader.fetch_fx_rates(conn, _Coins(), "missing") == (0, 0)
+    assert _price_rows(conn, "frankfurter") == {D2: Decimal("1.1")}
+
+
+def test_backfill_counts_only_the_rows_it_writes(tmp_path, monkeypatch):
+    # A row a fetch wrote in the same second carries the same fetched_at;
+    # it is not a backfilled gap.
+    monkeypatch.setattr(loader.time, "time", lambda: 1000.0)
+    conn = _fresh_db(tmp_path)
+    _held(conn, "BTC", (D1, D2))
+    conn.execute(
+        "INSERT INTO coin_prices VALUES (?, 'BTC', 5, 'binance', 1000)", [D2])
+    assert loader.backfill_first_day_gaps(conn) == 1
+    assert loader.backfill_first_day_gaps(conn) == 0
+    assert _price_rows(conn, "binance") == {D1: Decimal(5), D2: Decimal(5)}

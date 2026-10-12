@@ -2,7 +2,7 @@
 """
 REST auth for Relevate (portal.pens-expert.ch).
 
-Replays the three-step Airlock IAM flow:
+Replays the Airlock IAM login flow:
 
   1. GET  /auth/ui/app/auth/flow/b2c/password?lang=en
      — primes the cookie jar (AL_SESS-S, CSRFT759-S,
@@ -497,10 +497,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
     if args.check:
         return do_check(args.state_path)
     return do_login(args)

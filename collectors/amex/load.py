@@ -63,8 +63,8 @@ SOURCE_STATEMENT = "statement"
 # `rebuild_statements` parses every statement PDF, drops the whole
 # `source='statement'` era and re-imports it, so a re-parse already REPLACES.
 # The stamp is what gives it a reason to run when no bronze run has landed:
-# a parser edit alone used to change nothing, because its only gate was
-# whether a dump had been ingested. See migration 0002.
+# a parser edit lands no run, so without it nothing would re-read the PDFs.
+# See migration 0002.
 STATEMENT_GENERATION_SCOPE = "statement"
 # `pdftotext` is a binary, not a Python dist, so it is pinned by the version
 # it reports — a poppler upgrade that re-renders a column is exactly the
@@ -522,9 +522,9 @@ def _read_json(path: Path):
 def _read_accounts(run_dir: Path) -> list[dict]:
     data = _read_json(run_dir / "accounts.json") if (
         run_dir / "accounts.json").is_file() else None
-    if isinstance(data, dict):
-        data = data.get("accounts", [])
-    return [a for a in (data or []) if isinstance(a, dict)]
+    if not isinstance(data, list):
+        return []
+    return [a for a in data if isinstance(a, dict)]
 
 
 def _pending_total(payload: dict) -> float | None:
@@ -766,9 +766,9 @@ def rebuild_statements(conn, bronze_dir: Path) -> None:
     activity's own copy of the same charge — double-counted, and never
     withdrawn, because an incremental load only ever adds.
 
-    That is exactly the fleet's rebuild-derived-tables rule, and it was
-    learned here the expensive way: two loads at different windows in one
-    session left the same charges on both sides of the seam (DESIGN.md §M).
+    That is the fleet's rebuild-derived-tables rule: two loads at different
+    windows would otherwise leave the same charges on both sides of the seam
+    (DESIGN.md §M).
 
     So: drop every statement-sourced row and period, re-parse the PDFs across
     all bronze runs, and re-apply the seam as it now stands. Idempotent by
@@ -854,68 +854,70 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     stem_to_id = {_safe_stem(a["account_key"]): str(a["account_key"])
                   for a in accounts if a.get("account_key")}
 
-    # The activity pass runs first: it is what reports the unposted total the
-    # roster snapshot records.
-    pending_by_account: dict[str, float | None] = {}
-    activity_dir = run_dir / "activity"
-    if activity_dir.is_dir():
-        for path in sorted(activity_dir.glob("*.json")):
-            payload = _read_json(path)
-            if not isinstance(payload, dict):
-                continue
-            acct_id = stem_to_id.get(path.stem, path.stem)
-            rows = activity_rows(payload)
-            # The window a manifest advertises is what was ASKED for; this is
-            # what came back. A run whose fetch stopped short is still
-            # loadable and still 'complete' (silver ingest is additive) but
-            # the shortfall has to be visible, or the seam it moves looks
-            # like the account's real reach. Covers runs already on disk,
-            # whose manifests predate the download side's coverage block.
-            #
-            # Measured on the payload, never on `rows`: the projection also
-            # drops a row the ledger cannot key (no post date, no amount, no
-            # identifier), and counting those as a shortfall would send a
-            # reader hunting a pagination bug that never happened.
-            expected = payload.get("totalTransactionCount")
-            fetched = len(payload.get("transactions") or [])
-            if isinstance(expected, int) and fetched < expected:
-                log.warning("  %s: activity holds %d of the %d rows the "
-                            "source reported for the window — that fetch "
-                            "came back short", _log_id(acct_id), fetched,
-                            expected)
-            posted = [r for r in rows if not r["is_pending"]]
-            pending = [r for r in rows if r["is_pending"]]
-            for tx in posted:
-                _insert_transaction(conn, acct_id, tx)
-            _replace_pending(conn, acct_id, pending)
-            pending_by_account[acct_id] = _pending_total(payload)
-            balances = statement_balance_row(payload)
-            if balances is not None:
-                _insert_statement_balance(conn, snapshot_at, acct_id, balances,
-                                          SOURCE_ACTIVITY)
-            log.info("  %s: %d posted, %d pending", _log_id(acct_id),
-                     len(posted), len(pending))
+    # One transaction per dump: a failure part-way leaves silver as it was,
+    # with no dump_runs row, so the next load retries the whole dump.
+    with silver.transaction(conn):
+        # The activity pass runs first: it is what reports the unposted total the
+        # roster snapshot records.
+        pending_by_account: dict[str, float | None] = {}
+        activity_dir = run_dir / "activity"
+        if activity_dir.is_dir():
+            for path in sorted(activity_dir.glob("*.json")):
+                payload = _read_json(path)
+                if not isinstance(payload, dict):
+                    continue
+                acct_id = stem_to_id.get(path.stem, path.stem)
+                rows = activity_rows(payload)
+                # The window a manifest advertises is what was ASKED for; this is
+                # what came back. A run whose fetch stopped short is still
+                # loadable and still 'complete' (silver ingest is additive) but
+                # the shortfall has to be visible, or the seam it moves looks
+                # like the account's real reach. Covers runs already on disk,
+                # whose manifests predate the download side's coverage block.
+                #
+                # Measured on the payload, never on `rows`: the projection also
+                # drops a row the ledger cannot key (no post date, no amount, no
+                # identifier), and counting those as a shortfall would send a
+                # reader hunting a pagination bug that never happened.
+                expected = payload.get("totalTransactionCount")
+                fetched = len(payload.get("transactions") or [])
+                if isinstance(expected, int) and fetched < expected:
+                    log.warning("  %s: activity holds %d of the %d rows the "
+                                "source reported for the window — that fetch "
+                                "came back short", _log_id(acct_id), fetched,
+                                expected)
+                posted = [r for r in rows if not r["is_pending"]]
+                pending = [r for r in rows if r["is_pending"]]
+                for tx in posted:
+                    _insert_transaction(conn, acct_id, tx)
+                _replace_pending(conn, acct_id, pending)
+                pending_by_account[acct_id] = _pending_total(payload)
+                balances = statement_balance_row(payload)
+                if balances is not None:
+                    _insert_statement_balance(conn, snapshot_at, acct_id, balances,
+                                              SOURCE_ACTIVITY)
+                log.info("  %s: %d posted, %d pending", _log_id(acct_id),
+                         len(posted), len(pending))
 
-    for acct in accounts:
-        _insert_account(conn, snapshot_at, acct,
-                        pending_by_account.get(str(acct.get("account_key"))))
+        for acct in accounts:
+            _insert_account(conn, snapshot_at, acct,
+                            pending_by_account.get(str(acct.get("account_key"))))
 
-    # Documents are inventoried per run (a PDF's first sighting is its
-    # snapshot); their CONTENT is read by rebuild_statements, once all runs
-    # are in, because what it imports depends on the seam every run together
-    # produces.
-    stmt_dir = run_dir / "statements"
-    if stmt_dir.is_dir():
-        for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
-            acct_id = stem_to_id.get(acct_dir.name, acct_dir.name)
-            for pdf in sorted(acct_dir.glob("*.pdf")):
-                _insert_document(conn, snapshot_at, acct_id, pdf)
+        # Documents are inventoried per run (a PDF's first sighting is its
+        # snapshot); their CONTENT is read by rebuild_statements, once all runs
+        # are in, because what it imports depends on the seam every run together
+        # produces.
+        stmt_dir = run_dir / "statements"
+        if stmt_dir.is_dir():
+            for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
+                acct_id = stem_to_id.get(acct_dir.name, acct_dir.name)
+                for pdf in sorted(acct_dir.glob("*.pdf")):
+                    _insert_document(conn, snapshot_at, acct_id, pdf)
 
-    conn.execute(
-        "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
-        " run_dir) VALUES (?,?,?)",
-        (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
-    conn.commit()
+        conn.execute(
+            "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
+            " run_dir) VALUES (?,?,?)",
+            (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
     log.info("loaded %s (%d account(s))", run_dir.name, len(accounts))
     return True
 
@@ -952,8 +954,7 @@ def main(argv: list[str]) -> int:
             if load_run(conn, run_dir):
                 loaded += 1
         # A moved statement parser owes the rebuild a run just as a new
-        # bronze run does, and it is the case the old gate could not see:
-        # a parser-only change lands no run, so nothing re-read the PDFs.
+        # bronze run does: a parser-only change lands no run.
         if loaded or silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
                                              STATEMENT_GENERATION):
             # Only after every run is in: the seam this depends on is the

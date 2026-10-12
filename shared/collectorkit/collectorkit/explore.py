@@ -45,11 +45,11 @@ import signal
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, debugcap, envfile, launch
+from collectorkit import bronze, cli, debugcap, envfile, launch
+from collectorkit.session import iso_now
 
 DEFAULT_DEBUG_ROOT = Path("/debug")
 
@@ -74,10 +74,6 @@ MAX_BODY_BYTES = 4_000_000
 # detector fires when a form mounts; the poll covers SPA route changes and
 # late-mounting frames.
 PREFILL_POLL_SECONDS = 1.5
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def dom_skeleton(html: str) -> str:
@@ -282,8 +278,8 @@ class Session:
         """A session laid out by the shared flags: ``--debug-dir`` (else a
         timestamped dir under /debug), ``--trace``, ``--chunk-interval``
         and, where the harness has it, ``--dom-interval``."""
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        return cls(stack, args.debug_dir or (DEFAULT_DEBUG_ROOT / ts),
+        return cls(stack,
+                   args.debug_dir or (DEFAULT_DEBUG_ROOT / bronze.ts_slug()),
                    trace=args.trace, chunk_interval=args.chunk_interval,
                    dom_interval=getattr(args, "dom_interval", 0), **kwargs)
 
@@ -307,7 +303,7 @@ class Session:
             body = request.post_data if request.method != "GET" else None
             self._network_event({
                 "kind": "request",
-                "ts": now_iso(),
+                "ts": iso_now(),
                 "method": request.method,
                 "url": debugcap.redact_url(self.redact(request.url)),
                 "resource_type": request.resource_type,
@@ -333,7 +329,7 @@ class Session:
             ctype = response.headers.get("content-type", "").lower()
             payload = {
                 "kind": "response",
-                "ts": now_iso(),
+                "ts": iso_now(),
                 "url": debugcap.redact_url(self.redact(response.url)),
                 "method": response.request.method,
                 "status": response.status,
@@ -376,23 +372,11 @@ class Session:
         artefacts are flushed by then, so that error is noise, not a
         failed session.
         """
-        from camoufox.sync_api import Camoufox
-
-        # launch.firefox_prefs() disables Firefox's password manager so a
-        # saved credential can never autofill on top of the pre-fill, and
-        # keeps the profile down to session state.
-        cam = Camoufox(
-            persistent_context=True,
-            user_data_dir=str(profile_dir),
-            os="macos",
-            window=(1280, 800),
-            headless=False,
-            humanize=True,
-            geoip=True,
-            record_har_path=str(self.har_path),
-            firefox_user_prefs=launch.firefox_prefs(),
-            **options,
-        )
+        # The hardened prefs disable Firefox's password manager so a saved
+        # credential can never autofill on top of the pre-fill, and keep the
+        # profile down to session state.
+        cam = launch.headed_camoufox(
+            profile_dir, record_har_path=str(self.har_path), **options)
         context = cam.__enter__()
 
         def close() -> None:
@@ -437,7 +421,7 @@ class Session:
         # keeps Python's default and raises KeyboardInterrupt, which the
         # loop catches.
         def on_sigterm(signum, frame):  # noqa: ARG001
-            self.event({"kind": "signal", "ts": now_iso(),
+            self.event({"kind": "signal", "ts": iso_now(),
                         "signal": "SIGTERM"})
             self._done.set()
         signal.signal(signal.SIGTERM, on_sigterm)
@@ -462,7 +446,8 @@ class Session:
         page.on("download", self._save_download)
         page.on("framenavigated",
                 lambda f: f == page.main_frame and self.event({
-                    "kind": "navigation", "ts": now_iso(), "url": f.url}))
+                    "kind": "navigation", "ts": iso_now(),
+                    "url": debugcap.redact_url(f.url)}))
 
     def _save_download(self, download) -> None:
         # Materialised now: Playwright discards the bytes when the Download
@@ -472,8 +457,8 @@ class Session:
             download.suggested_filename, self.downloads)
         event = {
             "kind": "download",
-            "ts": now_iso(),
-            "url": download.url,
+            "ts": iso_now(),
+            "url": debugcap.redact_url(download.url),
             "suggested_filename": download.suggested_filename,
             "saved_to": str(out),
         }
@@ -488,8 +473,8 @@ class Session:
         """Offer the login-form fill to `page`; log it when it filled."""
         if self._prefill is None or not self._prefill(page):
             return False
-        self.event({"kind": self._prefill_event, "ts": now_iso(),
-                    "url": page.url})
+        self.event({"kind": self._prefill_event, "ts": iso_now(),
+                    "url": debugcap.redact_url(page.url)})
         self.log.info("pre-filled login field(s) on %s", page.url[:80])
         return True
 
@@ -497,7 +482,7 @@ class Session:
         """Record the session's start on its first page, and offer the fill
         at once: the form may already be in the initial DOM before the
         detector's first run."""
-        self.event({"kind": "started", "ts": now_iso(), "url": url, **extra})
+        self.event({"kind": "started", "ts": iso_now(), "url": url, **extra})
         self.try_prefill(page)
 
     def open(self, url: str):
@@ -548,7 +533,8 @@ class Session:
                 (snap / f"frame{i}.html").write_text(content, encoding="utf-8")
         with contextlib.suppress(Exception):
             (snap / "url.txt").write_text(
-                "\n".join(self.redact(p.url) for p in self.context.pages),
+                "\n".join(debugcap.redact_url(self.redact(p.url))
+                          for p in self.context.pages),
                 encoding="utf-8")
         with contextlib.suppress(Exception):
             self.context.pages[0].screenshot(path=str(snap / "screen.png"),
@@ -626,7 +612,7 @@ class Session:
                         self._save_trace_chunk()
                         last_chunk_at = time.monotonic()
         except KeyboardInterrupt:
-            self.event({"kind": "signal", "ts": now_iso(),
+            self.event({"kind": "signal", "ts": iso_now(),
                         "signal": "SIGINT"})
             reason = "sigint"
         self._stop(reason)
@@ -638,7 +624,7 @@ class Session:
         if self.dom_interval > 0 and reason != "browser-closed":
             with contextlib.suppress(Exception):
                 self.snapshot_dom()
-        self.event({"kind": "stopped", "ts": now_iso(), "reason": reason})
+        self.event({"kind": "stopped", "ts": iso_now(), "reason": reason})
         if not self.trace:
             self.log.info("stopping (reason: %s)", reason)
             return

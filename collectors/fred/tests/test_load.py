@@ -140,7 +140,7 @@ def test_in_progress_dump_not_loaded_then_loads_on_completion(tmp_path):
     bronze = tmp_path / "bronze"
     run = _seed_bronze(bronze)
     # Mark the run as an in-flight / crashed walk (the marker download.py
-    # now drops at run-dir creation). load must skip it — no partial rows
+    # drops at run-dir creation). load must skip it — no partial rows
     # leak — and must NOT record it in dump_runs, so a later completion
     # still loads.
     manifest = json.loads((run / "run.json").read_text(encoding="utf-8"))
@@ -151,8 +151,8 @@ def test_in_progress_dump_not_loaded_then_loads_on_completion(tmp_path):
     assert loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze)]) == 0
     assert _rows(db) == []
 
-    # The walk finalises; the same run now loads on the next (non-force)
-    # pass because it was never marked loaded.
+    # The walk finalises; the same run loads on the next (non-force) pass
+    # because it was never marked loaded.
     manifest["status"] = "complete"
     (run / "run.json").write_text(json.dumps(manifest), encoding="utf-8")
     assert loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze)]) == 0

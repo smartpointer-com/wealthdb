@@ -27,9 +27,9 @@ def test_is_authed_route_requires_a_real_in_app_route():
     assert elba.is_authed_route(
         "https://mein.elba.raiffeisen.at/bankingws-widgetsystem/"
         "meine-produkte/dashboard")
-    # The shared-URL trap (the live 2026-08-15 false positive): the bare
-    # widgetsystem shell and the OIDC ?code= callback are the PRE-login
-    # bounce and must NOT read as authed.
+    # The shared-URL trap (DESIGN.md §A): the bare widgetsystem shell and
+    # the OIDC ?code= callback are the PRE-login bounce and must NOT read
+    # as authed.
     assert not elba.is_authed_route(
         "https://mein.elba.raiffeisen.at/bankingws-widgetsystem/")
     assert not elba.is_authed_route(

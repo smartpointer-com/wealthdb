@@ -11,8 +11,8 @@
 # 2FA every time, so login + scrape share one Firefox lifetime — DESIGN.md
 # §F. `vnc-login` is the fallback that exposes VNC for a by-hand 2FA.
 # `login` folds into download; `load` / `prune` are pure Python. `explore`
-# is the retained discovery harness. `explore` and `vnc-login` forward a
-# free 5900-6000 host port for the VNC handoff.
+# is the discovery harness. `explore` and `vnc-login` forward a free
+# 5900-6000 host port for the VNC handoff.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -40,20 +40,22 @@ if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0
     cat <<EOF
 chase — host wrapper
 
-Read-only scraper for the Chase retail deposit relationship (checking /
-savings). \`download\` is a one-shot login + scrape over VNC; \`load\`
-builds the SQLite silver. See DESIGN.md "Observed" for the mapped flows.
+Read-only scraper for the Chase retail relationship: deposit accounts
+(checking / savings) and credit-card reads. \`download\` is a one-shot
+login + scrape with 2FA driven from the terminal; \`load\` builds the SQLite
+silver. See DESIGN.md "Source behaviour" for the mapped flows.
 
 Subcommands:
   build               Build the Docker image (\`docker build\`).
   download [args...]  One-shot login + scrape with 2FA driven from the
                       TERMINAL (no VNC): pre-fills + submits the sign-in
                       form, prompts for the code on stdin (push / SMS /
-                      voice), then exports each deposit account's activity
-                      (CSV + QFX) and statement PDFs into a UTC-stamped
-                      bronze run dir. --lookback bounds the window;
-                      --no-documents skips statements; --dry-run walks
-                      without exporting.
+                      voice), then exports each account's activity (CSV +
+                      QFX) and statement PDFs into a UTC-stamped bronze run
+                      dir. --lookback bounds the statement pass (the
+                      activity export always fetches Chase's full ~24
+                      months); --no-documents skips statements; --dry-run
+                      walks without exporting.
   vnc-login [args...] Fallback for download when the CLI 2FA can't drive a
                       challenge control: exposes VNC for a by-hand sign-in.
   login [args...]     Folds into download (the session dies with Firefox,
@@ -81,7 +83,8 @@ Override mounts via env:
 Credentials:
   CHASE_USERNAME / CHASE_PASSWORD are read from /secrets/chase.env inside
   the container (= \$HOME/.secrets/chase.env on the host). chmod 0600.
-  The 2FA challenge is driven by hand in the VNC session.
+  \`download\` drives the 2FA challenge from the terminal; \`vnc-login\`
+  and \`explore\` leave it to be completed by hand over VNC.
 EOF
     exit 0
 fi

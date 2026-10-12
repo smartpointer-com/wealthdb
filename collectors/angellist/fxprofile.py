@@ -36,8 +36,9 @@ DEFAULT_PROFILE_DIR = Path("/secrets/angellist-fxprofile")
 # documents dir (= angellist-documents/ in the wealthdb data dir on the
 # host) rather than the container-ephemeral ~/Downloads, so anything
 # grabbed from the Taxes & Documents page survives the run. The document
-# endpoints reject the injected cookie, so a real-browser download during
-# the by-hand login is the way to get them onto the host.
+# endpoints need a fresher session than GraphQL, so a real-browser
+# download during the by-hand login gets them onto the host even when
+# `download` finds its cookie too stale for them.
 DEFAULT_DOWNLOAD_DIR = Path("/data/angellist-documents")
 
 # Content types saved straight to disk rather than opening a dialog no one

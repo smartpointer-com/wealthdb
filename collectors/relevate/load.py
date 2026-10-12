@@ -23,6 +23,7 @@ import json
 import logging
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -48,9 +49,9 @@ PDF_GENERATION_SCOPE = "pdf_reports"
 PDF_GENERATION = srcfp.parser_fingerprint([pdf_parsers], ("pypdf",))
 
 # The tables the two PDF passes own outright, and the predicate that names
-# their rows. The `transactions` table is shared with the deposits endpoint,
-# so the credit-note rows are named by `source`; the two historical tables
-# hold nothing else.
+# their rows. The `transactions` table admits other sources (its `source`
+# CHECK), so the credit-note rows are named by `source`; the two historical
+# tables hold nothing else.
 _PDF_PASS_TABLES = (
     ("historical_position_snapshots", ""),
     ("historical_cash_balances", ""),
@@ -78,9 +79,9 @@ open_db = silver.open_db
 # ============================================================
 
 
-# Relevate's API serves fileNames in German on every observed
-# response; the older English needles are kept as defence in case
-# the API ever serves an en-locale flag we don't pass today.
+# Relevate's API serves fileNames in German; the older English
+# needles are kept as defence in case the API ever serves an
+# en-locale flag we don't pass.
 DOC_KIND_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Fee statement",        "quarterly_fee"),
     ("Gebührenabrechnung",   "quarterly_fee"),
@@ -105,6 +106,21 @@ def doc_kind_from_filename(file_name: str | None) -> str:
         if needle.lower() in file_name.lower():
             return label
     return "other"
+
+
+def iso_timestamp_to_epoch(value: str | None) -> int | None:
+    """Unix seconds of an ISO-8601 timestamp (`login.py`'s `minted_at`),
+    or None when absent or unparseable. A timestamp without an offset is
+    read as UTC."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
 
 
 def slug_for_account(external_id: str) -> str:
@@ -392,8 +408,7 @@ def load_one_dump(
         raise RuntimeError(f"no run.json in {run_dir} — refusing to load")
     run_manifest = json.loads(run_json_path.read_text(encoding="utf-8"))
 
-    conn.execute("BEGIN")
-    try:
+    with silver.transaction(conn):
         overview = load_accounts_phase(conn, snapshot_at, run_dir)
         if overview is not None:
             for p in (overview.get("portfolios") or []):
@@ -419,16 +434,12 @@ def load_one_dump(
                 snapshot_at, schema_version, run_dir.name,
                 run_manifest.get("mode"),
                 1 if run_manifest.get("dry_run") else 0,
-                parse.iso_date_to_epoch(run_manifest.get("state_minted_at")),
+                iso_timestamp_to_epoch(run_manifest.get("state_minted_at")),
                 len(run_manifest.get("files") or []),
                 len(run_manifest.get("errors") or []),
                 canonical_json(run_manifest),
             ),
         )
-    except sqlite3.DatabaseError:
-        conn.execute("ROLLBACK")
-        raise
-    conn.execute("COMMIT")
 
 
 # ============================================================
@@ -462,7 +473,7 @@ def load_historical_snapshots(
     transactions) so a parser hiccup never rolls back live data.
     """
     rows = conn.execute(
-        "SELECT relevate_doc_id, bronze_path, content_sha256, file_name "
+        "SELECT relevate_doc_id, bronze_path, content_sha256 "
         "FROM documents WHERE doc_kind = 'quarterly_report'"
     ).fetchall()
     if not rows:
@@ -477,9 +488,8 @@ def load_historical_snapshots(
     parsed_ok = 0
     n_positions = 0
     n_cash = 0
-    conn.execute("BEGIN")
-    try:
-        for doc_id, bronze_path, content_sha256, _file_name in rows:
+    with silver.transaction(conn):
+        for doc_id, bronze_path, content_sha256 in rows:
             pdf_abs = bronze_root / bronze_path
             if not pdf_abs.is_file():
                 logger.warning(
@@ -541,10 +551,6 @@ def load_historical_snapshots(
                 n_cash += 1
 
             parsed_ok += 1
-    except sqlite3.DatabaseError:
-        conn.execute("ROLLBACK")
-        raise
-    conn.execute("COMMIT")
     logger.info(
         "historical: parsed %d/%d PDF(s); %d position rows, %d cash rows",
         parsed_ok, len(rows), n_positions, n_cash,
@@ -560,12 +566,11 @@ def load_credit_note_transactions(
 
     Idempotent: `transaction_external_id` is derived deterministically
     from the document id so re-running collapses to the same row.
-    `snapshot_at` reflects the *latest* dump_run (the moment the loader
-    last saw the credit note), matching the historical-positions
-    convention.
+    `snapshot_at` is the *latest* dump_run (the last load that saw the
+    credit note), rewritten on every load.
 
     Runs in its own transaction so a parser hiccup never rolls back
-    the live deposits-endpoint transactions written upstream.
+    the per-dump rows committed before it.
     """
     rows = conn.execute(
         "SELECT relevate_doc_id, bronze_path, content_sha256 "
@@ -578,9 +583,8 @@ def load_credit_note_transactions(
         )
         return
 
-    # Latest dump_run snapshot_at is the "when did gold first see this"
-    # anchor we attach to every credit-note tx — mirrors what the
-    # historical-positions reader uses for its analogous tables.
+    # transactions.snapshot_at is NOT NULL and a PDF carries no dump time
+    # of its own, so every credit-note row takes the latest dump_run's.
     latest = conn.execute(
         "SELECT COALESCE(MAX(snapshot_at), 0) FROM dump_runs"
     ).fetchone()[0]
@@ -595,8 +599,7 @@ def load_credit_note_transactions(
         "credit_note: parsing %d Gutschriftsanzeige PDF(s)", len(rows),
     )
     parsed_ok = 0
-    conn.execute("BEGIN")
-    try:
+    with silver.transaction(conn):
         for doc_id, bronze_path, _content_sha256 in rows:
             pdf_abs = bronze_root / bronze_path
             if not pdf_abs.is_file():
@@ -643,10 +646,6 @@ def load_credit_note_transactions(
                 ),
             )
             parsed_ok += 1
-    except sqlite3.DatabaseError:
-        conn.execute("ROLLBACK")
-        raise
-    conn.execute("COMMIT")
     logger.info(
         "credit_note: parsed %d/%d PDF(s)", parsed_ok, len(rows),
     )

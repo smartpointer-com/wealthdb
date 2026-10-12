@@ -6,8 +6,8 @@ Thin wrapper over :mod:`collectorkit.recompress` (the shared,
 unit-tested backlog-recompression engine) with fidelity-web's
 configuration. ``download`` compresses each HTML/CSV export as it lands
 (``balances/balances.html.zst``, ``positions/positions_*.csv.zst``,
-``activity/activity_*.csv.zst``); this verb converts the run dirs
-written *before* that change, replacing every plain compressible file
+``activity/activity_*.csv.zst``); this verb converts run dirs holding
+plain copies, replacing every plain compressible file
 inside a **complete** dump with a zstd-compressed twin. PDFs are never
 touched — they are already internally compressed and are a load input
 in raw form. The silver loader resolves either form, so silver comes

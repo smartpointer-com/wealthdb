@@ -17,6 +17,7 @@ HERE = Path(__file__).resolve().parent
 COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
+import _txartefacts  # noqa: E402
 import load as loader  # noqa: E402
 from collectorkit import silver  # noqa: E402
 
@@ -89,6 +90,25 @@ def test_skips_already_loaded(tmp_path):
     again = loader.load_dump(conn, dump)
     assert again["skipped"] is True
     assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("status", ["in-progress", "dry-run"])
+def test_skips_non_complete_dump(tmp_path, status):
+    """A crashed download leaves status="in-progress" over partial
+    artefacts; the dump stays pending instead of loading half a snapshot."""
+    dump = _seed_bronze(tmp_path / "bronze")
+    (dump / "run.json").write_text(json.dumps({"status": status}),
+                                   encoding="utf-8")
+    conn = _fresh_db(tmp_path)
+    stats = loader.load_dump(conn, dump)
+    assert stats["skipped"] is True
+    assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
+
+    # Once the download finishes, the same dump loads.
+    (dump / "run.json").write_text(json.dumps({"status": "complete"}),
+                                   encoding="utf-8")
+    assert loader.load_dump(conn, dump)["skipped"] is False
 
 
 def _seed_with_txns(root: Path, slug: str,
@@ -498,12 +518,12 @@ def test_read_json_missing_artefact_raises(tmp_path):
 
 
 def test_logical_bronze_path_strips_compression_suffix():
-    assert loader._logical_bronze_path(Path(
+    assert _txartefacts.logical_bronze_path(Path(
         "d/accounts_positions.json.zst")) == Path("d/accounts_positions.json")
-    assert loader._logical_bronze_path(
+    assert _txartefacts.logical_bronze_path(
         Path("d/transactions_000.json.gz")) == Path("d/transactions_000.json")
     # Plain paths pass through unchanged.
-    assert loader._logical_bronze_path(
+    assert _txartefacts.logical_bronze_path(
         Path("d/run.json")) == Path("d/run.json")
 
 

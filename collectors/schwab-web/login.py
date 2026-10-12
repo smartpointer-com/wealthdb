@@ -43,7 +43,9 @@ import sys
 import time
 from pathlib import Path
 
+import download
 import landmarks as schwab
+from download import maybe_screenshot
 
 from collectorkit import bronze, cli, debugcap, envfile, launch
 
@@ -144,15 +146,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--mode", choices=("statements", "transactions", "all"),
         default="all",
-        help=("Scrape mode for the post-login walk. "
-              "'all' runs both passes (the everything-token). "
-              "See download.py --mode help. Ignored when --bronze-dir "
-              "is unset."),
+        help=("Scrape mode for the post-login walk: 'statements' (the "
+              "Statements & Tax Forms documents), 'transactions' (the "
+              "Transaction History exports), or 'all' (both)."),
     )
     p.add_argument(
         "--dry-run", action="store_true",
-        help=("Enumerate accounts and pages but do NOT click any "
-              "PDF download button. Forwarded to download.walk()."),
+        help=("Walk the accounts and result pages without downloading "
+              "any statement document. Tx-history exports still run, "
+              "into a temporary directory: nothing is written under "
+              "--bronze-dir."),
     )
     p.add_argument(
         "--no-more-detail", dest="with_more_detail", action="store_false",
@@ -161,12 +164,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "and captures the per-row detail modal contents; pass this to "
               "skip that heavier pass. See download.py walk()."),
     )
-    # The shared --lookback contract is the only window knob. Schwab's
-    # UI is preset-driven (Last3Months / Last6Months / Last5Years /
-    # Last10Years) rather than date-ranged, so the resolved window is
-    # mapped to the narrowest preset that still covers it. There is
-    # deliberately no raw-preset escape hatch: a second window flag is
-    # exactly what let a preset silently override the resolved window.
+    # The shared --lookback contract is the only window knob. A named
+    # preset maps to the narrowest Schwab preset (Last3Months /
+    # Last6Months / Last5Years / Last10Years) that still covers it; an
+    # ISO date drives the custom date-range mode, with that preset as the
+    # fallback. There is deliberately no raw-preset flag: a second
+    # window flag could silently override the resolved window.
     cli.add_standard_args(p, verb="download")
     p.add_argument(
         "--mfa-timeout", type=int, default=7200,
@@ -228,52 +231,8 @@ def maybe_source_env_files(args: argparse.Namespace) -> None:
 
 
 # ============================================================
-# Screenshot / trace helpers
+# Trace helper
 # ============================================================
-
-
-def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
-    """Capture page state at a navigation landmark: always save the
-    rendered HTML (fast — no font/animation wait), and best-effort
-    a viewport screenshot (Firefox `page.screenshot()` against
-    schwab.com tends to block on "waiting for fonts to load" which
-    never resolves, so we cap it tightly and accept misses).
-    Never raises."""
-    if screenshot_dir is None:
-        return
-    try:
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        log.warning("could not create screenshot dir %s: %s", screenshot_dir, e)
-        return
-    ts = bronze.ts_slug()
-    # HTML first. page.content() can fail with "page is navigating
-    # and changing" on Angular SPAs; fall back to evaluate which
-    # reads the DOM with no such guard.
-    try:
-        html_path = screenshot_dir / f"{ts}-{label}.html"
-        try:
-            html = page.content()
-        except Exception:
-            html = page.evaluate(
-                "() => document.documentElement.outerHTML",
-            )
-        # Scrubbed: a landmark on the sign-in page serializes the form with
-        # the typed password in a `value` attribute.
-        html_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
-        log.debug("wrote HTML %s", html_path)
-    except Exception as e:
-        log.warning("html capture %s failed: %s", label, e)
-    try:
-        png_path = screenshot_dir / f"{ts}-{label}.png"
-        page.screenshot(
-            path=str(png_path), full_page=False,
-            timeout=3_000, animations="disabled",
-        )
-        log.debug("wrote screenshot %s", png_path)
-    except Exception as e:
-        log.debug("screenshot %s failed (HTML saved): %s", label, e)
-
 
 def stop_trace_if_active(context, trace: bool, screenshot_dir: Path | None,
                         label: str) -> None:
@@ -480,7 +439,8 @@ def run_manual(profile_dir: Path,
                mfa_timeout_s: int,
                debug: bool = False,
                exact_window: tuple | None = None,
-               capture_bodies: bool = False) -> int:
+               capture_bodies: bool = False,
+               trace: bool = False) -> int:
     """One-shot: CLI-MFA login → scrape → exit, in one Firefox
     lifetime (the session-invalidation constraint in the module
     docstring).
@@ -507,7 +467,7 @@ def run_manual(profile_dir: Path,
              bronze_dir, mode, dry_run, date_range, with_more_detail)
 
     log.info("opening Firefox")
-    with open_camoufox_context(profile_dir, trace=False) as context:
+    with open_camoufox_context(profile_dir, trace) as context:
         bodies = debugcap.BodyCapture(
             screenshot_dir if capture_bodies else None,
             host_markers=("sws-gateway",), log=log,
@@ -589,26 +549,21 @@ def run_manual(profile_dir: Path,
             time.sleep(3)
             maybe_screenshot(page, screenshot_dir, "post-auth-handoff")
             page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
-            import download
-            try:
-                summary = download.walk(
-                    page, bronze_dir,
-                    mode=mode, dry_run=dry_run,
-                    screenshot_dir=screenshot_dir,
-                    date_range=date_range,
-                    with_more_detail=with_more_detail,
-                    debug=debug,
-                    exact_window=exact_window,
-                )
-                log.info(
-                    "scrape complete: %d statement entries, %d tx entries",
-                    len(summary.get("statements", [])),
-                    len(summary.get("transactions", [])),
-                )
-                return 0
-            except KeyboardInterrupt:
-                log.info("interrupted; closing browser")
-                return 0
+            summary = download.walk(
+                page, bronze_dir,
+                mode=mode, dry_run=dry_run,
+                screenshot_dir=screenshot_dir,
+                date_range=date_range,
+                with_more_detail=with_more_detail,
+                debug=debug,
+                exact_window=exact_window,
+            )
+            log.info(
+                "scrape complete: %d statement entries, %d tx entries",
+                len(summary.get("statements", [])),
+                len(summary.get("transactions", [])),
+            )
+            return 0
         except KeyboardInterrupt:
             log.info("interrupted; closing browser")
             return 0
@@ -625,6 +580,7 @@ def run_manual(profile_dir: Path,
             return 1
         finally:
             bodies.flush()
+            stop_trace_if_active(context, trace, screenshot_dir, "manual")
 
 
 def _live_url(page) -> str:
@@ -892,50 +848,44 @@ def _wait_iframe_progress(page, baseline_url: str | None,
     return False
 
 
-def _dump_visible_form_elements(page, label: str) -> None:
-    """Log visible <input> and <button>/[role=button] elements on
-    the top-level page. Used when CLI-MFA selectors miss, so the
-    next iteration can identify the new ids without burning a
-    fresh MFA round to inspect the DOM manually.
+# Visible <input> and <button>/[role=button] elements of a document, by
+# their identifying attributes only — never an input's value (AGENTS.md
+# §4). Logged when the CLI-MFA selectors miss, so the next iteration can
+# identify the new ids without burning a fresh MFA round on the DOM.
+_VISIBLE_FORM_ELEMENTS_JS = """
+() => {
+    const visible = e => {
+        const r = e.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    };
+    const inputs = [...document.querySelectorAll('input')]
+        .filter(visible)
+        .map(e => ({
+            id: e.id || null,
+            name: e.name || null,
+            type: e.type || null,
+            placeholder: e.placeholder || null,
+            autocomplete: e.autocomplete || null,
+            maxlength: e.maxLength > 0 ? e.maxLength : null,
+        }));
+    const buttons = [...document.querySelectorAll('button, [role="button"]')]
+        .filter(visible)
+        .map(e => ({
+            id: e.id || null,
+            type: e.type || null,
+            text: (e.textContent || '').trim().slice(0, 60) || null,
+        }));
+    return {inputs, buttons};
+}
+"""
 
-    Tags identifiers as keys but NOT values — Schwab's MFA inputs
-    are typically empty when this fires, but be safe (AGENTS.md
-    §4: don't leak identifiers anywhere).
-    """
+
+def _dump_visible_form_elements(page, label: str) -> None:
+    """Log the top-level page's visible form elements
+    (_VISIBLE_FORM_ELEMENTS_JS), one line each."""
     try:
-        info = page.evaluate(
-            """
-            () => {
-                const visible = e => {
-                    const r = e.getBoundingClientRect();
-                    return r.width > 0 && r.height > 0;
-                };
-                const inputs = [];
-                for (const e of document.querySelectorAll('input')) {
-                    if (!visible(e)) continue;
-                    inputs.push({
-                        id: e.id || null,
-                        name: e.name || null,
-                        type: e.type || null,
-                        placeholder: e.placeholder || null,
-                        autocomplete: e.autocomplete || null,
-                        maxlength: e.maxLength > 0 ? e.maxLength : null,
-                    });
-                }
-                const buttons = [];
-                for (const e of document.querySelectorAll('button, [role="button"]')) {
-                    if (!visible(e)) continue;
-                    buttons.push({
-                        id: e.id || null,
-                        type: e.type || null,
-                        text: (e.textContent || '').trim().slice(0, 60) || null,
-                    });
-                }
-                return {url: location.href, inputs, buttons};
-            }
-            """
-        )
-        log.info("DOM snapshot at %s: url=%s", label, info.get("url"))
+        info = page.evaluate(_VISIBLE_FORM_ELEMENTS_JS)
+        log.info("DOM snapshot at %s: url=%s", label, _live_url(page))
         for x in info.get("inputs") or []:
             log.info("  input %s", x)
         for x in info.get("buttons") or []:
@@ -945,43 +895,14 @@ def _dump_visible_form_elements(page, label: str) -> None:
 
 
 def _dump_iframe_state(page) -> None:
-    """Log every attached frame's URL plus a count of visible
-    <input> and <button> elements inside each. Used when MFA
-    selectors miss — tells us where in the frame tree the
-    challenge actually landed.
+    """Log every attached frame's URL plus its visible form elements
+    (_VISIBLE_FORM_ELEMENTS_JS). Used when MFA selectors miss — tells
+    where in the frame tree the challenge actually landed.
     """
     try:
         for f in page.frames:
             try:
-                summary = f.evaluate(
-                    """
-                    () => {
-                        const visible = e => {
-                            const r = e.getBoundingClientRect();
-                            return r.width > 0 && r.height > 0;
-                        };
-                        const inputs = [...document.querySelectorAll('input')]
-                            .filter(visible)
-                            .map(e => ({
-                                id: e.id || null,
-                                name: e.name || null,
-                                type: e.type || null,
-                                placeholder: e.placeholder || null,
-                                autocomplete: e.autocomplete || null,
-                                maxlength: e.maxLength > 0 ? e.maxLength : null,
-                            }));
-                        const buttons = [...document.querySelectorAll(
-                            'button, [role="button"]')]
-                            .filter(visible)
-                            .map(e => ({
-                                id: e.id || null,
-                                type: e.type || null,
-                                text: (e.textContent || '').trim().slice(0,60) || null,
-                            }));
-                        return {inputs, buttons};
-                    }
-                    """
-                )
+                summary = f.evaluate(_VISIBLE_FORM_ELEMENTS_JS)
             except Exception as e:
                 summary = {"error": str(e)}
             log.info(
@@ -1078,8 +999,6 @@ def _submit_mfa_code(page, code_locator, code: str) -> str | None:
     except Exception as e:
         log.error("could not press Enter to submit 2FA: %s", e)
         return None
-
-
 
 
 def _verify_mfa_outcome(page, code_input, *, budget_s: float = 60,
@@ -1207,7 +1126,6 @@ def _run_cli_mfa(page, screenshot_dir: Path | None,
             "question, push-to-device prompt, etc.) — fall back to "
             "--no-cli-mfa and drive via VNC", mfa_wait_s,
         )
-        _dump_visible_form_elements(page, "mfa-input-not-found")
         _dump_iframe_state(page)
         return "manual"
 
@@ -1271,9 +1189,10 @@ def _since_to_schwab_preset(since, until, log=None) -> str:
     """Map a (since, until) window to the narrowest Statements preset that
     still covers it.
 
-    Schwab's filter is preset-driven, not date-ranged, so the shared
-    --lookback window translates to whichever preset covers it. A window
-    wider than the longest preset is capped, with a warning."""
+    A named --lookback window runs on the preset; an exact window
+    (_exact_window) uses the custom date-range mode and falls back to this
+    preset. A window wider than the longest preset is capped, with a
+    warning."""
     days = (until - since).days
     if days <= 90:
         return "Last3Months"
@@ -1320,9 +1239,9 @@ def main(argv: list[str]) -> int:
         raise SystemExit("--capture-bodies requires --screenshot-dir "
                          "(see AGENTS.md §4).")
     # Translate the one window flag into the Schwab preset that covers it.
-    # An ISO-date --lookback expresses an exact window; tx-history can
-    # honour it verbatim via its custom date-range mode, so the resolved
-    # window rides along and only Statements falls back to the preset.
+    # An ISO-date --lookback expresses an exact window; both pages honour
+    # it verbatim via their custom date-range mode, so the resolved window
+    # rides along and the preset is the fallback when that mode fails.
     since, until = cli.resolve_lookback(args)
     args.date_range = _since_to_schwab_preset(since, until, log=log)
     args.exact_window = _exact_window(args.lookback, since, until)
@@ -1352,6 +1271,7 @@ def main(argv: list[str]) -> int:
         debug=args.debug,
         exact_window=args.exact_window,
         capture_bodies=args.capture_bodies,
+        trace=args.trace,
     )
 
 

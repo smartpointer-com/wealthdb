@@ -53,7 +53,7 @@ from collectorkit.launch import pump, wait_for
 import auth_dialog
 import mdsui
 # Frame-aware helpers for Chase's iframed, open-shadow MDS UI, shared with
-# download.py. Aliased to the `_name`s the rest of this module already uses.
+# download.py, imported under module-private aliases.
 from mdsui import (locate as _locate, first_in_frames as _first_in_frames,
                    activate as _activate, click_text as _click_text,
                    click_role as _click_role, deep_click_text as _deep_click_text)
@@ -217,8 +217,6 @@ def _session_authed(page, watch: _AuthWatch) -> bool:
     return watch.ok or _authenticated_live(page)
 
 
-
-
 def _capture(page, args, name: str) -> None:
     """DOM + screenshot to --screenshot-dir, only under --debug. Also dumps
     each chase.com **frame** DOM (`<name>-frameN.html`) — the login form and
@@ -344,7 +342,9 @@ def _enter_otp(page, code: str) -> bool:
         field.fill("")                 # clear any prior / rejected value first
         page.keyboard.type(code, delay=30)
     except Exception as exc:
-        log.debug("OTP entry failed: %r", exc)
+        # safe_error, never %r: a Playwright Call log can reproduce the
+        # typed code.
+        log.debug("OTP entry failed: %s", debugcap.safe_error(exc))
         return False
     return _submit_otp(page)
 
@@ -383,9 +383,9 @@ def _cli_two_factor(page, watch: _AuthWatch, args) -> int:
         log.error("%s — retry with vnc-login.", exc)
         return 1
 
-    # Pick the method in the "Confirm Your Identity" mds-list — the browser
-    # only sends a code once it is clicked (the earlier miss: the CLI menu
-    # was read from the network response, but nothing was clicked).
+    # Pick the method in the "Confirm Your Identity" mds-list — the menu was
+    # read off the network response, but the browser only sends a code once
+    # the method is clicked.
     if factor not in FACTOR_CONTROL or not _click_factor(page, factor):
         _capture(page, args, "factor-click-failed")
         log.error("could not select the 2FA method '%s' on the page. "

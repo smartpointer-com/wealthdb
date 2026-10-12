@@ -175,6 +175,24 @@ def test_load_mortgage_variable_rate(tmp_path):
     assert row["end_date"] is None
 
 
+def test_load_mortgage_saron_is_variable(tmp_path):
+    """A SARON mortgage reads as variable-rate, as the maturity-notice
+    parser reads the same product, so both feeds agree on it."""
+    dump = tmp_path / "bronze" / "20240101T000000Z"
+    (dump / "positions").mkdir(parents=True)
+    (dump / "positions" / "positions_test.csv").write_text(
+        ";".join(loader.POSITIONS_COLS) + "\r\n"
+        + _mortgage_row(rate_descriptor="UBS SARON Mortgage", term="")
+        + "\r\n" + "Valued in: CHF\r\n",
+        encoding="utf-8",
+    )
+    conn = _fresh_db(tmp_path)
+    with conn:
+        loader._load_positions(conn, 1700000000, dump)
+    row = conn.execute("SELECT rate_type FROM mortgages").fetchone()
+    assert row["rate_type"] == "variable"
+
+
 # ================================================================
 # Pre-2024 transaction backfill: per-account MT940 cut-over + dedup
 # ================================================================
@@ -1362,6 +1380,43 @@ def test_a_new_supplied_document_derives_without_a_new_dump(
     loader._derive_documents_without_a_new_dump(conn, [dump], {}, supplied=1)
     assert walked == [dump]
     conn.close()
+
+
+def test_a_dump_without_an_archive_does_not_hold_back_the_derive(
+        tmp_path, monkeypatch):
+    """A `--only` pass writes a dump with no `documents/` directory, and
+    loading it walks nothing. A document supplied on that run must still
+    be derived, not wait for a dump that carries an archive."""
+    bronze_dir = tmp_path / "bronze"
+    older = bronze_dir / "20260101T000000Z"
+    (older / "documents").mkdir(parents=True)
+    db = tmp_path / "ubs-web.db"
+
+    walked: list[Path] = []
+
+    def _fake_walk(conn, _snapshot_at, dump_dir, _cache):
+        # The real walk's own early return: no archive, nothing walked.
+        if not (dump_dir / "documents").is_dir():
+            return (0, 0, 0, 0)
+        walked.append(dump_dir)
+        silver.stamp_generation(conn, loader.DOCUMENT_GENERATION_SCOPE,
+                                loader._document_generation())
+        return (0, 0, 0, 0)
+
+    supplied = iter([0, 1])
+    monkeypatch.setattr(loader, "_load_historical_from_pdfs", _fake_walk)
+    monkeypatch.setattr(loader, "_load_supplied_documents",
+                        lambda _c, _d: next(supplied))
+    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze_dir)]
+
+    assert loader.main(argv) == 0
+    assert walked == [older]
+
+    newer = bronze_dir / "20260102T000000Z"
+    (newer / "transactions").mkdir(parents=True)
+    walked.clear()
+    assert loader.main(argv) == 0
+    assert walked == [older]
 
 
 def test_the_supplied_directory_is_not_a_bronze_dump(tmp_path):

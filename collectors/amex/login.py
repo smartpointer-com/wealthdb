@@ -128,8 +128,7 @@ class _LogonWatch:
     very same URL, and it answers `200` with an empty body ABOUT A SECOND
     BEFORE the real response arrives. Matching on the URL alone therefore
     reads the preflight as the outcome, finds no `statusCode` in its empty
-    body, and reports a sign-in the provider never refused — which is exactly
-    what the first live run did."""
+    body, and reports a sign-in the provider never refused."""
 
     def __init__(self):
         self.status: int | None = None
@@ -319,8 +318,8 @@ def enter_otp(page, code: str) -> bool:
     Two shapes are tried, because the control supports both: a paste of the
     whole code into the first box, which the widget distributes, and one
     digit per box. Either way the boxes are read back before Continue is
-    clicked — a partially filled control submits and is rejected, which is
-    the failure the first capture caught. Returns False without clicking
+    clicked — a partially filled control submits and is rejected
+    (DESIGN.md §B). Returns False without clicking
     when the code did not land, so the caller can report a clean failure
     rather than burning the passcode."""
     boxes = _otp_boxes(page)
@@ -485,10 +484,7 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
     deadline = time.monotonic() + OUTCOME_TIMEOUT_S
     while time.monotonic() < deadline:
         now = time.monotonic()
-        # One read per tick. The verdict is a single value, and deriving
-        # three answers from it read it three times — harmless while the
-        # watcher can only advance inside a Playwright call, and a trap the
-        # day that stops being true.
+        # One read per tick, so every branch below judges the same verdict.
         o = watch.outcome()
         if o is not None:
             if o.authenticated:
@@ -808,12 +804,11 @@ def run_check(args: argparse.Namespace) -> int:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """The `login --check` surface, and nothing else.
 
-    Everything that signs in lives on `download` now (see the module
+    Everything that signs in lives on `download` (see the module
     docstring), so this parser carries only what the probe reads. `--check`
     is required rather than defaulted: a bare `login` is trapped as a no-op
     by the wrapper and the entrypoint, and reaching this parser without it
-    means something addressed login.py directly expecting a verb that no
-    longer exists."""
+    means something addressed login.py directly expecting a sign-in verb."""
     p = argparse.ArgumentParser(
         description=__doc__.strip().splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,

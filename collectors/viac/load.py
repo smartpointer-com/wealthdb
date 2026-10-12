@@ -74,7 +74,7 @@ VIAC_ASSET_CLASS_MAP: dict[str, str] = {
 }
 
 # VIAC's transactions[].type → wealthdb canonical kind. The full
-# list of observed values is in the silver schema header comment;
+# list of known values is in the silver schema header comment;
 # anything new falls through to 'other'.
 VIAC_TX_KIND_MAP: dict[str, str] = {
     "INTEREST":              "interest",
@@ -104,23 +104,10 @@ open_db = silver.open_db
 # Helpers
 # ============================================================
 
-def ts_from_run_dir(name: str) -> int:
-    """Parse YYYYMMDDTHHMMSSZ into Unix seconds UTC."""
-    return bronze.parse_run_ts(name)
-
-
-def iso_date_to_epoch(s: str | None) -> int | None:
-    """Parse an ISO date (with or without time) into Unix seconds
-    UTC at the day's midnight. Returns None for falsy /
-    unparseable input."""
-    return parse.iso_date_to_epoch(s)
-
-
 # VIAC wraps a decimal in a tagged envelope — `{"__type":
-# "VIAC_DECIMAL", "__value": "12.30"}` — where the API once sent a bare
-# JSON number. Both shapes are in bronze and both have to load: bronze is
-# immutable, so a re-parse of an older run must still produce the rows it
-# produced the first time.
+# "VIAC_DECIMAL", "__value": "12.30"}` — and can also send a bare JSON
+# number. Both shapes must load: bronze is immutable, so a re-parse of an
+# older run must still produce the rows it produced the first time.
 VIAC_DECIMAL_TYPE = "VIAC_DECIMAL"
 
 
@@ -168,7 +155,7 @@ def viac_decimal(value: Any) -> float | None:
 def iso_datetime_to_epoch(s: str | None) -> int | None:
     """Parse an ISO datetime into Unix seconds UTC. VIAC sometimes
     emits microsecond-precision timestamps without a timezone
-    (e.g. `2021-11-28T14:18:13.222912`); treat those as UTC."""
+    (e.g. `2024-01-01T12:00:00.000000`); treat those as UTC."""
     if not s:
         return None
     try:
@@ -180,7 +167,6 @@ def iso_datetime_to_epoch(s: str | None) -> int | None:
         return int(dt.timestamp())
     except (ValueError, TypeError):
         return None
-
 
 
 def parse_account_id(account_external_id: str) -> tuple[str, str]:
@@ -294,8 +280,8 @@ def load_accounts_phase(
             "strategy": strategy_payload or None,
         }
 
-        # management_style: every VIAC product line we've observed
-        # is robo-managed (see DESIGN.md §7). The column is set
+        # management_style: VIAC products are robo-managed (see
+        # DESIGN.md §7). The column is set
         # explicitly here so the loader documents the contract; if
         # VIAC ever ships a non-robo product, this branches on
         # product_code or strategy.
@@ -397,8 +383,8 @@ def load_positions_phase(
                     continue
                 # VIAC's JSON key `amount` carries units (NOT CHF —
                 # that's `ratioInChf`); the silver columns are
-                # named `quantity` / `market_value_chf` after the
-                # 0002 rename to match canonical / gold semantics.
+                # named `quantity` / `market_value_chf` to match
+                # canonical / gold semantics.
                 conn.execute(
                     """
                     INSERT INTO positions (
@@ -459,18 +445,6 @@ def load_positions_phase(
     )
 
 
-def _parse_window_bound(s: str | None) -> date | None:
-    """Parse a YYYY-MM-DD ISO date from a run.json `windows` field.
-    Returns None if the field is missing or unparseable — callers
-    treat None as "no bound" (load every transaction)."""
-    if not s:
-        return None
-    try:
-        return date.fromisoformat(s)
-    except ValueError:
-        return None
-
-
 def _instrument_for_description(conn, description: str | None) -> str | None:
     """The instrument a transaction's description names, or None.
 
@@ -524,7 +498,7 @@ def load_transactions_phase(
         for t in (items or []):
             tx_type = t.get("type")
             vd_str = t.get("valueDate")
-            value_date = iso_date_to_epoch(vd_str)
+            value_date = parse.iso_date_to_epoch(vd_str)
             if not tx_type or value_date is None:
                 n_skipped += 1
                 continue
@@ -533,10 +507,7 @@ def load_transactions_phase(
             # from the epoch we just computed — keeps the window check
             # in calendar-date terms and avoids a timezone round-trip.
             if since is not None or until is not None:
-                try:
-                    vd = date.fromisoformat(vd_str[:10])
-                except (TypeError, ValueError):
-                    vd = None
+                vd = parse.iso_date(vd_str)
                 if vd is not None:
                     if since is not None and vd < since:
                         n_outside += 1
@@ -605,7 +576,7 @@ def load_wealth_history_phase(
     def by_date(series_name: str) -> dict[int, dict[str, Any]]:
         out: dict[int, dict[str, Any]] = {}
         for row in (summary.get(series_name) or []):
-            d = iso_date_to_epoch(row.get("date"))
+            d = parse.iso_date_to_epoch(row.get("date"))
             if d is not None:
                 out[d] = row
         return out
@@ -729,7 +700,7 @@ def load_historical_reports_phase(
         except Exception as e:  # noqa: BLE001 — one bad PDF mustn't fail the dump
             logger.warning("report %s parse failed: %s", doc_id, e)
             continue
-        as_of = iso_date_to_epoch(parsed.as_of_date)
+        as_of = parse.iso_date_to_epoch(parsed.as_of_date)
         if as_of is None:
             logger.warning("report %s: no parseable as-of date — skipping", doc_id)
             continue
@@ -856,7 +827,7 @@ def load_one_dump(
     """Load one bronze run dir into silver in a single transaction.
     Idempotency: caller has already checked dump_runs."""
     name = run_dir.name
-    snapshot_at = ts_from_run_dir(name)
+    snapshot_at = bronze.parse_run_ts(name)
     logger.info("loading dump %s (snapshot_at=%d)", name, snapshot_at)
 
     run_json_path = run_dir / "run.json"
@@ -865,15 +836,13 @@ def load_one_dump(
     run_manifest = json.loads(run_json_path.read_text(encoding="utf-8"))
     docs_counts = run_manifest.get("documents") or {}
     # Transactions window comes from the bronze run's windows block
-    # (set by download.py's resolve_lookback). Older bronze dumps
-    # predate the block — they get None/None and load everything,
-    # which matches the old behaviour.
+    # (set by download.py's resolve_lookback). A missing or unparseable
+    # bound is no bound; a dump without the block loads everything.
     windows = run_manifest.get("windows") or {}
-    tx_since = _parse_window_bound(windows.get("since"))
-    tx_until = _parse_window_bound(windows.get("until"))
+    tx_since = parse.iso_date(windows.get("since"))
+    tx_until = parse.iso_date(windows.get("until"))
 
-    conn.execute("BEGIN")
-    try:
+    with silver.transaction(conn):
         portfolios = load_accounts_phase(conn, snapshot_at, run_dir)
         load_positions_phase(conn, snapshot_at, run_dir, portfolios)
         load_transactions_phase(conn, snapshot_at, run_dir,
@@ -909,8 +878,8 @@ def load_one_dump(
                 # "fetched" column = every doc that hit the network: a plain
                 # fetch plus both fetch-verify outcomes (verified/changed also
                 # download, then dedup or keep). Only "linked" avoids the fetch.
-                # Old dumps carry no verified/changed, so this is unchanged for
-                # them. The full per-outcome breakdown lives in `payload`.
+                # A manifest without verified/changed counts plain fetches
+                # only. The full per-outcome breakdown lives in `payload`.
                 int(docs_counts.get("fetched", 0))
                 + int(docs_counts.get("verified", 0))
                 + int(docs_counts.get("changed", 0)),
@@ -920,10 +889,6 @@ def load_one_dump(
                 canonical_json(run_manifest),
             ),
         )
-    except sqlite3.DatabaseError:
-        conn.execute("ROLLBACK")
-        raise
-    conn.execute("COMMIT")
 
 
 # ============================================================

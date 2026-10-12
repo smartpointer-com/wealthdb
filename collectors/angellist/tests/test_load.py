@@ -834,3 +834,25 @@ def test_load_reads_operations_named_without_the_query_suffix(tmp_path):
     assert c.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 2
     assert c.execute("SELECT COUNT(*) FROM portfolio_summary").fetchone()[0] == 1
     assert c.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
+
+
+def test_an_unfinished_dump_is_not_loaded(tmp_path):
+    """A dump whose walk never finished (run.json still in-progress, or no
+    run.json at all) is skipped, whatever its captures.jsonl holds; prune
+    reclaims it."""
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    write_run(dest, "20240101T000000Z",
+              [positions_capture([pos_node("p1", "acme-co-s")])])
+    crashed = write_run(dest, "20240102T000000Z",
+                        [positions_capture([pos_node("p2", "other-co-s")])])
+    (crashed / "run.json").write_text(json.dumps({"status": "in-progress"}))
+    unmarked = write_run(dest, "20240103T000000Z",
+                         [positions_capture([pos_node("p3", "third-co-s")])])
+    (unmarked / "run.json").unlink()
+
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
+    c = sqlite3.connect(db)
+    assert [r[0] for r in c.execute(
+        "SELECT position_external_id FROM offerings")] == ["p1"]
+    assert c.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
+    c.close()

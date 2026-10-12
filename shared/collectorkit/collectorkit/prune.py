@@ -95,10 +95,10 @@ from collections.abc import Callable
 
 from collectorkit import bronze, cli
 
-# Classification states returned by an is_complete predicate and by
-# classify().
 log = logging.getLogger("collectorkit.prune")
 
+# Classification states returned by an is_complete predicate and by
+# classify().
 COMPLETE = "complete"          # keep load inputs; prune only debug artefacts
 NON_COMPLETE = "non-complete"  # whole-dir deletion candidate (once quiescent)
 UNKNOWN = "unknown"            # manifest unreadable/corrupt — never a candidate
@@ -122,8 +122,7 @@ class PruneConfig:
     ``transactions/*/page-*.html`` — a legacy per-account capture stranded
     inside a load-input dir). Only regular files are ever matched (a whole
     subtree is ``debug_subdirs``' job); each pattern must be crafted so it
-    can NEVER match a ``load`` input sibling. Empty by default, so a
-    collector that declares none is byte-for-byte unaffected.
+    can NEVER match a ``load`` input sibling. Empty by default.
 
     ``is_complete`` — ``(run_dir, meta) -> (state, reason)`` where ``meta``
     is the parsed manifest dict (or ``None`` when the manifest file is
@@ -161,14 +160,14 @@ def status_classification(
     """Classify a dump from the normalized ``status`` field, with a
     per-collector legacy fallback.
 
-    The forward convention (written by every ``download`` after this
-    change): ``status`` is ``"in-progress"`` while the walk runs, then
-    atomically overwritten with ``"complete"`` / ``"dry-run"`` at the end.
+    The convention every ``download`` writes: ``status`` is
+    ``"in-progress"`` while the walk runs, then atomically overwritten
+    with ``"complete"`` / ``"dry-run"`` at the end.
     So ``status == "complete"`` ⇒ COMPLETE, any other present status
     (``"in-progress"``, ``"dry-run"``, …) ⇒ NON_COMPLETE.
 
-    Existing dumps predate the ``status`` field. For a statusless dump,
-    ``legacy_complete(run_dir, meta)`` decides: it inspects the
+    A dump can carry no ``status`` field at all. For such a statusless
+    dump, ``legacy_complete(run_dir, meta)`` decides: it inspects the
     collector's original terminal signal (a specific artefact present, an
     empty ``errors`` list, ``dry_run: false``, …) and returns True when
     the dump looks finished. Absent a legacy predicate, a statusless dump
@@ -338,7 +337,7 @@ def _quiescent_age_s(run_dir: Path, newest_mtime: float,
 # Verdicts from `iter_run_eligibility`: a run dir is either ELIGIBLE (a
 # complete, quiescent, non-symlink dump a reclaim engine may act on) or skipped
 # for one of four reasons. Each engine formats its own skip message from the
-# verdict, so their existing wording and skip accounting are preserved.
+# verdict, so each keeps its own wording and skip accounting.
 ELIGIBLE = "eligible"
 SKIP_SYMLINK = "symlink"
 SKIP_NOT_COMPLETE = "not-complete"      # NON_COMPLETE or UNKNOWN (both skipped)
@@ -372,7 +371,7 @@ def iter_run_eligibility(bronze_dir: Path, config: PruneConfig,
     skip anything not :data:`COMPLETE` (NON_COMPLETE *or* UNKNOWN); compute the
     quiescent age and skip an unparseable slug or a dir touched within
     ``min_age_s``; otherwise ELIGIBLE. Callers map each verdict to their own
-    skip record, so their message wording and accounting are unchanged.
+    skip record.
     """
     for run_dir in bronze.iter_run_dirs(bronze_dir):
         if run_dir.is_symlink():
@@ -736,6 +735,7 @@ def run(config: PruneConfig, bronze_dir: Path, *, dry_run: bool,
     verb = "would delete" if dry_run else "deleting"
     total_bytes = 0
     total_files = 0
+    removed = 0
     dumps_deleted = 0
     for t in targets:
         rel = t["path"].relative_to(bronze_dir)
@@ -745,16 +745,19 @@ def run(config: PruneConfig, bronze_dir: Path, *, dry_run: bool,
         print(f"{verb}  {rel}{'/' if t['path'].is_dir() else ''}"
               f"  [{label}]"
               f"  ({t['files']} files, {human_size(t['bytes'])})")
-        total_bytes += t["bytes"]
-        total_files += t["files"]
-        if t["kind"] == "non-complete dump":
-            dumps_deleted += 1
         if not dry_run:
             validate_target(t["path"], bronze_dir, config)
             if not _recheck_target(t, config, min_age_s):
                 print(f"  ...changed since planning; skipping {rel}")
                 continue
             _remove(t["path"])
+        # Counted once removed (or, on a dry run, once it would be), so a
+        # target the recheck spared does not inflate the summary.
+        total_bytes += t["bytes"]
+        total_files += t["files"]
+        removed += 1
+        if t["kind"] == "non-complete dump":
+            dumps_deleted += 1
     for s in skipped:
         if s["age_s"] is None:
             print(f"skipping  {s['path'].relative_to(bronze_dir)}/"
@@ -774,7 +777,7 @@ def run(config: PruneConfig, bronze_dir: Path, *, dry_run: bool,
         return 0
     print(f"{'would free' if dry_run else 'freed'}: "
           f"{human_size(total_bytes)} ({total_files} files, "
-          f"{len(targets) + debug_paths} paths)")
+          f"{removed + debug_paths} paths)")
     if dumps_deleted and not dry_run:
         print(f"note: {dumps_deleted} non-complete {config.dump_label}(s) "
               "removed — silver rows sourced from them persist until the "

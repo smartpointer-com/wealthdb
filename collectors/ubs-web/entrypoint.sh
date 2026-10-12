@@ -26,7 +26,7 @@ case "${1:-help}" in
     explore)
         # Discovery harness: headed Chromium on a virtual display, served
         # over VNC so the session is driven by hand. The harness only
-        # records — every navigation and click is the operator's. Artefacts
+        # records — every navigation and click is made by hand. Artefacts
         # land in the /debug mount, never bronze.
         start_xvfb
         start_x11vnc explore

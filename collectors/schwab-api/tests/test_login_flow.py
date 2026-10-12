@@ -1,5 +1,5 @@
 """
-Login-flow guards (see DESIGN.md §3.1's incident note): page
+Login-flow guards (see DESIGN.md §3.1, "Failure discipline"): page
 classification gates every advance click, clicks are budgeted and
 progress-verified, the 2FA challenge is a hard barrier with at most one
 code submission per run, and the gateway's terminal notice route stops
@@ -228,7 +228,7 @@ ADVANCE = "button:has-text('Continue')"
 
 
 def test_no_click_on_a_challenge_page(clock):
-    # The incident shape: 2FA challenge showing, its own Continue button
+    # The forbidden shape: 2FA challenge showing, its own Continue button
     # visible and matching the advance candidates. Must never be clicked.
     page = FakePage(PLACEHOLDER, selectors={"#placeholderCode", ADVANCE})
     guard = login.AdvanceGuard()
@@ -413,3 +413,22 @@ def test_cli_mfa_requires_a_tty(monkeypatch):
     monkeypatch.setattr(login.sys, "stdin", _NoTty())
     with pytest.raises(SystemExit, match="TTY"):
         login.main([])
+
+
+# ============================================================
+# Token file
+# ============================================================
+
+def test_token_writer_is_owner_only_from_the_first_write(tmp_path):
+    """The bundle schwab-py hands the writer lands at mode 0600, replacing
+    a wider file left at the same path, and reads back as written."""
+    import json
+    import stat
+
+    token_path = tmp_path / "token.json"
+    token_path.write_text("{}", encoding="utf-8")
+    token_path.chmod(0o644)
+    bundle = {"creation_timestamp": 1, "token": {"refresh_token": "x"}}
+    login._token_writer(token_path)(bundle, refresh_token="x")
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+    assert json.loads(token_path.read_text(encoding="utf-8")) == bundle

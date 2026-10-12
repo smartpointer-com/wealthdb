@@ -16,10 +16,8 @@ prune engine) with angellist's configuration. Two categories are removed:
   marker the walk drops at run-dir creation) rather than ``"complete"``,
   or which has no ``run.json`` at all (the walk crashed before minting
   it, or ``--debug`` created the dir for captures and the walk then found
-  no session to capture). ``load`` ingests any dir that carries a
-  ``captures.jsonl``, regardless of manifest, so such a partial dir would
-  otherwise keep seeding silver; after pruning it, the next
-  ``load --force`` rebuild reflects the removal.
+  no session to capture). ``load`` already skips such a dir, but its
+  partial ``captures.jsonl`` otherwise lingers on disk.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` at the

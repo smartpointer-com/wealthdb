@@ -18,10 +18,9 @@ pytest>=8,<9
 # cointracking-only exception). SQLite ships with CPython, so no driver
 # dependency is needed here.
 
-# download.py drives a browser — Camoufox for stealth (the Investor Portal
-# flags the automation fingerprint), with vanilla Playwright Firefox kept as
-# a fallback. Both browser stacks are pre-installed in the base-camoufox
-# image; nothing to add here.
+# download.py drives Camoufox for stealth (the Investor Portal flags the
+# automation fingerprint). It is pre-installed in the base-camoufox image;
+# nothing to add here.
 
 # Document downloads (K-1 / capital-account-statement PDFs) are fetched
 # through Playwright's authenticated request API using the live session

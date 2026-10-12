@@ -10,7 +10,7 @@ sensor, only the session cookie + `q2token`, so no DOM scraping is needed).
 
 If the device-trust has expired, `logonUser` returns a 2FA challenge and
 authenticate() raises `NeedsLogin` — `download` has no terminal to answer
-it, so it fails loudly telling the operator to run `login`.
+it, so it fails loudly with a pointer to `login`.
 
 Captured, into a UTC-stamped bronze run dir (chase's layout):
 
@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import logging
-import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -84,15 +83,6 @@ def _fetch_history(context, account_id: str,
             "oldestTransactionDate": oldest, "transactions": all_tx}
 
 
-def safe_stem(value: str) -> str:
-    """A filesystem-safe stem from an account id / statement period: keep
-    word chars, dash, dot; collapse the rest to '-'; strip leading/trailing
-    dots and dashes so no path separator or traversal / dotfile survives.
-    Never empty."""
-    stem = re.sub(r"[^\w.-]+", "-", str(value)).strip("-.")
-    return stem or "item"
-
-
 def build_manifest(status: str, *, accounts: list[dict], counts: dict,
                    since: date | None, until: date | None,
                    formats: tuple[str, ...]) -> dict:
@@ -132,7 +122,8 @@ def _export_account(context, acct: dict, run_dir: Path,
             if not 200 <= resp.status < 300:
                 log.warning("export %s/%s: HTTP %s", acct_id, fmt, resp.status)
                 continue
-            out = run_dir / "transactions" / f"{safe_stem(acct_id)}.{fmt}"
+            out = (run_dir / "transactions"
+                   / f"{q2client.safe_stem(acct_id)}.{fmt}")
             bronze.atomic_write_bytes(out, resp.body())
             written += 1
         except Exception as exc:
@@ -163,8 +154,8 @@ def _download_statements(context, acct: dict, run_dir: Path,
         log.warning("statement list %s: HTTP %s", acct_id, status)
         return 0
     bronze.atomic_write_json(
-        run_dir / "raw" / f"statements-{safe_stem(acct_id)}.json", body)
-    out_dir = run_dir / "statements" / safe_stem(acct_id)
+        run_dir / "raw" / f"statements-{q2client.safe_stem(acct_id)}.json", body)
+    out_dir = run_dir / "statements" / q2client.safe_stem(acct_id)
     # The PDF POST requires the q2token as a multipart form field (like the
     # export); a header-only POST 400s (measured 2026-08-14).
     pdf_headers = {**login.q2_headers(context), "Accept": "*/*"}
@@ -181,7 +172,7 @@ def _download_statements(context, acct: dict, run_dir: Path,
                 log.warning("statement pdf %s/%s: HTTP %s",
                             acct_id, row["period"], resp.status)
                 continue
-            name = f"{safe_stem(row['period'])}.pdf"
+            name = f"{q2client.safe_stem(row['period'])}.pdf"
             bronze.atomic_write_bytes(out_dir / name, resp.body())
             written += 1
         except Exception as exc:
@@ -190,13 +181,14 @@ def _download_statements(context, acct: dict, run_dir: Path,
     return written
 
 
-def walk(context, page, bronze_dir: Path, *, since: date | None = None,
+def walk(context, bronze_dir: Path, *, since: date | None = None,
          until: date | None = None, formats: tuple[str, ...] = (),
          documents: bool = True, dry_run: bool = False) -> dict:
     """Fetch the deposit-account data into a fresh bronze run dir over the
     authenticated context, narrowed to the `[since, until]` window
-    (`--lookback`). --dry-run enumerates the roster + statement lists but
-    writes no exports/PDFs and stamps the manifest 'dry-run'."""
+    (`--lookback`). --dry-run records the roster and logs each account's
+    transaction total, but fetches no history, exports or statements, and
+    stamps the manifest 'dry-run'."""
     formats = formats or q2client.DEFAULT_EXPORT_FORMATS
     # The server-side window carried on the history + export URLs (§3). None
     # when no window was resolved → the account's full history.
@@ -243,7 +235,8 @@ def walk(context, page, bronze_dir: Path, *, since: date | None = None,
         merged = _fetch_history(context, acct_id, posted_date=posted_date)
         if merged is not None:
             bronze.atomic_write_json(
-                run_dir / "history" / f"{safe_stem(acct_id)}.json", merged)
+                run_dir / "history" / f"{q2client.safe_stem(acct_id)}.json",
+                merged)
             got, total = len(merged["transactions"]), merged["transactionCount"]
             counts["transactions"] += got
             if isinstance(total, int) and got != total:
@@ -301,7 +294,7 @@ def run_download(args: argparse.Namespace) -> int:
             log.error("authentication failed — retry, or run `login` if the "
                       "device trust has expired")
             return 1
-        summary = walk(context, page, args.bronze_dir, since=since,
+        summary = walk(context, args.bronze_dir, since=since,
                        until=until, formats=formats,
                        documents=not args.no_documents, dry_run=args.dry_run)
     log.info("done: %s", summary)
@@ -329,8 +322,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--no-documents", action="store_true",
                    help="Skip the statement-PDF pass (the run's heavy part).")
     p.add_argument("--dry-run", action="store_true",
-                   help="Enumerate the roster + statement lists but export "
-                        "nothing; stamp the manifest 'dry-run'.")
+                   help="Record the roster and log each account's "
+                        "transaction total, but fetch no history, exports "
+                        "or statements; stamp the manifest 'dry-run'.")
     p.add_argument("--mfa-timeout", type=int, default=600,
                    help="Unused on the unattended path (kept for a uniform "
                         "authenticate() signature). Default: %(default)s.")

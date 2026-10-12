@@ -168,9 +168,9 @@ def _download_statements(context, watch, all_docs: list, iban: str,
     PDFs written.
 
     The download URL carries the document's `versionsId` when it has one
-    (the older KDM-system Kontoauszüge; the newer EAZ ones have none) — the
-    fix for the KDM 422s, DESIGN.md §E. A failure is still reported as one
-    aggregate line per account rather than a wall of warnings."""
+    (the older KDM-system Kontoauszüge, which 422 without it; the newer EAZ
+    ones have none — DESIGN.md §E). Failures are reported as one aggregate
+    line per account rather than a wall of warnings."""
     rows = elba.parse_statements(all_docs, iban, since=since)
     out_dir = run_dir / "statements" / safe_stem(iban)
     headers = {**login.api_headers(watch), "Accept": "*/*"}

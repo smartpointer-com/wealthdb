@@ -79,7 +79,7 @@ Subcommands:
                         HTML/CSV bronze (balances/performance HTML,
                         positions/activity/statement CSV) inside
                         complete dumps with sha256-verified .zst
-                        twins — the form download now writes. Runs
+                        twins — the form download writes. Runs
                         host-side. Manual only, never scheduled;
                         review --dry-run first, verify with
                         \`load --force\`.
@@ -177,7 +177,7 @@ if [[ "${1:-}" == "prune" ]]; then
 fi
 
 # `./fidelity-web recompress [args...]` — one-time backlog sweep converting
-# pre-compression HTML/CSV bronze to the .zst form download now writes
+# pre-compression HTML/CSV bronze to the .zst form download writes
 # (verify-then-unlink per file, under prune's completeness envelope).
 # Manual only — never schedule; review --dry-run first.
 if [[ "${1:-}" == "recompress" ]]; then

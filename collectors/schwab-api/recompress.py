@@ -6,7 +6,7 @@ Thin wrapper over :mod:`collectorkit.recompress` (the shared,
 unit-tested backlog-recompression engine) with schwab-api's
 configuration. ``download`` compresses each bronze DATA artefact as it
 lands (``accounts_positions.json.zst``, ``transactions_NNN.json.zst``,
-etc.); this verb converts the run dirs written *before* that change,
+etc.); this verb converts run dirs that still hold plain JSON,
 replacing every plain data JSON inside a **complete** dump with a
 zstd-compressed twin. The silver loader resolves either form and parses
 the decompressed bytes, so silver comes out byte-identical — verify with

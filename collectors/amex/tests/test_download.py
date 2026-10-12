@@ -561,6 +561,32 @@ def test_an_account_whose_activity_fetch_failed_is_flagged(tmp_path,
                                          "complete": False}
 
 
+def test_a_dry_run_walks_past_a_failed_activity_fetch(tmp_path, monkeypatch,
+                                                      caplog):
+    # One card's failed fetch must not abort the dry run and strand its
+    # manifest at 'in-progress'; the other cards are still walked.
+    _stub_walk(monkeypatch, accounts=[
+        {"account_key": KEY, "account_token": TOKEN},
+        {"account_key": KEY_B, "account_token": TOKEN_B},
+    ])
+    walked = []
+
+    def _paginate(ctx, token, *, since, until):
+        walked.append(token)
+        if token == TOKEN:
+            raise RuntimeError("activity fetch failed (HTTP 500)")
+        return {"transactions": [], "totalTransactionCount": 0,
+                "categories": {}}
+    monkeypatch.setattr(download, "_paginate", _paginate)
+    with caplog.at_level(logging.WARNING, logger="amex.download"):
+        summary = download.walk(object(), tmp_path, since=None,
+                                until=date(2026, 3, 1), dry_run=True)
+    manifest = json.loads((Path(summary["run_dir"]) / "run.json").read_text())
+    assert manifest["status"] == "dry-run"
+    assert walked == [TOKEN, TOKEN_B]
+    assert "HTTP 500" in caplog.text
+
+
 # ============================================================
 # The statement and export passes, against the stub request context
 # ============================================================

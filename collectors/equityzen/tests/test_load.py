@@ -22,9 +22,14 @@ from collectorkit import silver  # noqa: E402
 RUN_SLUG = "20240301T000000Z"
 
 
-def _seed_bronze(root: Path) -> Path:
+def _seed_bronze(root: Path, manifest: dict | None = None) -> Path:
+    """A synthetic dump; `manifest` is its run.json, or a finished walk's
+    when omitted."""
     run_dir = root / RUN_SLUG
     run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(manifest if manifest is not None else {"status": "complete"}),
+        encoding="utf-8")
     investments = {
         "PORTFOLIO": {
             "data": {"buyer": {"buyerDeals": {"edges": [
@@ -128,6 +133,32 @@ def test_skips_already_loaded(tmp_path):
     # Second load without --force is a no-op (dump_runs guard).
     again = loader.load_run(conn, run_dir, force=False)
     assert again["skipped"] is True
+    assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 1
+
+
+def test_skips_a_dump_whose_walk_never_finished(tmp_path):
+    run_dir = _seed_bronze(tmp_path / "bronze", {"status": "in-progress"})
+    conn = _fresh_db(tmp_path)
+    stats = loader.load_run(conn, run_dir, force=False)
+    assert stats["skipped"] is True
+    assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
+
+
+def test_skips_a_dump_without_run_json(tmp_path):
+    run_dir = _seed_bronze(tmp_path / "bronze")
+    (run_dir / "run.json").unlink()
+    conn = _fresh_db(tmp_path)
+    assert loader.load_run(conn, run_dir, force=False)["skipped"] is True
+    assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
+
+
+def test_loads_a_statusless_manifest(tmp_path):
+    # A manifest without a status field was written at the end of a
+    # finished walk, so it is complete.
+    run_dir = _seed_bronze(tmp_path / "bronze", {"source": "equityzen"})
+    conn = _fresh_db(tmp_path)
+    assert loader.load_run(conn, run_dir, force=False)["skipped"] is False
     assert conn.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 1
 
 

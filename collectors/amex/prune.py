@@ -43,9 +43,5 @@ def main(argv=None):
     return prune.main(CONFIG, argv, description=__doc__)
 
 
-def validate_target(path, bronze_dir):
-    return prune.validate_target(path, bronze_dir, CONFIG)
-
-
 if __name__ == "__main__":
     sys.exit(main())

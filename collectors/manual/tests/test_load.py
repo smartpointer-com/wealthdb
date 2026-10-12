@@ -133,7 +133,7 @@ def test_vehicle_defaults_from_kind(tmp_path):
     got = dict(conn.execute("SELECT id, vehicle FROM positions").fetchall())
     assert got == {"re": "physical", "pe": "stock", "esc": "escrow", "ln": "loan"}
 
-    # A whole-column omission still defaults (back-compat with pre-0002 CSVs).
+    # A CSV without the vehicle column defaults it too.
     _write(tmp_path, "positions.csv",
            "id,kind,display_name,currency,acquired_at\n"
            "sp,spv,Deal,USD,2020-01-01\n")
@@ -268,6 +268,56 @@ def test_exits_reject_bad_rows(tmp_path, row, err):
            "position_id,exit_date,proceeds,currency\n" + row + "\n")
     conn = _fresh_db(tmp_path)
     with pytest.raises(loader.LoadError, match=err):
+        loader.load(conn, tmp_path)
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-inf", "sNaN"])
+def test_a_non_finite_amount_is_rejected(tmp_path, value):
+    # Decimal parses these; none is an amount, and NaN would otherwise
+    # escape as a bare decimal error with no row context.
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at\n"
+           "p-1,real_estate,X,CHF,2020-01-01\n")
+    _write(tmp_path, "valuations.csv",
+           "position_id,as_of_date,value,currency\n"
+           f"p-1,2020-01-01,{value},CHF\n")
+    conn = _fresh_db(tmp_path)
+    with pytest.raises(loader.LoadError,
+                       match=r"valuations.csv:row 2:value: not a finite number"):
+        loader.load(conn, tmp_path)
+
+
+def test_a_row_wider_than_the_header_is_rejected(tmp_path):
+    """A cell past the header's last column would be dropped unread."""
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at\n"
+           "p-1,real_estate,X,CHF,2020-01-01,stray\n")
+    conn = _fresh_db(tmp_path)
+    with pytest.raises(loader.LoadError,
+                       match=r"positions.csv:row 2:-: more cells than the header"):
+        loader.load(conn, tmp_path)
+
+
+def test_blank_trailing_cells_are_tolerated(tmp_path):
+    # Spreadsheet exports pad rows with empty cells; nothing is lost.
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at\n"
+           "p-1,real_estate,X,CHF,2020-01-01,,\n")
+    conn = _fresh_db(tmp_path)
+    assert loader.load(conn, tmp_path)["positions"] == 1
+
+
+@pytest.mark.parametrize("src", ["5", '[""p-1""]', '{""id"": ""p-1""}'])
+def test_a_non_string_conversion_link_is_rejected(tmp_path, src):
+    # Only a position id can be a conversion source; a list or object must
+    # fail with row context rather than crash on an unhashable lookup.
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at,payload\n"
+           "p-1,convertible_note,X,CHF,2020-01-01,\n"
+           f'p-2,private_equity,Y,CHF,2022-01-01,"{{""converted_from_position_id"": {src}}}"\n')
+    conn = _fresh_db(tmp_path)
+    with pytest.raises(loader.LoadError,
+                       match=r"positions.csv:row 3:payload: converted_from_position_id"):
         loader.load(conn, tmp_path)
 
 

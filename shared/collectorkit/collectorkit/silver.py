@@ -223,8 +223,8 @@ def canonical_json(obj, *, ascii: bool = False) -> str:
 
     `ascii` selects the ``ensure_ascii`` behaviour: the default (False)
     emits non-ASCII characters literally (UTF-8), while ``ascii=True``
-    escapes them to ``\\uXXXX`` — the form the older schwab-api / ubs-psn /
-    equityzen loaders produced.
+    escapes them to ``\\uXXXX`` — the form the schwab-api / ubs-psn /
+    equityzen loaders store.
     """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=ascii, default=str)

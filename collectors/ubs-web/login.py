@@ -69,8 +69,8 @@ DEFAULT_ENV_FILE_CANDIDATES = (
     Path.home() / ".secrets" / "ubs.env",
 )
 
-# Env var the contract number is read from. The companion
-# `~/.secrets/ubs.env` file should contain a line of the form
+# Env var the contract number is read from. The env file (see
+# DEFAULT_ENV_FILE_CANDIDATES) holds a line of the form
 # `UBS_CONTRACT_NUMBER=<digits>`.
 CONTRACT_NUMBER_ENV = "UBS_CONTRACT_NUMBER"
 
@@ -99,13 +99,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--contract-number", default=None,
         help=("UBS contract number (8-digit customer ID). Falls back to "
               f"${CONTRACT_NUMBER_ENV} env var, which is typically "
-              "sourced from ~/.secrets/ubs.env — see --env-file."),
+              "sourced from ~/.secrets/ubs-web.env — see --env-file."),
     )
     p.add_argument(
         "--env-file", default=None, type=Path,
-        help=("Path to a KEY=VALUE env file to load before resolving "
-              "the contract number. Defaults to /secrets/ubs.env if "
-              "present, else ~/.secrets/ubs.env."),
+        help=("Path to a bash env file to source before resolving "
+              "the contract number. Defaults to the first that exists "
+              "of ubs-web.env, then the bank-level ubs.env, under "
+              "/secrets or ~/.secrets."),
     )
     p.add_argument(
         "--check", action="store_true",
@@ -173,7 +174,7 @@ def resolve_contract_number(args: argparse.Namespace) -> str:
         return env.strip()
     raise SystemExit(
         f"Missing contract number: pass --contract-number, set "
-        f"${CONTRACT_NUMBER_ENV}, or put it in ~/.secrets/ubs.env."
+        f"${CONTRACT_NUMBER_ENV}, or put it in ~/.secrets/ubs-web.env."
     )
 
 
@@ -188,6 +189,26 @@ def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     path = screenshot_dir / f"{bronze.ts_slug()}-{label}.png"
     page.screenshot(path=str(path), full_page=True)
     log.debug("wrote screenshot %s", path)
+
+
+def _start_trace(context) -> None:
+    """Start a Playwright trace without DOM snapshots.
+
+    A trace's DOM snapshots record every input's value — here the
+    contract number typed into the login form — and nothing can redact a
+    trace after the fact. The per-action screenshots still show the
+    flow, and the network records are the redacted ones.
+    """
+    context.tracing.start(screenshots=True, snapshots=False, sources=True)
+
+
+def _save_trace(context, screenshot_dir: Path, verb: str) -> None:
+    """Stop the trace into `screenshot_dir` (main makes --trace require
+    it)."""
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = screenshot_dir / f"{bronze.ts_slug()}-{verb}-trace.zip"
+    context.tracing.stop(path=str(trace_path))
+    log.info("trace saved to %s", trace_path)
 
 
 # ============================================================
@@ -347,13 +368,7 @@ def run_check(state_path: Path, screenshot_dir: Path | None,
             storage_state=str(state_path), user_agent=USER_AGENT,
         )
         if trace:
-            # snapshots=False on the sign-in paths: a trace's DOM
-            # snapshots record every input's value — here the contract
-            # number typed into the login form — and nothing can redact a
-            # trace after the fact. The per-action screenshots still show
-            # the flow, and the network records are the redacted ones.
-            context.tracing.start(screenshots=True, snapshots=False,
-                                  sources=True)
+            _start_trace(context)
         page = context.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
         try:
@@ -385,13 +400,7 @@ def run_check(state_path: Path, screenshot_dir: Path | None,
             rc = 3
         finally:
             if trace:
-                if screenshot_dir is None:
-                    log.warning("--trace without --screenshot-dir; trace discarded")
-                else:
-                    screenshot_dir.mkdir(parents=True, exist_ok=True)
-                    trace_path = screenshot_dir / f"{bronze.ts_slug()}-check-trace.zip"
-                    context.tracing.stop(path=str(trace_path))
-                    log.info("trace saved to %s", trace_path)
+                _save_trace(context, screenshot_dir, "check")
             context.close()
             browser.close()
         return rc
@@ -411,13 +420,7 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
         )
         context = browser.new_context(user_agent=USER_AGENT)
         if trace:
-            # snapshots=False on the sign-in paths: a trace's DOM
-            # snapshots record every input's value — here the contract
-            # number typed into the login form — and nothing can redact a
-            # trace after the fact. The per-action screenshots still show
-            # the flow, and the network records are the redacted ones.
-            context.tracing.start(screenshots=True, snapshots=False,
-                                  sources=True)
+            _start_trace(context)
         page = context.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
 
@@ -537,13 +540,7 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
             return 6
         finally:
             if trace:
-                if screenshot_dir is None:
-                    log.warning("--trace without --screenshot-dir; trace discarded")
-                else:
-                    screenshot_dir.mkdir(parents=True, exist_ok=True)
-                    trace_path = screenshot_dir / f"{bronze.ts_slug()}-login-trace.zip"
-                    context.tracing.stop(path=str(trace_path))
-                    log.info("trace saved to %s", trace_path)
+                _save_trace(context, screenshot_dir, "login")
             context.close()
             browser.close()
 
@@ -582,11 +579,11 @@ def _advance_through_access_app_interstitial(page, qr_locator,
         # screens: the QR (success) or the confirm interstitial.
         try:
             page.wait_for_function(
-                "() => !!document.querySelector("
-                "       '[data-testid=\"qr-scanner-image\"]') || "
+                "(qr) => !!document.querySelector(qr) || "
                 "      !!Array.from(document.querySelectorAll("
                 "         'form button[type=\"submit\"]'))"
                 "         .find(b => b.offsetParent !== null)",
+                arg=f'[data-testid="{ubs.QR_IMG_TESTID}"]',
                 timeout=LANDMARK_TIMEOUT_MS,
             )
         except Exception:  # noqa: BLE001 — re-raise via the wait below
@@ -653,17 +650,20 @@ def _render_qr_from_locator(page, locator, qr_png: Path | None,
     png_bytes = decode_data_url_png(data_url)
     if qr_png is not None:
         qr_png.parent.mkdir(parents=True, exist_ok=True)
-        # UBS renders the QR at 150x150 px, which Preview/QuickLook
-        # shows ~2 cm wide on a retina display — too small for the
-        # Access App camera to resolve modules. Upscale 6x with
-        # nearest-neighbour so modules stay crisp.
-        scaled = _upscale_qr_png(png_bytes, factor=6)
+        scaled = _upscale_qr_png(png_bytes, factor=QR_PNG_SCALE)
         qr_png.write_bytes(scaled)
         log.info("QR PNG written to %s (%d bytes, upscaled %dx)",
-                 qr_png, len(scaled), 6)
+                 qr_png, len(scaled), QR_PNG_SCALE)
     if terminal_qr:
         render_qr_to_terminal(png_bytes)
     return data_url
+
+
+# UBS renders the QR at 150x150 px, which Preview/QuickLook shows ~2 cm
+# wide on a retina display — too small for the Access App camera to
+# resolve modules. The PNG is upscaled this many times with
+# nearest-neighbour so modules stay crisp.
+QR_PNG_SCALE = 6
 
 
 def _upscale_qr_png(png_bytes: bytes, factor: int) -> bytes:

@@ -97,10 +97,9 @@ TRANSACTION_HISTORY_URL = "https://client.schwab.com/app/accounts/history/"
 
 # Document-type filter chips, addressed by their `lookupid`
 # attribute (text labels live inside the Stencil <sdps-chips>
-# shadow DOM, so `:has-text(...)` doesn't reach them). Per the
-# collection brief, all bank documents EXCEPT trade confirms are
-# wanted: DOC_TYPES_WANTED is the set we ensure ON, the rest of
-# DOC_TYPES we ensure OFF.
+# shadow DOM, so `:has-text(...)` doesn't reach them). All bank
+# documents EXCEPT trade confirms are wanted: DOC_TYPES_WANTED is the
+# set ensured ON, the rest of DOC_TYPES is ensured OFF.
 DOC_TYPES = (
     ("Statements",      "statements-chip"),
     ("Tax Forms",       "taxforms-chip"),
@@ -113,15 +112,13 @@ DOC_TYPES_WANTED = frozenset({
 })
 
 # The "selected" state on <sdps-chips> is exposed via the HTML
-# attribute `selected=""` (NOT a CSS class). Older snapshots that
-# suggested a `sdps-chips--selected` class were misreading the
-# rendered DOM.
+# attribute `selected=""` (NOT a CSS class).
 CHIP_SELECTED_ATTR = "selected"
 
 # Dismiss-only close controls inside an open sdps modal — the
 # escalation _dismiss_open_modal reaches for when Escape doesn't clear
-# the overlay (observed live: the wire-details modal a wire row's
-# "More" opens ignores Escape). Deliberately limited to dismissive
+# the overlay (the wire-details modal a wire row's "More" opens
+# ignores Escape). Deliberately limited to dismissive
 # "X" / Close controls, never OK / Continue / action buttons: on an
 # unknown dialog those could confirm an action (read-only contract,
 # AGENTS.md §1).
@@ -163,10 +160,10 @@ PAGINATION_NEXT_LINK_ID = "pagination-next-link"
 PAGINATION_HIDDEN_LI_CLASS = "sdps-hide"
 
 # Date-range filter. <select id="date-range-select-id"> with the
-# preset <option value="..."> values below, as observed in the
-# live SPA. The UI defaults to "Last3Months", but a session can
-# land with a different value pre-selected — so select_option is
-# driven explicitly rather than trusting the default. Both pages
+# preset <option value="..."> values below, as the SPA renders them.
+# The UI defaults to "Last3Months", but a session can land with a
+# different value pre-selected — so select_option is driven explicitly
+# rather than trusting the default. Both pages
 # share the custom mode under the value "SpecifyDateRange"
 # (rendered label "Custom date range");
 # download.fill_custom_date_range drives its two datepickers.
@@ -184,9 +181,8 @@ DATE_RANGE_VALUES = (
     "Last10Years",   # longest preset; "all available"
     "SpecifyDateRange",
 )
-# 3-month default matches the convention of the sibling
-# collectors (schwab-api, ubs-psn, ubs-web).
-# Widen with `--lookback` (e.g. `--lookback all`) for a full backfill.
+# The preset a direct download.walk() call uses. The CLI always
+# passes the preset its resolved --lookback window maps to.
 DATE_RANGE_DEFAULT = "Last3Months"
 
 
@@ -261,9 +257,9 @@ def is_gateway_notice_url(url: str) -> bool:
 
 
 # Where the notice page renders its message: a #msgLabel span inside
-# the <lms-information> element (observed live). The content arrives
-# via an async fetch seconds after the route change, so extraction
-# polls for these before falling back to whole-body text.
+# the <lms-information> element. The content arrives via an async
+# fetch seconds after the route change, so extraction polls for these
+# before falling back to whole-body text.
 NOTICE_MESSAGE_SELECTORS = ("#msgLabel", "lms-information")
 
 # Case-insensitive substrings that mark a notice page as an account

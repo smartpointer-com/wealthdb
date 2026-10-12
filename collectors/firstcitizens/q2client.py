@@ -18,6 +18,7 @@ download.py replays them over `page.request`.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from urllib.parse import quote
@@ -38,15 +39,12 @@ APP_UUX = f"{APP_BASE}/uux.aspx"
 
 # Login-form controls, pinned from the explore DOM snapshots (DESIGN.md §3):
 # the homepage "Log In" button opens a modal carrying the classic light-DOM
-# form; the submit button then drives the SPA logon. (SEL_TAC_ENTRY, the
-# Secure Access Code field, is a Q2/Stencil shadow-DOM component used only on
-# the untrusted-device MFA path, which is driven by hand over VNC for now —
-# §4.2.)
+# form; the submit button then drives the SPA logon. The fields themselves are
+# found by explore's broad pre-fill selectors; the password field here is the
+# Enter-key fallback when the submit button is missing.
 SEL_LOGIN_TRIGGER = "button.fcb-modal__trigger[aria-controls='fcb-modal--login-master']"
-SEL_USER = "#login-form-0-id-textfield"
 SEL_PASSWORD = "#login-form-0-password-textfield"
 SEL_SUBMIT = "button[name='db-login-button']"
-SEL_TAC_ENTRY = "#tacEntry"
 
 # SPA hash-route markers for auth detection (never a bare URL match — the
 # pre-auth and post-auth pages share the uux.aspx path, only the fragment
@@ -92,10 +90,9 @@ Q2TOKEN = "q2token"
 # DESIGN.md §3). Csv carries the per-row running balance; QFX_1_0_2 is the
 # OFX-family form with a stable id; Qbo duplicates QFX (the chase result),
 # and Xls/Ofx are the remaining variants. The default fetch mirrors chase
-# (Csv + QFX) — but note the accountHistory JSON already carries both a
-# stable id and a running balance, so Phase 3 may not need the exports as a
-# transaction source at all (DESIGN.md §4.3). Extensible: pass --format to
-# widen.
+# (Csv + QFX). The exports are provenance only: load reads the
+# accountHistory JSON, which carries both a stable id and a running balance
+# (DESIGN.md §4.3). Pass --format to widen.
 EXPORT_FORMATS = {
     "csv": "Csv",
     "qfx": "QFX_1_0_2",
@@ -138,10 +135,6 @@ def posted_date_range(since: date, until: date) -> str:
 
 
 # --- endpoint builders ----------------------------------------------------
-
-def pre_logon_url() -> str:
-    return f"{MOBILEWS}/preLogonUser"
-
 
 def logon_url() -> str:
     return f"{MOBILEWS}/logonUser"
@@ -261,20 +254,14 @@ def classify_logon(status: int, body: dict) -> LogonOutcome:
     """Read a `logonUser` response into a LogonOutcome (DESIGN.md §3).
 
     A 203 with at least one `accessCodeTargets` entry is a 2FA challenge; a
-    200 with no targets and a populated `userProfileData` is an
-    authenticated trusted-device login. Anything else (e.g. a 200 that still
-    lists targets, or a non-2xx) is neither — the caller decides how to
-    surface it. Never raises on shape."""
+    200 with no targets is an authenticated trusted-device login, whether or
+    not it carries `userProfileData` (some builds omit the key on re-auth).
+    Anything else (e.g. a 200 that still lists targets, or a non-2xx) is
+    neither — the caller decides how to surface it. Never raises on shape."""
     targets = parse_access_code_targets(body)
-    data = _logon_data(body)
     if status == 203 and targets:
         return LogonOutcome(authenticated=False, needs_2fa=True,
                             targets=targets, status=status)
-    if status == 200 and not targets and data.get("userProfileData") is not None:
-        return LogonOutcome(authenticated=True, needs_2fa=False, status=status)
-    # Some builds return 200 with a populated profile and no explicit
-    # userProfileData key on re-auth; treat a 200 with no targets as authed
-    # only when nothing signals a pending challenge.
     if status == 200 and not targets:
         return LogonOutcome(authenticated=True, needs_2fa=False, status=status)
     return LogonOutcome(authenticated=False, needs_2fa=bool(targets),
@@ -345,6 +332,19 @@ def _balances(ext: dict) -> list[dict]:
         if desc or val:
             out.append({"description": desc, "value": val})
     return out
+
+
+_UNSAFE_STEM_RE = re.compile(r"[^\w.-]+")
+
+
+def safe_stem(value: str) -> str:
+    """A filesystem-safe stem from an account id / statement period: keep
+    word chars, dash, dot; collapse the rest to '-'; strip leading/trailing
+    dots and dashes so no path separator or traversal / dotfile survives.
+    Never empty. download.py names its bronze files with it, and load.py
+    maps those names back to account ids."""
+    stem = _UNSAFE_STEM_RE.sub("-", str(value)).strip("-.")
+    return stem or "item"
 
 
 def parse_statement_list(body: dict) -> list[dict]:

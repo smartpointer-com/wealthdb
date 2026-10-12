@@ -21,8 +21,9 @@ from collectorkit import launch
 
 # tests/ -> collectorkit/ -> shared/ -> repo root
 COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
-# collectorkit's own launch sites: the explore harness's Camoufox, and the
-# persistent sign-in browser most logins open through.
+# collectorkit's own launch sites: launch.headed_camoufox, which the explore
+# harness and the persistent sign-in browser open through. explore.py stays
+# in the scan so a launch added there directly is checked too.
 KIT = Path(__file__).resolve().parents[1] / "collectorkit"
 KIT_LAUNCH_SITES = (KIT / "explore.py", KIT / "launch.py")
 
@@ -265,7 +266,7 @@ class LaunchSitesHardenedTest(unittest.TestCase):
         # would make the test above vacuously pass.
         sites = list(_launch_sites())
         engines = [e for _, _, e, _ in sites]
-        self.assertGreaterEqual(engines.count("firefox"), 12)
+        self.assertGreaterEqual(engines.count("firefox"), 11)
         self.assertGreaterEqual(engines.count("chromium"), 5)
 
     def test_no_collector_redefines_the_pref_set(self):

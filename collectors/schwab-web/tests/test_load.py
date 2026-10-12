@@ -41,7 +41,7 @@ def conn():
 @pytest.fixture
 def migrated(conn):
     """In-memory DB with all migrations applied."""
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
     return conn
 
 
@@ -144,18 +144,18 @@ class TestParseDocDate:
 
 class TestMigrations:
     def test_fresh_db_starts_at_version_zero(self, conn):
-        assert load._current_schema_version(conn) == 0
+        assert load.silver.current_schema_version(conn) == 0
 
     def test_apply_migrations_reaches_head(self, conn):
-        load.apply_migrations(conn, MIGRATIONS_DIR)
+        load.silver.apply_migrations(conn, MIGRATIONS_DIR)
         # Head version = max migration file present; bumps when
         # a new migration lands.
-        assert load._current_schema_version(conn) >= 2
+        assert load.silver.current_schema_version(conn) >= 2
 
     def test_apply_is_idempotent(self, conn):
-        load.apply_migrations(conn, MIGRATIONS_DIR)
-        load.apply_migrations(conn, MIGRATIONS_DIR)
-        v = load._current_schema_version(conn)
+        load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+        load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+        v = load.silver.current_schema_version(conn)
         count = conn.execute(
             "SELECT COUNT(*) FROM schema_meta WHERE silver_schema_version = ?",
             (v,),
@@ -181,7 +181,7 @@ class TestMigrations:
         for name in ("0001_initial.sql", "0002_historical_snapshots.sql",
                      "0003_account_registration.sql"):
             (early / name).write_text((MIGRATIONS_DIR / name).read_text())
-        load.apply_migrations(conn, early)
+        load.silver.apply_migrations(conn, early)
 
         # Two PDFs = one logical statement re-downloaded (sha256 churn): same
         # account / doc_date / filename, different sha256. 'aaa' and 'bbb' are the
@@ -205,7 +205,7 @@ class TestMigrations:
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 3
 
         # Apply the pending migration (0004 only).
-        load.apply_migrations(conn, MIGRATIONS_DIR)
+        load.silver.apply_migrations(conn, MIGRATIONS_DIR)
 
         rows = dict(conn.execute(
             "SELECT activity_id, logical_doc_key FROM transactions"
@@ -215,7 +215,41 @@ class TestMigrations:
         # logical_doc_key backfilled from the documents join (sha256-independent).
         assert rows["aaa"] == "NNN|1709251200|Stmt_2024-03.PDF"
         assert rows["ccc"] == "NNN|1709251200|Stmt_2024-03.PDF"
-        assert load._current_schema_version(conn) == _HEAD_VERSION
+        assert load.silver.current_schema_version(conn) == _HEAD_VERSION
+
+    def test_0009_collapses_tx_history_copies_across_exports(self, conn,
+                                                            tmp_path):
+        early = tmp_path / "m"
+        early.mkdir()
+        for path in sorted(MIGRATIONS_DIR.glob("000[1-8]_*.sql")):
+            (early / path.name).write_text(path.read_text())
+        load.silver.apply_migrations(conn, early)
+        load.silver.stamp_generation(conn, load.DOCUMENT_GENERATION_SCOPE, "g")
+        # Export 1 holds a pair of genuine twins ('t1', 't2'); export 2
+        # repeats both under other ids ('u1', 'u2') and adds 'u3'. A
+        # statement row with the same payload is another source: kept.
+        rows = [
+            ("t1", "E1", "tx_history_json", '{"Amount":"-$50.00"}'),
+            ("t2", "E1", "tx_history_json", '{"Amount":"-$50.00"}'),
+            ("u3", "E2", "tx_history_json", '{"Amount":"-$10.00"}'),
+            ("u2", "E2", "tx_history_json", '{"Amount":"-$50.00"}'),
+            ("u1", "E2", "tx_history_json", '{"Amount":"-$50.00"}'),
+            ("s1", "S1", "statement_pdf", '{"Amount":"-$50.00"}'),
+        ]
+        conn.executemany(
+            "INSERT INTO transactions (activity_id, timestamp,"
+            " account_external_id, kind, instrument_key, source,"
+            " source_sha256, logical_doc_key, payload)"
+            " VALUES (?, 1715472000, 'NNN', 'Buy', NULL, ?, 'sha', ?, ?)",
+            [(aid, src, ldk, payload) for aid, ldk, src, payload in rows])
+        load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+        kept = {r[0] for r in conn.execute(
+            "SELECT activity_id FROM transactions")}
+        assert kept == {"t1", "t2", "u3", "s1"}
+        # The ids move, so the next load re-derives the archive.
+        assert load.silver.stale_generation(
+            conn, load.DOCUMENT_GENERATION_SCOPE, "g")
+        assert load.silver.current_schema_version(conn) == _HEAD_VERSION
 
 
 # ============================================================
@@ -618,6 +652,29 @@ class TestTxHistoryIngest:
         assert payload.get("_more", {}).get("Settle Date") == "05/14/2024"
         assert payload.get("_more", {}).get("Principal") == "$100.00"
 
+    def test_overlapping_exports_share_ids(self, migrated, tmp_path):
+        """A transaction in two exports of overlapping windows is one row,
+        wherever each file places it; genuine same-day twins stay two."""
+        def tx(date, amount, desc="ACME CORP", action="Buy"):
+            return {"Date": date, "Action": action, "Symbol": "ABC",
+                    "Description": desc, "Amount": amount}
+        twins = [tx("05/12/2024", "-$50.00", "FEE"),
+                 tx("05/12/2024", "-$50.00", "FEE")]
+        later = tx("05/13/2024", "$0.50", "ACME CORP DIV", "Cash Dividend")
+        first = _make_tx_history_bronze(tmp_path, "20260520T120000Z", "000",
+                                        [*twins, later])
+        second = _make_tx_history_bronze(
+            tmp_path, "20260521T120000Z", "000",
+            [tx("05/10/2024", "-$10.00"), *twins, later])
+        load.load_run(migrated, first)
+        load.load_run(migrated, second)
+        migrated.commit()
+        rows = migrated.execute(
+            "SELECT timestamp, json_extract(payload, '$.Amount')"
+            " FROM transactions ORDER BY timestamp").fetchall()
+        assert [amount for _, amount in rows] == [
+            "-$10.00", "-$50.00", "-$50.00", "$0.50"]
+
     def test_reparse_parse_failure_preserves_prior_rows(self, migrated, tmp_path):
         """An export that no longer reads during --reparse keeps the rows
         an earlier parse wrote: they are deleted only for a parse that
@@ -860,6 +917,37 @@ class TestAccountRegistrationLoad:
             "WHERE account_external_id = 'NNN'"
         ).fetchone()
         assert row == ("Contributory IRA",)
+
+    def test_label_change_keeps_statement_registration(
+            self, monkeypatch, migrated, tmp_path):
+        # A renamed account gets a new accounts row; the label its
+        # statements printed carries over, and the 5498 fallback does not
+        # overwrite it with the generic one.
+        parsed = iter([dict(self.PARSED_WITH_REG,
+                            account_registration="Roth Contributory IRA"),
+                       dict(self.PARSED_NO_REG)])
+        monkeypatch.setattr(load.pp, "parse_statement_pdf",
+                            lambda path, statement_year=None: next(parsed))
+        for run_ts, label, month in (("20260520T120000Z", "Old", "02"),
+                                     ("20260620T120000Z", "New", "03")):
+            run = _make_bronze_run(tmp_path, run_ts, [
+                {"suffix": "MMM", "label": f"{label} …MMM",
+                 "documents": [
+                     {"date": f"{month}/28/2026", "type": "Statements",
+                      "document": "Brokerage Statement",
+                      "filename": f"Brokerage-Statement_2026-{month}-28_MMM.PDF"},
+                     {"date": "05/01/2001", "type": "Tax Forms",
+                      "document": "5498",
+                      "filename": "5498---2000_2001-05-01_MMM.PDF"},
+                 ]},
+            ])
+            load.load_run(migrated, run, workers=1)
+            migrated.commit()
+        rows = migrated.execute(
+            "SELECT account_registration FROM accounts "
+            "WHERE account_external_id = 'MMM' ORDER BY snapshot_at"
+        ).fetchall()
+        assert rows == [("Roth Contributory IRA",)] * 2
 
     def test_tax_form_fallback_5498_esa(
             self, monkeypatch, migrated, tmp_path):
@@ -1397,7 +1485,7 @@ class TestSha256ChurnTransactionIdempotency:
     def test_four_downloads_yield_one_set_of_transactions(
             self, monkeypatch, migrated, tmp_path):
         """Four downloads (4 distinct sha256s, same logical content)
-        must still yield exactly 2 rows — matching the observed worst
+        must still yield exactly 2 rows — matching the worst
         case of 4 sha256s per statement (INTEROP.md §3)."""
         filename = "Brokerage-Statement_2026-01-31_NNN.PDF"
         for i, extra in enumerate([b"", b"V2", b"V3", b"V4"], start=1):
@@ -1946,6 +2034,17 @@ class TestDistributionLoad:
         ).fetchone()[0]
         assert n == 1
 
+    def test_a_letter_without_rows_is_parsed_once(
+            self, monkeypatch, migrated, tmp_path):
+        calls: list = []
+        monkeypatch.setattr(load.pp, "parse_distribution_pdf",
+                            lambda path: calls.append(path) or [])
+        for run_ts in ("20260520T120000Z", "20260521T120000Z"):
+            load.load_run(migrated, self._bronze(tmp_path, run_ts=run_ts),
+                          workers=1)
+            migrated.commit()
+        assert len(calls) == 1
+
     def test_reparse_parse_failure_preserves_prior_rows(
             self, monkeypatch, migrated, tmp_path):
         monkeypatch.setattr(load.pp, "parse_distribution_pdf",
@@ -2052,6 +2151,31 @@ def test_a_moved_parser_purges_the_snapshot_tables(tmp_path):
 
     assert load.run_load(args) == 0
     assert _snapshot_row_count(args.silver_db) == 0
+
+
+def test_a_failed_run_leaves_the_generation_unstamped(tmp_path, monkeypatch):
+    # A purge removed the run's rows and its dump_runs row survives the
+    # rollback, so a stamped generation would skip the run for good.
+    args = _generation_args(tmp_path)
+    _make_bronze_run(args.bronze_dir, "20260520T120000Z", [])
+    assert load.run_load(args) == 0
+    conn = sqlite3.connect(str(args.silver_db))
+    load.silver.stamp_generation(
+        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+    conn.commit()
+    conn.close()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(load, "load_run", boom)
+    assert load.run_load(args) == 0
+    conn = sqlite3.connect(str(args.silver_db))
+    try:
+        assert load.silver.stale_generation(
+            conn, load.DOCUMENT_GENERATION_SCOPE, load.DOCUMENT_GENERATION)
+    finally:
+        conn.close()
 
 
 def test_an_unmoved_parser_leaves_the_snapshot_tables_alone(tmp_path):
@@ -2217,7 +2341,7 @@ def test_a_silver_loaded_before_open_lots_gains_them_on_the_next_load(
     for f in sorted(MIGRATIONS_DIR.glob("000[1-5]_*.sql")):
         (early / f.name).write_text(f.read_text())
     conn = sqlite3.connect(str(args.silver_db))
-    load.apply_migrations(conn, early)
+    load.silver.apply_migrations(conn, early)
     conn.execute(
         "INSERT INTO historical_position_snapshots (as_of_date,"
         " account_external_id, instrument_key, quantity, market_value,"
@@ -2235,7 +2359,7 @@ def test_a_silver_loaded_before_open_lots_gains_them_on_the_next_load(
 
     conn = sqlite3.connect(str(args.silver_db))
     try:
-        assert load._current_schema_version(conn) == _HEAD_VERSION
+        assert load.silver.current_schema_version(conn) == _HEAD_VERSION
         assert conn.execute(
             "SELECT cost_basis FROM historical_position_snapshots"
             " WHERE instrument_key = 'XMPL'").fetchall() == [(100.0,)]
@@ -2383,7 +2507,7 @@ def test_0007_backfills_1099b_lots_from_transactions(conn, tmp_path):
     early.mkdir()
     for f in sorted(MIGRATIONS_DIR.glob("000[1-6]_*.sql")):
         (early / f.name).write_text(f.read_text())
-    load.apply_migrations(conn, early)
+    load.silver.apply_migrations(conn, early)
     row = {"date": "2021-06-15", "date_sold": "2021-06-15", "kind": "Sale",
            "security_name": "SYNTH BETA INC", "quantity": 50.0,
            "acquired_date": "Various", "proceeds": 1000.0, "cost_basis": None,
@@ -2399,7 +2523,7 @@ def test_0007_backfills_1099b_lots_from_transactions(conn, tmp_path):
             " VALUES (?, 1623715200, '999', 'Sale', 'form_1099b', 'sha1',"
             " '999|1644883200|XXXX-X999', ?)",
             (f"id{i}", load.canonical_json(r)))
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
     assert _closed_lots(conn) == [
         ("form_1099b", 0, "SYNTH BETA INC", None, 50.0, "Various",
          "2021-06-15", 1000.0, None, None, "SHORT", 0, "B", 2021),
@@ -2621,7 +2745,7 @@ def test_0008_backfills_the_owner_of_snapshot_rows(conn, tmp_path):
     early.mkdir()
     for f in sorted(MIGRATIONS_DIR.glob("000[1-7]_*.sql")):
         (early / f.name).write_text(f.read_text())
-    load.apply_migrations(conn, early)
+    load.silver.apply_migrations(conn, early)
     end = load.parse_doc_date("02/28/2026")
     conn.execute(
         "INSERT INTO documents (sha256, snapshot_at, account_external_id,"
@@ -2637,7 +2761,7 @@ def test_0008_backfills_the_owner_of_snapshot_rows(conn, tmp_path):
         "INSERT INTO historical_cash_balances (period_end, period_start,"
         " account_external_id, currency_iso, source_sha256, payload)"
         " VALUES (?, ?, 'NNN', 'USD', 'sha1', '{}')", (end, end))
-    load.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
     ldk = f"NNN|{end}|Brokerage-Statement_2026-02-28_NNN.PDF"
     assert conn.execute(
         "SELECT instrument_key, logical_doc_key FROM historical_position_snapshots"

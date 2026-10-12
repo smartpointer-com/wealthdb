@@ -33,9 +33,8 @@ case "${1:-help}" in
         ;;
     prune)
         # Delete non-complete dumps (crashed/in-progress walks and
-        # --dry-run shells) from the bronze tree. viac is REST-only and
-        # writes no bronze-resident debug artefacts, so complete dumps
-        # are left untouched. No browser, no Xvfb. --dry-run previews.
+        # --dry-run shells) and `download --debug` HTTP traces from the
+        # bronze tree. No browser, no Xvfb. --dry-run previews.
         shift
         exec python3 /app/prune.py "$@"
         ;;

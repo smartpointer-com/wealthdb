@@ -2,12 +2,10 @@
 The MFA page's API-call recorder.
 
 login.py logs what the wait page requested, and how long each call was held,
-because the approval channel it used to ride has moved once already: a route
-that was a genuine long poll in June answered 404 by September, and what
-replaced it is a short poll. Recording the page's own calls — id-masked, so a
-line can be pasted into a report, and ordered by duration, because a held
-call is the one worth polling — is what makes the next move diagnosable
-instead of guessable.
+because the page's approval channel is its own status endpoint, whose route
+can move. Recording the page's own calls — id-masked, so a line can be pasted
+into a report, and ordered by duration, because a held call is the one worth
+polling — makes such a move diagnosable instead of guessable.
 
 Run from the repo root inside the container:
     python3 -m unittest discover tests
@@ -23,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import login  # noqa: E402
+
 
 class UrlShapeTests(unittest.TestCase):
     """The MFA page's API calls are logged so a moved route can be re-derived.

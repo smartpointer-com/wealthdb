@@ -21,6 +21,10 @@ the per-portfolio loop:
        e. click Export → CSV                         → current per-
                                                         wallet balance
                                                         blob
+       f. GET /overview.php?change_user=<id>
+       g. click Export → CSV → Comma separated       → daily balance
+                                                        overview (coin
+                                                        prices for load)
 
   3. Write run.json manifest under the bronze run dir.
 
@@ -220,12 +224,8 @@ def save_known_portfolios(bronze_dir: Path, portfolios: list[dict]) -> None:
     passes the post-merge list (scrape ∪ prior cache). Written
     atomically via a temp + rename so a partial write can't
     corrupt the cache."""
-    bronze_dir.mkdir(parents=True, exist_ok=True)
-    path = bronze_dir / KNOWN_PORTFOLIOS_FILENAME
-    tmp = path.with_suffix(".tmp")
-    payload = {"schema": 1, "portfolios": portfolios}
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    bronze.atomic_write_json(bronze_dir / KNOWN_PORTFOLIOS_FILENAME,
+                             {"schema": 1, "portfolios": portfolios})
 
 
 def merge_portfolios(scraped: list[dict], cached: list[dict]) -> list[dict]:
@@ -282,13 +282,17 @@ def trigger_export(page, item_selector: str, out_path: Path,
         return None
 
     page.locator(EXPORT_BUTTON).first.click(timeout=10_000)
-    item = page.locator(item_selector).first
+    return _save_download(page, page.locator(item_selector).first, out_path)
+
+
+def _save_download(page, item, out_path: Path) -> Path:
+    """Click the visible menu `item`, save the download it fires to
+    `out_path`, and compress it. Returns the on-disk path."""
     item.wait_for(state="visible", timeout=10_000)
     with page.expect_download(timeout=120_000) as dl_info:
         item.click()
-    download = dl_info.value
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    download.save_as(str(out_path))
+    dl_info.value.save_as(str(out_path))
     log.info("  saved %s (%d bytes)", out_path.name, out_path.stat().st_size)
     return compress.compress_best_effort(out_path, log)
 
@@ -307,20 +311,14 @@ def trigger_overview_csv_export(page, out_path: Path,
     csv_btn = page.locator(OVERVIEW_CSV_BUTTON).first
     csv_btn.wait_for(state="visible", timeout=10_000)
     csv_btn.click(timeout=10_000)
-    item = page.locator(OVERVIEW_CSV_ITEM).first
-    item.wait_for(state="visible", timeout=10_000)
-    with page.expect_download(timeout=120_000) as dl_info:
-        item.click()
-    download = dl_info.value
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    download.save_as(str(out_path))
-    log.info("  saved %s (%d bytes)", out_path.name, out_path.stat().st_size)
-    return compress.compress_best_effort(out_path, log)
+    return _save_download(page, page.locator(OVERVIEW_CSV_ITEM).first,
+                          out_path)
 
 
 def download_portfolio(page, portfolio: dict, run_dir: Path,
                        dry_run: bool) -> None:
-    """Run the per-portfolio scrape: trade CSV + balance CSV."""
+    """Run the per-portfolio scrape: trade CSV, balance CSV and the
+    daily balance overview CSV."""
     cu_id = portfolio["id"]
     log_prefix = f"[cu={cu_id}]"
     portfolio_dir = run_dir / f"cu_{cu_id}"
@@ -570,7 +568,7 @@ def main(argv: list[str]) -> int:
                 # Non-zero exit only when EVERY portfolio failed —
                 # partial success still progresses the silver state
                 # for the portfolios that did download.
-                return 1 if successes == [] and failures else 0
+                return 1 if not successes and failures else 0
             else:
                 log.info("dry-run done: %d portfolios visited",
                          len(portfolios))

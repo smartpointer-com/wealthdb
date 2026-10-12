@@ -530,10 +530,11 @@ def load_securities_valued(conn, entity_id, edir: Path, *,
                                       position_status="held",
                                       exercises=exercises)
             if cancel_ts is not None:
-                _insert_security(conn, cancel_ts, entity_id, sectype, row,
-                                 canceled=_b(row.get("is_canceled")),
-                                 market_value=0.0, position_status="exited",
-                                 exercises=exercises)
+                n += _insert_security(conn, cancel_ts, entity_id, sectype, row,
+                                      canceled=_b(row.get("is_canceled")),
+                                      market_value=0.0,
+                                      position_status="exited",
+                                      exercises=exercises)
     return n
 
 
@@ -1343,7 +1344,7 @@ def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
     if not entities_dir.is_dir():
         return 0
     docs_dir = run_dir / "documents"
-    bronze_root = run_dir.parent  # side-loaded `<account_id>-*.csv` live here
+    bronze_root = run_dir.parent  # side-loaded `<entity_external_id>-*.csv` live here
     n = 0
     for edir in sorted(entities_dir.iterdir()):
         if not edir.is_dir():
@@ -1441,7 +1442,7 @@ def load_run(conn, run_dir: Path) -> bool:
                     override = _read_valuation_csv(
                         run_dir.parent / f"{eid}-valuations.csv")
                     if override:
-                        # Side-loaded `<account_id>-valuations.csv` is the single
+                        # Side-loaded `<eid>-valuations.csv` is the single
                         # source of truth: each cert held from its issue date and
                         # re-valued at every FMV step, so the share count and
                         # per-share price both move over time (DESIGN.md §5.1).
@@ -1475,9 +1476,10 @@ def load_run(conn, run_dir: Path) -> bool:
                                    _s(hd.get("held_since")), "shares first held")]
                         if cancel_ts is not None and cancel_ts > held_ts:
                             load_entity(conn, cancel_ts, ind_id, firm_id, edir)
-                            load_securities(conn, cancel_ts, eid, edir,
-                                            held=False, val_price=val_price,
-                                            exercises=matched)
+                            n_sec += load_securities(conn, cancel_ts, eid, edir,
+                                                     held=False,
+                                                     val_price=val_price,
+                                                     exercises=matched)
                             events.append((cancel_ts, eid, "disposition",
                                            cancel_s,
                                            "acquisition: securities cancelled"))

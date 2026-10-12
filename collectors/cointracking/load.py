@@ -361,8 +361,10 @@ def ingest_portfolios_and_wallets(
             portfolio_external_id,
             wallet_external_id,
             -- wallet_external_id is namespaced as 'cu_<id>:<wallet>';
-            -- display_name strips the namespace prefix.
-            SPLIT_PART(wallet_external_id, ':', 2) AS display_name,
+            -- display_name strips the namespace prefix and keeps the
+            -- rest whole, since an Exchange name may contain ':'.
+            SUBSTR(wallet_external_id,
+                   STRPOS(wallet_external_id, ':') + 1) AS display_name,
             ? AS snapshot_at,
             NULL AS payload
         FROM transactions
@@ -954,6 +956,75 @@ def coin_date_range(
     return row[0], row[1]
 
 
+def _fetch_window(
+    conn: duckdb.DuckDBPyConnection, sym: str, source: str, mode: str,
+    held_range: tuple[date, date],
+) -> tuple[date, date, date | None] | None:
+    """(fetch_from, fetch_to, stale_day) for one held instrument.
+
+    'full' fetches the whole held range. 'missing' starts at the earlier
+    of the first held day with no price row from `source` and the latest
+    priced day. That latest row was an intraday snapshot when written,
+    so it is fetched again, and `stale_day` names it for _store_prices
+    to replace. None when there is nothing to fetch."""
+    min_held, max_held = held_range
+    if mode == "full":
+        return min_held, max_held, None
+    first_unpriced = conn.execute("""
+        SELECT MIN(pd.as_of_date)
+        FROM positions_daily pd
+        LEFT JOIN coin_prices cp
+          ON cp.instrument_external_id = pd.instrument_external_id
+         AND cp.as_of_date = pd.as_of_date
+         AND cp.source = ?
+        WHERE pd.instrument_external_id = ?
+          AND pd.amount > 0
+          AND cp.as_of_date IS NULL
+    """, [source, sym]).fetchone()[0]
+    latest_priced = conn.execute("""
+        SELECT MAX(as_of_date) FROM coin_prices
+        WHERE instrument_external_id = ?
+          AND source = ?
+    """, [sym, source]).fetchone()[0]
+    candidates = [d for d in (first_unpriced, latest_priced) if d is not None]
+    if not candidates:
+        return None
+    return min(candidates), max_held, latest_priced
+
+
+def _store_prices(
+    conn: duckdb.DuckDBPyConnection, sym: str, source: str,
+    rows: list[tuple[date, float]], held_range: tuple[date, date],
+    stale_day: date | None,
+) -> int:
+    """Write fetched (day, price_usd) rows for `sym`, keeping only days
+    inside the held range. A day that already has a row keeps it (ON
+    CONFLICT DO NOTHING), except `stale_day`: its row is deleted first,
+    so the fetched close replaces the intraday price stored for it. The
+    caller runs this only after a fetch succeeds, so a failed fetch
+    leaves the stored price in place. Returns the rows offered."""
+    if stale_day is not None:
+        conn.execute(
+            """DELETE FROM coin_prices
+               WHERE instrument_external_id = ?
+                 AND source = ?
+                 AND as_of_date = ?""",
+            [sym, source, stale_day])
+    min_held, max_held = held_range
+    fetched_at = int(time.time())
+    held = [(day, sym, price, source, fetched_at)
+            for day, price in rows if min_held <= day <= max_held]
+    if held:
+        conn.executemany(
+            """INSERT INTO coin_prices
+               (as_of_date, instrument_external_id, price_usd,
+                source, fetched_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT DO NOTHING""",
+            held)
+    return len(held)
+
+
 def fetch_coin_prices(
     conn: duckdb.DuckDBPyConnection,
     client: BinanceClient,
@@ -998,51 +1069,10 @@ def fetch_coin_prices(
         held_range = coin_date_range(conn, sym)
         if not held_range:
             continue
-        min_held, max_held = held_range
-
-        if mode == "missing":
-            # Earliest day in the held range with no price row yet.
-            first_unpriced = conn.execute("""
-                SELECT MIN(pd.as_of_date)
-                FROM positions_daily pd
-                LEFT JOIN coin_prices cp
-                  ON cp.instrument_external_id = pd.instrument_external_id
-                 AND cp.as_of_date = pd.as_of_date
-                 AND cp.source = ?
-                WHERE pd.instrument_external_id = ?
-                  AND pd.amount > 0
-                  AND cp.as_of_date IS NULL
-            """, [PRICE_PROVIDER, sym]).fetchone()[0]
-            # Latest priced day — this row was an intraday/live
-            # snapshot when first written; it needs to be re-fetched
-            # so the next run upgrades it to the close.
-            latest_priced = conn.execute("""
-                SELECT MAX(as_of_date) FROM coin_prices
-                WHERE instrument_external_id = ?
-                  AND source = ?
-            """, [sym, PRICE_PROVIDER]).fetchone()[0]
-            # If neither exists, this coin isn't in the held set;
-            # skip (defensive — coin_date_range already caught it).
-            candidates = [d for d in (first_unpriced, latest_priced)
-                          if d is not None]
-            if not candidates:
-                continue
-            fetch_from = min(candidates)
-            # Drop the latest priced day so the INSERT below
-            # actually writes the close price (ON CONFLICT DO
-            # NOTHING would otherwise preserve the stale-live row).
-            if latest_priced is not None:
-                conn.execute(
-                    """DELETE FROM coin_prices
-                       WHERE instrument_external_id = ?
-                         AND source = ?
-                         AND as_of_date = ?""",
-                    [sym, PRICE_PROVIDER, latest_priced],
-                )
-            fetch_to = max_held
-        else:  # full
-            fetch_from = min_held
-            fetch_to = max_held
+        window = _fetch_window(conn, sym, PRICE_PROVIDER, mode, held_range)
+        if window is None:
+            continue
+        fetch_from, fetch_to, stale_day = window
 
         # Convert to unix seconds, 00:00 UTC. Pad by 1 day on each
         # side so day-boundary rounding doesn't lose anything.
@@ -1063,23 +1093,8 @@ def fetch_coin_prices(
             continue
 
         coins_fetched += 1
-        fetched_at = int(time.time())
-        # ON CONFLICT DO NOTHING for 'missing' — preserves existing
-        # rows. For 'full' we already truncated above, so conflict
-        # shouldn't fire, but DO NOTHING is the safer fallback.
-        n = 0
-        for day, price in rows:
-            if not (min_held <= day <= max_held):
-                continue  # only days the position was actually held
-            conn.execute(
-                """INSERT INTO coin_prices
-                   (as_of_date, instrument_external_id, price_usd,
-                    source, fetched_at)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT DO NOTHING""",
-                [day, sym, price, PRICE_PROVIDER, fetched_at],
-            )
-            n += 1
+        n = _store_prices(conn, sym, PRICE_PROVIDER, rows, held_range,
+                          stale_day)
         prices_written += n
         log.info("  %s: wrote %d daily price(s)", sym, n)
 
@@ -1107,6 +1122,7 @@ def backfill_first_day_gaps(
 
     Returns number of rows backfilled."""
     fetched_at = int(time.time())
+    n_before = conn.execute("SELECT COUNT(*) FROM coin_prices").fetchone()[0]
     conn.execute(f"""
         WITH gaps AS (
             SELECT DISTINCT
@@ -1144,14 +1160,11 @@ def backfill_first_day_gaps(
          AND cp.as_of_date = fl.next_priced
         WHERE DATEDIFF('day', fl.gap_date, fl.next_priced) <= {max_gap_days}
         ON CONFLICT DO NOTHING
-    """).fetchall()
-    # DuckDB's INSERT reports no rowcount; count the rows stamped
-    # with this fetched_at instead.
-    n = conn.execute("""
-        SELECT COUNT(*)
-        FROM coin_prices
-        WHERE fetched_at = ?
-    """, [fetched_at]).fetchone()[0]
+    """)
+    # Count by the table's growth: a fetch earlier in the same second
+    # stamps its rows with the same fetched_at.
+    n = conn.execute(
+        "SELECT COUNT(*) FROM coin_prices").fetchone()[0] - n_before
     if n:
         log.info("backfill: %d first-day gap(s) filled within %d-day "
                  "window", n, max_gap_days)
@@ -1204,40 +1217,10 @@ def fetch_fx_rates(
         held_range = coin_date_range(conn, fiat)
         if not held_range:
             continue
-        min_held, max_held = held_range
-
-        if mode == "missing":
-            first_unpriced = conn.execute("""
-                SELECT MIN(pd.as_of_date)
-                FROM positions_daily pd
-                LEFT JOIN coin_prices cp
-                  ON cp.instrument_external_id = pd.instrument_external_id
-                 AND cp.as_of_date = pd.as_of_date
-                 AND cp.source = ?
-                WHERE pd.instrument_external_id = ?
-                  AND pd.amount > 0
-                  AND cp.as_of_date IS NULL
-            """, [FX_PROVIDER, fiat]).fetchone()[0]
-            latest_priced = conn.execute("""
-                SELECT MAX(as_of_date) FROM coin_prices
-                WHERE instrument_external_id = ? AND source = ?
-            """, [fiat, FX_PROVIDER]).fetchone()[0]
-            candidates = [d for d in (first_unpriced, latest_priced)
-                          if d is not None]
-            if not candidates:
-                continue
-            fetch_from = min(candidates)
-            if latest_priced is not None:
-                conn.execute(
-                    """DELETE FROM coin_prices
-                       WHERE instrument_external_id = ?
-                         AND source = ?
-                         AND as_of_date = ?""",
-                    [fiat, FX_PROVIDER, latest_priced])
-            fetch_to = max_held
-        else:
-            fetch_from = min_held
-            fetch_to = max_held
+        window = _fetch_window(conn, fiat, FX_PROVIDER, mode, held_range)
+        if window is None:
+            continue
+        fetch_from, fetch_to, stale_day = window
 
         log.info("FX %s: fetching %s..%s", fiat, fetch_from, fetch_to)
         try:
@@ -1247,19 +1230,7 @@ def fetch_fx_rates(
             continue
 
         fiats_fetched += 1
-        fetched_at = int(time.time())
-        n = 0
-        for day, rate in rows:
-            if not (min_held <= day <= max_held):
-                continue
-            conn.execute(
-                """INSERT INTO coin_prices
-                   (as_of_date, instrument_external_id, price_usd,
-                    source, fetched_at)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT DO NOTHING""",
-                [day, fiat, rate, FX_PROVIDER, fetched_at])
-            n += 1
+        n = _store_prices(conn, fiat, FX_PROVIDER, rows, held_range, stale_day)
         prices_written += n
         log.info("  %s: wrote %d daily rate(s)", fiat, n)
 
@@ -1284,32 +1255,41 @@ def process_snapshot(
 
     manifest = json.loads((run_dir / "run.json").read_text())
 
-    n_tx = ingest_transactions(conn, manifest, run_dir, snapshot_at,
-                               timezones)
-    log.info("  total transactions loaded: %d", n_tx)
+    # One transaction per snapshot. A failure part-way, such as an export
+    # missing a column, rolls silver back to what the previous snapshot
+    # left, instead of leaving this one's portfolios half replaced.
+    conn.begin()
+    try:
+        n_tx = ingest_transactions(conn, manifest, run_dir, snapshot_at,
+                                   timezones)
+        log.info("  total transactions loaded: %d", n_tx)
 
-    ingest_portfolios_and_wallets(conn, manifest, snapshot_at, timezones)
+        ingest_portfolios_and_wallets(conn, manifest, snapshot_at, timezones)
 
-    cutoff, n_rewritten = upsert_positions_daily(conn, snapshot_at)
+        cutoff, n_rewritten = upsert_positions_daily(conn, snapshot_at)
 
-    warn_unhandled_transaction_types(conn)
+        warn_unhandled_transaction_types(conn)
 
-    ingest_portfolio_prices(conn, manifest, run_dir, snapshot_at)
+        ingest_portfolio_prices(conn, manifest, run_dir, snapshot_at)
 
-    reconcile_balances(conn, manifest, run_dir)
+        reconcile_balances(conn, manifest, run_dir)
 
-    # Record the snapshot and the schema version it was loaded under.
-    # Replace the row when the snapshot is ingested again.
-    conn.execute(
-        "INSERT INTO dump_runs (snapshot_at, silver_schema_version, "
-        "run_dir, payload) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT (snapshot_at) DO UPDATE SET "
-        "  silver_schema_version = excluded.silver_schema_version, "
-        "  run_dir               = excluded.run_dir, "
-        "  payload               = excluded.payload",
-        [snapshot_at, schema_version, str(run_dir),
-         json.dumps({"cutoff": cutoff, "rewritten": n_rewritten})],
-    )
+        # Record the snapshot and the schema version it was loaded under.
+        # Replace the row when the snapshot is ingested again.
+        conn.execute(
+            "INSERT INTO dump_runs (snapshot_at, silver_schema_version, "
+            "run_dir, payload) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (snapshot_at) DO UPDATE SET "
+            "  silver_schema_version = excluded.silver_schema_version, "
+            "  run_dir               = excluded.run_dir, "
+            "  payload               = excluded.payload",
+            [snapshot_at, schema_version, str(run_dir),
+             json.dumps({"cutoff": cutoff, "rewritten": n_rewritten})],
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def newest_loaded(

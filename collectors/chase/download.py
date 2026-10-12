@@ -16,9 +16,8 @@ a UTC-stamped bronze run dir:
 
 Both account kinds are walked: the deposit accounts (checking / savings) and
 the credit cards, which the roster discriminates by `summaryType` and every
-record carries as `product` ('dda' | 'card'). Card **reads** came into scope
-with the 2026-09-04 amendment (DESIGN.md §4); card *management* stays
-forbidden.
+record carries as `product` ('dda' | 'card'). Card **reads** are in scope
+(DESIGN.md §4); card *management* is forbidden.
 
 The scrape drives the account UI the way the discovery sessions did
 (DESIGN.md §C–§E): the browser holds the session cookie and sets the
@@ -752,7 +751,8 @@ def _discover_accounts(page, captured_bodies: list, timeout_ms: int) -> list[dic
     # If accounts are known but the (complete) download-options roster hasn't
     # been seen, visit the first account's download page to trigger it — it
     # returns every downloadable account in one response (DESIGN.md §E).
-    have_options = any("downloadAccountActivityOptions" in b
+    have_options = any(isinstance(b, dict)
+                       and "downloadAccountActivityOptions" in b
                        for b in captured_bodies)
     if roster and not have_options:
         try:
@@ -799,15 +799,9 @@ def _export_account(page, acct: dict, run_dir: Path, timeout_ms: int) -> int:
     # can't strand the second.
     for fmt, opt_prefix in EXPORT_FORMATS.items():
         try:
-            page.goto(route, wait_until="domcontentloaded", timeout=timeout_ms)
-            _settle(page)
-            # A goto to the hash route we're already on doesn't re-render the
-            # SPA, so the form can be stale/absent on the second format. Wait
-            # for it; force a reload if it didn't render.
-            if not _wait_visible(page, SEL_FILE_SELECT, 8):
-                page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
-                _settle(page)
-                _wait_visible(page, SEL_FILE_SELECT, 8)
+            # The second format revisits the route the first left the page
+            # on, which is exactly the stale-form case `_open` reloads for.
+            _open(page, route, SEL_FILE_SELECT, 8, timeout_ms)
             # The form's account picker, not the route, decides what gets
             # exported. A hash-only route change can leave it bound to the
             # previous account, so confirm it — and correct it through the
@@ -891,16 +885,9 @@ def _download_deposit_statements(page, accounts, run_dir: Path, since, until,
     statement era appears on none of them and imports nothing however
     complete the set is."""
     try:
-        page.goto(ROUTE_DOCUMENTS, wait_until="domcontentloaded",
-                  timeout=timeout_ms)
-        _settle(page)
-        # The micro-app can render the table after networkidle; wait for it,
-        # and force a reload if a same-route nav left it stale (as with the
-        # export form). Without this the year filter finds no options.
-        if not _wait_visible(page, SEL_STATEMENTS_ACCORDION, 10):
-            page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
-            _settle(page)
-            _wait_visible(page, SEL_STATEMENTS_ACCORDION, 10)
+        # The micro-app can render the table after networkidle; without the
+        # wait the year filter finds no options.
+        _open(page, ROUTE_DOCUMENTS, SEL_STATEMENTS_ACCORDION, 10, timeout_ms)
     except Exception as exc:
         log.warning("documents area unreachable: %r", exc)
         return 0, 0
@@ -945,14 +932,9 @@ def _download_card_statements(page, cards, captured_bodies: list,
             covered += 1
             continue
         try:
-            page.goto(ROUTE_ACCOUNT_DOCUMENTS.format(ext=ext),
-                      wait_until="domcontentloaded", timeout=timeout_ms)
-            _settle(page)
-            if not _wait_visible(page, SEL_STATEMENTS_ACCORDION, 10):
-                page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
-                _settle(page)
-                if not _wait_visible(page, SEL_STATEMENTS_ACCORDION, 10):
-                    raise RuntimeError("statements table did not render")
+            if not _open(page, ROUTE_ACCOUNT_DOCUMENTS.format(ext=ext),
+                         SEL_STATEMENTS_ACCORDION, 10, timeout_ms):
+                raise RuntimeError("statements table did not render")
         except Exception as exc:
             log.warning("  statements unreachable for %s: %r", label, exc)
             continue
@@ -1022,8 +1004,7 @@ def _available_statement_years(page) -> list[int] | None:  # pragma: no cover
     """The years the statements filter offers, or None if the filter is absent.
     The options lag the accordion after a navigation (they arrive together in
     one styled-select), so poll a few seconds for them to populate — reading
-    too early truncated the year list and left --lookback all with only the
-    current year."""
+    too early truncates the year list to the current year."""
     for _ in range(8):
         for frame in mdsui.chase_frames(page):
             with contextlib.suppress(Exception):
@@ -1068,8 +1049,7 @@ def _select_statement_year(page, year: int) -> bool:  # pragma: no cover
     one matching the year swaps the table. Returns True only once the table's
     first row is actually in `year` — so an unavailable year, or a click that
     didn't take, returns False rather than leaving the caller to re-scrape the
-    year already shown (the bug that made --lookback all save only the current
-    year)."""
+    year already shown."""
     if _table_year(page) == year:
         return True
     for _ in range(2):
@@ -1156,7 +1136,7 @@ def _save_statement_row(page, n: int, dest: Path,
 # ---- small UI helpers (browser-side) -------------------------------------
 # Live-validated on the deposit path; the account-picker helpers below are
 # taken from the card exploration capture (their selectors and the picker's
-# option shape) and are verified against the form on the first live run.
+# option shape).
 
 def _settle(page, ms: int = 1500) -> None:  # pragma: no cover
     """Give the SPA a moment to fire its XHRs after a route change."""
@@ -1164,6 +1144,21 @@ def _settle(page, ms: int = 1500) -> None:  # pragma: no cover
         page.wait_for_load_state("networkidle", timeout=8000)
     except Exception:
         time.sleep(ms / 1000)
+
+
+def _open(page, route: str, selector: str, secs: float,
+          timeout_ms: int) -> bool:
+    """Navigate to `route` and wait up to `secs` for `selector` to render,
+    reloading once when it does not: a goto to the hash route the SPA already
+    shows does not re-render it, so the control can be stale or absent.
+    Returns whether the selector rendered."""
+    page.goto(route, wait_until="domcontentloaded", timeout=timeout_ms)
+    _settle(page)
+    if _wait_visible(page, selector, secs):
+        return True
+    page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+    _settle(page)
+    return _wait_visible(page, selector, secs)
 
 
 def _wait_visible(page, selector: str, secs: float) -> bool:  # pragma: no cover

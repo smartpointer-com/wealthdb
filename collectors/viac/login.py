@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-viac Phase 2: session minter (pure httpx, no browser).
+viac session minter (pure httpx, no browser).
 
 Replays VIAC's auth flow against `app.viac.ch`, prompts for the
 mTAN SMS code on stdin, and persists the resulting cookies +
@@ -271,10 +271,7 @@ def _diagnose_auth_error(resp, *, step: str, hint: str) -> None:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
 
     if args.check:
         return check_session(args.state_path)

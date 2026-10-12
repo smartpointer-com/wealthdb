@@ -37,9 +37,9 @@ case "${1:-help}" in
         done
         start_xvfb
         # Diagnostics are opt-in (fleet convention), not injected here:
-        # Playwright 1.49.0's tracing.start() crashes the base's Firefox,
-        # so a hardcoded --trace killed every login. Pass --trace
-        # --screenshot-dir /debug through the wrapper to capture them.
+        # the base image's Firefox crashes on Playwright's
+        # tracing.start(). Pass --trace --screenshot-dir /debug through
+        # the wrapper to capture them.
         exec python3 /app/login.py "$@"
         ;;
     vnc-login)

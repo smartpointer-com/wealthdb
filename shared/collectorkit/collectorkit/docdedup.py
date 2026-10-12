@@ -1,12 +1,11 @@
 """Shared download-avoidance engine for collector ``download.py``.
 
-Where the shipped :mod:`collectorkit.dedup` reclaims duplicate disk *after*
-the bytes are already on disk (a host-side sweep, run post-load),
-``docdedup`` acts *before* the fetch, inside a live ``download`` walk, and can
-avoid the fetch itself — the bandwidth, the authenticated request against a
-live financial source (the bot-detection surface that matters most), and the
-wall-clock inside a held-open MFA session. It generalises viac's proven
-``find_existing_pdf`` + ``os.link`` pattern into a collector-agnostic helper.
+Where :mod:`collectorkit.dedup` reclaims duplicate disk *after* the bytes are
+already on disk (a host-side sweep, run post-load), ``docdedup`` acts *before*
+the fetch, inside a live ``download`` walk, and can avoid the fetch itself —
+the bandwidth, the authenticated request against a live financial source (the
+bot-detection surface that matters most), and the wall-clock inside a
+held-open MFA session.
 
 Two modes, chosen **per document class** (not per collector):
 
@@ -47,8 +46,7 @@ index and is re-fetched — bronze self-heals. There is **no CLI verb**: unlike
 so its whole surface is this Python API.
 
 Hardlink only — never a clone: ``clonefile`` is unavailable inside the docker
-collector runtimes; ``os.link`` works across the Docker-VM bind mounts
-(proven by viac).
+collector runtimes; ``os.link`` works across the Docker-VM bind mounts.
 The engine only ever *adds* a file (a hardlink) or *declines to add* one; it
 never deletes or rewrites a load input.
 """
@@ -77,18 +75,18 @@ CLASS_MUTABLE = "mutable"       # alias for tax: any doc that can change under i
 MODE_LINK = "link"              # opt-in fetch-avoidance: hardlink a prior copy
 MODE_FETCH_VERIFY = "fetch-verify"  # default: always fetch, dedup if byte-identical
 
-# The default, correctness-safe mapping. Only ``immutable`` is opted into link;
-# an unclassified document (a class not in this map, or ``None``) resolves to
+# The correctness-safe mapping. Only ``immutable`` is opted into link; an
+# unclassified document (a class not in this map, or ``None``) resolves to
 # MODE_FETCH_VERIFY — always fetched, but a byte-identical copy is still
 # deduped, so there is no reason to fetch a document without verifying it.
-DEFAULT_CLASS_MODES: dict[str, str] = {
+CLASS_MODES: dict[str, str] = {
     CLASS_IMMUTABLE: MODE_LINK,
     CLASS_TAX: MODE_FETCH_VERIFY,
     CLASS_MUTABLE: MODE_FETCH_VERIFY,
 }
 
 # ---------------------------------------------------------------------------
-# Per-document outcome codes (mirrors viac's {total, fetched, linked, skipped})
+# Per-document outcome codes
 # ---------------------------------------------------------------------------
 
 LINKED = "linked"              # link-mode: fetch avoided, prior file hardlinked in
@@ -96,10 +94,6 @@ FETCHED = "fetched"            # fresh bytes fetched and kept
 VERIFIED = "verified"          # fetch-verify: byte-identical to prior, prior hardlinked
 CHANGED = "changed"           # fetch-verify: prior existed but bytes differ (re-issue)
 FETCH_FAILED = "fetch-failed"  # fetch() produced no file (error/empty)
-# skip-mode (record "already have it", write no blob, load resolves across runs)
-# is intentionally NOT implemented yet — only link / fetch-verify / fetch ship,
-# all of which keep run dirs self-contained (no loader change). No outcome code
-# is reserved for it until it exists, so nothing here looks live but unreachable.
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +101,7 @@ FETCH_FAILED = "fetch-failed"  # fetch() produced no file (error/empty)
 # ---------------------------------------------------------------------------
 #
 # Every collector that adopts docdedup records the same per-document audit block
-# in its run.json (mirrors viac's original {total, fetched, linked, skipped}).
-# The outcome -> bucket mapping and the zero/increment helpers are identical
+# in its run.json. The outcome -> bucket mapping and the zero/increment helpers are identical
 # across adopters, so they live here rather than being copied per collector.
 
 # Maps a process() outcome to its manifest bucket. A collector extends this with
@@ -180,17 +173,14 @@ def audit_summary(counts: dict) -> str:
     return " ".join(f"{k}={counts[k]}" for k in keys)
 
 
-def mode_for_class(doc_class: str | None,
-                   class_modes: dict[str, str] | None = None) -> str:
+def mode_for_class(doc_class: str | None) -> str:
     """Resolve a document class to its docdedup mode.
 
     ``immutable -> link``; ``tax``/``mutable`` and an unknown / ``None`` class
     all ``-> fetch-verify`` (the safe default — always fetch, dedup a
-    byte-identical copy). ``class_modes`` overrides the defaults per collector
-    but keeps the same fetch-verify fail-safe for unlisted classes.
+    byte-identical copy).
     """
-    modes = DEFAULT_CLASS_MODES if class_modes is None else class_modes
-    return modes.get(doc_class, MODE_FETCH_VERIFY)
+    return CLASS_MODES.get(doc_class, MODE_FETCH_VERIFY)
 
 
 # Completeness classification reuses prune's shared lenient config
@@ -219,17 +209,12 @@ class DocRef:
     the actual on-disk file. ``doc_class`` tags the document's class when the
     prior manifest carries it; it is informational for the index (mode is chosen
     from the *live* document at download time), so a disk-driven extract may
-    leave it ``None``. ``size`` is the document's byte size when a collector can
-    record it pre-fetch; it feeds :func:`link_or_fetch`'s optional
-    ``expected_size`` collision guard for **label-keyed** callers (see there).
-    ``None`` (the default) leaves that guard off — equityzen's keys are already
-    collision-free (unique sha256 of the Relay id), so it provides no size.
+    leave it ``None``.
     """
     key: tuple
     doc_date: date | None
     relpath: str
     doc_class: str | None = None
-    size: int | None = None
 
 
 class SkipSet:
@@ -365,11 +350,10 @@ def _replace_with_hardlink(src: Path, target: Path) -> None:
 
 def link_or_fetch(skipset: SkipSet, key: tuple, *, target_dir: Path, stem: str,
                   fetch: Callable[[], Path | None], force: bool = False,
-                  expected_size: int | None = None,
                   usable: Callable[[Path], bool] | None = None) -> str:
     """link-mode: hardlink a prior identical file into the new run dir; fall
-    through to a real fetch on ANY error (the viac invariant — degrade to a
-    fetch, never to a missing document).
+    through to a real fetch on ANY error (degrade to a fetch, never to a missing
+    document).
 
     ``fetch`` performs the collector's own download and returns the path it
     wrote (or ``None`` on failure). On a hit the linked file is named
@@ -378,16 +362,11 @@ def link_or_fetch(skipset: SkipSet, key: tuple, *, target_dir: Path, stem: str,
     :data:`FETCHED`, :data:`FETCH_FAILED`.
 
     **link-mode correctness rests on collision-free keys** — a hit is trusted to
-    be *the same logical document*, never merely the same label. equityzen's key
-    is a unique ``sha256`` of the Relay id, so it holds by construction. For
-    **label-keyed** adopters (whose human-readable key can repeat across
-    accounts/periods) ``expected_size`` is the belt-and-braces: when set, the
-    prior file's on-disk byte size must equal it before the link is trusted; a
-    mismatch (or an un-stattable prior) is taken as a mis-keyed cross-account
-    collision and falls through to a real fetch rather than silently linking the
-    wrong file. ``None`` (equityzen) leaves the guard off.
+    be *the same logical document*, never merely the same label. A class is
+    opted into link only where its keys are collision-free, such as the
+    provider's own document id or a hash of it.
 
-    ``usable`` is the second guard, and it exists because link-mode is the one
+    ``usable`` is the guard, and it exists because link-mode is the one
     mode that can serve a file NO run ever validated: a fetch that once wrote
     the wrong bytes — an error page, an unfollowed url envelope — is hardlinked
     forward by every later run, and a mode that never re-fetches never notices.
@@ -398,8 +377,7 @@ def link_or_fetch(skipset: SkipSet, key: tuple, *, target_dir: Path, stem: str,
     """
     if not force:
         prior = skipset.take(key)
-        if (prior is not None and _size_ok(prior, expected_size)
-                and _usable(prior, usable)):
+        if prior is not None and _usable(prior, usable):
             target = Path(target_dir) / (stem + prior.suffix)
             try:
                 _hardlink(prior, target)
@@ -432,8 +410,8 @@ def is_pdf(path: Path) -> bool:
 
 def _usable(prior: Path, usable: Callable[[Path], bool] | None) -> bool:
     """True if the caller's usability predicate passes, or none was given. A
-    predicate that raises counts as unusable -> the caller fetches, which is the
-    safe direction and the same one :func:`_size_ok` takes on a stat error."""
+    predicate that raises OSError counts as unusable -> the caller fetches,
+    which is the safe direction."""
     if usable is None:
         return True
     try:
@@ -446,25 +424,8 @@ def _usable(prior: Path, usable: Callable[[Path], bool] | None) -> bool:
     return False
 
 
-def _size_ok(prior: Path, expected_size: int | None) -> bool:
-    """True if the size guard passes: no guard (``expected_size is None``) or the
-    prior file's on-disk size equals ``expected_size``. A stat error counts as a
-    mismatch → the caller fetches (the safe direction)."""
-    if expected_size is None:
-        return True
-    try:
-        if prior.stat().st_size == expected_size:
-            return True
-    except OSError:
-        pass
-    log.debug("size guard: prior %s does not match expected %r bytes; "
-              "treating as a key collision and fetching.", prior, expected_size)
-    return False
-
-
 def fetch_verify_dedup(skipset: SkipSet, key: tuple, *,
                        fetch: Callable[[], Path | None],
-                       digest_of: Callable[[Path], str] | None = None,
                        force: bool = False) -> str:
     """fetch-verify-dedup: ALWAYS fetch, then compare the fresh bytes to the
     prior run's copy for ``key``. On a byte-identical match discard the fetched
@@ -486,9 +447,8 @@ def fetch_verify_dedup(skipset: SkipSet, key: tuple, *,
     prior = skipset.take(key)
     if prior is None:
         return FETCHED
-    digest = digest_of or (lambda p: bronze.sha256_file(p)[0])
     try:
-        if digest(fetched) == digest(prior):
+        if bronze.sha256_file(fetched)[0] == bronze.sha256_file(prior)[0]:
             _replace_with_hardlink(prior, fetched)
             return VERIFIED
         return CHANGED
@@ -500,24 +460,19 @@ def fetch_verify_dedup(skipset: SkipSet, key: tuple, *,
 
 def process(skipset: SkipSet, key: tuple, *, doc_class: str | None,
             target_dir: Path, stem: str, fetch: Callable[[], Path | None],
-            digest_of: Callable[[Path], str] | None = None,
-            force: bool = False, expected_size: int | None = None,
-            class_modes: dict[str, str] | None = None,
+            force: bool = False,
             usable: Callable[[Path], bool] | None = None) -> str:
     """Dispatch one document to the mode its class selects (:func:`mode_for_class`).
 
     ``immutable -> link_or_fetch``; ``tax``/``mutable`` and any unknown class
     ``-> fetch_verify_dedup`` (always fetch, dedup a byte-identical copy).
     ``force`` bypasses the index (always fetch; for fetch-verify, keep the fresh
-    bytes without deduping). ``expected_size`` is passed to link-mode's collision
-    guard, and ``usable`` to its usability guard (both inert for fetch-verify,
-    which re-reads the bytes anyway). Returns the per-document outcome code.
+    bytes without deduping). ``usable`` is passed to link-mode's usability guard
+    (inert for fetch-verify, which re-reads the bytes anyway). Returns the
+    per-document outcome code.
     """
-    mode = mode_for_class(doc_class, class_modes)
-    if mode == MODE_LINK:
+    if mode_for_class(doc_class) == MODE_LINK:
         return link_or_fetch(skipset, key, target_dir=target_dir, stem=stem,
-                             fetch=fetch, force=force,
-                             expected_size=expected_size, usable=usable)
+                             fetch=fetch, force=force, usable=usable)
     # fetch-verify — the default for tax / mutable / unknown classes.
-    return fetch_verify_dedup(skipset, key, fetch=fetch,
-                              digest_of=digest_of, force=force)
+    return fetch_verify_dedup(skipset, key, fetch=fetch, force=force)
