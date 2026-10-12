@@ -4,9 +4,10 @@
 Two modes:
 
   - Default (no flag): FULL re-fetch. Drops every existing
-    coin_prices row from the active provider, then re-fetches the
-    complete held range for every coin. Use after suspected
-    provider data-quality issues (occasional bad values).
+    coin_prices row from the active provider and the Frankfurter FX
+    rows, then re-fetches the complete held range for every coin.
+    Use after suspected provider data-quality issues (occasional bad
+    values).
 
   - --missing: fetch only (held, unpriced) gaps + the previous
     run's latest priced day (always re-fetched because it was an

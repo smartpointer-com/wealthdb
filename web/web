@@ -318,7 +318,7 @@ web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
   report models mirroring the global / portfolios / accounts /
   positions / transactions / returns commands, plus pre-defined
   questions and the Wealth Overview / Allocation / Returns / Spending
-  / Income / Cash Flow / Data Freshness dashboards, each with a
+  / Income / Cash Flow / Gains / Data Freshness dashboards, most with a
   privacy twin that hides absolute values (all in the 'wealthdb
   (pre-defined)' collection; duplicate before customizing).
   Run 'wealthdb web refresh' after each 'wealthdb load' to update.

@@ -456,9 +456,9 @@ def test_mask_normalisation():
 
 
 def test_parse_statement_date():
-    assert download.parse_statement_date("Dec 17, 2025") == date(2025, 12, 17)
-    assert download.parse_statement_date("Jan 21, 2025") == date(2025, 1, 21)
-    assert download.parse_statement_date(" September 3, 2024 ") == date(2024, 9, 3)
+    assert download.parse_statement_date("Jan 15, 2024") == date(2024, 1, 15)
+    assert download.parse_statement_date("Feb 3, 2023") == date(2023, 2, 3)
+    assert download.parse_statement_date(" March 9, 2022 ") == date(2022, 3, 9)
     # unparseable / header / blank rows are skipped, not fatal
     assert download.parse_statement_date("Statement") is None
     assert download.parse_statement_date("") is None

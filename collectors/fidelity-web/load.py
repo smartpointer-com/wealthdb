@@ -3182,7 +3182,7 @@ def validate(conn):
     # Positions staleness: dumps whose mode covers the positions phase
     # keep landing while the retail positions table stops growing —
     # the signature of a silently failing export (format/selector
-    # drift; see DESIGN.md §8.3's dated note). Make it loud.
+    # drift; see DESIGN.md §8.3). Make it loud.
     cur = conn.execute(
         "SELECT MAX(snapshot_at) FROM dump_runs "
         "WHERE mode IN ('all', 'positions')"

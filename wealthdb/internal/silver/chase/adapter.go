@@ -10,7 +10,8 @@
 //   - ACCOUNTS. One per roster account: AccountKind 'cash' for a deposit
 //     account, 'card' for a credit card. DisplayName from the nickname
 //     (falling back to the last-4 mask); TaxWrapper 'taxable_personal',
-//     ManagementStyle 'self_directed'. All overridable via account_overrides.
+//     ManagementStyle 'self_directed'. The tax wrapper and management style
+//     are overridable via account_overrides.
 //
 //   - CASH BALANCES, not positions or instruments — cash is not an instrument,
 //     and a card is a revolving-credit liability that gold carries as negative

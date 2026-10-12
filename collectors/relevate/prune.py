@@ -27,9 +27,8 @@ The second is whole run dirs that are **not complete dumps**:
 * a ``--dry-run`` shell — ``status`` ``"dry-run"``, or (pre-``status``)
   a manifest with ``dry_run: true``.
 
-``load`` would otherwise re-ingest whatever partial artefacts such a
-dir holds; after pruning one, the next ``load --force`` rebuild
-reflects the removal.
+``load`` already skips such a dir; pruning reclaims the space, and the
+next ``load --force`` rebuild reflects the removal.
 
 Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
 at run-dir creation, atomically overwritten with ``"complete"`` /

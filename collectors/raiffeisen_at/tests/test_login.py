@@ -16,7 +16,7 @@ import login  # noqa: E402
 
 
 # ============================================================
-# Argument parsing — the wealthdb-collect / wealthdb-refresh contract
+# Argument parsing — the contract bin/wealthdb-collect relies on
 # ============================================================
 
 def test_parse_args_defaults():

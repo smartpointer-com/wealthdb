@@ -131,7 +131,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--screenshot-dir", default=None, type=Path,
         help=("If set, write a screenshot at each navigation landmark. "
               "Useful for debugging on a headless remote host. NEVER "
-              "commit these — see AGENTS.md §4."),
+              "commit these — see the root AGENTS.md §4."),
     )
     p.add_argument(
         "--trace", action="store_true",

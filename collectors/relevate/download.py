@@ -217,8 +217,8 @@ class Manifest:
     exists from the moment the run dir is created), and ``finish()``
     overwrites it with the terminal ``"complete"`` / ``"dry-run"`` /
     ``"incomplete"`` at the end. ``prune`` keys on that field to tell
-    a finished dump from a crashed walk; ``load`` skips a dump still
-    marked ``"in-progress"`` or ``"dry-run"``. ``ended_at`` / ``dry_run``
+    a finished dump from a crashed walk; ``load`` skips a dump marked
+    ``"in-progress"``, ``"dry-run"`` or ``"incomplete"``. ``ended_at`` / ``dry_run``
     are written alongside it — they are the terminal signal ``prune``
     falls back to for a manifest carrying no ``status``.
     """

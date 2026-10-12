@@ -41,15 +41,17 @@ type StatedLot struct {
 }
 
 // EventKind is what an event does. The order of the constants is the
-// order of events within one second: a transfer moves before the trades
-// of its second, acquisitions come before disposals so a same-second
-// buy and sell never dips below zero, and the snapshot comes last
-// because it shows the second's trades.
+// order of events within one instant:
+//   - flights open and land first;
+//   - what arrives from outside (Acquire) opens before anything leaves,
+//     so a receipt and a transfer out of the same day do not seed;
+//   - transfers move, then corporate actions apply;
+//   - disposals come after every opening, so a same-instant buy and
+//     sell never dips below zero;
+//   - the snapshot (Anchor, Observe) comes last, because it shows the
+//     instant's trades.
 type EventKind uint8
 
-// At one instant the kinds apply in this order: what arrives from
-// outside opens before anything leaves, so a receipt and a transfer out
-// of the same day do not seed.
 const (
 	// Flight marks Key in flight from At until the Land that follows: a
 	// transfer whose receipt is recorded before its departure moves at

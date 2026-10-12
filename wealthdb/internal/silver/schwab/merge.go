@@ -515,7 +515,7 @@ SELECT account_external_id,
 				continue
 			}
 			if len(matches) > 1 {
-				return nil, fmt.Errorf("schwab bridge: web account number for suffix %q matches %d api accounts (ambiguous); add an explicit override", wa.suffix, len(matches))
+				return nil, fmt.Errorf("schwab bridge: web account number for suffix %q matches %d api accounts, so the web account cannot be bridged", wa.suffix, len(matches))
 			}
 			// No exact counterpart — fall through to the suffix
 			// heuristic.
@@ -535,7 +535,7 @@ SELECT account_external_id,
 		case 1:
 			bridge[wa.suffix] = matches[0]
 		default:
-			return nil, fmt.Errorf("schwab bridge: web suffix %q matches %d api accounts (ambiguous); add an explicit override", wa.suffix, len(matches))
+			return nil, fmt.Errorf("schwab bridge: web suffix %q matches %d api accounts, so the web account cannot be bridged", wa.suffix, len(matches))
 		}
 	}
 	return bridge, nil

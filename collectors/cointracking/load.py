@@ -2,8 +2,9 @@
 """cointracking silver loader.
 
 Reads the bronze tree under --bronze-dir (one snapshot dir per
-download run, each containing run.json + cu_<id>/trades.csv.zst +
-cu_<id>/balance.csv.zst — plain .csv in pre-compression dumps; both
+download run, each containing run.json + cu_<id>/trades.csv.zst,
+balance.csv.zst and overview.csv.zst — plain .csv in pre-compression
+dumps; both
 forms resolve, and DuckDB decompresses .csv.zst natively inside
 read_csv_auto) and ingests into the DuckDB silver layer:
 

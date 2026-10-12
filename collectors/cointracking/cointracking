@@ -53,11 +53,12 @@ Subcommands:
   login [args...]     Mint a long-lived session via headless Playwright
                       Firefox. Prompts for the 6-digit TOTP code on
                       stdin and ticks "Don't ask again" so subsequent
-                      runs skip the 2FA push for years. --check
+                      runs skip the 2FA prompt for years. --check
                       probes the existing session without firing 2FA.
   download [args...]  Fetch fresh bronze for every linked portfolio:
-                      13-column trade history CSV + per-wallet balance
-                      CSV via the SPA Export blob. Writes a UTC-
+                      13-column trade history CSV, per-wallet balance
+                      CSV and overview CSV via the SPA Export blobs.
+                      Writes a UTC-
                       timestamped subdir + run.json manifest under the
                       data dir ($HOST_DATA); each CSV export is zstd-
                       compressed in place as it lands (.csv.zst).
@@ -108,8 +109,9 @@ Subcommands:
                       changes a selector. Launches Camoufox in the
                       container's Xvfb display and exposes a VNC port
                       for driving the live browser interactively;
-                      records HAR + trace + click log + saved blobs
-                      under /debug for analysis. --fresh wipes the
+                      records HAR + click log + saved blobs under
+                      /debug for analysis (--trace adds a Playwright
+                      trace). --fresh wipes the
                       profile so the next login forces 2FA.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.

@@ -12,15 +12,16 @@
 //   - a fund investment (is_fund_investment=1): an LP interest in a
 //     venture/PE fund, with a structured capital account
 //     (commitment / called / contributed / distributions / NAV).
-//     Mapped to AssetClassPrivateFund.
+//     Mapped to (AssetClassPrivateEquity, VehicleFund).
 //
 // Gold projection:
 //
 //   - ONE custody ACCOUNT for the whole portfolio (account_external_id
 //     = the Carta individual_id; AccountKind 'custody', TaxWrapper
 //     'taxable_personal', ManagementStyle 'self_directed' — the
-//     fund-vs-equity split rides on each position's asset_class). All
-//     overridable via account_overrides.
+//     fund-vs-equity split rides on each position's asset_class). The
+//     tax wrapper and management style are overridable via
+//     account_overrides.
 //
 //   - One INSTRUMENT per held company (the issuer / the fund), keyed
 //     by the entity id. Carta private securities have no

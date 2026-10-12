@@ -11,7 +11,7 @@ and no browser, so it is unit-tested on its own and driven from a `--demo`
 that replays the dialog against synthetic data.
 
 The wire contract is what the 2026-08-11 explore captures showed
-(DESIGN.md "Observed" §A):
+(DESIGN.md "Source behaviour" §A):
 
   - `challenge-options` returns `challengeMethodsDisplay.showAll` (the
     offered factors), `phoneList` (SMS/voice destinations, each a
@@ -72,7 +72,7 @@ METHOD_CODE = {
     FACTOR_OTP_VOICE: "V",
 }
 
-# Observed Chase SMS one-time code length. Kept as a soft check (warn, do
+# Chase's SMS one-time code length. Kept as a soft check (warn, do
 # not reject) so a policy change in code length can't wedge a real login.
 OTP_CODE_LEN = 8
 

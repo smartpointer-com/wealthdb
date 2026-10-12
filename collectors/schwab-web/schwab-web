@@ -65,8 +65,9 @@ Subcommands:
   vnc-login [args...]   Fallback to a VNC-driven login + scrape
                         when the CLI-MFA selectors drift or a
                         non-code challenge is required. Starts
-                        x11vnc on 127.0.0.1:5900; tunnel + connect
-                        from your local VNC client.
+                        x11vnc on the first free 127.0.0.1 port in
+                        5900-6000 (printed at start); tunnel and
+                        connect a VNC client to it.
   sh|bash               Open an interactive shell in the container.
   help                  Show this message.
 

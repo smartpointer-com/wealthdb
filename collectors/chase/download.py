@@ -37,12 +37,12 @@ shortfall into the status would cost that night's *deposit* ledger its load
 and hand it to `prune`. Nothing gates on the coverage block: it records which
 product fell short, for the run log and for anyone reading run.json.
 
-The selectors and routes are validated live for the deposit path (DESIGN.md
-§E/§C) and taken from the card exploration capture for the card path. The
-browserless helpers (roster reducers, run layout, the export window, filename
-sanitising, the manifest) are unit-tested, and so are the browser-side steps
-whose failure would be silent rather than loud: the export form's account
-guard and the statement pass's failure accounting, against a stub page.
+The selectors and routes follow the deposit and card UIs (DESIGN.md §E/§C).
+The browserless helpers (roster reducers, run layout, the export window,
+filename sanitising, the manifest) are unit-tested, and so are the
+browser-side steps whose failure would be silent rather than loud: the
+export form's account guard and the statement pass's failure accounting,
+against a stub page.
 
 Read-only: this only navigates, filters, and exports. Per AGENTS.md it never
 touches Pay & transfer / Zelle / settings, nor any card *management* surface
@@ -84,7 +84,7 @@ ROUTE_ACCOUNT_DOCUMENTS = (f"{BASE}/web/auth/dashboard#/dashboard/documents/myDo
 # 'UKN', on a non-account type such as 'ATM').
 PRODUCTS = {"DDA": "dda", "CARD": "card"}
 # `product` → the export route's (summaryType, detailType) tuple. Savings
-# accounts route through DDA/CHK like checking (live-validated).
+# accounts route through DDA/CHK like checking.
 PRODUCT_ROUTE = {"dda": ("DDA", "CHK"), "card": ("CARD", "BAC")}
 # `detail.detailType` → product, for the per-account detail responses. BOTH
 # sides are an explicit set: an error or partial body that carries an accountId
@@ -516,7 +516,7 @@ _STMT_MONTHS = {m: i for i, m in enumerate(
 
 
 def parse_statement_date(text: str) -> date | None:
-    """Parse a statement row's date cell ('Dec 17, 2025') to a date. Returns
+    """Parse a statement row's date cell ('Jan 15, 2024') to a date. Returns
     None for anything that doesn't match, so a stray header/blank row is
     skipped rather than crashing the loop."""
     m = re.match(r"\s*([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),\s*(\d{4})", text or "")
@@ -1134,9 +1134,8 @@ def _save_statement_row(page, n: int, dest: Path,
 
 
 # ---- small UI helpers (browser-side) -------------------------------------
-# Live-validated on the deposit path; the account-picker helpers below are
-# taken from the card exploration capture (their selectors and the picker's
-# option shape).
+# The deposit-path helpers drive Chase's account UI; the account-picker
+# helpers below follow the card UI's selectors and option shape.
 
 def _settle(page, ms: int = 1500) -> None:  # pragma: no cover
     """Give the SPA a moment to fire its XHRs after a route change."""
