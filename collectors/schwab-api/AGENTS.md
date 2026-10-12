@@ -7,12 +7,18 @@ applies on top of those shared rules.
 
 - Schwab refresh tokens have a hard 7-day lifetime, renewable only via
   an interactive browser login.
-- `login` now drives that re-auth through a headed Camoufox browser
-  (VNC), reusing the `schwab-web` Schwab login credentials
-  (`SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD` from `schwab-web.env`).
-  `download` / `load` remain host-venv. Never weaken auth (root
-  [AGENTS.md](../../AGENTS.md) §3): no `--password` flag, no bypassing
-  2FA, no persisting the password.
+- `login` drives that re-auth through a headed Camoufox browser in a
+  container (`vnc-login` over VNC). It reuses the `schwab-web` login
+  credentials (`SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD` from
+  `schwab-web.env`); the OAuth app credentials are `SCHWAB_CLIENT_ID` /
+  `SCHWAB_CLIENT_SECRET` in `schwab-api.env`. The other verbs run on the
+  host venv.
+- The factor is a 2FA code read from stdin. `login` and `vnc-login` sign
+  in and fire it, so they are real sessions (root
+  [AGENTS.md](../../AGENTS.md) §2).
+- `login --check` reads only the token file: no browser, no network.
+  `download --dry-run` uses the stored token and signs in to nothing: it
+  refreshes the access token, lists account hashes, and writes nothing.
 
 ## 0. The login browser surface — auth only, never act on the account
 
@@ -46,8 +52,3 @@ Forbidden in this repo — do not call, import, or wrap:
 - Anything related to ACH, wire, or fund transfer (not exposed by the
   API, but still — do not write code that would call such an endpoint
   if it ever appears).
-
-## Authentication & private data
-
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and
-§4 (no private information in source). They apply in full here.

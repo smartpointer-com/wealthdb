@@ -48,7 +48,7 @@ defines every identifier. Recap of the cross-silver join keys:
 | Banking relationship | `banking_relationship_id` (UBS opaque token), plus `account_number_prefix` (e.g. `BBBB AAAAAAAA`) and `description` | `relationship_id` (`SFTPCH01` / `SFTPCH02`, the SFTP server name) | **Manual config required** — there is no shared key. See §3.1. |
 | Portfolio | `portfolio_external_id` (e.g. `RNNN`) + `base_currency` (e.g. `CHF`, from positions.csv "Valued in:" footer) | `portfolio_external_id` (= UBS `PrtflId`) + `PrtflKey.PrtflCcyIsoCd` in payload | Equality on `portfolio_external_id` |
 | Cash account | `account_external_id` = IBAN no-spaces uppercase (e.g. `CHKKBBBBRRRRAAAAAAAAC`); plus parallel `account_acct_id_psn_form` (e.g. `RRRR000000AAAAAAAA0000C`) computed by the web loader | `account_external_id` = IBAN per `psn/migrations/0001` comment; the PSN payload also has UBS `AcctId` in the 21-char form | Equality on `account_external_id` (IBAN) OR equality on `account_acct_id_psn_form` ↔ PSN payload `AcctId`. Either works. |
-| Safekeeping account | Not currently surfaced by the web feed (would need future scraping) | `account_external_id` = UBS safekeeping code (e.g. `BBBB-AAAAAAAA.S1`) | PSN only for now. |
+| Safekeeping account | Not surfaced by the web feed (§3.4) | `account_external_id` = UBS safekeeping code (e.g. `BBBB-AAAAAAAA.S1`) | PSN only. |
 | Instrument | `instrument_isin` (ISO 6166 ISIN-12) on `positions` | `isin` on `instruments` / `holdings` | Equality on ISIN |
 | Transaction | `(transaction_external_id, account_external_id)` compound PK — UBS reuses the Transaction no. for both debit + credit sides of an inter-account transfer | `event_external_id` (derived from the SWIFT message reference), unique per event | **DO NOT JOIN** — the two ID schemes do not overlap in practice. See §3.6 for the date-splice-only merge strategy. |
 
@@ -92,7 +92,7 @@ Portfolios and accounts are **separate entities** in silver:
 key. A portfolio never owns positions / balances directly — they
 hang off cash and safekeeping accounts.
 
-**Three kinds of portfolio rows can appear in web silver:**
+**Two kinds of portfolio rows can appear in web silver:**
 
 1. **Real customer-facing portfolios** that appear on the
    UBS homepage as separate tiles. The web loader pulls one
@@ -174,9 +174,9 @@ layer. The web `positions.portfolio_external_id` does link to
 `isin`), though not strictly 1-to-1 — multiple safekeepings can
 exist under one portfolio.
 
-**Future work:** per-safekeeping attribution from web data would
-need scraping the "Investment positions (custody account)"
-navigation tree, which exposes the depot hierarchy. Not done in v1.
+Per-safekeeping attribution from web data would need the
+"Investment positions (custody account)" navigation tree, which
+exposes the depot hierarchy. The collector does not scrape it.
 
 ### 3.5 Positions (snapshots)
 
@@ -237,8 +237,8 @@ silver-side facts that make a clean date-splice possible:
   same row: nothing fails, nothing is logged, and the survivor looks
   like a complete account. `_assign_export_txn_ids` therefore leaves the
   bare number on exactly one member of the group and gives every other a
-  suffix derived from its own content, the way the statement era has
-  always suffixed the legs of a split movement. Which member that is is
+  suffix derived from its own content, the way the statement era
+  suffixes the legs of a split movement. Which member that is is
   not re-decided per dump: UBS clamps its transactions UI and
   `--lookback` is a window, so a run routinely sees only PART of a
   group, and re-auctioning the number there would overwrite the row that
@@ -332,7 +332,7 @@ than minting one:
   the floor would have caught against the statement era, the content
   check above catches on the movement itself.
 
-The price is that the prefix rule above no longer identifies the rail
+The price is that the prefix rule above does not identify the rail
 on its own: an advice row has no prefix and is not an export row. What
 distinguishes it is its payload, which carries `document` =
 `payment_advice_pdf`; that marker is also what the loader's
@@ -391,7 +391,7 @@ alone by construction.
 A split is only taken when it can be proved, because a wrong one moves
 money between beneficiaries: as many payments must be found as the
 trailer counts, AND they must add up to the movement's printed total.
-A movement that fails either check is stored whole, exactly as before.
+A movement that fails either check is stored whole.
 Each payment keeps only its own narrative lines, and its own
 counter-account and mandate markers are read from those lines rather
 than inherited from whatever else the batch contained; the printed
@@ -418,11 +418,11 @@ The PDF binaries live on disk under
 (`<sha256>.pdf`) — the silver `documents` table only indexes them.
 Content-addressed naming means an unchanged document keeps the same
 filename across runs (UBS otherwise serves it under a fresh per-session
-token each time), so the tree stops accreting a new name per
+token each time), so the tree does not accrete a new name per
 re-download and each document gains a stable cross-run identity
 (`content_sha256`, recorded in `run.json`) for later dedup tooling. The
 loader is filename-agnostic — it catalogs whatever `*.pdf` the manifest
-lists — so older token-named dumps keep loading unchanged.
+lists — so dumps with token-named PDFs load the same way.
 
 A document the archive never listed has no manifest entry and so no
 label; §3.7a covers how one is taken in.
@@ -467,12 +467,18 @@ Four properties make that safe:
   historical tables' own key, which carries `(as_of_date, portfolio,
   account, ISIN)`.
 
-Because the pass runs before the dump loop, a `--force` rebuild picks the
-supplied documents up with no special handling. On a night when every
-dump is already loaded, the archive walk would otherwise sit behind the
-already-loaded skip and never read a newly placed document, so indexing
-one is a second reason — beside a moved parser — for the loader to derive
-the archive without a new dump.
+The pass runs before the dump loop, so a `--force` rebuild picks the
+supplied documents up with no special handling. The archive walk itself
+runs inside the load of each new dump that has a `documents/`
+directory. When no dump loaded in a run walked the archive, the loader
+derives it once more against the newest dump that has one. It does so
+for either of two reasons:
+
+- the document parsers have changed since the rows were written;
+- the run indexed a new supplied document.
+
+Without that pass, a newly placed document would wait for the next dump
+that carries an archive.
 
 ### 3.7b Portfolio securities transactions
 
@@ -504,8 +510,8 @@ the whole shape of the pass:
   checks against what it asked for: a window that was not applied
   comes back as the list's default and would otherwise be stored as
   though it were the answer. A start date *later* than asked for is
-  accepted — that is the archive's floor (observed at 2024-01-01),
-  and what it returns is real.
+  accepted — that is the archive's floor, and what it returns is
+  real.
 
 **Every portfolio is reached through the switcher in the SPA's
 header**, which both lists them and moves between them
@@ -541,7 +547,7 @@ answerable from this feed:
   too under an id this one cannot match.
 
 Both are cross-source questions, so both belong to the adapter (§6),
-and both are answered there now — see the gold adapter's own
+and both are answered there — see the gold adapter's own
 [§11](../../wealthdb/docs/adapters/ubs.md).
 
 **Keying a row.** Every actual trade carries UBS's own `External
@@ -719,6 +725,16 @@ uses. How gold splices the historical and PSN snapshots (which feed
 wins per date) is owned by the wealthdb UBS adapter — see
 [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
+**A cash row collapses on re-derivation.** The table's key ends in
+the ISIN, and a cash line has none. SQLite treats NULLs in a key as
+distinct, so the upsert never fires on a cash row. The historical pass
+re-lists the whole archive on every dump, so the loader deletes the row
+a cash line is about to replace, as the key would if NULLs compared
+equal. Migration 0011 collapses byte-identical copies already stored.
+The cash rows stay even though the gold adapter reads cash from
+`historical_cash_balances`: most carry a quarter-end date that series
+has no row for, so those observations exist nowhere else.
+
 **Known parser limitations.** The parsers in
 [pdf_parsers.py](pdf_parsers.py) are best-effort:
 
@@ -835,9 +851,9 @@ both list it. `settlement_no` names it across statements.
 
 ## 4. Web loader implementation notes
 
-- **Migration runner.** Applies pending migrations in numeric
-  order, commit after each, record version in `schema_meta`.
-  Mirror `ubs-psn/load.py`'s pattern.
+- **Migration runner.** `collectorkit.silver.apply_migrations`
+  applies pending migrations in numeric order and records each
+  version in `schema_meta`.
 - **Bronze scan.** Walk `<bronze-root>` for subdirectories
   matching `YYYYMMDDTHHMMSSZ` and skip those already in
   `dump_runs`.
@@ -851,10 +867,13 @@ both list it. `settlement_no` names it across statements.
      under the synthetic catch-all portfolio.
   3. Parse `transactions/cash_*.csv` (per-account, per-window) →
      upsert `transactions` keyed by `(transaction_external_id,
-     account_external_id)`.
-  4. Catalog `documents/*.pdf` files referenced in `run.json` →
+     account_external_id)`. The `.mt940` files stay in bronze; no
+     loader reads them.
+  4. Parse `portfolio_transactions/*.csv` → `portfolio_transactions`
+     (§3.7b).
+  5. Catalog `documents/*.pdf` files referenced in `run.json` →
      upsert `documents`, computing `content_sha256` per file.
-  5. Walk the `documents` table, route every PDF whose label or
+  6. Walk the `documents` table, route every PDF whose label or
      `doc_type` names a type the parsers read to `pdf_parsers.py`, and
      upsert the parsed positions / cash balances into the
      `historical_*` tables. The Account-Statement movement walker
@@ -862,6 +881,7 @@ both list it. `settlement_no` names it across statements.
      the same walk (§3.6), and the capital-call and contract-note
      parsers write `advices` (§3.9). A Statement of assets also
      writes its transaction list to `statement_trades` (§3.10).
+  7. Parse `cards/` → the `card_*` tables (§5.9).
 
 - **PDF parsing isolation.** `pdfplumber` is bundled in the
   Docker image (`requirements.txt`). The parsers live in
@@ -872,36 +892,28 @@ both list it. `settlement_no` names it across statements.
   is a no-op (PK collisions caught + content-dedup).
 - **Atomicity.** One transaction per dump-run. Roll back on any
   parsing failure; re-run after fixing.
-
-- **Run status + pruning.** `download` writes `run.json` twice: a
-  `{"status": "in-progress"}` marker the moment it creates the run
-  dir, then an atomic overwrite with the terminal manifest carrying
-  `"status": "complete"` once the walk finishes (`--dry-run` writes
-  nothing to bronze at all). This makes a crashed walk —
-  which never reaches `write_run_json` — legible without leaving an
-  empty run dir. `load` is unaffected: `scan_bronze` selects every
-  timestamped subdir regardless of `run.json`, and `_read_run_json`
-  tolerates a missing manifest, so no dump-selection guard is needed.
-  `prune.py` (a thin wrapper over the shared `collectorkit.prune`
-  engine) uses the status field to reclaim disk: it deletes whole run
-  dirs that are non-complete — `in-progress` / `dry-run` / no
-  `run.json` — and keeps every complete dump's load inputs untouched.
-  `debug_subdirs` names `screenshots/`, the one thing a complete dump
-  gives up: the landmark DOM + screenshot captures `download --debug`
-  writes, which `load` never reads. ubs-web's other diagnostics —
-  screenshots, Playwright traces and QR PNGs — go to the external
-  `--screenshot-dir` / `--trace` / `--qr-png` outputs (the `/debug`
-  mount), outside bronze. Because the only deletion path that can touch
-  a load input is a whole non-complete dir, the classification that must
-  be exact is the
-  legacy (statusless) fallback: a pre-change `--dry-run` shell carries
-  a full-looking manifest with `dry_run: true`, so completeness there
-  is `manifest present AND not dry_run`, not the bare manifest-presence
-  fidelity-web uses.
+- **Run status + pruning.** The `run.json` status lifecycle and the
+  `prune` safety envelope are fleet-wide
+  ([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).
+  What is specific to ubs-web:
+  - `--dry-run` writes nothing to bronze, not even a `run.json`.
+  - `--only PASS` finalises its dump as `"status": "partial"` with a
+    `partial_pass` key, so `prune` reclaims it like any non-complete
+    dump.
+  - `load` does not gate on the status. `scan_bronze` takes every
+    timestamped run dir, and `_read_run_json` tolerates a missing
+    manifest.
+  - `debug_subdirs` names `screenshots/`, the landmark captures
+    `download --debug` writes. The other diagnostics go to the
+    `/debug` mount, outside bronze.
+  - A statusless (legacy) manifest is complete only when it is
+    present **and** does not carry `dry_run: true`. A legacy
+    `--dry-run` shell carries a full-looking manifest, so the bare
+    manifest-presence test fidelity-web uses would keep it forever.
 
 ## 5. Cards — observed
 
-Recorded from hand-driven `explore` sessions, 2026-09-06. The card
+Recorded from hand-driven `explore` sessions. The card
 surface is a **REST API the SPA reads**, not a page to scrape: every
 figure below comes from JSON the netbanking front end fetches for
 itself, and the toolbar's CSV/PDF exports are a lossy rendering of it.
@@ -1043,8 +1055,9 @@ own ids, so the invoice and the cash account's debit share none. Where a
 card is billed in one currency and settled from an account in another,
 both legs therefore stay unpaired however well the projection works, and
 the built-in card-payment rule keeps placing `card_spend` over a card
-that *is* collected. The gold work has to answer that case rather than
-assume the matcher will.
+that *is* collected. The matcher alone cannot pair that case. How gold
+books cards is in the adapter doc's
+[§10](../../wealthdb/docs/adapters/ubs.md).
 
 ### 5.7 The per-transaction detail view
 
@@ -1102,7 +1115,7 @@ no PSN twin at all.
 | `card_invoices` | (account, period end) | opening balance, turnover, the settlement date, and whether the figures reconcile |
 | `card_statements` | one PDF | the statement, indexed against its period |
 
-Four decisions of record:
+The decisions of record:
 
 - **The key is a content id, like chase's.** Not `transactionNr` (§5.3),
   and not the API's `_id` either: that is re-minted at every login, so
@@ -1136,17 +1149,6 @@ Four decisions of record:
   goes stale in the direction of claiming more than is there. A period
   counts as covered only when the account's loaded ledger reaches past
   *both* of its edges.
-- **A cash row in `historical_position_snapshots` collapses on
-  re-derivation.** That table's key ends in the ISIN and a cash line has
-  none, so SQLite — which treats NULLs in a key as distinct — never let
-  the upsert fire. Since the historical pass re-lists the whole document
-  archive on every dump, the cash rows grew by one copy per dump without
-  limit, every copy byte-identical (migration 0011 collapsed those already
-  stored). The loader now deletes the row a cash line is about to replace,
-  which is what the key would do if NULLs compared equal. They are kept
-  rather than dropped even though the gold adapter reads cash from
-  `historical_cash_balances`: most carry a quarter-end date that series has
-  no row for, so those observations exist nowhere else.
 - **No free text is inside a card row's identity.** The id hashes the
   card, the transaction and value dates, and the amounts and currencies
   — never the merchant, which UBS re-labels between fetches. Combined
@@ -1170,7 +1172,7 @@ listed here because they are properties of the feeds, not of gold.
 - **Multi-relationship sweep.** The web SPA only exposes the
   currently-selected relationship, so a session captures exactly
   one: covering a second one takes a relationship switch and
-  another run. Could be automated in download.py later.
+  another run.
 - **Cost basis comes in two shapes.** The web statement of assets
   carries a per-unit `cost_price` in the instrument currency, the
   holding's cost value in the portfolio currency (`cost_basis`) and,
@@ -1181,8 +1183,9 @@ listed here because they are properties of the feeds, not of gold.
   average acquisition FX rate (`AEXR`). A holding can come without a
   book cost; its narrative then has no `AVER` either. For a
   private-markets holding the paid-in amounts are in `advices` (§3.9).
-- **FX coverage differs sharply.** PSN carries 980+ FX rates; web
-  carries only the 8 CHF/* pairs in the `positions.csv` footer.
+- **FX coverage differs sharply.** PSN carries a broad FX rate
+  table; web carries only the CHF/* pairs in the `positions.csv`
+  footer.
 - **Documents are not indexed by instrument.** `documents` is indexed
   by type + date + account only. Capital calls and contract notes are
   parsed into `advices` (§3.9), which carry the ISIN. Trade
@@ -1196,8 +1199,8 @@ listed here because they are properties of the feeds, not of gold.
   ingested and cover nothing before it. Between the two sits the
   `portfolio_transactions` export (§3.7b), the only rail that can be
   asked for a past window at all — though not an unbounded one: its
-  archive begins where the surface's own floor does, observed at
-  2024-01-01, so the deep history stays the statements'. Below that
+  archive begins at the surface's own floor, so the deep history
+  stays the statements'. Below that
   floor the Statement of assets' transaction list (§3.10) states each
   trade's quantity and cost; it restates trades the other rails carry,
   so it is a source to match against, never one to add. Both

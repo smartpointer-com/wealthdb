@@ -197,11 +197,14 @@ Underneath, each component also builds directly:
   image's toolchain — no host Go, and `make update` resolves the
   module graph there too, so the Dockerfile's base-image tag is the
   only place the Go version is declared.
-- **Host-venv collectors** (a `requirements.txt`, no Dockerfile):
-  `.venv/bin/python {download,load}.py` (some are load-only — just
-  `load.py`).
-- **Docker collectors** (a Dockerfile + `entrypoint.sh`): the per-tool
-  wrapper (`./<tool> <login|download|load>`) drives `docker run`.
+- **Collectors**: every collector has a wrapper,
+  `collectors/<name>/<name> <login|download|load|prune>`.
+  - A **Docker** collector (a Dockerfile + `entrypoint.sh`): the
+    wrapper drives `docker run`.
+  - A **host-venv** collector (a `requirements.txt`, no Dockerfile):
+    the wrapper runs its scripts under its `.venv`. Some are load-only.
+
+  [collectors/README.md](collectors/README.md) has the full contract.
 
 ## 8. Documentation
 

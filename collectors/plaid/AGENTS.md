@@ -30,18 +30,23 @@ Allowed without asking:
   `PLAID_SANDBOX_SECRET` is set. The Sandbox has test institutions and
   test data only, and its Items are free. A Sandbox download writes into
   a rehearsal data dir, never a deployment's;
-- `login --check`. It asks Plaid two free questions, reaches no
-  institution, and lists the sign-ins left open from local files;
+- `login --check`. It makes free calls only: one `/institutions/get`,
+  then `/item/get` for each Item. It reaches no institution, and lists
+  the sign-ins left open from local files;
 - `download --dry-run`. It reads each Item and its accounts from Plaid's
-  copy, two free reads, and writes no run. No sign-in happens;
+  copy, two free reads per Item, and writes no run. No sign-in happens;
 - `load` against a rehearsal data dir. It reads the runs and writes the
   silver databases there, and talks to no one;
 - `prune` with `--dry-run`. It reads local files only.
 
-Not allowed unless explicitly asked, without `--sandbox`: `link`,
-`download` without `--dry-run`, and `login` without `--check`. A plain `login` opens no
-page, but it can store the Item of a sign-in left open. Hand the command
-to the user instead.
+Not allowed unless explicitly asked, without `--sandbox`:
+
+- `link`;
+- `download` without `--dry-run`;
+- `login` without `--check`. A plain `login` opens no page, but it can
+  store the Item of a sign-in left open.
+
+Hand the command to the user instead.
 
 The data root of a deployment is not a scratch area. Every verb, dry
 runs included, creates the empty data dir. Develop against a rehearsal
@@ -59,7 +64,7 @@ Two answers are beyond update mode:
 - `ITEM_NOT_FOUND`: Plaid no longer has the Item. The only way back is a
   new link under a new name, which uses one more Trial slot, so the
   choice is the user's. Moving the dead token file out of the secrets
-  dir stops runs reporting the Item; that is also the user's step, never
+  dir stops runs reporting the Item. That is also the user's step, never
   an agent's.
 - `INVALID_ACCESS_TOKEN`: Plaid does not accept the stored token with
   these app keys. The keys of the Plaid team that linked the Item, or

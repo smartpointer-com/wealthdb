@@ -5,23 +5,23 @@ source, git/commit conventions) live in the repo-root
 [AGENTS.md](../../AGENTS.md). The equityzen-specific surface below applies
 on top of those shared rules.
 
-This collector is **implemented** — `explore`, `login`, `download`, and
-`load` all work end-to-end (against the live portal / real bronze), and the
-gold adapter is registered with the gold engine; enabling the source in a
-gold run is operator config (a `wealthdb.cfg` `silver_sources` entry). The
-allow/forbid surface below is mapped against real traces, not guesses. EquityZen is a
-read-only target reached by replaying the buyer's browser session and
-reading the SPA's own investor-scoped GraphQL API responses
-(`POST /api/graphql/`); see [DESIGN.md](DESIGN.md). Note `download` captures
-the list by **clicking the SPA's stage tabs** and reading the responses —
-it does not replay the query through the endpoint (that returns a
-server-side SYSTEM_ERROR), and it never sends a write mutation. `download`
-fetches document PDF blobs by default via authenticated `GET` on
-`node.documents[].downloadUrl` (read-only; `--no-documents` skips); `load` parses the
-capital-account statements + K-1s locally (`statements.py` → `pdftotext`).
-Those PDFs carry names / addresses / SSN-EIN fragments and exact figures —
-they live only under `$XDG_DATA_HOME/wealthdb/equityzen/` (bronze) and in the silver DB,
-NEVER the repo, and the full K-1 text is deliberately not stored.
+EquityZen is a read-only target. The collector replays the buyer's
+browser session and reads the responses of the SPA's own buyer-scoped
+GraphQL API (`POST /api/graphql/`); see [DESIGN.md](DESIGN.md). The
+allow and forbid lists below are pinned to mapped endpoints.
+
+- `download` captures the investments list by **clicking the SPA's stage
+  tabs** and reading the responses. It does not replay the query through
+  the endpoint, which returns a server-side `SYSTEM_ERROR`. It never sends
+  a write mutation.
+- `download` fetches document blobs by default with an authenticated
+  `GET` on `node.documents[].downloadUrl` (`--no-documents` skips them).
+  `load` parses the capital-account statements and K-1s locally
+  (`statements.py`, through `pdftotext`).
+- Those PDFs carry names, addresses, SSN or EIN fragments and exact
+  figures. They live only in bronze under
+  `$XDG_DATA_HOME/wealthdb/equityzen/` and in the silver DB, never in the
+  repo. The full K-1 text is deliberately not stored.
 
 ## 1. Read-only EquityZen buyer access — never trigger writes
 
@@ -99,6 +99,10 @@ stays valid across runs until an explicit logout or a server-side expiry.
   (Camoufox or vanilla Firefox), shared by `explore` / `login` /
   `download`. It holds the session cookie. Keep it at 0700; treat the
   whole dir as a credential.
+- `login --check` and `download --dry-run` reuse the session in that
+  profile and never sign in. With a dead session they exit non-zero and
+  send no TOTP prompt. Both are in the set root
+  [AGENTS.md](../../AGENTS.md) §2 allows without asking.
 
 ## 3. login must not weaken authentication
 

@@ -95,24 +95,21 @@ This toolkit automates the netbanking-web channel under Playwright
 so a one-off historic backfill is feasible without manually
 clicking through years of archive listings.
 
-A second-factor approval (UBS Access App push or alternative MFA
-factor) is required on every fresh login. Unattended cron is
-therefore impossible; this toolkit is human-triggered (one
-biometric tap per fresh session) but reuses the persisted session
-cookie across runs until UBS invalidates it.
+Every fresh login needs a UBS Access App scan of a QR challenge.
+Unattended cron is therefore impossible. The toolkit is
+human-triggered: one scan per fresh session. Later runs reuse the
+persisted session cookie until UBS invalidates it.
 
 ## Tools
 
-The architecture follows the `swissquote` template; subcommand
-names and roles are the same:
-
 | Script | Purpose |
 | --- | --- |
-| [`login.py`](login.py) | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge: fill the contract number, advance through the optional "Login starten" interstitial, fetch the QR PNG from the rendered `<img>` data URL, render it both to the terminal (Unicode half-blocks; Access App scans this directly) and as an upscaled PNG (6×; for SFTP-then-scan on truly headless hosts), watch for QR rotations, poll for the post-auth URL transition (`/workbench/?login` → `/app/OQJ/<N>/ebanking/spa.html`), then persist `storageState.json` at `--state-path` (default `/secrets/ubs-web-state.json`, chmod 0600; an older `ubs_web_state.json` is read if the canonical file is absent). `--check` validates an existing state file without a new QR push. |
-| [`download.py`](download.py) | Reuse the persisted session to enumerate **cash** accounts from the homepage, then for each: export the transactions list as CSV and SWIFT MT940 enriched (one or more files per account per format; both bisected on the 1000-trx export cap). Export `positions.csv` per portfolio (enumerated from the homepage; one CSV per `portfolioUid`). Walk the documents archive in adaptive windows (bisected on UBS's 999-row display cap) fetching each PDF via the `/api/v1/digital-banking/files/` endpoint. Then capture the card surface via [`cards.py`](cards.py). Writes a `run.json` manifest. Read-only — see [AGENTS.md](AGENTS.md) §1. |
+| [`login.py`](login.py) | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge. It fills the contract number and renders the QR to the terminal (Unicode half-blocks the Access App scans directly). `--qr-png` also writes an upscaled PNG for a host with no usable terminal. It follows QR rotations, waits for the post-auth SPA URL, then saves the Playwright storage state at `--state-path` (default `/secrets/ubs-web-state.json`, chmod 0600; `ubs_web_state.json` is read when that file is absent). `--check` probes the stored session without a new QR challenge. |
+| [`download.py`](download.py) | Reuse the persisted session and run five passes. **positions**: one `positions.csv` for the consolidated default view, plus one per `portfolioUid` found on the homepage. **transactions**: for each **cash** account on the homepage, the transaction list as CSV and as enriched SWIFT MT940, both bisected on the 1000-transaction export cap. **portfolio-transactions**: each managed portfolio's securities-transaction CSV, reached through the portfolio switcher ([DESIGN.md](DESIGN.md) §3.7b). **documents**: the eDocuments archive in adaptive windows (bisected on the 999-row display cap), each PDF fetched from `/api/v1/digital-banking/files/`. **cards**: the card surface via [`cards.py`](cards.py). `--only PASS` runs one pass and marks the dump `partial`. Writes a `run.json` manifest. Read-only — see [AGENTS.md](AGENTS.md) §1. |
 | [`explore.py`](explore.py) | Discovery harness. Launches headed Chromium on the container's Xvfb display and serves it over VNC, so a session can be driven by hand while everything it produces is recorded: the network (requests, responses and bodies, line-flushed so a crash keeps the log), the clicks, one DOM snapshot plus screenshot per structurally distinct screen, and every file downloaded. Artefacts land under `--debug-dir`, never bronze. The harness itself never navigates and never clicks — it opens the login page and records from there, so the read-only surface in [AGENTS.md](AGENTS.md) §1 binds whoever drives. An existing session is reused and saved back on exit, so a sign-in here is not paid for twice. |
 | [`cards.py`](cards.py) | The credit-card surface, read from the SPA's own REST API rather than scraped (see [DESIGN.md §5](DESIGN.md)): the roster, each card account's paged ledger, its billing periods with their reconciling totals, and each period's statement PDF. Read-only and enforced — an allow-list of read endpoints gates every request, including the paging cursor the ledger hands back, so a link the API advertises is never followed for being advertised. Driven by `download.py`; not a verb of its own. |
-| [`card_parsers.py`](card_parsers.py) | Bronze → silver for the card surface: pure functions from the captured JSON to the rows `load.py` writes, with no database handle, so each is testable against a synthetic payload. Holds the three readings that are easy to get wrong — the row key is minted from row content, because the API's `_id` is re-minted at every login and `transactionNr` was never a key, a `RESERVED` row is unposted activity rather than a transaction, and `merchantName` is the category while `details` is the merchant. |
+| [`card_parsers.py`](card_parsers.py) | Bronze → silver for the card surface: pure functions from the captured JSON to the rows `load.py` writes, with no database handle, so each is testable against a synthetic payload. Holds the three readings that are easy to get wrong — the row key is minted from row content, because the API's `_id` is re-minted at every login and `transactionNr` is not a key, a `RESERVED` row is unposted activity rather than a transaction, and `merchantName` is the category while `details` is the merchant. |
+| [`prune.py`](prune.py) | Reclaim disk from the bronze tree and the `/debug` mount; see [Reclaiming disk](#reclaiming-disk). |
 | [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive — the scraped one plus any bank-delivered PDFs under `supplied-documents/` — and reads it via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image): positions with their cost, and the transaction list, from each "Statement of assets"; cash balances and movements from each "Account Statement"; mortgage balances from maturity notices; payments from credit and debit advices; and capital calls and contract notes ([DESIGN.md](DESIGN.md) §3.6–§3.10). |
 
 ### Why both CSV and MT940?
@@ -132,6 +129,9 @@ They overlap but neither is a strict superset:
 - MT940 truncates the `:86:` narrative and uses a Latin-1-ish
   encoding (mojibake on non-ASCII names).
 
+`load` parses the CSV. The MT940 files stay in bronze as the
+balance record; no loader reads them.
+
 Both are a **cash-account** concern: SWIFT MT940 is not defined for
 card transactions, and the card surface is not fetched as an export at
 all (below).
@@ -141,8 +141,9 @@ all (below).
 The card toolbar offers the same CSV and PDF exports the cash surface
 does, and `download.py` fetches **neither**. The SPA reads its card area
 from a REST API, and that JSON is strictly richer than what the export
-renders from it: it carries a stable per-row
-identity (`_id`), which the CSV has no column for at all, plus the
+renders from it: it carries a per-row `_id`, which the CSV has no
+column for at all (a per-session handle, not a key; DESIGN.md §5.3),
+plus the
 purchase and booking dates, the posted and original amounts with their
 currencies, the row's billing state, and the merchant category. Fetching
 the export too would cost a request per account for a lossy copy of what
@@ -174,7 +175,7 @@ bisecting the request window:
 | Surface | Cap | Behaviour at the cap | Workaround |
 | --- | --- | --- | --- |
 | Documents list (`#/documents/bank-documents`) | 999 rows displayed | Banner "Not all documents are displayed right now" | `_walk_window` bisects `[--lookback..today]` recursively until each leaf window has < 999 docs |
-| MT940 export dialog | 1000 transactions | Info-only dialog "A maximum of 1000 transactions can be exported" with no Export button | `_export_mt940_with_split` reads the rendered trx count for the current period; if > 1000, bisects in half and emits one MT940 file per leaf window. Output filename includes the window: `<kind>_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.mt940` |
+| Transaction export, CSV and MT940 | 1000 transactions | MT940: an info-only dialog "A maximum of 1000 transactions can be exported" with no Export button. CSV: a dialog instead of a file | `_export_with_split` reads the rendered transaction count for the window; above 1000 it bisects and writes one file per leaf window, named `cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.<csv\|mt940>` |
 
 Both bisections cap at `WINDOW_MAX_DEPTH = 20` and won't sub-divide
 below `WINDOW_MIN_DAYS = 1`.
@@ -186,20 +187,26 @@ below `WINDOW_MIN_DAYS = 1`.
 ├── supplied-documents/                                            bank-delivered PDFs; no run, no manifest
 │   └── <anything>.pdf                                             identified from the text it prints
 └── 20260518T220332Z/                                              one run = one UTC-timestamped dir
-    ├── run.json                                                   manifest (status, accounts, windows, file inventory)
+    ├── run.json                                                   manifest (status, window, accounts, file inventory)
+    ├── positions/
+    │   ├── positions.csv                                          the consolidated default view
+    │   └── positions_<sha256-prefix>.csv                          one per portfolio
     ├── transactions/
-    │   ├── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.csv         one per account per window
+    │   ├── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.csv         one or more per cash account
     │   └── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.mt940       one or more per cash account
+    ├── portfolio_transactions/
+    │   └── transactions_<sha256-prefix>.csv                       one per managed portfolio
     ├── documents/
     │   └── <sha256>.pdf                                           content-addressed by the PDF bytes
-    └── cards/
-        ├── accounts.json                                          the card roster, whole
-        ├── transactions_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.json  every ledger page for one card account
-        ├── invoices_<sha256-prefix>.json                          that account's billing periods
-        ├── invoice-details_<sha256-prefix>.json                   each period's reconciling totals
-        ├── statements_<sha256-prefix>.json                        which statement file came from which period
-        └── statements/
-            └── <sha256>.pdf                                       content-addressed by the PDF bytes
+    ├── cards/
+    │   ├── accounts.json                                          the card roster, whole
+    │   ├── transactions_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.json  every ledger page for one card account
+    │   ├── invoices_<sha256-prefix>.json                          that account's billing periods
+    │   ├── invoice-details_<sha256-prefix>.json                   each period's reconciling totals
+    │   ├── statements_<sha256-prefix>.json                        which statement file came from which period
+    │   └── statements/
+    │       └── <sha256>.pdf                                       content-addressed by the PDF bytes
+    └── screenshots/                                               only with `download --debug`; never read by load
 ```
 
 `supplied-documents/` holds the documents UBS produces only on request:
@@ -215,15 +222,15 @@ The `<sha256-prefix>` collapses the opaque UBS account-id token to
 16 hex chars. UBS account-ids all share a ~34-char per-customer
 prefix, so a naive slice would collide silently — hashing avoids it.
 
-`download` writes `run.json` twice: `{"status": "in-progress"}` when
-it creates the run dir, then an atomic overwrite with the terminal
-manifest carrying `"status": "complete"` once the walk finishes. A
-`--dry-run` walk writes nothing to bronze at all. A run dir left with
-`status: "in-progress"` (or none at all) is therefore a crashed walk;
-`prune` reclaims it, along with legacy `"dry-run"` shells (manifests
-carrying `"status": "dry-run"`). Dumps that predate the status field
-are statusless but complete iff their manifest is present and not a
-legacy `--dry-run` shell (`dry_run: false`).
+The `run.json` status lifecycle is the fleet's
+([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).
+Specific to ubs-web:
+
+- `--dry-run` writes nothing to bronze, not even a `run.json`.
+- `--only PASS` finalises the dump as `partial`, not `complete`.
+- `load` does not gate on the status: it loads every run dir.
+
+[DESIGN.md](DESIGN.md) §4 has the detail.
 
 ### Silver schema and gold-merge contract
 
@@ -245,50 +252,39 @@ Silver holds:
   statement-era cash movements land in `transactions` (§3.6);
 - bookkeeping: `dump_runs`, `parser_generations` and `schema_meta`.
 
-Full design notes including the per-entity gold-merge contract,
-identifier conventions, IBAN ↔ PSN AcctId conversion, the
-transaction-splice strategy, and the historical-snapshot
-reconstruction approach in [DESIGN.md](DESIGN.md).
+[DESIGN.md](DESIGN.md) holds the design notes: identifier
+conventions, IBAN ↔ PSN AcctId conversion, the transaction splice and
+the historical-snapshot reconstruction.
 
 ## Container build
 
-Playwright + Chromium + PDF tooling is heavy; running it directly
-on the host pollutes the OS. This toolkit ships as a Docker image
-and runs entirely inside the container.
-
-Base image: `mcr.microsoft.com/playwright/python:v1.62.0-noble`
-(Ubuntu Noble, Chromium browser binary and all OS-level deps
-pre-installed at `/ms-playwright/`). The Playwright Python package
-itself is installed via `requirements.txt`, version-pinned to match
-the base-image tag — bump both in lockstep. The Dockerfile pins to
-a specific tag so reruns are deterministic.
+Playwright, Chromium and the PDF tooling are heavy, so the toolkit
+ships as a Docker image and runs inside the container. The Dockerfile
+builds on the shared `wealthdb/base-playwright` image, which pins
+`mcr.microsoft.com/playwright/python:v1.62.0-noble` (Chromium and its
+OS deps under `/ms-playwright/`). `requirements.txt` pins the
+Playwright Python package to the same version; bump both in lockstep.
 
 ### Build
 
 ```sh
-git clone <this repo>
-cd collectors/ubs-web
-./ubs-web build         # one-time, ~10 min on first build
+make build-ubs-web      # from the repo root; builds the base images first
 ```
 
 ### Run
 
-The repo ships a thin `ubs-web` shell wrapper around
-`docker run`; the standard `~/.secrets → /secrets` and
-`$XDG_DATA_HOME/wealthdb/<source> → /data` bind-mounts and the run lifecycle are
-described in [collectors/README.md](../README.md#conventions-shared-across-collectors).
-Credentials go in `~/.secrets/ubs-web.env` (the bank-level `~/.secrets/ubs.env`
-also works as a fallback); see
-[collectors/README.md](../README.md#conventions-shared-across-collectors)
-for the shared env-file rules.
+The `ubs-web` wrapper drives `docker run`. The `/secrets` and `/data`
+mounts, the directory overrides and the env-file rules are the fleet's
+([collectors/README.md](../README.md#conventions-shared-across-collectors)).
+Credentials go in `~/.secrets/ubs-web.env`, as one line
+`UBS_CONTRACT_NUMBER=<contract-number>`. The bank-level
+`~/.secrets/ubs.env` is read when `ubs-web.env` does not exist.
 
-In addition to the two standard mounts, this tool adds a third,
-tool-specific `/debug` mount for opt-in screenshots / Playwright
-traces / ad-hoc QR PNGs:
+The tool adds a `/debug` mount for opt-in diagnostics:
 
 | Container path | Host path (default) | Purpose |
 | --- | --- | --- |
-| `/debug` | `~/.cache/wealthdb/debug/ubs-web` | opt-in screenshots / Playwright traces / ad-hoc QR PNGs, and the whole `explore` recording |
+| `/debug` | `~/.cache/wealthdb/debug/ubs-web` (`UBS_WEB_DEBUG_DIR`) | opt-in screenshots / Playwright traces / ad-hoc QR PNGs, and the whole `explore` recording |
 
 Pass any debug-flag value as `/debug/...` so debug artefacts stay
 out of the bronze/silver tree.
@@ -298,14 +294,12 @@ out of the bronze/silver tree.
 ./ubs-web login --qr-png /debug/qr.png
 ./ubs-web download --dry-run --screenshot-dir /debug/download
 ./ubs-web download --lookback 1y        # explicit wider window (default = 90 days)
+./ubs-web download --only cards         # one pass; the dump is marked partial
 ./ubs-web load                          # defaults under the /data mount
 ./ubs-web explore                       # VNC-driven capture into /debug
 ./ubs-web prune --dry-run               # print the deletion plan, delete nothing
-./ubs-web prune                         # reclaim non-complete dumps
+./ubs-web prune                         # reclaim non-complete dumps and old debug captures
 ```
-
-Override any of the host paths via env vars:
-`UBS_WEB_SECRETS_DIR`, `UBS_WEB_DATA_DIR`, `UBS_WEB_DEBUG_DIR`.
 
 #### Driving an `explore` session
 
@@ -352,46 +346,45 @@ them by age along with the rest of the debug dir.
 
 #### Reclaiming disk
 
-`prune` removes whole run dirs that are **not** complete dumps: a
-`--dry-run` shell (a manifest and no exports), or a walk that crashed
-before finalising (an `in-progress` marker, or no `run.json` at all).
-From a complete dump it strips one thing: `screenshots/`, the landmark
-DOM + screenshot captures `download --debug` writes, which `load` never
-reads. A complete dump's load inputs (`positions/`, `transactions/`,
-`documents/`, `run.json`) are always kept and silver stays reproducible.
-(ubs-web's other diagnostics — screenshots, Playwright traces and QR
-PNGs — land in the external `--screenshot-dir` / `--trace` / `--qr-png`
-outputs under the `/debug` mount, never in bronze, so prune never sees
-them.) Deleting a non-complete dump surfaces on the next `load --force`
-rebuild. An in-flight guard (`--min-age-hours`, default 1, keyed on
-recent write activity) keeps it from removing a multi-window backfill
-that is still running.
+`prune` follows the fleet's safety envelope
+([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).
+For ubs-web it reclaims:
 
-`download --debug` captures three landmarks into `<run>/screenshots/`:
-`10-home` (the homepage the account and portfolio anchors are scraped
-from — both misses only warn, so this DOM is the only record of why),
-`30-documents` (the documents list the window-bisect walk reads its
-counts out of), and `20-txn-<short>-failed` for any account whose
-transaction export raised. Off by default, and a no-op under `--dry-run`,
-which persists nothing to bronze.
+- whole non-complete run dirs: a crashed walk (`in-progress` or no
+  `run.json`), a `partial` dump from `--only`, or a legacy `dry-run`
+  shell;
+- `screenshots/` inside a complete dump;
+- aged entries of the `/debug` mount, including `explore` recordings.
+
+A non-complete dump that `load` already ingested leaves silver on the
+next `load --force` rebuild.
+
+`download --debug` captures these landmarks into `<run>/screenshots/`:
+
+- `10-home`: the homepage the account and portfolio anchors are scraped
+  from. Both misses only warn, so this DOM is the only record of why.
+- `20-txn-<short>-failed`: the page an account's transaction export
+  raised on.
+- `25-portfolio-txn-failed`: the page the portfolio-transaction pass
+  raised on.
+- `30-documents`: the documents list the window-bisect walk reads its
+  counts from.
+
+They are off by default, and `--dry-run` writes none.
 
 ### Headless remote host
 
-The toolkit is built to run on a headless remote Linux host (e.g.
-an always-on home server or a small VPS). The bronze directory
-is `scp`'d back to a workstation for analysis. Chromium
-runs headless inside the container; the MFA approval happens on
-the phone, not in any UI on the remote host.
+The toolkit runs on a headless remote Linux host, such as an
+always-on home server or a small VPS. Chromium runs headless inside the
+container. The Access App scan happens on the phone, against the QR
+the terminal shows.
 
-**First-run device verification.** UBS does device fingerprinting
-on retail netbanking. The first login from a new IP (i.e. the
-remote host's IP) is likely to trigger an extra device-trust step
-on top of the normal MFA factor. Plan to do the very first
-`login.py` run with `--screenshot-dir` enabled so you can `scp` the
-captured screenshots down and see what UBS is asking for.
-Alternatively, do the device-trust step once via a manual browser
-session on the same outbound IP (e.g. SSH port-forwarding), then
-run scripted afterwards.
+**First-run device verification.** UBS fingerprints devices on retail
+netbanking. The first login from a new IP is likely to add a
+device-trust step on top of the QR challenge. A first `login` with
+`--screenshot-dir` records what UBS asks for. The other route is one
+manual browser session from the same outbound IP (for example over SSH
+port forwarding) before the first scripted login.
 
 ## Relationship to ubs-psn
 
@@ -413,16 +406,15 @@ reconciles them.
 
 ## Session lifecycle
 
-UBS netbanking sessions, like Swissquote's, have two layers:
+A UBS netbanking session has two layers:
 
-- **Session cookie** — set by UBS's auth gateway after the login +
-  MFA flow completes. `login.py` persists it into
-  `storageState.json` (at `--state-path`); `download.py` reuses
-  that file directly. Lifetime is policy-driven; a re-login at
-  least once per working session is the practical norm.
-- **MFA gate** — UBS Access App push (or the configured fallback
-  factor) on every fresh login. Cannot be scripted away.
+- **Session cookie.** UBS's auth gateway sets it once the login and
+  the QR challenge complete. `login` saves it to the state file at
+  `--state-path`, and `download` and `explore` reuse that file. UBS
+  sets its lifetime by policy.
+- **Access App QR challenge.** Every fresh login raises one. It cannot
+  be scripted away.
 
-So the normal rhythm is: run `login.py` once, then `download.py`
-freely during the cookie's lifetime. When
-`download.py` reports the session is dead, re-run `login.py`.
+So `login` runs once, and `download` runs freely while the cookie
+lives. When `download` reports the session is dead, `login` runs
+again.

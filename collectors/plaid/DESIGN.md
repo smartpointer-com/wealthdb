@@ -1,7 +1,7 @@
 # plaid — design notes
 
-How the collector is built, what Plaid's rules force on it, and what was
-measured.
+How the collector is built, what Plaid's rules force on it, and how the
+Sandbox behaves.
 
 ## 1. Shape
 
@@ -18,7 +18,7 @@ measured.
 
 ## 2. What Plaid's rules force
 
-Each rule below was read in Plaid's documentation on 2026-10-01.
+Each rule below comes from Plaid's documentation.
 
 - **A Trial plan allows ten Production Items for its whole life.**
   Removing an Item does not return its slot. Three choices follow:
@@ -60,7 +60,7 @@ Each rule below was read in Plaid's documentation on 2026-10-01.
   the Item. A Trial plan does not charge for it. After an upgrade to a
   paid plan, Plaid bills every subscription added during the Trial each
   month, until the Item is removed.
-- **A refresh is billed per call** (read on 2026-10-03).
+- **A refresh is billed per call.**
   `/investments/refresh` fetches an Item's investments from the
   institution now. Without it, Plaid updates them on its own one or more
   times a day. A paid plan bills each successful call; a refused one
@@ -115,7 +115,7 @@ collector does not know, stops the run that needs it.
 
 ## 4. The `link` and `login` verbs
 
-`link` makes and renews links. `login` never opens a sign-in page: it
+`link` makes and renews links. `login` never opens a sign-in page. It
 settles what a stopped `link` left open, and `login --check` probes.
 The split keeps the fleet's `login → download → load` safe to run
 unattended.
@@ -157,7 +157,8 @@ Rules that keep an Item from being lost:
 
 - **Every public token is claimed.** That holds for a session that later
   ended in an exit, and for a second Item made in the same visit. A second
-  Item is stored under `<name>-2`.
+  Item is stored under the next free name: `<name>-2`, `<name>-3`, and so
+  on.
 - **An item id that is stored already is left alone.** An earlier run
   claimed it.
 - **A token that cannot be written is revoked.** `/item/remove` is
@@ -256,11 +257,11 @@ mid-read is never claimed for rows read before it.
 linked with investments, once per run. Plaid holds the request open
 while it fetches from the institution. At some institutions that takes
 over a minute, so the request may take five minutes before it gives up.
-The request is never sent again:
-a paid plan bills each successful one, and a request that got no answer
-may have been carried out. A 5xx answer says no more of the fetch than
-no answer does. The run then reads `/item/get` every 10 s,
-for up to two minutes, until a stamp in `status.investments` moves. Only
+The request is never sent again. A paid plan bills each successful one,
+and a request that got no answer may have been carried out. A 5xx answer
+says no more of the fetch than no answer does. The run then reads
+`/item/get` every 10 s, for up to two minutes, until a stamp in
+`status.investments` moves. Only
 then does it read the accounts and the products. `run.json` records the
 outcome under `refresh`:
 
@@ -324,7 +325,8 @@ when the run was stopped.
 
 **`--dry-run`** reads the Item and its accounts, both free, says what a
 run would read, and writes nothing. It checks the Item's tree as a run
-would. It refuses `--refresh`, which fetches from the institution.
+would. It refuses `--refresh`, which fetches from the institution, and
+`--debug`, which records into a run.
 
 **`--debug`** records each HTTP exchange in the run, under
 `screenshots/http-trace.jsonl`: URL, status, time and size. The client
@@ -404,12 +406,12 @@ Both ledgers are negated into the fleet sign: positive is money into the
 account. Balances keep Plaid's sign: a card or a loan states what is
 owed, positive. `payload` keeps each object as Plaid sent it.
 
-## 7. Observed
+## 7. Sandbox behaviour
 
-### Sandbox, Hosted Link (2026-10-01)
+### Hosted Link
 
-Measured against `sandbox.plaid.com` with a scripted browser and Plaid's
-test institution.
+The Hosted Link behaves as follows against `sandbox.plaid.com` with
+Plaid's test institution.
 
 - **The page lifetime is honoured.** The token's `expiration` equals its
   creation time plus `url_lifetime_seconds`.
@@ -445,7 +447,7 @@ test institution.
 - **`optional_products` all arrived.** The test institution supports all
   three data products, and the Item carried all three.
 
-### Sandbox, data reads (2026-10-02)
+### Data reads
 
 Read from the `user_good` test Item at First Platypus Bank.
 
@@ -486,7 +488,7 @@ Read from the `user_good` test Item at First Platypus Bank.
   `version: v2`, `original_description`, `counterparties` and
   `merchant_name`. Card spend is positive, a deposit negative.
 
-### Sandbox, refresh (2026-10-03)
+### Refresh
 
 Read from the `user_good` test Item at First Platypus Bank.
 

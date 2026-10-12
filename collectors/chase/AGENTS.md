@@ -5,37 +5,37 @@ source, git/commit conventions) live in the repo-root
 [AGENTS.md](../../AGENTS.md). The chase-specific surface below applies on
 top of those shared rules.
 
-This collector's pipeline is **implemented through gold** — the collector
-verbs `explore`, `login`, `download`, `load`, `prune` carry bronze →
-silver, and the gold adapter in `wealthdb/internal/silver/chase/`
-(registered from `wealthdb/cmd/wealthdb/main.go`) projects silver into
-canonical records. Which paths are validated live is tracked in
-[README.md](README.md) § Status. The allow/forbid surface below
-still errs wide on the forbid side where a surface is unmapped. Tighten
-the allow list to concrete routes / selectors as more traces land; never
-widen it without the user opting in in writing. When extending the browser
-code, keep to the allowed surfaces — mapping a new selector does not widen
-scope.
+The collector verbs `explore`, `login`, `download`, `vnc-login`, `load`
+and `prune` carry bronze → silver. The gold adapter in
+`wealthdb/internal/silver/chase/` projects silver into canonical records.
+Which paths the collector drives is in [README.md](README.md) § Status.
 
-**Scope amendment (2026-09-04, opted into in writing):** credit-card
-**read** surfaces are in scope alongside the deposit accounts; card
-**management / write** surfaces stay forbidden. The card read routes are
-mapped, `download.py` walks them into bronze, `load.py` ingests them into
-silver and the gold adapter projects them as liabilities. See DESIGN.md §4
-for the decision history.
+The allow/forbid surface below still errs wide on the forbid side where a
+surface is unmapped. Tighten the allow list to concrete routes / selectors
+as more traces land; never widen it without the user opting in in writing.
+When extending the browser code, keep to the allowed surfaces. Mapping a
+new selector does not widen scope.
+
+**Card scope (opted into in writing):** credit-card **read** surfaces are
+in scope alongside the deposit accounts. Card **management / write**
+surfaces stay forbidden. See DESIGN.md §4 for the scope decision.
 
 ## 0. Never run a real session unprompted
 
-Root [AGENTS.md](../../AGENTS.md) §2 applies with extra force here:
-`explore` is not a probe — it mints a real chase.com session and fires a
-real 2FA challenge at a real device, and repeated automated logins can
-trip Chase's fraud heuristics into a lock-out. Allowed without asking:
-reading code/config/docs, `make build-chase` / `make test-chase`,
-`./chase explore --help`, unit tests, and `login --check` (probes the
-persisted profile read-only, no new MFA). Not allowed unless explicitly
-asked: anything that mints a new session or fires a challenge — a full
-`login`/`download`, or "just checking the selectors" against the live
-login page.
+Root [AGENTS.md](../../AGENTS.md) §2 applies with extra force here.
+`explore` is not a probe: it mints a real chase.com session and fires a
+real 2FA challenge at a real device. Repeated automated logins can trip
+Chase's fraud heuristics into a lock-out.
+
+- Allowed without asking: reading code/config/docs, `make build-chase` /
+  `make test-chase`, `./chase explore --help`, unit tests, and
+  `login --check` (probes the persisted profile read-only, no new MFA).
+- Not allowed unless explicitly asked: anything that mints a new session or
+  fires a challenge. That covers `download`, `vnc-login`, `explore`, and
+  "just checking the selectors" against the live login page.
+- `download --dry-run` **signs in**. No session survives between runs, so
+  the dry run logs in and answers 2FA before its walk. It is a real
+  session, not a probe.
 
 ## 1. Read-only Chase retail access — never trigger writes
 
@@ -63,7 +63,7 @@ Allowed — only these surfaces may be navigated or clicked:
 - The statements & documents area: listing statements and other
   documents, opening / downloading statement PDFs.
 - Export / download controls that produce copies of already-displayed
-  transaction data (CSV / QFX / OFX expected — verify in traces).
+  transaction data (the export form offers CSV, QFX, QIF and QBO).
 - Logout (optional; not required between runs, but harmless).
 
 Forbidden — do not navigate to, click, or scrape:
@@ -113,7 +113,7 @@ via the flows above).
   it at 0700; treat the whole dir as a credential.
 - Device-trust does not buy a 2FA skip — every sign-in is challenged
   (DESIGN.md §F) — but the profile does hold a device token, and losing
-  it narrows the factors Chase offers to push only (§A). So don't
+  it narrows the factors Chase offers to push only (DESIGN.md §A). So don't
   invalidate it without cause: `--fresh` wipes the profile deliberately
   (to capture the first-login flow); never add a routine fresh-login
   pattern.
@@ -121,19 +121,20 @@ via the flows above).
 
 ## 3. Never weaken authentication
 
-Per root [AGENTS.md](../../AGENTS.md) §3: never bypass, downgrade, or
-"temporarily disable" 2FA; credentials arrive via env only
-(`CHASE_USERNAME` / `CHASE_PASSWORD` from `~/.secrets/chase.env`) —
-never a `--password` flag, never persisted; the OTP is read from stdin
-(or typed by hand in the `vnc-login` fallback), never accepted on argv. Chase's bot defense is Akamai-class (cf.
-[fidelity-web](../fidelity-web/), [schwab-web](../schwab-web/)); the
-answer to a challenge is a better stealth profile in `explore`, never an
-auth bypass.
+Root [AGENTS.md](../../AGENTS.md) §3 applies in full. The chase
+specifics:
 
-## Authentication & private data
+- Credentials arrive via env only: `CHASE_USERNAME` / `CHASE_PASSWORD`
+  from `~/.secrets/chase.env`.
+- The OTP is read from stdin, or typed by hand in the `vnc-login`
+  fallback. It is never accepted on argv.
+- Chase's bot defense is Akamai-class (cf. [fidelity-web](../fidelity-web/),
+  [schwab-web](../schwab-web/)). The answer to a challenge is a better
+  stealth profile in `explore`, never an auth bypass.
 
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and
-§4 (no private information in source). They apply in full here.
+## 4. Private data
+
+Root [AGENTS.md](../../AGENTS.md) §4 applies in full.
 
 Chase PII: account and routing numbers, balances, transaction payees and
 amounts, statement PDFs, names and addresses — **and the account roster
@@ -145,10 +146,12 @@ as the account *kinds* handled ("deposit accounts: checking + savings;
 credit cards read-only"), never what this login was seen to contain —
 including how many cards or deposit accounts it exposes, or that a kind is
 absent. Widening scope to cards does not license roster prose as
-rationale. The explore debug dir
-(`~/.cache/wealthdb/debug/chase/`) carries full response bodies and
-downloaded statements; the harness masks the username and password
-wherever they appear — headers, bodies, URLs and the DOM — but the
-Playwright trace is written unredacted, and everything else in there is
-real account data. Treat the dir as sensitive and never commit anything
-derived from it without stripping identifiers first.
+rationale.
+
+The explore debug dir (`~/.cache/wealthdb/debug/chase/`) carries full
+response bodies and downloaded statements. The harness masks the
+credentials in what it writes, but an opt-in Playwright trace stays
+unredacted ([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)),
+and everything else in there is real account data. Treat the dir as
+sensitive and never commit anything derived from it without stripping
+identifiers first.

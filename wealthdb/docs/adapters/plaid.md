@@ -349,7 +349,7 @@ batch, seen over the dates those transactions book at.
 
 ## 8. Change number and the window
 
-The shared load clock (`silver.LoadClockStatus`): a loaded run is the
+The shared load clock (`silver.LoadClockStatusOver`): a loaded run is the
 trigger, and a full re-emit is the response.
 
 - The change number is `MAX(dump_runs.snapshot_at)`.

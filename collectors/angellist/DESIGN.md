@@ -1,8 +1,8 @@
 # angellist — design notes
 
-How the AngelList LP collector works, end to end. Implemented:
-`login` → `download` → `load` →
-queryable SQLite silver.
+How the AngelList LP collector works, end to end: `login` → `download`
+→ `load` → SQLite silver → gold adapter. [README.md](README.md) has the
+verbs and example commands.
 
 ## Why a separate collector
 
@@ -15,7 +15,7 @@ reconciliation explicit.
 
 ## Access: why BYO-cookie, not API and not a headless login
 
-Two dead ends, recorded so they aren't re-litigated:
+Two constraints shape the design:
 
 1. **No LP API.** `docs.angellist.com` is the fund-administration / GP
    surface (org-gated GraphQL for *managing* investors). There is no
@@ -29,12 +29,12 @@ Two dead ends, recorded so they aren't re-litigated:
    returns `unprocessable_entity` with "Our security check couldn't verify
    your session." It's score-based with no solvable puzzle, so a human in
    a VNC session can't help — the **automation fingerprint** is what's
-   flagged. Hardened Camoufox (block_webrtc, manual typing, profile
-   warmup, no init-script tampering) **still failed**, confirming it's the
-   browser stack, not the IP.
+   flagged. A hardened automation browser (block_webrtc, manual typing,
+   profile warmup, no init-script tampering) is flagged too, so the cause
+   is the browser stack, not the IP.
 
 **The solution — bring-your-own-cookie.** `login` runs a *genuine,
-un-instrumented stock Mozilla Firefox* (Mozilla apt repo, arm64) under
+un-instrumented stock Mozilla Firefox* (from Mozilla's own APT repo) under
 Xvfb + VNC inside the container. A real Firefox clears the invisible
 challenge; login is completed by hand. A stock binary takes no Playwright
 prefs, so `fxprofile.py` seeds the profile's `user.js` first — the shared
@@ -68,10 +68,10 @@ a 32-byte signature that is per-(operation+variables), required (a request
 without it 404s), and **not a plain hash** of the request (no SHA-256
 match) — i.e. an HMAC/obfuscated value computed by venture-web JS.
 
-Per the repo convention (don't reverse-engineer JS-derived state — the
-cointracking lesson), `download` therefore runs a **headless Camoufox with
-the injected cookie, navigates the venture LP routes, and captures the
-GraphQL the SPA fetches and signs itself**. This is robust and read-only.
+The repo convention is to never reverse-engineer JS-derived state. So
+`download` runs a **headless Camoufox with the injected cookie, navigates
+the venture LP routes, and captures the GraphQL the SPA fetches and signs
+itself**. This is robust and read-only.
 URLs are built from `Viewer` (`currentUser.slug` = userSlug,
 `currentUser.investAccounts[i].slugName` = investAccountSlug) — slugs are
 **never hardcoded**.
@@ -102,16 +102,15 @@ spelling loads.
   primary `load` input.
 - `viewer.json` — `currentUser` (identity convenience; not a `load`
   input). Holds PII, so it stays out of the repo.
-- `run.json` — manifest (`status`, ops + counts), written LAST. A
-  `status: "in-progress"` marker is dropped when the run dir is created
-  and atomically overwritten with `status: "complete"` at the end (all
-  GraphQL capture completes in-memory first, so the in-progress window is
-  the captures.jsonl write loop only). That terminal `status` is the
-  signal `prune` keys on; `had_errors` does not gate completeness (a dump
-  with GraphQL errors still finished). Dumps that predate the `status`
-  field carry a statusless-but-present manifest — the walk wrote it only
-  at the end, so its presence still means COMPLETE. `run.json` is also a
-  `load` input (stored into `dump_runs.payload`).
+- `run.json` — manifest (`status`, ops + counts), written last. It
+  follows the
+  [shared `status` lifecycle](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+  All GraphQL capture completes in memory first, so the `in-progress`
+  window covers only the `captures.jsonl` write loop. `had_errors` does
+  not gate completeness: a dump with GraphQL errors still finished. A
+  manifest with no `status` counts as complete, because the walk writes
+  it only at the end. `run.json` is also a `load` input (stored into
+  `dump_runs.payload`).
 
 The tax documents do NOT live in the run dir: `download` (and the manual
 `login` grab) save the K-1 CSV/PDF and financial statements to a
@@ -120,29 +119,26 @@ bronze-ROOT sibling `angellist-documents/`, and the silver DB is
 
 ### Pruning bronze
 
-`prune` (`prune.py`, a thin wrapper over the shared
-`collectorkit.prune` engine) reclaims disk by deleting whole
-**non-complete** run dirs — a `download` that crashed before writing its
-terminal `run.json` (`status: "in-progress"`, or no manifest). It keys on
-the `run.json` `status` above; an in-flight guard (`--min-age-hours`,
-keyed on the newest write in the dir) protects a long download still in
-flight, and a corrupt/unreadable manifest is UNKNOWN and never deleted.
-`debug_subdirs` names `screenshots/`, the one thing prune strips from a
-*complete* dump: the DOM + screenshot `download --debug` takes of the
-bootstrap landing and of each LP route as it settles. Those say what the SPA
-rendered when an expected op never fired — `captures.jsonl` can only record
-the ops that did — and `load` never reads them, so reclaiming them cannot
-change silver. (The `explore` harness's HAR/trace/click-log are separate and
-land under `/debug`, outside bronze.) Every other file in a complete dump
-survives, and the engine only ever iterates timestamped run dirs, leaving the
-`angellist-documents/` sibling and `angellist.db` untouched. It runs host-side
-(a file walk needs no container), so it can reclaim disk while a `download` is
-mid-flight.
+`prune.py` hands the shared `collectorkit.prune` engine its config. The
+engine's safety envelope is in
+[collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+It deletes whole **non-complete** run dirs: a `download` that crashed
+leaves `status: "in-progress"` or no `run.json` at all.
 
-Because `--debug` writes while the browser is still open, it fixes the run
-dir's slug up front and creates the dir before the walk — a run that captures
-nothing (a stale cookie) never reaches the artefact write, and that is exactly
-the run whose screenshots are worth having. Such a dir carries no terminal
+`debug_subdirs` names `screenshots/`, the one thing prune strips from a
+*complete* dump. It holds the DOM and screenshot `download --debug` takes
+of the bootstrap landing and of each LP route as it settles. They show
+what the SPA rendered when an expected op never fired, which
+`captures.jsonl` cannot show. `load` never reads them, so reclaiming them
+cannot change silver. The `explore` harness's HAR, trace and click log
+land under `/debug`, outside bronze. The engine only iterates timestamped
+run dirs, so `angellist-documents/` and `angellist.db` stay untouched.
+
+Because `--debug` writes while the browser is still open, `download`
+fixes the run dir's slug up front and creates the dir before the walk. A
+run that captures nothing (a stale cookie) never reaches the artefact
+write, and it is exactly the run whose screenshots are worth having. Such
+a dir carries no terminal
 `run.json`, so prune reclaims it as non-complete and `load` skips it: the same
 lifecycle as a crash. `--dry-run` and `--check` write no bronze, so `--debug`
 warns and captures nothing there.
@@ -152,8 +148,7 @@ warns and captures nothing there.
 SQLite + JSON1 (the repo default; DuckDB is the cointracking-only
 exception). Money is stored exactly as AngelList returns it — minor units
 (`*_minor`, the GraphQL `fractional`) + ISO `currency`. JSON `payload`
-columns carry the full node. Schema in
-[`migrations/0001_initial.sql`](migrations/0001_initial.sql):
+columns carry the full node. Schema in [`migrations/`](migrations/):
 
 - **`vehicles`** — one row per investable, keyed by the stable
   `investableGuid`; `name`, `avatar_url`, first/last seen, and `kind`
@@ -176,8 +171,8 @@ columns carry the full node. Schema in
   Realized position's stated total is what came out, so it marks 0 and
   closes there). `is_open` flips to 0 at a final K-1 (exit) or at a
   Realized valuation. **Holdings as-of a date** = each position's latest
-  snapshot ≤ date, dropping the is_open=0 ones. This mirrors the equityzen collector — one row per
-  position per capital event.
+  snapshot ≤ date, dropping the is_open=0 ones. This mirrors the
+  equityzen collector: one row per position per capital event.
 - **`portfolio_summary`** — per snapshot: totals (committed/contributed/
   invested/realized/unrealized/value) + `irr`/`tvpi`/`dpi` + counts. (The
   full summary, including insights, also rides in `payload`.)
@@ -186,7 +181,7 @@ columns carry the full node. Schema in
   per date, spanning back to the account's first investment), promoted from
   `summary.timeSeries`. One row per `(invest_account_slug, as_of_date)`,
   upserted latest-snapshot-wins (past months get revised as valuations
-  settle). Longer than our own snapshot history and not reconstructable
+  settle). Longer than the collector's own snapshot history and not reconstructable
   from positions alone.
 - **`commitments`** — per snapshot, the open (unfunded) commitments:
   amount, payment, remaining-to-fund, opportunity/syndicate, deadlines.
@@ -229,7 +224,7 @@ Taxes & Documents page (`AccountDocuments`: `taxDocuments[]` with
 `pdfUrl`/`csvUrl` + completeness fields `documentType` /
 `k1Count`/`totalK1Count` / `updatedAt`; `financialDocuments[]`).
 
-**Fund financial reports → fair-value marks (built).** For proper funds
+**Fund financial reports → fair-value marks.** For proper funds
 AngelList also issues quarterly financial reports (and, at some
 year-ends, a dedicated capital-account statement). Both embed a per-LP
 capital statement whose ending balance is the partner's capital account
@@ -240,9 +235,9 @@ emits a `statement` event with `valuation_basis='fmv'` at each report's
 period end, matched to a `kind='fund'` offering by the longest
 normalised name (company or fund-legal) in the filename; a year-end
 fair-value statement replaces the same-dated tax-basis K-1 mark. SPVs
-get no financial reports, so their K-1/tender-free marks are unchanged.
+get no financial reports, so their marks come from the K-1s alone.
 
-**Parsed (built).** `load.py` parses the K-1 CSVs in
+**Parsing.** `load.py` parses the K-1 CSVs in
 `angellist-documents/` into **`k1_capital_accounts`** — one row per
 `(tax_year, SPV)`: SPV legal name + EIN (the investment entity — the SPV,
 not the company), portfolio company, capital account
@@ -265,15 +260,18 @@ Each holds the K-1 figure as printed, in minor units. A blank cell, or a
 row without the cell, is NULL. The migration fills rows already on disk
 from `payload`, so they need no re-parse.
 
-**Download (built).** The file endpoints (`/k1_packets/<id>/{download,csv}`,
-`/financial_reports/<id>/download`) accept a cookie GET but need a fresher
-session than GraphQL — a stale cookie 404s to the login wall. `download.py`
-auto-fetches them after the GraphQL capture, re-fetching incomplete tax
-years (`estimate_provided`, or `k1Count < totalK1Count`) until `complete`
-(which runs through ~Aug of the following year); `login` saves the same
-way.
+**Download.** The file endpoints (`/k1_packets/<id>/{download,csv}`,
+`/financial_reports/<id>/download`) accept a plain cookie GET. They need
+a fresher session than GraphQL: a stale cookie lands on the login wall,
+which `download` reports without failing the run. After the GraphQL
+capture, `download.py` fetches each file with `urllib` and the session
+cookie. It re-fetches incomplete tax years (`estimate_provided`, or
+`k1Count < totalK1Count`) on every run until they are `complete`, which
+runs through about August of the following year. A file downloaded by
+hand during `login` saves into the same `angellist-documents/`
+directory.
 
-**Fed into the timeline (built).** Each K-1 becomes a `statement` event in
+**Fed into the timeline.** Each K-1 becomes a `statement` event in
 `position_snapshots` (tax-basis ending capital as the mark, dated Dec-31,
 with cumulative contributed / distributions). Pairing is by **fund
 identity**: the SPV legal name is stable, so a fund is matched to a
@@ -289,12 +287,12 @@ it. So a pairing that shifts leaves no stale marks behind, and a fund
 name stays on one offering. The mark basis (`fmv` / `tax_basis` / `cost`) is
 recorded per event, never blended.
 
-## Gold mapping (implemented)
+## Gold mapping
 
 The gold adapter lives in `wealthdb/internal/silver/angellist/`
 (registered in `cmd/wealthdb/main.go`; `silver_kind` whitelisted by gold
-migration 0014). The collector does the valuation + lifecycle work; the adapter is a thin
-forward-fill:
+migration 0014). The collector does the valuation + lifecycle work; the
+adapter is a thin forward-fill:
 
 - **Account.** One canonical `account` for the whole LP book
   (`invest_account_slug`): `account_kind=custody` (LP interests held in
@@ -303,10 +301,11 @@ forward-fill:
   the GP's management inside each vehicle isn't modeled) — same as carta /
   equityzen. Config `account_overrides` win on overlap.
 - **Instruments + positions — one per SPV stake** (the SPV, not the company;
-  keyed by the AngelList position id). `asset_class` from `offerings.kind`:
-  single-company SPVs/RUVs → `spv` (a canonical enum value added for this),
-  multi-company funds → `private_fund`; `isin`/`symbol` NULL. Instrument
-  name = the underlying company.
+  keyed by the AngelList position id). The taxonomy comes from
+  `offerings.kind`. Both kinds are `asset_class=private_equity`. The
+  vehicle is `spv` for a single-company SPV/RUV and `fund` for a
+  multi-company fund. `isin`/`symbol` are NULL. Instrument name = the
+  underlying company.
 - **Positions are forward-filled** from `position_snapshots`: for each event
   date the adapter emits each position's latest snapshot ≤ it, dropping the
   is_open=0 (exited) ones — a complete portfolio per date, which is what
@@ -323,14 +322,15 @@ forward-fill:
   (`silver.ClosureMarkerBatch`) instead of an empty batch. `market_value`
   = the collector's
   `market_value_minor` (current FMV → quarterly fund fair-value statement
-  → annual tax-basis NAV → cost, never blended within a snapshot);
+  → annual tax-basis NAV → cost, never blended within a snapshot).
   `book_value` = the capital contributed as the portal states it, on the
-  latest portal event ≤ the date (gross: cash distributions do not reduce
-  it). A K-1's Line 19(c) property distribution does: from the K-1's
-  period end, which is a snapshot day, the basis it states left in kind
-  comes off the book value, never below zero. A K-1's cumulative contributions are tax-basis capital
-  and can differ from the portal's figure, so they ride in the position
-  payload as `tax_basis_contributed` instead; `quantity=NULL`;
+  latest portal event ≤ the date. It is gross: cash distributions do not
+  reduce it. A K-1's Line 19(c) property distribution does. From the
+  K-1's period end, which is a snapshot day, the basis it states left in
+  kind comes off the book value, never below zero. A K-1's cumulative
+  contributions are tax-basis capital and can differ from the portal's
+  figure, so they ride in the position payload as
+  `tax_basis_contributed` instead. `quantity=NULL`;
   `acquisition_date=investment_date`.
 - **Transactions = the funding ledger** (`funding_transactions`). Each cash
   movement maps to a canonical kind by its source type:
@@ -340,9 +340,8 @@ forward-fill:
   stays clean), disbursement→`sell` on an SPV (its one stake is sold, and
   the lot engine realizes the proceeds against the paid-in basis) and
   →`distribution` on a fund (capital returned; the fund goes on).
-  `contribution` is a canonical
-  TxKind added for this; AngelList's amounts are authoritatively signed and
-  reconcile to the balance, so they're used directly (the source sign wins).
+  AngelList's amounts are authoritatively signed and reconcile to the
+  balance, so they are used directly (the source sign wins).
   Each contribution / distribution / refund carries `instrument_external_id`
   = the SPV / fund it concerns, resolved in the collector (recorded as
   `funding_transactions.position_external_id`): the company named in the
@@ -389,5 +388,6 @@ AngelList changes the venture SPA's GraphQL or routes.
 
 See [AGENTS.md](AGENTS.md). Navigation + passive GraphQL capture only;
 never a mutate control, never the lead/admin surface. SPV/fund names,
-amounts, and the commitments wire details are PII — synthetic placeholders
-only in any tracked file; real data stays under `$XDG_DATA_HOME/wealthdb` / `~/.secrets`.
+amounts, and the commitments wire details are PII. Tracked files use
+synthetic placeholders only. Real data stays under
+`$XDG_DATA_HOME/wealthdb` and `~/.secrets`.

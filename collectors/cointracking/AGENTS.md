@@ -8,10 +8,10 @@ applies on top of those shared rules.
 ## 1. Read-only cointracking.info access — never trigger write actions
 
 Root [AGENTS.md](../../AGENTS.md) §1 mandates read-only access. The
-concrete surfaces the collector reads are enumerated in DESIGN.md
-("Page surfaces and endpoints"); the allow-list pattern below is the
-binding read-only policy regardless of which specific URLs a later
-UI change relocates.
+concrete surfaces the collector reads are listed in
+[DESIGN.md](DESIGN.md#page-surfaces-and-endpoints). The allow-list
+pattern below is the binding read-only policy, whichever URLs a later
+UI change moves them to.
 
 Allowed — only these surfaces may be navigated or clicked:
 
@@ -61,14 +61,23 @@ foreseeable future. **Do not** invalidate it without cause:
 
 - Don't add a routine "fresh login per N runs" pattern — the
   collector should only re-mint when the cookie genuinely expires.
-- Don't log out programmatically at the end of `download` — the
-  cost of an unnecessary fresh login is a real 2FA push to the
-  user's phone.
+- Don't log out programmatically at the end of `download`. An
+  unnecessary fresh login costs a real 2FA challenge that only a
+  human can answer.
 - `/secrets/cointracking-profile/` is the Playwright Firefox
   persistent profile dir. **Single profile dir shared across
   `login`, `download`, and `explore`.** Holds session cookies
   including the multi-year `ctfa<user_id>` device-trust value. Keep
   it at 0700; treat the whole dir as a credential.
+
+Which verbs may run without asking (root [AGENTS.md](../../AGENTS.md)
+§2):
+
+- `login --check` and `download --dry-run` use the stored profile and
+  never sign in. On an expired session they fail. Both are in the
+  run-without-asking set.
+- `login` without `--check` signs in and asks for a TOTP code. A real
+  `download` exports data. Neither runs unless asked.
 
 ## 3. login is headless Playwright Firefox, CLI-MFA
 
@@ -78,10 +87,10 @@ form, then prompts for the 6-digit 2FA code on stdin. The
 browser runs cointracking's JS-side password encryption for
 free; the persistent profile dir captures the session.
 
-Pure HTTP was attempted and abandoned: POST 1's `password_login`
-is a session-encrypted blob (not a hash), and reverse-engineering
-the encryption was deemed too fragile vs. just running a real
-browser. See DESIGN.md.
+Pure HTTP does not work: POST 1's `password_login` is a
+session-encrypted blob (not a hash), and reverse-engineering the
+encryption is too fragile compared with running a real browser. See
+[DESIGN.md](DESIGN.md#login--headless-playwright-firefox-cli-mfa).
 
 This means **login.py must not bypass or downgrade any auth
 control** to make HTTP-only work — if a future cointracking
@@ -91,12 +100,12 @@ shortcuts that skip JS-derived state.
 
 ## Authentication & private data
 
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and
-§4 (no private information in source). They apply in full here.
+Root [AGENTS.md](../../AGENTS.md) §3 (authentication) and §4 (no
+private information in source) apply in full.
 
-cointracking aggregates EVERY user crypto position and transaction
-across multiple sources — so the PII surface in test fixtures /
-example commits is larger than for any single-source collector.
-Synthetic addresses + ticker examples only; never copy a real
-wallet address, exchange account label, or transaction hash into
+cointracking aggregates every crypto position and transaction across
+many exchanges and wallets. So the PII surface in test fixtures and
+examples is larger than for any single-source collector. Use synthetic
+addresses and ticker examples only. Never copy a real wallet address,
+exchange account label, portfolio ID or name, or transaction hash into
 tracked files.

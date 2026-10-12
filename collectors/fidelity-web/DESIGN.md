@@ -7,9 +7,8 @@ against the live `www.fidelity.com` UI. It is also the contract
 between this silver and the wealthdb Fidelity adapter
 ([`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/)).
 
-This document is the planning artefact, not the journal. Decisions
-that get revised should be revised here, in place. See §11 for the
-explicit punch list of unknowns that remain.
+A revised decision is revised here, in place. §11 lists the open
+questions.
 
 Part of the **wealthdb** suite — see [the architecture
 overview](../../DESIGN.md) for the bronze → silver → gold
@@ -20,15 +19,10 @@ conventions. This document only covers what's Fidelity-specific.
 
 ### 1.1 Why a web scraper
 
-Fidelity's OFX Direct Connect endpoint (`ofx.fidelity.com`) is
-**NXDOMAIN as of 2026-05-15**. The historical channel that
-Quicken / GnuCash / hobbyists used to read Fidelity data
-programmatically has been retired; verification was a `dig` against
-the hostname (empty) vs `www.fidelity.com` / `oltx.fidelity.com`
-(both still resolving via Akamai), confirming the OFX hostname
-specifically was removed rather than a transient outage. Customer-
-service FAQ pages for "Quicken / Direct Connect" have been
-replaced by a chat-search that dead-ends on the topic.
+Fidelity's OFX Direct Connect host (`ofx.fidelity.com`) returns
+**NXDOMAIN**, while `www.fidelity.com` and `oltx.fidelity.com` still
+resolve. The channel desktop finance tools read Fidelity data through
+is retired.
 
 The official consumer-facing path for 2026 is **Fidelity Access /
 Akoya** (FDX-JSON over OAuth). It is B2B-only: data-recipient
@@ -53,7 +47,7 @@ into a stable `portfolios.kind`:
 | ---                            | ---               | --- |
 | `Education`                    | `529`             | 529 College Investing Plan participant accounts. Statement PDFs are generated and surface in the document center's Statements sub-page. |
 | `Authorized`                   | `trust_managed`   | Accounts under a trust agreement whose investments a third-party manager runs, with Fidelity as custodian (see §1.3). The web document center may serve no statement PDFs for this group; statements supplied out-of-band are ingested separately (see §4.5). Its tax forms surface in the read-through view. |
-| `Fidelity Charitable® Giving`  | `daf`             | Donor-Advised Fund. Ingested by the DAF walk phase (§12) over the Fidelity Charitable JSON REST API, reached by an SSO hop; the retail phases still auto-exclude it by its 7-digit id length (it has no brokerage-side surfaces). Gold: `account_kind = donor_advised_fund`, `tax_wrapper = charitable`, `management_style = automated` (§12.3). |
+| `Fidelity Charitable® Giving`  | `daf`             | Donor-Advised Fund. Ingested by the DAF walk phase (§12) over the Fidelity Charitable JSON REST API, reached by an SSO hop; the retail phases auto-exclude it by its 7-digit id length (it has no brokerage-side surfaces). Gold: `account_kind = donor_advised_fund`, `tax_wrapper = charitable`, `management_style = automated` (§12.3). |
 | any other label                | `other`           | Fall-through so future Fidelity labels don't need a schema migration. |
 
 ### 1.3 Third-party managers and institutional feeds
@@ -68,11 +62,16 @@ bronze subdirectory holds documents that arrive out-of-band.
 
 - **Real-time / near-real-time pull.** MFA gates every truly-fresh
   login.
+- **MFA automation.** A human enters the code on every truly-fresh
+  login.
 - **Trade execution, money movement, account configuration.** See
   [AGENTS.md](AGENTS.md) §1 — the contract is read-only.
+- **OFX.** Retired (§1.1).
 - **Akoya / FDX / Plaid / SnapTrade.** B2B-only.
 - **Prospectuses / fund supplements / disclosures.** Out of
   document-center scope (AGENTS.md §1).
+- **Third-party investment-manager feeds.** Their own collector
+  (§1.3).
 - **Cross-bank semantic alignment.** `wealthdb` gold's job.
 
 ## 2. Bronze layout
@@ -92,8 +91,7 @@ bronze subdirectory holds documents that arrive out-of-band.
 │   │                                           positions and closed-positions queries, open-lot
 │   │                                           table pages, closed lots
 │   ├── activity/
-│   │   └── activity_<YYYYMMDD>__<YYYYMMDD>.csv.zst one CSV per date-window (Custom-range mode),
-│   │                                           or activity_past_90_days.csv.zst (preset mode);
+│   │   └── activity_<YYYYMMDD>__<YYYYMMDD>.csv.zst one CSV per Custom-range window,
 │   │                                           consolidated across accounts, Account Number
 │   │                                           column inside.
 │   ├── documents/
@@ -176,14 +174,10 @@ Everything in a run dir except `screenshots/` is a `load` input.
 The captures are diagnostic-only and opt-in (`--debug`, implied by
 `--explore`): a full-page DOM dump plus PNG at every navigation
 landmark is far larger than the structured load inputs of the same
-run, so leaving them on for every nightly run makes the debug
-artefacts, not the data, the bulk of the bronze tree. The `prune`
-verb deletes them wholesale, along with non-complete dumps
-(missing/unreadable `run.json`, or `status` ≠ `complete`, e.g.
-`--dry-run` shells and crashed walks) older than an in-flight guard
-window; `--dry-run` prints the plan first. Pruning captures leaves
-silver byte-identical; pruning non-complete dumps surfaces in
-silver on the next `load --force` rebuild.
+run. `prune` deletes them, along with non-complete dumps, under the
+fleet rules in
+[collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+A `--dry-run` creates no run dir at all.
 
 Filename conventions:
 
@@ -202,20 +196,16 @@ Filename conventions:
 - Activity: one CSV per date-window, **each containing all
   in-scope accounts** (consolidated; account-selector state does
   NOT scope the export). Account dimension lives in the CSV's
-  `Account Number` column, same shape as positions. With a
-  `--lookback` window, the request is bisected into
-  `MAX_ACTIVITY_WINDOW_DAYS` chunks — narrower than Fidelity's own
-  per-export cap, and for a correctness reason given in §8.4.2;
-  one CSV per chunk, named
-  `activity_<YYYYMMDD>__<YYYYMMDD>.csv`. With no window, the
-  rolling preset (default `Past 90 days`) produces a single
-  `activity_past_90_days.csv`. Retention upper-bound is set by
-  Fidelity's Custom-tab `min` attribute on the date input
-  (currently ~4 years back from today; backfill calls below that
-  are clamped, logged, and continue).
+  `Account Number` column, same shape as positions. Every run
+  splits its `--lookback` window (default 90 days) into
+  `MAX_ACTIVITY_WINDOW_DAYS` chunks and drives the page's Custom
+  range once per chunk. The chunk is narrower than Fidelity's own
+  per-export cap, for a correctness reason given in §8.4.2. One
+  CSV per chunk, named `activity_<YYYYMMDD>__<YYYYMMDD>.csv`. A
+  window reaching past Fidelity's retention is clamped (§8.4.3).
 - Documents: Fidelity's own filenames preserved. A tax-form PDF
   can carry an account or agreement number in the filename
-  (Fidelity-supplied; we don't redact, but bronze is gitignored).
+  (Fidelity-supplied; not redacted, and bronze is gitignored).
 
 `run.json` records the CLI config, account inventory, and
 per-phase results (success + file paths, or per-failure error
@@ -223,9 +213,9 @@ strings).
 
 ### 2.1 Coverage, status and the exit code — three different questions
 
-A run answers three questions that must not be conflated, because
-conflating two of them is how the activity phase came to fail on
-nightly run after nightly run while every signal read healthy.
+A run answers three questions that must not be conflated. Merge
+any two, and a phase can fail run after run while every signal
+reads healthy.
 
 **`coverage` — did each phase get what it went for?** One entry per
 phase the run *attempted*, always written, each with a `complete`
@@ -244,10 +234,13 @@ phases fared. That is deliberate. `complete` is what keeps a dump
 loadable and out of `prune`'s delete path, and a dump whose activity
 phase failed still holds good positions, balances, documents and DAF
 artefacts. Downgrading the status would hand all of that to prune and
-block the positions load besides — chase records the same lesson at
-its `download.py` head and in `load.py`'s "DO NOT re-add a coverage
-gate here". Phase completeness and *dump* completeness are different
-axes and live in different fields.
+block the positions load besides. Phase completeness and *dump*
+completeness are different axes and live in different fields.
+
+Each phase runs under `_run_phase`. An exception in one phase,
+a navigation timeout for example, becomes a failed result in that
+phase's own shape. The walk goes on to the later phases, writes the
+manifest, and `coverage` shows the gap.
 
 **The exit code — should a human be told?** `download` exits
 `EXIT_PHASE_INCOMPLETE` (4) when any attempted phase has
@@ -260,14 +253,18 @@ apart from "a phase quietly died". The propagation chain carries it
 unchanged: `entrypoint.sh` execs python, the wrapper execs `docker
 run`, `wealthdb-collect` execs the wrapper.
 
-The loader adds two guards of its own on the same reasoning: it skips
-a dump whose `status` says it never finished (the check eleven of the
-fleet's loaders already make), and `validate` warns when
-activity-covering dumps keep landing while the newest transaction
-stops moving — the second line of defence that catches the one case
-an exit code cannot, an export that succeeds but parses to nothing.
-It is a warning and never a gate, because a quiet account
-legitimately produces no transaction for weeks.
+The loader adds guards of its own on the same reasoning. It skips a
+dump whose `status` says it never finished; a dump with no status is
+loaded. After each load, `validate` warns in three cases:
+
+- positions-covering dumps keep landing while the retail positions
+  table stops advancing;
+- activity-covering dumps keep landing while the newest transaction
+  stops moving. This catches the one case an exit code cannot: an
+  export that succeeds but parses to nothing. It is a warning and
+  never a gate, because a quiet account legitimately produces no
+  transaction for weeks;
+- a non-cash transaction has no `instrument_key`.
 
 ## 3. Identifier strategy
 
@@ -331,32 +328,28 @@ in one export and leaves it blank in another, naming the security only
 in the Action text (migration 0014). Silver-internal only; gold
 does not attempt cross-source per-row matching on it.
 
-### 3.4 `owner` dimension
+### 3.4 Trust and personal accounts
 
-Two values, with sub-trust extensibility:
+Silver has no owner column. A trust account and a personal one differ
+by the account selector's portfolio label, captured by
+`enumerate_account_dimensions()` (§3.5), and by the `portfolios.kind`
+silver classifies it into (§4.4). The label is stable across logins:
 
-- `self` — personal accounts (retail, brokerage, 529).
-- `trust` — accounts under a trust agreement.
-
-The owner discriminator is derived at silver-load time from the
-`portfolio` field captured at bronze time by
-`enumerate_account_dimensions()` (see §3.5). Fidelity's
-account-selector groups every account under a portfolio label
-that is stable across logins:
-- `Authorized` → `trust`
-- `Education` → `self`
-- `Fidelity Charitable® Giving` → out-of-scope (DAF, auto-
-  excluded by account-id length before walk reaches it)
+- `Authorized` → `trust_managed`; the gold adapter gives it a trust
+  tax wrapper.
+- `Education` → `529`.
+- `Fidelity Charitable® Giving` → `daf`, ingested by the DAF phase
+  (§12); the retail phases exclude it by account-id length.
 
 ### 3.5 `account_dimensions` capture
 
-At the start of every walk, before any phase runs, we read the
+At the start of every walk, before any phase runs, the walk reads the
 account-selector's `<section aria-label="<portfolio>">` blocks
 to capture three dimensions per account:
 
 - `portfolio` — the section's `aria-label` (e.g. `Authorized`,
-  `Education`); maps directly to the `owner` discriminator at
-  silver-load time. Mirrors UBS PSN's `relationship_id`
+  `Education`); silver classifies it into `portfolios.kind`
+  (§4.4). Mirrors UBS PSN's `relationship_id`
   dimension: a single login, multiple parallel ownership
   contexts.
 - `nickname` — the user-visible link text inside each
@@ -387,8 +380,8 @@ databases always conform to the latest schema.
 | Table | Archetype | PK | Promoted columns |
 | --- | --- | --- | --- |
 | `schema_meta` | meta | `silver_schema_version` | `applied_at` |
-| `dump_runs` | meta | `snapshot_at` | `silver_schema_version`, `run_dir`, `mode`, `activity_since`, `activity_until`, `positions_present`, `activity_present`, `documents_present` |
-| `portfolios` | snapshot | `(snapshot_at, portfolio_external_id)` | `kind` (`529` / `trust_managed` / `other`); rest in `payload` |
+| `dump_runs` | meta | `snapshot_at` | `silver_schema_version`, `run_dir`, `mode`, `activity_since`, `activity_until`, `positions_present`, `activity_present`, `documents_present`. A `*_present` flag says the phase left artefacts in the dump. `positions_present` is 0 for a dump whose positions the completeness gate held back (§12.3). |
+| `portfolios` | snapshot | `(snapshot_at, portfolio_external_id)` | `kind` (`529` / `trust_managed` / `daf` / `other`); rest in `payload` |
 | `accounts` | snapshot | `(snapshot_at, account_external_id)` | `portfolio_external_id`, `nickname`, `management_style`; rest in `payload` |
 | `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`, `currency`, `asset_class`, `is_core_position`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
 | `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's structural columns + a per-file occurrence index; §3.3 — file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
@@ -508,9 +501,7 @@ account UI signals (Fidelity emits none — see §11.6):
 A Fidelity 529 is `automated`, not `self_directed`: the plan offers
 only percentage-wise allocation across a small menu of funds and
 age-based strategies — a model portfolio, not free security
-selection. Migration 0003 originally classified it `self_directed`;
-migration 0006 corrected it in place (the loader writes the corrected
-value on every fresh/`--force` load).
+selection (migration 0006).
 
 ### 4.5 Historical reconstruction — three PDF sources
 
@@ -617,10 +608,7 @@ primary key, and an activity row's description is inside its
 produces, and `INSERT OR REPLACE` has nothing left to replace — the
 old rows simply stay beside the new ones, and silver holds both
 copies of the same holding or the same payment. The scraped feed
-already paid for this: **migration 0005** had to rebuild
-`transactions` because Fidelity's mutable description text sat inside
-the identity, so a security re-label between exports duplicated its
-rows.
+avoids this by keeping every text column out of its id (§3.3).
 
 Each pass therefore drops what it is about to re-derive, at whichever
 grain that family of rows can be named at:
@@ -630,8 +618,8 @@ grain that family of rows can be named at:
   the supplied pass writes, so nothing escapes the purge, including a
   row whose statement has since left the tree. The purge is held until
   the first statement has actually parsed: spending it ahead of the
-  walk would empty the ledger on the run where poppler broke and then
-  re-derive nothing. Unspent it leaves the generation unstamped, so the
+  walk would empty the ledger on a run where PDF extraction broke and
+  then re-derive nothing. Unspent it leaves the generation unstamped, so the
   next load tries the whole thing again.
 - **Holdings rows** — per document, every time the document is
   re-parsed. Three passes share that table and only `source_sha256`
@@ -661,10 +649,8 @@ the signature guard.
 ### 4.6 Tax-form structured data
 
 Fidelity's Consolidated 1099 is available as **PDF only** from
-the Tax forms sub-page. The download anchors carry aria-labels
-ending in ` (pdf)` exclusively; an early DOM snapshot suggested
-CSV / XML variants may exist for some 1099 types, but live
-testing found no such variants surface in practice. Silver
+the Tax forms sub-page. Every download anchor carries an aria-label
+ending in ` (pdf)`; no CSV or XML variant is offered. Silver
 stores the PDFs in `documents` keyed by `content_sha256` with
 `doc_kind='tax_form'`. `tax_year` is set when the file name
 states it (`<YYYY>-<nickname>-<NNNN>-Consolidated-Form-1099.pdf`);
@@ -703,42 +689,29 @@ generation has moved (§4.5.1).
 
 ### 4.7 Balances + Performance pages
 
-Two additional Fidelity surfaces beyond positions / activity /
-documents:
+Two surfaces beyond positions / activity / documents. Neither has a
+structured export, so the walk saves the rendered page and silver
+indexes it in `documents` (`balances_html` / `performance_html`).
 
-- **Balances** (`/portfolio/balances`) — no direct CSV / Excel
-  / PDF export. The actions menu (`balwebex-actions-menu` in
-  some builds, `more-action-menu` in others) offers 'Create
-  Balance Letter', 'Print', and 'Glossary of terms'. 'Create
-  Balance Letter' opens a multi-step wizard (select letter
-  type: 'sample letter balance' or 'sample letter balance in
-  excess' → select account(s) → Generate → PDF), with shapes
-  that aren't a plain snapshot of the on-screen balance table.
-  We persist the rendered `balances.html` instead; per-account
-  totals are in `data-testid$='-totalaccountvalue-label'`
-  elements (and accessible to the silver loader without
-  driving the wizard). The Balance Letter wizard is left as
-  a follow-up if a formal as-of PDF is ever required.
-
-- **Performance** (`/portfolio/performance`) — no structured
-  export of any kind. The page is a Highcharts SVG plus
-  collapsible info tiles (return percentages by period,
-  benchmark deltas). The only download-shaped action is
-  "Print"; there is no kebab/menu CSV option. The full
-  rendered DOM is captured as `performance/performance.html`
-  so silver can extract metrics by parsing the rendered text;
-  most return metrics are also derivable from positions +
-  activity time-series, so the gap is acceptable.
+- **Balances** — per-account totals sit in
+  `data-testid$='-totalaccountvalue-label'` elements. The actions
+  menu offers 'Create Balance Letter', 'Print' and 'Glossary of
+  terms'. The letter is a multi-step wizard (letter type → accounts
+  → Generate → PDF) whose letters are eligibility artefacts, not a
+  snapshot of the balance table, so the walk never opens it.
+- **Performance** — a Highcharts SVG plus collapsible tiles of
+  return percentages and benchmark deltas. The only download-shaped
+  action is "Print". Most return metrics are derivable from
+  positions + activity, so the missing export costs little.
 
 ## 5. Architecture: one-shot model
 
 **Fidelity binds its session to the Firefox-process lifetime.**
-Confirmed empirically: after a successful login that writes the
-profile dir to disk, closing the Camoufox process and reopening
-with the same profile dir lands on a signin redirect — Fidelity
-treats the cookie as dead even though the file persists. This
-matches the [schwab-web session model](../schwab-web/README.md#session-lifecycle)
-exactly.
+After a successful login writes the profile dir, closing Camoufox
+and reopening the same profile dir lands on a signin redirect.
+Fidelity treats the cookie as dead even though the file persists.
+The [schwab-web session model](../schwab-web/README.md#session-lifecycle)
+is the same.
 
 Consequence: **login and scrape share one continuous Camoufox
 process.** The sibling-tool "login mints `storageState.json`,
@@ -764,38 +737,29 @@ pushes.
 
 **Hybrid: Docker `download`, host-venv `load` / `prune` /
 `recompress`.** `download` needs Camoufox + Xvfb, so it runs in the
-image. The file-only verbs are pure bronze walks that never touch a
-browser, and they run host-side on a venv the `.host-venv` marker tells
-the Makefile to build (from `requirements.txt`, with `collectorkit`
-editable-installed). Running host-side saves the docker-spin overhead
-and bypasses the single-writer safety guard, so a `load` can run while a
-`download` container is mid-flight. The host venv exists (rather than
-bare `python3`, as it did before bronze compression) because `load`
-decompresses zstd bronze **in Python** — fidelity-web's silver is
-SQLite, with no engine to stream `.csv.zst` natively the way
-cointracking's DuckDB does — so the host interpreter needs the
-`zstandard` package (and it already needed `pdfplumber` for the
-statement-PDF parsing). The wrapper runs these via `host_python`
-(`shared/wrappers/host-lib.sh`).
+image. The file-only verbs never touch a browser. They run on a host
+venv that the `.host-venv` marker tells the Makefile to build, which
+carries `zstandard` and `pdfplumber` for `load` (§2). Running
+host-side bypasses the single-writer safety guard, so a `load` can
+run while a `download` container is mid-flight. The wrapper runs them
+via `host_python` (`shared/wrappers/host-lib.sh`).
 
 ### 5.1 Session timeout
 
-Empirically observed: **Fidelity's idle timeout is ~15 minutes**.
-Since each run is bounded by login + walk + logout, this is only
-relevant when the walk itself exceeds 15 min idle (e.g. waiting
-for human stdin at the 2FA prompt). The walk functions
-defensively check the post-auth URL prefix after navigation and
-abort the affected phase cleanly if Fidelity has redirected to a
-session-timeout modal.
+**Fidelity's idle timeout is about 15 minutes.** Each run is bounded
+by login + walk + logout, so this matters only when the session sits
+idle that long, such as at a human-paced 2FA prompt. A phase whose
+page never loads fails on its own and the later phases still run
+(§2.1). The documents phase reads a landing outside the portfolio
+and document-center hosts as a session timeout. The DAF hop does the
+same for a bounce to the sign-in page.
 
 ## 6. Anti-bot configuration (Camoufox + behavioural mimicry)
 
 The working config: **Camoufox + `os="macos"` + `humanize=True` +
 `geoip=True`**, headed against Xvfb. This combination gets the
 login flow past Akamai Bot Manager (Fidelity's bot-detection
-vendor). The empirical diagnostic chain is below.
-
-The escalation history:
+vendor). The configurations tried at credential submit:
 
 | Rung | Configuration | Result |
 | --- | --- | --- |
@@ -809,9 +773,10 @@ real Firefox-sourced mousedown/mouseup events that satisfy
 Akamai's behavioural-score gate. Once Akamai's trust cookie is
 in the profile dir, automated clicks on the button work fine.
 
-The `--vnc` subcommand drives this: pre-fills the credentials,
-prints a READY banner, polls for the post-auth URL while the
-login + 2FA are completed by hand over VNC.
+`vnc-login` (the `--vnc` flag) drives this: it pre-fills the
+credentials, prints a READY banner, and polls for the post-auth URL
+while the login + 2FA are completed by hand over VNC. The wait
+defaults to an hour (`--mfa-timeout 3600`).
 
 ## 7. Login + MFA flow
 
@@ -835,15 +800,15 @@ cookies:
      submit.
 7. Wait for the post-auth URL prefix
    `https://digital.fidelity.com/ftgw/digital/portfolio/` to
-   appear (using `live_url()` via `location.href` — see workaround
-   note in §6).
+   appear. `live_url()` reads `location.href`, because Playwright's
+   cached `page.url` can miss a redirect under Camoufox.
 8. Run `walk()` for the requested mode(s).
 9. Best-effort `logout()` (click visible Log Out link).
 10. Camoufox context teardown → process exit.
 
 `--no-trust-this-browser` skips ticking the "Trust this browser"
-checkbox at the 2FA page (useful for repeatedly exercising the
-MFA flow during development).
+checkbox at the 2FA page, so the next run meets the code prompt
+again.
 
 `--check` loads the profile dir and navigates to the post-auth
 landing without re-logging — reports session ALIVE / DEAD,
@@ -856,10 +821,7 @@ VNC. After the post-auth URL lands, the walk runs as normal (or
 
 ## 8. UI surface map
 
-URLs and selectors anchored to the live DOM as of 2026-05-24/25,
-except §8.2 and §8.4, re-anchored 2026-09 after Fidelity renamed the
-signin inputs and rebuilt Activity & Orders on the `fds-*` design
-system.
+The URLs and selectors below mirror the constants in `download.py`.
 
 ### 8.1 URLs
 
@@ -869,8 +831,8 @@ system.
 | Post-auth landing | `https://digital.fidelity.com/ftgw/digital/portfolio/summary` |
 | Positions SPA | `https://digital.fidelity.com/ctgw/digital/positions/poswebex/client/` (we use the wrapper URL at `/ftgw/digital/portfolio/positions` which routes through) |
 | Activity & Orders | `https://digital.fidelity.com/ftgw/digital/portfolio/activity` |
-| Documents hub | `https://digital.fidelity.com/ftgw/digital/portfolio/documents` — now 302s to the Enterprise Document Center at `https://digitalservices.fidelity.com/navigate/ent-documentcenter/statements` (a **different host**). The documents phase accepts that host as a valid landing (`DOCCENTER_PREFIX`); only a redirect to `/prgw/digital/signin` is treated as a session timeout. |
-| GraphQL endpoint | `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql` (not used; flagged as a future-iteration alternative to HTML scraping) |
+| Documents hub | `https://digital.fidelity.com/ftgw/digital/portfolio/documents` — 302s to the Enterprise Document Center at `https://digitalservices.fidelity.com/navigate/ent-documentcenter/statements` (a **different host**). The documents phase accepts that host as a valid landing (`DOCCENTER_PREFIX`); only a redirect to `/prgw/digital/signin` is treated as a session timeout. |
+| GraphQL endpoint | `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql` (not used; §11.2) |
 
 ### 8.2 Login
 
@@ -895,13 +857,11 @@ the two fills.
 That guard is a safety rule, not tidiness. A blank submit is not a
 no-op — Fidelity counts it as a failed sign-in attempt, so a run that
 makes one nightly walks the account towards a lockout while reporting
-only that no post-auth URL appeared within 15s. When the username
-selector drifted, that is exactly what happened: every candidate
-missed, a last-resort "first visible text input" filled without
-verifying, and the run's own diagnosis pointed at anti-bot blocking.
-The last-resort branch still exists and still names itself in the log
-— a run filling through it has a drifted selector and is one render
-away from filling the wrong box.
+only that no post-auth URL appeared within 15s. A drifted username
+selector produces exactly that, and its symptoms read like anti-bot
+blocking. A last-resort branch fills the first visible text input and
+names itself in the log. A run that fills through it has a drifted
+selector and is one render away from filling the wrong box.
 
 ### 8.3 Positions
 
@@ -920,20 +880,17 @@ rows for every visible account. Two CSVs per scrape (one per
 preset view); account dimension lives in the `Account Number`
 column.
 
-**CSV header drift (observed 2026-07-10, diagnosed 2026-09-02).**
-Fidelity re-cased every positions-CSV header from title case to
-sentence case (`Account Number` → `Account number`, `Last Price` →
-`Last price`, …) and renamed the dividend view's `Dist. yield` /
-`Distribution yield as of` to the `rate` spellings. The download side
-was unaffected (files kept landing, `run.json` reported ok) but the
-loader's exact-name lookups matched nothing, silently zeroing the
-positions load for ~8 weeks until the DAF work surfaced it. The
-loader now resolves columns case-insensitively (`_row_ci`) and
-accepts both yield/rate spellings, `validate()` warns loudly whenever
-positions-covering dumps keep landing while the retail positions
-table stops advancing, and a `load --force` rebuild recovers the
-whole gap from bronze. The activity CSV headers were spared this
-round; their lookups are case-insensitive now too.
+**CSV header drift.** Fidelity has shipped the positions-CSV headers
+in title case and in sentence case (`Account Number` /
+`Account number`, `Last Price` / `Last price`, …), and the dividend
+view's yield columns with `yield` or `rate` spellings. The download
+side cannot see such a change: files keep landing and `run.json`
+reports ok. An exact-name lookup would read the re-cased file as
+empty. So the loader resolves every positions and activity column
+case-insensitively (`_row_ci`) and accepts both spellings.
+`validate()` warns when positions-covering dumps keep landing while
+the retail positions table stops advancing (§2.1). A `load --force`
+rebuild recovers such a gap from bronze.
 
 #### 8.3.1 Open and closed lots
 
@@ -1006,11 +963,11 @@ lots do not sum to the figures the page stated for the position.
 
 ### 8.4 Activity & Orders
 
-Fidelity rebuilt this page on the **`fds-*` design system** (Angular
-host, Lit components, AG Grid table) in 2026-07. Every selector below
-carries the current generation first and the ones before it as
-fallbacks, because the rebuild has rolled forward and back before.
-Three properties of the new page are load-bearing and easy to miss:
+The page runs on the **`fds-*` design system** (Angular host, Lit
+components, AG Grid table). Every selector below lists the current
+generation first and older ones as fallbacks, because the page has
+switched between generations before. Three properties of the page are
+load-bearing and easy to miss:
 
 - **ids are generated per render** (`segment-444046273391`,
   `button-968185178406`, `form-7107669447`), so nothing may key on
@@ -1029,11 +986,10 @@ Three properties of the new page are load-bearing and easy to miss:
 | Filter dialog trigger | `button:has-text('Filter')` (also `[aria-label='Filter']`) |
 | Time-period filter pill | `[data-testid='filter-by-time-button']` (expands panel `[id^='time-filter-panel']`; legacy `[data-testid='ap143528-timeperiod-filter']`) |
 | Picker open state | `aria-expanded='true'` on the pill (legacy: the Recent/Custom radios existing at all) |
-| Preset day-count radios (Recent tab) | `helios-radio[pvd-value='<N>']` — what `_select_activity_page_timeperiod` still issues. The rebuilt panel renders them as `input.fds-radio__radio[name='recent-options']`, so the preset path is DEAD against the current page; nothing drives it, because the custom-range path covers every window the collector asks for |
 | Custom tab | `input.fds-segment__radio[type='radio'][value='custom' i]` — matched case-INSENSITIVELY because the generation before spelled the same value `Custom`; then `input#Custom[type='radio']`, then legacy `apex-kit-segment[pvd-value='Custom']` |
 | Custom-tab date inputs | `#input-from-date` / `#input-to-date` (legacy `#customized-timeperiod-from-date` / `-to-date`). HTML5 `<input type="date">`, ISO YYYY-MM-DD. The current generation sets **no `min`/`max`** — the retention floor is enforced by the panel's own validation instead, so the bounds probe finds nothing to clamp to |
 | Apply (Custom tab) | `form:has(#input-from-date) button[type='submit']` — the button is unlabelled and its id is per-render, so it is addressed through the form the date inputs sit in (legacy `button[aria-label='Apply Customized Time Period']`) |
-| Download dropdown trigger | `button[aria-label='Download']`. Disabled while the SPA re-fetches; the busy state is now `fds-disabled` on the wrapping custom element, NOT the native `disabled` attribute — reading only the native one reports a busy button as ready |
+| Download dropdown trigger | `button[aria-label='Download']`. Disabled while the SPA re-fetches; the busy state is `fds-disabled` on the wrapping custom element, NOT the native `disabled` attribute — reading only the native one reports a busy button as ready |
 | CSV item inside popover | `#download-csv-button` — the custom element's own light-DOM id, the one stable handle (legacy `#downloadContent button:has-text('CSV')`) |
 
 #### 8.4.1 The table lags the filter by a whole apply
@@ -1095,8 +1051,8 @@ silver loader fans out per-account from there.
 `_probe_activity_date_bounds` clamps a backfill to the retention the
 page publishes on its date inputs' `min`/`max`. The current
 generation sets NEITHER, so the probe comes back empty as a matter of
-course rather than as a fault, and `ACTIVITY_RETENTION_FLOOR_DAYS` is
-the fallback floor. Without it `--lookback all` asks for thirty years
+course rather than as a fault, and `ACTIVITY_RETENTION_FLOOR_DAYS`
+(five years) is the fallback floor. Without it `--lookback all` asks for thirty years
 and chunks every one of them into 30-day windows, most of them past
 anything Fidelity holds.
 
@@ -1112,9 +1068,9 @@ the page accepted none.
 
 ### 8.5 Documents
 
-Fidelity migrated the document center to the **Enterprise Document
-Center** (`digitalservices.fidelity.com/navigate/ent-documentcenter`),
-a Stencil/PVD component SPA. Statements and Tax forms share one
+The document center is the **Enterprise Document Center**
+(`digitalservices.fidelity.com/navigate/ent-documentcenter`), a
+Stencil/PVD component SPA. Statements and Tax forms share one
 shape; both are driven by `_doccenter_*` helpers in `download.py`.
 
 | Element | Selector |
@@ -1143,9 +1099,10 @@ canonical `page.expect_response`, then base64-decodes the content
 index and deduped on **PDF content hash**, not label: tax forms
 repeat one label (`"Consolidated Form 1099 (pdf)"`) across accounts
 (distinct documents, distinct bytes), while a statement reappearing
-under several year filters is identical bytes. Statement-row labels
-carry a year used for the `min_year` floor; tax-form labels don't and
-are always kept.
+under several year filters is identical bytes. The walk selects
+every year from the `--lookback` start year on (`min_year`).
+Statement-row labels carry a year, and a row before `min_year` is
+dropped; tax-form labels carry none and are always kept.
 
 **Scope filter.** Only the personal Statements + Tax-forms types are
 walked; interested-party / prospectus / proxy categories are out of
@@ -1165,28 +1122,20 @@ walk leaves alone; its history can come from
 
 ### 8.6 Balances + Performance
 
-Two surfaces with no structured export. `download.py` persists
-the rendered HTML; silver scrapes from there.
+What the walk does with these pages is in §4.7.
 
-| Page | URL | Surface notes |
+| Page | URL | Selectors |
 | --- | --- | --- |
-| Balances | `/ftgw/digital/portfolio/balances` | Per-account totals in `[data-testid$='-totalaccountvalue-label']`. Actions menu (`balwebex-actions-menu` in some builds, `more-action-menu` in others) offers a multi-step "Create Balance Letter" wizard (select letter type → select account → Generate → PDF), 'Print' (browser dialog), and 'Glossary of terms' — none are plain snapshots, so we skip the menu entirely. |
-| Performance | `/ftgw/digital/portfolio/performance` | Highcharts SVG + collapsible info tiles. No kebab/menu Download item; the only data path is parsing the rendered DOM (return percentages by period, benchmark deltas). |
+| Balances | `/ftgw/digital/portfolio/balances` | per-account totals `[data-testid$='-totalaccountvalue-label']`; actions menu `balwebex-actions-menu` or `more-action-menu`, depending on the build |
+| Performance | `/ftgw/digital/portfolio/performance` | none; no kebab or menu Download item |
 
-## 9. What we do NOT do
+## 9. Out of scope
 
-- OFX — dead (§1.1).
-- Akoya / FDX / Plaid / SnapTrade — B2B-only.
-- Prospectuses / supplementary documents.
-- Trade / transfer / config writes — see [AGENTS.md](AGENTS.md) §1.
-- MFA automation — human-in-the-loop on every truly-fresh login.
-- Cross-bank semantic alignment — gold's job.
-- Third-party investment-manager data sources — out-of-band; their own future collector when needed.
+See the non-goals in §1.4.
 
 ## 10. Implementation status
 
-Everything above is built; the deferred per-account registration and the
-other open items are in §11.
+Every surface above is built. §11 lists the open questions.
 
 ## 11. Open questions
 
@@ -1202,20 +1151,14 @@ stable hashes; if they turn out to be regenerated, switch to
 
 ### 11.2 GraphQL endpoint
 `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql`
-is reachable from the post-auth session. Schema unknown; could
-provide cleaner / more stable access than HTML scraping for
-positions and activity. Out of scope for v1; flagged for a
-future-iteration alternative.
+is reachable from the post-auth session. Its schema is unknown. It
+could give cleaner, more stable access to positions and activity
+than the CSV exports; the walk does not use it.
 
 ### 11.3 Balance Letter wizard
-The Balances actions menu's 'Create Balance Letter' opens a
-multi-step wizard (select letter type → select account →
-Generate). The letter types (`sample letter balance`,
-`sample letter balance in excess`) are compliance / eligibility
-artefacts, not a plain snapshot of the on-screen balance table,
-so we skip the wizard. Deferred unless a formal as-of PDF is
-later needed — the per-account totals are already accessible
-from the persisted `balances.html`.
+Skipped (§4.7). The per-account totals already come from the saved
+`balances.html`; the wizard matters only if a formal as-of PDF is
+ever needed.
 
 ### 11.4 Third-party-manager institutional feed
 Out-of-band; such a feed would live in its own collector
@@ -1228,9 +1171,8 @@ exposed wrapper label (`Roth IRA`, `Traditional IRA`,
 `Coverdell ESA`, `Health Savings Account`, `Joint WROS`,
 `Individual TOD`, etc.).
 
-**Finding (2026-05):** Fidelity does NOT emit a per-account
-registration label on any surface we currently scrape. Sweeping
-the captured DOM for keyword shapes (`Roth IRA`, `Coverdell`,
+Fidelity emits no per-account registration label on any surface the
+walk scrapes. A sweep of the captured DOM for keyword shapes (`Roth IRA`, `Coverdell`,
 `HSA`, `TOD`, `WROS`, `Joint`, `Individual`, `Trust`, …) across:
 
 * account-selector sidebar (`balances.html`, `performance.html`,
@@ -1242,7 +1184,7 @@ the captured DOM for keyword shapes (`Roth IRA`, `Coverdell`,
 * the consolidated positions CSV (`Account Name` carries only
   the account nickname)
 
-…surfaces no structured registration tag. The keyword hits we DO
+…finds no structured registration tag. The keyword hits it does
 find ("Health Savings Account", "Strategic Disciplines",
 "Fidelity Wealth Services") are all in page-wide disclosure /
 footer text, not per-account tags.
@@ -1256,22 +1198,19 @@ registration is implied by `portfolios.kind`:
 | `trust_managed`  | Trust account, managed                        |
 
 Other account types (retirement, brokerage) would extend this
-table. The most likely place a registration label
-surfaces is the dedicated `/portfolio/accounts/<account-id>`
-detail page, which `download.py` does NOT currently visit. The
-path forward when that signal materialises:
-1. Extend `download.py` to nav each in-scope account-id detail
-   page; capture `account-registration` (or similar testid)
-   into `run.json/account_dimensions[*].registration`.
-2. Migration to add `accounts.account_registration TEXT`.
-3. Loader populates the column from the captured value.
+table. The most likely place a registration label surfaces is the
+`/portfolio/accounts/<account-id>` detail page, which `download.py`
+does not visit. Capturing it would take three steps: visit each
+in-scope detail page and record the label under
+`run.json/account_dimensions[*].registration`, add an
+`accounts.account_registration` column, and have the loader fill it.
 
 Until then, gold treats `portfolios.kind` as the registration
-proxy and the column stays unimplemented.
+proxy, and silver has no registration column.
 
 ### 11.6 Advisory vs discretionary within `trust_managed`
 Migration 0003 promotes `accounts.management_style`, derived
-from `portfolios.kind` (see §4.4; 0006 corrected the 529 value):
+from `portfolios.kind` (see §4.4):
 - `529` → `automated`
 - `trust_managed` → `discretionary`
 - other / unknown kind → NULL
@@ -1299,12 +1238,11 @@ extend `download.py`, schema migration, loader populates.
 
 A Fidelity Charitable Donor-Advised Fund appears in the account
 selector under `Fidelity Charitable® Giving`. It sits behind a
-distinct web UI, so this surface followed the fleet discovery
-playbook (NEW-COLLECTOR-PROMPT.md): a human-driven `explore` session
-(§12.1) mapped it, and the DAF walk phase (§12.2) was built from the
-captures. The retail phases auto-exclude the DAF by account-id length
-(§1.2/§3.1; it has no brokerage-side surfaces); the DAF phase enters
-it via the charitable API.
+distinct web UI. A human-driven `explore` session maps it (§12.1),
+and the DAF walk phase reads it (§12.2). The retail phases
+auto-exclude the DAF by account-id length (§1.2/§3.1; it has no
+brokerage-side surfaces); the DAF phase enters it via the charitable
+API.
 
 `explore.py` is the discovery harness — the site half of it, over the
 shared recorder in collectorkit.explore. It opens the standard signin
@@ -1376,7 +1314,7 @@ the CSVs are corroborating bronze.
 suggests a DAF-side session independent of the retail one
 (browser-lifetime binding, §5, presumed to apply across the hop).
 
-### 12.2 Walk phase (built)
+### 12.2 Walk phase
 
 `scrape_daf` in `download.py` — runs whenever the account enumeration
 carries a Fidelity Charitable relationship (a retail-only login skips
@@ -1406,6 +1344,11 @@ to cover both channels. The full phase:
    full history); silver is cumulative, so nightly windows keep
    recent events fresh while the initial backfill captures history.
 
+An account whose master or pool balances did not come back is
+recorded with `status: error`. The phase's own status is `error` when
+any giving account failed, because that account's holdings were not
+observed (§12.3).
+
 Bronze layout (see §2): `daf/accounts.json` (roster) + one
 `daf/<account_key>/` per giving account, holding `account.json`,
 `pool_balances.json`, `grants.json`, `contributions.json`,
@@ -1422,9 +1365,10 @@ retail phases, whose export surfaces the account enumeration already
 reaches, the DAF sits behind its own SSO hop + API): the dry-run hops,
 bootstraps, reads the roster, and reads the per-account JSON counts +
 document listing — but fetches no CSV export or PDF and writes no
-bronze (root AGENTS.md §2 "export nothing"). So a cheap
+bronze (root AGENTS.md §2 "export nothing"). So a
 `download --dry-run` validates reachability + auth before a full run,
-and its plan log carries the real per-account counts.
+and its plan log carries the real per-account counts. It still signs
+in ([AGENTS.md](AGENTS.md) §0).
 
 **Validation.** A full `--lookback all` DAF walk exercises the SSO
 hop, the JWT bootstrap, the roster read, pagination, and the
@@ -1438,7 +1382,7 @@ giving accounts. The year-union and pagination logic is uniform per
 account. One detail may still differ on a login with several DAFs:
 whether the party scope is shared or per account.
 
-### 12.3 Silver + gold model (implemented)
+### 12.3 Silver + gold model
 
 **Silver** (migration 0007 + `load._load_daf`): the DAF bronze under
 `<dump>/daf/` lands in the shared silver tables so the adapter
@@ -1477,9 +1421,8 @@ statement quarter-end rather than the toolkit's first live run.
 
 - `account_kind` = `donor_advised_fund` (canonical enum + gold
   migration 0036)
-- `tax_wrapper` = `charitable` (renamed from the never-emitted `daf`
-  value in 0036 — the wrapper names the tax treatment, the kind
-  carries the DAF-ness)
+- `tax_wrapper` = `charitable` (gold migration 0036; the wrapper
+  names the tax treatment, the kind carries the DAF-ness)
 - `management_style` = `automated`, from the silver column (Fidelity
   DAF pools are model portfolios — allocation across a fixed pool
   menu, not free selection)
@@ -1506,22 +1449,28 @@ it omits. The invariant is enforced at both ends:
   slice, and a DAF-only mode does not exist. When the account
   selector enumerated a DAF but the charitable walk comes back
   empty, the walk records `daf_results.status='error'` rather than
-  `no-daf`, so the failure is legible downstream.
+  `no-daf`, so the failure is legible downstream. A giving account
+  whose master or pools were not fetched is an error too (§12.2).
 - **Load** (`_positions_completeness_gate`): positions are
-  all-or-nothing per dump. A dump whose observation is partial — a
-  legacy `mode='daf'` dump, a DAF-phase failure alongside landed
-  retail CSVs, or retail rows parsing to zero while the pool landed —
-  contributes NO positions at all, with a loud warning. Stale beats
-  partial: the anchor stays on the last complete dump. Events,
-  documents, and master data still load (keyed rows, not
-  snapshots), and the loader skips the retail master rows of a
-  legacy `mode='daf'` dump (its `account_dimensions` is an
-  enumeration-only capture).
+  all-or-nothing per dump. A dump whose observation is partial
+  contributes NO positions at all, with a loud warning. Partial means
+  one of:
+  - a legacy `mode='daf'` dump;
+  - a DAF phase, or one giving account in its `per_account` map,
+    with `status='error'` while other positions landed;
+  - retail rows parsing to zero while the pool landed.
+
+  Stale beats partial: the anchor stays on the last complete dump.
+  The gate runs before the `dump_runs` row is written, so a held-back
+  dump records `positions_present = 0`. Events, documents, and master
+  data still load (keyed rows, not snapshots), and the loader skips
+  the retail master rows of a legacy `mode='daf'` dump (its
+  `account_dimensions` is an enumeration-only capture).
 
 ### 12.4 Remaining open questions
 
 1. Whether `poolBalances?numberOfDays=N` (N > 1) returns a NAV/value
-   time series. The quarterly statement reconstruction (§12.3) now
+   time series. The quarterly statement reconstruction (§12.3) already
    covers history, so this would only add intra-quarter granularity;
    one read-only probe with a larger N answers it.
 2. PDF byte stability across repeated downloads (dedup key choice —
@@ -1532,4 +1481,4 @@ it omits. The invariant is enforced at both ends:
    (~15 min, §5.1) — matters only if the DAF phase runs late in a
    long dump.
 4. Gold treatment beyond the wrapper: the include/exclude default in
-   the user's config (§12.3).
+   the deployment's config (§12.3).

@@ -44,6 +44,19 @@ Forbidden — do not navigate to, click, or scrape:
   trading limits, MFA factor management).
 - Anything that performs a `POST` other than the login form itself.
 
+## 2. Sessions and MFA
+
+A fresh sign-in sends a **Mobile Level 3** push to the registered phone.
+Credentials come from `SWISSQUOTE_USERNAME` and `SWISSQUOTE_PASSWORD` in
+`~/.secrets/swissquote.env`. The session is a Playwright storage-state
+file, `~/.secrets/swissquote-state.json`.
+
+- `login --check` and `download --dry-run` reuse that state file and
+  never sign in. With a dead session they fail and send no push. Both are
+  in the set root [AGENTS.md](../../AGENTS.md) §2 allows without asking.
+- A plain `login` sends a push, and a real `download` exports data. Run
+  them only when explicitly asked.
+
 ## Authentication & private data
 
 See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and

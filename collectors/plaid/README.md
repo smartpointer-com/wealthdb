@@ -157,7 +157,8 @@ are the three products the collector reads.
 
 4. Restrict the file with `chmod 600 ~/.secrets/plaid.env`.
 
-Keep the single quotes. The file is read as a shell script.
+The file is a shell script. The quoting rules are in
+[collectors/README.md](../README.md#conventions-shared-across-collectors).
 
 The Production secret reads real institutions. The Sandbox secret reads
 only Plaid's test institutions.
@@ -235,8 +236,8 @@ institution on the sign-in page.
 
 ## The sign-in page
 
-`link` prints a URL and waits. The page stays valid for one hour. In
-the Sandbox it shows these screens:
+`link` prints a URL and waits. The page stays valid for one hour, or
+as long as `--mfa-timeout` says. In the Sandbox it shows these screens:
 
 1. Plaid's consent screen.
 2. The list of institutions, with a search box.
@@ -288,7 +289,8 @@ $XDG_DATA_HOME/wealthdb/plaid/
         ├── holdings.json      investment holdings and securities
         ├── liabilities.json   card, mortgage and student-loan terms
         ├── transactions-0001.json              the ledger, page by page
-        └── investment_transactions-0001.json   investment activity, page by page
+        ├── investment_transactions-0001.json   investment activity, page by page
+        └── screenshots/http-trace.jsonl        with --debug only: each HTTP exchange
 ```
 
 Back up the token files. Plaid shows an access token once. A lost token
@@ -305,10 +307,34 @@ A run made before it is done notes what was missing and exits with
 status 1. Its log names the command that reads the same window again,
 such as `./plaid download --item bank --lookback all`.
 
+## Silver
+
+`load` writes one SQLite database per Item. Its tables:
+
+| Table | Holds |
+| --- | --- |
+| `dump_runs` | one row per run loaded; `snapshot_at` is the run's start |
+| `run_products` | what each run read, product by product, with its status and window |
+| `item_states` | the Item as each run saw it: institution, products, consent expiry, Plaid's update times |
+| `accounts` | every account at each run, with its balances |
+| `securities` | one row per Plaid security: ticker, CUSIP, ISIN, type |
+| `holdings` | the holdings of each investment account at each run, with cost basis and tax lots |
+| `investment_transactions` | investment activity: trades, cash, fees, transfers |
+| `transactions` | the bank, card and loan ledger, with Plaid's category |
+| `liabilities` | card, mortgage and student-loan terms at each run |
+
+Money is a decimal string. Both ledgers use the fleet sign: money into
+the account is positive. A balance keeps Plaid's sign, so a card or a
+loan states what is owed as a positive figure. The data tables keep
+Plaid's object in `payload`. The comments in
+[migrations/0001_initial.sql](migrations/0001_initial.sql) describe each
+column. [DESIGN.md §6](DESIGN.md#6-the-load-verb) says how runs load.
+
 ## Gold
 
 Each linked login's silver database is a gold source of its own, of
-kind `plaid`. Add one entry per Item to the gold config:
+kind `plaid`. Add one entry per Item to `silver_sources` in the gold
+config:
 
 ```json
 {"id": "broker", "kind": "plaid", "path": "<data-dir>/broker/broker.db"}

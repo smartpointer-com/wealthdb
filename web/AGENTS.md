@@ -18,14 +18,19 @@ gold DB, never the live file. The snapshot is mounted `:ro`. Never:
 
 The one narrow carve-out: before snapshotting, `web refresh` (and the
 initial snapshot in `web start`) invokes the **engine's** hidden
-`web-materialize` subcommand, which rewrites the `report_returns` table
-in live gold (DESIGN.md §8). That is an engine-owned write — the same
-class as `wealthdb load` and mutually exclusive with it under the
-engine's write mutex (an advisory flock on a `<gold_db>.wealthdb.lock`
-sidecar, with DuckDB's own single-writer file lock behind it), a
-concurrent load making it fail rather than wait so refresh aborts
-*before* the snapshot is touched — not a web write path: the container
-and `provision.py` still only ever see the `:ro` snapshot.
+`web-materialize` subcommand. It rewrites the `report_returns` and
+`report_gains` tables in live gold (DESIGN.md §8). That is an
+engine-owned write, not a web write path:
+
+- it is the same class as `wealthdb load`, and mutually exclusive with
+  it under the engine's write mutex (an advisory flock on a
+  `<gold_db>.wealthdb.lock` sidecar, with DuckDB's own single-writer
+  file lock behind it);
+- a concurrent load makes it fail rather than wait, so refresh aborts
+  *before* the snapshot is touched;
+- the container and `provision.py` still only ever see the `:ro`
+  snapshot.
+
 Keep it that way: materialization happens in the engine, before
 `_snapshot`, never from the container.
 
@@ -71,9 +76,9 @@ trap, see DESIGN.md §3):
 - (b) the JAR is **world-readable** in `/plugins` (`ADD --chmod=0644` —
   root-only is silently skipped, no error);
 - (c) the base image is **glibc**, not Alpine/musl (the JDBC native is
-  glibc and hard-crashes the JVM on musl). We build Metabase from
-  `metabase.jar` on `eclipse-temurin` for (c) — do **not** "simplify"
-  back to `FROM metabase/metabase` (that image is Alpine).
+  glibc and hard-crashes the JVM on musl). The image builds Metabase
+  from `metabase.jar` on `eclipse-temurin` for (c) — do **not**
+  "simplify" back to `FROM metabase/metabase` (that image is Alpine).
 
 When bumping pins, re-run the smoke test (provision + `SELECT count(*)
 FROM positions` through the driver) and update the sha256.

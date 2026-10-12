@@ -11,17 +11,14 @@ illiquid, no public quote) and a sibling of [`carta`](../carta/). Part of
 the **wealthdb** suite — see [the architecture
 overview](../../DESIGN.md) and [collectors/README.md](../README.md).
 
-The API surface, auth flow, page routes, and data model described below
-are **observed** from a real discovery (`explore`) session against the
-live portal, not guessed. The collector is implemented end-to-end —
-`explore` / `login` / `download` / `load` / `prune` plus the gold adapter
-(§6) — and the sections below describe how it works today; genuinely
-unbuilt pieces are collected under [Future work](#7-future-work).
+The API surface, auth flow, page routes, and data model below are mapped
+by the `explore` harness (§3), not guessed. Unbuilt pieces are listed
+under [Future work](#7-future-work).
 
 Sections:
 
 1. [Why web, not a public API — the path investigation](#1-why-web-not-a-public-api--the-path-investigation)
-2. [The investor GraphQL surface (observed)](#2-the-investor-graphql-surface-observed)
+2. [The investor GraphQL surface](#2-the-investor-graphql-surface)
 3. [Discovery: the `explore` harness](#3-discovery-the-explore-harness)
 4. [Login and download](#4-login-and-download)
 5. [Silver schema](#5-silver-schema)
@@ -41,8 +38,7 @@ reconciliation explicit, exactly as for every other source.
 
 ## 1. Why web, not a public API — the path investigation
 
-The task pointed at two starting URLs. The verdict, recorded so it isn't
-re-litigated:
+No published API serves an individual buyer:
 
 - **`status.equityzen.com/public-api` is a Statuspage.io feed, not a
   product.** It exposes only `/v3/summary.json` + `/v3/components.json`
@@ -50,7 +46,7 @@ re-litigated:
   an internal API exists and is monitored; it documents nothing about its
   surface or access rules.
 - **No investor-facing *published* API exists.** `developers.equityzen.com`
-  and `api.equityzen.com` both refuse connections; the help centre and web
+  and `api.equityzen.com` do not accept connections; the help centre and web
   search surface no developer portal, SDK, or OpenAPI. The
   `github.com/EquityZen` org is a backend stack — Django + GraphQL
   (`graphene` / `graphene-django` forks), BlockScore (KYC), Modern
@@ -63,7 +59,7 @@ re-litigated:
   same session a human login mints. Its operations are explicitly
   buyer/investor-scoped (`getBuyerInvestments`, `getMyInvestmentDetails`,
   `getBuyerDocuments`, `getK1EquivalentDocuments`). This is exactly the
-  data we want, read-only, already shaped for the holder.
+  data the collector needs, read-only, already shaped for the holder.
 
 **Verdict.** There is no credentialed public API for an individual, but
 the SPA's internal GraphQL endpoint *is* the investor data surface. So —
@@ -77,7 +73,7 @@ ever opens a credentialed API to individuals, this collector can be
 re-pathed to host-venv without disturbing gold — silver is the only
 contract gold reads, and §2 already records the operation shapes.
 
-## 2. The investor GraphQL surface (observed)
+## 2. The investor GraphQL surface
 
 All operations are `POST /api/graphql/`, Relay-style (cursor pagination
 via `pageInfo { hasNextPage, endCursor }`, `edges → node`). The data
@@ -102,8 +98,7 @@ FMV ← `deal` / `security` valuation; share count ← `security` /
 `equityBlock`; status ← `buyerStageInfo`; distributions ←
 `primaryTransaction.distributedTransactions`; movements ← `transfers`.
 
-**Confirmed against the captured responses** (structural inspection of the
-explore session, no values retained):
+**Structure of the responses** (no values recorded):
 
 - **Single- vs multi-company is a native field.** `assetClass` ∈
   `{ASSET_COMPANY, ASSET_MULTI_COMPANY_FUND}` distinguishes a
@@ -137,7 +132,7 @@ order operation. See [AGENTS.md](AGENTS.md).
 `/accounts/login/`, pre-fills the credentials (origin- and login-path-
 gated; never submits), and records three artefact channels under
 `/debug/<UTC-ts>/`: **HAR** + a crash-safe `network.jsonl` (the primary
-signal — this is where the GraphQL operations in §2 were read from), an
+signal — this is where the GraphQL operations in §2 are read from), an
 opt-in **Playwright trace** (`--trace`; DOM + screenshots), and a
 **clicks.jsonl** click / lifecycle log (VNC clicks bypass Playwright's
 API). Credentials + password fields are redacted from `network.jsonl`,
@@ -148,12 +143,10 @@ its DOM snapshots store every input's value — which is why it is off by
 default. The persistent Camoufox profile carries the post-TOTP session
 between runs.
 
-The first real session confirmed the login form selectors (email is
-`input#email type=text` — no `name`, so id/placeholder are the only
-hooks; password is `input#password`), the GraphQL surface (§2), the page
-route map (§4), the cookie+CSRF auth, and the document set (statement +
-K-1-equivalent PDFs plus a few zip bundles, spanning the document/tax
-centre).
+The explore capture is the source of the login selectors (§4), the
+GraphQL surface (§2), the page route map (§4), the cookie and CSRF auth,
+and the document set: statement and K-1-equivalent PDFs plus some zip
+bundles from the document and tax centre.
 
 ## 4. Login and download
 
@@ -166,11 +159,11 @@ to `/accounts/login/`; short-circuit if a prior session is still valid;
 else fill credentials and complete the two-step auth, reading the 6-digit
 **TOTP** from stdin. `EQUITYZEN_USERNAME` (alias `EQUITYZEN_EMAIL`) /
 `EQUITYZEN_PASSWORD` from the env file; `--totp CODE` supplies the code
-non-interactively; `--debug` saves a screenshot + logs the auth GraphQL
-ops on failure.
+non-interactively; `--debug` saves a screenshot to `--screenshot-dir`
+(default `/debug`) and logs the auth GraphQL ops on failure.
 
-**Concrete flow + selectors** (from the explore capture, and the gotchas
-that cost real login attempts — recorded so they are not rediscovered):
+**Concrete flow and selectors** (from the explore capture; each item is a
+trap a naive flow falls into):
 
 - email `input#email` (type=text, **no `name`** — id/placeholder are the
   only hooks), password `input#password`. The login form submits on
@@ -186,7 +179,7 @@ that cost real login attempts — recorded so they are not rediscovered):
   manager is disabled (the `signon.*` prefs in the shared
   [`collectorkit.launch`](../../shared/collectorkit/collectorkit/launch.py)
   pref set) so a saved credential can't autofill on top and concatenate the
-  password — an early failure mode.
+  password.
 - Auth state is decided **purely by the URL leaving `/accounts/login`**
   (the whole login + TOTP flow stays on that path; a valid session
   redirects to `/welcome/`). The "#email-absent" heuristic is deliberately
@@ -196,8 +189,8 @@ that cost real login attempts — recorded so they are not rediscovered):
 EquityZen 2FA is **TOTP-only** (no SMS/email, no "remember this device"
 checkbox), but closing the browser does **not** log the account out — the
 session cookie in the profile dir stays valid until an explicit logout or
-server-side expiry, so the renewal short-circuit keeps nightly runs from
-firing a fresh 2FA push (cf. `cointracking`). **Never log out at the end of
+server-side expiry, so the renewal short-circuit keeps later runs from
+asking for a fresh TOTP code (cf. `cointracking`). **Never log out at the end of
 any verb.** `--check` probes the dashboard and exits 0/1 with no 2FA push.
 
 ### download — per-surface bronze capture
@@ -205,8 +198,7 @@ any verb.** `--check` probes the dashboard and exits 0/1 with no 2FA push.
 Runs headed Camoufox under Xvfb (same engine as login; the session from the
 profile carries auth), navigating the SPA and capturing the GraphQL
 responses the page fires — the SPA supplies the Relay-id variables, so no
-query text is reconstructed. Two mechanics, learned the hard way and
-recorded so they are not re-litigated:
+query text is reconstructed. Two mechanics matter:
 
 - **The investments list is per-stage, behind Ant-Design tabs.**
   `getBuyerInvestments` is keyed by a `stage` variable — `ONGOING`,
@@ -216,7 +208,7 @@ recorded so they are not re-litigated:
   "Closed (N)", "Exited (N)"); download clicks each tab and captures that
   stage's response. **Replaying the query directly through the GraphQL
   endpoint — even byte-matching the SPA's body + `x-csrftoken` — returns a
-  server-side `SYSTEM_ERROR` (500)**, so we let the SPA issue the request
+  server-side `SYSTEM_ERROR` (500)**, so the SPA issues the request
   via the tab click instead.
 - **Per-offering detail by URL.** `deal.id = base64("DealNode:<N>")`; the
   `<N>` is exactly the `/portfolio/<N>/` number. download decodes it,
@@ -267,9 +259,9 @@ recorded so they are not re-litigated:
   distinct from a real fetch failure, not counted as an error.
   `--documents-force` bypasses the index (fetch every blob, no dedup).
 
-Observed page routes: `/welcome/` (landing), `/portfolio/` (list, tabbed),
-`/portfolio/<N>/` (detail), `/equity/<uuid>/` (share lot — investigated then
-dropped, §4), `/documents/` (doc + tax centre).
+Page routes: `/welcome/` (landing), `/portfolio/` (list, tabbed),
+`/portfolio/<N>/` (detail), `/equity/<uuid>/` (share lot, not captured;
+see below), `/documents/` (doc + tax centre).
 
 Layout (`collectorkit.bronze`; deal-slug = `sha256(deal.id)[:16]` so no
 company name ever appears in a path): `$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/` with
@@ -277,47 +269,53 @@ company name ever appears in a path): `$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts
 `offerings/<deal-slug>/detail.json` (`getMyInvestmentDetails`;
 `node.documents[]` carries the document metadata), document blobs under
 `documents/<deal-slug>/` (skipped by `--no-documents`), and a `run.json` manifest
-(slugs + counts only — no names/ids/amounts). `--dry-run` captures the list
-across all stages, logs what it would fetch, and writes nothing
-(AGENTS.md-sanctioned read-only smoke test).
+(slugs + counts only — no names/ids/amounts). `--dry-run` reuses the stored
+session, captures the list across all stages, logs what it would fetch,
+and writes nothing. It never signs in.
 
 #### run.json status lifecycle + prune
 
-`run.json` carries a `status` field: `download` drops
-`{"status": "in-progress"}` as the run dir's first on-disk artefact (right
-before `investments.json`), then atomically overwrites it with the terminal
-manifest carrying `"status": "complete"` at the very end. A crashed walk
-therefore leaves a run dir whose `status` is `"in-progress"` (or, if it died
-before even that first write, no `run.json` at all) — either way a
-**non-complete** dump. `--dry-run` returns before creating the run dir, so it
-leaves no shell. The `prune` verb (shared `collectorkit.prune` engine, thin
-`prune.py`) reclaims those non-complete dumps once they are quiescent past
-`--min-age-hours`; a **complete** dump keeps every load input, and a
-statusless manifest counts as complete — such a dump only ever got a
-`run.json` at the end, so its presence alone means the walk finished. The one thing prune strips from a complete dump is `screenshots/`
-(`debug_subdirs`), where the opt-in `--debug` gate puts its captures: the
-portfolio list page — which carries both the auth verdict and the Ant stage
-tabs the sweep clicks — plus any offering page whose `getMyInvestmentDetails`
-never fired, captured on that path alone so the interesting one is not buried
-under a capture per offering. `load` never reads them, so reclaiming them
-cannot change silver. `--debug` is off by default and a no-op under
-`--dry-run`, which creates no run dir. The remaining diagnostics live
-externally under `login --screenshot-dir` and the `explore` verb's
+The fleet rules are in
+[collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+The equityzen specifics:
+
+- `download` writes `{"status": "in-progress"}` as the run dir's first
+  artefact, right before `investments.json`. The terminal manifest with
+  `"status": "complete"` overwrites it at the very end.
+- `--dry-run` returns before it creates the run dir, so it leaves nothing
+  behind.
+- A `--debug` run that fails the auth gate leaves a run dir holding only
+  its capture, with no `run.json`.
+- `load` skips a run dir with no `run.json`, or one whose `status` is not
+  `complete`. Such a dump holds a partial capture. Its list nodes would
+  replace positions that a complete run replayed from the full ledger.
+- A `run.json` without a `status` loads, and `prune` keeps it. Such a
+  dump only ever got its `run.json` at the end, so the file alone means
+  the walk finished.
+- `prune` deletes the run dirs `load` skips once they are quiet for
+  `--min-age-hours`. From a complete dump it strips only `screenshots/`
+  (`debug_subdirs`).
+
+`screenshots/` holds the opt-in `--debug` captures. One is the portfolio
+list page, which shows both the auth verdict and the Ant stage tabs the
+sweep clicks. The others are offering pages whose
+`getMyInvestmentDetails` never fired. Only that failure path captures an
+offering, so the interesting page is not buried under one capture per
+offering. `load` never reads them. The remaining diagnostics live outside
+bronze: `login --screenshot-dir` and the `explore` verb's
 `/debug/<UTC-ts>/`.
 
-#### Why no `/equity/<uuid>/` capture (investigated, then removed)
+#### Why no `/equity/<uuid>/` capture
 
 The per-company equity pages (`/equity/<uuid>/`, enumerated via the
-paginated `getEquityBlocks(buyerId)` off `/equity/`) were built and trialled
-as a price-signal source, then **deliberately removed**. What they carry,
-and why none of it is worth the extra per-company navigations + pagination
-machinery per run:
+paginated `getEquityBlocks(buyerId)` off `/equity/`) are **not captured**.
+What they carry, and why none of it is worth the extra per-company
+navigations and pagination per run:
 
 - `getInvOpps(equityBlockUuid)` → the company's **open order-book asks**
   (deals currently open to buyers). An ask need never transact, so it is
   **not reliable price data** — only *closed* deals are (the valuation
-  rule). Of the live book, typically only a held name that happens to be
-  actively offered has any ask; other held names return nothing.
+  rule). An ask exists only while a company is actively offered.
 - `getIssuerInformation(equityBlockUuid)` → company **metadata** only
   (`transferFee`, `canDisplayCapTable`, `cashlessExerciseAllowed`,
   `legalOpinionRequired`) — no valuation, no price.
@@ -332,8 +330,8 @@ Crucially, everything valuation needs is already in the **holdings** bronze
 (`primaryTransaction.sharesRemainingPostSplit`, populated for all
 holdings), the entry price (`pricePostSplit`), the **closed secondary
 prices** (`distributedTransactions[].pricePostSplit` — the tenders), and
-distributions. The marketplace **live listings** were also rejected for the
-same reason (order-book asks, not closed deals). If EquityZen ever exposes
+distributions. The marketplace **live listings** are not used either, for
+the same reason (order-book asks, not closed deals). If EquityZen ever exposes
 a per-company *closed*-deal price feed, this is the surface to revisit — the
 operation map (`getEquityBlocks` → `getInvOpps`/`getIssuerInformation`/
 `getEquityDetails`/`getEquityBlockInformation`, all keyed by
@@ -342,7 +340,8 @@ operation map (`getEquityBlocks` → `getInvOpps`/`getIssuerInformation`/
 ## 5. Silver schema
 
 SQLite + JSON1, source-shaped, owned by `load.py` (via
-`collectorkit.silver`) and defined in `migrations/0001_initial.sql`.
+`collectorkit.silver`) and defined in `migrations/` (`0001_initial.sql`,
+`0002_cash_flow_shares_price.sql`).
 `snapshot_at` is INTEGER Unix-seconds-UTC; source *dates* (purchase /
 tender / deal start) stay as their source ISO TEXT; stable filter columns
 promoted, rest in `payload`.
@@ -354,10 +353,10 @@ lives in `positions`; the ledgers key by stable source id.
 | Table | Grain | Notes |
 |---|---|---|
 | `offerings` | deal_external_id (immutable, upserted) | Identity + entry terms, fixed at purchase: `kind` (`spv` ← `ASSET_COMPANY` / `private_fund` ← `ASSET_MULTI_COMPANY_FUND`), `asset_class`, `company_*`, `fund_*`, `parent_deal_name`, `ticker_symbol`, `flavor`, `date_start`, `deal_share_price`, **`basis`** (`investmentSize`), **`purchase_price`** (`pricePostSplit`), **`shares_original`** (`sharesPostSplit`), `currency`, `last_seen_at`, `payload`. Company/fund names are PII. |
-| `positions` | (deal_external_id, event_seq) | **EVENT-SOURCED valuation history** — one row per capital *event* (changes only, not a per-date portfolio snapshot): `event_seq 0` = the original investment, then each disposition (tender) in date order, then a terminal `exit` event when `EXITED`. Per row: `as_of_date`, `event_type`, `status`, `is_open`, `shares_held`, `cost_basis_remaining`, `price_per_share`, `market_value` (= `shares_held × price_per_share`), `distributions_cumulative`, `total_value`. **Closed-deal prices only** (entry + tender prices), so the mark steps on real transactions; for **funds**, each parsed capital-account statement is injected as a `statement` revaluation event (NAV); un-tendered SPVs carry cost. **Reconstruct holdings as of any date D**: each position's latest event with `as_of_date ≤ D` (`MAX(event_seq)`), keep `is_open=1` (drops exited). Full query inline in `migrations/0001_initial.sql`. |
-| `cash_flows` | cash_flow_external_id | One row per purchase / distribution (CLOSED transactions): `deal_external_id`, `flow_date`, `kind` (`purchase` / `distribution`), `method` (e.g. `ACH`), `amount`, `execution_fee` (gold books it as its own leg, and a purchase's fee as part of the book value), `currency`, `description`, `payload`. From `primaryTransaction` + `primaryTransaction.distributedTransactions`. |
+| `positions` | (deal_external_id, event_seq) | **EVENT-SOURCED valuation history** — one row per capital *event* (changes only, not a per-date portfolio snapshot): `event_seq 0` = the original investment, then each disposition (tender) in date order, then a terminal `exit` event when `EXITED`; a fund also gets `statement` events (below). Per row: `as_of_date`, `event_type`, `status`, `is_open`, `shares_held`, `cost_basis_remaining`, `price_per_share`, `market_value` (= `shares_held × price_per_share`), `distributions_cumulative`, `total_value`. **Closed-deal prices only** (entry + tender prices), so the mark steps on real transactions; for **funds**, each parsed capital-account statement is injected as a `statement` revaluation event (NAV); un-tendered SPVs carry cost. **Reconstruct holdings as of any date D**: each position's latest event with `as_of_date ≤ D` (`MAX(event_seq)`), keep `is_open=1` (drops exited). Full query inline in `migrations/0001_initial.sql`. |
+| `cash_flows` | cash_flow_external_id | One row per purchase / distribution (CLOSED transactions): `deal_external_id`, `flow_date`, `kind` (`purchase` / `distribution`), `method` (e.g. `ACH`), `amount`, `shares` and `price_per_share` (the event's `sharesPostSplit` / `pricePostSplit`), `execution_fee` (gold books it as its own leg, and a purchase's fee as part of the book value), `currency`, `description`, `payload`. From `primaryTransaction` + `primaryTransaction.distributedTransactions`. |
 | `tax_documents` | document_external_id | Per-offering document metadata + archive: `document_type`, `download_url`, and once `download` fetches the blob (by default; `--no-documents` skips it), `local_path` + `content_hash` + `retrieved_at`. |
-| `capital_account_statements` | document_external_id | Parsed quarterly partner's Statement of Capital Account: `period_end`, `beginning_balance`, `contributions`, `withdrawals`, `transfers`, `profit_loss`, `carried_interest`, **`ending_nav`** (Net Ending Capital Account Balance = the fund's fair-value NAV). Funds only in practice (SPVs issue no capital-account statements). |
+| `capital_account_statements` | document_external_id | Parsed quarterly partner's Statement of Capital Account: `period_end`, `beginning_balance`, `contributions`, `withdrawals`, `transfers`, `profit_loss`, `carried_interest`, **`ending_nav`** (Net Ending Capital Account Balance = the fund's fair-value NAV). Funds only (SPVs issue no capital-account statements). |
 | `k1_documents` | document_external_id | Parsed Schedule K-1 (Form 1065): `tax_year`, `is_final`, and Item L tax-basis capital account (`beginning_capital`, `current_year_income`, `withdrawals_distributions`, **`ending_capital`**). Part III box amounts are not extracted (form-grid; see statements.py). |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. |
 
@@ -368,9 +367,8 @@ statements give the multi-company funds the fair-value NAV the holdings API
 lacks** — each statement's `ending_nav` is injected into `positions` as a
 `statement` revaluation event (kind=`private_fund` only; SPVs stay
 tender-driven), so a fund's `positions` history runs investment → quarterly
-NAV revaluations. This matters: a fund can run materially below cost, so a statement NAV well
-under the original commitment is invisible in the API, which only reports
-cost. K-1s contribute the tax-basis capital account; their
+NAV revaluations. The API reports only cost for a fund, so a fund's fall
+below cost shows only in its statements. K-1s contribute the tax-basis capital account; their
 Part III boxes are not extracted (form-grid parsing — see §7).
 
 The GraphQL feed is the primary cash-flow source; these PDFs corroborate
@@ -394,23 +392,20 @@ So this collector stays on the documented default — the same call
 
 ## 6. Gold adapter
 
-The gold adapter lives at `wealthdb/internal/silver/equityzen/`
-(adapter / status / snapshots / transactions / classmap / policy `.go` +
-`adapter_test.go`) and is registered with the gold engine by the blank
-import in `cmd/wealthdb/main.go`. It is the closest sibling of `angellist`
-(an event-sourced LP book with distributions) and a cousin of `carta`. The
-package doc comment in `adapter.go` is the canonical spec — like
-`angellist`, there is no separate `docs/adapters/*.md` (the latest
-convention is the package comment).
+The gold adapter lives at `wealthdb/internal/silver/equityzen/` and is
+registered with the gold engine by the blank import in
+`cmd/wealthdb/main.go`. It is the closest sibling of `angellist` (an
+event-sourced LP book with distributions) and a cousin of `carta`. The
+package doc comment in `adapter.go` is the canonical spec; there is no
+separate `docs/adapters/*.md`. Gold migration `0015` admits
+`'equityzen'` as a `silver_kind`.
 
 ### Enums — no gold change needed
 
-The `asset_class` enum already carries `spv` and `private_fund` (added for
-carta/angellist) and `TxKind` carries `distribution` (added for angellist).
-`ASSET_COMPANY → spv`, `ASSET_MULTI_COMPANY_FUND → private_fund`, and the
-`buy` / `sell` / `distribution` transaction kinds all map onto existing
-values. The only gold-schema change is migration `0015`, which widens the
-`silver_sources.silver_kind` whitelist to admit `'equityzen'`.
+The source maps onto existing canonical values. `ASSET_COMPANY → spv` and
+`ASSET_MULTI_COMPANY_FUND → private_fund` (`asset_class`), and the
+`buy` / `sell` / `contribution` / `distribution` transaction kinds all
+exist in gold.
 
 ### Account / instrument / position model
 
@@ -433,20 +428,23 @@ values. The only gold-schema change is migration `0015`, which widens the
   multi-company funds have none. No ISIN/CUSIP — adapter-scoped.
 - **Positions** map straight off the silver `positions` event rows:
   `market_value = market_value` (the collector's chosen mark — tender price
-  for SPVs, statement NAV for funds, cost otherwise). `book_value` for an
-  SPV = `cost_basis_remaining` plus the purchase's `execution_fee` in the
-  same proportion (`shares_held ÷ shares_original`, at most 1); for a fund
-  = the capital paid in (`offerings.basis`) plus the whole fee.
+  for SPVs, statement NAV for funds, cost otherwise). `book_value`
+  (`basis.go`) for an SPV = `cost_basis_remaining` plus the purchase's
+  `execution_fee` in the same proportion (`shares_held ÷ shares_original`,
+  at most 1); for a fund = the capital paid in (`offerings.basis`) plus
+  the whole fee. A purchase that states no fee leaves the fee out.
   `quantity = shares_held` for SPVs (NULL for funds — units are not a
   share count). `acquisition_date` = the deal's first event.
 
-### Adapter shape (six files, mirroring angellist)
+### Adapter shape
 
 - `adapter.go` — `silver.Register`, `Open` (read-only SQLite), `Connection`.
 - `status.go` — `Status` + `ChangeWindow`, driven by `dump_runs`
-  (`LatestChangeNumber = MAX(dump_runs.snapshot_at)`, idle reload = no-op).
-  Snapshot extrema = MIN/MAX `positions.as_of_date`; transaction extrema =
-  MIN/MAX `cash_flows.flow_date`; the change window spans both. Silver dates
+  (`LatestChangeNumber = MAX(dump_runs.snapshot_at)`, idle reload = no-op;
+  the latest dump is also the source's observed watermark).
+  Snapshot extrema = MIN/MAX `positions.as_of_date`, stretched to the
+  latest dump that dropped a deal; transaction extrema = MIN/MAX
+  `cash_flows.flow_date`; the change window spans both. Silver dates
   are source ISO TEXT → converted with `strftime('%s', …)` to the canonical
   unix seconds.
 - `snapshots.go` — **forward-fill**: for each distinct position event date
@@ -492,13 +490,18 @@ values. The only gold-schema change is migration `0015`, which widens the
     Either way the bank leg matches the cash that crossed, to the cent.
     Every leg links to the offering's instrument. EquityZen is funded
     upfront, so there are no capital calls beyond the initial purchase.
+- `basis.go` — the book value and its basis stamp (derived; `average` for
+  an SPV, `paid_in` for a fund).
 - `classmap.go` — `offerings.kind` → `asset_class`.
-- `policy.go` — registers the source's `ReturnsPolicy`: the ledger's
-  `deposit`/`withdrawal` legs are real dated cash crossings of the EquityZen
-  boundary and count as external capital; the paired investment legs stay
-  internal (counting both halves would cancel every event). `CapitalCallRisk`
-  keeps the `nav_only_capital_call_risk` tag on flow-less windows (matching
-  `carta`).
+- `policy.go` — registers the shared `returns.PrivateMarketLedgerPolicy`:
+  the ledger's `deposit`/`withdrawal` legs are real dated cash crossings of
+  the EquityZen boundary and count as external capital; the paired
+  investment legs stay internal (counting both halves would cancel every
+  event). `CapitalCallRisk` keeps the `nav_only_capital_call_risk` tag on
+  flow-less windows.
+- `lotpolicy.go` — registers `lots.StatedPolicy`: the cost basis is what
+  the source states, so the lot engine builds no lots and realizes a sale
+  against that basis (`wealthdb/docs/LOTS.md`).
 
 The parsed `capital_account_statements` / `k1_documents` stay silver-only:
 the statement **NAV already reaches gold via the `positions` `statement`
@@ -522,41 +525,27 @@ ChangeWindow / forward-fill per event date (cost → tender → statement NAV,
 exited drop-out, spv-quantity vs fund-NULL) / the double-entry transaction
 pairs (deposit+buy, deposit+contribution, sell+withdrawal,
 distribution+withdrawal, the $0-exit withdrawal omission) including the
-**paired ledger nets to exactly 0** invariant. An end-to-end gold load of
-real silver reproduced the expected position and valuation series, and
-the custody account's transactions sum to 0.
+**paired ledger nets to exactly 0** invariant. `basis_test.go` covers the
+book-value arithmetic.
 
 ## 7. Future work
 
-The collector ingests offerings + positions + cash flows (§2, §5) and, by
-default, the tax-document PDFs (§4, §5); the gold adapter
-(§6) is implemented and registered. What remains:
+Open items:
 
-- **Enabling the source in a gold run.** Build, test, gold-adapter
-  registration (`cmd/wealthdb/main.go`), and the gold `silver_sources`
-  whitelist (migration `0015`) are all in place; pulling EquityZen into a
-  run is then just a `wealthdb.cfg` `silver_sources` entry pointing at the
-  silver DB.
 - **K-1 Part III box amounts** (income / gains / distributions) — the IRS
   form grid defeats a naive `pdftotext` parse (it grabs box *numbers*, not
-  amounts), so only Item L (the tax-basis capital account) is extracted
-  today. The blobs are archived in bronze, so a grid-aware extractor is a
+  amounts), so only Item L (the tax-basis capital account) is extracted.
+  The blobs are archived in bronze, so a grid-aware extractor is a
   parse-only follow-up.
 - **A per-company *closed*-deal price feed.** The `/equity/<uuid>/` pages
-  were built, trialled, and intentionally dropped — they carry only
-  order-book asks and company metadata, no reliable price (§4, "Why no
+  carry only order-book asks and company metadata, no reliable price (§4, "Why no
   `/equity/<uuid>/` capture"), and everything valuation needs is already in
   the holdings bronze. If EquityZen ever exposes a per-company closed-deal
   price, that is the surface to revisit; the operation map is recorded in §4.
 
 ## 8. Read-only & PII
 
-See [AGENTS.md](AGENTS.md). EquityZen is a **live marketplace**: the
-portal exposes order-placement, Express-Deal sell, reserve/IOI, funding,
-and e-sign surfaces — all forbidden; this collector only reads the
-buyer's own holdings + documents. The pre-IPO **company names** in the
-book, SPV/fund names, share counts, basis/FMV figures, and K-1 contents
-are PII — synthetic placeholders only in any tracked file (e.g. company
-"ACME-CO", `dealId 1234`, round example figures). Raw artefacts live only
-under `$XDG_DATA_HOME/wealthdb/equityzen/`, `~/.secrets/`, and the debug dir, never in
-the repo.
+See [AGENTS.md](AGENTS.md) for the allowed and forbidden surfaces and the
+private-data rules. Company names, SPV and fund names, share counts, basis
+and FMV figures, and K-1 contents never enter a tracked file; examples use
+synthetic placeholders.

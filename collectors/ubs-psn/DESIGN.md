@@ -2,8 +2,8 @@
 
 This document captures decisions and contracts that aren't obvious from
 the operational README — primarily for engineers writing adapters
-against this repo's silver schema (today: the `wealthdb` gold-layer
-adapter). The README covers how to run the tools; this document covers
+against this repo's silver schema, such as the `wealthdb` gold-layer
+adapter. The README covers how to run the tools; this document covers
 what the silver data does and does not contain, and why.
 
 ## 1. Account taxonomy and pension accounts
@@ -20,10 +20,10 @@ interprets these columns is owned by the wealthdb UBS adapter — see
 PSN is a private-banking custody/cash feed. Swiss pension assets
 typically live in legally separate entities from a private-banking
 relationship, so they are structurally unlikely to surface in this
-feed regardless of a given customer's holdings. An absence of
-pension accounts in the loaded PSN data would not, on its own,
-establish that PSN *would* surface them if they existed — they may
-simply never fall within PSN's scope:
+feed regardless of a given customer's holdings. A PSN feed without
+pension accounts would not, on its own, establish that PSN *would*
+surface them if they existed — they may simply never fall within
+PSN's scope:
 
 - **Pillar 2 (BVG / LPP):** the employer's *Personalvorsorgekasse* /
   *Pensionskasse* — a foundation distinct from UBS AG.
@@ -103,9 +103,8 @@ doesn't try to surface it:
   keeps the raw zip; silver does not ingest. See migration 0001's
   header.
 - **MT536, MT568, MT590, MT599, MT600, MT608, MT900/910, MT942,
-  MT990.** Loader stubs not yet implemented — added when real
-  samples exist to develop against. Bronze keeps every zip; silver
-  simply skips.
+  MT990.** No loader reads them. Bronze keeps every zip; silver
+  skips them.
 - **Empty XML containers** (`TDOPT`, `TDMM`, `TDOTC` when the
   relationship is not provisioned for, or holds none of, those product
   types; `TDCAPI` on days with no service-charge or interest bookings;
@@ -123,7 +122,8 @@ canonicalisation rule changed, a `snapshot_at` derivation changed),
 the operationally-correct response is:
 
 1. Add a migration if the schema changes.
-2. Wipe `<silver>.db` and re-run `load.py`.
+2. Rebuild with `load --force`, which deletes the silver DB and
+   re-ingests all bronze.
 
 `dump_runs.snapshot_at` (= the dump-directory timestamp) provides
 idempotency on re-runs that don't change loader semantics, but for
@@ -152,8 +152,8 @@ loader-semantics changes a wipe is the only consistent path.
 │   │                                 <ORDERTYPE>_<YYYYMMDD>.zip instead
 │   ├── HAC.zip / PTK.zip             EBICS admin zips (raw bronze; not
 │   │                                 load inputs, but never debug artefacts)
-│   └── screenshots/                  legacy --debug capture from before
-│                                     listing.json; never a load input
+│   └── screenshots/                  legacy --debug capture of the SFTP
+│                                     listing; never a load input
 ├── 20260525T120000Z/
 │   └── …
 └── ubs-psn.db                        silver SQLite (default location)

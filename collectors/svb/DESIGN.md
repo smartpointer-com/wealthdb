@@ -9,14 +9,14 @@ PDFs, not scraped on a schedule.
 
 | File | Role |
 |---|---|
-| `svb` | Host wrapper. `load` rebuilds the silver; `login`/`download` are no-ops (no live source). |
+| `svb` | Host wrapper. `load` rebuilds the silver; `login`, `download` and `prune` are no-ops (no live source, nothing to reclaim). |
 | `pdf_parsers_svbdep.py` | Parser for the **SVB Private Bank deposit and mortgage** statement families. These carry no text layer at all, so they are rastered and OCRed (`collectorkit.pdf.extract_text_ocr` — Apple's Vision framework on macOS, RapidOCR everywhere else) before parsing. Every section is gated on the statement's own arithmetic: the balance summary must close to the cent, each ledger row's running balance must chain from the beginning balance to the stated ending one, and the rows must sort into the same four buckets the summary states — deposits, withdrawals, interest and charges — each to the cent. |
 | `pdf_parsers_svbwa.py` | Parser for the **SVB Wealth Advisory / NFS** statement family (a different statement layout from the supplied statements, whose parser is `fidelity-web/pdf_parsers_supplied.py` in the fidelity-web collector). Equity/ETP/fund, fixed-income (inline CUSIP), and **options** rows — with parens→negative for short legs — plus the no-positions/$0 closing form, the stated beginning value, and the Activity region, where an option leg's contract line rebuilds its OCC code. |
 | `statement_tokens.py` | How this bank writes a number and a date, shared by both parsers: parentheses mean negative, a two-digit year pivots the conventional way, and a separator may come through as a colon or a dot where OCR read a hyphen. The parsers each keep the SHAPE their own layout accepts; this is only what a token MEANS once one is found. |
 | `derived_marks.py` | Reads the advisor's performance workbook, which carries a month-end value per BROKERAGE account for the months no statement covers — its sheets are keyed by the `SV[MRT]-NNNNNN` serial, and only the brokerage silver DB is passed to it, so the deposit and mortgage families are out of its reach. Used only to fill an INTERIOR gap, never to extend a series, and every row it produces is marked at row level so a statement that later joins the archive takes its month back. |
 | `instrument_links.py` | Links each activity row that moves a position to the holding the statements' arithmetic proves it moved, and each dividend-like row, which names a security without moving it, to the one holding the account's statements leave its name to (see *Modelling decisions*). Pure functions, imported by neither parser, so it is outside the parse cache's fingerprint. |
 | `load.py` | Standalone host builder: discovers the bronze PDFs recursively, routes each to a parser by the document family its own text declares, and writes one silver DB per family (`svb.db`, `svb-deposit.db`, `svb-mortgage.db`) in the **fidelity-web silver schema** — holdings plus the statements' Activity rows as `transactions`, linked to their instruments — synthesising account/portfolio masters. Host venv, no docker: stdlib `sqlite3`, `collectorkit` (`cli`/`silver`/`srcfp`, and `pdf` for the OCR pass), and the two extraction stacks pinned in `requirements.txt`. |
-| `migrations/*.sql` | Copies of the fidelity-web silver schema migrations. svb copies 0001–0004 and 0009–0012, and deliberately skips 0005–0008 and 0013: 0005 (activity-id rehash) and 0006 (529 `management_style`) are data-only UPDATEs against rows svb does not have, 0007 only WIDENS the `portfolios.kind` CHECK to admit a value this build never writes (it writes the neutral `other`), and 0008 creates `parser_generations`, which only `collectorkit.silver`'s generation stamp writes — this loader never stamps one — and which the Fidelity gold adapter never reads; 0013 only clears a stamp in that table. 0009 adds the cost-basis columns to `historical_position_snapshots`, 0010 the `closed_lots` table (0012 renames its columns), and 0011 the `open_lots` table; svb statements print no basis and this build reads no 1099 and no lot table, so the columns stay NULL and the tables empty here. These DBs are read by that adapter (`kind: "fidelity"`), so any fidelity-web migration that changes a shape svb WRITES or the adapter READS must be copied here — keep those in lockstep with `collectors/fidelity-web/migrations/`. |
+| `migrations/*.sql` | Copies of the fidelity-web silver schema migrations. svb copies 0001–0004 and 0009–0012, and deliberately skips 0005–0008, 0013 and 0014: 0005 (activity-id rehash) and 0006 (529 `management_style`) are data-only UPDATEs against rows svb does not have, 0007 only WIDENS the `portfolios.kind` CHECK to admit a value this build never writes (it writes the neutral `other`), and 0008 creates `parser_generations`, which only `collectorkit.silver`'s generation stamp writes — this loader never stamps one — and which the Fidelity gold adapter never reads; 0013 only clears a stamp in that table; 0014 only deletes export rows and the dump ledger so a fidelity-web load re-ingests them, and svb rebuilds every load anyway. 0009 adds the cost-basis columns to `historical_position_snapshots`, 0010 the `closed_lots` table (0012 renames its columns), and 0011 the `open_lots` table; svb statements print no basis and this build reads no 1099 and no lot table, so the columns stay NULL and the tables empty here. These DBs are read by that adapter (`kind: "fidelity"`), so any fidelity-web migration that changes a shape svb WRITES or the adapter READS must be copied here — keep those in lockstep with `collectors/fidelity-web/migrations/`. |
 
 ## Why three gold sources, not one
 
@@ -26,17 +26,12 @@ here run on three calendars that collide — a month-end brokerage statement and
 a month-end deposit statement share a snapshot date — so under one source id
 each family's next statement repeatedly reads as the others' closure, and the
 values flicker in and out at every statement date. The build therefore writes
-one silver DB per family and the config registers each under its own id:
+one silver DB per family and the config registers each under its own id
+(the entries are in [README.md](README.md#gold-registration)).
 
-```jsonc
-{ "id": "svb",          "kind": "fidelity", "path": "…/svb/svb.db" }
-{ "id": "svb-deposit",  "kind": "fidelity", "path": "…/svb/svb-deposit.db" }
-{ "id": "svb-mortgage", "kind": "fidelity", "path": "…/svb/svb-mortgage.db" }
-```
-
-`--silver-db` names the brokerage DB, so that id keeps its original path; the
-other two sit beside it. They take the same `kind`, so this costs no new
-adapter and no gold migration.
+`--silver-db` names the brokerage DB, the `svb` id's path; the other two sit
+beside it. They take the same `kind`, so this costs no new adapter and no gold
+migration.
 
 A silver is written only for a family the archive actually holds, so an
 archive holding one family alone leaves no empty DBs beside its own; an empty
@@ -48,16 +43,16 @@ never goes missing.
 
 ## Why a separate gold source from `fidelity-web`, not a fold-in
 
-The point-in-time gold reports (`report_accounts` / `report_positions`, migration
-0021) carry positions forward **per silver source**: a source contributes only
-the accounts present at its single latest snapshot ≤ the as-of day. (The daily
-history macros resolve their active snapshot per *account* since gold migration
-0051, but a later run that re-covers the accounts a statement was loaded
-alongside still ends them, so a feed whose statements straddle another's runs
-needs its own id there too.) Folding these staggered-date statements into
-`fidelity-web` would let an unrelated fidelity snapshot (a later statement or
-scrape) supersede and drop them. So the build keeps them out of `fidelity-web`
-entirely, under the three ids registered above.
+The point-in-time gold reports (`report_accounts` / `report_positions`) carry
+positions forward **per silver source**: a source contributes only the accounts
+present at its single latest snapshot ≤ the as-of day. The daily history
+macros resolve their active snapshot per *account*. Even there, a later run
+that re-covers the accounts a statement was loaded alongside still ends them,
+so a feed whose statements straddle another's runs needs its own id there too.
+Folding these staggered-date statements into `fidelity-web` would let an
+unrelated fidelity snapshot (a later statement or scrape) supersede and drop
+them. So the build keeps them out of `fidelity-web` entirely, under the three
+ids registered above.
 
 `kind: "fidelity"` reuses the fidelity gold adapter — it `COALESCE`s
 the empty live tables and projects `historical_position_snapshots`, and the
@@ -247,8 +242,8 @@ they default cleanly and the overrides set the precise values.
   document is unreadable, and each earns the second read. A document is
   rastered at most twice. The two recognisers do not need the same
   resolution: Vision
-  reads this archive at the default raster, RapidOCR needs the finer one for
-  the worst of the 1-bit scans. The retry is paid only on a document that
+  reads a statement at the default raster, RapidOCR needs the finer one for
+  poor 1-bit scans. The retry is paid only on a document that
   failed, and replaces the first pass only where the arithmetic accepts more of
   it. That is what lets one parser serve both engines: the escalation absorbs
   the difference between them, so neither has to be the one the patterns were
@@ -372,7 +367,9 @@ while a comment / formatting / docstring edit does not. A recogniser that is
 not installed is recorded as unavailable rather than skipped, so a macOS key
 and a Linux key differ and a sidecar moved between them re-parses. The
 signature component is the sorted set, so reordering `signature.txt` does not
-evict the cache. New/changed statements miss and re-parse. Against this static
+evict the cache. New/changed statements miss and re-parse. Each run rewrites
+the sidecar to hold only its own entries, so a key from an older fingerprint or
+a statement that left the archive does not accumulate. Against this static
 archive a warm rebuild replays every parse from the sidecar (sub-second) and
 emits byte-identical silver. The sidecar holds parsed statement data, so — like
 the silver DBs — it lives outside the repo and never under a secrets dir.

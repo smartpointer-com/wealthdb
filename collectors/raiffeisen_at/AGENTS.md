@@ -8,16 +8,19 @@ applies on top of those shared rules.
 This collector targets **Mein ELBA**, the Austrian Raiffeisen retail
 e-banking portal (`mein.elba.raiffeisen.at`). The name is namespaced to
 Austria because Raiffeisen operates distinct banking systems in other
-countries. Two discovery captures (2026-08-15, DESIGN.md §3-Observed)
-mapped the surface: an OIDC login on `sso.raiffeisen.at` driving a
-`kunde-login-ui` REST API (pushTAN every login — no trusted-device
-bypass), an Angular SPA over per-widget REST endpoints under `/api/…`
-on `mein.elba.raiffeisen.at`, and a document archive
-(`bankingquer-dokumentenablage`) holding the statement PDFs (there is
-no on-demand statement generator). The allow list below is stated
-against those observed endpoints and still errs wide on the forbid
-side. Tighten it as more traces land; never widen it without the user
-opting in in writing. Mapping a new endpoint does not widen scope.
+countries. The surface (DESIGN.md §3-Surface) has three parts:
+
+- an OIDC login on `sso.raiffeisen.at` driving a `kunde-login-ui` REST
+  API, with a pushTAN at every login and no trusted-device bypass;
+- an Angular SPA over per-widget REST endpoints under `/api/…` on
+  `mein.elba.raiffeisen.at`;
+- a document archive (`bankingquer-dokumentenablage`) holding the
+  statement PDFs. There is no on-demand statement generator.
+
+The allow list below is stated against the mapped endpoints and errs
+wide on the forbid side. Tighten it as more traces land. Never widen it
+without the user opting in in writing. Mapping a new endpoint does not
+widen scope.
 
 **The UI is entirely German.** Never key a selector on display text —
 English *or* German — where an id / test-id / ARIA role exists; where a
@@ -26,18 +29,28 @@ drift is diagnosable. Repo prose stays English.
 
 ## 0. Never run a real session unprompted
 
-Root [AGENTS.md](../../AGENTS.md) §2 applies with extra force here:
-`explore` is not a probe — it mints a real Mein ELBA session and fires a
-real **pushTAN** confirmation at a real phone, and repeated automated
-logins can trip fraud heuristics into a lock-out (the Chase sibling
-soft-blocked after ~6 rapid logins in one day). Allowed without asking:
-reading code/config/docs, `make build-raiffeisen_at` /
-`make test-raiffeisen_at`, `--help`, and unit tests. Not allowed unless
-explicitly asked: anything that touches the live site — a real
-`explore`, `login` or `download`, or "just checking the selectors"
-against the live login page. Every live run is explicitly
-requested with the user present; waits on a pushTAN approval use long
-timeouts (1h+); never fire logins in quick succession.
+Root [AGENTS.md](../../AGENTS.md) §2 applies with extra force here.
+`explore`, `download` and `vnc-login` each mint a real Mein ELBA session
+and fire a real **pushTAN** at a real phone. Repeated automated logins
+can trip fraud heuristics into a lock-out.
+
+This is a one-shot collector: no session survives the browser. So
+**`download --dry-run` signs in and fires a pushTAN**, like a real
+download.
+
+Allowed without asking:
+
+- reading code, config and docs;
+- `make build-raiffeisen_at` / `make test-raiffeisen_at`, unit tests,
+  `--help`;
+- `login --check`, which probes the stored profile and fires no
+  pushTAN. It reports DEAD between runs, by design.
+
+Not allowed unless explicitly asked: anything else that touches the live
+site. That covers a real `explore`, `download` or `vnc-login`, a
+`download --dry-run`, and "just checking the selectors" against the live
+login page. Every live run is explicitly requested with the user
+present. Never fire logins in quick succession.
 
 ## 1. Read-only Mein ELBA retail access — never trigger writes
 
@@ -93,8 +106,8 @@ except the login sequence itself):
 - The **Statement-of-Fees PDF** (Entgeltaufstellung / Entgeltnachweis)
   over a date range —
   `GET …/kontoinformationen-ui/rest/konten/<IBAN>/entgeltnachweise?datumVon=&datumBis=`
-  — an allowed read-only export trigger. Mapped but not fetched by
-  default (informative-only; DESIGN.md §E).
+  — an allowed read-only export trigger. Mapped but not fetched
+  (informative only; DESIGN.md §E).
 - Logout (optional; not required between runs, but harmless).
 
 The dashboard SPA fires widget calls outside this list **on its own**
@@ -153,13 +166,13 @@ the flows above, subject to pushTAN).
 - `/secrets/raiffeisen_at-profile/` is the persistent Camoufox profile
   dir. It holds the session cookie and any browser/device-trust state.
   Keep it at 0700; treat the whole dir as a credential.
-- Trust persistence is measured (DESIGN.md §3-Observed·§F): the
-  profile persists a `profilToken` that remembers the *identity* (skips
-  region/Verfüger/PIN entry) but **not** the second factor — pushTAN
-  fires on every login. So the profile still holds sign-in state worth
-  protecting, but it is never a route past 2FA. Don't invalidate it
-  without cause: `--fresh` wipes the profile deliberately (to capture
-  the full challenge); never add a routine fresh-login pattern.
+- The profile persists a `profilToken` that remembers the *identity*
+  (it skips region/Verfüger/PIN entry) but **not** the second factor
+  (DESIGN.md §3-Surface·§F). pushTAN fires on every login. So the
+  profile holds sign-in state worth protecting, but it is never a route
+  past 2FA. Don't invalidate it without cause. `--fresh` wipes the
+  profile deliberately, to force the full challenge. Never add a routine
+  fresh-login pattern.
 - Don't log out programmatically at the end of any verb.
 
 ## 3. Never weaken authentication
@@ -170,34 +183,38 @@ Per root [AGENTS.md](../../AGENTS.md) §3: never bypass, downgrade, or
 personal, unprefixed Verfüger number), `RAIFFEISEN_AT_PASSWORD` (the
 PIN), and `RAIFFEISEN_AT_REGION` (the Mandant code that selects the
 regional bank and determines the Verfüger prefix — DESIGN.md
-§3-Observed·§B) — never a `--password` flag, never persisted. The
+§3-Surface·§B) — never a `--password` flag, never persisted. The
 pushTAN approval happens on the phone (no fallback factor exists on
-this flow); nothing code-like is ever accepted on argv. No bot
-defense has been observed; if the site ever challenges the browser,
-the answer is a better stealth profile in `explore`, never an auth
-bypass.
+this flow); nothing code-like is ever accepted on argv. No bot defense
+is visible. If the site ever challenges the browser, the answer is a
+better stealth profile, never an auth bypass.
 
-## Authentication & private data
+## 4. Private data
 
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and
-§4 (no private information in source). They apply in full here.
+Root [AGENTS.md](../../AGENTS.md) §4 applies in full. Raiffeisen PII
+covers:
 
-Raiffeisen PII: IBANs and account numbers, the Verfüger number /
-username, balances, transaction counterparties and amounts, statement
-PDFs, supplied transaction listings (`<data-dir>/supplied/`, and every
-line in them — their file names can be account numbers), names and
-addresses — **and the account roster itself** (which
-accounts/products the login holds, their number or type, or that a
-product is absent; see root [AGENTS.md](../../AGENTS.md) §4). None of
-it enters tracked files (source, fixtures, comments, commit messages) —
-synthetic placeholders and round figures only. Synthetic IBANs use the
-placeholder-letter pattern `AT<chk><BBBBB><KKKKKKKKKKK>`. Describe scope
-as the account *kinds* handled ("deposit accounts: checking + savings;
-cards out of scope"), never what this login was seen to contain. German
-UI *labels* are not PII — recording load-bearing ones in DESIGN.md is
-expected. The explore debug dir
-(`~/.cache/wealthdb/debug/raiffeisen_at/`) carries full response bodies
-and downloaded documents; the harness redacts the username + password
-from `network.jsonl`, but everything else in there is real account data
-— treat the dir as sensitive and never commit anything derived from it
-without stripping identifiers first.
+- IBANs and account numbers, the Verfüger number / username;
+- balances, transaction counterparties and amounts;
+- statement PDFs;
+- supplied transaction listings (`<data-dir>/supplied/`) and every line
+  in them. Their file names can be account numbers;
+- names and addresses;
+- **the account roster itself**: which accounts or products the login
+  holds, their number or type, or that a product is absent.
+
+None of it enters tracked files (source, fixtures, comments, commit
+messages). Use synthetic placeholders and round figures only. Synthetic
+IBANs use the placeholder-letter pattern `AT<chk><BBBBB><KKKKKKKKKKK>`.
+Describe scope as the account *kinds* handled ("deposit accounts:
+checking + savings; cards out of scope"), never what this login was
+seen to contain. German UI *labels* are not PII; recording load-bearing
+ones in DESIGN.md is expected.
+
+The explore debug dir (`~/.cache/wealthdb/debug/raiffeisen_at/`)
+carries full response bodies and downloaded documents. The harness masks
+credentials and session tokens
+([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)),
+but everything else there is real account data. Treat the dir as
+sensitive. Never commit anything derived from it without stripping
+identifiers first.

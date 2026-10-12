@@ -115,11 +115,16 @@ wealthdb income summary 2025-01 2025-03 -C +withheld # Q1 income, with the tax w
 wealthdb cashflow sankey 2025                        # the year's cash flow as a diagram
 ```
 
-Everything is available from the command line, in tables, CSV or JSON,
-from a set of local dashboards (`wealthdb web`): net worth,
-allocation, returns, gains, spending, income and cash flow, and to AI agents
-over MCP (`wealthdb mcp`). A privacy mode
-shows percentages instead of amounts, for a screen others may see.
+Every report is available in three places:
+
+- the command line, as a table, CSV or JSON;
+- a set of local dashboards (`wealthdb web`) for net worth, allocation,
+  returns, gains, spending, income and cash flow;
+- AI agents, over MCP (`wealthdb mcp`).
+
+A privacy mode hides amounts, for a screen others may see. The CLI's
+`-p` redacts them, and most dashboards have a twin that shows shares
+instead.
 `wealthdb help` lists every command with its flags; the topic documents
 under [Documentation](#documentation) cover each feature in depth.
 
@@ -133,30 +138,29 @@ of a probabilistic, prompt-injectable system is a standing invitation
 for irreversible damage. wealthdb keeps the two apart:
 
 1. **Credentials are handled only by static, reviewable code.**
-   The collectors are deterministic scripts — auditable line by
-   line, human-triggered, with MFA challenges answered by a
-   person. No agent drives a banking session, and no agent ever
-   sees a credential. A login linked through Plaid is handled by
+   The collectors are deterministic scripts that can be audited line
+   by line. A person starts each run and answers each MFA challenge.
+   No agent drives a banking session, and no agent ever sees a
+   credential. A login linked through Plaid is handled by
    Plaid's code instead. Its sign-in starts on a page Plaid hosts,
    and Plaid holds the access to the institution. The collector
    keeps Plaid's keys and one token per login. A token reads data
    and cannot pay.
 2. **The collectors only read.** Their contract is navigate,
-   filter, export — no code path submits a form, places an order,
-   or changes a setting, and no CLI flag can enable one.
+   filter, export. No code path submits a form, places an order or
+   changes a setting, and no CLI flag can enable one.
 3. **The data lands locally.** Everything is parsed into local
-   databases and consolidated into one queryable gold store;
-   nothing is sent to any third-party service. The two exceptions
-   are named at the top: Plaid, and a remote model that
+   databases and consolidated into one queryable gold store.
+   Nothing is sent to any third-party service, with the two
+   exceptions named at the top: Plaid, and a remote model that
    `categorize` and `resolve-symbols` ask.
 4. **Agent access is read-only by construction.** The MCP server
    (`wealthdb mcp`, [mcp/README.md](mcp/README.md)) serves the
-   reports as tools: it has no tool that writes, it opens the
+   reports as tools. It has no tool that writes, it opens the
    database read-only for one call at a time, and its container
    mounts the data read-only. An agent with a shell can run the CLI
-   instead, with `--read-only`. Either way the surface exposed to an
-   agent is consolidated, local, read-only queries — and nothing
-   else.
+   instead, with `--read-only`. Either way, an agent sees only
+   consolidated, local, read-only queries.
 
 The result is a clean separation. An agent runs the same reports a
 person does, through the MCP server or `wealthdb --read-only`. The
@@ -166,9 +170,8 @@ let alone the banking credentials that produced it.
 
 ## Data sources
 
-There is one collector per provider. All of them use the same `login`,
-`download` and `load` verbs. [collectors/README.md](collectors/README.md)
-has the full table.
+There is one collector per provider.
+[collectors/README.md](collectors/README.md) has the full table.
 
 - **Banks** — [UBS](collectors/ubs-web/) (netbanking and the
   [PSN feed](collectors/ubs-psn/)), [Swissquote](collectors/swissquote/),
@@ -290,9 +293,8 @@ make demo-roll                    # later: add the days since the last build
 
 The demo keeps to its own directory, its own gold and its own
 dashboard and MCP containers, so its data never mixes with a real
-setup's. It
-does share the engine and dashboard images: the demo targets build them
-from the checkout, as `make all` does. [demo/README.md](demo/README.md)
+setup's. It shares the engine and dashboard images, which the demo
+targets build from the checkout, as `make all` does. [demo/README.md](demo/README.md)
 describes the household and how to query it from the command line.
 
 ## Documentation

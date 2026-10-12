@@ -70,8 +70,8 @@ serials — the `SV[MRT]-NNNNNN` shape for brokerage, all-zero 10-digit serials
 for the deposit accounts and the loan, distinguished only by the last digit —
 example tickers (`AAAA` / `BBBB` / `VOO`), synthetic 9-char CUSIPs and OCC
 option codes, round example amounts, and a fabricated registration signature.
-Pre-commit: grep the staged diff for any real account id, holder name, or
-amount **before** the first `git add`.
+The pre-commit grep of root [AGENTS.md](../../AGENTS.md) §4 applies: any
+real account id, holder name or amount, before the first `git add`.
 
 ## 2. `load` is a full, reproducible-from-bronze rebuild
 

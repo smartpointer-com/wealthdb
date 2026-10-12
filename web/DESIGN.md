@@ -14,8 +14,8 @@ stays pure (CLI/query only; no daemon).
 The one thing the host script needs from the engine is config it can't
 easily parse itself (`wealthdb.cfg` is JSON, validated in Go): it calls
 `wealthdb web-config`, a hidden read-only subcommand that prints the
-resolved `web.enabled`, `web.port`, `gold_db` and `default_currency` as
-shell-evalable `KEY=VALUE` lines. One source of truth (the Go parser), no
+resolved `web.enabled`, `web.port`, `gold_db`, `default_currency` and
+`lots.missing_basis` as shell-evalable `KEY=VALUE` lines. One source of truth (the Go parser), no
 `jq` dependency, no bash JSON parsing.
 
 ## 2. Read-only snapshot, not the live gold file
@@ -32,15 +32,14 @@ DB to `…/web/snapshot/wealthdb.db` and mounts *that* read-only;
 never contend with the server; dashboards show data as of the last
 refresh (run `web refresh` after `wealthdb load`). The copy is atomic
 (temp + `mv`) and refuses to run if a `.wal` sidecar is present (gold
-mid-write / not checkpointed), so we never capture a torn copy.
+mid-write / not checkpointed), so a torn copy is never captured.
 
 ## 3. The driver: glibc base, version pin, readable JAR (load-bearing)
 
-Three things must all be right or DuckDB silently won't work — each one
-cost a debugging round:
+Three things must all be right or DuckDB silently won't work:
 
 - **Engine version.** The gold DB is DuckDB **1.5.x** storage format
-  (the engine links `duckdb-go/v2 v2.10504.0`). The driver bundles its
+  (the engine's `duckdb-go/v2` version is in `wealthdb/go.mod`). The driver bundles its
   own DuckDB; an older one can't open a 1.5 file. Pin driver **1.5.3.0**
   (DuckDB 1.5.3, targets Metabase 59), sha256-verified.
 - **JAR must be readable.** `ADD`-from-URL writes the JAR root-only
@@ -49,7 +48,7 @@ cost a debugging round:
 - **glibc, not musl.** The driver's JDBC native (`libduckdb_java.so`) is
   glibc-built and needs `libstdc++.so.6`. The official Metabase image is
   **Alpine/musl**, where the native *hard-crashes the JVM* (gcompat does
-  not save it). So we build Metabase from its official `metabase.jar` on
+  not save it). So the image builds Metabase from its official `metabase.jar` on
   `eclipse-temurin:21-jre-noble` (Ubuntu/glibc, already ships libstdc++6)
   rather than `FROM metabase/metabase`.
 
@@ -96,27 +95,34 @@ reports (+ all-time `report_transactions`), the daily `_history` reports
 the `report_cashflow` model over `web_cashflow` (migration 0084) — which
 backs the Cash Flow dashboard's Section picker rather than any card —
 and `_pct` privacy variants of the models the privacy
-surface reads. On top of the models, provisioning creates pre-defined
-questions and eight dashboards — **Wealth
-Overview** and **Allocation** carry dashboard-level filters (a required
-currency picker, a time range resp. a required as-of day, and a source
-picker), **Returns** carries a
-required currency picker (returns are stored one row set per currency),
-**Gains** carries the time range and source picker, a required currency
-picker, a *Tax wrapper* picker and a required *Missing cost basis*
-picker (ignore or zero, default `lots.missing_basis` from wealthdb.cfg,
-else ignore),
-**Spending** carries the time range and source picker plus a required
-currency picker, an account picker and a category multi-select,
-**Income** carries the same five with a *type* picker in place of the
-category one, **Cash Flow** carries the time range and source picker, a
-required currency picker, and two grain pickers of its own — a required
-*Investing* picker (the section netted whole, or by asset class) and a
-*Section* picker deliberately narrower than the rest, which the by-month
-charts and the line list take and the headline figures and the Sankey
-decline — and no account picker at all, the household boundary being
-what defines the pool, **Data Freshness** is deliberately unfiltered — all of them
-definitions only (MBQL or SQL), no data baked in.
+surface reads.
+
+On top of the models, provisioning creates pre-defined questions and
+eight dashboards. Their pickers:
+
+- **Wealth Overview**: a required currency, a time range, and a source.
+- **Allocation**: a required currency, a required as-of day, and a
+  source.
+- **Returns**: a required currency (returns are stored one row set per
+  currency).
+- **Gains**: the time range and source, a required currency, a *Tax
+  wrapper* picker, and a required *Missing cost basis* picker (ignore or
+  zero; the default is `lots.missing_basis` from wealthdb.cfg, else
+  ignore).
+- **Spending**: the time range and source, a required currency, an
+  account, and a category multi-select.
+- **Income**: the same five, with a *type* picker in place of the
+  category one.
+- **Cash Flow**: the time range and source, a required currency, and two
+  grain pickers of its own. The required *Investing* picker nets the
+  section whole or by asset class. The *Section* picker is narrower than
+  the rest: the by-month charts and the line list take it, and the
+  headline figures and the Sankey do not. There is no account picker,
+  because the household boundary defines the pool.
+- **Data Freshness**: no pickers.
+
+All of them are definitions only (MBQL or SQL), with no data baked in.
+
 A tile that sums money in the chosen currency is native SQL over a gold
 `web_*` serving view. The views carry each reporting currency as a
 column (gold migration 0114), and a dashboard picker selects rows but
@@ -137,7 +143,9 @@ Each dashboard but Gains also gets a **privacy twin** (linked from the
 dashboard's top row): same layout and filters, but every card shows
 shares (%) instead of money. Gains has none. Its tiles are gains on
 named positions. A twin would redact the names and normalise the money,
-and what would remain is the percent columns the tables carry already. The twins' charts are native SQL over the gold `web_*` serving views
+and what would remain is the percent columns the tables carry already.
+
+The twins' charts are native SQL over the gold `web_*` serving views
 (migrations 0032, 0043, 0072 and 0084 — TIMESTAMP-cast reductions of the report macros to
 the grain each card reads, some folding cash in as a class of its own;
 Metabase syncs views like tables and assigns their columns field ids), with the
@@ -240,15 +248,20 @@ probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
 catches a snapshot older than 0114: its views exist by name, but they lack
-the GBP columns every money card reads.
-Idempotent — re-running updates cards and dashboards in place and archives
-retired names. The admin password comes from
-`WEALTHDB_WEB_ADMIN_PASSWORD` (e.g. `~/.secrets/wealthdb-web.env`) or is
-generated once and saved chmod 600; `WEALTHDB_WEB_NO_PROVISION=1` opts
-back into the browser wizard.
+the GBP columns every money card reads. A Metabase listing that fails
+aborts the run too. Read as empty, it would create a second collection,
+database, card or dashboard of the same name.
+
+Provisioning is idempotent. Re-running updates cards and dashboards in
+place and archives retired names. `web/web` takes the admin password
+from `WEALTHDB_WEB_ADMIN_PASSWORD` (for example in
+`~/.secrets/wealthdb-web.env`), or generates one once and saves it
+chmod 600. It hands the password to `provision.py` in that same
+environment variable, never on the command line, where `ps` would show
+it. `WEALTHDB_WEB_NO_PROVISION=1` opts back into the browser wizard.
 
 The container runs as root (temurin default), so it reads the mode-600
-gold snapshot without us having to loosen the snapshot's perms.
+gold snapshot without loosening the snapshot's permissions.
 
 ## 7. Memory discipline (DuckDB runs in-process)
 
@@ -284,13 +297,13 @@ Four settings work together, each load-bearing:
 
 The Returns dashboards can't be views or macros: MWR is XIRR (iterative
 root-finding), and the returns engine leans on things that only exist
-in Go and config — per-source `ReturnsPolicy` hooks, `wealthdb.cfg`'s
+in Go and config: the per-source `ReturnsPolicy`, `wealthdb.cfg`'s
 inception overrides and exclusions, the transfer-netting heuristic,
 synthetic onboarding. A SQL re-implementation would be a second returns
 engine that drifts. So the existing engine computes and the result is
-**materialized** into `report_returns` (migration 0026) — the first
-*derived* table in gold; everything else is loader-written
-source-of-truth or computed on read.
+**materialized** into `report_returns` (migration 0026). It and
+`report_gains` (below) are gold's *derived* tables; everything else is
+loader-written source of truth or computed on read.
 
 The contract keeps it honest: each `(grain, granularity, currency)`
 partition is the **verbatim output of one `RunReturns` call with the

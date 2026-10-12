@@ -4,8 +4,8 @@
 -- Deposit-account (checking / savings) silver for the Chase retail
 -- relationship. Far simpler than a brokerage silver: cash accounts, a
 -- transaction ledger, and a statement/document inventory — no positions,
--- instruments, or tax-lot detail. See ../DESIGN.md "Observed" for the
--- source shapes these columns are parsed from.
+-- instruments, or tax-lot detail. See ../DESIGN.md "Source behaviour"
+-- for the source shapes these columns are parsed from.
 --
 -- Migration discipline: every schema change lands as a new numbered file
 -- here. The loader applies any migration newer than MAX(silver_schema_version)

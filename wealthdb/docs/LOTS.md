@@ -9,7 +9,7 @@ replaced.
 
 Related: DESIGN.md §7.4 (the stated cost basis), §7.5 (the engine's
 place), §8.1 (where the pass runs), docs/GAINS.md (the readers), and
-migration 0118.
+migrations 0118 and 0121.
 
 ---
 
@@ -63,9 +63,7 @@ A key is an instrument held in one account of one source. A pooled
 source keys on the portfolio instead of the account (§6). A key's open
 lots are its book.
 
-The feed reads gold into events, per key, in time order. At one
-instant what arrives from outside opens before anything leaves, so a
-receipt and a transfer out of the same day do not seed.
+The feed reads gold into events, per key, in time order.
 
 | event | from |
 |---|---|
@@ -78,9 +76,14 @@ receipt and a transfer out of the same day do not seed.
 | anchor | the lots a source states at a snapshot (§4) |
 | observe | a snapshot's quantity |
 
-Within one second a transfer moves first, then corporate actions,
-then acquisitions, then disposals, then the snapshot. A same-second buy and
-sell therefore never dips below zero.
+Within one second the events apply in this order:
+
+1. acquisitions, so what arrives from outside opens before anything
+   leaves, and a receipt and a transfer out of the same day do not seed;
+2. transfers between keys;
+3. corporate actions;
+4. disposals, so a same-second buy and sell never dips below zero;
+5. a source's stated lots, then the snapshot.
 
 A snapshot stamped at UTC midnight states its date's closing balance,
 so it observes at the day's last second. A snapshot stamped at any
@@ -361,8 +364,8 @@ The `lots` block of wealthdb.cfg (DESIGN.md §5.1):
 "lots": {
   "method": "fifo",
   "missing_basis": "ignore",
-  "sources":    { "<source>": { "method": "hifo", "mode": "fill", "grain": "portfolio" } },
-  "sources":    { "<source>": { "mode": "stated" } },
+  "sources":    { "<source>":       { "method": "hifo", "mode": "fill", "grain": "portfolio" },
+                  "<other-source>": { "mode": "stated" } },
   "basis":      [ { "source": "<source>", "account": "<account-id>", "instrument": "<instrument-id>",
                     "per_unit": 0.25, "acquired": "2020-01-15", "note": "…" } ],
   "portfolios": { "<source>": { "<portfolio-id>": { "method": "lifo" } } },
@@ -392,9 +395,8 @@ a configured source.
 
 ## 8. A missing cost basis
 
-The ledger holds NULL where a cost is unknown. GAINS.md §8 says how
-the readers count it: `ignore` leaves a figure that needs it blank,
-`zero` counts it as 0. `lots.missing_basis` sets their default.
+The ledger holds NULL where a cost is unknown. [GAINS.md §8](GAINS.md#8-a-missing-cost-basis)
+says how the readers count it.
 
 ## 9. The check
 

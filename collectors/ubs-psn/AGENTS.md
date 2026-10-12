@@ -13,6 +13,10 @@ applies on top of those shared rules.
   irreplaceable. An unprompted download still consumes the queued
   files and may break downstream workflows — never trigger one without
   being asked.
+- There is no MFA and no session. The RSA key is the credential.
+  `login --check` and `download --dry-run` each open one authenticated
+  SSH session with that key and close it. Neither lists nor fetches a
+  file.
 
 ## Authentication & private data
 

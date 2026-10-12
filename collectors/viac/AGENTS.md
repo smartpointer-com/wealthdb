@@ -5,6 +5,15 @@ source, git/commit conventions) live in the repo-root
 [AGENTS.md](../../AGENTS.md). The viac-specific surface below
 applies on top of those shared rules.
 
+Which verbs open a session (root [AGENTS.md](../../AGENTS.md) §2):
+
+- `login` signs in and sends an SMS mTAN to the registered phone.
+- `login --check` probes the stored cookie jar with one GET. It
+  submits no credential and sends no SMS.
+- `download`, `--dry-run` included, reuses the stored cookie jar and
+  never signs in. A `--dry-run` walks the JSON endpoints and writes
+  nothing.
+
 ## 1. Read-only VIAC access — never trigger write actions
 
 Root [AGENTS.md](../../AGENTS.md) §1 mandates read-only access. The
@@ -41,5 +50,9 @@ Forbidden — do not navigate to, click, or scrape:
 
 ## Authentication & private data
 
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and
-§4 (no private information in source). They apply in full here.
+Root [AGENTS.md](../../AGENTS.md) §3 and §4 apply in full. Two viac
+identifiers need the same care as an account number:
+
+- the login id, `VIAC_LOGIN`, which is a mobile phone number;
+- the portfolio number, which embeds the customer id
+  ([DESIGN.md](DESIGN.md) §3.1).

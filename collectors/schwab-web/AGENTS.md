@@ -5,6 +5,15 @@ source, git/commit conventions) live in the repo-root
 [AGENTS.md](../../AGENTS.md). The schwab-web-specific surface below
 applies on top of those shared rules.
 
+## 0. Which verbs sign in
+
+No Schwab session survives the browser, so every verb that opens one
+signs in: `download` (including `download --dry-run`) and
+`vnc-login`. A `--dry-run` writes nothing to bronze, but it is a real
+session with a real 2FA challenge (root [AGENTS.md](../../AGENTS.md)
+§2). `download --check` opens the stored profile and submits no
+credential.
+
 ## 1. Read-only Schwab web access — never trigger write actions
 
 Root [AGENTS.md](../../AGENTS.md) §1 mandates read-only access. The
@@ -25,8 +34,8 @@ pattern below is binding):
 - Export / download buttons that produce CSV, XLS, or PDF copies
   of already-displayed data.
 - Document download endpoints reachable via the session cookie
-  (typically REST endpoints fetched via Playwright's request API
-  rather than per-row link clicks).
+  (the walk clicks a row's download link and saves the file the
+  browser receives).
 - Logout (optional; not required between runs, but harmless).
 
 Forbidden — do not navigate to, click, or scrape:

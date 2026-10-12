@@ -2,8 +2,9 @@
 
 An [MCP](https://modelcontextprotocol.io/) server that puts the
 read-only wealthdb reports in front of any MCP client: Claude Desktop
-and Claude Code, Cursor, LM Studio, open-webui, or a custom agent. A model asks "what did we spend on groceries last year" and gets
-the same table `wealthdb spending` prints.
+and Claude Code, Cursor, LM Studio, open-webui, or a custom agent. A
+model asks "what did we spend on groceries last year" and gets the same
+table `wealthdb spending` prints.
 
 The server is the engine itself (`wealthdb mcp-serve`), run in the
 `wealthdb:latest` image. It can only read:

@@ -1,14 +1,13 @@
 # `wealthdb returns` — method and rationale
 
-The design decisions of record behind `wealthdb returns` (TWR / MWR):
-the conventions, the non-obvious choices, and what is deliberately
-deferred. [DESIGN.md §10.9](DESIGN.md) is the user-facing summary; this
-is the "why". All examples synthetic (AGENTS.md §4).
+The design decisions behind `wealthdb returns` (TWR / MWR): the
+conventions, the non-obvious choices, and what is out of scope.
+[DESIGN.md §10.9](DESIGN.md) is the summary; this file is the "why".
 
-The engine is **source-agnostic**: `internal/returns/` holds the pure
-math (period Modified-Dietz, TWR chaining, XIRR, onboarding/closure
-subsumption) and takes zero source names or branches. Each source's
-domain knowledge enters through a pluggable `ReturnsPolicy` (see
+The engine is **source-agnostic**. `internal/returns/` holds the pure
+math: period Modified-Dietz, TWR chaining, XIRR, and onboarding and
+closure subsumption. It names no source and has no per-source branch.
+Each source's knowledge enters through its `ReturnsPolicy` (see
 "Pluggable per-source policy" below).
 
 ## Grain and scope
@@ -30,15 +29,16 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
   (`transfer_in` / `transfer_out` from the equity-transfer ledger) for value
   that arrived from another tracked vehicle rather than a bank.
   A blended aggregate MWR is still computed and tagged
-  `mwr_incomplete_flows` — disclose, don't refuse. carta / equityzen count
-  the real boundary flows of their double-entry ledgers (see "Pluggable
-  per-source policy"); a window of theirs with no observed flow keeps
-  `nav_only_capital_call_risk` via the `CapitalCallRisk` knob.
+  `mwr_incomplete_flows`: disclose, don't refuse. carta and equityzen
+  count the real boundary flows of their double-entry ledgers (see
+  "Pluggable per-source policy"). A window of theirs with no observed
+  flow keeps `nav_only_capital_call_risk` through the `CapitalCallRisk`
+  knob.
 
 ## Credit cards are returns-invisible
 
-An account of kind `card` (migration 0037 — a revolving-credit liability
-whose outstanding balance is carried as negative cash) contributes
+An account of kind `card` (migration 0037) is a revolving-credit
+liability. Its outstanding balance is carried as negative cash. It contributes
 **nothing to any return series at any grain**: no value, no flow, no row.
 A card is not an investment; its balance swings are spending, and running
 them through TWR/MWR would report shopping as performance.
@@ -61,11 +61,11 @@ kind and default to a strict no-op, so a card arriving from a source with
 no registered policy would leak straight into the aggregates. The rule is
 engine-level and keys on the account kind itself.
 
-**Contract of record:** with cards loaded, the returns global **no longer
-equals `report_global`** — the gap is the card balances, plus, for a source
-whose runs are partial, every account the per-account value spine carries
-that the per-source point-in-time `report_global` leaves out of its latest
-snapshot (gold DESIGN §10.7). Same
+**Contract of record:** with cards loaded, the returns global **does not
+equal `report_global`**. The gap is the card balances. For a source whose
+runs are partial, it also holds every account the per-account value spine
+carries that the per-source `report_global` leaves out of its latest
+snapshot ([DESIGN.md §10.7](DESIGN.md)). Same
 precedent as mortgages and other liabilities, which the rollups already
 drop; unlike a mortgage, a card is not even reported on the liability
 line, because it produces no row at all. The holdings surfaces
@@ -112,8 +112,9 @@ price gain on positions measured against a cost basis;
   at real valuation days keeps each flow in the same sub-period as the
   value change it causes (textbook TWR at valuation dates). A carried tail
   past the last snapshot is excluded; a window with no interior valuation
-  falls back to a single `[winFrom, winTo]` bucket. Dense (daily-snapshot)
-  sources are unchanged. Guard: `TestRunReturnsSparseSnapshotNoChainCollapse`.
+  falls back to a single `[winFrom, winTo]` bucket. For dense
+  (daily-snapshot) sources this is daily bucketing. Guard:
+  `TestRunReturnsSparseSnapshotNoChainCollapse`.
 - **Onboarding books the debut value.** A staggered constituent's real
   debut-region flows are subsumed first (`flowSubsumed` in `entityFlows`),
   then synthetic onboarding books the full first-snapshot value — or, under
@@ -133,29 +134,30 @@ price gain on positions measured against a cost basis;
 
 ## Value spine and flows
 
-SQL assembles the inputs by reusing existing report macros — no dedicated
-returns migration:
+The inputs come from the existing report macros. Returns adds no input
+macro of its own:
 
 - **Value spine:** `report_accounts_history(p_ccy)` is the per-account
   carry-forward series; its ASOF inner join omits pre-inception days, so a
   boundary before an account's first snapshot reads NULL ("not yet alive",
   not 0). Every grain is driven off the per-account spine (aggregated in
   Go), which is what synthetic onboarding needs.
-  - The macro resolves the active snapshot **per account** (gold migration
-    0051), so an account a partial run did not cover keeps its own last
-    observation instead of dropping out of the spine for that day. The spine
-    therefore has no holes where a source writes different accounts under
-    different snapshots — which is the common case now that a deposit run, a
-    card run and a statement backfill each carry their own `snapshot_at`. An
-    account that vanishes for a snapshot or two and then reappears is carried
-    across the gap too, so the macro and the Go carry no longer disagree there.
+  - The macro resolves the active snapshot **per account** (migration
+    0051). An account a partial run did not cover keeps its own last
+    observation, so it stays in the spine for that day. The spine therefore
+    has no holes where a source writes different accounts under different
+    snapshots. A deposit run, a card run and a statement backfill each
+    carry their own `snapshot_at`, so this case is common. An account that
+    vanishes for a snapshot or two and then reappears is carried across the
+    gap too, so the macro and the Go carry agree there.
   - A **dropped** account — one a later run of its source re-covered
     everything it was last seen with without mentioning it, or one its source
     kept snapshotting past for longer than the carry horizon — ends its series
     there, and reads **0 after its last emitted row**, not its last carried
-    value: post-disappearance absence ≠ pre-inception NULL. `valueAt` returns
-    0 past the last row and flags `dropped_while_nonzero`, so
-    `global == Σ accounts` reconciles again past the ending.
+    value: post-disappearance absence ≠ pre-inception NULL. `valueAt` reads
+    0 past the last row, and an account that ended while still holding value
+    raises `dropped_while_nonzero`. So `global == Σ accounts` reconciles past
+    the ending.
   - A **closure** is an explicit zeroing row (`silver.ClosureMarkerBatch`),
     which the spine carries as a zero immediately — the supported way to end
     an account's value on the day it really ended. A cash account written down
@@ -200,21 +202,21 @@ returns migration:
     zeroing value drop itself is the exit signal, offset by real drains that
     preceded the zeroing snapshot. Safe when the ledger may be missing or
     mis-dated around a closure.
-  - `ClosureLedgerExact` (carta / equityzen): zero-tail flows are real dated
-    exit legs — those ledgers put the proceeds on the zeroing day itself —
-    so they are KEPT and no closure synthetic is booked: the realized-vs-
-    last-mark delta shows as return (a late escrow release after the zeroing
-    likewise books as gain). A flow-less zeroing reads as a full loss under
+  - `ClosureLedgerExact` (carta, equityzen, manual): zero-tail flows are
+    real dated exit legs. Those ledgers put the proceeds on the zeroing day
+    itself, so they are KEPT and no closure synthetic is booked. The
+    realized-vs-last-mark delta shows as return. A late escrow release
+    after the zeroing likewise books as gain. A flow-less zeroing reads as a full loss under
     either scope, tagged via `CapitalCallRisk`.
 
   The closure day is the zero tail's END, so the machinery engages when the
   window reaches it. The exit-day zero snapshot itself comes from the
-  adapters (`silver.ClosureMarkerBatch`): when a carta / equityzen portfolio
-  fully empties, the disposition date's batch replays the previous
-  snapshot's positions at zero value — an empty batch is invisible to gold's
-  history and as-of queries, which would otherwise carry the pre-exit marks
-  forward as phantom value. The closure mirror of an inception anchor: the
-  track record ends at a real, dated zero.
+  adapters (`silver.ClosureMarkerBatch`). When a portfolio fully empties,
+  the exit date's batch replays the previous snapshot's positions at zero
+  value. An empty batch is invisible to gold's history and as-of queries,
+  which would otherwise carry the pre-exit marks forward as phantom value.
+  It is the closure mirror of an inception anchor: the track record ends
+  at a real, dated zero.
 
 ## Staggered-inception subsumption
 
@@ -255,86 +257,102 @@ double-count. Guard: `TestStaggeredJournalFundedNoPhantom`.
 
 *(referenced by DESIGN.md §10.9 and `internal/returns/returnspolicy.go`)*
 
-Source economics differ — NAV-only tiny bases, crypto sweep churn, drained
-closures, appreciated in-kind transfers, conduit cash — so a single
-hardcoded model comes out wrong for most sources, and a pile of per-source
-`if` branches in shared engine code leaks one source's behavior into
-another (at the global grain every constituent merges into one entity). The
-one source-blind engine instead reads a declarative `ReturnsPolicy` per
-source:
+Source economics differ: NAV-only tiny bases, crypto sweep churn, drained
+closures, conduit cash. A single hardcoded model is wrong for most
+sources. Per-source `if` branches in shared engine code would leak one
+source's behaviour into another, because at the global grain every
+constituent merges into one entity. So the engine reads a declarative
+`ReturnsPolicy` per source instead, and the returns calculation names no
+source.
 
-- **Registry.** `internal/returns/returnspolicy.go` defines `ReturnsPolicy`
-  (a `Flow FlowPolicy` member plus the knobs) and a `kind`-keyed registry
-  (`RegisterPolicy` / `ReturnsPolicyFor`). Each source declares its policy
-  in `internal/silver/<source>/policy.go` and registers it from that
-  package's `init()` — the same pattern as the adapter registry. Resolution
-  is by adapter kind, so a policy is **source-scoped even at the global
-  grain** (each constituent keeps its origin's policy inside the merged
-  entity), which makes the cross-grain leak structurally impossible.
-  `DefaultReturnsPolicy()` reproduces current behavior, so a
-  recognised-but-unmigrated source is a strict no-op.
-- **Config overrides.** A deployment can adjust a source's registered policy
-  from wealthdb.cfg (`returns_policy_overrides`, DESIGN.md §5.6), keyed by
-  silver_source_id and composed at the engine's single resolution point
-  (`newAccountData`), so the CLI and the materialized `report_returns` always
-  agree: `flow_regime` replaces the flow classification with a regime's
-  canonical kind sets (`FlowPolicyForRegime`); `accounts_grain` sets the
-  per-account display mode (normal / blanked / hidden). The `returns_hide`
-  config block (DESIGN.md §5.7) hides specific account/portfolio ids the
-  same way — rows suppressed, values and flows still aggregated. The escape hatch for data completeness
-  that differs from the registered default (e.g. a flow-counting source whose
-  silver carries no transactions pins back to `nav_only`).
-- **UBS knobs (live).** UBS's policy sets four source-scoped knobs:
-  `OnboardScope = OnboardPerEntityOnce` (books the relationship's inception
-  step-up once, net of same-day negative sibling funding drops, floored at
-  0 — an internal cash→securities move onboards nothing); `ConduitKinds =
-  [cash]` (cash feeds the value spine but emits no per-account onboarding);
-  `ExternalOnly = true` (honored in silver — UBS pre-tags external/internal
-  and demotes internal rows to a non-flow kind, so the engine's
-  `ExternalOnly`/`ClassifyFlow` branch is inert for UBS; the silver
-  classifier combines the parser's internal markers, the own-counter-IBAN
-  rule, a direction-symmetric interbank-rail promotion era-gated to the
-  MT940-covered era, and a same-day offset veto that recognises a mirror
-  leg on another own account across all three feeds — see
-  `pdfCashIsExternal` / `buildSameDayOffsetVeto`. The deep backfill era
-  before any MT940 coverage stays conservative in BOTH directions: its
-  inbound capital rides the onboarding step-ups, so one-sided or symmetric
-  counting there fabricates return — that era's honest fix is
-  counterparty-complete data, tracked separately);
-  `Inception = InceptionFirstRealSnapshot` (anchors the window past sparse
-  cash-only pre-history, so a tiny opening base cannot inflate the return).
-- **Flow classification** is one member of the policy: banks / pension =
-  flow-complete; crypto = fiat flows only (transfer legs excluded); carta /
-  equityzen = boundary deposit/withdrawal only (the holding legs of their
-  double-entry pairs — buy/sell/contribution/distribution — stay internal,
-  or every event would cancel to a net-0 flow; `CapitalCallRisk` keeps the
-  honesty tag on flow-less windows; `ClosureLedgerExact` books full exits at
-  their real proceeds); manual = NAV-only.
-- **No dormant knobs.** Every `ReturnsPolicy` field has a live engine
-  site; a knob is added together with the code that reads it. The
-  `ClassifyFlow` hook's site is live (`attachOneFlow`) but every current
-  source ships it nil — UBS pre-tags external/internal in silver instead.
-  NAV-only and crypto handling ride `Flow.Regime`.
+- **Registry.** `internal/returns/returnspolicy.go` defines
+  `ReturnsPolicy` and a registry keyed by adapter kind (`RegisterPolicy`
+  / `ReturnsPolicyFor`). Each source declares its policy in
+  `internal/silver/<source>/policy.go` and registers it from that
+  package's `init()`, as it registers its adapter. Each constituent keeps
+  its own source's policy inside a merged entity, so a policy is
+  source-scoped even at the global grain. `DefaultReturnsPolicy(flow)`
+  sets every knob to the engine's baseline, so a policy that changes no
+  knob changes no number.
+- **Knobs.** Each has a live engine site, and a knob is added together
+  with the code that reads it:
 
-**Abandoned — residual onboarding.** An earlier attempt reconciled
-per-constituent onboarding with conduit cash deposits by subtracting counted
-inflows from the onboarding amount. It was implemented and **reverted**:
-unwinnable, because the conduit's gross throughput dwarfs debut values, so
-there is nothing to net against. The per-entity-once step-up
-(`groupOnboardStep`) replaced it; no residual/throughput arithmetic remains
-(grep-clean).
+  | knob | default | effect |
+  |---|---|---|
+  | `Flow` | per source | the regime and the kinds that count as external flows and as transfer-like (netting) flows |
+  | `OnboardScope` | per constituent | `OnboardPerEntityOnce` books one step-up per entity (`groupOnboardStep`); `OnboardNone` books no onboarding |
+  | `AccountsGrain` | normal | `blanked` shows values with TWR/MWR n/a + `accounts_grain_meaningless`; `hidden` emits no rows, while values and flows still aggregate |
+  | `CapitalCallRisk` | off | keeps `nav_only_capital_call_risk` on a window where the source's own accounts observed no external flow |
+  | `ClosureScope` | `ClosureSubsumeDrains` | `ClosureLedgerExact` keeps zero-tail flows as real exit legs ("Netting and closure") |
+  | `Inception` | full window | `InceptionFirstRealSnapshot` anchors the window at the first real position snapshot |
+  | `ConduitKinds` | none | account kinds that feed the value spine but get no per-account onboarding |
+  | `ExternalOnly` | off | drops every row the silver tagged `returns_flow: internal` (`attachOneFlow`) |
+
+- **Flow classification.** Banks and pensions are flow-complete
+  (`BankFlowPolicy`). Crypto counts fiat flows only, and its transfer
+  legs are excluded. carta and equityzen count boundary deposit and
+  withdrawal only (`PrivateMarketLedgerPolicy`). The holding legs of
+  their double-entry pairs (buy, sell, contribution, distribution) stay
+  internal, or every event would cancel to a net-0 flow. angellist counts
+  deposit and withdrawal plus the equity-transfer ledger's transfer legs;
+  contribution and distribution stay internal. manual is NAV-only and
+  counts only the equity-transfer ledger's legs.
+- **Shared policies.** `DepositBankPolicy` (checking, savings and
+  money-market conduits) and `CardIssuerPolicy` (card-only sources) are
+  the bank set with `AccountsGrainHidden`. A deposit account is cash
+  plumbing. A card emits nothing anyway ("Credit cards are
+  returns-invisible"); its policy states that rather than fall through to
+  `unknown_adapter_policy`.
+- **UBS.** UBS is a conduit relationship: external cash lands in a cash
+  account and funds securities in another account of the same
+  relationship. Its policy sets four knobs:
+  - `OnboardScope = OnboardPerEntityOnce`: the relationship's inception
+    step-up is booked once, net of same-day negative sibling funding
+    drops, floored at 0. An internal cash→securities move onboards
+    nothing.
+  - `ConduitKinds = [cash]`: cash feeds the value spine but gets no
+    per-account onboarding.
+  - `ExternalOnly = true`: the silver tags conduit churn
+    `returns_flow: internal`, and the engine drops those rows. A tag is
+    used rather than a rewritten kind, because spending reads the kind
+    too. The silver classifier (`pdfCashIsExternal`,
+    `buildSameDayOffsetVeto`) is described in
+    [adapters/ubs.md](adapters/ubs.md) §5 and §7.
+  - `Inception = InceptionFirstRealSnapshot`: the window starts past the
+    sparse cash-only pre-history, so a tiny opening base cannot inflate
+    the return.
+- **cointracking** sets `OnboardNone`: its wallets debut funded by
+  crypto transfers already excluded from flows, so onboarding would
+  double-count. It also sets `AccountsGrain = blanked`, because coins
+  sweep between wallets.
+- **Config overrides.** wealthdb.cfg can adjust a source's registered
+  policy (`returns_policy_overrides`, DESIGN.md §5.6), keyed by
+  silver_source_id. The override applies at the engine's single
+  resolution point (`newAccountData`), so the CLI and the materialized
+  `report_returns` agree. `flow_regime` replaces the whole flow
+  classification with the regime's own kind sets
+  (`FlowPolicyForRegime`). `accounts_grain` sets the per-account display
+  mode. It is the escape hatch for data completeness that differs from
+  the registered default. One example: a flow-counting source whose
+  silver carries no transactions pins back to `nav_only`. The
+  `returns_hide` block (DESIGN.md §5.7) hides specific account or
+  portfolio ids the same way: no rows, but values and flows still
+  aggregate.
+
+**Not done: residual onboarding.** Subtracting a conduit's counted
+inflows from per-constituent onboarding cannot work. The conduit's gross
+throughput dwarfs debut values, so there is nothing to net against. The
+per-entity-once step-up (`groupOnboardStep`) handles conduits instead.
 
 ## UBS stamp-duty routing
 
-The `cash_movement` default fall-through is `signedDepositWithdrawal`
-(deposit/withdrawal by sign), **not** `other`. Stamp duty is routed to `tax`
-by a substring match on the distinctive terms (`TIMBRE`, `UMSATZABGABE`,
-`STEMPEL`, `STAMP`) anywhere in the narrative — a first-word match can't
-catch "DROIT DE TIMBRE" (first word "DROIT", shared with "droit de garde"
-custody fees). The default is deliberately **not** changed to `other`: that
-would mis-route genuine unlabeled wires (real external capital) out of the
-flow series — the worse error. Residual: stamp-duty variants without those
-terms still leak to deposit/withdrawal (defensive coverage, no live sample).
+UBS's unmapped `cash_movement` falls through to deposit or withdrawal by
+sign, not to `other`. Stamp duty is routed to `tax` by its distinctive
+terms anywhere in the narrative ([adapters/ubs.md](adapters/ubs.md) §6).
+The fall-through stays deposit/withdrawal on purpose. `other` would drop
+genuine unlabeled wires, which are real external capital, out of the
+flow series, and that is the worse error. A stamp-duty variant without
+those terms still reads as a deposit or withdrawal.
 
 ## Quality flags
 
@@ -357,7 +375,7 @@ inception override (DESIGN.md §5.4) rather than the data's own start.
 `accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of
 sweep sources (a single crypto wallet's return is noise; the coarser
 grains stay valid). Plumbing goes further: every `cash` account, whatever
-its source, `AccountsGrainHidden` sources (the deposit banks) and
+its source, `AccountsGrainHidden` sources (deposit banks, card issuers) and
 `returns_hide` ids emit no rows at all, nor does a portfolio or source made
 only of them, while still feeding every aggregate.
 `mwr_negative_net_capital` reports XIRR as n/a because the
@@ -373,15 +391,13 @@ after days and a quarterly manual source only after months, with no
 per-source configuration; with fewer than 3 observed gaps no cadence
 is inferred and the flag stays off.
 
-`unknown_adapter_policy` is unreachable via the real pipeline
-(`silver_sources.silver_kind` has a CHECK constraint admitting only the
-known adapter kinds, each of which registers a policy from its `init()`).
-That invariant once silently broke — three collectors shipped into the
-CHECK without a `policy.go` — so it is now enforced by a guard test
-(`TestEveryCheckKindHasAdapterAndPolicy`) that cross-checks the CHECK list
-against the adapter and policy registries (fred exempt: a pure FX reference
-source that never reaches the returns engine). The flag itself stays as
-defense-in-depth, unit-tested at the policy-resolution level.
+`unknown_adapter_policy` is unreachable through the real pipeline.
+`silver_sources.silver_kind` has a CHECK constraint that admits only the
+known adapter kinds, and each registers a policy from its `init()`. A
+guard test (`TestEveryCheckKindHasAdapterAndPolicy`) cross-checks the
+CHECK list against the adapter and policy registries. fred is exempt: it
+is a pure FX reference source that never reaches the returns engine. The
+flag stays as defense in depth, unit-tested at policy resolution.
 
 `flows_before_inception` marks an entity whose observed external ledger
 flows reach back before its resolved inception (data-derived, policy
@@ -391,21 +407,12 @@ With a configured override the flag documents exactly what the override
 excludes; without one it means the transaction backfill reaches further
 back than the value spine supports (the case the §5.4 override is the
 remedy for). Purely diagnostic — no flow handling changes — and anchored
-on the inception, so an explicit `--from` / windowed-partition clip never
+on the inception, so an explicit FROM or a windowed-partition clip never
 raises it.
 
-Deferred flags: `corp_action_present` / `corp_action_split_timing`,
-`dormant_carryforward`.
+No flag marks a corporate action inside a window, or a dormant account
+carried forward.
 
-## Deferred / out of scope
+## Out of scope
 
-- **Per-source policy migrations** still pending — each its own reviewed
-  change with a per-source before/after: schwab appreciated-transfer
-  handling folded into the policy + `ClassifyFlow`; svb drained-closure
-  handling. End state: no source-named code in the returns
-  calculation — all source-specificity is a declarative policy (+ rare
-  hook) co-located in `internal/silver/<source>/`. (Done: carta / equityzen
-  count their ledgers' real boundary flows — the pairs moved from the
-  funding sentinel onto the custody account, making them spine-visible —
-  with `CapitalCallRisk` covering flow-less windows.)
-- **`--gross-of-fees`** (v2); returns ship net-of-fees / after-tax.
+There is no gross-of-fees mode. Returns are net of fees and after tax.

@@ -5,18 +5,18 @@ source, git/commit conventions) live in the repo-root
 [AGENTS.md](../../AGENTS.md). The angellist-specific surface below
 applies on top of those shared rules.
 
-This collector is **implemented and working end-to-end** (2026-06-09):
-`login` (real-Firefox cookie lift) → `download` (Camoufox + injected
-cookie, passive GraphQL capture + tax-doc fetch) → `load` (event-sourced
-silver) → gold adapter (`wealthdb/internal/silver/angellist/`). The
-allow/forbid surface below is binding.
+The pipeline is `login` (real-Firefox cookie lift) → `download`
+(Camoufox + injected cookie, passive GraphQL capture + tax-doc fetch) →
+`load` (event-sourced silver) → gold adapter
+(`wealthdb/internal/silver/angellist/`). The allow/forbid surface below
+is binding.
 
 ## 1. Read-only AngelList Investor Portal access — never trigger writes
 
 Root [AGENTS.md](../../AGENTS.md) §1 mandates read-only access. The
 concrete surface for angellist:
 
-Allowed — once mapped, only these surfaces may be navigated or clicked:
+Allowed — only these surfaces may be navigated or clicked:
 
 - The Investor Portal login form and the 2FA challenge page that
   follows it (handled by the human in `login`; the tooling types no
@@ -29,15 +29,17 @@ Allowed — once mapped, only these surfaces may be navigated or clicked:
 - Date-range / period filter inputs and "Apply" / "Search" buttons on
   the above pages.
 - Export / download buttons that produce CSV / XLS / PDF copies of
-  already-displayed data, and document-download endpoints reachable via
-  the session cookie (fetched through Playwright's request API).
+  already-displayed data, and the document-download endpoints listed by
+  the tax-documents page (fetched by a plain `urllib` GET that carries the
+  session cookie).
 - The venture LP read routes
   `venture.angellist.com/v/<user>/i/<investAccount>/{portfolio,commitments,
   taxes-and-documents,funding-accounts}` (the last is the dated cash ledger +
   balance, read-only) and the investor portal `portal.angellist.com`,
   plus the read-only GraphQL the SPA fetches from
-  `venture.angellist.com/venture/graphql` (captured passively by
-  `download` — we only navigate; the SPA issues the queries).
+  `venture.angellist.com/venture/graphql`. `download` captures it
+  passively: the collector only navigates, and the SPA issues the
+  queries.
 - Logout (optional; not required between runs, but harmless).
 
 Forbidden — do not navigate to, click, or scrape:
@@ -100,16 +102,15 @@ flag; never persist a password to disk. Do **not** try to automate the
 venture SPA login (bot-walled by design) or to forge/replay the
 `x-al-gql` GraphQL signature — drive the real browser instead.
 
-## Authentication & private data
+## 4. Private data
 
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and §4
-(no private information in source). They apply in full here.
-
-This collector's PII surface is unusually sensitive: K-1s and
-capital-account statements carry the LP's legal name, SSN/EIN fragments,
-and exact per-vehicle dollar figures, and SPV / fund names are
-themselves identifying. **Never** copy a real SPV / fund / manager name,
-LP name, commitment amount, or document into a tracked file (source,
-fixtures, comments, commit messages). Synthetic placeholders only — e.g.
-"SPV Alpha", "Fund I", round example figures. The raw artefacts live
-only under `$XDG_DATA_HOME/wealthdb/angellist/` and `~/.secrets/`, never in the repo.
+Root [AGENTS.md](../../AGENTS.md) §4 applies in full. This collector's
+PII surface is unusually sensitive. K-1s and capital-account statements
+carry the LP's legal name, SSN/EIN fragments and exact per-vehicle dollar
+figures. SPV and fund names are themselves identifying. **Never** copy a
+real SPV / fund / manager name, LP name, commitment amount, or document
+into a tracked file (source, fixtures, comments, commit messages). Use
+synthetic placeholders only, such as "SPV Alpha", "Fund I" and round
+example figures. The raw artefacts live
+only under `$XDG_DATA_HOME/wealthdb/angellist/` and `~/.secrets/`, never
+in the repo.

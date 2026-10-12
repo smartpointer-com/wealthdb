@@ -43,395 +43,200 @@ affiliated with, endorsed by, or sponsored by Fidelity or any other
 financial institution; nothing in this repository is financial, legal, or
 tax advice.
 
-A toolkit for ingesting Fidelity (USA) brokerage data by driving
-the `www.fidelity.com` client UI under Camoufox (a stealth-patched
-Firefox) to export portfolio positions, transaction history, and
-the archived PDF document set (statements + tax forms), then (in
-subsequent scripts) parsing the raw downloads into a queryable
-SQLite silver database for downstream tools to consume.
+fidelity-web reads Fidelity (USA) brokerage data from the
+`www.fidelity.com` client site. It drives Camoufox, a stealth-patched
+Firefox, through the sign-in and a read-only walk. It downloads:
 
-Part of the **wealthdb** suite — see [the architecture
-overview](../../DESIGN.md) for the bronze → silver → gold
-model and [collectors/README.md](../README.md) for shared collector
-conventions. [DESIGN.md](DESIGN.md) here covers Fidelity-specific
-design decisions.
+- portfolio positions, and the open and closed tax lots behind them;
+- transaction history;
+- statement and tax-form PDFs;
+- the balances and performance pages, as HTML;
+- a Fidelity Charitable donor-advised fund (DAF), when the login has one.
 
-## Status
+`load` parses the downloads into a SQLite silver database. The wealthdb
+Fidelity adapter
+([`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/))
+reads that database into gold.
 
-Login, bronze fetch, and silver loader are operational.
+Part of the **wealthdb** suite. See [the architecture
+overview](../../DESIGN.md) for the bronze → silver → gold model and
+[collectors/README.md](../README.md) for the shared collector
+conventions. [DESIGN.md](DESIGN.md) covers the Fidelity-specific design,
+and [AGENTS.md](AGENTS.md) the read-only surface.
 
-| Component | Status |
-| --- | --- |
-| [`download.py`](download.py) login + logout | one-shot: Camoufox + Akamai trust + Fidelity device-trust + CLI-MFA prompt; best-effort logout before context teardown |
-| [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts; then the open and closed lots of new and changed positions, or of all with `--refresh-lots`, loaded into `open_lots` and `closed_lots` by [`lot_parsers.py`](lot_parsers.py) — [DESIGN.md §8.3.1](DESIGN.md)) |
-| [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--lookback` window bisected into ≤30-day chunks, clamped to Fidelity's ~4-year retention; a window before what Fidelity serves is not a gap) |
-| [`download.py`](download.py) documents — tax forms | implemented (multi-year via `#options-select-TimeFilter`; one click per form by unique anchor id) |
-| [`download.py`](download.py) documents — statements | implemented (per-row click fires an authenticated `financial-documents/download` POST; the PDF is decoded from base64-in-JSON in that response; scroll-into-view + JS-click fallback for rows below the fold). |
-| [`download.py`](download.py) balances | implemented as HTML capture only — no direct export; per-account values are in `data-testid$='-totalaccountvalue-label'` for silver to scrape. The actions menu's 'Create Balance Letter' is a multi-step wizard; deferred. |
-| [`download.py`](download.py) performance | implemented as HTML capture only — Fidelity offers no structured export here (pure Highcharts UI + collapsible info tiles). Silver loader either scrapes return % from DOM text or accepts the gap. |
-| [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). |
-| [`pdf_parsers.py`](pdf_parsers.py) + [migration 0004](migrations/0004_historical_position_snapshots.sql) | implemented — 529 statement-PDF parser back-fills `historical_position_snapshots` for any quarter the statement archive covers. Accounts whose statements Fidelity does not serve (see [DESIGN.md §4.5](DESIGN.md)) are back-filled from `pdf_parsers_supplied.py` instead. |
-| [`pdf_parsers_1099.py`](pdf_parsers_1099.py) + [migration 0010](migrations/0010_closed_lots.sql) | implemented — reads the Form 1099-B lots of each Consolidated 1099 into `closed_lots`, next to the sales the supplied statements list, and files each copy in `documents` under the account and tax year the form states ([DESIGN.md §4.6](DESIGN.md)). |
-| `wealthdb` Fidelity adapter | implemented — see [`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/) |
-| [`explore.py`](explore.py) DAF discovery harness | implemented — VNC-driven recording session that mapped the Donor-Advised Fund surface ([DESIGN.md §12.1](DESIGN.md)) |
-| [`download.py`](download.py) DAF phase | implemented — SSO hop into the Fidelity Charitable SPA, then its JSON REST API, CSV exports, and PDF document set per giving account. Rides `--mode all` (full) and `--mode positions` (pool snapshot); no DAF-only mode, so every positions-bearing dump covers both channels ([DESIGN.md §12.2–12.3](DESIGN.md)) |
-| DAF silver + gold ([migration 0007](migrations/0007_portfolio_kind_daf.sql) + `load._load_daf`; gold migration 0036 + adapter) | implemented — DAF bronze loads into the shared silver tables under `portfolios.kind='daf'`, flowing through the single `fidelity` gold source as `donor_advised_fund` / `charitable` / `automated`; the loader's completeness gate keeps partial positions observations out ([DESIGN.md §12.3](DESIGN.md)) |
-| [`pdf_parsers_daf.py`](pdf_parsers_daf.py) DAF statement reconstruction | implemented — parses the quarterly Giving Account statement PDFs into `historical_position_snapshots` (reconciliation-gated), extending the DAF value spine back to the first statement ([DESIGN.md §12.3](DESIGN.md)) |
+## Why a web scraper
 
-The current open punch list lives in [DESIGN.md §11](DESIGN.md).
+Fidelity's OFX Direct Connect host does not resolve. Fidelity Access
+(Akoya) serves businesses only. The client site is the one channel open
+to an individual.
 
-## Why this design
+Akamai Bot Manager guards the sign-in. Stock Playwright Chromium is
+blocked at credential submit. Camoufox with a macOS fingerprint, a
+geoip-matched locale and humanised cursor movement gets through. See
+[DESIGN.md §1.1](DESIGN.md#11-why-a-web-scraper) and
+[§6](DESIGN.md#6-anti-bot-configuration-camoufox--behavioural-mimicry).
 
-Fidelity's OFX Direct Connect endpoint at `ofx.fidelity.com` is
-**NXDOMAIN** (retired) as of 2026-05-15. The official 2026
-consumer path is Fidelity Access / Akoya, which is B2B-only and
-not accessible to an individual reading their own data. Web
-scraping is the only realistic surface for a personal-archive
-toolkit, and Fidelity's signin flow is protected by Akamai Bot
-Manager — vanilla Playwright Chromium gets blocked at credential
-submit. Camoufox-patched Firefox with macOS-mode fingerprinting,
-geoip-derived locale, and humanised cursor trajectories gets
-through. See [DESIGN.md §6](DESIGN.md) for the empirical
-escalation chain.
+## Sessions and MFA
 
-A 2FA approval (Symantec VIP / Google Authenticator / similar
-TOTP-style code) is required on every truly-fresh login. Once
-"Trust this browser" is ticked, subsequent logins from the same
-Camoufox profile dir skip MFA for the duration of Fidelity's
-device-trust cookie (~30 days nominal).
+- Fidelity ends a session when its Firefox process exits. So `download`
+  signs in, walks, logs out and exits in one run. `login` is a no-op
+  that says so.
+- A fresh sign-in asks for a 6-digit code. `download` prompts for it on
+  stdin.
+- The run ticks "Trust this browser" at the code prompt. The profile dir
+  (`~/.secrets/fidelity-web-profile/`) then skips the code for about 30
+  days.
+- A fresh profile dir on a new IP needs one sign-in by hand over VNC
+  (`vnc-login`). Akamai wants one real human click. Its trust cookie
+  then lets scripted sign-ins through. When that cookie expires, the
+  next scripted sign-in can be blocked, and another `vnc-login`
+  re-seeds it.
+- `download --check` reports whether the stored session is alive. It
+  submits no credential. A closed Firefox ends the session, so it
+  usually reports DEAD.
 
-The first-ever login from a fresh profile dir on a new IP needs
-a one-time **VNC handoff** so Akamai sees a real human-generated
-mousedown/mouseup when the Log-In button is clicked. After that,
-the trust cookies in the profile dir allow scripted auto-clicks
-to pass. See [DESIGN.md §6](DESIGN.md) / `vnc-login` subcommand.
-
-## Account composition
-
-Fidelity's account selector groups accounts under section labels
-(`Education` for 529 sleeves, `Authorized` for trust accounts
-under a third-party investment manager, `Fidelity Charitable®
-Giving` for DAFs, etc.). The retail positions / activity /
-documents phases exclude the DAF by account-id length (Fidelity
-uses a shorter id for it than for brokerage / trust / 529
-accounts, and it has no brokerage-side surfaces to scrape) and
-dump every other account into one bronze run. The DAF is ingested
-by its own walk phase over the Fidelity Charitable API — see
-[DESIGN.md §12](DESIGN.md).
-
-Silver classifies each section label into a stable
-`portfolios.kind`:
-
-- `529` — 529 College Investing Plan participant accounts
-- `trust_managed` — Trust accounts under a third-party investment
-  manager (Fidelity-as-custodian; manager places trades)
-- `other` — anything else, kept as a fall-through so future
-  Fidelity labels don't need a schema migration
-
-A trust can be a separate tax entity, so this `portfolios.kind`
-split is not cosmetic. How gold consumes it is the adapter's
-concern — see [the canonical model](../../DESIGN.md) and the adapter source
-[`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/).
-
-See [DESIGN.md §1.2](DESIGN.md) for the account-category model
-in more depth; §1.3 for third-party managers.
-
-## Operational model
-
-Fidelity binds its session to the Firefox-process lifetime
-(confirmed empirically; same model as Schwab). Login and scrape
-share one continuous Camoufox process — `./fidelity-web
-download` does login → walk → logout → exit in one shot. The
-device-trust cookie in the profile dir lets subsequent runs skip
-the MFA prompt for ~30 days; once it expires the next run
-prompts on stdin for a fresh 6-digit code.
-
-### Build
+## Build
 
 ```sh
-git clone <this repo>
-cd collectors/fidelity-web
-./fidelity-web build       # one-time, ~10 min on first build
-                                # (~700 MB of that is the Camoufox-
-                                # patched Firefox binary fetch)
+make build-fidelity-web    # the Docker image and the host venv
+make test-fidelity-web
 ```
 
-fidelity-web is a **hybrid** collector: `download` / `vnc-login` run in
-the Docker image, while `load` / `prune` / `recompress` run on a host
-venv (they parse + decompress bronze in Python, no browser).
-`make build-fidelity-web` builds both halves — the image and the
-`.venv` (from `requirements.txt`, with `collectorkit` editable-
-installed). `make test-fidelity-web` runs the suite in that venv.
+fidelity-web is a hybrid collector. `download`, `vnc-login` and
+`explore` run in the Docker image. `load`, `prune` and `recompress` run
+on a host venv built from `requirements.txt`. `./fidelity-web build`
+builds the image alone. The image builds on the shared
+`wealthdb/base-camoufox`
+([`shared/images/base-camoufox.Dockerfile`](../../shared/images/base-camoufox.Dockerfile)),
+which pins Camoufox and the Playwright release that matches it.
 
-Base image is the shared `wealthdb/base-camoufox`
-(`shared/images/base-camoufox.Dockerfile`, itself built on
-`wealthdb/base-playwright` = `mcr.microsoft.com/playwright/python`,
-used for OS-level deps only — the bundled Playwright browsers are
-unused). It stages Camoufox's pre-fetched Firefox at
-`/opt/camoufox-cache` and pins the Python `playwright` package to
-**1.49.0** to match Camoufox's juggler-protocol revision — do NOT
-bump without also bumping `camoufox[geoip]`.
-
-### Run
-
-The wrapper drives `docker run` with the shared
-`~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/fidelity-web → /data`
-mounts (see [collectors/README.md](../README.md)). On top of
-those it adds two Fidelity-specific mounts:
-
-| Container path | Host path (default) | Purpose |
-| --- | --- | --- |
-| `/debug` | `~/.cache/wealthdb/debug/fidelity-web` | opt-in screenshots / traces |
-| `/app` | repo dir | edits to `download.py` picked up by the next spawn — no rebuild during iteration |
-
-Override host paths via env: `FIDELITY_WEB_SECRETS_DIR`,
-`FIDELITY_WEB_DATA_DIR`, `FIDELITY_WEB_DEBUG_DIR`.
-
-#### First-ever login (one-time VNC handoff)
-
-For a fresh profile dir on a new IP, Akamai's behavioural-detection
-needs a real human click at credential submit. Use `vnc-login` to
-hand off:
-
-```sh
-rm -rf ~/.secrets/fidelity-web-profile/
-./fidelity-web vnc-login --mode none -v
-```
-
-`entrypoint.sh` prints a fresh single-use VNC password and the
-host-side port at startup. The wrapper walks `5900-6000` to find a
-free TCP port (so a prior crashed container, macOS Screen Sharing,
-or another VNC server doesn't collide); whichever port lands is
-printed in the banner. Tunnel + connect with any VNC client (macOS:
-Finder → ⌘K → `vnc://localhost:<port>`), click "Log in" in the
-Camoufox window, complete 2FA, tick "Trust this browser" if you
-want subsequent runs to skip MFA. The script auto-detects post-auth
-and exits; the profile dir now holds the trust cookies.
-
-Drop the `--mode none` to also run the walk after the VNC-driven
-login lands.
-
-#### DAF discovery sessions
-
-```sh
-./fidelity-web explore
-```
-
-Opens the standard signin under Camoufox with a VNC handoff (same
-port banner as `vnc-login`) and records the whole human-driven
-session — crash-safe network log with response bodies, click log,
-browser downloads, and per-screen DOM snapshots — under the debug
-dir. It maps a surface the scripted walk does not cover, such as
-the Donor-Advised Fund behind the `Fidelity Charitable® Giving`
-account-selector link; see [DESIGN.md §12](DESIGN.md) for the
-walk script and open questions. Reuses the download profile dir, so
-a session costs at most a 2FA code. Recording stops when the
-browser window closes (or Ctrl-C). Distinct from
-`download --explore`, which only adds DOM inventories along the
-scripted walk.
-
-#### Routine dumps
-
-Once the profile dir is seeded, every run is one-shot:
-
-```sh
-./fidelity-web download --mode all     # positions + activity + documents + balances + performance
-                                        # + the full DAF phase (Fidelity Charitable: JSON REST,
-                                        #  CSV exports, PDF documents) when the login carries one
-./fidelity-web download --mode positions   # retail positions CSVs + the DAF pool snapshot —
-                                            # every positions-bearing dump covers BOTH channels
-                                            # (a partial dump would read downstream as the
-                                            #  uncovered accounts having emptied; there is no
-                                            #  DAF-only mode for the same reason)
-./fidelity-web download --mode positions --refresh-lots
-                                            # also re-fetch the lots of every
-                                            # position, not just new and changed
-                                            # ones (200 per run; later runs
-                                            # fetch the rest)
-./fidelity-web download --mode activity
-./fidelity-web download --mode documents
-./fidelity-web download --mode balances    # balances.html (no CSV export)
-./fidelity-web download --mode performance # HTML snapshot (no structured export)
-./fidelity-web download --mode activity \
-  --lookback 2022-06-01                  # Custom-range backfill from that date to
-                                          # today (chunked into ≤30-day windows,
-                                          # clamped to Fidelity's ~4-year retention)
-./fidelity-web download --lookback 1y    # shared window flag: a preset
-                                          # (1w/4w/3m/6m/1y/2y/5y/all) or an ISO date;
-                                          # also widens the documents scope
-                                          # (stmts + tax-forms, at year granularity)
-./fidelity-web download --dry-run      # walk + enumerate, no artefact writes
-./fidelity-web download --check        # validate session, no walk
-./fidelity-web download --debug        # also save per-landmark HTML+PNG captures
-                                        # under <run>/screenshots/ (off by default;
-                                        # diagnostic-only, prunable; --explore implies it)
-```
-
-Each invocation spins up Camoufox, logs in (auto-MFA-skip via the
-device-trust cookie or stdin prompt for the 6-digit code), runs
-the walk, attempts a clean logout, and exits. Bronze lands in a
-fresh `<bronze-dir>/<UTC-ts>/`.
-
-#### Loading into silver
-
-`load.py` walks every `<bronze-dir>/<UTC-ts>/` subdir, applies
-any pending schema migrations, and inserts new dumps into the
-silver SQLite DB. Idempotent on the synthetic `activity_id` and
-the `content_sha256` document key, so re-running converges.
-
-```sh
-./fidelity-web load                                # defaults: bronze + silver under $XDG_DATA_HOME/wealthdb/fidelity-web
-./fidelity-web load --silver-db /tmp/fidelity.db  # override the silver path
-./fidelity-web load -v                             # DEBUG logging
-```
-
-Runs host-side on the collector's venv (no Docker, no Camoufox), so
-it can execute in parallel with a `download` container if needed. The
-venv (built by `./fidelity-web build` / `make build-fidelity-web`)
-carries `zstandard` — the loader decompresses the zstd-compressed
-HTML/CSV bronze in Python, since the SQLite silver has no engine to
-stream `.zst` natively — and `pdfplumber` for statement parsing. Bronze
-is resolved by on-disk variant, so a plain (pre-compression) tree and a
-`.zst` tree load to identical silver. After every run the loader
-validates that positions and non-cash transactions have a ticker and
-logs how many accounts each classified portfolio holds; failures are
-logged as warnings.
-
-#### Reclaiming disk
-
-```sh
-./fidelity-web prune --dry-run   # print the deletion plan, delete nothing
-./fidelity-web prune             # delete it
-```
-
-`prune` removes two things across the bronze tree: `screenshots/`
-from complete dumps (debug captures, written only by
-`download --debug` / `--explore`; never a load input), and whole
-non-complete run dirs (a `--dry-run` shell, or a walk that crashed
-before writing a terminal `run.json`). Load inputs of complete
-dumps are never touched, so silver stays reproducible; deleting a
-non-complete dump surfaces on the next `load --force` rebuild.
-
-It also reclaims the `/debug` cache outside bronze
-(`~/.cache/wealthdb/debug/fidelity-web`, or `$FIDELITY_WEB_DEBUG_DIR`) — the
-screenshots and traces the container writes there, which nothing else
-clears out. Runs host-side like `load`, and one in-flight guard
-(`--min-age-hours`, default 1, keyed on recent write activity) covers
-both: it keeps `prune` from removing a download that is still running,
-or the captures of one.
-
-#### Compressing the pre-compression backlog
-
-`download` zstd-compresses every HTML/CSV export and the lot step's
-files as they land (`balances.html.zst`, `positions_*.csv.zst`,
-`activity_*.csv.zst`, `lots/*.zst`), and `load` reads the `.zst` and
-plain forms alike (it decompresses in Python). Run dirs written before
-compression existed can be converted once with the `recompress` verb,
-which replaces each plain compressible file inside a **complete** dump
-with a compressed twin — the original is unlinked only after the twin
-has been decompressed and sha256-verified against it, and an
-interrupted sweep is safe to re-run. PDFs and
-`run.json` are left untouched. Unlike `prune` this rewrites load
-inputs, so it is strictly manual: never schedule it, review the plan
-first, and verify afterwards with `load --force` (silver must come out
-identical).
-
-```sh
-./fidelity-web recompress --dry-run   # print the sweep plan, rewrite nothing
-./fidelity-web recompress             # convert complete dumps, with byte accounting
-./fidelity-web load --force           # convergence check: silver must be unchanged
-```
-
-### Credentials
+## Credentials
 
 `download.py` reads two env vars inside the container:
 
-- `FIDELITY_WEB_USERNAME` — Fidelity login username (treat as sensitive).
-- `FIDELITY_WEB_PASSWORD` — Fidelity login password.
+- `FIDELITY_WEB_USERNAME` — the Fidelity login username. Treat it as
+  sensitive.
+- `FIDELITY_WEB_PASSWORD` — the Fidelity login password.
 
-The unprefixed legacy names (`FIDELITY_USERNAME` / `FIDELITY_PASSWORD`)
-are read as a fallback.
-
-Credentials go in `~/.secrets/fidelity-web.env` (sourced
-automatically as `/secrets/fidelity-web.env` inside the container);
-see [collectors/README.md](../README.md#conventions-shared-across-collectors)
+The unprefixed names (`FIDELITY_USERNAME` / `FIDELITY_PASSWORD`) are
+read as a fallback. Credentials go in `~/.secrets/fidelity-web.env`,
+which the container reads as `/secrets/fidelity-web.env`. See
+[collectors/README.md](../README.md#conventions-shared-across-collectors)
 for the shared env-file rules.
 
-### Session lifecycle
+## Run
 
-- The session lives only for the duration of one `download`
-  invocation: login → walk → logout → exit. No keep-alive,
-  no idle-timeout concerns.
-- Device-trust cookie has a long lifetime (~30 days nominal);
-  during that window subsequent runs skip the MFA prompt.
-  Beyond it, MFA fires again on the next run.
-- Akamai trust cookie has a separate lifetime; if it expires,
-  the next scripted login may get bot-blocked and need another
-  one-shot VNC handoff to re-seed.
-- `download --check` is mostly diagnostic — it'll report DEAD on
-  a profile dir whose Fidelity session has expired even if the
-  cookies on disk look intact (session ≠ profile-dir cookies,
-  per §5 of [DESIGN.md](DESIGN.md)).
-
-## Bronze layout
-
-```
-<bronze-dir>/                              e.g. $XDG_DATA_HOME/wealthdb/fidelity-web/
-├── 20260524T120000Z/                      one bronze dump per trigger
-│   ├── run.json                           manifest: accounts, per-phase results (not compressed)
-│   ├── positions/
-│   │   ├── positions_summary.csv.zst      Overview view (all accounts)
-│   │   └── positions_dividend.csv.zst     DividendView (all accounts)
-│   ├── lots/
-│   │   ├── index.json.zst                 every lot-eligible position and the dump that
-│   │   │                                   fetched its lots
-│   │   └── lots.jsonl.zst                 the lot step's responses, one JSON line each
-│   ├── activity/
-│   │   └── activity_<since>__<until>.csv.zst  one CSV per date-window
-│   │                                       (consolidated across accounts;
-│   │                                       Account Number column inside)
-│   ├── documents/
-│   │   ├── <fidelity-supplied-filename>.pdf  (PDFs never compressed)
-│   │   └── …
-│   ├── balances/
-│   │   └── balances.html.zst              full-page DOM (no CSV export)
-│   ├── performance/
-│   │   └── performance.html.zst           full-page DOM (no CSV export)
-│   └── screenshots/                       only with download --debug / --explore
-│       └── <ts>-<label>.{html,png}        per-landmark diagnostics (prunable, not compressed)
-├── 20260525T120000Z/
-│   └── …
-├── manual/                                hand-dropped artefacts (documents that arrive out-of-band)
-├── supplied-statements/                   statement PDFs supplied out-of-band (parsed into position snapshots, transactions and closed lots)
-└── fidelity-web.db                        silver SQLite (default location)
+```sh
+./fidelity-web vnc-login --mode none -v    # first sign-in on a fresh profile, by hand
+./fidelity-web download                     # every phase, last 90 days
+./fidelity-web download --mode positions    # positions, lots and the DAF pool snapshot
+./fidelity-web download --mode activity --lookback 2022-06-01   # activity since a date
+./fidelity-web download --lookback all      # everything Fidelity still serves
+./fidelity-web download --check             # is the stored session alive?
+./fidelity-web load                         # bronze → silver
+./fidelity-web prune --dry-run              # preview the disk reclaim
 ```
 
-HTML/CSV load inputs and the lot step's files are zstd-compressed in
-place as they land (`.zst`; plain in pre-compression dumps — both
-forms load, and the loader decompresses in Python). PDFs and
-`run.json` stay raw. See [DESIGN.md](DESIGN.md) §2 for the
-compression + convergence contract and the manual `recompress`
-backlog sweep.
+`./fidelity-web help` lists the verbs, and `download --help` the flags.
+A few behaviours worth knowing:
 
-`run.json` keys `account_dimensions` by `sha256(account_external_id)[:16]`,
-so `ls` of a bronze dir + a glance at the manifest does not
-expose the 9-digit Fidelity account numbers. The canonical
-mapping lives inside each CSV's `Account Number` column and
-in tax-form filenames (Fidelity-supplied); bronze itself is
-gitignored.
+- `--mode` picks one phase: `positions`, `activity`, `documents`,
+  `balances` or `performance`. `all` (the default) runs every phase.
+  Every positions-bearing mode also reads the DAF, so there is no
+  DAF-only mode
+  ([DESIGN.md §12.3](DESIGN.md#123-silver--gold-model)).
+- `--lookback` sets where the window starts. The default is 90 days
+  back. Activity comes as one CSV per window of at most 30 days
+  ([DESIGN.md §8.4](DESIGN.md#84-activity--orders)). Documents are
+  filtered by year, from the year the window starts.
+- `--refresh-lots` fetches the lots of every position, not only of new
+  and changed ones. Each run fetches at most 200 lot tables; later runs
+  fetch the rest.
+- `--dry-run` still signs in and walks the site. It writes nothing to
+  bronze.
+- `--debug` saves an HTML and PNG capture at each landmark under
+  `<run>/screenshots/`. `load` never reads them.
+- `download` exits 4 when a phase came back short. The dump stays
+  loadable ([DESIGN.md §2.1](DESIGN.md#21-coverage-status-and-the-exit-code--three-different-questions)).
 
-The `manual/` directory is for bronze artefacts that arrive
-out-of-band, outside anything Fidelity-as-custodian surfaces.
-`manual/` contents are stored alongside the auto-fetched
-bronze but are not parsed into silver.
+### VNC sign-in
 
-## Relationship to a hypothetical Fidelity API source
+`vnc-login` pre-fills the credentials and waits for the human to click
+"Log in" and enter the code over VNC. The wrapper picks a free port in
+5900-6000 and prints it with a single-use VNC password. The wait
+defaults to one hour (`--mfa-timeout`). Without `--mode none`, the walk
+runs after the sign-in lands.
 
-`schwab-api` exists alongside `schwab-web` because
-Schwab publishes a retail Trader API; for Fidelity in 2026 there
-is no equivalent api-side toolkit. A direct institutional feed,
-if one ever materialises, would live in its own collector; the
-`wealthdb` Fidelity adapter would then merge the two silvers the
-same way the Schwab adapter merges api + web.
+### Discovery sessions
 
-For now, this is the only Fidelity-side silver source planned.
+`./fidelity-web explore` opens the sign-in over VNC and records a
+human-driven session under the debug dir: network log with response
+bodies, click log, downloads and DOM snapshots. It maps surfaces the
+walk does not cover; [DESIGN.md §12](DESIGN.md#12-donor-advised-fund-extension)
+records the DAF map it produced. It reuses the download profile dir.
+Recording stops when the browser window closes. `download --explore`
+is different: it only adds DOM inventories along the scripted walk.
+
+### Mounts
+
+The wrapper mounts `~/.secrets` as `/secrets` and the data dir as
+`/data` ([collectors/README.md](../README.md)). It adds two more:
+
+| Container path | Host path (default) | Purpose |
+| --- | --- | --- |
+| `/debug` | `~/.cache/wealthdb/debug/fidelity-web` | opt-in screenshots and traces |
+| `/app` | the collector dir | code edits take effect on the next run, with no rebuild |
+
+`FIDELITY_WEB_SECRETS_DIR`, `FIDELITY_WEB_DATA_DIR` and
+`FIDELITY_WEB_DEBUG_DIR` override the host paths.
+
+## Output
+
+```
+$XDG_DATA_HOME/wealthdb/fidelity-web/
+├── 20260524T120000Z/       one dump per download run
+│   ├── run.json            config, accounts, per-phase results, coverage
+│   ├── positions/          Overview and DividendView CSVs, all accounts
+│   ├── lots/               the lot step's responses and index
+│   ├── activity/           one CSV per date window, all accounts
+│   ├── documents/          statement and tax-form PDFs
+│   ├── balances/           balances page HTML
+│   ├── performance/        performance page HTML
+│   ├── daf/                the DAF phase's JSON, CSV exports and PDFs
+│   └── screenshots/        only with --debug or --explore
+├── supplied-statements/    statement PDFs supplied out-of-band
+├── manual/                 hand-dropped documents; not parsed
+└── fidelity-web.db         silver SQLite
+```
+
+The HTML and CSV exports and the lot step's files are zstd-compressed
+as they land. PDFs, `run.json` and the DAF JSON stay raw.
+[DESIGN.md §2](DESIGN.md#2-bronze-layout) has the full layout, and
+[§4](DESIGN.md#4-silver-schema) the silver tables.
+
+`load` runs on the host, so it can run while a `download` container
+works. It reads every finished dump not yet in silver, plus the PDFs
+under `supplied-statements/`
+([DESIGN.md §4.5](DESIGN.md#45-historical-reconstruction--three-pdf-sources)).
+Re-running converges. `load --force` rebuilds silver from bronze.
+
+## Reclaiming disk
+
+```sh
+./fidelity-web prune --dry-run        # print the plan, delete nothing
+./fidelity-web prune
+./fidelity-web recompress --dry-run   # plan the backlog sweep
+./fidelity-web recompress
+./fidelity-web load --force           # silver must come out unchanged
+```
+
+`prune` removes `screenshots/` from complete dumps, whole unfinished
+dumps, and old entries of the `/debug` cache. It never touches a `load`
+input. See
+[collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+
+`recompress` compresses the plain HTML and CSV files that complete
+dumps still hold. It rewrites `load` inputs, so it is
+manual only: review the plan first, then check that `load --force`
+leaves silver unchanged
+([DESIGN.md §2](DESIGN.md#2-bronze-layout)).

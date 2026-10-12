@@ -5,16 +5,18 @@ source, git/commit conventions) live in the repo-root
 [AGENTS.md](../../AGENTS.md). The carta-specific surface below applies on
 top of those shared rules.
 
-This collector is **implemented and verified end-to-end** (2026-06-08):
-`explore` / `login` / `download` / `load` all work. It **pivoted from an API
-design to a web scraper**: Carta has a real `/v1alpha1/` REST API, but API
-access is invite-gated and (as of 2025) also requires SOC 2 Type 2 for
-third-party partners; the "customers can consume their own data" carve-out
-is for *companies and investment firms*, not individual shareholders. An
-individual holder cannot self-provision credentials, so we drive the holder
-web UI (Camoufox) and replay its internal cookie-session REST/JSON API
-read-only. See [DESIGN.md](DESIGN.md). The allow/forbid surface below is
-binding.
+Carta's public REST API is closed to individual holders
+([DESIGN.md](DESIGN.md) §1). The collector therefore drives the holder web
+UI (Camoufox) and replays its internal cookie-session REST/JSON API,
+read-only. The allow/forbid surface below is binding.
+
+Which verbs open a session (root [AGENTS.md](../../AGENTS.md) §2):
+
+- `login` signs in and fires a 2FA challenge.
+- `explore` opens a live session that a human drives over VNC.
+- `login --check` and `download --dry-run` reuse the stored profile and
+  never sign in. A `--dry-run` lands in the app, lists the held entities
+  and writes nothing.
 
 ## 1. Read-only Carta holder access — never trigger writes
 
@@ -82,9 +84,9 @@ tick (`#enable-bypass`) plants a device-trust cookie that skips 2FA on
 renewal; its exact lifetime is unmeasured — do not assume the session
 persists, and do not invalidate it without cause:
 
-- Don't add a routine "fresh login per N runs" pattern — re-mint only when
+- Don't add a routine "fresh login per N runs" pattern. Re-mint only when
   the session genuinely expires. Each fresh login fires a real 2FA
-  challenge to the user's device.
+  challenge.
 - Don't log out programmatically at the end of `download`.
 - `/secrets/carta-profile/` is the persistent browser profile dir (Camoufox
   or vanilla Firefox). It holds the session cookie and any device-trust
@@ -92,26 +94,21 @@ persists, and do not invalidate it without cause:
 
 ## 3. login must not weaken authentication
 
-Per root [AGENTS.md](../../AGENTS.md) §3: never bypass, downgrade, or
-"temporarily disable" 2FA to simplify the flow; never add a `--password`
-flag (credentials arrive via env only); never persist a password to disk.
-If a future Carta change breaks the browser flow, fix the selectors / waits
-— do not reach for an auth shortcut. Carta's login is fronted by
-Cloudflare Turnstile bot detection; the answer to a
-challenge is a better stealth profile in `explore`, never an auth bypass.
+Root [AGENTS.md](../../AGENTS.md) §3 applies in full. When a Carta change
+breaks the browser flow, fix the selectors and waits. Never reach for an
+auth shortcut. Carta's login is fronted by Cloudflare Turnstile bot
+detection. The answer to a challenge is a better stealth profile in
+`explore`, never an auth bypass.
 
-## Authentication & private data
+## Private data
 
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and §4
-(no private information in source). They apply in full here.
-
-This collector's PII surface is unusually sensitive. Carta data names
-**private companies**, exact share
-counts, strike prices, 409A fair-market-values, vesting schedules, and
-tax-document figures (3921 / 1099-B). The **company name alone is
-identifying**. Never copy a real company / issuer / portfolio name or id,
-share count, strike, FMV, or document into a tracked file (source,
-fixtures, comments, commit messages). Synthetic placeholders only — e.g.
+Root [AGENTS.md](../../AGENTS.md) §4 applies in full. This collector's PII
+surface is unusually sensitive. Carta data names **private companies**,
+exact share counts, strike prices, 409A fair-market-values, vesting
+schedules, and tax-document figures (3921 / 1099-B). The **company name
+alone is identifying**. Never copy a real company / issuer / portfolio name
+or id, share count, strike, FMV, or document into a tracked file (source,
+fixtures, comments, commit messages). Synthetic placeholders only, e.g.
 issuer "ACME-CO", `portfolioId "pf_EXAMPLE"`, round example figures. Raw
-artefacts live only under `$XDG_DATA_HOME/wealthdb/carta/` and `~/.secrets/`, never in
-the repo.
+artefacts live only under `$XDG_DATA_HOME/wealthdb/carta/` and
+`~/.secrets/`, never in the repo.

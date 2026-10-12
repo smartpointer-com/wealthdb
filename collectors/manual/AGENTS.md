@@ -33,7 +33,7 @@ collector. The real CSVs under `$XDG_DATA_HOME/wealthdb/manual/` can name:
   deal.
 - **Exact figures** — purchase prices, valuations, principal/commitment
   amounts, ownership percentages, rent, dividends, distributions.
-- **Account names in `accounts.csv`** — a sleeve is often named after the
+- **Account names in `accounts.csv`** — a sleeve may be named after the
   legal entity that holds it, and that name is identifying. The tax wrapper
   itself is a canonical enum and carries nothing; the `display_name` beside
   it does.
@@ -65,14 +65,7 @@ no credential of any kind.
 The whole value of this collector is that the hand-entered CSVs are
 **checked**. A bad row (unknown kind, dangling `position_id`, currency
 mismatch, malformed JSON payload, a dangling `converted_from_position_id`)
-must fail the load with `file:row:column` context and a non-zero exit —
-never be
-skipped, coerced, or partially loaded. The load is one transaction: a
+must fail the load with `file:row:column` context and a non-zero exit.
+It is never skipped, coerced, or partially loaded. The load is one transaction: a
 single bad row rolls the whole rebuild back, so silver is never left in a
 half-updated state. Don't add a "lenient" / "skip-bad-rows" mode.
-
-## Authentication & private data
-
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication — N/A here,
-there is no credential) and §4 (no private information in source — binding,
-see §1 above).

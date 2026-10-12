@@ -25,14 +25,15 @@ $XDG_DATA_HOME/wealthdb/svb/        # the data dir (override: --data-dir)
 │   └── signature.txt               # page-1 guard substrings, one per line (PII)
 ├── svb.db                          # built silver, brokerage (override: --silver-db)
 ├── svb-deposit.db                  # built silver, deposit accounts (if any)
-└── svb-mortgage.db                 # built silver, mortgage loan (if any)
+└── svb-mortgage.db                 # built silver, mortgage loans (if any)
 ```
 
 Each PDF is classified from its own text, so each statement family reaches its
 own parser; the build summary prints a per-family census of everything it saw.
-Only a family the archive holds gets a silver, so an archive of one family
-leaves no empty DBs beside its own — though one already built is rebuilt even
-after its family leaves the archive, so it empties rather than going stale.
+Only a family the archive holds gets a new silver. A silver that already exists
+is still rebuilt after its family leaves the archive, so it empties rather than
+going stale.
+
 The brokerage statements have a text layer. The deposit and mortgage statements
 have none, so they are rastered and OCRed: Apple's Vision framework on macOS
 (nothing to install), RapidOCR everywhere else (a pip wheel carrying its own
@@ -48,8 +49,9 @@ wealthdb-collect svb load           # rebuild every svb*.db from the PDFs in the
 collectors/svb/svb load
 ```
 
-`load` is a full rebuild, reproducible from the PDFs alone. Extra flags pass
-through to `load.py`, e.g.:
+`load` is a full rebuild, reproducible from the PDFs alone. It caches each
+parse under `$XDG_CACHE_HOME/wealthdb/svb/`, so a warm rebuild is fast. Extra
+flags pass through to `load.py`, e.g.:
 
 ```sh
 collectors/svb/svb load --statement-signature "<page-1 substring>"
@@ -65,17 +67,11 @@ thing).
 
 ## Reclaiming disk (prune)
 
-`prune` is a **documented no-op** here. The scraper collectors keep timestamped
-`<UTC-ts>/` run dirs under bronze and let the shared `collectorkit.prune` engine
-reclaim their debug-artefact subdirs and abandoned partial dumps. svb has none of
-that: its bronze holds the statement PDFs themselves (plus an optional
-`signature.txt`), in a hand-made folder layout rather than run dirs, there is
-no download stage that could leave a screenshot or trace, and no run dir ever
-exists. Those PDFs *are* the `load` inputs — git-ignored and the only copy — so
-there is nothing to reclaim and pruning could only put an irreplaceable input at
-risk. `prune` therefore prints an explanation and exits 0 without deleting
-anything; no `prune.py` is shipped (a wired engine would match no run dir and be
-inert). **The statement PDFs are never deleted.**
+`prune` is a **documented no-op** here. The bronze holds the statement PDFs
+and the workbook beside them. They are the `load` inputs and the only copy.
+There are no run dirs and no debug artefacts, so `prune` prints an explanation
+and exits 0. **The statement PDFs are never deleted.** See
+[DESIGN.md](DESIGN.md#bronze-layout-and-prune) for the detail.
 
 ## Gold registration
 

@@ -10,41 +10,44 @@ This is the spend-category taxonomy. The instrument taxonomy —
 different vocabulary with a different purpose and lives in
 [TAXONOMY.md](TAXONOMY.md).
 
-Related design: DESIGN.md §4.11 (the `categorize` and
-`categorizations` subcommands), §4.12 (the `spending` read command),
-§5.1 (the `spending` config block), §13.11 (the pins ledger), and
-migrations 0040 / 0041 / 0045 / 0046 / 0047 / 0048 / 0049 / 0050 /
-0052 / 0054 (the `spend_categories` dimension, the enrichment overlay,
-the `investment`, `card_spend` and `gift` deltas, the blank merchant on
-a delta line, the serving views' zone-free timestamps, the model tier's
-resolved provenance, the issuer a card bill names, and the signature a
-line with no store row falls back to).
+Related design in [DESIGN.md](DESIGN.md):
+
+- §4.11: the `categorize` and `categorizations` subcommands;
+- §4.12: the `spending` read command and its flags;
+- §5.1: the `spending` config block;
+- §10.10: the report macros;
+- §13.11: the pins ledger.
+
+Each mechanism below names the gold migration that defines it.
 
 ---
 
 ## 1. Scope: outflows only
 
-Spending covers money leaving the tracked accounts. Income, interest
-credited and dividends are the other direction and are deliberately
-absent here: they are [INCOME.md](INCOME.md)'s, read by the same engine
-from the same enrichment pass. Buys and sells belong to neither: they
-are the **cashflow** feature's ([CASHFLOW.md](CASHFLOW.md)). The taxonomy carries only
-what this side may assign. It drops five of Plaid's primaries:
-`TRANSFER_IN`, `TRANSFER_OUT`, `LOAN_PAYMENTS`, `LOAN_DISBURSEMENTS`
-and `OTHER` (§2). Plaid's `INCOME` primary is vendored for the other
-family (migration 0069). Investment FEES are
-not in that list: they are money leaving, they arrived with the
-brokerage accounts (§2), and they have a value of their own.
+Spending covers money leaving the tracked accounts. The other
+directions belong elsewhere:
+
+- Income, credited interest and dividends are
+  [INCOME.md](INCOME.md)'s. The same engine reads them in the same
+  enrichment pass.
+- Buys and sells are the cash flow statement's
+  ([CASHFLOW.md](CASHFLOW.md)).
+
+The taxonomy carries only what this side may assign. It drops five of
+Plaid's primaries: `TRANSFER_IN`, `TRANSFER_OUT`, `LOAN_PAYMENTS`,
+`LOAN_DISBURSEMENTS` and `OTHER` (§2). Plaid's `INCOME` primary is
+vendored for the income family (migration 0069). Investment fees stay
+in: they are money leaving, and they have a value of their own (§2).
 
 The population is layered in SQL (migration 0041), each layer narrower
 than the one it reads, so no Go-side predicate restates any of it:
 
 | macro | what it is |
 |---|---|
-| `spend_scoped_accounts()` | which accounts count at all: EVERY account by default since migration 0068 — whether an account can pay a fee is not a property of its kind — and a `spend_account_scope` row is the only thing that takes one out |
+| `spend_scoped_accounts()` | which accounts count at all: EVERY account by default (migration 0068), because whether an account can pay a fee is not a property of its kind. A `spend_account_scope` row is the only thing that takes one out |
 | `spend_enrichment_population(f, t)` | what the enrichment pass may write a verdict for |
 | `spend_matcher_pool(f, t)` | what the internal-transfer matcher sees — deliberately BROADER on two axes: the transfer-eligible KINDS, which include the income side the spending base excludes, on EVERY account rather than the scoped ones (migration 0044). ONE pool for both families: income reads its verdicts and pairs nothing ([INCOME.md](INCOME.md) §1). The legs the pass builds from it also carry the reference their source stamped, which is not a column of the macro but a second read over `transactions` (§3, *The reference road*) |
-| `spending_lines_base(f, t)` | what a report charts: the population with its category resolved and its own-account moves and capital deployed removed — a bill on a card not itemised (`card_spend`) and a cash gift (`gift`) stay in |
+| `spending_lines_base(f, t)` | what a report charts: the population with its category resolved, less own-account moves, capital deployed, debt repayments and crossings to untracked plans (§2). A bill on a card not itemised (`card_spend`) and a cash gift (`gift`) stay in |
 
 The layering is not decoration. The enrichment pass is the thing that
 *decides* which rows are own-account moves, so it cannot read a
@@ -66,8 +69,8 @@ exclusion: DESIGN.md §10.10.
 `wealthdb spending <view>` is the CLI over those three macros, one
 view each, and restates none of it either — see §7.
 
-`spend_account_scope` is where an account leaves the scope, and since
-0068 it is the only place that happens. A donor-advised fund is one
+`spend_account_scope` is the only place an account leaves the scope. A
+donor-advised fund is one
 example: its grants would double-count giving already booked when the
 fund was contributed to. Such a rule argues about a particular
 arrangement rather than about a kind. It is configuration
@@ -161,13 +164,15 @@ in the dimension:
 | `deposit_transfer` | *(both)* the same for a bank's own deposit product the collector does not list as an account — a call deposit, a fixed-term deposit, a notice account; the interest it pays is income and is not this |
 | `mortgage_transfer` | *(both)* an instalment paid to, or a tranche drawn from, a mortgage servicer the product does not hold as an account; drawn under financing, where the interest/principal split applies, rather than as a crossing |
 
-The last seven arrived with the cash flow statement
-([CASHFLOW.md](CASHFLOW.md)) and leave `spending_lines_base` — the
-crossings because the money is still the holder's, `debt_repayment`
-because it reduces a liability rather than buying anything, which is
-`investment`'s argument read against a debt. Nothing on the spending
-side reads them: they exist so the movement has an honest home rather
-than reading as uncategorised spend.
+The last seven serve the cash flow statement
+([CASHFLOW.md](CASHFLOW.md)) and leave `spending_lines_base`:
+
+- the crossings, because the money is still the holder's;
+- `debt_repayment`, because it reduces a liability rather than buying
+  anything. That is `investment`'s argument read against a debt.
+
+No spending report shows them. They exist so the movement has an
+honest home rather than reading as uncategorised spend.
 
 `cash_withdrawal` is its own primary rather than a guess, so a report
 can show how much of a period's spending is simply unattributable
@@ -184,7 +189,7 @@ product tracks — the matcher sees both legs, or a rule knows the
 account — and an `investment` when it is not. The vendored vocabulary
 is consumption through and through, so without a value of its own an
 outright securities purchase from a cash account, which the bank books
-as a plain withdrawal, had no honest home: `internal_transfer` would be
+as a plain withdrawal, has no honest home: `internal_transfer` would be
 false, `other` is excluded from nothing and explains nothing, and every
 vendored category says the money was consumed. It is excluded from
 `spending_lines_base` exactly as `internal_transfer` is (migration
@@ -202,9 +207,9 @@ bill is the only trace of that spending, and filing it as
 `internal_transfer` deletes real consumption from every total,
 silently, at whatever size the bill was. So the built-in card-payment
 rule (§3) places `card_spend`: a placeholder primary, **included** in
-`spending_lines_base` (migration 0046 — the base's exclusion list
-names `internal_transfer` and `investment` one by one, not "every
-delta"), shown as its own line in every category report so it is
+`spending_lines_base` (migration 0046; the base's exclusion list
+names each excluded value, not "every delta"), shown as its own line
+in every category report so it is
 visible rather than hidden, and replaced by itemised purchases the day
 the card is collected, because the matcher outranks the rule. It is a
 delta, so the model may never emit it; the built-in rule, a config
@@ -222,8 +227,8 @@ under `GENERAL_SERVICES_OTHER_GENERAL_SERVICES`, which is false —
 nothing was bought and no service rendered. `internal_transfer` would
 be false too, since the money left the household. So `gift` is a
 primary in its own right, **included** in `spending_lines_base` by the
-same construction as `card_spend` (migration 0047 — the base's
-exclusion list is unchanged) and shown as its own line in every
+same construction as `card_spend` (migration 0047) and shown as its
+own line in every
 category report. It is a delta, so the model may never emit it; and
 no built-in rule places it either, because nothing in a transfer's
 narrative says a person is family rather than a contractor or an
@@ -232,10 +237,10 @@ untracked account of the holder's own. A config rule (§3) or a pin
 
 ### Extensions
 
-A third class, and the newest. An EXTENSION is a value of ours in the
-vendored SHAPE — a `PRIMARY_DETAIL` pair filed under an existing
-primary — added where the vendored vocabulary has no word for
-something a household buys often. There are three.
+An EXTENSION is the third class: a value of ours in the vendored
+SHAPE, a `PRIMARY_DETAIL` pair filed under an existing primary. It
+fills a gap where the vendored vocabulary has no word for something a
+household pays for often. The spending side has three.
 
 `GENERAL_SERVICES_DIGITAL_SERVICES` (migration 0056): software and
 online subscriptions, for which the taxonomy offers ELECTRONICS
@@ -244,12 +249,11 @@ online subscriptions, for which the taxonomy offers ELECTRONICS
 subscription.
 
 `BANK_FEES_INVESTMENT_FEES` and
-`GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX` (migration 0065) came with
-brokerage accounts, which joined the scope in 0064 and were followed by
-every other kind in 0068 (§1). Holding
-investments costs money in two ways the vendored vocabulary cannot
-name, and both arrive in volume — together they are most of what a
-managed account books.
+`GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX` (migration 0065) exist
+because brokerage accounts are in scope (§1). Holding investments
+costs money in two ways the vendored vocabulary cannot name. Both
+arrive in volume, and together they are most of what a managed
+account books.
 
 Every vendored BANK_FEES value is a fee for BANKING: ATM fees,
 foreign-transaction fees, insufficient funds, interest charges,
@@ -315,6 +319,47 @@ the wider predicate, `ValidSpendDetailed`: both are the holder's own
 local input, applied inside the pass and never shown to the model, so
 the model's restriction has no reason to reach them.
 
+### Reading the taxonomy
+
+The vendored values shout in full caps and repeat their primary in the
+detail; the deltas are lower-case, because one vocabulary is
+Plaid's and the other is ours. Each row therefore carries what it
+should READ as beside what it IS: `spend_categories.label` and
+`.primary_label` (migration 0058). `canonical.SpendLabel` is the rule
+the seeds are generated from, and a test holds the two together.
+`FOOD_AND_DRINK_GROCERIES` reads "Groceries",
+`GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` reads "Other general
+merchandise", `internal_transfer` reads "Internal transfer".
+
+The rule is mechanical, so a value it reads wrongly is corrected by
+hand in `canonical.spendLabelOverrides`, and the same correction is
+seeded into the dimension. Six values carry one:
+
+- `card_spend` reads **"Uncategorized card spend"**. The rule reads it
+  "Card spend", which is true of every card purchase in the product.
+  Among the merchant categories on a chart it would read as a KIND of
+  spending, not as the placeholder defined above.
+- `INCOME_OTHER` reads "Other income". The rule reads it "Other", which
+  is the label of the `other` delta. The two are different things. A
+  catch-all declines a row, while `other` is a verdict that takes the
+  row out of the backlog.
+- `INCOME_MILITARY` reads "Veterans benefits". The value names
+  veterans' benefits. "Military" reads as military pay, which is
+  salary.
+- `BANK_FEES_CASH_ADVANCE` reads "Cash advance fees". "Cash advance"
+  names the advance itself, which is borrowed money and not a fee.
+- `INCOME_LONG_TERM_DISABILITY` reads "Long-term disability", and
+  `INCOME_ENERGY_FEED_IN` reads "Energy feed-in". The rule cannot spell
+  a hyphenated compound.
+
+The label is presentation and nothing more. The value stays the join
+key, the name a rule and a pin write, and what the model gauntlet
+validates, so a taxonomy refresh still diffs against the vendored
+spelling. The CLI's `category` column and the Metabase pickers render
+the label. `category_id` and the Metabase models' `spend_*_id` columns
+carry the value, for a caller that needs a key a rewording cannot
+move.
+
 ---
 
 ## 3. The tiers and the precedence lattice
@@ -332,15 +377,19 @@ inside `wealthdb load`; the fifth costs money and runs only when
         (per source; derived, pins re-stamped)     (GLOBAL, paid for)
 ```
 
-The **kind** floor (migration 0066, extended by 0067, 0103 and 0110) is
-last, stands outside both stores — it reads no verdict anyone wrote — and
-takes the transaction's own kind: a row of kind `fee` that nothing else
-placed is an investment fee (on a bank account or a card, a bank fee —
-below), one of kind
-`tax` is withholding, and one of kind `interest` is an interest charge
-when the amount is negative. The sign is tested rather than assumed
-there, because this macro is read at transaction grain too, where
-credited interest reaches it and is income. It exists because a
+The **kind** floor (migration 0066, extended by 0067, 0103 and 0110)
+comes last. It stands outside both stores and reads no verdict anyone
+wrote. It takes the transaction's own kind, for a row nothing else
+placed:
+
+- `fee` is an investment fee, or a bank fee on a bank account or a
+  card (below);
+- `tax` is withholding;
+- `interest` with a negative amount is an interest charge.
+
+The sign is tested rather than assumed, because this macro is read at
+transaction grain too, where credited interest reaches it and is
+income. The floor exists because a
 brokerage books rows no narrative explains — a security-level fee or tax
 withheld at source, whose narrative is the SECURITY or, on some sources,
 nothing at all. There is no payee in them for a rule to key on. But the
@@ -368,19 +417,22 @@ applies only where the pass AND the model both declined — so `kind`,
 like `model`, is a provenance that exists only at query time and is
 never stored.
 
-**Across scopes**, `spend_txn_categories()` (migration 0042, re-issued
-by 0048, 0050, 0052 and 0054 for the merchant column and the model
-tier's resolved provenance) resolves with `COALESCE(transaction scope,
-merchant scope)`: a per-transaction verdict beats the merchant-wide
-one. Both `spending_lines_base` and the transaction reports read that
+**Across scopes**, `spend_txn_categories()` resolves with
+`COALESCE(transaction scope, merchant scope, kind floor)`: a
+per-transaction verdict beats the merchant-wide one. Migration 0042
+defines the macro, and its current body is 0110's. Both
+`spending_lines_base` and the transaction reports read that
 macro, so the lattice has exactly one definition. The merchant store is
 reached *through* the enrichment row's signature, which is why the pass
 records a signature even for rows it cannot categorise. The same macro
-publishes the merchant column, in three steps (§7): a delta line shows
-its issuer label or nothing at all, whatever the store holds for its
-signature; otherwise the store's name; otherwise the line's own
-signature, which is what every line this lattice places above the model
-tier — and every line it places nowhere — has instead of a store row.
+publishes the merchant column, in three steps (§7):
+
+1. a delta line shows its issuer label or nothing at all, whatever the
+   store holds for its signature;
+2. otherwise the store's name;
+3. otherwise the line's own signature. Every line this lattice places
+   above the model tier, and every line it places nowhere, has that
+   instead of a store row.
 
 **Within the transaction scope** the order is pin > matcher > rule >
 provider, and it reads weakest-first:
@@ -407,8 +459,8 @@ provider, and it reads weakest-first:
   can do better: the issuer knew the row was "shopping", and the
   descriptor said Apple. Declining is not the same as the issuer
   saying nothing; both leave the row for a later tier, and
-  `provider_spend_detailed` tells them apart (§ The issuer's view,
-  kept).
+  `provider_spend_detailed` tells them apart (*The issuer's view,
+  kept*, below).
 - A **rule** beats it because a rule encodes something structural
   about the product's own account graph — that the mortgage being paid
   is itself tracked, that cash out of an ATM is unattributable — which
@@ -424,9 +476,8 @@ provider, and it reads weakest-first:
   transaction, written for exactly the row where every tier below has
   nothing to go on — or got it wrong.
 
-`manual` is the provenance a pin lands with. The schema admitted it
-from the first issue of the overlay, and the pass owns it exactly as it
-owns the derived provenances (see *Pins* below).
+`manual` is the provenance a pin lands with. The pass owns it exactly
+as it owns the derived provenances (see *Pins* below).
 
 ### Pins
 
@@ -447,9 +498,7 @@ optional `asset_class`, admitted beside `investment` alone, saying what
 the capital went into. The cash flow statement's investing class is
 otherwise the instrument's, and a bank payment order names none
 (CASHFLOW.md §4). A config rule carries the same field on the same
-terms. Two ledger rows on one transaction must now agree on both
-columns, and an unrecognised header fails the parse — `note` and
-`asset_class` are the only two beyond the required set.
+terms.
 
 A pin may set **any** valid value, vendored or delta — the same
 vocabulary a config rule may place. Pins are the override surface: a
@@ -464,8 +513,8 @@ fresh-file `reload -a` needs no carry-across, and a pin whose row has
 not loaded yet is *counted* as unmatched — on the pass result and on
 its family's `load` summary line — rather than treated as an error.
 
-Income has its own ledger, `income.pins`, with `income_detailed` where
-`spend_detailed` was. Everything above holds for it word for word; only
+Income has its own ledger, `income.pins`, with `income_detailed` in
+place of `spend_detailed`. Everything above holds for it word for word; only
 the vocabulary differs, and each ledger is validated against its own
 (INCOME.md §3).
 
@@ -601,8 +650,8 @@ charge per wire, not a share of the sum. Uncapped, half a percent of a
 large transfer is tens of units — more than any real fee, and wide
 enough to reach an unrelated credit. `DefaultTransferFeeCap` bounds it
 so a genuine wire fee still pairs and a coincidence at that distance
-does not. The returns caller applies the same cap; the rail demands it
-never sets, so its matching is unchanged.
+does not. The returns caller applies the same cap. It sets no rail
+demands.
 
 ### Manual overrides on the matcher
 
@@ -610,7 +659,10 @@ never sets, so its matching is unchanged.
 cannot settle, in the same idiom and for the same reason as the pins
 ledger: a leg is named by what a person reads off a statement —
 source, account, day, amount, currency — never by gold's opaque
-transaction id.
+transaction id. The columns are `verb`, `silver_source_id`, `account`,
+`occurred_at`, `amount` and `currency` for the first leg, the same
+names with a `_b` suffix for the second, and an optional `note`.
+Columns are found by header name.
 
 | verb | legs given | meaning |
 |---|---|---|
@@ -662,8 +714,8 @@ candidates by native currency because matching converted amounts would
 make the same movement pair differently per output currency — a
 report's display currency must not change what counts as spending —
 and a conversion's two legs carry different figures by definition. So
-a withdrawal in one currency funding an account in another was, for as
-long as amounts were the only evidence, unpairable.
+no amount test can pair a withdrawal in one currency with the deposit
+it funds in another.
 
 A **shared reference is not an amount test.** Where a bank stamps one
 transaction number on both halves of a move between two accounts of
@@ -695,7 +747,7 @@ What makes it safe is **uniqueness, tested twice**:
   no settlement takes is a reference space that has wrapped.
 
 Anything that fails a test pairs **nothing** rather than its best
-guess, and falls through to the amount pass exactly as it did before.
+guess, and falls through to the amount pass.
 Refusing costs a match; guessing costs a real spending line, because a
 false pair withdraws both legs.
 
@@ -763,15 +815,18 @@ whole class of rows is structurally mis-read without it, and the right
 answer follows from what the product already knows about its own
 accounts rather than from anyone's preference.
 
+The rule names below are labels for this table, not identifiers in the
+code.
+
 | rule | verdict | why |
 |---|---|---|
 | `card_payment` | `card_spend` | A card bill with no counter-leg in gold is a bill for a card wealthdb does not itemise — a card no collector exists for, or the deep era, where a card payment is dated before the card's own ledger begins — and the bill is the only trace of that spending. So it is kept in the base as generic card spend, not deleted as an own-account move; a bill whose card *is* in gold never reaches this verdict, because the matcher outranks it. Matched on card-payment phrases and an issuer table, never on a store card that names its merchant, and refused outright on a row the `atm` rule matches — cash taken at a machine carries the same masked card number — or a row the provider filed under another value. A match on a named issuer's descriptor also LABELS the bill with that issuer, which is what the line carries as its merchant (§7). |
-| `atm` | `cash_withdrawal` | The money is gone, but *what it bought* has no record anywhere. Stands down on a row the provider filed as a bank fee, since the fee for taking cash is booked in the same words as the cash. |
-| `mortgage` | `internal_transfer` | The mortgage is a tracked account; counting the payment as spend would double-count against the liability it reduces. It matches a NARRATIVE, so it fires whether or not the lender is tracked — and where no pair exists, nothing else on the row says where the money went, so it records `mortgage` as the cashflow class it stands for (`far_class`, migration 0079). That column is not the card rule's `merchant_label`: a class name there would print as the merchant of every card bill. |
-| `investment_fee` | `investment_fees` | A custodian's per-security pass-through, such as an ADR depositary charge, booked once per security per period. The narrative names the security and never a payee, so nothing else can reach it. It is a cost of INVESTING rather than of banking, which is what the extension exists to say. |
-| `wire_fee` | `other_bank_fees` | Sits on the same statements as the pass-through above and is deliberately not one: paying to move money is a banking service, and filing it as an investment fee would overstate what holding the assets costs. Not the wire itself, which no rule places — that is the matcher's to pair or nobody's to guess. |
-| `withholding` | `withholding_tax` | Tax deducted at source on foreign dividend income. The gross dividend is booked as income, so leaving the withholding out would report the gross as though it were net. |
-| `management_fee` | `investment_fees` | The fee an account pays for being managed. It is levied on the account where the pass-through is levied on the security, but both are the cost of holding the assets, which is why they share one value. |
+| `atm` | `cash_withdrawal` | The money is gone, but *what it bought* has no record anywhere. Stands down on a row the provider filed as a bank fee or as a payment on a debt, since the fee for taking cash and the repayment of a cash advance are booked in the same words as the cash. |
+| `mortgage` | `internal_transfer` | The mortgage is a tracked account; counting the payment as spend would double-count against the liability it reduces. It matches a NARRATIVE, so it fires whether or not the lender is tracked — and where no pair exists, nothing else on the row says where the money went, so it records `mortgage` as the cashflow class it stands for (`far_class`, migration 0079). That column is not the card rule's `merchant_label`: a class name there would print as the merchant of every card bill. The rule places the payment whole. Only the principal share is an own-account move, and the cash flow statement derives the interest/principal split from the mortgage balance ([CASHFLOW.md](CASHFLOW.md) §5); a rule sees one row's text and never a balance. |
+| `investment_fee` | `BANK_FEES_INVESTMENT_FEES` | A custodian's per-security pass-through, such as an ADR depositary charge, booked once per security per period. The narrative names the security and never a payee, so nothing else can reach it. It is a cost of INVESTING rather than of banking, which is what the extension exists to say. Stands down where the provider named a specific bank fee, as every fee rule does. |
+| `wire_fee` | `BANK_FEES_OTHER_BANK_FEES` | Sits on the same statements as the pass-through above and is deliberately not one: paying to move money is a banking service, and filing it as an investment fee would overstate what holding the assets costs. Not the wire itself, which no rule places — that is the matcher's to pair or nobody's to guess. |
+| `withholding` | `GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX` | Tax deducted at source on foreign dividend income. The gross dividend is booked as income, so leaving the withholding out would report the gross as though it were net. |
+| `management_fee` | `BANK_FEES_INVESTMENT_FEES` | The fee an account pays for being managed. It is levied on the account where the pass-through is levied on the security, but both are the cost of holding the assets, which is why they share one value. |
 
 Rules run against three texts, each on its own: the merchant
 **signature**, and the raw `counterparty` and `description` it was
@@ -840,7 +895,7 @@ matched:
   or else to the kind floor.
 
 One case is lost: an issuer that files the cash itself under its fee
-bucket. That row is no longer `cash_withdrawal`, and a pin restores it.
+bucket. That row does not read as `cash_withdrawal`, and a pin restores it.
 
 These refusals are the only things a built-in reads the
 **provider's filing** for. It may never place a verdict from it — that
@@ -857,70 +912,90 @@ provenance and, for `internal_transfer`, by deleting the row from the
 base: the failure that is invisible in a report. **Built-in rules read
 the narrative only; config rules read narrative and memo** (below).
 
-The card-payment rule's issuer table is a list of ISSUERS, each with
-the phrases a deposit-account export can put on a bill paid to it, one
-per statement format, digits masked — `PAYMENT TO CHASE CARD ENDING IN
-####`, `CHASE CREDIT CRD AUTOPAY`, `AMERICAN EXPRESS ACH PMT`,
-`AMERICAN EXPRESS CREDIT CARD`, `CITI CARD ONLINE PAYMENT ####`, `CITI
-AUTOPAY PAYMENT ####`, `CITI CREDIT CARD PAYMENT`, `UBS SWITZERLAND
-AG;C/O UBS CARD CENTER`, the Swiss direct-debit shape `…; UBS CARD
-CENTER; CREDIT CARD STATEMENT …` / `…; CARD PAYMENT …`, and a masked
-card number as the whole counterparty, which is a card top-up, in
-either of two masking conventions: the spaced `XXXX XXXX XXXX ####`,
-and the one-token `####XXXXXXXX####` — first four and last
-four digits kept, the middle eight masked, often followed by a date
-fragment. The two masked forms are the entries that name no issuer:
-they say a row is a card bill and nothing about whose card it is, so
-they place the verdict and label nothing.
-Each descriptor is a whole-word phrase matched *anywhere* in
-the signature or in either narrative field, so the mandate notice a
-direct debit puts before the creditor (`DIRECT DEBIT; <CODE> OBJECTION TO <BANK>; WITHIN 30 DAYS;`,
-§4) makes no difference whether or not the normaliser stripped it. The
-one-token mask is the exception: its digits differ per card, so it is
-matched as a token *shape* rather than a phrase, and narrowly — exactly
-four digits, eight `X`, four digits, so a plain 16-digit number is not
-it.
-The table holds **issuers only**: a store card that names its merchant
-— a fuel card, a retailer's own card — is that merchant's spend and
-belongs in that merchant's category, which the model or a config rule
-places; adding a retailer to the table would re-file its purchases as
-generic card spend, which is precisely the information the
-placeholder exists to stop losing — and would put a retailer's name in
-the merchant column of a line that is not its purchases.
+The card-payment rule's issuer table (`cardIssuers` in
+`internal/spending/rules.go`) is a list of ISSUERS. Each entry holds the
+phrases a deposit-account export prints on a bill paid to that issuer,
+one per statement format. Some examples, with digits masked:
+
+- `PAYMENT TO CHASE CARD ENDING IN ####` and `CHASE CREDIT CRD AUTOPAY`;
+- `AMERICAN EXPRESS ACH PMT` and `AMERICAN EXPRESS CREDIT CARD`;
+- `CITI CARD ONLINE PAYMENT ####`, `CITI AUTOPAY PAYMENT ####` and
+  `CITI CREDIT CARD PAYMENT`;
+- `UBS SWITZERLAND AG;C/O UBS CARD CENTER`, the Swiss direct-debit
+  shapes `…; UBS CARD CENTER; CREDIT CARD STATEMENT …` and
+  `…; CARD PAYMENT …`, and `VIS1W`, the objection code the card centre
+  prints on its own direct debit.
+
+A masked card number as the whole counterparty is a card top-up. Two
+masking conventions occur:
+
+- the spaced `XXXX XXXX XXXX ####`;
+- the one-token `####XXXXXXXX####`: the first and last four digits
+  kept, the middle eight masked, often followed by a date fragment.
+
+The two masked forms name no issuer. They say a row is a card bill and
+nothing about whose card it is, so they place the verdict and label
+nothing.
+
+Each descriptor is a whole-word phrase matched *anywhere* in the
+signature or in either narrative field. So the mandate notice a direct
+debit puts before the creditor
+(`DIRECT DEBIT; <CODE> OBJECTION TO <BANK>; WITHIN 30 DAYS;`, §4)
+makes no difference, whether or not the normaliser stripped it. The
+one-token mask is the exception. Its digits differ per card, so it is
+matched as a token *shape* rather than a phrase. The shape is narrow:
+exactly four digits, eight `X` and four digits, so a plain 16-digit
+number does not match.
+
+The table holds **issuers only**. A store card that names its merchant,
+such as a fuel card or a retailer's own card, is that merchant's spend.
+It belongs in that merchant's category, which the model or a config
+rule places. A retailer in the table would re-file its purchases as
+generic card spend, which is the information the placeholder exists to
+keep. It would also put a retailer's name in the merchant column of a
+line that is not its purchases.
+
 The name in each entry is what a bill matched by it is **labelled**
 with, and the label is the merchant column of the `card_spend` line
 (§7). It is the rule's own output, carried out of the tier beside the
-category and stored on the enrichment row: no other tier writes one,
-and a tier that overrules the card rule clears it with the verdict it
+category and stored on the enrichment row. No other tier writes one. A
+tier that overrules the card rule clears it with the verdict it
 replaces, so the label never outlives the bill it describes.
-Phrases in every built-in rule
-match whole tokens, never substrings, so `SCORECARD PAYMENTS` does not
-carry the phrase `CARD PAYMENT`.
+
+Phrases in every built-in rule match whole tokens, never substrings, so
+`SCORECARD PAYMENTS` does not carry the phrase `CARD PAYMENT`.
 
 #### Config-supplied rules
 
-One input to the rule tier is not an engine constant: `spending.rules`,
-a list of `{ "match": <regex>, "category": <spend_detailed>, "scope": {…} }`
-entries, of which `scope` is optional. `match`
-is compiled case-insensitively and tested against a row's raw
-narrative (`counterparty` and `description`, each on its own — the
-description whole, memo included, so a rule may key on what the payer
-wrote a payment was for) **and against `provider_category`, the
-issuer's own filing of the row**, on the same terms. That third field
-is how a rule reaches a class of merchant the descriptor never names —
-a membership, a trade — and it is what makes the issuer an input to
-our classification rather than a tier that outranks it. `category` is
-what a match places, with provenance `rule`. The key is
-named for what the entries are — rules in the same tier as the three
-built-ins, with the same provenance — rather than for a pattern with
-one fixed verdict.
+One input to the rule tier is not an engine constant: `spending.rules`.
+Each entry has these fields:
 
-**Scoping a rule.** `scope` narrows where and when a rule may fire:
-`source` (a silver_source_id), `portfolio`, `account` and the inclusive
-date range `from` / `to` (`YYYY-MM-DD`, compared against the row's own
-day). Every field is optional and an omitted one does not constrain, so
-a rule with no scope — every rule written before scopes existed —
-matches everywhere.
+- `match`, a regular expression, compiled case-insensitively;
+- `category`, the `spend_detailed` value a match places, with
+  provenance `rule`;
+- `scope`, optional, below;
+- `far`, optional, below;
+- `asset_class`, optional, on the same terms as on a pin (*Pins*
+  above).
+
+`match` is tested against three fields of a row, each on its own:
+
+- `counterparty`;
+- `description`, whole, memo included, so a rule may key on what the
+  payer wrote a payment was for;
+- **`provider_category`, the issuer's own filing of the row.**
+
+That third field is how a rule reaches a class of merchant the
+descriptor never names, such as a membership or a trade. It makes the
+issuer an input to our classification rather than a tier that outranks
+it. The key is named `rules` because the entries are rules in the same
+tier as the built-ins, with the same provenance.
+
+**Scoping a rule.** `scope` narrows where and when a rule may fire. Its
+fields are `source` (a silver_source_id), `portfolio`, `account`, and
+the inclusive date range `from` / `to` (`YYYY-MM-DD`, compared against
+the row's own day). Every field is optional, and an omitted one does
+not constrain. A rule with no scope matches everywhere.
 
 It exists because a pattern specific enough for one booking is rarely
 specific enough for the whole future. `^\s*closing\s*$` reads a
@@ -946,8 +1021,8 @@ identifies (CASHFLOW.md §4). `far` is refused beside any other
 category — only an own-account move has a far side — and where it
 names no declaration.
 
-It exists for three populations neither the matcher nor the model can
-ever reach. One is own-money movement whose receiving side is booked
+Config rules exist for three populations neither the matcher nor the
+model can ever reach. One is own-money movement whose receiving side is booked
 nowhere in gold: a wire to the holder's own account at a bank the
 product does not track, money sent to a family member's account
 elsewhere, a transfer to a crypto exchange the holder also tracks. The
@@ -965,11 +1040,10 @@ that identifies the row is text in the narrative, and that text is
 personal: a name, an IBAN, a fund's or an exchange's legal entity, a
 payee's.
 
-Which is why the knob is **deployment-specific by nature**, and the
-documentation is deliberately plain about it: this is where the
+So the knob is **deployment-specific by nature**. It holds the
 account holder's own name, own account numbers at untracked
 institutions, own exchange counterparties, the funds subscribed to and
-the recurring wire payees go; it lives in the user's config, never in
+the recurring wire payees. It lives in a deployment's config, never in
 the repository.
 
 The category may be **any** valid `spend_detailed` value, vendored or
@@ -1013,64 +1087,72 @@ rows, and a deployment rule is the right place to act on it.
 
 ### The provider tier
 
-Providers already file the rows they publish, and the filing is carried
+Providers already file the rows they publish. The filing is carried
 into gold verbatim as `transactions.provider_category`: a card issuer's
-spend category, a bank's booking type. The translation maps are per
+spend category, or a bank's booking type. The translation maps are per
 **product** rather than per source, because the vocabulary belongs to
-the provider's product — a source's key is its silver kind, optionally
-narrowed to one account kind (`ubs/card` before `ubs`), and a kind with
-no entry of its own inherits the source's. Lookups fold case and
-surrounding space so one entry covers every era's spelling of a value.
+the provider's product (`providerVocabularies` in
+`internal/spending/providermap.go`):
 
-One source needs that narrowing today. UBS files a bank account's rows
-by booking type and a card's by merchant category, and the two shapes
-disagree about what an unmapped value *means* — so they are two
-vocabularies, one categorical and one not, rather than one map that
-would have to call both the same thing.
+- a map's key is a silver kind, optionally narrowed to one account kind
+  (`ubs/card` before `ubs`);
+- an account kind with no entry of its own inherits the source's map;
+- lookups fold case and surrounding space, so one entry covers every
+  era's spelling of a value.
 
-Two shapes of vocabulary, and the shape decides what a value the map
-does not translate *means*:
+UBS needs the narrowing. It files a bank account's rows by booking type
+and a card's by merchant category. The two shapes disagree about what
+an unmapped value *means*, so they are two vocabularies, one
+categorical and one not.
 
-- A **categorical** vocabulary — a card issuer's (`chase`, `amex`), or
-  Plaid's category taxonomy (`plaid`) — files every row under one of
-  its categories rather than naming a payment rail. **The unmapped case
-  is the
-  load-bearing one.** The map is the vocabulary this build translates,
-  which is narrower than what an issuer can publish, so a value it does
-  not hold is one nobody reviewed: it falls through to the model tier
-  and is *counted* as drift, never guessed into a plausible neighbour —
-  a wrong category is invisible in a report, while an uncategorised row
-  is visible as backlog and an unmapped-value count is visible as
-  drift. `wealthdb categorize` prints those counts, and `load` prints
-  the pass's. The exceptions are the values the vocabulary lists as
-  `untranslatable` beside the translations: the issuer's own residual
-  bucket — its literal "Other" — and any value that names a money
-  MOVEMENT rather than a line of business, such as a bank's catch-all
-  for the card rows that transferred money instead of buying something.
-  Both are reviewed, so a miss on either is not drift, and both are
-  deliberately left untranslated, because a row the provider itself
-  could not place, or placed under a movement, is the row the model tier
-  exists for. Translating one would lose the row to a bucket; counting
-  it would inflate the drift signal with a value there is nothing to
-  review.
-- A **booking-type** vocabulary — a bank's (`ubs`) — names how each
-  entry was booked, in whichever spelling the era used: the statement
-  PDF's `E-BANKING PAYMENT ORDER`, the MT940 feed's `NTRF`, the web
-  export's `e-banking payment order`. Most values name a payment rail,
-  and a rail says nothing about what the money bought, so only the
-  types whose meaning is the movement itself translate: the bank's fee
-  and charge types to `BANK_FEES_*`, ATM and Bancomat withdrawals to
-  `cash_withdrawal`, FX conversions between the holder's own currency
-  accounts to `internal_transfer` — the matcher's amount pass cannot
-  pair those, because the legs differ in currency, and its reference
-  pass reaches only the ones the bank stamped one number on; this entry
-  places the rest, without a far account, so the statement draws such a
-  row as leaving the pool — and a bill paid to a card to
-  `card_spend`. A value the map does not hold is the normal case, not
-  drift: the row falls through exactly as an unmapped category does,
-  and nothing is counted. The shape is a flag on the map
-  (`categorical`), so a bank's payment orders can never drown the
-  canary a card issuer's drift is meant to trip.
+The shape of a vocabulary decides what a value the map does not
+translate *means*:
+
+- A **categorical** vocabulary files every row under one of its
+  categories rather than naming a payment rail. Examples are a card
+  issuer's (`chase`, `amex`, `ubs/card`), a bank's own category list
+  (`raiffeisen_at`) and Plaid's category taxonomy (`plaid`). **The
+  unmapped case is the load-bearing one.** The map is the vocabulary
+  this build translates, which is narrower than what a provider can
+  publish. A value it does not hold is one nobody reviewed. It falls
+  through to the model tier and is *counted* as drift, never guessed
+  into a plausible neighbour. A wrong category is invisible in a
+  report, while an uncategorised row shows as backlog and an
+  unmapped-value count shows as drift. `wealthdb categorize` prints
+  those counts, and `load` prints the pass's.
+
+  The exceptions are the values the vocabulary lists as
+  `untranslatable` beside the translations:
+
+  - the provider's own residual bucket, its literal "Other";
+  - any value that names a money MOVEMENT rather than a line of
+    business, such as a card issuer's catch-all for card rows that
+    transferred money instead of buying something.
+
+  Both are reviewed, so a miss on either is not drift. Both stay
+  untranslated on purpose: a row the provider could not place, or
+  placed under a movement, is the row the model tier exists for.
+  Translating one would lose the row to a bucket. Counting it would
+  inflate the drift signal with a value there is nothing to review.
+- A **booking-type** vocabulary (`ubs`, and the demo source
+  `synthetic`) names how each entry was booked, in whichever spelling
+  the era used: the statement PDF's `E-BANKING PAYMENT ORDER`, the
+  MT940 feed's `NTRF`, the web export's `e-banking payment order`. Most
+  values name a payment rail, and a rail says nothing about what the
+  money bought. So only the types whose meaning is the movement itself
+  translate:
+
+  - the bank's fee and charge types to `BANK_FEES_*`;
+  - ATM and Bancomat withdrawals to `cash_withdrawal`;
+  - FX conversions between the holder's own currency accounts to
+    `internal_transfer`, without a far account;
+  - a bill paid to a card to `card_spend`.
+
+  A value the map does not hold is the normal case, not drift. The row
+  falls through exactly as an unmapped category does, and nothing is
+  counted. The shape is a flag on the map (`categorical`), so a bank's
+  payment orders can never drown the canary a card issuer's drift is
+  meant to trip.
 
 The UBS **card** vocabulary is the categorical one: ISO 18245 merchant
 category descriptions in UBS's own spelling, typos and airline names
@@ -1081,63 +1163,21 @@ transfer, a card top-up). It names no line of business, so a translation
 would file person-to-person transfers as shopping; leaving it unmapped
 sends the row to the model, which sees the descriptor.
 
-The map carries every UBS FX spelling for vocabulary completeness, and
-none of them can now be placed: every era's FX booking reaches gold as
-an `fx` kind, which the enrichment population excludes by kind (§1), so
-it is the kind and not the tier that keeps those rows out of spending.
-The MT940 `NFEX` shape — a movement whose narrative is a bare tag — was
-the one exception until the adapter learned to read the `:61:` type
-code for exactly those rows. See docs/adapters/ubs.md §7.
+The FX entries cover every UBS spelling, but they place nothing in
+practice. Every era's FX booking, the MT940 `NFEX` shape included,
+reaches gold as an `fx` kind, and the enrichment population excludes
+that kind (§1). So the kind, not the tier, keeps those rows out of
+spending. [adapters/ubs.md](adapters/ubs.md) §6 has how the adapter
+kinds them.
 
 The UBS web export puts the payer's own message ahead of the booking
 type in the column the adapter reads (`THANKS; e-banking payment
 order`); the adapter splits it off, so the provider tier sees the
 booking type alone and the message travels as the row's memo, which
 gold stores at the end of the description behind the memo separator
-(§4, docs/adapters/ubs.md §7).
+(§4, [adapters/ubs.md](adapters/ubs.md) §7).
 
----
-
-#### Reading the taxonomy
-
-The vendored values shout in full caps and repeat their primary in the
-detail; the deltas are lower-case, because one vocabulary is
-Plaid's and the other is ours. Each row therefore carries what it
-should READ as beside what it IS: `spend_categories.label` and
-`.primary_label` (migration 0058), seeded from `canonical.SpendLabel`.
-`FOOD_AND_DRINK_GROCERIES` reads "Groceries",
-`GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` reads "Other general
-merchandise", `internal_transfer` reads "Internal transfer".
-
-The rule is mechanical, so a value it reads wrongly is corrected by
-hand — `canonical.spendLabelOverrides`, and the same correction seeded
-into the dimension. Six values carry one:
-
-- `card_spend` reads **"Uncategorized card spend"**. The rule reads it
-  "Card spend", which is true of every card purchase in the product.
-  Among the merchant categories on a chart it would read as a KIND of
-  spending, not as the placeholder §2 defines it to be.
-- `INCOME_OTHER` reads "Other income". The rule reads it "Other", which
-  is the label of the `other` delta. The two are different things. A
-  catch-all declines a row, while `other` is a verdict that takes the
-  row out of the backlog.
-- `INCOME_MILITARY` reads "Veterans benefits". The value names
-  veterans' benefits. "Military" reads as military pay, which is
-  salary.
-- `BANK_FEES_CASH_ADVANCE` reads "Cash advance fees". "Cash advance"
-  names the advance itself, which is borrowed money and not a fee.
-- `INCOME_LONG_TERM_DISABILITY` reads "Long-term disability", and
-  `INCOME_ENERGY_FEED_IN` reads "Energy feed-in". The rule cannot spell
-  a hyphenated compound.
-
-The label is presentation and nothing more. The value stays the join
-key, the name a rule and a pin write, and what the model gauntlet
-validates — so a taxonomy refresh still diffs against the vendored
-spelling. The CLI's `category` column and the Metabase pickers render
-the label; `category_id` and the model's `spend_*_id` columns carry the
-value for a caller that needs a key a rewording cannot move.
-
-#### The issuer's view, kept
+### The issuer's view, kept
 
 `transactions.provider_category` holds what the issuer called a row,
 verbatim. `spend_txn_enrichment.provider_spend_detailed` holds what our
@@ -1154,7 +1194,7 @@ of a silent overwrite. Three values, three meanings:
 | `provider_spend_detailed` | the issuer |
 | --- | --- |
 | a specific value | filed the row under a real line of business |
-| a catch-all (`*_OTHER_*`) | filed the row, but said no more than the primary |
+| a catch-all (`*_OTHER` or `*_OTHER_*`) | filed the row, but said no more than the primary |
 | NULL | published nothing this build translates |
 
 The last two must never be collapsed. A mapped catch-all is a real if
@@ -1162,238 +1202,244 @@ uninformative opinion; NULL is no opinion at all, and the distinction
 is exactly what the decline rule turns on.
 
 Reports show our verdict by default and the issuer's on request.
-Nothing sums across the two — they disagree on roughly a third of the
-rows an issuer classifies, which is the reason both are kept.
+Nothing sums across the two. They often disagree, which is the reason
+both are kept.
 
-A rule may also MATCH on `provider_category` (§ The rule tier), which
+A rule may also MATCH on `provider_category` (*The rule tier*, above), which
 is what makes the issuer an input to our own classification rather
 than a tier that outranks it.
 
-### Re-asking the model: `--all` and `--refine`
-
-A run asks about the backlog — signatures no tier could place. Two
-flags widen it, and they choose different things:
-
-- `--all` re-asks every signature candidacy admits, placed or not. That
-  is what a taxonomy revision or a model change wants.
-- `--refine` re-asks only where the MODEL's own verdict is a catch-all:
-  it was asked, and could say no more than the primary already did.
-
-`--refine` is scoped by PROVENANCE, not by value, and that is the whole
-point. A catch-all a rule or a pin placed is a considered decision —
-the taxonomy has no word for a portrait photographer or for household
-removals, so one was chosen deliberately after checking — and a pass
-that re-asked those would undo the work and push private individuals at
-a model.
-
-A value is a catch-all when its detail part is `OTHER` or starts with
-`OTHER_`. The detail part is the value with its primary's prefix taken
-off, and the convention is Plaid's own.
-`GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` is one, and so is
-`INCOME_OTHER`, the income side's only catch-all. A delta never is.
-`spend_categories.catch_all` (migration 0060, recomputed by 0111) is
-the same predicate as `canonical.CatchAllSpendDetailed` and
-`CatchAllIncomeDetailed`, as data, so the query and the enrichment pass
-share one definition of what a catch-all is.
+---
 
 ## 4. Merchant signatures
 
 `spending.Normalize` reduces a narrative to the key that groups every
-visit to one merchant into a single thing worth categorising once: fold
-to upper-case ASCII (with Latin-1 accents folded, because the same
-merchant is spelled with and without them depending on the export),
-collapse every non-alphanumeric run to a space, strip leading
-direct-debit mandate boilerplate, drop a leading payment-processor
-token, drop reference-number-shaped tokens (four or more digits and
-nothing else), drop every phone-shaped run of what is left (spaced
-digit groups: two or more consecutive all-digit tokens carrying six
-digits or more between them, at least one of them three digits or
-more — a phone number as a statement spaces it, with or without its
-country code, and still over that bar when a four-digit group has
-gone to the reference test; a single digit group between words is not
-a run, so a house number or a numbered chain stays, a house number in
-front of a postcode is a lone group by then, the postcode being gone,
-a run under the floor — two house numbers, `24/7`, a day and month
-once the year is gone, a time, a price in francs and cents — stays
-too, and so does a run of pairs over it with no group of three — a
-date with a two-digit year, a day and month with a time behind them
-once the year is gone, three house numbers, and, deliberately, a
-number written as five pairs), and cap at 64 characters on a
-whole-token boundary.
+visit to one merchant into a single thing worth categorising once. Each
+field goes through these steps:
+
+1. fold to upper-case ASCII, Latin-1 accents included, because the
+   same merchant is spelled with and without them depending on the
+   export;
+2. collapse every non-alphanumeric run to a space;
+3. strip leading direct-debit mandate boilerplate (below);
+4. drop a leading payment-processor token (`SQ`, `TST`);
+5. drop reference-number-shaped tokens: four or more digits and
+   nothing else;
+6. drop every phone-shaped run of what is left (below);
+7. cap the result at 64 characters, on a whole-token boundary.
+
+A **phone-shaped run** is two or more consecutive all-digit tokens with
+six digits or more between them, at least one group of three digits or
+more. That is a phone number as a statement spaces it, with or without
+its country code, even once a four-digit group has gone to the
+reference test. These stay:
+
+- a single digit group between words, such as a house number or a
+  numbered chain;
+- a house number in front of a postcode, which is a lone group once
+  the postcode is gone;
+- a run under six digits: two house numbers, `24/7`, a day and month
+  once the year is gone, a time, a price in francs and cents;
+- a run of pairs with no group of three: a date with a two-digit year,
+  a day and month with a time behind them, three house numbers, and,
+  on purpose, a number written as five pairs.
 
 A narrative is also read for its **head**: the segment that names the
-payee. A statement narrative is written in segments — the payee, the
-street, the country and town, then what the payment was for — and an
-MT940 `:86:` narrative leads with the structured-field tag the payee
-was written into (`Z44?`: a letter, two digits, a question mark). The
-head is the narrative less that tag and less everything from the first
-`;`. Neither half is the merchant. The tag names the field slot and
-differs across bookings of one merchant; the address behind it is
-spelled differently across bookings too — a town in full or
-abbreviated, a postcode before the name or after it — so left in, one
-merchant gets a separate signature per spelling, and an address
-trailing a name reads to a model as part of it. Only the KEY is
-trimmed: the fence that decides whether a signature may be sent
-anywhere reads the whole narrative (`RowTransferShaped`), so no rail
-written in a later segment slips through because the key stopped
-showing it.
+payee. A statement narrative is written in segments: the payee, the
+street, the country and town, then what the payment was for. An MT940
+`:86:` narrative leads with the structured-field tag the payee was
+written into (`Z44?`: a letter, two digits, a question mark). The head
+is the narrative less that tag and less everything from the first `;`.
+Neither dropped part is the merchant:
 
-Both fields are reduced, and which one becomes the signature is
-decided on the reduced forms, in this order. When the counterparty
-is, whole, an e-bill rail marker — `EBILL-RECHNUNG`, `EBILL INVOICE`
-or `E-BILL`, hyphen or space, any case — the description from the
-segment after the marker, reduced segment by segment and less the
-payment-order boilerplate around the creditor (below): the marker
-names the rail the bill came in on, never the creditor, and it has
-words in it, so no later step would refuse it. When the description
-reduces to nothing, the counterparty, whatever it holds — a bare code
-is kept over an empty signature, which would drop the row out of every
-store. When the counterparty reduces to nothing, or to no word at all
-(`Uninformative`), the head if the narrative was structured — a field
-tag led it — and the head carries a word, else the description whole.
-The tag is what says the first segment is the payee: an untagged
-narrative leads with the booking type as often as with a payee
-(`Direct debit; <merchant>; <what for>`), and trimming that to its
-first segment would file every direct debit under one key and lose
-the merchant behind it. When the head begins with
-the counterparty's tokens and carries more, the head: the
-counterparty is then a truncation of it, and the rest of the segment
-is what tells one creditor from another — unless what follows the counterparty's
-tokens, the counterparty read with its own runs gone, is a
-phone-shaped run, when the counterparty stands whatever else follows:
-a name with its number behind it is the whole name, not a truncation
-of one, so `<counterparty>; <phone>; <more>` keys on the counterparty
-alone. The shape that needs this is the person-to-person contact
-line, the payee, the number and the rail's reference, keyed the same
-whether the payee carries the number in the description alone or in
-both fields; a merchant's line with the number in front of its
-address keys on the name by the same rule, and with the number behind
-its address on the name and the address, the number gone. Only the
-spaced form is a run: a number printed unbroken is a reference number
-to the four-digit test, gone before the precedence is read, and the
-description is then a truncation like any other. Otherwise the
-counterparty — it is the merchant field proper, and adapters are
-contractually bound not to reformat it. The first two exceptions exist
-because an adapter's counterparty can be silver's promotion of the
-narrative's first segment, and that segment can be nothing but the
-bank's own notice (`CRD1W OBJECTION TO UBS`) while the creditor sits
-in the description. What the head trim leaves behind is not lost with
-it: a care-of line or an address past the separator is the bank's
-filing of where to send the post, and the rule tier reads the raw
-narrative, so a card bill written `UBS SWITZERLAND AG;C/O UBS CARD
-CENTER` keys on the payee and is still placed by the card rule.
+- the tag names the field slot and differs across bookings of one
+  merchant;
+- the address is spelled differently across bookings too, such as a
+  town in full or abbreviated, or a postcode before the name or after
+  it.
+
+Left in, either gives one merchant a separate signature per spelling,
+and an address trailing a name reads to a model as part of it. Only the
+KEY is trimmed. The fence that decides whether a signature may be sent
+anywhere reads the whole narrative (`RowTransferShaped`), so no rail
+written in a later segment slips through.
+
+Both fields are reduced, and the signature is chosen on the reduced
+forms. The first case that applies wins:
+
+1. **The counterparty is, whole, an e-bill rail marker** (`EBILL-RECHNUNG`,
+   `EBILL INVOICE` or `E-BILL`, hyphen or space, any case). The
+   signature is the creditor from the description's segments after the
+   marker, less the payment order's boilerplate (below). The marker
+   names the rail the bill came in on, never the creditor. It has words
+   in it, so no later step would refuse it.
+2. **The description reduces to nothing.** The counterparty, whatever
+   it holds. A bare code is kept over an empty signature, which would
+   drop the row out of every store.
+3. **The counterparty holds no word** (`Uninformative`). If a field tag
+   led the narrative, the head when it carries a word, and no signature
+   at all when the tag is all there is. Otherwise the description whole.
+   The tag is what says the first segment is the payee. An untagged
+   narrative leads with the booking type as often as with a payee
+   (`Direct debit; <merchant>; <what for>`), and trimming that to its
+   first segment would file every direct debit under one key.
+4. **The head begins with the counterparty's tokens and carries more.**
+   The counterparty is then a truncation, and the rest of the segment
+   tells one creditor from another, so the head wins. The exception is
+   a phone-shaped run right after the counterparty's tokens. A name with
+   its number behind it is the whole name, so
+   `<counterparty>; <phone>; <more>` keys on the counterparty alone.
+   This is the person-to-person contact line: the payee, the number and
+   the rail's reference. It keys the same whether the number sits in the
+   description alone or in both fields. Only the spaced form is a run: a
+   number printed unbroken is gone to the reference test before this
+   case is read.
+5. **Otherwise the counterparty.** It is the merchant field proper, and
+   adapters are bound not to reformat it.
+
+Cases 3 and 4 exist because an adapter's counterparty can be silver's
+promotion of the narrative's first segment. That segment can be nothing
+but the bank's own notice (`CRD1W OBJECTION TO UBS`) while the creditor
+sits in the description. What the head trim leaves behind is not lost:
+the rule tier reads the raw narrative. So a card bill written
+`UBS SWITZERLAND AG;C/O UBS CARD CENTER` keys on the payee and is still
+placed by the card rule.
 
 The description is read only up to its **memo separator**
-(`canonical.DescriptionMemoSeparator`, a spaced em dash). Where a
-source carries the payer's own free text about a row — the message
-typed on a UBS e-banking order — the adapter emits it apart, as the
-change's `Memo`, and the gold writer stores it *after* everything the
-bank wrote, folding any separator the narrative itself carried before
-it joins the two; every adapter's rows enter gold through that one
-writer, so the separator has exactly one meaning there. What follows
-it is the payer's words, not the payee's identity: it is shown
-wherever the description is shown and a config rule can key on it
-(what a payment was for), but it never enters the signature, never
-fires a built-in rule (§3), and `categorize` cuts it from a descriptor
-before the narrative stands in for a missing counterparty (§5). On the
-UBS caption shape the description is the field the signature is built
-from, so without the cut every message would have been its own
-merchant.
+(`canonical.DescriptionMemoSeparator`, a spaced em dash). Some sources
+carry the payer's own free text about a row, such as the message typed
+on a UBS e-banking order. The adapter emits it apart, as the change's
+`Memo`. The gold writer stores it *after* everything the bank wrote
+(`canonical.JoinDescriptionMemo`). Every adapter's rows enter gold
+through that one writer, so the separator has exactly one meaning
+there.
 
-The boilerplate steps are the two rewrites among the folds. A Swiss
-direct debit (LSV) arrives with the mandate notice *before* the
-creditor — `DIRECT DEBIT; CRD1W OBJECTION TO UBS; WITHIN 30 DAYS;
-EXAMPLE CREDITOR AG; …` (synthetic values, exact structure) — so keyed
-on its leading tokens every such row folded to the signature of the
-notice: one fake merchant swallowing every creditor on the rail alike,
-for the model to name and file as one merchant. The notice
-is the bank's format, not the holder's data, so it comes off before
-the signature is built and the signature starts at the creditor. The
-match is narrow: the `DIRECT DEBIT` marker (optional — the web adapter
-carries it as a booking type, so the free text may begin at the
-notice), then `<CODE> OBJECTION TO <BANK>` (required, one token each:
-the notice's fingerprint), then `WITHIN <N> DAYS` (optional), at the
-head of the narrative and nothing else. A narrative with the words but
-not the shape is untouched. When the notice is all there was, the
-mandate code is kept as the signature — it is the creditor's LSV
-identity, and being a code rather than a word it is refused at
-candidacy by `Uninformative` instead of becoming an empty signature.
-That last case is every direct debit on the UBS
-adapter, whose counterparty is the promoted first segment and so holds
-the notice and nothing else; the precedence above is what reaches the
-creditor there, by building the signature from the description
-whenever the counterparty reduces to no word.
+The writer folds every shape in the narrative that a split would read
+as a separator:
 
-An e-bill is the second rewrite, and the one that precedence cannot
-reach. In the statement era the bank prints the rail marker as the
-*first* narrative segment and the creditor second, so the adapter
-promotes the marker into the counterparty and composes the
-description as `PAYNET ORDER; EBILL-RECHNUNG; EXAMPLE TELECOM AG; CH
-EXAMPLETOWN 9999; QRR; 0000…; 1 times E-Banking domestic` (synthetic
-values, exact structure; the three spellings a statement prints are
-`EBILL-RECHNUNG`, `EBILL INVOICE` and `E-BILL`). The marker has words
-in it and is no prefix of a description that leads with the booking
-type, so keyed on the counterparty every e-bill on the rail would
-share one signature per spelling of the marker, and two creditors
-would share one verdict. A rail marker is never a merchant. When the
-counterparty is one — whole, hyphen or space, any case — the
-signature is built from the description's segments after the marker,
-so the creditor leads, and the lines the payment order prints around
-the creditor come off: the `QRR` marker, the `<N> times E-Banking
-domestic` execution line, a page footer — two lines, `Form without
-signature Page …` and then the form id, a counter and the statement
-date, dropped as a pair wherever the break falls, between the marker
-and the creditor included, where the second line would otherwise
-land in the creditor's slot — and any segment with no word in it at
-all, a lone country code (a segment that is only a long reference
-number is already gone to the digit stripping). The
-creditor's own slot, the first segment kept, is exempt from the
-no-word test, since a name can be an abbreviation the word test
-refuses; and nothing else is stripped — the postal address stays,
-because a creditor named with nothing but an address is still that
-creditor, and the fence (§5) knows an address from an IBAN. A marker
-with nothing behind it yields no signature rather than the marker:
-unlike the mandate code it carries no creditor identity worth a key,
-and having words in it it would reach the model and become the one
-fake merchant the strip removes. A plain payment order —
-`E-BANKING PAYMENT ORDER; EXAMPLE PAYEE AG; CH; 1 times E-Banking
-domestic`, its counterparty the payee — is untouched, and so is a
-creditor whose name merely carries the word: only a field that holds
-the marker and nothing else is the rail.
+- the separator itself, wherever it occurs, two adjacent ones
+  included;
+- a bare separator at the start or the end of the narrative;
+- a narrative that is nothing but the dash.
+
+So a narrative that happens to print a spaced em dash is never read
+back as carrying a memo. The split (`canonical.SplitDescriptionMemo`)
+tests the memo-only prefix first. A description with no narrative is
+therefore memo whole, even when the payer's own words carry the
+separator.
+
+What follows the separator is the payer's words, not the payee's
+identity:
+
+- it is shown wherever the description is shown;
+- a config rule can key on it (what a payment was for);
+- it never enters the signature;
+- it never fires a built-in rule (§3);
+- `categorize` cuts it from a descriptor before the narrative stands in
+  for a missing counterparty (§5).
+
+On the UBS caption shape the description is the field the signature is
+built from. Without the cut, every message would be its own merchant.
+
+Two boilerplate steps rewrite a narrative rather than fold it.
+
+**The direct-debit mandate notice.** A Swiss direct debit (LSV) arrives
+with the mandate notice *before* the creditor:
+`DIRECT DEBIT; CRD1W OBJECTION TO UBS; WITHIN 30 DAYS; EXAMPLE CREDITOR AG; …`
+(synthetic values, exact structure). Keyed on its leading tokens, every
+such row would fold to the notice. That is one fake merchant covering
+every creditor on the rail, for the model to name and file as one. The
+notice is the bank's format, not the holder's data, so it comes off
+before the signature is built, and the signature starts at the
+creditor. The match is narrow, and only at the head of the narrative:
+
+1. the `DIRECT DEBIT` marker, optional, because the web adapter carries
+   it as a booking type;
+2. `<CODE> OBJECTION TO <BANK>`, required, one token each: the notice's
+   fingerprint;
+3. `WITHIN <N> DAYS`, optional.
+
+A narrative with the words but not the shape is untouched. When the
+notice is all there was, the mandate code is kept as the signature. It
+is the creditor's LSV identity, and being a code it is refused at
+candidacy by `Uninformative` rather than becoming an empty signature.
+That is every direct debit on the UBS adapter, whose counterparty is
+the promoted first segment and holds only the notice. Case 3 of the
+precedence above reaches the creditor there, from the description.
+
+**The e-bill rail marker.** The precedence alone cannot reach this one.
+In the statement era the bank prints the rail marker as the *first*
+narrative segment and the creditor second. The adapter promotes the
+marker into the counterparty and composes the description as
+`PAYNET ORDER; EBILL-RECHNUNG; EXAMPLE TELECOM AG; CH EXAMPLETOWN 9999; QRR; 0000…; 1 times E-Banking domestic`
+(synthetic values, exact structure). The marker has words in it and is
+no prefix of the description. Keyed on the counterparty, every e-bill
+would share one signature per spelling of the marker, and all their
+creditors would share one verdict.
+
+So when the counterparty is the marker, the signature is built from the
+description's segments after the marker, and the creditor leads. These
+lines the payment order prints around the creditor come off:
+
+- the `QRR` marker;
+- the `<N> times E-Banking domestic` execution line;
+- a page footer: `Form without signature Page …`, then a line with the
+  form id, a counter and the statement date. Both lines go as a pair
+  wherever the page break falls, between the marker and the creditor
+  included;
+- any segment with no word in it at all, such as a lone country code.
+
+The creditor's own slot, the first segment kept, is exempt from the
+no-word test, since a name can be an abbreviation. Nothing else is
+stripped. The postal address stays, because a creditor named with
+nothing but an address is still that creditor, and the fence (§5) tells
+an address from an IBAN. A marker with nothing behind it yields no
+signature. Unlike the mandate code it carries no creditor identity, and
+having words in it, it would reach the model as one fake merchant.
+
+A plain payment order (`E-BANKING PAYMENT ORDER; EXAMPLE PAYEE AG; CH; 1 times E-Banking domestic`,
+its counterparty the payee) is untouched. So is a creditor whose name
+merely carries the word: only a field that holds the marker and nothing
+else is the rail.
 
 `SignatureVersion` stamps every signature the current rules produce.
-It exists so a change to the normalisation can be told apart from a
-change in the data: the merchant store keys paid-for verdicts by
-signature, and a silent re-normalisation would orphan them behind keys
-nothing will ever compute again. On a bump, the pass carries
-older-version verdicts forward onto the new keys — but only where the
-new key has no verdict yet, so a real re-categorisation is never undone
-by a stale copy, and `model_name` is preserved verbatim so a carried
-verdict does not claim to be new work.
+It tells a change to the normalisation apart from a change in the data.
+The merchant store keys paid-for verdicts by signature, and a silent
+re-normalisation would orphan them behind keys nothing computes any
+more. On a bump, the pass carries older-version verdicts forward onto
+the new keys, under these rules:
 
-**A verdict is carried only across a one-to-one move**: every row that
-carried the old key must now carry the same new key. That is what a
-refinement of a genuine merchant's signature looks like — a store
-number dropped, a processor prefix stripped — and a verdict about the
-merchant is as true at the new key as at the old. When an old key's
-rows **split** across several new keys, the old key never was a
-merchant but a shape several creditors shared, and the verdict bought
-at it describes the shape. Version 2 is that case: the boilerplate
-strip above moves every direct-debit row's key from the notice to its
-creditor, and one notice key covers every creditor on the rail under
-whatever the model made of the notice. A carry by old key alone would
-file each of them under that verdict; instead the verdict is left in
-the store, unreachable, and `load` reports the count (`spending: N
-merchant verdict(s) left behind …`), which is what puts those
-merchants back in the backlog visibly. A partial move — some rows
-stay at the old key, others leave — is a split too; the rows that
-stayed keep their verdict. `wealthdb categorizations --forget` (§8)
-removes a verdict outright, and forgetting an artefact's key *before*
-a bump is the clean way to keep it from carrying anywhere, one-to-one
-move or not.
+- only where the new key has no verdict yet, so a stale copy never
+  undoes a real re-categorisation;
+- `model_name` is kept verbatim, so a carried verdict does not claim to
+  be new work;
+- **only across a one-to-one move**: every row that carried the old key
+  must now carry the same new key;
+- when several old keys collapse onto one new key, the first in row
+  order carries its verdict, and the others stay behind at keys nothing
+  computes. Each old key moved whole, so these are not splits.
 
-Each version moved some keys and left every other narrative keyed as
-before:
+A one-to-one move is what a refinement of a genuine merchant's
+signature looks like, such as a store number dropped or a processor
+prefix stripped. A verdict about the merchant is as true at the new key
+as at the old. When an old key's rows **split** across several new
+keys, the old key was never a merchant. It was a shape several
+creditors shared, and the verdict bought at it describes the shape. The
+mandate-notice strip above is the example: one notice key covered every
+creditor on the rail. So a split verdict stays in the store,
+unreachable, and `load` reports the count
+(`spending: N merchant verdict(s) left behind …`). Those merchants are
+back in the backlog, visibly. A partial move, where some rows stay at
+the old key and others leave, is a split too. The rows that stayed keep
+their verdict.
+
+`wealthdb categorizations --forget` (§8) removes a verdict outright.
+Forgetting an artefact's key *before* a bump keeps it from carrying
+anywhere, one-to-one move or not.
+
+A bump can come from an adapter change as well as from a Normalize
+rule. It is what lets the carry run for the rows whose input changed.
+What each version moved, with every other narrative keyed as before:
 
 | version | what moved |
 |---|---|
@@ -1405,120 +1451,10 @@ before:
 | 6 | a description that is all memo stays memo, and the lone-dash narrative is a narrative again |
 | 7 | UBS: the export's record of a booking folds onto the MT940 row, which is keyed on the payee instead of a code |
 | 8 | UBS: a booking two eras both recorded folds to one row, carrying the statement's narrative |
-| 9 | a narrative is read down to its head, without field tag, address or reason; UBS no longer promotes a booking type to payee |
+| 9 | a narrative is read down to its head, without field tag, address or reason; UBS does not promote a booking type to payee |
 | 10 | a narrative that is only a field tag yields no signature |
 | 11 | UBS: a charge for the bank's own service names the bank |
 | 12 | Schwab's web feeds lead the narrative with the movement, the security after it; swissquote and viac project one where none reached gold |
-
-A bump for an adapter change moves no Normalize rule; it is what lets
-the carry run for the rows whose input changed.
-
-Version 3 corrects version 2 on the UBS adapter, whose counterparty is
-the promoted first segment: there the strip left the bare mandate code
-as the whole signature, one code per creditor; a code is
-`Uninformative`, so the model was never re-asked, and the re-key moved
-each notice verdict onto its code one-to-one — the split guard was
-correctly silent, because a code key really does cover one creditor — so
-the notice verdicts carried onto the code keys as artefacts, and the
-card rule, which read only the signature, never saw `UBS CARD CENTER` in
-the description. Ordinary transfers failed the same way through
-`UBS SWITZERLAND AG` alone. Version 3 builds the signature from the
-description in both shapes (the precedence at the top of this section),
-and the built-in rules read the narrative fields as well as the key
-(§3). A verdict carried onto a code key that way is what forgetting
-before the bump (§8) is for.
-
-Version 4 lands three reductions at once. The first is the e-bill
-strip above. Version 3 keys an e-bill on the UBS adapter's statement
-era by its counterparty, the marker, so its key there is one of three,
-one per spelling, and covers every creditor the rail carries; under
-version 4 those rows split onto their creditors, and a verdict at any
-of the three keys is left behind and reported. The second is the memo
-cut. The cut itself moves no key: a description composed without a
-memo never carries the separator, so for every such narrative the key
-under version 4 is the string version 3 computed. What does move keys
-is the UBS adapter change that ships with it. A web-export row with a
-message and no caption was keyed *on* the message — `<message> <type>
-<detail>`, one key per message — and is keyed on `<type> <detail>`
-now; a reference-led order (`<reference>; order`) was one key per
-reference and is the bare `ORDER`. Several old keys collapse onto one
-new key there, each a one-to-one move from its own side, and the bump
-is what lets the carry run: the first old key in row order carries its
-verdict onto the new key, and the others' verdicts stay behind at keys
-nothing computes any more — not counted as splits, because each old
-key moved whole. `ORDER` and its like — a signature that is nothing
-but the bank's booking type — are refused at candidacy (§5), so the
-collapse buys no verdict about a booking type. The third is the
-phone-run drop with the contact-line exception to the truncation rule
-that goes with it. A run is spaced digit groups — six digits or more
-in total, at least one group of three or more — and version 3's digit
-test let such a number's groups through one by one, so a
-person-to-person mobile payment in the web-export shape — `<payee>;
-<phone number>; <reference>`, the payee promoted as the counterparty
-— was keyed on the payee, the number and the reference and is keyed
-on the payee alone, the key the statement era gives the same shape
-behind its booking type, while a number anywhere else in a narrative
-drops out of its key the same way; the digit pairs a narrative
-carries for other reasons — a date, a time, a price, house numbers —
-have no group of three and keep their keys, and each old key moves
-whole. Everything else is keyed exactly as version 3 keys it.
-
-Version 5 closes the memo fold's edge shapes
-(`canonical.JoinDescriptionMemo`). Version 4 folded each separator a
-narrative carried, so one that merely happened to print a spaced em
-dash could not be read back as carrying a memo. Three shapes outlived
-that fold and were read as a memo boundary anyway, and two of them
-move keys. Two **adjacent** separators overlap, so the second survived
-a single pass: the description was split at the survivor and
-everything behind it dropped as the payer's words, where the whole
-narrative is keyed now. A narrative **opening** on the bare separator
-read as all memo and no narrative at all, so the description
-contributed nothing and the counterparty decided the key alone; it is
-a narrative again. The third — a narrative **closing** on the bare
-separator — only moves where the memo boundary falls, and the memo is
-dropped from the key either way. The rows that shared one cut-down key
-move onto keys of their own: the split case above, where the verdict
-stays in the store and `load` reports it. Everything else is keyed
-exactly as version 4 keys it.
-
-Version 6 closes the memo cut's own mirror of that hole
-(`canonical.SplitDescriptionMemo`). The cut searched for the separator
-anywhere in the description before it tested the memo-only prefix, so a
-description that is **all memo** — no narrative at all — whose memo
-carried a spaced em dash in the payer's own words was cut *inside the
-memo*: part of what the payer wrote came back as the narrative and was
-keyed, tested by the built-in rules and eligible as a model descriptor,
-which is the one thing the separator exists to prevent. The prefix is
-tested first now, so such a description is memo whole and the row falls
-back to the counterparty, or to no signature at all. Folded with it is
-the last narrative that could open on the bare prefix without being one:
-a narrative that is **nothing but the dash**, which the separator's
-leading space turned into the prefix, so its description read as all
-memo and the counterparty decided the key alone; it is a narrative
-again. Both shapes move rows that shared one cut-down key onto keys of
-their own — the split case above — and everything else is keyed exactly
-as version 5 keys it.
-
-Version 7 changes no reduction at all: the rules are version 6's. What
-moves is what the UBS adapter hands them. The MT940 feed and the
-account-statement export both record the bank's own bookings, and
-where they overlap the era cut gives the MT940 row to gold — which,
-when the bank wrote nothing but its own code into the `:86:` narrative,
-reaches gold as that code, with the `:61:` type code as its whole
-provider filing and no payee at all. Such a row is keyed on the code: a
-key no tier can place, refused at candidacy as the bank's own filing,
-and in the backlog for good. The adapter now folds the export's record
-of the same entry — matched on the bank's transaction number, which the
-MT940 line repeats as its own reference — onto the columns the MT940
-row left as codes, so the row is keyed on the payee the export names,
-and the booking type the export prints reaches the provider tier in
-place of the SWIFT code. Amounts, dates, kinds and ids stay the MT940
-row's, untouched. Each moved row leaves behind a code key that other
-rows may still share — a code-only booking the export never carried
-keeps it — so this is the split case above: a verdict bought at a code
-key stays in the store, and the rows that moved are back in the backlog
-under a key that names someone. Everything else is keyed exactly as
-version 6 keys it.
 
 ---
 
@@ -1551,9 +1487,9 @@ IBAN-shaped run — two letters, two check digits and an account body,
 spaces removed — that begins where a token begins. The anchor is what
 keeps a postal address out of it: `HAUPTSTRASSE 12; CH EXAMPLE 9999`
 holds the same letters-digits-letters sequence once its spaces are
-gone, and a fence that read it as an account number kept every
-wire-paid bill — a tax office, a dentist, a utility — from the model,
-which is the population only the model can place.
+gone. A fence that read it as an account number would keep every
+wire-paid bill (a tax office, a dentist, a utility) from the model, and
+that is the population only the model can place.
 
 It is a **fence, not a classifier**. The rule tier decides what such a
 row *is*; this decides what may be shown to a model at all. A P2P
@@ -1701,35 +1637,38 @@ store. `--all` widens that to every signature in the spending
 population — what re-asks a merchant after a taxonomy revision or a
 model change. The fence applies to both.
 
-So does a narrower refusal, `spending.Uninformative`. A
-signature with no word in it — no all-letter token of three or more
-letters, which is what an MT940 `:86:` narrative reduces to when the
-bank wrote nothing but its own booking code or a two-digit tag — is
-never a candidate either, at any context level. It carries nothing to
-name, so a model can only echo it back and the gauntlet can only
-reject the echo; refusing it at candidacy saves the round-trips. The
-claim is deliberately *not* about which words are merchants, only
-that no word at all means nothing to name: a token mixing letters and
-digits is a code, while an all-letter code cannot be told from a word
-and goes to the model, where the gauntlet's verbatim-echo check
-remains the backstop. One more refusal is counted with it:
-`spending.FilingOnly`, a signature that is nothing but the provider's
-own filing of the row — the booking type an adapter composes a
-description from when the bank wrote nothing else (`order`, `credit`,
-`FEES`), reduced as the signature was. There is a word in it, but it
-names how the bank booked the row, not whom it paid: one such key
-covers every row the bank filed that way, and a verdict bought at it
-would cover them all. A narrative that carries more than the filing
-(`credit; Ref 7`) is not refused. So is `spending.MechanismOnly`, a
-signature that names how the money moved and no party — `MOBILE
-DEPOSIT`, `REMOTE ONLINE DEPOSIT`, `WIRED FUNDS RECEIVED`, a cheque
-printed as `CHECK` and its serial — or carries
-`ACCTVERIFY`, the entry description NACHA mandates on a verification
-micro-deposit whoever sends it. Both counts print with the plan — "N
-signature(s) fenced as transfer-shaped and never sent", "N
-signature(s) uninformative and never sent" — so a row that stayed
-uncategorised for either reason is accounted for rather than wondered
-about.
+Three narrower refusals apply to both too, at every context level.
+They are about waste rather than privacy:
+
+- **`spending.Uninformative`**: a signature with no word in it, that is,
+  no all-letter token of three or more letters. That is what an MT940
+  `:86:` narrative reduces to when the bank wrote nothing but its own
+  booking code or a two-digit tag. A model can only echo it back, and
+  the gauntlet can only reject the echo. The claim is *not* about which
+  words are merchants. A token mixing letters and digits is a code. An
+  all-letter code cannot be told from a word and goes to the model,
+  where the gauntlet's verbatim-echo check is the backstop.
+- **`spending.FilingOnly`**: a signature that is nothing but the
+  provider's own filing of the row. That is the booking type an adapter
+  composes a description from when the bank wrote nothing else
+  (`order`, `credit`, `FEES`), reduced as the signature was. It names
+  how the bank booked the row, not whom it paid. One such key covers
+  every row the bank filed that way, and a verdict bought at it would
+  cover them all. A narrative that carries more than the filing
+  (`credit; Ref 7`) is not refused.
+- **`spending.MechanismOnly`**: a signature that names how the money
+  moved and no party (`MOBILE DEPOSIT`, `REMOTE ONLINE DEPOSIT`,
+  `WIRED FUNDS RECEIVED`, a cheque printed as `CHECK` and its serial),
+  or one that carries `ACCTVERIFY`, the entry description NACHA
+  mandates on a verification micro-deposit.
+
+The plan prints a count per gate, so a row that stayed uncategorised
+for any of these reasons is accounted for:
+
+- "N signature(s) fenced as transfer-shaped and never sent";
+- "N signature(s) fenced as person-shaped and never sent";
+- "N signature(s) uninformative and never sent", which counts all three
+  refusals above.
 
 **Anchors** are verdicts already in the store, newest first, shown as
 in-context examples. They exist to steer the model towards its own
@@ -1777,7 +1716,8 @@ rejected row is quoted back with its reason and the model re-emits.
 - the signature was not in the candidate set that was sent;
 - the category is one of the deltas (rejected with a specific reason,
   so the retry says *why*, in any casing);
-- the category is otherwise outside the vendored values;
+- the category is otherwise outside what a model may emit: the
+  vendored values and the extensions (`canonical.ModelSpendDetailed`);
 - the merchant name is empty, or is the signature verbatim.
 
 The row must carry exactly three columns. Unlike the resolve-symbols
@@ -1790,10 +1730,10 @@ are free text and a padded row cannot be read without guessing.
 write. So it does not, and it labels its plan as computed against the
 enrichment *as of the last load* rather than quietly planning against
 a different world than a real run would see. It still asks the model,
-batch by batch, exactly as a real run does — that is the precedent's
-shape, and the only way to see verdicts without writing them — which
-is why the batch plan prints before the first call: it is the cost
-signal that arrives before any waiting.
+batch by batch, exactly as a real run does, as `resolve-symbols` does:
+it is the only way to see verdicts without writing them. That is why
+the batch plan prints before the first call. It is the cost signal
+that arrives before any waiting.
 
 **Every run ends with canaries**, because the run's own counters say
 whether the model behaved and nothing about whether the spending
@@ -1817,30 +1757,59 @@ picture is right:
   it pairs was never a spending candidate (a move between two
   brokerage accounts, wallet to wallet); those are counted on one
   line, `N pair(s) matched outside the spending population, not
-  listed`, rather than listed or silently dropped;
-- **the largest unmatched legs**, including opposite-sign
-  cross-currency shapes no phase could pair. Each pair listed above
-  also says which phase asserted it, because the check a reader runs on
-  two legs depends on the answer: legs that disagree in size or
-  currency are the defect the listing exists to catch on an amount pair
-  and the expected shape on an asserted one. Asserted pairs are listed
-  first, ahead of the chronological order, so the cut cannot swallow the
-  roads whose pairs are least self-evident — which are the newest roads,
-  and the ones a day-ordered listing would never reach;
+  listed`, rather than listed or silently dropped. Each pair says which
+  phase asserted it, because the check a reader runs on two legs
+  depends on the answer. Legs that disagree in size or currency are the
+  defect the listing exists to catch on an amount pair, and the
+  expected shape on an asserted one. Asserted pairs are listed first,
+  so the cut cannot swallow the pairs that are least self-evident;
+- **the largest unmatched legs**, including the opposite-sign
+  cross-currency near-pairs no phase could pair;
 - **a stratified sample of what is still uncategorised**, spread
-  across sources rather than taken from the head of the biggest one.
+  across sources rather than taken from the head of the biggest one,
+  then every other uncategorised signature, one per line. A signature
+  can carry a person's name, and this listing has no `-p`, so the
+  report is narrative data.
+
+### Re-asking the model: `--all` and `--refine`
+
+A run asks about the backlog: signatures no tier could place. Two
+flags widen it, and they choose different things:
+
+- `--all` re-asks every signature candidacy admits, placed or not. That
+  is what a taxonomy revision or a model change wants.
+- `--refine` re-asks only where the MODEL's own verdict is a catch-all:
+  it was asked, and could say no more than the primary already did.
+
+`--refine` is scoped by PROVENANCE, not by value, and that is the whole
+point. A catch-all a rule or a pin placed is a considered decision —
+the taxonomy has no word for a portrait photographer or for household
+removals, so one was chosen deliberately after checking — and a pass
+that re-asked those would undo the work and push private individuals at
+a model.
+
+A value is a catch-all when its detail part is `OTHER` or starts with
+`OTHER_`. The detail part is the value with its primary's prefix taken
+off, and the convention is Plaid's own.
+`GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` is one, and so is
+`INCOME_OTHER`, the income side's only catch-all. A delta never is.
+`spend_categories.catch_all` (migration 0060, recomputed by 0111) is
+the same predicate as `canonical.CatchAllSpendDetailed` and
+`CatchAllIncomeDetailed`, as data, so the query and the enrichment pass
+share one definition of what a catch-all is.
 
 ---
 
 ## 7. Reading it: `wealthdb spending <view>`
 
 Three views, one per report macro, with the grain in a positional and
-everything else in a flag — the returns family's shape:
+everything else in a flag, as the returns family does. DESIGN.md §4.12
+has the flags.
 
 | view | a row is |
 |---|---|
 | `summary` | a period bucket: `txn_count`, `spend`, `refunds`, `net_spend` |
-| `categories` | a (bucket, category) pair, plus its `share` of the bucket |
+| `categories` | a (bucket, category) pair, plus its `share_pct` of the bucket |
 | `transactions` | a spending line: merchant (the store's name, else the line's own signature; none on a delta line, the issuer on a card bill), category, provenance, amount |
 
 The window is positional and defaults to the **trailing twelve
@@ -1850,11 +1819,10 @@ recent habit, and a window reaching back past the day a source's card
 ledger begins covers a cash-only population — a `total` over it answers
 a different question than it appears to.
 
-`--period` is `daily | weekly | monthly | quarterly | annual | total`
-(default `monthly`), which is the returns family's vocabulary extended
-downwards: a quarter is the coarsest interesting return bucket and
-about the finest interesting spending one. `--level primary|detailed`
-picks the vocabulary `categories` groups by.
+`--period` (default `monthly`) is the returns family's vocabulary
+extended downwards to `daily` and `weekly`. A quarter is the coarsest
+interesting return bucket and about the finest interesting spending
+one.
 
 **There are no row-filter flags**, matching `holdings positions` and
 `transactions`. Filtering by merchant, category or account is `-f json`
@@ -1920,9 +1888,10 @@ category. The backlog names its merchants too — which is most of what
 makes a backlog readable at all.
 
 It is not restricted by **candidacy** either, and that is the one
-widening to know about. `Uninformative` and `FilingOnly` (§6) refuse
-the model a signature that is nothing but a booking code, or nothing
-but the provider's own filing of the row: one such key covers every
+widening to know about. `Uninformative`, `FilingOnly` and
+`MechanismOnly` (§6) refuse the model a signature that is nothing but
+a booking code, the provider's own filing of the row, or a payment
+mechanism. One such key covers every
 row the bank filed that way, so a verdict bought at it would be
 bought for all of them. Those gates fence the STORE, not this column,
 and the normaliser keeps such a fold rather than storing an empty
@@ -1939,18 +1908,16 @@ string that exists nowhere else in gold. The fold also labels itself —
 upper case tells a reader the name was derived rather than written,
 without consulting `provenance`. And identity is a stable rendering by
 construction, so one signature always renders one way and a report
-groups its lines as one merchant; a display caser could fold two distinct signatures, or a
-signature and a store name, onto one label and merge rows the
-resolution holds apart. `initcap` does not exist in this DuckDB
-besides, so casing would mean a hand-rolled `list_transform` caser
-inside a macro every report reads, for a worse answer on acronyms and
-brand casing.
+groups its lines as one merchant. A display caser could fold two
+distinct signatures, or a signature and a store name, onto one label
+and merge rows the resolution holds apart.
 
 **A delta line carries no store name** (migration 0048), whatever the
 store holds for its signature, and no fallback either, because a delta
 line is not a merchant transaction: a gift names the recipient, an
 own-account move the holder's own bank, cash out of an ATM a bank and
-a place, and none of those is who the money was spent with. The rule is per line, not per signature: a pin that
+a place, and none of those is who the money was spent with. The rule
+is per line, not per signature: a pin that
 places `gift` on one row of a signature the store has named blanks
 that row alone, and its siblings keep the name and the category the
 store gave them. Nothing else moves. The store keeps the verdict —
@@ -1976,14 +1943,12 @@ model tier, the provider tier, a config rule, a pin and the matcher
 never write one — so an issuer appears in the column only on a line
 this rule filed as a bill to that issuer.
 
-The label is a merchant column, not a merchant: a report that ranks
+The label is a merchant column, not a merchant. A report that ranks
 merchants excludes the delta categories rather than reading a blank
-merchant as "not a delta", or an issuer ranks among shops. The
-dashboard's two rankings do exactly that (web/DESIGN.md), which is
-also why the fallback needed no change there — the lines it names rank
-as the merchants they are. What ranks widens with it: every non-delta
-line carrying a signature, at the grain the fold gives it, so ranks
-and rank 1's share move with the population.
+merchant as "not a delta", or an issuer would rank among shops. The
+dashboard's merchant lists do exactly that
+([web/DESIGN.md](../../web/DESIGN.md)). A line named by the fallback
+ranks as the merchant it is.
 
 Delta-ness is read off the `spend_categories` dimension rather than
 restated as a list: a delta is primary-level (`spend_primary =
@@ -1995,8 +1960,7 @@ downstream inherits the column from `spend_txn_categories()` by name —
 siblings, `report_transactions` (so `wealthdb transactions` shows no
 merchant on an own-account move or a subscription either, and shows
 the fold on a provider-placed purchase), `web_spending` and the
-dashboard's merchant rankings. None of them re-derives the column, and
-none was re-issued for any of the three steps.
+dashboard's merchant rankings. None of them re-derives the column.
 
 ### What `-p` redacts
 
@@ -2006,13 +1970,13 @@ gates candidacy for the merchant STORE, not the column: a wire, an
 ACH, a P2P narrative — the shapes that carry a counterparty's NAME
 where a merchant would be — is refused a verdict and therefore has no
 store name, and lands on step 3 with a signature folded from that
-narrative. So a payment to a person now surfaces its payee here, on
+narrative. So a payment to a person surfaces its payee here, on
 the non-private view, exactly as `merchant_signature` and
 `counterparty` beside it already do. The column is free text rather
 than a name because that is what it holds.
 
-Step 2 carries the same exposure by a slower route, and carried it
-before the fallback existed. The store is append-only across signature
+Step 2 carries the same exposure by a slower route. The store is
+append-only across signature
 revisions and across widenings of the fence itself, and the enrichment
 lookup applies a stored verdict by signature for as long as it is
 there: a name bought while the fence was narrower outlives the fence
@@ -2036,25 +2000,41 @@ through.
 
 The account's external id and display name redact as account ids — a
 card's display name is typically its masked number — and amounts
-redact as money. Categories, provenance and the `share` percentage
-stay legible, like the returns percentages.
+redact as money. Categories, provenance and `share_pct` stay legible,
+like the returns percentages.
 
 ## 8. Storage and lifecycle
 
 | table | keyed by | lifecycle |
 |---|---|---|
-| `spend_txn_enrichment` | (silver_source_id, transaction_external_id) | derived; rewritten whole by every pass, pinned rows included; carries the far-account columns of migration 0079 — the partner leg's account for a matched row, the account the SOURCE itself named where no pairing exists (a counter account in the row's payload, resolved against the accounts gold holds), and the class a rule stands for where neither road reached one — which nothing on this side reads; `reset <source>` clears THAT source's rows only, and the surviving leg of a cross-source matcher pair keeps its `internal_transfer` verdict until the next `load -a` re-asserts the pass — which is what `reset` prints; a fresh-file `reload -a` does not carry it (the rebuild re-projects the transactions it is derived from, and the pins are re-stamped from the ledger) |
+| `spend_txn_enrichment` | (silver_source_id, transaction_external_id) | derived; rewritten whole by every pass, pinned rows included (below) |
 | `spend_merchant_categories` | merchant_signature | GLOBAL and paid for; survives `reset`, and `reload -a` carries it across the fresh-file swap because nothing could regenerate it; a row leaves only by `categorizations --forget` |
 | `spend_account_scope` | (silver_source_id, account_external_id) | configuration stamped into gold; re-stamped whole every pass |
 
-The enrichment pass deletes every row it owns — which is every row —
-and re-asserts them, rather than scoping the delete to the current
+`spend_txn_enrichment` also carries the far-account columns of
+migration 0079, which only the cash flow statement reads. They hold the
+first of these that exists:
+
+- the partner leg's account, for a matched row;
+- the account the SOURCE itself named, where no pairing exists: a
+  counter account in the row's payload, resolved against the accounts
+  gold holds;
+- the class a rule stands for, where neither reached one.
+
+`reset <source>` clears THAT source's enrichment rows only. The
+surviving leg of a cross-source matcher pair keeps its
+`internal_transfer` verdict until the next `load -a` re-asserts the
+pass, and `reset` says so. A fresh-file `reload -a` does not carry the
+table: the rebuild re-projects the transactions it is derived from, and
+the pins are re-stamped from the ledger.
+
+The enrichment pass deletes every row it owns, which is every row, and
+re-asserts them. It does not scope the delete to the current
 population: an account fenced out of scope, or a transaction a
 re-projection dropped, would otherwise leave rows the pass can no
-longer reach and therefore no longer clean up. `manual` rows are
-owned too: the decision behind one is not in gold but in the pins
-ledger, which is config, and a preserved manual row would outlive the
-pin that made it.
+longer reach and so no longer clean up. `manual` rows are owned too.
+The decision behind one is not in gold but in the pins ledger, which is
+config, and a preserved manual row would outlive the pin that made it.
 
 ### Undoing a merchant verdict
 
@@ -2062,12 +2042,10 @@ The model is sometimes wrong at merchant scope, and the store has no
 tier above it: a per-transaction pin outranks a verdict for one row,
 not for the merchant. `wealthdb categorizations --forget SIGNATURE`
 (repeatable) is the undo. It deletes the rows whose signature matches
-exactly — the `signature` column of the dump, quoted — in one
-transaction, prints each removal with its name and category, reports a
-signature it did not find without failing, and needs write access;
-`--dry-run` prints what would go and writes nothing. Nothing else
-changes: the next `categorize` run re-asks a forgotten merchant
-naturally, because the backlog is whatever the store does not cover.
+exactly: the `signature` column of the dump, quoted. DESIGN.md §4.11
+has its write gate, dry run and output. Nothing else changes. The next
+`categorize` run re-asks a forgotten merchant, because the backlog is
+whatever the store does not cover.
 
 Forgetting is also how a verdict is kept out of a signature-version
 re-key (§4). The pass carries a verdict only across a one-to-one move
@@ -2080,240 +2058,117 @@ tidies the store — by then the rows have moved on.
 
 ## 9. Decisions of record
 
-- **Family name `spending`; outflows only.** Income is
-  [INCOME.md](INCOME.md); buys and sells are `cashflow`'s
+Each decision points to the section that argues it.
+
+- **Family name `spending`; outflows only** (§1). Income is
+  [INCOME.md](INCOME.md); buys and sells are the cash flow statement's
   ([CASHFLOW.md](CASHFLOW.md)).
 - **Plaid PFC version 2, vendored verbatim**, plus extensions and
-  deltas. A revision arrives as a diff. The dimension carries both
-  families, told
-  apart by a `family` column (migration 0069); the two vocabularies are
-  fenced from each other by predicate, so a spending rule cannot place
-  an income value.
+  deltas (§2). A revision arrives as a diff. One dimension carries both
+  families, told apart by a `family` column (migration 0069). The two
+  vocabularies are fenced from each other by predicate, so a spending
+  rule cannot place an income value.
 - **A rewards credit is income, not an offset against card spend**
-  (migration 0070). The `reward` kind left the spending population: a
-  statement credit, an account-opening bonus and a referral bonus all
-  arrive under it, and only the first has any relationship to spending
-  at all. Nothing in gold changed — no adapter emits the kind yet.
+  (migration 0070). The `reward` kind is outside the spending
+  population. A statement credit, an account-opening bonus and a
+  referral bonus all arrive under it, and only the first relates to
+  spending at all.
 - **Capital deployed is not spending** (`investment`, §2). It is an
   own-account move when the destination is tracked and an
-  `investment` when it is not; either way it leaves the base.
+  `investment` when it is not. Either way it leaves the base.
 - **An unpaired card payment is card spend, not an own-account move**
-  (`card_spend`, §2). `internal_transfer` is the wrong verdict for an
-  unpaired bill: a household pays bills for cards no collector exists
-  for, and every such bill — the only trace of that card's spending —
-  would be deleted from the totals, silently and at whatever size it
-  was. The rule places `card_spend`, a placeholder primary kept in the
-  base and visible as its own line. The matcher still outranks it, so a
-  bill whose card *is* collected nets out exactly as before, and
+  (`card_spend`, §2). Filed as `internal_transfer`, the bill for a card
+  no collector covers would vanish from the totals, and it is the only
+  trace of that card's spending. The matcher outranks the rule, so
   collecting a card replaces its bills with its purchases on the next
-  pass. The rule's issuer table names issuers only — a store card that
-  names its merchant is that merchant's spend — and the issuer it
-  matched is what the line carries as its merchant (§7).
-- **A cash gift is spending, visible as what it is** (`gift`, §2).
-  The vendored vocabulary means a shop by gifts-and-novelties and a
-  non-profit by donations, and left to itself the model files cash gifts
-  and family support under other general services, which is false.
-  `gift` is a primary in its own right, kept in the base by the same
-  construction as `card_spend`, and placed only by a config rule or a
-  pin — no narrative says a person is family, and the fence keeps
-  person-shaped rows from the model regardless.
-- **No merchant on a delta line** (migration 0048, §7). The merchant
-  column is the store's name for the signature only where the resolved
-  category is vendored. A delta line — an own-account move, capital
-  deployed, a card bill, a gift, cash out — is not a merchant
-  transaction and shows none, whatever the store holds: the holder's
-  own name on a card-bill payment, a relative's on a gift, a company's
-  on a subscription are not merchants and do not rank among them.
-  Decided per line from the resolved value, and read off the
-  dimension's own marker (a delta is primary-level) rather than a
-  second list, so a new delta is covered by being seeded.
-- **…except a card bill, which names its issuer** (migration 0052, §7).
-  A card bill has no purchases to name, and the issuer it was paid to
-  is the only handle on which card the money went to; without it the
-  `card_spend` line is one undifferentiated bucket. The name comes from
-  the card-payment rule's issuer table rather than from the merchant
-  store — the store holds whatever a model made of a narrative naming
-  the payer's own bank — and is written by that rule alone, cleared by
-  any tier that overrules it. It is a handle, not a merchant: a report
-  that ranks merchants excludes the delta categories rather than
-  reading a blank merchant as "not a delta".
-- **A line with no store row falls back to its own signature**
-  (migration 0054, §7). The store is the model tier's, and the model
-  tier is the weakest scope: every line a stronger tier placed, and
-  every line nothing placed, is outside it and was blank. The
-  signature is the key that store row would have hung on and is a
-  merchant identity already, so the column publishes it — verbatim,
-  because the cell is then the value of the `merchant_signature`
-  column beside it, the fold's upper case tells a derived name from a
-  written one, and identity is the only rendering that is stable by
-  construction. The candidacy gates gate the store and not the
-  column, so a fold that is only a booking tag surfaces under it.
-- **Merchant-keyed categorisation**, stored globally. A merchant is
+  pass.
+- **A cash gift is spending, visible as what it is** (`gift`, §2). No
+  vendored value fits, and the model would file it under general
+  services. Only a config rule or a pin places it.
+- **No merchant on a delta line, except a card bill's issuer**
+  (migrations 0048 and 0052, §7). A delta line is not a merchant
+  transaction. A card bill names the issuer from the card rule's table,
+  because that is the only handle on which card the money went to.
+- **A line with no store row falls back to its own signature,
+  verbatim** (migration 0054, §7). The signature is already a merchant
+  identity, and verbatim is the only rendering stable by construction.
+- **Merchant-keyed categorisation**, stored globally (§6). A merchant is
   the same merchant whichever card met it.
 - **The description outranks a counterparty that names no merchant**
-  (`SignatureVersion` 3, §4). The counterparty is the merchant field
-  proper and wins by default, but an adapter's counterparty may be a
-  promotion of the narrative's first segment, and that segment can be
-  the bank's notice or the bank's own name with the creditor behind
-  it in the description. When the counterparty reduces to no word, or
-  is a truncation of the description, the signature comes from the
-  description; and the built-in rules read both narrative fields as
-  well as the signature, so a creditor named only in the description
-  is found whatever the key holds.
-- **A rail marker is never a merchant** (`SignatureVersion` 4, §4).
-  An e-bill's promoted counterparty is the bank's marker for the
-  rail, with words in it and the creditor behind it in the
-  description; the signature is built from the description past the
-  marker, less the payment order's own lines, so a utility and an
-  insurer are two merchants rather than one.
-- **An address is not part of the merchant's name**
-  (`SignatureVersion` 9, §4). A statement narrative writes the payee
-  first and its address behind, and an MT940 `:86:` narrative leads
-  with the structured-field tag the payee went into. Both are the
-  bank's filing, and both vary across bookings of one merchant — a
-  town in full or abbreviated, a postcode before the name or after it,
-  a different field tag — so left in the key one merchant gets a
-  signature per spelling and a model reads the town as part of the
-  name. The key is trimmed to the narrative's head; the transfer fence
-  still reads the whole narrative, so nothing a later segment says can
-  slip through on the trim.
-- **Only a STRUCTURED narrative is trimmed to its head** (§4). The
-  field tag is what says the first segment is the payee. The export
-  feed composes its description the other way round — the booking type
-  leads and the merchant follows — so trimming an untagged narrative
-  would file every direct debit under one key and lose the merchant
-  behind it.
-- **The bank's booking type is not a payee** (§4). A row the bank
-  filed without one leads its narrative with the booking type, which
-  the ubs adapter's promotion then reads as the counterparty and the
-  signature prefers over the description. Refused at the promotion,
-  the description names the merchant instead — and for the bookings
-  the MT940 feed also carries, that description is the one narrative
-  with a payee in it.
-- **The model may never emit a delta.** Enforced by a stricter
-  predicate in `canonical`, not by a hardcoded list in the command.
-- **The provider tier may place a delta.** The no-deltas restriction
-  guards a merchant-keyed verdict the model produces from a name; a provider verdict is per transaction, placed from the
-  provider's own structured filing of the row, and where that filing
-  names the movement — an ATM withdrawal, an FX conversion between the
-  holder's own currency accounts, a bill paid to a card — the delta is
-  the only honest verdict, and the tiers above still overrule it (§3).
-- **An unmapped booking type is a rail, not drift.** A card issuer's
-  vocabulary is categorical, so a value the map lacks is drift and is
-  counted — bar the values the map marks `untranslatable`, the issuer's
-  own residual bucket and a category naming a money movement rather than
-  a line of business (§3); a bank's booking types mostly name payment
-  rails, so a value
-  the map lacks is the normal case and is not. The shape is a flag on
-  the map, which keeps the misses canary meaningful for the issuers it
-  was built for (§3).
-- **A payer's memo never enters the signature** (`SignatureVersion` 4,
-  §4). An adapter emits the payer's own message apart, as the change's
-  memo, and the gold writer stores it after the memo separator, at the
-  end of the description, folding any separator the narrative carried
-  — so the payee keeps leading the narrative and the separator means
-  one thing; the signature stops at it, so a payment is keyed the same
-  whatever was written on it; the memo is never sent as a descriptor;
-  and a signature that is nothing but the bank's booking type, which
-  is what a message-led row without a caption reduces to, is refused
-  at candidacy (§5).
+  (§4, cases 3 and 4). An adapter's counterparty can be a promotion of
+  the bank's notice or the bank's own name, with the creditor in the
+  description. The built-in rules read both narrative fields as well as
+  the signature, so a creditor named only in the description is found.
+- **A rail marker is never a merchant** (§4, the e-bill strip). Keyed on
+  the marker, a utility and an insurer would be one merchant.
+- **An address is not part of the merchant's name, and only a
+  STRUCTURED narrative is trimmed to its head** (§4). The field tag is
+  what says the first segment is the payee. The transfer fence still
+  reads the whole narrative.
+- **The bank's booking type is not a payee** (§4). The UBS adapter does
+  not promote a booking type into the counterparty, so the description
+  names the merchant instead.
+- **The model may never emit a delta** (§2). A stricter predicate in
+  `canonical` enforces it, not a list in the command.
+- **The provider tier may place a delta** (§3). A provider verdict is
+  per transaction, placed from the provider's structured filing. Where
+  that filing names the movement, the delta is the only honest verdict,
+  and the tiers above still overrule it.
+- **An unmapped booking type is a rail, not drift** (§3). The shape is
+  a flag on the map, which keeps the misses canary meaningful for the
+  categorical vocabularies.
+- **A payer's memo never enters the signature** (§4). A payment is
+  keyed the same whatever was written on it, and the memo is never sent
+  as a descriptor.
 - **Built-in rules read the narrative only; config rules read
-  narrative and memo** (§3). The payer's words can name a mortgage or
-  a cash machine on a row that is neither, and a built-in that read
-  them would place a delta with the rule's provenance — invisibly, for
-  `internal_transfer`. A config rule is the holder's own input and may
-  key on what the holder wrote a payment was for.
+  narrative and memo** (§3). The payer's words can name a mortgage or a
+  cash machine on a row that is neither. A config rule is the holder's
+  own input and may key on them.
 - **A built-in may read the provider's filing to DECLINE a row, never
-  to place one** (§3). The card-payment rule stands down where the
-  booking type names a cash withdrawal, because cash taken at a machine
-  carries the masked card number the rule reads as a bill. It also
-  stands down where the provider filed the row under another value,
-  because AUTOPAY says how a bill was paid, not to whom. The `atm` rule
-  stands down where the provider filed the row as a bank fee or a
-  payment on a debt, because a fee for taking cash, and the repayment
-  of a cash advance, are booked in the same words as the cash. The fee
-  rules stand down where the provider named the fee.
-  Placing a category from the filing would be the provider tier wearing
-  the rule tier's provenance and outranking it; declining on it hands
-  the row down to the tier that owns the filing.
-- **Card-rule order is a refusal, not a re-order.** The card rule
-  still leads the table — its narratives are the most specific — and
-  the one row type both it and the `atm` rule match is settled by the
-  refusal rather than by moving either rule.
-- **The built-in rules are engine constants.** A per-deployment
-  override of them would let a wrong local rule quietly break the
-  arithmetic the three rules protect; a merchant needing special
-  handling belongs in the merchant store, where a verdict is
-  per-merchant and visible. `spending.rules` sits *below* the built-ins,
-  so a local rule can add a verdict but never override one, which is
-  what keeps this true.
+  to place one** (§3). Placing from the filing would be the provider
+  tier wearing the rule tier's provenance. Declining hands the row down
+  to the tier that owns the filing.
+- **Card-rule order is a refusal, not a re-order** (§3). The card rule
+  leads the table because its narratives are the most specific. The
+  one row type both it and the `atm` rule match is settled by the
+  refusal.
+- **The built-in rules are engine constants** (§3). A per-deployment
+  override could quietly break the arithmetic they protect.
+  `spending.rules` sits *below* the built-ins, so a local rule can add a
+  verdict but never override one.
 - **Deterministic enrichment is folded into `load`**; the model tier
-  is only ever explicit.
+  is only ever explicit (§6).
 - **The matcher's window defaults to 5 days**, the same as the returns
-  matcher: one matching core, one banding, so the same movement is not
+  matcher. One matching core and one banding keep a movement from being
   internal in one report and external in the other.
-- **The spending matcher pairs legs on the same account**
-  (`AllowSameOwner`) when they are a round trip — one signature, or a
-  reversal's wording; the returns matcher does not. Otherwise
-  a same-day, equal-and-opposite withdrawal and deposit on one account
-  — a round trip netting to zero — counts as spending. The knob
-  defaults off in the shared core so returns is byte-identical; the
-  false-pair surface it opens is bounded by the round-trip test, the
-  eligible-kind set (`purchase` / `refund` never reach the matcher)
-  and a tie-break that prefers a partner on another account.
-- **The catch-all kinds (`other`, `journal`) are excluded from the
-  population.** The UBS adapter deliberately demotes internal conduit
-  legs to `other`, and `journal` is a bookkeeping entry; neither kind
-  carries a reliable sign, so admitting them would import noise with no
-  way to orient it. `wealthdb status -v` counts the rows excluded for
-  either kind so the drift is loud rather than silently uncounted.
-- **Context defaults to `merchant`**, the most private level.
+- **The spending matcher pairs legs on the same account** for a round
+  trip only (`AllowSameOwner`, §3); the returns matcher does not. The
+  knob defaults off in the shared core, so returns matching is
+  unaffected. The round-trip test, the eligible-kind set and the
+  tie-break towards another account bound the false-pair surface.
+- **The catch-all kinds (`other`, `journal`) are outside the
+  population.** Neither carries a reliable sign. `wealthdb status -v`
+  counts the in-scope rows of either kind, so the gap is visible.
+- **Context defaults to `merchant`**, the most private level (§5).
 - **The read CLI carries no row filters** and defaults to the trailing
-  twelve months. Filtering is jq / SQL / the dashboard's job; the
-  window default follows what a spending report is read for.
-- **A narrow correction surface.** Three populations settle what it must
-  cover, each not spending and each counted as it without a correction:
-  own-money movement to destinations whose receiving side is booked
-  nowhere in gold, so no matcher can ever pair it; outright securities
-  purchases from a cash account, booked as plain withdrawals, for which
-  the taxonomy has no honest value; and rows with no descriptor and no
-  counter-leg, which nothing but a per-transaction pin can classify. The
-  surface is exactly two mechanisms and no more: `spending.rules` (§3),
-  keyed on narrative text for a counterparty that recurs, and the
-  `spending.pins` ledger (§3, DESIGN.md §13.11), the override proper,
-  per transaction. Both are config, both are re-stamped whole on every
-  pass so removal removes, and both hold the holder's own identifiers —
-  which is why they live in the user's config and never in the
-  repository.
-- **A config rule may place a consumption category.** Confining rules to
-  the three delta verdicts was rejected. The fence (§5) keeps person-
-  and IBAN-shaped narratives away from the model, correctly; but a
-  household that pays its lawyer, contractor and tax office by wire has
-  every such row fenced, and with consumption forbidden to rules those
-  rows could be categorised by nothing but a per-transaction pin, one
-  row at a time, for a counterparty that recurs. A rule is the holder's
-  own local input and the model never sees it, so the privacy argument
-  behind the restriction never applied to it; the model's output stays
-  delta-free, and that is a different restriction with a different
-  reason. `spending.rules` validates against `ValidSpendDetailed`, as
-  the pins do.
+  twelve months (§7).
+- **A narrow correction surface: `spending.rules` and `spending.pins`**
+  (§3). Rules key on narrative text for a counterparty that recurs.
+  Pins name one transaction. Both are config, re-stamped whole on every
+  pass, and both hold the holder's own identifiers, so they live in a
+  deployment's config and never in the repository.
+- **A config rule may place a consumption category** (§3). The fence
+  keeps wire-paid creditors from the model, and a recurring one would
+  otherwise need a pin per row. A rule is local input the model never
+  sees, so the model's delta restriction does not apply to it.
+  `spending.rules` validates against `ValidSpendDetailed`, as the pins
+  do.
 
 ## 10. Open follow-ups
 
-- **The interest-versus-principal split — DONE, and not here.** Part of
-  a mortgage payment is consumed and only the principal share is the
-  own-account move, but no category can carry that: the split needs the
-  lender's own outstanding balance. The cash flow statement derives it
-  and draws the two shares as separate leaves
-  ([CASHFLOW.md](CASHFLOW.md) §5). The rule in `rules.go` is unchanged
-  and still places the payment whole — a rule sees one row's text and
-  never a balance.
-- **Model-tier measurements.** The `categorize` loop is covered
-  against a scripted client, and batching was set from live runs: a
-  backlog sent whole times out, and a local model answers a batch of
-  40 well inside the transport's ceiling, in the shape the gauntlet
-  expects (§6, DESIGN.md §4.11). Two things have not been measured:
-  whether the rolling anchor set converges the vocabulary across a
-  full backlog — only samples of verdicts have been read — and
-  whether 40 is tuned rather than merely safe, since no larger batch
-  has been tried against the ceiling.
+- **Model-tier measurements.** The `categorize` loop is covered against
+  a scripted client, and a batch of 40 sits well inside the transport's
+  call ceiling (§6). Two things are not measured:
+  - whether the rolling anchor set converges the vocabulary across a
+    full backlog;
+  - whether 40 is tuned rather than merely safe.

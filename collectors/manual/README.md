@@ -11,24 +11,24 @@ GmbH / Swiss AG). Every other collector scrapes or calls a source; this one
 has **no source**. A few hand-maintained CSVs are the input; `load` validates
 them and projects them into a SQLite silver.
 
-> `load` is exercised against the synthetic [examples/](examples/), and the
-> gold adapter
-> ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/))
-> loads the manual source into gold, where it appears in
-> `wealthdb holdings positions`. The collector tracks **positions,
-> valuations and exits**; cash stays with the banks (see
-> [DESIGN.md](DESIGN.md) §6).
+The gold adapter
+([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/))
+loads the manual source into gold, where it appears in
+`wealthdb holdings positions`. The collector tracks **positions,
+valuations and exits**. Cash stays with the banks (see
+[DESIGN.md](DESIGN.md) §6).
 
 ## Tools
 
 | Script | Purpose |
 | --- | --- |
 | [`load.py`](load.py) | Validate `accounts.csv` / `positions.csv` / `valuations.csv` / `cost_basis.csv` / `exits.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
-| `login.py` | **N/A.** No source, no session. `./manual login` is a no-op that prints this. |
-| `download.py` | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
+| `login` | **N/A.** No source, no session. `./manual login` is a no-op that says so. |
+| `download` | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
+| `prune` | **N/A.** Nothing to reclaim (see [below](#reclaiming-disk-prune)). |
 
-There is no Docker image and no `~/.secrets/manual.env` — there is nothing
-to authenticate to.
+There is no Docker image and no `~/.secrets/manual.env`. There is
+nothing to authenticate to.
 
 ## Layout
 
@@ -52,31 +52,25 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 #    (and accounts.csv if the book spans more than one tax sleeve,
 #    cost_basis.csv if a commitment is paid in over time, exits.csv once
 #    something is sold).
-#    Copying examples/ (a synthetic sample covering every asset kind, incl.
-#    a note→equity conversion and a second sleeve) makes a good skeleton;
-#    replace the placeholder holdings with your real ones.
+#    examples/ is a synthetic sample with most asset kinds, a note→equity
+#    conversion, a capital-call series, an exit and a second sleeve.
+#    Copy it as a skeleton and replace the placeholder holdings.
 
 # 2. Load — validates the CSVs and (re)builds $XDG_DATA_HOME/wealthdb/manual/manual.db
 ./manual load
 ```
 
-`./manual load` resolves its two paths with precedence **CLI flag > env var
-> default**:
+The CSV dir is the collector's data dir. `--data-dir` and `--silver-db`
+override it and the silver path, with the fleet precedence
+([collectors/README.md](../README.md#the-wrapper--the-wealthdb-collect-contract)).
+`-v` turns on DEBUG logging. The load is **idempotent**. It fully rebuilds
+silver from the current CSVs every run, so a re-run after an edit shows
+the new state. There are no incremental dumps to reconcile.
 
-| path | flag | env var | default |
-| --- | --- | --- | --- |
-| CSV dir | `--bronze-dir` | `MANUAL_DATA_DIR` (via the wrapper) | `$XDG_DATA_HOME/wealthdb/manual` |
-| silver DB | `--silver-db` | `MANUAL_SILVER_DB` | `<bronze-dir>/manual.db` |
-
-(The silver DB follows the resolved CSV dir unless overridden on its own.)
-`-v` turns on DEBUG logging. The load is **idempotent** — it fully rebuilds
-silver from the current CSVs every run, so editing a CSV and re-running just
-reflects the new state (there are no incremental dumps to reconcile).
-
-To try it against the committed synthetic data without touching your own:
+To try it against the committed synthetic data, from this directory:
 
 ```bash
-./manual load --bronze-dir examples --silver-db /tmp/manual.db -v
+./manual load --data-dir examples --silver-db /tmp/manual-example.db -v
 ```
 
 ## The CSV schema (bronze)
@@ -90,11 +84,11 @@ out and every position lands in one account (`manual`, kind `other`,
 `taxable_personal` / `self_directed`), which is right for a book with one
 owner and one tax treatment.
 
-Add it when two holdings sit in different **tax sleeves** — a stake held
-through a trust or a company is not your own taxable property, and rolling
-both into one account makes every wrapper-grained report wrong. An account
-here is a *declaration*, not something fetched: it says "these positions are
-held under this wrapper, managed this way".
+Add it when two holdings sit in different **tax sleeves**. A stake held
+through a trust or a company is not the holder's own taxable property.
+Rolling both into one account makes every wrapper-grained report wrong.
+An account here is a *declaration*, not something fetched. It says
+"these positions are held under this wrapper, managed this way".
 
 | column | notes |
 | --- | --- |
@@ -152,17 +146,6 @@ back; that part is an escrow position of its own. A write-off is proceeds
 0. The position's `closed_at` is the exit date: a blank one is filled in,
 a different one fails the load. Gold books the exit as a sale and
 realizes the gain against the position's cost basis.
-
-> **No cash ledger.** The wires that fund a purchase, pay a fee, or return
-> a distribution are real movements in the bank accounts — already captured
-> by the bank collectors — so recording them here would only duplicate
-> them. The acquisition date lives on the position (`acquired_at`); the
-> exit lives in `exits.csv`. See [DESIGN.md](DESIGN.md) §6. A note→equity
-> **conversion** is recorded position-side: close the note (`closed_at`)
-> and open the equity with `payload.converted_from_position_id`. Value
-> arriving from **another tracked vehicle** with no bank in between — sale
-> proceeds an agent holds back — has its cash half in the equity-transfer
-> ledger, not here (DESIGN.md §6).
 
 ### `payload` cheat-sheet
 
@@ -246,26 +229,29 @@ Anything a source can be scraped or exported from. A brokerage, a bank, a
 crypto exchange — those get their own collector, and one that fetches beats
 one that is typed.
 
-### Before you run it
+### A trial load
 
 ```bash
-./manual load --bronze-dir <your dir> --silver-db /tmp/check.db -v
+./manual load --silver-db /tmp/manual-check.db -v
 ```
 
-Validates against a throwaway DB and leaves the real silver untouched. Worth
-it after a bulk edit: the load is all-or-nothing, but seeing the failure
-before touching the real file is cheaper than reasoning about it afterwards.
+This validates the CSVs into a throwaway DB and leaves the real silver
+untouched. It is worth it after a bulk edit. The load is all-or-nothing
+either way, but a failure is easier to read before the real file is
+touched.
 
 ## Validation
 
 `load` rejects the whole load, with a `file:row:column` message and a
 non-zero exit, on any of these:
 
+- a missing, unknown (typo'd) or extra column;
 - a duplicate id;
-- an unknown `kind`;
+- an unknown `kind` or `vehicle`;
 - an `account_kind`, `tax_wrapper` or `management_style` outside the
   canonical gold vocabulary;
-- a bad date, currency or number;
+- a bad date, currency or number, or a negative amount;
+- a `closed_at` before `acquired_at`;
 - a `positions` `account_id` not present in `accounts.csv`;
 - a `valuations`, `cost_basis` or `exits` `position_id` not present in
   `positions.csv`;
@@ -277,29 +263,23 @@ non-zero exit, on any of these:
   its `closed_at`;
 - a `converted_from_position_id` that names a position not in
   `positions.csv`;
-- a malformed JSON `payload`;
-- an unexpected (typo'd) column.
+- a malformed JSON `payload`, or one that is not a JSON object.
 
-It warns (but loads) when a valuation predates the position's `acquired_at`,
-and when an account holds no position — that one is usually a typo in an
-`account_id` or a sleeve left behind after its last holding closed.
+It warns (but loads) in three cases:
+
+- a valuation predates the position's `acquired_at`;
+- an account holds no position (usually a typo in an `account_id`, or a
+  sleeve left behind after its last holding closed);
+- `positions.csv` is missing or empty.
 
 ## Reclaiming disk (`prune`)
 
-`prune` is a **documented no-op** for `manual`. On the scraping collectors the
-fleet-wide verb deletes debug captures and crashed run dirs from the bronze
-tree; here it has nothing to act on. `manual` is load-only — no timestamped
-bronze run-dirs, and no debug or diagnostic artefacts (there is no download, no
-browser, no capture surface to leave anything behind). Bronze is just the
-hand-maintained CSVs sitting flat in the data dir; they are `load`'s only input
-and the collector's source of truth, so they are never a prune target. The
-shared prune engine walks only timestamped run-dirs, so wiring it here would
-leave it permanently empty-handed, and a bespoke root-file sweeper is ruled out
-because deleting those CSVs would be unrecoverable — hence the no-op rather than
-a real `prune.py`. `./manual prune` prints that explanation and exits 0 (the
-`wealthdb-collect` dispatcher forwards the verb, so it must not fail). The
-silver `manual.db` is rebuilt from the CSVs by `load` and can be deleted by
-hand to reclaim its space.
+`prune` is a **no-op** here. `./manual prune` explains why and exits 0.
+The collector keeps no timestamped run dirs and writes no debug
+artefacts. The CSVs are `load`'s only input and the only copy, so they
+are never a prune target. `manual.db` is rebuilt from them by `load`, so
+deleting it by hand is safe. [DESIGN.md](DESIGN.md) §1 gives the
+reasoning.
 
 ## Tests
 

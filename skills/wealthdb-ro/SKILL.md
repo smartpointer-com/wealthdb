@@ -211,10 +211,10 @@ Treat any other column as unredacted unless it actually prints `***`.
 | `holdings global` | `min_snapshot_date, max_snapshot_date, cash_balance_outccy, positions_value_outccy, total_value_outccy` (always exactly one row) |
 | `holdings positions` | `silver_source, snapshot_date, account, symbol, position_key, asset_class, vehicle, currency, quantity, market_value, value` |
 | `holdings accounts` | `silver_source, snapshot_date, account, account_kind, tax_wrapper, management_style, base_currency, positions_value, cash_balance, total_value, total_value_outccy` |
-| `holdings sources` | as `accounts`, one row per institution (base columns blank when the source mixes currencies or wrappers) |
-| `holdings portfolios` | as `accounts`, with `portfolio` as the label column, plus one sentinel row per source for accounts the bank did not group |
+| `holdings sources` | as `accounts` without `account` and `account_kind`, one row per institution (base columns blank when the source mixes currencies or wrappers) |
+| `holdings portfolios` | as `accounts`, with `portfolio` in place of `account` and no `account_kind`, plus one sentinel row per source for accounts the bank did not group |
 | `transactions` | `silver_source, date, account, kind, symbol, instrument_id, currency, net_amount, value` |
-| `returns <view>` | `silver_source, entity, period, start_value, end_value, net_flow, gain, twr, mwr, quality` |
+| `returns <view>` | `silver_source, entity, period, start_value, end_value, net_flow, gain, twr, quality` (`--method mwr` swaps `twr` for `mwr`; `both` shows the two) |
 | `spending summary` | `period, txn_count, spend, refunds, net_spend` |
 | `spending categories` | the same plus `category` and `share` |
 | `spending transactions` | `silver_source, date, account, merchant, category, currency, net_amount, value` |

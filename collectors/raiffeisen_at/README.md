@@ -45,54 +45,38 @@ Raiffeisen Banking Group or any other financial institution; nothing in
 this repository is financial, legal, or tax advice.
 
 A read-only collector for [Mein ELBA](https://mein.elba.raiffeisen.at/),
-the Austrian Raiffeisen retail e-banking portal: **deposit accounts**
-(checking + savings), their transaction history, daily balances and
-archived statement PDFs. Cards, financing, and any securities / wealth
-surface the same login may expose are out of scope (see
-[AGENTS.md](AGENTS.md)). The collector is named `raiffeisen_at` because
-Raiffeisen operates distinct banking systems in other countries. Like
-the other portal-only sources it replays the browser flow via Camoufox
-from day one — the fleet's browser-scraped banks all measured
-Akamai-class bot defense blocking vanilla engines, so the harness builds
-on the shared Camoufox base image rather than re-measuring.
+the Austrian Raiffeisen retail e-banking portal. It collects **deposit
+accounts** (checking + savings): their transaction history, daily
+balances and archived statement PDFs. Cards, financing, and any
+securities or wealth surface the same login may expose are out of scope
+(see [AGENTS.md](AGENTS.md)). The name is namespaced to Austria because
+Raiffeisen runs distinct banking systems in other countries.
 
-Part of the **wealthdb** suite — see
+Part of the **wealthdb** suite. See
 [the architecture overview](../../DESIGN.md) for the bronze → silver →
 gold model and [collectors/README.md](../README.md) for shared collector
 conventions.
 
-## Status: built and validated through gold
+## How it works
 
-Two `explore` captures (2026-08-15) mapped the whole surface: an OIDC
-login on `sso.raiffeisen.at` with a **region (Mandant) dropdown that
-prefixes the Verfüger number**, **pushTAN** confirmed in the Raiffeisen
-app (announce-then-poll, a Vergleichswert shown on both screens, no
-fallback factor, **and it fires on every login** — the profile
-remembers the identity but not the second factor), and — despite the
-legacy-bank expectation — a clean Angular-SPA REST API for the data: a
-stable-id transaction ledger with booking + value dates, a
-parameterizable daily-balance series, and a ~3-year server-side history
-floor. The CSV export turned out to be a client-side dump of that same
-JSON (so the JSON is the ledger source), and statements are a
-**document archive** (Dokumente) of monthly Kontoauszüge, not an
-on-demand generator — reaching only ~5 months past the transaction
-floor, so they are no deep backfill; transaction listings the bank
-prints on request are (below). Because 2FA fires every run,
-`login` folds into `download` (chase's shape). See
-[DESIGN.md](DESIGN.md) §3-Observed. The [`chase`](../chase/) collector
-is the retail-deposit playbook this one adapts, with
-[`firstcitizens`](../firstcitizens/) the most recent run of the same
-playbook.
+- **Sign-in** is an OIDC login on `sso.raiffeisen.at` in a Camoufox
+  browser. A region (Mandant) dropdown prefixes the Verfüger number.
+- **pushTAN** is confirmed in the Raiffeisen app. It fires on every
+  login, so `login` folds into `download`: one browser lifetime and one
+  pushTAN per run.
+- **Data** comes from the portal's REST API: a transaction ledger with
+  stable ids and booking + value dates, a daily balance series, and the
+  statement archive. The server keeps about three years of history.
+- **Deeper history** comes from transaction listings a branch prints on
+  request ([below](#supplied-transaction-listings)).
+- **`load`** writes a SQLite silver: the account roster, transactions,
+  daily closing balances, and the statement and listing inventory.
+- **Gold** (`wealthdb/internal/silver/raiffeisen_at/`) maps these to
+  cash accounts with a closing-balance series and the deposit ledger.
 
-The full pipeline is **built and validated** — `login` and `download`
-live (pushTAN, full history + balances + statements to bronze), `load`
-on the real bronze into the SQLite silver (transactions, a daily
-closing-balance series, the account roster, and the statement
-inventory), and the **gold adapter**
-(`wealthdb/internal/silver/raiffeisen_at/`) projecting that silver into
-the canonical store (cash accounts, the closing-balance series, and the
-deposit ledger). Gold needs only a `wealthdb.cfg` source entry and a
-`wealthdb load`.
+[DESIGN.md](DESIGN.md) §3-Surface maps the surface. The
+[`chase`](../chase/) and [`firstcitizens`](../firstcitizens/) collectors
+are the retail-deposit models this one follows.
 
 ## Setup
 
@@ -100,13 +84,12 @@ deposit ledger). Gold needs only a `wealthdb.cfg` source entry and a
 make build-raiffeisen_at
 ```
 
-Credentials go in `~/.secrets/raiffeisen_at.env` (chmod `0600`;
-single-quote values containing `$`, `!`, or backticks):
+Credentials go in `~/.secrets/raiffeisen_at.env` (chmod `0600`):
 
 ```
 RAIFFEISEN_AT_USERNAME='...'   # the personal Verfüger number, WITHOUT the region prefix
 RAIFFEISEN_AT_PASSWORD='...'   # the PIN
-RAIFFEISEN_AT_REGION='...'     # the Mandant code selecting the regional bank (DESIGN.md §3-Observed·§B)
+RAIFFEISEN_AT_REGION='...'     # the Mandant code selecting the regional bank (DESIGN.md §3-Surface·§B)
 ```
 
 ## Usage
@@ -114,7 +97,7 @@ RAIFFEISEN_AT_REGION='...'     # the Mandant code selecting the regional bank (D
 ```
 ./raiffeisen_at download                 # one-shot login + REST fetch → bronze (default window ~90 days)
 ./raiffeisen_at download --lookback all   # full history (the initial backfill)
-./raiffeisen_at download --dry-run        # log in, enumerate the roster, fetch nothing
+./raiffeisen_at download --dry-run        # sign in, record the roster, fetch nothing
 ./raiffeisen_at download --fresh          # force the cold region/Verfüger/PIN form
 ./raiffeisen_at login --check             # is a session still alive? (dead between runs is expected)
 ./raiffeisen_at vnc-login                 # by-hand login fallback over VNC
@@ -125,18 +108,23 @@ RAIFFEISEN_AT_REGION='...'     # the Mandant code selecting the regional bank (D
 ```
 
 `download` fills the region/Verfüger/PIN form (or clicks the saved-user
-card) from the env credentials and then waits for you to **approve the
-pushTAN in the Raiffeisen app** — there is nothing to type, so no TTY is
-needed. It compares a 4-char Vergleichswert shown on screen and in the
-app. Real sessions fire real pushTAN prompts — run them only
-deliberately, never in quick succession.
+card) from the env credentials. It then logs a 4-character
+Vergleichswert and waits for the **pushTAN approval in the Raiffeisen
+app**. The same value shows in the app. Nothing is typed, so no TTY is
+needed. Every real session, `--dry-run` included, fires a real pushTAN,
+so run them deliberately and never in quick succession.
 
-`explore` opens Mein ELBA in Camoufox and records the session (HAR +
-network log + click log + DOM snapshots + downloads) under
-`~/.cache/wealthdb/debug/raiffeisen_at/<UTC-ts>/`; connect a VNC viewer
-to the forwarded port and walk the three flows in
-[DESIGN.md](DESIGN.md) §3. The login is confirmed via **pushTAN** in the
-Raiffeisen mobile app, like every real session.
+`explore` opens Mein ELBA in Camoufox for a VNC viewer on the forwarded
+port and records the session under
+`~/.cache/wealthdb/debug/raiffeisen_at/<UTC-ts>/`. [DESIGN.md](DESIGN.md)
+§3 lists the flows to walk.
+
+## Output
+
+- Bronze runs land under `$XDG_DATA_HOME/wealthdb/raiffeisen_at/<UTC-ts>/`.
+- Silver is `$XDG_DATA_HOME/wealthdb/raiffeisen_at/raiffeisen_at.db`,
+  with the tables `accounts`, `transactions`, `daily_balances`,
+  `documents` and `run_windows` ([DESIGN.md](DESIGN.md) §4.2).
 
 ## Supplied transaction listings
 
@@ -151,20 +139,27 @@ under the data dir, beside the run dirs:
   raiffeisen_at.db   the silver
 ```
 
-Every `load` reads them — no flag, so `wealthdb-collect raiffeisen_at load`
-picks them up too. Each listing is checked against its own arithmetic (every
-day's closing balance, the stated totals), bound to its account, and stitched
-next to the live history: a day a download fully covered stays live, other
-days come from a listing covering them (one printing booking text first, then
-the newest), which also tops up a day a download saw only partly; a listing
-must agree with everything it overlaps and join it without a balance jump, or
-it is left out whole. Overlapping and repeated listings are fine. Each
-listing's outcome — accepted with the days it speaks for, or rejected with
-the reason — is logged, and a listing that binds to an account is recorded in
-the silver `documents` table (`doc_kind = 'transaction_listing'`).
+Every `load` reads them with no flag, so `wealthdb-collect raiffeisen_at
+load` picks them up too. For each listing, `load`:
 
-The stitch is recomputed on every load, so adding, replacing or removing a
+- checks it against its own arithmetic (every day's closing balance, the
+  stated totals);
+- binds it to its account;
+- stitches it next to the live history. A day a download fully covered
+  stays live. Other days come from a listing that covers them, preferring
+  one that prints booking text, then the newest. A listing also tops up
+  a day a download saw only partly.
+
+A listing must agree with everything it overlaps and join it without a
+balance jump, or it is left out whole. Overlapping and repeated listings
+are fine. Each listing's outcome is logged: accepted with the days it
+speaks for, or rejected with the reason. A listing that binds to an
+account gets a row in the silver `documents` table
+(`doc_kind = 'transaction_listing'`).
+
+The stitch is recomputed on every load. Adding, replacing or removing a
 listing takes effect on the next `load`, and so does a later, deeper
-download. An empty `supplied/` removes the stitched rows; a missing one leaves
-them alone. Listings are account data like everything else in the data dir —
-they are never committed. The mechanics are in [DESIGN.md](DESIGN.md) §I.
+download. An empty `supplied/` removes the stitched rows; a missing one
+leaves them alone. Listings are account data like everything else in the
+data dir and are never committed. [DESIGN.md](DESIGN.md) §I has the
+mechanics.

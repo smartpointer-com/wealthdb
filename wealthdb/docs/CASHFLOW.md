@@ -1,37 +1,36 @@
 # Cashflow
 
-The household's cash flow statement, and the Sankey that draws it:
-where cash came from and where it went over a window, across the
-household's accounts, with its own internal movements removed and
-buying-and-selling shown as one net movement rather than two gross
-ones.
+The household's cash flow statement, and the Sankey that draws it. It
+shows where cash came from and where it went over a window, across the
+household's accounts. Moves inside the household are removed. Buying
+and selling show as one net movement, not two gross ones.
 
 This document is a **delta against [SPENDING.md](SPENDING.md) and
-[INCOME.md](INCOME.md)**. Cashflow is the third reading of one engine:
-one enrichment pass, one precedence lattice, one internal-transfer
-matcher, one signature normaliser, one taxonomy. Where a mechanism is
-shared, this file says so and points at the section that explains it.
+[INCOME.md](INCOME.md)**. Cashflow is the third reading of one engine.
+It shares one enrichment pass, one precedence lattice, one
+internal-transfer matcher, one signature normaliser and one taxonomy.
+Where a mechanism is shared, this file points at the section that
+explains it.
 
-What it adds is smaller than either predecessor and worth stating up
-front:
+What cashflow adds is small:
 
 - **Almost no collector work.** The resolution reads neither bronze nor
-  silver. The one exception is the far account: the counter account a
-  bank states on its own row is a fact only a collector can carry, so
-  the adapters and collectors able to state one do (§4).
-- **No new tier and no model.** The precedence lattice is untouched,
+  silver. The one exception is the far account. A counter account that
+  a bank states on its own row is a fact only a collector can carry, so
+  the adapters and collectors that can state one do (§4).
+- **No new tier and no model.** The precedence lattice is unchanged,
   `categorize` gains nothing, and the backlog is the two families'.
 - **No new store.** Nothing is bought from a model, so `reload -a`
   carries nothing new across.
 - **The centre of gravity is SQL.** One resolution macro maps each line
-  to a node; everything above it is reports over that macro.
+  to a node. Everything above it is reports over that macro.
 
 ---
 
 ## 1. Scope: both directions, and the movements neither family claims
 
-Income reads what arrived and spending reads what left. Cashflow reads
-both, adds the kinds of movement neither books, and closes the
+Income reads what arrived, and spending reads what left. Cashflow reads
+both, adds the movements neither family books, and closes the
 arithmetic:
 
 ```
@@ -50,58 +49,61 @@ in, what went out, and what was left.
 | `vehicles` | moves to or from a retirement plan, an education or health account, a non-grantor trust, or a bank's own deposit product; and the own-account moves nothing paired | net |
 | `cash` | the residual: the four summed, seen from the pool's side | computed |
 
-`summary` prints four statement sections — operating is the signed
-difference of the two halves — while `flows` and `sankey` carry the six
+`summary` prints the four statement sections, with operating as the
+signed difference of its two halves. `flows` and `sankey` carry the six
 values above, because a node has to know which half of operating it
 belongs to.
 
-**The sign rule, once:** positive is cash arriving in the pool,
-negative is cash leaving it. gold's canonical signs already mean that
-for every kind the statement admits, the card kinds included — a card's
-balance is carried as negative cash, so a purchase on it drives the
-pool down exactly as one on a deposit account does. Nothing in the
-resolution negates anything.
+**The sign rule:** positive is cash arriving in the pool, and negative
+is cash leaving it. Gold's canonical signs already mean that for every
+kind the statement admits, the card kinds included. A card's balance is
+carried as negative cash, so a purchase on it drives the pool down like
+a purchase on a deposit account. Nothing in the resolution negates
+anything.
 
 What is deliberately **not** here:
 
-- **Not a P&L.** Investing shows cash moved, not gain realised.
-  Selling at a loss is an inflow. The gains are [GAINS.md](GAINS.md)'s.
-- **Not returns.** "External to the thing being measured" and "across
-  the household's cash edge" are different edges. The two agree on most
-  rows and are allowed to disagree on the rest.
-- **Not tax reporting.** Withholding a vehicle deducted before the
+- **A P&L.** Investing shows cash moved, not gain realised. Selling at
+  a loss is an inflow. Gains are [GAINS.md](GAINS.md)'s.
+- **Returns.** "External to the thing being measured" and "across the
+  household's cash edge" are different edges. They agree on most rows
+  and may disagree on the rest.
+- **Tax reporting.** Withholding a vehicle deducted before the
   household saw the money is on no node at all (§3).
-- **Not the vehicles' own statements.** Giving routed through a
-  vehicle — a plan distribution paid straight to a charity — is that
+- **The vehicles' own statements.** Giving routed through a vehicle,
+  such as a plan distribution paid straight to a charity, is that
   vehicle's, not the household's.
-- **Not accrual, not a budget, not a forecast, and not gross of
-  payroll.** Income is what arrived, as the income family decided.
+- **Accrual, a budget, a forecast, or gross payroll.** Income is what
+  arrived, as the income family decided.
 
 ---
 
 ## 2. The pool
 
 Cashflow measures movement across the edge of the household's **cash
-pool**: cash and cash equivalents on the household's accounts. Deposit
-balances, brokerage cash, exchange fiat, a card's owed balance (which
-the product already carries as negative cash), and the instruments
-whose asset class is `cash` — money-market funds and time deposits.
+pool**: cash and cash equivalents on the household's accounts. That
+covers:
+
+- deposit balances, brokerage cash and exchange fiat;
+- a card's owed balance, which the product carries as negative cash;
+- instruments whose asset class is `cash`, such as money-market funds
+  and time deposits.
 
 Two things draw the edge:
 
 - **What the balance is.** A security is not cash, so buying one is
   cash leaving the pool. A money-market fund bought with idle brokerage
   cash is cash becoming cash, and the diagram does not show it.
-- **Whose the account is.** The household's, or a vehicle's beyond the
-  boundary of §3.
+- **Whose the account is.** It is the household's, or a vehicle's
+  beyond the boundary of §3.
 
-The pool is exactly `cashflow_pool_accounts()` — the scoped accounts
-whose tax wrapper is on the household side — and every rule reads it
-rather than re-deriving "household" per rule. An account the
-configuration takes out of the pool is treated like any account the
-product does not hold: a move to it is a crossing, not an invisible
-internal step. That equivalence is what keeps the scope from silently
-inflating the residual.
+The pool is exactly `cashflow_pool_accounts()`: the accounts not
+excluded by `cashflow.accounts` whose tax wrapper is on the household
+side. Every rule reads it rather than re-deriving "household" per rule.
+An account excluded from the pool is treated like an account the
+product does not hold. A move to it is a crossing, not an invisible
+internal step. That keeps the scope from silently inflating the
+residual.
 
 ---
 
@@ -110,262 +112,308 @@ inflating the residual.
 A household does not count its retirement plan, its education accounts,
 its health savings account, its donor-advised fund or a trust it funded
 as itself, even when it holds every login. The boundary is drawn by
-**tax wrapper** (`canonical.DefaultWrapperSide`), an engine default a
-deployment can override per wrapper (§7).
+**tax wrapper** (`canonical.DefaultWrapperSide`). A deployment can
+override it per wrapper (§7).
 
-Two questions decide where a wrapper sits, in order:
+Two questions decide where a wrapper sits. They are asked in order:
 
-1. **Is the money still the household's?** No — a completed,
-   irrevocable transfer — and the crossing is `operating_out · Giving`.
+1. **Is the money still the household's?** If not, the transfer is
+   complete and irrevocable, and the crossing is
+   `operating_out · Giving`.
 2. **Is it earmarked** for a purpose or a life stage the household does
-   not treat as current money? Yes, and the crossing is a `vehicles`
+   not treat as current money? If so, the crossing is a `vehicles`
    move.
 3. Otherwise it is the household, and a move is pool-internal.
 
 **Reversibility is not the test.** A retirement account can be drawn on
 at any time, with a penalty, and nobody counts it as this month's
-money; an education plan and a health savings account are the same in
-kind. What separates them from a current account is not the lock but
-the earmark.
+money. An education plan and a health savings account are the same.
+The earmark separates them from a current account, not the lock.
 
 | tax wrapper | household? | a crossing lands in |
 |---|---|---|
 | `taxable_personal` `taxable_joint` `trust_grantor` `other`, and unset | yes | nothing: it is pool-internal |
-| the seven US retirement wrappers, `pillar_2` `vested_benefits` `pillar_3a` | no — earmarked | `vehicles · Retirement savings` |
-| `529` `coverdell_esa` | no — earmarked | `vehicles · Education savings` |
-| `hsa` | no — earmarked | `vehicles · Health` |
-| `trust_non_grantor` | no — a separate taxpayer | `vehicles · Trusts` |
-| `charitable` `trust_charitable` `foundation` `custodial_utma` `custodial_ugma` | no — given away | out: `operating_out · Giving`; in: `operating_in · Other receipts` |
+| the seven US retirement wrappers, `pillar_2` `vested_benefits` `pillar_3a` | no, earmarked | `vehicles · Retirement savings` |
+| `529` `coverdell_esa` | no, earmarked | `vehicles · Education savings` |
+| `hsa` | no, earmarked | `vehicles · Health` |
+| `trust_non_grantor` | no, a separate taxpayer | `vehicles · Trusts` |
+| `charitable` `trust_charitable` `foundation` `custodial_utma` `custodial_ugma` | no, given away | out: `operating_out · Giving`; in: `operating_in · Other receipts` |
 
-An education plan and a custodial account land on **different sides of
-the same child**, which is the two-question test doing its work: the
-plan's owner can revoke it and take the money back, so it is the
-household's capital in an earmarked pool; a custodial account is
-legally the minor's the moment it is funded, so funding it is a gift.
+An education plan and a custodial account for the same child land on
+**different sides**. The plan's owner can revoke it and take the money
+back, so it is the household's capital in an earmarked pool. A
+custodial account is legally the minor's the moment it is funded, so
+funding it is a gift.
 
 `other` is on the household side because the product cannot know
-better. The enum covers two jurisdictions; a pension, insurance or
-company wrapper from a third can only be `other` today. The remedy is a
-new enum value rather than the per-wrapper override, which cannot tell
-two `other` accounts apart.
+better. The enum covers two jurisdictions. A pension, insurance or
+company wrapper from a third can only be `other`. The remedy is a new
+enum value. The per-wrapper override cannot tell two `other` accounts
+apart.
 
-**An unset wrapper reads as household** — the render-time default gold
-applies everywhere else, and the safe direction, because nothing is
-silently removed from the statement. It is not free: an adapter that
-leaves the column unset puts a retirement or health account inside the
-pool, where its own trades become household investing and its
-contributions become invisible. Nothing in the reconciliation can see
-that, because the crossing is **absent** rather than wrong. So the load
-summary and `status -v` both count pooled accounts with no wrapper
-(§10).
+**An unset wrapper reads as household.** Gold applies the same default
+everywhere else. It is the safe direction, because nothing is silently
+removed from the statement. It has a cost. An adapter that leaves the
+column unset puts a retirement or health account inside the pool. Its
+own trades then become household investing, and its contributions
+become invisible. No reconciliation can see that, because the crossing
+is **absent** rather than wrong. So the load summary and `status -v`
+both count pooled accounts with no wrapper (§10).
 
 ### What follows from the boundary
 
-- **A vehicle's accounts contribute no lines.** Its dividends, its
-  trades, its fees are not the household's cash flow. They stay in the
-  income and spending reports, which count the holder's accounts rather
-  than the household's — so the totals here are smaller than those
-  reports' by **four** terms, not one (§8).
+- **A vehicle's accounts contribute no lines.** Its dividends, trades
+  and fees are not the household's cash flow. They stay in the income
+  and spending reports, which count the holder's accounts. So the
+  totals here are smaller than those reports' by **four** terms (§8).
 - **A crossing is one line, on the household's side.** A contribution
-  is the household account's outgoing leg, sorted by the far account;
-  the plan's incoming leg is the vehicle's and is not a line. The
-  crossing therefore reads the same whether or not the plan is
-  collected — only how it was placed differs.
+  is the household account's outgoing leg, sorted by the far account.
+  The plan's incoming leg is the vehicle's and is not a line. So the
+  crossing reads the same whether or not the plan is collected. Only
+  how it was placed differs.
 - **Spending paid from a vehicle is not on the statement; spending
   reimbursed by one is.** A medical bill the health account pays
   directly draws nothing. The same bill paid from a current account and
-  then reimbursed is two real lines, which is the honest reading of
-  what the cash did.
-- **A move between two vehicles is invisible**, and that has a cost: a
-  plan distribution paid straight to a charity is giving the household
-  would claim and the statement does not show. The Giving node is the
-  household's giving, not the family's.
+  then reimbursed is two real lines.
+- **A move between two vehicles is invisible.** A plan distribution
+  paid straight to a charity is giving the household would claim, and
+  the statement does not show it. The Giving node is the household's
+  giving, not the family's.
 - **Tax withheld inside a vehicle is not on the statement.** The Taxes
-  node is the tax the household paid from its own accounts, which in a
-  drawdown year is less than the tax it bore.
+  node is the tax the household paid from its own accounts. In a
+  drawdown year that is less than the tax it bore.
 - **Payroll-funded contributions are invisible**, for the reason income
-  is net as booked: a deduction the household never received is on no
+  is net as booked. A deduction the household never received is on no
   account the product holds.
 - **The wrapper decides, not the kind.** A brokerage account inside a
-  retirement wrapper is a vehicle; a cash account inside a non-grantor
-  trust is a vehicle.
+  retirement wrapper is a vehicle. So is a cash account inside a
+  non-grantor trust.
 - **The boundary is time-invariant.** A wrapper is one column with no
-  validity range, so a grantor trust that becomes non-grantor changes
-  every year at once. A dated override is a follow-up (§11).
+  validity range. A grantor trust that becomes non-grantor changes every
+  year at once. A dated override is an open follow-up (§11).
 
 ---
 
 ## 4. The resolution
 
-`cashflow_txn_nodes(from, to)` maps every transaction to a node —
-`section.class.group` — and a `disposition` saying whether it is a line
-at all: `line`, `internal` (pool-internal, and invisible) or `excluded`
-(declined, and counted). `cashflow_lines_base(from, to)` is that,
-restricted to the pool and to the lines.
+`cashflow_txn_nodes(from, to)` maps every transaction to a node,
+`section.class.group`. It also gives a `disposition` saying whether the
+row is a line at all:
 
-It is **SQL rather than Go** because the dashboard needs the same node
-assignment the CLI uses, computed after its pickers apply; a Go-side
-resolution would have to be re-implemented in the serving view and
-would drift. The returns engine is in Go because its maths cannot be
-expressed in SQL. Nothing here is like that.
+- `line`: drawn on the statement;
+- `internal`: pool-internal, and invisible;
+- `excluded`: declined, and counted.
 
-**One inversion:** cashflow reads each family's **resolution** macro,
-never its `*_lines_base`. Four of the verdicts it wants are exactly the
-ones a base excludes.
+`cashflow_lines_base(from, to)` is that macro restricted to the pool
+and to the lines.
 
-### Where each kind lands
+The resolution is **SQL, not Go**. The dashboard needs the same node
+assignment the CLI uses, computed after its pickers apply. A Go-side
+resolution would have to be re-implemented in the serving view, and the
+two would drift. (The returns engine is in Go because its maths cannot
+be written in SQL. Nothing here is like that.)
 
-A row's **kind** decides its section; the verdict outranks the kind
-wherever both have something to say — except on the six kinds gold
-pins no canonical sign for, which are excluded whatever a verdict
-says, because a section that reads direction cannot admit them.
+**Cashflow reads each family's resolution macro, never its
+`*_lines_base`.** The verdicts it needs most are exactly the ones a
+base excludes: the crossings, `investment`, `capital_return`,
+`loan_proceeds`, `debt_repayment` and `reimbursement`.
 
-| kind | section | note |
-|---|---|---|
-| `dividend` `coupon` `staking` `capital_gain` `reward` `interest` (+) | operating in | by resolved income type |
-| `deposit` | by verdict | an own-account move with a far account, matched or stated → by the far account; `capital_return` → investing; `loan_proceeds` → financing; a `*_transfer` delta → vehicles; `reimbursement` → operating in (income excludes it, cashflow keeps it — it is cash that arrived); otherwise operating in |
-| `distribution` | investing | floors to `capital_return`; a rule or a pin promoting it to an income type moves it to operating in, as the holder's word should |
-| `purchase` `refund` `fee` `tax` `interest` (−) | operating out | by resolved spend category |
-| `withdrawal` | by verdict | an own-account move with a far account, matched or stated → by the far account; `investment` → investing; `debt_repayment` → financing; a `*_transfer` delta → vehicles (`deposit_transfer` → `vehicles · Bank deposits`), except `mortgage_transfer` → `financing · Mortgage`; a rule-placed `internal_transfer` with no far account → `vehicles · Unpaired transfers`; otherwise operating out |
-| `card_payment` | matched → by the far account; otherwise **excluded, counted** | an unpaired card bill is in neither family's population, so no tier ever saw it. It also has a known false shape: a cross-currency pair no road joins — the amount pass partitions by currency, and a card ledger mints its own ids, so no shared reference reaches it either — whose bank leg the provider tier already files as card spend. Counting it as a receipt would print a phantom inflow and double the bill |
-| `buy` `sell` | investing | by the instrument's asset class; a `cash`-class instrument is pool-internal |
-| `contribution` `distribution` | investing | private capital, by the vehicle's asset class |
-| `transfer_in` `transfer_out` | matched → by the far account; otherwise **excluded, counted** | an unmatched one is an in-kind ledger leg or a source's own tagging, and is counted rather than guessed at |
-| `fx` `fx_forward` `fx_swap` `corporate_action` | **excluded, counted** | gold pins no canonical sign for any of these, so their direction is a per-source convention and a section that reads direction cannot admit them. Admitting the last three needs a per-adapter sign pin first (§11) |
-| `journal` `other` | **excluded, counted** | the same catch-all exclusion both families make |
+### Where each row lands
+
+The first matching step places a row:
+
+1. **The six unsigned kinds are excluded, whatever a verdict says.**
+   They are `fx`, `fx_forward`, `fx_swap`, `corporate_action`, `journal`
+   and `other`. Their direction is a per-source convention, so a
+   section that reads direction cannot admit them. Admitting the FX
+   family or corporate actions needs a per-adapter sign pin first
+   (§11). The two catch-alls are excluded by both families too.
+2. **`internal_transfer`** is placed by the far account, whatever the
+   kind (see *Own-account moves* below).
+3. **`mortgage_transfer`** goes to `financing · Mortgage`.
+4. **A crossing delta** goes to `vehicles`: `retirement_transfer`,
+   `education_transfer`, `health_transfer`, `trust_transfer` and
+   `deposit_transfer` (`vehicles · Bank deposits`).
+5. **`loan_proceeds` and `debt_repayment`** go to `financing · Loans`.
+6. **`investment` and `capital_return`** go to `investing`.
+7. **`distribution`** goes to `investing`. It floors to
+   `capital_return`, so step 6 usually places it first. A rule or a pin
+   that promotes it to an income type moves it to operating in. A
+   distribution from a `cash`-class instrument is pool-internal.
+8. **`buy`, `sell` and `contribution`** go to `investing`, classed by
+   the instrument's asset class. A `cash`-class instrument is
+   pool-internal.
+9. **The income kinds** go to operating in, by resolved income type:
+   `dividend`, `coupon`, `staking`, `capital_gain`, `reward`, `deposit`
+   and positive `interest`. A `deposit` placed `reimbursement` lands
+   here too. Income excludes it, but it is cash that arrived.
+10. **The spending kinds** go to operating out, by resolved spend
+    category: `purchase`, `refund`, `fee`, `tax`, `withdrawal` and
+    negative `interest`.
+11. **Everything else is excluded and counted.** In practice that is an
+    unpaired `card_payment` or an unmatched `transfer_in` /
+    `transfer_out`.
+
+The two cases in step 11 are excluded for these reasons:
+
+- **An unpaired card bill** is in neither family's population, so no
+  tier ever saw it. It also has a known false shape: a cross-currency
+  pair that no road joins. The amount pass partitions by currency, and
+  a card ledger mints its own ids, so no shared reference reaches it.
+  The provider tier already files its bank leg as card spend. Counting
+  the bill as a receipt would print a phantom inflow and double it.
+- **An unmatched transfer** is an in-kind ledger leg or a source's own
+  tagging. It is counted rather than guessed at.
 
 **Excluded means counted.** A counter nobody reads is how a silent hole
 starts, so `status -v` reports the declined rows on pooled accounts
-(§10). Pool-internal rows are NOT counted there: they are movements the
+(§10). Pool-internal rows are NOT counted there. They are movements the
 statement deliberately does not draw, and a permanently large counter
 is an unreadable one.
 
 ### Own-account moves are sorted by the far account
 
 An `internal_transfer` verdict says the money stayed the holder's.
-Cashflow needs one more fact: whether it stayed in the **pool**. The
-far account is how it knows, and it arrives by two roads.
+Cashflow needs one more fact: whether it stayed in the **pool**. The far
+account says so, and it arrives by two roads.
 
-The **matcher's** road is a pairing: two legs the product collected,
-joined by amount and day, by a reference the source stamped on both
-halves, or by the other leg the source described on one of them, each
-then naming the other's account (`far_silver_source_id`,
+**The matcher's road** is a pairing. Two legs the product collected are
+joined on one of:
+
+- amount and day;
+- a reference the source stamped on both halves;
+- the other leg the source described on one of them.
+
+Each leg then names the other's account (`far_silver_source_id`,
 `far_account_external_id`, migration 0079).
 
-The two joins are not interchangeable. A pairing on amount is an
-inference, so its two legs necessarily agree in currency and very
-nearly in size; a pairing on a reference is the source asserting an
-identity, so its legs may differ in **both** — a conversion between two
-of the holder's own accounts is exactly that shape, and it is the only
-shape the amount join can never reach (SPENDING.md §3, *The reference
-road*). Nothing here nets a pair: each leg is placed on its own figure,
-by its own far account, so the disagreement costs the statement
-nothing. Where both accounts are in the pool both legs are simply
-invisible, which is what a move inside the household's cash is.
+The joins are not interchangeable. A pairing on amount is an inference,
+so its two legs agree in currency and nearly in size. A pairing on a
+reference is the source asserting an identity, so its legs may differ
+in **both**. A conversion between two of the holder's own accounts has
+exactly that shape, and the amount join can never reach it (SPENDING.md
+§3, *The reference road*). Nothing here nets a pair. Each leg is placed
+on its own figure, by its own far account, so the difference costs the
+statement nothing. Where both accounts are in the pool, both legs are
+invisible.
 
-The **source's** road is the bank stating the counter account outright.
-Where the product does not collect the far side at all — a wire to an
-account of the holder's own whose transactions no feed reports — there
-is one row, the matcher needs two, and only the narrative knows. The
-UBS adapter reads it from whichever of its feeds states it, and the svb
-collector from a deposit-ledger row's reference to a loan, and each puts
-it in the row's payload; the pass resolves it against the accounts gold
-already holds, and takes it only when it names one of them — in the
-row's own source first, and in another source only when no account of
-its own answers and exactly one account elsewhere does. A third party's
-account resolves to nothing, which is the common case and the right
-answer.
+**The source's road** is the bank stating the counter account outright.
+Where the product does not collect the far side at all, there is one
+row. A wire to an account of the holder's own whose transactions no
+feed reports is the typical case. The matcher needs two rows, and only
+the narrative knows. An adapter or collector whose source states the
+counter account puts it in the row's payload as `counter_account`. The
+UBS adapter reads it from whichever of its feeds states it. The svb
+collector reads it from a deposit-ledger row's reference to a loan.
+
+The pass resolves a stated counter account against the accounts gold
+already holds:
+
+- it searches the row's own source first;
+- it takes an account from another source only when no account of the
+  row's own source matches and exactly one account elsewhere does;
+- it refuses a row that names its own account;
+- a third party's account resolves to nothing. That is the common case
+  and the right answer.
 
 That road answers **where the money went and nothing else**. What the
-movement WAS stays the tiers' question: a stated counter account places
+movement was stays the tiers' question. A stated counter account places
 no verdict, so a row still needs a matcher, a rule or a pin to be
-called an own-account move at all. Where no far account is known by
-either road, the rules that place the verdict carry a class instead
-(`far_class`).
+called an own-account move. Where neither road knows a far account, the
+rules that place the verdict can carry a class instead (`far_class`).
 
-The test is ordered, first match wins, and **the wrapper is asked
-before the kind** — a mortgage on a trust-owned property and a card
-inside a foundation are both, and the wrapper is what says whose money
-moved:
+The ladder is ordered, and the first match wins. **The wrapper is
+asked before the kind**: a mortgage on a trust-owned property and a
+card inside a foundation exist, and the wrapper says whose money moved.
 
-1. the far account's wrapper is on the **vehicle** side → that
-   wrapper's class, with the leg's own direction. An outgoing leg to a
+1. The far account's wrapper is on the **vehicle** side → that
+   wrapper's class, in the leg's own direction. An outgoing leg to a
    retirement plan is a contribution, an incoming leg from one is a
    distribution, and both are `vehicles · Retirement savings`.
-2. the far account's wrapper is a **giving** one → outgoing legs are
-   `operating_out · Giving`, because the contribution is irrevocable
-   and the vehicle's later grants are its own. **Incoming legs are
-   `operating_in · Other receipts`**: a charitable remainder trust's
-   annuity, a foundation reimbursing a trustee, a custodial account
-   drawn for the minor's costs are all cash arriving, and none of them
-   is negative giving.
-3. the far account is kind `mortgage` → `financing · Mortgage`, either
-   direction (a drawdown is an inflow).
-4. the far account is **in the pool** → invisible.
-5. anything else — the far account is outside the pool, or there is no
-   far account because a rule placed the verdict — → `vehicles ·
-   Unpaired transfers`, unless the rule recorded a class of its own
-   (the mortgage rule records `mortgage`). At group grain the node
-   splits by what is missing: **No far account** (`unnamed`) where
-   nothing paired the row, and **Fenced-out account** (`out_of_pool`)
-   where the far account is one gold holds that the `cashflow.accounts`
-   scope excluded from the pool.
+2. The far account's wrapper is a **giving** one. An outgoing leg is
+   `operating_out · Giving`: the contribution is irrevocable, and the
+   vehicle's later grants are its own. **An incoming leg is
+   `operating_in · Other receipts`.** A charitable remainder trust's
+   annuity, a foundation reimbursing a trustee, and a custodial account
+   drawn for the minor's costs are cash arriving. None is negative
+   giving.
+3. The far account is kind `mortgage` → `financing · Mortgage`, either
+   direction. A drawdown is an inflow.
+4. The far account is **in the pool** → invisible.
+5. The rule recorded `far_class` `mortgage` (the built-in mortgage rule
+   does) → `financing · Mortgage`.
+6. Anything else → `vehicles · Unpaired transfers`. At group grain the
+   node splits by what is missing:
+   - **No far account** (`unnamed`): nothing paired the row.
+   - **Fenced-out account** (`out_of_pool`): the far account is one
+     gold holds, which `cashflow.accounts` excluded from the pool.
 
-Step 5 closes a hole the rule tier opens. A config rule exists
-precisely to place a wire to the holder's own account at a bank the
-product does not track, and that money **leaves the pool**. Drawn as
-invisible it would vanish into the residual forever; drawn as
-`Unpaired transfers` it is visible as what it is. Under the closed
-world the statement assumes (§4 above) the node is a finding, not a
-residual: a row there is either a counter-leg gold should hold and does
-not — an account not yet collected, a pair the matcher missed — or a
-declaration not yet written. The remedy is obvious from the chart:
-collect that account, **declare** it, or find the missing leg. A
-fenced-out row is the exception — a setting, named as one so a reader
-need not open the config to tell it from the finding.
+Step 6 closes a hole the rule tier opens. A config rule exists to place
+a wire to the holder's own account at a bank the product does not
+track. That money **leaves the pool**. Drawn as invisible, it would
+vanish into the residual. Drawn as `Unpaired transfers`, it is visible
+as what it is.
+
+The statement assumes a **closed world**: an account it does not hold
+is outside the household unless declared. Under that assumption the
+node is a finding, not a residual. A row there is one of:
+
+- a counter-leg gold should hold and does not: an account not yet
+  collected, or a pair the matcher missed;
+- a declaration not yet written.
+
+The remedy is plain from the chart: collect that account, **declare**
+it, or find the missing leg. A fenced-out row is the exception. It is a
+setting, and is named as one so a reader can tell it from a finding
+without opening the config.
 
 **A declared account is a far account the holder states.**
 `declared_accounts` in the config names an account the household owns
-at an institution the product does not collect, with the kind and the
-wrapper it would carry if it were collected; the load writes it into
-the accounts dimension under the reserved source `declared`, and a
-rule's `far` names it as the other side of the move the rule places.
-From there the ladder above reads it like any collected far account:
-a household wrapper puts it in the pool and the move is invisible
-(step 4), a retirement wrapper draws the move as `vehicles ·
-Retirement savings` (step 1). The statement assumes a closed world —
-an account it does not hold is outside the household unless declared,
-so a move to one is income or spending — and a declaration is how the
-holder opens it, one account at a time. Nothing the product measures
-can contradict a declaration, which is why the load prints how many
-sit inside the pool. The inbound leg is the income family's verdict,
-but its far account is written onto the spending overlay, the one
-overlay with far columns, so both directions place alike.
+at an institution the product does not collect. Each entry carries the
+kind and the wrapper the account would have if collected. The load
+writes it into the accounts dimension under the reserved source
+`declared`. A rule's `far` names it as the other side of the move the
+rule places. The ladder above then reads it like any collected far
+account:
 
-**The investing class has three roads, and they are ordered.** The
-trade's own exposure first (0097/0100: a feed that cannot name the
-instrument can still name what it traded), then the instrument's, then
-— beside an `investment` or `capital_return` verdict — the
-`asset_class` a config rule or a pins-ledger row carried (§7, migration
-0102). The holder's word comes last, and is read AFTER the test that
-sends a row naming an instrument with no dimension row to `other`: that
-node is how a missing dimension row stays visible, and a stated
-exposure read any earlier would hide the hole behind a plausible class.
-A stated `cash` is ignored rather than drawn, because that class's
+- a household wrapper puts it in the pool, and the move is invisible
+  (step 4);
+- a retirement wrapper draws the move as `vehicles · Retirement
+  savings` (step 1).
+
+A declaration is how the holder opens the closed world, one account at
+a time. A move to an undeclared, untracked account is income or
+spending. Nothing the product measures can contradict a declaration, so
+the load prints how many sit inside the pool. The inbound leg is the
+income family's verdict. Its far account is written onto the spending
+overlay, the one overlay with far columns, so both directions place
+alike.
+
+**The investing class has three roads, in order:**
+
+1. the trade's own exposure (migrations 0097 and 0100). A feed that
+   cannot name the instrument can still name what it traded;
+2. the instrument's asset class;
+3. beside an `investment` or `capital_return` verdict, the
+   `asset_class` that a config rule or a pins-ledger row carries (§7,
+   migration 0102).
+
+A row that names an instrument with no dimension row goes to `other`
+before the third road is read. That node keeps a missing dimension row
+visible. A stated exposure read any earlier would hide the hole behind
+a plausible class. A stated `cash` is ignored, because that class's
 label is the statement's own residual node. Where none of the three
-says anything the row is `elsewhere` — which after 0102 means exactly
-that, and nothing weaker.
+roads says anything, the row is `elsewhere`.
 
-The GROUP stays the verdict on those rows. The class is what the money
-went into and the group is what the money did, so a house bought and a
+The group stays the verdict on those rows. The class is what the money
+went into, and the group is what the money did. A house bought and a
 REIT traded share a class node and separate at group grain.
 
-This ladder runs for `internal_transfer` and nothing else, so it is
-not the only road to the nodes it reaches. `mortgage_transfer` (§5)
-resolves to `financing · Mortgage` on the verdict alone, ahead of any
-far-account test — which is the point of it: both steps above that
-reach that node read a far side, and a servicer the product holds no
-account for has none to read.
+This ladder runs for `internal_transfer` only, so it is not the only
+road to the nodes it reaches. `mortgage_transfer` (§5) resolves to
+`financing · Mortgage` on the verdict alone, before any far-account
+test. Both ladder steps that reach that node read a far side, and a
+servicer the product holds no account for has none.
 
 ---
 
@@ -373,26 +421,26 @@ account for has none to read.
 
 Three levels, whose leaves are the two families' own values:
 
-- **section** — the six values above.
-- **class** — the diagram's inner nodes.
-- **group** — the diagram's leaves.
+- **section**: the six values of §1.
+- **class**: the diagram's inner nodes.
+- **group**: the diagram's leaves.
 
 A node's identity is **the whole key**, `section.class.group`. Three
-values of the shared vocabulary — `gift`, `other` and the unplaced row
-— exist on both sides of the household, and keying a node by its leaf
-alone would collide a gift given with a gift received in one edge list.
+values of the shared vocabulary exist on both sides of the household:
+`gift`, `other` and the unplaced row. Keying a node by its leaf alone
+would merge a gift given with a gift received in one edge list.
 
 | section | classes |
 |---|---|
 | operating in | `earnings` · `yield` · `benefits` · `other_receipts` · `(uncategorized)` |
 | operating out | `consumption` · `fees` · `taxes` · `giving` · `(uncategorized)` |
-| investing | the exposure, from whichever of three roads names one — the trade's own word, then the instrument's, then the holder's `asset_class` on the rule or pin that placed the verdict; every value but `cash`. `other` where a row names an instrument whose class is missing; `elsewhere` where none of the three said anything; all of them folded into `investments` under `--investing whole` |
+| investing | the exposure from the first of the three roads of §4 that names one; every value but `cash`. `other` where a row names an instrument whose class is missing; `elsewhere` where no road says anything. All fold into `investments` under `--investing whole` |
 | financing | `mortgage` · `loans` |
 | vehicles | `retirement` · `education` · `health` · `trusts` · `deposits` · `unpaired` (grouped `unnamed` · `out_of_pool`) |
 | cash | `cash`, drawn as **Cash savings** |
 
-The operating-in classes sort the income values, vendored and
-extension alike:
+The operating-in classes sort the income values, vendored and extension
+alike:
 
 | class | income values |
 |---|---|
@@ -404,222 +452,233 @@ extension alike:
 Yield is what the household's assets produce without its labour, so
 rental income and royalties sit beside the dividends. A card credit or
 a referral bonus is a receipt, not income from wealth. The lists live
-in `cashflow_txn_nodes`, and an income value they do not name lands in
+in `cashflow_txn_nodes`. An income value they do not name lands in
 `other_receipts`.
 
 **Four lifts and no new tier.** Yield is lifted out of income, and
 fees, taxes and giving out of spending. The families' primaries cannot
-do either: income has one vendored primary, and taxes hide inside a
-government-and-non-profit bucket beside donations and a passport
-renewal. Fees are lifted because the cost of being invested is a line
-worth seeing beside the tax rather than inside a catch-all. The uncategorised class is its own node on each side rather than a
-leaf inside Consumption: the families made the backlog a visible
-label on purpose.
+do this:
 
-**`consumption` reads as "Consumption", not "Spending".** The class is
-the spending family's categories minus the three lifts, and it is
-deliberately not named after the spending report: that report's number
-differs from this one by construction (§8), and one word for two
-figures a reader is meant to compare is a trap. The same rule renames
-the summary's two operating columns — see §8.
+- income has one vendored primary;
+- taxes hide in a government-and-non-profit bucket, beside donations
+  and a passport renewal;
+- fees are worth a line of their own: the cost of being invested
+  belongs beside the tax, not inside a catch-all.
+
+The uncategorised class is its own node on each side, not a leaf inside
+Consumption. The families made the backlog a visible label on purpose.
+
+**`consumption` reads "Consumption", not "Spending".** The class is the
+spending family's categories minus the three lifts. Its figure differs
+from the spending report's by construction (§8). One word for two
+figures a reader is meant to compare is a trap. For the same reason the
+summary's operating columns are `operating_in` and `operating_out`, not
+`income` and `spending`.
 
 ### The leaves
 
-The leaves are the families' own values, at the level each family's
-vocabulary makes readable — and the two differ:
+The leaves are the families' own values, at the level each vocabulary
+makes readable. The two differ:
 
 - **operating in**: the income **detailed** value. Income has one
   vendored primary, so a primary-level leaf would fold every earned and
-  yielded type into `INCOME` and say nothing.
+  yielded type into `INCOME`.
 - **operating out**: the spending **primary**. That vocabulary has
-  nearly a hundred detailed values, and a diagram with that many leaves
-  is not a diagram. The detailed value is a column away, behind `-C
-  +detailed` on the transactions view.
-- **taxes, fees and giving** keep the detailed value. Each of those
-  three classes was lifted out of spending precisely for the
-  distinction inside it — a tax assessed against one withheld at
-  source, a fee for banking against a fee for investing, a donation
-  against a gift given — and a class whose one leaf repeats its own
-  name is a self-edge.
+  nearly a hundred detailed values, which is too many leaves for a
+  diagram. The detailed value is a column away, behind `-C +detailed`
+  on the transactions view.
+- **taxes, fees and giving** keep the detailed value. Each class was
+  lifted out of spending for the distinction inside it: a tax assessed
+  against one withheld at source, a fee for banking against a fee for
+  investing, a donation against a gift. A class whose one leaf repeats
+  its own name is a self-edge.
 - A **delta** is primary-level, so `card_spend`, `cash_withdrawal` and
   `other` are their own leaves either way.
-- **One detailed value is promoted**: `GENERAL_SERVICES_EDUCATION`.
-  The primary rule above is right and one primary breaks it —
-  `GENERAL_SERVICES` is a catch-all rather than a category, and school
-  fees are a bigger line in most households than several primaries that
-  do get an edge. The criterion is a property of the vendored
-  vocabulary rather than of any deployment's data: a detailed value
-  whose primary does not describe it (migration 0088). Its siblings
-  under the catch-all still group by primary.
+- **One detailed value is promoted**: `GENERAL_SERVICES_EDUCATION`
+  (migration 0088). `GENERAL_SERVICES` is a catch-all rather than a
+  category, and school fees are a bigger line in most households than
+  several primaries that get an edge. The criterion is a property of
+  the vendored vocabulary, not of any deployment's data: a detailed
+  value whose primary does not describe it. Its siblings under the
+  catch-all still group by primary.
 
-The vehicle classes are named for the ACT rather than the subject
-(migration 0087): **Education savings** and **Retirement savings**, not
-`Education` and `Retirement`. Each of those words names two things — a
-529 contribution and a tuition payment, a plan contribution and a
-pension — and the two sit in different sections but would have read as
-the same node on a diagram. `Health` and `Trusts` keep their names:
-"Health savings" is right for an HSA and wrong for the class the day it
-holds anything else, and nobody says "Trust savings".
+The vehicle classes are named for the act, not the subject (migration
+0087): **Education savings** and **Retirement savings**, not
+`Education` and `Retirement`. Each bare word names two things: a 529
+contribution and a tuition payment, a plan contribution and a pension.
+Those sit in different sections but would read as one node on a
+diagram. `Health` and `Trusts` keep their names. "Health savings" is
+right for an HSA and wrong the day the class holds anything else, and
+nobody says "Trust savings".
 
 Seven leaves are cashflow's own, where no family value says the right
-thing: `trades` and `private_capital` on the investing classes;
-`vehicle_giving` / `vehicle_receipt` for a crossing to or from a giving
-vehicle — whose verdict is `internal_transfer`, which names a movement
-rather than a kind of giving or a kind of receipt; and
-`mortgage_interest`, `mortgage_amortization` and `mortgage_drawdown`,
-which `cashflow_lines_base` mints from direction and the derived split
-rather than reading from the resolution, no family value naming half a
-row or naming money borrowed against an account the product holds.
+thing:
 
-On the vehicles and on cash the class **is** the leaf: nothing finer
-exists to say, so the diagram draws them attached to the hub and their
-leaf level shows in `flows --level group` and not in the Sankey. A
-class enters the hub in its own right when it has no leaves; where it
-has them, it enters as their sum and they draw below it. **Investing is
-held out of that stage deliberately**, at either grain: its classes do
-have leaves — `trades` and `private_capital`, which `flows --level
-group` shows — but what a leaf stage there would draw, a trade against
-a capital call, is a different question from the one the diagram asks,
-so investing's classes enter the hub in their own right as well.
+- `trades` and `private_capital`, on the investing classes;
+- `vehicle_giving` and `vehicle_receipt`, for a crossing to or from a
+  giving vehicle. The verdict there is `internal_transfer`, which names
+  a movement, not a kind of giving or receipt;
+- `mortgage_interest`, `mortgage_amortization` and `mortgage_drawdown`.
+  `cashflow_lines_base` mints these from direction and the derived
+  split. No family value names half a row, or money borrowed against an
+  account the product holds.
 
-Financing has leaves on both its classes. `loans` splits into
-`loan_proceeds` and `debt_repayment` — money borrowed against money
-repaid, which is the distinction the class exists to carry.
+On the vehicles and on cash the class **is** the leaf, because nothing
+finer exists. The diagram attaches them to the hub, and their leaf level
+shows in `flows --level group`, not in the Sankey. A class with no
+leaves enters the hub in its own right. A class with leaves enters as
+their sum, and the leaves draw below it.
 
-`mortgage` has three, decided by direction first. An instalment is an
-outflow and splits into **`Mortgage interest`** and **`Mortgage
-amortization`**, which are not the same kind of thing. Interest is
-consumed: it buys the use of the money and is gone. Principal is not
-spending at all — it moves value from one side of the balance sheet to
-the other, and the household is no poorer for it. Summed into one node
-they overstate what was consumed by whatever was repaid — and in any
-period that happens to carry an extraordinary repayment, that is most
-of the node.
+**Investing is held out of that stage**, at either grain. Its classes
+do have leaves, which `flows --level group` shows: `trades`,
+`private_capital`, and the verdicts `investment` and `capital_return`.
+But a leaf stage there would draw a trade against a capital call, which
+is a different question from the one the diagram asks. So investing's
+classes enter the hub in their own right.
+
+Financing has leaves on both classes. `loans` splits into
+`loan_proceeds` and `debt_repayment`: money borrowed against money
+repaid, the distinction the class exists to carry.
+
+`mortgage` has three leaves, decided by direction first. An instalment
+is an outflow and splits into **`Mortgage interest`** and **`Mortgage
+amortization`**. They are not the same kind of thing:
+
+- interest is consumed. It buys the use of the money and is gone;
+- principal is not spending. It moves value from one side of the
+  balance sheet to the other, and the household is no poorer.
+
+Summed into one node, they overstate what was consumed by whatever was
+repaid. In a period with an extraordinary repayment, that is most of
+the node.
 
 Money running the other way is **`Mortgage drawdown`**: a tranche
-drawn, a line increased. It is a leaf rather than the bare class for a
-structural reason as much as a readable one — a leaf-stage section
-draws a row THROUGH a leaf, so a row whose group repeated its class
-would be dropped by the self-edge rule and dropped again by its class
-having other leaves, reaching the diagram nowhere while the residual
-went on counting it. Where it draws follows from the ordinary rule
-that a leaf running against its class's net detaches: in a year of
-repayments it attaches to the hub in its own right, and in a year that
-borrowed more than it repaid the repayment leaves are the ones that
-detach.
+drawn, a line increased. It is a leaf, not the bare class, for a
+structural reason. A leaf-stage section draws a row through a leaf. A
+row whose group repeated its class would be dropped by the self-edge
+rule, and dropped again because its class has other leaves. It would
+reach the diagram nowhere while the residual still counted it. Where it
+draws follows the ordinary rule that a leaf running against its class's
+net detaches. In a year of repayments it attaches to the hub directly.
+In a year that borrowed more than it repaid, the repayment leaves
+detach instead.
 
 **The split is derived, and it has to be.** No bank prints the share,
-and the narrative cannot be made to yield it: a tranche may bundle its
-scheduled amortisation into the same row as its interest under one
-booking type, and a closing may book the principal and the final
-interest as two rows identical in every field. So the rule reads
-neither. Whatever a period retired of the mortgage's own outstanding
-balance was principal, and the rest of what was paid into it that
-period was interest; within a period the principal goes to the largest
-instalment first, capped at its face value, which is the order the two
-really occur in on a closing. The balance is **observed** — the
-lender's own figure, carried as the mortgage account's position — which
-makes this an estimator of the split and not of the debt.
+and the narrative cannot yield it:
 
-A snapshot is the balance **before** that day's instalment posts, so an
-interval runs from one observation up to — not including — the next;
-and a tranche that closes stops being snapshotted, so its last interval
+- a tranche may book its scheduled amortisation in the same row as its
+  interest, under one booking type;
+- a closing may book the principal and the final interest as two rows
+  identical in every field.
+
+So the rule reads neither. Whatever a period retired of the mortgage's
+own outstanding balance was principal. The rest of what was paid into
+it that period was interest. Within a period the principal goes to the
+largest instalment first, capped at its face value. That is the order
+the two really occur in on a closing. The balance is **observed**: the
+lender's own figure, carried as the mortgage account's position. So
+this estimates the split, not the debt.
+
+A snapshot is the balance **before** that day's instalment posts. An
+interval runs from one observation up to, but not including, the next.
+A tranche that closes stops being snapshotted. Its last interval
 retires whatever was left, read from the account's disappearance from
 its source's latest snapshot.
 
-A mortgage the product does not hold has no balance to read, so its
-instalments keep their whole amount and draw as interest: the
-conservative direction, since it overstates what was consumed rather
-than inventing a repayment. It is the second, quieter cost of not
-holding the mortgage — the first being that the narrative rule which
-places the payment fires on the words a feed prints (`MORTGAGE`,
-`HYPOTHEK`, `HYPOTHEKARZINS`), so a feed that stops carrying them drops
-its mortgage rows into `vehicles · Unpaired transfers`, with nothing in
-the statement to say that is what happened — which is what
-`mortgage_transfer` (below) answers: a pin reaches `financing ·
-Mortgage` on the verdict alone. A rule sees one row's text
-and never the lender's balance: it names the class, and the statement
+A mortgage the product does not hold has no balance to read. Its
+instalments keep their whole amount and draw as interest. That is the
+conservative direction: it overstates what was consumed rather than
+inventing a repayment. Not holding the mortgage costs more:
+
+- the built-in rule that places the payment fires on words a feed
+  prints (`MORTGAGE`, `HYPOTHEK`, `HYPOTHEKARZINS`, and the phrases
+  `HOME LOAN` and `MORTGAGE PAYMENT`);
+- a feed that stops printing them drops its mortgage rows into
+  `vehicles · Unpaired transfers`, and nothing in the statement says so.
+
+`mortgage_transfer` (below) answers that: a pin reaches
+`financing · Mortgage` on the verdict alone. A rule sees one row's text
+and never the lender's balance. It names the class, and the statement
 splits the amount. `cashflow_txn_nodes` still emits one row per
-transaction, so the reconciliation memo is untouched; the split happens
+transaction, so the reconciliation memo is untouched. The split happens
 in `cashflow_lines_base`, and the two shares sum to the row.
 
-Both shares stay in **financing**. Putting interest in `operating_out`
-would net one half of a payment against the section the other half sits
-in, and a reader comparing years would see consumption jump on a
-refinancing that changed nothing about the household. The leaves say
-which is which without moving either.
+Both shares stay in **financing**. Interest in `operating_out` would
+net one half of a payment against the section the other half sits in.
+A reader comparing years would see consumption jump on a refinancing
+that changed nothing about the household. The leaves say which is which
+without moving either.
 
-### The seven new taxonomy values
+### The seven values cashflow adds to the taxonomy
 
 [SPENDING.md](SPENDING.md) §2 and [INCOME.md](INCOME.md) §2 carry the
-tables; the policy is here.
+tables. The policy is here.
 
-`debt_repayment` is the outflow mirror of `loan_proceeds` and what the
-dropped `LOAN_PAYMENTS` primary was for, minus the interest share
-nothing in the data splits out. Spending family, out of the spending
-base. Without it a car or student loan paid to an untracked lender has
-no honest home in either family and reads as uncategorised spending.
+`debt_repayment` is the outflow mirror of `loan_proceeds`. It covers
+what Plaid's `LOAN_PAYMENTS` primary would, minus the interest share
+nothing in the data splits out. It is spending family and out of the
+spending base. Without it, a car or student loan paid to an untracked
+lender has no honest home in either family and reads as uncategorised
+spending.
 
 `retirement_transfer`, `education_transfer`, `health_transfer` and
-`trust_transfer` are deltas of family **both**, in the manner of
-`internal_transfer`: one row each, read from either side, out of both
-bases. They exist for the crossing whose far side the product does not
-hold. **The direction is the row's own**: a withdrawal placed
-`retirement_transfer` is a contribution and a deposit placed the same
+`trust_transfer` are deltas of family **both**, like
+`internal_transfer`. Each is one row, read from either side, and out of
+both bases. They exist for a crossing whose far side the product does
+not hold. **The direction is the row's own.** A withdrawal placed
+`retirement_transfer` is a contribution, and a deposit placed the same
 is a distribution.
 
-`mortgage_transfer` is a delta of the same family **both**, and the
-one that is not a crossing: it reaches `financing · Mortgage`, where
-the interest/principal split applies, rather than the vehicles
-section. It exists because that node had only two roads in, and both
-read the far side — a far account of kind `mortgage`, or `far_class`,
-which only the built-in tier may write. A servicer whose narrative is
-its own legal entity cannot go in a tracked built-in, so an instalment
-to one had no road at all and fell to `vehicles · Unpaired transfers`.
-`debt_repayment` stays the value for every other untracked lender: a
-mortgage is split into interest and principal and a car loan is not.
-A servicer with no balance series in gold has no principal to
-apportion against, so its instalments draw whole as `Mortgage
-interest`.
+`mortgage_transfer` is also family **both**, but it is not a crossing.
+It reaches `financing · Mortgage`, where the interest/principal split
+applies, not the vehicles section. Without it that node has two roads
+in, and both read the far side: a far account of kind `mortgage`, or
+`far_class`, which only the built-in tier writes. A servicer whose
+narrative is its own legal entity cannot go in a tracked built-in. So
+an instalment to one has no other road and would fall to
+`vehicles · Unpaired transfers`. `debt_repayment` stays the value for
+every other untracked lender, because a mortgage is split into interest
+and principal and a car loan is not. A servicer with no balance series
+in gold has no principal to apportion against, so its instalments draw
+whole as `Mortgage interest`.
 
-`deposit_transfer` is the fifth crossing and the one with no wrapper
-behind it: a bank's own deposit product — a call deposit, a fixed-term
-deposit, a notice account. The bank books every movement of one on the
-account that FUNDS it and never lists the product beside it, so the
-collector has no account to collect and the move reaches the resolution
-with a single leg. Nothing can pair it, and drawn by the far-account
-test it fell to `vehicles · Unpaired transfers` — the node for a
-destination nothing identifies, where this one is identified on every
-row.
+`deposit_transfer` is the fifth crossing, and the one with no wrapper
+behind it. It covers a bank's own deposit product: a call deposit, a
+fixed-term deposit, a notice account. The bank books every movement of
+one on the account that funds it and never lists the product beside
+it. So the collector has no account to collect, and the move reaches
+the resolution with a single leg. Nothing can pair it. Without the
+value, the far-account ladder would draw it as `vehicles · Unpaired
+transfers`, the node for a destination nothing identifies. This
+destination is identified on every row.
 
-It is a verdict rather than a far account for a reason worth stating:
-`far_class` lives on the spending overlay, which holds the outflow leg
-and not the return. That road would have named the money going in and
-left the money coming back anonymous. A verdict can be placed by either
-family, so both legs carry it.
+It is a verdict rather than a far account for a reason. `far_class`
+lives on the spending overlay, which holds the outflow leg and not the
+return. That road would name the money going in and leave the money
+coming back anonymous. A verdict can be placed by either family, so
+both legs carry it.
 
-Two things it deliberately does not change. The move stays a **line**:
-the money left the measured pool, so the statement has to say so, and
-drawing it as internal netting would make the statement stop tying to
-the balances it is drawn from. `deposits` is `unpaired` made specific,
-not made invisible. And the **interest** a deposit pays is untouched —
-it is income, it arrives on its own row, and it is the one movement of
-a deposit that is not a transfer.
+Two things it does not change:
 
-One value per class rather than one `vehicle_transfer` for all four.
-The alternative would need a rule to carry a second field saying which
-pool it meant, which is a new shape in a config surface that today is a
-pattern and a category — and money to the retirement pool and money to
-the education pool are different decisions, read at different stages of
-a life.
+- The move stays a **line**. The money left the measured pool, so the
+  statement has to say so. Drawing it as internal netting would stop
+  the statement tying to the balances it is drawn from. `deposits` is
+  `unpaired` made specific, not made invisible.
+- The **interest** a deposit pays is untouched. It is income, it
+  arrives on its own row, and it is the one movement of a deposit that
+  is not a transfer.
 
-Because a rule only ever sees its own family's population, the
-contribution side is a `spending.rules` entry and the distribution side
-an `income.rules` entry, exactly as an own-account move is placed
-today. **None of them is needed where the far account is tracked**: the
-matcher's verdict already says everything, and it outranks a rule.
-Giving needs no delta of its own — `GOVERNMENT_AND_NON_PROFIT_DONATIONS`
-already lands there.
+There is one value per class, not one `vehicle_transfer` for all four.
+A single value would need a rule to carry a second field naming the
+pool. And money to the retirement pool and money to the education pool
+are different decisions, made at different stages of a life.
+
+A rule only sees its own family's population. So the contribution side
+is a `spending.rules` entry and the distribution side an `income.rules`
+entry, exactly as an own-account move is placed. **None of them is
+needed where the far account is tracked.** The matcher's verdict says
+everything, and it outranks a rule. Giving needs no delta of its own:
+`GOVERNMENT_AND_NON_PROFIT_DONATIONS` already lands there.
 
 ---
 
@@ -629,36 +688,36 @@ already lands there.
 > the sign of that net decides the side.
 
 Aggregating every sale as an inflow and every purchase as an outflow
-makes two gross bands dominate any diagram for a household with
-ordinary portfolio churn, and says nothing: a bond ladder rolling, a
-rebalance between two equity funds, a coin traded for another coin are
-not the household raising or deploying cash.
+makes two gross bands dominate the diagram for any household with
+ordinary portfolio churn. They say nothing. A bond ladder rolling, a
+rebalance between two equity funds, or a coin traded for another coin
+is not the household raising or deploying cash.
 
-Both readings of investing are wanted, so the grain is a toggle and the
-whole is the default. `--investing whole` nets the section and draws
-one `Investments` node on the side the period's net puts it — the
-answer to the question a reader opens with. `--investing class` nets
-per asset class and shows the reallocation the whole nets away. Under
-`whole` the Investments node has no leaves: a class on the other side
-cannot be drawn as a child of a node on this one.
+Both readings of investing are wanted, so the grain is a toggle:
 
-Financing and the vehicles net per class with no toggle, and cash is
-one node by definition.
+- `--investing whole`, the default, nets the section and draws one
+  `Investments` node on the side the period's net puts it. That answers
+  the question a reader opens with. The Investments node has no leaves,
+  because a class on the other side cannot be a child of a node on this
+  one.
+- `--investing class` nets per asset class and shows the reallocation
+  the whole nets away.
+
+Financing and the vehicles net per class, with no toggle. Cash is one
+node by definition.
 
 **The hub** is computed at the view's level, as the sum of the positive
-nets there — which equals the sum of the negative ones, because the
-identity above sums to zero once cash is a node. A finer level can
-therefore have a **larger** hub than a coarser one: two leaves of
-opposite sign inside one class net away at the class level and both
-appear at the group level. That is not an inconsistency, it is what
-netting means, and it is why `share` is defined against the hub of the
-level being drawn.
+nets there. That equals the sum of the negative nets, because the
+identity above sums to zero once cash is a node. So a finer level can
+have a **larger** hub than a coarser one. Two leaves of opposite sign
+inside one class net away at the class level and both appear at the
+group level. That is what netting means, and it is why `share` is
+measured against the hub of the level being drawn.
 
-One consequence of the universal side rule: a leaf whose net runs
-opposite to its class is drawn **attached to the hub directly** rather
-than as a child of a node on the other side, and its class's edge
-carries only the leaves that stayed with it. Each stage still conserves
-flow, and no node appears twice.
+A leaf whose net runs opposite to its class is drawn **attached to the
+hub directly**, not as a child of a node on the other side. Its class's
+edge carries only the leaves that stayed with it. Each stage still
+conserves flow, and no node appears twice.
 
 Netting is per period bucket: monthly for a monthly report, the whole
 window for the diagram.
@@ -677,46 +736,48 @@ window for the diagram.
 One block, two fields, both optional.
 
 `cashflow.accounts` is the pool, and the only account gate cashflow
-applies. **It inherits neither family's scope**, and that is
-deliberate: the two families keep their own scopes on purpose, and an
-account one of them excludes is not thereby outside the household's
-cash pool. The shape to hold in mind is an income scope dropping an
-account whose funding leg cannot pair — inherited here, it would put
-that account's withdrawals in the pool while its deposits vanished. Cashflow reads each family's verdicts, not its base, so the
-families' scopes and base exclusions do not reach inside the pool.
-Absent, every account is pooled.
+applies. **It inherits neither family's scope.** An account one family
+excludes is not thereby outside the household's cash pool. Consider an
+income scope that drops an account whose funding leg cannot pair. If
+cashflow inherited it, that account's withdrawals would stay in the
+pool while its deposits vanished. Cashflow reads each family's
+verdicts, not its base, so the families' scopes and base exclusions do
+not reach inside the pool. When the block is absent, every account is
+pooled.
 
-**Exclusion only.** Every account is pooled by default, so an
-`include` could fence nothing, and a knob that does nothing is worse
-than one that is absent. The loader disallows unknown fields, so
-writing one is an error rather than a silent no-op.
+**Exclusion only.** Every account is pooled by default, so an `include`
+could fence nothing. A knob that does nothing is worse than none. The
+config loader refuses unknown fields, so writing `include` is an error,
+not a silent no-op.
 
 `cashflow.wrappers` moves a tax wrapper across the boundary. The value
 is where a crossing lands: `household` (no crossing at all),
 `retirement`, `education`, `health`, `trusts` or `giving`. Unlisted
-wrappers keep the engine default; an unknown wrapper or destination
-fails the load naming the entry. It is **per wrapper, not per account**:
-an account a source mis-labelled is fixed with the existing per-account
-`tax_wrapper` override, so that every consumer of the wrapper agrees
-about whose money it is. The two knobs take effect on different
-triggers — this block is re-stamped by every enrichment pass, while an
-account override reaches the rows a load actually touches, so a reload
-is what applies one to history.
+wrappers keep the engine default. An unknown wrapper or destination
+fails the load, naming the entry.
 
-Nothing else is configurable. Rules, pins and transfer overrides are
-the families'; a verdict written there is what cashflow reads, and the
-seven new values are placed through those surfaces.
+It is **per wrapper, not per account**. An account a source
+mis-labelled is fixed with the per-account `tax_wrapper` override, so
+every consumer of the wrapper agrees about whose money it is. The two
+knobs apply at different times:
 
-One thing those surfaces now carry that only cashflow reads: an
-optional `asset_class` on a `spending.rules[]` / `income.rules[]` entry
-and in either pins ledger, admitted only beside `investment` or
-`capital_return` and validated against the exposure set (TAXONOMY.md
-§2) less `cash` and `other`. It says what the capital went INTO, for
-the movement whose feed named no instrument — see §4. It is the one
-exception to the paragraph above, and it is deliberately not in the
-`cashflow` block: the verdict and the exposure are one statement about
-one row, and splitting them across two config surfaces would let a
-deployment carry half of it.
+- this block is re-stamped by every enrichment pass;
+- an account override reaches only the rows a load touches, so a
+  reload applies it to history.
+
+Nothing else is configurable. Rules, pins and transfer overrides belong
+to the families. A verdict written there is what cashflow reads, and
+the seven values of §5 are placed through those surfaces.
+
+Those surfaces carry one field that only cashflow reads: an optional
+`asset_class` on a `spending.rules[]` or `income.rules[]` entry, and in
+either pins ledger. It is admitted only beside `investment` (spending)
+or `capital_return` (income). It is validated against the exposure set
+([TAXONOMY.md](TAXONOMY.md) §2), less `cash` and `other`. It says what
+the capital went into, for a movement whose feed named no instrument
+(§4). It is not in the `cashflow` block on purpose: the verdict and the
+exposure are one statement about one row. Splitting them across two
+config surfaces would let a deployment carry half of it.
 
 ---
 
@@ -727,128 +788,131 @@ wealthdb cashflow <view> [FROM [TO]] [--period P] [--level L] [--investing G]
                          [-f FORMAT] [-C COLS] [-x CCY] [-p]
 ```
 
-The families' idiom, unchanged. Five views:
+The families' idiom, unchanged. The flags and their defaults are in
+[DESIGN.md](DESIGN.md) §4.14 and `wealthdb cashflow -h`. Five views:
 
 | view | a row is | default columns |
 |---|---|---|
-| `summary` | a period bucket: the cash flow statement | period, operating_in, operating_out, operating, investing, financing, vehicles, net_cash_flow |
-| `flows` | a (bucket, node) pair at `--level`, netted at that level | period, section, class, group, txn_count, inflow, outflow, net, share_pct |
-| `sankey` | an edge of the window's diagram | stage, source, target, value, share_pct |
-| `transactions` | a cashflow line, oldest first | silver_source, date, account, kind, section, class, group, name, currency, net_amount, value |
-| `coverage` | an (account, currency, bucket): the ledger against the account's own balances | period, silver_source, account, currency, ledger, measured, gap, status |
+| `summary` | a period bucket: the cash flow statement | `period, operating_in, operating_out, operating, investing, financing, vehicles, net_cash_flow` |
+| `flows` | a (bucket, node) pair at `--level`, netted at that level | `period, section, class, group, txn_count, inflow, outflow, net, share` |
+| `sankey` | an edge of the window's diagram | `stage, source, target, value, share` |
+| `transactions` | a cashflow line, oldest first | `silver_source, date, account, kind, section, class, group, name, currency, net_amount, value` |
+| `coverage` | an (account, currency, bucket): the ledger against the account's own balances | `period, silver_source, account, currency, ledger, measured, gap, status` |
 
-**Three refusals, all usage errors rather than silent ignores.**
-`sankey --period` would mean one edge list per bucket, which is a
-loop's job; `sankey --level section` would draw a diagram with no inner
-column; `coverage -x` would put a rate error on top of the one number
-that view exists to make trustworthy. Ignoring any of them would hand
-back a plausible answer to a question nobody asked. `transactions` DOES
-ignore `--period`, as the families' transactions views do.
+**Three refusals.** Each is a usage error, not a silent ignore.
+Ignoring any of them would return a plausible answer to a question
+nobody asked.
 
-Behind `-C`: `section_id` / `class_id` / `group_id` on `flows` (the
-dotted node keys), `source_id` / `target_id` / `section` on `sankey`,
-and on `summary` the four memo columns — `yield`, `taxes`, `fees`,
-`giving` — plus `savings_rate`.
+- `sankey --period`: a period on an edge list means one list per
+  bucket, which is a loop's job.
+- `sankey --level section`: the diagram would have no inner column.
+- `coverage -x`: a rate error on top of the one number that view exists
+  to make trustworthy.
+
+`transactions` DOES ignore `--period`, as the families' transactions
+views do.
+
+Behind `-C`:
+
+- on `flows`: `section_id`, `class_id` and `group_id`, the dotted node
+  keys;
+- on `sankey`: `source_id`, `target_id` and `section`;
+- on `summary`: the memo columns `yield`, `taxes`, `fees` and `giving`,
+  plus `savings_rate`, plus the reconciliation memo below.
 
 `-p` redacts exactly as the families do: account ids, amounts, and
-every name taken off a statement line. Section, class, group and the
-shares stay legible, which is what makes the privacy twin of the
-diagram **normalisation alone**: no node is ever a merchant, a payer,
-an account or an instrument.
+every name taken off a statement line. Sections, classes, groups and
+shares stay legible. So the diagram's privacy twin needs
+**normalisation alone**: no node is ever a merchant, a payer, an
+account or an instrument.
 
-`wealthdb transactions` gains `cashflow_section`, `cashflow_class` and
-`cashflow_group` behind `-C`, beside the spending and income trios, so
-the one surface that shows a row from every side keeps doing so. They
-read the **resolution** rather than the base, so a row on an account no
-cashflow report charts still carries its node.
-
-They are **blank** where the resolution reached no node at all: a
-pool-internal move and a declined kind both land there, and the columns
-say only that the statement does not draw the row. Which of the two it
-was is `cashflow_txn_nodes`' `disposition`, one query below the
-reports.
+`wealthdb transactions` carries `cashflow_section`, `cashflow_class`
+and `cashflow_group` behind `-C`, beside the spending and income trios.
+They read the **resolution**, not the base, so a row on an account no
+cashflow report charts still carries its node. They are **blank** where
+the resolution reached no node: a pool-internal move or a declined
+kind. Which of the two is the `disposition` column of
+`cashflow_txn_nodes`.
 
 ### Reconciliation
 
-Two identities are **structural** and therefore guard arithmetic rather
-than population: the four section figures sum to `net_cash_flow`, and a
-bucket's `flows` rows — the Cash row included — sum to zero.
+Two identities are **structural**. They guard arithmetic, not
+population:
 
-The check that can catch a wrong POPULATION is the memo on
+- the four section figures sum to `net_cash_flow`;
+- a bucket's `flows` rows, the Cash row included, sum to zero.
+
+The check that can catch a wrong **population** is the memo on
 `summary`, behind
 `-C +cash_measured,+fx_effect,+cash_flow_measured,+unexplained`. The
-cash section is computed, never measured, so an unpaired transfer or a
-wire a bank books under a catch-all kind lands in the residual and
+cash section is computed, never measured. So an unpaired transfer, or a
+wire a bank books under a catch-all kind, lands in the residual and
 looks like cash saved or spent. The pool's balances, unlike the
 residual, are **observed**.
 
-- `cash_measured` — the pool's cash balances at the bucket's end minus
+- `cash_measured`: the pool's cash balances at the bucket's end minus
   at its start, each at its own boundary day's rate.
-- `fx_effect` — the revaluation part of that change, in **two** terms:
-  the opening balances revalued to the closing rate, and every
-  movement in the bucket revalued from its own day's rate to the
+- `fx_effect`: the revaluation part of that change, in two terms. One
+  revalues the opening balances to the closing rate. The other
+  revalues every movement in the bucket from its own day's rate to the
   closing one. Without the second, a salary received mid-year and held
-  to the year's end would masquerade as an error.
-- `cash_flow_measured` — the flow the residual is taken against.
-  **Not `net_cash_flow`**, and the difference is the point: the memo
-  can only compare observed balances against the flow over the accounts
-  and dates those balances cover, so this term counts the movements
-  inside the pool and starts each account at its own first snapshot
-  (the six narrowings below). Printed because without it the four
-  columns do not close on their face and a reader doing the arithmetic
-  finds a residual that is neither zero nor `unexplained`.
-- `unexplained` — what is left. Near zero, **not** zero.
+  to the year's end would look like an error.
+- `cash_flow_measured`: the flow the residual is taken against. It is
+  **not** `net_cash_flow`. The memo can only compare observed balances
+  against the flow over the accounts and dates those balances cover.
+  So this term counts the movements inside the pool too, and starts
+  each account at its own first snapshot (the narrowings below). It is
+  printed so that the four memo columns close on their face.
+- `unexplained`: what is left. Near zero, **not** zero.
 
-The four printed columns close exactly:
+The four columns close exactly:
 
 ```
 unexplained = cash_measured - fx_effect - cash_flow_measured
 ```
 
-Six things narrow what the memo measures, and each is a way it would
-otherwise be wrong about itself rather than about the statement:
+Six things narrow what the memo measures. Each prevents the memo from
+being wrong about itself rather than about the statement.
 
-1. pooled accounts only;
-2. accounts that contribute transactions only — one loaded for
-   balances alone has a real balance change and no lines;
-3. accounts that have a balance history only, and never the synthetic
-   per-portfolio `overlay` accounts;
-4. each account is measured **from its own first snapshot**. Collectors
-   onboard at different times: one begins, back-loads years of
-   transaction history, and has balances only from the day it first
-   ran. Blanking every bucket in which any account was unobserved
-   blanks every year before the last collector was added;
-5. the flow side is the same accounts over the same slice, because a
+1. Pooled accounts only.
+2. Accounts that contribute transactions only. An account loaded for
+   balances alone has a real balance change and no lines.
+3. Accounts with a balance history only, and never the synthetic
+   per-portfolio `overlay` accounts.
+4. Each account is measured **from its own first snapshot**. Collectors
+   onboard at different times. One may back-load years of transaction
+   history but have balances only from its first run. Blanking every
+   bucket in which any account was unobserved would blank every year
+   before the last collector was added.
+5. The flow side covers the same accounts over the same slice. A
    diagnostic whose halves covered different populations would carry a
-   structural term and stop being a diagnostic;
-6. the flow side counts the movements the resolution calls
-   **pool-internal** as well as its lines. The measured spine is
-   narrower than the household: a wire to a pooled account whose
-   balances are not collected leaves it, and so does a money-market
-   fund bought with idle cash. Both move the spine and the statement
-   rightly draws neither. What the flow side does NOT count is the rows
-   the resolution declined — showing up in `unexplained` is exactly
-   what the memo is for. Counting the pool-internal rows is
-   load-bearing rather than merely harmless, and a pair whose two legs
-   are one currency conversion is what makes it so: those legs do not
-   offset each other in native terms, so a flow side that dropped them
-   would put the whole conversion into `unexplained` on every bucket it
-   touched. Included at their own amounts, they move the measured spine
-   by exactly what the balances moved by.
+   structural term and stop being a diagnostic.
+6. The flow side counts the movements the resolution calls
+   **pool-internal**, as well as its lines. The measured accounts are
+   narrower than the household. A wire to a pooled account whose
+   balances are not collected leaves them, and so does a money-market
+   fund bought with idle cash. Both change the measured balances, and
+   the statement rightly draws neither. The flow side does NOT count
+   the rows the resolution declined: showing them in `unexplained` is
+   what the memo is for. Counting the pool-internal rows is essential
+   for a currency conversion between two own accounts. Its two legs do
+   not offset in native terms, so without them the whole conversion
+   would land in `unexplained`. At their own amounts they move the
+   measured flow by exactly what the balances moved.
 
 A bucket reports blank where nothing is measurable, or where no rate
-can value an amount at a boundary. It is a diagnostic with a stated
-tolerance, never an input: `net_cash_flow` does not read it.
+can value an amount at a boundary. The memo is a diagnostic with a
+stated tolerance, never an input: `net_cash_flow` does not read it.
 
 ### Coverage: which accounts the statement can be trusted on
 
-The memo above answers one question per period for the whole pool. When
-it does not close it says so in one number and stops, and the account
-behind that number is not in the statement.
+The memo answers one question per period for the whole pool. When it
+does not close, it says so in one number and stops. The account behind
+that number is not in the statement.
 
-`wealthdb cashflow coverage` is where it is: per account and per
-period, the cash delta its transactions imply against the delta its own
-balances show.
+`wealthdb cashflow coverage` names it. Per account and per period, it
+sets the cash change the account's transactions imply against the
+change its own balances show. With `-C +unsigned`:
 
 ```
 period  silver_source  account  currency      ledger    unsigned    measured         gap  status
@@ -856,51 +920,52 @@ period  silver_source  account  currency      ledger    unsigned    measured    
 2099    bank           Mandate  USD        99999.99        0.00    1111.11   98888.88  measured
 ```
 
-(Figures invented; the shapes are the two that matter. The first account
-converts currencies, so the gap is smaller than the volume no sign could
-be read from and nothing can be concluded. The second carries no
-unsigned volume at all, so its gap is real.)
+The figures are invented; the shapes are the two that matter. The
+first account converts currencies, so its gap is smaller than the
+volume no sign could be read from, and nothing can be concluded. The
+second carries no unsigned volume, so its gap is real.
 
-Three things separate it from the query anyone would write first, and
-each is a way that query is wrong.
+It differs from the obvious query in three ways, and each fixes a way
+that query is wrong.
 
 1. **It does not convert.** A per-account gap belongs in the account's
-   own currency; carrying it to an output currency puts a rate error on
-   top of the number the report exists to make trustworthy. `-x` is
-   refused rather than ignored.
-2. **It publishes its own blind spot.** Gold pins no canonical sign for
-   six kinds — the FX family, corporate actions, the two catch-alls — so
-   their amounts cannot be summed into a cash delta, and an in-kind
-   transfer (`transfer_in` / `transfer_out` carrying an instrument) is
-   valued securities that moved no cash at all. Dropping them quietly
-   makes an account that converts currencies, or received a portfolio in
-   kind, look like an account with an enormous hole. The volume that had
-   to be dropped is the `unsigned` column, and a gap no larger than it
-   reads **obscured**: not clean, not damning, not answerable from what
-   the adapters signed. An account with no unsigned volume is never
-   obscured. It reads **measured**, and its gap stands. A gap of zero
-   means the account reconciles.
-3. **It reports what it cannot measure.** An account with no balance
-   history never enters a join-based version's output at all — absent
-   reads as fine. Those rows are here as **unmeasurable**. An account
-   whose balance series begins inside the period reads **opening**, and
-   one whose series stopped before the period reads **ended**: either
-   way the difference across the period is not a delta.
+   own currency. Converting it adds a rate error to the number the
+   report exists to make trustworthy. `-x` is refused.
+2. **It publishes its own blind spot.** Some volume moves no cash that
+   a sign can be read from:
+   - the six unsigned kinds of §4: the FX family, corporate actions and
+     the two catch-alls;
+   - an in-kind transfer (`transfer_in` / `transfer_out` carrying an
+     instrument). It is valued securities that moved no cash.
 
-Read `status` first and sort by `gap` within `measured`. That ordering
-puts at the top whichever account's balances moved most without flows
-to explain it, which is how a feed that stopped covering an account
-mid-window surfaces itself instead of waiting to be found.
+   Dropping them quietly makes an account that converts currencies, or
+   received a portfolio in kind, look like one with an enormous hole.
+   The dropped volume is the `unsigned` column. A gap no larger than it
+   reads **obscured**: not clean, not damning, and not answerable from
+   what the adapters signed. An account with no unsigned volume is
+   never obscured. It reads **measured**, and its gap stands. A gap of
+   zero means the account reconciles.
+3. **It reports what it cannot measure.** In a join-based query, an
+   account with no balance history never appears, and absent reads as
+   fine. Here it reads **unmeasurable**. An account whose balance series
+   begins inside the period reads **opening**. One whose series stopped
+   before the period reads **ended**. Either way the difference across
+   the period is not a real change.
+
+Read `status` first, then sort by `gap` within `measured`. The report
+already lists each period's rows by gap size. That puts first the
+account whose balances moved most without flows to explain it. A feed
+that stopped covering an account mid-window shows up there.
 
 ### The gap to the family reports
 
 Cashflow's income differs from `wealthdb income`'s total by exactly
 four terms, each computed separately:
 
-1. the **vehicles' own income** — a plan's dividends are not the
+1. the **vehicles' own income**: a plan's dividends are not the
    household's cash flow;
 2. the **reimbursements** cashflow keeps and income drops;
-3. the **re-homed verdicts** — `capital_return` and `investment` to
+3. the **re-homed verdicts**: `capital_return` and `investment` to
    investing, `loan_proceeds` to financing;
 4. any account the families' own **scopes** exclude but the pool keeps.
 
@@ -912,36 +977,42 @@ and that bridge is the cheapest place to see it.
 ## 9. The dashboard
 
 **Cash Flow**, in the Spending and Income dashboards' shape, with a
-privacy twin linked from the top row. Five pickers: time range, source,
-a required currency, a section, and **Investing** — as a whole (the
-default) or by asset class, bound to the diagram and the investing
-trend.
+privacy twin linked from the top row. It has five pickers:
 
-**The Section picker is narrower than the other four**, and it is the
-one picker the design did not ask for. It reaches the by-month charts
-and `Largest flows`, and the headline figures and the diagram decline
-it. A statement narrowed to one section is not a statement; a savings
-rate or a yield share narrowed to one has lost a leg of its own ratio;
-and a one-section diagram draws a `Cash savings` node that absorbs the
-whole section rather than the residual it names. A by-month chart that is
-already scoped to one section — Inflows, Outflows, Investing — goes
-empty when a different section is picked, which is what a dashboard
-filter means. The scope is enforced by withholding the filter's
-template tag from the cards that decline it, so a card cannot drift
-into the picker by being written later, and `test_provision.py` pins
-it card by card.
+- time range;
+- source;
+- a required currency;
+- a section;
+- **Investing**: as a whole (the default) or by asset class. It binds
+  to the diagram and the investing trend.
 
-**No account picker**, and that is the design rather than an omission.
-The household boundary is what separates the household's cash flow from
-its vehicles', and a picker that moved accounts in and out of the pool
-would turn every crossing it split into an unexplained disappearance: a
-wire between two of the household's own accounts is invisible only
-while both are in the pool.
+**The Section picker is narrower than the other four.** It reaches the
+by-month charts and `Largest flows`. The headline figures and the
+diagram decline it:
+
+- a statement narrowed to one section is not a statement;
+- a savings rate or a yield share narrowed to one section has lost a
+  leg of its own ratio;
+- a one-section diagram draws a `Cash savings` node that absorbs the
+  whole section, not the residual it names.
+
+A by-month chart already scoped to one section (Inflows, Outflows,
+Investing) goes empty when a different section is picked, which is what
+a dashboard filter means. The scope is enforced by withholding the
+filter's template tag from the cards that decline it. So a card added
+later cannot drift into the picker, and `test_provision.py` checks it
+card by card.
+
+**There is no account picker, by design.** The household boundary
+separates the household's cash flow from its vehicles'. A picker that
+moved accounts in and out of the pool would turn every crossing it
+split into an unexplained disappearance. A wire between two of the
+household's own accounts is invisible only while both are in the pool.
 
 | row | cards |
 |---|---|
 | headlines | Operating in · Operating out · Net cash flow · Savings rate · Yield share |
-| the diagram | Cash flow — the Sankey, full width, the window's four stages |
+| the diagram | Cash flow: the Sankey, full width, the window's four stages |
 | the shape of the window | Cash flow statement by month: signed stacked bars per section |
 | the two sides | Inflows by class by month · Outflows by class by month |
 | the swing sections | Investing by month · Financing and vehicles by month |
@@ -949,112 +1020,116 @@ while both are in the pool.
 
 Every tile is a **native query over `web_cashflow`**, the line-grain
 serving view. The Sankey card computes its nets, its sides and its hub
-**in-query**: a node's side is the sign of its net over the FILTERED
-window, so a pre-netted table would be netted over the wrong window the
-moment a reader moved a picker.
+**in the query**. A node's side is the sign of its net over the
+filtered window. A pre-netted table would be netted over the wrong
+window the moment a reader moved a picker.
 
-The twin is **normalisation, not redaction** — with the hub at 100 there
-is nothing left to hide, because no node is ever a merchant, a payer, an
-account or an instrument. One card is the exception and drops columns
-the way every other twin card does: `Largest flows` names the account a
-line moved through and the payer or merchant behind it, so the twin
-ranks instead and projects neither.
+The twin is **normalisation, not redaction**. With the hub at 100 there
+is nothing left to hide, because no node is ever a merchant, a payer,
+an account or an instrument. One card is the exception and drops
+columns, as every other twin card does. `Largest flows` names the
+account a line moved through and the payer or merchant behind it, so
+the twin ranks the lines and projects neither.
 
 ---
 
 ## 10. Storage and lifecycle
 
-Cashflow has no store of its own. What it adds to gold is three columns
-on the spending overlay and two stamped tables:
+Cashflow has no store of its own. It adds columns to the family
+overlays and two stamped tables:
 
 | table / column | grain | survives `reset`? | carried by `reload -a`? |
 |---|---|---|---|
-| `spend_txn_enrichment.far_*` | per transaction | no | n/a — re-derived |
+| `spend_txn_enrichment.far_*` (three columns) | per transaction | no | n/a, re-derived |
+| `spend_txn_enrichment.stated_asset_class`, `income_txn_enrichment.stated_asset_class` | per transaction | no | n/a, re-derived |
 | `cashflow_wrapper_sides` | one row per tax wrapper | yes | re-stamped from config |
 | `cashflow_account_scope` | config, stamped into gold | yes | re-stamped from config |
 
-Nothing is stored for the memo: it reads `cash_balances` and the
+Nothing is stored for the memo. It reads `cash_balances` and the
 resolution at query time.
 
-The wrapper table is stamped **whole** — every value of the enum,
-defaults included — which is what keeps `canonical.DefaultWrapperSide`
-the single place a wrapper's side is decided. Stamping only the
-overrides would put the defaults in SQL a second time, where a wrapper
-added for a new jurisdiction would take two edits to reach the
-statement.
+The wrapper table is stamped **whole**: every value of the enum,
+defaults included. That keeps `canonical.DefaultWrapperSide` the single
+place a wrapper's side is decided. Stamping only the overrides would
+put the defaults in SQL a second time. A wrapper added for a new
+jurisdiction would then take two edits to reach the statement.
 
-`wealthdb load` prints a `cashflow:` block: the boundary stamped, how
-many own-account moves carry a far account and how many of those the
-source stated itself, what the matcher asserted on a shared reference
-and on a described counter leg, and — loudly — how many pooled accounts
-have no tax wrapper. The far accounts are rows, one per leg; the
-matcher's figures are pairs, each writing two of them.
+`wealthdb load` prints a `cashflow:` block. It reports:
 
-### The diagram's node order is the renderer's, not ours
+- the boundary stamped: wrappers, overrides, and accounts out of the
+  pool;
+- how many own-account moves carry a far account, and how many of
+  those the source stated itself;
+- how many pairs the matcher asserted on a shared reference, on a
+  described counter leg, and on a narrative naming the other account;
+- source references that named more than one movement and paired
+  nothing, when there are any;
+- loudly, how many pooled accounts have no tax wrapper;
+- declared accounts, how many sit inside the pool, and how many no
+  rule-placed row reached;
+- `cashflow.accounts` ids that match no account.
 
-Within a column the BI layer's Sankey orders nodes by a force
-relaxation: each node is pulled toward the weighted centre of its
-neighbours and the column is re-sorted on position, for a fixed number
-of iterations. It converges to a fixed point that ignores the input —
-reversing the entire edge list produces a byte-identical layout — and
-the BI layer exposes no iteration count and no node-sort setting.
+Far accounts are rows, one per leg. The matcher's figures are pairs,
+each writing two rows.
+
+### The diagram's node order is the renderer's
+
+Within a column, the BI layer's Sankey orders nodes by force
+relaxation. Each node is pulled toward the weighted centre of its
+neighbours, and the column is re-sorted by position, for a fixed number
+of iterations. It converges to a fixed point that ignores the input
+order. Reversing the whole edge list gives an identical layout. The BI
+layer exposes no iteration count and no node-sort setting.
 
 So a class's leaves are NOT drawn together. A large leaf settles high
-and can land among another class's leaves, which reads as though it
-belonged to that class. Where it lands depends on the data: over one
-window a mortgage's amortisation sits second in the column, over
-another it sits twenty-fourth.
+and can land among another class's leaves, where it reads as though it
+belonged to that class. Where it lands depends on the data in the
+window.
 
-Two things follow, and both were measured rather than assumed.
+Two consequences:
 
-The edge list's own ORDER BY groups a class's leaves together, which
-makes the rows readable — and does nothing for the diagram. The comment
-on it says so.
+- The edge list's own ORDER BY groups a class's leaves together. That
+  makes the rows readable and does nothing for the diagram. The comment
+  on it says so.
+- Flattening a class into its leaves is not a fix. It reduces
+  interleaving only by removing a level. The same interleaving
+  reappears between whichever classes still have leaves. Trading a node
+  of the vocabulary for that would fit one window of one deployment. If
+  the BI layer exposes the layout's iteration count, this becomes a
+  visualisation setting and stops being a data question.
 
-And flattening a class into its leaves, so it has none to interleave,
-is not a fix. It is tidier by the count (four to six order changes down
-the column against eight to twelve) but only because it removes a
-level: the same interleaving reappears between whichever classes still
-have leaves, so a mortgage's amortisation stops landing among the
-consumption leaves and a gift starts landing among the fees. Trading a
-node of the vocabulary for that is a fix aimed at one window of one
-deployment. If the BI layer ever exposes the layout's iteration count,
-this becomes a visualisation setting and none of it is a data question.
+### Until the first load, the statement is wrong
 
-### After an upgrade, the statement is wrong until a load has run
-
-Applying the cashflow migrations creates the two boundary tables and
-the three far-account columns **empty**. Nothing backfills them: they
-are written by the enrichment pass, which runs inside `wealthdb load`
-and `reload`. Between the two the statement is not merely incomplete,
-it is wrong in a way that reads like a finding:
+The cashflow migrations create the two boundary tables and the far
+columns **empty**. Nothing backfills them. The enrichment pass writes
+them, and it runs inside `wealthdb load` and `reload`. Before that pass
+the statement is not just incomplete. It is wrong in a way that reads
+like a finding:
 
 - `cashflow_wrapper_sides` is empty, so every wrapper reads as
-  household and the pool is **every account**, vehicles included;
+  household, and the pool is **every account**, vehicles included;
 - no enrichment row carries a far account, so the far-account ladder
-  (§4) falls to its last arm and **every matched own-account move**
+  (§4) falls to its last step, and **every matched own-account move**
   resolves to `vehicles · Unpaired transfers`.
 
-The dashboard then shows one enormous `Unpaired transfers` node that
+The dashboard then shows one enormous `Unpaired transfers` node. It
 looks like a data problem and is not. `wealthdb load -a` ends the
-state, and the load that does prints a line saying so — once, because
-after it the counters alone tell the story.
+state. The load that ends it prints a line saying so, once.
 
-A binary carrying unapplied migrations applies them **on any
-read-write open of gold**, which includes `web-materialize` and every
-command that is not explicitly read-only. So the state above can begin
-without anyone running a migration on purpose.
+A binary with unapplied migrations applies them on any read-write open
+of gold. That includes `web-materialize` and every command that is not
+read-only. So this state can begin without anyone running a migration
+on purpose.
 
-`wealthdb status -v` prints a `cashflow:` block with three counters,
-each naming a way the statement can be quietly wrong:
+`wealthdb status -v` prints a `cashflow:` block with three counters.
+Each names a way the statement can be quietly wrong:
 
-- **excluded by kind** on pooled accounts — the FX family, corporate
+- **excluded by kind** on pooled accounts: the FX family, corporate
   actions, unmatched transfers, unpaired card payments and the
   catch-alls;
-- **no tax wrapper** on pooled accounts — the boundary's coverage gap;
-- **no far account** — rule-placed moves landing in `Unpaired
-  transfers · No far account`, which are also the ones collecting or
-  declaring that account would resolve.
+- **no tax wrapper** on pooled accounts: the boundary's coverage gap;
+- **no far account**: rule-placed moves in `Unpaired transfers · No far
+  account`. Collecting or declaring that account would resolve them.
 
 ---
 
@@ -1062,23 +1137,21 @@ each naming a way the statement can be quietly wrong:
 
 1. **A per-vehicle statement.** The same statement with the edge drawn
    around one plan or one trust. Every mechanism here applies
-   unchanged; only the boundary moves. It is where a payroll-funded
-   plan's growth, and giving routed through a vehicle, become visible.
+   unchanged; only the boundary moves. It would show a payroll-funded
+   plan's growth and giving routed through a vehicle.
 2. **A sign pin for the unsigned kinds.** A per-adapter pin, recorded
-   where the canonical signs live, is what would let the cash leg of a
-   merger or a rights issue join investing.
-3. **A dated wrapper override.** The boundary is time-invariant (§3); an
-   effective-from date is the fix.
-4. **Memo pairs for what the boundary removes** — the vehicles' own
+   where the canonical signs live, would let the cash leg of a merger
+   or a rights issue join investing.
+3. **A dated wrapper override.** The boundary is time-invariant (§3).
+   An effective-from date is the fix.
+4. **Memo pairs for what the boundary removes**: the vehicles' own
    income and spending, and the tax they withheld before the household
    saw the money.
-5. **Platform custody deposits**, **reimbursement netting** and the
-   **cross-currency own-account moves no assertion reaches**: the two
-   families' standing follow-ups, each of which shows up here too. The
-   third narrowed twice — first when the matcher learned to pair on the
-   transaction number a source stamps on both halves, then when it
-   learned to read the counter leg a source describes on one of them.
-   What is left is the movement whose source does neither, and the card
-   bill whose two feeds share no id space.
-6. **Net cash flow on the Wealth Overview**, once the feature has been
-   read for a while.
+5. **The two families' standing follow-ups**, which show up here too:
+   - platform custody deposits ([INCOME.md](INCOME.md) §11);
+   - reimbursement netting ([INCOME.md](INCOME.md) §11);
+   - cross-currency own-account moves no assertion reaches. These are a
+     movement whose source neither stamps one reference on both halves
+     nor describes the counter leg, and a card bill whose two feeds
+     share no id space.
+6. **Net cash flow on the Wealth Overview.**

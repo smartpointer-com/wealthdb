@@ -89,6 +89,19 @@ driving the browser**. The harness will faithfully record a forbidden
 surface if one is opened — recording is not permission, and the list is
 what says where the session may go.
 
+## 2. Sessions, challenges and the dry run
+
+Root [AGENTS.md](../../AGENTS.md) §2 governs real sessions. For ubs-web:
+
+- A full `login` raises a UBS Access App QR challenge.
+- `login --check` and `download --dry-run` reuse the stored state
+  file and never sign in. On a dead session they exit with an error
+  and raise no challenge. Both are in the run-without-asking set.
+- `explore` drives a live session and runs only when asked.
+- The contract number comes from `UBS_CONTRACT_NUMBER`, sourced from
+  `ubs-web.env`, or from the bank-level `ubs.env` when `ubs-web.env`
+  does not exist.
+
 ## Authentication & private data
 
 See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) and

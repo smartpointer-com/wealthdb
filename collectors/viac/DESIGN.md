@@ -1,27 +1,18 @@
 # viac — design
 
-Design document for the `viac` toolkit. The audience is the
-engineer (current author, future contributor) maintaining
-`login.py`, `download.py`, and `load.py` against the live
-`app.viac.ch` SPA. It is also the contract between this silver
-and the `wealthdb` VIAC adapter.
+Design notes for maintaining `login.py`, `download.py` and `load.py`
+against the `app.viac.ch` SPA. The silver schema here is also the
+contract with the `wealthdb` VIAC adapter. The [README](README.md) covers
+the verbs, examples and bronze layout.
 
 Part of the **wealthdb** suite — see [the architecture
 overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions. This document only covers what's VIAC-specific.
 
-## Tools
-
-| Verb | Notes |
-| --- | --- |
-| `login.py` | pure httpx; Airlock-flow replay; cookies + CSRF metadata at chmod 0600 |
-| `download.py` | pure httpx; per-event TRANSACTION receipts on by default with a `--no-transaction-documents` opt-out; `collectorkit.docdedup` download-avoidance — link the immutable/unparsed docs, fetch-verify the parsed/tax/fusion docs; `--documents-force` bypass; h2-stream-drop retry |
-| `load.py` + `migrations/0001_initial.sql` | idempotent on `dump_runs.snapshot_at` |
-
-What's NOT implemented: PVB (Pillar-2 vested-benefits) per-
-portfolio endpoint surface — `accounts` carries the inventory
-entry but positions / strategy / fees aren't fetched. See §9.
+Scope: `download` fetches per-portfolio detail (strategy, positions,
+fees) for Pillar-3a portfolios only. PVB and INV portfolios reach silver
+`accounts` from the inventory alone (§9).
 
 ## 1. Context and non-goals
 
@@ -53,10 +44,10 @@ arrays:
 - `p3a[]` — Pillar-3a portfolios. Per-portfolio strategy /
   positions / fees endpoints exist.
 - `pvb[]` — Pillar-2 vested-benefits portfolios. Typically
-  PASSIVE while still actively employed; per-portfolio
-  endpoint surface not yet mapped (see §9).
+  PASSIVE while the holder is employed; the per-portfolio
+  endpoint surface is unmapped (see §9).
 - `inv[]` — VIAC's non-retirement investment product line.
-  Empty for users who only hold retirement assets.
+  Empty for a customer with retirement products only.
 
 The first dotted segment of each portfolio number encodes the
 product line: `3.*` is p3a, `2.*` is pvb, `1.*` is inv.
@@ -70,8 +61,7 @@ product line: `3.*` is p3a, `2.*` is pvb, `1.*` is inv.
   is read-only.
 - **MFA automation.** Human-in-the-loop on every fresh login.
 - **Cross-bank semantic alignment.** `wealthdb` gold's job.
-- **The VIAC mobile app's signed-payload feed.** If reachable
-  it lives in a separate `viac-mobile` repo.
+- **The VIAC mobile app's signed-payload feed.**
 
 ## 2. Auth + REST surface
 
@@ -82,9 +72,8 @@ The login URL is a hash-route:
 https://app.viac.ch/#/ext(modal:core/session/login)
 ```
 
-— but the toolkit doesn't load it; the auth flow is a sequence
-of REST calls. The SPA's hash-route is operationally irrelevant
-once the wire shape is known.
+— but the toolkit does not load it; the auth flow is a sequence
+of REST calls.
 
 ### 2.1 Auth flow (replayed by `login.py`)
 
@@ -122,13 +111,15 @@ double-submit-cookie machinery.
 | `/files/document/<docid>` | PDF binary |
 
 Several endpoints carry build-bound `/N-N` version suffixes
-(`customer/current/7-5`, `notification/6-2`, `document/7-0`,
-`fees-70`). The values appear stable per VIAC deploy. They're
-hardcoded as constants in `download.py`; if they rotate, the
-loader fails fast with a clear error.
+(`customer/current/7-5`, `document/7-0`, `fees-70`). The values
+appear stable per VIAC deploy. They are constants in
+`download.py`. If one rotates, `download` fails fast with an
+error that points here; the fix is a fresh capture of the SPA's
+login flow.
 
 No pagination needed — `transactions` and `document` return
-the full set in one response.
+the full set in one response. `download` retries transient
+errors, including a dropped HTTP/2 stream.
 
 ## 3. Identity strategy
 
@@ -139,7 +130,7 @@ The dotted portfolio number, verbatim: `<product>.<customer-id>.<portfolio-index
 Examples (placeholder shape — synthetic):
 - `3.NNN.NNN.NNN.NN` (Pillar-3a)
 - `2.NNN.NNN.NNN.O` / `2.NNN.NNN.NNN.U` (PVB mandatory / extra-mandatory)
-- `1.NNN.NNN.NNN.NN` (INV, not yet observed)
+- `1.NNN.NNN.NNN.NN` (INV)
 
 Silver promotes the first dotted segment to `product_code` and
 the last to `portfolio_index` for the gold-layer `tax_wrapper`
@@ -158,46 +149,30 @@ Synthetic SHA-256 prefix over
 `(account | type | value_date | amount_chf | document_number)`.
 VIAC doesn't surface a stable per-event id on the wire — the
 `documentNumber` is shared across some legs of corporate-
-action pairs, so we hash a tuple. Deterministic → re-loading
+action pairs, so the id hashes a tuple. Deterministic → re-loading
 the same bronze converges.
 
-## 4. Anti-bot — resolved
+## 4. Anti-bot
 
 VIAC's backend is plain JSON over cookies. No fingerprinting,
-no JS challenge, no anti-replay guard observed at any of the
+no JS challenge and no anti-replay guard at any of the
 endpoints in §2. Vanilla httpx with a realistic Chrome
 User-Agent + the SPA's standard headers (see
 `viac_client.py:DEFAULT_HEADERS`) gets through every endpoint
 the toolkit needs.
 
-If VIAC later adds an anti-bot layer (e.g. an Akamai upgrade),
-the escalation path mirrors the sibling collectors: stealth
-plugins, then Camoufox-patched Firefox. None of the existing
-code would need to change beyond the underlying HTTP client.
+If VIAC adds an anti-bot layer (e.g. Akamai), the escalation
+path mirrors the sibling collectors: stealth plugins, then
+Camoufox-patched Firefox. Only the HTTP client would change.
 
 ## 5. Bronze layout
 
-```
-<bronze-dir>/                          e.g. $XDG_DATA_HOME/wealthdb/viac/
-├── <YYYYMMDDTHHMMSSZ>/                one bronze dump per run
-│   ├── run.json                       manifest (status, timestamp, flags, doc counts)
-│   ├── customer.json                  /rest/web/customer/current/<N-N>
-│   ├── wealth/
-│   │   ├── portfolio-inventory.json   master list (p3a + pvb + inv)
-│   │   ├── summary.json               daily NAV time series across all wealth
-│   │   └── allocation.json            cross-portfolio allocation breakdown
-│   ├── positions/<portfolio-num>/
-│   │   ├── strategy.json
-│   │   ├── assets.json                current holdings per fund
-│   │   └── fees.json
-│   ├── transactions/all.json          every tx keyed by portfolio
-│   ├── documents/
-│   │   ├── index.json                 document catalogue
-│   │   └── <docid>.pdf                PDF binaries (see gating below)
-└── viac.db                            silver SQLite (default name)
-```
+The run-dir tree is in the [README](README.md#output).
 
-**PDF gating** (`download.py`):
+**PDF gating** (`download.py`). A date gate comes first: a
+document whose `timestamp` falls outside the run's `--lookback`
+window is skipped, and one with no readable timestamp is kept.
+Then the type gate:
 
 - **Default**: download everything — the non-TRANSACTION docs
   (statements, Bescheinigungen, contracts, investment profiles),
@@ -215,7 +190,7 @@ engine, keyed by document number and chosen per document class so the
 fetch-avoidance never serves a stale figure:
 
 - **link** (fetch avoided) — the executed-once, immutable, unparsed
-  documents (`CONTRACT`, `INVESTMENT_PROFILE`, `CONTRIBUTION_CREDIT_NOTE`,
+  documents (`PROVISION_CONTRACT`, `INVESTMENT_PROFILE`, `CONTRIBUTION_CREDIT_NOTE`,
   `GENERIC_COMMUNICATION`, and the per-event `TRANSACTION` receipts
   `TRADE_REPORT` / `FEE_CHARGE` / `INTEREST` / `DIVIDEND` /
   `DIVIDEND_CANCELLATION`) are hard-linked from a prior complete run when
@@ -231,7 +206,9 @@ fetch-avoidance never serves a stale figure:
   the one mode correct against a silent re-issue under a stable document
   number — a restated statement or corrected certificate is never served
   stale into silver. Any unrecognised type fetch-verifies too (the safe
-  default).
+  default). A `TAX` or `REPORT` document of an uncatalogued
+  subtype fetch-verifies too, since the class keys on `type` as
+  well as `subType`.
 
 Every run dir stays self-contained (a hardlink is a real in-run file), so
 `load.py` needs no cross-run fallback. `--documents-force` bypasses the
@@ -242,7 +219,7 @@ confidence check.
 
 The REST API only exposes the *current* holdings snapshot
 (`assetsOverview`), so live scraping alone gives gold a position
-time series that starts the day scraping began. The document
+time series that starts at the first download. The document
 archive closes that gap: the `REPORT` / `INVESTMENT_REPORTING`
 PDFs (plus the on-demand `MANUAL_INVESTMENT_REPORTING`) are
 period-end statements that list, per portfolio, every fund held
@@ -275,79 +252,65 @@ tagged `source = 'report:<docid>'` and keyed on the as-of date
 the same stable report across successive dumps converges
 (`INSERT OR REPLACE`). Reconstructed rows reconcile to the cent
 against each report's printed "Balance in CHF". Instruments held
-only historically (e.g. the pre-2024-fusion CS/iShares funds, no
-longer in the live holdings) enter the `instruments` catalogue
-through this path, and live instruments gain an earlier
-`first_seen_at`.
+only historically (a fund merged away, for example) enter the
+`instruments` catalogue through this path, and live instruments
+gain an earlier `first_seen_at`. The statements are window-gated
+like every document, so the history reaches back as far as
+`--lookback` does.
 
 ## 5.2 Run status + reclaiming disk
 
-`download.py` records a `status` in `run.json`: `"in-progress"` when
-it creates the run dir (written via `bronze.atomic_write_json` right
-after `mkdir`), then atomically overwritten with `"complete"` once
-the walk returns (a `--dry-run` writes nothing under bronze; the
-`"dry-run"` status survives only in legacy shells). A crash
-mid-walk therefore leaves `status = "in-progress"`, a stronger "this
-dump is partial" signal than the older "no `run.json` = incomplete"
-heuristic, which a partial manifest write could defeat.
+`run.json` follows the
+[fleet status lifecycle](../README.md#debug-artefacts-run-status-and-pruning-bronze):
+`"in-progress"` when `download` creates the run dir, atomically
+overwritten with `"complete"` when the walk returns. A `--dry-run`
+creates no run dir. The viac specifics:
 
-`load.py` keys on it: `list_pending_dumps` skips a dump whose status is
-anything but `"complete"`, so a crashed walk never leaks a partial
-snapshot into silver. A statusless manifest predates the field, where
-the manifest was written only at the end so its presence alone meant
-completion, and stays loadable.
-
-`prune.py` — a thin wrapper over the shared, unit-tested
-[`collectorkit.prune`](../../shared/collectorkit/collectorkit/prune.py)
-engine — reclaims whole **non-complete** dumps (`status != "complete"`,
-or a legacy statusless `dry_run: true` shell, or no `run.json`). Its
-`PruneConfig.debug_subdirs` nominates `screenshots/`, the HTTP trace a
-`download --debug` writes: viac drives no browser, so the request trace
-is its whole bronze-resident debug surface, and it is the only thing ever
-removed from a complete dump. The engine guarantees a `load`
-input is never deleted, an unreadable/corrupt manifest is skipped as
-UNKNOWN, symlinks and non-run-dir root entries (the silver `viac.db`)
-are never touched, and an in-flight download is protected by a
-newest-mtime age guard (`--min-age-hours`, default 1) plus a
-recheck immediately before deletion. Document PDFs are hard-linked
-across dumps (§5, cross-run dedup), so deleting a non-complete dump
-that holds a link is safe — the inode survives while any complete dump
-still links it, and `documents/<docid>.pdf` (a `load` input parsed
-cross-dump by the historical-reports phase) is never lost. The
-wrapper runs `prune` host-side (bypassing the single-writer guard so
-it can run beside a live container); the entrypoint keeps a `prune`
-arm for direct `docker run`.
+- `load` (`bronze.pending_run_dirs`) skips a run dir with no
+  `run.json` and one whose status is neither `"complete"` nor absent.
+  A statusless manifest stays loadable.
+- `prune` treats a statusless manifest as complete, unless it
+  carries `dry_run: true`. That legacy dry-run shell is non-complete,
+  so `prune` reclaims it, while `load` still reads it.
+- `prune`'s `debug_subdirs` is `screenshots/`, where
+  `download --debug` writes its HTTP trace (`http-trace.jsonl`).
+  viac drives no browser, so the trace is its whole debug surface.
+- Document PDFs are hard-linked across dumps (§5). Deleting a
+  non-complete dump that holds a link is safe: the inode survives
+  while a complete dump still links it. So `documents/<docid>.pdf`,
+  which the historical-reports phase reads across dumps, is never
+  lost.
+- The wrapper runs `prune` host-side. The entrypoint keeps a
+  `prune` arm for a direct `docker run`.
 
 ## 6. Silver schema
 
-Materialised in [`migrations/0001_initial.sql`](migrations/0001_initial.sql);
-read that file for column-level commentary, this section for
+Materialised in [`migrations/`](migrations/) (0001 to 0005);
+read those files for column-level commentary, this section for
 the overview.
 
 | Table | PK | Purpose |
 | --- | --- | --- |
 | `schema_meta` | `silver_schema_version` | Migration version registry. |
 | `dump_runs` | `snapshot_at` | One row per ingested bronze run; full `run.json` in `payload`. Promotes `dry_run`, `with_transaction_documents`, document-counter columns. |
-| `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, portfolio). Promotes `product_code` ('3' p3a / '2' pvb / '1' inv) and `portfolio_index` parsed from the dotted number; plus the inventory + strategy union. p3a portfolios populate `strategy_*` and `custody_bank`; pvb portfolios populate `foundation` + `portfolio_type`. `management_style` is `'automated'` for every VIAC account today (see §7). |
-| `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). Only `balance_kind='cash'` today. `source` (schema v3) is `'live'` for `assetsOverview.cashAmount` rows, `'report:<docid>'` for the 3a-account liquidity reconstructed from a Reporting PDF (§5.1). |
+| `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, portfolio). Promotes `product_code` ('3' p3a / '2' pvb / '1' inv) and `portfolio_index` parsed from the dotted number; plus the inventory + strategy union. p3a portfolios populate `strategy_*` and `custody_bank`; pvb portfolios populate `foundation` + `portfolio_type`. `management_style` is `'automated'` for every VIAC account (see §7). |
+| `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). `balance_kind` is always `'cash'`. `source` (schema v3) is `'live'` for `assetsOverview.cashAmount` rows, `'report:<docid>'` for the 3a-account liquidity reconstructed from a Reporting PDF (§5.1). |
 | `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | Holdings, `instrument_external_id` = ISIN. Promotes `quantity` (fund units; VIAC's confusingly-named `amount` JSON field), `market_value_chf` (CHF mark-to-market; VIAC's `ratioInChf`), `ratio` (fraction of portfolio), `acquisition_price`, `asset_price`, canonical `asset_class` + VIAC's raw `viac_asset_class` + `sub_asset_class`. `source` (schema v3) splits **live** rows from `assetsOverview` (snapshot_at = scrape time) and **historical** rows from the Reporting PDFs (`'report:<docid>'`, snapshot_at = the report's period-end date; §5.1). Both coexist; the gold adapter reads every snapshot_at uniformly, so a historical snapshot answers `wealthdb holdings positions --as-of <past date>`. |
 | `instruments` | `instrument_external_id` | Slow-changing master data; ISIN-keyed. Upserts advance `last_seen_at`. |
-| `transactions` | `transaction_external_id` | One row per event from `/p3a/portfolio/transactions`. `transaction_external_id` synthesised per §3.3. `kind` is the canonical mapping (`buy`, `sell`, `dividend`, `interest`, `fee`, `deposit`, `corporate_action`, `other`). |
-| `wealth_history` | `(snapshot_at, value_date)` | Customer-level daily NAV from `/wealth/summary`. Zips `dailyWealth` + `dailyPerformance` + `dailyInvestedAmounts` by date. Each scalar arrives wrapped as `{"__type": "VIAC_DECIMAL", "__value": "<decimal string>"}`; the loader reads that and the bare JSON number the endpoint sent before it, because bronze holds runs from both eras. Customer-level **by choice**, not by limitation: the same response carries a per-portfolio series under `p3aSummary` / `pvbSummary` → `portfolioWealthSummaries`, which nothing reads today. |
+| `transactions` | `transaction_external_id` | One row per event from `/p3a/portfolio/transactions`. `transaction_external_id` synthesised per §3.3. `kind` is the canonical mapping (`buy`, `sell`, `dividend`, `interest`, `fee`, `deposit`, `corporate_action`, `other`). `instrument_external_id` (migration 0005) is the ISIN of the one instrument whose `name` equals the transaction's `description`; NULL when no name or several match. |
+| `wealth_history` | `(snapshot_at, value_date)` | Customer-level daily NAV from `/wealth/summary`. Zips `dailyWealth` + `dailyPerformance` + `dailyInvestedAmounts` by date. A scalar arrives either wrapped as `{"__type": "VIAC_DECIMAL", "__value": "<decimal string>"}` or as a bare JSON number; the loader reads both. Customer-level **by choice**: the same response carries a per-portfolio series under `p3aSummary` / `pvbSummary` → `portfolioWealthSummaries`, which the loader does not read. |
 | `documents` | `content_sha256` | Content-deduped PDF index. Promotes `viac_doc_id`, `doc_type`, `doc_subtype`, `timestamp`, `product`. `bronze_path` is relative to bronze root. |
 | `parser_generations` | `scope` | Which generation of the Reporting-PDF parsing logic produced the rows a pass is holding (`collectorkit.srcfp` fingerprint). A moved generation drops them before the pass re-derives, so a re-parse replaces rather than accumulates. |
 
-Migrations land under `migrations/NNNN_<slug>.sql`. The loader
-runs pending migrations on every invocation. Same discipline
-as the sibling collectors — never rewrite an applied migration,
-always add a new file.
+The loader runs pending migrations on every invocation. An
+applied migration is never rewritten; a change is a new file.
 
 ### 6.1 Load invariants
 
 Per-portfolio reconstructed rows reconcile to the cent against
-each report's printed Balance in CHF, ISIN-keyed instrument
-master upserts dedupe as expected, and content-dedup collapses
-identical PDFs across snapshots.
+each report's printed Balance in CHF, ISIN-keyed instrument master
+upserts dedupe, and content-dedup collapses identical PDFs across
+snapshots.
 
 Re-running `load` is a no-op (`dump_runs.snapshot_at` is the
 idempotency anchor).
@@ -362,72 +325,63 @@ model](../../DESIGN.md) and the adapter source
 The silver-side facts the adapter reads:
 
 - `accounts.product_code` — `'3'` (Pillar-3a), `'2'` (PVB),
-  `'1'` (INV, not yet observed); parsed from the first dotted
-  segment of the portfolio number (§3.1).
-- `accounts.management_style` — carried in silver (added in
-  migration 0002); the loader sets it to `'automated'` for
-  every account. VIAC is robo-advisor-shaped — the holder
+  `'1'` (INV); parsed from the first dotted segment of the
+  portfolio number (§3.1).
+- `accounts.management_style` — carried in silver (migration
+  0002); the loader sets it to `'automated'` for every account,
+  and the adapter reads it. VIAC is robo-advisor-shaped — the holder
   picks a strategy from a menu (or builds one within VIAC's
   concentration limits), then rebalancing runs by rules. The
   custom-strategy capability looks self-directed but isn't:
   the holder can only pick from VIAC's listed fund universe,
   with concentration / risk-level guards. Same product shape
-  as Relevate's FZ products. If VIAC ever ships a non-robo
-  product line, the loader branches and the adapter reads the
-  silver column directly.
-- `accounts` state — ACTIVE p3a vs PASSIVE pvb (the latter
-  until the pvb endpoint surface is mapped, §9).
+  as Relevate's FZ products. A non-robo product line would
+  branch in the loader.
+- `accounts.state` — VIAC's `ACTIVE` / `PASSIVE` portfolio
+  state, as the inventory lists it.
 - `instruments.isin` — always populated; VIAC ships ISIN on
   every position, so it is the cross-bank join key.
 - `transactions.kind` — already the canonical mapping in
   silver via `VIAC_TX_KIND_MAP` in `load.py`.
+- `transactions.instrument_external_id` — the traded fund's
+  ISIN, resolved in silver by name (§6).
 
-## 8. What we do NOT do
+## 8. Out of scope
 
-- **Mutations** — no contributions, no strategy changes, no
-  withdrawals, no beneficiary edits. See [AGENTS.md §1](AGENTS.md).
-- **MFA automation** — human-in-the-loop on every fresh login.
-- **Cron / launchd / GitHub-Actions scheduling** — see
-  [the repo-root AGENTS.md §2](../../AGENTS.md). Unattended runs
-  can't pass the mTAN gate anyway.
-- **Cross-bank semantic alignment** — gold's job.
+The non-goals of §1.3 hold. One more:
+
 - **PDF body parsing for transaction documents** — silver records
   the per-event TRADE / DIVIDEND / SECURITY_FUSION PDFs only by
-  sha256 + (type, subType) metadata; parsing their bodies into
-  structured events is deferred (§9).
-- **The VIAC mobile app's payload** — separate `viac-mobile`
-  repo if ever.
+  sha256 + (type, subType) metadata; their bodies are not parsed
+  (§9).
 
 ## 9. Open questions
 
-Outstanding work — currently neither implemented nor blocking:
+Open items, none blocking:
 
 1. **Session lifetime.** Airlock typically defaults to ~30 min
-   idle / ~8 h absolute. Determine empirically with periodic
-   `login --check` runs.
-2. **`/N-N` endpoint suffixes rotating.** Hardcoded as
-   constants today. If VIAC ever rotates, the loader fails
-   fast with a clear "endpoint changed" pointer (we don't
-   silently 404).
-3. **PVB per-portfolio endpoints.** PVB portfolios are present
-   in the inventory but `download.py` doesn't fetch their
-   detail. If a future VIAC user has ACTIVE PVB, mapping the
-   `/pvb/portfolio/<num>/...` surface matters; symmetric to
-   p3a is the likely shape.
-4. **`INV` product line.** Not observed in any user; the
-   `inv[]` array is in the inventory schema. Mapping to
-   wealthdb `tax_wrapper='taxable_personal'` is speculative
-   until we see one.
+   idle / ~8 h absolute. `login --check` measures it.
+2. **`/N-N` endpoint suffixes rotating.** They are constants.
+   A rotation makes `download` fail fast with a pointer to
+   §2.2 rather than a silent 404.
+3. **PVB per-portfolio endpoints.** PVB portfolios are in the
+   inventory, but `download.py` does not fetch their detail.
+   An ACTIVE PVB portfolio would need the
+   `/pvb/portfolio/<num>/...` surface mapped; symmetric to p3a
+   is the likely shape.
+4. **`INV` product line.** The `inv[]` array is in the
+   inventory schema, but its per-portfolio surface is unmapped.
+   Its gold mapping to `tax_wrapper='taxable_personal'` is
+   unverified.
 5. **Transaction collision rate.** Some source rows can
    collapse in silver on identical-to-16-decimals (account, type,
    date, amount, doc) keys — most likely duplicate reports of the
    same dividend in VIAC's API rather than legitimately
-   distinct events. Worth a follow-up if a future bronze dump
-   shows a materially higher collision rate, which would suggest
-   the synthesizer needs a row-index disambiguator.
+   distinct events. If such collisions grow, the synthesizer needs a
+   row-index disambiguator.
 6. **Transaction-document PDF body parsing.** The per-event TRADE /
    DIVIDEND / SECURITY_FUSION PDFs carry data not in the JSON
    (per-event ISIN, units, FX rate, old→new ISIN mapping for
-   fusions). Projecting them into a structured silver column — today
-   they are only indexed, not parsed (§8) — is a mechanical parser
-   pass, deferred until a downstream consumer needs it.
+   fusions). Projecting them into a structured silver column (they are
+   indexed, not parsed; §8) is a mechanical parser
+   pass, left until a downstream consumer needs it.

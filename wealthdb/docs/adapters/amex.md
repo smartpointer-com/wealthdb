@@ -11,17 +11,19 @@ no positions and no instruments at all — every figure it projects is an
 account, a cash balance, or a transaction.
 
 It is the card half of the [chase](chase.md) adapter without the
-deposit half, and simpler in three ways that all come from the source:
-one stable transaction id shared by every channel (so no
-content-derived id and no export join), a spend category on the modern
-era's rows bar the ones Amex leaves uncategorised (so the spending
-provider tier places those without the model, while the deep era's rows
-carry none and fall to it), and no
-running balance anywhere (so the balance history is monthly rather than
-daily).
+deposit half. It is simpler in three ways, all set by the source:
 
-Requires **amex silver schema 1**. `load` applies the migrations in
-place, so any silver a load has touched is at that version.
+- One stable transaction id is shared by every channel. No
+  content-derived id and no export join is needed.
+- A modern-era row carries a spend category, except the rows Amex
+  leaves uncategorised. The spending provider tier places those rows
+  without the model. Deep-era rows carry none and fall to the model.
+- No channel carries a running balance. The balance history is
+  monthly, not daily.
+
+The adapter checks no silver schema version. It reads the tables the
+collector's first migration creates, which every later migration
+keeps. The collector's `load` applies newer migrations in place.
 
 ## 1. Silver source
 
@@ -81,29 +83,26 @@ unconditional.
 A credit limit and available credit are not balances of anything owned
 and never become rows.
 
-Two kinds of mark feed the series, told apart by kind rather than by
-date — they can fall on the same day without competing:
+Two kinds of mark feed the series. They are told apart by kind, not by
+date, so they can fall on the same day without competing:
 
 | Mark | When | From |
 | --- | --- | --- |
-| `CURRENT` | the source's latest load | the roster's live balance |
+| `CURRENT` | the source's latest roster snapshot | the roster's live balance |
 | `CLOSING` | each period's own `period_end` | that period's stated closing figure: printed on the statement for the archive, or the activity payload's cycle summary at the end of the window a run fetched |
 
-**There is no per-day series**, because no Amex channel carries a
-running balance on a card: not the activity JSON, not the CSV, not the
-QFX. The balance history is therefore monthly — the density at which
-the provider actually asserts it — and an as-of query between two
-period ends returns the earlier one's closing balance. chase
-reconstructs a daily series by rolling its ledger between the same
-anchors; that is available here later if the granularity proves
-insufficient, and is deliberately not guessed at now.
+**There is no per-day series.** No Amex channel carries a running
+balance on a card: not the activity JSON, not the CSV, not the QFX.
+The balance history is monthly, the density at which the provider
+states it. An as-of query between two period ends returns the earlier
+one's closing balance. chase rolls its ledger between the same anchors
+to build a daily series. This adapter does not.
 
 The `CURRENT` mark is stamped at the **source's** latest roster
-snapshot, not the account's own — silver content-dedups an unchanged
-roster row, and gold's `cash_chosen` keeps only the rows carrying the
-source's single `MAX(snapshot_at)`, so a card stamped at its own would
-drop out of the latest net-worth view the moment it stopped changing,
-taking its debt with it.
+snapshot, not the card's own. A quiet card would otherwise drop out of
+the latest net-worth view, and its debt with it. chase does the same
+and says why
+([chase.md §5](chase.md#current-is-stamped-at-the-sources-latest-snapshot)).
 
 ## 5. Transactions
 
@@ -164,22 +163,15 @@ carried rather than swapped in.
 
 ## 6. Returns — nothing, by construction
 
-The returns engine drops every `card` account at the loader
-(`returnsInvisibleKind`), because a revolving-credit liability is a
-spending instrument, not an investment: running its balance swings
-through TWR/MWR would report shopping as performance. Since this source
-emits only cards, it contributes **nothing to any return series at any
-grain**.
+Every account this source emits is a card, and the returns engine drops
+every `card` account. So the source contributes **nothing to any return
+series at any grain**.
+[../RETURNS-NOTES.md](../RETURNS-NOTES.md#credit-cards-are-returns-invisible)
+says why, and why the cash leg that pays the card is a real outflow.
 
-The registered `ReturnsPolicy` (`returns.CardIssuerPolicy`) exists
-because gold guards that every whitelisted silver kind declares one —
-an unregistered kind falls through to a conservative default and is
-reported as `unknown_adapter_policy` — and it declares exactly that.
-
-Consequence, inherited from cards generally: money leaving a tracked
-cash account to pay this card is a real outflow from the returns value
-spine, because the spine omits the card. That is self-consistent, not a
-gap.
+The source still registers a `ReturnsPolicy`
+(`returns.CardIssuerPolicy`). A source without one falls to a
+conservative default and is reported as `unknown_adapter_policy`.
 
 ## 7. Spending — where this source earns its keep
 

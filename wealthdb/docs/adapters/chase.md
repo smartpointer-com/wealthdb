@@ -13,9 +13,10 @@ instrument, so the adapter emits no positions and no instruments at
 all — every figure it projects is an account, a cash balance, or a
 transaction.
 
-Requires **chase silver schema 3** (cards, plus their
-statement-coverage flag). `load` applies the migrations in place,
-so any silver a load has touched is at that version.
+The adapter checks no silver schema version. It reads tables and
+columns the collector's migrations add through 0003 (cards, plus
+their statement-coverage flag), so an older silver fails on a missing
+column. The collector's `load` applies newer migrations in place.
 
 ## 1. Silver source
 
@@ -75,8 +76,8 @@ references**: a re-priced row is new content and gets a new id.
 - **`display_name`** is the nickname, falling back to the last-4
   mask. `nickname` is carried separately.
 
-All four are overridable per account via the `account_overrides`
-block in `wealthdb.cfg`.
+Config `account_overrides` can replace the nickname, `tax_wrapper`
+and `management_style` per account ([../DESIGN.md](../DESIGN.md) §5.1).
 
 ### The liability sign
 
@@ -194,9 +195,12 @@ account with no richer categorisation:
 | (anything else, amount < 0) | `withdrawal` |
 | (anything else, amount ≥ 0) | `deposit` |
 
-**Card rows** carry one of two vocabularies in the same column:
-the CSV export's `Type` above the seam, and below it the statement
-section the row was printed under.
+**Card rows** carry one of three vocabularies in the same column:
+
+- the CSV export's `Type` above the seam;
+- the statement section the row was printed under, below the seam;
+- the OFX `TRNTYPE`, on a row that only the QFX export carried. Each
+  export format is fetched on its own and can fail on its own.
 
 | Silver `kind` | Gold `kind` | Notes |
 | --- | --- | --- |
@@ -205,13 +209,14 @@ section the row was printed under.
 | `Payment` | `card_payment` | |
 | `Adjustment` | `refund` / `purchase` | Follows the row's sign; see below. |
 | `Fee` | `fee` | |
+| `DEBIT` / `CREDIT` | `purchase` / `card_payment` | QFX-only row. Follows the row's sign; see below. |
 | `STMT_PURCHASE` | `purchase` | Statement era |
 | `STMT_PAYMENT` | `card_payment` | Statement era |
 | `STMT_FEE` | `fee` | Statement era |
 | `STMT_INTEREST` | `interest` | Statement era |
 | (unrecognised) | `other` | Raw type preserved in `payload.source_kind`. |
 
-Two decisions of record:
+Three decisions of record:
 
 - **`Adjustment` follows the row's sign, and is never `other`.**
   An adjustment carries the issuer's own sign and goes both ways: a
@@ -223,6 +228,12 @@ Two decisions of record:
   `other` in either direction would drop the row out of that base
   altogether and misstate what was spent, and a kind pinned to one
   direction would flip the other.
+- **A QFX-only credit is a `card_payment`.** The `TRNTYPE` says only
+  which way the money went. Most card credits are the monthly bill.
+  Kinding a credit `refund` would leave the deposit-side bill unpaired
+  and count the same money twice with opposite signs. The cost: a
+  genuine refund that reached only the QFX leaves the spending base,
+  and `status -v` does not count it as unmapped.
 - **`reward` has no producer here.** Chase issues no reward
   transaction — a redemption surfaces as an `Adjustment` like any
   other credit — so the kind is left unproduced rather than
@@ -280,50 +291,35 @@ enter every aggregate, where transfer legs against tracked sources
 cancel.
 
 A **card** is excluded more strongly than that, and not by this
-policy at all: `account_kind='card'` is returns-invisible
-engine-wide — no value, no flow, no row, at any grain
-(`appendSeries` in `internal/gold/returns.go`; see
-[../RETURNS-NOTES.md](../RETURNS-NOTES.md), "Credit cards are
-returns-invisible"). Unlike a hidden deposit account, a card's
-balance does not reach the returns value spine either. The card
-transaction kinds (`purchase` / `refund` / `card_payment` /
-`reward`) sit outside the policy's external-capital set as well, so
-card activity would not read as owner capital even if it were
-visible.
-
-**A card payment crosses two accounts of the same source, and the
-legs do not cancel.** The deposit leg is a `withdrawal` — external
-capital under the bank set — while the card leg does not exist in
-returns at all. That is the settled answer rather than a gap: the
-money left the returns-visible system for a liability the engine
-cannot see, so it is capital out, not an internal transfer.
+policy at all: `account_kind='card'` is returns-invisible engine-wide.
+No value, no flow and no row reach any grain. The card leg of a card
+payment therefore does not exist in returns, and the deposit leg is a
+real `withdrawal`. [../RETURNS-NOTES.md](../RETURNS-NOTES.md#credit-cards-are-returns-invisible)
+says why.
 
 ## 8. Change number
 
-`LatestChangeNumber = MAX(dump_runs.snapshot_at)` — the load
-clock, or `-1` if `dump_runs` is empty. Each bronze dump loaded
-bumps it and a subsequent `wealthdb load` re-emits; an idle reload
-is a no-op.
+The source runs on the shared load clock (`silver.LoadClockStatus`,
+`silver.LoadClockChangeWindow`): `LatestChangeNumber` is
+`MAX(dump_runs.snapshot_at)`, and a new load re-emits the full history
+([../DESIGN.md](../DESIGN.md) §6.4).
 
-When it triggers, `ChangeWindow` re-emits the **full** history:
-`Start`/`End` span every date the projection touches, so gold's
-`deleteWindow` over `[Start,End]` makes the re-emit idempotent.
-That span is the MIN/MAX over three columns —
-`accounts.snapshot_at`, `transactions.posted_at`, and
-`statement_balances.period_end`.
+The re-emit window is the MIN/MAX over three columns:
 
-The third is required for correctness, not merely for `Status` to
-read well: a statement period with no ledger row of its own — a
-quiet month, or one whose transactions were refused — still emits
-a closing balance at its `period_end`, and a record outside the
-delete window is re-inserted without its predecessor being
-removed, so it would duplicate on every load. `period_start` is
-not included: nothing is emitted at it, and `period_end` already
-bounds every row that table produces.
+- `accounts.snapshot_at`;
+- `transactions.posted_at`;
+- `statement_balances.period_end`.
+
+The third is required for correctness. A statement period with no
+ledger row of its own still emits a closing balance at its
+`period_end`. That can be a quiet month, or one whose transactions were
+refused. A record outside the delete window is re-inserted without its
+predecessor being removed, so it would duplicate on every load.
+`period_start` is not included: nothing is emitted at it.
 
 ## 9. Open questions
 
-- **A second card vocabulary.** The kind map covers the CSV types
-  and statement sections this build translates; a cash advance or a
-  balance transfer would land as `other` with its raw type in the
-  payload until mapped.
+- **Unmapped card types.** The kind map covers the CSV types,
+  statement sections and `TRNTYPE` values listed in §6. A cash advance
+  or a balance transfer lands as `other`, with its raw type in the
+  payload, until it is mapped.

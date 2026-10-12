@@ -46,78 +46,76 @@ legal, or tax advice.
 
 A read-only collector for
 [americanexpress.com](https://www.americanexpress.com), the American
-Express card portal: **credit and charge card accounts** — the card
-roster and balances, transaction history and exports, and statement PDFs.
-Everything else the same login may expose is out of scope: money movement
-in every form, Membership Rewards redemption, offers and enrolment,
-Plan It / pay-over-time, travel and booking, account lifecycle, profile
-and settings, and the message center (see [AGENTS.md](AGENTS.md)). Like
-the other portal-only sources it replays the browser flow via Camoufox —
-the US siblings ([`chase`](../chase/), [`fidelity-web`](../fidelity-web/),
-[`schwab-web`](../schwab-web/)) all measured Akamai-class bot defense
-blocking vanilla browsers, so the harness builds on the shared Camoufox
-base image from the start.
+Express card portal. It covers **credit and charge card accounts**:
 
-Part of the **wealthdb** suite — see
+- the card roster and balances;
+- the transaction history and its exports;
+- the statement PDFs.
+
+Everything else the same login can reach is out of scope. That includes
+money movement, Membership Rewards redemption, offers, Plan It,
+travel, account changes, settings and the message center. The exact
+allow and forbid surface is in [AGENTS.md](AGENTS.md).
+
+Part of the **wealthdb** suite. See
 [the architecture overview](../../DESIGN.md) for the bronze → silver →
-gold model and [collectors/README.md](../README.md) for shared collector
-conventions.
+gold model and [collectors/README.md](../README.md) for the shared
+collector conventions.
 
-## Status: full pipeline through gold, validated live
+## How it works
 
-The signed-in app is a React SPA over a **`functions.americanexpress.com`
-BFF** plus a **`/api/servicing/…` REST API**, behind **Akamai Bot Manager**
-that is **cookie-borne** — no data endpoint carries a sensor header, so once
-the browser holds the session jar the data is fetched over plain REST. 2FA
-is a **one-time passcode** (no push) entered in a six-box control, driven
-from the terminal. Endpoint by endpoint: [DESIGN.md](DESIGN.md) §A–§H.
+The signed-in app is a React SPA. It talks to a
+**`functions.americanexpress.com` BFF** and a **`/api/servicing/…` REST
+API**. Akamai Bot Manager guards the site, as at the US siblings
+([`chase`](../chase/), [`fidelity-web`](../fidelity-web/),
+[`schwab-web`](../schwab-web/)). Its defense lives in cookies, and no data
+endpoint carries a sensor header. So a Camoufox browser signs in, and the
+data comes over plain REST with the browser's cookie jar. The second factor
+is a **one-time passcode** (no push), typed into a six-box control.
+[DESIGN.md](DESIGN.md) §A–§H maps each endpoint.
 
-**`download` is the one verb that signs in.** Device trust persists
-(`device-id`, ~396 days) while the session cookies die with the browser, so
-after the first run the sign-in needs no passcode — but that durable trust
-did *not* earn a separate `login` verb. Amex's sign-in budget is small
-enough that about seven in twenty minutes provoked a captcha, and a
-`login` → `download` pair spent two of them for nothing, so `login` folds
-into `download` (§L) as it does at [`chase`](../chase/) and
-[`schwab-web`](../schwab-web/). `vnc-login` runs the same walk behind a
-hand-driven sign-in — the only way past a captcha; `login` is a host-side
-no-op; `login --check` reports device registration from the profile without
-signing in at all.
+**`download` is the one verb that signs in.** Amex allows few sign-ins:
+a handful inside a short window draw a captcha. A separate `login` would
+spend two sign-ins per run, so `login` folds into `download`, as at
+[`chase`](../chase/) and [`schwab-web`](../schwab-web/)
+([DESIGN.md](DESIGN.md) §L).
 
-**`load`** parses each bronze run into a source-shaped SQLite: the card
-roster, the transaction ledger, the per-period statement balances and the
-document inventory. The activity JSON is the ledger of record — one stable
-id across every channel, both dates, the merchant category and pending rows
-— so there is no export join. Three things are specific to this source: it
-**negates every amount**, because Amex states spend as positive while the
-fleet's card convention is negative; it **replaces** pending rows rather
-than accumulating them, because their ids are provisional; and it
-**rebuilds** the statement-sourced rows from all of bronze on every load,
-because the seam they are gated on moves as wider windows land.
+- **Device trust persists.** The `device-id` cookie lives about 396 days.
+  On a registered device `download` signs in with no passcode.
+- **The session does not.** The session cookies die with the browser, so
+  every run signs in again.
+- **`vnc-login`** runs the same walk with the sign-in done by hand over
+  VNC. It is the only way past a captcha.
+- **`login`** is a host-side no-op. `login --check` reports whether this
+  device is registered. It reads the profile's cookie and signs in to
+  nothing.
+- **`download --dry-run` still signs in.** It skips the exports and
+  documents, not the sign-in.
 
-The **statement backfill** is what reaches past the 24 months the activity
-and exports stop at, into the provider's ~7-year archive. Each statement is
-gated on its own printed summary adding up *and* on each section's rows
-summing to the figure printed for it; only periods ending before the
-activity's oldest row are imported.
+**`load`** parses each bronze run into SQLite. The activity JSON is the
+ledger of record. It carries one stable id per row across every channel,
+both dates, the merchant category and pending rows, so no export join is
+needed. Three rules are specific to this source:
 
-A **gold adapter** (`wealthdb/internal/silver/amex/`) projects that silver
-as **card liabilities**: one `card` account per card, the owed balance
-negated into canonical negative cash at the roster mark and at every
-statement period, and the whole ledger. Cards contribute nothing to returns
-by construction — the engine drops them, because a card's balance swings are
-purchases and payments — so this source's value is net worth and
-**spending**: every modern-era row carries the provider's own spend
-category, and the card's payment legs let the internal-transfer matcher net
-out the bills paid from a collected cash account, replacing the `card_spend`
-placeholder with the purchases the card itemises. See
+- it **negates every amount**, because Amex states spend as positive and
+  the fleet's card convention is negative;
+- it **replaces** pending rows on every load, because their ids are
+  provisional;
+- it **rebuilds** the statement-sourced rows from all of bronze on every
+  load, because the seam they are gated on moves as wider windows land.
+
+The **statement backfill** reaches past the 24 months where the activity
+and the exports stop, into the provider's ~7-year PDF archive. A statement
+is imported only when its printed summary adds up and each section's rows
+sum to the figure printed for it. Only periods that end before the
+activity's oldest row are imported ([DESIGN.md](DESIGN.md) §4.3).
+
+The **gold adapter** (`wealthdb/internal/silver/amex/`) projects each card
+as a `card` liability. Its value is net worth and spending: cards stay out
+of returns by construction. Modern-era rows carry the provider's own spend
+category. A card's payment legs let the internal-transfer matcher pair the
+bills paid from a collected cash account. See
 [the adapter doc](../../wealthdb/docs/adapters/amex.md).
-
-Validated live on 2026-09-06, bronze through gold. What that leaves
-untested is named in [DESIGN.md](DESIGN.md) §5: the untrusted-device path,
-the `--no-cli-mfa` failure branch, and the statement layouts the parser has
-not met — they vary by card product, and a new one may need its section
-headings added.
 
 ## Setup
 
@@ -125,8 +123,8 @@ headings added.
 make build-amex
 ```
 
-Credentials go in `~/.secrets/amex.env` (chmod `0600`; single-quote values
-containing `$`, `!`, or backticks):
+Credentials go in `~/.secrets/amex.env`, quoted as described in
+[collectors/README.md](../README.md#conventions-shared-across-collectors):
 
 ```
 AMEX_USERNAME='...'
@@ -138,7 +136,7 @@ AMEX_PASSWORD='...'
 ```
 ./amex download                    # the whole run: sign in + REST fetch → bronze (~90 days)
 ./amex download --lookback all     # everything the source offers (the initial backfill)
-./amex download --dry-run          # roster + activity — STILL SIGNS IN, exports nothing
+./amex download --dry-run          # roster + activity counts; STILL SIGNS IN, exports nothing
 ./amex download --no-documents     # skip the statement PDFs
 ./amex download --fresh            # move device trust aside, forcing the untrusted flow
 ./amex download --format xls       # csv, xls, qfx, qbo (repeatable; default csv+qfx)
@@ -149,45 +147,74 @@ AMEX_PASSWORD='...'
 ./amex load                   # bronze → silver SQLite
 ./amex load --force           # delete the silver DB and rebuild from all bronze
 
+./amex prune --dry-run        # preview what prune would reclaim
 ./amex explore                # discovery harness over VNC
 ```
 
-On an already-registered device `download` signs in with no passcode. When
-one does fire, it is answered **from your terminal** — the wrapper forwards
-stdin only when stdin and stdout are both TTYs, so run it in a real one —
-and the device is registered while it is there, so later runs skip it. With
-no terminal a challenge is a loud failure rather than a blocked prompt, so a
-cron run fails cleanly; `--cli-mfa` / `--no-cli-mfa` force either half.
+When a passcode does fire, `download` asks for it **in the terminal** and
+registers the device while there, so later runs skip it. The wrapper
+forwards stdin only when stdin and stdout are both TTYs. With no terminal,
+a challenge fails loudly instead of blocking, so an unattended run fails
+cleanly. `--cli-mfa` and `--no-cli-mfa` force either behaviour.
 
 A **captcha** cannot be answered from a terminal. `download` recognises one
-and stops immediately, naming `vnc-login` — which runs the same walk with
-the sign-in done by hand in the browser, so answering it costs one sign-in
-rather than two.
+and stops at once, naming `vnc-login`. Captcha reputation builds per
+account and decays with idle time. The remedy is to wait, not to retry, so
+real runs should never follow each other quickly.
 
-`--lookback` narrows the fetch at the source, on two windows rather than
-one. Past 24 months the activity and exports stop — Amex's own limit — so
-their window is clamped there with a warning. The statement PDFs are
-fetched over the window **as requested**, unclamped, so a wide `--lookback`
-reaches the provider's full retention; that is what makes the backfill
-above reachable at all.
+`--lookback` narrows the fetch at the source, on two windows:
 
-The sign-in diagnostics `download` / `vnc-login` capture under `--debug`
-land in `~/.cache/wealthdb/debug/amex/screenshots/`, each `explore` capture
-in `~/.cache/wealthdb/debug/amex/<UTC-ts>/`, and bronze runs under
-`$XDG_DATA_HOME/wealthdb/amex/<UTC-ts>/`. On `login`, `--debug` only raises
-the log level — it captures nothing. Both trees carry real account data —
-treat those directories as sensitive. Credentials are masked out of every
-capture the harness writes itself, including the HAR, which is rewritten
-after the browser closes; `explore --trace` is the exception — Playwright
-writes that bundle in its own format and nothing scrubs it, and a trace
-cannot be redacted after the fact because its DOM snapshots store every
-input's value, so a trace holds the credential and is worth deleting once
-it has been read.
+- The activity and the exports stop at 24 months, Amex's own limit. Their
+  window is clamped there with a warning.
+- The statement PDFs use the window **as requested**, unclamped. A wide
+  `--lookback` therefore reaches the provider's full retention, which is
+  what feeds the backfill.
 
-Real sessions can fire a real passcode at your device — run them only
-deliberately, **never in quick succession**. Amex's budget is small: about
-seven sign-ins inside twenty minutes provoked a **captcha**, which no
-terminal can answer (`vnc-login` and a human can). Captcha reputation
-accrues per account and decays with idle time, so the remedy is to wait, not
-to retry. `login` is a host-side no-op here, so a `login` → `download` pair is one
-sign-in, and once the device is trusted `download` alone is enough.
+## Output
+
+Each `download` writes a UTC-stamped run dir under
+`$XDG_DATA_HOME/wealthdb/amex/`:
+
+```
+<run>/
+  run.json                        status manifest, windows and per-account coverage
+  accounts.json                   the card roster
+  activity/<key>.json             the activity ledger, category map and cycle balances
+  transactions/<key>.<ext>        the exports, one per --format
+  statements/<key>/<date>.pdf     statement PDFs (skipped by --no-documents)
+  statements/<key>/yes-<year>.pdf year-end summary PDFs
+  raw/*.json                      raw roster and statement-archive bodies
+```
+
+`<key>` is the account's opaque servicing key, never a card number. A dry
+run's only files are `run.json`, `accounts.json` and the raw roster.
+
+`load` writes `$XDG_DATA_HOME/wealthdb/amex/amex.db`:
+
+| table | one row per | notable columns |
+| --- | --- | --- |
+| `accounts` | card per run, when its payload changed | `balance` (positive amount owed), `pending_charges`, `payment_due_at`, `mask`, `account_token` |
+| `transactions` | ledger row | `amount` (spend negative), `posted_at`, `txn_date`, `category`, `category_code`, `is_pending`, `source` (`activity` or `statement`) |
+| `statement_balances` | card and billing period | `opening`, `closing`, `new_charges`, `payments_and_credits`, `fees`, `interest`, `transactions_covered`, `source` |
+| `documents` | distinct PDF | `sha256`, `doc_kind` (`statement` or `year_end_summary`), `doc_date` |
+
+[`migrations/0001_initial.sql`](migrations/0001_initial.sql) documents
+every column and the sign convention.
+
+Under `--debug`, the sign-in diagnostics of `download` and `vnc-login`
+land in `~/.cache/wealthdb/debug/amex/screenshots/`. Each `explore` run
+writes to `~/.cache/wealthdb/debug/amex/<UTC-ts>/`. On `login --check`,
+`--debug` only raises the log level. Both trees hold real account data,
+so treat them as sensitive. Captures are redacted as described in
+[collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+An `explore --trace` bundle is never redacted and holds the credential, so
+delete it once read.
+
+## Known limits
+
+Paths covered by unit tests only:
+
+- the untrusted-device flow (`--fresh`);
+- the `--no-cli-mfa` failure branch;
+- statement layouts the parser has not met. Layouts vary by card product,
+  and a new one may need its section headings added.

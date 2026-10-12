@@ -27,7 +27,7 @@ Every collector exposes the same four steps:
 
 | Step | Produces | What it does |
 | --- | --- | --- |
-| `login` | a session/token in `~/.secrets/` | Authenticate; usually prompts for MFA. (Omitted where the runtime mints the session inside `download` — see each tool.) |
+| `login` | a session/token in `~/.secrets/` | Authenticate; usually prompts for MFA. Where `download` mints its own session, `login` is a no-op that says so. |
 | `download` | **bronze** under `$XDG_DATA_HOME/wealthdb/<source>/<UTC-ts>/` | Fetch raw artefacts (JSON / CSV / XLS / PDF / zip), exactly as the source returns them. |
 | `load` | **silver** `$XDG_DATA_HOME/wealthdb/<source>/<source>.db` | Parse bronze into a source-shaped SQLite. Idempotent — already-loaded dumps are skipped. |
 | `prune` | reclaimed disk | Delete debug artefacts from complete dumps + whole non-complete dumps, plus aged-out entries of the host-side debug cache. Never touches a `load` input. See [Debug artefacts, run status, and pruning bronze](#debug-artefacts-run-status-and-pruning-bronze). |
@@ -43,7 +43,7 @@ A collector's runtime is set by whether it ships a Dockerfile (the
 | Runtime | Marker | Invocation |
 | --- | --- | --- |
 | **Host venv** | a `requirements.txt`, no Dockerfile — no browser and no container | A wrapper runs the collector's `.py` under its `.venv`. |
-| **Docker** | a Dockerfile + `entrypoint.sh` — browser-based scrapers run headed inside the container | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. |
+| **Docker** | a Dockerfile + `entrypoint.sh` — browser-based scrapers run headed inside the container | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. `prune` runs on the host. |
 
 Two collectors are **hybrid**, and a `.host-venv` marker tells the
 Makefile to build and test both halves. `schwab-api`'s weekly OAuth
@@ -89,16 +89,13 @@ bind-mounts `~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/<source> →
 `/secrets/<source>.env` and bronze/silver at `/data`.
 
 **Session discipline:** `login --check` probes the stored session
-without a new MFA push; `download --dry-run` walks with the existing
-session but exports nothing — *where a session persists*. On the one-shot
-collectors, where `login` folds into `download` because no session survives
-the browser (schwab-web, chase, raiffeisen_at, amex, fidelity-web — whose
-`login` is an explicit no-op that says so), a dry-run signs in to
-do that walk. On amex that sign-in is silent on a trusted device but comes
-out of a budget small enough that a handful of them draws a captcha, so
-`download --dry-run` is **not** in the run-without-asking set there
-([amex/AGENTS.md](amex/AGENTS.md) §0). Agents must not mint real sessions
-or run real downloads unless asked — see root [AGENTS.md](../AGENTS.md) §2.
+without a new MFA push. Where a session persists, `download --dry-run`
+walks with it but exports nothing. The one-shot collectors keep no
+session between runs, so their `download` signs in itself: schwab-web,
+chase, raiffeisen_at, amex and fidelity-web. There a dry run signs in
+too. Which dry runs an agent may start without asking is set by root
+[AGENTS.md](../AGENTS.md) §2 and each collector's own `AGENTS.md`; amex
+is the case that matters (see the exceptions below).
 
 ## Gold consumes silver — not the other way round
 
@@ -214,8 +211,8 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | bronze root (every verb that touches it) | `--bronze-dir` | resolved data dir |
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
 | force reload (on `load`) | `--force` — delete the silver DB, then rebuild from all bronze | off |
-| session probe | `login --check` — exit `0` = credential/session alive, nonzero = not. Every collector implements it, including the ones with no session to mint: where a static credential IS the session (fred's API key, ubs-psn's RSA key), the probe is the cheapest authenticated read against the source, so a credential that is present but rejected fails here. Two deviate. **fidelity-web** has no `login` verb to probe — its session is the browser's lifetime, so there is nothing to persist and nothing to check; the verb exists only to no-op so an orchestrator's login → download → load does not trip. **amex** (see the exceptions below) is the other, where a sign-in is the scarce resource: its `--check` reads the device-trust cookie out of the profile's own Firefox jar on disk, opening no browser and touching no network, so exit `0` means *this device is registered*, not *the credential is alive*. | — |
-| human-MFA wait | `--mfa-timeout SECONDS` | ≥ 600 (swissquote and ubs-web ship 300) |
+| session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the two collectors that differ. | — |
+| human-MFA wait | `--mfa-timeout SECONDS` | per source; see the list below |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
 | login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |
 | `--mode` "everything" token | `all` | `all` |
@@ -236,6 +233,16 @@ and is **rejected** on any other verb rather than silently dropped. The
 `${PREFIX}_SILVER_DB` env var is not symmetric with the flag: it is ambient
 config naming where silver lives, so a verb with no use for it ignores it
 rather than failing.)
+
+The `--mfa-timeout` defaults, in seconds:
+
+- 7200: schwab-web;
+- 3600: schwab-api, fidelity-web, plaid (its `link` verb);
+- 600: chase, amex, firstcitizens;
+- 300: swissquote, ubs-web, raiffeisen_at (the pushTAN timeout the
+  server declares).
+
+The other collectors read a code from stdin and set no wall clock.
 
 **Unknown or inapplicable flags fail; they are never ignored.** The one
 exception is uniformity: a flag the fleet orchestrator forwards to every
@@ -266,9 +273,10 @@ did this run cover".
   loudly** that it has no effect and pull their complete history — a
   superset of any window — rather than either silently ignoring it or
   rejecting it at parse time.
-- A collector whose source can't express the window exactly (Schwab's
-  preset-driven UI, relevate's year-granularity endpoint) maps it to the
-  narrowest thing that covers it, and **warns when it has to cap**.
+- A collector whose source can't express the window exactly maps it to
+  the narrowest thing that covers it. relevate's year-granularity
+  endpoint widens the window to whole years without a warning; a
+  collector that has to cap the window **warns when it caps**.
 
 Both tiers wire the one shared group,
 [`collectorkit.cli`](../shared/collectorkit/collectorkit/cli.py)
@@ -309,12 +317,13 @@ structurally cannot narrow a fetch, the collector says so at runtime
   institution first. Plaid bills that per call on a paid plan, so a
   Production run makes it only with the opt-in in the collector's own
   `$XDG_CONFIG_HOME/plaid.cfg`.
-- **amex** spends its whole verb surface out of one small sign-in budget,
-  so two fleet defaults are withdrawn: `login --check` reads the profile's
-  device-trust cookie instead of calling the source (exit `0` = device
-  registered, not credential alive), and `download --dry-run` still signs
-  in — it skips the exports, not the sign-in — which takes it out of the
-  run-without-asking set root [AGENTS.md](../AGENTS.md) §2 grants.
+- **amex** spends its whole verb surface out of one small sign-in budget.
+  A handful of sign-ins draws a captcha. So two fleet defaults are
+  withdrawn. `login --check` reads the device-trust cookie instead of
+  calling the source (see [login.py](#loginpy--the-session)). And
+  `download --dry-run` still signs in: it skips the exports, not the
+  sign-in. That takes the dry run out of the run-without-asking set of
+  root [AGENTS.md](../AGENTS.md) §2 ([amex/AGENTS.md](amex/AGENTS.md) §0).
 
 ### login.py — the session
 
@@ -339,15 +348,24 @@ Which **identity** surface to copy for a new collector:
   `resolve_credential`, never the `--x-env NAME` indirection.
 
 A `--check` mode probes the stored session without a new MFA push. It never
-merely asserts the credential is *present* — a key that exists but is
-rejected is exactly what it exists to catch — so it makes the cheapest
+merely asserts that the credential is *present*. A key that exists but is
+rejected is exactly what it exists to catch. So it makes the cheapest
 authenticated call the source allows and maps the answer onto its exit code.
-The exception is amex, where the cheapest authenticated call is a sign-in
-and a sign-in is the scarce resource: `--check` there reports device
-registration from the profile's own cookie instead. It cannot see a rotated
-password or a trust revocation made server-side; only a `download` sign-in
-can. The full authentication policy is in root
-[AGENTS.md](../AGENTS.md) §3.
+Where a static credential is the session (fred's API key, ubs-psn's RSA
+key), that call is the cheapest authenticated read. Two collectors differ:
+
+- **fidelity-web** has no session to probe. Its session lasts as long as
+  the browser, so its `login` is a no-op that keeps an orchestrator's
+  `login → download → load` from failing.
+- **amex** spends a sign-in on its cheapest authenticated call, and
+  sign-ins are its scarce resource. Its `--check` reads the device-trust
+  cookie from the profile's Firefox jar on disk instead. It opens no
+  browser and touches no network. Exit `0` means *this device is
+  registered*, not *the credential is alive*. It cannot see a rotated
+  password or a trust revocation made server-side; only a `download`
+  sign-in can.
+
+The full authentication policy is in root [AGENTS.md](../AGENTS.md) §3.
 
 #### Browser launches
 
@@ -514,14 +532,14 @@ uniform convention:
   `{"status": "in-progress"}` when it creates the run dir, then
   atomically overwrites `run.json` with the terminal manifest carrying
   `"status": "complete"` (or `"dry-run"`) at the end. So a run dir is a
-  **complete** dump (`status == "complete"`), a **non-complete** one (an
+  **complete** dump (`status == "complete"`) or a **non-complete** one (an
   `in-progress` marker from a crashed walk, a `dry-run` shell, or no
-  `run.json` at all), or — for a dump that predates this field — a
-  statusless manifest that each collector classifies from its original
-  terminal signal (the presence of the manifest, or of a terminal
-  artefact for collectors that never wrote a `run.json`). `load` takes a
-  run whose status is `complete` or absent and skips every other status
-  (`collectorkit.bronze.is_loadable_status`); `prune` reclaims those.
+  `run.json` at all). A manifest with no `status` field is classified by
+  each collector from its own terminal signal: the manifest itself, or a
+  terminal artefact where the collector writes no `run.json`. `load`
+  takes a run whose status is `complete` or absent and skips every other
+  status (`collectorkit.bronze.is_loadable_status`). `prune` reclaims
+  the runs `load` skips.
 
 - **`prune`** deletes, across every timestamped run dir under the bronze
   root: the collector's nominated **debug-artefact subdirs from complete

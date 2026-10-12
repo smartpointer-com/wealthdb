@@ -1,52 +1,55 @@
 # Income
 
 What the tracked accounts received: wages, interest, dividends, staking
-rewards, rent, gifts — consolidated across every source, typed, and
-attributed to a payer.
+rewards, rent, gifts. Income is consolidated across every source, typed,
+and attributed to a payer.
 
-This document is a **delta against [SPENDING.md](SPENDING.md)**. The two
-features are one engine read in two directions: one enrichment pass, one
-precedence lattice, one internal-transfer matcher, one signature
-normaliser, one model-tier protocol. Where a mechanism is shared, this
-file says so and points at the section that explains it, rather than
-explaining it twice — a second explanation is a second thing to keep
-true.
+This document is a **delta against [SPENDING.md](SPENDING.md)**. Income
+and spending are one engine read in two directions. They share one
+enrichment pass, one precedence lattice, one internal-transfer matcher,
+one signature normaliser and one model-tier protocol. Where a mechanism
+is shared, this file points at the section of SPENDING.md that explains
+it. A second explanation would be a second thing to keep true.
 
 ---
 
 ## 1. Scope: inflows only
 
-Income is **what arrived**, on any account the product tracks, that the
-household did not already own.
+Income is **what arrived** on any tracked account that the household
+did not already own.
 
-That last clause is the whole of the difficulty, and §2's deltas are
-where it is written down. Money arriving is not automatically income: a
-funding wire between two of the holder's own accounts arrived, a private
-fund returning contributed capital arrived, a loan being disbursed
-arrived. None of them is earnings, and each leaves the base by a
-different route.
+That last clause is the hard part, and §2's deltas write it down. Money
+arriving is not always income:
+
+- a funding wire between two of the holder's own accounts arrived;
+- a private fund returning contributed capital arrived;
+- a loan being disbursed arrived.
+
+None of them is earnings, and each leaves the base by a different route.
 
 What is deliberately **not** here:
 
 - **Investment buys and sells**, maturities, corporate actions and FX
-  legs — the `cashflow` feature's ([CASHFLOW.md](CASHFLOW.md)). Sale
-  proceeds are not income under any reading and never enter the base.
-- **Gross-of-payroll wages.** A bank sees the net salary; the gross, the
-  deductions and the employer's contributions live on a payslip the
+  legs. They belong to the cash flow statement
+  ([CASHFLOW.md](CASHFLOW.md)). Sale proceeds are not income under any
+  reading and never enter the base.
+- **Gross-of-payroll wages.** A bank sees the net salary. The gross,
+  the deductions and the employer's contributions are on a payslip the
   product does not collect. Income is what arrived (§5).
 - **Netting reimbursements against spending.** An expense reimbursement
-  is money back for money spent. It is excluded from income here and
-  belongs to spending's refund side later — a recorded follow-up (§11).
-- **Tax reporting.** Withholding is visible beside income (§5) but no
-  view claims to be a tax figure; jurisdictions differ on staking, on
-  capital-gains distributions, on gifts.
-- **Accrued but unpaid income.** Cash basis throughout, like spending.
+  is money back for money spent. Income excludes it. Netting it on
+  spending's refund side is an open follow-up (§11).
+- **Tax reporting.** Withholding is visible beside income (§5), but no
+  view claims to be a tax figure. Jurisdictions differ on staking, on
+  capital-gains distributions and on gifts.
+- **Accrued but unpaid income.** Income is cash basis, like spending.
 
 ### The population, layered
 
-Three macros where spending has four, each narrower than the one it
-reads, for the reason SPENDING.md §1 gives: the pass decides what the
-base excludes, so it cannot read a base that already excluded it.
+Income has three macros where spending has four. Each is narrower than
+the one it reads, for the reason SPENDING.md §1 gives: the pass decides
+what the base excludes, so it cannot read a base that already excluded
+it.
 
 | macro | what it is |
 |---|---|
@@ -55,79 +58,83 @@ base excludes, so it cannot read a base that already excluded it.
 | `income_lines_base(f, t)` | what a view charts: the population with its type resolved, less the deltas §2 keeps out of the base |
 
 There is **no income matcher pool**. The internal-transfer matcher
-already admits `deposit` on every account (migration 0044) precisely so a
-funding wire pairs, and already writes `internal_transfer` on both legs.
-Income reads those verdicts; it pairs nothing (§10, decision 8).
+admits `deposit` on every account (migration 0044), so a funding wire
+pairs. It writes `internal_transfer` on both legs. Income reads those
+verdicts and pairs nothing (§10, decision 8).
 
 ### Platform wallets and custody accounts
 
-A `deposit` on a private-market platform — an investment wallet, a
-custody account holding an SPV or an exercised grant — can only be the
-holder's own money arriving to be invested. Such a platform pays OUT as
-a `distribution`, which the floor already takes out of the base. So an
-inbound leg there is a funding leg, and the matcher removes it as an
-own-account move **when the funding bank's side of it is in gold**.
+A `deposit` on a private-market platform can only be the holder's own
+money arriving to be invested. The account is an investment wallet, or
+a custody account holding an SPV or an exercised grant. Such a platform
+pays out as a `distribution`, and the kind floor already takes that out
+of the base. So an inbound leg there is a funding leg. The matcher
+removes it as an own-account move **when the funding bank's side is in
+gold**.
 
-When it is not, the matcher has nothing to pair and the leg stays in the
+When it is not, the matcher has nothing to pair. The leg stays in the
 base as an unplaced receipt. That is the honest answer for a movement
-whose other half the product cannot see, and it is not a bug in the
-matcher: a source loaded for balances alone contributes no transactions,
-and a greedy one-to-one matcher given a missing partner correctly pairs
-nothing rather than guessing. Widening the window or the tolerance to
-reach these buys false pairs faster than real ones — the amounts are
-round numbers that recur across banks, and half the near-misses have the
-bank leg AFTER the credit.
+whose other half the product cannot see:
 
-Until the funding side is ingested, `income.accounts.exclude` is the
-remedy: the platform's wallet and custody accounts are not accounts
-whose inflows are income, and the income scope is its own for exactly
-this kind of reason. §11 records the ingestion follow-up and the
-general-audience fix.
+- a source loaded for balances alone contributes no transactions;
+- a greedy one-to-one matcher with a missing partner pairs nothing
+  rather than guessing.
+
+Widening the matcher's window or tolerance to reach these legs buys
+false pairs faster than real ones. Funding amounts are round numbers
+that recur across banks.
+
+The remedy is `income.accounts.exclude`. A platform's wallet and custody
+accounts are not accounts whose inflows are income, and the income scope
+exists for this kind of reason. §11 records the ingestion follow-up and
+the general fix.
 
 ### Which kinds are income
 
-The design turns on where each transaction kind lands. Income selects
-rows by kind, not by account, exactly as spending does.
+Income selects rows by kind, not by account, exactly as spending does.
 
 | kind | where it goes |
 |---|---|
-| `dividend` | in — floor `INCOME_DIVIDENDS` |
-| `coupon` | in — floor `INCOME_INTEREST_EARNED` |
-| `staking` | in — floor `INCOME_STAKING` |
-| `capital_gain` | in — floor `INCOME_DISTRIBUTIONS`; a public fund's payout of realised gains returns no basis |
-| `reward` | in — floor `INCOME_REWARDS` |
-| `distribution` | in the population, **out of the base** — floor `capital_return`; a private fund returns contributed capital first |
-| `deposit` | in — **no floor**; the one kind the narrative tiers decide |
-| `interest` | in when **positive**; the negative side is a finance charge and is spending's |
-| `refund` | spending's — it nets inside the merchant's category there |
+| `dividend` | in; floor `INCOME_DIVIDENDS` |
+| `coupon` | in; floor `INCOME_INTEREST_EARNED` |
+| `staking` | in; floor `INCOME_STAKING` |
+| `capital_gain` | in; floor `INCOME_DISTRIBUTIONS`. A public fund's payout of realised gains returns no basis |
+| `reward` | in; floor `INCOME_REWARDS` |
+| `distribution` | in the population, **out of the base**; floor `capital_return`. A private fund returns contributed capital first |
+| `deposit` | in, with **no floor**. It is the one kind the narrative tiers decide |
+| `interest` | in when **positive**. The negative side is a finance charge and belongs to spending |
+| `refund` | spending's. It nets inside the merchant's category there |
 | `sell`, `contribution`, `transfer_in`, `card_payment`, `corporate_action`, `journal`, `other`, the FX kinds | out |
 
-Seven of the eight admitted kinds carry **both signs**, so a negative row —
-a dividend clawed back, a credit reversed — nets against what it reverses
-inside its own type. On `capital_gain` and `staking` a negative row need
-not be a reversal at all (a realised loss, a slashing penalty), and the
-same arithmetic nets it in the same place, which is the right answer
-either way.
+Seven of the eight admitted kinds carry **both signs**. A negative row,
+such as a dividend clawed back or a credit reversed, nets against what
+it reverses inside its own type. On `capital_gain` and `staking` a
+negative row need not be a reversal: it can be a realised loss or a
+slashing penalty. The same arithmetic nets it in the same place, which
+is right either way.
 
-`interest` is the one kind with a **sign guard**, and the guard is not a
-policy about reversals: one canonical kind carries two opposite events —
-interest credited and interest charged — and the sign is the only thing
-that tells them apart, with spending having claimed the negative half in
-migration 0041. `deposit` takes both signs like every other income kind:
-its canonical sign is positive and `ApplyCanonicalSign` forces it, so the
-only route to a negative one is an adapter that keeps a source sign it
-knows marks a reversal (`canonical/sign.go`; the Fidelity adapter keeps
-every sign, since its sources sign each row from the account's side),
-which makes a negative `deposit` a reversal by construction.
+`interest` is the one kind with a **sign guard**. The guard is not a
+policy about reversals. One canonical kind carries two opposite events,
+interest credited and interest charged. Only the sign tells them apart,
+and spending claims the negative half (migration 0041).
+
+A negative `deposit` is a reversal by construction:
+
+- the canonical sign of `deposit` is positive, and
+  `ApplyCanonicalSign` forces it (`canonical/sign.go`);
+- only an adapter that keeps a source sign on purpose can produce a
+  negative one. An adapter does this when the source marks a reversal.
+  The Fidelity adapter keeps every sign, because its sources sign each
+  row from the account's side.
 
 ---
 
 ## 2. The taxonomy
 
-**Same provenance, same three classes, same predicates** as
-SPENDING.md §2, in one table and one dimension. `spend_categories` gained
-a `family` column in migration 0069: a row is `spending`, `income`, or
-`both`.
+Income uses the same provenance, the same three classes and the same
+predicates as SPENDING.md §2, in one table and one dimension.
+`spend_categories` carries a `family` column (migration 0069). A row is
+`spending`, `income`, or `both`.
 
 **Vendored, verbatim:** Plaid's `INCOME` primary, version 2, and its
 thirteen detailed values. Their descriptions are copied untouched, so a
@@ -150,19 +157,19 @@ its label:
 | `INCOME_TAX_REFUND` | Tax refund |
 | `INCOME_OTHER` | Other income |
 
-Plaid's five other primaries stay dropped, as on the spending side
+Plaid's five other primaries are not vendored, as on the spending side
 (SPENDING.md §2):
 
 - `TRANSFER_IN` says money arrived, not from whose account. The matcher
   pairs an own-account move, and the other tiers place the rest.
-- `LOAN_DISBURSEMENTS` is money borrowed, which the `loan_proceeds`
-  and `mortgage_transfer` deltas name.
+- `LOAN_DISBURSEMENTS` is money borrowed. The `loan_proceeds` and
+  `mortgage_transfer` deltas name it.
 - `OTHER` is Plaid's bucket for a row it could not place.
 - `TRANSFER_OUT` and `LOAN_PAYMENTS` are outflows, and spending's.
 
-**Eight extensions**, ours, in the vendored shape under `INCOME`. The
-model may emit them, and a future Plaid value supersedes one as a clean
-diff:
+**Eight extensions** are wealthdb's own, in the vendored shape under
+`INCOME`. The model may emit them. A future Plaid value supersedes one
+as a clean diff.
 
 | value | label |
 |---|---|
@@ -184,48 +191,50 @@ Each extension clears the usual bar:
 The bar is set for households in general, because the product is
 published.
 
-`INCOME_INSURANCE_PAYOUT` is the one whose placement is not obvious, since
-`reimbursement` below also describes it. It is income because **the premium
-was already counted as spending** and nothing in the data links a payout to
-the premiums it answers — different amounts, different dates, often
-different years. Netting the payout out would count the outflow and drop the
-inflow. `reimbursement` keeps the cases where the outflow IS identifiable: a
+`INCOME_INSURANCE_PAYOUT` is income, although `reimbursement` also
+seems to describe it. The reasons:
+
+- the premium was already counted as spending;
+- nothing in the data links a payout to the premiums it answers. The
+  amounts, the dates and often the years differ;
+- netting the payout out would count the outflow and drop the inflow.
+
+`reimbursement` keeps the cases where the outflow IS identifiable: a
 utility credit against a bill, a merchant reversing its own charge. A
 recurring disability benefit is not a payout, even from an insurer. It
 is `INCOME_LONG_TERM_DISABILITY`, whoever pays it.
 
-`INCOME_ENERGY_FEED_IN` is what a grid operator or an energy retailer pays
-for electricity the household's own generation fed into the grid. It is
-income from an asset the household owns, earned without its labour, so the
-cash flow statement files it under yield beside rental income and
-royalties.
+`INCOME_ENERGY_FEED_IN` is what a grid operator or an energy retailer
+pays for electricity that the household's own generation fed into the
+grid. It is income from an asset the household owns, earned without its
+labour. The cash flow statement files it under yield, beside rental
+income and royalties.
 
 `INCOME_GOVERNMENT_BENEFITS` covers the state transfers no other value
 names: child and family allowances, parental-leave pay, housing
 benefits, social assistance, stimulus payments. A state pension, an
 unemployment benefit, a disability benefit, a veterans benefit and
-child support an agency pays out each have a vendored value of their
-own. It excludes tax refunds by name: a refund is not a state transfer
-whichever tax office pays it, in whatever language it is written.
+child support paid by an agency each have a vendored value. A tax
+refund is never a government benefit, whichever tax office pays it and
+in whatever language.
 
-`INCOME_ALIMONY` is the half of family maintenance that
-`INCOME_CHILD_SUPPORT` leaves out: maintenance from a former spouse or
-partner. Child support is `INCOME_CHILD_SUPPORT` whether a court ordered
-it or the parents agreed it. Maintenance a person pays is
-person-shaped, so the fence keeps most of it from the model, and a rule
-or a pin places it.
+`INCOME_ALIMONY` is maintenance from a former spouse or partner. It is
+the half of family maintenance that `INCOME_CHILD_SUPPORT` leaves out.
+Child support is `INCOME_CHILD_SUPPORT`, whether a court ordered it or
+the parents agreed it. Maintenance a person pays is person-shaped, so
+the fence keeps most of it from the model. A rule or a pin places it.
 
 **What the vendored descriptions leave out.** Plaid's texts are kept
 verbatim, so the policies they cannot carry are written here:
 
-- Tips paid through payroll are `INCOME_SALARY`. Cash tips paid into
-  an account are `cash_deposit`.
+- Tips paid through payroll are `INCOME_SALARY`. Cash tips paid into an
+  account are `cash_deposit`.
 - Military pay is `INCOME_SALARY`. `INCOME_MILITARY` is veterans'
   benefits only.
 - Pay from a gig platform is `INCOME_GIG_ECONOMY`.
 - `INCOME_CONTRACTOR` covers freelance and contract work, a sole
   trader's takings and an owner's draw.
-- A tenancy deposit returned and the proceeds of selling a property are
+- A returned tenancy deposit and the proceeds of selling a property are
   `capital_return`, not `INCOME_RENTAL`.
 - A disability benefit is `INCOME_LONG_TERM_DISABILITY`, whoever pays
   it.
@@ -237,8 +246,8 @@ verbatim, so the policies they cannot carry are written here:
   A pension paid from a pool the holder does not own is
   `INCOME_RETIREMENT_PENSION`, social security among them.
 
-**Fourteen deltas**, ours, primary-level and lowercase, decided from
-structure a payer's name cannot reveal:
+**Fourteen deltas** are wealthdb's own. They are primary-level and
+lowercase, and they record structure a payer's name cannot reveal:
 
 | value | meaning | in the base? |
 |---|---|---|
@@ -250,62 +259,60 @@ structure a payer's name cannot reveal:
 | `education_transfer` | the same for an education plan or savings account | no |
 | `health_transfer` | the same for a health savings account | no |
 | `trust_transfer` | the same for a trust that is a separate taxpayer | no |
-| `deposit_transfer` | the principal of a bank deposit product coming back — a call or fixed-term deposit repaid or drawn down; the interest is `INCOME_INTEREST_EARNED` and is not this | no |
-| `mortgage_transfer` | a tranche drawn from a mortgage servicer the product does not hold as an account; the outflow leg is the instalment | no |
+| `deposit_transfer` | the principal of a bank deposit product coming back, such as a call or fixed-term deposit repaid. The interest is `INCOME_INTEREST_EARNED`, not this | no |
+| `mortgage_transfer` | a tranche drawn from a mortgage servicer the product does not hold as an account. The outflow leg is the instalment | no |
 | `gift` | a cash gift or family support received | yes |
 | `inheritance` | an estate's distribution to the holder | yes |
 | `cash_deposit` | cash paid in at a counter or a machine | yes |
 | `other` | a receipt no tier could place, that a tier nonetheless placed there | yes, labelled `Other` |
 
-Nine of them — `internal_transfer`, `gift`, `other`, the five
-crossings and `mortgage_transfer` — are **one row** read from either
-side, which is what `family = 'both'` means.
+Nine of them are **one row** read from either side, which is what
+`family = 'both'` means: `internal_transfer`, `gift`, `other`, the five
+crossings and `mortgage_transfer`.
 
-The five crossings arrived with the cash flow statement
-([CASHFLOW.md](CASHFLOW.md), migrations 0078 and 0090) and leave the
+The five crossings (`retirement_transfer` to `deposit_transfer`) serve
+the cash flow statement ([CASHFLOW.md](CASHFLOW.md) §5). They leave the
 base for `internal_transfer`'s reason: the money is the holder's
-throughout, in a pool whose far side the product does not hold rather
-than earned — four of them earmarked by a tax wrapper,
-`deposit_transfer` with no wrapper at all. The DIRECTION is the
-row's own, so a deposit placed `retirement_transfer` is a plan payout
-and a withdrawal placed the same is a contribution. None of them is
-needed where the far account IS tracked — the matcher's verdict says
-everything, and it outranks a rule.
+throughout, in a pool whose far side the product does not hold. Four of
+them are earmarked by a tax wrapper. `deposit_transfer` has no wrapper.
+The direction is the row's own. A deposit placed `retirement_transfer`
+is a plan payout, and a withdrawal placed the same is a contribution.
+None of them is needed where the far account is tracked: the matcher's
+verdict says everything, and it outranks a rule.
 
-`other` is **not** `(uncategorized)`, and the difference is the backlog.
-`other` is a stored value with a label of its own: a tier looked at the
-row and placed it there, and the row is out of the model tier's backlog
-for good. `(uncategorized)` is what a row whose resolved type is NULL
-reads as — nothing placed it, and it is exactly what the next
-`categorize income` run asks about. A rule that files a class of receipt
-as `other` therefore removes it from the backlog rather than leaving it
-there.
+`other` is **not** `(uncategorized)`, and the difference is the backlog:
 
-Nor is `other` the catch-all `INCOME_OTHER`, which reads "Other income".
-A catch-all is not a verdict (SPENDING.md §3). An issuer's filing under
-it is recorded and the row declined, and `--refine` re-asks a model
-verdict there. The two keep separate labels, so a chart draws them as
-two slices.
+- `other` is a stored value with its own label. A tier placed the row
+  there, and the row leaves the model tier's backlog for good. A rule
+  that files a class of receipt as `other` removes it from the backlog.
+- `(uncategorized)` is how a row with no resolved type reads. Nothing
+  placed it, and the next `categorize income` run asks about it.
 
-Spending's `card_spend` has no mirror, deliberately. It exists because
-deleting an unpaired card bill deletes real consumption; an unpaired
-inbound wire is not deleted — it stays in the base, visible and unplaced,
-which is the honest answer.
+Nor is `other` the catch-all `INCOME_OTHER`, which reads "Other
+income". A catch-all is not a verdict (SPENDING.md §3). A tier that can
+only place a row there declines it, and `--refine` re-asks a model
+verdict there. The two values keep separate labels, so a chart draws
+them as two slices.
+
+Spending's `card_spend` has no mirror, on purpose. It exists because
+deleting an unpaired card bill deletes real consumption. An unpaired
+inbound wire is not deleted. It stays in the base, visible and
+unplaced, which is the honest answer.
 
 **Two validity predicates**, as on the spending side and for the reason
-SPENDING.md §2 gives: `ValidIncomeDetailed` admits everything storable,
-`ModelIncomeDetailed` refuses the deltas. Both are derived from the
-`family` column rather than restated, so a value added to `canonical` is
-admitted or refused everywhere at once. The predicates are **fenced by
-family**: a spending rule naming `INCOME_SALARY` fails at config load, and
-so does an income rule naming `FOOD_AND_DRINK_GROCERIES`.
+SPENDING.md §2 gives. `ValidIncomeDetailed` admits everything storable.
+`ModelIncomeDetailed` refuses the deltas. Both derive from the `family`
+column, so a value added to `canonical` is admitted or refused
+everywhere at once. The predicates are **fenced by family**. A spending
+rule naming `INCOME_SALARY` fails at config load, and so does an income
+rule naming `FOOD_AND_DRINK_GROCERIES`.
 
 **Retired spellings.** Five values of an earlier vocabulary are not
 values of this one. Validity is read off the table, so an income rule
-or an income pin naming one is refused like any other unknown value.
-The error names the value to write instead
-(`canonical.RetiredDetailed`). The model gauntlet refuses one the same
-way, and the reason it sends back names the value to emit instead:
+or an income pin naming one is refused like any unknown value. The
+error names the value to write instead (`canonical.RetiredDetailed`).
+The model gauntlet refuses one the same way, and its feedback names the
+value to emit instead.
 
 | retired | write instead |
 |---|---|
@@ -315,13 +322,15 @@ way, and the reason it sends back names the value to emit instead:
 | `INCOME_RENT` | `INCOME_RENTAL` |
 | `INCOME_ALIMONY_AND_CHILD_SUPPORT` | `INCOME_CHILD_SUPPORT` for child support, or `INCOME_ALIMONY` for maintenance from a former partner |
 
-A pins ledger is read before gold is opened for writing, so a stale pin
-fails before anything is migrated or loaded. Migration 0111 moved each
-stored verdict to the first value in its row above. A verdict of the
-split value therefore reads `INCOME_CHILD_SUPPORT`. A config rule on the
-payer's narrative moves a payer of maintenance to `INCOME_ALIMONY`. A pin
-moves one payment. `reload -a` respells the payer store it carries
-across the same way (§9).
+A pins ledger is read before gold is opened for writing. So a stale pin
+fails before anything is migrated or loaded.
+
+Migration 0111 moves each stored verdict to the first value in its row
+above. A stored verdict of the split value therefore reads
+`INCOME_CHILD_SUPPORT`. A config rule on the payer's narrative moves a
+payer of maintenance to `INCOME_ALIMONY`, and a pin moves one payment.
+`reload -a` respells the payer store it carries across the same way
+(§9).
 
 A verdict placed under the wider meaning of a narrowed value keeps it.
 Examples:
@@ -336,219 +345,209 @@ Examples:
 
 ## 3. The tiers and the precedence lattice
 
-> One field the income surfaces carry that no income report reads: an
-> optional `asset_class` on an `income.rules[]` entry or a pins-ledger
-> row, admitted beside `capital_return` alone. It says what the
-> returned capital had been deployed INTO, and it exists so the return
-> leg of a private holding draws on the same cash-flow node its funding
-> leg does — the outflow side is the spending family's and a
-> spending-only column could never have reached this one. See
-> docs/CASHFLOW.md §4.
-
 The lattice is spending's in every tier the pass writes, and the
-provenance vocabulary is the same seven values (SPENDING.md §3). One
-step is **re-ordered**: the kind floor is read over the model, not under
-it.
+provenance vocabulary is the same seven values ([SPENDING.md §7](SPENDING.md)). One
+step is **re-ordered**: the kind floor is read over the model, not
+under it.
 
 ```
 spending:  pin > matcher > built-in rule > config rule > provider > model > kind floor
 income:    pin > matcher > built-in rule > config rule > provider > KIND FLOOR > model
 ```
 
-What differs is the **weight each tier carries**, and the re-order
-follows from it. On the outflow side the narrative decides nearly
-everything and the kind floor is a backstop. On the inflow side the
-floor answers for every kind the population admits except one — a
-`dividend` row is dividend income whatever its narrative says — and the
-narrative tiers exist for `deposit`, which has no floor because nothing
-but the narrative can say what it was.
+The re-order follows from the **weight each tier carries**:
 
-- **Built-in rules** — one: `cash_deposit`, from a narrative naming a
-  counter or machine deposit. The asymmetry is the design rather than an
-  omission: almost every structural inflow fact is the matcher's already,
-  and what is left is cash paid in, which has no counter-leg anywhere.
-  It is **gated on `deposit`**, the one admitted kind the floor does not
-  answer. The rule tier sits above the floor on both sides — a config
-  rule promoting a `distribution` depends on it — so an ungated phrase
-  match would not merely add a verdict, it would replace a right one:
-  a call account's credited interest narrated "INTEREST ON CASH
+- On the outflow side the narrative decides nearly everything. The
+  kind floor is a backstop.
+- On the inflow side the floor answers for every admitted kind but
+  one. A `dividend` row is dividend income whatever its narrative says.
+  The narrative tiers exist for `deposit`, which has no floor, because
+  only the narrative can say what it was.
+
+The tiers, where income differs:
+
+- **Built-in rules.** There is one: `cash_deposit`, from a narrative
+  naming a counter or machine deposit. Almost every structural inflow
+  fact is the matcher's already. What is left is cash paid in, which
+  has no counter-leg anywhere. The rule is **gated on `deposit`**, the
+  one admitted kind the floor does not answer. The rule tier sits above
+  the floor, so an ungated phrase match would replace a right verdict.
+  For example, a call account's interest narrated "INTEREST ON CASH
   DEPOSIT" would read as cash paid in over a counter. Config rules are
-  NOT gated; a rule is the holder's own instrument, and saying
-  something the data does not is its whole purpose.
-- **Config rules** — `income.rules[]`, the holder's own, with the value
-  field named `type`. Same shape as `spending.rules`, scope and `far`
-  included; the far account an income rule names is written onto the
-  spending overlay, the one overlay with far columns, so the inbound
-  leg of a move to a declared account places as its outbound leg does
-  (CASHFLOW.md §4).
-- **Provider tier** — a bank's booking type says "salary", "dividend",
-  "interest"; the provider maps gained an income side. Per (silver kind,
-  account kind), as on the spending side. One booking type can mean
-  different things by direction — UBS books both halves of an account's
-  interest settlement under one type — which is why the two maps are
-  separate rather than one lookup. Plaid's category taxonomy (`plaid`)
-  has an income side as well. Its translations are in
-  adapters/plaid.md §10.
-- **Model tier** — asked about the payer signatures on `deposit` rows
-  the deterministic tiers left unplaced, and about nothing else (§7).
-  **The fence is identical** and matters more here (§6).
-- **Pins** — `income.pins`, the spending ledger's format with
-  `income_detailed` where `spend_detailed` was. SPENDING.md §3's *Pins*
-  section is the whole of the mechanics, including what happens to a
-  pin naming a transaction this family's population does not admit: it
-  is written, counted as matched, and then seen by nothing but
-  `wealthdb transactions`.
+  NOT gated. A rule is the holder's own instrument, and its purpose is
+  to say something the data does not.
+- **Config rules.** `income.rules[]` takes the shape of
+  `spending.rules`, scope and `far` included, with the value field
+  named `type`. The far account an income rule names is written onto
+  the spending overlay, the one overlay with far columns. So the inbound
+  leg of a move to a declared account places like its outbound leg
+  ([CASHFLOW.md](CASHFLOW.md) §4).
+- **Provider tier.** A bank's booking type can say "salary",
+  "dividend", "interest". The provider maps have an income side, keyed
+  per (silver kind, account kind) as on the spending side. The two maps
+  are separate because one booking type can mean different things by
+  direction: UBS books both halves of an account's interest settlement
+  under one type. Plaid's category taxonomy (`plaid`) has an income
+  side too; [adapters/plaid.md](adapters/plaid.md) §10 lists its
+  translations.
+- **Model tier.** It is asked only about the payer signatures on
+  `deposit` rows that the deterministic tiers left unplaced (§7). The
+  fence is identical, and it matters more here (§6).
+- **Pins.** `income.pins` uses the spending ledger's format, with
+  `income_detailed` in place of `spend_detailed`. SPENDING.md §3,
+  *Pins*, covers the mechanics. That includes a pin naming a
+  transaction outside this family's population: it is written and
+  counted as matched, and only `wealthdb transactions` shows it.
 
-The deterministic pass is folded into `wealthdb load`, and it is **one
-pass writing both families** in one transaction: one matcher run, both
+An `income.rules[]` entry or an income pin may carry an optional
+`asset_class`, admitted only beside `capital_return`. No income report
+reads it. It says what the returned capital had been deployed into, so
+the return leg of a private holding draws on the same cash-flow node as
+its funding leg ([CASHFLOW.md](CASHFLOW.md) §4 and §7).
+
+The deterministic pass runs inside `wealthdb load`. It is **one pass
+writing both families** in one transaction: one matcher run, both
 overlays deleted and re-asserted, both verdict stores re-keyed, one
-commit. Only the model tier is explicit.
+commit. Only the model tier is a separate command.
 
 ### The floor above the model (migration 0073)
 
-The two families ask a model **different questions**, and which of the
-two outranks the other follows from which question it is.
+The two families ask a model **different questions**. Which question it
+is decides whether the model or the floor ranks higher.
 
 On the outflow side the model names a merchant and picks that
-merchant's category. It is never allowed to decide that a card purchase
-was actually an investment: the nature of the row is the data's, and
-what the model adds is a finer reading of who was paid. A merchant
-verdict is therefore finer than any kind floor, and migration 0066 put
-the floor under the store for exactly that reason.
+merchant's category. It may never decide that a card purchase was
+really an investment. The nature of the row is the data's, and the
+model adds a finer reading of who was paid. A merchant verdict is
+finer than any kind floor, so spending reads the floor under the store
+(migration 0066).
 
-On the inflow side the model is asked **what kind of income** a receipt
-is. That is a claim about the transaction itself, not about who sent
-it — and wherever the data already makes that claim, the model has
-nothing to add and can only be wrong. So the floor is read over the
-store here, and the model has a say on the one kind that has no floor
-at all: `deposit`.
+On the inflow side the model is asked **what kind of income** a
+receipt is. That is a claim about the transaction itself, not about who
+sent it. Wherever the data already makes that claim, the model can only
+be wrong. So income reads the floor over the store, and the model
+decides only the kind with no floor: `deposit`.
 
-The shape this protects against is one payer, two kinds. A signature is
-shared by every row that folds to it, so an employer whose shares are
-also held would carry one verdict onto both: the salary deposit's
-`INCOME_SALARY` would re-type that employer's dividends. Under this
-ordering the dividend keeps `INCOME_DIVIDENDS` with provenance `kind`
-and the deposit keeps the store's verdict with provenance `model`.
+The shape this protects against is one payer with two kinds. A
+signature is shared by every row that folds to it. Take an employer
+whose shares the household also holds. Without the re-order, the salary
+deposit's `INCOME_SALARY` verdict would re-type that employer's
+dividends. With it, the dividend keeps `INCOME_DIVIDENDS` with
+provenance `kind`, and the deposit keeps the store's verdict with
+provenance `model`.
 
-**Every tier the pass writes still outranks the floor**, because they
-all write into the overlay and the overlay is still the head of the
-resolution: a pin, the matcher, a built-in rule, a config rule and the
-provider map all sit above it, exactly as before. Only the MODEL moved,
-from above the floor to below it. Decision 4 is untouched: a
-`distribution` floors to `capital_return` and a tier that writes the
-overlay — in practice a rule or a pin, since no provider map claims one
-today — is what promotes it.
+**Every tier the pass writes still outranks the floor.** They all
+write into the overlay, and the overlay heads the resolution. A pin,
+the matcher, a built-in rule, a config rule and the provider map all
+sit above the floor. Only the model sits below it. Decision 4 holds: a
+`distribution` floors to `capital_return`, and a tier that writes the
+overlay promotes it. In practice that is a rule or a pin.
 
-The **kind floor** is read at query time and never stored, with
-provenance `kind`. One arm places a DELTA — `distribution` →
-`capital_return` — which no spending floor does, and that row therefore
-leaves the base with no verdict written anywhere. The pass still records
-its signature.
+The **kind floor** is read at query time and never stored. Its
+provenance is `kind`. One arm places a delta, `distribution` →
+`capital_return`, which no spending floor does. Such a row leaves the
+base with no verdict written anywhere. The pass still records its
+signature.
 
 ---
 
 ## 4. The payer
 
 Spending's merchant resolves in three steps. The payer resolves in four,
-with one in front that the inflow side needs and the outflow side never
-did. It is **first that ANSWERS**, so a step yielding nothing falls
-through:
+with one step in front that only the inflow side needs. The first step
+that **answers** wins, so a step yielding nothing falls through:
 
-1. a line whose resolved type is a **delta** has no payer, terminal. An
-   own-account move names the holder's own bank and a gift names a
-   relative; neither is a payer.
-2. the **instrument**, where the line carries one — the company, the
-   issuer, the protocol, the fund — by name, or by symbol where the name
-   is unknown. This answers for every row carrying an instrument.
+1. a line whose resolved type is a **delta** has no payer, and this
+   step is final. An own-account move names the holder's own bank, and
+   a gift names a relative. Neither is a payer.
+2. the **instrument**, where the line carries one: the company, the
+   issuer, the protocol, the fund. Its name is used, or its symbol where
+   the name is unknown.
 3. the **payer store's** name for the line's signature.
 4. the **signature** itself, trimmed.
 
-The signature is the same fold spending computes, from the same
+The signature is the fold spending computes, from the same
 `counterparty` and `description`, by the same normaliser at the same
-`SignatureVersion` — a counterparty is keyed one way whichever direction
+`SignatureVersion`. A counterparty is keyed one way whichever direction
 the money moved, and a version bump re-keys both stores. The **store is
 separate**: `income_payer_categories`, keyed by signature, holding an
-income type. One counterparty can be both a merchant and a payer, and the
-two questions have two answers.
+income type. One counterparty can be both a merchant and a payer, and
+the two questions have two answers.
 
 ---
 
 ## 5. Gross as booked, withholding beside it
 
-**Income is what the source booked as arriving.** Where a source books a
-gross dividend and a separate withholding row, income shows the gross and
-the withholding row is already spending's `WITHHOLDING_TAX`. Where a bank
-books a net salary, that is the income — the gross is on a payslip the
-product does not hold, and a gross the product cannot see is not a figure
-it should print.
+**Income is what the source booked as arriving.**
 
-This keeps the household arithmetic exact: *income − spending* subtracts
-withholding once, on the side that booked it. A net-of-withholding income
-would subtract it twice.
+- Where a source books a gross dividend and a separate withholding row,
+  income shows the gross. The withholding row is already spending's
+  `WITHHOLDING_TAX`.
+- Where a bank books a net salary, the net is the income. The gross is
+  on a payslip the product does not hold, and the product does not
+  print a figure it cannot see.
 
-**`withheld`** is a memo column on `summary`, off by default: the
-same-window `tax` rows on the same accounts, shown beside the income they
-were withheld from. `net_income` does not read it. It is not on `types`,
-and that is a correction rather than an omission — a tax row names the
-security it was withheld from, not the income type, so there is no honest
-way to attribute it to one row of that report.
+This keeps the household arithmetic exact. *Income − spending*
+subtracts withholding once, on the side that booked it. A
+net-of-withholding income would subtract it twice.
 
-It is **every NEGATIVE `tax`-kind row on those accounts**, negated so it
-reads as a positive magnitude. That is what a brokerage books
-withholding at source as — and also what UBS books a transaction stamp
-duty as, so a purchase-heavy month can show a `withheld` figure with no
-income beside it. The column is named for what it usually is rather than
-for what it always is; it is a memo pointing at the spending side's
-`WITHHOLDING_TAX`, never an input to any total. A positive `tax` row —
-a refund of withholding — is not in it, which is the one shape the
-memo's arithmetic could not have shown without changing sign.
+**`withheld`** is a memo column on `summary`, off by default. It shows
+the same-window `tax` rows on the same accounts, beside the income they
+were withheld from. `net_income` does not read it. It is not on
+`types`, on purpose: a tax row names the security it was withheld from,
+not the income type. There is no honest way to attribute it to one row
+of that report.
+
+The memo is **every negative `tax`-kind row on those accounts**,
+negated to read as a positive magnitude. That is how a brokerage books
+withholding at source. It is also how UBS books a transaction stamp
+duty, so a purchase-heavy month can show `withheld` with no income
+beside it. The column is named for what it usually holds. It points at
+spending's `WITHHOLDING_TAX` and is never an input to a total. A
+positive `tax` row, a refund of withholding, is not in it.
 
 A bucket can hold **withholding and no income**. The two sides are FULL
-JOINed by bucket, so neither can drop a row the other has, and such a
-bucket prints with `txn_count 0` and empty money columns — `-C
-+withheld` is what shows why it is there. Dropping it instead would have
-hidden tax paid in a month that received nothing, which is precisely a
-month worth seeing.
+JOINed by bucket, so neither drops a bucket the other has. Such a
+bucket prints with `txn_count 0` and empty money columns, and
+`-C +withheld` shows why it is there. Tax paid in a month that received
+nothing is worth seeing.
 
 ---
 
 ## 6. What leaves the machine
 
-**The fence is spending's** — SPENDING.md §5 is the whole of it, and
-§6 the loop it gates. What may leave the machine does not depend on the
-direction of the money, so `TransferShaped`, `RowTransferShaped`,
+**The fence is spending's.** SPENDING.md §5 describes it, and §6 the
+loop it gates. What may leave the machine does not depend on the
+direction of the money. `TransferShaped`, `RowTransferShaped`,
 `PersonShaped`, `Uninformative` and `FilingOnly` are called the same way
-for both families.
+for both families, and each arm refuses what SPENDING.md §5 says.
 
-It matters more here, and one arm was **added because of this side**.
-Rails, IBANs and masked contacts are markers BESIDE a name; an inbound
-credit transfer often has none of them, because its narrative simply IS
-the sender. `PersonShaped` is the arm that reads the name itself, and it
-is on by default (`spending.categorization.fence_person_names`,
-inherited with the rest of the block).
+The fence matters more here. Rails, IBANs and masked contacts are
+markers beside a name. An inbound credit transfer often has none of
+them, because its narrative IS the sender. `PersonShaped` reads the
+name itself. It is on by default
+(`spending.categorization.fence_person_names`, inherited with the rest
+of the block).
 
-What each arm refuses is SPENDING.md §5's table; nothing here changes
-it.
+On the income side the model sees what is left of the **deposits**.
+Candidacy is that one kind (§7). In practice the model sees employers,
+letting agents, agencies and platforms whose names say what they are.
 
-What the model sees on the income side is what is left of the
-**deposits** — candidacy is that one kind and no other (§7) — so in
-practice: employers, letting agents, agencies and the platforms whose
-names say what they are. A business named like a person is fenced with
-the people and is placed by a config rule or a pin, which is the remedy
-every fenced row has; a gift or maintenance payment from a relative is
-fenced and stays uncategorised, which is the honest answer.
+- A business named like a person is fenced with the people. A config
+  rule or a pin places it, which is the remedy for every fenced row.
+- A gift or a maintenance payment from a relative is fenced and stays
+  uncategorised, which is the honest answer.
 
-The person arm's cost — it cannot tell a person from an organisation
-whose name carries no marker, and refuses both — is SPENDING.md §5's to
-state. It lands harder here, because this is the side whose narratives
-are names.
+The person arm cannot tell a person from an organisation whose name
+carries no marker, and refuses both (SPENDING.md §5). That cost is
+higher here, because on this side the narratives are names.
 
 The context levels are the same three. `income.categorization.context`
-accepts `payer` as the income spelling of the narrowest level, and
-`merchant` as well, so that a `spending.categorization` block inherited
-whole validates without being rewritten. Internally they are one set of
-constants: the level decides how much of a TRANSACTION leaves the
-machine, and that question has one answer per level.
+accepts `payer` as the income spelling of the narrowest level. It also
+accepts `merchant`, so a `spending.categorization` block inherited whole
+validates without edits. Internally they are one set of constants: a
+level decides how much of a transaction leaves the machine, and that
+has one answer per level.
 
 ---
 
@@ -556,53 +555,49 @@ machine, and that question has one answer per level.
 
 **One `categorize`, two families.** The batching, the rolling anchors,
 the gauntlet, the per-batch persistence, the retry flush and the fence
-are one loop over a family descriptor; SPENDING.md §6 describes the loop.
-What a family brings is a vocabulary, a pair of tables, and the nouns the
-conversation uses.
+are one loop over a family descriptor (SPENDING.md §6). A family
+brings a vocabulary, a pair of tables, and the nouns the conversation
+uses.
 
 ```
 wealthdb categorize [spending | income] [-n] [--batch N] [--all | --refine]
 wealthdb categorizations [spending | income] [-f FORMAT] [-d VALUE] [--forget SIG]
 ```
 
-- No positional runs **both**, spending then income: two plans, two
-  summaries, one model. A name runs that one alone.
+`wealthdb categorize -h` lists the remaining flags. Income-specific
+behaviour:
+
+- With no positional, `categorize` runs **both** families, spending
+  then income: two plans, two summaries, one model. A name runs that
+  family alone.
 - `--forget SIG` with no family removes the signature from **both**
-  stores and reports per store, one counterparty being able to sit in
-  both.
-- The dump's columns are named for **neither** family — `family`,
-  `signature`, `name`, `detailed` — because one listing carries both
-  stores and a `merchant_signature` header over a payer's row would be
-  wrong on half of it. `family` is what says which vocabulary a row's
-  `detailed` belongs to.
-- The income conversation names payers of money RECEIVED, offers
+  stores and reports per store. One counterparty can sit in both.
+- The dump's columns are named for **neither** family: `family`,
+  `signature`, `name`, `detailed`. One listing carries both stores, and
+  `family` says which vocabulary a row's `detailed` belongs to.
+- The income conversation names payers of money received. It offers
   `ModelIncomeCategories()` and forbids `DeltaIncomeCategories()` by
   name. `--refine` re-asks `INCOME_OTHER`, the family's catch-all.
 - **Candidacy is `deposit` and nothing else**, in every backlog mode.
-  It is the one admitted kind with no floor, so it is the one a model
-  can say anything useful about (§3, decision 13). `--all` therefore
-  means *every deposit signature, including the answered ones* — it
-  lifts the backlog filter and never the kind gate, so it cannot reach
-  a floor-placed row and buy a verdict for every instrument in the
-  holdings.
-- **The backlog is the RESOLVED type being NULL**, over
-  `income_txn_categories()` joined to the population. With the kind gate
-  this is the difference between a few hundred payer verdicts and
-  several thousand pointless ones: a dividend the floor placed has a
-  signature and no stored verdict, and asking about it would be work
-  with a known answer.
-- `income.categorization` **inherits** `spending.categorization` whole
-  when absent — one household, one local model. Inheritance is
-  whole-block rather than per-field: a half-inherited endpoint is a
-  configuration nobody wrote down, and the failure would be a quiet
-  widening of what leaves the machine.
-- **One payer can fold under several signatures**, and each is asked
-  about on its own. A payer's narrative varies from booking to booking —
-  a period, a reference, a department — so a tax office or an employer
-  reaches the store as several keys, and the verdicts can disagree. A
-  config rule keyed on the narrative places every one of those keys at
-  once and outranks the model; it is the fix, where a pin per signature
-  is only a patch.
+  It is the one admitted kind with no floor (§3, decision 13). `--all`
+  means *every deposit signature, answered ones included*. It lifts the
+  backlog filter and never the kind gate, so it cannot buy a verdict
+  for every instrument in the holdings.
+- **The backlog is the resolved type being NULL**, over
+  `income_txn_categories()` joined to the population. A dividend the
+  floor placed has a signature and no stored verdict. With the kind
+  gate it is not asked about, because its answer is already known.
+- When `income.categorization` is absent it **inherits**
+  `spending.categorization` whole: one household, one local model.
+  Inheritance is whole-block, not per field. A half-inherited endpoint
+  is a configuration nobody wrote down, and its failure would be a
+  quiet widening of what leaves the machine.
+- **One payer can fold under several signatures.** A payer's narrative
+  varies between bookings: a period, a reference, a department. So a
+  tax office or an employer reaches the store as several keys, each
+  asked about on its own, and the verdicts can disagree. A config rule
+  on the narrative places every key at once and outranks the model. It
+  is the fix; a pin per signature is only a patch.
 
 ---
 
@@ -613,6 +608,9 @@ wealthdb income <view> [FROM [TO]] [--period P] [--level L]
                        [-f FORMAT] [-C COLS] [-x CCY] [-p]
 ```
 
+The flags and their defaults are in [DESIGN.md](DESIGN.md) §4.13 and
+`wealthdb income -h`.
+
 | view | a row is | default columns |
 |---|---|---|
 | `summary` | a period bucket | `period, txn_count, income, reversals, net_income` (+ `withheld` via `-C`) |
@@ -620,38 +618,37 @@ wealthdb income <view> [FROM [TO]] [--period P] [--level L]
 | `transactions` | an income line, oldest first | `silver_source, date, account, kind, payer, income_type, provenance, currency, net_amount, value` |
 
 The window defaults to the **trailing twelve months**, as spending's
-does. Income is often read per calendar year, and a positional year is
-the idiom the whole CLI already uses for it:
+does. A positional year reads a calendar year:
 `wealthdb income types 2025 --period annual`.
 
 `--level` defaults to **`detailed`**, the one default that differs from
-spending's. The income vocabulary has one vendored primary, so at the
+spending's. The income vocabulary has one vendored primary. At the
 primary level every vendored type and extension folds into `INCOME`,
-beside the deltas the base keeps (§2's table) and `(uncategorized)`.
-That view has a use —
-what was earned or yielded against what was given — but it is not the one
-a reader opens the report for.
+beside the deltas the base keeps (§2) and `(uncategorized)`. That view
+shows what was earned or yielded against what was given, but it is not
+what a reader opens the report for.
 
-`income` and `reversals` are positive **magnitudes** and `net_income` is
-the difference, mirroring spending's `spend` / `refunds` / `net_spend`
-exactly; the `transactions` view keeps canonical signs.
+`income` and `reversals` are positive **magnitudes**, and `net_income`
+is the difference. This mirrors spending's `spend` / `refunds` /
+`net_spend`. The `transactions` view keeps canonical signs.
 
-**Privacy.** `payer` takes the free-text class, exactly as `merchant`
-does and for the same reason: step 4 publishes the fold of a narrative
-that can carry a person's name, and the fence gates the store, not the
-column. That step 2 fills the column with an instrument name for most of
-the base does not change the class — a column takes the class of the
-worst thing it can hold. `payer_signature`, `counterparty` and
-`description` redact with it; type, provenance and `share` stay legible.
+**Privacy.** `payer` takes the free-text class, as `merchant` does and
+for the same reason. Step 4 of §4 publishes the fold of a narrative,
+which can carry a person's name. The fence gates the store, not the
+column. Step 2 fills the column with an instrument name for most rows,
+but a column takes the class of the worst thing it can hold.
+`payer_signature`, `counterparty` and `description` redact with it.
+Type, provenance and `share` stay legible.
 
 `wealthdb transactions` carries `payer`, `income_primary` and
-`income_detailed` behind `-C`; the defaults are unchanged. A transaction
-can carry both families' verdicts, and routinely does — a deposit the
-matcher paired is `internal_transfer` in each overlay — and that view is
-the one surface showing a row from both sides at once.
+`income_detailed` behind `-C`. A transaction can carry both families'
+verdicts, and often does: a deposit the matcher paired is
+`internal_transfer` in each overlay. That view is the one surface that
+shows a row from both sides at once.
 
 **Metabase.** An **Income** dashboard and its privacy twin, in the
-Spending dashboards' shape; `web/DESIGN.md` §6 has the detail.
+Spending dashboards' shape. [web/DESIGN.md](../../web/DESIGN.md) §6 has
+the detail.
 
 ---
 
@@ -661,122 +658,98 @@ Everything in SPENDING.md §8 holds, with the income names:
 
 | table | grain | survives `reset`? | carried by `reload -a`? |
 |---|---|---|---|
-| `income_txn_enrichment` | per transaction, per source | no | n/a — re-derived |
+| `income_txn_enrichment` | per transaction, per source | no | n/a, re-derived |
 | `income_payer_categories` | global, per signature | yes | **yes** |
 | `income_account_scope` | config, stamped into gold | yes | re-stamped from config |
 
-The payer store joins the merchant store in `reload -a`'s carry-across: a
-store that is not carried is lost with no backup, so the rebuild walks a
-LIST of stores rather than naming one. After carrying a store, the
+`reload -a` carries the payer store across beside the merchant store. A
+store that is not carried is lost with no backup, so the rebuild walks
+a list of stores rather than naming one. After carrying a store, the
 rebuild respells any retired value in it to its successor (§2). So a
 carry from a file older than migration 0111 brings no retired spelling
 into the rebuilt file.
 
 `wealthdb status -v` prints an `income:` block with the backlog count.
-The catch-all-kind counter (`excluded_unmapped`) is **not** duplicated
-per family, but not because the two count the same rows: it joins
-`spend_scoped_accounts()`, and where the two scopes agree — the default —
-one number answers for both.
+The catch-all-kind counter (`excluded_unmapped`) is not repeated per
+family. It joins `spend_scoped_accounts()`. Where the two scopes agree,
+which is the default, one number answers for both.
 
 ---
 
 ## 10. Decisions of record
 
-1. **Three CLI views**, `summary / types / transactions`. No `payers`
+1. **Three CLI views**: `summary`, `types`, `transactions`. No `payers`
    view: payers rank on the dashboard only, as merchants do.
 2. **Plaid's `INCOME` vendored verbatim**, version 2, plus eight
-   extensions and fourteen deltas. Widened deliberately for a general
-   audience — the
-   product is published, so the vocabulary names what a household
-   commonly receives rather than what one deployment does.
-3. **Gross as booked.** `withheld` is a memo, off by default, never read
-   by `net_income` (§5).
-4. **A private fund's `distribution` is excluded until proven income**:
-   the floor places `capital_return`, and a rule or a pin promotes the
-   exception. `capital_gain` stays income — it returns no basis.
-5. **The instrument is the payer** for a row carrying one; the column
+   extensions and fourteen deltas. The vocabulary names what a
+   household commonly receives, not what one deployment does, because
+   the product is published.
+3. **Gross as booked.** `withheld` is a memo, off by default, never
+   read by `net_income` (§5).
+4. **A private fund's `distribution` is excluded until proven income.**
+   The floor places `capital_return`, and a rule or a pin promotes the
+   exception. `capital_gain` stays income, because it returns no basis.
+5. **The instrument is the payer** for a row carrying one. The column
    keeps the free-text privacy class regardless.
-6. **One `categorize`, two families**, with a separate payer store keyed
-   by the shared signature.
-7. **Own account scope**; `income.categorization` inherits
+6. **One `categorize`, two families**, with a separate payer store
+   keyed by the shared signature.
+7. **Own account scope.** `income.categorization` inherits
    `spending.categorization` when absent.
-8. **One matcher.** Income pairs nothing and reads the shared verdicts;
-   `spending.transfer_overrides` serves both.
+8. **One matcher.** Income pairs nothing and reads the shared verdicts.
+   `spending.transfer_overrides` serves both families.
 9. The Wealth Overview's investment-income card reads the income base.
-10. **Reimbursements are excluded** via the delta; netting them against
-    spending is a recorded spending follow-up, not this work.
+10. **Reimbursements are excluded** via the delta. Netting them against
+    spending is an open follow-up (§11).
 11. Window default: **trailing twelve months**.
-12. **Reversals net inside their type.** `interest` enters positive only,
-    the sign being the only thing that separates two opposite events;
-    `deposit` takes both signs like every other income kind (§1).
-13. **The model decides the KIND of income only where the data does
-    not.** On the spending side the model only ever names the merchant
-    and files that merchant — it may never decide that a card purchase
-    was really an investment. On the income side it is being asked what
-    kind of income a receipt is, which is a claim about the transaction,
-    and the data makes that claim itself on every admitted kind but
-    `deposit`. So the kind floor is read over the payer store here
-    (migration 0073, §3) and candidacy is restricted to `deposit` in
-    every backlog mode (§7). Two independent guards, as the fence and
-    the context level are two.
+12. **Reversals net inside their type.** `interest` enters positive
+    only, because the sign is the only thing that separates two
+    opposite events. `deposit` takes both signs like every other income
+    kind (§1).
+13. **The model decides the kind of income only where the data does
+    not.** On the spending side the model names and files the merchant,
+    and may never decide that a card purchase was an investment. On the
+    income side it is asked what kind of income a receipt is, which is
+    a claim about the transaction. The data makes that claim itself on
+    every admitted kind but `deposit`. So two independent guards apply:
+    the kind floor is read over the payer store (migration 0073, §3),
+    and candidacy is restricted to `deposit` in every backlog mode (§7).
 
 ---
 
 ## 11. Open follow-ups
 
-- **The package name.** The deterministic pass lives in
-  `internal/spending` and is now the enrichment engine for both
-  families. Renaming it (`internal/enrichment`) touches every import for
-  no behavioural gain and was left out of scope.
-- **Reimbursement netting** on the spending side: an expense claim is
-  money back for a specific outflow, and spending's refund side is where
-  that would net. Excluded from income here; not designed. An insurance
-  payout is NOT this case and is income — see §2: the premium was
-  already counted as spending, and nothing links a payout to the
-  premiums it answers.
-- **Investment buys and sells, and maturities, have a home now.** The
-  cash flow statement's investing section reads them beside income and
-  spending ([CASHFLOW.md](CASHFLOW.md) §4). Corporate actions did NOT
-  join them: gold pins no canonical sign for the kind, so the
-  resolution excludes it outright and a per-adapter sign pin is what
-  would change that (CASHFLOW.md §11). The interest-versus-principal
-  split stays where SPENDING.md §10 leaves it.
-- **A rewards credit reaches gold as `refund` today.** Every card adapter
-  maps a statement credit to `refund`, being unable to tell one from a
-  merchant credit once the issuer's descriptor is gone, so the `reward`
-  kind's move to income does not yet bite. What changes that is an
-  adapter learning the difference, not a gold migration.
-- **The matcher pairs a deposit with its own same-amount reversal** when
-  the two fall inside its window, so both legs read `internal_transfer`
-  and leave the base rather than netting inside the payer's type. The net
-  is identical either way; the account of it is not. The remedy, if one
-  is wanted, is the transfer-override ledger that already exists for
-  every other matcher false positive.
-- **Cash-flow ingestion for a balances-only source.** A source whose
-  bronze holds statements read for balances alone contributes no
-  transactions, so every funding wire it sent has no leg for the matcher
-  to pair and the receiving leg stays in the income base as an unplaced
-  receipt (§1). Parsing those statements into transactions fixes it at
-  the root and needs no income change at all — it is a collector
-  project, and the same gap a returns reconciliation of the same era
-  waits on. `income.accounts.exclude` is the remedy until then.
-- **A built-in income rule for platform custody deposits** — a `deposit`
+- **The package name.** The deterministic pass for both families lives
+  in `internal/spending`. Renaming it (`internal/enrichment`) would
+  touch every import for no behavioural gain.
+- **Reimbursement netting** on the spending side. An expense claim is
+  money back for a specific outflow, and spending's refund side is
+  where it would net. Income excludes it; the netting is not designed.
+  An insurance payout is NOT this case and is income (§2).
+- **A rewards credit reaches gold as `refund`.** Card adapters map a
+  statement credit to `refund`. Once the issuer's descriptor is gone
+  they cannot tell it from a merchant credit. No adapter emits the
+  `reward` kind, so its income floor never fires. An adapter that
+  learns the difference fixes this, not a gold migration.
+- **The matcher pairs a deposit with its own same-amount reversal**
+  when the two fall inside its window. Both legs then read
+  `internal_transfer` and leave the base, rather than netting inside
+  the payer's type. The net is the same either way; the account of it
+  is not. The remedy, if one is wanted, is the transfer-override ledger
+  that exists for every other matcher false positive.
+- **Transactions for a balances-only source.** A source whose bronze
+  holds statements read for balances alone contributes no
+  transactions. Every funding wire it sent has no leg for the matcher
+  to pair, and the receiving leg stays in the income base as an
+  unplaced receipt (§1). Parsing those statements into transactions
+  fixes it at the root and needs no income change. It is collector
+  work. `income.accounts.exclude` is the remedy until then.
+- **A built-in income rule for platform custody deposits.** A `deposit`
   on a private-market custody account is the holder's own capital going
-  in, and `capital_return` is what it should read as. It is the
-  general-audience version of the exclusion above, and it needs
-  something the rule hook does not carry today: the account KIND and the
-  source, rather than a narrative.
+  in, and should read `capital_return`. This is the general version of
+  the exclusion above. It needs something the rule hook does not carry:
+  the account kind and the source, not a narrative.
 - **No `report_income_summary_multi`.** Spending publishes a
-  multi-currency sibling for all three of its reports; income has two.
-  Nothing reads either summary `_multi` today, so the gap is recorded
-  rather than filled — an unread macro is a shape to keep true for
-  nothing. A Metabase card that needs the summary in every reporting currency
-  is what would close it.
-- ~~**Whether a transfer override can assert a cross-currency pair.**~~
-  Answered: it can. The partition by native currency belongs to the
-  matcher's AMOUNT pass, and both phases that assert a pair outright —
-  the override ledger and a reference the source stamped on both legs —
-  run ahead of it and never consult a currency. So the two legs of a
-  wire converted in transit are reachable by a `match` line, and
-  reachable without one wherever the bank stamped one transaction
-  number on both. SPENDING.md §3 says so in both places.
+  multi-currency sibling for all three of its reports; income for two.
+  Nothing reads either summary `_multi`, so the gap stays. An unread
+  macro is a shape to keep true for nothing. A Metabase card that needs
+  the summary in every reporting currency would close it.

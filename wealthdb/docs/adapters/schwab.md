@@ -1,26 +1,26 @@
 # Schwab adapter
 
-Adapter that projects two Schwab silver SQLite databases into the
+The adapter projects two Schwab silver SQLite databases into the
 canonical gold schema:
 
-- `schwab-api` — Trader-API JSON, live position / cash
-  snapshots and ~2y of transactions.
-- `schwab-web` — netbanking scrape (live account list +
-  reconstructed historical positions, cash balances, and
-  transactions from monthly statement PDFs).
+- `schwab-api`: Trader API JSON. Live position and cash snapshots, and
+  about two years of transactions.
+- `schwab-web`: the netbanking scrape. The account list, and the
+  positions, cash balances, transactions and tax lots read from
+  statements, tax forms and the transaction-history export.
 
-Implements the `silver.Adapter` / `silver.Connection` interface
-defined in [../DESIGN.md](../DESIGN.md) §6. When both subsources
-are configured the orchestrator (`merge.go`) splices them: web
-backfills pre-api-coverage transactions and contributes
-per-statement-period historical positions and cash balances that
-api doesn't surface at all. See §7 below for the merge contract,
-§7.1 for the suffix↔hashValue bridge and §8 for cost basis and tax
-lots.
+It implements the `silver.Adapter` / `silver.Connection` interface of
+[../DESIGN.md](../DESIGN.md) §6. With both subsources configured, the
+orchestrator (`merge.go`) splices them:
 
-Single-path mode (`"kind": "schwab", "path": ...`) is preserved
-for users with only the api silver — it's treated as api-only
-and skips the orchestrator's merge layer.
+- The web feed backfills transactions from before the api's coverage.
+- It adds statement-period positions and cash balances, which the api
+  does not have.
+- It adds the tax lots (§8).
+
+§7 has the merge contract and §7.1 the account bridge. A single `path`
+(`"kind": "schwab", "path": ...`, no subsources) reads an api silver
+alone, without the merge layer.
 
 ## 1. Silver sources
 
@@ -34,9 +34,9 @@ and skips the orchestrator's merge layer.
 
 | Field | Source | Notes |
 | --- | --- | --- |
-| `account_external_id` | Schwab `hashValue` | Opaque account hash, stable per Schwab developer-app. Plaintext account number stays in payload. |
-| `instrument_external_id` | CUSIP if present, else symbol | Mirrors silver's `instrument_key`. |
-| `transaction_external_id` | Schwab `activityId` | Already globally unique within Schwab. |
+| `account_external_id` | Schwab `hashValue` | Opaque account hash, stable per Schwab developer app. The account number is the `display_name` and stays in the payload. |
+| `instrument_external_id` | CUSIP if present, else symbol | Silver's `instrument_key`. A web ticker maps to the api's CUSIP where the api states one (§8.3). |
+| `transaction_external_id` | Schwab `activityId` | Unique within Schwab. A web row's id is a synthetic SHA-256 prefix (§7.2). |
 | `realized_lot_external_id` | web `closed_lots` key | A hash of `(logical_doc_key, document_kind, lot_index)`: stable across loads, one per copy of a lot. |
 | `position_lots.lot_key` | web `open_lots.lot_index` | The lot's place in print order under its holding. |
 
@@ -44,98 +44,77 @@ and skips the orchestrator's merge layer.
 
 | Silver table | Gold target | Notes |
 | --- | --- | --- |
-| `schema_meta` / `dump_runs` | meta only | Used by `Status` / `ChangeWindow`; not projected as facts. |
-| `accounts` | `accounts` (kind=`brokerage`) | Account hash is `account_external_id`. |
-| `user_preference` | — | Schwab-internal UI/streamer preferences; no portfolio relevance. Likely permanent omit. |
-| `account_balances` | `cash_balances` | One row per `balance_kind`; cash-relevant fields only. |
-| `positions` | `positions`; `CASH_EQUIVALENT` rows → `cash_balances` | See §4 below; book value in §8. |
-| `open_orders` | — | Operational state, not portfolio state. Deferred. |
-| `transactions` | `transactions` | See `kind` mapping in §5. |
+| `schema_meta` / `dump_runs` | meta only | Read by `Status` and `ChangeWindow` (§6). |
+| `accounts` | `accounts` (kind `brokerage`) | Account hash as `account_external_id`. The optional `nickname` column becomes the gold `nickname`. |
+| `user_preference` | — | Schwab-internal UI and streamer preferences. Not projected. |
+| `account_balances` | `cash_balances` | The `cashBalance` of each `balance_kind` (`initial`, `current`, `projected`, `aggregated`), in USD. A row without one, or of another kind, emits nothing. |
+| `positions` | `positions`; `CASH_EQUIVALENT` and `CURRENCY` rows → `cash_balances` | §4; book value in §8. |
+| `instruments` | `instruments.name` | The latest description per symbol, where a position states none (§4). |
+| `open_orders` | — | Operational state, not portfolio state. Not projected. |
+| `transactions` | `transactions` | §5 maps the kinds. |
 
 The web silver's tables are in §7 and §8.
 
 ## 4. Position routing
 
-Schwab models cash positions as instruments with
-`assetType = 'CASH_EQUIVALENT'`, but gold separates cash into
-`cash_balances`. The adapter detects `CASH_EQUIVALENT` (and
-`MONEY_MARKET` mutual-fund-style cash holdings, case-by-case) and
-emits a `CashBalanceChange` instead of a `PositionChange`. The
-`currency` and `marketValue` carry over directly.
+Schwab models cash as positions with `assetType` `CASH_EQUIVALENT` or
+`CURRENCY`. Gold keeps cash in `cash_balances`, so the adapter emits
+such a row as a `current` `CashBalanceChange` in USD, at its
+`marketValue`. A purchased money-market fund stays a position,
+`(cash, fund)` (below).
 
-All other Schwab positions land in `positions` with the
-`(asset_class, vehicle)` pair derived from
-`payload.instrument.assetType` (plus, for collective vehicles,
-`instrument.type` and the security name):
+Every other position lands in `positions`. `taxonomyFor` derives the
+`(asset_class, vehicle)` pair from `instrument.assetType`, plus
+`instrument.type` and the security name for collective vehicles:
 
 | Schwab `assetType` | Gold `(asset_class, vehicle)` |
 | --- | --- |
 | `EQUITY` | `(public_equity, stock)` |
-| `ETF` | `(RefineETFExposure(name), etf)` (in the API's enum, but real dumps use `COLLECTIVE_INVESTMENT` below) |
-| `MUTUAL_FUND` | `(fundExposure(name), fund)` — name-derived exposure, money-market funds → `cash` |
+| `COLLECTIVE_INVESTMENT` with `instrument.type = EXCHANGE_TRADED_FUND` | `(RefineETFExposure(name), etf)`. This is how the Trader API types ETFs. |
+| `COLLECTIVE_INVESTMENT`, other | `(fundExposure(name), fund)` |
+| `ETF` | `(RefineETFExposure(name), etf)`. In the API's enum; position dumps use `COLLECTIVE_INVESTMENT`. |
+| `MUTUAL_FUND` | `(fundExposure(name), fund)` |
 | `BOND` / `FIXED_INCOME` | `(fixed_income, bond)` |
 | `OPTION` | `(public_equity, option)` (equity underlying) |
 | `FUTURE` | `(public_equity, future)` (equity underlying) |
-| `COLLECTIVE_INVESTMENT` | `(fundExposure(name), fund)`; with `instrument.type = EXCHANGE_TRADED_FUND` → `(RefineETFExposure(name), etf)` — this is how the Trader API actually types ETFs |
-| (unrecognised) | `(other, other)` (original `assetType` preserved in payload) |
+| (unrecognised) | `(other, other)`; the `assetType` stays in the payload |
 
-For ETF and fund wrappers the exposure is refined from
-`instrument.description` (`silver.RefineETFExposure`): crypto →
-`crypto`, bullion → `metal` (miners funds stay `public_equity` —
-they hold stocks), bond / fixed-income → `fixed_income`, everything
-else → `public_equity`. Purchased money-market funds reaching the
-`MUTUAL_FUND` / `COLLECTIVE_INVESTMENT` path take `cash` instead
-(`fundExposure` routes a money-fund name to cash before name-based
-exposure refinement). Name-shy exchange-traded products are pinned
-via the config's `instrument_overrides` (DESIGN.md §13.9).
+- `silver.RefineETFExposure` reads the exposure from the name: crypto →
+  `crypto`, bullion → `metal` (miners funds stay `public_equity`: they
+  hold stocks), bond and fixed-income → `fixed_income`, else
+  `public_equity`.
+- `fundExposure` first routes a money-market fund's name to `cash`,
+  then refines the rest the same way.
+- Config `instrument_overrides` pins a product whose name hides its
+  exposure ([../DESIGN.md](../DESIGN.md) §13.9).
 
-### `instrument.name` is empty for EQUITY positions
+### Instrument names
 
-The `instruments.name` column populates from `position.payload.
-instrument.description`. Schwab's Trader API returns `description`
-in `COLLECTIVE_INVESTMENT` / `MUTUAL_FUND` / `BOND` payloads but
-**not** in `EQUITY` payloads — equity instrument blocks carry only
-`{assetType, cusip, symbol, netChange}`. The same omission applies
-to `transactions[].transferItems[].instrument` for equity legs:
-`description` is absent.
+`instruments.name` is the position's `instrument.description`. The
+Trader API states one for `COLLECTIVE_INVESTMENT`, `MUTUAL_FUND` and
+`BOND` positions, but not for `EQUITY` ones. An equity block carries
+only `{assetType, cusip, symbol, netChange}`.
 
-So gold's `name` column is empty for any Schwab equity position
-(visible in `wealthdb holdings positions --columns all`, where the
-`name` column shows blank for equity rows but populated for
-funds/bonds). The company name lives on Schwab's
-`/marketdata/instruments` or `/marketdata/quotes` endpoints,
-which `schwab-api` doesn't currently call.
-
-Three places this could be fixed; none is done in wealthdb v1,
-deliberately:
-1. `schwab-api` enriches positions/instruments by calling
-   `/marketdata/quotes` (or `instruments?projection=symbol-search`)
-   once per held symbol. Right place architecturally — silver is
-   the per-broker faithful projection.
-2. A future market-data ingest in wealthdb (DESIGN.md §13.8)
-   would populate instrument names from a vendor feed regardless
-   of which silver registered the position.
-3. (Don't.) Synthesise `name = symbol`, hard-code a CSV, etc.
-   Rejected — equity ticker IS the name to a human reader, no
-   need to duplicate.
-
-Until either (1) or (2) lands, equity rows render with an empty
-`name` column. The `symbol` column is still populated.
+So the adapter falls back to the silver `instruments` table: the latest
+description per symbol (`latestKnownInstrumentNames`). `schwab-api`
+fills it from `/marketdata/v1/instruments` on every download unless
+`--no-instruments` is given. A silver without the table leaves an
+equity's name empty; its `symbol` is still set.
 
 ## 5. `transactions.kind` mapping
 
-Schwab's `silver.transactions.kind` discriminator, observed in
-real data, maps to the canonical gold `kind` taxonomy:
+The api silver's `transactions.kind` (Schwab's transaction `type`) maps
+to gold's `kind` (`kindFor`):
 
 | Schwab | Gold | Adapter notes |
 | --- | --- | --- |
 | `TRADE` | `buy`, `sell` or `other` | sign of `netAmount` (negative = buy); zero is `other` (see below) |
 | `JOURNAL` | `journal` | catch-all internal cash move |
-| `DIVIDEND_OR_INTEREST` | `dividend` or `interest` | from `payload` subtype |
+| `DIVIDEND_OR_INTEREST` | `dividend` or `interest` | from the description: a cash-sweep, margin or bond interest prefix, or a Treasury note or bond, is `interest` |
 | `WIRE_IN` / `CASH_RECEIPT` / `ELECTRONIC_FUND`(+) | `deposit` | |
 | `WIRE_OUT` / `CASH_DISBURSEMENT` / `ELECTRONIC_FUND`(−) | `withdrawal` | |
 | `RECEIVE_AND_DELIVER` | `corporate_action`, `journal`, `transfer_in` or `transfer_out` | see below |
-| `SMA_ADJUSTMENT` | `other` | margin-related, rare |
+| `SMA_ADJUSTMENT`, `MEMORANDUM`, `MONEY_MARKET`, any other | `other` | the raw type stays in the payload ([../DESIGN.md](../DESIGN.md) §6.8) |
 
 A `TRADE` with a zero `netAmount` buys and sells nothing. Schwab books
 a "System transfer" this way. It restates a holding at its cost, and the
@@ -155,138 +134,212 @@ reads them as a group:
 - Any other row is a delivery: `transfer_in` for a positive quantity,
   `transfer_out` for a negative one.
 
-Per the global fallback rule (DESIGN.md §6.8): any new Schwab
-`kind` value an adapter version doesn't recognise lands as `other`
-with the original string preserved in payload.
+**Signs.** The API signs `netAmount` from the account's side, and the
+adapter keeps that sign on every kind. A row signed against its kind is
+a correction, such as a dividend clawed back, and nets against the
+booking it corrects.
 
-The API signs `netAmount` from the account's side, and the adapter
-keeps that sign on every kind. A row signed against its kind is a
-correction, such as a dividend clawed back, and nets against the
-booking it corrects. The web feeds print most figures as magnitudes,
-so there the kind orients the figure; only a minus printed on an
-inflow kind is kept, because the statements print one only on such a
-correction. The statement parser's `Unknown` bucket is the exception:
-its rows carry the figure as printed, and the cash shapes read out of it
-by name (a short sale and its cover, a pass-through or borrow fee, a
-withholding or its reclaim, a fund's capital-gain payout) keep that sign.
-Anything else the bucket carries (a share journal, an in-kind
-transfer, a corporate action, an expiry) stays `other`.
+### 5.1 Web transactions
+
+The web silver's `kind` is the word Schwab prints on statements and in
+the transaction-history export. `webKind` (`web_reader.go`) maps it:
+
+| Web `kind` | Gold |
+| --- | --- |
+| `Buy`, `Buy to Open`, `Buy to Close`, `Purchase`, `Reinvest`, `Reinvest Shares` | `buy` |
+| `Sell`, `Sell to Open`, `Sell to Close`, `Sale`, `Redemption` | `sell` |
+| dividend words (`Cash Dividend`, `Qualified Dividend`, `Reinvest Dividend`, …) | `dividend` |
+| interest words (`Bond Interest`, `Credit Interest`, `Margin Interest`, …) | `interest` |
+| `Fee`, `Service Fee`, `ADR Mgmt Fee` | `fee` |
+| `Foreign Tax Paid`, `NRA Tax Adj`, `Pr Yr NRA Tax`, `Tax` | `tax` |
+| `Deposit`, `MoneyLink Deposit`, `Funds Received`, `Wire Received` | `deposit` |
+| `Withdrawal`, `Wire Sent` | `withdrawal` |
+| `Transfer Out` | `withdrawal` for a cash distribution, else `transfer_out` |
+| `Transfer In` | `transfer_in` |
+| `MoneyLink Transfer`, `Transfer` | `deposit` / `withdrawal` by the amount's sign; `journal` without one |
+| `Security Transfer`, `Journal`, `Journaled Shares` | `journal` |
+| corporate-action words (`Split`, `Reverse Split`, `Spin-off`, `Exchange`, `Cash In Lieu`, …) | `corporate_action` |
+| `Unknown` | see below |
+| anything else | `other` |
+
+- A reinvested dividend is two rows: `Reinvest Dividend` (a dividend)
+  and `Reinvest Shares` (a buy). They net to zero cash.
+- The undirected transfer words take their direction from the amount.
+  The API books the same movements as deposits and withdrawals, so the
+  kinds stay continuous across the two feeds.
+- `Unknown` is the statement parser's catch-all. A funds journal in it
+  (`Journaled Funds …`) takes its direction from the amount. Cash shapes
+  are read by the name the statement prints first: a short sale (`sell`)
+  and its cover (`buy`), a pass-through or service fee (`fee`), a
+  withholding or its reclaim (`tax`), a fund's capital-gain payout or a
+  dividend correction (`dividend`). Anything else in it (a share
+  journal, an in-kind transfer, a corporate action, an expiry) stays
+  `other`.
+
+**Signs.** The web feeds print most figures as magnitudes, so the kind
+orients the figure. A minus printed on an inflow kind is kept: the
+statements print one only on a correction. The `Unknown` bucket keeps
+every figure as printed, a debit in parentheses.
+
+**Narrative.** A web row's description is the movement, then the
+security (`webNarrative`). The movement is the export's `Action`, or a
+statement row's `action` or `category`; `Unknown` names none. The
+security alone cannot tell a dividend from the withholding taken from
+it.
 
 ## 6. Change number
 
-`LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
-`dump_runs` is empty.
+Each feed has its own change number. The source's is the later of the
+two.
+
+- **api:** `MAX(dump_runs.snapshot_at)`, or `-1` when `dump_runs` is
+  empty.
+- **web:** the later of `MAX(dump_runs.snapshot_at)` and
+  `MAX(transactions.timestamp)` without the `form_1099b` rows, or `-1`
+  when both are empty.
+
+The web feed's statement-period dates (`historical_position_snapshots`,
+`historical_cash_balances`) never count. They widen `Status`'s snapshot
+range, and the load window once a load triggers. But `ChangeWindow`
+never advances the watermark to them. A latest period end past the
+latest dump and transaction would otherwise keep the source from ever
+reading as up to date.
+
+- A load triggers on a dump past the watermark, or on a transaction
+  past it (web: without the `form_1099b` rows).
+- The web window then widens to every statement-period date, so the
+  loader's window-DELETE covers the historical gold rows before they
+  are re-inserted.
 
 Each feed is observed through its latest run. The source is observed
 through the later of the api and web feeds: each reads every account
-(DESIGN.md §6.4).
+([../DESIGN.md](../DESIGN.md) §6.4).
 
 ## 7. Web subsource (schwab-web)
 
-When the `schwab-web` subsource is configured, the adapter
-contributes what the api silver doesn't have. The tax lots, open
-and realized, are in §8.
+With the `schwab-web` subsource configured, the adapter adds what the
+api silver does not have. §8 has the tax lots, open and realized.
 
-- **Historical position snapshots.** `historical_position_snapshots`
-  carries per-statement-period holdings (one row per (period_end,
-  account, instrument_key)). Cadence is monthly when statements
-  are available. Statements carry no CFI/assetType code, so the
-  `(asset_class, vehicle)` pair is derived from the statement
-  section (`Equities` → `(public_equity, stock)`, `Exchange Traded
-  Funds` → `(RefineETFExposure(description), etf)`, `Fixed Income`
-  → `(fixed_income, bond)`, `Options` → `(public_equity, option)`),
-  falling back to instrument-key / description shape heuristics for
-  other sections — OCC symbol or CALL/PUT → `(public_equity,
-  option)`, money-market name or XX-ending money-fund ticker →
-  `(cash, fund)`, CUSIP or coupon → `(fixed_income, bond)`,
-  word-ETF → etf, four-letter-plus-X ticker → fund, ETF-only
-  issuer name (iShares / SPDR / Vanguard / …) → etf, else
-  `(public_equity, stock)`. Per-column upsert lets a
-  later api emission win on the underlying instrument row's
-  dimension when the same key reappears source-classified.
-  A statement prints a holding's accrued interest or declared
-  dividend apart from its market value. Gold's `market_value`
-  includes it and `accrued_interest` says how much it is (DESIGN.md
-  §7.1); the printed value stays in the payload as
-  `printed_market_value`. The api positions state none.
-- **Historical cash balances.** `historical_cash_balances`
-  carries opening + closing balances per statement period.
-  Opening lands at `period_start`, closing at `period_end`; rows
-  with NULL on a side skip that side rather than coercing to 0.
-- **Pre-api transaction backfill.** Web's transactions reach
-  ~3-4y back (limited by Schwab's transaction-history export);
-  the api only covers ~2y. The adapter emits web transactions
-  strictly older than each account's api-coverage-start. The
-  statement and history feeds carry the sales; the `form_1099b`
-  rows stay out of the transactions (§8.3).
-- **Nickname.** Web's `accounts.nickname` is the account
-  label as Schwab renders it in the UI (e.g. an account-type
-  hint like "IRA Account …NNN"). Promoted onto AccountChange so
-  per-column upsert merges it with api's other account columns.
+- **Statement positions.** `historical_position_snapshots` holds the
+  holdings of each statement period, one row per (`as_of_date`,
+  account, `instrument_key`). The `instrument_key` is both the
+  instrument id and the `position_key`. Statements carry no
+  `assetType`, so the pair comes from the statement section
+  (`taxonomyHistorical`):
+  - `Equities` → `(public_equity, stock)`;
+  - `Exchange Traded Funds` → `(RefineETFExposure(description), etf)`;
+  - `Fixed Income` → `(fixed_income, bond)`;
+  - `Options` → `(public_equity, option)`;
+  - any other section falls back to the key and description shapes:
+    OCC symbol or CALL/PUT → `(public_equity, option)`; money-market
+    name or money-fund ticker → `(cash, fund)`; CUSIP or coupon →
+    `(fixed_income, bond)`; the word ETF → etf; a four-letter-plus-X
+    ticker → fund; an ETF-only issuer name (iShares, SPDR, Vanguard,
+    …) → etf; else `(public_equity, stock)`.
+
+  The api's classification wins on the instrument row when the same
+  key appears there (per-column upsert). A statement prints a holding's
+  accrued interest or declared dividend apart from its market value.
+  Gold's `market_value` includes it, and `accrued_interest` says how
+  much it is ([../DESIGN.md](../DESIGN.md) §7.1). The printed value
+  stays in the payload as `printed_market_value`. The api positions
+  state none.
+- **Statement cash balances.** `historical_cash_balances` holds the
+  opening and closing balance of each statement period. Opening lands
+  at `period_start`, closing at `period_end`. A NULL side is skipped,
+  not read as 0.
+- **Transaction backfill.** The web transactions reach further back
+  than the api's. The adapter emits the web rows from before each
+  account's api coverage start (§7.2). The `form_1099b` rows stay out
+  (§8.3).
+- **Web sub-feeds.** The statements (`statement_pdf`) and the
+  transaction-history export (`tx_history_json`) overlap. The
+  third-party distribution letters (`third_party_distribution`) add
+  transfers out. The adapter reconciles them before emitting
+  ([INTEROP §8](../../../collectors/schwab-web/INTEROP.md#8-gold-layer-hand-off-the-1099-b-and-distribution-sources)):
+  1. Across the export's span per account, the export is the record
+     for every row that is not an external flow. A statement row in
+     that span is dropped. Older statement rows stay as the deep
+     backfill.
+  2. A cash distribution names the counterparty, so it outranks a
+     matching statement or export debit. A match is within 3 days, and
+     within the larger of $1 and 0.5% of the amount. Every such debit
+     is dropped.
+  3. A statement external flow (deposit, withdrawal, transfer,
+     journal) that matches an export one within the same tolerance is
+     dropped, 1:1. A flow only one sub-feed records stays.
+
+  A securities distribution is new data and always passes through.
+- **Accounts.** The web `accounts` row adds two columns to the api's
+  account by per-column upsert:
+  - `nickname`, the label Schwab shows in the UI;
+  - `account_registration`, the statement's registration label. It
+    becomes the `account_category` and sets the tax wrapper (IRA,
+    Coverdell ESA, 529, …). An unknown label leaves the wrapper unset.
 
 ### 7.1. Suffix ↔ hashValue bridge
 
-Web stores `account_external_id` as the 3-to-5-digit account
-suffix Schwab shows in the UI. The api stores Schwab's opaque
-`hashValue`. The orchestrator builds the suffix → hashValue
-bridge lazily on first Snapshots/Transactions call, in
-two tiers per web account:
+The web silver keys an account by the 3-to-5-digit suffix Schwab shows
+in the UI. The api keys it by Schwab's opaque `hashValue`. The
+orchestrator builds the suffix → hashValue bridge on the first
+`Snapshots` or `Transactions` call (`buildAccountBridge`).
 
-1. **Exact.** When the web account's payload carries a non-empty
-   `account_number_full` (the number as printed on statement
-   PDFs, e.g. `1234-5678`), both it and every api
-   `accounts.account_number` (a column the api silver promotes
-   from the `/accounts/accountNumbers` response) are reduced to
-   their digit sequences and compared for equality. The UI
-   suffix is by construction the trailing digits of the account
-   number, so a full number that doesn't end in the account's
-   own suffix can only be a mis-parsed statement header — that
-   disagreement fails the bridge loudly rather than rebridging
-   the account's history onto the wrong hashValue. Two api
-   accounts can't share a full number, but the case is guarded
-   with the same loud failure as the suffix tier. A full number
-   matching no api account falls through to the suffix tier —
-   the api roster may lag the statement side.
-2. **Suffix.** Without a resolving full number, the web suffix
-   is matched against the trailing digits of every api
-   `account_number`. This tier is unambiguous as long as no two
-   api accounts share the same trailing-N digits; a web account
-   that does trigger ambiguity fails the bridge loudly rather
-   than silently mismapping.
+- The api side reads each account's latest row, so a closed account
+  still bridges. It compares against `accounts.account_number`, which
+  the api silver promotes from `/accounts/accountNumbers`.
+- The web side reads every account. The newest non-empty
+  `account_number_full` (the number a statement prints, e.g.
+  `1234-5678`) wins.
 
-Web rows whose suffix doesn't bridge to any api hashValue are
-dropped silently — they have no api counterpart to merge with
-and emitting them under the raw suffix would create orphaned
-gold rows.
+Each web account resolves in two tiers:
+
+1. **Exact.** With an `account_number_full`, the full number and every
+   api account number are reduced to their digits and compared.
+   - The suffix is the trailing digits of the account number. A full
+     number that does not end in the suffix can only be a mis-parsed
+     statement header, and the bridge fails loudly.
+   - Two api accounts matching one full number also fail the bridge.
+   - A full number that matches no api account falls through to the
+     suffix tier: the api roster may lag the statements.
+2. **Suffix.** The web suffix is matched against the trailing digits of
+   every api account number. Two matches fail the bridge loudly.
+
+A web account that bridges to no api account is skipped, with all its
+rows. Emitted under the raw suffix, they would be orphaned gold rows.
 
 ### 7.2. Transaction splice — hard cut, not overlap merge
 
-Per [INTEROP §2](../../../collectors/schwab-web/INTEROP.md#2-transaction-identifier-mismatch):
-the two silvers' `activity_id` spaces are disjoint (api uses
-Schwab's real `activityId`; web uses a synthetic SHA-256 prefix).
-Any cross-source per-row match would be heuristic and risk
-double-counting. Inside the api window, api wins (real
-`activity_id`, no parser approximation); web emits only
-timestamps strictly before the account's api coverage start, and
-api only those from it on.
+The two silvers' id spaces are disjoint: the api uses Schwab's
+`activityId`, the web a synthetic SHA-256 prefix
+([INTEROP §2](../../../collectors/schwab-web/INTEROP.md#2-transaction-identifier-mismatch)).
+A per-row match across them would be heuristic and risk counting a
+transaction twice. So each account's history splits at its api
+coverage start:
 
-The coverage start is the account's first api row, unless that row
-is a stray: the api can return one trade from months before its
-history proper, then fall silent. A leading api row followed by more
-than 30 days of api silence, during which the web books the account
-as active, is set aside, and the history starts at the next row. The
-web's activity is the evidence; a quiet account keeps its first row
-as its start.
+- the web emits the rows strictly before it;
+- the api emits the rows from it on, with its real `activityId` and no
+  parser approximation;
+- an account with no api transactions takes every web row.
+
+The coverage start is the account's first api row, unless that row is
+a stray. The api can return one trade from months before its history
+proper, then fall silent. A leading api row followed by more than 30
+days of api silence, during which the web books the account as active,
+is set aside (`apiCoverageStart`). The history then starts at the next
+row. The web's activity is the evidence: a quiet account keeps its
+first row as its start.
 
 ### 7.3. PDF sha256 churn
 
-INTEROP §3 documents that Schwab regenerates statement PDFs per
-download (different sha256 each time, same logical content). The
-mitigation lives in `schwab-web` silver: every load gate keys on the
-logical document, not its bytes, and the statement tables keep one
-row per account and period end, owned by the first statement that
-prints it (schwab-web DESIGN.md §4.4 and §4.5). wealthdb doesn't need
-to dedupe further.
+Schwab regenerates a statement PDF on every download: a new sha256,
+the same content (INTEROP §3). The `schwab-web` silver handles it:
+
+- every load gate keys on the logical document, not its bytes;
+- the statement tables keep one row per account and period end, owned
+  by the first statement that prints it (schwab-web DESIGN.md §4.4,
+  §4.5).
+
+The adapter does not dedupe further.
 
 ## 8. Cost basis and tax lots
 
@@ -314,10 +367,10 @@ included. Every book value carries its stamp (DESIGN.md §7.4).
 
 ### 8.2. Open lots
 
-`open_lots` holds the lots the 2020-2024 statements print under each
-holding. Each lot lands in `position_lots` beside its holding's
-position row: same period end, bridged account and position key
-(the holding's `instrument_key`).
+`open_lots` holds the lots the statements print under each holding.
+Each lot lands in `position_lots` beside its holding's position row:
+same period end, bridged account and position key (the holding's
+`instrument_key`).
 
 - `lot_key` is the lot's place in print order (`lot_index`).
 - `quantity` and `book_value` are as printed. A short lot prints
@@ -386,20 +439,20 @@ The `form_1099b` rows also stay out of the transaction range that
 
 ## 9. Open questions
 
-- **Tax withholding on dividends.** Schwab reports the withholding
-  inside the `DIVIDEND_OR_INTEREST` payload's `transferItems`. The
-  current mapping puts the dividend gross in `gross_amount` and net
-  in `net_amount`; a separate `tax` row is not generated. Revisit
-  if tax-lot work needs the withholding as a distinct event.
-- **`open_orders` projection.** Reserved for a future `wealthdb
-  orders` subcommand; no schema work needed in gold yet.
+- **Tax withholding on dividends.** A `DIVIDEND_OR_INTEREST` row
+  carries only its cash leg. The adapter books its `netAmount`, leaves
+  `gross_amount` NULL, and generates no separate `tax` row for a
+  withholding. Tax-lot work may need the withholding as an event of
+  its own.
+- **`open_orders` projection.** Not projected. A `wealthdb orders`
+  subcommand would need it.
 - **Cost-basis methods.** A Gain/Loss Report prints the account's
   relief method per asset class (`cost_basis_methods`, schwab-web
-  DESIGN.md §9.3). Gold does not map it yet.
-- **Explicit suffix→hashValue override config.** The bridge is
-  auto-only. The exact tier (§7.1) resolves any realistic suffix
-  collision once `account_number_full` is present, so an
-  `account_bridge: {<api_hash>: <web_suffix>}` field on the
-  schwab silver_source config is needed only if both tiers fail
-  ambiguously — a suffix collision on an account whose payload
-  carries no full number.
+  DESIGN.md §9.3). Gold does not map it.
+- **Explicit suffix→hashValue override.** The bridge is automatic
+  only. The exact tier (§7.1) resolves a suffix collision wherever
+  `account_number_full` is present. A config field such as
+  `account_bridge: {<api_hash>: <web_suffix>}` would be needed only for
+  a suffix collision on an account whose payload carries no full
+  number. The bridge's error message suggests an override, which no
+  config field provides.

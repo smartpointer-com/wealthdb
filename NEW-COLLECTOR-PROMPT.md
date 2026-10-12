@@ -2,13 +2,11 @@
 
 [collectors/README.md](collectors/README.md) defines **what** a
 collector is — the anatomy, verbs, CLI conventions, and shared
-libraries. This file defines **how one gets built**: the process that
-produced the existing fleet, distilled from nearly twenty
-agent-assisted builds. Almost every collector in this repo was written
-by an AI coding agent working from a kickoff prompt, with the account
-user driving the live banking sessions. The process converged on a
-phased playbook whose latest runs take a new source from empty
-directory to a validated gold adapter in one or two days.
+libraries. This file defines **how one gets built**. Almost every
+collector in this repo was written by an AI coding agent working from a
+kickoff prompt, with the user driving the live banking sessions. The
+phased playbook below takes a new source from an empty directory to a
+validated gold adapter in one or two days.
 
 The file has four parts: how to run a build, a copy-paste **kickoff
 prompt template**, the **user protocol** (what the human does), and
@@ -67,8 +65,8 @@ the template should read this whole file plus the docs it names.
    at explicit gates: it scaffolds, then asks for an explore session;
    builds, then asks for live validation. The user's hands-on time
    is a handful of short live sessions — each explicitly requested,
-   each with the 2FA device at hand. Recent builds needed roughly
-   half a dozen short logins end to end.
+   each with the 2FA device at hand. A build needs roughly half a
+   dozen short logins end to end.
 6. **Phases are user-triggered.** The agent finishes a phase, commits,
    and lists what it needs next; the user says go. Nothing touches
    the live bank unprompted, ever.
@@ -193,8 +191,8 @@ entries are cheap when framed this way — correct them and move on.
    browser-everywhere); web technology; login form shape; the 2FA
    challenge's network/DOM shape and its completion signal; session
    persistence and device trust across browser restarts (script a
-   second short run without --fresh, the flag that forces the cold
-   first-device path by setting the saved profile aside — whether 2FA
+   second short run without --fresh, the flag that starts from an
+   empty profile and so forces the first-device path — whether 2FA
    fires again is the single measurement that decides the verb
    architecture); transaction history depth, pagination, and
    export formats with their columns (stable ids? running balance?
@@ -368,17 +366,18 @@ those captures carry real response bodies, so the directory is
 sensitive and nothing derived from it lands in a tracked file
 unstripped. Approve pushes when the script announces them;
 relay OTP codes promptly (they expire in minutes). After a rate-limit
-stall, wait a few hours and time the single confirming retry
-yourself — the agent verifies success from artefacts rather than
-burning another login.
+stall, the user waits a few hours and times the single confirming
+retry. The agent verifies success from artefacts rather than burning
+another login.
 
 **Decisions the user keeps.** Scope (which account kinds), the verb
 split and runtime tier the agent proposes from explore evidence, the
 backfill go/no-go, anything with destructive semantics, and every
 change to the private `wealthdb.cfg` or the real gold store. The agent
-proposes with a stated default and waits. Conversely, the agent may —
-without asking — read code and captures, run `login --check`,
-`download --dry-run`, and unit tests (root [AGENTS.md](AGENTS.md) §2).
+proposes with a stated default and waits. Conversely, the agent may,
+without asking, read code and captures and run `login --check` and unit
+tests. A `download --dry-run` is allowed only where it walks an existing
+session and cannot sign in (root [AGENTS.md](AGENTS.md) §2).
 
 **Lending a session.** The user may explicitly lend an authenticated
 session to the agent for bounded iteration ("iterate on download
@@ -426,8 +425,9 @@ as hard rules rather than advice.
   after a successful run.
 - **First logins on a fresh profile may offer different 2FA factors**
   than later ones (unrecognised-device paths). Validate the untrusted
-  path deliberately (`--fresh`), not by waiting for natural expiry;
-  move a profile aside rather than deleting it.
+  path deliberately with `--fresh`, not by waiting for natural expiry.
+  The explore harness's `--fresh` wipes the profile; move a profile
+  aside by hand to keep it.
 - **No cleverness in auth flows.** Submit exactly what the human
   entered, surface the provider's own error text verbatim, fail fast.
   Guessed provider policy (code lifetimes, reuse, prefixes) is
@@ -592,10 +592,9 @@ as hard rules rather than advice.
   account *kinds*, never what a login was observed to hold. Tests
   never read real data directories. The agent never pushes.
 - **The CLI conventions table is binding** (collectors/README.md).
-  Fifteen independently built collectors once drifted into 51 verified
-  CLI discrepancies — four names for one timeout, three meanings of
-  `--force`, flags that parsed and did nothing — and unifying them
-  retroactively cost a 139-file sweep. Wire
+  Independently built collectors drift: four names for one timeout,
+  three meanings of `--force`, flags that parse and do nothing.
+  Unifying them afterwards costs a sweep across the whole fleet. Wire
   `collectorkit.cli.add_standard_args`/`resolve_standard`, take every
   spelling from the table, and wire every advertised flag or warn
   loudly. Help never starts a container or touches the network; zero

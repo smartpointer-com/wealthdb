@@ -286,26 +286,14 @@ A generic kind cannot know which institution a source models. One
 synthetic silver may stand for a bank, the next for a broker, a crypto
 wallet or a book of private holdings.
 
-So the kind registers the bank-style default:
-
-- regime `flow_complete`;
-- the bank external set: `deposit`, `withdrawal`, `transfer_in`,
-  `transfer_out`, `journal`;
-- the bank transfer-like set: `transfer_in`, `transfer_out`,
-  `journal`;
-- every other knob at its default.
-
-A deployment states each source's own regime with config
-`returns_policy_overrides` (DESIGN.md §5.6). Keys are source ids, so
-two synthetic sources override independently.
-
-```json
-"returns_policy_overrides": {
-    "demo-crypto":  { "flow_regime": "crypto_partial" },
-    "demo-private": { "flow_regime": "nav_only" },
-    "demo-bank":    { "accounts_grain": "hidden" }
-}
-```
+So the kind registers the bank-style default,
+`DefaultReturnsPolicy(BankFlowPolicy())`: regime `flow_complete` on the
+shared bank external and transfer-like sets, every other knob at its
+default. A deployment states each source's own regime with config
+`returns_policy_overrides` ([../DESIGN.md](../DESIGN.md) §5.6). Its
+keys are source ids, so two synthetic sources override independently.
+The demo household overrides two of its sources this way: one to
+`crypto_partial`, one to `nav_only`.
 
 ## 10. Provider vocabulary
 

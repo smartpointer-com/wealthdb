@@ -94,15 +94,9 @@ brokerages, pension providers, crypto, private markets, and reference
 FX. See [`../collectors/README.md`](../collectors/README.md) for the
 sources and [`internal/silver/`](internal/silver/) for their adapters.
 
-Accounts carry a three-dimensional taxonomy — `account_kind` (the
-technical container), `tax_wrapper` (the tax / regulatory
-registration) and `management_style` (who decides the allocation).
-The values of each live in [docs/DESIGN.md §13.9](docs/DESIGN.md),
-which is the one place they are written down. Adapters populate what
-silver carries; config-side `account_overrides` fills the rest.
-
-Open questions and future work are in
-[docs/DESIGN.md §13](docs/DESIGN.md).
+Each account has a kind, a tax wrapper and a management style.
+Adapters fill what silver carries, and the config fills the rest
+([docs/DESIGN.md §13.9](docs/DESIGN.md)).
 
 ## Quickstart
 
@@ -127,7 +121,7 @@ wealthdb status -v                     # how current each source is
 
 The `config` wizard asks for:
 
-1. the gold DB path (default `$XDG_DATA_HOME/wealthdb/wealthdb.db`);
+1. the gold DB path (default `${XDG_DATA_HOME:-~/.local/share}/wealthdb/wealthdb.db`);
 2. the default output currency (default `USD`; `-x` overrides it per
    query);
 3. one or more silver sources, each with a short id (used by `load`,
@@ -138,6 +132,13 @@ It writes the result to `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`
 (another path with `-c <path>`). [docs/DESIGN.md §5](docs/DESIGN.md)
 describes every field.
 
+## Where the data goes
+
+The gold database and the collectors' silver databases live under one
+data root: `$WEALTHDB_DATA_ROOT` when set, else
+`${XDG_DATA_HOME:-~/.local/share}/wealthdb`. The engine reads silver
+and never writes it. Reports print to standard output.
+
 ## Build and run
 
 From the repo root, the `Makefile` drives builds and tests
@@ -145,9 +146,8 @@ From the repo root, the `Makefile` drives builds and tests
 directory, are the per-component wrappers.
 
 All commands run inside a single Docker image. The host wrapper
-bind-mounts `$XDG_CONFIG_HOME/wealthdb.cfg` and `$XDG_DATA_HOME/wealthdb/`
-at identical paths inside the container, so `~`/`$HOME` resolution
-matches on both sides.
+mounts the config file and the data root at the same paths inside the
+container, so paths in the config resolve the same on both sides.
 
 ```sh
 ./wealthdb build               # build the wealthdb:latest image
@@ -156,8 +156,8 @@ matches on both sides.
 ./wealthdb-go mod tidy         # any `go` subcommand, same toolchain
 ```
 
-See [docs/DESIGN.md §12](docs/DESIGN.md) for the container model
-and read-only sharing pattern.
+[docs/DESIGN.md §12](docs/DESIGN.md) describes the container model
+and the read-only sharing pattern.
 
 ## Documentation
 
@@ -178,5 +178,4 @@ and read-only sharing pattern.
 - **[docs/TAXONOMY.md](docs/TAXONOMY.md)** — the 2-D
   `asset_class` × `vehicle` taxonomy.
 - **[docs/adapters/](docs/adapters/)** — per-source adapter design,
-  one file per adapter that needed one. Not listed here: the
-  directory is the list.
+  one file per adapter that needs one.

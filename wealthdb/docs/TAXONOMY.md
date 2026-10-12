@@ -1,12 +1,11 @@
 # Instrument taxonomy: asset class × vehicle
 
-Reference for the two-dimensional instrument classification. Status:
-**implemented** — `asset_class` (exposure) and `vehicle` (wrapper)
-are the live gold columns; the canonical enums live in
-`internal/canonical/taxonomy.go` and `enums.go`, and every adapter
-emits an (`asset_class`, `vehicle`) pair. Section 4 records how the
-former single `asset_class` values map onto the pair, for reading
-data or history captured before the split.
+Reference for the two-dimensional instrument classification. Gold
+carries it in two columns: `asset_class` (exposure) and `vehicle`
+(wrapper). The canonical enums live in `internal/canonical/taxonomy.go`
+and `enums.go`. Every adapter emits an (`asset_class`, `vehicle`) pair,
+and the gold writer accepts only the admitted pairs (§3). Section 4
+maps the adapters' intermediate 1-D labels onto the pair.
 
 ## 1. Design principles
 
@@ -22,7 +21,7 @@ data or history captured before the split.
    (≈ underlying); family-office reporting platforms separate
    "asset class" from "investment structure". Bank feeds disagree on
    which dimension they report (UBS UAC codes are exposure, CFI codes
-   are wrapper) — the 1-D scheme collided precisely because of that.
+   are wrapper). A single dimension cannot hold both.
 4. **Derivatives classify by underlying**: an option on a listed
    stock is `public_equity × option`; an FX forward is
    `foreign_exchange × forward`.
@@ -31,7 +30,7 @@ data or history captured before the split.
    so allocation views show net property equity.
 6. **Look-through stops at one level**: a private-equity fund is
    `private_equity × fund`; the companies inside the fund are not
-   modelled. (Same rule the private-market adapters already follow.)
+   modelled. The private-market adapters follow the same rule.
 
 ## 2. `asset_class` values (13)
 
@@ -41,7 +40,7 @@ data or history captured before the split.
 | `private_equity` | Unlisted company ownership | direct stakes in private companies, employee equity comp (options/RSUs/warrants), venture SPVs, PE/VC funds and feeders, listed private-equity ETFs, equity-like pre-seed convertible notes (via override, see §5.10) |
 | `fixed_income` | Public / rated debt | government, municipal and corporate bonds, MTNs, bond ETFs and bond index funds |
 | `private_debt` | Non-public credit claims | convertible notes and SAFEs, bilateral private loans, sale-proceeds escrow receivables |
-| `real_estate` | Property exposure, direct or securitized; includes property-secured liabilities as negative exposure | directly-held property, real-estate index funds, REITs, mortgages |
+| `real_estate` | Property exposure, direct or securitized; includes property-secured liabilities as negative exposure | directly-held property, real-estate index funds and ETFs, mortgages |
 | `infrastructure` | Infrastructure assets | infrastructure funds and feeders, listed-infrastructure funds |
 | `metal` | Precious metals | vaulted bullion, physical-metal ETFs/ETPs (e.g. GLD), physical-gold index funds |
 | `crypto` | Digital assets | coins and tokens held in wallets, spot crypto ETFs/ETPs (e.g. IBIT) |
@@ -49,7 +48,7 @@ data or history captured before the split.
 | `foreign_exchange` | Currency derivative exposure | FX forwards, FX options, currency-linked structured products |
 | `hedge_fund` | Absolute-return / manager-strategy exposure, where the strategy — not a single class — is the exposure | hedge funds, long-short liquid-alternative funds |
 | `multi_asset` | Blended-allocation products | target-date and 529 plan sleeves, balanced / "real return" funds, robo strategy sleeves |
-| `other` | Fallback; adapters must set explicitly | unclassifiable placeholders, synthetic $0 closure markers |
+| `other` | Fallback; adapters must set explicitly | unclassifiable placeholders, a statement's $0 no-positions row, a whole-account value mark |
 
 ## 3. `vehicle` values (18)
 
@@ -63,7 +62,7 @@ data or history captured before the split.
 | `convertible_note` | Convertible note or SAFE | pre-conversion; converts to `stock` or writes to zero |
 | `loan` | Bilateral private loan | |
 | `option` | Option-shaped claim | listed options, employee options, warrants, FX options |
-| `future` | Listed future | enum-supported; no adapter emits it yet |
+| `future` | Listed future | from UBS's CFI `F` and Schwab's `FUTURE` asset type |
 | `forward` | OTC forward | FX forwards |
 | `time_deposit` | Term-locked cash placement | time / fiduciary deposits, money-market contracts |
 | `demand_deposit` | On-demand account cash | plain cash balances, used where views union cash into allocation |
@@ -74,15 +73,39 @@ data or history captured before the split.
 | `escrow` | Sale-proceeds holdback | contingent receivable |
 | `other` | Fallback; adapters must set explicitly | |
 
-## 4. How the former 1-D classes map to the pair
+### Admitted pairs
 
-The single `asset_class` scheme this replaced used the values in the
-left column; each dissolves into one or more `(asset_class, vehicle)`
-pairs. Kept as a reading aid for pre-split data and for the adapters'
-intermediate 1-D classifiers, which still emit these values internally
-before mapping to the pair.
+Not every combination is meaningful. `canonical.ValidTaxonomyPair`
+admits these, and the gold writer and config validation refuse the
+rest:
 
-| former 1-D `asset_class` | 2-D `(asset_class, vehicle)` |
+| `asset_class` | admitted vehicles |
+| --- | --- |
+| `public_equity` | stock, etf, fund, option, future, right, structured_product |
+| `private_equity` | stock, spv, fund, option, etf, convertible_note |
+| `fixed_income` | bond, etf, fund, structured_product |
+| `private_debt` | convertible_note, loan, escrow |
+| `real_estate` | physical, fund, etf, mortgage |
+| `infrastructure` | fund, etf |
+| `metal` | physical, etf, fund |
+| `crypto` | physical, etf, fund |
+| `cash` | demand_deposit, time_deposit, fund |
+| `foreign_exchange` | forward, option, structured_product |
+| `hedge_fund` | fund |
+| `multi_asset` | fund, etf |
+| `other` | other, structured_product |
+
+A new pair is added in `taxonomy.go` and in this table together.
+
+## 4. How the intermediate 1-D labels map to the pair
+
+Some silver stores and adapter classifiers use a single 1-D label (the
+left column, declared in `enums.go`). The adapter maps the label to an
+`(asset_class, vehicle)` pair before it emits a row, so the 1-D labels
+never reach gold. Five labels (`private_equity`, `real_estate`, `metal`,
+`crypto`, `other`) are also exposure values, with the same meaning.
+
+| 1-D label | 2-D `(asset_class, vehicle)` |
 | --- | --- |
 | `equity` | `public_equity × stock` |
 | `etf` | `public_equity × etf` (the residual default after exposure refinement) |
@@ -90,14 +113,14 @@ before mapping to the pair.
 | `fund` | vehicle `fund`; asset_class re-derived per fund (public_equity / fixed_income / real_estate / multi_asset / cash / …) |
 | `bond` | `fixed_income × bond` |
 | `option` | underlying `× option` (equity options → `public_equity`) |
-| `future` | underlying `× future` |
+| `future` | `public_equity × future` |
 | `fx_forward` | `foreign_exchange × forward` |
 | `fx_option` | `foreign_exchange × option` |
 | `money_market` | `cash × fund` (money-market funds) or `cash × time_deposit` (contracts) |
-| `otc_derivative` | underlying `× forward` / `other` |
+| `otc_derivative` | `foreign_exchange × forward`, else `other × other` |
 | `metal` | `metal × physical / etf / fund` |
-| `crypto` | `crypto × physical / etf` |
-| `private_equity` | `private_equity × stock / option` |
+| `crypto` | `crypto × physical / etf / fund` |
+| `private_equity` | `private_equity × stock / option`, or `× etf` when listed |
 | `spv` | `private_equity × spv` |
 | `private_fund` | `private_equity / infrastructure / hedge_fund × fund` |
 | `real_estate` | `real_estate × physical` |
@@ -105,8 +128,8 @@ before mapping to the pair.
 | `mortgage` | `real_estate × mortgage` |
 | `other` | `other × other`, minus the recoverable cases above |
 
-`fund` and `private_fund` were the only values whose dissolution
-needed real classification logic; every other mapping is mechanical.
+`fund` and `private_fund` are the only labels whose mapping needs real
+classification logic. Every other mapping is mechanical.
 
 ## 5. Decisions of record
 
@@ -118,9 +141,9 @@ needed real classification logic; every other mapping is mechanical.
 3. **Listed private-equity / listed infrastructure classify by
    exposure** (`private_equity × etf`, `infrastructure × fund`); the
    vehicle column preserves the liquidity fact.
-4. **Escrow is `private_debt`** — a contingent receivable from a
-   sale. Weakest call; revisit if it distorts the private-debt
-   bucket.
+4. **Escrow is `private_debt`**: a contingent receivable from a
+   sale. It is the weakest call here, and the one to revisit if it
+   distorts the private-debt bucket.
 5. **Warrants → `option`, RSUs → `stock`** — no dedicated vehicles
    until a use case demands the split.
 6. **`metal`, not `commodity`** — the metal holdings the sources
@@ -134,10 +157,10 @@ needed real classification logic; every other mapping is mechanical.
    at-sight account cash vs term-locked placements.
 10. **Convertible notes default to `private_debt`, but the pair
     `private_equity × convertible_note` is admitted** for notes that
-    are economically equity — e.g. a hypothetical 0%-interest pre-seed
+    are economically equity. One example is a 0%-interest pre-seed
     note with no repayment expectation, which either converts in the
-    next round or writes to zero. Adapters keep emitting `private_debt` (the legal
-    form); an `instrument_overrides` entry pins the exposure to
+    next round or writes to zero. Adapters emit `private_debt` (the
+    legal form). An `instrument_overrides` entry pins the exposure to
     `private_equity` per holding.
 
 ## 6. Source signals per dimension (implementation guide)
@@ -159,11 +182,8 @@ Where a source pins only one dimension, the other defaults from the
 pair tables above (e.g. a vehicle-only "Funds" section header defaults
 to the fund's name-derived exposure, `other` if underivable).
 
-The last row is the exception, and the only signal that lands on a
-fact row rather than on the instrument. `transactions` carries its own
-`(asset_class, vehicle)` for what the instrument cannot answer: both
-NULL where the instrument is known, one half alone where that is all
-the trade adds (an option resolves to its underlying and states
-`option` in the vehicle), and both where the feed named the kind of
-thing but no instrument at all. Neither half defaults — an unstated
-half means "ask the instrument", not `other`. See DESIGN.md §10.8.
+The last row is the only signal that lands on a fact row rather than
+on the instrument. `transactions` carries its own pair, set only for
+what the instrument cannot answer. An unstated half means "ask the
+instrument", not `other`. [DESIGN.md §10.8](DESIGN.md) has the column
+rules.

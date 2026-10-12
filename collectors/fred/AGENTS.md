@@ -5,12 +5,12 @@ source, git/commit conventions) live in the repo-root
 [AGENTS.md](../../AGENTS.md). The fred-specific surface below applies on
 top of those shared rules.
 
-`fred` is unusual among the collectors: it has **no private account
-data**. It reads **public** FX reference rates from the US Federal
-Reserve H.10 release via the FRED API. So root [AGENTS.md](../../AGENTS.md)
-§4 (no private information in source) is largely moot for the *data* —
-FX rates, dates, and FRED series IDs are public and fine to commit (as in
-the tests). The one secret is the **API key**.
+`fred` has **no private account data**. It reads **public** FX
+reference rates from the US Federal Reserve H.10 release via the FRED
+API. FX rates, dates and FRED series IDs are public and fine to commit,
+as in the tests. Root [AGENTS.md](../../AGENTS.md) §4 here protects the
+one secret, the **API key**. Root §3 governs how that key reaches the
+tool.
 
 ## 1. Read-only, public data — never call write/other endpoints
 
@@ -28,9 +28,3 @@ matter here, but keep the surface to observations).
   [AGENTS.md](../../AGENTS.md) §3), which is what `download.py` does.
 - When debugging the live API, build request URLs so the key is not
   echoed to stdout/logs (it travels in the query string).
-
-## Authentication & private data
-
-See the repo-root [AGENTS.md](../../AGENTS.md) §3 (authentication) — the
-API key is the credential — and §4 (no private information in source),
-which here protects the key, not the data.

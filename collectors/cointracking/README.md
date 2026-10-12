@@ -7,8 +7,8 @@
 > privileged financial-account credentials. Read this disclaimer in full
 > before configuring any credential.**
 
-This collector **impersonates a human user**: it drives a real,
-stealth-hardened browser session that signs in to CoinTracking with your
+This collector **impersonates a human user**: it drives a real browser
+session that signs in to CoinTracking with your
 credentials and your multi-factor confirmations. The session it holds is
 **fully privileged** — the same login a human uses to move money — and
 CoinTracking offers no read-only sub-scope, so nothing but this codebase's
@@ -43,222 +43,203 @@ affiliated with, endorsed by, or sponsored by CoinTracking or any other
 financial institution; nothing in this repository is financial, legal, or
 tax advice.
 
-A read-only scraper for [cointracking.info](https://cointracking.info)
-— the aggregator portal that tracks a full crypto portfolio
-and transaction history across centralised exchanges + on-chain
-wallets. **No first-order crypto integration** lives in wealthdb;
-cointracking.info is the single source of truth for crypto, the
-same way the per-bank collectors are for fiat.
+A read-only scraper for [cointracking.info](https://cointracking.info).
+CoinTracking is an aggregator. It tracks crypto holdings and transactions
+across exchanges and on-chain wallets. wealthdb has no direct crypto
+integration: CoinTracking is its single source for crypto, the way each
+bank collector is the source for its bank.
 
-cointracking.info has no public API. The collector replays the
-browser flow (TOTP 2FA on first login; the device-trust cookie
-persists for years afterwards) by driving headless Firefox via
-Playwright.
+CoinTracking has no public API. The collector drives headless Firefox
+through Playwright. The first `login` asks for a TOTP code. It then ticks
+"Don't ask again", which plants a device-trust cookie that lasts for
+years. Later runs sign in with no 2FA challenge.
 
-Part of the **wealthdb** suite — see
-[the architecture overview](../../DESIGN.md) for the bronze →
-silver → gold model and [collectors/README.md](../README.md) for
-shared collector conventions.
+Part of the **wealthdb** suite. See
+[the architecture overview](../../DESIGN.md) for the bronze → silver →
+gold model and [collectors/README.md](../README.md) for the shared
+collector conventions. [DESIGN.md](DESIGN.md) holds the mechanism
+detail.
 
-## Status
+## Verbs
 
-| Verb | Status | Notes |
-| --- | --- | --- |
-| `login`    | implemented | Headless Playwright Firefox, CLI-MFA on stdin, persistent profile. |
-| `download` | implemented | Per-portfolio SPA loop: 13-column trade CSV + balance CSV + daily-overview CSV per portfolio. |
-| `load`     | implemented | DuckDB silver, aggregate-then-window holdings replay with incremental upsert + balance reconciliation + portfolio_prices ingest (per-portfolio quote currency). |
-| `fetch-prices` | implemented | USDT-denominated price backfill from Binance public spot (no key, no signup). 1000-day chunked klines, polite rate-limited. Stablecoins emit synthetic 1.0. |
-| `prune`    | implemented | Reclaim bronze disk — deletes whole non-complete dumps (crashed / in-progress walks) and strips `screenshots/` (the `download --debug` captures) from complete dumps. A complete dump's load inputs are left intact. |
-| `explore`  | implemented | Discovery harness (Camoufox + VNC + redacted HAR + network/click logs, opt-in `--trace`). Kept around for re-discovery if cointracking changes their UI. |
+| Verb | What it does |
+| --- | --- |
+| `login` | Signs in with headless Firefox and reads the TOTP code on stdin. `--check` probes the stored session. |
+| `download` | Exports three CSVs per portfolio: the 13-column trade history, the per-wallet balance and the daily balance overview. Always the full history. |
+| `load` | Builds the DuckDB silver. Replays the trades into daily holdings, checks them against the balance CSV, and fills missing USD prices. |
+| `fetch-prices` | Fills USD prices into silver from Binance (crypto) and the ECB through Frankfurter (fiat cash). No key needed. |
+| `prune` | Reclaims bronze and debug-cache disk. |
+| `recompress` | Converts plain `.csv` bronze to `.csv.zst`. Manual, one-off. |
+| `explore` | Discovery harness: Camoufox over VNC with a redacted network record. |
 
-The device-trust cookie is multi-year, so once `login` has been
-run once the collector slots into unattended scheduling like the
-rest — one MFA prompt every few years.
+`./cointracking help` and `./cointracking <verb> --help` list the flags.
 
-## Operational quick start
+## Quick start
 
 ```sh
-# 1. Build the image (~3-5 min first time; the base-camoufox image
-#    holds the pre-fetched Firefox so this step is fast on a warm cache).
+# 1. Build the image.
 ./cointracking build
 
-# 2. Drop credentials into the env file. chmod 0600.
+# 2. Put the credentials in the env file and chmod it 0600.
 #    cat > ~/.secrets/cointracking.env <<'EOF'
 #    COINTRACKING_USERNAME=your-cointracking-email
 #    COINTRACKING_PASSWORD=your-cointracking-password
 #    EOF
 
-# 3. Mint the session. Headless Firefox; prompts for the 6-digit TOTP
-#    code on stdin once, ticks "Don't ask again" for the multi-year
-#    device-trust cookie. Subsequent runs short-circuit without firing
-#    a 2FA push.
+# 3. Sign in once. Prompts for the 6-digit TOTP code.
 ./cointracking login
 
-# 4. Pull a fresh bronze dump (a few seconds per linked portfolio).
+# 4. Pull a bronze dump of every linked portfolio.
 ./cointracking download
 
-# 5. Ingest into the DuckDB silver. Computes daily holdings from the
-#    full transaction history via the aggregate-then-window replay;
-#    only rewrites positions_daily from the first deviation day
-#    onwards. Parses overview.csv into portfolio_prices (one row per
-#    [day, portfolio, coin, quote_currency] — CT-derived, used so the
-#    gold layer can match CT's per-portfolio totals byte-exactly).
-#    Reconciles final balances vs the balance CSV per portfolio.
-#    The post-ingest USD price fill runs by default: it pulls missing
-#    USDT-denominated prices from Binance at the end (rolls
-#    fetch-prices --missing in). Pass --no-fetch-prices to skip it.
+# 5. Build silver and fill missing USD prices.
 ./cointracking load
-
-# 6. Cron / launchd: a nightly `./cointracking download && ./cointracking load`
-#    is unattended for the multi-year lifetime of the device-trust cookie.
 ```
 
-### Timezone
+After the first `login`, `download` and `load` need no human until the
+device-trust cookie expires.
+
+More examples:
+
+```sh
+./cointracking login --check          # exit 0 if the stored session is signed in
+./cointracking download --dry-run     # walk the pages, export nothing
+./cointracking load --no-fetch-prices # build silver offline
+./cointracking load --replay-only     # re-run the holdings replay only
+./cointracking load --force           # delete silver, rebuild from all bronze
+./cointracking fetch-prices --missing # fill price gaps only
+./cointracking fetch-prices           # drop and re-fetch every price
+```
+
+`download --dry-run` uses the stored session and never signs in. On an
+expired session it fails.
+
+## Timezone
 
 CoinTracking writes each trade's date in the timezone set on the
-portfolio's account. `load` stores it as printed and converts it to
-UTC. Name each portfolio's zone in `~/.config/cointracking.cfg`
-(under `$XDG_CONFIG_HOME` when set). The wrapper sources that file:
+portfolio's account. `load` keeps the date as printed and converts it to
+UTC. Name each portfolio's zone in `~/.config/cointracking.cfg` (under
+`$XDG_CONFIG_HOME` when set). The wrapper sources that file:
 
 ```sh
 COINTRACKING_TIMEZONES="cu_1001=Europe/Zurich cu_1002=America/New_York"
 ```
 
-A portfolio the file does not name is read as UTC. A changed zone
-applies at the next `load`. DESIGN.md has the details.
+`load --timezone cu_<id>=<zone>` overrides the file. A portfolio named in
+neither is read as UTC. A changed zone applies at the next `load`.
+[DESIGN.md](DESIGN.md#timezone) has the details.
 
-Standalone USD-price tools:
+## Prices
 
-```sh
-./cointracking fetch-prices --missing   # fill gaps (e.g. after load --no-fetch-prices)
-./cointracking fetch-prices             # full re-fetch (corruption recovery)
+`load` ends with a price fill, the same as `fetch-prices --missing`:
+
+- It prices every coin held on any day in any portfolio.
+- Crypto comes from Binance's public daily klines, in USDT.
+- Fiat cash (EUR, CHF, …) comes from the ECB rates through Frankfurter.
+- Stablecoins (USDT, USDC, DAI, …) get a fixed 1.0.
+- The latest priced day is always fetched again. That row was an
+  intraday price when it was written.
+
+`fetch-prices` with no flag drops every fetched price and re-fetches the
+whole held range. Use it to recover from bad provider data. An optional
+`BINANCE_API_KEY` raises Binance's rate limit.
+
+Binance keeps pair metadata after it purges a delisted coin's history. A
+coin can therefore map to a symbol with no prices and stay unpriced.
+[DESIGN.md](DESIGN.md#coverage-gap) has the details.
+
+## Output
+
+Everything lands in the collector's data dir
+(`$XDG_DATA_HOME/wealthdb/cointracking/` by default):
+
+```
+<data-dir>/
+├── 20260101T120000Z/            one bronze dump per run
+│   ├── run.json                 manifest and status
+│   └── cu_<id>/                 one dir per portfolio
+│       ├── trades.csv.zst
+│       ├── balance.csv.zst
+│       └── overview.csv.zst
+├── known_portfolios.json        every portfolio seen so far
+└── cointracking.duckdb          silver
 ```
 
-`fetch-prices` reads positions_daily to know which (coin, date) pairs
-matter — every coin held in any portfolio on at least one day — and
-fetches USDT-denominated daily closes into `coin_prices` via
-Binance's `/api/v3/klines?symbol=<TICKER>USDT&interval=1d` endpoint.
-The CT-ticker → Binance-symbol mapping is built lazily from
-`/api/v3/exchangeInfo` (filter for USDT pairs) and cached in
-`coin_mapping`. Both `fetch-prices --missing` and `load`'s default price fill
-always re-fetch the latest priced day so the previous run's intraday
-snapshot gets upgraded to the close price.
+Silver is a DuckDB file, not SQLite. This is a recorded fleet exception;
+[DESIGN.md](DESIGN.md#data-model) gives the reasons. Its tables:
 
-Stablecoins (USDT, USDC, DAI, …) emit synthetic 1.0 USD prices —
-they can't be self-quoted on Binance, and for portfolio valuation
-the small USDT/USD basis is silently absorbed (the gold layer can
-apply a precise FX correction later if ever needed).
+| Table | Contents |
+| --- | --- |
+| `portfolios` | One row per linked CoinTracking account (`cu_<id>`), with its display name and the `timezone` its dates were read in. |
+| `wallets` | One row per portfolio and wallet. A wallet is an exchange account or a self-custody wallet: the export's `Exchange` column. |
+| `transactions` | One row per trade-CSV row. `type` as printed; buy, sell and fee amounts as `DECIMAL(38, 18)` with their currencies; `comment`, `lpn`. `trade_group`, `tx_id` and `occurred_local` hold the `Group`, `Tx-ID` and `Date` text as printed. `occurred_at` is `occurred_local` in UTC. |
+| `positions_daily` | Computed by `load`: the amount per (day, portfolio, wallet, instrument). A row exists only on days the amount changed; a reader forward-fills. |
+| `portfolio_prices` | CoinTracking's own daily price per (day, portfolio, coin), from the overview CSV, in the portfolio's main fiat (`quote_currency`). |
+| `coin_prices` | Daily USD price per coin or fiat, with its `source` (`binance` or `frankfurter`). |
+| `coin_mapping` | CoinTracking ticker → price-provider symbol, per provider. |
+| `dump_runs` | One row per loaded dump, with the schema version it was loaded under. |
 
-No API key required. Optional `BINANCE_API_KEY` env activates
-authenticated tiers for higher rate-limit ceilings; unused on the
-public endpoint at api.binance.com.
+The columns are in [`migrations/`](migrations/). The gold adapter reads
+this file read-only; [its design doc](../../wealthdb/docs/adapters/cointracking.md)
+says how the tables map into gold.
 
-**Coverage gap:** Binance retains pair metadata in `exchangeInfo`
-long after it purges the kline history for a delisted coin, so a
-mapping can resolve to a symbol with no price data. The architecture
-bounds the impact: gold reads `coin_prices` only for non-USD
-portfolios (USD portfolios use `portfolio_prices` directly). DESIGN.md
-("Coverage gap") has the details.
+## Re-discovery
 
-Probe the session without firing a 2FA push:
+`explore` is for the day CoinTracking changes a selector the headless
+flow depends on. It launches Camoufox in the container's Xvfb display and
+serves it over VNC. While the browser is driven by hand, it records a
+redacted HAR, a network log, a click log and every downloaded file. A
+Playwright trace is opt-in with `--trace`, because nothing redacts one.
 
 ```sh
-./cointracking login --check    # exits 0 if session is valid, 1 if not
-./cointracking download --dry-run    # walks navigation, skips exports
-./cointracking load --replay-only    # re-runs the holdings replay only
-./cointracking load --force          # delete silver + rebuild from all bronze
-```
-
-## Re-discovery: when cointracking changes their UI
-
-The `explore` subcommand is kept around for the next time
-cointracking changes a selector that the headless flow depends on
-(e.g. the "Extended with additional columns" mode dropdown, or the
-"Don't ask again" checkbox). It launches Camoufox in the
-container's Xvfb display and exposes a VNC port for driving the
-live browser interactively; meanwhile it records a redacted HAR, a
-crash-safe network log, a click log, any blob downloads, and — with
-`--trace`, off by default because nothing redacts one — a Playwright
-trace:
-
-```sh
-./cointracking explore --fresh      # --fresh wipes the profile so 2FA is forced
+./cointracking explore --fresh   # --fresh wipes the profile, so 2FA is asked again
 #  explore: VNC ready on 127.0.0.1:<port>
 #  explore: password (single-use):  <16 hex chars>
 #  explore: tunnel from your laptop with
-#    ssh -L <port>:127.0.0.1:<port> <host>
+#  explore:   ssh -L <port>:127.0.0.1:<port> <host>
 #  explore: then on the laptop:
-#    open vnc://localhost:<port>
+#  explore:   open vnc://localhost:<port>
 ```
 
-Artefacts land under `$HOME/.cache/wealthdb/debug/cointracking/<UTC-ts>/`
-(network.jsonl + clicks.jsonl + network.har + downloads/, plus
-trace-chunks/ with `--trace`).
-Close the browser window OR Ctrl-C the container — either path
-flushes everything to disk.
-
-Override host mounts via env: `COINTRACKING_SECRETS_DIR`,
-`COINTRACKING_DATA_DIR`, `COINTRACKING_DEBUG_DIR`.
+The record lands in a UTC-stamped subdir of the debug dir
+(`${XDG_CACHE_HOME:-~/.cache}/wealthdb/debug/cointracking/` by default).
+Closing the browser window or pressing Ctrl-C flushes it.
+[collectors/README.md](../README.md#the-wrapper--the-wealthdb-collect-contract)
+lists the env vars that move the secrets, data and debug dirs.
 
 ## Reclaiming disk
 
-`prune` deletes, across every timestamped run dir under the data dir,
-whole run dirs that are **not complete dumps** — a walk that crashed
-before finalising (`run.json` absent, or carrying the
-`status: "in-progress"` marker it drops at run-dir creation). A finished
-dump atomically overwrites that marker with `status: "complete"`, so
-its `run.json` + `cu_<id>/{trades,balance,overview}.csv.zst` are load
-inputs and stay untouched. The one thing it does strip from a complete
-dump is `screenshots/` — the `download --debug` captures, which `load`
-never reads. (The `explore` harness records its HAR/trace/click logs to an
-external `/debug` mount, never into a bronze run dir, so prune never sees
-them.)
+`prune` follows the fleet rules in
+[collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+For this collector it removes:
+
+- whole dumps that did not finish;
+- `screenshots/` from finished dumps, which `download --debug` writes;
+- quiet entries of the debug dir, which `explore` writes.
+
+It never touches `known_portfolios.json` or the silver file.
 
 ```sh
-./cointracking prune --dry-run    # print the plan, delete nothing
-./cointracking prune              # reclaim non-complete dumps
-./cointracking prune --min-age-hours 6   # protect anything touched in the last 6h
+./cointracking prune --dry-run           # print the plan, delete nothing
+./cointracking prune                     # reclaim
+./cointracking prune --min-age-hours 6   # spare anything written in the last 6 hours
 ```
 
-An in-flight guard keeps a download that is still writing safe: a
-non-complete dir is a deletion candidate only once nothing under it has
-been written for `--min-age-hours` (default 1), keyed on the newest
-mtime in the dir, so a multi-portfolio walk whose slug is old but whose
-files are fresh is never mistaken for abandoned. `run.json` that is
-unreadable or corrupt is left alone, and non-run-dir entries at the data
-root (`known_portfolios.json`, the silver `cointracking.duckdb`) are
-never touched. A statusless `run.json` from a dump that predates the
-status lifecycle counts as complete and is kept: such a dump only ever
-got a `run.json` at the end. Deleting a non-complete dump does not
-touch silver — rows already loaded from it persist until the next
-`load --force` rebuild.
-
-The persistent scrape-union cache and the DuckDB silver both live at the
-data root alongside the run dirs; `prune` matches only `<UTC-ts>/`
-timestamp dirs, so neither is ever in scope.
-
-### Compressing the pre-compression backlog
-
-`download` zstd-compresses every CSV export as it lands, and `load`
-reads `.csv.zst` and plain `.csv` alike (DuckDB decompresses natively).
-Run dirs written before compression existed can be converted once with
-the `recompress` verb, which replaces each plain `cu_<id>/*.csv` inside
-a **complete** dump with a compressed twin — the original is unlinked
-only after the twin has been decompressed and sha256-verified against
-it, and an interrupted sweep is safe to re-run. Unlike `prune` this
-rewrites load inputs, so it is strictly manual: never schedule it,
-review the plan first, and verify afterwards with `load --force`
-(silver must come out identical).
+`download` compresses each CSV as it lands, and `load` reads `.csv.zst`
+and plain `.csv` alike. `recompress` converts the plain `.csv` files in
+finished dumps. It deletes an original only after the compressed copy
+decompresses to the same sha256. A stopped sweep is safe to run again.
+It rewrites `load` inputs, so it is manual only and never scheduled.
 
 ```sh
-./cointracking recompress --dry-run   # print the sweep plan, rewrite nothing
-./cointracking recompress             # convert complete dumps, with byte accounting
-./cointracking load --force           # convergence check: silver must be unchanged
+./cointracking recompress --dry-run   # print the plan, rewrite nothing
+./cointracking recompress             # convert, with byte accounting
+./cointracking load --force           # check: silver must come out the same
 ```
 
 ## Read-only
 
-See [AGENTS.md](AGENTS.md). cointracking.info exposes mutation
-surfaces (add transactions by hand, edit address book entries,
-delete imports, change account settings). This toolkit is
-**read-only** — it only navigates, filters, and exports.
+The collector only navigates, filters and exports. CoinTracking also
+offers write surfaces: manual transaction entry, import management,
+account settings. [AGENTS.md](AGENTS.md) lists what is allowed and what
+is forbidden.

@@ -1,17 +1,16 @@
 # relevate — design (REST-only)
 
 A read-only scraper for Relevate's customer portal at
-`portal.pens-expert.ch`. **Replays the Airlock IAM authentication
-flow and the `/middlelayer/v2/` REST API directly from Python** —
-no browser, no Xvfb, no VNC. CLI-only; mTAN code is prompted on
-stdin during login.
+`portal.pens-expert.ch`. It **replays the Airlock IAM authentication
+flow and the `/middlelayer/v2/` REST API directly from Python**. There
+is no browser, no Xvfb and no VNC. `login` prompts for the mTAN code on
+stdin.
 
-Lands per-portfolio JSON + per-document PDFs into a versioned
-bronze tree, then parses them into a queryable SQLite silver
-database. Part of the **wealthdb** suite — see [the architecture
-overview](../../DESIGN.md) for the bronze → silver → gold
-model and [collectors/README.md](../README.md) for shared collector
-conventions.
+`download` lands per-portfolio JSON and per-document PDFs in a bronze
+tree. `load` parses them into a SQLite silver database. Part of the
+**wealthdb** suite — see [the architecture overview](../../DESIGN.md)
+for the bronze → silver → gold model and
+[collectors/README.md](../README.md) for shared collector conventions.
 
 Sections:
 
@@ -31,116 +30,112 @@ Sections:
 
 ## 1. How the portal works
 
-The portal is driven entirely over its REST surface; the
-container is slim Python + `requests`, no browser. What the
-portal looks like on the wire:
+The portal is driven entirely over its REST surface. The container is
+slim Python + `requests`, no browser. What the portal looks like on the
+wire:
 
 **Auth stack — Airlock IAM:**
 - Vendor: Ergon Informatik's Airlock IAM (Swiss-banking-standard
-  reverse-proxy gateway). Confirmed by cookies `AL_SESS-S`,
-  `AL_LoginFromNewDevice`, the `CSRFT759-S` CSRF cookie, and the
+  reverse-proxy gateway). The cookies `AL_SESS-S`,
+  `AL_LoginFromNewDevice` and `CSRFT759-S` identify it, as do the
   asset bundles served from `/auth/ui/assets/airlock/`.
-- 2FA factor: **mTAN** (SMS code to the registered mobile
-  number), confirmed on that device; the URL `/auth/ui/app/auth/
-  flow/b2c/mtan` and the API endpoint
+- 2FA factor: **mTAN**, an SMS code to the registered mobile number.
+  The URL `/auth/ui/app/auth/flow/b2c/mtan` and the API endpoint
   `/auth/rest/public/authentication/mtan/otp/check` both match.
 
 **Auth endpoints (all under `/auth/rest/`, all serving
 `application/vnd.api+json`):**
 
-The auth flow is **three steps**, not two: `/b2c/access` is the
-flow-init probe, then `/password/check` for credentials, then
-`/mtan/otp/check` for the OTP.
+The auth flow has **three steps**: `/b2c/access` is the flow-init
+probe, `/password/check` takes the credentials, and `/mtan/otp/check`
+takes the OTP.
 
 - `POST /auth/rest/public/authentication/applications/b2c/access`
-   — flow-init probe. **Empty body**, sent with `X-CSRFT759`
+   — flow-init probe. **Empty body**, sent with the `X-CSRFT759`
    header. Returns **401** with a JSON:API envelope describing
    the current flow state (`meta.nextAuthStep`,
-   `errors[].code`). 401 is *expected* — it's Airlock saying
+   `errors[].code`). The 401 is *expected*: Airlock is saying
    "authenticate first".
 - `POST /auth/rest/public/authentication/password/check`
    — credentials submission. Body
    `{"username": "...", "password": "..."}`. On 200, Airlock
    sends the mTAN and returns
    `data.attributes.{nextAuthStep, phoneNumber, resendPossible}`.
-   `phoneNumber` comes back in full; login.py masks it
-   client-side before echoing it to stderr so the target device
-   is identifiable without leaking digits.
+   `phoneNumber` comes back in full. `login.py` masks it before
+   echoing it to stderr, so the target device is identifiable
+   without leaking digits.
 - `POST /auth/rest/public/authentication/mtan/otp/check`
    — OTP verification. Body `{"otp": "..."}`. On 200 the
    existing `AL_SESS-S` cookie is promoted server-side from
-   anonymous → authenticated. **No bearer token in the response
-   body** — `data.attributes` is `{}`.
+   anonymous to authenticated. **No bearer token in the response
+   body**: `data.attributes` is `{}`.
 - `GET /auth/rest/protected/self-service/ui/configuration/portal`
-   — post-auth probe; returns the portal target redirect tree
-   (a `portalGroups[].portalTargets[]` structure). Useful as a
-   session-alive landmark.
-- `DELETE /auth/rest/public/authentication` — observed in the
-   logout flow; returns 204.
+   — post-auth probe. Returns the portal target redirect tree
+   (a `portalGroups[].portalTargets[]` structure). It serves as
+   the session-alive landmark.
+- `DELETE /auth/rest/public/authentication` — the SPA's logout;
+   returns 204. The toolkit does not call it.
 
-**Authorization for application API — cookie-only, no bearer:**
+**Authorization for the application API — cookie-only, no bearer:**
 
-The `/middlelayer/v2/` REST endpoints' `Authorization: bearer X`
-header is a red herring: the SPA stringifies a JS
-`undefined` and sends literally `Authorization: bearer undefined`
-(rest_len=9, prefix `un`, suffix `ed`). Airlock ignores it; the
-real session is carried by the `AL_SESS-S` cookie alone. We
-mirror the same `bearer undefined` value defensively in case
-Airlock checks for header presence, but we have no token to
-extract or refresh.
+The `Authorization: bearer X` header on the `/middlelayer/v2/` calls is
+a red herring. The SPA stringifies a JS `undefined` and sends literally
+`Authorization: bearer undefined`. Airlock ignores it; the `AL_SESS-S`
+cookie alone carries the session. The toolkit sends the same
+`bearer undefined` value so its requests match the SPA's. There is no
+token to extract or refresh.
 
-CSRF is **double-submit-cookie**: the `CSRFT759-S` cookie value
-(22 chars, NOT httpOnly so JS can echo it) is also sent as the
-`X-CSRFT759` request header on every state-changing POST. The
-auth POSTs require it; the middlelayer GETs do not.
+CSRF is **double-submit-cookie**. The `CSRFT759-S` cookie value
+(22 chars, not httpOnly so JS can echo it) is also sent as the
+`X-CSRFT759` request header on every state-changing POST. The auth
+POSTs require it; the middlelayer GETs do not.
 
 **Application API — `/middlelayer/v2/`:**
 
 | Endpoint | Method | Notes |
 |---|---|---|
 | `/portfolio/investment-overview` | GET | **Master list.** All portfolios under the contact, with full metadata: `portfolios[].{id, externalId, contactId, contactGroupId, currency, currentValue, investedAmount, currentPerformance*, isActive, portfolioTypeId, portfolioStatusId, product.{id, key, name, externalId, ...}}` plus top-level `cashAmount`, `ahvStatus`, `externalContactId`. |
-| `/Portfolio/{id}/deposits` | GET | Transactions / deposits. Returned `{year:null, maxDepositPerYear:null, transactions:[]}` without query params — needs a `?year=YYYY` query param (TBC). |
+| `/Portfolio/{id}/deposits` | GET | Transactions / deposits, one year per call (`?year=YYYY`). Without the parameter it returns `{year:null, maxDepositPerYear:null, transactions:[]}`. For vested-benefits portfolios the `transactions` list is empty for every year; contributions come from the credit-note PDFs instead. |
 | `/portfolio/{id}/performance` | GET | Daily time series: `values[].{date, value, amount, cashBalance, securitiesBalance, cashFlow, deposits, payouts, profit, profitAll, profitVirtual, amountVirtual}` plus `currency`, `externalPortfolioId`, `isEntireDuration`. |
 | `/portfolio/{id}/fees` | GET | Fee breakdown. |
 | `/portfolio/{id}/investment/allocation` | GET | Allocation summary: `totalValuation`, `investmentValuation`, `savingValuation`. |
 | `/Portfolio/proposal/{proposalId}/modelportfolio` | GET | Target model portfolio with `positions[].{security.{isin, name, assetClass, country, tradingPrice, tradingUnit, faceValue}, allocation}` and `riskCategory.{min, max, expectedReturn}`. The `proposalId` is `portfolios[].portfolioProposalId` from the overview. |
 | `/documents` | GET | Document index. Returns `{documents[], maintenance}`. Each document: `{id, externalId, fileName, documentType (enum), category (enum), createDate, foundation, foundationId, validTill, dmsDocumentMetadataId, ownerId, namePreInsurer, isUploaded, sP6_SHOW_RELEVATE, externalContactId, tenantId, description}`. |
 | `/document/{id}` | GET | Direct PDF fetch (`application/pdf`). The download surface. |
-| `/document/generate/contract/pensionfundregulations?tId=N` | GET | On-demand contract regeneration; also returns a PDF. |
-| `/portfolio/services`, `/compliance/products`, `/contact/{messages, notification, language, risk-protection}`, `/sso/{claims, sync}` | GET | Ancillary endpoints. Probe-only for now; `/contact/messages` may carry foundation announcements worth preserving in bronze. |
+| `/document/generate/contract/pensionfundregulations?tId=N` | GET | On-demand contract regeneration; also returns a PDF. Not called. |
+| `/compliance/products`, `/contact/{messages, notification, risk-protection}`, `/sso/claims` | GET | Ancillary endpoints, saved to bronze in `--mode all`. `/contact/risk-protection` answers 204 when no protection is set up. |
+| `/portfolio/services`, `/contact/language`, `/sso/sync` | GET | Not called. `/portfolio/services` answers 400 and `/contact/language` 405 without parameters the toolkit cannot supply. |
+
+The casing of `Portfolio` vs `portfolio` differs between endpoints on
+the wire; the code keeps each as observed.
 
 **Account taxonomy:**
 
-- The portal can surface multiple FZ portfolios (vested benefits /
-  Pillar 2 / Freizügigkeit) under one login. Both product keys are
-  observable:
+- One login can hold several vested-benefits (Pillar 2,
+  Freizügigkeit) portfolios. The known product keys are:
   - `product.key = FZPF` ("PensFree").
   - `product.key = FZI` ("Independent").
-  Both products surface the same interface, fees, and investment
-  menu in the SPA — the holder picks from a small set of pre-
-  built strategies in either case, and the foundation doesn't let
-  the holder choose individual securities or funds. No human
-  manager or advisor is in the loop (robo-advisor shape, not
-  self-directed brokerage).
+  Both products offer the same interface, fees and investment menu.
+  The holder picks one of a small set of pre-built strategies. The
+  foundation does not let the holder choose individual securities or
+  funds, and no human manager or advisor is in the loop (robo-advisor
+  shape, not self-directed brokerage). See §7.1.1.
 - Portfolios are CHF-denominated.
 - The SPA exposes a `/dashboard/3a/depots` URL, but
   `/portfolio/investment-overview` returns only the products a
-  given login actually holds. `download.py` walks whatever the
-  overview lists — a login holding 3a surfaces it there; no
-  separate 3a probe.
+  login holds. `download.py` walks whatever the overview lists and
+  makes no separate 3a call (§11, question 4).
 
 **Document corpus:**
 
-- Recognisable types from the fileName field: Quarterly Reports,
-  Quarterly Fee Statements, FZ Credit Notes (contribution
-  arrivals), Pension Agreement, Pension Plan, Investor Profile,
-  Leaving Statement.
-- `documentType` is a numeric enum (observed values: 0, 1, 3, 4,
-  7, 9). `category` is a separate numeric enum (0, 1, 2). The
-  enum-to-name mapping isn't exposed in the responses we've
-  captured; the silver loader derives `doc_kind` from fileName
-  needles instead (`DOC_KIND_PATTERNS` in load.py, German +
-  English).
+- The `fileName` field names the document kind: quarterly report,
+  quarterly fee statement, credit note (contribution arrival),
+  pension agreement, pension plan, investor profile, leaving
+  statement, account opening.
+- `documentType` and `category` are numeric enums. The responses
+  carry no names for their values. The silver loader therefore
+  derives `doc_kind` from `fileName` needles (`DOC_KIND_PATTERNS` in
+  `load.py`, German and English).
 
 ## 2. Architecture
 
@@ -166,74 +161,66 @@ auth POSTs require it; the middlelayer GETs do not.
                                                               (SQLite silver)
                                                               │
                                                               ▼
-                                          wealthdb gold (out of scope — sibling component: wealthdb/)
+                                          wealthdb gold (sibling component: wealthdb/)
 ```
 
 The Python scripts (login / download / load / prune +
-pdf_parsers) run inside the same Docker image
-(`wealthdb/base-python` + requests / pypdf / pytest). No browser,
-no Xvfb, no VNC.
+pdf_parsers) run inside one Docker image (`wealthdb/base-python` +
+requests / pypdf / pytest). `prune` also runs on the host.
 
 Stack:
 
 - **Python `requests`** for HTTP. Synchronous; the workload is
-  read-only and modest (low tens of API calls per portfolio + a
-  few dozen document GETs).
+  read-only and modest (a handful of calls per portfolio plus one per
+  in-window document).
 - **`requests.cookies.RequestsCookieJar`** persisted as JSON for
   the Airlock cookies (`AL_SESS-S`, `AL_LoginFromNewDevice`,
   `CSRFT759-S`).
-- **No `httpx`, no async**, no scheduling library. Simpler is
-  better for a tool invoked by hand.
+- **No `httpx`, no async**, no scheduling library. A tool run by hand
+  needs none of them.
 
 ## 3. `login.py` (REST auth)
 
 ### 3.1 Flow
 
-Three steps. `/b2c/access` is the flow-initialisation probe (not
-the credentials endpoint — credentials go to the separate
-`/password/check`). There is **no bearer token at all**: the
-SPA's `Authorization` header literally carries the string
-`"bearer undefined"` (a JS `undefined` stringified). The session
-is 100% cookie-based.
+Three steps. `/b2c/access` is the flow-initialisation probe; the
+credentials go to the separate `/password/check`. There is **no bearer
+token at all**: the session is 100% cookie-based (§1).
 
 The script reproduces what the Angular SPA does:
 
 1. Read `RELEVATE_LOGIN` and `RELEVATE_PASSWORD` from env (the
-   wrapper sourced them from `~/.secrets/relevate.env`).
-2. `GET /auth/ui/app/auth/flow/b2c/password?lang=en` — primes the
+   wrapper sources them from `~/.secrets/relevate.env`). Missing →
+   exit 64.
+2. `GET /auth/ui/app/auth/flow/b2c/password?lang=en` primes the
    cookie jar. Airlock sets `AL_SESS-S` (68 chars, httpOnly,
-   secure), `CSRFT759-S` (22 chars, NOT httpOnly so JS can echo
-   it), and `AL_LoginFromNewDevice` (185 chars, device-trust
-   token).
+   secure), `CSRFT759-S` (22 chars, not httpOnly) and
+   `AL_LoginFromNewDevice` (185 chars, device-trust token).
 3. `POST /auth/rest/public/authentication/applications/b2c/access`
-   with empty body. Sends the `X-CSRFT759` header (value =
-   `CSRFT759-S` cookie value, double-submit pattern). Returns
-   HTTP **401** with a JSON:API envelope describing the current
-   flow state (`meta.nextAuthStep`, `errors[].code`). The 401 is
-   *expected* — it's Airlock saying "you need to authenticate".
+   with an empty body and the `X-CSRFT759` header (the `CSRFT759-S`
+   cookie value, double-submit pattern). Returns the expected
+   HTTP **401** with the flow-state envelope.
 4. `POST /auth/rest/public/authentication/password/check` with
    body `{"username": "...", "password": "..."}` and the
    `X-CSRFT759` + `X-Continue-Flow: true` headers. Returns HTTP
    200 with `data.attributes.{nextAuthStep, phoneNumber,
    resendPossible}`. Airlock has sent the mTAN to the registered
-   number; the phone number comes back in full and is masked
-   client-side before being surfaced on stderr.
-5. Display the masked phone number on stderr and read the OTP
-   from stdin via `input()`. Retry on rejection up to
-   `--max-otp-attempts` (default 3); each retry accepts the next
-   code that arrived (mTANs are usually
-   single-use but Airlock typically allows multiple-in-flight).
+   number.
+5. Print the masked phone number on stderr and read the OTP from
+   stdin via `input()`. A rejected code re-prompts, up to
+   `--max-otp-attempts` (default 3). Typing `resend` (or `r`)
+   repeats step 4, which asks Airlock for a fresh mTAN. A resend
+   or an empty line does not count as an attempt.
 6. `POST /auth/rest/public/authentication/mtan/otp/check` with
    body `{"otp": "..."}` and the same `X-CSRFT759` +
    `X-Continue-Flow: true` headers. Returns HTTP 200. Server-side
    the existing `AL_SESS-S` session record is promoted from
-   anonymous → authenticated; **the cookie value does not change**
-   across the pre/post-auth exchanges.
+   anonymous to authenticated. **The cookie value does not change**
+   across the pre- and post-auth exchanges.
 7. `GET /auth/rest/protected/self-service/ui/configuration/portal`
-   — landmark probe to confirm the session is in fact live
-   before persisting. 200 = good.
+   confirms the session is live before it is persisted. 200 = good.
 8. Persist the cookie jar to `~/.secrets/relevate-state.json`
-   (chmod 0600), atomic via `mv tmp final`:
+   (chmod 0600), written atomically:
    ```json
    {
      "minted_at": "2026-01-01T12:00:00+00:00",
@@ -248,51 +235,42 @@ The script reproduces what the Angular SPA does:
      ]
    }
    ```
-   Only the Airlock-domain cookies + the device-trust cookie are
-   load-bearing; the SPA's Google Analytics cookies (`_ga`,
-   `_gcl_au`, `_ga_*`) are JS-set and never appear in the
-   `requests` cookie jar.
+   Only the Airlock-domain cookies and the device-trust cookie
+   matter. The SPA's Google Analytics cookies (`_ga`, `_gcl_au`,
+   `_ga_*`) are set by JS and never appear in the `requests` cookie
+   jar.
 
 No bearer extraction step. No token decoding. Just cookies.
 
-### 3.2 CLI surface (as built)
+### 3.2 CLI surface
 
 ```
 login.py [--state-path PATH] [--check] [--max-otp-attempts N]
-         [--verbose]
+         [-v/--verbose]
 ```
 
 - `--state-path` — defaults to `/secrets/relevate-state.json`
   inside the container (host `~/.secrets/relevate-state.json`).
 - `--check` — **no credentials submitted, no mTAN push.** Loads
   the existing state file, restores the cookie jar, hits the
-  landmark probe, prints `ALIVE` / `DEAD` / `MISSING` on stdout.
-  Exit codes: 0 (ALIVE), 1 (MISSING), 2 (DEAD). Allowed without
-  user prompt (root AGENTS.md §2).
-- `--max-otp-attempts` — retry budget for a mistyped OTP
-  (default 3). Attempts can pause indefinitely; `input()`
-  blocks on stdin without a deadline. This
-  is the "no immediate-response interactive flows" rule honoured
-  by NOT having a timeout, rather than by setting a long one.
-- No `--password` flag, ever. Credentials only via env.
+  landmark probe, and prints `ALIVE` / `DEAD` / `MISSING` on stdout.
+  Exit codes: 0 (ALIVE), 1 (MISSING), 2 (DEAD).
+- `--max-otp-attempts` — how many OTP submissions before giving up
+  (default 3). The prompt has no deadline: `input()` blocks on stdin
+  until a code arrives.
+- No `--password` flag. Credentials come only from env.
 
 ### 3.3 Session reuse
 
-Airlock IAM session cookies have a sliding TTL — server-side
-configuration, not exposed on the wire we observed. Most Airlock
-deployments default to 30 min idle / 8 h absolute, but the
-device-trust cookie (`AL_LoginFromNewDevice`) is usually much
-longer (30 d nominal).
-
-`login.py --check` is the canonical "is my session still alive"
-probe. The wrapper documents that running `login.py` without
-`--check` triggers a fresh mTAN — it runs only on explicit
-request (root AGENTS.md §2).
+Airlock session cookies have a sliding lifetime set server-side. The
+wire does not expose it (§11, question 1). `login.py --check` is the
+probe for whether the stored session is still alive. Every other
+`login` run sends a fresh mTAN.
 
 ### 3.4 Custom request headers
 
-Mirroring what the SPA sends, in order to look like a polite
-browser-class consumer to Airlock:
+The toolkit sends the headers the SPA sends, so its requests look
+like a browser's:
 
 | Header | Value | Where |
 | --- | --- | --- |
@@ -300,78 +278,57 @@ browser-class consumer to Airlock:
 | `Accept` | `application/vnd.api+json, application/json, */*` | every request |
 | `Accept-Language` | `en-US,en;q=0.9` | every request |
 | `Origin` | `https://portal.pens-expert.ch` | every request |
-| `Referer` | login-flow URL | every request |
+| `Referer` | login-flow URL (`login`), dashboard URL (`download`) | every request |
 | `Sec-Ch-Ua*`, `Sec-Fetch-*` | matching Chrome's client hints | every request |
 | `X-Same-Domain` | `1` | every request |
+| `Authorization` | `bearer undefined` | `download` GETs |
 | `X-CSRFT759` | `CSRFT759-S` cookie value (22 chars) | every POST |
 | `X-Continue-Flow` | `true` | `/password/check`, `/mtan/otp/check` |
 | `Content-Type` | `application/json` | every POST that has a body |
 
 ### 3.5 What is NOT `login.py`'s job
 
-- It does NOT call any `/middlelayer/v2/` endpoint beyond the
-  bare-minimum probe (`/configuration/portal` from the auth
-  rest tree, not middlelayer). Data extraction is `download.py`.
-- It does NOT prompt for credentials interactively. They come
-  from env. Refuse-and-exit (64) if missing.
+- It calls no `/middlelayer/v2/` endpoint. Its only post-auth call
+  is the `/configuration/portal` probe in the auth tree. Data
+  extraction is `download.py`.
+- It never prompts for credentials. They come from env, and a
+  missing one is exit 64.
 
 ## 4. `download.py` (REST dump)
 
 ### 4.1 Flow
 
 1. Load `/secrets/relevate-state.json` and restore the cookie
-   jar into a `requests.Session`. Missing file → exit `64`,
-   print "run `./relevate login` first".
-2. Configure session headers to mirror the SPA: realistic Chrome
-   UA, `Sec-Ch-Ua-*` client hints, `X-Same-Domain: 1`, and the
-   placeholder `Authorization: bearer undefined`. No `X-CSRFT759`
-   on GETs — Airlock only enforces double-submit on POSTs.
+   jar into a `requests.Session`. Missing file → exit `64` with
+   "run `./relevate login` first".
+2. Set the session headers listed in §3.4. No `X-CSRFT759` on GETs:
+   Airlock enforces double-submit only on POSTs.
 3. Probe `/auth/rest/protected/self-service/ui/configuration/portal`.
-   Non-200 → exit; report that the session is dead.
-4. Create the run dir `/data/<UTC-ts>/`. Open the
-   `Manifest` (run.json writer); it is born `status: "in-progress"`
-   and flushed at construction, then flushed after every artefact so
-   a Ctrl-C run leaves an inspectable partial manifest. The terminal
-   status is stamped by `finish()` at the end.
-5. **Accounts phase** (run when `--mode` ∈ `{all, accounts,
-   portfolios}`):
+   Non-200 → exit 1 and report that the session is dead. `download`
+   never signs in.
+4. Create the run dir `/data/<UTC-ts>/` and open the `Manifest`
+   (the `run.json` writer). It is born `status: "in-progress"` and
+   flushed at once, then flushed after every artefact, so a Ctrl-C
+   run leaves an inspectable partial manifest. `finish()` stamps the
+   terminal status at the end.
+5. **Accounts phase** (when `--mode` is `all`, `accounts` or
+   `portfolios`):
    - `GET /middlelayer/v2/portfolio/investment-overview` →
      `accounts/investment-overview.json`.
-   - In `all` mode also fetch the small ancillary user-scope
-     endpoints into `accounts/*.json`: `/compliance/products`,
-     `/contact/messages`, `/contact/notification`,
-     `/contact/risk-protection` (returns 204 No Content for
-     accounts without protection set up — saved as a tiny
-     `{_no_content: true, _status: 204}` marker), `/sso/claims`.
-     `/portfolio/services` and `/contact/language` were dropped
-     after the first real run showed them 400-ing /
-     405-ing without parameters we could synthesise. Each
-     endpoint is independent; real failures are recorded but
-     don't abort the run.
-6. **Portfolios phase** (run when `--mode` ∈ `{all, portfolios}`):
+   - In `all` mode, also fetch the small ancillary endpoints into
+     `accounts/*.json`: `/compliance/products`, `/contact/messages`,
+     `/contact/notification`, `/contact/risk-protection` and
+     `/sso/claims`. A 204 from `/contact/risk-protection` is saved
+     as a `{_no_content: true, _status: 204}` marker. Each endpoint
+     is independent; a failure is recorded and the run goes on.
+   - If the overview fails, no portfolio or document work can run.
+     The run is stamped `"incomplete"` and exits 1.
+6. **Portfolios phase** (when `--mode` is `all` or `portfolios`):
    for each `portfolios[i]` in the overview, in order:
-   - Resolve the deposits-iteration policy:
-     - Iterate from the window's start year to the current
-       year, saving `deposits-YYYY.json` per year. Year is the
-       smallest granularity `/deposits` accepts, so the start
-       year of the `--lookback` window is the closest analog of
-       the fleet's date window (current year by default, since
-       `--lookback` defaults to today − 90 days). This is the
-       path the download always takes — it derives the years
-       from `--lookback` — so the fallbacks below serve direct
-       callers of `do_download`.
-     - Else if `firstInvestmentDate` is plausible (parses to
-       a year ≥ 1900, not the `0001-01-01` sentinel Relevate
-       uses for "unknown"): the current year only, saved as
-       `deposits-YYYY.json`.
-     - Else: single call to `/deposits` with no `?year=` param,
-       saved as `deposits.json`. The first real run revealed
-       that for the FZ products observed so far, the endpoint
-       returns the same empty `{transactions:[]}` envelope
-       regardless of `?year=YYYY` — actual transaction data
-       arrives via the credit-note PDFs that the documents
-       phase fetches. One call records "asked, empty" for the
-       silver loader.
+   - `GET /middlelayer/v2/Portfolio/{id}/deposits?year=YYYY` for
+     every year from the `--lookback` start year to the current
+     year → `portfolios/<slug>/deposits-YYYY.json`. Year is the
+     smallest unit `/deposits` accepts (§4.2).
    - `GET /middlelayer/v2/portfolio/{id}/performance` →
      `portfolios/<slug>/performance.json`.
    - `GET /middlelayer/v2/portfolio/{id}/fees` →
@@ -382,54 +339,55 @@ browser-class consumer to Airlock:
      `GET /middlelayer/v2/Portfolio/proposal/{pid}/modelportfolio`
      → `portfolios/<slug>/modelportfolio.json`.
    - The slug is `sha256(externalId)[:16]`. The raw `externalId`
-     stays inside the JSON files (under the bronze tree, which is
-     gitignored); it never appears in path strings.
-7. **Documents phase** (run when `--mode` ∈ `{all, documents}` and
+     stays inside the JSON files and never appears in a path.
+7. **Documents phase** (when `--mode` is `all` or `documents`, and
    not `--no-documents`):
-   - `GET /middlelayer/v2/documents` → `documents/index.json`.
-   - Each in-window `documents[].id` is routed through the shared
-     `collectorkit.docdedup` download-avoidance engine (keyed
-     `(doc_id,)`), chosen per document kind (the `fileName`-derived
-     label `load.py` parses on, so a parsed kind is never
-     mis-linked):
-     - executed-once immutable kinds `load` never parses (fee
-       statements, pension agreements/plans, investor profiles,
-       account-opening docs) → **link**: an identical PDF from a
-       prior complete run is hardlinked into this run dir and the
-       fetch is skipped (a hardlink error falls through to a real
-       fetch — a doc degrades to a fetch, never to a miss);
-     - parsed / tax-adjacent kinds (quarterly reports, credit notes,
-       leaving statements) and any unrecognised kind → **fetch-verify**
-       (the safe default): always `GET
-       /middlelayer/v2/document/{id}`, then content-compare to the
-       prior copy — a byte-identical one is hardlinked (disk
-       reclaimed), a re-issue keeps its fresh bytes.
-     `application/pdf` 200 → `documents/<id>.pdf`. Any other
-     content-type → `documents/<id>.unexpected.<ext>` (yields no PDF;
-     counted as a per-document error). The index is rebuilt statelessly
-     from the COMPLETE prior runs' on-disk PDFs each run; the current
-     in-progress run is excluded so it never seeds itself.
-     `--documents-force` bypasses the index (always fetch, no hardlink
-     reuse). A hardlink is a real in-run file, so each run dir stays
-     self-contained and the loader needs no cross-run fallback.
-8. Final `run.json` flush via `finish()`, which stamps the terminal
-   `status`: `"complete"` for a finished walk (set even when some
-   endpoints errored), `"dry-run"` for a `--dry-run` walk (stamped
-   in a throwaway temp dir — a dry run leaves nothing under bronze),
-   `"incomplete"` when the master enumeration failed and no work
-   could run. Exit 0 if no errors recorded, 2 if at least one
-   endpoint failed (the run dir is still usable; the loader skips
-   manifest entries flagged with errors).
+   - `GET /middlelayer/v2/documents` → `documents/index.json`. The
+     full index is always written.
+   - Entries whose `createDate` falls outside the window are
+     skipped. An entry with no parseable date counts as in-window.
+   - Each in-window `documents[].id` goes through the shared
+     `collectorkit.docdedup` download-avoidance engine, keyed
+     `(doc_id,)`. The mode follows the document kind, the same
+     `fileName`-derived label `load.py` parses on, so a parsed kind
+     is never mis-linked:
+     - Executed-once immutable kinds that `load` never parses (fee
+       statements, pension agreements and plans, investor profiles,
+       account-opening documents) → **link**. An identical PDF from
+       a prior complete run is hardlinked into this run dir and the
+       fetch is skipped. A hardlink error falls through to a real
+       fetch, so a document degrades to a fetch, never to a miss.
+     - Parsed or tax-adjacent kinds (quarterly reports, credit
+       notes, leaving statements) and any unrecognised kind →
+       **fetch-verify**, the safe default. The PDF is always fetched
+       with `GET /middlelayer/v2/document/{id}` and compared to the
+       prior copy. A byte-identical one is hardlinked to reclaim
+       disk; a re-issue keeps its fresh bytes.
+   - `application/pdf` 200 → `documents/<id>.pdf`. Any other
+     content type → `documents/<id>.unexpected.<ext>`. That yields
+     no PDF and counts as a per-document error.
+   - The skip index is rebuilt each run from the PDFs on disk in the
+     COMPLETE prior runs. The current in-progress run is excluded, so
+     it never seeds itself. A hardlink is a real in-run file, so each
+     run dir stays self-contained and the loader needs no cross-run
+     fallback.
+   - `--documents-force` bypasses the index: every PDF is fetched
+     and nothing is hardlinked.
+8. `finish()` stamps the terminal `status`: `"complete"` for a
+   finished walk, even when some endpoints errored. The exit code is
+   0 with no recorded errors and 2 with at least one. The errors stay
+   in `run.json`, and `load` ingests the dump; `dump_runs` records
+   the error count.
 
-The `status` field is the fleet-uniform completeness signal: a run
-dir is a *complete* dump (`status == "complete"`), or a *non-complete*
-one (an `"in-progress"` marker from a crashed walk, a `"dry-run"`
-shell, an `"incomplete"` abort, or no `run.json` at all). `load` skips
-a dump whose status is anything but `"complete"`, so a partial capture
-never reaches silver; `prune` reclaims non-complete run dirs (§6). The
-`ended_at` / `dry_run` fields are written alongside `status` and are the
-terminal signal `prune` falls back to for a statusless manifest
-(complete iff `ended_at` was stamped on a non-`dry_run` run).
+**Run status.** The `status` lifecycle and how `load` and `prune` read
+it are fleet-wide
+([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).
+relevate adds one terminal status, `"incomplete"`, for a run whose
+master enumeration failed (step 5). `load` skips it and `prune`
+reclaims it. The `ended_at` and `dry_run` fields are written alongside
+`status`. `prune` falls back on them for a manifest with no `status`:
+because `run.json` is flushed from the start, only `ended_at` stamped
+on a non-`dry_run` run marks such a dump complete.
 
 Manifest shape (as written):
 
@@ -440,6 +398,10 @@ Manifest shape (as written):
   "started_at": "...", "status": "complete", "ended_at": "...",
   "mode": "all", "dry_run": false,
   "state_minted_at": "...",
+  "windows": {
+    "since": "YYYY-MM-DD", "until": "YYYY-MM-DD",
+    "documents_since": "YYYY-MM-DD", "documents_until": "YYYY-MM-DD"
+  },
   "accounts": [
     {
       "id": NNNN, "slug": "<sha256-prefix>",
@@ -449,7 +411,7 @@ Manifest shape (as written):
       "is_active": true,
       "first_investment_date": "0001-01-01T00:00:00",
       "portfolio_type_id": 0, "portfolio_status_id": 0,
-      "deposits_year_window": null
+      "deposits_year_window": [YYYY, YYYY]
     }
   ],
   "documents": {
@@ -466,6 +428,9 @@ Manifest shape (as written):
 }
 ```
 
+`first_investment_date` carries Relevate's `0001-01-01` sentinel when
+the date is unknown.
+
 ### 4.2 CLI surface
 
 ```
@@ -476,248 +441,241 @@ download.py [--state-path PATH] [--bronze-dir DIR]
             [--lookback PRESET|YYYY-MM-DD]
             [--limit-portfolios N]
             [--limit-documents N]
-            [--verbose]
+            [-v/--verbose]
 ```
 
-Date-window contract: `--lookback` is the one window flag — a
-named preset (`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) or an ISO
-date naming the window's start, which runs from there to today.
-Its start year bounds the `/deposits` year iteration
-(`year_from = since.year`, `year_to = until.year`), since the
-endpoint takes year granularity only. The same window filters the
-per-PDF fetch by `createDate` (the full index is still written for
-traceability).
+Date window: `--lookback` follows the
+[fleet contract](../README.md#collector-cli-conventions). `/deposits`
+takes year granularity only, so `download` asks for every year from
+the window's start year to the current year
+(`year_from = since.year`, `year_to = until.year`). The fetch therefore
+covers whole years, a superset of the window; no warning is printed.
+`/documents` has no server-side date filter, so the same window
+filters the per-PDF fetch by `createDate` on the client. The full
+index is still written for traceability.
 
-Iteration discipline: the
-`--mode`, `--no-documents`, and `--limit-*` flags let one phase be
-re-run cheaply while iterating on the silver loader or
-investigating a specific portfolio's response shape.
+`--mode`, `--no-documents` and the `--limit-*` flags re-run one phase
+cheaply while iterating on the loader or on one portfolio's response
+shape.
 
-`--dry-run` hits only the two master listing endpoints
-(`investment-overview` + `documents`), records the work-list
-counts in the manifest, and exits. Root AGENTS.md §2 explicitly
-allows running this without user prompt.
+`--dry-run` reuses the stored session; it never signs in and never
+sends an mTAN. With no state file it exits 64, and with a dead session
+it exits 1, as a real run does. With a live session it calls only the
+two master listings (`investment-overview` and `documents`) and logs
+how many portfolios and in-window documents a real run would fetch.
+Its manifest goes to a throwaway temp dir that is removed on exit, so
+nothing lands under `--bronze-dir`. `--debug` captures nothing on a
+dry run.
+
+`--debug` writes an HTTP trace to `<run>/screenshots/http-trace.jsonl`:
+one line per Relevate request with its status, timing, size and
+rate-limit headers. It holds no bodies and no credential. `load` never
+reads it, and `prune` reclaims it.
 
 ### 4.3 Idempotency + dedup
 
-- The bronze run dir is timestamped per invocation — never
-  rewritten across runs.
-- Document fetches are download-avoidant across runs via the shared
-  `collectorkit.docdedup` engine (§4.1 step 7): an immutable,
-  unparsed doc identical to a prior complete run is hardlinked in
-  (fetch skipped); everything parsed / tax-adjacent / unrecognised
-  is fetch-verified (always fetched, a byte-identical copy still
-  hardlinked to reclaim disk). The mode is chosen off the same
-  `fileName`-derived kind `load.py` parses on, so a parsed doc is
-  never mis-linked; `--documents-force` bypasses the index. The
-  freshness window (default 35 days, keyed on `createDate`) holds a
-  just-issued immutable doc out of the index so a same-period
-  correction is re-fetched rather than linked.
-- Cross-run silver dedup is still the loader's job (content-hash on
-  ingest); the download-time hardlinking is a bronze-side disk +
-  fetch-avoidance win that leaves each run dir self-contained.
+- Each invocation gets its own timestamped run dir; a run dir is never
+  rewritten.
+- Document fetches avoid re-downloads across runs through
+  `collectorkit.docdedup` (§4.1 step 7). Its freshness window (35
+  days, keyed on `createDate`) keeps a just-issued immutable document
+  out of the skip index, so a same-period correction is fetched, not
+  linked.
+- Silver dedups across runs on its own: `documents` is keyed by
+  content hash (§7). Download-time hardlinking saves disk and fetches
+  and leaves each run dir self-contained.
 
 ### 4.4 Errors + retry policy
 
-Current implementation is conservative: log + record in
-`manifest.errors`, continue to the next work item. No retry
-loop.
+There is no retry loop. A failed request is logged and recorded in
+`manifest.errors`, and the walk moves to the next work item.
 
-- HTTP 401 → session probably expired (the initial probe should
-  have caught this; if not, it's mid-run). Record and continue —
-  individual endpoints may have shorter-lived auth than the
-  landmark.
-- HTTP 5xx → record and continue. No retry layer; a
-  retry-with-backoff layer would slot in here if needed.
-- HTTP 429 → record and continue. Same: not observed; defer.
-- Document GET returning HTML or `application/json` instead of
-  `application/pdf` → save under `documents/<id>.unexpected.<ext>`
-  and record in `manifest.documents.unexpected_content_type`.
+- HTTP 401 mid-run → the session expired after the initial probe.
+  Recorded; the walk continues.
+- HTTP 5xx or 429 → recorded; the walk continues. A retry-with-backoff
+  layer would slot in here.
+- A document GET returning HTML or `application/json` instead of
+  `application/pdf` → saved as `documents/<id>.unexpected.<ext>` and
+  recorded in `manifest.documents.unexpected_content_type`.
 
 ## 5. `load.py` (silver loader)
 
-Mechanical projection of bronze JSON into the silver SQLite
-schema (§7), with migrations applied on each invocation. Idempotent
-on re-runs: tracks which `dump_runs.snapshot_at` have been ingested
-and short-circuits.
+`load` applies the migrations on each invocation, then projects bronze
+JSON into the silver schema (§7). It loads each pending dump, oldest
+first, in one transaction (`accounts`, `cash_balances`, `positions`,
+`instruments`, `performance_points`, `documents`). The `dump_runs` row
+is the last insert before the commit, so a failure rolls the whole
+dump back and the next run retries it. Which run dirs count as pending
+follows the fleet `run.json` status rule
+([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).
+`load` does not read the `deposits-YYYY.json`, `fees.json` or
+`investment-allocation.json` files (§7.3).
 
-The loader ingests each unseen bronze run in one transaction
-(accounts / cash_balances / positions / instruments /
-performance_points / documents), then runs two cross-dump PDF
-phases: `load_historical_snapshots` (quarterly-report holdings →
-`historical_position_snapshots` / `historical_cash_balances`) and
-`load_credit_note_transactions` (credit-note events,
-`source='credit_note_pdf'`).
+Two PDF passes then run over every document silver indexes, each in
+its own transaction:
+
+- `load_historical_snapshots` parses the quarterly reports into
+  `historical_position_snapshots` and `historical_cash_balances`.
+- `load_credit_note_transactions` parses the credit notes into
+  `transactions` with `source='credit_note_pdf'`. Each row takes the
+  latest `dump_runs.snapshot_at`, since a PDF carries no dump time.
+
+A PDF that fails to parse is logged and skipped. Both passes re-read
+the whole archive on every load. When the `pdf_parsers` fingerprint
+changes (`parser_generations`, migration 0003), `load` first drops the
+rows both passes wrote, so a re-parse replaces them. If the re-parse
+yields fewer rows than before, the new generation is not stamped and
+the next load tries again.
+
+`load --force` deletes the silver DB and rebuilds it from all bronze.
 
 ## 6. Bronze layout
 
 ```
 $XDG_DATA_HOME/wealthdb/relevate/                     (= /data inside container)
 ├── 20260101T120000Z/                        one bronze dump per run
-│   ├── run.json                             manifest
+│   ├── run.json                             manifest (§4.1)
 │   ├── accounts/
 │   │   ├── investment-overview.json         master list
-│   │   ├── services.json
 │   │   ├── compliance-products.json
-│   │   ├── sso-claims.json
-│   │   └── contact-messages.json
+│   │   ├── contact-messages.json
+│   │   ├── contact-notification.json
+│   │   ├── contact-risk-protection.json     204 marker when empty
+│   │   └── sso-claims.json
 │   ├── portfolios/
 │   │   └── <sha256-16>/                     dir per portfolio, slug hides externalId
-│   │       ├── deposits-2018.json
-│   │       ├── deposits-2019.json
-│   │       ├── ...
+│   │       ├── deposits-YYYY.json           one per year of the window
 │   │       ├── performance.json
 │   │       ├── fees.json
 │   │       ├── investment-allocation.json
 │   │       └── modelportfolio.json
-│   └── documents/
-│       ├── index.json
-│       ├── <docId>.pdf
-│       └── <docId>.unexpected.{html,json}   only if API returned non-PDF
+│   ├── documents/
+│   │   ├── index.json
+│   │   ├── <docId>.pdf
+│   │   └── <docId>.unexpected.{html,json}   only if the API returned non-PDF
+│   └── screenshots/http-trace.jsonl         only with download --debug
 ├── 20260815T120000Z/
 │   └── ...
-├── manual/                                  ad-hoc user-supplied PDFs
 └── relevate.db                              silver SQLite (default path)
 ```
 
 Path conventions:
 
-- **Account / portfolio slugs are `sha256(externalId)[:16]`** —
-  same pattern as ubs-web's `<sha256-prefix>`. Keeps
-  raw external IDs out of any path string that might leak into
-  shell history, ps output, error messages.
+- **Portfolio slugs are `sha256(externalId)[:16]`**, the same
+  pattern as ubs-web's `<sha256-prefix>`. Raw account numbers stay
+  out of any path string that could leak into shell history, `ps`
+  output or error messages.
 - **Document filenames key on Relevate's own document `id`**
-  (small integer). Stable across runs; idempotent fetch.
-- **`run.json`** is written incrementally so a SIGINT-killed
-  run still leaves a partial manifest for inspection. Because it is
-  flushed from run-dir creation (born `status: "in-progress"`), its
-  mere *presence* does not mean the walk finished — the completeness
-  signal is `status == "complete"` (or, for a pre-`status` dump,
-  `ended_at` stamped on a non-`dry_run` run).
+  (a small integer). Stable across runs, so a fetch is idempotent.
+- **`run.json`** is written incrementally (§4.1 step 4). Its mere
+  presence does not mean the walk finished.
 
-**Pruning.** `prune` (a thin wrapper over the shared, unit-tested
-`collectorkit.prune` engine) reclaims whole **non-complete** run dirs
-— crashed walks and `--dry-run` shells — across the bronze tree, plus
-the one debug artefact a run dir can hold: the `screenshots/` HTTP trace
-a `download --debug` writes (`debug_subdirs`). relevate drives no
-browser, so there are no DOM dumps or Playwright traces beside it. Every
-other file in a *complete* dump is kept: the JSON payloads and document
-PDFs (the latter read cross-dump by `load_historical_snapshots` and
-`load_credit_note_transactions` via `documents.bronze_path`) are faithful
-bronze captures and load inputs, never prune targets. Non-run entries at the bronze root (`manual/`,
-`relevate.db`) and symlinks are never touched, and an unreadable or
-corrupt `run.json` is UNKNOWN and skipped. An in-flight guard
-(`--min-age-hours`, default 1, keyed on the newest write in the dir)
-protects a long backfill whose slug is old but whose files are fresh;
-a whole-dir deletion rechecks completeness + quiescence immediately
-before `rmtree`. Deleting a non-complete dump surfaces on the next
-`load --force` rebuild.
+**Pruning.** `prune` follows the
+[fleet rules](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+Its relevate specifics:
+
+- From a complete dump it reclaims only `screenshots/`, the HTTP trace
+  of `download --debug` (`debug_subdirs`). relevate drives no browser,
+  so there are no DOM dumps or Playwright traces.
+- Every other file of a complete dump is kept. The JSON payloads and
+  PDFs are load inputs; the PDFs are read cross-dump by both PDF
+  passes via `documents.bronze_path`.
+- A non-complete dump is a crashed walk (`"in-progress"`), an
+  `"incomplete"` abort, a `"dry-run"` shell, or a statusless
+  manifest without a stamped `ended_at` (§4.1).
+- Deleting a non-complete dump shows in silver after the next
+  `load --force` rebuild.
 
 ## 7. Silver schema
 
-SQLite + JSON1. Migrations live in `migrations/`; the loader
-reads `MAX(silver_schema_version)` from `schema_meta` and applies
-any newer files in order. Migration discipline matches the
-sibling collectors: every change lands as a new numbered file, no
-backward-compatible drift, silver DBs always conform to the
-latest schema.
+SQLite + JSON1. Migrations live in `migrations/`. The loader reads
+`MAX(silver_schema_version)` from `schema_meta` and applies any newer
+files in order. Every change lands as a new numbered file.
 
 Storage conventions:
 
 - Unix-seconds-UTC integers for all timestamps.
-- Stable filter columns promoted; rest in `payload TEXT` JSON.
-- Snapshot tables monotemporal on `snapshot_at` (PK starts with
+- Stable filter columns promoted; the rest in `payload TEXT` JSON.
+- Snapshot tables monotemporal on `snapshot_at` (the PK starts with
   it, so the implicit B-tree is the as-of index).
-- Event tables (`transactions`) keyed by stable external id;
-  INSERT OR REPLACE so re-loading a window converges.
+- Event tables (`transactions`) keyed by a stable external id;
+  `INSERT OR REPLACE`, so re-loading converges.
 - Documents content-deduped via PRIMARY KEY `content_sha256`.
 
-### 7.1 Tables (as built — see `migrations/`)
+### 7.1 Tables
 
 | Table | PK | Purpose |
 |---|---|---|
 | `schema_meta` | `silver_schema_version` | Migration version registry. |
-| `dump_runs` | `snapshot_at` | One row per ingested bronze run; carries the `run.json` manifest verbatim in `payload`. `dry_run` flag preserves provenance. |
-| `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, Relevate portfolio). Promotes product_key, currency, portfolio_proposal_id, is_active, first_investment_date, contact_id; rest in payload. |
-| `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). `balance_kind` ∈ {cash, invested, current, securities, saving, investment, virtual, target_inv, target_sav} — derived from the matching `portfolios[i]` fields. |
+| `dump_runs` | `snapshot_at` | One row per ingested bronze run. Carries the `run.json` manifest verbatim in `payload`, plus `bronze_files_total` and `bronze_errors_total`. |
+| `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, Relevate portfolio). Promotes product_key, currency, portfolio_proposal_id, is_active, first_investment_date, contact_id; the rest in payload. |
+| `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). `balance_kind` ∈ {cash, invested, current, securities, saving, investment, virtual, target_inv, target_sav}, derived from the matching `portfolios[i]` fields. |
 | `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | One row per (snapshot, account, modelportfolio position). **TARGET allocation**, not actual unit holdings. Promotes isin, asset_class, country_code, allocation, trading_price. |
-| `instruments` | `instrument_external_id` | Slow-changing master data; upsert advances `last_seen_at`. Cross-portfolio dedup'd on `security.id`. |
-| `performance_points` | `(snapshot_at, account_external_id, value_date)` | Daily time series from `/portfolio/{id}/performance`. One point per calendar day of the portfolio's history since inception. `value_date` is Unix seconds at the day's midnight UTC. |
-| `transactions` | `transaction_external_id` | `/deposits` returns no rows for FZ accounts, so the API side stays empty; `load_credit_note_transactions` parses the credit-note PDFs and lands the contribution events here with `source='credit_note_pdf'`. |
-| `documents` | `content_sha256` | Content-deduped index of PDFs on disk. `first_seen_at` is the earliest dump that captured the content; `last_seen_at` advances on subsequent dumps. Promotes numeric `document_type_code` and `category_code` (enum-to-name mapping not exposed; `doc_kind` is derived from fileName needles — `DOC_KIND_PATTERNS`, `'other'` only for unrecognised names). |
+| `instruments` | `instrument_external_id` | Slow-changing master data; an upsert advances `last_seen_at`. Keyed on `security.id`, shared across portfolios. |
+| `performance_points` | `(snapshot_at, account_external_id, value_date)` | Daily time series from `/portfolio/{id}/performance`. One point per calendar day since the portfolio's inception. `value_date` is Unix seconds at the day's midnight UTC. |
+| `transactions` | `transaction_external_id` | Contribution events parsed from the credit-note PDFs (`source='credit_note_pdf'`, id `credit_note:<doc id>`). The loader does not read `/deposits`, which returns no rows for vested-benefits portfolios. |
+| `documents` | `content_sha256` | Content-deduped index of the PDFs on disk. `relevate_doc_id` is unique: new content under a known id is a re-issue and replaces the earlier row. `first_seen_at` is the earliest dump that captured the content; `last_seen_at` advances on later dumps. Promotes the numeric `document_type_code` and `category_code`. `doc_kind` comes from `fileName` needles (`DOC_KIND_PATTERNS`), `'other'` only for unrecognised names. |
 | `historical_position_snapshots` | `(snapshot_at, account_external_id, isin)` | Per-quarter holdings parsed from the quarterly-report PDFs (migration 0002). |
-| `historical_cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | Per-quarter cash/valuation figures from the same reports (migration 0002). |
-| `parser_generations` | `scope` | Which generation of the PDF parsing logic produced the rows a pass is holding (`collectorkit.srcfp` fingerprint). A moved generation drops them before the pass re-derives, so a re-parse replaces rather than accumulates. |
+| `historical_cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | Per-quarter cash and valuation figures from the same reports (migration 0002). |
+| `parser_generations` | `scope` | Which generation of the PDF parsing logic produced the rows a pass holds (`collectorkit.srcfp` fingerprint, migration 0003). A moved generation drops those rows before the pass re-derives them, so a re-parse replaces rather than accumulates. |
 
 #### 7.1.1 `accounts.product_key` is forensic, not behavioural
 
-The observed values `FZI` (product_name `Independent`) and
-`FZPF` (product_name `PensFree`) look like two product lines
-with potentially different investment menus, fees, or
-operational characteristics. They aren't.
+The two known values, `FZI` (product_name `Independent`) and `FZPF`
+(product_name `PensFree`), look like two product lines with different
+investment menus, fees or behaviour. They are not.
 
-PensExpert operates these as **two legally separate
-foundations** that surface the IDENTICAL investment-product
-menu, IDENTICAL fee schedule, and IDENTICAL strategy-
-configuration UI. The two-foundation structure exists as a
-Swiss regulatory workaround: vested-benefits law caps a
-customer's vested-benefits assets at two custody accounts when
-transferring, so PensExpert runs `Independent` and `PensFree`
-side-by-side under one roof to support that without forcing
-customers to a third-party foundation. A customer's assets can
-land in either or both; the customer experiences no
-behavioural difference between them.
+PensExpert runs these as **two legally separate foundations**. Both
+offer the IDENTICAL investment menu, IDENTICAL fee schedule and
+IDENTICAL strategy-configuration UI. The two-foundation structure is a
+Swiss regulatory workaround. Vested-benefits law caps a customer's
+vested-benefits assets at two custody accounts when transferring.
+PensExpert runs `Independent` and `PensFree` side by side so a customer
+can use both without moving to a third-party foundation. A customer's
+assets can sit in either or both, with no difference in behaviour.
 
-The column is surfaced verbatim because it's forensically
-useful: "which foundation does this account live in",
-legal-entity attribution, cross-checks against the credit-note
-PDFs that name the issuing Stiftung. Both foundations classify
-identically, so `product_key` is not a behavioural
-discriminator — a downstream consumer should treat FZI and FZPF
-the same. How gold interprets this column is owned by the
+The column is kept verbatim because it is forensically useful: which
+foundation an account lives in, legal-entity attribution, and
+cross-checks against the credit-note PDFs that name the issuing
+Stiftung. Both foundations classify identically, so `product_key` is
+not a behavioural discriminator. A downstream consumer treats FZI and
+FZPF the same. How gold interprets this column is owned by the
 wealthdb relevate adapter — see [the canonical
 model](../../DESIGN.md) and the adapter source
 [`wealthdb/internal/silver/relevate/`](../../wealthdb/internal/silver/relevate/).
 
-### 7.2 Load semantics verified
+### 7.2 Row shape
 
-The projected row shape:
+One dump projects to:
 
-- one `accounts` row per (portfolio, snapshot);
+- one `accounts` row per portfolio;
 - one `cash_balances` row per (account, populated balance kind);
-- one `positions` row per (modelportfolio position, non-dry-run
-  snapshot);
+- one `positions` row per modelportfolio position;
 - one `instruments` row per distinct security across the
   modelportfolios;
-- ~N `performance_points` per (portfolio, non-dry-run snapshot);
-- `transactions` may be empty for FZ products (`/deposits` can
-  return no rows);
-- `documents` content-deduped across the dumps.
+- one `performance_points` row per (portfolio, day of its history);
+- `documents` rows, content-deduped across dumps.
 
 Each `positions` row carries an `asset_class` label (from
-`security.assetClass.name`) and an ISIN. Re-running `load`
-against the same bronze is a no-op (the `dump_runs.snapshot_at`
-PK is the idempotency anchor).
+`security.assetClass.name`) and an ISIN. Re-running `load` against the
+same bronze is a no-op (the `dump_runs.snapshot_at` PK is the
+idempotency anchor).
 
 ### 7.3 What's deliberately NOT a table
 
-- **`fx_rates`**: portfolios are CHF-denominated and
-  `currentValue` comes back in `currency.currencyCode = "CHF"`.
-  If a future Relevate product surfaces foreign-currency holdings
-  the loader will materialise an `fx_rates` table in a follow-on
-  migration; doing it now would be empty-table speculation.
+- **`fx_rates`**: portfolios are CHF-denominated, and `currentValue`
+  comes back in `currency.currencyCode = "CHF"`.
 - **`fees`**: `/portfolio/{id}/fees` returns a single `{value,
-  isPercent, displayValue}` object per portfolio. The raw JSON
-  stays on disk under `portfolios/<slug>/fees.json` in the
-  bronze tree; the loader doesn't project it into silver in v1.
-  A future migration can promote it into the `accounts` row's
-  payload or its own table once gold consumers care.
+  isPercent, displayValue}` object per portfolio. The raw JSON stays
+  in bronze under `portfolios/<slug>/fees.json`; silver does not
+  project it.
 - **`investment_allocation`**: the
-  `/portfolio/{id}/investment/allocation` endpoint's
-  `{totalValuation, investmentValuation, savingValuation}` is
-  redundant with the matching `cash_balances` rows the loader
-  already derives from `investment-overview`. The raw response
-  stays in bronze.
+  `/portfolio/{id}/investment/allocation` response
+  (`{totalValuation, investmentValuation, savingValuation}`) repeats
+  the `cash_balances` rows the loader derives from
+  `investment-overview`. The raw response stays in bronze.
+- **`deposits`**: `/deposits` returns no rows for vested-benefits
+  portfolios (§1). The yearly files stay in bronze.
 
 ## 8. Identity strategy
 
@@ -731,25 +689,26 @@ model](../../DESIGN.md) and the adapter source
 ### 8.1 `account_external_id`
 
 **Use `portfolios[].externalId`** (the `NNNN.NNNNNN.N` form,
-e.g. `1234.567890.0`). It's the foundation-issued account number
-and is stable across sessions. The `id` field is the
-foundation's internal DB key — fine as a join column but not
-appropriate as the canonical external identifier.
+e.g. `1234.567890.0`). It is the foundation-issued account number
+and is stable across sessions. The `id` field is the foundation's
+internal DB key. It serves as a join column but not as the canonical
+external identifier.
 
 ### 8.2 `instrument_external_id`
 
-**Prefer ISIN** if `modelportfolio.positions[].security.isin` is
-non-null (wealthdb gold's `instruments.isin` is indexed for
-cross-bank joins). Otherwise use `security.id` as an
-adapter-scoped identifier.
+`positions` and `instruments` key on `security.id`, Relevate's
+numeric security key, and carry the ISIN in their own `isin` column
+(wealthdb gold's `instruments.isin` is indexed for cross-bank joins).
+The quarterly-report tables key on the ISIN, because the PDFs never
+print `security.id`.
 
 ## 9. Container + wrapper architecture
 
 ### 9.1 Image
 
 `wealthdb/base-python` + `requirements.txt` (requests, pypdf,
-pytest). No browser stack — the toolkit replays REST calls and
-parses PDFs. Build takes a few seconds on a warm base.
+pytest). No browser stack: the toolkit replays REST calls and parses
+PDFs.
 
 ### 9.2 Wrapper subcommand surface
 
@@ -757,80 +716,69 @@ parses PDFs. Build takes a few seconds on a warm base.
 ./relevate <verb>
 
 build       Build the Docker image.
-login       login.py — mint or refresh the cookie jar.
+login       login.py — mint a session, or probe it with --check.
 download    download.py — fetch bronze from /middlelayer/v2/.
 load        load.py — parse bronze into silver SQLite.
-prune       prune.py — reclaim non-complete dumps from the bronze tree.
+prune       prune.py — reclaim non-complete dumps and debug traces (runs on the host).
 sh|bash     Interactive shell in the container.
 help        Show usage.
 ```
 
-The wrapper sources `~/.secrets/relevate.env`, manages the mount
-points, allocates a TTY when both stdin and stdout are TTYs, and
-refuses to evict a running container without
-`RELEVATE_FORCE_REPLACE=1`.
+The wrapper sources `~/.secrets/relevate.env` and the optional
+`relevate.cfg`, manages the mounts, and allocates a TTY when stdin and
+stdout are both TTYs. It refuses to evict a running container unless
+`RELEVATE_FORCE_REPLACE=1` is set.
 
 ### 9.3 Mounts
 
-The standard `/secrets` (`~/.secrets`) and `/data`
-(`$XDG_DATA_HOME/wealthdb/relevate`) bind-mounts follow the shared collector
-convention — see [collectors/README.md](../README.md). On top of
-those, relevate bind-mounts a third, tool-specific path:
+The standard `/secrets` and `/data` bind-mounts follow the
+[shared convention](../README.md#conventions-shared-across-collectors).
+relevate adds one more:
 
 | Container path | Host default | Purpose |
 |---|---|---|
 | `/debug` | `~/.cache/wealthdb/debug/relevate` | opt-in scratch logs / traces |
 
-All three are bind-mounted RW. No ports published — the
-container is purely an HTTP client.
+All mounts are read-write. No ports are published: the container is
+purely an HTTP client.
 
 ## 10. What we do NOT do
 
-- **No mutations.** No POST / PUT / DELETE to any
-  `/middlelayer/v2/` endpoint. No call to
-  `/dashboard/depot/{id}/investment/allocation/change` or any
-  other `*/change` URL — these exist in the SPA but are
-  explicitly off-limits. The CLI must never accept a flag that
-  would trigger a write.
-- **No 2FA bypass.** Every fresh `login.py` invocation prompts
-  for a code from the phone. No SMS-receiver integration,
-  no TOTP-secret storage, no email-poll-and-extract.
-- **No `--password` flag** anywhere. Env-only for secrets.
-- **No scheduling.** Cron / launchd / Actions are out of scope —
-  they can't survive the mTAN gate, would burn the session
-  cookie's lifetime, and add a stealth-traffic signature to a
-  customer portal we're a polite guest on.
-- **No PII in tracked files.** The repo is publishable; the
-  account-external-id `NNNN.NNNNNN.N` pattern is on the
-  pre-commit grep list along with AHV `756.NNNN.NNNN.NN`.
+The read-only surface is in [AGENTS.md](AGENTS.md) §1. The
+authentication and privacy rules are in the root
+[AGENTS.md](../../AGENTS.md) §2–§4. Specific to relevate:
+
+- The SPA has `*/change` URLs (for example
+  `/dashboard/depot/{id}/investment/allocation/change`). The toolkit
+  never calls them, and no CLI flag triggers a write.
+- Every fresh `login` prompts for the mTAN from the phone. There is
+  no SMS-receiver integration and no stored second factor.
+- Account numbers have the shape `NNNN.NNNNNN.N`, and AHV numbers
+  `756.NNNN.NNNN.NN`. Neither belongs in a tracked file.
 
 ## 11. Open questions
 
 1. **Session TTL.** Airlock typically defaults to 30 min idle
-   / 8 h absolute. Determine empirically by running
-   `login.py --check` periodically after a fresh login and
-   noting when it flips to DEAD.
-2. **Session-renewal mechanism.** No `/refresh` endpoint appears
-   on the wire, but the SPA may issue keepalives that haven't
-   been captured. If Airlock has an idle-extending touch that
-   can be issued without a fresh mTAN, hook it in.
-3. **`documentType` + `category` enum mapping.** The numeric
-   values 0/1/3/4/7/9 (type) and 0/1/2 (category) — derive
-   labels by correlating with fileName patterns, or look for a
-   config endpoint that exposes the mapping.
-4. **Pillar 3a presence.** Endpoint `/dashboard/3a/depots`
-   exists; investment-overview omits 3a entries for FZ-only
-   logins. Confirm whether the absence is "the login doesn't have
-   any" or "the API filters them out unless explicitly requested
-   via a separate endpoint".
-5. **Actual unit holdings.** Modelportfolio gives target
-   allocation; investment-overview gives total currentValue.
-   Is there an endpoint that returns the actual units held
-   (e.g., `/positions`, `/holdings`)? If not, silver's
-   `positions` table holds target allocations — fine for
-   vested benefits but worth confirming.
-6. **OTP retry behaviour.** Does Airlock invalidate the mTAN
-   after one bad guess, or accept the next attempt? `login.py`
-   allows 3 attempts; verify a fat-finger can in fact be
-   corrected before the session locks.
-
+   / 8 h absolute, and its device-trust cookie to about 30 days.
+   The real values can be measured by running `login.py --check`
+   periodically after a fresh login and noting when it flips to DEAD.
+2. **Session renewal.** No `/refresh` endpoint appears on the
+   wire, but the SPA may issue keepalives that have not been
+   captured. An idle-extending call that needs no fresh mTAN would
+   let a session live longer.
+3. **`documentType` + `category` enum mapping.** Labels could be
+   derived by correlating the numeric codes with `fileName`
+   patterns, or from a config endpoint that exposes the mapping.
+4. **Pillar 3a presence.** The SPA has a `/dashboard/3a/depots`
+   route. Unconfirmed: whether `investment-overview` lists 3a
+   portfolios, or whether they need a separate endpoint.
+5. **Actual unit holdings.** Modelportfolio gives the target
+   allocation; investment-overview gives the total `currentValue`.
+   No endpoint returning the actual units held (e.g. `/positions`,
+   `/holdings`) is known. Until one is, live `positions` holds
+   target allocations, and actual units come only from the
+   quarterly reports.
+6. **OTP retry behaviour.** Does Airlock invalidate the mTAN after
+   one bad guess, or accept the next attempt? `login.py` allows 3
+   attempts plus `resend`; whether a typo can be corrected before
+   the session locks is unverified.

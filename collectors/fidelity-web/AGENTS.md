@@ -5,6 +5,15 @@ source, git/commit conventions) live in the repo-root
 [AGENTS.md](../../AGENTS.md). The fidelity-web-specific surface below
 applies on top of those shared rules.
 
+## 0. Which verbs sign in
+
+No Fidelity session survives the browser, so every verb that opens
+one signs in: `download` (including `download --dry-run`),
+`vnc-login` and `explore`. A `--dry-run` writes nothing to bronze,
+but it is a real session (root [AGENTS.md](../../AGENTS.md) §2).
+`download --check` opens the stored profile and submits no
+credential.
+
 ## 1. Read-only Fidelity web access — never trigger write actions
 
 Root [AGENTS.md](../../AGENTS.md) §1 mandates read-only access. The
@@ -26,8 +35,8 @@ within the surfaces listed below:
   of already-displayed data (the "Download" toolbars on
   Activity & Orders, Positions, and the document center).
 - Document download endpoints reachable via the session cookie
-  (typically REST endpoints fetched via Playwright's request API
-  rather than per-row link clicks).
+  (in the document center, a row click fires the authenticated
+  request that returns the PDF; the walk reads that response).
 - The positions page's read-only query API under
   `/ftgw/digital/positions/poswebex/api/`, called with the
   session's own CSRF token and account context, and bodies shaped

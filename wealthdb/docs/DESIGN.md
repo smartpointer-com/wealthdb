@@ -69,8 +69,8 @@ spending, income, cash flow) read.
   read-only over a network share (NFS, SMB, S3-FUSE) or shipped
   via `scp`. Multiple consumers can run `wealthdb holdings positions` /
   `wealthdb status` against it concurrently, in read-only mode and
-  outside the window in which the single upstream owner's
-  `wealthdb load` holds the write lock. See §4.10.
+  outside the window in which the single writer's `wealthdb load`
+  holds the file. See §4.10.
 - **Dockerised everything.** Build, dev, and prod all run inside a
   single container image. The host OS stays clean.
 
@@ -79,15 +79,14 @@ spending, income, cash flow) read.
 - **A UI of its own.** The engine is a CLI and an MCP server. The
   optional dashboards are Metabase over a snapshot of gold
   ([web/](../../web/)).
-- **Built-in market-data feeds (v1 only).** Real-time prices,
-  ex-dividend dates, ratings, historic and implied volatility, etc.
-  are out of scope for v1 — gold operates on whatever each silver
-  carries. These feeds are planned future work and will arrive via
-  their own ingest path independent of any bank silver. See §13.8.
+- **Built-in market-data feeds.** Real-time prices, ex-dividend
+  dates, ratings and volatility are out of scope. Gold operates on
+  whatever each silver carries. §13.8 sketches where such a feed
+  would land.
 - **Performance attribution.** No command computes it. Gold carries
   the cost basis, open lots and realized lots each source states
   (§7.4), the lot engine fills what a source leaves out (§7.5), and
-  `wealthdb gains` reads both (docs/GAINS.md).
+  `wealthdb gains` reads both ([GAINS.md](GAINS.md)).
 - **Cross-silver instrument deduplication.** Two silvers may hold the
   "same" equity under different `instrument_external_id`s; gold keeps
   them separate at the row level. `instruments.isin` is the join key
@@ -114,18 +113,18 @@ wealthdb config [-c <cfg>]            (setup) Interactive first-time wizard; wri
 wealthdb init                         (RW)    Initialise an empty gold DB at the configured path.
 wealthdb load    <id> | -a            (RW)    Merge new silver snapshots into gold.
 wealthdb reset   <id> | -a            (RW)    Purge a silver source's data from gold.
-wealthdb reload  <id> | -a            (RW)    Reset then load; -a builds a fresh compact gold and swaps it in.
-wealthdb compact                      (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
+wealthdb reload  <id> | -a [--in-place] (RW)  Reset then load; -a builds a fresh compact gold and swaps it in.
+wealthdb compact [--dry-run]          (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
 wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the cost basis no source states (docs/LOTS.md).
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
 wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
 wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
-wealthdb transactions [flags]         (RO)    Print transactions over a date range.
+wealthdb transactions [FROM [TO]] [flags] (RO) Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
 wealthdb cashflow <view> [flags]      (RO)    Cash flow statement: summary, flows, sankey, transactions, coverage.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
-wealthdb snapshots <id> | -a          (RO)    List snapshots gold has loaded (one silver, or all).
+wealthdb snapshots <id> | -a [--latest] (RO)  List snapshots gold has loaded (one silver, or all).
 wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM; skips hinted rows and cash-class instruments.
 wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
 wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants and payers via the configured LLM.
@@ -135,8 +134,14 @@ wealthdb version                      (RO)    Print the version: a release tag, 
 wealthdb help [<subcommand>]
 ```
 
-`-a` means "all configured silver sources". `<id>` is the user-defined
-`silver_source_id` from the config file.
+`-a` means "all configured silver sources". `<id>` is the
+`silver_source_id` the config file defines.
+
+Every subcommand accepts its flags before or after its positionals:
+`transactions 2025 -f csv` reads like `transactions -f csv 2025`.
+`--` ends the flags, and a lone `-` (an open window end) is a
+positional. `wealthdb help <subcommand>` prints a subcommand's full
+flag list.
 
 `(RW)` subcommands require a writeable gold database; `(RO)`
 subcommands work on a read-only one. See §4.10 for how read-only
@@ -150,14 +155,18 @@ gold DB at all.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-c`, `--config` | `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg` | Path to config file. Tilde (`~`) and `$HOME` are expanded. |
-| `-r`, `--read-only` | off | Force read-only access even when the gold DB is writeable. Useful for ad-hoc safety during exploration ("I'm running queries on prod and don't want to accidentally mutate anything"). Without this flag, mode is auto-detected from filesystem permissions (§4.10). |
+| `-r`, `--read-only` | off | Force read-only access even when the gold DB is writeable, as a safety net for exploration. Without this flag, mode is auto-detected from filesystem permissions (§4.10). |
+
+These come before the subcommand. A subcommand's own `-r` (on
+`transactions` and `gains realized`) means "newest first".
 
 ### 4.3 `wealthdb init`
 
 Creates the gold DuckDB file at the path given by the `gold_db`
 field in the config file, runs all migrations from `migrations/`,
-and exits. Fails if the file already exists (use `wealthdb reset -a`
-followed by `wealthdb init` to rebuild — or just `rm`).
+and exits. Fails with exit code 4 if the file already exists. To
+start over, delete the file, or rebuild it from silver with
+`wealthdb reload -a` (§9).
 
 ### 4.4 `wealthdb load <id> | -a`
 
@@ -190,9 +199,10 @@ Prints the consolidated portfolio as of a date.
 | --- | --- | --- |
 | `-d`, `--as-of` | today (UTC) | Date in `YYYY-MM-DD` to query as-of. |
 | `-f`, `--format` | `table` | One of `table`, `csv`, `csv_plain`, `json`. |
-| `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). |
+| `-C`, `--columns` | `default` | Comma-separated column names, `default`, `all`, or a `+ADD,-REMOVE` delta against the default set. |
+| `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` stays reserved for the top-level `--config` flag (§4.2). |
 | `--with-cash` | off | Also emit one synthetic row per account+currency with non-zero cash (`asset_class = 'cash'`). |
-| `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts (docs/GAINS.md §8). Under `zero` the cost basis is the part the lots know. |
+| `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts ([GAINS.md §8](GAINS.md)). Under `zero` the cost basis is the part the lots know. |
 | `-p`, `--privacy` | off | Redact identifying and monetary columns (see below). |
 
 **Privacy classes.** `-p` is per-column, and every read-only view
@@ -259,12 +269,13 @@ and the last few rows from `load_audit`.
 
 Lists every distinct `snapshot_at` gold has data for — derived
 from `SELECT DISTINCT snapshot_at FROM positions UNION ... FROM
-cash_balances WHERE silver_source_id = ?`. Oldest first. Useful
-for debugging "I expected to see a snapshot from yesterday and
-don't".
+cash_balances WHERE silver_source_id = ?`. Oldest first. It
+answers why an expected snapshot is missing.
 
 With `<id>`: snapshots for the one named silver source. With
-`-a`: snapshots for every configured silver, grouped by source.
+`-a`: snapshots for every silver source gold has loaded, grouped by
+source.
+`--latest` prints only the newest snapshot per source.
 
 ### 4.9 `wealthdb config [-c <cfg-file-path>]`
 
@@ -272,7 +283,8 @@ Interactive first-time setup wizard. Writes the config file at
 `-c` (default `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`) by walking
 through:
 
-1. **Gold DB path** — default `$XDG_DATA_HOME/wealthdb/wealthdb.db`. The wizard
+1. **Gold DB path** — default `$XDG_DATA_HOME/wealthdb/wealthdb.db`
+   (`~/.local/share/wealthdb/wealthdb.db` without the variable). The wizard
    confirms the parent directory exists but does **not** create
    the gold DB itself — that's `wealthdb init`'s job.
 2. **Default output currency** — default `USD`. ISO 4217 only;
@@ -287,32 +299,31 @@ through:
 4. **Add another silver source?** — repeats step 3 until
    declined.
 
-On success the wizard writes the JSON config and prints a
-suggested next-step message ("Run `wealthdb init`, then `wealthdb
-load -a`."). On any failure (silver path invalid, ID collision,
-parent dir uncreatable) the wizard rejects the input and re-asks
-the offending question — it never writes a partial or invalid
-config file.
+On success the wizard writes the JSON config and prints the next
+steps: `wealthdb init`, then `wealthdb load -a`. An invalid answer
+(a missing parent directory, a bad silver path, an id collision) is
+rejected and the question asked again. The wizard never writes a
+partial or invalid config file.
 
 The wizard is the **only** subcommand that prompts interactively;
 every other subcommand consumes the file produced here.
 
 #### Refusal to clobber
 
-If the target config file already exists, `wealthdb config` exits
-with a clear message (exit code 4, the same code as `init` uses
-when the gold DB already exists, for consistency) and does not
-overwrite. To re-run the wizard, delete or move the existing file
-first; to add a silver to an existing config, edit the JSON
-directly. (A `wealthdb config add-silver` subcommand could soften
-this.)
+If the target config file already exists and is not empty,
+`wealthdb config` exits with code 4 (the code `init` uses for an
+existing gold DB) and does not overwrite it. An empty file counts as
+absent: the host wrapper creates one so it can bind-mount the path
+before any config exists (§12.2). To re-run the wizard, delete or
+move the existing file, or pass another `-c` path. To add a silver to
+an existing config, edit the JSON directly.
 
 #### Non-interactive fallback
 
-In a pipe / non-TTY environment, `wealthdb config` refuses to run
-("wealthdb config requires an interactive terminal; run with `docker
-run -it` or write the JSON directly per §5"). This is preferable
-to silently consuming stdin and producing an empty config.
+When stdin is not a terminal, `wealthdb config` refuses to run and
+exits 2. The message says to re-run with `docker run -it` or to write
+the JSON by hand per §5. Reading a pipe would silently produce an
+empty config.
 
 ### 4.10 Read-only mode
 
@@ -394,8 +405,9 @@ rename it over the live path. A verdict or a load written into the
 outgoing file inside that window lands in the inode the rename
 unlinks, and both commands report success.
 
-So every write command — `load`, `reset`, `reload`, `compact`,
-`lots`, `categorize`, `resolve-symbols`, `web-materialize` — takes an
+So every write command (`load`, `reset`, `reload`, `compact`,
+`lots`, `categorize`, `categorizations --forget`, `resolve-symbols`,
+`web-materialize`) takes an
 advisory `flock` for the whole command on a sidecar file,
 `<gold_db>.wealthdb.lock`. The sidecar is created on first use and
 left in place afterwards: it is an expected artefact beside the
@@ -437,8 +449,8 @@ crash.
 | RO subcommand on non-existent DB | 3 | `wealthdb: gold database '<path>' does not exist. Run 'wealthdb init' first (requires write access).` |
 | `init` on existing DB | 4 | `wealthdb: gold database '<path>' already exists. Use 'wealthdb reset -a' to clear data, or delete the file manually if you really want a fresh DB.` |
 | DuckDB open fails mid-run | 5 | the driver's own error, passed through whole and prefixed by the stage that hit it: `wealthdb: ping duckdb "<path>": <driver error>` (or `open duckdb` / `migrate gold`) |
-| Write subcommand while another holds the write mutex | 5 | `wealthdb: '<cmd>' cannot write '<path>': another wealthdb write command (load / reset / reload / compact / lots / categorize / resolve-symbols / web-materialize) is running and holds '<path>.wealthdb.lock'. Wait for it to finish and re-run.` |
-| Silver DB unreadable during load | 6 (reserved) | not emitted today — a silver open failure returns a plain error and exits 1 |
+| Write subcommand while another holds the write mutex | 5 | `wealthdb: '<cmd>' cannot write '<path>': another wealthdb write command (load / reset / reload / compact / lots / categorize / categorizations --forget / resolve-symbols / web-materialize) is running and holds '<path>.wealthdb.lock'. Wait for it to finish and re-run.` |
+| Silver DB unreadable during load | 6 (reserved) | not emitted: a silver open failure returns a plain error and exits 1 |
 
 `<reason>` in row 1 is one of: `parent directory not writeable`,
 `file mode lacks owner write bit`, `mounted read-only`, etc. The
@@ -484,12 +496,11 @@ the mount mode. The writer host runs without the flag.
 
 ### 4.11 `wealthdb categorize [spending|income]` / `wealthdb categorizations [spending|income]`
 
-Both take an optional family positional. Nothing named runs BOTH, in
-order — spending, then income — as two plans and two summaries against
-one model; a name runs that one alone. `--forget SIG` with no family
-removes the signature from both verdict stores, one counterparty being
-able to sit in each with a different verdict. See docs/INCOME.md §7.
-
+Both take an optional family positional. Without one, both families
+run in order (spending, then income), as two plans and two summaries
+against one model. A name runs that family alone. `--forget SIG` with
+no family removes the signature from both verdict stores, because one
+counterparty can sit in each with a different verdict.
 
 `categorize` is the model tier of both families. The deterministic
 tiers run on every `load`; what they leave behind is a set of
@@ -500,51 +511,18 @@ priced PER SIGNATURE and the verdicts land in a global store —
 income — so a merchant met by several cards, or a payer paying into
 several accounts, is asked about once and answered once.
 
-A normal run re-asserts every deterministic verdict first — the same
-pass `load` runs — and then asks about what is left. `--dry-run` opens
-gold read-only and therefore *cannot* run that pass, so its plan is
-computed against the enrichment as of the last load and says so.
+A normal run re-asserts every deterministic verdict first (the pass
+`load` runs), then asks about what is left. `--dry-run` opens gold
+read-only and so cannot run that pass; its plan is computed against the
+enrichment as of the last load and says so. A dry run still asks the
+model, batch by batch, and writes nothing.
 
-The backlog goes to the model in **batches** of `--batch` signatures
-(default 40: what a local model answers well inside the transport's
-five-minute call ceiling; a backlog sent whole in one call times out).
-Every batch carries the taxonomy and the anchor block, retries on its
-own feedback up to `--max-attempts`, and has its accepted verdicts
-**stored as it completes**: a run that dies at batch 30 of 50 has kept
-29 batches' worth of paid answers, and a re-run asks only about what is
-still unanswered, because the backlog excludes whatever the store now
-covers. Each batch's accepted verdicts become the newest anchors for the
-batch after it, capped by `--max-anchors`. The batch plan — count,
-sizes, anchors, the first prompt's size in characters and estimated
-tokens, the best- and worst-case call count — prints before the first
-call, and one progress line prints per batch. A dry run asks the model
-exactly as a real run does, batch by batch (the precedent's shape: it is
-the only way to see verdicts without writing them), so the plan is its
-cost signal.
-
-Two independent gates decide what leaves the machine, and neither can
-be relaxed by the other: the family's `categorization.context` decides
-how much of a candidate is described, and the fence — rails, IBANs,
-masked contacts, wordless and filing-only keys, and by default
-person-shaped keys on non-card accounts — decides which signatures are
-candidates at all. See docs/SPENDING.md §5, and
-docs/INCOME.md §7 for the one difference — an `income.categorization`
-block inherits `spending.categorization` WHOLE when absent, so a
-household that configured one tier gets one tier, and a stricter income
-context is a deliberate act.
-
-Every run ends, per family, with its own counters and a stratified
-sample of what that family left uncategorised. The data-quality
-canaries are computed once over the SPENDING population and print with
-the spending family: the categorisation rate per source, the
-provider-map misses (a card issuer's categorical vocabulary moving, bar
-the residual bucket its map marks untranslatable; a bank's untranslated
-booking types are rails, not misses — SPENDING.md §3), the matched
-internal-transfer pairs (both legs — the audit surface for what the
-matcher removed from spending, each labelled with the phase that
-asserted it), and the largest unmatched legs including the
-cross-currency shapes the amount pass cannot pair and that no shared
-reference reached.
+[SPENDING.md §5 and §6](SPENDING.md) own the rest: the fence and the
+context level that decide what leaves the machine, batches (`--batch`,
+default 40), anchors (`--max-anchors`), retries (`--max-attempts`),
+`--all` and `--refine`, and the per-run counters and canaries.
+[INCOME.md §7](INCOME.md) gives the one income difference: an absent
+`income.categorization` block inherits `spending.categorization` whole.
 
 `categorizations` dumps the family's store — the `resolutions`
 counterpart for the enrichment overlays. It takes no source filter:
@@ -580,47 +558,22 @@ flag.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `[FROM [TO]]` | trailing twelve months | Positional window, same grammar as `transactions` (`YYYY` / `YYYY-MM` / `YYYY-MM-DD`, an explicit pair, `-` for an open bound). May appear before or after flags. |
+| `[FROM [TO]]` | trailing twelve months | Positional window, same grammar as `transactions` (`YYYY` / `YYYY-MM` / `YYYY-MM-DD`, an explicit pair, `-` for an open bound). |
 | `--period` | `monthly` | `daily` \| `weekly` \| `monthly` \| `quarterly` \| `annual` \| `total`. Maps onto the `date_trunc` part `report_spending_*` buckets by; `total` collapses the window into one bucket. |
 | `--level` | `primary` | `primary` \| `detailed` — the category vocabulary `categories` groups by. The other views ignore it. |
 | `-f`, `--format` | `table` | `table` \| `csv` \| `csv_plain` \| `json`. |
 | `-C`, `--columns` | `default` | Per-view column set: names, `default`, `all`, or a `+ADD,-REMOVE` delta. |
 | `-x`, `--currency` | `default_currency` | ISO 4217 output currency; historic FX at each line's `occurred_at`. |
-| `-p`, `--privacy` | off | Redact account IDs, counterparties, and amounts. |
+| `-p`, `--privacy` | off | Redact account ids, narratives and amounts. |
 
 The window defaults to the trailing twelve months rather than inception,
 and there are no row-filter flags; docs/SPENDING.md §7 argues both.
 
-**Privacy classes** (§4.6) are the substantive per-column decision here:
-
-- `merchant` takes the **free-text class**, like the narrative it was
-  named from. The transfer fence gates candidacy for the merchant STORE
-  (docs/SPENDING.md §5), not the column: a wire, ACH or P2P narrative
-  is refused a verdict, has no store name, and falls back to the
-  signature folded from that narrative (migration 0054), so a payment
-  to a person surfaces its payee here on the non-private view. The
-  store's own names carry the same exposure by a slower route — it is
-  append-only across signature revisions and across widenings of the
-  fence itself, and a stored verdict is applied by signature for as
-  long as it is there, so a name bought while the fence was narrower
-  outlives the fence that would now refuse it. The column is empty on a
-  delta line besides (migration 0048, docs/SPENDING.md §7): a gift or
-  an own-account move a rule or a pin placed shows no name, whatever
-  the store holds for its signature. A card bill shows the issuer it
-  was paid to (migration 0052) — an institution rather than a
-  narrative, and redacted with the column all the same.
-- `counterparty`, `description` and `merchant_signature` take the same
-  class, and reach it more directly: they are the raw narrative and its
-  fold, published for every row the fence let through *and* every row
-  it stopped. The class masks the cell whole (`***`) without asking
-  what the value looks like. A shape test is the wrong
-  instrument here: the narratives that carry a person's name are
-  multi-word, so any identifier heuristic passes precisely them.
-- The account's external id and display name take the account-id class,
-  so a card whose display name is its masked number redacts like any
-  account id.
-- Amount columns take the money class; category, provenance and the
-  `share` percentage stay legible, like the returns percentages.
+**Privacy classes** (§4.6): `merchant`, `counterparty`, `description`
+and `merchant_signature` take the free-text class; the account's id and
+display name take the account-id class; amounts take the money class.
+Category, provenance and `share_pct` stay legible.
+[SPENDING.md §7](SPENDING.md), *What `-p` redacts*, gives the reasons.
 
 Exit codes follow §4.10's table: `2` for a usage error (unknown view,
 invalid `--period` / `--level` / `-x`, unknown column), `3` when the
@@ -693,8 +646,8 @@ views, and the shared `-f`, `-C`, `-x`, `-p`.
 | `[FROM [TO]]` | trailing twelve months | As §4.12. A positional year reads a calendar year: `wealthdb gains realized 2025`. `lots` reads the window's end. |
 | `--period` | `monthly` | As §4.12, on the four aggregate views; the others read the whole window. |
 | `--documents` | `primary` | `primary` \| `all`, on `realized` only: `all` lists every document's copy of a sale. Refused on the other views. |
-| `-r` | off | `realized` only: newest first. Refused on the other views. |
-| `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts (docs/GAINS.md §8). Refused on `coverage` and `check`, which count a missing cost rather than read it. |
+| `-r`, `--reverse` | off | `realized` only: newest first. Refused on the other views. |
+| `--missing-basis` | `lots.missing_basis`, else `ignore` | `ignore` \| `zero`: how a missing cost basis counts ([GAINS.md §8](GAINS.md)). Refused on `coverage` and `check`, which count a missing cost rather than read it. |
 | `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` masks account ids, quantities and amounts; percentages, basis stamps, dates and security names stay legible. |
 
 Every aggregate and positions row carries a `quality` column naming
@@ -714,35 +667,28 @@ replays anyway. It prints one line per source: mode,
 methods, lots, realized lots, positions filled, seeds, implied
 disposals, blips and anchors.
 
-### 4.17 Future subcommands (sketch only)
-
-These are reserved namespaces; their final shape will be designed
-when implemented. The schema must not preclude them.
-
-- `wealthdb networth [-d DATE] [--by bank,asset_class,currency]` —
-  rolled-up balance sheet.
-- `wealthdb filter` / dedicated subcommands per asset_class
-  (`wealthdb equities`, `wealthdb bonds`, `wealthdb fx`) — convenience
-  views over `wealthdb holdings positions`.
-
-The point of mentioning them now is to ensure the schema carries
-the columns these will need (`asset_class`, `vehicle`,
-`acquisition_date`, `currency`, etc.) from day one.
-
 ## 5. Configuration
 
 JSON file. Path defaults to `wealthdb.cfg` under the XDG config dir
 (`$XDG_CONFIG_HOME`, falling back to `~/.config`) and is
 overridable with `-c` / `--config`. The `.cfg` extension is a
-convention; the content is JSON. Tilde (`~`) and `$HOME` are
-expanded in both the `--config` argument and the path values
-inside the file.
+convention; the content is JSON, and an unknown field fails the
+load. Every path value in the file is expanded the same way:
 
-Conventional host layout, produced by `wealthdb config`'s defaults:
+1. a leading `~` or `$HOME` becomes the home directory;
+2. `$VAR` and `${VAR}` become the variable's value, and an unset
+   variable fails the load rather than expanding to nothing;
+3. a path still relative resolves against the config file's
+   directory.
+
+Conventional host layout, produced by `wealthdb config`'s defaults.
+The host wrapper mounts the data root at `$WEALTHDB_DATA_ROOT` when
+that is set (§12.2), so a config can write
+`${WEALTHDB_DATA_ROOT}/...` paths:
 
 ```
 $XDG_CONFIG_HOME/wealthdb.cfg          config file (this file)
-$XDG_DATA_HOME/wealthdb/                        all wealthdb data
+$XDG_DATA_HOME/wealthdb/               all wealthdb data
 ├── wealthdb.db                        gold DuckDB
 ├── ubs-psn/ubs-psn.db                UBS PSN silver SQLite + bronze dirs
 ├── ubs-web/ubs-web.db                UBS web silver SQLite + bronze dirs
@@ -808,9 +754,9 @@ Example config file:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. `~` and `$HOME` expanded. |
+| `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. Expanded as above. |
 | `default_currency` | string | ISO 4217. The output currency of every command that values money, and of the MCP server, when `-x`/`--currency` is not given. When it is a reporting currency (USD, CHF, EUR or GBP, §10.8), the web dashboards open in it too. |
-| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. `~` / `$HOME` / `${VAR}` expanded; a missing file is a no-op. See §13.10. |
+| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. Expanded as above; a missing file is a no-op. See §13.10. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
 | `web.port` | integer | Host loopback port Metabase is published on (127.0.0.1 + [::1] → container 3000). Default 3000. |
@@ -822,7 +768,7 @@ Example config file:
 | `silver_sources[]` | array | Registered silver databases. |
 | `silver_sources[].id` | string | User-defined unique identifier. Used in CLI args. Must match `^[A-Za-z0-9_-]+$`. |
 | `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …), or `auto` to auto-detect (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |
-| `silver_sources[].path` | string | Filesystem path to the silver SQLite. `~` and `$HOME` expanded. Relative paths resolved against the config file's directory. Used by single-file adapters (Schwab, Swissquote, single-source UBS, fred). Mutually exclusive with `subsources`. |
+| `silver_sources[].path` | string | Filesystem path to the silver database, expanded as above. Used by single-file adapters (Schwab, Swissquote, single-source UBS, fred). Mutually exclusive with `subsources`. |
 | `silver_sources[].fx_priority` | integer | Optional. FX-rate precedence when several sources publish the same `(base, quote)` pair: lower = higher priority, absent/null = lowest. Ties broken by the order sources appear in this array. Affects only FX resolution (§10.6 / §13.2) — no effect on positions or transactions. |
 | `silver_sources[].taxable_wrapper` | string | Optional. The taxable wrapper this source's taxable accounts actually sit in, validated against the canonical `tax_wrapper` enum at config-load time. A bank feed says what a product IS and never who holds it, so an adapter emits the generic `taxable_personal` for any taxable account; this states the deployment's answer once per source instead of once per account, so an account opened later is right on the load that first sees it. It rewrites `taxable_personal` and nothing else — a retirement, trust or custodial wrapper the adapter had positive evidence for is kept, and an account with no wrapper at all is left alone. A per-account `account_overrides.tax_wrapper` still wins. See §13.9. |
 | `silver_sources[].subsources[]` | array | Optional. For adapters that merge several backing silvers under one logical source (UBS = `ubs-web` + `ubs-psn`). Each entry has its own `kind` and `path`. At least one entry required when present. |
@@ -857,8 +803,9 @@ Example config file:
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
 | `spending.accounts` | object | Optional. Account-scope overrides, keyed by `silver_source_id` in the `returns_exclude` shape, with `include` / `exclude` lists of account ids. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. Which way round the overrides bite is the scope rule — see docs/SPENDING.md §1. |
 | `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. Both bound the matcher's banded passes only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. `names` (list of `{source, account?, match}`, each `match` a regular expression) says which narratives name which account as the other side of a movement; a leg that names one pairs with nothing else, and named pairs are claimed before the amount pass. See docs/SPENDING.md §3. |
-| `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed> }`. `match` is compiled case-insensitively at load and tested against `counterparty`, the full `description` (memo included) and `provider_category` — the issuer's own filing of the row — each on its own; among config rules the first written wins. Matching the issuer's filing is how a rule reaches a class of merchant the descriptor never names, and is what makes the provider an input to the rule tier rather than a tier that outranks it. `category` may be **any** valid `spend_detailed` value, vendored or delta, in the taxonomy's case-sensitive spelling. An optional `asset_class` says what the capital went into and is admitted only where `category` is `investment`, validated against the exposure set (TAXONOMY.md §2) less `cash` and `other`; see docs/CASHFLOW.md §4 and §7. An invalid pattern, one matching the empty string, or an unknown category fails the load naming `spending.rules[i]` and the text. An optional `far` names a `declared_accounts` entry as the other side of the move, admitted only where `category` is `internal_transfer`; the row's far columns then carry the declaration and the cash flow statement places the move by its wrapper (docs/CASHFLOW.md §4). Consulted after the built-in rules and below the matcher and the pins, with provenance `rule`. Deployment-specific: lives in the user's config, never in the repository. See docs/SPENDING.md §3, *Config-supplied rules*. |
+| `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed>, "scope"?, "asset_class"?, "far"? }`. `match` is compiled case-insensitively and tested against `counterparty`, the full `description` and `provider_category`; among config rules the first written wins. `category` may be any valid `spend_detailed` value, vendored or delta. `scope` narrows a rule to a `source`, `portfolio` or `account` and an inclusive `from`/`to` date range. `asset_class` is admitted only beside `investment` and `far` (a `declared_accounts` id) only beside `internal_transfer` ([CASHFLOW.md §4 and §7](CASHFLOW.md)). An invalid pattern, one matching the empty string, or an unknown value fails the load naming `spending.rules[i]`. Deployment-specific: lives in the config, never in the repository. [SPENDING.md §3](SPENDING.md), *Config-supplied rules*, owns the semantics. |
 | `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, asset_class, note` and no others — an unknown header fails the parse, and `asset_class` is optional; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.11. |
+| `spending.transfer_overrides` | string | Optional. Path to a CSV ledger of manual match and unmatch decisions for the internal-transfer matcher, for a pair the data cannot settle. Expanded as above; a missing file is a no-op. Both families read it. See [SPENDING.md §3](SPENDING.md), *Manual overrides on the matcher*. |
 | `spending.categorization` | object | Optional. Configures `wealthdb categorize`: the model endpoint (`model`), how much of a transaction reaches it (`context`), and the per-merchant narrative cap (`descriptor_samples`). Absent ⇒ the subcommand refuses; the deterministic tiers are unaffected and keep running on load. |
 | `spending.categorization.model` | object | Optional. LLM endpoint asked for a category per merchant signature. Same shape and same API support as `symbol_resolution.model` (`baseUrl`, `api`, `apiKey`, `name`). |
 | `spending.categorization.context` | string | Optional. `"merchant"` (default) sends merchant signatures only; `"descriptor"` adds the raw statement narratives; `"transaction"` adds date, amount, account kind and nearby-transaction signatures. The default is the most private level by decision, not by accident. Independent of the fence, which gates candidacy at every level. |
@@ -910,12 +857,12 @@ source, not just crypto.
 - **Resolution** when an entity is computed is most-specific-first: the
   accounts grain tries account → its portfolio → source; the portfolios
   grain tries portfolio → source; the sources grain tries source. The
-  **global** grain is never anchored (v1).
+  **global** grain is never anchored.
 - **Semantics:** `winFrom = max(data-inception, configured-inception, --from)`
   — it can only move an anchor LATER, never earlier (an inception before an
   entity's data is a no-op). The opening base `V0` becomes the entity's
   carry-forward value on that date. Truncation is tagged
-  `configured_inception` (replacing `since_data_inception`). Composes with
+  `configured_inception` in place of `since_data_inception`. Composes with
   the policy `Inception` mode (e.g. UBS `first-real-snapshot`) as `max`.
   MOIC is unaffected (time-insensitive); this re-anchors the TWR/MWR chain.
   Ledger flows dated before the resolved inception fall outside every
@@ -923,9 +870,9 @@ source, not just crypto.
   (and, conversely, marks the entities where this override is the
   documented remedy — a transaction backfill reaching further back than
   the value spine supports).
-- Absent block ⇒ every entity keeps its data-derived inception, byte for
-  byte. A typo'd portfolio/account id silently no-ops (it can't be checked
-  against gold at load) — a known v1 gap; a source-id typo fails the load.
+- Absent block ⇒ every entity keeps its data-derived inception. A
+  misspelled portfolio or account id is a silent no-op, because the load
+  cannot check it against gold. A misspelled source id fails the load.
 
 ### 5.5 Returns exclusion (higher grains)
 
@@ -948,9 +895,9 @@ tracked in a shared login that belong to another person.
   portfolio there). At
   the sources and global grains, an excluded account, and every account of an
   excluded portfolio, are omitted from the aggregate.
-- **Returns only.** Holdings / net-worth views are unaffected; excluding
-  someone's holdings from your net worth is a separate owner-dimension task.
-- Absent ⇒ nothing excluded, byte-identical to before.
+- **Returns only.** Holdings and net-worth views are unaffected. To drop
+  an account from gold entirely, use `account_overrides.exclude` (§13.9).
+- Absent ⇒ nothing excluded.
 
 ### 5.6 Returns policy overrides (per source)
 
@@ -990,7 +937,7 @@ silver holding positions but no transaction history).
   inception mode, …) are never touched.
 - Applied identically by `wealthdb returns` and the materialized
   `report_returns` behind the web dashboard. Absent ⇒ registered policies
-  apply unchanged, byte-identical to before.
+  apply unchanged.
 
 ### 5.7 Returns hiding (display only)
 
@@ -1071,7 +1018,7 @@ aggregate containing BOTH accounts double-represents the move (the
 - **Off by default.** Absent block or `enabled: false` ⇒ the matcher never
   runs; output is byte-identical to the per-source heuristics alone. A
   matched-nothing run is also byte-identical.
-- **Limitations (v1):** same-native-currency pairs only (a CHF→USD
+- **Limitations:** same-native-currency pairs only (a CHF→USD
   cross-source wire never matches); one-to-one only (a split wire — one
   withdrawal, two deposits — pairs at most one deposit).
 
@@ -1141,29 +1088,34 @@ type Connection interface {
     // Status is a read-only snapshot of where the silver DB stands.
     // Cheap to call (a few aggregate queries). The main app calls
     // this on every `wealthdb load` and `wealthdb status`.
-    Status(ctx context.Context) (Status, error)
+    Status(ctx context.Context) (canonical.Status, error)
 
     // ChangeWindow returns the time window of changes in silver
     // since the given logical change number, plus the new change
     // number to advance the watermark to upon successful load.
     //
-    // If HasChanges is false, the caller is done and skips the
-    // Snapshots / Transactions calls; the new change number may
-    // still differ from `sinceChangeNumber` (silver advanced but
-    // produced no observable changes inside the window).
-    ChangeWindow(ctx context.Context, sinceChangeNumber int64) (Window, error)
+    // If HasChanges is false, the caller skips the Snapshots /
+    // Transactions calls; the new change number may still differ
+    // from `sinceChangeNumber` (silver advanced but produced no
+    // observable changes inside the window).
+    ChangeWindow(ctx context.Context, sinceChangeNumber int64) (canonical.Window, error)
 
     // Snapshots iterates dimension upserts and snapshot-grain facts
-    // (positions, cash balances, fx rates, account/instrument
-    // updates) whose snapshot_at falls inside the given window.
-    // Pull-model batched iterator: caller loops Next until done.
-    Snapshots(ctx context.Context, window Window) (SnapshotStream, error)
+    // (positions, open lots, cash balances, fx rates, account,
+    // portfolio and instrument updates) whose snapshot_at falls
+    // inside the given window. Pull-model batched iterator: the
+    // caller loops Next until done.
+    Snapshots(ctx context.Context, window canonical.Window) (SnapshotStream, error)
 
     // Transactions iterates event-grain facts whose occurred_at
     // falls inside the given window. Pull-model batched iterator.
-    Transactions(ctx context.Context, window Window) (TransactionStream, error)
+    Transactions(ctx context.Context, window canonical.Window) (TransactionStream, error)
 }
 
+// Optional: a connection whose silver states realized lots also
+// implements silver.RealizedLotReader (§8.3).
+
+// In internal/canonical:
 type Status struct {
     OldestSnapshotAt     int64  // Unix seconds UTC; -1 if silver has no snapshots
     LatestSnapshotAt     int64  // -1 if no snapshots
@@ -1183,24 +1135,25 @@ type Window struct {
 
 type SnapshotStream interface {
     // Next returns the next batch and whether more batches follow.
-    // ok=false signals stream end; the returned batch is still
+    // more=false signals stream end; the returned batch is still
     // valid and must be applied. Each batch contains zero or more
     // records of each kind, multiplexed.
-    Next(ctx context.Context) (batch SnapshotBatch, more bool, err error)
+    Next(ctx context.Context) (batch canonical.SnapshotBatch, more bool, err error)
     Close() error
 }
 
 type SnapshotBatch struct {
+    Portfolios   []PortfolioChange
     Accounts     []AccountChange
     Instruments  []InstrumentChange
     Positions    []PositionChange
+    PositionLots []PositionLotChange
     CashBalances []CashBalanceChange
     FxRates      []FxRateChange
-    Portfolios   []PortfolioChange
 }
 
 type TransactionStream interface {
-    Next(ctx context.Context) (batch TransactionBatch, more bool, err error)
+    Next(ctx context.Context) (batch canonical.TransactionBatch, more bool, err error)
     Close() error
 }
 
@@ -1212,22 +1165,25 @@ type TransactionBatch struct {
 // They live in internal/canonical so an adapter imports only the
 // canonical types, never the gold-writer implementation.
 type PositionChange struct {
+    SilverSourceID        string
     SnapshotAt            int64
+    ValuedAt              int64   // the mark's instant; 0 = SnapshotAt (§6.4)
     AccountExternalID     string
     PositionKey           string
-    InstrumentExternalID  string  // "" if NULL in gold
-    AssetClass            string  // exposure (§7.2, TAXONOMY.md)
-    Vehicle               string  // wrapper (§7.2, TAXONOMY.md)
+    InstrumentExternalID  *string // nil if NULL in gold
+    AssetClass            AssetClass  // exposure (§7.2, TAXONOMY.md)
+    Vehicle               Vehicle     // wrapper (§7.2, TAXONOMY.md)
     Currency              string
     Quantity              *Decimal
     MarketValue           *Decimal
     BookValue             *Decimal
+    Basis                 Basis       // the stamp on BookValue (§7.4)
     AccruedInterest       *Decimal
-    AcquisitionDate       *Date
+    AcquisitionDate       *time.Time
     Payload               json.RawMessage
 }
-// ...AccountChange, InstrumentChange, CashBalanceChange,
-// FxRateChange, TransactionChange similarly mirror their tables.
+// ...the other *Change types (PositionLotChange, TransactionChange,
+// RealizedLotChange, …) similarly mirror their tables.
 ```
 
 ### 6.3 Registration
@@ -1372,7 +1328,7 @@ is partially applied.
 
 Push-model (visitor) would also work; pull-model wins because:
 - The main app controls pacing (e.g., commit periodically on very
-  large windows — future work).
+  large windows).
 - Streaming reads from silver SQLite map naturally to a
   resumable cursor.
 - Cancellation via `context.Context` is one-line at the loop boundary.
@@ -1387,8 +1343,8 @@ schema. It:
 - Projects each silver row into one or more canonical `*Change`
   records.
 - Picks the `(asset_class, vehicle)` taxonomy pair from per-bank type
-  fields (Schwab `assetType`, UBS SDFI `Tp` codes, Swissquote XLS
-  section headers).
+  fields (Schwab `assetType`, UBS CFI codes and asset-class codes,
+  Swissquote XLS section headers).
 - Handles per-bank identifier conventions (Schwab account hash, UBS
   relationship_id + IBAN/safekeeping code, Swissquote customer ID).
 - Decides whether a "position" in silver belongs in gold's `positions`
@@ -1622,33 +1578,7 @@ CREATE TABLE load_audit (
 -- The `payload` column carries the latest silver payload for forensics.
 -- ============================================================
 
--- account_kind values:
---   'brokerage'     — Schwab trading account
---   'cash'          — IBAN-keyed cash account (UBS SDCA, future banks)
---   'safekeeping'   — UBS safekeeping (custody) sub-account
---   'custody'       — managed-custody account where a third-party
---                     manager directs the holdings on the client's behalf
---   'overlay'       — synthetic per-portfolio account that holds
---                     positions the bank attributes to the portfolio
---                     directly rather than to a sub-account (UBS
---                     forward contracts). One per portfolio,
---                     lazily emitted when needed.
---   'crypto'        — crypto holding bucket (cointracking); wallet
---                     display names don't reliably distinguish
---                     exchange from self-custody, so one kind covers
---                     both. 'crypto_exchange' / 'crypto_self_custody'
---                     stay reserved for a future adapter that surfaces
---                     the distinction at source.
---   'mortgage'      — real-property-backed liability; outstanding
---                     principal sits as a negative-value position
---   'card'          — revolving-credit liability; unlike a mortgage it
---                     carries no position, its outstanding balance
---                     being negative cash on the account
---   'donor_advised_fund'
---                   — irrevocably donated charitable assets; its own
---                     kind so DAF balances can be included in or
---                     excluded from net worth by kind
---   'other'         — unclassifiable, fall back to payload
+-- account_kind is the technical container; §13.9 lists its values.
 --
 -- portfolio_external_id (nullable) names the parent portfolio in
 -- the `portfolios` table. Schwab and Swissquote accounts leave it
@@ -1673,7 +1603,7 @@ CREATE TABLE accounts (
     FOREIGN KEY (silver_source_id) REFERENCES silver_sources(silver_source_id)
 );
 
--- portfolios is its own entity (added in migration 0004). A
+-- portfolios is its own entity. A
 -- portfolio is the wealth-management wrapper (UBS, cointracking, fidelity)
 -- that GROUPS one or more accounts under a single mandate; it
 -- does not hold positions or cash directly — its component
@@ -1685,7 +1615,7 @@ CREATE TABLE portfolios (
     display_name            TEXT,
     base_currency           TEXT,               -- portfolio reporting currency (UBS PrtflCcyIsoCd)
     relationship_id         TEXT,               -- UBS relationship dimension; NULL otherwise
-    nickname                TEXT,               -- user-set label (config-side override only today)
+    nickname                TEXT,               -- portfolio label, where the source states one
     first_seen_at           BIGINT  NOT NULL,
     last_seen_at            BIGINT  NOT NULL,
     payload                 JSON,
@@ -1694,25 +1624,18 @@ CREATE TABLE portfolios (
 );
 
 -- asset_class (exposure) + vehicle (wrapper) are the two-dimensional
--- instrument taxonomy — docs/TAXONOMY.md is the authority.
---   asset_class — one of 13 exposures: public_equity, private_equity,
---     fixed_income, private_debt, real_estate, infrastructure, metal,
---     crypto, cash, foreign_exchange, hedge_fund, multi_asset, other.
---   vehicle     — one of 18 wrappers: stock, etf, fund, spv, bond,
---     convertible_note, loan, option, future, forward, time_deposit,
---     demand_deposit, physical, structured_product, right, mortgage,
---     escrow, other.
--- The writer accepts only admitted (exposure, vehicle) pairs
+-- instrument taxonomy; docs/TAXONOMY.md lists the values and the
+-- admitted pairs. The writer accepts only admitted pairs
 -- (canonical.ValidTaxonomyPair); an unrecognised source code falls
 -- through to (other, other) with the raw code preserved in `payload`.
--- The vehicle column was added by gold migration 0028; the writer
--- always populates it though the column itself is nullable.
+-- The writer always populates vehicle, though the column is nullable.
 --
 -- `instrument_external_id` is whatever the silver layer uses as its
 -- per-source instrument key:
 --   Schwab     — CUSIP if present, else symbol (mirrors silver)
 --   UBS        — ISIN (mirrors silver)
---   Swissquote — symbol + '@' + currency (silver's PK suffix)
+--   Swissquote — ISIN where known, else symbol + '@' + currency
+--                (adapters/swissquote.md §8)
 CREATE TABLE instruments (
     silver_source_id        TEXT    NOT NULL,
     instrument_external_id  TEXT    NOT NULL,
@@ -1886,9 +1809,8 @@ CREATE INDEX ix_fx_rates_pair_time
 --   'journal'             — internal account-to-account journal
 --   'other'               — unmapped; bank's own type lives in payload
 --
--- `counterparty` and `provider_category` were added by gold migration
--- 0038, both nullable — a non-card source leaves them unset.
--- `counterparty` is not merely informational: it is the input to the
+-- `counterparty` and `provider_category` are nullable; a source with
+-- no such field leaves them unset. `counterparty` is not merely informational: it is the input to the
 -- merchant signature that groups spend, so how an adapter formats it
 -- is a stated contract (drift re-keys merchants). `provider_category`
 -- is the provider's own filing of the row — a card issuer's spend
@@ -1915,6 +1837,10 @@ CREATE TABLE transactions (
     description             TEXT,                    -- free-text row label, may end with a memo; see above
     counterparty            TEXT,                    -- merchant/payee; see above
     provider_category       TEXT,                    -- provider's own filing: spend category or booking type
+    check_number            TEXT,                    -- cheque number on an outflow (§10.8)
+    asset_class             TEXT,                    -- what a trade traded, where the instrument cannot say (§10.8)
+    vehicle                 TEXT,
+    instrument_hint         TEXT,                    -- the token an instrument lookup failed on (§10.8)
     payload                 JSON,
     PRIMARY KEY (silver_source_id, transaction_external_id),
     FOREIGN KEY (silver_source_id, account_external_id)
@@ -1969,11 +1895,9 @@ CREATE TABLE realized_lots (
 
 ### 7.3 What's deliberately omitted
 
-- **Views.** ~~The first cut keeps gold as tables only.~~ Landed, in
-  the shape the reasoning predicted: the views exist because a query
-  needed them, not ahead of one. They serve the optional Metabase
-  server and are named `web_*` for that reason (§10.10), so nothing
-  in the engine depends on one.
+- **Views ahead of a reader.** A view exists because a query needed
+  it. The serving views for the optional Metabase server are named
+  `web_*` (§10.10), and nothing in the engine depends on one.
 - **Materialised positions-as-of cache.** The as-of query in §10 runs
   fast on the index; no cache needed at personal scale.
 - **A surrogate `account_id` / `instrument_id` integer key.** Tuple
@@ -2180,7 +2104,8 @@ its transactions, because none is a per-source fact:
 1. The config-driven FX source precedence is stamped into
    `silver_sources` (§13.2).
 2. The config's declared accounts are stamped into `accounts`
-   (`declared_accounts`, §5.1).
+   (`declared_accounts`, §5.1), and its `holding_aliases` into the
+   table of that name.
 3. The deterministic enrichment pass re-asserts every spend and income
    verdict in gold (§10.10, docs/SPENDING.md §3). An own-account move's
    two legs routinely arrive from two different sources, so neither is
@@ -2189,7 +2114,8 @@ its transactions, because none is a per-source fact:
    links two sources the same way.
 
 A failed FX stamp is a warning: it degrades a conversion. The other
-three fail as errors. A failed declaration stamp or enrichment pass
+three fail as errors. A failed enrichment pass does not stop the lot
+pass; the load reports both. A failed declaration stamp or enrichment pass
 leaves own-account moves counted as spending, which is a wrong answer
 rather than a degraded one. A failed lot pass leaves the positions the
 load rewrote without a rebuilt basis, and nothing would say why.
@@ -2198,12 +2124,10 @@ fresh-file paths.
 
 ### 8.2 Why a windowed delete (not a full-replace)
 
-The previous draft used full-replace for `transactions` — delete
-all events for the silver source on every load, re-insert all of
-them. That was correct but wasteful at scale.
-
-The windowed-delete approach (above) is just as correct and bounded
-by the size of the delta:
+A full replace (delete every event of the source, re-insert all of
+them) would be correct but costs the whole history on every load.
+The windowed delete is just as correct and bounded by the size of
+the delta:
 
 - **For snapshots**: every snapshot whose `snapshot_at` falls in
   the window is wiped and re-emitted. Re-emitted rows have the same
@@ -2276,18 +2200,12 @@ recency arbitrates conflicts, absence never wins. NULL means "this
 record doesn't carry the field", not "set it to NULL", in both
 directions: a newer record's NULL doesn't erase an older value, and
 an older record's value isn't discarded just because a newer,
-field-less record exists. (The one-directional form of this guard
-silently dropped attributes only an older observation carries on
-every full rebuild — schwab-web's statement-derived `tax_wrapper`,
-dated at its silver snapshot, lost to newer wrapper-less api rows.)
-The seen-at range expands in both directions regardless —
-re-emitting an older snapshot pulls `first_seen_at` backward.
-
-(An earlier sketch used a single `WHERE EXCLUDED.last_seen_at >=
-accounts.last_seen_at` at the end of the SET clause; that gated
-the whole UPDATE including `first_seen_at` expansion, defeating
-the union semantics. Per-column CASE keeps the two concerns
-independent.)
+field-less record exists. A merged source needs this: one feed may
+carry an attribute (a statement-derived `tax_wrapper`, say) that a
+newer feed's rows lack. The seen-at range expands in both directions
+regardless. Re-emitting an older snapshot pulls `first_seen_at`
+backward. The guard is per column, not one `WHERE` on the whole
+UPDATE, so the seen-at expansion never depends on recency.
 
 The loader folds each load's dimension emissions down to one record
 per entity before the upsert runs (`gold.ChangeAccumulator`).
@@ -2297,8 +2215,8 @@ hundred entities — and executing the guard once per emission made
 dimension upserts dominate load time. The fold applies records in
 arrival order with the guard semantics above. Because both fold and
 SQL are symmetric-coalescing per column, the folded single upsert
-stores exactly what record-by-record upserts would — emission order
-no longer affects which attributes survive.
+stores exactly what record-by-record upserts would. Emission order
+does not affect which attributes survive.
 
 ### 8.5 Silver-went-backwards detection
 
@@ -2312,8 +2230,8 @@ stored `high_watermark`, gold refuses to load. Possible causes:
   ever changes).
 
 The escape hatch is `wealthdb reset <id>` followed by `wealthdb load
-<id>`. Auto-recovery would risk silently dropping data and is
-out of scope for v1.
+<id>`. There is no auto-recovery: it would risk silently dropping
+data.
 
 ## 9. Reset semantics
 
@@ -2321,30 +2239,34 @@ out of scope for v1.
 
 ```sql
 BEGIN TRANSACTION;
-DELETE FROM symbol_resolutions   WHERE silver_source_id = ?;
-DELETE FROM spend_txn_enrichment WHERE silver_source_id = ?;
-DELETE FROM transactions         WHERE silver_source_id = ?;
-DELETE FROM fx_rates             WHERE silver_source_id = ?;
-DELETE FROM cash_balances        WHERE silver_source_id = ?;
-DELETE FROM positions            WHERE silver_source_id = ?;
-DELETE FROM instruments          WHERE silver_source_id = ?;
-DELETE FROM accounts             WHERE silver_source_id = ?;
-DELETE FROM portfolios           WHERE silver_source_id = ?;
-DELETE FROM load_audit           WHERE silver_source_id = ?;
-DELETE FROM silver_sources       WHERE silver_source_id = ?;
+DELETE FROM symbol_resolutions    WHERE silver_source_id = ?;
+DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?;
+DELETE FROM income_txn_enrichment WHERE silver_source_id = ?;
+DELETE FROM lots                  WHERE silver_source_id = ?;  -- and lot_disposals, lot_realized,
+                                                               -- lot_findings, lot_anchors
+DELETE FROM transactions          WHERE silver_source_id = ?;
+DELETE FROM realized_lots         WHERE silver_source_id = ?;
+DELETE FROM fx_rates              WHERE silver_source_id = ?;
+DELETE FROM cash_balances         WHERE silver_source_id = ?;
+DELETE FROM position_lots         WHERE silver_source_id = ?;
+DELETE FROM positions             WHERE silver_source_id = ?;
+DELETE FROM instruments           WHERE silver_source_id = ?;
+DELETE FROM accounts              WHERE silver_source_id = ?;
+DELETE FROM portfolios            WHERE silver_source_id = ?;
+DELETE FROM load_audit            WHERE silver_source_id = ?;
+DELETE FROM silver_sources        WHERE silver_source_id = ?;
 COMMIT;
 ```
 
-The order matters because of foreign keys. The silver database
+The order is facts, then dimensions, then registration: the order the
+documented foreign keys would need (§7.1). The silver database
 itself is untouched. The watermark is removed with the
 `silver_sources` row, so a follow-up `wealthdb load <id>` starts
 fresh (treating `high_watermark` as -1).
 
-`symbol_resolutions` and the two enrichment tables — `spend_txn_enrichment`
-and `income_txn_enrichment` — go with the rest because all are per-source
-derived data — resolved tickers keyed to the source's instruments,
-enrichment derived from the transactions being deleted — and the next
-resolve or enrichment pass regenerates them. Six tables deliberately
+`symbol_resolutions`, the two enrichment tables and the lot ledger go
+with the rest because all are per-source derived data. The next
+resolve, enrichment or lot pass regenerates them. Six tables deliberately
 survive, two per family: the verdict stores `spend_merchant_categories`
 and `income_payer_categories` are global knowledge keyed by signature,
 with no source column and verdicts that were paid for, and the scope
@@ -2522,27 +2444,15 @@ needed cross resolves through one of them. Direct and reciprocal pairs
 are already both present in `fx_norm`, so leg 2 covers either
 direction without a separate fallback.
 
-**`current` vs `historic`.** Both modes use the same ASOF machinery;
-they differ only in the as-of passed to the macro:
+**Which day's rate.** A line converts at the rate of its own
+snapshot's day. The as-of passed to a macro picks the snapshot, not
+the rate: the CLI passes the `-d` date (default today), and the
+Metabase models pass `MAX(BIGINT)`, so each source's latest snapshot.
+There is no linear interpolation between rates.
 
-- **`historic`** (default) passes the real as-of date, so each line
-  lands on the newest rate at or before its own day.
-- **`current`** passes an as-of of `MAX(BIGINT)`, so the ASOF join
-  always lands on each source's latest snapshot.
-
-There is **no linear interpolation** in either mode. A line predating
-its pair's FX history clamps to the earliest available rate (above);
-only a pair with no rates at all leaves the value cell empty.
-
-**Cross-silver precedence.** Precedence is **data, not runtime state**.
-Migration `0019` added a `silver_sources.fx_priority` INTEGER column;
-on every `load` / `reload`, `gold.SetFxPriorities(ctx, db,
-cfg.FxSourceOrder())` stamps each source's rank into it (rank 0 =
-highest priority; sources not listed = NULL = lowest). The config field
-is still `silver_sources[].fx_priority` (lower = higher priority,
-absent = lowest, ties broken by config declaration order), flattened by
-`config.FxSourceOrder()`. `fx_norm` / `fx_daily` read the stamped
-column. See §13.2.
+**Cross-silver precedence** is data, not runtime state: a stamped
+`silver_sources.fx_priority` column that `fx_norm` reads. §13.2
+describes it.
 
 ### 10.7 History reports (time series)
 
@@ -2568,14 +2478,12 @@ spine on its own snapshot series, so it contributes its own most recent
 observation at or before the day and the day's total is the sum across keys. The
 key is `(source, account)` for positions and `(source, account, currency)` for
 cash, where every balance row is its own observation. One active snapshot per
-*source* (the 0022 rule) is only right for a source that writes every account in
-one run; where a deposit run, a card run and a statement backfill each land under
-their own `snapshot_at`, it reported whichever run was last and dropped every
-account the others carried — a card-only day read as that card's negative balance
-alone. Four rules complete the picture:
+*source* would be right only for a source that writes every account in one run.
+Where a deposit run, a card run and a statement backfill each land under their
+own `snapshot_at`, it would report whichever run was last and drop every account
+the others carried. Four rules complete the picture:
 
-- **Zero is an observation.** The cash line bases keep `amount = 0` rows (they
-  used to be filtered as noise), so an account paid down to zero carries the
+- **Zero is an observation.** The cash line bases keep `amount = 0` rows, so an account paid down to zero carries the
   zero, not the balance before it, and a zero line converts to 0 in every
   reporting currency instead of following the FX chain — no rate exists for a
   currency nobody quotes, and a NULL there would blank the whole entity-day's
@@ -2592,8 +2500,8 @@ alone. Four rules complete the picture:
   *and still reported at that snapshot*. Company that left in the same run is
   not company the source could re-cover, so it is not required — otherwise two
   accounts closing in one nightly dump would each hold the other's ending open.
-  A nightly full dump therefore ends a closed account on the next dump, as the
-  per-source rule did, whether one account closed or several; a card-only or
+  A nightly full dump therefore ends a closed account on the next dump, whether
+  one account closed or several; a card-only or
   deposit-only run covers none of another run's keys and ends nothing. A key
   observed alone has no company to re-cover.
 - **The source's clock bounds the rest.** A key nothing ever re-covers stops
@@ -2610,8 +2518,7 @@ alone. Four rules complete the picture:
   one source without expiring each other for as long as their runs carry their
   own `snapshot_at`. A slow key whose last observation *did* share a run with a
   faster sibling is ended by that sibling's next run, which covers the whole
-  peer set — indistinguishable from closure at this grain, and what the
-  per-source rule this replaces did with that shape too.
+  peer set, which is indistinguishable from closure at this grain.
 
 What follows for readers of these macros:
 
@@ -2624,12 +2531,11 @@ What follows for readers of these macros:
   account, while the point-in-time reports read one latest snapshot per source
   and so value only the accounts of the source's last run. `wealthdb holdings global` and
   `wealthdb holdings positions` read the point-in-time macros, so for such a source the
-  CLI headline sits below a chart built on the history. Pulling the CLI onto the
-  same per-account resolution is a known follow-up; nothing in gold depends on
-  the two disagreeing.
+  CLI headline sits below a chart built on the history. Moving the CLI onto the
+  same per-account resolution is open; nothing in gold depends on the two
+  disagreeing.
 - **`report_positions_history.snapshot_at`** is the account's own active
-  snapshot, so it varies per account within a source-day where it used to hold
-  one value per (source, day).
+  snapshot, so it varies per account within a source-day.
 - **Cost:** the day spine is crossed with keys rather than with sources, so its
   cardinality grows by the accounts-per-source factor.
 
@@ -2656,10 +2562,8 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   every source macro; `source_lines_base(p_asof)` is the latest-snapshot line
   base behind `report_sources` / `report_sources_multi` (the history variants
   build their own all-snapshot lines, like the portfolio history macros).
-- **Single-currency macros refactored.** `report_accounts` /
-  `report_portfolios` and their `_history` variants are rebuilt on these bases;
-  their output columns/values are **unchanged** (the Go scan and gold tests are
-  unaffected — verified by a byte-for-byte before/after diff).
+- **Single-currency macros on the same bases.** `report_accounts` /
+  `report_portfolios` and their `_history` variants read these bases too.
 - **`report_x_multi` macros.** `report_{global,sources,accounts,portfolios,positions}_multi(p_asof)`,
   `report_transactions_multi(p_from, p_to)`, and the five `report_*_history_multi()`
   emit one value set per currency — `{positions_value,cash_balance,total_value}_{usd,chf,eur,gbp}`
@@ -2691,23 +2595,20 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   income and portfolio costs. NULL when the transaction's account is absent
   from `accounts` (a LEFT JOIN), so a fence must keep NULLs.
 - **Merchant and spend category on the transaction macros.** The same two
-  macros also carry `merchant_name`, `spend_primary` and `spend_detailed`
-  (migration 0042), resolved by `spend_txn_categories()` (re-issued by 0050,
-  which resolves the model tier's provenance, and by 0052 and 0054) — the
-  overlay's precedence lattice, extracted so `spending_lines_base` and the
-  transaction reports share one definition of it (§10.10, docs/SPENDING.md §3). NULL for
+  macros also carry `merchant_name`, `spend_primary` and `spend_detailed`,
+  resolved by `spend_txn_categories()`: the overlay's precedence lattice,
+  one definition that `spending_lines_base` and the transaction reports share
+  (§10.10, [SPENDING.md §3](SPENDING.md)). NULL for
   every row the enrichment pass does not reach. Unlike the spending reports,
   these keep a row the matcher called an own-account move and show what it was
   categorised as: `wealthdb transactions` is the whole ledger. `merchant_name`
-  resolves in three steps (docs/SPENDING.md §7): a delta row shows its issuer
-  label or nothing (migrations 0048 and 0052), otherwise the store's name for
-  the signature, otherwise the row's own `merchant_signature` verbatim
-  (migration 0054).
+  resolves in three steps ([SPENDING.md §7](SPENDING.md)): a delta row shows its
+  issuer label or nothing, otherwise the store's name for the signature,
+  otherwise the row's own `merchant_signature` verbatim.
 - **Lockstep on the transaction macros.** `gold.TransactionsBetween` runs
   `SELECT *` with a positional scan, so every column added to these macros must
-  land in `gold.TransactionRow` and the scan list in the same change (0039,
-  0042, 0071 and 0075 each made that edit). The returns flow loaders are safe by
-  construction: they project named columns.
+  land in `gold.TransactionRow` and the scan list in the same change. The
+  returns flow loaders are safe by construction: they project named columns.
 - **`transactions.check_number`** (migration 0075) is the number written on a
   paper cheque drawn on the holder's own account, kept so a row can be matched
   against the holder's own paper records. An adapter sets it **only on an
@@ -2727,7 +2628,7 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   where the feed named the kind of thing but no instrument. Restating a known
   instrument's pair here is the one thing they are not for: the copy would
   freeze at load time and mask the dimension, which `cashflow_txn_nodes` reads
-  in preference (migration 0100 coalesces the trade's over the instrument's).
+  in preference (it coalesces the trade's pair over the instrument's).
   The writer gates each half against its own vocabulary and the two together
   as an admitted pair, so a wrapper value cannot reach the exposure column.
   Denormalised by decision: a transaction points at no position and no lot.
@@ -2740,8 +2641,7 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   fidelity adapter carries it. NULL where no lookup was needed or it
   succeeded, so `instrument_external_id IS NULL AND instrument_hint IS NOT
   NULL` is exactly the set a `transaction_instruments` entry can still close,
-  and `wealthdb transactions -C +instrument_hint` (migration 0099) is how that
-  set is read. `wealthdb resolve-symbols` does not put such a row to its
+  and `wealthdb transactions -C +instrument_hint` is how that set is read. `wealthdb resolve-symbols` does not put such a row to its
   model: the token is config's to close. See §13.9.
 - **Account display defaults.** `report_accounts_multi` and
   `report_accounts_history_multi` apply the conventional
@@ -2763,129 +2663,53 @@ DuckDB macro. The computation lives in Go — the CLI computes on demand, and
 `web-materialize` snapshots the same engine's output into `report_returns` for
 the dashboards — as a hybrid:
 
-- **SQL assembles**, reusing existing macros — no new migration. The per-account
-  carry-forward value series comes from `report_accounts_history(p_ccy)` (§10.7;
-  its ASOF-inner join already omits pre-inception days, so a boundary before an
-  account's first snapshot reads as NULL — "not yet alive", not 0, and its
-  per-account carry means a run that covered only part of a source no longer
-  punches holes in the spine). External
-  flows come from `report_transactions(from,to,p_ccy)` (`net_amount` converted at
-  `occurred_at`). The source's adapter kind (`silver_sources.silver_kind`) and a
-  `DISTINCT snapshot-day per account` query complete the inputs.
-- **Go computes** (`internal/returns`, pure + unit-tested): Modified-Dietz per
-  sub-period, geometric chaining, XIRR (Newton + bisection), the per-adapter flow
-  policy, and the synthetic onboarding/closure mechanics. The gold orchestration
-  is `internal/gold/returns.go` (`RunReturns`), aggregating the per-account spine
-  to every grain.
+- **SQL assembles** the inputs from existing macros. The per-account
+  carry-forward value series comes from `report_accounts_history(p_ccy)`
+  (§10.7). Its ASOF inner join omits pre-inception days, so a boundary before
+  an account's first snapshot reads as NULL ("not yet alive"), not 0. External
+  flows come from `report_transactions(from, to, p_ccy)` (`net_amount`
+  converted at `occurred_at`). The adapter kind (`silver_sources.silver_kind`)
+  and the distinct snapshot days per account complete the inputs.
+- **Go computes** (`internal/returns`, pure and unit-tested): Modified Dietz
+  per sub-period, geometric chaining, XIRR (Newton plus bisection), the
+  per-source flow policy, and the synthetic onboarding and closure flows. The
+  gold orchestration is `internal/gold/returns.go` (`RunReturns`), which
+  aggregates the per-account spine to every grain.
 
-Method and conventions (see `docs/RETURNS-NOTES.md` for the full rationale and
-the per-adapter flow classification):
+Each source registers a `ReturnsPolicy` beside its adapter
+(`internal/silver/<source>/policy.go`), resolved by adapter kind through
+`internal/returns/returnspolicy.go`. The engine names no source: it reads
+the policy's knobs. §5.6 lists what config may override.
 
-- **TWR** = chained period-Modified-Dietz; `--period {monthly|quarterly|annual|
-  total}` controls the per-bucket rows, but the since-inception cumulative figure
-  is chained over the entity's **actual valuation (snapshot) days**, independent of
-  `--period`. Snapshot-aligned sub-periods keep each flow in the same bucket as the
-  value change it causes; a fixed calendar grid splits a flow from a later value
-  realisation when a period boundary lands in a snapshot gap, manufacturing a
-  sub-(−100%) bucket that collapses the geometric chain (see RETURNS-NOTES
-  §"snapshot-aligned headline"). For dense (daily-snapshot) sources this is just
-  daily bucketing.
-- **MWR** = XIRR over the window's external flows + opening/terminal values; n/a
-  (with a reason) for no-flow / no-sign-change / non-unique / NAV-only entities.
-- **Each source declares a pluggable `ReturnsPolicy`**, co-located in
-  `internal/silver/<source>/policy.go` and registered from that package's `init()`,
-  resolved by adapter kind via a registry (`internal/returns/returnspolicy.go`).
-  The engine takes **zero source names or branches** — it reads knobs off the
-  resolved policy (onboarding grain, conduit kinds, external-only, inception
-  anchor) and the policy is source-scoped even at the global grain. **Flow
-  classification** is one member of that policy (banks/pension = flow-complete;
-  crypto = fiat flows only; carta/equityzen = boundary deposit/withdrawal
-  only; manual = NAV-only). `value_outccy`
-  already carries the canonical sign, so Dietz `F_i = +value_outccy` and XIRR
-  `cf = -value_outccy` with no per-kind exception.
-- **Historic-FX**: FX movement is part of the return. **Net
-  of fees and taxes paid** (after-tax) — costs stay inside the value series.
-- **Mortgage / net-negative entities** are excluded from coarse rollups and shown
-  as a separate `nonpositive_base` liability line.
-- **Credit cards (`account_kind='card'`) are returns-invisible**: no value, no
-  flow, no row, at any grain. A card is a spending instrument, not an
-  investment. The exclusion is engine-level and kind-keyed (the loader seam
-  `appendSeries`), never a `ReturnsPolicy` knob — policies default to a no-op,
-  so a card from an unregistered source would otherwise leak. Consequence: with
-  cards loaded the returns global no longer equals `report_global`; the gap is
-  the card balances, which net worth still counts, plus — for a source whose
-  runs are partial — the accounts the per-account value spine carries and the
-  per-source `report_global` omits (§10.7). The checking-side leg
-  of a card payment stays a real external withdrawal — the money left the
-  returns-visible system. See `docs/RETURNS-NOTES.md`, "Credit cards are
-  returns-invisible".
-- **Account-grain is exact**; coarse grains are best-effort (heuristic transfer
-  netting, synthetic onboarding for staggered inception). **Returns are NOT
-  additive across grains** — `global == Σ accounts + hidden plumbing` is a
-  *value* identity, not a return identity (hidden conduit rows, §5.7, are in
-  global but emit no accounts-grain row).
-- **Staggered inception (corrected semantics).** When a constituent joins a
-  coarse aggregate *mid-window* (debut `d > winFrom`), its arrival is booked once
-  as a synthetic onboarding inflow of its **full** first-snapshot value at `d`,
-  and **all of its own external flows dated `≤ d` are subsumed** (dropped from the
-  aggregate flow series) — they happened while the aggregate value series did not
-  yet reflect the account, so counting them too would double-count the capital and
-  drive the chained TWR below −100%. A constituent already alive at `winFrom`
-  keeps every in-window flow and gets no onboarding. The symmetric **closure**
-  case: flows a closing constituent dates inside its terminal zero-carry tail
-  are subsumed as strays under the default per-source `ClosureScope` (the
-  zeroing value drop is the exit signal), while `ClosureLedgerExact` sources
-  (carta / equityzen) keep them as the real, dated exit proceeds
-  (RETURNS-NOTES.md §"Netting and closure"). The netting interaction is handled by running
-  transfer/journal netting over the *full* candidate set (pre-debut legs included)
-  **before** subsumption, so genuine internal pairs annihilate and only a
-  constituent's own surviving pre-debut/closure capital is subsumed — never
-  orphaning a phantom outflow whose sibling sits on an already-alive account
-  (whose value series does reflect it). Onboarding still legitimately recognizes
-  *untracked pre-existing* capital (a late account with no funding transactions at
-  all, e.g. a custody account whose backfill carries no transactions), which is NOT a double-count.
-  See `docs/RETURNS-NOTES.md`, "Staggered-inception subsumption".
-- **Conduit relationships (per-source policy knobs).** A source whose policy opts
-  in (UBS today) is treated specially by the source-blind engine purely via its
-  `ReturnsPolicy`: **conduit-kind** accounts (UBS cash) feed the value spine but
-  emit no per-account onboarding; **per-entity-once** onboarding books the group
-  step-up net of same-day negative sibling funding drops (floored at 0), so an
-  internal cash→securities move inside a relationship onboards nothing — the
-  capital was already counted at inception; **external-only** drops internal churn
-  (UBS pre-tags external vs. internal in silver, so the engine hook is inert for
-  it); **inception = first-real-snapshot** anchors the window past sparse cash-only
-  pre-history (kills the tiny-base artifact). All four are source-scoped, so
-  every other source stays byte-identical even in the merged global entity. See
-  `docs/RETURNS-NOTES.md`, "Pluggable per-source policy".
+The flags are `--method twr|mwr|both`, `--period monthly|quarterly|annual|total`
+(default quarterly), `--annualize`, `--netting on|off` and
+`--inception full|strict`; `wealthdb help returns` describes them. Every n/a
+carries a reason and every approximation a tag in the `quality` column.
 
-The honesty surface is the **`quality` column**: every n/a carries a reason, and
-every approximation is tagged (`since_data_inception`, `configured_inception`,
-`partial_window`, `staggered_inception`, `accounts_grain_meaningless`,
-`empty_bucket`/`carried_forward`, `boundary_same_snapshot`, `stale_snapshot`,
-`dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`, `mwr_no_flows`,
-`mwr_no_sign_change`, `mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`,
-`mwr_negative_net_capital`, `unmatched_transfers=N`, `cross_source_netted=N`, `journal_present`, `nav_only`,
-`nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
-`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`,
-`flows_before_inception`, `after_tax`). Cross-grain note: `global == Σ accounts + hidden
-plumbing` is a **value** identity (verified by reconciliation test; hidden
-conduit rows, §5.7, are in global but emit no accounts row), and **returns
-are not additive across grains**.
+[RETURNS-NOTES.md](RETURNS-NOTES.md) owns the method: the snapshot-aligned
+headline, flow classification per source, card invisibility, staggered
+inception and closure, netting, the policy knobs and every quality flag.
+Three facts matter to the rest of gold:
+
+- **Historic FX.** Values and flows convert at their own day's rate
+  (§10.6), so currency movement is part of the return.
+- **Credit cards are returns-invisible** at every grain, keyed on
+  `account_kind = 'card'` in the engine. With cards loaded, the returns global
+  therefore differs from `report_global` by the card balances.
+- **Returns are not additive across grains.** `global == Σ accounts + hidden
+  plumbing` holds for values, not for returns (§5.7).
 
 ### 10.10 Spending reports
 
-The spending family (docs/SPENDING.md) charts the population
-`spending_lines_base(from, to)` defines — the scoped accounts, spend-side
-kinds, category resolved, own-account moves and capital deployed
-(`internal_transfer`, `investment`) removed. A card bill on a card wealthdb
-does not itemise stays in as `card_spend` (migration `0046`), its own
-primary: an unpaired card payment is generic card spend, not an own-account
-move, and only the matcher — which has seen the card's own leg — may net it
-out. A cash gift or family support stays in as `gift` (migration `0047`),
-likewise its own primary: spending with no merchant behind it, placed by a
-config rule or a pin. Migration `0042` adds
-three reports over it, each with the `_multi` sibling §10.8 describes
-(single-currency VARCHAR money for the CLI, DECIMAL in every reporting currency for the web):
+The spending family ([SPENDING.md](SPENDING.md)) charts the population
+`spending_lines_base(from, to)` defines: the scoped accounts and
+spend-side kinds, with the category resolved, less own-account moves,
+capital deployed, debt repayments and crossings to untracked plans.
+[SPENDING.md §1 and §2](SPENDING.md) list the excluded values and say
+why `card_spend` and `gift` stay in.
+Three reports sit over it, each with the `_multi` sibling §10.8
+describes (VARCHAR money in one currency for the CLI, DECIMAL in every
+reporting currency for the web):
 
 | macro | grain |
 |---|---|
@@ -2903,283 +2727,170 @@ column registry.
   **positive** magnitudes and `net_spend = spend − refunds`.
 - **Period bucketing.** `spend_period_bucket(period, at)` emits the bucket's
   UTC-midnight epoch second via `date_trunc` (`day` | `week` | `month` |
-  `quarter` | `year`), or NULL for the single `total` bucket. The part is a
-  macro parameter, which DuckDB accepts — but `total` is not a `date_trunc`
-  part and the engine binds the call even on a CASE branch it discards, so the
-  substitution happens **inside** the call. The timestamp comes from `epoch_ms`,
-  not `to_timestamp`, which is TIMESTAMPTZ and would truncate in the session's
-  zone rather than UTC.
+  `quarter` | `year`), or NULL for the single `total` bucket. `total` is not a
+  `date_trunc` part, and DuckDB binds the call even on a CASE branch it
+  discards, so the substitution happens **inside** the call. The timestamp
+  comes from `epoch_ms`, not `to_timestamp`: the latter is TIMESTAMPTZ and
+  would truncate in the session's zone rather than UTC.
 - **Shares over magnitudes.** A category's share is `|net_spend|` over the
   bucket's `Σ|net_spend|`, so a net-positive category cannot shrink the
   denominator and push the others past 100%; a bucket's shares sum to 1.
 - **`(uncategorized)` is a label.** The backlog is materialised **before** the
   GROUP BY at both levels, so it groups like any other category instead of
-  rendering as a blank row. At transaction grain the category stays NULL —
+  rendering as a blank row. At transaction grain the category stays NULL, and
   `web_spending` labels it at the view.
-- **No merchant on a delta line, except a card bill.** `merchant_name` is
-  refused on a line whose resolved category is a delta (migration `0048`,
-  docs/SPENDING.md §7), whatever the merchant store holds for its signature.
-  The one exception is a card bill, which names the ISSUER it was paid to
-  (migration `0052`): the bill's own narrative names the payer's bank or the
-  holder, so the issuer the built-in card rule matched is the only handle on
-  which card the money went to, and it is stored on the enrichment row rather
-  than read from the merchant store. `web_spending` inherits the column; the
-  dashboard's merchant rankings exclude the delta categories, so an issuer
-  never ranks as a merchant.
-- **Every other line names its merchant, store row or not.** The store is the
-  model tier's alone and the model tier is the weakest scope, so a line a
-  provider, a rule, the matcher or a pin placed is never a model candidate and
-  never acquires a store row — and a line nothing placed has none by
-  construction. `merchant_name` therefore falls back to the line's own
-  `merchant_signature` (migration `0054`, docs/SPENDING.md §7), VERBATIM: the
-  cell is then the value of the `merchant_signature` column beside it, the
-  fold's upper case distinguishes a derived name from a model-written one, and
-  identity is the only rendering stable by construction, so a report groups one
-  signature as one merchant. (`initcap` does not exist in this DuckDB.) An
-  empty or blank signature still renders nothing. The candidacy gates that keep
-  a bare booking code or the provider's own filing away from the model fence
-  the STORE and not this column, so such a fold surfaces, and ranks, under
-  itself; the merchant rankings widen from the lines the store named to every
-  non-delta line carrying a signature. Every consumer inherits the column by
-  name — the three spending reports and their `_multi` siblings,
-  `report_transactions`, `web_spending`, both CLI views — and none was
-  re-issued.
+- **`merchant_name`** resolves as [SPENDING.md §7](SPENDING.md) describes:
+  nothing on a delta line except a card bill's issuer, else the store's
+  name, else the line's own `merchant_signature`. Every consumer inherits
+  the column by name: the spending reports and their `_multi` siblings,
+  `report_transactions`, `web_spending` and both CLI views.
 - **Reconciliation.** Σ categories == the summary bucket, for every period and
-  level. The identity is structural (one base, one sign split) and therefore
-  cannot catch a wrong population: an over-eager internal-transfer match removes
-  a row from both sides at once and the month is silently cheaper. The layered
-  populations are what surfaces that — `spend_enrichment_population` is
-  deliberately the layer **before** the exclusion, so a removed row is still
-  there carrying the tier that removed it (docs/SPENDING.md §6, the matched-pair
-  canary).
+  level. The identity is structural (one base, one sign split), so it cannot
+  catch a wrong population: an over-eager internal-transfer match removes a row
+  from both sides at once. `spend_enrichment_population` is the layer
+  **before** the exclusion, so a removed row is still there with the tier that
+  removed it ([SPENDING.md §6](SPENDING.md), the matched-pair canary).
 
-Migration `0043` adds the two serving views, in the 0032 shape (an `epoch_ms`
-TIMESTAMP reduction Metabase syncs like a table; re-issued in that form by
-migration `0049`):
+Two serving views reduce timestamps with `epoch_ms`, so Metabase syncs them
+like tables:
 
-- **`web_spending`** — transaction grain over
+- **`web_spending`**: transaction grain over
   `report_spending_transactions_multi`, with the account's identity for the
-  picker and both category levels for the breakdowns, NULL rendered as
+  picker and both category levels for the breakdowns. NULL renders as
   `(uncategorized)` here.
-- **`web_card_balances_history`** — a card account's owed balance per UTC day,
+- **`web_card_balances_history`**: a card account's owed balance per UTC day,
   carried forward, in the reporting currencies
-  (`report_card_balances_history_multi()`). Its grain is finer than the
-  account-history macros': one row per (source, account, **currency**), carrying
-  the native balance alongside the converted values, which is what the card cards
-  chart. It was also the first macro to ASOF-join each (source, account,
-  currency) onto the day spine independently — migration `0043`, because the
-  account-history macros then gated each day on one active snapshot per source
-  and lost a card behind a deposit-move day (and the deposits behind a statement
-  closing). Migration `0051` made that resolution the rule everywhere and
-  matched this view's cash grain, so the two now resolve a day the same way;
-  this view keeps the card-grain series. They still differ at the end of one:
-  0043 bounds nothing, so a card its source stops reporting keeps its last owed
-  balance to the end of this view's spine, where the account-history macros end
-  it (§10.7). Zero balances are kept in both: a paid-off card really is at zero,
-  and dropping the row would leave the series owing money forever.
+  (`report_card_balances_history_multi()`). One row per (source, account,
+  **currency**), with the native balance beside the converted values. It
+  resolves a day per key as §10.7 does, but bounds nothing at the end: a card
+  its source stops reporting keeps its last owed balance to the end of this
+  view's spine, where the account-history macros end it. Zero balances are
+  kept: a paid-off card is at zero, and dropping the row would leave the
+  series owing money forever.
 
-Both views label an account through the shared `account_label` macro
-(migration `0063`): `<name> (<source> <kind>)`, where the name falls back
-to the account's id when an adapter leaves it unset (`0061`) — a name on
-its own says neither which institution the account belongs to nor whether
-the money moved through a deposit account or a card, and names collide
-across sources. The name comes first so a chart truncating a long label
-clips the annotation rather than the identity. The bare name and the id
-stay projected beside it.
+Both views label an account through the shared `account_label` macro:
+`<name> (<source> <kind>)`, where the name falls back to the account's id
+when an adapter leaves it unset. A name alone says neither which
+institution holds the account nor whether it is a deposit account or a
+card, and names collide across sources. The name comes first, so a chart
+that truncates a long label clips the annotation, not the identity. The
+bare name and the id stay projected beside it.
 
 ### 10.11 Income reports
 
-The spending macros of §10.10 read in the other direction, over the
-income population. `income_scoped_accounts()`,
-`income_enrichment_population(f, t)` and `income_lines_base(f, t)`
-(migration `0070`), the FX pair `income_lines_outccy` /
-`income_lines_multi` and the three reports `report_income_summary`,
-`report_income_types` and `report_income_transactions` (`0071`), with
-`0073` re-issuing the resolution and `0074` the types report's
-multi-currency form.
+The spending macros of §10.10, read in the other direction over the
+income population ([INCOME.md](INCOME.md)):
 
-One asymmetry is left standing: spending publishes a `_multi` sibling
-for all three of its reports, income for two. There is no
-`report_income_summary_multi`, because nothing reads either summary
-`_multi` and an unread macro is a shape to keep true for nothing
-(docs/INCOME.md §11).
+- `income_scoped_accounts()`, `income_enrichment_population(f, t)` and
+  `income_lines_base(f, t)`;
+- `income_txn_categories()`, the resolution, which names the payer as the
+  instrument where a line carries one;
+- the FX pair `income_lines_outccy` / `income_lines_multi`;
+- `report_income_summary`, `report_income_types` and
+  `report_income_transactions`, with `_multi` forms of the last two;
+- `web_income`, `web_spending`'s shape over the income lines. `(uncategorized)`
+  labels the type columns but not the payer, which a delta line never has.
 
-Four things differ from the spending set, and only four:
+[INCOME.md](INCOME.md) owns how these differ from the spending set: the
+kind floor read over the verdict store, the `distribution` floor, and the
+`withheld` memo on the summary.
 
-- **The kind floor is read OVER the verdict store**, where spending's is
-  read under its merchant store (`0073`). Spending asks the model who
-  was paid, and a name is finer than a kind; income asks what KIND of
-  income a receipt is, and the data answers that itself on every
-  admitted kind but `deposit`. `categorize income` is restricted to that
-  one kind for the same reason (docs/INCOME.md §3, decision 13).
-- **The resolution adds a step.** `income_txn_categories()` resolves the
-  payer as the INSTRUMENT where a line carries one — a dividend, a
-  coupon, a staking reward arrive with an instrument and no narrative —
-  before falling through to the store's name and then the signature.
-  A delta line carries no payer at all.
-- **One floor arm places a delta.** `distribution` floors to
-  `capital_return`, so such a row leaves the base with no verdict
-  written anywhere (docs/INCOME.md §1).
-- **The summary carries `withheld`**, a memo with no spending twin: the
-  window's `tax` rows on the same accounts, bucketed and converted like
-  the lines, FULL JOINed by bucket and never subtracted. Full, so that
-  neither side drops a bucket the other has: a bucket whose only
-  booking was a tax row keeps its row, with `txn_count 0` and an empty
-  income column (docs/INCOME.md §5).
-
-`report_transactions` was re-issued in `0071` to carry `payer_name`,
-`income_primary` and `income_detailed` after the spending trio. It is
-read by a POSITIONAL scan (`gold.TransactionRow`), so that macro, the
-row struct and the scan list move together in one change.
-
-`web_income` (`0072`) is `web_spending`'s shape over the income lines:
-one row per (line, reporting currency), epoch-ms timestamps, the shared
-account-label macro, and `(uncategorized)` on the type columns — but
-NOT on the payer, which a delta line has none of by construction.
+`report_transactions` carries `payer_name`, `income_primary` and
+`income_detailed` after the spending trio. It is read by a positional
+scan (`gold.TransactionRow`), so the macro, the row struct and the scan
+list move together in one change.
 
 ### 10.12 Cash flow statement
 
 The third reading of the same engine, and the only one that is mostly
-SQL. The boundary is stamped (`0080`): `cashflow_wrapper_sides` holds
-each tax wrapper's side, `cashflow_account_scope` the pool's exclusions,
-and `cashflow_pool_accounts()` is the account gate over them — every
-account not excluded by `cashflow.accounts`. `cashflow_txn_nodes(f, t)`
-maps every transaction to a `section.class.group` node and a
-disposition saying whether it is a line at all, and
-`cashflow_lines_base(f, t)` is that restricted to the pool and to the
-lines (both `0081`; the node macro re-issued by `0085`, `0088`, `0090`,
-`0100`, `0101` and `0102`, the base by `0091`, `0092`, `0093` and
-`0096`).
+SQL ([CASHFLOW.md](CASHFLOW.md) is the spec):
 
-Six reports sit over it: `report_cashflow_summary`, `_flows`, `_sankey`
-and `_transactions` with the FX pair `cashflow_lines_outccy` /
-`cashflow_nodes_outccy` (`0082`), `_reconciliation` (`0083`),
-`_coverage` (`0089`), and `web_cashflow` (`0084`); the summary was
-re-issued by `0083` and `0086`, the reconciliation by `0086`, the
-sankey by `0091` and `0095`, the flows by `0095`. Two of the six are
-diagnostics rather than views of the statement: `_reconciliation` is
-the memo that compares the OBSERVED balances of `cashflow_balance_pool()`
-— the pooled accounts carrying both transactions and balances — against
-the flow over the dates those balances cover, and `_coverage` is that
-per account and period, in the account's own currency and never
-converted.
+- `cashflow_wrapper_sides` holds each tax wrapper's side of the household
+  boundary, and `cashflow_account_scope` the pool's exclusions. Every
+  enrichment pass re-stamps both from config.
+- `cashflow_pool_accounts()` is the account gate: every account that
+  `cashflow.accounts` does not exclude and whose wrapper sits on the
+  household side.
+- `cashflow_txn_nodes(f, t)` maps every transaction to a
+  `section.class.group` node and a disposition that says whether it is a
+  line at all. `cashflow_lines_base(f, t)` is that, restricted to the pool
+  and to the lines.
+- `report_cashflow_summary`, `_flows`, `_sankey` and `_transactions` sit
+  over it, with the FX pair `cashflow_lines_outccy` /
+  `cashflow_nodes_outccy`; `web_cashflow` serves the dashboard.
+- `report_cashflow_reconciliation` and `report_cashflow_coverage` are
+  diagnostics. The first compares the observed balances of
+  `cashflow_balance_pool()` (the pooled accounts that carry both
+  transactions and balances) with the flow over the dates those balances
+  cover. The second does that per account and period, in the account's own
+  currency, never converted.
 
-Four things differ from the two family sets:
-
-- **It reads each family's RESOLUTION macro, never its `_lines_base`.**
-  Four of the verdicts it wants — the crossings, `investment`,
-  `capital_return`, `debt_repayment` — are exactly the ones a base
-  excludes.
-- **It has no scope of its own and no backlog of its own.** The pool
-  inherits neither family's account scope, and every verdict is
-  theirs; `status -v`'s cashflow block therefore counts the three ways
-  the statement can be quietly wrong instead of a backlog.
-- **The resolution is SQL rather than Go** because the dashboard needs
-  the same node assignment the CLI uses, computed after its pickers
-  apply; a Go-side resolution would have to be re-implemented in the
-  serving view and would drift.
-- **Excluded means counted.** Rows the resolution declines are
-  reported, because a counter nobody reads is how a silent hole starts.
-  Pool-internal rows are NOT counted there: they are movements the
-  statement deliberately does not draw.
-
-docs/CASHFLOW.md is the spec; it is written as a delta against
-SPENDING.md and INCOME.md and does not repeat what they own.
+The node assignment reads each family's resolution macro, never its
+`_lines_base`, because several verdicts it needs are exactly the ones a
+base excludes. It is SQL because the dashboard needs the same assignment
+the CLI uses after its pickers apply. [CASHFLOW.md §4](CASHFLOW.md) owns
+the rules.
 
 ### 10.13 Gains reports
 
-Migration 0116 holds the gains macros over what 0115 loads, and gives
-`report_positions` and `report_cash` the cost basis columns after
-their others. Shared pieces:
+The gains macros read the cost basis columns and lot tables of §7.4 and
+§7.5. [GAINS.md](GAINS.md) defines every figure they return, and
+[LOTS.md §5](LOTS.md) the lot engine's ledger.
 
-- `fx_rates_to(ccy)` and `fx_amount`: one conversion path, in the
-  order every single-currency report applies;
+Shared pieces:
+
+- `fx_rates_to(ccy)` and `fx_amount`: one conversion path, in the order
+  every single-currency report applies. `fx_rates_to` builds its grid over
+  the currencies gold's figures are in, not every coin a crypto source
+  prices.
 - `positions_at(instants)`: the point-in-time rule of §10.1 at several
-  instants at once, and `gains_position_lines` over it;
-- `realized_lots_in`: the one place the realized-gain formula lives;
-- `gains_events`: sells, in-kind moves and corporate actions;
-- `gains_windows`: one row per bucket, account and instrument, which
-  every gains report sums, so the grains and the positions view
-  reconcile by construction.
-
-The readers are `report_gains_buckets(from, to, ccy, period, grain)`,
-`report_gains_positions`, `report_gains_realized`, `report_lots` and
-`report_gains_coverage`. docs/GAINS.md defines every figure they
-return. They are single-currency; 0119 adds the multi-currency forms
-the materializer reads.
-
-Migration 0117 serves the Metabase Gains dashboard. `report_gains`
-holds `gains_windows(0, today, CCY, 'month')` for every reporting
-currency, less the figures in a holding's own currency. It is a
-derived table like `report_returns` (§10.9), and `web-materialize`
-rewrites it at every web refresh. The `web_gains` view labels its
-accounts and joins in their tax wrapper. 0117 also gives
-`gains_windows` the cost basis of the lots realized, the denominator of
-a realized percent.
-
-Migration 0118 adds the lot engine's ledger and its readers
-(docs/LOTS.md §5):
-
-- `report_positions` and every gains reader but coverage and check
-  take `p_missing := 'ignore'` and read a missing cost under it,
-  through `gains_position_lines` and `realized_lots_in` or, in
-  `report_lots`, on the lot itself;
+  instants at once, and `gains_position_lines` over it.
+- `realized_lots_in`: the one place the realized-gain formula lives.
+- `gains_events`: sells, in-kind moves and corporate actions. A sale the lot
+  engine realized against a stated basis counts as documented, through the
+  transaction each `lot_realized` row names.
+- `gains_windows`: one row per bucket, account and instrument, which every
+  gains report sums, so the grains and the positions view reconcile by
+  construction. It maps every key through `holding_aliases` (the config
+  block, written at every load) and `instrument_aliases()` (a source's
+  CUSIP key to the ticker it also keys the security by) before a bucket's
+  start meets its end.
 - `basis_applies`, `stated_basis`, `basis_missing`, `gain_needs_cost`,
   `documented_years`, `documented_txns`, `lot_obs_at` and
-  `lot_key_accounts` are the predicates and keys the readers and the
-  lot pass share;
-- `lots_at(instants)` gives the engine's lots open at each instant, and
-  `report_lots` lists them on a position the engine filled;
-- `lot_sources()` is each source's row of the last pass (mode, grain,
-  methods, counts), which `gains_windows` turns into quality flags;
-- `report_gains_check` compares the engine with the stated lots and
-  cost bases;
-- `fx_rates_to` builds its grid over the currencies gold's figures are
-  in, not every coin a crypto source prices;
-- `report_gains` holds a row set per currency and per reading of a
-  missing cost basis, and `web_gains` exposes `missing_basis` for the
-  dashboard's picker.
+  `lot_key_accounts`: the predicates and keys the readers and the lot pass
+  share.
+- `lots_at(instants)`: the engine's lots open at each instant.
+- `lot_sources()`: each source's row of the last lot pass (mode, grain,
+  methods, counts), which `gains_windows` turns into quality flags.
 
-Migration 0119 lets one evaluation serve several currencies and
-readings. `gains_windows_all`, `gains_position_lines_all`,
-`realized_lots_in_all` and `fx_rates_into` take lists of output
-currencies and readings, and each row names its own. The buckets, the
-events, the findings and what a holding is at an instant do not depend
-on either, so they are found once. The single-currency macros are these
-over one-element lists. `web-materialize` writes `report_gains` from one
-call of `gains_windows_all`.
+The readers are `report_gains_buckets(from, to, ccy, period, grain)`,
+`report_gains_positions`, `report_gains_realized`, `report_lots`,
+`report_gains_coverage` and `report_gains_check`. `report_positions` and
+`report_cash` carry the cost basis columns after their others.
+`report_positions` and every gains reader but coverage and check take
+`p_missing := 'ignore'` and read a missing cost under it.
 
-Migration 0120 splits each row's gain by what prices did, for the Gains
-dashboard: `sold_gain_x` is what the lots sold in the bucket gained in
-it, and `held_change_x` the unrealized change with those lots left out
-(docs/GAINS.md §2). `report_gains` and `web_gains` carry both.
-`instrument_aliases()` maps a source's CUSIP key to the ticker it also
-keys the security by, so a document's lot finds its position's price.
+The `_all` forms (`gains_windows_all`, `gains_position_lines_all`,
+`realized_lots_in_all`, `fx_rates_into`) take lists of output currencies
+and readings of a missing basis, and each row names its own. Buckets,
+events, findings and what a holding is at an instant depend on neither,
+so one evaluation finds them once. The single-currency macros are these
+over one-element lists.
 
-Migration 0121 gives `lot_realized` the transaction it realizes, so
-`gains_events` counts a sale the lot engine realized against a stated
-basis (docs/LOTS.md §5.3, the `stated` mode) as documented; adds
-`holding_aliases`, the table config `holding_aliases` is written into
-at every load, which `gains_windows_all` maps every key through; and
-reads a cost basis the zero reading assumes at one boundary against one
-stated at the other as `basis_changed`.
-
-Migration 0122 adds `silver_sources.observed_snapshots_through` and
-`observed_transactions_through`, when the silver last observed the
-source's holdings and its ledger (§6.4), and the view
-`source_observed` that reads them.
-
-Migration 0123 adds `positions.valued_at`, the instant a position's
-mark is from where a read dated the snapshot later (§6.4);
-`positions_at`, `report_positions` and `report_cash` carry it, and
-`report_sources` / `report_sources_multi` gain `valued_at`, the latest
-mark a source's latest snapshot rides on.
+The Metabase Gains dashboard reads `report_gains`, a derived table like
+`report_returns` (§10.9). `web-materialize` rewrites it from one call of
+`gains_windows_all` at every web refresh: `gains_windows(0, today, CCY,
+'month')` for every reporting currency and reading, less the figures in a
+holding's own currency. It carries `sold_gain_x` and `held_change_x`, the
+split of a bucket's gain by what prices did ([GAINS.md §2](GAINS.md)). The
+`web_gains` view labels its accounts, joins in their tax wrapper and
+exposes `missing_basis` for the dashboard's picker.
 
 ## 11. Repository layout
 
 ```
 wealthdb/
-├── README.md                       — user-facing usage
+├── README.md                       — what the engine does, with examples
 ├── Dockerfile                      — single-stage; Go toolchain + binary in one image (ENTRYPOINT is the binary)
 ├── wealthdb                        — host-side wrapper around `docker run` (production binary)
 ├── wealthdb-go                     — host-side wrapper around `docker run go ...` (§12.5)
@@ -3212,7 +2923,9 @@ wealthdb/
 import anything higher, never the reverse:
 
 ```
-canonical, lots              (zero deps)
+canonical                    (zero deps)
+   ↑
+lots, returns                import canonical
    ↑
 silver (interface)           imports canonical
    ↑
@@ -3225,9 +2938,9 @@ loader                       imports gold + silver (the bridge)
 cmd/wealthdb                 imports loader + gold + config + wizard + output
 ```
 
-**`gold` never imports `silver`** (a compile-time test in
-`internal/gold` guards it): the writer takes canonical `*Change`
-values, not adapter handles, and `loader` is the sole place silver
+**`gold` never imports `silver`.** Only gold's tests import the
+adapters, to register their policies. The writer takes canonical
+`*Change` values, not adapter handles, and `loader` is the sole place silver
 and gold meet. Migrations live under `internal/gold/migrations/`
 because Go's `//go:embed` can't traverse up the tree. The
 `internal/` prefix keeps every package unimportable downstream —
@@ -3281,19 +2994,20 @@ rejected for this reason.
 ### 12.2 Volume mounts
 
 The host wrapper mounts host paths to the **same paths** inside the
-container — so `$XDG_DATA_HOME/wealthdb/wealthdb.db` resolves identically on
-both sides and no path translation is needed. Two specific bind
+container, so the gold DB path resolves identically on both sides and
+no path translation is needed. The data root is `$WEALTHDB_DATA_ROOT`
+when set, else `${XDG_DATA_HOME:-~/.local/share}/wealthdb`. Two bind
 mounts:
 
 ```
 $XDG_CONFIG_HOME/wealthdb.cfg → $XDG_CONFIG_HOME/wealthdb.cfg   config file
-$XDG_DATA_HOME/wealthdb/      → $XDG_DATA_HOME/wealthdb/        gold + silver data tree
+<data root>/                  → <data root>/                    gold + silver data tree
 ```
 
-The container also sets `HOME` and `XDG_CONFIG_HOME` to match the
-host's so that `~` / `$HOME` references in the config file — and the
-engine's default config-path resolution — land on the same absolute
-paths inside and outside.
+The container also gets `HOME`, `XDG_CONFIG_HOME` and
+`WEALTHDB_DATA_ROOT` from the host, so `~`, `$HOME` and
+`${WEALTHDB_DATA_ROOT}` in the config file, and the engine's default
+config path, land on the same absolute paths inside and outside.
 
 The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 
@@ -3302,35 +3016,42 @@ The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 
 ```sh
 CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
-mkdir -p "$CFG_DIR" "$XDG_DATA_HOME/wealthdb"
+DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
+mkdir -p "$CFG_DIR" "$DATA_ROOT"
 [ -f "$CFG_DIR/wealthdb.cfg" ] || : > "$CFG_DIR/wealthdb.cfg"
-docker run --rm -it \
+TTY=""; [ -t 0 ] && [ -t 1 ] && TTY="-it"
+docker run --rm $TTY \
     -e HOME="$HOME" \
     -e XDG_CONFIG_HOME="$CFG_DIR" \
+    -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
     -u "$(id -u):$(id -g)" \
     -v "$CFG_DIR/wealthdb.cfg:$CFG_DIR/wealthdb.cfg" \
-    -v "$XDG_DATA_HOME/wealthdb:$XDG_DATA_HOME/wealthdb" \
+    -v "$DATA_ROOT:$DATA_ROOT" \
     wealthdb:latest \
     "$@"
 ```
 
-(`-it` is needed for `wealthdb config`; harmless for the others.)
+The empty config file lets the mount exist before `wealthdb config`
+writes it (§4.9). A TTY is allocated only when the host shell has one:
+`wealthdb config` needs it, and a cron or piped run skips it.
 
-**Reader host** (only `wealthdb holdings positions`, `wealthdb status`, ...,
-against a read-only mount of someone else's gold tree):
+**Reader host** (only the read commands, such as `wealthdb holdings
+positions` and `wealthdb status`, against a read-only mount of another
+host's gold tree):
 
 ```sh
 docker run --rm \
     -e HOME="$HOME" \
     -e XDG_CONFIG_HOME="$CFG_DIR" \
+    -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
     -u "$(id -u):$(id -g)" \
     -v "$CFG_DIR/wealthdb.cfg:$CFG_DIR/wealthdb.cfg:ro" \
-    -v "/mnt/shared/wealthdb:$XDG_DATA_HOME/wealthdb:ro" \
+    -v "/mnt/shared/wealthdb:$DATA_ROOT:ro" \
     wealthdb:latest \
     "$@"
 ```
 
-The `:ro` flag on the `$XDG_DATA_HOME/wealthdb` mount makes the gold DB file
+The `:ro` flag on the data-root mount makes the gold DB file
 unwriteable inside the container; `wealthdb`'s mode detection (§4.10)
 picks this up and refuses (RW) subcommands with a clear message.
 
@@ -3474,13 +3195,14 @@ A user with only Docker installed can run the entire test suite — and
 `make update` — end-to-end. This is the same contract as `./wealthdb`
 itself.
 
-## 13. Open questions / future work
+## 13. Further mechanisms and open questions
 
-These are deliberately left out of v1 but worth recording.
+This section holds mechanisms that cut across the sections above
+(§13.2, §13.9 to §13.11) and the questions still open.
 
 ### 13.1 Cross-silver instrument canonicalisation
 
-If both UBS and Schwab hold AAPL, gold today has two `instruments`
+If both UBS and Schwab hold AAPL, gold has two `instruments`
 rows. Queries that want "all AAPL holdings" join on `isin`. This
 works but is awkward. A future `instruments_canonical` table with
 a mapping from `(silver_source_id, instrument_external_id)` to a
@@ -3518,12 +3240,10 @@ covers; `fred` covers the major ones).
 ### 13.3 acquisition_date backfill
 
 Adapters set `acquisition_date` only where silver states it (§10.4).
-For holding-period queries to work across every source, the rest must
-be derived. Strategy: a `wealthdb backfill acquisitions` subcommand
-that walks `transactions` (filtered to `kind IN ('buy',
-'transfer_in')`) and writes the earliest matching date into each
-position row. On the sources the lot engine fills, `lots_at` already
-gives each open lot's acquisition date.
+For holding-period queries to work across every source, the rest would
+have to be derived, for example from the earliest `buy` or
+`transfer_in` of each position. On the sources the lot engine fills,
+`lots_at` already gives each open lot's acquisition date.
 
 ### 13.4 Lot engine: open items
 
@@ -3574,7 +3294,7 @@ code.
 ### 13.7 Deferred silver tables
 
 Per the per-bank adapter docs (§6.7), several silver tables exist
-but no v1 adapter projects them into gold. Cross-bank summary of
+but no adapter projects them into gold. Cross-bank summary of
 what each would need:
 
 - **`schwab.user_preference`** — Schwab UI/streamer config. No
@@ -3649,7 +3369,7 @@ Sketch of where this lands when designed:
   - `instrument_events`  — event grain `(instrument, kind, occurred_at, ...)`
                             for ex-div, splits, ratings changes, etc.
   - `instrument_vol`     — snapshot grain `(instrument, timestamp, hist_vol, impl_vol_atm, ...)`
-- **Impact on existing schema.** Additive only. Today's
+- **Impact on existing schema.** Additive only. The
   `positions.market_value` (sourced from the bank's view) coexists
   with future `instrument_prices`-derived mark-to-market — queries
   pick whichever they prefer, with the bank's number remaining the
@@ -3669,9 +3389,7 @@ Independently, a `nickname` lets the CLI render
 something more recognisable than the bank's identifier.
 
 The `accounts` table carries three orthogonal classifier columns
-plus the free-text descriptors (migrations 0002 promoted
-`account_category`/`nickname`; migration 0008 added the two
-structured-enum columns):
+plus the free-text descriptors:
 
 - **`account_kind`** — the technical container the bank exposes:
   `brokerage`, `cash`, `safekeeping`, `custody`, `overlay`,
@@ -3679,11 +3397,17 @@ structured-enum columns):
   `crypto_exchange` / `crypto_self_custody` reserved for a future
   adapter that distinguishes them). Required; every adapter
   stamps this. A `donor_advised_fund` holds irrevocably donated
-  charitable assets — its own kind so deployments can include or
-  exclude DAF balances from net-worth calculations. A `card` is a
-  revolving-credit liability (migration 0037): unlike a `mortgage`
-  it carries no position, its outstanding balance being negative
-  cash on the account.
+  charitable assets, a kind of its own so a deployment can include or
+  exclude DAF balances from net worth. A `mortgage` is a
+  real-property-backed liability whose outstanding principal sits as
+  a negative-value position. A `card` is a revolving-credit
+  liability: it carries no position, and its outstanding balance is
+  negative cash on the account. An `overlay` is a synthetic
+  per-portfolio account for positions the bank attributes to the
+  portfolio directly (UBS forward contracts). A `custody` account is
+  one a third-party manager directs. `crypto` covers both exchange
+  and self-custody, because wallet names do not reliably tell them
+  apart.
 - **`tax_wrapper`** — the tax / regulatory registration.
   Nullable; defaults to `taxable_personal` at render time.
   Values cover US (`traditional_ira`, `roth_ira`, `sep_ira`,
@@ -3693,18 +3417,16 @@ structured-enum columns):
   Switzerland (`pillar_2`, `vested_benefits` /
   Freizügigkeitskonto, `pillar_3a`), plus generic
   `taxable_personal`, `taxable_joint`, `foundation`, `other`.
-  (`charitable` pairs with the `donor_advised_fund` kind; it
-  replaced the never-emitted `daf` value in migration 0036.)
+  `charitable` pairs with the `donor_advised_fund` kind.
 - **`management_style`** — who places trades. Nullable;
   defaults to `self_directed` at render time. Values:
   `self_directed`, `advisory`, `discretionary`, `automated`.
 - **`account_category`** — free-text bank-supplied descriptor,
-  unchanged from migration 0002. Demoted from "the primary
-  classifier" to "supplementary metadata"; useful for verbatim
-  strings the structured enums don't capture (UBS's
-  "Custody / Cash-Custody", etc.).
+  supplementary to the enums. It keeps verbatim strings the
+  structured enums don't capture (UBS's "Custody / Cash-Custody",
+  etc.).
 
-Adapter-supplied values today:
+Examples of adapter-supplied values:
 
 - **UBS** populates `account_category` from
   `cash_accounts.AcctTpDesc` for cash legs, and from
@@ -3717,26 +3439,27 @@ Adapter-supplied values today:
   per-account nickname, so `nickname` stays NULL unless the
   config-side override fills it in. `management_style` is not
   surfaced by silver and stays nil.
-- **Schwab** populates `nickname` from the v3-promoted
-  `silver.accounts.nickname` column (which mirrors the user-set
-  label from `/userPreference`). `account_category` and
-  `tax_wrapper` stay NULL — Schwab's `securitiesAccount.type` is
-  CASH/MARGIN (margin enablement), not a wealth-management
-  category, and the schwab-api endpoints surveyed expose no
-  structured wrapper field. Config-side override fills both.
+- **Schwab** populates `nickname` from the api silver's
+  `accounts.nickname` (the label set in the Schwab UI). The api's
+  `securitiesAccount.type` is CASH/MARGIN, not a wrapper. The web
+  feed's statement registration label sets `account_category` and the
+  tax wrapper ([adapters/schwab.md §7](adapters/schwab.md)).
 - **Swissquote** populates `account_category` and `tax_wrapper`
   from `silver.accounts.account_product` (the per-account
   product label scraped from the eBanking account-overview
   page): `Trading`/`Savings` → `taxable_personal`,
   `Säule 3a` → `pillar_3a`, `Freizügigkeit` → `vested_benefits`.
   `nickname` stays NULL; Swissquote doesn't expose one.
-- **Fidelity** populates `tax_wrapper` and `management_style`
-  via a join through `silver.portfolios.kind`: `529` →
-  `tax_wrapper=529`; `trust_managed` → `tax_wrapper=
-  trust_non_grantor` + `management_style=discretionary`. Per-
-  account registration labels (Roth IRA / Coverdell ESA / etc.)
-  aren't currently surfaced by silver; the path to add them is
-  documented in fidelity-web's DESIGN.md §11.5.
+- **Fidelity** populates `tax_wrapper` (and, for a charitable
+  account, `account_kind`) through `silver.portfolios.kind`:
+  - `529` → `tax_wrapper=529`;
+  - `trust_managed` → `tax_wrapper=trust_non_grantor`;
+  - `daf` → `account_kind=donor_advised_fund`, `tax_wrapper=charitable`.
+
+  `management_style` comes from silver's `accounts.management_style`
+  (`automated` for a 529, `discretionary` for a managed trust). Silver
+  does not carry per-account registration labels (Roth IRA, Coverdell
+  ESA); fidelity-web's DESIGN.md §11.5 describes the path to add them.
 
 Adapters use SQLite PRAGMA-based feature detection where the
 silver schema has evolved (e.g. Swissquote's pre-v5 silvers used
@@ -3871,7 +3594,7 @@ touched, and a token nothing states any more is a silent no-op (that is
 what an adapter learning to resolve it looks like). An entry closes every
 row of its source that states the token, in any account and of any kind,
 and the row's own coarse taxonomy pair is dropped as the link lands, the
-instrument now named answering better. It states the identity only, so it
+instrument it names answering better. It states the identity only, so it
 composes with `instrument_overrides`: pin the link here, pin its
 classification there.
 
@@ -3881,11 +3604,8 @@ The three structured classifiers are part of the default
 column set; the descriptor columns (`account_category`,
 `account_nickname`) are registered but opt-in.
 
-Still on the roadmap:
-- `--tax-wrapper personal,roth_ira` filter for the readout
-  subcommands.
-- Long-form `wealthdb status` flag to show wrapper / style
-  alongside account IDs.
+The reports take no row filters (`wealthdb help`): a view is picked,
+then its output filtered.
 
 ### 13.10 Equity-transfer ledger
 
@@ -4006,9 +3726,7 @@ whoever reads the ledger next — and nothing carries it into gold.
 
 Those two are the only columns beyond the required ones, and the header
 is checked against that closed set: an unknown column fails the parse
-naming it. Before `asset_class` the parser ignored what it did not
-recognise, which was harmless while the only such column was
-decorative; a misspelled `asset_class` would otherwise be a silent
+naming it. A misspelled `asset_class` would otherwise be a silent
 no-op that still applied its verdict.
 
 A pin applies to **every** gold transaction matching (source, account,

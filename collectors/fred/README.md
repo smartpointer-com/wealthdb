@@ -6,10 +6,10 @@ for shared collector conventions.
 
 A collector for **historic foreign-exchange rates** from the US Federal
 Reserve's **H.10** release, pulled via the [FRED API](https://fred.stlouisfed.org/docs/api/).
-It fills the gap left by `ubs-psn`, which supplies fresh (almost) daily
-FX rates but no deep history: FRED gives **USD-centric daily reference
-rates back to 1971** (1999 for EUR). USD-native — no triangulation
-through EUR — so USD-base deployments need no conversion.
+FRED gives **USD-centric daily reference rates back to 1971** (1999 for
+EUR). A daily account source such as `ubs-psn` supplies fresh rates but
+no deep history; `fred` fills that history. Every series is quoted
+against USD, so a USD-base deployment needs no triangulation.
 
 ## Tools
 
@@ -17,21 +17,21 @@ through EUR — so USD-base deployments need no conversion.
 | --- | --- |
 | [`download.py`](download.py) | Fetch each currency's FRED series for the requested window into bronze (raw JSON + a `run.json` manifest). Read-only. |
 | [`load.py`](load.py) | Parse bronze into the silver `fx_rates` table. Rates upsert by date (so a re-fetch overwrites FRED revisions); already-loaded runs are skipped. |
-| [`prune.py`](prune.py) | Reclaim bronze disk: delete non-complete (crashed / in-flight) run dirs. Complete dumps are never touched. |
+| [`prune.py`](prune.py) | Reclaim bronze disk: delete non-complete (crashed) run dirs and `--debug` traces. A complete dump's `load` inputs are never touched. |
 
-There is **no `login`** — FRED authenticates with an API key, not a
-session. `login --check` still works as the credential probe: it resolves
-the key and asks FRED for a single observation, so a key that is present
-but rejected fails there rather than at the next `download`. It writes
-nothing.
+FRED authenticates with an API key, not a session, so a bare `login` is
+a no-op. `login --check` is the credential probe. It resolves the key
+and asks FRED for a single observation, so a key that is present but
+rejected fails there rather than at the next `download`. It writes
+nothing. `download --dry-run` fetches with the key and writes no bronze.
+Neither one mints a session or raises a challenge.
 
 ## Currencies
 
-The default series cover the major reserve/reference currencies against
-USD; add or trim `FX_SERIES` to match your own holdings. Each FRED
-series is one currency vs USD. The stored `(base, quote)` follows the
-canonical convention — `(base, quote, mid)` means "**1 quote = mid
-base**" — the same direction `ubs-psn` uses:
+The default series cover the major reserve and reference currencies
+against USD. Each FRED series is one currency vs USD. The stored
+`(base, quote)` follows the canonical convention, the same direction
+`ubs-psn` uses: `(base, quote, mid)` means "**1 quote = mid base**".
 
 | FRED series | base / quote | Meaning |
 | --- | --- | --- |
@@ -44,10 +44,11 @@ base**" — the same direction `ubs-psn` uses:
 | `DEXCHUS` | CNY / USD | Chinese Yuan per USD |
 | `DEXHKUS` | HKD / USD | Hong Kong Dollars per USD |
 
-To add a currency, add its FRED H.10 series (e.g. `DEXSDUS` SEK,
-`DEXNOUS` NOK, `DEXDNUS` DKK, `DEXUSNZ` NZD, `DEXSIUS` SGD, `DEXKOUS`
-KRW, `DEXINUS` INR, `DEXSFUS` ZAR — verify the quote direction) to
-`FX_SERIES` in [download.py](download.py).
+To add a currency, add its FRED H.10 series to `FX_SERIES` in
+[download.py](download.py), and check its quote direction. Examples:
+`DEXSDUS` SEK, `DEXNOUS` NOK, `DEXDNUS` DKK, `DEXUSNZ` NZD, `DEXSIUS`
+SGD, `DEXKOUS` KRW, `DEXINUS` INR, `DEXSFUS` ZAR. `download --series`
+fetches a comma-separated subset of `FX_SERIES`.
 
 ## Usage
 
@@ -55,29 +56,28 @@ KRW, `DEXINUS` INR, `DEXSFUS` ZAR — verify the quote direction) to
 ./fred download                       # last ~90 days (default)
 ./fred download --lookback all        # full history (1971→, per series)
 ./fred download --lookback 2010-01-01 # explicit backfill start
+./fred download --series DEXSZUS,DEXUSEU
 ./fred load
-./fred prune --dry-run                # preview reclaimable bronze
 ```
 
-`download` accepts the shared `--lookback` window flag — a preset
-(`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) or an ISO date, running from
-there to today; FRED clamps to each series' own start date. The directory
-overrides (`--secrets-dir` / `--data-dir` / `--silver-db`) follow the
-[shared contract](../README.md#anatomy-of-a-collector).
+`download` honours the shared
+[`--lookback` window](../README.md#collector-cli-conventions). FRED
+clamps it to each series' own start date. The directory overrides follow
+the
+[shared contract](../README.md#the-wrapper--the-wealthdb-collect-contract).
 
-Each `download` mints one UTC-timestamped bronze run dir holding a
-`run.json` manifest plus one `<series_id>.json` per fetched series. The
-manifest carries a `status` field: `"in-progress"` while the walk runs,
-atomically overwritten with `"complete"` at the end. A crashed walk thus
-leaves `status: "in-progress"`, which `load` skips (no partial rates leak
-into silver) and `prune` reclaims.
+Each `download` writes one UTC-timestamped bronze run dir under
+`$XDG_DATA_HOME/wealthdb/fred/`. It holds a `run.json` manifest and one
+`<series_id>.json` per fetched series. The manifest follows the
+[shared `status` lifecycle](../README.md#debug-artefacts-run-status-and-pruning-bronze),
+so `load` never ingests a crashed walk. The silver DB is `fred.db`,
+beside the run dirs.
 
-`download --debug` adds `screenshots/http-trace.jsonl` to the run dir: one
-line per FRED request recording status, timing, size and any rate-limit
-headers — the shape of the exchange, which the observations documents
-beside it do not capture. Bodies are not duplicated, and the `api_key`
-query parameter is redacted, never persisted. `load` ignores the trace and
-`prune` reclaims it. A `--dry-run` mints no run dir, so it captures
+`download --debug` adds `screenshots/http-trace.jsonl` to the run dir.
+Each line records one FRED request: status, timing, size and any
+rate-limit headers. Bodies are not duplicated. The `api_key` query
+parameter is redacted, never persisted. `load` ignores the trace and
+`prune` reclaims it. A `--dry-run` writes no run dir, so it captures
 nothing.
 
 ### Reclaiming disk
@@ -87,29 +87,24 @@ nothing.
 ./fred prune             # delete it
 ```
 
-`prune` removes whole non-complete run dirs across the bronze tree — a
-walk that crashed before writing a terminal `run.json`, or one that
-carries `status: "in-progress"` — plus any `screenshots/` trace `--debug`
-left behind. A complete dump's `load` inputs are never touched: every
-other file in it (`run.json` and each `<series_id>.json`) feeds silver, so
-silver stays reproducible from bronze alone. Deleting a non-complete dump
-surfaces on the next
-`load --force` rebuild. `prune` runs host-side like `load`, and an
-in-flight guard (`--min-age-hours`, default 1, keyed on the newest write
-in the dir) keeps it from removing a long `--lookback all` backfill that
-is still running. An unreadable or corrupt `run.json` is left alone, as is
-the silver `fred.db` and anything else at the bronze root that is not a
-timestamped run dir.
+`prune` works within the
+[shared safety envelope](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+It removes whole non-complete run dirs and the `screenshots/` trace that
+`--debug` leaves in a complete one. Every other file in a complete dump
+(`run.json` and each `<series_id>.json`) is a `load` input and stays.
+The in-flight guard (`--min-age-hours`) protects a long
+`--lookback all` backfill that is still running.
 
-**Credentials:** put your key in `~/.secrets/fred.env` as
-`FRED_API_KEY=...` (the wrapper sources it automatically). Get a free key
-at <https://fred.stlouisfed.org/docs/api/api_key.html>.
+**Credentials.** The API key lives in `~/.secrets/fred.env` as
+`FRED_API_KEY=...`, and the wrapper sources it. `download.py --api-key`
+takes the key directly, with `FRED_API_KEY` as the fallback. A free key
+comes from <https://fred.stlouisfed.org/docs/api/api_key.html>.
 
-**API version:** this uses FRED's classic ("v1") endpoint
+**API version.** The collector uses FRED's classic ("v1") endpoint
 `https://api.stlouisfed.org/fred/series/observations` with the `api_key`
 query parameter. The newer v2 API uses `Authorization: Bearer` auth and
-offers no advantage for this read-only time-series fetch, so v1 is the
-default; `--base-url` is overridable if that ever changes.
+offers no advantage for a read-only time-series fetch. `--base-url`
+points the download at another endpoint.
 
 ## Silver schema
 
@@ -124,22 +119,18 @@ One row per `(observation date, base, quote)` in `fx_rates`:
 
 ## Gold FX precedence
 
-`fred` is best treated as a **historic / fallback** FX source: it reaches
-back to 1971 but its weekly refresh lags the last few days (see caveats),
-so wherever a deployment also has a fresher daily source, that source
-should win on the days they overlap and `fred` should fill the rest.
+`fred` works best as a **historic / fallback** FX source. It reaches back
+to 1971, but its weekly refresh lags the last few days (see caveats).
+Where a deployment also has a fresher daily source, that source should
+win on the days they overlap, and `fred` should fill the rest.
 
-How the winner is chosen is **not hard-coded** — it's the per-source
-**`fx_priority`** field in `wealthdb.cfg`. For each conversion the gold FX
-resolver (`internal/gold/fxpriority.go`) picks, per day, the rate from the
-highest-priority source that covers that day, falling back to the next.
-Lower number = higher priority; absent/null = lowest; ties broken by the
-order sources are listed in the config. Which sources exist and how
-they rank is entirely up to the deployment — `fred` carries no built-in
-priority.
+The per-source **`fx_priority`** field in `wealthdb.cfg` sets the winner.
+Lower number = higher priority; absent/null = lowest. `fred` carries no
+built-in priority. Gold's FX views apply the ranking per UTC day; see
+[wealthdb/docs/DESIGN.md §13.2](../../wealthdb/docs/DESIGN.md#132-fx-rate-precedence-among-silvers).
 
-For example, a deployment whose daily rates come from `ubs-psn` would give
-`ubs` a lower number than `fred` so the bank's same-day rate wins and
+For example, a deployment whose daily rates come from `ubs-psn` gives
+`ubs` a lower number than `fred`. The bank's same-day rate then wins, and
 `fred` backfills the history:
 
 ```jsonc
@@ -149,17 +140,18 @@ For example, a deployment whose daily rates come from `ubs-psn` would give
 ]
 ```
 
-A deployment with no daily FX source at all can just add `fred` and leave
-priorities unset — `fred` then supplies every rate. After adding the
-source, rebuild the `wealthdb` binary (the `fred` adapter is compiled in)
-and run `wealthdb load fred`.
+A deployment with no daily FX source can add `fred` and leave
+priorities unset; `fred` then supplies every rate. After adding the
+source, `wealthdb load fred` merges it into gold.
 
 ## Caveats
 
-- **Weekly refresh.** The Fed discontinued the *daily* H.10 update in
-  2009; FRED refreshes the daily series once a week, so the tail lags by
-  up to ~9 days. Use `ubs-psn` for the fresh tail; `fred` for history.
-- **Business days only.** No weekends/holidays (FRED emits `.`, which the
-  loader skips). The gold FX layer forward-fills.
-- **Fixing.** FRED = noon New York; `ubs-psn` = UBS's own; ECB = 16:00
-  CET. They differ intraday — gold shouldn't blend sources within a day.
+- **Weekly refresh.** FRED refreshes the daily H.10 series once a week,
+  so the tail lags by up to about 9 days. A daily source such as
+  `ubs-psn` covers the fresh tail; `fred` covers history.
+- **Business days only.** There are no weekend or holiday rows. FRED
+  emits `.` for a missing day, and the loader skips it. Gold converts
+  with the latest rate at or before each day.
+- **Fixing.** FRED rates are noon New York; `ubs-psn` uses UBS's own
+  fixing. They differ intraday, so gold takes one source per day and
+  never blends them.

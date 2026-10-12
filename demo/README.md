@@ -28,9 +28,9 @@ make demo-mcp-stop        # stop the demo's MCP server
 `AS_OF=YYYY-MM-DD` (default today, UTC), `SEED=` and `FINDINGS=1`
 (below). `make demo-roll` takes the same root and seed as the build it
 extends. The dashboards' admin password is in `web/admin-password.txt`
-under the demo root, and the MCP server's token in `mcp/token`. The demo shares the engine and dashboard images
-with a real setup: its make targets build them from the checkout, as
-`make all` does.
+under the demo root, and the MCP server's token in `mcp/token`. The demo
+shares the engine and dashboard images with a real setup. Its make
+targets build them from the checkout, as `make all` does.
 
 The engine reads the demo when its data root and config dir both point
 at the demo root. The web settings point `demo web …` at the demo's
@@ -82,8 +82,7 @@ transfer to it is an own-account move that stays inside the household.
 
 Every holding counted in units keeps its tax lots: shares, fund
 units, bonds, gold and coins. A private fund, the SPV and the home are
-valued by marks and have none. A
-buy adds a lot at its cost, with the trading fee where there is one.
+valued by marks and have none. A buy adds a lot at its cost, with the trading fee where there is one.
 A sale relieves the oldest lots first and writes one realized lot per
 piece it relieves. A taxable account states its sales on a Form
 1099-B, without the gain. The `aubervane` mandate and the

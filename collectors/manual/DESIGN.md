@@ -1,13 +1,14 @@
 # manual — design notes
 
-`load.py` validates a few hand-maintained CSVs into a SQLite silver against the
-synthetic [examples/](examples/) (`tests/`); the gold adapter
+`load.py` validates a few hand-maintained CSVs into a SQLite silver. The
+gold adapter
 ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
-§6) loads the manual source into gold, so it shows up in `wealthdb holdings positions`.
+§6) loads it into gold. [README.md](README.md) documents the CSV columns,
+the maintenance recipes and the validation rules.
 
-A catch-all collector for **private holdings with no source UI at all** —
-the bank/portal sources are all covered by the other collectors;
-what's left is illiquid private holdings tracked by hand:
+This is a catch-all collector for **private holdings with no source UI at
+all**. The bank and portal sources have their own collectors. What is
+left is illiquid private holdings tracked by hand:
 
 - **Real estate** — directly-held residential / commercial property.
 - **Convertible notes (CLAs)** — early-stage venture investments into private
@@ -20,8 +21,8 @@ what's left is illiquid private holdings tracked by hand:
 - **Other illiquid positions** — anything without a cleaner home, e.g. a
   receivable or a private loan.
 
-Volume is a few new holdings per year, valuations updated occasionally.
-The design goal is to be the **simplest collector in the repo**.
+The expected volume is a few new rows a year. The design goal is to be
+the **simplest collector in the repo**.
 
 Sections:
 
@@ -36,14 +37,13 @@ Sections:
 
 Every other collector has the lifecycle `login → download → load`, driving
 a privileged read-only session against a source. **`manual` has no source.**
-A few hand-maintained CSVs live in `$XDG_DATA_HOME/wealthdb/manual/`; there is no auth, no
-MFA, no Docker, no browser, no `~/.secrets/manual.env`. Only `load` exists
-(the `manual` wrapper accepts `download`/`login` as friendly no-ops). The
-runtime is **host-venv** (like `schwab-api` / `ubs-psn`) minus the network
-half — there is no third-party runtime dependency at all (SQLite is stdlib;
-the only install is the shared `collectorkit`, editable). CSV parsing +
-validation use the stdlib so the loader reports precise `file:row:column`
-errors.
+A few hand-maintained CSVs live in the data dir
+(`$XDG_DATA_HOME/wealthdb/manual/`). There is no auth, no MFA, no Docker,
+no browser and no `~/.secrets/manual.env`. Only `load` does work. The
+wrapper accepts `download` and `login` as no-ops. The runtime is
+**host-venv** with no third-party dependency: SQLite and CSV parsing are
+stdlib, and the only install is the shared `collectorkit`. The loader
+reports precise `file:row:column` errors.
 
 Because the CSVs *are* the source of truth (not a captured snapshot of a
 remote state), `load` **fully rebuilds** silver from the current CSVs each
@@ -52,132 +52,98 @@ timestamped bronze run-dirs and no per-dump idempotency gate — the model
 that fits a remote source that emits successive dumps doesn't apply to a
 hand-edited spreadsheet.
 
-The fleet-wide **`prune`** verb follows from this shape: with no run-dirs and no
-debug/diagnostic artefacts (nothing writes a screenshot, trace, or DOM dump into
-bronze), there is nothing for it to reclaim. The shared prune engine
-([`collectorkit.prune`](../../shared/collectorkit/collectorkit/prune.py)) walks
-only timestamped run-dirs, so it would be permanently empty-handed here; a
-bespoke root-file sweeper is expressly ruled out because the CSVs are the
-irreplaceable source of truth (§2, [AGENTS.md](AGENTS.md) §1–2). So `manual`
-accepts `prune` — the `wealthdb-collect` dispatcher forwards it, so the wrapper
-must not crash on it — as a **documented no-op**: it explains why nothing is
-reclaimed and exits 0, never touching the CSVs or the derived silver DB.
+The fleet-wide **`prune`** verb follows from this shape. There are no run
+dirs and no debug artefacts, so there is nothing to reclaim. The shared
+prune engine
+([`collectorkit.prune`](../../shared/collectorkit/collectorkit/prune.py))
+walks only timestamped run dirs, so it would always be empty-handed here.
+A sweeper for the root files is ruled out, because the CSVs are the only
+copy of the source of truth ([AGENTS.md](AGENTS.md) §1–2). So `prune` is
+a **documented no-op**. It explains why and exits 0, because the
+`wealthdb-collect` dispatcher forwards the verb and it must not fail. It
+never touches the CSVs or the silver DB.
 
 ## 2. Bronze: the CSV schema
 
-Five CSVs, one row per thing. The **stable columns are the same across all
-asset kinds**; everything kind-specific lives in a JSON `payload` column —
-not sparse per-kind columns. This is the repo's silver convention (promote
-stable filter/join fields, absorb drift in `payload`) applied one layer
-earlier, at bronze, because here bronze *is* a hand-typed schema.
-One file across kinds (a `kind` discriminator + `payload`), never a file per
-kind, so adding another asset kind (a crypto cold-wallet, a collectible)
-needs no new file and no schema change.
+Five CSVs, one row per thing. [README.md](README.md#the-csv-schema-bronze)
+lists their columns. The **stable columns are the same across all asset
+kinds**. Everything kind-specific lives in a JSON `payload` column, not in
+sparse per-kind columns. This is the repo's silver convention (promote
+stable filter and join fields, absorb drift in `payload`), applied one
+layer earlier. Here bronze *is* a hand-typed schema. There is one file
+across kinds (a `kind` discriminator + `payload`), never a file per kind.
+So a new asset kind (a crypto cold wallet, a collectible) needs no new
+file and no schema change.
 
-**accounts.csv** — one row per pseudo-account, and OPTIONAL. A book that
-omits it puts every position in one account (`manual`, kind `other`,
-`taxable_personal` / `self_directed`), which is right for a book with one
-owner and one wrapper.
-`id, display_name, account_kind, tax_wrapper, management_style, notes, payload`
-- An account here is a **declaration, not something fetched**: it says "these
-  positions are held under this wrapper, managed this way". It exists because
-  a holding inside a trust or a company is not the holder's own taxable
-  property, and rolling both into one account makes every wrapper-grained
-  report wrong.
-- `account_kind`, `tax_wrapper` and `management_style` are the canonical gold
-  vocabularies, checked by `load.py` against literal sets mirroring
-  `internal/canonical/enums.go` — a value gold would reject fails at load,
-  where the CSV row number is still in hand. The two nullable ones default to
-  the default account's taxonomy, so a file that declares an account only to
-  name a wrapper need not restate the ordinary case.
-- The alternative was a **second silver source per sleeve** — a directory, a
-  silver DB, a config entry and an `account_overrides` entry each time. One
-  table replaces all of that. `account_overrides` still wins on overlap: the
-  loader applies config after the adapter stamps.
+**accounts.csv** is optional. A book without it puts every position in
+one default account.
 
-**positions.csv** — one row per held asset.
-`id, account_id, kind, vehicle, display_name, currency, acquired_at, closed_at, notes, payload`
-- `account_id` references `accounts.csv` and is optional; omitted, it is the
-  default account above. A position naming an account the book does not
-  declare is a load error, not a silently synthesised sleeve.
-- `kind` ∈ `real_estate | private_equity | convertible_note | private_fund
-  | spv | mortgage | other` (extensible — lives in `load.py`'s
-  `POSITION_KINDS`, not a DB constraint). The kind is the coarse 1-D
-  classification; the gold adapter maps (`kind`, `vehicle`) to the
-  (`asset_class`, `vehicle`) pair.
-- `vehicle` (optional) — the wrapper dimension of the 2-D taxonomy (wealthdb
-  docs/TAXONOMY.md), e.g. `physical | stock | fund | spv | convertible_note
-  | loan | escrow | mortgage`. Blank defaults from `kind`
-  (real_estate→physical, private_equity→stock, spv→spv, private_fund→fund,
-  convertible_note→convertible_note, mortgage→mortgage, other→other). Set it
-  explicitly on a `kind=other` row so gold gets the right wrapper — an
-  escrow receivable is `escrow`, a private loan is `loan`. The gold adapter
-  derives the exposure (`asset_class`) from (`kind`, `vehicle`). Full
-  vocabulary is `load.py`'s `POSITION_VEHICLES`.
-- `closed_at` (nullable) — set when the asset stops existing (full disposal,
-  or a convertible note that converted). Gold drops the position from as-of
-  queries after this date.
-- `payload` — e.g. real_estate `{property_type, ownership_pct, city,
-  country}`; convertible_note `{principal, interest_rate, cap, maturity_date,
-  conversion_terms, counterparty}` (`interest_rate` is 0 for these venture
-  notes; the principal is the cost-basis valuation at `acquired_at`);
-  private_equity `{ownership_pct, share_cnt,
-  fiduciary, converted_from_position_id?}`; private_fund `{role, commitment}`
-  (an LP interest; the capital paid in rides in `cost_basis.csv`).
+- An account is a **declaration, not something fetched**. It exists
+  because a holding inside a trust or a company is not the holder's own
+  taxable property. Rolling both into one account makes every
+  wrapper-grained report wrong.
+- `account_kind`, `tax_wrapper` and `management_style` are the canonical
+  gold vocabularies. `load.py` checks them against literal sets that
+  mirror `internal/canonical/enums.go`. A value gold would reject fails at
+  load, where the CSV row number is still in hand. The two optional ones
+  default to the default account's values, so a row that only names a
+  wrapper need not restate the rest.
+- The alternative is a **second silver source per sleeve**: a directory,
+  a silver DB, a config entry and an `account_overrides` entry each time.
+  One table replaces all of that. `account_overrides` still wins on
+  overlap, because the loader applies config after the adapter stamps.
 
-**valuations.csv** — the periodic mark-to-market series.
-`position_id, as_of_date, value, currency, notes, payload`
-- One row per (position, as-of date). This is the **per-date valuation
-  series** — borrowed from carta's per-date valuation-override pattern
-  (carta DESIGN §5.1), but first-class here rather than a side-loaded
-  override. The value as of a date D is the latest row with `as_of_date ≤ D`;
-  gold forward-fills. Lets an illiquid asset's value move correctly over
-  time (a property re-appraised every few years, a convertible note re-marked at a round).
-- `payload` — kind-specific provenance, e.g. real_estate
-  `{appraisal_source}`, convertible_note `{mark_source}`, spv/private_fund
-  `{post_money_valuation}` / NAV provenance.
+**positions.csv** holds one row per held asset.
 
-**cost_basis.csv** — an optional paid-in series.
-`position_id, as_of_date, amount, currency, notes`
-- One row per (position, as-of date): the capital paid in so far, gross of
-  any capital paid back. It is for a holding whose cost is not its first
-  valuation, such as a fund commitment paid in over several capital calls.
-- A position with rows here takes its book value from them (§6). A position
-  without any keeps the valuation at `acquired_at`.
-- The rows are running totals, not cash events: the calls themselves are
-  bank wires, as below.
+- A position naming an account that `accounts.csv` does not declare is a
+  load error, not a silently synthesised sleeve.
+- `kind` is the coarse classification. Its vocabulary lives in
+  `load.py`'s `POSITION_KINDS`, not in a DB constraint, so a new kind
+  needs no migration.
+- `vehicle` is the wrapper dimension of the 2-D taxonomy
+  ([TAXONOMY.md](../../wealthdb/docs/TAXONOMY.md)). A blank one defaults
+  from `kind`. The gold adapter derives the exposure from (`kind`,
+  `vehicle`) (§6).
+- `closed_at` is set when the asset stops existing: a full disposal, or a
+  convertible note that converted. Gold drops the position from as-of
+  queries after that date.
 
-**exits.csv** — optional, what a position was sold for.
-`position_id, exit_date, proceeds, currency, notes`
-- One row per position: the proceeds on the day it left the book, gross of
-  any part an agent holds back (that part is an escrow position of its
-  own). A write-off is proceeds 0.
-- The position's `closed_at` is the exit date; `load` fills a blank one in
-  and rejects a different one.
-- The gold adapter projects the row as a `sell` on the exit date (§6), the
-  one datum the bank wires cannot carry: which position the money came
-  from, so the lot engine can realize the gain against its cost basis.
+**valuations.csv** is the **per-date valuation series**. It follows
+carta's per-date valuation-override pattern
+([carta DESIGN](../carta/DESIGN.md) §5.1), but as a first-class series.
+The value as of a date D is the latest row with `as_of_date ≤ D`, and gold
+forward-fills. So an illiquid asset's value moves correctly over time: a
+property re-appraised every few years, a note re-marked at a round.
 
-**No cash-flow file.** Every other event — a purchase wire, a capital
-call, a fee, a distribution, the proceeds landing — is a real wire in the
-bank accounts, already captured by the bank collectors; a file here would
-only duplicate them. The acquisition date lives on the position
-(`acquired_at`).
+**cost_basis.csv** is an optional paid-in series, for a holding whose
+cost is not its first valuation. The rows are running totals, not cash
+events. The calls themselves are bank wires.
+
+**exits.csv** holds what a position was sold for. It carries the one
+datum the bank wires cannot: which position the money came from. The
+gold adapter projects it as a `sell` (§6), so the lot engine can realize
+the gain against the cost basis.
+
+**No cash-flow file.** Every other event is a real wire in the bank
+accounts, already captured by the bank collectors: a purchase, a capital
+call, a fee, a distribution, the proceeds landing. A file here would only
+duplicate them.
 
 **Conversion (convertible_note → equity)** is modelled **purely
-position-side**, no exit and no transaction:
-- the convertible_note position gets `closed_at` = the conversion date (it
-  drops out of as-of queries after that date);
-- a new `private_equity` position is opened with `acquired_at` = that date and
-  `payload.converted_from_position_id` = the note's id (the whole record of
-  the conversion). `load` enforces the back-reference (a dangling
-  `converted_from_position_id` fails). No cash moves at conversion, so there
-  is nothing to record beyond the close + open.
+position-side**, with no exit and no transaction:
+
+- the note gets `closed_at` = the conversion date;
+- a new `private_equity` position opens with `acquired_at` = that date
+  and `payload.converted_from_position_id` = the note's id. `load`
+  enforces that back-reference.
+
+No cash moves at a conversion, so there is nothing more to record.
 
 ## 3. Silver schema
 
-SQLite + JSON1, mirroring the bronze CSV shape one-to-one. Realized in
+SQLite + JSON1, mirroring the bronze CSV shape one-to-one. The schema is
 [migrations/0001_initial.sql](migrations/0001_initial.sql), extended by
+[0002_positions_vehicle.sql](migrations/0002_positions_vehicle.sql),
 [0003_accounts.sql](migrations/0003_accounts.sql),
 [0004_cost_basis.sql](migrations/0004_cost_basis.sql) and
 [0005_exits.sql](migrations/0005_exits.sql).
@@ -185,7 +151,7 @@ SQLite + JSON1, mirroring the bronze CSV shape one-to-one. Realized in
 | Table | Grain | Notes |
 |---|---|---|
 | `accounts` | `id` | `display_name`, `account_kind`, `tax_wrapper`, `management_style`, `notes`, `payload`. Optional (migration 0003): the sleeve a position is held in. |
-| `positions` | `id` | `account_id` (NULL → the default account), `kind`, `display_name`, `currency`, `acquired_at`, `closed_at` (NULL = held), `notes`, `payload`. |
+| `positions` | `id` | `account_id` (NULL → the default account), `kind`, `vehicle`, `display_name`, `currency`, `acquired_at`, `closed_at` (NULL = held), `notes`, `payload`. |
 | `valuations` | (`position_id`, `as_of_date`) | `value`, `currency`, `notes`, `payload`. The per-date mark series; the row dated at the position's `acquired_at` is the cost basis, unless `cost_basis` covers the position. |
 | `cost_basis` | (`position_id`, `as_of_date`) | `amount`, `currency`, `notes`. Optional (migration 0004): the capital paid in as of a date, gross of any paid back. |
 | `exits` | `position_id` | `exit_date`, `proceeds`, `currency`, `notes`. Optional (migration 0005): what the position brought on the day it left. |
@@ -205,10 +171,10 @@ adding a kind needs no migration.
 
 ## 4. Why SQLite
 
-SQLite + JSON1 — the repo default. The one prior DuckDB exception
-(`cointracking`) was driven by a window-function holdings replay and
-`DECIMAL(38,18)` crypto amounts; **neither applies here** — this is a tiny
-shape transformation, a few rows a year, no computation and no
+SQLite + JSON1 is the repo default. The one DuckDB exception
+(`cointracking`) is driven by a window-function holdings replay and
+`DECIMAL(38,18)` crypto amounts; **neither applies here** — this is a small
+shape transformation with no computation and no
 arbitrary-precision need. DuckDB is for high-volume / complex-query stores,
 which this is not. Money
 is stored as decimal STRINGS (TEXT) verbatim to avoid float rounding, dates
@@ -218,27 +184,13 @@ other SQLite-silver adapter uses.
 
 ## 5. Validation
 
-The collector's whole value is that hand-entered data is **checked**, since
-there's no source system enforcing anything. `load` fails the entire load
-(one DB transaction → rollback; non-zero exit; `file:row:column` message) on:
-duplicate id; unknown `kind`; unparseable date / non-3-letter currency /
-non-numeric or negative `value`; a `value` currency that disagrees with the
-position's; a `valuations` `position_id` absent from `positions.csv`; a
-`converted_from_position_id` that references a position absent from
-`positions.csv`; malformed or non-object JSON `payload`; an unexpected
-(typo'd) column. From `accounts.csv`: a duplicate account id; an
-`account_kind`, `tax_wrapper` or `management_style` outside the canonical
-vocabulary (mirrored from `internal/canonical/enums.go` — a collectorkit
-test pins the two copies together); a position naming an `account_id` no
-account declares. From `cost_basis.csv`, the same checks as a valuation:
-a `position_id` absent from `positions.csv`, a duplicate (position, date),
-a currency that disagrees with the position's, a negative or non-numeric
-`amount`. From `exits.csv`: a `position_id` absent from `positions.csv`,
-two exits for one position, a currency that disagrees with the
-position's, negative or non-numeric `proceeds`, an exit before the
-position's `acquired_at`, or one on another day than a stated
-`closed_at`. It **warns** but loads when a valuation predates the
-position's `acquired_at`.
+The collector's whole value is that hand-entered data is **checked**,
+since no source system enforces anything. A bad row fails the entire
+load: one DB transaction rolls back, the exit is non-zero, and the
+message carries `file:row:column`. [README.md](README.md#validation)
+lists the checks. The taxonomy sets in `load.py` mirror
+`internal/canonical/enums.go`, and a collectorkit test
+(`test_canonical_enum_mirrors.py`) pins the two copies together.
 
 ## 6. Gold mapping
 
@@ -261,7 +213,7 @@ exactly one account.
   `management_style` from `accounts.csv`, which is what lets one book span
   tax sleeves — holdings under one wrapper beside personally-held ones.
 - Either way, `account_overrides` still has the last word. No
-  `base_currency` — the book spans CHF / EUR / USD. The asset-family split
+  `base_currency`, since a book can span currencies. The asset-family split
   rides on each position's `asset_class`, not the account.
 - An account is emitted at a snapshot date only while it holds something
   then, so a sleeve that is fully closed stops appearing rather than
@@ -278,39 +230,45 @@ correct at any historical date:
 - `market_value` = latest `valuations.value` with `as_of_date ≤` the snapshot
   date (forward-filled); the position drops out after `closed_at`.
 - `book_value` = for a position `cost_basis` covers, its latest entry with
-  `as_of_date ≤` the snapshot date (none before the first entry): a fund
-  commitment shows the capital called so far, not the commitment. Otherwise
-  the valuation dated at the position's `acquired_at` (the cost basis),
-  constant while market moves — real estate shows purchase price vs.
-  current appraisal; a note / loan / escrow held at par shows book == market.
-  Every `cost_basis` date is a snapshot date too.
+  `as_of_date ≤` the snapshot date (none before the first entry). A fund
+  commitment shows the capital called so far, not the commitment.
+  Otherwise it is the valuation dated at the position's `acquired_at`,
+  constant while the market moves. Real estate shows purchase price
+  against the current appraisal; a note, loan or escrow held at par shows
+  book equal to market. Every `cost_basis` date is a snapshot date too.
+  The figure is stamped `stated`, with method `paid_in` or
+  `acquisition_value` and fees `unknown`
+  ([DESIGN.md](../../wealthdb/docs/DESIGN.md) §7.4): a figure entered by
+  hand says nothing about fees.
+- A `mortgage` is entered as a positive outstanding balance. The adapter
+  negates its market and book value, so the liability nets against the
+  property.
 - `quantity` = NULL — none of these are unit-denominated; they're valued by
   amount (the way carta values a fund LP interest by NAV, not units).
 - `acquisition_date` = `acquired_at`.
 
-**Asset class.** Bronze `kind` **is** the canonical `asset_class`
-(identity classmap), so the CSV self-documents the class:
+**Asset class and vehicle.** The adapter
+([`classmap.go`](../../wealthdb/internal/silver/manual/classmap.go))
+derives the exposure (`asset_class`) from `kind`, and for `other` also
+from `vehicle`. The `vehicle` comes straight from silver, with the
+kind's default when blank.
 
-| position `kind` = `asset_class` | rationale |
-|---|---|
-| `real_estate` | Directly-held property is a first-class asset class with no other fit; `other` would erase it from portfolio queries. |
-| `convertible_note` | 0%-interest early-stage venture bets expected to convert to equity (or go to zero) — **not** debt. Calling them `private_debt`/`bond` would be technically arguable but actively misleading. |
-| `private_equity` | Direct private-company equity (e.g. a GmbH/AG stake) — what carta's classmap folds into `private_equity`. |
-| `private_fund` | LP interest in a venture/PE fund, the class carta and angellist use too. The capital paid in rides in `cost_basis.csv`; the calls and distributions are bank wires. |
-| `spv` | LP interest in a single-company SPV, the class equityzen uses too. The buy-in is the valuation at `acquired_at`. |
-| `mortgage` | Real-property-backed liability (gold `AssetClassMortgage`), typically securing a `real_estate` position. Valuations are entered as a positive outstanding balance; the gold adapter negates it so it nets against the property. |
-| `other` | Catch-all for holdings without a fitting class — e.g. a receivable or a private loan. Semantics ride in `display_name` + `payload`. |
-
-`asset_class` carries **no SQL CHECK** (Go-validated only), so a class
-lives in `internal/canonical/enums.go` + its `assetClassValues` map — no
-gold migration for the enum itself.
+| position `kind` | `asset_class` | default `vehicle` | rationale |
+|---|---|---|---|
+| `real_estate` | `real_estate` | `physical` | Directly-held property is a first-class class; `other` would erase it from portfolio queries. |
+| `mortgage` | `real_estate` | `mortgage` | A liability secured on a property, netted against it (above). |
+| `private_equity` | `private_equity` | `stock` | Direct private-company equity, such as a GmbH or AG stake. |
+| `private_fund` | `private_equity` | `fund` | An LP interest in a venture or PE fund. The capital paid in rides in `cost_basis.csv`; calls and distributions are bank wires. |
+| `spv` | `private_equity` | `spv` | An LP interest in a single-company SPV. The buy-in is the valuation at `acquired_at`. |
+| `convertible_note` | `private_debt` | `convertible_note` | A 0%-interest venture note that converts to equity or goes to zero. The vehicle keeps it apart from ordinary lending. |
+| `other` | `private_debt` with vehicle `loan` or `escrow`, else `other` | `other` | The catch-all, such as a receivable or a private loan. Set `vehicle` so gold gets the right wrapper. |
 
 **One transaction: the exit.** `Transactions()` yields a `sell` per
 `exits` row, on the exit date, on the position's account, for the
 proceeds (id `exit:<position_id>`). It is the internal half of the sale:
 the cash lands in a bank account the banks book. The lot engine's
 `stated` mode realizes it against the position's book value as of the
-last snapshot before the sale (wealthdb docs/LOTS.md §6). There is no
+last snapshot before the sale ([LOTS.md](../../wealthdb/docs/LOTS.md)). There is no
 `manual-funding` sentinel and no other transaction: a purchase wire,
 rent, a fee, the proceeds landing are real movements in the bank
 accounts, already captured by the bank collectors; re-representing them
@@ -325,7 +283,7 @@ example, as an `other`/`escrow` position. The position alone would make the
 returns engine read the arrival as performance — a mark stepping up with
 nothing to fund it — and a later release as a loss of the whole claim. The
 missing half is supplied by a row in the config-side equity-transfer ledger
-(wealthdb `docs/DESIGN.md` §13.10) written against this source's single
+([DESIGN.md](../../wealthdb/docs/DESIGN.md) §13.10) written against this source's single
 account; the loader injects it as a `transfer_in` / `transfer_out`, and the
 source's returns policy admits exactly those two kinds. The invariant, for
 every date something happens to such a claim:
@@ -345,8 +303,6 @@ A claim paid out to a third party is a mark-down with **no ledger row**
 (a loss); forfeiture is the mark going to zero the same way.
 
 **Gold registration.** `internal/gold/migrations/0016_silver_sources_manual.sql`
-widens the `silver_sources` `silver_kind` whitelist (the 0007–0015
-rename-recreate pattern); `real_estate` + `convertible_note` are added to
-`internal/canonical/enums.go`; the adapter is built + registered in
-`cmd/wealthdb`. The `wealthdb.cfg` entry is
+adds `manual` to the `silver_sources` `silver_kind` whitelist. The adapter
+registers in `cmd/wealthdb`. The `wealthdb.cfg` entry is
 `{"id":"manual","kind":"manual","path":"…/manual.db"}`.

@@ -1,27 +1,19 @@
 # carta — design notes
 
-**Implemented end-to-end.** `explore` mapped the holder UI; `login`,
-`download` and `load` are built.
-The silver schema is realized in `migrations/` (§5) and the
-**gold adapter is built** (`wealthdb/internal/silver/carta/`, §6). The chosen
-path (web scraper, not API — see the investigation below), the observed
-endpoints (§3), the silver schema, and the gold mapping are all locked in.
-
 A read-only collector for [carta.com](https://carta.com), the
-private-investment / cap-table platform. This collector targets the **portfolio-holder**
-surface — a direct shareholder / option-holder in private companies, not a
-corporate issuer and not (by default) a fund LP. The collector replays the
+private-investment / cap-table platform. This collector targets the
+**portfolio-holder** surface: direct shareholders and option-holders in
+private companies, and fund LPs. It never acts as a corporate issuer.
+The collector replays the
 holder's browser session (2FA login, React SPA) via Camoufox, captures
 bronze, and parses it into a source-shaped SQLite silver. Part of the
 **wealthdb** suite — see [the architecture overview](../../DESIGN.md)
 and [collectors/README.md](../README.md).
 
-This is the **first wealthdb source for non-public-market equity** — stock
-options (strike + vesting), SAFEs / convertible notes, RSUs/RSAs, and
-private-company share certificates. None had an established home in gold's
-canonical model, which assumed public-market instruments with a quotable
-price. That mismatch — resolved with two new private asset classes — is the
-substance of the gold mapping (§6).
+The collector handles **non-public-market equity**: stock options (strike
+and vesting), SAFEs / convertible notes, RSUs / RSAs, and private-company
+share certificates. None has a ticker or a quotable price. The gold adapter maps
+them to private asset classes (§6).
 
 Sections:
 
@@ -31,7 +23,7 @@ Sections:
 4. [login + download](#4-login--download)
 5. [Silver schema](#5-silver-schema)
 6. [Gold mapping](#6-gold-mapping)
-7. [Scope (as built)](#7-scope-as-built)
+7. [Scope](#7-scope)
 8. [Read-only & PII](#8-read-only--pii)
 
 ## Why a separate collector
@@ -47,19 +39,19 @@ exactly as for every other source.
 ## 1. Why web, not API — the path investigation
 
 A clean, well-documented, investor-side REST API **exists** (per the public
-docs at `docs.carta.com`, incl. its `llms.txt` OpenAPI index — no live call
-was made), but it is **not obtainable by an individual shareholder**:
+docs at `docs.carta.com`, including its `llms.txt` OpenAPI index), but it is
+**not obtainable by an individual shareholder**:
 
 - **The API is real and well-scoped.** OAuth 2.0 (`client_credentials` for
   own-account data), base `api.carta.com`, token at
   `login.app.carta.com/o/access_token/` (1-hour token, no refresh). A
   Portfolio-Holder family (`/v1alpha1/portfolios/...`) exposes exactly the
-  holder data we want, read-only, with `read_portfolio_*` scopes. If we
-  could get credentials, this would be a clean host-venv API collector
+  holder data this collector needs, read-only, with `read_portfolio_*`
+  scopes. With credentials, this would be a host-venv API collector
   (schwab-api shape).
 - **But access is gated, and the gate excludes individuals.** Carta's
-  developer program is invite-only: you need a developer-portal invite code
-  (or to clear a waitlist). As of **2025** the program tightened further —
+  developer program is invite-only: it takes a developer-portal invite code
+  or a cleared waitlist. As of **2025** the program tightened further —
   third-party partner access is invite-only **and requires a valid SOC 2
   Type 2 certification**, and the partner waitlist form was deactivated.
   Carta's own notice says *companies and investment firms* that use Carta
@@ -83,10 +75,9 @@ or by emailing `developers@carta.com` as a Carta customer), this collector
 can be re-pathed to host-venv without disturbing gold — silver is the only
 contract gold reads, and §2 already documents the API shapes.
 
-### Anchor endpoints, verified (for the record)
+### Anchor endpoints
 
-Two anchor endpoints were checked; both readings needed a tweak, recorded
-so they aren't re-litigated:
+Two anchor endpoints of the public API, and what each one serves:
 
 - **`investors/listInvestments`** →
   `GET /v1alpha1/investors/firms/{firmId}/funds/{fundId}/investments`. This
@@ -103,10 +94,9 @@ so they aren't re-litigated:
 ## 2. Carta's data model (API map, kept as a scraping treasure-map)
 
 The documented API is the best available map of *what data exists and how
-it's shaped* — and the SPA the scraper drives almost certainly calls the
-same or closely-related internal JSON endpoints, so `explore`'s HAR capture
-should be read against this map. Holder-side (`/v1alpha1/portfolios/...`),
-all read-only:
+it's shaped*. The SPA calls internal endpoints with different names and
+shapes (§3), but the concepts match, so this map helps read an `explore`
+capture. Holder-side (`/v1alpha1/portfolios/...`), all read-only:
 
 | Surface | Endpoint (operation) | What it carries |
 |---|---|---|
@@ -142,7 +132,7 @@ snapshots.
 **Three different "prices" per security** — none a public last-price:
 **strike** (`exercisePrice`), **409A FMV** (`fairMarketValue`), and
 **liquidation preference / preferred price** (share-class detail). Which is
-"the price" for valuing a gold position is a real decision (§4).
+"the price" for valuing a position is settled in §5.1.
 
 **Tax documents.** Even the API only surfaces *fund-LP* documents
 (`fundInvestmentDocuments`); equity tax forms (3921 for ISO exercise,
@@ -150,30 +140,30 @@ snapshots.
 documents/tax centre. So the **web scraper is the only path to the tax docs
 regardless**, API access or not.
 
-**Cadence.** Carta refreshes most operational data daily (~noon ET); a
-nightly run after that is the right cadence — same "nightly batch" shape as
-ubs-psn.
+**Cadence.** Carta refreshes most operational data once a day (around noon
+US Eastern time), so a second run on the same day adds nothing.
 
 ## 3. Discovery via `explore`
 
 `explore.py` launches Camoufox in the container's Xvfb display, opens
-carta.com, and records the live session via three channels — HAR +
-`network.jsonl` (the primary signal for the SPA's internal JSON/XHR
-endpoints; read it against the §2 map), a Playwright trace (DOM +
-screenshots; `--trace` opt-in — the pinned Playwright 1.49 tracer crashes
-the camoufox 152.0.4 browser build, so it stays off until the pair is
-realigned), and a `clicks.jsonl`
-click log (VNC clicks bypass Playwright's API). Artefacts land under
-`/debug/<UTC-ts>/`, never under `/data`. The persistent Camoufox profile
-carries the post-2FA session between runs. Re-run it whenever Carta moves
-its UI or endpoints.
+carta.com, and records a session driven by hand over VNC:
 
-### Observed internal endpoints (2026-06-08 run)
+- a HAR and `network.jsonl`, the main record of the SPA's internal JSON/XHR
+  calls;
+- a `clicks.jsonl` click log, since VNC clicks bypass Playwright's API;
+- an optional Playwright trace (`--trace`, off by default; see
+  [`collectorkit.explore`](../../shared/collectorkit/collectorkit/explore.py)).
+
+Artefacts land under `/debug/<UTC-ts>/`, never under `/data`. The
+persistent Camoufox profile carries the post-2FA session between runs.
+Re-run it whenever Carta moves its UI or endpoints.
+
+### Internal endpoints
 
 **All endpoints are cookie-session REST returning `application/json`** (no
 GraphQL); the scraper replays these GETs with the logged-in session via
 Playwright's request API. Internal field names are snake_case and differ
-from the public `/v1alpha1/` map of §2 — follow the *observed* shapes
+from the public `/v1alpha1/` map of §2 — follow the *internal* shapes
 below. (No values reproduced here — PII.)
 
 - **Auth / infra.** Login at `login.app.carta.com/credentials/login/`
@@ -228,7 +218,7 @@ below. (No values reproduced here — PII.)
   (`/api/payments/corporation/{cid}/transaction-receipts/certificates/{id}/`)
   returns **403** — issuer/admin-gated. So acquisition consideration isn't
   API-obtainable; it would live in a 1099-B / payout statement, which the
-  documents index does not carry. Don't re-add a receipts fetch.
+  documents index does not carry. `download` makes no receipts fetch.
 
 - **Fund-LP side** (`app.carta.com/api/investors/…` + `fund-admin.app.carta.com/…`):
   `/api/investors/portfolio/fund/{fid}/list/` (look-through portfolio
@@ -296,12 +286,11 @@ Mirrors the `cointracking` / `fidelity-web` pattern: launch a persistent
 browser context on `/secrets/carta-profile/`, navigate to Carta,
 short-circuit if a prior session is still valid, else walk the two-step
 form (§3: email screen, then password screen; a single-screen variant is
-also handled) with `CARTA_USERNAME` (or the legacy `CARTA_EMAIL`) /
-`CARTA_PASSWORD`, submit,
-read the 2FA code from stdin,
-tick any "trust this device" box, and `context.close()` to flush the
-session back to the profile. `--check` probes the dashboard and exits 0/1
-with no 2FA push — safe for cron healthchecks.
+also handled) with `CARTA_USERNAME` (or the legacy `CARTA_EMAIL`) and
+`CARTA_PASSWORD`, submit, read the 2FA code from stdin, tick the "remember
+this device" box (`#enable-bypass`), and `context.close()` to flush the
+session back to the profile. `--check` loads the app and exits 0 or 1. It
+posts no credentials and fires no 2FA push.
 
 ### download — per-surface bronze capture
 
@@ -316,9 +305,11 @@ with
 - `entities/<slug>/` per held entity: `meta.json`,
   `holdings-dashboard.json`, one file per security type (`shares`,
   `options`, `rsu`, `rsa`, `warrants`, `convertibles`, `sar`, `piu`,
-  `equity-grants`), `vesting/grant_<gid>.json`, the exercise-detail xlsx
-  under `exercises/`, and on the fund side `fund-{tabs,companies,cap-calls}.json`
-  + `fund-admin/{app-init,partner-metrics}.json`.
+  `equity-grants`), `overview-captable-summary.json`,
+  `post-money-list.json`, `vesting/grant_<gid>.json`, the exercise-detail
+  xlsx under `exercises/`, and on the fund side
+  `fund-{tabs,companies,cap-calls}.json` +
+  `fund-admin/{app-init,partner-metrics}.json`.
 - `documents/index.json` + the PDF blobs.
 - `run.json` — the manifest.
 
@@ -330,39 +321,30 @@ Everything is pulled in full — holdings, activity and documents alike — so
 the shared `--lookback` flag is accepted for fleet uniformity
 but cannot narrow the walk: it is validated, warned about, and otherwise
 ignored. `--no-documents` skips the documents pass (the run's dominant
-cost). `--dry-run` walks navigation without firing any export.
+cost). `--dry-run` lands in the app with the stored session, lists the held
+entities, logs the work-list and writes nothing. It never signs in: a
+session that bounced to the login host fails the run.
 
-### run.json status lifecycle + prune
+### run.json status and prune
 
-`download` stamps a run dir's `run.json` with `{"status": "in-progress"}`
-the moment it creates the dir, then atomically overwrites it with the
-terminal manifest carrying `"status": "complete"` (`write_json` = tmp +
-replace) as the last step of a successful walk. So a run dir is a **complete**
-dump (`status == "complete"`), a **non-complete** one (a crashed walk left
-`status == "in-progress"`, or no `run.json` at all), or — for a dump that
-predates the field — a statusless manifest, which counts as complete: such a
-dump only ever got a `run.json` as the walk's final step, so its presence
-alone means the walk finished. `--dry-run` creates no run dir, so it leaves
-no shell to classify or prune.
+`run.json` follows the
+[fleet status lifecycle](../README.md#debug-artefacts-run-status-and-pruning-bronze).
+The carta specifics:
 
-`load` skips any dir whose `status` is not `complete` (a statusless manifest
-still loads), so a crashed walk's partial capture
-never becomes a silver snapshot. `prune` (a thin wrapper over the shared
-`collectorkit.prune` engine) reclaims those non-complete run dirs once they go
-quiescent. From a complete dump it strips one thing: `screenshots/`, named by
-`prune`'s `debug_subdirs`. That is where `download --debug` puts the landing
-page's DOM + screenshot — carta's only rendered surface, and so the only
-browser-side evidence of a session that bounced or an app whose routing moved;
-every later fetch is JSON replay whose failures already land in `run.json`'s
-`errors`. `load` never reads the captures, so reclaiming them cannot change
-silver. A complete dump's inputs, the bronze-root override CSVs, and the silver
-DB are out of scope by construction. (The `explore` diagnostics — HAR, trace,
-click log — live under `/debug`, external to the bronze tree; prune never sees
-them.) `--debug` is off by default, and is a no-op under `--dry-run`, which
-creates no run dir to write into. `prune` runs host-side (a pure file walk
-needs no container, and `load`'s in-container residence is only because it
-needs `poppler-utils`), guarded by `--min-age-hours` (default 1, keyed on the
-newest write in the dir) so a long backfill in flight is protected.
+- A run dir with no `run.json` is non-complete. `load` skips it and
+  `prune` reclaims it.
+- A manifest without a `status` key counts as complete. Such a dump only
+  got its `run.json` as the walk's final step.
+- `--dry-run` creates no run dir, so it leaves nothing to classify.
+- `prune` removes one thing from a complete dump: `screenshots/`. That is
+  where `download --debug` puts the landing page's DOM and screenshot.
+  The landing page is carta's only rendered surface; every later fetch is
+  JSON replay whose failures land in `run.json`'s `errors`. `--debug` is a
+  no-op under `--dry-run`.
+- The `explore` artefacts live in the debug dir outside bronze. The
+  wrapper passes that dir to `prune` as `--debug-dir`.
+- `load` runs in the container only because it needs `poppler-utils`.
+  `prune` runs host-side.
 
 ## 5. Silver schema
 
@@ -372,7 +354,7 @@ Unix-seconds-UTC; stable filter columns promoted, rest in `payload`; snapshot
 tables monotemporal on `snapshot_at` — which is the **event date**, not the
 download time (§5.1). The internal API the scraper actually hit (§3) is
 snake_case and shaped differently from the public `/v1alpha1/` map of §2, so
-the tables follow the observed responses.
+the tables follow the internal responses.
 
 | Table | Grain | Notes |
 |---|---|---|
@@ -380,7 +362,7 @@ the tables follow the observed responses.
 | `securities` | (snapshot_at, entity_external_id, security_type, security_external_id) | One per cap-table security line. `security_type` ∈ share / option / rsu / rsa / warrant / convertible / sar / piu / equity_grant. Promotes `quantity`, `exercise_price` (strike), `cost`, `vested` / `exercised` / `exercisable`, `has_vesting`, dates, plus `market_value` (the per-snapshot valuation, §5.1) and, on a share born from an exercise, `exercise_type` / `exercise_date` / `exercise_fmv` (§5.3); rest in `payload`. |
 | `vesting_schedules` | (snapshot_at, entity_external_id, grant_external_id) | Per option/RSU grant: `so_type`, `has_iso_nso_split`, `vesting_start/end_date`, `vested_shares_quantity`. |
 | `vesting_events` | (snapshot_at, grant_external_id, seq) | The dated schedule: `vest_date`, `amount`, `cumulative`, `has_vested`. **First vesting concept in wealthdb** (silver-only — §6). |
-| `fund_metrics` | (snapshot_at, entity_external_id) | The LP capital account: `commitment`, `called_capital`, `capital_contributed`, `distributions`, `net_asset_value`, `vintage_year` (decimal strings, kept verbatim as TEXT), `accepted_date`, and on a statement's row its inception-to-date fees, operating income, gains and carry (§5.3). |
+| `fund_metrics` | (snapshot_at, entity_external_id) | The LP capital account: `commitment`, `called_capital`, `capital_contributed`, `distributions`, `net_asset_value` (decimal strings, kept verbatim as TEXT), `vintage_year`, `accepted_date`, and on a statement's row its inception-to-date fees, operating income, gains and carry (§5.3). |
 | `cap_calls` | (snapshot_at, entity_external_id, call_external_id) | Active LP capital calls. |
 | `documents` | content_sha256 | PDF archive index (K-1 / 1042-S / statements / notices / financials), content-deduped on SHA-256; the PDF blobs stay under the bronze tree. |
 | `k1_capital_accounts` | content_sha256 | One per K-1 document (§5.3): the federal face page's tax year and, for a fiscal year, its period (migration 0005), the tax capital account (item L), net short- and long-term gain (boxes 8, 9a), and cash and property distributions (box 19 A, C). |
@@ -472,10 +454,11 @@ Carta exposes holdings but not the cash mechanics — an exercise is paid from a
 external bank, a fund capital call is wired straight into the SPV/fund, and
 exit / distribution proceeds leave to an external account. The Carta "account"
 is therefore a **sentinel** for the opaque managed accounts (Carta custody +
-the fund managers' books); we never observe a real cash balance.
+the fund managers' books); no real cash balance is ever observed.
 
 `cash_flows` records the dated cash EVENTS as positive magnitudes (`kind`
-carries the nature + direction), reconstructed from data we *do* have:
+carries the nature + direction), reconstructed from the data Carta does
+expose:
 
 - **`exercise`** — one per share certificate: `amount` = quantity × strike (the
   cert cost), with `shares` + `price_per_share` carried. Fully derivable from
@@ -595,73 +578,29 @@ shape transformation only). `angellist` made the same call.
 
 ## 6. Gold mapping
 
-The gold adapter is **built** — `wealthdb/internal/silver/carta/`, documented
-in [`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md).
-It projects this silver into canonical `accounts` / `instruments` /
-`positions`, plus a `transactions` projection from the cash-flow ledger
-(§6.1) as balanced double-entry pairs on the custody account:
+The gold adapter is `wealthdb/internal/silver/carta/`. Its document,
+[`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md),
+owns the gold side:
 
-- **Asset classes** — two new canonical values in
-  `internal/canonical/enums.go`: `private_fund` (the fund LP interest) and
-  `private_equity` (all cap-table securities, options included — a private
-  ESO isn't lumped with exchange-traded `option`, nor a private share with
-  public `equity`). `asset_class` carries no SQL CHECK (Go-validated), so the
-  only gold migration was `0013`, widening the `silver_kind` whitelist.
-- **Account grain + taxonomy** — ONE gold account for the whole portfolio
-  (`individual_id`); each held company is one position under it, its share
-  certs / option grants aggregated as lots (brokerage-style), one instrument
-  per company. `account_kind = custody`, `tax_wrapper = taxable_personal`,
-  `management_style = self_directed` (the fund-vs-equity split rides on each
-  position's `asset_class`, since management_style is account-level).
-- **Valuation** — fund position: `market_value` = NAV, `book_value` =
-  contributed capital, less the property a K-1 (box 19 code C) says left
-  in kind from its period end on. Cap-table position: `quantity`,
-  `book_value` = each line at its value when acquired (an exercised
-  certificate at shares × `exercise_fmv`, every other line at its
-  `cost`), `market_value` = the silver `market_value` (the valuation
-  override's count-as-of × FMV-as-of, else the Carta-derived fallback —
-  §5.1).
-- **Lots** — each held share certificate is one gold `position_lots` row
-  under its company's position: its quantity, `cost` (the cash paid) as
-  the book value, `market_value`, and `original_acquisition_date`, with
-  the exercise facts of §5.3 in its payload.
-- **Vesting / documents / cap_calls** — kept silver-only; gold has no
-  canonical home for a vesting timeline or a document archive.
-
-Non-blocking follow-ups (in the adapter doc's "Open questions"): capturing
-409A FMV to value cap-table equity, and per-lot vs aggregate positions.
-
-**Gold consumption of the event-driven silver (§5.1).** The adapter
-widens its change window to the content tables' `snapshot_at` span (not just
-`dump_runs`) so the event-dated rows fall in-window, reads
-`securities.market_value` for the cap-table value, and at each event date emits
-the **forward-filled** state — every position's latest delta
-`snapshot_at <= that date`, dropping `position_status='exited'` — so a complete
-per-source snapshot reaches gold's as-of query and an exited holding drops out
-exactly at its disposition date. When the LAST holding exits, the disposition
-date instead gets the exit-day zero snapshot (`silver.ClosureMarkerBatch` in
-the gold adapter): the previous snapshot's positions replayed at zero value,
-so gold registers the closure on the exit day itself instead of carrying the
-pre-exit marks forward as phantom value.
+- the account taxonomy (one custody account for the whole portfolio);
+- the (`asset_class`, `vehicle`) pair of each company and fund;
+- how it forward-fills the event-dated deltas of §5.1 into a complete
+  snapshot per event date, and the exit-day zero snapshot;
+- book value, lots, and the K-1 in-kind reduction;
+- vesting, documents and cap calls staying silver-only.
 
 ### 6.1 Transactions — double-entry pairs on the custody account
 
-Following equityzen, the adapter projects the `cash_flows` ledger (§5.2) as
-balanced double-entry PAIRS on the custody account, so the returns engine
-sees the flows: Carta exposes no real funding balance, so each event splits
-into an external-bank leg and a holding leg that net to zero, the same shape
-as a brokerage's same-day deposit + buy. A side-loaded
-`<entity_external_id>-transactions.csv` (§5.2) instead names canonical kinds
-directly and is emitted 1:1, since the CSV already carries both halves.
+The adapter projects the `cash_flows` ledger (§5.2) as balanced
+double-entry pairs on the custody account, following equityzen. Each event
+splits into an external-bank leg and a holding leg that net to zero. A
+side-loaded `<entity_external_id>-transactions.csv` names canonical kinds
+and is emitted 1:1. Which `cash_flows.kind` becomes which signed pair is
+in the adapter document, §7.
 
-Which `cash_flows.kind` becomes which signed pair — and everything else on
-the gold side — lives in
-[`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md) §7.
-It is not repeated here, so the two cannot drift apart.
+## 7. Scope
 
-## 7. Scope (as built)
-
-The scope is **everything**; all of it is captured:
+The collector captures every holder surface:
 
 - equity / share certificates + the latest holdings snapshot;
 - options / RSUs / RSAs — grants with strike + vesting;
@@ -679,10 +618,5 @@ gold transactions per §6.1.
 
 ## 8. Read-only & PII
 
-See [AGENTS.md](AGENTS.md). The holder UI exposes mutation surfaces
-(exercise options, sell/transfer shares, funding + tax-withholding setup,
-e-sign, account settings) and possibly an issuer / company-admin or
-fund-admin console — all forbidden; this toolkit only navigates, filters,
-and exports its own holdings. Private-company names, share counts, strikes,
-FMVs, vesting data, and tax documents are PII: synthetic placeholders only
-in any tracked file.
+[AGENTS.md](AGENTS.md) lists the allowed and forbidden surfaces and the
+private data this source carries.

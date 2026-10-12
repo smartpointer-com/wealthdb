@@ -61,7 +61,7 @@ bridge them manually.
 
 | | web silver | api silver |
 | --- | --- | --- |
-| Value | Last-3-to-5-digit account suffix (e.g. `"NNN"`) | Schwab opaque `hashValue` (e.g. `"E5A0...A1F2"`) |
+| Value | Last-3-to-5-digit account suffix (e.g. `"NNN"`) | Schwab opaque `hashValue` (a long hex string) |
 | Source | `…NNN` text rendered next to the account name in the dropdown | `/accounts/accountNumbers` response |
 | Stable? | Yes (Schwab doesn't recycle suffixes within a profile) | Yes |
 | Joinable across silvers? | **No** — see §4.1 |
@@ -70,9 +70,22 @@ bridge them manually.
 
 | | web silver | api silver |
 | --- | --- | --- |
-| Value | Synthetic hex SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index>` (sha256-independent) | Schwab-supplied `activityId` from `/accounts/{hash}/transactions` |
+| Value | Synthetic hex SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|ordinal>` (sha256-independent) | Schwab-supplied `activityId` from `/accounts/{hash}/transactions` |
 | Stable across re-loads? | Yes (deterministic; sha256-churn-safe) | Yes |
 | Joinable across silvers? | **No** — see §4.2 |
+
+The ordinal keeps two genuine same-day twins apart. Its meaning
+depends on the feed:
+
+- a statement, 1099 or distribution letter: the row's position in the
+  document's parsed rows;
+- a tx-history export: the number of earlier rows in the same export
+  with the same date, amount, description and symbol. Exports of
+  overlapping windows place a row at different positions but list one
+  day's rows the same way, so the row keeps one id across them.
+  Migration 0009 collapses duplicate rows held under ids keyed on a
+  row's position in the export file, and clears the parser generation
+  so the next load re-walks the archive (§4.4).
 
 ### 2.3 `instrument_key`
 
@@ -130,20 +143,16 @@ FULL account number embedded in two places:
    `Brokerage-Statement_<YYYY-MM-DD>_<suffix>.PDF`. This carries
    only the suffix; not useful.
 2. The first page of the PDF text, in a header line like
-   `Account Number: 1234-5678` (8-digit format).
-   `pdf_parsers.parse_account_number` extracts it — inline colon
-   form (2017-2019) or label-and-value-on-consecutive-lines form
-   (2020+) — and the loader writes it verbatim (dash kept) into
-   `accounts.payload.account_number_full`, only when every
-   statement for the account agrees on the value (see INTEROP.md
-   §1). Accounts loaded before the parser existed are backfilled
-   from bronze on the next `load` run, and a key first set by an
-   incremental load is re-checked against all bronze statements,
-   so the key depends only on the statements in bronze, never on
-   load order. Gold joins api↔web through that key, normalising
-   both sides to digits-only.
+   `Account Number: NNNN-NNNN` (8-digit format). The loader writes
+   it verbatim into `accounts.payload.account_number_full` when every
+   statement for the account agrees on it. Gold joins api↔web through
+   that key, normalising both sides to digits-only.
+   [INTEROP.md §1](INTEROP.md#1-account-identifier-mismatch) has the
+   parsing, the consistency rule and the join.
 
-Accounts whose statements never yield a parseable (or consistent) header carry no key; gold falls back to matching the web suffix against the trailing digits of the api account number.
+Accounts whose statements never yield a parseable (or consistent)
+header carry no key; gold falls back to matching the web suffix
+against the trailing digits of the api account number.
 
 ### 4.2 Transaction identity is different in the two feeds
 
@@ -190,18 +199,18 @@ api silver is NOT modified — the data simply isn't in the api.
 
 ### 4.4 Schwab regenerates PDFs per download — sha256 dedup is byte-level only
 
-Empirically: the same *logical* statement (same account, same
+The same *logical* statement (same account, same
 period, same filename) downloaded from Schwab in two different
-sessions yields **different sha256s**. An archive can show
-the same (account, doc_date, filename) tuple appearing with
-multiple distinct sha256s across scrape runs. Schwab almost
+sessions yields **different sha256s**. An archive can hold
+the same (account, doc_date, filename) tuple under
+multiple distinct sha256s. Schwab almost
 certainly stamps a generation timestamp or download-token into
 the PDF on each request, making each physical fetch unique at
 the byte level.
 
 The silver `documents` table is keyed on `sha256` — so it
 preserves every physical fetch (no data loss), but the
-LOGICAL document count is roughly half the row count.
+LOGICAL document count is lower than the row count.
 
 **Silver mitigation (migration 0004)**: the `transactions` table is
 sha256-churn-safe. `activity_id` does not include `source_sha256`;
@@ -209,8 +218,9 @@ every load gate keys on `logical_doc_key` (`account|doc_date|filename`),
 never on `source_sha256`; and `INSERT OR IGNORE` on the
 `activity_id` PK prevents row-level duplicates. Re-downloading the
 same logical PDF with a new sha256 is a clean no-op for
-transactions. **Gold needs no transaction dedup pass for this
-case.**
+transactions. A tx-history row keeps one id across exports of
+overlapping windows too (§2.2). **Gold needs no transaction dedup
+pass for this case.**
 
 **Parse markers (migration 0008)**: the statement, 1099-B and
 realized-lot passes record the logical documents they parse in
@@ -218,18 +228,26 @@ realized-lot passes record the logical documents they parse in
 A later load skips a marked document, so a re-download is not parsed
 again. This holds also when the parse yields no rows: a statement
 without transactions, a 1099 without 1099-B lots, a report without
-realized lots. A moved parser generation clears the markers, and
-`--reparse` ignores them. The distribution letters and the
-tx-history exports carry no marker; they are skipped once they have
-transaction rows. Within one load, each logical document is parsed
-once, also under `--reparse`.
+realized lots. The distribution letters carry markers too. A moved
+parser generation clears the markers, and `--reparse` ignores them.
+The tx-history exports carry no marker; they are skipped once they
+have transaction rows. Within one load, each logical document is
+parsed once, also under `--reparse`.
+
+**Parser generation (migration 0005)**: `parser_generations` records
+which generation of the document parsers wrote the rows in hand. A
+moved generation purges the statement snapshot tables and the parse
+markers, and the load re-walks every run as under `--reparse`. A load
+stamps the new generation only when every run and the account-number
+reconcile pass committed. After a failure the generation stays
+unstamped, so the next load re-walks the archive again.
 
 **Gold-layer mitigation for `documents`**: when consuming web silver
 `documents`, deduplicate on `(account_external_id, doc_date,
 doc_kind, filename)` rather than `sha256`. Pick any one
 representative row per logical doc (e.g. `MIN(snapshot_at)` —
-the first time we saw the logical doc). The `transactions` table
-is clean.
+the first time the logical doc was seen). The `transactions` table
+needs no such pass (above).
 
 **Bronze-disk mitigation (`collapse-statements` verb)**: the per-download
 re-render also means the `statements/` tree grows one full PDF copy per
@@ -238,8 +256,9 @@ collapse them (the bytes differ). The `collapse-statements` verb
 hardlinks the copies of one logical statement that parse identically
 onto the oldest copy. It is silver-safe because `load` keys
 `documents` off the manifest sha256 and re-parses whatever bytes the
-filename holds. The README section "Reclaiming disk
-(`collapse-statements`)" and [dedup.py](dedup.py) describe the verb.
+filename holds. The README section
+[Reclaiming disk (`collapse-statements`)](README.md#reclaiming-disk-collapse-statements)
+and [dedup.py](dedup.py) describe the verb.
 
 ### 4.5 Web position snapshots are statement-cadence, not live
 
@@ -294,7 +313,7 @@ its migration 0004 promotes the full account number to the
 └── <UTC-timestamp>/                e.g. 20260520T120000Z/
     ├── run.json                    manifest written by download.walk();
     │                               carries a `status` field
-    │                               (in-progress → complete / dry-run)
+    │                               (in-progress → complete)
     ├── statements/
     │   └── <suffix>/
     │       ├── Brokerage-Statement_2026-04-30_<suffix>.PDF
@@ -318,24 +337,13 @@ its migration 0004 promotes the full account number to the
 
 The `status` field is the completeness signal `prune` and `load`
 key on: `download.walk()` writes `"in-progress"` at run-dir
-creation and atomically overwrites it with `"complete"` (or
-`"dry-run"` for a `--dry-run`, whose tx-history exports still fire)
-at the end. `load` skips a dump whose `status` is anything but
-`"complete"` (a statusless legacy manifest stays loadable); `prune`
-deletes whole non-complete dumps plus `<run>/screenshots/` from
-complete ones, and never a `load` input (`statements/`,
-`transactions/`, `run.json`).
-
-A narrower reclaim also fires from complete dumps:
-`transactions/*/page-*.html`. Older run dirs hold a copy of the
-per-account landing-page HTML inside the `transactions/<suffix>/`
-load-input dir as `page-001.html`. `load` never reads them — the
-tx-history loader consumes only `more-details.json` and the manifest's
-per-account `.csv`/`.json`/`.xml` exports — so `prune` reclaims them via
-an explicit file glob. The glob matches only names that both begin
-`page-` and end `.html`, which no load-input sibling can, and the shared
-engine re-checks that glob against the run-dir-relative path immediately
-before each unlink, so a load input can never be removed.
+creation, rewrites the manifest as it goes, and atomically
+overwrites it with `"complete"` at the end. A `--dry-run` writes its
+manifest and its tx-history exports into a temporary directory, so
+it leaves nothing under the bronze root. `load` skips a dump whose
+`status` is anything but `"complete"`; a statusless legacy manifest
+stays loadable. What `prune` reclaims is in the README's
+[`prune` section](README.md#reclaiming-disk-prune).
 
 The silver loader reads `run.json` for the document inventory and,
 per document kind, parses these into `transactions`:
@@ -345,7 +353,8 @@ per document kind, parses these into `transactions`:
 - **Tx-history JSON** → `source='tx_history_json'`. The tx-history
   CSV / XML twins are sha256-keyed into `documents` for traceability
   but not re-parsed — the JSON carries the same set plus Schwab's
-  `AcctgRuleCd`. If `more-details.json` is present, the loader merges
+  `AcctgRuleCd`. A row's id is stable across exports of overlapping
+  windows (§2.2). If `more-details.json` is present, the loader merges
   each record into the matching transaction's `payload` under `_more`
   (keyed by `_tx_history_row_key`).
 - **1099-Composite XML / CSV** → `source='form_1099b'` (the 1099-B
@@ -372,7 +381,7 @@ position delta rather than as an activity row. Parsed by
 - **Format precedence.** Schwab ships the form as a PDF and, where it
   offers them, as XML + CSV twins. The twins share one base filename;
   the PDF is named apart (§6). All three share the manifest row (date
-  and document name). We prefer the **XML** (OFX-2.x, cleaner
+  and document name). The loader prefers the **XML** (OFX-2.x, cleaner
   per-field structure, an explicit `DTVAR` "Various" flag, a
   `TAXYEAR` element) and fall back to the **CSV**. The PDF's 1099-B
   pages are not read; its Year-End Summary half is (§9.2). The
@@ -387,7 +396,7 @@ position delta rather than as an activity row. Parsed by
   null), `term`, `wash_sale_disallowed`, `quantity`, `security_name`,
   and the `noncovered` / `basis_not_shown` flags.
 - **Cost-basis honesty.** A noncovered lot whose basis Schwab does
-  not know renders `COSTBASIS=0`; we null the promoted `cost_basis`
+  not know renders `COSTBASIS=0`; silver nulls the promoted `cost_basis`
   for those (keeping the raw `0` + flags in payload) so a placeholder
   is never mistaken for a real zero. A genuine `$0` basis on a
   *covered* lot is preserved.
@@ -402,24 +411,25 @@ These `Letters`-kind PDFs are the **only record of securities (and
 cash) moved out of an account to a third party** — gifts to people /
 DAFs, transfers to other custodians or accounts. The statements show
 such a move only as an unexplained position drop. Parsed by
-`pdf_parsers.parse_distribution_pdf` (text via the same pypdfium2
-extractor the statement parser uses — a bake-off showed it recovers
-every required field on every form, ~5× faster than poppler/pdftotext
-and with no extra system dependency).
+`pdf_parsers.parse_distribution_pdf`, with text from the same
+pypdfium2 extractor the statement parser uses.
 
-- Three observed layout families, all outbound: a **wire** ("To the
+- Three known layout families, all outbound: a **wire** ("To the
   account of NAME at BANK"), a **cash transfer to a Schwab third
   party** ("Account name: NAME"), and a **securities transfer** (a
   `Symbol / Quantity / Market Value` table).
 - **One row per security line** for a securities transfer (one for a
-  cash transfer), `kind='Transfer Out'`. The payload carries
-  `transfer_kind` (`securities` / `cash`), `method` (`wire` /
-  `schwab_third_party`), `counterparty`, `counterparty_bank`,
-  `counterparty_account_suffix`, and `symbol` / `quantity` /
-  `market_value` (securities) or `cash_amount` (cash). Securities
-  transfers set `instrument_key` to the ticker.
+  cash transfer), `kind='Transfer Out'`. A letter worded as money
+  coming in gets `kind='Transfer In'`. The payload carries
+  `direction`, `transfer_kind` (`securities` / `cash`), `method`
+  (`wire` / `schwab_third_party` / `unknown`), `counterparty`,
+  `counterparty_bank`, `counterparty_account_suffix`, and `symbol` /
+  `quantity` / `market_value` (securities) or `cash_amount` (cash).
+  Securities transfers set `instrument_key` to the ticker.
 - An unrecognised layout emits **no rows** and logs a warning, rather
   than corrupting the load.
+- Each letter is parsed once per parser generation: its parse marker
+  (§4.4) skips it on later loads, also when it yielded no rows.
 
 ## 7. Known gaps (not blockers for the gold merge, but worth noting)
 
@@ -439,7 +449,7 @@ and with no extra system dependency).
   wrapped from the row above, not a row of its own.
 - **Some sale rows lose their amount**. Such rows are skipped
   during load with a warning rather than failing the whole
-  statement; worth a follow-up parser pass.
+  statement.
 - **Multiple overlapping transaction sources**. The same logical
   event can land in silver from more than one feed:
   `statement_pdf` (parser-derived, multi-year via quarterly
@@ -460,9 +470,9 @@ and with no extra system dependency).
   §6b) are mostly data the other feeds lack. A cash transfer may
   overlap a statement cash debit; gold dedupes it (INTEROP.md §8).
 - **The per-row "More" detail pass runs by default; `--no-more-detail`
-  opts out** — it adds ~1 modal click per transaction, on the order
-  of an hour for a high-activity account, so `--no-more-detail` skips
-  it when that cost isn't warranted.
+  opts out** — it adds one modal click per transaction, so an account
+  with many transactions takes long, and `--no-more-detail` skips it
+  when that cost isn't warranted.
 
 ## 8. `account_registration` column (migration 0003)
 
@@ -470,18 +480,16 @@ Schwab's Trader API doesn't surface the per-account tax
 wrapper (see `schwab-api/DESIGN.md` §4.10). The web feed
 does — every statement PDF prints the registration label at
 the top of page 1, adjacent to the account number. Migration
-0003 promotes that label to a top-level column on `accounts`:
-
-```sql
-ALTER TABLE accounts ADD COLUMN account_registration TEXT;
-```
+0003 promotes that label to a top-level column on `accounts`.
 
 The column carries the **raw** Schwab label, verbatim.
 `pdf_parsers.parse_account_registration` handles all three
-layout eras (see §7); the loader UPDATEs the column once per
-load run, using the first non-null label it sees per account.
-A re-load of newer statements overwrites with the most recent
-seen value. How gold maps this label to its canonical
+layout eras (see §7). Each load sets the column on every row of an
+account, from the first label among the statements that load
+parsed. A later load that parses newer statements overwrites it. A
+new `accounts` row, written when an account's manifest payload
+changes (a new label or nickname, say), carries the registration forward from the account's latest
+row. How gold maps this label to its canonical
 `tax_wrapper` enum is owned by the wealthdb Schwab adapter — see
 [the adapter doc](../../wealthdb/docs/adapters/schwab.md).
 
@@ -557,14 +565,14 @@ era), the loader falls back to the documents table:
                                            Roth / Inherited /
                                            SEP / SIMPLE require
                                            5498-body parsing
-                                           which we don't do —
+                                           which silver does not do —
                                            gold can refine via
                                            documents.sha256)
 
 5498 forms are uniquely issued for IRA / ESA accounts, so
 their existence is itself a definitive signal. The fallback
-does NOT touch the column if a statement label was already
-landed; it only sets a value when the column was NULL.
+fills only an account with no registration on any of its rows,
+so it never overwrites a statement label.
 
 ### 8.4 Sanity histogram
 

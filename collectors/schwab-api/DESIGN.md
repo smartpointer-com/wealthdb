@@ -17,100 +17,73 @@ bronze → silver → gold model and the layer-ownership boundaries this
 toolkit inherits. The rest of this document covers only how
 `schwab-api` realises its bronze and silver.
 
-## 3. The toolkit: three scripts
+## 3. The toolkit
 
-Each collector should expose three top-level tools with these
-responsibilities. Names and shapes don't have to match exactly, but
-the separation of concerns does.
+schwab-api follows the fleet lifecycle
+([collectors/README.md](../README.md#the-lifecycle)): `login.py`,
+`download.py`, `load.py` and `prune.py`, plus the manual
+`recompress.py`. This section covers what is specific to Schwab.
 
 ### 3.1 `login.py` — authentication lifecycle
 
-Owns whatever credential dance the upstream requires:
-- Schwab: OAuth 2.0 with a 7-day refresh-token cap that requires
-  interactive browser re-auth. `login.py` runs the auth flow,
-  exchanges the code, writes the token file to disk.
-- UBS PSN: an RSA keypair onboarded with UBS once (most of the work
-  is the one-time onboarding email exchange), so it ships no
-  login.py; the wrapper's `login --check` runs `download.py --check`,
-  which validates the key against the pinned server fingerprint.
+Schwab uses OAuth 2.0 with a 7-day refresh-token cap. Only an
+interactive browser grant renews it. `login.py` runs that grant,
+exchanges the code, and writes the token file.
 
 **Why a separate tool?** Auth is interactive, episodic (weekly for
-Schwab, once-and-forget for UBS), and has its own failure modes. It
-should not live inside the fetch loop, where it would trigger an
-interactive prompt mid-cron.
+Schwab) and has its own failure modes. Inside the fetch loop it would
+raise an interactive prompt in an unattended run.
 
-**Lessons from the Schwab implementation that generalise:**
-- A `--check` subcommand that reports auth-credential age without
-  using it is worth more than its 30 lines of code. Saves users from
-  the "why did download.py just blow up?" dance.
-- If the underlying library has interactive prompts (schwab-py asks
-  "Press ENTER to open the browser"), suppress them. They expire
-  auth codes when running over SSH, in remote dev environments, or
-  whenever a phone call interrupts.
-- File mode 0600 on the credential file, programmatically. Don't
-  trust user umask.
+**Choices that generalise:**
+- `--check` reports the token's age without using it. It makes a
+  failing `download` predictable.
+- schwab-py's own interactive prompts ("Press ENTER to open the
+  browser") are suppressed. They expire auth codes over SSH, in remote
+  environments, or after any interruption.
+- The token file is written with mode `0600` from its first byte. The
+  code does not rely on the umask.
 
-#### Incident note (2026-08): blind consent clicks on an unresolved 2FA challenge
+#### Failure discipline
 
-A routine `login` run ended with the Schwab account locked. Reconstructed
-control flow (all in one thread — the Ctrl-C traceback pinned the main
-flow inside `_wait_for_callback → _drive_consent → _click_first`, proving
-the stdin prompt had already returned):
+The flow drives a 2FA challenge and consent pages that can lock the
+account. A blind click on an unresolved challenge submits an empty or
+stale code, and repeated failed 2FA verifications are a lockout trigger.
+The flow therefore follows these rules. schwab-web's separate MFA code
+follows them too.
 
-1. The login form was pre-filled and submitted; the 2FA input was found
-   on the gateway SPA (`sws-gateway.schwab.com/ui/host/#/placeholder`)
-   and the stdin code prompt opened.
-2. `sys.stdin.readline()` returned an empty line immediately — stdin was
-   at EOF (the wrapper passes docker `-i` only when stdin AND stdout are
-   TTYs, so a piped/tee'd run gets a closed stdin; a stray buffered
-   newline produces the same result). The empty code took a **silent**
-   no-submit path and the flow fell through to the consent wait.
-3. The consent wait called `_drive_consent` every ~0.5 s, whose last act
-   was an unconditional click of the first visible advance-button
-   candidate — `button:has-text('Continue')` — with no check of which
-   page was showing, no verification that a click changed anything, and
-   no budget. The page was still the 2FA challenge, so its own Continue
-   was clicked ~11 times in 8 s, each submitting an empty/stale code.
-   Repeated failed 2FA verifications are the presumed lockout trigger.
-4. Re-runs then submitted the password again; the gateway served its
-   terminal notice route (`…/ui/host/#/information/<code>`), which
-   nothing recognized: the 2FA wait burned its full timeout, logged the
-   misleading "no 2FA prompt detected", and the consent wait spun to its
-   own timeout.
-
-Defect class and hardening (applies to schwab-web's separate MFA
-machinery too):
-
-- **No blind clicks.** An advance/consent click fires only on a page
-  positively classified as part of the consent flow (URL route or DOM
-  heading), never on a challenge, interstitial, or unknown page.
-- **Click budget + change check.** Every click loop verifies the page
-  state changed after a click; an unchanged page is never re-clicked,
-  and a stalled or over-budget flow captures ground truth and fails.
+- **No blind clicks.** An advance or consent click fires only on a page
+  positively classified as part of the consent flow, by URL route or DOM
+  heading. It never fires on a challenge, an interstitial or an unknown
+  page.
+- **Click budget and change check.** Every click loop checks that the
+  page changed after a click. An unchanged page is never clicked again.
+  A stalled or over-budget flow captures the page and fails.
 - **MFA is a barrier.** Nothing drives the page while a challenge is
-  unresolved; an empty/EOF stdin code is terminal (and a non-TTY stdin
-  fails fast before any credential is submitted).
+  unresolved. An empty code, or stdin at EOF, is terminal. A non-TTY
+  stdin fails before any credential is submitted. The wrapper passes
+  docker `-i` only when stdin and stdout are TTYs, so a piped run gets a
+  closed stdin.
 - **One shot per run.** One credential submission and at most one 2FA
-  submission; any failure after that is terminal — the provider's own
-  on-page message is logged verbatim and the run exits nonzero.
-  Re-running is the recovery path.
-- **Terminal pages end the run.** The gateway notice route family
-  (`#/information/<code>`) stops all interaction immediately; a lockout
-  message additionally says the account must be unlocked with Schwab
-  directly. Unrecognized interstitials fail with a capture instead of a
-  silent multi-minute wait.
+  submission. Any failure after that is terminal: the provider's on-page
+  message is logged verbatim and the run exits nonzero. Re-running is
+  the recovery path.
+- **Terminal pages end the run.** The gateway's notice route family
+  (`…/ui/host/#/information/<code>`) stops all interaction at once
+  (exit 7). A lockout message adds that Schwab must unlock the account.
+  An unrecognized interstitial fails with a capture (exit 8) instead of
+  a silent multi-minute wait.
 
-Confirmed against the locked account with one instrumented run per
-collector (captures in the debug cache): both flows stop on the notice
-route after the single credential submission, with no further
-interaction. The gateway's content catalog maps that notice code to the
-identity-verification wording ("we need to verify your identity before
-proceeding … please call") — a lockout marker — while two sibling codes
-render a generic "there's a problem logging you in" and stay
-non-lockout. The notice text renders into the page's `#msgLabel`
-container via an async fetch seconds after the route change, so message
-extraction polls for that container before falling back to body text
-(an immediate body read yields only footer boilerplate).
+Notice-page details:
+
+- The gateway's content catalog maps one notice code to the
+  identity-verification wording ("we need to verify your identity
+  before proceeding … please call"). The flow treats it as a lockout.
+  Two sibling codes show a generic "there's a problem logging you in"
+  and are not lockouts.
+- The notice text renders into the page's `#msgLabel` container through
+  an async fetch, seconds after the route change. Message extraction
+  polls for that container before it falls back to the body text. An
+  immediate body read yields only footer boilerplate.
 
 ### 3.2 `download.py` — bronze fetch
 
@@ -130,12 +103,12 @@ Schwab specifics:
 - Drops a `run.json` status manifest into the run dir: `in-progress`
   at run-dir creation, atomically overwritten with `complete` (plus a
   few counts, no identifiers) once every artefact is written. It is the
-  forward completeness signal `prune` keys on; `load` never reads it.
-  `--dry-run` returns before the run dir exists, so it leaves no shell
-  and no manifest.
+  completeness signal `prune` and `load` key on: `load` skips a dump
+  whose status is present and not `complete`. `--dry-run` returns
+  before the run dir exists, so it leaves no shell and no manifest.
 - Never imports or calls write endpoints (`place_order`, etc.).
-  This is enforced by code review, documented in `AGENTS.md`, and
-  reinforced by registering the Schwab app with order rate-limit 0.
+  This is enforced by code review and documented in `AGENTS.md`. An
+  order rate limit of 0 on the Schwab app adds a safeguard.
 
 **Bronze compression.** Each of the six data artefacts
 (`account_numbers.json`, `user_preference.json`,
@@ -173,18 +146,17 @@ a `load --force` rebuild must produce identical silver.
   incremental.** Silver does the dedup. This is cheaper than tracking
   "since when" cursors and survives missed runs trivially.
 - **Filename should not leak identifiers.** Schwab returns account
-  hashes which would be safe-ish, but we still don't put them in
+  hashes which would be safe-ish, but they still stay out of
   filenames; account dimension lives inside payloads. Doing `ls` on
   a bronze dir reveals only artefact kinds, not which accounts are
   involved.
 - **Filter to what matters at the dump layer, not silver.** For
-  Schwab open orders, we filter to non-terminal statuses *in the
-  dump* and discard everything else — order history is out of
+  Schwab open orders, the dump keeps only non-terminal statuses
+  and discards everything else — order history is out of
   scope. Data that would only be thrown away is not captured.
 - **A `--dry-run` mode that validates auth and lists accounts but
-  doesn't fetch.** Used both for connectivity testing and by agents
-  exploring the codebase under the AGENTS.md "don't burn live API
-  quota" rule.
+  doesn't fetch.** It refreshes the stored token and signs in to
+  nothing, so it serves as a connectivity test that fires no 2FA.
 
 ### 3.3 `load.py` — bronze → silver
 
@@ -207,7 +179,11 @@ Three discipline points:
 
 3. **Skip already-loaded dumps** by checking `dump_runs` at the top
    of the load function. The unique `snapshot_at` PK on `dump_runs`
-   ensures re-running on the same bronze dir is a no-op.
+   ensures re-running on the same bronze dir is a no-op. A dump whose
+   `run.json` status is present and not `complete` is skipped too and
+   stays pending (`collectorkit.bronze.is_loadable_status`). Its
+   artefacts are partial: loading them would record the dump as done
+   with, say, accounts but no positions.
 
 The loader is also where minor "cleanup-on-the-way-in" lives —
 specifically, stripping per-request noise fields that would otherwise
@@ -224,29 +200,26 @@ silver as its uncompressed form (§3.2).
 
 ### 3.4 `prune.py` — reclaiming bronze
 
-Owns "delete run dirs that are not complete dumps". A thin wrapper over
-the shared `collectorkit.prune` engine (frozen, unit-tested), it runs
-host-side like `load`.
+A thin wrapper over the shared `collectorkit.prune` engine, run
+host-side like `load`. The safety envelope is the engine's
+([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).
 
-schwab-api is a pure REST collector, so a run dir holds only JSON load
-inputs plus the `run.json` manifest — there are **no bronze-resident
-debug artefacts** to sweep (the browser-flow captures / traces belong to
-`login.py` and land in a separate debug dir outside bronze). So the
-engine's `debug_subdirs` is empty and `prune`'s only category is whole
-non-complete run dirs: a `download` that crashed or was interrupted
-before finishing.
+A run dir holds the JSON load inputs, the `run.json` manifest, and,
+only under `download --debug`, a `screenshots/` subdir with the HTTP
+trace. `debug_subdirs` is that one subdir. The browser captures and
+traces belong to `login.py` and land in the debug dir outside bronze,
+which the wrapper passes to `prune` as `--debug-dir`. So `prune` has
+three categories: `screenshots/` of complete dumps, whole non-complete
+dumps (a `download` that crashed or was interrupted), and idle entries
+of the debug dir.
 
-Completeness comes from the `run.json` status (`in-progress` ⇒
-non-complete, `complete` ⇒ keep). A dump carrying no status falls back to
-the presence of `open_orders.json`, the last unconditional artefact a
-complete run writes. The safety envelope is the engine's: an unreadable/corrupt
-manifest is UNKNOWN and never deleted; a complete dump's load inputs are
-never touched; symlinks and non-run entries at the bronze root (the
-silver DB) are skipped; and an in-flight guard keyed on recent write
-activity (`--min-age-hours`, default 1) protects a long transaction
-backfill that is still writing `transactions_NNN.json`. Deleting a
-non-complete dump only removes bronze — silver rows already sourced from
-it persist until the next `load --force` rebuild.
+Completeness comes from the `run.json` status. A dump carrying no
+status falls back to the presence of `open_orders.json`, the last
+unconditional artefact a complete run writes. The in-flight guard
+(`--min-age-hours`) protects a long transaction backfill that is still
+writing `transactions_NNN.json`. Deleting a non-complete dump only
+removes bronze. Silver rows already sourced from it persist until the
+next `load --force` rebuild.
 
 Bronze compression is inert to `prune` for a manifest-bearing dump —
 classification is status-based, and the data artefacts are load inputs
@@ -338,7 +311,7 @@ When in doubt, leave it in `payload`.
 ### 4.3 Temporal model: monotemporal on source-time
 
 Silver stores facts at **the time the source claims they happened**,
-not the time we ingested them. The ingest time only matters for
+not the time they were ingested. The ingest time only matters for
 debugging and is *not* a queryable column.
 
 Why monotemporal rather than bitemporal? Bitemporal databases solve
@@ -348,7 +321,7 @@ For personal portfolio analysis, the question "what was true" suffices
 and bitemporal is overkill.
 
 The price of monotemporal: when an upstream source amends a past
-event, the prior version is lost. We accept that. See §4.5.
+event, the prior version is lost. That loss is accepted; see §5.
 
 ### 4.4 Two row archetypes: snapshots and events
 
@@ -414,7 +387,7 @@ source-stable event ID. For Schwab: `transactions` only.
   column `timestamp` index would be redundant.
 
 **Why not three archetypes (e.g. "slowly changing dimension")?** The
-two-archetype model covers what we have. Resist adding a third until
+two-archetype model covers every table here. Resist adding a third until
 a real third pattern shows up.
 
 ### 4.5 Indexing strategy: minimal
@@ -447,9 +420,11 @@ The mapping is stable per Schwab app. silver uses the **hash** as
 `{plaintext: hash}` lookup from `account_numbers.json` at the start
 of each dump load and translates plaintext→hash before insert.
 
-The plaintext stays inside the JSON `payload` for traceability, but
-doesn't appear in any promoted column. Doing `SELECT account_external_id
-FROM ...` on the silver DB never returns a real Schwab account number.
+The plaintext stays inside the JSON `payload` for traceability. One
+promoted column carries it: `accounts.account_number` (migration 0004),
+which lets gold bridge schwab-api accounts to schwab-web's without a
+`json_extract` per row. Every other table keys on the hash, so
+`account_external_id` never holds a real Schwab account number.
 
 **For other banks:**
 - UBS PSN doesn't hash account numbers, but it does have a
@@ -501,8 +476,9 @@ original for anyone who genuinely needs to trace a specific request.
 - Ends with `INSERT INTO schema_meta (silver_schema_version, applied_at)
   VALUES (N, CAST(strftime('%s','now') AS INTEGER));` — this is the
   loader's "migration completed" marker.
-- Is idempotent against partial application by design (or has
-  explicit guards), so a crashed migration can be retried.
+
+A crash mid-migration can leave a partial schema. The recovery is
+`load --force`, which deletes the silver DB and rebuilds it from bronze.
 
 The loader:
 1. On startup, reads the maximum `silver_schema_version` from
@@ -528,7 +504,7 @@ silver and pass it downstream. Two coherent ways out:
 2. Fill it in for equities by hitting a second Schwab endpoint that
    *does* return descriptions (`/marketdata/v1/instruments`).
 
-We chose (2) — the `/instruments` lookup runs by default, with a
+schwab-api takes (2): the `/instruments` lookup runs by default, with a
 `download.py --no-instruments` opt-out, because the metadata is
 slow-changing and the extra round-trip needn't fire on every dump.
 The fetched payload lands in a
@@ -586,7 +562,7 @@ silver consumer sees one table; the source is transparent.
 The Schwab Trader API does **not** expose the tax-registration / wrapper
 of an account (IRA, Roth IRA, Rollover IRA, SEP-IRA, Inherited IRA,
 Coverdell ESA, UTMA/UGMA, 529, taxable, trust, etc.) as a structured
-field. Both endpoints that touch accounts were probed exhaustively:
+field. No endpoint that touches accounts carries one:
 
 | Endpoint | Wrapper-shaped field? |
 |---|---|
@@ -675,17 +651,6 @@ Will need adaptation:
   a per-asset-class JSON shape in `payload` — pick after looking at
   real bronze samples.
 
-A new collector's recommended build order is:
-1. Implement `login.py` first (credentials gate everything
-   else). Cap effort at "mints a token / verifies a key".
-2. Implement `download.py` and write the bronze format to disk. Stop
-   here, inspect real bronze samples, *then* design silver.
-3. Draft `migrations/0001_initial.sql` after seeing real bronze.
-4. Implement `load.py` with the migration runner + one transaction
-   per dump.
-5. Load a couple of dumps and sanity-check counts/round-tripping
-   against the bronze JSON before considering silver "done".
-
-The order matters: silver schemas designed in the abstract are
-always wrong in some specific way that becomes obvious 30 seconds
-after the first real bronze sample lands.
+A new collector's build order is the phased playbook in
+[NEW-COLLECTOR-PROMPT.md](../../NEW-COLLECTOR-PROMPT.md#phases). Its
+core rule holds here too: inspect real bronze before designing silver.

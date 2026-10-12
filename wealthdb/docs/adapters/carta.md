@@ -4,17 +4,20 @@ Projects the **carta** silver (private-market holdings on carta.com —
 see `collectors/carta/`) into canonical gold change records.
 `internal/silver/carta/`.
 
-Carta is the first wealthdb source for **non-public-market securities**:
-direct private-company equity + equity-comp (shares, option grants with
-strike + vesting, RSUs/RSAs, SAFEs/notes, warrants) and LP interests in
-venture/PE funds. None has an ISIN/CUSIP/symbol or a quotable market price, so
-the adapter introduces two private asset classes and values the fund at its
-NAV and cap-table equity at the holder's per-date fair-market-value (from the
-collector's valuation series), rather than inventing prices.
+Carta holds **non-public-market securities**:
 
-Single-source. The silver is a per-position **change delta** series (collector
-`DESIGN.md` §5.1) that the adapter forward-fills into a complete portfolio at
-every event date (§5), plus a `cash_flows` ledger projected as double-entry
+- direct private-company equity and equity compensation: shares, option
+  grants with strike and vesting, RSUs/RSAs, SAFEs/notes, warrants;
+- LP interests in venture/PE funds.
+
+None has an ISIN/CUSIP/symbol or a quotable market price. The adapter
+classes them under the private asset classes (§6) and invents no prices. A fund is
+valued at its NAV. Cap-table equity is valued at the holder's per-date
+fair market value, from the collector's valuation series.
+
+The silver is a per-position **change delta** series (collector
+`DESIGN.md` §5.1). The adapter forward-fills it into a complete portfolio
+at every event date (§5). A `cash_flows` ledger becomes double-entry
 transaction pairs on the custody account (§7).
 
 ## 1. Silver source
@@ -74,9 +77,10 @@ One SQLite DB (`$XDG_DATA_HOME/wealthdb/carta/carta.db`). The relevant tables:
 
 ## 4. Account taxonomy
 
-**One** account for the whole Carta portfolio — like a brokerage account that
-holds many securities. All values are adapter defaults; config-side
-`account_overrides` win on overlap.
+**One** account for the whole Carta portfolio, like a brokerage account that
+holds many securities. All values are adapter defaults. Config
+`account_overrides` can replace `tax_wrapper` and `management_style`
+([../DESIGN.md](../DESIGN.md) §5.1).
 
 - **account_kind** = `custody`. Carta safekeeps / administers private
   securities and fund interests; it is not a trading brokerage.
@@ -118,7 +122,7 @@ reads the whole portfolio; a dry run, or a manifest naming no entity, says
 nothing about the roster. That dump time is a snapshot time: the roster is
 emitted without the company and its lots, and every other position carries
 the date of the delta or NAV it is built from as `valued_at`
-(`silver.Removals`, wealthdb/docs/DESIGN.md §6.4).
+(`silver.Removals`, [../DESIGN.md](../DESIGN.md) §6.4).
 
 **Cap-table** (the held `securities` lots of one company → one position, whose
 (`asset_class`, `vehicle`) pair is derived from the aggregated security types —
@@ -212,8 +216,8 @@ figure less every such distribution so far:
   of its `tax_year`, and it is a snapshot day;
 - two documents of one fund and tax year are copies of one K-1, so the
   later document counts;
-- the book value never goes below zero; the load counts the funds held
-  at zero;
+- the book value never goes below zero; the load logs how many
+  positions it held at zero;
 - a reduced book value is stamped `derived` / `paid_in` / `included`, and
   its payload carries `paid_in` and `property_distributed`.
 
@@ -259,11 +263,9 @@ separate non-quotable private holdings from listed securities; the security
 type stays queryable in the payload (a private ESO is not lumped with an
 exchange-traded `option`, nor a private share with public equity).
 
-Neither `asset_class` nor `vehicle` carries a SQL CHECK — both are
-Go-validated (`AssetClass.Valid()` / `Vehicle.Valid()`, and the combination
-via `ValidTaxonomyPair`, in `internal/canonical/taxonomy.go`), so no gold
-migration was needed for the enums — only migration `0013` widening the
-`silver_sources.silver_kind` whitelist to admit `carta`.
+Neither `asset_class` nor `vehicle` carries a SQL CHECK. Both are
+validated in Go: `AssetClass.Valid()` and `Vehicle.Valid()`, and the
+combination by `ValidTaxonomyPair`, in `internal/canonical/taxonomy.go`.
 
 ## 7. Transactions
 
@@ -284,14 +286,14 @@ instrument; the buy / sell legs carry the share lot + price.
 | `convertible_purchase` | `deposit` (+) + `buy` (−, no lot — a SAFE or note buys no shares yet) |
 | `capital_call` | `deposit` (+) + `contribution` (−) |
 | `exit`         | `sell` (+, with lot) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
-| `distribution` | `distribution` (+) + `withdrawal` (−) |
+| `distribution` | `distribution` (+) + `withdrawal` (−); a $0 distribution omits the `withdrawal` too |
 
-A company's side-loaded `<account_id>-transactions.csv` (collector DESIGN.md
-§5.2) instead names canonical kinds directly (`sell` / `withdrawal` /
-`deposit` / `buy` / `contribution`), which the adapter emits **1:1** — the CSV
-supplies both halves of an exit (a sale plus the withdrawals it splits
-into), so they net to 0 without auto-pairing and override the
-synthesized $0 exit. A fund's side-loaded file can itemise calls made before
+A company's side-loaded `<entity_external_id>-transactions.csv` (collector
+DESIGN.md §5.2) instead names canonical kinds directly (`sell` /
+`withdrawal` / `deposit` / `buy` / `contribution`). The adapter emits
+those rows **1:1**. The CSV supplies both halves of an exit, a sale plus
+the withdrawals it splits into, so they net to 0 without auto-pairing.
+The collector derives no $0 exit for a company that has the file. A fund's side-loaded file can itemise calls made before
 Carta's coverage; they reach silver as `capital_call` / `distribution` rows
 and pair like the fund's own.
 
@@ -305,32 +307,34 @@ figures in the fund position payload.
 
 ## 8. Change number & window
 
-`ChangeWindow` triggers on any `dump_run` past the watermark (a new download),
-and `NewChangeNumber` is `MAX(dump_runs.snapshot_at)`, so an idle reload is a
-no-op. The window itself spans the **event-dated content** (MIN/MAX
-`snapshot_at` across `entities` / `securities` / `fund_metrics`) and every
-`cash_flows` date, **not** the download time: the reconstructed deltas can
-sit years before the download (an exercise, an acquisition, a quarterly NAV) and
-must fall in-window to reach gold, and a fund's calls can precede its first
-statement. `Status` reports the content span widened by the fund carry days
-as the observable range, with `LatestChangeNumber` = the newest dump.
-The source is observed through the newest dump that is not a dry run
-(DESIGN.md §6.4).
+`ChangeWindow` triggers on any `dump_run` past the watermark (a new
+download). `NewChangeNumber` is `MAX(dump_runs.snapshot_at)`, so an idle
+reload is a no-op ([../DESIGN.md](../DESIGN.md) §6.4).
+
+The window spans the **event-dated content**, not the download time:
+
+- MIN/MAX `snapshot_at` across `entities`, `securities` and
+  `fund_metrics`. The reconstructed deltas can sit years before the
+  download: an exercise, an acquisition, a quarterly NAV.
+- every `cash_flows` date. A fund's calls can precede its first
+  statement.
+- the time of each dump that stopped listing a company (§5), which can
+  lie after every mark.
+
+`Status` reports the content span, widened by the fund carry days and
+the removal times, as the snapshot range. `LatestChangeNumber` is the
+newest dump. The source is observed through the newest dump that is not
+a dry run.
 
 ## Open questions / future work
 
-- **Cap-table valuation.** Held shares are valued per date — share count from
-  the certificate issue dates × the FMV in effect at each snapshot. When a
-  company exits, Carta purges its historical 409A timeline, so an exact
-  per-date FMV comes from a side-loaded valuation override
-  (`<account_id>-valuations.csv` in the bronze root); absent one, the collector falls
-  back to the FMV-at-last-exercise — exact from the last exercise onward, but
-  over-stating earlier dates (collector `DESIGN.md` §5.1).
-- **Per-company aggregation (done).** Each company is one gold position; its
-  share certs / option grants are aggregated into it (the per-lot detail
-  rides in the position payload), and its share certificates are its
-  `position_lots`, mirroring how a public brokerage account holds one
-  position per security with tax lots underneath.
-- **Vesting in gold.** Deliberately silver-only. If a future need arises, a
-  dedicated gold table (not the positions/transactions facts) would be the
-  place.
+- **Cap-table valuation.** Held shares are valued per date: the share
+  count from the certificate issue dates times the FMV in effect at each
+  snapshot. When a company exits, Carta purges its historical 409A
+  timeline. An exact per-date FMV then comes from a side-loaded
+  valuation override (`<entity_external_id>-valuations.csv` in the bronze root).
+  Without one, the collector falls back to the FMV at the last exercise.
+  That is exact from the last exercise onward and over-states earlier
+  dates (collector `DESIGN.md` §5.1).
+- **Vesting in gold.** Vesting stays silver-only. A gold home for it
+  would be a dedicated table, not the positions or transactions facts.

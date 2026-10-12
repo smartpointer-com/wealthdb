@@ -36,7 +36,7 @@ that needs to converge them.
 
 Every Schwab statement PDF has the full account number printed
 in its first-page header (typically `Account Number:
-1234-5678`). The web loader parses that header
+NNNN-NNNN`). The web loader parses that header
 (`pdf_parsers.parse_account_number` — both the 2017-2019 inline
 form and the 2020+ label-and-value-on-consecutive-lines form)
 and writes the value into `accounts.payload` under
@@ -44,13 +44,12 @@ and writes the value into `accounts.payload` under
 The value is stored **exactly as printed — dash kept**; the key
 is set only when all of an account's statements agree on the
 number (a disagreement logs a warning and leaves the key
-absent). Accounts loaded before the parser existed are
-backfilled from the bronze statement PDFs on the next `load`
-run (header-only re-read; no `--reparse` needed), and a key
-first set by an incremental load is re-verified the same way
-against every statement in bronze — the key's end state
-depends only on the statements in the bronze tree, never on
-the order they were loaded in. Then:
+absent). An account still lacking the key is filled from the
+bronze statement PDFs on the next `load` run (a header-only
+re-read; no `--reparse` needed). A key first set by an
+incremental load is re-verified the same way against every
+statement in bronze. So the key depends only on the statements in
+the bronze tree, never on the order they were loaded in. Then:
 
 ```sql
 -- Bridge. Normalise to digits-only on both sides: the api's
@@ -77,16 +76,20 @@ the api hashValue is opaque).
 | | `schwab-web` | `schwab-api` |
 | --- | --- | --- |
 | Column | `transactions.activity_id` | `transactions.activity_id` |
-| Value | Synthetic SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index>` (sha256-independent) | Schwab-supplied `activityId` |
+| Value | Synthetic SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|ordinal>` (sha256-independent) | Schwab-supplied `activityId` |
 | Stable across re-loads? | Yes (deterministic; sha256-churn-safe) | Yes |
 | Joinable? | **No** — different value spaces |
 
 All four web feeds — `statement_pdf`, `tx_history_json`, `form_1099b`,
 `third_party_distribution` — share the **same** synthetic-id scheme
-(content + ordinal index, sha256-independent). So they collide
-deterministically only when their content genuinely matches; in
-general the same economic event carries a *different* id per feed and
-gold reconciles by content, not by id (see §4 + §8).
+(content + an ordinal, sha256-independent). For a document the
+ordinal is the row's position in its parsed rows. For a tx-history
+export it counts the earlier rows of the export with the same date,
+amount, description and symbol, so exports of overlapping windows
+give a row one id. Ids collide across feeds only when the content
+genuinely matches; in general the same economic event carries a
+*different* id per feed, and gold reconciles by content, not by id
+(see §4 + §8).
 
 ### Gold-layer bridge
 
@@ -111,8 +114,8 @@ substitutes synthetic descriptions.
 
 ## 3. Schwab regenerates PDFs per download (sha256 churn)
 
-Empirically observed across multiple `schwab-web` scrape
-runs: the **same logical statement** (same account, same period,
+Schwab re-renders a statement on each download: the
+**same logical statement** (same account, same period,
 same Schwab-supplied filename) downloaded in two different
 sessions yields **different sha256s** — multiple distinct
 sha256s for one statement. Schwab almost certainly
@@ -123,7 +126,7 @@ Effects on the web silver:
 
 - `documents` is keyed on `sha256`, so it preserves every
   physical fetch (no data loss). But the **logical** document
-  count is roughly half the row count.
+  count is lower than the row count.
 - `transactions` are unaffected: the synthetic `activity_id` is
   sha256-independent and the load gates on `logical_doc_key`, so a
   re-download does not duplicate rows (see below).
@@ -148,14 +151,18 @@ JOIN logical_docs ld
   ON d.sha256 = ld.canonical_sha256;
 ```
 
-Transactions are **already deduped at the silver level**:
-`activity_id` is sha256-independent and
-`INSERT OR IGNORE` prevents duplicate rows even if the same logical
-statement is re-downloaded with a new sha256. Gold does **not**
-need a second dedup pass for sha256-churn duplicates; the silver is
-clean. The only remaining overlap gold needs to handle is the
-two-source case (§7: `statement_pdf` and `tx_history_json` covering
-the same logical event).
+Within one feed, transactions are **deduped at the silver level**:
+
+- a statement re-downloaded with a new sha256 keeps its ids, since
+  `activity_id` is sha256-independent and `INSERT OR IGNORE`
+  skips a row already held;
+- a tx-history row keeps one id across exports of overlapping
+  windows (§2). Migration 0009 collapses duplicate rows held under
+  ids keyed on a row's position in the export file.
+
+Gold does **not** need a second dedup pass for these duplicates. The
+overlap gold still handles is across feeds (§7: `statement_pdf` and
+`tx_history_json` covering the same logical event).
 
 ## 4. Tax-form structure has no api equivalent
 
@@ -203,8 +210,7 @@ recomputed from the statement-transaction feed
 
 ## 6. Asks for `schwab-api` (none)
 
-The api silver already does the right thing in every spot we
-checked:
+The api silver already carries what the merge needs:
 
 - **`account_number` is promoted as a column on `accounts`**
   (api migration 0004). The api gets `accountNumber` back from
@@ -224,7 +230,7 @@ the web feed is and isn't carrying:
 
 | Gap | Impact on gold |
 | --- | --- |
-| pdf_parsers occasionally returns `amount=None` on Sale rows | A handful of missing transactions per year; gold can detect via a row-count sanity check |
+| pdf_parsers occasionally returns `amount=None` on Sale rows | Some Sale rows lose their amount; gold can detect the gap with a row-count sanity check |
 | Overlapping transaction sources (`statement_pdf` + `tx_history_json` + `form_1099b`) | Same logical event can land more than once with different synthetic `activity_id`s. Gold dedupes statement↔tx-history by (account, timestamp, amount, ±description) preferring `tx_history_json`, and leaves `form_1099b` out of its transactions (§8.1) |
 | Per-row "More"-modal data may be absent | Captured by default (~1 click/transaction); `--no-more-detail` opts out. When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
 | `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold reads the name as a ticker or an option contract and bridges it like any web key (§8.1) |
@@ -277,8 +283,11 @@ cash, once.
   `quantity`, and `market_value` (the external-flow magnitude). The
   holding drops by the transferred quantity across the letter date.
 - **Cash transfers** (`payload.transfer_kind == "cash"`, `method` ∈
-  {`wire`, `schwab_third_party`}) **may overlap** a `statement_pdf` /
-  `tx_history_json` cash debit for the same movement. Run them through
+  {`wire`, `schwab_third_party`}) are money leaving the household, so
+  a cash `kind='Transfer Out'` maps to `TxKindWithdrawal`, not
+  `TxKindTransferOut`. A cash transfer **may overlap** a
+  `statement_pdf` / `tx_history_json` cash debit for the same
+  movement. Run them through
   the cross-feed external-flow dedup (3-day / 0.5%-amount
   tolerance); when matched, treat `third_party_distribution` as
   authoritative (it names the counterparty). Do **not** sum a cash
@@ -292,8 +301,9 @@ cash, once.
 - `sourceFORM1099B = "form_1099b"` and
   `sourceThirdPartyDistribution = "third_party_distribution"`
   constants sit alongside `sourceStatementPDF` / `sourceTxHistoryJSON`.
-- `webKind` maps `"Transfer Out"` / `"Transfer In"` →
-  `TxKindTransferOut` / `TxKindTransferIn`.
+- `webKind` maps `"Transfer Out"` to `TxKindTransferOut` for a
+  securities transfer and to `TxKindWithdrawal` for a cash one
+  (`distributionIsCash`), and `"Transfer In"` to `TxKindTransferIn`.
 - `transactionsBeforeAPIStart` skips the `form_1099b` rows;
   `RealizedLots` (`realized.go`) reads `closed_lots`.
 - `third_party_distribution` rows route through `externalFlowKinds`

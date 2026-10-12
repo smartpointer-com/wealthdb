@@ -1,9 +1,10 @@
 # web — Metabase BI server (optional)
 
 A local, dockerized [Metabase](https://www.metabase.com/) for running
-and visualizing analytics over the **gold** DuckDB database. Optional,
-fully dockerized (no host Java/Metabase), read-only against your data,
-and reachable only over an SSH tunnel + Metabase's own login.
+and visualizing analytics over the **gold** DuckDB database. It is
+optional and fully dockerized (no host Java or Metabase). It only reads
+the data, and it is reachable only over an SSH tunnel plus Metabase's
+own login.
 
 It comes with eight dashboards: Wealth Overview, Allocation, Returns,
 Gains, Spending, Income, Cash Flow and Data Freshness. Each but Gains
@@ -18,16 +19,13 @@ wealthdb web start | stop | status | restart | refresh | logs
 
 ## Why a snapshot
 
-DuckDB is single-writer across processes: a long-lived Metabase
+DuckDB is single-writer across processes. A long-lived Metabase
 connection would hold a lock that makes every `wealthdb load` fail at
-open — a load does not queue behind the server. (Between two engine
-commands the exclusion is the engine's own write mutex, a
-`<gold_db>.wealthdb.lock` sidecar beside the database — an expected
-file, safe for a copy to skip.) So Metabase never reads
-the live gold file — `wealthdb web start` serves it a read-only
+open; a load does not queue behind the server. So Metabase never reads
+the live gold file. `wealthdb web start` serves it a read-only
 **snapshot copy**, and `wealthdb web refresh` re-copies it. Loads never
-contend with the server; the dashboards show data as of the last
-refresh. See [DESIGN.md](DESIGN.md).
+contend with the server, and the dashboards show data as of the last
+refresh. See [DESIGN.md](DESIGN.md) §2.
 
 ## Enable it
 
@@ -41,9 +39,9 @@ Add a `web` block to `wealthdb.cfg` (the only config it needs):
 `default_currency` when it is USD, CHF, EUR or GBP, and in USD
 otherwise; each dashboard's Currency picker switches between the four.
 
-Operational knobs are env overrides (not in
-the config file): `WEALTHDB_WEB_IMAGE`, `WEALTHDB_WEB_CONTAINER`,
-`WEALTHDB_WEB_DATA_DIR`, `WEALTHDB_WEB_BIND` (`both`|`v4`|`v6`).
+Operational knobs are environment variables, not config: the image,
+the container name, the data dir, the address family to bind, and the
+admin login. `wealthdb web help` lists them.
 
 ## Quick start
 
@@ -56,11 +54,11 @@ wealthdb web build         # or: make build-web
 #    pre-adds the gold database, and creates the report models mirroring
 #    the CLI plus the dashboards — no "tell us about your company" wizard.
 wealthdb web start
-#    -> prints the admin login. A generated password is saved to
-#       $XDG_DATA_HOME/wealthdb/web/admin-password.txt (chmod 600);
-#       or set WEALTHDB_WEB_ADMIN_PASSWORD yourself.
+#    -> prints the admin login. The password comes from
+#       WEALTHDB_WEB_ADMIN_PASSWORD, or is generated once and saved to
+#       $XDG_DATA_HOME/wealthdb/web/admin-password.txt (chmod 600).
 
-# 3. From your laptop, forward the port and open it (IPv4 loopback):
+# 3. From a laptop, forward the port and open it (IPv4 loopback):
 ssh -L 3000:127.0.0.1:3000 <this-host>
 open http://127.0.0.1:3000/        # log in as admin@wealthdb.local
 
@@ -81,7 +79,7 @@ wealthdb load -a && wealthdb web refresh
   `~/.secrets/wealthdb-web.env`) or use the generated one saved to
   `admin-password.txt` (chmod 600); change it in the UI anytime.
 - The gold snapshot is mounted **read-only**; Metabase cannot write to
-  your data.
+  the data.
 
 ## Layout
 
