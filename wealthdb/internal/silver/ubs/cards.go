@@ -29,10 +29,11 @@ import (
 // than assume it.
 
 // hasCardTables reports whether this silver has been migrated to the
-// schema that carries cards. A DB written before collector migration
-// 0007 has none, and must keep loading rather than fail.
+// schema that carries cards: every card table the projection reads,
+// which collector migration 0007 creates together. A DB written before
+// it has none, and must keep loading rather than fail.
 func (r *webReader) hasCardTables(ctx context.Context) (bool, error) {
-	return silver.HasTables(ctx, r.db, "card_accounts", "card_transactions")
+	return silver.HasTables(ctx, r.db, "card_accounts", "card_transactions", "card_invoices")
 }
 
 // appendWebCards emits, per snapshot in the window, one AccountChange

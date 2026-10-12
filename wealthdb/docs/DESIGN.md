@@ -980,7 +980,7 @@ Per-source flow classification can never pair the two legs of a
 cross-custodian move: the sending source books a real withdrawal/journal, the
 receiving one a real deposit, and each is correct at its own boundary — but an
 aggregate containing BOTH accounts double-represents the move (the
-`unmatched_transfers=N` population is dominated by exactly these legs).
+`unmatched_transfers=N` count includes exactly these legs).
 `returns_transfer_matching` closes that gap:
 
 ```json
@@ -2210,9 +2210,9 @@ UPDATE, so the seen-at expansion never depends on recency.
 The loader folds each load's dimension emissions down to one record
 per entity before the upsert runs (`gold.ChangeAccumulator`).
 Adapters re-emit accounts / instruments alongside every snapshot
-they walk — tens of thousands of emissions folding onto a few
-hundred entities — and executing the guard once per emission made
-dimension upserts dominate load time. The fold applies records in
+they walk, so emissions far outnumber entities, and executing the
+guard once per emission made dimension upserts dominate load time.
+The fold applies records in
 arrival order with the guard semantics above. Because both fold and
 SQL are symmetric-coalescing per column, the folded single upsert
 stores exactly what record-by-record upserts would. Emission order
@@ -2456,10 +2456,13 @@ describes it.
 
 ### 10.7 History reports (time series)
 
-For charting value over time, each snapshot report has a
-`report_*_history(p_ccy)` variant (migration 0022, plus `report_sources_history`
-in 0025): `report_global_history`, `report_sources_history`,
-`report_accounts_history`, `report_portfolios_history`, `report_positions_history`.
+For charting value over time, five snapshot reports have a daily series in
+every reporting currency (§10.8): `report_global_history_multi()`,
+`report_sources_history_multi()`, `report_accounts_history_multi()`,
+`report_portfolios_history_multi()` and `report_positions_history_multi()`.
+The accounts series also has a single-currency form,
+`report_accounts_history(p_ccy)`, which the returns engine reads (§10.9).
+The other four have none: migration 0124 drops them, as nothing read them.
 Each emits one row per entity per UTC day, from the first snapshot to today,
 with the value **carried forward** — on a day with no new snapshot the most
 recent snapshot's value is repeated. Positions and cash are carried
@@ -2468,9 +2471,9 @@ chosen by `snapshot_at` so multiple same-day dumps resolve to the latest. Each
 line is valued **once** at its own snapshot's FX day, then expanded onto a daily
 spine via an at-or-before ASOF join — so per-day compute stays cheap. A day an
 entity has no line on at all is omitted (a day it is observed at zero on is
-not: that emits an explicit 0 row). `report_global_history` is
-`Σ report_accounts_history`. The Metabase models wrap the **multi-currency**
-variants of these (§10.8), not the single-currency macros directly.
+not: that emits an explicit 0 row). `report_global_history_multi` is
+`Σ report_accounts_history_multi`. The Metabase models wrap the
+multi-currency series.
 
 The active snapshot is resolved **per key per day** — migration `0051`,
 `hist_active_pos()` / `hist_active_cash()`. Each key is ASOF-joined onto the day
@@ -2491,7 +2494,7 @@ the others carried. Four rules complete the picture:
   carry unit is the account's whole snapshot, so a holding absent from that
   account's next snapshot is sold rather than carried, and an explicit $0
   position row (`silver.ClosureMarkerBatch`) reads as zero. The per-position
-  series (`report_positions_history`) keeps the plain FX chain, as its
+  series (`report_positions_history_multi`) keeps the plain FX chain, as its
   point-in-time twin does — a display row has no sum for a NULL to poison.
 - **A later run that re-covers the key's company ends it.** Absence is evidence
   of closure exactly when the run that produced it was in a position to report
@@ -2534,7 +2537,7 @@ What follows for readers of these macros:
   CLI headline sits below a chart built on the history. Moving the CLI onto the
   same per-account resolution is open; nothing in gold depends on the two
   disagreeing.
-- **`report_positions_history.snapshot_at`** is the account's own active
+- **`report_positions_history_multi.snapshot_at`** is the account's own active
   snapshot, so it varies per account within a source-day.
 - **Cost:** the day spine is crossed with keys rather than with sources, so its
   cardinality grows by the accounts-per-source factor.
@@ -2562,16 +2565,16 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   every source macro; `source_lines_base(p_asof)` is the latest-snapshot line
   base behind `report_sources` / `report_sources_multi` (the history variants
   build their own all-snapshot lines, like the portfolio history macros).
-- **Single-currency macros on the same bases.** `report_accounts` /
-  `report_portfolios` and their `_history` variants read these bases too.
+- **Single-currency macros on the same bases.** `report_accounts`,
+  `report_portfolios` and `report_accounts_history` read these bases too.
 - **`report_x_multi` macros.** `report_{global,sources,accounts,portfolios,positions}_multi(p_asof)`,
   `report_transactions_multi(p_from, p_to)`, and the five `report_*_history_multi()`
   emit one value set per currency — `{positions_value,cash_balance,total_value}_{usd,chf,eur,gbp}`
-  plus the base trio. Each `_<ccy>` column equals `report_x(MAX, '<ccy>')` for
-  that currency by construction (same base, same conversion order; see the
-  helper below). They are Metabase-only, so they emit **DECIMAL** money
-  directly (no CLI VARCHAR-trim round-trip); the `web/provision.py` wrapper
-  then only casts epoch columns to TIMESTAMP.
+  plus the base trio. Where a single-currency form exists, each `_<ccy>`
+  column equals it for that currency by construction (same base, same
+  conversion order; see the helper below). They are Metabase-only, so they
+  emit **DECIMAL** money directly (no CLI VARCHAR-trim round-trip); the
+  `web/provision.py` wrapper then only casts epoch columns to TIMESTAMP.
 - **One conversion helper** (migration 0114). Every `_multi` macro converts
   through the same three objects:
   - `fx_reporting_legs`: each currency's rate to each reporting currency;
@@ -2707,9 +2710,10 @@ spend-side kinds, with the category resolved, less own-account moves,
 capital deployed, debt repayments and crossings to untracked plans.
 [SPENDING.md §1 and §2](SPENDING.md) list the excluded values and say
 why `card_spend` and `gift` stay in.
-Three reports sit over it, each with the `_multi` sibling §10.8
-describes (VARCHAR money in one currency for the CLI, DECIMAL in every
-reporting currency for the web):
+Three reports sit over it, with VARCHAR money in one currency for the
+CLI. The transaction-grain report also has the `_multi` sibling §10.8
+describes, with DECIMAL money in every reporting currency. The web
+reads that one (`web_spending`, below) and buckets the lines itself:
 
 | macro | grain |
 |---|---|
@@ -2742,8 +2746,9 @@ column registry.
 - **`merchant_name`** resolves as [SPENDING.md §7](SPENDING.md) describes:
   nothing on a delta line except a card bill's issuer, else the store's
   name, else the line's own `merchant_signature`. Every consumer inherits
-  the column by name: the spending reports and their `_multi` siblings,
-  `report_transactions`, `web_spending` and both CLI views.
+  the column by name: the spending reports,
+  `report_spending_transactions_multi`, `report_transactions`,
+  `web_spending` and both CLI views.
 - **Reconciliation.** Σ categories == the summary bucket, for every period and
   level. The identity is structural (one base, one sign split), so it cannot
   catch a wrong population: an over-eager internal-transfer match removes a row
@@ -2787,7 +2792,7 @@ income population ([INCOME.md](INCOME.md)):
   instrument where a line carries one;
 - the FX pair `income_lines_outccy` / `income_lines_multi`;
 - `report_income_summary`, `report_income_types` and
-  `report_income_transactions`, with `_multi` forms of the last two;
+  `report_income_transactions`, with a `_multi` form of the last;
 - `web_income`, `web_spending`'s shape over the income lines. `(uncategorized)`
   labels the type columns but not the payer, which a delta line never has.
 
@@ -3308,7 +3313,7 @@ what each would need:
   `relationship_id`. Useful for households with multiple legal
   entities; defer until a use case lands.
 - **`ubs.pending_securities`** — MT537 pending-settlement
-  snapshots. The majority of rows are "no activity" markers
+  snapshots. Many rows are "no activity" markers
   (`ACTI//N`); the rest are transient (positions show up in
   `holdings` once settled). Worth surfacing only if a use case
   cares about T+2 visibility.

@@ -23,8 +23,9 @@ SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
 )`
 
 // Status reports the observable snapshot + transaction ranges. The snapshot
-// range spans the event-dated content and the days a fund's carried value
-// changes (fundcarry.go); the transaction range is the cash-flow ledger
+// range spans the event-dated content, the days a fund's carried value
+// changes (fundcarry.go), and the removals and K-1 period ends
+// (snapshots.go); the transaction range is the cash-flow ledger
 // (transactions.go). LatestChangeNumber is the newest dump (the
 // live-time signal, one row per ingested bronze run, so an idle reload is a
 // no-op).
@@ -56,13 +57,17 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 			s.LatestSnapshotAt = t
 		}
 	}
-	// A dump that stopped listing a company is a snapshot at the dump
-	// time (snapshots.go), which can lie after every mark.
+	// A dump that stopped listing a company, and a K-1's period end, are
+	// snapshot times (snapshots.go) that can lie after every mark.
 	removals, err := c.removals(ctx)
 	if err != nil {
 		return s, err
 	}
-	s.LatestSnapshotAt = removals.Reach(s.LatestSnapshotAt)
+	inKind, err := c.readInKind(ctx)
+	if err != nil {
+		return s, err
+	}
+	s.LatestSnapshotAt = inKind.Reach(removals.Reach(s.LatestSnapshotAt))
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
 	}
@@ -111,8 +116,9 @@ func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int
 }
 
 // ChangeWindow triggers on any dump_run past `since` (a new download), but the
-// window spans the full event-dated content range and every cash-flow date, so
-// every reconstructed delta and every ledger row is re-emitted and reaches
+// window spans the full event-dated content range, every cash-flow date, and
+// the snapshot times a removal or a K-1's period end adds, so every
+// reconstructed delta and every ledger row is re-emitted and reaches
 // gold. NewChangeNumber is
 // MAX(dump_runs.snapshot_at) so an idle reload (no new dump) is a no-op.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
@@ -150,7 +156,11 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 		if err != nil {
 			return w, err
 		}
-		w.End = removals.Reach(w.End)
+		inKind, err := c.readInKind(ctx)
+		if err != nil {
+			return w, err
+		}
+		w.End = inKind.Reach(removals.Reach(w.End))
 	}
 	if newCN.Valid {
 		w.NewChangeNumber = newCN.Int64

@@ -748,8 +748,9 @@ which is the default, one number answers for both.
   in, and should read `capital_return`. This is the general version of
   the exclusion above. It needs something the rule hook does not carry:
   the account kind and the source, not a narrative.
-- **No `report_income_summary_multi`.** Spending publishes a
-  multi-currency sibling for all three of its reports; income for two.
-  Nothing reads either summary `_multi`, so the gap stays. An unread
-  macro is a shape to keep true for nothing. A Metabase card that needs
-  the summary in every reporting currency would close it.
+- **Only the transaction report has a `_multi` form.** The same holds
+  for spending. The web reads the lines in every reporting currency and
+  buckets them itself, so a summary or types `_multi` would have no
+  reader. An unread macro is a shape to keep true for nothing. A
+  Metabase card that needs either in every reporting currency would add
+  it.

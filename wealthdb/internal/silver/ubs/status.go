@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Status mirrors Schwab's adapter: -1 sentinels for "no rows".
@@ -15,7 +16,6 @@ import (
 // time. LatestChangeNumber = MAX(dump_runs.snapshot_at) so an
 // idle reload stays a no-op.
 func (c *psnReader) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
 	const q = `
 SELECT
     COALESCE((SELECT MIN(t) FROM (
@@ -44,27 +44,12 @@ SELECT
     COALESCE((SELECT MAX(timestamp)   FROM events),    -1),
     COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1)
 `
-	var oldS, newS, oldT, newT, latestRun sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q).Scan(&oldS, &newS, &oldT, &newT, &latestRun); err != nil {
-		return s, fmt.Errorf("ubs Status: %w", err)
+	s, err := silver.ContentStatus(ctx, c.db, "ubs", q)
+	if err != nil {
+		return s, err
 	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	if oldT.Valid {
-		s.OldestTransactionAt = oldT.Int64
-	}
-	if newT.Valid {
-		s.LatestTransactionAt = newT.Int64
-	}
-	if latestRun.Valid {
-		s.LatestChangeNumber = latestRun.Int64
-		// A nightly report states the holdings and the day's events.
-		s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = latestRun.Int64, latestRun.Int64
-	}
+	// A nightly report states the holdings and the day's events.
+	s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = s.LatestChangeNumber, s.LatestChangeNumber
 	return s, nil
 }
 

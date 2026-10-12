@@ -48,6 +48,22 @@ func (x *valorIndex) add(valor, isin string) {
 	x.byValor[valor] = isin
 }
 
+// valorIndex is buildValorIndex over this reader and the connection's
+// feed reader, psn. The first call reads it and later calls return the
+// same map: a connection pairs one reader of each silver, so psn is the
+// same on every call.
+func (r *webReader) valorIndex(ctx context.Context, psn *psnReader) (map[string]string, error) {
+	if r.valors != nil {
+		return r.valors, nil
+	}
+	x, err := buildValorIndex(ctx, psn, r)
+	if err != nil {
+		return nil, err
+	}
+	r.valors = x
+	return x, nil
+}
+
 // buildValorIndex reads every road both silvers offer.
 //
 // From the feed's instrument dimension, two — because it states the

@@ -57,6 +57,20 @@ func (k *InKind) PeriodEnds() []int64 {
 	return out
 }
 
+// Reach returns the later of t and the latest period end, or t when no
+// distribution is recorded. A window's end and a status's latest
+// snapshot reach to the latest period end: a K-1 can close a period
+// after every other dated row, and its snapshot has to fall inside the
+// window to be emitted.
+func (k *InKind) Reach(t int64) int64 {
+	for _, outs := range k.byKey {
+		for _, d := range outs {
+			t = max(t, d.periodEnd)
+		}
+	}
+	return t
+}
+
 // BookValue is the book value at t of the position key whose capital
 // paid in is paidIn, a figure stamped stamp: paidIn less every
 // distribution whose period ended on or before t, never below zero. A

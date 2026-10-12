@@ -40,7 +40,7 @@ func (c *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 	if err != nil {
 		return nil, err
 	}
-	mirrors, err := c.conversionMirrors(ctx, coverage)
+	mirrors, err := c.conversionMirrors(ctx)
 	if err != nil {
 		return nil, err
 	}

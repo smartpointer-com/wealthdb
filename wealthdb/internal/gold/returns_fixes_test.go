@@ -87,9 +87,9 @@ func TestRunReturnsUncoveredAccountCarries(t *testing.T) {
 	}
 	var spine float64
 	if err := db.QueryRowContext(ctx,
-		`SELECT CAST(total_value_outccy AS DOUBLE) FROM report_global_history('USD')
+		`SELECT CAST(total_value_usd AS DOUBLE) FROM report_global_history_multi()
 		  WHERE as_of_day = ?`, (end/86400)*86400).Scan(&spine); err != nil {
-		t.Fatalf("report_global_history: %v", err)
+		t.Fatalf("report_global_history_multi: %v", err)
 	}
 	got, gok := parseFloatPtr(g[0].EndValue)
 	if !gok || math.Abs(got-spine) > 1e-6 {

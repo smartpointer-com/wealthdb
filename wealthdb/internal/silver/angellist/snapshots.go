@@ -31,10 +31,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	k, err := c.readInKind(ctx)
+	k, dropped, err := c.readInKind(ctx)
 	if err != nil {
 		return nil, err
 	}
+	logDropped(dropped)
 	removals, err := c.removals(ctx)
 	if err != nil {
 		return nil, err

@@ -28,6 +28,11 @@ import (
 // handle (buildPSNStartByWebRel).
 type webReader struct {
 	db *sql.DB
+
+	// valors keeps what valorIndex read, for the reason psnReader keeps
+	// its cash coverage: the cash pass, the portfolio pass and the
+	// realized lots each resolve against it.
+	valors map[string]string
 }
 
 func (r *webReader) Close() error {
@@ -45,8 +50,8 @@ func (r *webReader) Close() error {
 // Number is MAX of either (whichever advanced): the value
 // ChangeWindow advances the watermark to. The historical tables
 // widen the snapshot range but not the change number, since
-// ChangeWindow never advances to their dates; a future-dated
-// maturity notice would otherwise keep the source from ever
+// ChangeWindow never advances to their dates; a historical date
+// past the latest dump would otherwise keep the source from ever
 // reading as up to date.
 func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	out := canonical.UnknownStatus()
@@ -455,7 +460,7 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []sil
 	if p.ownIBANs, err = r.buildOwnIBANSet(ctx); err != nil {
 		return nil, err
 	}
-	if p.valorToISIN, err = buildValorIndex(ctx, psn, r); err != nil {
+	if p.valorToISIN, err = r.valorIndex(ctx, psn); err != nil {
 		return nil, err
 	}
 	if p.mt940Start, err = r.mt940FeedStart(ctx); err != nil {
@@ -831,9 +836,9 @@ func withCounterLeg(payload json.RawMessage, currency, amount string) json.RawMe
 //
 // The export era states it in `Description2` and nowhere else. The statement
 // era composed the same stamp into the description itself, which is why a
-// mortgage payment booked before 2024 is recognised by the narrative rule and
-// one booked after is not: the bank stopped printing the word where the
-// composed description could reach it, and nothing else on the row said so.
+// mortgage payment from the statement era is recognised by the narrative rule
+// and one from the export era is not: the bank stopped printing the word where
+// the composed description could reach it, and nothing else on the row said so.
 var mortgageStampInNarrative = regexp.MustCompile(`(?i)\bHYPOTHEK\s+([0-9]+\s*\.\s*[A-Z0-9]+\s+[0-9]{4})\b`)
 
 // mortgageRefShape is the reference itself, once the spaces are gone:
@@ -1317,7 +1322,7 @@ func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, 
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	psnLegs, err := psn.offsetLegs(ctx, cut.coverage)
+	psnLegs, err := psn.offsetLegs(ctx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1402,7 +1407,7 @@ func (r *webReader) webOffsetLegs(ctx context.Context, cut psnCut, suppressed ma
 
 // offsetLegs reads the PSN half of the offset veto's universe: every
 // deposit/withdrawal cash movement.
-func (r *psnReader) offsetLegs(ctx context.Context, coverage psnCashCoverage) ([]offsetLeg, error) {
+func (r *psnReader) offsetLegs(ctx context.Context) ([]offsetLeg, error) {
 	var legs []offsetLeg
 	err := r.eachCashMovement(ctx, "buildSameDayOffsetVeto (psn)", func(row psnCashRow) error {
 		var p cashMovementPayload
@@ -1447,7 +1452,7 @@ func (r *psnReader) offsetLegs(ctx context.Context, coverage psnCashCoverage) ([
 	}
 	// The conversion mirrors, as legs of their own: the other side of a
 	// stated conversion, where no feed booked it (conversionMirrors).
-	mirrors, err := r.conversionMirrors(ctx, coverage)
+	mirrors, err := r.conversionMirrors(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -2179,7 +2184,7 @@ func pdfCashIsExternal(p webTxPayload, own map[string]bool, outbound, railEra bo
 // "<security caption>; <ISIN>" — a typical caption looks like
 // "UBS (Lux) Fund Solutions SICAV - UBS Core MSCI EMU UCITS ETF
 // EUR dis-dist; LU0000000070". The trailing 12-char alphanumeric
-// after "; " is a valid ISIN ~always in observed data; we
+// after "; " is a valid ISIN when the caption names a security; we
 // validate by length-and-charset to avoid grabbing other ";"-
 // separated comments.
 //

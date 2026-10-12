@@ -190,12 +190,11 @@ func TestSourcesAsOfEmpty(t *testing.T) {
 	}
 }
 
-// TestSourcesHistoryCarryForward exercises the daily-series macros
-// (report_sources_history + the Metabase-facing _multi). Those have no
-// Go scan path, so this asserts them via raw SQL: two snapshots a few
-// days apart should produce a daily spine with the value carried
-// forward on the gap day, and history@today should equal the latest
-// non-history total.
+// TestSourcesHistoryCarryForward exercises the daily-series macro
+// report_sources_history_multi. It has no Go scan path, so this asserts
+// it via raw SQL: two snapshots a few days apart should produce a daily
+// spine with the value carried forward on the gap day, and history@today
+// should equal the latest non-history total.
 func TestSourcesHistoryCarryForward(t *testing.T) {
 	db, ctx := openMigrated(t)
 	chf := "CHF"
@@ -226,12 +225,11 @@ func TestSourcesHistoryCarryForward(t *testing.T) {
 		})
 	})
 
-	// Single-currency series in CHF.
 	rows, err := db.QueryContext(ctx,
-		`SELECT as_of_day, total_value_outccy FROM report_sources_history('CHF')
+		`SELECT as_of_day, CAST(total_value_chf AS VARCHAR) FROM report_sources_history_multi()
 		   WHERE silver_source_id = 'ubs' ORDER BY as_of_day`)
 	if err != nil {
-		t.Fatalf("report_sources_history: %v", err)
+		t.Fatalf("report_sources_history_multi: %v", err)
 	}
 	defer rows.Close()
 	series := map[int64]string{}
@@ -242,8 +240,8 @@ func TestSourcesHistoryCarryForward(t *testing.T) {
 		if err := rows.Scan(&d, &tot); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		// The raw macro emits an untrimmed DECIMAL string ("1000.0000");
-		// canonicalise the way the CLI's trimmedDecimalPtr would.
+		// The macro emits an untrimmed DECIMAL ("1000.0000"); canonicalise
+		// the way the CLI's trimmedDecimalPtr would.
 		val := tot.String
 		if dec, err := canonical.NewDecimalFromString(val); err == nil {
 			val = dec.String()
@@ -273,19 +271,6 @@ func TestSourcesHistoryCarryForward(t *testing.T) {
 	}
 	if got := series[maxDay]; got != "1500" {
 		t.Errorf("history@today total = %q, want 1500", got)
-	}
-
-	// The Metabase-facing _multi macro returns the same latest total.
-	var chfLatest float64
-	if err := db.QueryRowContext(ctx,
-		`SELECT CAST(total_value_chf AS DOUBLE) FROM report_sources_history_multi()
-		   WHERE silver_source_id = 'ubs' AND as_of_day = (
-		       SELECT MAX(as_of_day) FROM report_sources_history_multi() WHERE silver_source_id = 'ubs')`,
-	).Scan(&chfLatest); err != nil {
-		t.Fatalf("report_sources_history_multi: %v", err)
-	}
-	if chfLatest != 1500 {
-		t.Errorf("history_multi latest total_value_chf = %v, want 1500", chfLatest)
 	}
 }
 

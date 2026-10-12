@@ -60,8 +60,9 @@ every such movement one-legged, and a one-legged outgoing leg is
 indistinguishable from spending.
 
 The reports over that base — `report_spending_{summary,categories,
-transactions}` and their `_multi` siblings (migration 0042), and the
-`web_spending` / `web_card_balances_history` serving views (0043) —
+transactions}` (migration 0042) and the multi-currency
+`report_spending_transactions_multi`, and the `web_spending` /
+`web_card_balances_history` serving views (0043) —
 restate none of it. Sign-split magnitudes, period bucketing, shares,
 and why the summary-equals-categories identity cannot catch a wrong
 exclusion: DESIGN.md §10.10.
@@ -1156,7 +1157,7 @@ translate *means*:
 
 The UBS **card** vocabulary is the categorical one: ISO 18245 merchant
 category descriptions in UBS's own spelling, typos and airline names
-included, written as observed rather than corrected. One value is
+included, written as UBS prints them rather than corrected. One value is
 deliberately left untranslated — the bank's own catch-all for a card row
 that moved money rather than bought something (a mobile-payment
 transfer, a card top-up). It names no line of business, so a translation
@@ -1956,11 +1957,11 @@ spend_detailed`, §2), so a delta added to `canonical` and seeded is
 blank in the merchant column with no change to the macro — and, being
 unlabelled, blank whatever the enrichment row holds. Everything
 downstream inherits the column from `spend_txn_categories()` by name —
-`spending_lines_base`, the three spending reports and their `_multi`
-siblings, `report_transactions` (so `wealthdb transactions` shows no
-merchant on an own-account move or a subscription either, and shows
-the fold on a provider-placed purchase), `web_spending` and the
-dashboard's merchant rankings. None of them re-derives the column.
+`spending_lines_base`, the three spending reports,
+`report_spending_transactions_multi`, `report_transactions` (so
+`wealthdb transactions` shows no merchant on an own-account move or a
+subscription either, and shows the fold on a provider-placed
+purchase), `web_spending` and the dashboard's merchant rankings. None of them re-derives the column.
 
 ### What `-p` redacts
 

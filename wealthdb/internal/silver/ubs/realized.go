@@ -68,7 +68,7 @@ func (c *Connection) RealizedLots(ctx context.Context) ([]canonical.RealizedLotC
 	if err != nil {
 		return nil, err
 	}
-	valors, err := buildValorIndex(ctx, c.psn, c.web)
+	valors, err := c.web.valorIndex(ctx, c.psn)
 	if err != nil {
 		return nil, err
 	}

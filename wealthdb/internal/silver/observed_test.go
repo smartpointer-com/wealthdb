@@ -30,13 +30,13 @@ func TestMergeObservedTakesTheWholeOrEveryPart(t *testing.T) {
 	a, b, none := canonical.UnknownStatus(), canonical.UnknownStatus(), canonical.UnknownStatus()
 	a.ObservedSnapshotsThrough, a.ObservedTransactionsThrough = 100, 90
 	b.ObservedSnapshotsThrough, b.ObservedTransactionsThrough = 80, 95
-	if s, tx := MergeObserved([]canonical.Status{a, b, none}, true); s != 100 || tx != 95 {
+	if s, tx := mergeObserved([]canonical.Status{a, b, none}, true); s != 100 || tx != 95 {
 		t.Errorf("whole: %d %d", s, tx)
 	}
-	if s, tx := MergeObserved([]canonical.Status{a, b, none}, false); s != 80 || tx != 90 {
+	if s, tx := mergeObserved([]canonical.Status{a, b, none}, false); s != 80 || tx != 90 {
 		t.Errorf("parts: %d %d", s, tx)
 	}
-	if s, tx := MergeObserved([]canonical.Status{none}, false); s != -1 || tx != -1 {
+	if s, tx := mergeObserved([]canonical.Status{none}, false); s != -1 || tx != -1 {
 		t.Errorf("none: %d %d", s, tx)
 	}
 }

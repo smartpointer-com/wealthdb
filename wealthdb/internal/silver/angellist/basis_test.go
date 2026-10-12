@@ -201,3 +201,28 @@ func TestAnAmbiguousK1FundReducesNoPosition(t *testing.T) {
 		t.Errorf("log = %q, want the ambiguous fund named", got)
 	}
 }
+
+// A K-1 whose period ends after every position event still reaches the
+// window and the status, so the snapshot that steps the book value down
+// is emitted.
+func TestALateK1PeriodEndIsInTheWindow(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seedInKind(t, db)
+	if _, err := db.Exec(`
+        INSERT INTO k1_capital_accounts(tax_year, fund_name, cash_distributions_minor,
+            property_distributions_minor) VALUES (2022, 'Example SPV One, LP', NULL, 100000)`); err != nil {
+		t.Fatal(err)
+	}
+	end := day(t, "2022-12-31")
+	s, err := openAdapter(t, path).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.LatestSnapshotAt != end {
+		t.Errorf("latest snapshot = %d, want the K-1 period end %d", s.LatestSnapshotAt, end)
+	}
+	p, ok := inKindPositions(t, path)[end]["s1"]
+	if !ok || p.BookValue == nil || p.BookValue.StringFixed(2) != "5000.00" {
+		t.Errorf("2022-12-31 s1: position %v (present %v), want book value 5000.00", p.BookValue, ok)
+	}
+}

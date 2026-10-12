@@ -28,13 +28,14 @@ var paidInBasis = canonical.Basis{
 // the offering whose fund_name it stamped. A K-1 covers a calendar tax
 // year, so its period ends on Dec 31. A fund name that no offering, or
 // several, carry names no single position: its figures reduce no book
-// value, and the load names those funds. A silver older than migration
-// 0008 states none.
-func (c *Connection) readInKind(ctx context.Context) (*silver.InKind, error) {
-	k := &silver.InKind{}
+// value, and dropped maps each such fund to the number of offerings that
+// carry its name, for Snapshots to name (logDropped). A silver older
+// than migration 0008 states none.
+func (c *Connection) readInKind(ctx context.Context) (k *silver.InKind, dropped map[string]int64, err error) {
+	k = &silver.InKind{}
 	has, err := silver.HasColumn(ctx, c.db, "k1_capital_accounts", "property_distributions_minor")
 	if err != nil || !has {
-		return k, err
+		return k, nil, err
 	}
 	const q = `
 SELECT k.fund_name, k.tax_year, k.property_distributions_minor,
@@ -44,10 +45,10 @@ SELECT k.fund_name, k.tax_year, k.property_distributions_minor,
  WHERE k.property_distributions_minor > 0`
 	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("readInKind: %w", err)
+		return nil, nil, fmt.Errorf("readInKind: %w", err)
 	}
 	defer rows.Close()
-	dropped := map[string]int64{}
+	dropped = map[string]int64{}
 	for rows.Next() {
 		var (
 			fund               string
@@ -55,7 +56,7 @@ SELECT k.fund_name, k.tax_year, k.property_distributions_minor,
 			pid                sql.NullString
 		)
 		if err := rows.Scan(&fund, &year, &minor, &count, &pid); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if count != 1 {
 			dropped[fund] = count
@@ -65,10 +66,9 @@ SELECT k.fund_name, k.tax_year, k.property_distributions_minor,
 		k.Add(pid.String, end, decimal.New(minor, -2))
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	logDropped(dropped)
-	return k, nil
+	return k, dropped, nil
 }
 
 // logDropped names the K-1 funds whose property distributions reduce no

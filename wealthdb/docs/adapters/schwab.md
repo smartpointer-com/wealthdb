@@ -20,7 +20,10 @@ orchestrator (`merge.go`) splices them:
 
 §7 has the merge contract and §7.1 the account bridge. A single `path`
 (`"kind": "schwab", "path": ...`, no subsources) reads an api silver
-alone, without the merge layer.
+alone, without the merge layer. A `schwab-web` subsource needs a
+`schwab-api` one beside it, and the adapter refuses it alone. The web
+silver names an account by the last digits of its number, and only the
+api silver maps those to an account (§7.1).
 
 ## 1. Silver sources
 

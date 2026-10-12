@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -235,5 +236,47 @@ func TestAStatementCopyFoldsOntoTheCounterLeg(t *testing.T) {
 	}
 	if _, ok := got[mirrorIDPrefix+mirrorEvent]; !ok {
 		t.Error("the counter-leg was not emitted")
+	}
+}
+
+// TestAMergedPassReadsEachIndexOnce: the merged pass asks for the feed's
+// coverage and its conversion mirrors from the web cut, the era fold,
+// the offset veto and the PSN stream, and for the valor index from the
+// cash and portfolio passes. Each is read once and kept. Once the pass
+// has run, closed silvers fail every read, so each still answering, with
+// what the pass used, shows that nothing reads it again.
+func TestAMergedPassReadsEachIndexOnce(t *testing.T) {
+	ctx := context.Background()
+	r := newWebTxFixture(t)
+	seedRailEraAnchor(t, r)
+	psnDB := newMirrorSilver(t)
+	conn := &Connection{web: r, psn: &psnReader{db: psnDB}}
+	stream, err := conn.Transactions(ctx, canonical.Window{Start: 0, End: 1 << 40, HasChanges: true})
+	if err != nil {
+		t.Fatalf("merged Transactions: %v", err)
+	}
+	drainTx(t, stream)
+	coverage, mirrors, valors := conn.psn.coverage, conn.psn.mirrors, conn.web.valors
+	if coverage == nil || mirrors == nil || valors == nil {
+		t.Fatalf("the pass kept coverage=%v mirrors=%v valors=%v", coverage, mirrors, valors)
+	}
+	if len(coverage) == 0 || len(mirrors.byID) == 0 {
+		t.Fatal("the fixture yields no coverage or no mirror; the test is vacuous")
+	}
+
+	if err := psnDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := conn.psn.cashCoverage(ctx); err != nil || !reflect.DeepEqual(got, coverage) {
+		t.Errorf("cashCoverage read again: %v, %v", got, err)
+	}
+	if got, err := conn.psn.conversionMirrors(ctx); err != nil || got != mirrors {
+		t.Errorf("conversionMirrors read again: %v, %v", got, err)
+	}
+	if got, err := conn.web.valorIndex(ctx, conn.psn); err != nil || !reflect.DeepEqual(got, valors) {
+		t.Errorf("valorIndex read again: %v, %v", got, err)
 	}
 }

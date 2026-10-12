@@ -11,6 +11,14 @@ import (
 // file defines the type, its lifecycle and the shared event scan.
 type psnReader struct {
 	db *sql.DB
+
+	// coverage and mirrors keep what cashCoverage and conversionMirrors
+	// read. Each scans every cash movement of the silver, unwindowed,
+	// and a connection serves one load over a silver that does not
+	// change under it, so each is read once per connection however many
+	// passes ask for it.
+	coverage psnCashCoverage
+	mirrors  *conversionMirrors
 }
 
 func (r *psnReader) Close() error {

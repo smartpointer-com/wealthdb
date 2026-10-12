@@ -106,12 +106,12 @@ func CoveredByRuns(ctx context.Context, db *sql.DB, kind, q string) (int64, erro
 	return CoveredThrough(spans, SpanSlack), nil
 }
 
-// MergeObserved combines the observed watermarks of a source's feeds.
+// mergeObserved combines the observed watermarks of a source's feeds.
 // Feeds that each read the whole source take the later (whole); feeds
 // that each read a part of it take the earlier, since the source is
 // observed only as far as every part is. A feed with no watermark (-1)
 // does not count.
-func MergeObserved(statuses []canonical.Status, whole bool) (snapshots, transactions int64) {
+func mergeObserved(statuses []canonical.Status, whole bool) (snapshots, transactions int64) {
 	pick := func(get func(canonical.Status) int64) int64 {
 		out := int64(-1)
 		for _, st := range statuses {

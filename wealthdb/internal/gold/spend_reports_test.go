@@ -1011,66 +1011,6 @@ func TestSpendingTransactionsMacro(t *testing.T) {
 	}
 }
 
-// TestSpendingMultiMacrosMatchSingleCurrency holds the `_multi`
-// siblings to their contract: each per-currency column equals the
-// single-currency macro called for that currency, so the web and the
-// CLI cannot disagree.
-func TestSpendingMultiMacrosMatchSingleCurrency(t *testing.T) {
-	db, ctx := openMigrated(t)
-	seedSpendingReportFixture(t, db, ctx)
-	from, to := spendWindow()
-
-	for i, ccy := range []string{"USD", "CHF", "EUR"} {
-		col := []string{"net_spend_usd", "net_spend_chf", "net_spend_eur"}[i]
-		rows, err := db.QueryContext(ctx,
-			`SELECT period_start, txn_count, CAST(`+col+` AS DOUBLE)
-               FROM report_spending_summary_multi(?, ?, 'month')`, from, to)
-		if err != nil {
-			t.Fatalf("report_spending_summary_multi: %v", err)
-		}
-		var multi []spendSummaryRow
-		for rows.Next() {
-			var r spendSummaryRow
-			if err := rows.Scan(&r.period, &r.txnCount, &r.netSp); err != nil {
-				t.Fatalf("scan summary_multi: %v", err)
-			}
-			multi = append(multi, r)
-		}
-		rows.Close()
-
-		single := readSpendingSummary(t, db, ctx, ccy, "month")
-		if len(multi) != len(single) {
-			t.Fatalf("%s: multi = %d buckets, single = %d", ccy, len(multi), len(single))
-		}
-		for j := range single {
-			if multi[j].period != single[j].period || multi[j].txnCount != single[j].txnCount ||
-				!nearly(multi[j].netSp.Float64, single[j].netSp.Float64) {
-				t.Errorf("%s bucket %d: multi %+v != single %+v", ccy, j, multi[j], single[j])
-			}
-		}
-	}
-
-	// The category shares are per currency, and each currency's still sum to 1.
-	rows, err := db.QueryContext(ctx, `
-        SELECT SUM(share_usd), SUM(share_chf), SUM(share_eur)
-          FROM report_spending_categories_multi(?, ?, 'total', 'primary')`, from, to)
-	if err != nil {
-		t.Fatalf("report_spending_categories_multi: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var usd, chf, eur sql.NullFloat64
-		if err := rows.Scan(&usd, &chf, &eur); err != nil {
-			t.Fatalf("scan shares: %v", err)
-		}
-		for name, v := range map[string]sql.NullFloat64{"usd": usd, "chf": chf, "eur": eur} {
-			if !nearly(v.Float64, 1) {
-				t.Errorf("Σ share_%s = %v, want 1", name, v.Float64)
-			}
-		}
-	}
-}
-
 // TestSpendingWronglyMatchedTransferStaysVisible is the negative half
 // of the reconciliation.
 //
@@ -1323,12 +1263,6 @@ func TestSpendReportColumnsSurviveAReissue(t *testing.T) {
 		{"SELECT * FROM report_spending_categories(0, 9, 'USD', 'month', 'detailed') LIMIT 0",
 			[]string{"period_start", "category", "category_label", "txn_count",
 				"spend", "refunds", "net_spend", "share"}},
-		{"SELECT * FROM report_spending_categories_multi(0, 9, 'month', 'detailed') LIMIT 0",
-			[]string{"period_start", "category", "category_label", "txn_count",
-				"spend_usd", "spend_chf", "spend_eur",
-				"refunds_usd", "refunds_chf", "refunds_eur",
-				"net_spend_usd", "net_spend_chf", "net_spend_eur",
-				"share_usd", "share_chf", "share_eur"}},
 		{"SELECT * FROM report_spending_transactions(0, 9, 'USD') LIMIT 0",
 			[]string{"merchant_name", "spend_primary", "spend_detailed",
 				"spend_label", "spend_primary_label", "provenance",

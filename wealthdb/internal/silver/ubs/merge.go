@@ -62,44 +62,19 @@ import (
 //       cut still decides which side emits, and amounts, dates, kinds
 //       and ids are untouched.
 
-// Status aggregates the per-subsource Status. The change number
-// is max across subsources (so the gold watermark covers
-// whichever advanced further); snapshot/transaction extrema use
-// (min, max) across the union.
+// Status merges the per-subsource Status (silver.MergeStatuses).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	// Sentinel-aware combiner. -1 means "no observable state" per
-	// canonical.Status; treat as absent during the combine.
-	combine := func(a, b int64, op func(int64, int64) int64) int64 {
-		switch {
-		case a == -1:
-			return b
-		case b == -1:
-			return a
-		default:
-			return op(a, b)
-		}
-	}
-	lower := func(a, b int64) int64 { return min(a, b) }
-	upper := func(a, b int64) int64 { return max(a, b) }
-
-	out := canonical.UnknownStatus()
 	var feeds []canonical.Status
 	for _, sub := range c.subsources() {
 		s, err := sub.status(ctx)
 		if err != nil {
 			return canonical.Status{}, fmt.Errorf("ubs %s status: %w", sub.name, err)
 		}
-		out.OldestSnapshotAt = combine(out.OldestSnapshotAt, s.OldestSnapshotAt, lower)
-		out.LatestSnapshotAt = combine(out.LatestSnapshotAt, s.LatestSnapshotAt, upper)
-		out.OldestTransactionAt = combine(out.OldestTransactionAt, s.OldestTransactionAt, lower)
-		out.LatestTransactionAt = combine(out.LatestTransactionAt, s.LatestTransactionAt, upper)
-		out.LatestChangeNumber = combine(out.LatestChangeNumber, s.LatestChangeNumber, upper)
 		feeds = append(feeds, s)
 	}
 	// The report feed states the securities and the web feed the cash
 	// accounts: the source is observed only as far as both are.
-	out.ObservedSnapshotsThrough, out.ObservedTransactionsThrough = silver.MergeObserved(feeds, false)
-	return out, nil
+	return silver.MergeStatuses(feeds, false), nil
 }
 
 // subsource is one configured reader's Status and ChangeWindow, named
@@ -122,30 +97,18 @@ func (c *Connection) subsources() []subsource {
 	return out
 }
 
-// ChangeWindow produces a window covering any subsource that has
-// advanced past sinceN. NewChangeNumber is max across subsources
-// (so the watermark moves forward by whatever progress either
-// side made). HasChanges is true when at least one subsource
-// reports changes.
+// ChangeWindow merges the per-subsource windows past sinceN
+// (silver.MergeWindows).
 func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
-	out := canonical.Window{NewChangeNumber: sinceN}
+	var windows []canonical.Window
 	for _, sub := range c.subsources() {
 		w, err := sub.changeWindow(ctx, sinceN)
 		if err != nil {
 			return canonical.Window{}, fmt.Errorf("ubs %s ChangeWindow: %w", sub.name, err)
 		}
-		if w.HasChanges {
-			if !out.HasChanges {
-				out.Start, out.End = w.Start, w.End
-			} else {
-				out.Start = min(out.Start, w.Start)
-				out.End = max(out.End, w.End)
-			}
-			out.HasChanges = true
-		}
-		out.NewChangeNumber = max(out.NewChangeNumber, w.NewChangeNumber)
+		windows = append(windows, w)
 	}
-	return out, nil
+	return silver.MergeWindows(sinceN, windows), nil
 }
 
 // Snapshots emits the merged stream described in the file header.

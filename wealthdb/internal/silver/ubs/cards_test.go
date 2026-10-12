@@ -318,6 +318,23 @@ INSERT INTO card_invoices VALUES
 	}
 }
 
+// A silver missing any one card table reads as one without cards: every
+// card read checks the same set, so none queries a table that is absent.
+func TestASilverWithoutTheInvoiceTableReadsNoCards(t *testing.T) {
+	r := newCardFixture(t)
+	if _, err := r.db.Exec(`DROP TABLE card_invoices`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if lo, hi, err := r.cardRange(ctx); err != nil || lo != -1 || hi != -1 {
+		t.Errorf("card range = (%d, %d, %v), want (-1, -1) and no error", lo, hi, err)
+	}
+	byTime := map[int64]*canonical.SnapshotBatch{1000: {}}
+	if err := r.appendCardStatementBalances(ctx, fullWindow(), byTime); err != nil {
+		t.Errorf("statement balances: %v", err)
+	}
+}
+
 func TestCardRangeIsEmptyWithoutCardTables(t *testing.T) {
 	lo, hi, err := newWebFixture(t).cardRange(context.Background())
 	if err != nil {

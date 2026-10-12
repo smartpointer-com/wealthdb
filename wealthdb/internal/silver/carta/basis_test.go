@@ -1,6 +1,7 @@
 package carta
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -155,5 +156,27 @@ func TestTheCapTableStampFollowsWhatTheBookValueSums(t *testing.T) {
     (1700000000, 100, 'convertible', 3, NULL, 2500, 2500, 'held', '$', '03/15/2090', '{}')`)
 	if conv.BookValue == nil || conv.BookValue.String() != "2500" || conv.Basis != cashPaidBasis {
 		t.Errorf("convertible alone: book value %v stamped %+v, want 2500 cash paid", conv.BookValue, conv.Basis)
+	}
+}
+
+// A K-1 whose period ends after every other dated row still reaches the
+// window and the status, so the snapshot that steps the book value down
+// is emitted.
+func TestALateK1PeriodEndIsInTheWindow(t *testing.T) {
+	conn := fundBookFixture(t, false, k1Schema+`
+INSERT INTO k1_capital_accounts(content_sha256, doc_id, entity_external_id, tax_year,
+    cash_distributions, property_distributions, payload, period_start, period_end) VALUES
+    ('sha-c', 13, 300, 2024, NULL, '5000', '{}', NULL, NULL);`)
+	end := unixDate(t, "2024-12-31")
+	s, err := conn.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.LatestSnapshotAt != end {
+		t.Errorf("latest snapshot = %d, want the K-1 period end %d", s.LatestSnapshotAt, end)
+	}
+	byDay, _ := fundPositions(t, conn)
+	if p, ok := byDay[end]; !ok || p.BookValue == nil || p.BookValue.String() != "145000" {
+		t.Errorf("2024-12-31: position %v (present %v), want book value 145000", p.BookValue, ok)
 	}
 }

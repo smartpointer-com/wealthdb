@@ -320,9 +320,10 @@ The window spans the **event-dated content**, not the download time:
   statement.
 - the time of each dump that stopped listing a company (§5), which can
   lie after every mark.
+- each K-1's period end (§5), which can also lie after every mark.
 
-`Status` reports the content span, widened by the fund carry days and
-the removal times, as the snapshot range. `LatestChangeNumber` is the
+`Status` reports the content span, widened by the fund carry days, the
+removal times and the K-1 period ends, as the snapshot range. `LatestChangeNumber` is the
 newest dump. The source is observed through the newest dump that is not
 a dry run.
 

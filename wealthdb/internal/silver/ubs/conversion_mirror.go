@@ -180,14 +180,34 @@ type mirrorPayload struct {
 	Rate            string `json:"rate,omitempty"`
 }
 
-// conversionMirrors reads every conversion the feed describes whose
+// conversionMirrors is readConversionMirrors over the feed's own
+// coverage. The first call reads them and later calls return the same
+// set: the era fold, the offset veto and the PSN stream all ask.
+func (r *psnReader) conversionMirrors(ctx context.Context) (*conversionMirrors, error) {
+	if r == nil || r.db == nil {
+		return r.readConversionMirrors(ctx, nil)
+	}
+	if r.mirrors != nil {
+		return r.mirrors, nil
+	}
+	coverage, err := r.cashCoverage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if r.mirrors, err = r.readConversionMirrors(ctx, coverage); err != nil {
+		return nil, err
+	}
+	return r.mirrors, nil
+}
+
+// readConversionMirrors reads every conversion the feed describes whose
 // other account it does not speak for, and builds the missing leg.
 //
 // The whole silver, unwindowed, for buildEraFold's reason: which
 // bookings exist depends on silver's contents alone, never on which
 // slice of time a load covers. The emitting loop selects by the feed
 // row's own date.
-func (r *psnReader) conversionMirrors(ctx context.Context, coverage psnCashCoverage) (*conversionMirrors, error) {
+func (r *psnReader) readConversionMirrors(ctx context.Context, coverage psnCashCoverage) (*conversionMirrors, error) {
 	out := &conversionMirrors{
 		bySource: map[string]conversionMirror{},
 		byID:     map[string]conversionMirror{},

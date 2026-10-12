@@ -414,7 +414,7 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 	// A conversion mirror is the feed's record of the other account's
 	// booking (conversionMirrors), and a statement copy of that booking
 	// folds onto it like any other. Keyed as the mirror is emitted.
-	mirrors, err := psn.conversionMirrors(ctx, cut.coverage)
+	mirrors, err := psn.conversionMirrors(ctx)
 	if err != nil {
 		return nil, err
 	}

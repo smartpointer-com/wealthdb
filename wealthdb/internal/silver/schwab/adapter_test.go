@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -47,6 +48,31 @@ func TestKindIsSchwab(t *testing.T) {
 	if got := (&Adapter{}).Kind(); got != "schwab" {
 		t.Errorf("Kind() = %q, want %q", got, "schwab")
 	}
+}
+
+// A web subsource alone is refused: its accounts are named by the last
+// digits of their numbers, and only the api silver maps those to the
+// account ids gold holds, so every web row would be dropped.
+func TestOpenRefusesTheWebSubsourceAlone(t *testing.T) {
+	path, _ := newFixtureSilver(t)
+	a := &Adapter{}
+	conn, err := a.Open(context.Background(), silver.OpenSpec{Subsources: []silver.Subsource{
+		{Kind: "schwab-web", Path: path},
+	}})
+	if err == nil {
+		conn.Close()
+		t.Fatal("Open accepted a web subsource without the api one")
+	}
+	if !strings.Contains(err.Error(), "subsources[schwab-api] must be configured") {
+		t.Errorf("Open error = %v, want it to name the missing api subsource", err)
+	}
+	conn, err = a.Open(context.Background(), silver.OpenSpec{Subsources: []silver.Subsource{
+		{Kind: "schwab-api", Path: path},
+	}})
+	if err != nil {
+		t.Fatalf("Open with the api subsource alone: %v", err)
+	}
+	conn.Close()
 }
 
 func TestStatusEmpty(t *testing.T) {

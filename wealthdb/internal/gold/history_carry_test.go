@@ -107,19 +107,19 @@ func histAccountsOn(t *testing.T, db *sql.DB, ctx context.Context, src string, o
 	return out
 }
 
-// histSourceTotalOn reads report_sources_history's daily total for one
-// source; ok is false when the source has no row on that day.
+// histSourceTotalOn reads report_sources_history_multi's daily USD total
+// for one source; ok is false when the source has no row on that day.
 func histSourceTotalOn(t *testing.T, db *sql.DB, ctx context.Context, src string, off int64) (float64, bool) {
 	t.Helper()
 	var tot sql.NullFloat64
 	err := db.QueryRowContext(ctx, `
-        SELECT CAST(total_value_outccy AS DOUBLE) FROM report_sources_history('USD')
+        SELECT CAST(total_value_usd AS DOUBLE) FROM report_sources_history_multi()
          WHERE silver_source_id = ? AND as_of_day = ?`, src, dayAt(off)).Scan(&tot)
 	if err == sql.ErrNoRows {
 		return 0, false
 	}
 	if err != nil {
-		t.Fatalf("report_sources_history: %v", err)
+		t.Fatalf("report_sources_history_multi: %v", err)
 	}
 	return tot.Float64, tot.Valid
 }
@@ -270,9 +270,9 @@ func TestHistoryZeroLineNeedsNoFxRate(t *testing.T) {
 	}
 	var global sql.NullFloat64
 	if err := db.QueryRowContext(ctx, `
-        SELECT CAST(total_value_outccy AS DOUBLE) FROM report_global_history('USD')
+        SELECT CAST(total_value_usd AS DOUBLE) FROM report_global_history_multi()
          WHERE as_of_day = ?`, dayAt(0)).Scan(&global); err != nil {
-		t.Fatalf("report_global_history: %v", err)
+		t.Fatalf("report_global_history_multi: %v", err)
 	}
 	if !global.Valid || !nearly(global.Float64, 1000) {
 		t.Errorf("global total = %v (valid=%v), want 1000 — an unconvertible zero "+
@@ -567,12 +567,12 @@ func TestHistoryPositionsFollowTheAccountSnapshot(t *testing.T) {
 	// The per-position series agrees: only the holdings of each
 	// account's own active snapshot are on the day.
 	rows, err := db.QueryContext(ctx, `
-        SELECT account_external_id, position_key, CAST(value_outccy AS DOUBLE)
-          FROM report_positions_history('USD')
+        SELECT account_external_id, position_key, CAST(value_usd AS DOUBLE)
+          FROM report_positions_history_multi()
          WHERE silver_source_id = ? AND as_of_day = ?
          ORDER BY 1, 2`, src, dayAt(-3))
 	if err != nil {
-		t.Fatalf("report_positions_history: %v", err)
+		t.Fatalf("report_positions_history_multi: %v", err)
 	}
 	defer rows.Close()
 	var got []string
@@ -671,9 +671,9 @@ func TestHistoryFullDumpSourceIsUnchanged(t *testing.T) {
 	}{
 		{"report_accounts_history('USD')", goldenAccountsHistory, nil},
 		{"report_accounts_history_multi()", goldenAccountsHistoryMulti, nil},
-		{"report_sources_history('USD')", goldenSourcesHistory, nil},
-		{"report_portfolios_history('USD')", goldenPortfoliosHistory, nil},
-		{"report_positions_history('USD')", goldenPositionsHistory, []string{"snapshot_at"}},
+		{"report_sources_history_multi()", goldenSourcesHistoryMulti, nil},
+		{"report_portfolios_history_multi()", goldenPortfoliosHistoryMulti, nil},
+		{"report_positions_history_multi()", goldenPositionsHistoryMulti, []string{"snapshot_at"}},
 	} {
 		if got := dumpMacro(t, db, ctx, c.macro, src, c.epochCols...); got != c.want {
 			t.Errorf("%s over a full-dump source changed:\n--- got ---\n%s\n--- want ---\n%s",
@@ -717,9 +717,10 @@ func TestHistoryZeroBalanceEmitsItsOwnRow(t *testing.T) {
 	}
 }
 
-// The goldens below are the per-source macros' verbatim answer to the
-// full-dump fixture, captured before the active-snapshot rule changed.
-// Column order is the macro's own; the leading field(s) are day offsets
+// The goldens below are the macros' verbatim answer to the full-dump
+// fixture. Every value through the USD columns is the per-source macros'
+// answer, captured before the active-snapshot rule changed; the fixture
+// quotes no rate to another reporting currency. Column order is the macro's own; the leading field(s) are day offsets
 // from today (as_of_day, then snapshot_at for the positions series).
 const goldenAccountsHistory = `-1|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|<null>|<null>|1100.0000|0.0000|1100.0000|1100.0000|0.0000|1100.0000
 -1|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|<null>|<null>|0.0000|260.0000|260.0000|0.0000|260.0000|260.0000
@@ -739,20 +740,20 @@ const goldenAccountsHistoryMulti = `-1|full-src|F-0000|brokerage|Brokerage EXAMP
 0|full-src|F-0000|brokerage|Brokerage EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|1100.0000|0.0000|1100.0000|1100.0000|0.0000|1100.0000|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>
 0|full-src|F-0001|cash|Deposit EXAMPLE|USD|<null>|<null>|<null>|<null>|taxable_personal|self_directed|0.0000|260.0000|260.0000|0.0000|260.0000|260.0000|0.0000|<null>|<null>|0.0000|<null>|<null>|0.0000|<null>|<null>`
 
-const goldenSourcesHistory = `-1|full-src|USD|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000
--2|full-src|USD|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000
--3|full-src|USD|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000
-0|full-src|USD|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000`
+const goldenSourcesHistoryMulti = `-1|full-src|USD|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>
+-2|full-src|USD|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>
+-3|full-src|USD|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>
+0|full-src|USD|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>`
 
-const goldenPortfoliosHistory = `-1|full-src||<null>|USD|<null>|<null>|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000
--2|full-src||<null>|USD|<null>|<null>|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000
--3|full-src||<null>|USD|<null>|<null>|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000
-0|full-src||<null>|USD|<null>|<null>|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000`
+const goldenPortfoliosHistoryMulti = `-1|full-src||<null>|USD|<null>|<null>|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>
+-2|full-src||<null>|USD|<null>|<null>|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>
+-3|full-src||<null>|USD|<null>|<null>|taxable_personal|self_directed|1000.0000|250.0000|1250.0000|1000.0000|250.0000|1250.0000|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>
+0|full-src||<null>|USD|<null>|<null>|taxable_personal|self_directed|1100.0000|260.0000|1360.0000|1100.0000|260.0000|1360.0000|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>|<null>`
 
-const goldenPositionsHistory = `-1|-1|full-src|F-0000|Brokerage EXAMPLE|<null>|<null>|<null>|X|<null>|<null>|<null>|public_equity|USD|<null>|1100.0000|1100.0000
--2|-3|full-src|F-0000|Brokerage EXAMPLE|<null>|<null>|<null>|X|<null>|<null>|<null>|public_equity|USD|<null>|1000.0000|1000.0000
--3|-3|full-src|F-0000|Brokerage EXAMPLE|<null>|<null>|<null>|X|<null>|<null>|<null>|public_equity|USD|<null>|1000.0000|1000.0000
-0|-1|full-src|F-0000|Brokerage EXAMPLE|<null>|<null>|<null>|X|<null>|<null>|<null>|public_equity|USD|<null>|1100.0000|1100.0000`
+const goldenPositionsHistoryMulti = `-1|-1|full-src|F-0000|Brokerage EXAMPLE|<null>|<null>|<null>|X|<null>|<null>|<null>|public_equity|stock|USD|<null>|1100.0000|1100.0000|<null>|<null>|<null>
+-2|-3|full-src|F-0000|Brokerage EXAMPLE|<null>|<null>|<null>|X|<null>|<null>|<null>|public_equity|stock|USD|<null>|1000.0000|1000.0000|<null>|<null>|<null>
+-3|-3|full-src|F-0000|Brokerage EXAMPLE|<null>|<null>|<null>|X|<null>|<null>|<null>|public_equity|stock|USD|<null>|1000.0000|1000.0000|<null>|<null>|<null>
+0|-1|full-src|F-0000|Brokerage EXAMPLE|<null>|<null>|<null>|X|<null>|<null>|<null>|public_equity|stock|USD|<null>|1100.0000|1100.0000|<null>|<null>|<null>`
 
 // historyMacroColumns is the documented shape of every macro that
 // resolves the active snapshot — the column list its readers (the
@@ -775,10 +776,6 @@ var historyMacroColumns = []struct {
 		"positions_value_chf", "cash_balance_chf", "total_value_chf",
 		"positions_value_eur", "cash_balance_eur", "total_value_eur",
 		"positions_value_gbp", "cash_balance_gbp", "total_value_gbp"}},
-	{"report_sources_history('USD')", []string{
-		"as_of_day", "silver_source_id", "base_currency", "tax_wrapper", "management_style",
-		"positions_value_base", "cash_balance_base", "total_value_base",
-		"positions_value_outccy", "cash_balance_outccy", "total_value_outccy"}},
 	{"report_sources_history_multi()", []string{
 		"as_of_day", "silver_source_id", "base_currency", "tax_wrapper", "management_style",
 		"positions_value_base", "cash_balance_base", "total_value_base",
@@ -786,11 +783,6 @@ var historyMacroColumns = []struct {
 		"positions_value_chf", "cash_balance_chf", "total_value_chf",
 		"positions_value_eur", "cash_balance_eur", "total_value_eur",
 		"positions_value_gbp", "cash_balance_gbp", "total_value_gbp"}},
-	{"report_portfolios_history('USD')", []string{
-		"as_of_day", "silver_source_id", "portfolio_external_id", "display_name", "base_currency",
-		"relationship_id", "nickname", "tax_wrapper", "management_style",
-		"positions_value_base", "cash_balance_base", "total_value_base",
-		"positions_value_outccy", "cash_balance_outccy", "total_value_outccy"}},
 	{"report_portfolios_history_multi()", []string{
 		"as_of_day", "silver_source_id", "portfolio_external_id", "display_name", "base_currency",
 		"relationship_id", "nickname", "tax_wrapper", "management_style",
@@ -799,17 +791,11 @@ var historyMacroColumns = []struct {
 		"positions_value_chf", "cash_balance_chf", "total_value_chf",
 		"positions_value_eur", "cash_balance_eur", "total_value_eur",
 		"positions_value_gbp", "cash_balance_gbp", "total_value_gbp"}},
-	{"report_positions_history('USD')", []string{
-		"as_of_day", "silver_source_id", "snapshot_at", "account_external_id", "display_name",
-		"relationship_id", "nickname", "account_category", "position_key", "instrument_external_id",
-		"symbol", "name", "asset_class", "currency", "quantity", "market_value", "value_outccy"}},
 	{"report_positions_history_multi()", []string{
 		"as_of_day", "silver_source_id", "snapshot_at", "account_external_id", "display_name",
 		"relationship_id", "nickname", "account_category", "position_key", "instrument_external_id",
 		"symbol", "name", "asset_class", "vehicle", "currency", "quantity", "market_value",
 		"value_usd", "value_chf", "value_eur", "value_gbp"}},
-	{"report_global_history('USD')", []string{
-		"as_of_day", "cash_balance_outccy", "positions_value_outccy", "total_value_outccy"}},
 }
 
 // TestMigration0051DDLIsRerunnable holds the re-issued history macros

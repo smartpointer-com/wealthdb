@@ -408,7 +408,7 @@ func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Windo
 	if err != nil {
 		return out, err
 	}
-	valorToISIN, err := buildValorIndex(ctx, psn, r)
+	valorToISIN, err := r.valorIndex(ctx, psn)
 	if err != nil {
 		return out, err
 	}

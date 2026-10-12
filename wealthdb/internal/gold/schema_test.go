@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -284,4 +285,118 @@ func TestCheckSchemaKnown(t *testing.T) {
 	if err := CheckSchemaKnown(ctx, db); !errors.Is(err, ErrStaleBinary) {
 		t.Errorf("a database one migration ahead: err = %v, want ErrStaleBinary", err)
 	}
+}
+
+// dropped0124 are the macros migration 0124 drops.
+var dropped0124 = []string{
+	"report_global_history", "report_sources_history",
+	"report_portfolios_history", "report_positions_history",
+	"report_spending_summary_multi", "report_spending_categories_multi",
+	"report_income_types_multi",
+}
+
+// assertGone0124 checks that what 0124 drops is gone, that nothing left
+// in the schema names it, and that instruments keeps both its indexes.
+func assertGone0124(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	for _, name := range dropped0124 {
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = ?`, name).Scan(&n); err != nil {
+			t.Fatalf("look up %s: %v", name, err)
+		}
+		if n != 0 {
+			t.Errorf("macro %s survived", name)
+		}
+	}
+	var cols int
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM duckdb_columns()
+         WHERE table_name IN ('instruments', 'positions') AND column_name = 'asset_class_new'`).Scan(&cols); err != nil {
+		t.Fatalf("look up asset_class_new: %v", err)
+	}
+	if cols != 0 {
+		t.Errorf("asset_class_new survives on %d table(s)", cols)
+	}
+	// A view or macro still naming a dropped object would fail only when
+	// read; the word boundary keeps the _multi siblings out of the match.
+	rows, err := db.QueryContext(ctx, `
+        SELECT view_name, sql FROM duckdb_views() WHERE NOT internal
+        UNION ALL
+        SELECT function_name, macro_definition FROM duckdb_functions()
+         WHERE function_type IN ('macro', 'table_macro') AND NOT internal`)
+	if err != nil {
+		t.Fatalf("read definitions: %v", err)
+	}
+	defer rows.Close()
+	names := append([]string{"asset_class_new"}, dropped0124...)
+	read := 0
+	for rows.Next() {
+		read++
+		var name string
+		var body sql.NullString
+		if err := rows.Scan(&name, &body); err != nil {
+			t.Fatalf("scan definition: %v", err)
+		}
+		for _, dropped := range names {
+			if regexp.MustCompile(`\b` + dropped + `\b`).MatchString(body.String) {
+				t.Errorf("%s still names %s", name, dropped)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate definitions: %v", err)
+	}
+	if read < 100 {
+		t.Fatalf("read %d view and macro definitions; the scan is vacuous", read)
+	}
+	var idx int
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM duckdb_indexes()
+         WHERE table_name = 'instruments'
+           AND index_name IN ('ix_instruments_isin', 'ix_instruments_symbol')`).Scan(&idx); err != nil {
+		t.Fatalf("look up indexes: %v", err)
+	}
+	if idx != 2 {
+		t.Errorf("instruments carries %d of its two indexes", idx)
+	}
+}
+
+// TestMigration0124DropsOverRows applies 0124 to a database that holds
+// instruments and positions, as a live gold does, and keeps their rows.
+func TestMigration0124DropsOverRows(t *testing.T) {
+	db, ctx := openAtVersion(t, 123)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path,
+            high_watermark, first_loaded_at, last_loaded_at)
+            VALUES ('test-src', 'schwab', '/tmp/test.db', -1, 0, 0);
+        INSERT INTO instruments(silver_source_id, instrument_external_id, asset_class,
+            isin, symbol, first_seen_at, last_seen_at, asset_class_new, vehicle)
+            VALUES ('test-src', 'I1', 'public_equity', 'XX0000000000', 'VTI', 1, 1, 'public_equity', 'etf');
+        INSERT INTO positions(silver_source_id, snapshot_at, account_external_id,
+            position_key, instrument_external_id, asset_class, currency, market_value,
+            asset_class_new, vehicle)
+            VALUES ('test-src', 1000, 'A1', 'I1', 'I1', 'public_equity', 'USD', 100, 'public_equity', 'etf')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	assertGone0124(t, db, ctx)
+	var symbol, vehicle string
+	if err := db.QueryRowContext(ctx, `
+        SELECT i.symbol, p.vehicle FROM positions p
+          JOIN instruments i USING (silver_source_id, instrument_external_id)`).Scan(&symbol, &vehicle); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if symbol != "VTI" || vehicle != "etf" {
+		t.Errorf("rows after the drop = %s/%s, want VTI/etf", symbol, vehicle)
+	}
+}
+
+// TestMigration0124DDLIsRerunnable holds the drops to the replay bar.
+func TestMigration0124DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0124_drop_unread_reports.sql")
+	assertGone0124(t, db, ctx)
 }

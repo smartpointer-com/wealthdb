@@ -11,10 +11,8 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// Connection orchestrates one or both Schwab subsources. Each
-// reader (api / web) is non-nil only when its subsource is
-// configured; the merge layer here handles whichever combination
-// is present.
+// Connection orchestrates the Schwab subsources: api always, web
+// when its subsource is configured (Open refuses web alone).
 //
 // Composition rules (api + web configured):
 //
@@ -77,7 +75,8 @@ type Connection struct {
 	symbolBridgeErr   error
 }
 
-// Close releases both readers. Safe to call multiple times.
+// Close releases both readers. Safe to call multiple times, and on a
+// Connection Open is still assembling.
 func (c *Connection) Close() error {
 	var firstErr error
 	if c.api != nil {
@@ -107,83 +106,40 @@ type feed struct {
 
 // feeds lists the configured subsources, api first.
 func (c *Connection) feeds() []feed {
-	var out []feed
-	if c.api != nil {
-		out = append(out, feed{"api", c.api})
-	}
+	out := []feed{{"api", c.api}}
 	if c.web != nil {
 		out = append(out, feed{"web", c.web})
 	}
 	return out
 }
 
-// Status combines per-subsource Status. Sentinel-aware (-1 means
-// "no observable state"). Matches the UBS orchestrator.
+// Status merges the per-subsource Status (silver.MergeStatuses).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	out := canonical.UnknownStatus()
 	var statuses []canonical.Status
 	for _, f := range c.feeds() {
 		s, err := f.clock.Status(ctx)
 		if err != nil {
 			return canonical.Status{}, fmt.Errorf("schwab %s status: %w", f.name, err)
 		}
-		out.OldestSnapshotAt = earliest(out.OldestSnapshotAt, s.OldestSnapshotAt)
-		out.LatestSnapshotAt = latest(out.LatestSnapshotAt, s.LatestSnapshotAt)
-		out.OldestTransactionAt = earliest(out.OldestTransactionAt, s.OldestTransactionAt)
-		out.LatestTransactionAt = latest(out.LatestTransactionAt, s.LatestTransactionAt)
-		out.LatestChangeNumber = latest(out.LatestChangeNumber, s.LatestChangeNumber)
 		statuses = append(statuses, s)
 	}
 	// Each feed reads every account of the source: it is observed
 	// through the later of the two.
-	out.ObservedSnapshotsThrough, out.ObservedTransactionsThrough = silver.MergeObserved(statuses, true)
-	return out, nil
+	return silver.MergeStatuses(statuses, true), nil
 }
 
-// earliest and latest fold two extrema, either of which may be the
-// -1 "no observable state" sentinel.
-func earliest(a, b int64) int64 {
-	switch {
-	case a == -1:
-		return b
-	case b == -1:
-		return a
-	}
-	return min(a, b)
-}
-
-func latest(a, b int64) int64 {
-	switch {
-	case a == -1:
-		return b
-	case b == -1:
-		return a
-	}
-	return max(a, b)
-}
-
-// ChangeWindow yields a window covering whichever subsource has
-// advanced past sinceN. NewChangeNumber is max across subsources.
-// HasChanges is true when at least one subsource reports changes.
+// ChangeWindow merges the per-subsource windows past sinceN
+// (silver.MergeWindows).
 func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
-	out := canonical.Window{NewChangeNumber: sinceN}
+	var windows []canonical.Window
 	for _, f := range c.feeds() {
 		w, err := f.clock.ChangeWindow(ctx, sinceN)
 		if err != nil {
 			return canonical.Window{}, fmt.Errorf("schwab %s ChangeWindow: %w", f.name, err)
 		}
-		if w.HasChanges {
-			if !out.HasChanges {
-				out.Start, out.End = w.Start, w.End
-			} else {
-				out.Start = min(out.Start, w.Start)
-				out.End = max(out.End, w.End)
-			}
-			out.HasChanges = true
-		}
-		out.NewChangeNumber = max(out.NewChangeNumber, w.NewChangeNumber)
+		windows = append(windows, w)
 	}
-	return out, nil
+	return silver.MergeWindows(sinceN, windows), nil
 }
 
 // Snapshots emits the merged stream. When only api is configured,
@@ -205,16 +161,14 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, fmt.Errorf("schwab web Snapshots (historical): %w", err)
 	}
 	streams = append(streams, hist)
-	if c.api != nil {
-		// api's Snapshots also surfaces accounts. We rely on the
-		// per-column upsert in gold to merge web's nickname (emitted
-		// below) with api's other account columns.
-		s, err := c.api.Snapshots(ctx, w)
-		if err != nil {
-			return nil, fmt.Errorf("schwab api Snapshots: %w", err)
-		}
-		streams = append(streams, s)
+	// api's Snapshots also surfaces accounts. The per-column upsert in
+	// gold merges web's nickname (emitted below) with api's other
+	// account columns.
+	s, err := c.api.Snapshots(ctx, w)
+	if err != nil {
+		return nil, fmt.Errorf("schwab api Snapshots: %w", err)
 	}
+	streams = append(streams, s)
 	dims, err := c.snapshotsWebDimensions(ctx, w, bridge)
 	if err != nil {
 		return nil, fmt.Errorf("schwab web Snapshots (dimensions): %w", err)
@@ -283,13 +237,11 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		return nil, fmt.Errorf("schwab web Transactions: %w", err)
 	}
 	streams = append(streams, webTxs)
-	if c.api != nil {
-		s, err := c.api.Transactions(ctx, w)
-		if err != nil {
-			return nil, fmt.Errorf("schwab api Transactions: %w", err)
-		}
-		streams = append(streams, &apiFromCoverageStart{inner: s, start: apiStart})
+	s, err := c.api.Transactions(ctx, w)
+	if err != nil {
+		return nil, fmt.Errorf("schwab api Transactions: %w", err)
 	}
+	streams = append(streams, &apiFromCoverageStart{inner: s, start: apiStart})
 	return silver.NewConcatTransactionStream(streams), nil
 }
 
@@ -328,7 +280,7 @@ func (c *Connection) ensureBridge(ctx context.Context) (map[string]string, error
 		return c.bridge, c.bridgeErr
 	}
 	c.bridgeBuilt = true
-	if c.api == nil || c.web == nil {
+	if c.web == nil {
 		c.bridge = map[string]string{}
 		return c.bridge, nil
 	}
@@ -337,18 +289,12 @@ func (c *Connection) ensureBridge(ctx context.Context) (map[string]string, error
 }
 
 // ensureSymbolBridge builds the web ticker → api CUSIP map on
-// first use and caches the result. Empty when api isn't
-// configured (web-only mode falls back to using the ticker as
-// the instrument id, with no api row to join against).
+// first use and caches the result.
 func (c *Connection) ensureSymbolBridge(ctx context.Context) (map[string]string, error) {
 	if c.symbolBridgeBuilt {
 		return c.symbolToCUSIP, c.symbolBridgeErr
 	}
 	c.symbolBridgeBuilt = true
-	if c.api == nil {
-		c.symbolToCUSIP = map[string]string{}
-		return c.symbolToCUSIP, nil
-	}
 	c.symbolToCUSIP, c.symbolBridgeErr = buildSymbolToCUSIPBridge(ctx, c.api.db)
 	return c.symbolToCUSIP, c.symbolBridgeErr
 }
@@ -567,9 +513,6 @@ func (c *Connection) ensureAPIStart(ctx context.Context) (map[string]int64, erro
 	}
 	c.apiStartBuilt = true
 	c.apiStartByHash = map[string]int64{}
-	if c.api == nil {
-		return c.apiStartByHash, nil
-	}
 	apiTimes, err := accountTimestamps(ctx, c.api.db, nil)
 	if err != nil {
 		c.apiStartErr = fmt.Errorf("schwab apiStartByHash: %w", err)

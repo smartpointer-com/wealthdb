@@ -23,6 +23,12 @@ func TestInKindReducesThePaidInBookValueFromThePeriodEnd(t *testing.T) {
 	if got, want := k.PeriodEnds(), []int64{100, 200}; !reflect.DeepEqual(got, want) {
 		t.Errorf("PeriodEnds = %v, want %v", got, want)
 	}
+	if got := k.Reach(150); got != 200 {
+		t.Errorf("Reach(150) = %d, want the latest period end, 200", got)
+	}
+	if got := k.Reach(250); got != 250 {
+		t.Errorf("Reach(250) = %d, want 250", got)
+	}
 
 	pi := dec(1000)
 	for _, c := range []struct {
@@ -56,5 +62,8 @@ func TestInKindReducesThePaidInBookValueFromThePeriodEnd(t *testing.T) {
 	}
 	if got := empty.PeriodEnds(); len(got) != 0 {
 		t.Errorf("zero value PeriodEnds = %v, want none", got)
+	}
+	if got := empty.Reach(-1); got != -1 {
+		t.Errorf("zero value Reach(-1) = %d, want -1", got)
 	}
 }

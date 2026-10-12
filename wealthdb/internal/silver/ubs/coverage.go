@@ -35,8 +35,12 @@ func (c psnCashCoverage) speaksFor(account string, at int64) bool {
 
 // cashCoverage reads the feed's coverage off the whole silver: whether the
 // feed speaks for an account is a property of what has been delivered,
-// never of which slice of time a load happens to cover.
+// never of which slice of time a load happens to cover. The first call
+// reads it and later calls return the same map.
 func (r *psnReader) cashCoverage(ctx context.Context) (psnCashCoverage, error) {
+	if r != nil && r.coverage != nil {
+		return r.coverage, nil
+	}
 	out := psnCashCoverage{}
 	err := r.eachCashMovement(ctx, "ubs-psn cashCoverage", func(row psnCashRow) error {
 		acct := row.account
@@ -51,6 +55,9 @@ func (r *psnReader) cashCoverage(ctx context.Context) (psnCashCoverage, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if r != nil {
+		r.coverage = out
 	}
 	return out, nil
 }

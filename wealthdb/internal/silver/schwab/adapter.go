@@ -32,12 +32,14 @@ func (*Adapter) Kind() string { return kindName }
 // file as a schwab-api silver. Used by tests and by users who
 // only have the api feed configured at the top level.
 //
-// Subsources mode: kind is "schwab-api" or "schwab-web"; each
-// entry is optional but at least one must be present. The
-// returned Connection orchestrates a merged stream where web
-// data backfills pre-api-coverage transactions and contributes
-// historical position / cash snapshots that api doesn't
-// surface. See merge.go.
+// Subsources mode: kind is "schwab-api" or "schwab-web". The api
+// entry is required and the web entry optional: the web silver
+// names an account by the last digits of its number, and only the
+// api silver maps those to the account ids gold holds
+// (buildAccountBridge). The returned Connection orchestrates a
+// merged stream where web data backfills pre-api-coverage
+// transactions and contributes historical position / cash
+// snapshots that api doesn't surface. See merge.go.
 func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	c := &Connection{}
 
@@ -68,8 +70,10 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 			return nil, fmt.Errorf("schwab: unknown subsource kind %q (want schwab-api or schwab-web)", s.Kind)
 		}
 	}
-	if c.api == nil && c.web == nil {
-		return nil, fmt.Errorf("schwab: at least one of subsources[schwab-api], subsources[schwab-web] must be configured")
+	if c.api == nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("schwab: subsources[schwab-api] must be configured: " +
+			"only the api silver maps the web silver's account numbers to account ids")
 	}
 	return c, nil
 }
