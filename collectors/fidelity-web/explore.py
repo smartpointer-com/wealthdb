@@ -40,7 +40,6 @@ import logging
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 from collectorkit import cli, debugcap, explore
 
@@ -91,112 +90,17 @@ USER_SELECTOR = (
 USER_SELECT_SELECTOR = "select#dom-select-username"
 PWD_SELECTOR = "#dom-pswd-input, input[type='password']"
 
-# Init script. Two responsibilities:
-#   1. Click recorder — log every DOM click to console.log() so the
-#      Python side picks it up via page.on('console'). Necessary because
-#      VNC mouse events bypass Playwright's action API. Password-input
-#      values are redacted before logging.
-#   2. Login-form + OTP detectors — once a fidelity.com frame renders a
-#      login form (SPA: may be after the initial DOM), signal Python via
-#      a console.log() sentinel so the Python side can fill it.
-#      Host-gated so neither detector can fire on a third-party frame.
-#      Init scripts run in every frame, so an embedded sign-in iframe is
-#      covered too.
-CLICK_RECORDER_JS = r"""
-(() => {
-  const xpathOf = (el) => {
-    if (!el) return '';
-    const segs = [];
-    while (el && el.nodeType === Node.ELEMENT_NODE) {
-      let i = 1, sib = el.previousElementSibling;
-      while (sib) {
-        if (sib.tagName === el.tagName) i++;
-        sib = sib.previousElementSibling;
-      }
-      segs.unshift(el.tagName.toLowerCase() + '[' + i + ']');
-      el = el.parentElement;
-    }
-    return '/' + segs.join('/');
-  };
-  document.addEventListener('click', (e) => {
-    const t = e.target;
-    // Redact password-input values so they never end up in the
-    // trace / click log.
-    const safeText = (t && t.tagName === 'INPUT' && t.type === 'password')
-      ? '<redacted>'
-      : (t.innerText || t.value || '').toString().slice(0, 80);
-    const data = {
-      kind: 'click',
-      ts: new Date().toISOString(),
-      url: location.href,
-      tag: t.tagName,
-      id: t.id || null,
-      cls: (typeof t.className === 'string' ? t.className : null),
-      text: safeText,
-      xpath: xpathOf(t),
-      x: e.clientX, y: e.clientY,
-    };
-    console.log('__FIDELITY_EVENT__ ' + JSON.stringify(data));
-  }, true);
-
-  // Login-form + OTP detectors. Host-gated to fidelity.com frames.
-  if (!/(^|\.)fidelity\.com$/i.test(location.hostname)) return;
-  const USER_SEL =
-    "input#userId-input, input[autocomplete='username'], " +
-    "input[name='userId'], input[aria-labelledby='dom-username-label'], " +
-    "input[name*='user' i], input[id*='user' i], select#dom-select-username";
-  const detect = () => {
-    const user = document.querySelector(USER_SEL);
-    const pwd = document.querySelector(
-      "#dom-pswd-input, input[type='password']");
-    const sig = (user ? 'u' : '') + (pwd ? 'p' : '');
-    if (sig && sig !== window.__FIDELITY_LOGIN_SIG__) {
-      window.__FIDELITY_LOGIN_SIG__ = sig;
-      console.log('__FIDELITY_EVENT__ ' + JSON.stringify({
-        kind: 'login-form-detected',
-        fields: sig,
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-    // OTP / one-time-code field detector — emits the field's STATIC
-    // descriptor (never its value) once it mounts, so the 2FA surface
-    // is recorded even when no click lands on the field itself. The
-    // known field is #dom-totp-security-code-input; the generic
-    // conventions cover drift and any DAF-side challenge.
-    const otp = document.querySelector(
-      "#dom-totp-security-code-input, " +
-      "input[autocomplete='one-time-code'], input[inputmode='numeric'], " +
-      "input[name*='otp' i], input[name*='code' i], input[id*='otp' i], " +
-      "input[id*='code' i], input[maxlength='6'], input[maxlength='8']"
-    );
-    if (otp && !window.__FIDELITY_OTP_DETECTED__) {
-      window.__FIDELITY_OTP_DETECTED__ = true;
-      console.log('__FIDELITY_EVENT__ ' + JSON.stringify({
-        kind: 'otp-field-detected',
-        tag: otp.tagName,
-        id: otp.id || null,
-        name: otp.getAttribute('name'),
-        type: otp.getAttribute('type'),
-        placeholder: otp.getAttribute('placeholder'),
-        inputmode: otp.getAttribute('inputmode'),
-        autocomplete: otp.getAttribute('autocomplete'),
-        maxlength: otp.getAttribute('maxlength'),
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-  };
-  detect();
-  // MutationObserver covers SPAs that mount the form after initial
-  // load. Attached to documentElement so the whole subtree is seen.
-  const target = document.documentElement || document;
-  if (target && typeof MutationObserver !== 'undefined') {
-    new MutationObserver(detect).observe(target,
-      {childList: true, subtree: true});
-  }
-})();
-"""
+# The in-page click recorder and login-form / one-time-code detectors
+# (collectorkit.explore.click_recorder_js), host-gated to fidelity.com
+# frames like the pre-fill. The username detector also matches the
+# remember-my-username <select>; the code detector puts the known 2FA
+# field ahead of the generic conventions.
+OTP_SELECTOR = ("#dom-totp-security-code-input, "
+                + explore.DEFAULT_OTP_SELECTOR)
+CLICK_RECORDER_JS = explore.click_recorder_js(
+    EVENT_PREFIX, host_re=PREFILL_HOST_RE,
+    user_selector=f"{USER_SELECTOR}, {USER_SELECT_SELECTOR}",
+    password_selector=PWD_SELECTOR, otp_selector=OTP_SELECTOR)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -207,84 +111,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     explore.add_args(p, url=DEFAULT_URL, env_file=DEFAULT_ENV_FILE,
                      profile_dir=DEFAULT_PROFILE_DIR, dom_snapshots=True)
     return p.parse_args(argv)
-
-
-def _maybe_prefill_login(page, username: str, password: str,
-                         filled: set) -> bool:
-    """Fill the username + password fields of a Fidelity login form, each
-    AT MOST ONCE per page (tracked in `filled`, keyed by (id(page), kind)).
-
-    Frame-aware and host-gated to fidelity.com, so the credentials can
-    never touch a third-party frame. The password is filled only when a
-    username control co-exists in the SAME frame — either a text input
-    (fresh-device form) or the remember-my-username <select> (returning
-    device), whose remembered value is left alone. A lone password-shaped
-    field (a 2FA code entry) is never touched. Each fill is verified by
-    read-back, with one clear-and-retry, so a stray autofill can never
-    concatenate onto a correct value; the field is marked done regardless
-    of the outcome so later DOM mutations never trigger a re-fill that
-    fights a hand-typed value. A field that already has content is marked
-    done untouched. Never submits — Sign in + 2FA are driven manually in
-    the VNC session. Returns True iff at least one field was newly filled
-    and verified."""
-    did = False
-    for frame in page.frames:
-        try:
-            host = urlparse(frame.url).hostname or ""
-        except Exception:
-            continue
-        if not PREFILL_HOST_RE.search(host):
-            continue
-        try:
-            user_field = frame.locator(USER_SELECTOR).first
-            user_select = frame.locator(USER_SELECT_SELECTOR).first
-            pwd_field = frame.locator(PWD_SELECTOR).first
-            # count() / is_visible() are instant (no auto-wait), so a
-            # frame without the form costs nothing per poll instead of
-            # blocking on a timeout.
-            if pwd_field.count() == 0 or not pwd_field.is_visible():
-                continue
-            has_user_input = (user_field.count() > 0
-                              and user_field.is_visible())
-            has_user_select = (user_select.count() > 0
-                               and user_select.is_visible())
-            if not (has_user_input or has_user_select):
-                continue
-        except Exception as exc:
-            log.debug("prefill frame probe failed: %r", exc)
-            continue
-        targets = [("pwd", pwd_field, password)]
-        if has_user_input:
-            targets.insert(0, ("user", user_field, username))
-        for kind, field, value in targets:
-            key = (id(page), kind)
-            if key in filled:
-                continue
-            try:
-                if field.input_value(timeout=1000):
-                    # Hand-typed (or already pre-filled) — leave it alone.
-                    filled.add(key)
-                    continue
-                field.fill(value, timeout=2000)
-                got = field.input_value(timeout=1500)
-                if got != value:
-                    field.fill("", timeout=1500)
-                    field.fill(value, timeout=2000)
-                    got = field.input_value(timeout=1500)
-                filled.add(key)
-                if got == value:
-                    did = True
-                else:
-                    log.warning(
-                        "pre-fill of %s field did not stick (got len %d, "
-                        "want %d) — type it manually in the VNC session",
-                        kind, len(got or ""), len(value))
-            except Exception as exc:
-                log.debug("prefill %s field failed: %r", kind, exc)
-        # The first fidelity.com frame carrying the form is the login
-        # form; other frames don't get a second pass.
-        break
-    return did
 
 
 # What the person at the VNC session is asked to walk (DESIGN.md §12).
@@ -317,8 +143,11 @@ def main(argv: list[str]) -> int:
         context = session.open_camoufox(stack, args.profile_dir)
         session.attach(
             context, init_js=CLICK_RECORDER_JS, event_prefix=EVENT_PREFIX,
-            prefill=(lambda page: _maybe_prefill_login(
-                page, username, password, filled)) if prefill else None)
+            prefill=(lambda page: explore.prefill_login(
+                page, username, password, filled, host_re=PREFILL_HOST_RE,
+                user_selector=USER_SELECTOR, password_selector=PWD_SELECTOR,
+                user_alt_selector=USER_SELECT_SELECTOR,
+                log=log)) if prefill else None)
         session.open(args.url)
         session.record(WALK, max_duration=args.max_duration)
     session.report()

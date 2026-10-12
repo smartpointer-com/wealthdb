@@ -23,8 +23,7 @@ stub fetch. Asserts each document kind behaves per the mode mapping:
   * an unrecognised kind → always fetched (fail-safe);
   * a fetch that yields no PDF → an error; --documents-force bypasses the index;
   * a link-kind doc issued inside the freshness window is re-fetched, not
-    linked;
-  * _tally routes an unmapped outcome to 'other', never inflating 'fetched'.
+    linked.
 
 Part 3 — the `--debug` HTTP trace. Asserts the flag defaults off, that the
 request choke point records successes, unexpected statuses and transport
@@ -417,22 +416,13 @@ def test_tally_and_counts():
     counts = download._empty_doc_counts()
     for s in (docdedup.LINKED, docdedup.LINKED, docdedup.FETCHED,
               docdedup.VERIFIED, docdedup.CHANGED, docdedup.FETCH_FAILED):
-        download._tally(counts, s)
+        docdedup.tally(counts, s)
     assert counts["linked"] == 2
     assert counts["fetched"] == 1
     assert counts["verified"] == 1
     assert counts["changed"] == 1
     assert counts["errors"] == 1
     assert counts["other"] == 0
-
-
-def test_tally_unmapped_code_goes_to_other():
-    # An outcome the map does not know must NOT inflate 'fetched'; it lands in
-    # its own 'other' bucket so the audit stays honest.
-    counts = download._empty_doc_counts()
-    download._tally(counts, "totally-unexpected-code")
-    assert counts["other"] == 1
-    assert counts["fetched"] == 0
 
 
 def test_fetch_failure_is_error(tmp_path):
@@ -449,7 +439,7 @@ def test_fetch_failure_is_error(tmp_path):
         fetch=lambda: None)
     assert status == docdedup.FETCH_FAILED
     counts = download._empty_doc_counts()
-    download._tally(counts, status)
+    docdedup.tally(counts, status)
     assert counts["errors"] == 1
 
 

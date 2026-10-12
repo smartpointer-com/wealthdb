@@ -2,7 +2,7 @@
 
 Design notes for the Austrian Raiffeisen (Mein ELBA) retail collector.
 Sections: scope (§1), the discovery harness (§2), the discovery walk
-(§3), the mapped surface (§3-Observed, with lettered parts §A–§I), the
+(§3), the mapped surface (§3-Surface, with lettered parts §A–§I), the
 runtime (§4), and operating notes (§5). The layout follows
 [chase](../chase/DESIGN.md) and
 [firstcitizens](../firstcitizens/DESIGN.md).
@@ -62,7 +62,8 @@ runtime (§4), and operating notes (§5). The layout follows
 ([`collectorkit.explore`](../../shared/collectorkit/collectorkit/explore.py)),
 which documents its artefacts and redaction. This collector adds the
 entry URL, a host gate (the pre-fill touches only raiffeisen.at frames),
-the credential env names, and its in-page detector. The harness never
+the credential env names, and the field selectors. The shared in-page
+detector watches those fields, plus TAN code fields. The harness never
 submits a form; sign-in and pushTAN are done by hand over VNC. The
 opt-in `--trace` is off by default, because the pinned
 Playwright/Camoufox pair crashes on tracing.
@@ -89,7 +90,7 @@ VNC. Each is one continuous segment.
    date filters, and the history floor (§C). The CSV export can be run
    once for comparison (§D).
 
-## 3-Observed — the mapped surface
+## 3-Surface — the mapped surface
 
 Endpoints below are masked (`<IBAN>` and `<id>` stand for elided
 values). Account numbers, Verfüger numbers, balances and the region in
@@ -117,7 +118,7 @@ order:
 4. `POST rest/identify/<fullVerfueger>/pin` — submits the PIN (the
    password; the form field caps it at `maxlength="5"`). Response
    carries `challengeType: "PUSH"` → pushTAN required.
-   `GET rest/identify/challenge/switch` returned `[]` — **no fallback
+   `GET rest/identify/challenge/switch` returns `[]` — **no fallback
    factor exists** on this flow; pushTAN is the only path.
 5. `POST rest/login/pushtan?language=de` — sends the push. The response
    is the whole polling contract:

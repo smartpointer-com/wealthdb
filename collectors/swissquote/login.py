@@ -22,7 +22,6 @@ import argparse
 import getpass
 import logging
 import os
-import re
 import subprocess
 import sys
 import time
@@ -171,92 +170,16 @@ def _dump_html(page, screenshot_dir: Path | None, name: str) -> None:
         log.warning("HTML dump %s failed: %s", path, e)
 
 
-# A run of hex long enough to be an id rather than a word. Session-scoped
-# ids (the MFA page's urlId, document tokens) are what make a captured URL
-# unsafe to paste into a bug report; the PATH is what diagnoses a moved
-# endpoint, so the shape is kept and the ids are not.
-_HEX_ID_RE = re.compile(r"[0-9a-f]{8,}", re.I)
-
-
-def url_shape(url: str) -> str:
-    """A URL reduced to its shape: credential params masked, ids elided."""
-    return _HEX_ID_RE.sub("<id>", debugcap.redact_url(url))
-
-
-def sample_api_calls(page) -> list:
-    """This document's XHR/fetch calls, with how long each took.
-
-    Read out of `performance.getEntriesByType('resource')` rather than off a
-    Playwright response event: sync-Playwright callbacks only fire inside a
-    Playwright call, and the wait loop below sleeps between its polls, so an
-    event listener could miss what the page did in between. The timing
-    buffer has no such gap — but it IS per-document, so this is sampled
-    while the MFA page is still open, not once at the end.
-
-    The DURATION is the point, not just the URL: a server-held long poll
-    lasts seconds to tens of seconds, a status check milliseconds, and that
-    is what says which call the page is waiting on.
-
-    Best-effort: a page mid-navigation just yields nothing.
-    """
-    try:
-        return page.evaluate(
-            "() => performance.getEntriesByType('resource')"
-            "  .filter(e => e.initiatorType === 'xmlhttprequest'"
-            "            || e.initiatorType === 'fetch')"
-            "  .map(e => [e.name, Math.round(e.duration)])"
-        ) or []
-    except Exception:  # noqa: BLE001 - diagnostics never break a login
-        return []
-
-
-def merge_api_sample(seen: dict, sample) -> dict:
-    """Fold one sample into `seen`, keyed by URL shape.
-
-    The timing buffer accumulates within a document and resets on
-    navigation, so the highest count any single sample reported is the
-    per-document peak — and the longest duration ever seen is the one that
-    matters. Both are taken as maxima rather than summed, which would
-    multiply the same entries by the number of samples.
-    """
-    counts: dict = {}
-    longest: dict = {}
-    for name, ms in sample or []:
-        shape = url_shape(str(name))
-        counts[shape] = counts.get(shape, 0) + 1
-        longest[shape] = max(longest.get(shape, 0), int(ms or 0))
-    for shape, n in counts.items():
-        row = seen.setdefault(shape, {"calls": 0, "ms": 0})
-        row["calls"] = max(row["calls"], n)
-        row["ms"] = max(row["ms"], longest[shape])
-    return seen
-
-
-def report_api_calls(seen: dict, screenshot_dir: Path | None) -> None:
-    """Log what the MFA page called, longest call first, and save it.
+def report_mfa_api_calls(seen: dict, screenshot_dir: Path | None) -> None:
+    """Log what the MFA page called, longest call first, and save it as
+    ``mfa_api_calls.txt`` in `screenshot_dir`.
 
     The page's approval channel is its own status endpoint, whose route
-    can move. The list is what re-derives it: id-masked, so a line can be
-    pasted into a report, and ordered by duration, because the call the
-    page is WAITING on is the one to poll.
+    can move. The list is what re-derives it (see
+    `debugcap.report_api_calls`).
     """
-    if not seen:
-        return
-    rows = sorted(seen.items(), key=lambda kv: (-kv[1]["ms"], kv[0]))
-    lines = [f'{row["ms"]:>7}ms  x{row["calls"]:<3} {shape}'
-             for shape, row in rows]
-    log.info("MFA page issued %d distinct API call shape(s), "
-             "longest-held first:", len(rows))
-    for line in lines:
-        log.info("    %s", line)
-    if not screenshot_dir:
-        return
-    try:
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-        (screenshot_dir / "mfa_api_calls.txt").write_text(
-            "\n".join(lines) + "\n", encoding="utf-8")
-    except Exception as e:  # noqa: BLE001
-        log.warning("could not save the API-call list: %s", e)
+    debugcap.report_api_calls(seen, screenshot_dir, log=log,
+                              title="MFA page", filename="mfa_api_calls.txt")
 
 
 # How often the trigger URL is re-navigated while waiting for approval. This
@@ -264,7 +187,7 @@ def report_api_calls(seen: dict, screenshot_dir: Path | None) -> None:
 # and it re-fires the push when approval has not landed yet — so the interval
 # must comfortably exceed the time to verify the code and approve, or a run
 # costs the phone more than one live request.
-MFA_APPROVAL_PROBE_SECONDS = 30
+MFA_APPROVAL_PROBE_SECONDS = 60
 
 
 def _announce_operation_code(page, *, waiting_note: str = "") -> None:
@@ -347,13 +270,6 @@ def _maybe_start_trace(context, enabled: bool):
         context.tracing.start(screenshots=True, snapshots=False, sources=True)
 
 
-def stop_trace(context, trace_path: Path) -> None:
-    """Stop a running trace and write its bundle to `trace_path`."""
-    trace_path.parent.mkdir(parents=True, exist_ok=True)
-    context.tracing.stop(path=str(trace_path))
-    log.info("Wrote Playwright trace: %s", trace_path)
-
-
 def check_session(args: argparse.Namespace) -> int:
     """Return 0 if the saved session still authenticates, 1 otherwise."""
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -402,11 +318,9 @@ def check_session(args: argparse.Namespace) -> int:
                 )
                 return 1
         finally:
-            if args.trace:
-                stop_trace(
-                    context,
-                    args.screenshot_dir / f"trace_check_{ts}.zip",
-                )
+            debugcap.stop_trace_if_active(context, args.trace,
+                                          args.screenshot_dir, "check",
+                                          log=log)
             context.close()
             browser.close()
 
@@ -515,7 +429,8 @@ def login(args: argparse.Namespace) -> int:
                 if time.monotonic() - last_api_sample > 1:
                     # Sampled while the MFA document is still open: the
                     # timing buffer is cleared by the next navigation.
-                    merge_api_sample(api_calls, sample_api_calls(page))
+                    debugcap.merge_api_sample(api_calls,
+                                              debugcap.sample_api_calls(page))
                     last_api_sample = time.monotonic()
                 if url != last_logged_url:
                     log.info("waiting; current URL: %s", url)
@@ -569,7 +484,7 @@ def login(args: argparse.Namespace) -> int:
                 screenshot(
                     page, args.screenshot_dir, f"login_{ts}_04_mfa_timeout",
                 )
-                report_api_calls(api_calls, args.screenshot_dir)
+                report_mfa_api_calls(api_calls, args.screenshot_dir)
                 raise SystemExit(
                     f"Login did not complete within {args.mfa_timeout}s. "
                     f"Final URL: {page.url}. The push may not have been "
@@ -577,7 +492,7 @@ def login(args: argparse.Namespace) -> int:
                     f"have shown an unfamiliar interstitial. Re-run with "
                     f"--screenshot-dir -v to diagnose."
                 )
-            report_api_calls(api_calls, args.screenshot_dir)
+            report_mfa_api_calls(api_calls, args.screenshot_dir)
             # After the wait fires, give the SPA a beat to settle —
             # F5 may issue follow-up redirects and additional cookies
             # before the session is fully bedded in.
@@ -597,11 +512,9 @@ def login(args: argparse.Namespace) -> int:
             print(f"session minted: {args.state_path}", flush=True)
             return 0
         finally:
-            if args.trace:
-                stop_trace(
-                    context,
-                    args.screenshot_dir / f"trace_login_{ts}.zip",
-                )
+            debugcap.stop_trace_if_active(context, args.trace,
+                                          args.screenshot_dir, "login",
+                                          log=log)
             context.close()
             browser.close()
 

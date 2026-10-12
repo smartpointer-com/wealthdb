@@ -2,8 +2,8 @@
 """American Express bronze download — the whole run, sign-in included.
 
 **`login` folds into this verb** (DESIGN.md §L). Amex's sign-in budget is
-small enough that a captcha fires at roughly seven in twenty minutes (§K),
-and a separate `login` verb doubled the cost of every routine run for
+small enough that a handful of sign-ins in a short window fires a captcha
+(§K), and a separate `login` verb doubled the cost of every routine run for
 nothing: the device trust it minted is minted just as well here, by the same
 code, on the same profile. So this is the one verb that signs in — it
 launches the persistent Camoufox profile, submits the form (a trusted device
@@ -47,7 +47,6 @@ import argparse
 import calendar
 import contextlib
 import logging
-import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -62,27 +61,6 @@ log = logging.getLogger("amex.download")
 # Safety cap on activity pagination (100 rows/page → 50k rows). A real card
 # is far under this; the cap only bounds a runaway loop.
 MAX_ACTIVITY_PAGES = 500
-
-
-def log_id(value: str) -> str:
-    """An account key shortened for the LOG.
-
-    The key is a 32-hex account identifier, and terminal output is this
-    fleet's primary debugging channel — it gets pasted into chats and issue
-    threads. A prefix identifies the account in a run's own output without
-    carrying the whole identifier along with it. Files on disk keep the full
-    key (safe_stem), because that is what the loader joins on."""
-    stem = safe_stem(value)
-    return stem if len(stem) <= 12 else stem[:8] + "…"
-
-
-def safe_stem(value: str) -> str:
-    """A filesystem-safe stem from an account key / statement date: keep word
-    chars, dash, dot; collapse the rest to '-'; strip leading/trailing dots
-    and dashes so no path separator or traversal / dotfile survives. Never
-    empty."""
-    stem = re.sub(r"[^\w.-]+", "-", str(value)).strip("-.")
-    return stem or "item"
 
 
 def _months_back(d: date, months: int) -> date:
@@ -216,17 +194,17 @@ def _export_account(context, acct: dict, run_dir: Path,
             resp = context.request.get(url, headers={"Accept": "*/*"})
             if not 200 <= resp.status < 300:
                 log.warning("export %s/%s: HTTP %s",
-                            log_id(key), fmt, resp.status)
+                            bronze.log_id(key), fmt, resp.status)
                 continue
             ext = amexclient.EXPORT_EXTENSIONS[fmt]
-            out = run_dir / "transactions" / f"{safe_stem(key)}.{ext}"
+            out = run_dir / "transactions" / f"{bronze.safe_stem(key)}.{ext}"
             bronze.atomic_write_bytes(out, resp.body())
             written += 1
         except Exception as exc:
             # safe_error, never %r: a Playwright request error's Call log
             # reproduces the request headers, cookie jar included, and this
             # line is written to be pasted around.
-            log.warning("export %s/%s failed: %s", log_id(key), fmt,
+            log.warning("export %s/%s failed: %s", bronze.log_id(key), fmt,
                         debugcap.safe_error(exc))
     return written
 
@@ -271,24 +249,24 @@ def _download_statements(context, acct: dict, run_dir: Path, *,
         amexclient.activity_body(acct["account_token"],
                                  view=amexclient.VIEW_STATEMENTS))
     if status != 200 or body is None:
-        log.warning("statement list %s: HTTP %s", log_id(key), status)
+        log.warning("statement list %s: HTTP %s", bronze.log_id(key), status)
         return 0, 0
     bronze.atomic_write_json(
-        run_dir / "raw" / f"statements-{safe_stem(key)}.json", body)
-    out_dir = run_dir / "statements" / safe_stem(key)
+        run_dir / "raw" / f"statements-{bronze.safe_stem(key)}.json", body)
+    out_dir = run_dir / "statements" / bronze.safe_stem(key)
     entries = amexclient.parse_statements(body)
     structured = sum(1 for e in entries if e.has_structured_export)
     log.info("  %s: %d statement period(s), %d with a structured export",
-             log_id(key), len(entries), structured)
+             bronze.log_id(key), len(entries), structured)
     pdfs = 0
     for entry in entries:
         if not _statement_in_window(entry.end_date, since):
             continue
-        out = out_dir / f"{safe_stem(entry.end_date)}.pdf"
+        out = out_dir / f"{bronze.safe_stem(entry.end_date)}.pdf"
         pdfs += _fetch_pdf(context, entry.pdf_url, out)
     summaries = 0
     for row in amexclient.parse_year_end_summaries(body):
-        out = out_dir / f"yes-{safe_stem(str(row['year']))}.pdf"
+        out = out_dir / f"yes-{bronze.safe_stem(str(row['year']))}.pdf"
         summaries += _fetch_pdf(context, row["pdf_url"], out)
     return pdfs, summaries
 
@@ -385,8 +363,8 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
     for acct in accounts:
         # `stem` names files (the loader joins on the full key); `shown` is
         # the shortened form the log carries.
-        stem = safe_stem(acct["account_key"])
-        shown = log_id(acct["account_key"])
+        stem = bronze.safe_stem(acct["account_key"])
+        shown = bronze.log_id(acct["account_key"])
         if not acct["account_token"]:
             log.warning("account %s has no activity token — skipped", shown)
             # Recorded rather than omitted: a key present in `accounts` with
@@ -569,7 +547,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "the sign-in is treated as an unrecognised device and "
                         "a real passcode fires — the untrusted-device flow. "
                         "Costs a real passcode; never routine.")
-    p.add_argument("--mfa-timeout", type=int, default=600,
+    p.add_argument("--mfa-timeout", type=int, default=login.MFA_TIMEOUT_S,
                    help="Seconds to wait for the authenticated session to "
                         "appear once a challenge has been answered: the "
                         "by-hand VNC window, and the same ceiling after the "

@@ -38,7 +38,6 @@ import logging
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 from collectorkit import cli, debugcap, explore
 
@@ -59,12 +58,12 @@ EVENT_PREFIX = "__FIRSTCITIZENS_EVENT__ "
 # Pre-fill is restricted to firstcitizens.com (and subdomains) so
 # credentials never leak into an embedded third-party frame. A login form
 # rendering on another host gets its credentials typed by hand; the gate is
-# widened to an observed host only after a capture shows it — never
+# widened to a host only after a capture shows the form there — never
 # pre-emptively.
 HOST_RE = re.compile(r"(^|\.)firstcitizens\.com$", re.I)
 
 # Locators tried in order. Deliberately broad: they anchor on standard HTML
-# conventions rather than any one observed id, so a reworked form still
+# conventions rather than any one known id, so a reworked form still
 # pre-fills. US retail sign-ins are username-keyed (not an email), hence the
 # name/id substring hooks lead and the email conventions trail as defence.
 USER_SELECTOR = (
@@ -76,114 +75,16 @@ USER_SELECTOR = (
     "input[type='email'], "
     "input[autocomplete='email']"
 )
-PWD_SELECTOR = "input[type='password']"
 
-# Init script. Two responsibilities:
-#   1. Click recorder — log every DOM click to console.log() so the Python
-#      side picks it up via page.on('console'). Necessary because VNC mouse
-#      events bypass Playwright's action API. Password-input values are
-#      redacted before logging.
-#   2. Login-form + OTP detectors — once a firstcitizens.com frame renders
-#      a login form (SPA: may be after the initial DOM), signal Python via
-#      a console.log() sentinel so the Python side can fill it. Host-gated
-#      so neither detector can fire on a third-party frame; there is no
-#      path gate, so the detectors see the form wherever it mounts — the
-#      Python side only fills when username + password fields co-exist
-#      in one frame, which is what keeps credentials out of lone fields.
-#      Init scripts run in every frame, so an embedded sign-in iframe is
-#      covered too.
-CLICK_RECORDER_JS = r"""
-(() => {
-  const xpathOf = (el) => {
-    if (!el) return '';
-    const segs = [];
-    while (el && el.nodeType === Node.ELEMENT_NODE) {
-      let i = 1, sib = el.previousElementSibling;
-      while (sib) {
-        if (sib.tagName === el.tagName) i++;
-        sib = sib.previousElementSibling;
-      }
-      segs.unshift(el.tagName.toLowerCase() + '[' + i + ']');
-      el = el.parentElement;
-    }
-    return '/' + segs.join('/');
-  };
-  document.addEventListener('click', (e) => {
-    const t = e.target;
-    // Redact password-input values so they never end up in the
-    // trace / click log.
-    const safeText = (t && t.tagName === 'INPUT' && t.type === 'password')
-      ? '<redacted>'
-      : (t.innerText || t.value || '').toString().slice(0, 80);
-    const data = {
-      kind: 'click',
-      ts: new Date().toISOString(),
-      url: location.href,
-      tag: t.tagName,
-      id: t.id || null,
-      cls: (typeof t.className === 'string' ? t.className : null),
-      text: safeText,
-      xpath: xpathOf(t),
-      x: e.clientX, y: e.clientY,
-    };
-    console.log('__FIRSTCITIZENS_EVENT__ ' + JSON.stringify(data));
-  }, true);
-
-  // Login-form + OTP detectors. Host-gated to firstcitizens.com frames.
-  if (!/(^|\.)firstcitizens\.com$/i.test(location.hostname)) return;
-  const USER_SEL =
-    "input[autocomplete='username'], input[name*='user' i], " +
-    "input[id*='user' i], input[name*='login' i], input[id*='login' i], " +
-    "input[type='email'], input[autocomplete='email']";
-  const detect = () => {
-    const user = document.querySelector(USER_SEL);
-    const pwd = document.querySelector("input[type='password']");
-    const sig = (user ? 'u' : '') + (pwd ? 'p' : '');
-    if (sig && sig !== window.__FIRSTCITIZENS_LOGIN_SIG__) {
-      window.__FIRSTCITIZENS_LOGIN_SIG__ = sig;
-      console.log('__FIRSTCITIZENS_EVENT__ ' + JSON.stringify({
-        kind: 'login-form-detected',
-        fields: sig,
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-    // OTP / one-time-code field detector — emits the field's STATIC
-    // descriptor (never its value) once it mounts, so the 2FA surface
-    // (SMS / voice / email OTP expected — observed, not assumed) is
-    // recorded even when no click lands on the field itself.
-    const otp = document.querySelector(
-      "input[autocomplete='one-time-code'], input[inputmode='numeric'], " +
-      "input[name*='otp' i], input[name*='code' i], input[id*='otp' i], " +
-      "input[id*='code' i], input[maxlength='6'], input[maxlength='8']"
-    );
-    if (otp && !window.__FIRSTCITIZENS_OTP_DETECTED__) {
-      window.__FIRSTCITIZENS_OTP_DETECTED__ = true;
-      console.log('__FIRSTCITIZENS_EVENT__ ' + JSON.stringify({
-        kind: 'otp-field-detected',
-        tag: otp.tagName,
-        id: otp.id || null,
-        name: otp.getAttribute('name'),
-        type: otp.getAttribute('type'),
-        placeholder: otp.getAttribute('placeholder'),
-        inputmode: otp.getAttribute('inputmode'),
-        autocomplete: otp.getAttribute('autocomplete'),
-        maxlength: otp.getAttribute('maxlength'),
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-  };
-  detect();
-  // MutationObserver covers SPAs that mount the form after initial load.
-  // We attach to documentElement so we see the whole subtree.
-  const target = document.documentElement || document;
-  if (target && typeof MutationObserver !== 'undefined') {
-    new MutationObserver(detect).observe(target,
-      {childList: true, subtree: true});
-  }
-})();
-"""
+# The in-page click recorder plus the login-form and one-time-code detectors
+# (collectorkit.explore.click_recorder_js). VNC mouse events bypass
+# Playwright's action API, so clicks are logged from the page itself. The
+# detectors are host-gated to firstcitizens.com frames; init scripts run in
+# every frame, so an embedded sign-in iframe is covered too. The Python side
+# fills only when username and password co-exist in one frame, which keeps
+# credentials out of a lone field.
+CLICK_RECORDER_JS = explore.click_recorder_js(
+    EVENT_PREFIX, host_re=HOST_RE, user_selector=USER_SELECTOR)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -198,74 +99,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def _maybe_prefill_login(page, username: str, password: str,
                          filled: set) -> bool:
-    """Fill the username + password fields of a First Citizens login form,
-    each AT MOST ONCE per page (tracked in `filled`, keyed by
-    (id(page), kind)).
-
-    Frame-aware: the form is looked for in every frame whose host is under
-    firstcitizens.com — covering both a form in the main frame and one
-    embedded in a same-brand iframe. Both fields must co-exist in the SAME
-    frame before either is touched, so the password can never land in a
-    standalone field (a 2FA code entry is a lone input). Each fill is
-    verified by read-back, with one clear-and-retry, so a stray autofill can
-    never concatenate onto a correct value; the field is marked done
-    regardless of the outcome so later DOM mutations never trigger a re-fill
-    that fights a hand-typed value. A field that already has content is marked
-    done untouched. Never submits: that is login.py's step, or the human's
-    in an explore session. Returns True iff at least one field was newly
-    filled and verified."""
-    did = False
-    for frame in page.frames:
-        try:
-            host = urlparse(frame.url).hostname or ""
-        except Exception:
-            continue
-        if not HOST_RE.search(host):
-            continue
-        try:
-            user_field = frame.locator(USER_SELECTOR).first
-            pwd_field = frame.locator(PWD_SELECTOR).first
-            # count() / is_visible() are instant (no auto-wait), so a
-            # frame without the form costs nothing per poll instead of
-            # blocking on a timeout.
-            if user_field.count() == 0 or pwd_field.count() == 0:
-                continue
-            if not (user_field.is_visible() and pwd_field.is_visible()):
-                continue
-        except Exception as exc:
-            log.debug("prefill frame probe failed: %r", exc)
-            continue
-        for kind, field, value in (("user", user_field, username),
-                                   ("pwd", pwd_field, password)):
-            key = (id(page), kind)
-            if key in filled:
-                continue
-            try:
-                if field.input_value(timeout=1000):
-                    # Hand-typed (or already pre-filled) — leave it alone.
-                    filled.add(key)
-                    continue
-                field.fill(value, timeout=2000)
-                got = field.input_value(timeout=1500)
-                if got != value:
-                    field.fill("", timeout=1500)
-                    field.fill(value, timeout=2000)
-                    got = field.input_value(timeout=1500)
-                filled.add(key)
-                if got == value:
-                    did = True
-                else:
-                    log.warning(
-                        "pre-fill of %s field did not stick (got len %d, "
-                        "want %d) — type it by hand",
-                        kind, len(got or ""), len(value))
-            except Exception as exc:
-                log.debug("prefill %s field failed: %r", kind, exc)
-        # The first firstcitizens.com frame carrying both fields is the
-        # login form; other frames (marketing embeds) don't get a second
-        # pass.
-        break
-    return did
+    """Fill a First Citizens login form at most once per page
+    (collectorkit.explore.prefill_login on the firstcitizens.com frames).
+    Never submits: that is login.py's step, or the human's in an explore
+    session."""
+    return explore.prefill_login(page, username, password, filled,
+                                 host_re=HOST_RE, user_selector=USER_SELECTOR,
+                                 log=log)
 
 
 # What the person at the VNC session is asked to walk (DESIGN.md §3).

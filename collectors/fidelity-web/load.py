@@ -136,21 +136,6 @@ SUPPLIED_GENERATION_SCOPE = "supplied_statement"
 CONSOLIDATED_1099_GENERATION_SCOPE = "consolidated_1099"
 
 
-def _logical_bronze_path(path):
-    """Strip a compression suffix (`.zst` / `.gz`) so silver records the
-    LOGICAL (uncompressed) name/path of a bronze artefact.
-
-    download + recompress may write an HTML/CSV artefact as
-    `<name>.zst`; a `documents` row (and every other silver fact) must
-    be byte-identical whether the on-disk file is `balances.html` or
-    `balances.html.zst`, so the loader keys on the logical name. Plain
-    paths (and PDFs, never compressed) pass through unchanged."""
-    for suffix in compress.VARIANT_SUFFIXES:
-        if path.name.endswith(suffix):
-            return path.with_name(path.name[:-len(suffix)])
-    return path
-
-
 # Fidelity activity rows whose Action column starts with one of
 # these tokens are pure-cash and legitimately have no instrument.
 # Any other Action with an empty Symbol is a validation failure.
@@ -1050,7 +1035,7 @@ def _resolved_bronze_files(directory, matches):
     for path in directory.iterdir():
         if not path.is_file():
             continue
-        logical = _logical_bronze_path(path)
+        logical = compress.logical_bronze_path(path)
         if matches(logical):
             logical_names.add(logical.name)
     resolved = (compress.resolve_variant(directory / name)
@@ -1100,8 +1085,8 @@ def _ingest_activity_csv(conn, csv_path):
     occ_counter: dict[str, int] = {}
     for row in reader:
             # Case-insensitive lookups (_row_ci): a re-cased header
-            # must not read as an empty column (the drift the
-            # positions export has already shown).
+            # must not read as an empty column (the positions export
+            # can change header casing).
             # Values (which the activity identity hashes) are
             # untouched, so ids are stable across header re-casings.
             ci = _row_ci(row)
@@ -1479,7 +1464,7 @@ def _ingest_document(conn, snapshot_at, path, classification, *,
     the same artefact across runs regardless of compression state."""
     if compressible:
         sha, size = compress.decompressed_sha256(path)
-        logical = _logical_bronze_path(path)
+        logical = compress.logical_bronze_path(path)
     else:
         sha = bronze.sha256_file(path)[0]
         size = path.stat().st_size

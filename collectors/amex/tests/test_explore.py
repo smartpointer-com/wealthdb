@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import explore  # noqa: E402
+from collectorkit import explore as kit_explore  # noqa: E402
 
 USERNAME = "example-user"
 PASSWORD = "example-password"
@@ -94,13 +95,13 @@ def test_js_uses_the_python_event_prefix():
     # The console listener matches on EVENT_PREFIX (trailing space
     # included); the injected JS must emit exactly that sentinel or every
     # event is silently dropped.
-    assert f"'{explore.EVENT_PREFIX}'" in explore.CLICK_RECORDER_JS
+    assert json.dumps(explore.EVENT_PREFIX) in explore.CLICK_RECORDER_JS
 
 
 def test_js_mirrors_the_python_host_gate():
     # The JS detector carries its own copy of the origin gate; the two
     # must not drift apart.
-    assert explore.HOST_RE.pattern in explore.CLICK_RECORDER_JS
+    assert json.dumps(explore.HOST_RE.pattern) in explore.CLICK_RECORDER_JS
 
 
 def test_js_redacts_password_values():
@@ -387,7 +388,9 @@ class StubFrame:
         self._pwd = pwd if pwd is not None else AbsentField()
 
     def locator(self, selector):
-        return self._pwd if selector == explore.PWD_SELECTOR else self._user
+        if selector == kit_explore.DEFAULT_PASSWORD_SELECTOR:
+            return self._pwd
+        return self._user
 
 
 class StubPage:

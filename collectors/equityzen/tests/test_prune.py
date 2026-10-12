@@ -283,26 +283,26 @@ def test_missing_bronze_dir_exits(tmp_path):
 
 def test_validate_target_accepts_whole_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
-    prune.validate_target(tmp_path / OLD_TS, tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
 def test_validate_target_accepts_screenshots_subdir(tmp_path):
     # The one subdir shape prune may target: the --debug capture dir.
     (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):
     (tmp_path / OLD_TS / "offerings").mkdir(parents=True)
     with pytest.raises(SystemExit):
         # a load input inside a run dir — never a valid deletion target
-        prune.validate_target(tmp_path / OLD_TS / "investments.json", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / OLD_TS / "investments.json", tmp_path)
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path / OLD_TS / "offerings", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / OLD_TS / "offerings", tmp_path)
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path / "equityzen.db", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / "equityzen.db", tmp_path)
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path.parent / OLD_TS, tmp_path)
+        prune.CONFIG.validate_target(tmp_path.parent / OLD_TS, tmp_path)
 
 
 def test_validate_target_refuses_symlink(tmp_path):
@@ -311,4 +311,4 @@ def test_validate_target_refuses_symlink(tmp_path):
     link = tmp_path / OLD_TS
     link.symlink_to(external, target_is_directory=True)
     with pytest.raises(SystemExit):
-        prune.validate_target(link, tmp_path)
+        prune.CONFIG.validate_target(link, tmp_path)

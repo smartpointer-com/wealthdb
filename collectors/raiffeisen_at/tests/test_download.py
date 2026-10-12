@@ -22,15 +22,8 @@ IBAN_A = "ATkkBBBBBKKKKKKKKKKK"
 
 
 # ============================================================
-# safe_stem + manifest
+# manifest
 # ============================================================
-
-def test_safe_stem():
-    assert download.safe_stem(IBAN_A) == IBAN_A
-    assert download.safe_stem("EAZ/ELOOE_1") == "EAZ-ELOOE_1"
-    assert download.safe_stem("../../etc") == "etc"
-    assert download.safe_stem("...") == "item"
-
 
 def test_build_manifest_carries_only_ibans():
     m = download.build_manifest(

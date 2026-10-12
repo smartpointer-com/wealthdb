@@ -3,11 +3,11 @@
 and the cheap `login --check` device-trust probe.
 
 **There is no `login` verb.** It folded into `download` (DESIGN.md §L): the
-sign-in budget is small enough that a captcha fires at roughly seven in
-twenty minutes (§K), and a separate `login` doubled the cost of every
-routine run for nothing — the device trust it minted is minted just as well
-inside `download`, by this same code, on the same profile. The wrapper traps
-a bare `login` host-side as a no-op so an orchestrator's
+sign-in budget is small enough that a handful of sign-ins in a short
+window fires a captcha (§K), and a separate `login` doubled the cost of
+every routine run for nothing — the device trust it minted is minted just
+as well inside `download`, by this same code, on the same profile. The
+wrapper traps a bare `login` host-side as a no-op so an orchestrator's
 login → download → load never trips.
 
 The sign-in form is classic light DOM on www.americanexpress.com, and
@@ -78,6 +78,10 @@ TWOFACTOR_NONE = "none"   # unattended download: a challenge is a hard error
 # How long to wait for a logon outcome (signed in, or a challenge) after the
 # form is submitted.
 OUTCOME_TIMEOUT_S = 120
+
+# How long a sign-in waits for an answered challenge to yield a session
+# (root AGENTS.md §9).
+MFA_TIMEOUT_S = 300
 
 
 class NeedsLogin(RuntimeError):
@@ -263,7 +267,7 @@ def describe_screen(page) -> str:
 
     The fleet lesson is that a login failure path must be self-diagnosing —
     the next drift should debug itself from a pasted log rather than needing
-    a fresh live run. So this is printed unconditionally, not behind --debug.
+    another sign-in. So this is printed unconditionally, not behind --debug.
 
     It reports element IDENTIFIERS (test-id / id / name) and never element
     text: a challenge screen's labels carry the masked destination, and this
@@ -305,8 +309,8 @@ def _otp_boxes(page) -> list:
 
 def _clear_otp(boxes) -> None:
     """Empty every box. Always run before typing — a retry over a partly
-    filled control is exactly what produced the observed HTTP 400
-    (DESIGN.md §B)."""
+    filled control is exactly what produces the HTTP 400 described in
+    DESIGN.md §B."""
     for box in boxes:
         with contextlib.suppress(Exception):
             box.fill("")
@@ -467,7 +471,7 @@ def _drive_challenge_cli(page, watch: _LogonWatch, args) -> bool:
 # --- the shared authenticate() -------------------------------------------
 
 def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
-                 mfa_timeout: int = 600, args=None) -> bool:
+                 mfa_timeout: int = MFA_TIMEOUT_S, args=None) -> bool:
     """Take a submitted login to an authenticated session.
 
     Prefill + submit are the caller's job (drive_to_auth); this polls for the
@@ -507,9 +511,9 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
 
     if failure is not None:
         if failure.status_code is None:
-            # A logon POST whose body carried no verdict. Never seen — every
-            # observed response is JSON with a statusCode — so say what was
-            # actually observed rather than blaming the credentials.
+            # A logon POST whose body carried no verdict. Not expected — every
+            # known response is JSON with a statusCode — so say what the
+            # logon actually returned rather than blaming the credentials.
             raise LogonFailed(
                 f"could not read the sign-in outcome: the logon responded "
                 f"HTTP {failure.status} with no statusCode. Retry with "

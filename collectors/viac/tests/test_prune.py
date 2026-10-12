@@ -342,23 +342,23 @@ def test_missing_bronze_dir_exits(tmp_path):
 
 def test_validate_target_accepts_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
-    prune.validate_target(tmp_path / OLD_TS, tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
 def test_validate_target_accepts_debug_subdir(tmp_path):
     (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path / "manual", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / "manual", tmp_path)
     with pytest.raises(SystemExit):
         # A load-input subdir of a run dir is never a valid target — only
         # the screenshots/ debug subdir is — so it must be refused.
-        prune.validate_target(tmp_path / OLD_TS / "documents", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / OLD_TS / "documents", tmp_path)
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path.parent / OLD_TS, tmp_path)
+        prune.CONFIG.validate_target(tmp_path.parent / OLD_TS, tmp_path)
 
 
 def test_validate_target_refuses_symlink(tmp_path):
@@ -367,4 +367,4 @@ def test_validate_target_refuses_symlink(tmp_path):
     link = tmp_path / OLD_TS
     link.symlink_to(external, target_is_directory=True)
     with pytest.raises(SystemExit):
-        prune.validate_target(link, tmp_path)
+        prune.CONFIG.validate_target(link, tmp_path)

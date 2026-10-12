@@ -399,7 +399,7 @@ def capture_fund(api: Api, iid: str, entity_id: str, edir: Path) -> None:
 # parses ("apital account"). Matching is fetch-verify-first: a document is only
 # ever routed to link-mode once it is BOTH unparsed AND immutable under its id.
 #
-# The observed inventory (DESIGN.md §3): K-1, 1042-S, capital-account
+# The document inventory (DESIGN.md §3): K-1, 1042-S, capital-account
 # statements, quarterly/annual (unaudited) financials, capital-call &
 # distribution activity notices.
 
@@ -480,22 +480,6 @@ def extract_carta(run_dir: Path, manifest):
                               relpath=str(f.relative_to(run_dir)))
 
 
-# A received-document row with no document_url or no id yields no blob BY
-# DESIGN — the loader records nothing for it. That is not a fetch failure, so
-# it gets its own outcome and its own audit bucket in the shared docdedup
-# counters, and is NOT counted among `errors`.
-NO_BLOB = "no-blob"
-_AUDIT_EXTRA = {NO_BLOB: "no_blob"}
-
-
-def _empty_doc_counts() -> dict:
-    return docdedup.empty_audit("no_blob")
-
-
-def _tally(counts: dict, status: str) -> None:
-    docdedup.tally(counts, status, extra=_AUDIT_EXTRA)
-
-
 def _fetch_document(api: Api, url: str, out: Path) -> Path | None:
     """Follow a document_url envelope to its signed CDN url and write the PDF
     bytes to `out`. Returns `out` on success, or None on any failure (no signed
@@ -520,11 +504,11 @@ def _fetch_document(api: Api, url: str, out: Path) -> Path | None:
 def _process_document(skip, api: Api, row: dict, docs_dir: Path, *,
                       force: bool) -> str:
     """Decide + execute one received-document's cross-run download-avoidance
-    outcome, returning a status code for :func:`_tally`.
+    outcome, returning a status code for :func:`docdedup.tally`.
 
     A row with no document_url or no id was never going to yield a blob, so it
-    returns :data:`NO_BLOB` (a null-blob-by-design, NOT a fetch failure) without
-    touching the fetch/dedup path. Otherwise it dispatches to
+    returns :data:`docdedup.NO_BLOB` (no blob by design, NOT a fetch failure;
+    the loader records nothing for it) without touching the fetch/dedup path. Otherwise it dispatches to
     :func:`docdedup.process` by the document's class: link-mode for the
     executed-once archival reports, fetch-verify for the parsed statements and
     notices / tax docs / unknown types. ``force`` bypasses the cross-run index. The fetch
@@ -533,7 +517,7 @@ def _process_document(skip, api: Api, row: dict, docs_dir: Path, *,
     url = row.get("document_url")
     doc_id = row.get("id") or row.get("uuid")
     if not url or doc_id is None:
-        return NO_BLOB
+        return docdedup.NO_BLOB
     doc_id = str(doc_id)
     if not url.startswith("http"):
         url = APP + url if url.startswith("/") else f"{APP}/{url}"
@@ -578,7 +562,7 @@ def capture_documents(api: Api, iid: str, docs_dir: Path, *,
     write_json(docs_dir / "index.json",
                {"count": len(all_rows), "results": all_rows})
 
-    counts = _empty_doc_counts()
+    counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
     n_pdf = 0
     seen: set[str] = set()
     for row in all_rows:
@@ -595,7 +579,7 @@ def capture_documents(api: Api, iid: str, docs_dir: Path, *,
             seen.add(key)
         counts["total"] += 1
         status = _process_document(skip, api, row, docs_dir, force=force)
-        _tally(counts, status)
+        docdedup.tally(counts, status)
         if status in (docdedup.LINKED, docdedup.FETCHED,
                       docdedup.VERIFIED, docdedup.CHANGED):
             n_pdf += 1
@@ -683,7 +667,8 @@ def run(context, args, run_dir: Path, snapshot_at: int,
     # / notices / tax / unknown docs. See _document_class. --documents-force bypasses it.
     if args.no_documents:
         log.info("--no-documents: skipping the documents pass")
-        n_docs, n_pdf, doc_counts = 0, 0, _empty_doc_counts()
+        n_docs, n_pdf = 0, 0
+        doc_counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
     else:
         skip = docdedup.SkipSet.derive(
             run_dir.parent, extract_carta,
@@ -816,18 +801,8 @@ def main(argv: list[str]) -> int:
     # relocation) before launching against it.
     launch.prepare_profile_dir(args.profile_dir)
 
-    from camoufox.sync_api import Camoufox
-
-    with Camoufox(
-        persistent_context=True,
-        user_data_dir=str(args.profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,   # headed under the entrypoint's Xvfb; clears Cloudflare
-        humanize=True,
-        geoip=True,
-        firefox_user_prefs=launch.firefox_prefs(),
-    ) as context:
+    # Headed under the entrypoint's Xvfb: that is what clears Cloudflare.
+    with launch.headed_camoufox(args.profile_dir) as context:
         try:
             return run(context, args, run_dir, snapshot_at, debug_dir)
         except RuntimeError as exc:

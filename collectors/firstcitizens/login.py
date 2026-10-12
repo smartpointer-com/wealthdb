@@ -63,6 +63,9 @@ TWOFACTOR_NONE = "none"   # unattended download: a challenge is a hard error
 # after the form is submitted.
 OUTCOME_TIMEOUT_S = 120
 
+# How long `login` waits for a 2FA challenge to complete (root AGENTS.md §9).
+MFA_TIMEOUT_S = 300
+
 
 class NeedsLogin(RuntimeError):
     """Raised by authenticate(two_factor='none') when the device is no longer
@@ -409,7 +412,7 @@ def _await_outcome(context, page, watch: _LogonWatch) -> str | None:
 
 
 def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
-                 mfa_timeout: int = 600, args=None) -> bool:
+                 mfa_timeout: int = MFA_TIMEOUT_S, args=None) -> bool:
     """Take a submitted login to an authenticated session.
 
     Reveal + prefill + submit are the caller's job (drive_to_auth); this polls
@@ -510,8 +513,10 @@ def drive_to_auth(context, page, args, *, two_factor: str) -> bool:
     watch = _LogonWatch().attach(context)
     if not _reveal_prefill_submit(page, args):
         return False
+    # `download` has no --mfa-timeout: it never waits on a challenge.
     ok = authenticate(context, page, watch, two_factor=two_factor,
-                      mfa_timeout=args.mfa_timeout, args=args)
+                      mfa_timeout=getattr(args, "mfa_timeout", MFA_TIMEOUT_S),
+                      args=args)
     _capture(page, args, "post-auth" if ok else "auth-failed")
     return ok
 
@@ -592,8 +597,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--no-cli-mfa", dest="cli_mfa", action="store_false",
                    help="Complete Sign In + 2FA by hand over VNC "
                         "(the vnc-login fallback).")
-    p.add_argument("--mfa-timeout", type=int, default=600,
-                   help="Seconds to wait for 2FA to complete over VNC. "
+    p.add_argument("--mfa-timeout", type=int, default=MFA_TIMEOUT_S,
+                   help="Seconds to wait for 2FA to complete. "
                         "Default: %(default)s.")
     p.add_argument("--debug", action="store_true",
                    help="Capture login DOM/screenshots into --screenshot-dir.")

@@ -103,7 +103,7 @@ with echo off. Each script's `--help` lists every flag.
 - **Operation number.** `login` prints the on-screen Operation No., so it
   can be compared with the phone before the push is approved.
 - **Approval.** `login` watches the URL for the post-auth landing page,
-  up to `--mfa-timeout` seconds (default 300). Every 30 seconds it
+  up to `--mfa-timeout` seconds (default 300). Every 60 seconds it
   re-opens the eBanking root as a backstop. If approval has not landed,
   F5 re-issues the push, and `login` prints the new code.
 - **Skipped push.** Swissquote sometimes skips the push for a recently

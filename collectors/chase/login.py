@@ -132,7 +132,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--no-cli-mfa", dest="cli_mfa", action="store_false",
                    help="Wait for Sign In + 2FA to be done by hand over VNC "
                         "(the vnc-login fallback).")
-    p.add_argument("--mfa-timeout", type=int, default=600,
+    p.add_argument("--mfa-timeout", type=int, default=300,
                    help="Seconds to wait for 2FA to complete. Default: "
                         "%(default)s.")
     p.add_argument("--no-documents", action="store_true",

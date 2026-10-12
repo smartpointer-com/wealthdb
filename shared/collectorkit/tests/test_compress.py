@@ -221,3 +221,16 @@ def test_read_text_and_sha_encoding_over_raw_bytes(tmp_path):
     text, sha, size = compress.read_text_and_sha(f, encoding="utf-8-sig")
     assert text == "Type,Buy\nTrade,0.5\n"        # BOM stripped by decode
     assert (sha, size) == (hashlib.sha256(raw).hexdigest(), len(raw))
+
+
+def test_logical_bronze_path_strips_one_compression_suffix():
+    assert compress.logical_bronze_path(Path("r/a.csv.zst")) == Path("r/a.csv")
+    assert compress.logical_bronze_path(Path("r/a.json.gz")) == Path("r/a.json")
+    assert compress.logical_bronze_path(Path("r/a.pdf")) == Path("r/a.pdf")
+    assert compress.logical_bronze_path("a.zst.gz") == Path("a.zst")
+
+
+def test_logical_bronze_path_inverts_resolve_variant(tmp_path):
+    (tmp_path / "trades.csv.zst").write_bytes(b"x")
+    on_disk = compress.resolve_variant(tmp_path / "trades.csv")
+    assert compress.logical_bronze_path(on_disk) == tmp_path / "trades.csv"

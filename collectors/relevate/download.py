@@ -86,7 +86,7 @@ DASHBOARD_REFERER = f"{BASE}/dashboard/"
 DEFAULT_BRONZE_DIR = Path("/data")
 
 # Endpoints. Note the inconsistent casing of "Portfolio" vs
-# "portfolio" — observed on the wire; do NOT normalise.
+# "portfolio" — the API spells them so; do NOT normalise.
 # /portfolio/services (400 without query params we can't synthesise)
 # and /contact/language (405 on GET) are deliberately omitted.
 EP_INVESTMENT_OVERVIEW = "/middlelayer/v2/portfolio/investment-overview"
@@ -190,7 +190,7 @@ def new_session_from_state(
 def _empty_doc_counts() -> dict[str, Any]:
     """The documents audit block. ``count_in_*`` record the index/window split;
     the rest is the per-document download-avoidance audit (collectorkit.docdedup
-    outcomes; see _tally / docdedup.tally). ``total`` is the count of in-window docs
+    outcomes; see docdedup.tally). ``total`` is the count of in-window docs
     routed through the engine; the rest tally how each resolved: ``fetched``
     fresh bytes kept, ``linked`` an immutable prior copy hardlinked in (fetch
     avoided), ``verified`` fetch-verify byte-identical to prior (hardlinked,
@@ -509,7 +509,7 @@ def fetch_portfolio(
     trace: debugcap.HttpTrace = _NO_TRACE,
 ) -> None:
     """
-    Fetch every observed per-portfolio endpoint into
+    Fetch every known per-portfolio endpoint into
     /data/<run>/portfolios/<slug>/.
 
     ``year_from`` / ``year_to`` bound the /deposits iteration: year is the
@@ -711,14 +711,6 @@ def extract_relevate(run_dir: Path, manifest: dict | None):
         )
 
 
-# Tally a docdedup outcome into the manifest audit block (shared counters). A
-# per-document fetch that produced no PDF (non-200, network error, or a non-PDF
-# body) surfaces as FETCH_FAILED and is counted under ``errors``; an unmapped
-# outcome goes to ``other``, never silently ``fetched``.
-def _tally(counts: dict, status: str) -> None:
-    docdedup.tally(counts, status)
-
-
 def fetch_documents(
     session: requests.Session,
     run_dir: Path,
@@ -811,7 +803,8 @@ def fetch_documents(
             fetch=(lambda d=doc_id, t=target: _fetch_blob(d, t)),
             force=force, usable=docdedup.is_pdf,
         )
-        _tally(counts, status)
+        # A fetch that produced no PDF is FETCH_FAILED, counted under errors.
+        docdedup.tally(counts, status)
         manifest.flush()
 
     logger.info("documents: %s", docdedup.audit_summary(counts))

@@ -1,4 +1,5 @@
-"""Unit test for login.py's guarded browser context.
+"""Unit test for login.py's guarded browser context, built on
+collectorkit.launch.camoufox_context.
 
 Regression for a masked failure: the browser crashed right after launch,
 every page call in the with-body raised TargetClosedError, and then the
@@ -77,3 +78,7 @@ def test_profile_dir_and_hardening_reach_the_launch(tmp_path):
     assert kwargs["user_data_dir"] == str(tmp_path)
     assert kwargs["persistent_context"] is True
     assert kwargs["firefox_user_prefs"]["browser.cache.disk.enable"] is False
+    # Schwab's sign-in runs without the humanized cursor and the geoip
+    # fingerprint, as it always has.
+    assert kwargs["humanize"] is False
+    assert kwargs["geoip"] is False

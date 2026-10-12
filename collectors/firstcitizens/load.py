@@ -45,7 +45,6 @@ from pathlib import Path
 from collectorkit import bronze, cli, silver
 from collectorkit.money import parse_money
 
-import q2client
 
 log = logging.getLogger("firstcitizens.load")
 
@@ -131,7 +130,7 @@ def _signed_amount(row: dict) -> float | None:
 
 def _hash_fitid(account_external_id: str, posted_at: int, amount: float,
                 description: str | None, check_number: str | None) -> str:
-    """Stable synthetic id for a row with no `transactionId` (never observed,
+    """Stable synthetic id for a row with no `transactionId` (not expected,
     but tolerated so a malformed row is not silently dropped). Deterministic,
     so re-loads converge on it."""
     basis = "|".join([account_external_id, str(posted_at), f"{amount:.2f}",
@@ -368,7 +367,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     accounts = _read_accounts(run_dir)
     # Map a statement dir's safe-stemmed name back to the raw account id, so a
     # document links to the same account_external_id the roster + history use.
-    stem_to_id = {q2client.safe_stem(a.get("id", "")): str(a.get("id", ""))
+    stem_to_id = {bronze.safe_stem(a.get("id", "")): str(a.get("id", ""))
                   for a in accounts if a.get("id")}
 
     # One transaction per dump: a failure part-way leaves silver as it was,

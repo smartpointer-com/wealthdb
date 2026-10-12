@@ -216,7 +216,7 @@ ssh -L 5900:127.0.0.1:5900 <host>    # from another machine
 open vnc://localhost:5900            # macOS Screen Sharing
 ```
 
-The wait for the human sign-in defaults to two hours (`--mfa-timeout`).
+The wait for the human sign-in defaults to five minutes (`--mfa-timeout`).
 
 ### Mounts
 

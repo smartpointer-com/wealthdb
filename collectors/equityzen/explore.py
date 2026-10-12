@@ -83,116 +83,23 @@ PWD_SELECTOR = "input#password, input[type='password']"
 # and a lone 2FA/TOTP step could get the password typed into it.
 LOGIN_PATH_RE = re.compile(r"/accounts/|login|sign[-_]?in", re.I)
 
-# Init script. Two responsibilities:
-#   1. Click recorder — log every DOM click to console.log() so the
-#      Python side picks it up via page.on('console'). Necessary
-#      because VNC mouse events bypass Playwright's action API.
-#      Password-input values are redacted before logging.
-#   2. Login-form detector — once the portal renders a login form (SPA:
-#      may be after the initial DOM), signal Python via a console.log()
-#      sentinel so the Python side can fill it. The detector is
-#      host-gated so it can't fire on third-party iframes, and uses a
-#      window-scoped sentinel to fire once per page-load.
-CLICK_RECORDER_JS = r"""
-(() => {
-  const xpathOf = (el) => {
-    if (!el) return '';
-    const segs = [];
-    while (el && el.nodeType === Node.ELEMENT_NODE) {
-      let i = 1, sib = el.previousElementSibling;
-      while (sib) {
-        if (sib.tagName === el.tagName) i++;
-        sib = sib.previousElementSibling;
-      }
-      segs.unshift(el.tagName.toLowerCase() + '[' + i + ']');
-      el = el.parentElement;
-    }
-    return '/' + segs.join('/');
-  };
-  document.addEventListener('click', (e) => {
-    const t = e.target;
-    // Redact password-input values so they never end up in the
-    // trace / click log.
-    const safeText = (t && t.tagName === 'INPUT' && t.type === 'password')
-      ? '<redacted>'
-      : (t.innerText || t.value || '').toString().slice(0, 80);
-    const data = {
-      kind: 'click',
-      ts: new Date().toISOString(),
-      url: location.href,
-      tag: t.tagName,
-      id: t.id || null,
-      cls: (typeof t.className === 'string' ? t.className : null),
-      text: safeText,
-      xpath: xpathOf(t),
-      x: e.clientX, y: e.clientY,
-    };
-    console.log('__EZ_EVENT__ ' + JSON.stringify(data));
-  }, true);
+# The TOTP field, recognised by the usual one-time-code hooks plus
+# EquityZen's own `totp` / `2fa` names.
+OTP_SELECTOR = (
+    "input[autocomplete='one-time-code'], input[inputmode='numeric'], "
+    "input[name*='otp' i], input[name*='totp' i], input[name*='2fa' i], "
+    "input[name*='code' i], input[id*='otp' i], input[id*='totp' i], "
+    "input[id*='code' i], input[maxlength='6']"
+)
 
-  // Login-form detector. Host-gated. Fires when an email OR a password
-  // field appears, and re-fires whenever the set of present fields
-  // changes — so a two-step (email → continue → password) flow gets a
-  // signal at each step, and the Python side fills whichever field is
-  // currently on screen. The window-scoped signature guards against
-  // spamming on every unrelated mutation.
-  if (!/(^|\.)equityzen\.com$/i.test(location.hostname)) return;
-  // Login surface only — mirrors LOGIN_PATH_RE on the Python side so the
-  // detector doesn't fire on the authenticated app's own input fields.
-  if (!/\/accounts\/|login|sign[-_]?in/i.test(location.pathname)) return;
-  const USER_SEL =
-    "input#email, input[type='email'], input[placeholder*='email' i], " +
-    "input[autocomplete='username'], input[autocomplete='email'], " +
-    "input[name*='email' i], input[name*='user' i], input[name*='login' i]";
-  const detect = () => {
-    const user = document.querySelector(USER_SEL);
-    const pwd = document.querySelector("input#password, input[type='password']");
-    const sig = (user ? 'u' : '') + (pwd ? 'p' : '');
-    if (sig && sig !== window.__EZ_LOGIN_SIG__) {
-      window.__EZ_LOGIN_SIG__ = sig;
-      console.log('__EZ_EVENT__ ' + JSON.stringify({
-        kind: 'login-form-detected',
-        fields: sig,
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-    // TOTP / one-time-code field detector — emits the field's STATIC
-    // descriptor (never its value) once it mounts, so login.py can target
-    // the 2FA input without a VNC capture. The value is never read.
-    const otp = document.querySelector(
-      "input[autocomplete='one-time-code'], input[inputmode='numeric'], " +
-      "input[name*='otp' i], input[name*='totp' i], input[name*='2fa' i], " +
-      "input[name*='code' i], input[id*='otp' i], input[id*='totp' i], " +
-      "input[id*='code' i], input[maxlength='6']"
-    );
-    if (otp && !window.__EZ_OTP_DETECTED__) {
-      window.__EZ_OTP_DETECTED__ = true;
-      console.log('__EZ_EVENT__ ' + JSON.stringify({
-        kind: 'totp-field-detected',
-        tag: otp.tagName,
-        id: otp.id || null,
-        name: otp.getAttribute('name'),
-        type: otp.getAttribute('type'),
-        placeholder: otp.getAttribute('placeholder'),
-        inputmode: otp.getAttribute('inputmode'),
-        autocomplete: otp.getAttribute('autocomplete'),
-        maxlength: otp.getAttribute('maxlength'),
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-  };
-  detect();
-  // MutationObserver covers SPAs that mount the form after initial
-  // load. We attach to documentElement so we see the whole subtree.
-  const target = document.documentElement || document;
-  if (target && typeof MutationObserver !== 'undefined') {
-    new MutationObserver(detect).observe(target,
-      {childList: true, subtree: true});
-  }
-})();
-"""
+# The in-page detector: the click recorder, a login-form signal that
+# triggers the pre-fill, and the TOTP field's static descriptor (never its
+# value) once it mounts, so login.py can target the 2FA input. Gated to
+# the login surface of equityzen.com frames, as the pre-fill is.
+CLICK_RECORDER_JS = explore.click_recorder_js(
+    EVENT_PREFIX, host_re=HOST_RE, path_re=LOGIN_PATH_RE,
+    user_selector=USER_SELECTOR, password_selector=PWD_SELECTOR,
+    otp_selector=OTP_SELECTOR, otp_kind="totp-field-detected")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -205,65 +112,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _maybe_prefill_login(page, username: str, password: str,
-                         filled: set) -> bool:
-    """Pre-fill the email / password fields on EquityZen's login form,
-    each field AT MOST ONCE per page (tracked in `filled`, keyed by
-    (id(page), kind)). Each fill is clear → fill → verify, so a stray
-    autofill or a second invocation can never concatenate onto a field
-    that is already correct. Login-surface- and origin-gated; the email
-    field must co-exist before the password field is touched, so the
-    password can never land in a standalone 2FA input. Returns True iff a
-    field was newly filled this call. Never submits — Login + TOTP are
-    driven manually in the VNC session."""
+def _prefill(page, username: str, password: str, filled: set) -> bool:
+    """Pre-fill the email and password on EquityZen's login form, each at
+    most once per page.
+
+    Gated to the login surface (LOGIN_PATH_RE) on top of the shared
+    host gate. Content already in a field is overwritten once: a stray
+    autofill must never stack onto the value. Never submits: login and
+    the TOTP are driven by hand in the VNC session.
+    """
     try:
-        parsed = urlparse(page.url)
-        host = parsed.hostname or ""
-    except Exception:
+        path = urlparse(page.url).path or ""
+    except Exception:  # noqa: BLE001
         return False
-    if not HOST_RE.search(host):
+    if not LOGIN_PATH_RE.search(path):
         return False
-    if not LOGIN_PATH_RE.search(parsed.path or ""):
-        return False
-    user_field = page.locator(USER_SELECTOR).first
-    try:
-        if user_field.count() == 0:
-            return False
-    except Exception:
-        return False
-    did = False
-    for kind, field, value in (("user", user_field, username),
-                               ("pwd", page.locator(PWD_SELECTOR).first, password)):
-        key = (id(page), kind)
-        if key in filled:
-            continue
-        try:
-            if field.count() == 0:
-                continue  # not present on this step
-        except Exception:
-            continue
-        try:
-            # Explicit clear before fill defeats append-style stacking; the
-            # read-back verifies the field holds exactly our value, with one
-            # retry. Mark the field done regardless so later mutations
-            # never trigger a re-fill that fights a hand-typed value.
-            field.fill("", timeout=1500)
-            field.fill(value, timeout=2000)
-            got = field.input_value(timeout=1500)
-            if got != value:
-                field.fill("", timeout=1500)
-                field.fill(value, timeout=2000)
-                got = field.input_value(timeout=1500)
-            filled.add(key)
-            if got == value:
-                did = True
-            else:
-                log.warning("pre-fill of %s field did not stick (got len %d, "
-                            "want %d) — type it manually in the VNC session",
-                            kind, len(got or ""), len(value))
-        except Exception as e:
-            log.debug("login-form fill failed for %s: %s", kind, e)
-    return did
+    return explore.prefill_login(
+        page, username, password, filled, host_re=HOST_RE,
+        user_selector=USER_SELECTOR, password_selector=PWD_SELECTOR,
+        overwrite=True, log=log)
 
 
 # What the person at the VNC session is asked to do.
@@ -287,7 +154,7 @@ def main(argv: list[str]) -> int:
         context = session.open_camoufox(stack, args.profile_dir)
         session.attach(
             context, init_js=CLICK_RECORDER_JS, event_prefix=EVENT_PREFIX,
-            prefill=(lambda page: _maybe_prefill_login(
+            prefill=(lambda page: _prefill(
                 page, username, password, filled)) if prefill else None)
         session.open(args.url)
         session.record(WALK, max_duration=args.max_duration,

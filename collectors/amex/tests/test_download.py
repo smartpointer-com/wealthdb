@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import amexclient  # noqa: E402
 import download  # noqa: E402
 import login  # noqa: E402
+from collectorkit import bronze  # noqa: E402
 
 KEY = "0123456789ABCDEF0123456789ABCDEF"
 KEY_B = "FEDCBA9876543210FEDCBA9876543210"
@@ -91,6 +92,10 @@ def test_vnc_mode_beats_every_other_setting():
                                        isatty=False) == login.TWOFACTOR_VNC
     assert download.resolve_two_factor(False, vnc=True,
                                        isatty=True) == login.TWOFACTOR_VNC
+
+
+def test_mfa_timeout_defaults_to_five_minutes():
+    assert download.parse_args(["--bronze-dir", "/d"]).mfa_timeout == 300
 
 
 def test_the_mfa_flags_parse_and_default_to_auto():
@@ -208,12 +213,12 @@ def test_log_id_shortens_an_account_key_but_files_keep_it():
     # pasted around, so a 32-hex account key is shortened for the log — while
     # the file name keeps the whole key, which is what the loader joins on.
     key = "0123456789ABCDEF0123456789ABCDEF"
-    assert download.log_id(key) == "01234567…"
-    assert download.safe_stem(key) == key
+    assert bronze.log_id(key) == "01234567…"
+    assert bronze.safe_stem(key) == key
 
 
 def test_log_id_leaves_a_short_key_alone():
-    assert download.log_id("ABC123") == "ABC123"
+    assert bronze.log_id("ABC123") == "ABC123"
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -226,7 +231,7 @@ def test_log_id_leaves_a_short_key_alone():
     ("///", "item"),
 ])
 def test_safe_stem(raw, expected):
-    assert download.safe_stem(raw) == expected
+    assert bronze.safe_stem(raw) == expected
 
 
 # ============================================================

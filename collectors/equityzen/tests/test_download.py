@@ -13,7 +13,6 @@ Camoufox). Asserts each document class behaves per the class mapping:
   * an unrecognised type → always fetched (fail-safe);
   * a document node with no downloadUrl → NO_BLOB (null-blob-by-design, not an
     error); a real fetch failure → an error;
-  * _tally routes an unmapped outcome to 'other', never inflating 'fetched';
   * --documents-force bypasses the index.
 
 Synthetic slugs / ids / bytes only — no real deal ids, company names, document
@@ -310,25 +309,6 @@ def test_documents_force_bypasses_index(tmp_path):
     assert _ino(fetched) != _ino(prior / "documents" / DEAL_SLUG / f"{STMT_SLUG}.pdf")
 
 
-def test_tally_and_counts():
-    counts = download._empty_doc_counts()
-    for s in (docdedup.LINKED, docdedup.LINKED, docdedup.FETCHED,
-              docdedup.VERIFIED, docdedup.CHANGED, docdedup.FETCH_FAILED,
-              download.NO_BLOB):
-        download._tally(counts, s)
-    assert counts == {"total": 0, "fetched": 1, "linked": 2, "verified": 1,
-                      "changed": 1, "errors": 1, "no_blob": 1, "other": 0}
-
-
-def test_tally_unmapped_code_goes_to_other():
-    # An outcome code the map does not know must NOT inflate 'fetched'; it lands
-    # in its own 'other' bucket (audit stays honest).
-    counts = download._empty_doc_counts()
-    download._tally(counts, "totally-unexpected-code")
-    assert counts["other"] == 1
-    assert counts["fetched"] == 0
-
-
 def test_no_url_document_is_no_blob_not_error(tmp_path):
     # A document node with no downloadUrl yields NO_BLOB (null-blob-by-design)
     # without ever attempting a fetch, and is NOT counted as an error.
@@ -346,10 +326,10 @@ def test_no_url_document_is_no_blob_not_error(tmp_path):
     status = download._process_document(
         skip, deal_slug=DEAL_SLUG, doc=doc,
         target_dir=run / "documents" / DEAL_SLUG, fetch_blob=_fetch_blob)
-    assert status == download.NO_BLOB
+    assert status == docdedup.NO_BLOB
     assert attempts == []                            # fetch path never entered
-    counts = download._empty_doc_counts()
-    download._tally(counts, status)
+    counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
+    docdedup.tally(counts, status)
     assert counts["no_blob"] == 1 and counts["errors"] == 0
 
 
@@ -370,8 +350,8 @@ def test_real_fetch_failure_is_error(tmp_path):
         skip, deal_slug=DEAL_SLUG, doc=doc,
         target_dir=run / "documents" / DEAL_SLUG, fetch_blob=_failing_fetch)
     assert status == docdedup.FETCH_FAILED
-    counts = download._empty_doc_counts()
-    download._tally(counts, status)
+    counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
+    docdedup.tally(counts, status)
     assert counts["errors"] == 1 and counts["no_blob"] == 0
 
 

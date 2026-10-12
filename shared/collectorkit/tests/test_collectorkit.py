@@ -1,5 +1,7 @@
 """Unit tests for collectorkit. Stdlib unittest so they run with a bare
 `python -m unittest` (and also under pytest in the collector containers)."""
+import contextlib
+import logging
 import os
 import sqlite3
 import tempfile
@@ -259,6 +261,42 @@ class BronzeTest(unittest.TestCase):
                              {"status": "complete"})
             self.assertEqual(bronze.run_status(path), "complete")
 
+    def test_manifest_is_complete(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            self.assertFalse(bronze.manifest_is_complete(run))  # no manifest
+            (run / "run.json").write_text("{")
+            self.assertFalse(bronze.manifest_is_complete(run))  # corrupt
+            for meta, want in (('{"status": "complete"}', True),
+                               ("{}", True),     # statusless: written last
+                               ('{"status": "in-progress"}', False),
+                               ('{"status": "dry-run"}', False)):
+                (run / "run.json").write_text(meta)
+                self.assertIs(bronze.manifest_is_complete(run), want, meta)
+            (run / "manifest.json").write_text('{"status": "complete"}')
+            (run / "run.json").unlink()
+            self.assertTrue(bronze.manifest_is_complete(run, "manifest.json"))
+
+    def test_safe_stem_keeps_one_path_segment(self):
+        for value, want in (("7000001", "7000001"),
+                            ("07/31/2026", "07-31-2026"),
+                            ("EAZ/ELOOE_1", "EAZ-ELOOE_1"),
+                            ("../../etc", "etc"),
+                            (".hidden", "hidden"),
+                            ("a b\tc", "a-b-c"),
+                            ("2026-01-31_doc.v2", "2026-01-31_doc.v2"),
+                            (12345, "12345")):
+            self.assertEqual(bronze.safe_stem(value), want, value)
+        self.assertEqual(bronze.safe_stem("..."), "item")
+        self.assertEqual(bronze.safe_stem("", fallback="account"), "account")
+
+    def test_log_id_shortens_long_ids_only(self):
+        self.assertEqual(bronze.log_id("ACCT-0001"), "ACCT-0001")
+        self.assertEqual(bronze.log_id("0123456789abcdef0123456789abcdef"),
+                         "01234567…")
+        self.assertEqual(bronze.log_id("x" * 12), "x" * 12)
+        self.assertEqual(bronze.log_id("a/b" * 5), "a-ba-ba-…")
+
 
 class EnvFileTest(unittest.TestCase):
     def test_a_syntax_error_names_the_line_and_never_shows_it(self):
@@ -324,206 +362,216 @@ class EnvFileTest(unittest.TestCase):
             envfile.resolve_credential(None, "CK_CRED", "--x")
 
 
-# --------------------------------------------------------------------------
-# Equivalence proof for the hoisted hand-rolled parser.
-#
-# `envfile.load_env_file` replaces a hand-rolled KEY=VALUE parser that was
-# triplicated in schwab-api/login.py, schwab-web/login.py and
-# fidelity-web/download.py. `_oracle_load` is an INDEPENDENT verbatim copy
-# of that pre-refactor parser; the tests below assert the shared helper is
-# byte-identical to it, and that it does NOT match a bash source
-# (`source_env_file`) on shapes a real credential file can hit — which is
-# why the parser was hoisted verbatim rather than migrated to bash.
-# --------------------------------------------------------------------------
-
-_OVR = frozenset({"CRED_A", "CRED_B"})
-
-# (name, content). Realistic + edge shapes a credential env file can carry.
-_GOOD_FIXTURES = [
-    ("plain", "CRED_A=value\n"),
-    ("double_quoted", 'CRED_A="value"\n'),
-    ("single_quoted", "CRED_A='value'\n"),
-    ("export_prefix", "export CRED_A=value\n"),
-    ("blank_and_comment", "\n   \n# a comment\nCRED_A=value\n"),
-    ("empty_value", "CRED_A=\n"),
-    ("empty_value_quoted", 'CRED_A=""\n'),
-    ("eq_in_value", "CRED_A=a=b=c\n"),
-    ("hash_in_value_unquoted", "CRED_A=ab#cd\n"),
-    ("hash_in_value_quoted", 'CRED_A="ab#cd"\n'),
-    ("dollar_double_quoted", 'CRED_A="abc$def"\n'),
-    ("dollar_single_quoted", "CRED_A='abc$def'\n"),
-    ("dollar_unquoted", "CRED_A=abc$def\n"),
-    ("backtick_double_quoted", 'CRED_A="a`echo x`b"\n'),
-    ("bang_double_quoted", 'CRED_A="abc!def"\n'),
-    ("spaces_in_value_quoted", 'CRED_A="a b c"\n'),
-    ("spaces_in_value_unquoted", "CRED_A=a b c\n"),
-    ("spaces_around_eq", "CRED_A = value\n"),
-    ("trailing_inline_comment", "CRED_A=value # note\n"),
-    ("crlf", "CRED_A=value\r\n"),
-    ("indented", "    CRED_A=value\n"),
-    ("single_side_quote", 'CRED_A="foo\n'),  # unmatched -> left intact
-    ("override_and_plain", "CRED_A=fromfile\nPLAIN=alsofile\n"),
-    ("non_override_only", "PLAIN=fromfile\n"),
-    ("multi_override", "CRED_A=aaa\nCRED_B=bbb\n"),
-]
-
-_MALFORMED_FIXTURES = [
-    ("no_equals", "CRED_A\n"),
-    ("empty_key", "=value\n"),
-    ("empty_key_after_export", "export =value\n"),
-]
-
-_BASE_ENVS = [
-    {},
-    {"CRED_A": "hostval", "PLAIN": "hostplain"},
-]
+@contextlib.contextmanager
+def _isolated_environ(**values):
+    """os.environ as it was, plus `values`, restored afterwards."""
+    saved = dict(os.environ)
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
-def _oracle_load(path, override_vars, base_env):
-    """Independent verbatim copy of the pre-refactor hand-rolled parser.
-    Returns the resulting env mapping (does not touch os.environ)."""
-    env = dict(base_env)
-    with open(path, encoding="utf-8") as fh:
-        for lineno, raw in enumerate(fh, 1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):]
-            if "=" not in line:
-                raise SystemExit(
-                    f"env file {path}:{lineno}: not a KEY=VALUE line: "
-                    f"{raw.rstrip()!r}"
-                )
-            key, _, value = line.partition("=")
-            key = key.strip()
-            v = value.strip()
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
-                v = v[1:-1]
-            if not key:
-                raise SystemExit(f"env file {path}:{lineno}: empty key")
-            if key in override_vars:
-                env[key] = v
-            else:
-                env.setdefault(key, v)
-    return env
+class ReadEnvFileTest(unittest.TestCase):
+    """An env file means what bash makes of it: quoting, escapes and
+    `$`-expansion are the shell's, never a hand-written parser's."""
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
 
-class HandRolledEnvFileEquivalenceTest(unittest.TestCase):
-    """Proves envfile.load_env_file == the parser it replaced, and that a
-    bash source would diverge on realistic credential shapes."""
+    def tearDown(self):
+        self.tmp.cleanup()
 
-    def _run_helper(self, path, override_vars, base_env, warn):
-        import logging
-        saved = dict(os.environ)
+    def _write(self, text, name="test.env"):
+        path = self.dir / name
+        path.write_text(text)
+        return path
+
+    def test_bash_quoting_rules(self):
+        path = self._write(
+            "# a comment line\n"
+            "export CK_EXPORTED=plain\n"
+            'CK_SPACES="a b  c"\n'
+            "CK_SINGLE='lit $x `y` \\z \"q\"'\n"
+            'CK_DOUBLE="dq \\"q\\" \\$lit back\\\\slash \'s\'"\n'
+            "CK_UNQUOTED=a\\ b\n"
+            "CK_COMMENTED=value # a trailing comment\n"
+            "CK_HASH=ab#cd\n"
+            "CK_EMPTY=\n"
+            "CK_EQUALS=a=b=c\n")
+        with _isolated_environ():
+            got = envfile.read_env_file(path)
+        self.assertEqual(got, {
+            "CK_EXPORTED": "plain",
+            "CK_SPACES": "a b  c",
+            "CK_SINGLE": 'lit $x `y` \\z "q"',
+            "CK_DOUBLE": "dq \"q\" $lit back\\slash 's'",
+            "CK_UNQUOTED": "a b",
+            "CK_COMMENTED": "value",
+            "CK_HASH": "ab#cd",
+            "CK_EMPTY": "",
+            "CK_EQUALS": "a=b=c",
+        })
+
+    def test_dollar_expands_against_the_environment(self):
+        # Double quotes and bare words expand `$NAME`, as bash does; the
+        # file sees the environment it is sourced from.
+        path = self._write('CK_DQ="x-$CK_BASE-y"\nCK_BARE=x$CK_UNSET\n'
+                           "CK_SQ='x-$CK_BASE-y'\n")
+        with _isolated_environ(CK_BASE="base"):
+            os.environ.pop("CK_UNSET", None)
+            got = envfile.read_env_file(path)
+        self.assertEqual(got, {"CK_DQ": "x-base-y", "CK_BARE": "x",
+                               "CK_SQ": "x-$CK_BASE-y"})
+
+    def test_returns_only_what_the_file_set_or_changed(self):
+        path = self._write("CK_SAME=same\nCK_CHANGED=new\nCK_NEW=1\n"
+                           "PATH=/nowhere\nunset CK_GONE\n")
+        with _isolated_environ(CK_SAME="same", CK_CHANGED="old",
+                               CK_GONE="x", CK_UNTOUCHED="y"):
+            got = envfile.read_env_file(path)
+        self.assertEqual(got, {"CK_CHANGED": "new", "CK_NEW": "1"})
+
+    def test_output_and_startup_files_do_not_interfere(self):
+        # A file that prints cannot corrupt the env read-back, and BASH_ENV
+        # cannot make bash run a second file.
+        startup = self._write("export CK_FROM_STARTUP=1\n", "startup.sh")
+        path = self._write("echo noise\nprintf '\\0\\0'\nCK_A=1\n")
+        with _isolated_environ(BASH_ENV=str(startup), ENV=str(startup)):
+            got = envfile.read_env_file(path)
+        self.assertEqual(got, {"CK_A": "1"})
+
+    def test_a_relative_path_is_the_file_not_a_path_lookup(self):
+        path = self._write("CK_REL=1\n", "rel.env")
+        cwd = os.getcwd()
+        os.chdir(self.dir)
         try:
-            os.environ.clear()
-            os.environ.update(base_env)
-            envfile.load_env_file(path, override_vars,
-                                  logger=logging.getLogger("test-envfile"),
-                                  warn_on_override=warn)
-            return dict(os.environ)
+            with _isolated_environ():
+                self.assertEqual(envfile.read_env_file(Path("rel.env")),
+                                 {"CK_REL": "1"})
         finally:
-            os.environ.clear()
-            os.environ.update(saved)
+            os.chdir(cwd)
+        self.assertTrue(path.is_file())
 
-    def test_helper_matches_oracle_on_good_fixtures(self):
-        with tempfile.TemporaryDirectory() as d:
-            for name, content in _GOOD_FIXTURES:
-                p = Path(d) / f"{name}.env"
-                p.write_text(content)
-                for base in _BASE_ENVS:
-                    expected = _oracle_load(p, _OVR, base)
-                    # warn flag must not change the resolved mapping.
-                    for warn in (False, True):
-                        got = self._run_helper(p, _OVR, base, warn)
-                        self.assertEqual(
-                            got, expected,
-                            msg=f"{name} base={base} warn={warn}")
+    def test_a_missing_file_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            envfile.read_env_file(self.dir / "nope.env")
 
-    def test_helper_matches_oracle_on_malformed(self):
-        with tempfile.TemporaryDirectory() as d:
-            for name, content in _MALFORMED_FIXTURES:
-                p = Path(d) / f"{name}.env"
-                p.write_text(content)
-                with self.assertRaises(SystemExit, msg=f"oracle {name}"):
-                    _oracle_load(p, _OVR, {})
-                with self.assertRaises(SystemExit, msg=f"helper {name}"):
-                    self._run_helper(p, _OVR, {}, False)
+    def test_a_syntax_error_fails_and_never_shows_the_line(self):
+        path = self._write("export CK_OK=1\nCK_SECRET='SYNTHETIC-VALUE\n")
+        with self.assertRaises(ValueError) as caught:
+            envfile.read_env_file(path)
+        message = str(caught.exception)
+        self.assertIn(str(path), message)
+        self.assertIn("not valid bash", message)
+        self.assertNotIn("SYNTHETIC-VALUE", message)
 
-    def test_a_malformed_line_is_named_and_never_shown(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "pasted.env"
-            p.write_text("CRED_A=ok\nSYNTHETIC-VALUE\n")
-            with self.assertRaises(SystemExit) as caught:
-                self._run_helper(p, _OVR, {}, False)
-            self.assertIn(f"{p}:2", str(caught.exception))
-            self.assertNotIn("SYNTHETIC-VALUE", str(caught.exception))
+    def test_a_sourcing_error_fails_and_never_shows_the_line(self):
+        # An unquoted space makes the rest of the value a command; bash
+        # names it in its error, and it may be half a password.
+        path = self._write("CK_OK=1\nCK_SECRET=SYNTHETIC VALUE-TAIL\n")
+        with self.assertRaises(ValueError) as caught:
+            envfile.read_env_file(path)
+        message = str(caught.exception)
+        self.assertIn("at line 2", message)
+        self.assertNotIn("VALUE-TAIL", message)
+        self.assertNotIn("CK_SECRET", message)
+
+
+class LoadEnvFileTest(unittest.TestCase):
+    """load_env_file: the file wins for the named credential keys, the
+    environment wins for the rest."""
+
+    LOG = logging.getLogger("test-envfile")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "creds.env"
+
+    def tearDown(self):
+        self.tmp.cleanup()
 
     def test_override_semantics(self):
-        # Override keys: file wins over an inherited host value.
-        # Non-override keys: setdefault (host value wins).
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "ovr.env"
-            p.write_text("CRED_A=fromfile\nPLAIN=fromfile\n")
-            got = self._run_helper(
-                p, _OVR, {"CRED_A": "hostcred", "PLAIN": "hostplain"}, True)
-            self.assertEqual(got["CRED_A"], "fromfile")   # file wins
-            self.assertEqual(got["PLAIN"], "hostplain")   # env wins
+        self.path.write_text("CK_CRED='fromfile$1'\nCK_PLAIN=fromfile\n"
+                             "CK_FRESH=fresh\n")
+        with _isolated_environ(CK_CRED="hostcred", CK_PLAIN="hostplain"):
+            os.environ.pop("CK_FRESH", None)
+            envfile.load_env_file(self.path, {"CK_CRED"}, logger=self.LOG)
+            self.assertEqual(os.environ["CK_CRED"], "fromfile$1")
+            self.assertEqual(os.environ["CK_PLAIN"], "hostplain")
+            self.assertEqual(os.environ["CK_FRESH"], "fresh")
 
-    def test_bash_source_would_diverge_on_credential_shapes(self):
-        # The decisive evidence: for shapes a real credential file can
-        # hit, a bash source (source_env_file) yields a DIFFERENT value
-        # than the byte-preserving hand parser. If these ever stop
-        # diverging, revisit whether a bash source could replace it.
-        diverging = {
-            "dollar_double_quoted": 'CRED_A="abc$def"\n',   # $def expands
-            "dollar_unquoted": "CRED_A=abc$def\n",
-            "backtick_double_quoted": 'CRED_A="a`echo x`b"\n',  # cmd subst
-            "crlf": "CRED_A=value\r\n",                     # keeps \r
-            "trailing_inline_comment": "CRED_A=value # note\n",
-        }
-        with tempfile.TemporaryDirectory() as d:
-            for name, content in diverging.items():
-                p = Path(d) / f"{name}.env"
-                p.write_text(content)
-                hand = self._run_helper(p, _OVR, {}, False).get("CRED_A")
-                saved = dict(os.environ)
-                try:
-                    os.environ.clear()
-                    os.environ["PATH"] = saved.get("PATH", "/usr/bin:/bin")
-                    envfile.source_env_file(p, prefer_file=True)
-                    bash = os.environ.get("CRED_A")
-                finally:
-                    os.environ.clear()
-                    os.environ.update(saved)
-                self.assertNotEqual(
-                    hand, bash,
-                    msg=f"{name}: expected divergence but both = {hand!r}")
+    def test_warning_names_lengths_never_values(self):
+        self.path.write_text("CK_CRED=SYNTHETIC-FILE\n")
+        with _isolated_environ(CK_CRED="SYNTHETIC-HOST-VALUE"), \
+                self.assertLogs(self.LOG, "WARNING") as logs:
+            envfile.load_env_file(self.path, ("CK_CRED",), logger=self.LOG,
+                                  warn_on_override=True)
+        text = "\n".join(logs.output)
+        self.assertIn("len=20", text)
+        self.assertIn("len=14", text)
+        self.assertNotIn("SYNTHETIC", text)
 
-    def test_bash_source_matches_on_single_quoted_and_plain(self):
-        # Following the documented single-quote convention, both agree.
-        agreeing = {
-            "plain": "CRED_A=value\n",
-            "single_quoted": "CRED_A='value'\n",
-            "dollar_single_quoted": "CRED_A='abc$def'\n",
-            "double_quoted_plain": 'CRED_A="value"\n',
-        }
-        with tempfile.TemporaryDirectory() as d:
-            for name, content in agreeing.items():
-                p = Path(d) / f"{name}.env"
-                p.write_text(content)
-                hand = self._run_helper(p, _OVR, {}, False).get("CRED_A")
-                saved = dict(os.environ)
-                try:
-                    os.environ.clear()
-                    os.environ["PATH"] = saved.get("PATH", "/usr/bin:/bin")
-                    envfile.source_env_file(p, prefer_file=True)
-                    bash = os.environ.get("CRED_A")
-                finally:
-                    os.environ.clear()
-                    os.environ.update(saved)
-                self.assertEqual(hand, bash, msg=name)
+    def test_no_warning_when_the_values_agree(self):
+        self.path.write_text("CK_CRED=same\n")
+        with _isolated_environ(CK_CRED="same"), \
+                self.assertNoLogs(self.LOG, "WARNING"):
+            envfile.load_env_file(self.path, ("CK_CRED",), logger=self.LOG,
+                                  warn_on_override=True)
+
+    def test_a_bash_error_exits_without_the_line(self):
+        self.path.write_text("CK_CRED=SYNTHETIC VALUE-TAIL\n")
+        with self.assertRaises(SystemExit) as caught:
+            envfile.load_env_file(self.path, ("CK_CRED",), logger=self.LOG)
+        self.assertIn(str(self.path), str(caught.exception))
+        self.assertNotIn("VALUE-TAIL", str(caught.exception))
+
+    def test_a_missing_file_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            envfile.load_env_file(self.path, (), logger=self.LOG)
+
+
+class SourceNamedEnvFileTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "named.env"
+        self.path.write_text("CK_NAMED=fromfile\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_explicit_file_wins_over_the_environment(self):
+        with _isolated_environ(CK_NAMED="host"):
+            os.environ.pop("CK_NAMED_ENV_FILE", None)
+            self.assertEqual(
+                envfile.source_named_env_file(self.path, "CK_NAMED_ENV_FILE"),
+                self.path)
+            self.assertEqual(os.environ["CK_NAMED"], "fromfile")
+
+    def test_the_env_var_names_the_file(self):
+        with _isolated_environ(CK_NAMED_ENV_FILE=str(self.path)):
+            os.environ.pop("CK_NAMED", None)
+            envfile.source_named_env_file(None, "CK_NAMED_ENV_FILE")
+            self.assertEqual(os.environ["CK_NAMED"], "fromfile")
+
+    def test_nothing_named_sources_nothing(self):
+        with _isolated_environ():
+            os.environ.pop("CK_NAMED_ENV_FILE", None)
+            self.assertIsNone(
+                envfile.source_named_env_file(None, "CK_NAMED_ENV_FILE"))
+
+    def test_a_named_file_that_is_missing_exits(self):
+        with self.assertRaises(SystemExit):
+            envfile.source_named_env_file(self.path.with_name("nope.env"),
+                                          "CK_NAMED_ENV_FILE")
+
+    def test_a_bash_error_exits(self):
+        self.path.write_text("CK_NAMED='unterminated\n")
+        with self.assertRaises(SystemExit):
+            envfile.source_named_env_file(self.path, "CK_NAMED_ENV_FILE")
 
 
 def _build_parser():

@@ -26,8 +26,10 @@ Modes:
                        drift). The account checkboxes are still auto-ticked.
   - --manual           No browser: print the authorize URL, paste the
                        redirected URL back (schwab-py's manual flow).
-  - --check            Inspect the existing token file's age. No browser,
-                       no network.
+  - --check            Report the token file's age, then prove the token
+                       works: refresh the access token and list the
+                       account hashes, as `download` does. No browser,
+                       no MFA.
 
 Failure discipline (see DESIGN.md §3.1): one credential
 submission and at most one 2FA submission per run; every page-advancing
@@ -42,7 +44,6 @@ window expired), or to mint the first token.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
 import json
 import logging
@@ -52,6 +53,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import _tokenclient
 import oauth_landmarks as lm
 
 from collectorkit import cli, debugcap, envfile, launch, session
@@ -62,9 +64,8 @@ log = logging.getLogger("schwab-login")
 # constant so --check output matches the actual cap.
 REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
-# Credential env vars whose env-file value wins over an inherited host
-# value (the host shell's `source` mangles $-containing values; see
-# collectorkit.envfile.load_env_file). The OAuth app id/secret live in
+# Credential env vars whose env-file value wins over a value inherited
+# from the calling environment. The OAuth app id/secret live in
 # schwab-api.env; the Schwab web login id/password (reused to pre-fill
 # the consent login) live in schwab-web.env.
 _CRED_OVERRIDE_VARS = frozenset({
@@ -131,9 +132,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.set_defaults(cli_mfa=True)
     p.add_argument(
-        "--mfa-timeout", type=float, default=3600.0,
-        help="Seconds to wait for the human MFA + consent redirect to the "
-             "callback URL (default 3600 — time to complete login over VNC).",
+        "--mfa-timeout", type=float, default=300.0,
+        help="Seconds to wait for the redirect to the callback URL: after "
+             "the stdin 2FA code, or for login, 2FA and consent done by "
+             "hand over VNC (default 300 — five minutes).",
     )
     p.add_argument(
         "--mfa-page-timeout", type=float, default=300.0,
@@ -171,7 +173,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     mode.add_argument(
         "--check", action="store_true",
-        help="Inspect the existing token file's age. No browser, no network.",
+        help="Report the token file's age, then refresh the access token "
+             "and call /accounts/accountNumbers to prove the token works "
+             "(ALIVE, or the failure and a non-zero exit). No browser, "
+             "no MFA.",
     )
     cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
@@ -221,97 +226,98 @@ def read_token_creation_time(path: Path) -> datetime | None:
         return None
 
 
+# Exit codes of --check.
+CHECK_NO_TOKEN = 1        # no token file to check
+CHECK_REJECTED = 3        # Schwab refused the token (expired, revoked, bad client)
+CHECK_PROBE_FAILED = 4    # the probe call failed (HTTP status, network)
+
+
+def print_token_age(token_path: Path) -> None:
+    """Print when the token file was issued and when its refresh token
+    runs out by the 7-day cap. An estimate from the file alone: the
+    probe in :func:`cmd_check` is what proves the token."""
+    issued = read_token_creation_time(token_path)
+    print(f"Token file:        {token_path}")
+    if issued is None:
+        print("Issued (UTC):      unknown (no issue timestamp in the file)")
+        return
+    age = datetime.now(timezone.utc) - issued
+    remaining_s = REFRESH_TOKEN_TTL_SECONDS - age.total_seconds()
+    print(f"Issued (UTC):      {issued.isoformat(timespec='seconds')}")
+    print(f"Age:               {age}")
+    if remaining_s <= 0:
+        print("Estimated expiry:  EXPIRED by the 7-day cap.")
+        return
+    renew_by = datetime.fromtimestamp(
+        issued.timestamp() + REFRESH_TOKEN_TTL_SECONDS, tz=timezone.utc,
+    )
+    print(f"Estimated expiry:  {renew_by.isoformat(timespec='seconds')} "
+          f"({remaining_s / 3600:.1f}h from now)")
+    if remaining_s / 3600 < 24:
+        print("WARNING: refresh window expires in under 24 hours. "
+              "Re-run login soon.")
+
+
+def probe_token(args: argparse.Namespace) -> int:
+    """The cheapest authenticated call: build the client from the token
+    file the way `download` does (refreshing the access token when it
+    has lapsed) and GET /accounts/accountNumbers. Prints ALIVE, or the
+    failure, and returns the --check exit code. The response body is
+    never printed: it holds the plain account numbers."""
+    client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
+                                           "--client-id")
+    client_secret = envfile.resolve_credential(
+        args.client_secret, "SCHWAB_CLIENT_SECRET", "--client-secret")
+    try:
+        client = _tokenclient.client_from_token_file(
+            args.token_path, client_id, client_secret)
+        response = client.get_account_numbers()
+    except _tokenclient.oauth_error_types() as exc:
+        print(_tokenclient.explain_token_failure(args.token_path, exc))
+        print("Session:           REJECTED")
+        return CHECK_REJECTED
+    except Exception as exc:  # noqa: BLE001 - any transport fault
+        print(f"Session:           FAILED — /accounts/accountNumbers did "
+              f"not answer ({type(exc).__name__}: {exc})")
+        return CHECK_PROBE_FAILED
+    if response.status_code // 100 != 2:
+        print(f"Session:           FAILED — /accounts/accountNumbers "
+              f"returned HTTP {response.status_code}: "
+              f"{response.text[:500]}")
+        return CHECK_PROBE_FAILED
+    print("Session:           ALIVE (/accounts/accountNumbers answered)")
+    return 0
+
+
 def cmd_check(args: argparse.Namespace) -> int:
+    """Report the token file's age, then probe it (:func:`probe_token`).
+    The probe decides the exit code: the age is an estimate, Schwab's
+    answer is not."""
     if not args.token_path.is_file():
         print(f"No token file at {args.token_path}.")
         print("Run login without --check to mint one.")
-        return 1
-    issued = read_token_creation_time(args.token_path)
-    if issued is None:
-        print(f"Token file exists at {args.token_path}, "
-              f"but its issue timestamp could not be determined.")
-        return 2
-    now = datetime.now(timezone.utc)
-    age = now - issued
-    remaining_s = REFRESH_TOKEN_TTL_SECONDS - age.total_seconds()
-    print(f"Token file:        {args.token_path}")
-    print(f"Issued (UTC):      {issued.isoformat(timespec='seconds')}")
-    print(f"Age:               {age}")
-    if remaining_s > 0:
-        renew_by = datetime.fromtimestamp(
-            issued.timestamp() + REFRESH_TOKEN_TTL_SECONDS, tz=timezone.utc,
-        )
-        print(f"Estimated expiry:  {renew_by.isoformat(timespec='seconds')} "
-              f"({remaining_s / 3600:.1f}h from now)")
-        if remaining_s / 3600 < 24:
-            print("WARNING: refresh window expires in under 24 hours. "
-                  "Re-run login soon.")
-        return 0
-    print("Estimated expiry:  EXPIRED. Re-run login to mint a new token.")
-    return 3
+        return CHECK_NO_TOKEN
+    print_token_age(args.token_path)
+    return probe_token(args)
 
 
 # ============================================================
 # Browser helpers (adapted from schwab-web)
 # ============================================================
 
-def ts_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-@contextlib.contextmanager
 def open_camoufox_context(profile_dir: Path, trace: bool):
-    """Open Camoufox (stealth-patched Firefox) with a persistent profile,
-    headed (Schwab flags headless), on the Xvfb display the entrypoint
-    provides. Mirrors schwab-web's launch.
+    """Headed Camoufox on the persistent profile, on the Xvfb display
+    the entrypoint provides (Schwab flags headless), yielding the
+    BrowserContext (:func:`collectorkit.launch.camoufox_context`). The
+    humanized cursor and the geoip fingerprint are off, as in
+    schwab-web's launch.
 
-    The close is guarded: when the body fails because the browser itself
-    died (startup crash, closed window), Playwright's own cleanup raises
-    TargetClosedError `from None`, which would replace the body's
-    exception — the actual diagnosis — with a generic close error. A
-    cleanup failure is logged instead, never raised."""
-    from camoufox.sync_api import Camoufox
-    cm = Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        firefox_user_prefs=launch.firefox_prefs(),
-    )
-    context = cm.__enter__()
-    try:
-        if trace:
-            # snapshots=False while a sign-in is on screen: a trace's DOM
-            # snapshots record every input's value, a hand-typed password
-            # included, and nothing can redact a trace after the fact. The
-            # per-action screenshots still show the flow (the browser draws
-            # a password field as dots) and the network records are the
-            # redacted ones.
-            context.tracing.start(screenshots=True, snapshots=False,
-                                  sources=True)
-        yield context
-    finally:
-        try:
-            cm.__exit__(None, None, None)
-        except Exception as exc:
-            log.warning("browser cleanup failed (%s: %s) — the browser "
-                        "likely crashed or was closed; the propagating "
-                        "error above is the real cause",
-                        type(exc).__name__, exc)
-
-
-def stop_trace_if_active(context, trace: bool, screenshot_dir: Path | None,
-                         label: str) -> None:
-    if not trace:
-        return
-    if screenshot_dir is None:
-        log.warning("--trace without --screenshot-dir; trace discarded")
-        return
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = screenshot_dir / f"{ts_slug()}-{label}-trace.zip"
-    context.tracing.stop(path=str(trace_path))
-    log.info("trace saved to %s", trace_path)
+    A trace records no DOM snapshots: a sign-in is on screen, and a
+    snapshot records every input's value, a hand-typed password
+    included. The close is guarded, so a browser that died never hides
+    the body's own error."""
+    return launch.camoufox_context(profile_dir, trace=trace,
+                                   humanize=False, geoip=False, logger=log)
 
 
 def _scopes(page) -> list:
@@ -326,26 +332,6 @@ def _live_url(page) -> str:
         return page.evaluate("() => window.location.href")
     except Exception:
         return page.url
-
-
-def maybe_capture_html(page, screenshot_dir: Path | None, label: str) -> None:
-    if screenshot_dir is None:
-        return
-    try:
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-        ts = ts_slug()
-        # Scrubbed: this is called on the sign-in page after prefill, so a
-        # raw serialization would persist the typed password.
-        (screenshot_dir / f"{ts}-{label}.html").write_text(
-            debugcap.scrub_dom(page.content()), encoding="utf-8")
-        try:
-            page.screenshot(path=str(screenshot_dir / f"{ts}-{label}.png"),
-                            full_page=False, timeout=3_000,
-                            animations="disabled")
-        except Exception as e:
-            log.debug("screenshot %s failed (HTML saved): %s", label, e)
-    except Exception as e:
-        log.debug("capture %s failed: %s", label, e)
 
 
 def _fill_first(scope, candidates, value: str) -> bool:
@@ -736,7 +722,8 @@ def select_all_link_accounts(page, screenshot_dir=None, seen=None) -> int:
         except Exception as e:
             log.warning("on the account-link page but could not read the "
                         "checkboxes (%s) — capturing DOM for refinement", e)
-        maybe_capture_html(page, screenshot_dir, "025-account-link")
+        debugcap.capture_landmark(page, screenshot_dir, "025-account-link",
+                                  log=log)
     n = _check_visible_checkboxes(page)
     if n:
         log.info("auto-ticked %d previously-unselected account checkbox(es)", n)
@@ -869,7 +856,6 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
     password = os.environ.get("SCHWAB_PASSWORD")
 
     args.token_path.parent.mkdir(parents=True, exist_ok=True)
-    launch.prepare_profile_dir(args.profile_dir)
 
     ctx = schwab_auth.get_auth_context(client_id, args.callback_url)
     log.info("Authorize URL built; opening in Camoufox.")
@@ -901,9 +887,11 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
             page.goto(ctx.authorization_url, wait_until="domcontentloaded")
         except Exception as e:
             log.warning("initial navigation reported: %s", e)
-        maybe_capture_html(page, args.screenshot_dir, "01-authorize")
+        debugcap.capture_landmark(page, args.screenshot_dir, "01-authorize",
+                                  log=log)
         prefill_login(page, login_id, password)
-        maybe_capture_html(page, args.screenshot_dir, "02-prefilled")
+        debugcap.capture_landmark(page, args.screenshot_dir, "02-prefilled",
+                                  log=log)
 
         try:
             if args.cli_mfa:
@@ -923,17 +911,21 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
                                               args.screenshot_dir,
                                               args.cli_mfa, args.explore)
         except LoginFlowError as exc:
-            maybe_capture_html(page, args.screenshot_dir, "99-terminal")
-            stop_trace_if_active(context, args.trace, args.screenshot_dir,
-                                 "login-terminal")
+            debugcap.capture_landmark(page, args.screenshot_dir, "99-terminal",
+                                      log=log)
+            debugcap.stop_trace_if_active(context, args.trace,
+                                          args.screenshot_dir, "login-terminal",
+                                          log=log)
             _report_flow_error(exc, args.screenshot_dir)
             return exc.exit_code
         finally:
             bodies.flush()
-        maybe_capture_html(page, args.screenshot_dir, "03-postconsent")
+        debugcap.capture_landmark(page, args.screenshot_dir, "03-postconsent",
+                                  log=log)
         if received_url is None:
-            stop_trace_if_active(context, args.trace, args.screenshot_dir,
-                                 "login-timeout")
+            debugcap.stop_trace_if_active(context, args.trace,
+                                          args.screenshot_dir, "login-timeout",
+                                          log=log)
             log.error("Did not reach the callback URL within %ss. The grant "
                       "was not completed.", args.mfa_timeout)
             return 6
@@ -945,13 +937,15 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
                 _token_writer(args.token_path),
             )
         except Exception as exc:
-            stop_trace_if_active(context, args.trace, args.screenshot_dir,
-                                 "exchange-failed")
+            debugcap.stop_trace_if_active(context, args.trace,
+                                          args.screenshot_dir, "exchange-failed",
+                                          log=log)
             log.error("token exchange failed: %s: %s",
                       type(exc).__name__, exc)
             return 5
-        stop_trace_if_active(context, args.trace, args.screenshot_dir,
-                             "login-ok")
+        debugcap.stop_trace_if_active(context, args.trace,
+                                      args.screenshot_dir, "login-ok",
+                                      log=log)
 
     if not args.token_path.is_file():
         log.error("flow completed but no token file at %s", args.token_path)
@@ -1092,9 +1086,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.capture_bodies and args.screenshot_dir is None:
         raise SystemExit("--capture-bodies requires --screenshot-dir "
                          "(see AGENTS.md §4).")
+    source_env_files(args.env_file)
     if args.check:
         return cmd_check(args)
-    source_env_files(args.env_file)
     if args.manual:
         return cmd_login_manual(args)
     if args.cli_mfa and not sys.stdin.isatty():

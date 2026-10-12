@@ -749,7 +749,7 @@ def test_the_seam_is_anchored_to_activity_rows_only(db, tmp_path):
 
 def test_a_deeper_window_withdraws_rows_the_activity_now_covers(db, tmp_path,
                                                                 monkeypatch):
-    """The regression the first live load found (DESIGN.md §M).
+    """A regression test (DESIGN.md §M).
 
     The seam MOVES: a later run with a wider --lookback reaches further back,
     so a period that was below the seam is covered by the activity next time.
@@ -843,17 +843,6 @@ def test_a_year_end_summary_is_never_parsed_as_a_statement(db, tmp_path,
     # It is still inventoried as a document.
     assert db.execute("SELECT doc_kind FROM documents").fetchone()[0] == \
         "year_end_summary"
-
-
-def test_the_loader_stem_helpers_match_the_download_side_originals():
-    # load.py copies them rather than importing download.py (which would drag
-    # Playwright into a loader that never opens a browser), so nothing but
-    # this pins the two to the same answer.
-    import download
-    for raw in ["0123ABC", "2026-03-12", "../../etc/passwd", "a/b",
-                ".hidden", "", "///", "0123456789ABCDEF0123456789ABCDEF"]:
-        assert load._safe_stem(raw) == download.safe_stem(raw), raw
-        assert load._log_id(raw) == download.log_id(raw), raw
 
 
 # ============================================================

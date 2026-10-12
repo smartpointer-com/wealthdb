@@ -50,29 +50,14 @@ from collectorkit import debugcap, prune
 DEBUG_SUBDIRS: tuple[str, ...] = (debugcap.SCREENSHOTS_DIR,)
 
 
-def _is_complete(run_dir, meta):
-    # Statusless-but-readable run.json → COMPLETE (see module docstring);
-    # no run.json at all → a crash before finalising → NON_COMPLETE. A
-    # status key, when present, resolves in status_classification before
-    # this fallback is consulted.
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
-
-
 CONFIG = prune.PruneConfig(
     debug_subdirs=DEBUG_SUBDIRS,
-    is_complete=_is_complete,
+    is_complete=prune.lenient_classification,
 )
 
 
 def main(argv=None):
     return prune.main(CONFIG, argv, description=__doc__)
-
-
-def validate_target(path, bronze_dir):
-    """Back-compat shim for the local test suite: bind the shared
-    validator to this collector's config."""
-    return prune.validate_target(path, bronze_dir, CONFIG)
 
 
 if __name__ == "__main__":

@@ -26,23 +26,14 @@ import sys
 from collectorkit import prune
 
 
-def _is_complete(run_dir, meta):
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
-
-
 CONFIG = prune.PruneConfig(
     debug_subdirs=(),          # firstcitizens writes no in-bronze debug capture
-    is_complete=_is_complete,
+    is_complete=prune.lenient_classification,
 )
 
 
 def main(argv=None):
     return prune.main(CONFIG, argv, description=__doc__)
-
-
-def validate_target(path, bronze_dir):
-    return prune.validate_target(path, bronze_dir, CONFIG)
 
 
 if __name__ == "__main__":

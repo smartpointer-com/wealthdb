@@ -36,7 +36,6 @@ the full diagnostic chain.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import os
 import sys
@@ -47,7 +46,7 @@ import download
 import landmarks as schwab
 from download import maybe_screenshot
 
-from collectorkit import bronze, cli, debugcap, envfile, launch
+from collectorkit import cli, debugcap, envfile, launch
 
 log = logging.getLogger("schwab-web.login")
 
@@ -82,10 +81,10 @@ DEFAULT_ENV_FILE_CANDIDATES = (
     Path.home() / ".secrets" / "schwab-web.env",
 )
 
-# Env var names. The companion ~/.secrets/schwab-web.env file
-# should contain lines of the form `SCHWAB_LOGIN_ID=<login-id>`
-# and `SCHWAB_PASSWORD=<password>` (single-quoted if the values
-# contain shell metacharacters — see collectorkit.envfile.load_env_file).
+# Env var names. The companion ~/.secrets/schwab-web.env file is a
+# bash script that sets `SCHWAB_LOGIN_ID=<login-id>` and
+# `SCHWAB_PASSWORD=<password>`, quoted by bash's rules (single quotes
+# keep every character as written).
 #
 # Note the asymmetry vs. schwab-api (Trader API), which uses
 # SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET for OAuth credentials.
@@ -94,8 +93,8 @@ DEFAULT_ENV_FILE_CANDIDATES = (
 LOGIN_ID_ENV = "SCHWAB_LOGIN_ID"
 PASSWORD_ENV = "SCHWAB_PASSWORD"
 
-# Credentials whose file value overrides anything inherited from
-# the host env. See collectorkit.envfile.load_env_file for the rationale.
+# Credentials whose env-file value wins over a value inherited from
+# the calling environment: the file is authoritative for them.
 _CRED_OVERRIDE_VARS = (LOGIN_ID_ENV, PASSWORD_ENV)
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -172,12 +171,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # window flag could silently override the resolved window.
     cli.add_standard_args(p, verb="download")
     p.add_argument(
-        "--mfa-timeout", type=int, default=7200,
-        help=("Seconds to wait for the human login + 2FA to complete "
-              "via VNC (default: 7200 = 2 hours). The default is "
-              "deliberately generous — vnc-login is human-in-the-loop, "
-              "so the wait must not force racing a deadline. Exits with "
-              "rc=7 on timeout."),
+        "--mfa-timeout", type=int, default=300,
+        help=("Seconds to wait for the sign-in to reach the post-auth "
+              "page, whether the 2FA code comes from stdin or Log In + "
+              "2FA are done by hand over VNC (default: 300 = 5 "
+              "minutes). Exits with rc=7 on timeout."),
     )
     p.add_argument(
         "--debug", action="store_true",
@@ -231,23 +229,6 @@ def maybe_source_env_files(args: argparse.Namespace) -> None:
 
 
 # ============================================================
-# Trace helper
-# ============================================================
-
-def stop_trace_if_active(context, trace: bool, screenshot_dir: Path | None,
-                        label: str) -> None:
-    if not trace:
-        return
-    if screenshot_dir is None:
-        log.warning("--trace without --screenshot-dir; trace discarded")
-        return
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = screenshot_dir / f"{bronze.ts_slug()}-{label}-trace.zip"
-    context.tracing.stop(path=str(trace_path))
-    log.info("trace saved to %s", trace_path)
-
-
-# ============================================================
 # Browser launch helpers
 # ============================================================
 
@@ -282,57 +263,24 @@ def open_page(context):
     return context.new_page()
 
 
-@contextlib.contextmanager
 def open_camoufox_context(profile_dir: Path, trace: bool):
-    """Open Camoufox with a persistent profile dir, yielding the
-    BrowserContext. The context auto-closes on exit.
+    """Headed Camoufox on the persistent profile, yielding the
+    BrowserContext (:func:`collectorkit.launch.camoufox_context`).
 
     Camoufox is a stealth-patched Firefox fork that masks the
     fingerprint surfaces (canvas, WebGL, audio, fonts, navigator.*,
     TLS) Schwab's anti-bot scoring uses to detect Playwright-driven
-    Firefox. `os="macos"` runs the full macOS-pretend mode so the
-    fingerprint is internally consistent all the way down the stack,
-    not just at the UA-string layer.
+    Firefox. The window is 1280x800 on the entrypoint's Xvfb display,
+    which avoids Schwab's mobile layout. The humanized cursor and the
+    geoip fingerprint are off, as Schwab's sign-in has always run.
 
-    Headed + window=(1280, 800) avoids Schwab's mobile responsive
-    layout; the Xvfb display from entrypoint.sh provides the X11
-    surface (camoufox respects DISPLAY when set).
-
-    The close is guarded: when the body fails because the browser
-    itself died (startup crash, closed window), Playwright's own
-    cleanup raises TargetClosedError `from None`, which would replace
-    the body's exception — the actual diagnosis — with a generic close
-    error. A cleanup failure is logged instead, never raised.
+    A trace records no DOM snapshots: a sign-in is on screen, and a
+    snapshot records every input's value, a hand-typed password
+    included. The close is guarded, so a browser that died never hides
+    the body's own error.
     """
-    from camoufox.sync_api import Camoufox
-    cm = Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        firefox_user_prefs=launch.firefox_prefs(),
-    )
-    context = cm.__enter__()
-    try:
-        if trace:
-            # snapshots=False while a sign-in is on screen: a trace's DOM
-            # snapshots record every input's value, a hand-typed password
-            # included, and nothing can redact a trace after the fact. The
-            # per-action screenshots still show the flow (the browser draws
-            # a password field as dots) and the network records are the
-            # redacted ones.
-            context.tracing.start(screenshots=True, snapshots=False,
-                                  sources=True)
-        yield context
-    finally:
-        try:
-            cm.__exit__(None, None, None)
-        except Exception as exc:
-            log.warning("browser cleanup failed (%s: %s) — the browser "
-                        "likely crashed or was closed; the propagating "
-                        "error above is the real cause",
-                        type(exc).__name__, exc)
+    return launch.camoufox_context(profile_dir, trace=trace,
+                                   humanize=False, geoip=False, logger=log)
 
 
 # ============================================================
@@ -423,7 +371,8 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
             log.error("timeout during --check: %s", e)
             rc = 3
         finally:
-            stop_trace_if_active(context, trace, screenshot_dir, "check")
+            debugcap.stop_trace_if_active(context, trace, screenshot_dir,
+                                          "check", log=log)
         return rc
 
 
@@ -580,7 +529,8 @@ def run_manual(profile_dir: Path,
             return 1
         finally:
             bodies.flush()
-            stop_trace_if_active(context, trace, screenshot_dir, "manual")
+            debugcap.stop_trace_if_active(context, trace, screenshot_dir,
+                                          "manual", log=log)
 
 
 def _live_url(page) -> str:
@@ -1200,9 +1150,9 @@ def _since_to_schwab_preset(since, until, log=None) -> str:
         return "Last6Months"
     # <= keeps the shared 5y preset (exactly 1825 days) on Last5Years.
     # Safe: Schwab resolves Last5Years to the 5-calendar-year
-    # anniversary date (observed on the live filter, 2026-07), and any
-    # 5-year calendar span contains at least one leap day, so the
-    # preset always covers >= 1826 days — never a day short of 1825.
+    # anniversary date, and any 5-year calendar span contains at least
+    # one leap day, so the preset always covers >= 1826 days — never a
+    # day short of 1825.
     if days <= 1825:
         return "Last5Years"
     if days > LAST_10_YEARS_DAYS and log is not None:
@@ -1246,7 +1196,6 @@ def main(argv: list[str]) -> int:
     args.date_range = _since_to_schwab_preset(since, until, log=log)
     args.exact_window = _exact_window(args.lookback, since, until)
     maybe_source_env_files(args)
-    launch.prepare_profile_dir(args.profile_dir)
     if args.check:
         return run_check(args.profile_dir, args.screenshot_dir, args.trace)
     if args.bronze_dir is None:

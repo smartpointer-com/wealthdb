@@ -18,7 +18,6 @@ carta mode mapping:
   * a row with no document_url / id → NO_BLOB (null-blob-by-design, not an
     error); a real fetch failure → an error;
   * the within-run guard collapses a paginated duplicate to a single fetch;
-  * _tally routes an unmapped outcome to 'other', never inflating 'fetched';
   * --documents-force bypasses the cross-run index.
 
 Also covers the cap-table access gate: a holder the dashboard reports as
@@ -328,10 +327,10 @@ def test_no_url_row_is_no_blob_not_error(tmp_path):
     status = download._process_document(
         api=api, skip=_skip(tmp_path, run), row=row,
         docs_dir=run / "documents", force=False)
-    assert status == download.NO_BLOB
+    assert status == docdedup.NO_BLOB
     assert api.calls == []                                   # fetch path never entered
-    counts = download._empty_doc_counts()
-    download._tally(counts, status)
+    counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
+    docdedup.tally(counts, status)
     assert counts["no_blob"] == 1 and counts["errors"] == 0
 
 
@@ -342,7 +341,7 @@ def test_no_id_row_is_no_blob(tmp_path):
     status = download._process_document(
         api=api, skip=_skip(tmp_path, run), row=row,
         docs_dir=run / "documents", force=False)
-    assert status == download.NO_BLOB
+    assert status == docdedup.NO_BLOB
     assert api.calls == []
 
 
@@ -357,8 +356,8 @@ def test_missing_signed_url_is_fetch_failed(tmp_path):
         api=api, skip=_skip(tmp_path, run), row=row,
         docs_dir=run / "documents", force=False)
     assert status == docdedup.FETCH_FAILED
-    counts = download._empty_doc_counts()
-    download._tally(counts, status)
+    counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
+    docdedup.tally(counts, status)
     assert counts["errors"] == 1 and counts["no_blob"] == 0
 
 
@@ -429,27 +428,6 @@ def test_within_run_guard_no_url_row_not_re_tallied(tmp_path):
     assert counts["total"] == 1                  # counted once despite two rows
     assert counts["no_blob"] == 1                # not inflated to 2
     assert n_pdf == 0
-
-
-# ============================================================
-# Audit tally
-# ============================================================
-
-def test_tally_and_counts():
-    counts = download._empty_doc_counts()
-    for s in (docdedup.LINKED, docdedup.LINKED, docdedup.FETCHED,
-              docdedup.VERIFIED, docdedup.CHANGED, docdedup.FETCH_FAILED,
-              download.NO_BLOB):
-        download._tally(counts, s)
-    assert counts == {"total": 0, "fetched": 1, "linked": 2, "verified": 1,
-                      "changed": 1, "errors": 1, "no_blob": 1, "other": 0}
-
-
-def test_tally_unmapped_code_goes_to_other():
-    counts = download._empty_doc_counts()
-    download._tally(counts, "totally-unexpected-code")
-    assert counts["other"] == 1
-    assert counts["fetched"] == 0
 
 
 def test_lookback_flag():

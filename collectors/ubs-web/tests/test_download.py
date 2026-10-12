@@ -2,9 +2,8 @@
 
 The load-bearing guarantee: ``download --dry-run`` is the read-only
 walk (root AGENTS.md §2) and must persist NOTHING under the bronze
-``--bronze-dir`` — not even a ``run.json`` shell, because ``load``'s
-``scan_bronze`` has no status guard and would ingest such a shell as a
-dump run. These tests pin that invariant plus the real-run counterpart.
+``--bronze-dir``, not even a ``run.json`` shell. These tests pin that
+invariant plus the real-run counterpart.
 
 ``--debug`` is covered here too, since it writes into that same tree:
 its captures must land inside the run dir on a real run, and must not
@@ -129,7 +128,7 @@ def test_dry_run_download_persists_nothing_to_bronze(tmp_path, monkeypatch):
 def test_dry_run_with_debug_still_persists_nothing(tmp_path, monkeypatch):
     # --debug must not resurrect a bronze write under --dry-run: there is
     # no run dir for captures to live in, and materialising one would
-    # hand `load`'s scan_bronze a dump run. The gate warns instead.
+    # write to bronze. The gate warns instead.
     _mock_playwright_layer(monkeypatch)
     dest = tmp_path / "bronze"
     state = tmp_path / "state.json"

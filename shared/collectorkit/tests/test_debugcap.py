@@ -1245,5 +1245,177 @@ class TeeDebugLogTest(unittest.TestCase):
 
 
 
+class _LandmarkPage:
+    """The slice of a Playwright Page capture_landmark touches."""
+
+    def __init__(self, html="<html>ok</html>", *, content_raises=False,
+                 shot_raises=False):
+        self._html = html
+        self._content_raises = content_raises
+        self._shot_raises = shot_raises
+        self.shot = None
+
+    def content(self):
+        if self._content_raises:
+            raise RuntimeError("page is navigating and changing")
+        return self._html
+
+    def evaluate(self, script):
+        return "<html>evaluated</html>"
+
+    def screenshot(self, **kwargs):
+        if self._shot_raises:
+            raise RuntimeError("waiting for fonts")
+        self.shot = kwargs
+        Path(kwargs["path"]).write_bytes(b"\x89PNG")
+
+
+class CaptureLandmarkTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name) / "shots"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _one(self, suffix):
+        found = sorted(self.dir.glob(f"*-signin{suffix}"))
+        self.assertEqual(len(found), 1, found)
+        self.assertRegex(found[0].name, r"^\d{8}T\d{6}Z-signin")
+        return found[0]
+
+    def test_writes_timestamped_dom_and_viewport_screenshot(self):
+        page = _LandmarkPage()
+        debugcap.capture_landmark(page, self.dir, "signin", log=log)
+        self.assertEqual(self._one(".html").read_text(), "<html>ok</html>")
+        self._one(".png")
+        self.assertEqual(page.shot["timeout"], 3_000)
+        self.assertIs(page.shot["full_page"], False)
+        self.assertEqual(page.shot["animations"], "disabled")
+
+    def test_no_dir_captures_nothing(self):
+        page = _LandmarkPage()
+        debugcap.capture_landmark(page, None, "signin", log=log)
+        self.assertIsNone(page.shot)
+
+    def test_a_navigating_page_falls_back_to_the_live_dom(self):
+        page = _LandmarkPage(content_raises=True)
+        debugcap.capture_landmark(page, self.dir, "signin", log=log,
+                                  png_timeout_ms=5_000)
+        self.assertEqual(self._one(".html").read_text(),
+                         "<html>evaluated</html>")
+        self.assertEqual(page.shot["timeout"], 5_000)
+
+    def test_a_missed_screenshot_keeps_the_dom_and_never_raises(self):
+        page = _LandmarkPage(shot_raises=True)
+        debugcap.capture_landmark(page, self.dir, "signin", log=log)
+        self._one(".html")
+        self.assertEqual(list(self.dir.glob("*.png")), [])
+
+    def test_the_typed_password_and_known_credentials_are_scrubbed(self):
+        page = _LandmarkPage('<input type="password" value="s3cr3t">'
+                             '<div>example-user</div>')
+        debugcap.capture_landmark(
+            page, self.dir, "signin", log=log,
+            redact=debugcap.secret_redactor("example-user"))
+        out = self._one(".html").read_text()
+        self.assertNotIn("s3cr3t", out)
+        self.assertNotIn("example-user", out)
+
+
+class StopTraceTest(unittest.TestCase):
+    class _Tracing:
+        def __init__(self, raises=False):
+            self.raises = raises
+            self.path = None
+
+        def stop(self, path):
+            if self.raises:
+                raise RuntimeError("tracing crashed")
+            self.path = path
+
+    def _context(self, raises=False):
+        import types
+        return types.SimpleNamespace(tracing=self._Tracing(raises))
+
+    def test_saves_a_timestamped_zip(self):
+        import tempfile
+        ctx = self._context()
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(debugcap.stop_trace_if_active(
+                ctx, True, Path(d) / "out", "signin", log=log))
+        self.assertRegex(Path(ctx.tracing.path).name,
+                         r"^\d{8}T\d{6}Z-signin-trace\.zip$")
+
+    def test_no_trace_does_nothing(self):
+        ctx = self._context()
+        self.assertFalse(debugcap.stop_trace_if_active(
+            ctx, False, Path("/nonexistent"), "x", log=log))
+        self.assertIsNone(ctx.tracing.path)
+
+    def test_no_dir_discards_with_a_warning(self):
+        with self.assertLogs(log, "WARNING"):
+            self.assertFalse(debugcap.stop_trace_if_active(
+                self._context(), True, None, "x", log=log))
+
+    def test_a_failed_stop_is_logged_not_raised(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d, \
+                self.assertLogs(log, "WARNING"):
+            self.assertFalse(debugcap.stop_trace_if_active(
+                self._context(raises=True), True, Path(d), "x", log=log))
+
+
+class ApiCallSampleTest(unittest.TestCase):
+    def test_url_shape_masks_ids_and_credentials(self):
+        shape = debugcap.url_shape(
+            "https://www.example.com/api/0123abcd4567ef89/status"
+            "?token=SYNTHETIC&page=2")
+        self.assertNotIn("0123abcd4567ef89", shape)
+        self.assertNotIn("SYNTHETIC", shape)
+        self.assertIn("/api/<id>/status", shape)
+        self.assertIn("page=2", shape)
+
+    def test_sample_reads_the_timing_buffer_and_survives_a_navigation(self):
+        import types
+        page = types.SimpleNamespace(evaluate=lambda js: [["u", 5]])
+        self.assertEqual(debugcap.sample_api_calls(page), [["u", 5]])
+
+        def boom(js):
+            raise RuntimeError("context destroyed")
+        page = types.SimpleNamespace(evaluate=boom)
+        self.assertEqual(debugcap.sample_api_calls(page), [])
+
+    def test_merge_takes_maxima_not_sums(self):
+        seen = {}
+        url = "https://www.example.com/poll/deadbeef01"
+        sample = [[url, 100], [url, 9000], ["https://www.example.com/x", 3]]
+        debugcap.merge_api_sample(seen, sample)
+        debugcap.merge_api_sample(seen, sample)   # the same buffer, again
+        self.assertEqual(seen["https://www.example.com/poll/<id>"],
+                         {"calls": 2, "ms": 9000})
+        self.assertEqual(seen["https://www.example.com/x"],
+                         {"calls": 1, "ms": 3})
+
+    def test_report_logs_longest_first_and_saves_the_list(self):
+        import tempfile
+        seen = {"https://a/fast": {"calls": 3, "ms": 20},
+                "https://a/long-poll": {"calls": 1, "ms": 25_000}}
+        with tempfile.TemporaryDirectory() as d, \
+                self.assertLogs(log, "INFO") as logs:
+            debugcap.report_api_calls(seen, Path(d), log=log,
+                                      title="The challenge page",
+                                      filename="calls.txt")
+            saved = (Path(d) / "calls.txt").read_text().splitlines()
+        self.assertIn("The challenge page issued 2", logs.output[0])
+        self.assertIn("long-poll", saved[0])
+        self.assertIn("fast", saved[1])
+
+    def test_report_of_nothing_is_silent(self):
+        with self.assertNoLogs(log):
+            debugcap.report_api_calls({}, None, log=log)
+
+
 if __name__ == "__main__":
     unittest.main()

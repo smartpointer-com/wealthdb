@@ -63,9 +63,7 @@ HOST_RE = re.compile(r"(^|\.)carta\.com$", re.I)
 # Carta's form has moved and the concrete ids in login.py no longer match,
 # so it anchors on standard HTML conventions (input[type=email] /
 # autocomplete=username) plus name-substring fallbacks rather than on any
-# one observed id. On a two-step form (email screen, then password) both
-# fields aren't present at once and pre-fill simply no-ops — the
-# credentials get typed by hand, which is fine for discovery.
+# one known id.
 USER_SELECTOR = (
     "input[type='email'], "
     "input[autocomplete='username'], "
@@ -76,81 +74,13 @@ USER_SELECTOR = (
 )
 PWD_SELECTOR = "input[type='password']"
 
-# Init script. Two responsibilities:
-#   1. Click recorder — log every DOM click to console.log() so the Python
-#      side picks it up via page.on('console'). Necessary because VNC mouse
-#      events bypass Playwright's action API. Password-input values are
-#      redacted before logging.
-#   2. Login-form detector — once Carta renders a login form (SPA: may be
-#      after the initial DOM), signal Python via a console.log() sentinel so
-#      the Python side can fill it. Host-gated so it can't fire on
-#      third-party iframes; window-scoped sentinel fires once per page-load.
-CLICK_RECORDER_JS = r"""
-(() => {
-  const xpathOf = (el) => {
-    if (!el) return '';
-    const segs = [];
-    while (el && el.nodeType === Node.ELEMENT_NODE) {
-      let i = 1, sib = el.previousElementSibling;
-      while (sib) {
-        if (sib.tagName === el.tagName) i++;
-        sib = sib.previousElementSibling;
-      }
-      segs.unshift(el.tagName.toLowerCase() + '[' + i + ']');
-      el = el.parentElement;
-    }
-    return '/' + segs.join('/');
-  };
-  document.addEventListener('click', (e) => {
-    const t = e.target;
-    // Redact password-input values so they never end up in the
-    // trace / click log.
-    const safeText = (t && t.tagName === 'INPUT' && t.type === 'password')
-      ? '<redacted>'
-      : (t.innerText || t.value || '').toString().slice(0, 80);
-    const data = {
-      kind: 'click',
-      ts: new Date().toISOString(),
-      url: location.href,
-      tag: t.tagName,
-      id: t.id || null,
-      cls: (typeof t.className === 'string' ? t.className : null),
-      text: safeText,
-      xpath: xpathOf(t),
-      x: e.clientX, y: e.clientY,
-    };
-    console.log('__CARTA_EVENT__ ' + JSON.stringify(data));
-  }, true);
-
-  // Login-form detector. Host-gated; fires once per window.
-  if (!/(^|\.)carta\.com$/i.test(location.hostname)) return;
-  const detect = () => {
-    if (window.__CARTA_LOGIN_DETECTED__) return;
-    const user = document.querySelector(
-      "input[type='email'], input[autocomplete='username'], " +
-      "input[autocomplete='email'], input[name*='email' i], " +
-      "input[name*='user' i], input[name*='login' i]"
-    );
-    const pwd = document.querySelector("input[type='password']");
-    if (user && pwd) {
-      window.__CARTA_LOGIN_DETECTED__ = true;
-      console.log('__CARTA_EVENT__ ' + JSON.stringify({
-        kind: 'login-form-detected',
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-  };
-  detect();
-  // MutationObserver covers SPAs that mount the form after initial load.
-  // We attach to documentElement so we see the whole subtree.
-  const target = document.documentElement || document;
-  if (target && typeof MutationObserver !== 'undefined') {
-    new MutationObserver(detect).observe(target,
-      {childList: true, subtree: true});
-  }
-})();
-"""
+# The in-page detector: the click recorder, and a login-form signal that
+# triggers the pre-fill. It re-fires whenever the set of present fields
+# changes, so a two-step form signals at each step. Host-gated, so it
+# never fires on a third-party frame. The 2FA field is not watched for.
+CLICK_RECORDER_JS = explore.click_recorder_js(
+    EVENT_PREFIX, host_re=HOST_RE, user_selector=USER_SELECTOR,
+    password_selector=PWD_SELECTOR, otp_selector=None)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -166,6 +96,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def _maybe_prefill_login(page, email: str, password: str) -> bool:
     """Fill whichever of the email / password fields is present, visible,
     and still empty on the current carta.com page.
+
+    Kept apart from the shared ``explore.prefill_login``, which fills only
+    a frame holding both fields: Carta's form can be two-step.
 
     Handles single-step forms, two-step (email screen → password screen)
     forms, and SPA client-side route changes: each field is filled
@@ -201,7 +134,10 @@ def _maybe_prefill_login(page, email: str, password: str) -> bool:
             field.fill(value, timeout=2000)
             filled = True
         except Exception as e:
-            log.debug("prefill %s field failed: %s", label, e)
+            # safe_error, never the raw error: a failed fill() renders the
+            # typed value verbatim inside Playwright's call log.
+            log.debug("prefill %s field failed: %s", label,
+                      debugcap.safe_error(e))
     return filled
 
 

@@ -207,7 +207,7 @@ def test_a_symlinked_item_tree_is_not_followed(tmp_path):
 
 def test_the_validator_refuses_a_load_input(bronze):
     with pytest.raises(SystemExit, match="refusing to delete"):
-        prune.validate_target(
+        prune.CONFIG.validate_target(
             bronze / "bank" / "20260101T000000Z" / "accounts.json",
             bronze / "bank")
 

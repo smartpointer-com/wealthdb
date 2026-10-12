@@ -511,11 +511,19 @@ def test_empty_audit_and_tally_buckets_outcomes():
                       "changed": 1, "errors": 1, "other": 0}
 
 
-def test_empty_audit_extra_bucket_and_collector_outcome():
-    counts = docdedup.empty_audit("no_blob")
+def test_no_blob_has_its_own_bucket_and_is_never_an_error():
+    counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
     assert counts["no_blob"] == 0
-    docdedup.tally(counts, "no-blob", extra={"no-blob": "no_blob"})
+    docdedup.tally(counts, docdedup.NO_BLOB)
     assert counts["no_blob"] == 1 and counts["errors"] == 0
+    assert counts["other"] == 0
+
+
+def test_empty_audit_extra_bucket_and_collector_outcome():
+    counts = docdedup.empty_audit("skipped")
+    assert counts["skipped"] == 0
+    docdedup.tally(counts, "gate-declined", extra={"gate-declined": "skipped"})
+    assert counts["skipped"] == 1 and counts["other"] == 0
 
 
 def test_tally_unmapped_outcome_goes_to_other_not_fetched():

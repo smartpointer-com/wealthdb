@@ -53,31 +53,18 @@ import sys
 from collectorkit import debugcap, prune
 
 
-def _is_complete(run_dir, meta):
-    # A statusless-but-readable run.json is a pre-`status` complete dump:
-    # the manifest was written only at the end, so its presence means the
-    # walk finished. Current walks always carry a status key
-    # (in-progress -> complete), which status_classification resolves
-    # before this legacy fallback is consulted. Identical shape to
-    # fidelity-web, which uses the same completeness signal.
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
-
-
 CONFIG = prune.PruneConfig(
     # Where `download --debug` puts its landmark captures.
     debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=_is_complete,   # manifest_name defaults to 'run.json'
+    # A statusless-but-readable run.json is a pre-`status` complete dump:
+    # the manifest was written only at the end, so its presence means the
+    # walk finished.
+    is_complete=prune.lenient_classification,
 )
 
 
 def main(argv=None):
     return prune.main(CONFIG, argv, description=__doc__)
-
-
-def validate_target(path, bronze_dir):
-    """The shared target validator, bound to this collector's config."""
-    return prune.validate_target(path, bronze_dir, CONFIG)
 
 
 if __name__ == "__main__":

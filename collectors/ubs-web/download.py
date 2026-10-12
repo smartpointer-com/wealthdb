@@ -1133,17 +1133,14 @@ def write_run_json(run_dir: Path, since: date, until: date,
         "dump_started_at": bronze.ts_slug(),
         # Terminal status for the run.json lifecycle: this function is
         # only reached at the end of a real walk (--dry-run writes no
-        # bronze at all — see _prepare_run_dir), so the run finalises as
-        # "complete". The atomic write below overwrites the
-        # "in-progress" marker dropped at run-dir creation. `prune` keys
-        # on this field; the `dry_run` bool is kept alongside it because
-        # the statusless-manifest fallback classifies on it (see
-        # prune._is_complete).
-        # A walk that ran one pass covers one surface, and saying
-        # "complete" of it would tell every reader the others were
-        # looked at and found empty. It is named for what it is, which
-        # also puts it among the dumps `prune` reclaims: it exists to
-        # work on a surface, not to be the record of a day.
+        # bronze at all — see _prepare_run_dir). The atomic write below
+        # overwrites the "in-progress" marker dropped at run-dir
+        # creation. A walk that ran one pass covers one surface, and
+        # saying "complete" of it would tell every reader the others
+        # were looked at and found empty, so it finalises as "partial";
+        # `load` reads it and `prune` keeps it (load.PARTIAL_STATUS).
+        # The `dry_run` bool is kept because the statusless-manifest
+        # fallback classifies on it (load.legacy_manifest_is_complete).
         "status": "complete" if only is None else "partial",
         **({"partial_pass": only} if only is not None else {}),
         "dry_run": False,
@@ -1188,13 +1185,12 @@ def _prepare_run_dir(bronze_dir: Path, dry_run: bool) -> Path | None:
     Real run: make `bronze_dir`, create a fresh UTC-timestamped run dir
     under it, and atomically write ``run.json`` with
     ``status="in-progress"`` up front — so a walk that crashes before
-    ``write_run_json`` leaves a non-complete dump that `prune` reclaims
-    and `load` can classify.
+    ``write_run_json`` leaves a non-complete dump that `load` skips and
+    `prune` reclaims.
 
     Dry-run: create NOTHING under `bronze_dir` and return ``None``. A
     dry-run is the read-only walk (AGENTS.md §2) and must persist nothing
-    to bronze — not even a `run.json` shell, since `load`'s `scan_bronze`
-    has no status guard and would otherwise ingest it as a dump run.
+    to bronze, not even a `run.json` shell.
     """
     if dry_run:
         log.info(
@@ -1674,8 +1670,8 @@ def main(argv: list[str]) -> int:
     # A real run gets a bronze run dir plus an "in-progress" manifest,
     # atomically overwritten with the terminal status by write_run_json.
     # This makes a crashed walk — which never reaches write_run_json —
-    # legible to `prune` (status="in-progress" ⇒ non-complete dump,
-    # reclaimed whole once quiescent) instead of leaving an empty run
+    # legible to `load` and `prune` (status="in-progress" ⇒ skipped by
+    # load, reclaimed whole once quiescent) instead of leaving an empty run
     # dir, and closes the window where a run dir carries no run.json at
     # all. A --dry-run persists nothing to bronze, so run_dir is None and
     # every export (and write_run_json) is skipped below.
@@ -1808,11 +1804,9 @@ def main(argv: list[str]) -> int:
                                    positions_meta, cards_meta,
                                    portfolio_txn_meta, args.only)
             finally:
-                if args.trace:
-                    args.screenshot_dir.mkdir(parents=True, exist_ok=True)
-                    trace_path = args.screenshot_dir / f"{bronze.ts_slug()}-download-trace.zip"
-                    context.tracing.stop(path=str(trace_path))
-                    log.info("trace saved to %s", trace_path)
+                debugcap.stop_trace_if_active(context, args.trace,
+                                              args.screenshot_dir,
+                                              "download", log=log)
                 context.close()
                 browser.close()
     except SystemExit:

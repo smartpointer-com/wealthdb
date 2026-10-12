@@ -297,19 +297,8 @@ def main(argv: list[str]) -> int:
     # regenerable startupCache relocated out of the secrets tree.
     launch.prepare_profile_dir(args.profile_dir)
 
-    # Imported lazily so `--help` doesn't pay the Camoufox import cost.
-    from camoufox.sync_api import Camoufox
-
-    with Camoufox(
-        persistent_context=True,
-        user_data_dir=str(args.profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,   # headed under the entrypoint's Xvfb; clears Cloudflare
-        humanize=True,
-        geoip=True,
-        firefox_user_prefs=launch.firefox_prefs(),
-    ) as context:
+    # Headed under the entrypoint's Xvfb: that is what clears Cloudflare.
+    with launch.headed_camoufox(args.profile_dir) as context:
         page = context.new_page()
 
         if args.check:

@@ -13,10 +13,11 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy only the login surface. download.py / load.py / tests run on the
-# host venv, so they're deliberately NOT baked into this image. Listed
-# explicitly so stray host artefacts never leak in.
-COPY login.py oauth_landmarks.py /app/
+# Copy only the login surface, plus the token-file client that
+# `login --check` shares with download.py. download.py / load.py / tests
+# run on the host venv, so they're deliberately NOT baked into this
+# image. Listed explicitly so stray host artefacts never leak in.
+COPY login.py oauth_landmarks.py _tokenclient.py /app/
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

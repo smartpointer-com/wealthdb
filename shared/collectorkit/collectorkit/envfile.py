@@ -1,26 +1,25 @@
 """Credential + .env handling shared across collectors.
 
-Two loaders live here, for two different needs:
+An env file is a bash script (repo AGENTS.md §3), so it is read the way a
+shell reads it. `bash -n` checks its syntax first. Then a bash subprocess
+sources it under `set -a` and prints its environment with `env -0`.
+Quoting and escaping are bash's:
 
-- :func:`source_env_file` *sources the file via bash* (honoring full bash
-  syntax — quoting, `export`, variable references). Preferred for env
-  files that hold ordinary configuration.
+- single quotes keep every character as written;
+- inside double quotes, `$`, backticks and backslashes stay special;
+- an unquoted `#` after a space starts a comment, and an unquoted space
+  ends the value.
 
-- :func:`load_env_file` *hand-parses* KEY=VALUE, reading each value
-  byte-for-byte and stripping only a matched pair of outer quotes. This
-  exists for the browser-login collectors' credential files: bash
-  sourcing would `$`-expand, run backtick/`$()` command substitution, and
-  strip unquoted trailing `#` comments, silently mangling a password that
-  contains those characters even when it is *double-quoted*. Measured
-  divergences of a bash source vs. this loader, for shapes a real
-  credential file can hit:
-    * ``PW="ab$cd"`` / ``PW=ab$cd``  → bash yields ``ab`` (``$cd`` expands)
-    * ``PW="a`cmd`b"``               → bash runs ``cmd`` (substitution)
-    * CRLF line endings             → bash keeps a trailing ``\\r``
-    * ``KEY=value # note``          → bash strips the inline comment
-    * ``KEY = value`` / unquoted spaces → bash treats it as a command
-  Single-quoted values match under both. The hand parser preserves the
-  literal bytes, so credentials survive regardless of quoting style.
+No parser here stands in for bash, so a file means the same to a
+collector as to the wrapper that sources it.
+
+:func:`read_env_file` returns what the file set. Two loaders apply it to
+``os.environ``:
+
+- :func:`source_env_file` lets either the environment or the file win,
+  for every key.
+- :func:`load_env_file` lets the file win for named credential keys, and
+  the environment win for the rest.
 
 Credentials are resolved with the value-with-env-fallback pattern (an
 explicit flag value wins, else the env var), never a `--x-env NAME`
@@ -28,67 +27,131 @@ indirection.
 """
 from __future__ import annotations
 
+import errno
 import os
 import re
-import shlex
 import subprocess
 from pathlib import Path
 
-# Shell bookkeeping variables to drop when merging a sourced env, so they
-# don't leak into the child process environment.
+# Shell bookkeeping variables, and the variables that steer process lookup,
+# never taken from an env file into the collector's environment.
 BASH_VAR_BLOCKLIST = frozenset({
     "PWD", "OLDPWD", "SHLVL", "_", "PATH", "SHELL", "HOME", "PIPESTATUS",
 })
 
+# Variables that make a non-interactive bash read a startup file. Dropped
+# from the subprocess's environment, so only the env file itself runs.
+_STARTUP_FILE_VARS = ("BASH_ENV", "ENV")
+
+# Prints the environment before and after sourcing the file, separated by
+# one extra NUL. `env -0` ends every entry with a NUL, so the separator
+# reads as the one empty entry. The file is `$0`, so it receives no
+# positional arguments. Its stdout is dropped: only `env -0` writes there.
+# `command -p` finds `env` even when the file sets PATH.
+_SOURCE_SCRIPT = (r'command -p env -0; printf "\0"; set -a; '
+                  r'source "$0" >/dev/null; set +a; command -p env -0')
+
+_BASH = ("bash", "--noprofile", "--norc")
+
+
+def _error_lines(stderr: bytes) -> str:
+    """`` at line N, M`` from bash's error output, or "". Only the numbers
+    are kept: bash quotes the offending line, and it may hold a secret."""
+    lines = sorted({int(n) for n in re.findall(rb": line (\d+): ", stderr)})
+    return f" at line {', '.join(map(str, lines))}" if lines else ""
+
+
+def _parse_env0(entries: list[bytes]) -> dict[str, str]:
+    env = {}
+    for entry in entries:
+        k, _sep, v = entry.partition(b"=")
+        try:
+            env[k.decode("utf-8")] = v.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    return env
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """The variables the env file at `path` sets or changes, as bash reads it.
+
+    The subprocess inherits this process's environment, so the file can
+    refer to it (``$HOME``). Only what the file set to a new value is
+    returned: never the inherited environment, nor a key in
+    :data:`BASH_VAR_BLOCKLIST`. A variable the file unsets is ignored.
+
+    Raises FileNotFoundError when `path` is no file. Raises ValueError when
+    bash reports a syntax error, or an error while sourcing (a command not
+    found, an unquoted space in a value). The error names the file and the
+    line numbers only, never the line: it may hold a secret.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(errno.ENOENT, "no env file", str(path))
+    chk = subprocess.run([*_BASH, "-n", str(path)], capture_output=True)
+    if chk.returncode != 0:
+        raise ValueError(f"env file {path} is not valid bash"
+                         f"{_error_lines(chk.stderr)}. The line is not "
+                         f"shown, since it may hold a secret.")
+    env = {k: v for k, v in os.environ.items() if k not in _STARTUP_FILE_VARS}
+    # Absolute: `source` looks a slash-free name up in PATH first.
+    result = subprocess.run(
+        [*_BASH, "-c", _SOURCE_SCRIPT, str(path.absolute())],
+        env=env, capture_output=True)
+    if result.returncode != 0 or result.stderr:
+        raise ValueError(f"env file {path} failed when sourced"
+                         f"{_error_lines(result.stderr)}. The line is not "
+                         f"shown, since it may hold a secret.")
+    # No `env -0` entry is empty, so the first empty one is the separator.
+    entries = result.stdout.split(b"\x00")
+    cut = entries.index(b"")
+    old = _parse_env0(entries[:cut])
+    new = _parse_env0([e for e in entries[cut + 1:] if e])
+    return {k: v for k, v in new.items()
+            if k not in BASH_VAR_BLOCKLIST and old.get(k) != v}
+
 
 def source_env_file(path: Path, prefer_file: bool = False) -> bool:
-    """Syntax-check then source `path` as bash and merge its KEY=VALUE
-    bindings into ``os.environ``. By default an existing environment
-    value wins (``setdefault`` semantics, for the cron/nightly case
-    where the parent shell already exported credentials). Pass
-    ``prefer_file=True`` to let the file's value win instead — the
-    Playwright login collectors do this so a password with shell
-    metacharacters reaches the browser exactly as written in the
-    env file rather than as a possibly-mangled inherited value.
-    Returns False if the file is absent; raises ValueError on a bash
-    syntax error. The error names the file and the line numbers only:
-    bash quotes the offending line, and that line may hold a secret.
+    """Source `path` as bash and merge what it sets into ``os.environ``.
+
+    By default an existing environment value wins (``setdefault``
+    semantics, for the case where the calling shell already exported the
+    credentials). ``prefer_file=True`` lets the file's value win instead.
+    Returns False if the file is absent. Raises ValueError on a bash error
+    (see :func:`read_env_file`).
     """
     path = Path(path)
     if not path.is_file():
         return False
-    chk = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-n", str(path)],
-        capture_output=True,
-    )
-    if chk.returncode != 0:
-        lines = sorted({int(n) for n in
-                        re.findall(rb": line (\d+): ", chk.stderr)})
-        where = (f" at line {', '.join(map(str, lines))}" if lines else "")
-        raise ValueError(f"env file {path} is not valid bash{where}. The "
-                         f"line is not shown, since it may hold a secret.")
-    quoted = shlex.quote(str(path))
-    result = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-c",
-         f"set -a; source {quoted}; set +a; env -0"],
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-        capture_output=True, check=True,
-    )
-    for entry in result.stdout.split(b"\x00"):
-        if not entry:
-            continue
-        k, _sep, v = entry.partition(b"=")
-        try:
-            key, val = k.decode("utf-8"), v.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-        if key in BASH_VAR_BLOCKLIST:
-            continue
+    for key, val in read_env_file(path).items():
         if prefer_file:
             os.environ[key] = val
         else:
             os.environ.setdefault(key, val)
     return True
+
+
+def source_named_env_file(explicit: Path | None, env_var: str) -> Path | None:
+    """Source the env file a run names, so that its values win.
+
+    The file is `explicit` (an ``--env-file`` flag), else the path in the
+    environment variable `env_var`. Neither set returns None and sources
+    nothing. A named file that does not exist exits: a file that was asked
+    for is never silently replaced by whatever the environment holds. A
+    bash error exits too, with :func:`read_env_file`'s message. Returns the
+    path sourced.
+    """
+    path = explicit or (Path(os.environ[env_var])
+                        if os.environ.get(env_var) else None)
+    if path is None:
+        return None
+    if not Path(path).is_file():
+        raise SystemExit(f"--env-file does not exist: {path}")
+    try:
+        source_env_file(path, prefer_file=True)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
+    return Path(path)
 
 
 def resolve_env_file(arg_path, candidates) -> Path | None:
@@ -102,69 +165,36 @@ def resolve_env_file(arg_path, candidates) -> Path | None:
     return None
 
 
-def _strip_outer_quotes(s: str) -> str:
-    """Strip a matched pair of leading+trailing single or double quotes
-    from ``s``. Single-side strips (e.g. ``"foo``) are left alone — they
-    are more likely a real value than a syntax slip."""
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
-        return s[1:-1]
-    return s
-
-
 def load_env_file(path, override_vars, *, logger,
                   warn_on_override: bool = False) -> None:
-    """Hand-parse KEY=VALUE pairs from ``path`` into ``os.environ``.
+    """Source `path` as bash and merge what it sets into ``os.environ``.
 
-    Unlike :func:`source_env_file` this does NOT hand the file to bash;
-    it reads each value byte-for-byte, stripping only a matched pair of
-    outer quotes, so a credential that contains ``$``, backticks, ``#``
-    or shell metacharacters survives intact regardless of quoting (see
-    the module docstring for the bash-source divergence table).
+    ``override_vars`` names the keys whose file value wins over a value
+    already in the environment (credentials: the file is authoritative).
+    Every other key uses ``setdefault`` (the file is a fallback). With
+    ``warn_on_override``, an inherited value that differs from the file's
+    is logged via ``logger``, by length only, never the secret.
 
-    ``override_vars`` names the keys whose file value wins over an
-    already-set host env var (credentials — the file is authoritative);
-    every other key uses ``setdefault`` (the env-file is a fallback).
-    With ``warn_on_override`` a mismatch between an inherited value and
-    the file value is logged via ``logger`` (lengths only, never the
-    secret).
-
-    Lines beginning with ``#`` and blank lines are ignored; a leading
-    ``export`` is stripped; malformed lines raise ``SystemExit``.
+    Raises FileNotFoundError when `path` is no file. A bash error raises
+    SystemExit with :func:`read_env_file`'s message.
     """
     path = Path(path)
     logger.debug("loading env file: %s", path)
-    with path.open("r", encoding="utf-8") as fh:
-        for lineno, raw in enumerate(fh, 1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):]
-            if "=" not in line:
-                # Not shown: such a line is often a value pasted on a
-                # line of its own, and the value may be a secret.
-                raise SystemExit(
-                    f"env file {path}:{lineno}: not a KEY=VALUE line"
-                )
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = _strip_outer_quotes(value.strip())
-            if not key:
-                raise SystemExit(f"env file {path}:{lineno}: empty key")
-            if key in override_vars:
-                if warn_on_override:
-                    prior = os.environ.get(key)
-                    if prior is not None and prior != value:
-                        logger.warning(
-                            "%s inherited from host env (len=%d) differs "
-                            "from %s file value (len=%d); using file value. "
-                            "(Use SINGLE quotes for values containing $/!/"
-                            "backtick to avoid host `source` mangling.)",
-                            key, len(prior), path, len(value),
-                        )
-                os.environ[key] = value
-            else:
-                os.environ.setdefault(key, value)
+    try:
+        values = read_env_file(path)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
+    for key, value in values.items():
+        if key not in override_vars:
+            os.environ.setdefault(key, value)
+            continue
+        prior = os.environ.get(key)
+        if warn_on_override and prior is not None and prior != value:
+            logger.warning(
+                "%s from the environment (len=%d) differs from the value "
+                "in %s (len=%d); using the file's value.",
+                key, len(prior), path, len(value))
+        os.environ[key] = value
 
 
 def resolve_credential(value, env_name: str, flag_name: str) -> str:

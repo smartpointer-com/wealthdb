@@ -35,7 +35,8 @@ Schwab) and has its own failure modes. Inside the fetch loop it would
 raise an interactive prompt in an unattended run.
 
 **Choices that generalise:**
-- `--check` reports the token's age without using it. It makes a
+- `--check` reports the token's age, then proves the token with the
+  cheapest authenticated call (`/accounts/accountNumbers`). It makes a
   failing `download` predictable.
 - schwab-py's own interactive prompts ("Press ENTER to open the
   browser") are suppressed. They expire auth codes over SSH, in remote
@@ -557,7 +558,7 @@ appears in both the dump's `instruments.json` *and* a transactions
 transferItem, synthesis skips it and lets the API row stand. The
 silver consumer sees one table; the source is transparent.
 
-### 4.10 Tax wrapper: a negative finding
+### 4.10 Tax wrapper: not exposed
 
 The Schwab Trader API does **not** expose the tax-registration / wrapper
 of an account (IRA, Roth IRA, Rollover IRA, SEP-IRA, Inherited IRA,
@@ -566,7 +567,7 @@ field. No endpoint that touches accounts carries one:
 
 | Endpoint | Wrapper-shaped field? |
 |---|---|
-| `GET /trader/v1/accounts` and `/accounts/{hash}`, with or without `fields=…` | No. The `securitiesAccount.type` field is one of {`CASH`, `MARGIN`} — that is *margin enablement*, not tax treatment. The 9 returned keys are `accountNumber`, `type`, `roundTrips`, `isDayTrader`, `isClosingOnlyRestricted`, `pfcbFlag`, plus three balance blocks. Trying undocumented projections (`accountSubType`, `registrationType`, `type2`, `registration`, `all`, …) yields the same 9 keys; unknown projection values are silently ignored. |
+| `GET /trader/v1/accounts` and `/accounts/{hash}`, with or without `fields=…` | No. The `securitiesAccount.type` field is one of {`CASH`, `MARGIN`} — that is *margin enablement*, not tax treatment. The 9 returned keys are `accountNumber`, `type`, `roundTrips`, `isDayTrader`, `isClosingOnlyRestricted`, `pfcbFlag`, plus three balance blocks. Undocumented projections (`accountSubType`, `registrationType`, `type2`, `registration`, `all`, …) return the same 9 keys; unknown projection values are silently ignored. |
 | `GET /trader/v1/accounts/accountNumbers` | No. Just `{accountNumber, hashValue}`. |
 | `GET /trader/v1/userPreference` per-account entry | The structured `type` field returns `BROKERAGE` — useless for discrimination. The only wrapper signal is the **`nickName`** free-text field. |
 

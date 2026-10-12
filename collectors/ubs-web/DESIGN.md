@@ -50,7 +50,7 @@ defines every identifier. Recap of the cross-silver join keys:
 | Cash account | `account_external_id` = IBAN no-spaces uppercase (e.g. `CHKKBBBBRRRRAAAAAAAAC`); plus parallel `account_acct_id_psn_form` (e.g. `RRRR000000AAAAAAAA0000C`) computed by the web loader | `account_external_id` = IBAN per `psn/migrations/0001` comment; the PSN payload also has UBS `AcctId` in the 21-char form | Equality on `account_external_id` (IBAN) OR equality on `account_acct_id_psn_form` ↔ PSN payload `AcctId`. Either works. |
 | Safekeeping account | Not surfaced by the web feed (§3.4) | `account_external_id` = UBS safekeeping code (e.g. `BBBB-AAAAAAAA.S1`) | PSN only. |
 | Instrument | `instrument_isin` (ISO 6166 ISIN-12) on `positions` | `isin` on `instruments` / `holdings` | Equality on ISIN |
-| Transaction | `(transaction_external_id, account_external_id)` compound PK — UBS reuses the Transaction no. for both debit + credit sides of an inter-account transfer | `event_external_id` (derived from the SWIFT message reference), unique per event | **DO NOT JOIN** — the two ID schemes do not overlap in practice. See §3.6 for the date-splice-only merge strategy. |
+| Transaction | `(transaction_external_id, account_external_id)` compound PK — UBS reuses the Transaction no. for both debit + credit sides of an inter-account transfer | `event_external_id` (derived from the SWIFT message reference), unique per event | **DO NOT JOIN** — the two ID schemes do not overlap. See §3.6 for the date-splice-only merge strategy. |
 
 ## 3. Per-entity silver shapes
 
@@ -451,11 +451,11 @@ Four properties make that safe:
   portfolio are read from the text it prints on its own first page
   (`Statement of assets` / `As of <D Month YYYY>` /
   `Portfolio BBB-AAAAAAAA-NN, valued in …`), never from a filename, which
-  a hand-placed file makes no promises about. Measured across the whole
-  archive, those anchors give the same answer as the listing label on
-  every document that has both; the header's `As of` line is what the
-  label states, not the `valued as of` note some year-end statements
-  print a day or two earlier. A PDF whose body does not carry all three
+  a hand-placed file makes no promises about. Those anchors give the same
+  answer as the listing label on every document that has both; the
+  header's `As of` line is what the label states, not the `valued as of`
+  note some year-end statements print a day or two earlier. A PDF whose
+  body does not carry all three
   anchors is named in a warning and left out of `documents` entirely,
   rather than catalogued under no type where it would look ingested and
   never be parsed.
@@ -898,11 +898,12 @@ both list it. `settlement_no` names it across statements.
   What is specific to ubs-web:
   - `--dry-run` writes nothing to bronze, not even a `run.json`.
   - `--only PASS` finalises its dump as `"status": "partial"` with a
-    `partial_pass` key, so `prune` reclaims it like any non-complete
-    dump.
-  - `load` does not gate on the status. `scan_bronze` takes every
-    timestamped run dir, and `_read_run_json` tolerates a missing
-    manifest.
+    `partial_pass` key. A `partial` dump is a load input, so `load`
+    reads it and `prune` keeps it.
+  - `load` reads `complete`, `partial` and statusless (legacy) dumps.
+    It skips a dir with no `run.json`, an `in-progress` or `dry-run`
+    status, and any status it does not know (`skip_reason`). `prune`
+    keeps exactly the dumps `load` reads.
   - `debug_subdirs` names `screenshots/`, the landmark captures
     `download --debug` writes. The other diagnostics go to the
     `/debug` mount, outside bronze.
@@ -911,11 +912,10 @@ both list it. `settlement_no` names it across statements.
     `--dry-run` shell carries a full-looking manifest, so the bare
     manifest-presence test fidelity-web uses would keep it forever.
 
-## 5. Cards — observed
+## 5. Cards
 
-Recorded from hand-driven `explore` sessions. The card
-surface is a **REST API the SPA reads**, not a page to scrape: every
-figure below comes from JSON the netbanking front end fetches for
+The card surface is a **REST API the SPA reads**, not a page to scrape:
+every figure below comes from JSON the netbanking front end fetches for
 itself, and the toolbar's CSV/PDF exports are a lossy rendering of it.
 
 ### 5.1 The endpoints
@@ -944,8 +944,8 @@ fetch uses is part of what its window means.
 The homepage tiles an anchor per card account under
 `#/cards?target=card-account-transactions&accountId=<token>`, the same
 shape the cash anchors use. **It is not a complete enumeration** — the
-tiled set is a subset of what the roster returns, and a collector keyed
-on those anchors under-collects with no error to show for it. Enumerate
+tiled set need not match what the roster returns, and a collector keyed
+on those anchors can under-collect with no error to show for it. Enumerate
 from `/api/v2/credit-card-accounts`.
 
 A card *account* (`accountType=CREDIT_CARD_ACCOUNT`) holds one or more
@@ -958,8 +958,8 @@ optionally narrowed to one card with `creditCardIds`.
 
 | Field | What it is |
 | --- | --- |
-| `_id` | **a per-session handle, not a key.** An opaque ~65-char token, re-minted at every login: two dumps a day apart shared not one id. Within a single session it is stable and distinguishes rows, which is all the paging needs; the silver row key is minted from row content instead (`card_parsers.py`) |
-| `transactionNr` | **not an id** — a one- to three-digit sequence number that repeats heavily across rows. It reads as a position within a statement, not a key. Keying on it would collapse most of the ledger into a hundred rows |
+| `_id` | **a per-session handle, not a key.** An opaque ~65-char token, re-minted at every login, so two dumps share no id. Within a single session it is stable and distinguishes rows, which is all the paging needs; the silver row key is minted from row content instead (`card_parsers.py`) |
+| `transactionNr` | **not an id** — a one- to three-digit sequence number that repeats heavily across rows. It reads as a position within a statement, not a key. Keying on it would collapse many rows onto each number |
 | `transactionDate` / `valueDate` | purchase timestamp / booking date |
 | `postingAmount` / `originalAmount` | `{amount, currency}` each — equal on a domestic row, different on a foreign-currency one |
 | `details` | **the merchant descriptor** — the terminal string, the input a merchant signature is built from |
@@ -1064,8 +1064,8 @@ books cards is in the adapter doc's
 A ledger row's title is an accordion
 (`span[role="button"][aria-expanded]` inside
 `div[data-name="transaction-title"]`), so the detail expands in place
-rather than opening a page. Nothing in the card surface carried an
-"order origination" field in any capture.
+rather than opening a page. The card surface carries no
+"order origination" field.
 
 That field belongs to the **cash** ledger, where a debit-card
 point-of-sale payment is what has an origination to state. The cash
@@ -1081,9 +1081,9 @@ here.
 **Nothing in the collector reads any of this** — the card surface is
 fetched from the API (§5.1), and no card selector is pinned in
 [landmarks.py](landmarks.py) because no code has needed one. It is
-recorded because a capture is expensive: it dates what the UI looked
-like, so a later diagnosis of drift, or a need the API cannot serve,
-starts from a written record rather than from another live session.
+recorded so that a later diagnosis of drift, or a need the API cannot
+serve, starts from a written record rather than from another live
+session.
 
 - transactions toolbar: `button[data-testid="download-csv-button"]`,
   `button[data-testid="download-pdf-button"]` (cards render **both**;

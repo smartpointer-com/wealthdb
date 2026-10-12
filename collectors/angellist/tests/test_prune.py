@@ -306,13 +306,13 @@ def test_missing_bronze_dir_exits(tmp_path):
 def test_validate_target_accepts_run_dir(tmp_path):
     # With no debug_subdirs, the only valid target shape is a whole run dir.
     (tmp_path / OLD_TS).mkdir()
-    prune.validate_target(tmp_path / OLD_TS, tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
 def test_validate_target_accepts_screenshots_subdir(tmp_path):
     # The one subdir shape prune may target: the --debug capture dir.
     (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):
@@ -320,13 +320,13 @@ def test_validate_target_refuses_stray_paths(tmp_path):
     (tmp_path / OLD_TS / "captures.jsonl").write_text(CAPTURE_LINE)
     with pytest.raises(SystemExit):
         # a load input inside a run dir is never a target
-        prune.validate_target(tmp_path / OLD_TS / "captures.jsonl", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / OLD_TS / "captures.jsonl", tmp_path)
     with pytest.raises(SystemExit):
         # the bronze-root documents sibling is never a target
-        prune.validate_target(tmp_path / "angellist-documents", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / "angellist-documents", tmp_path)
     with pytest.raises(SystemExit):
         # a run dir outside this bronze root is never a target
-        prune.validate_target(tmp_path.parent / OLD_TS, tmp_path)
+        prune.CONFIG.validate_target(tmp_path.parent / OLD_TS, tmp_path)
 
 
 def test_validate_target_refuses_symlink(tmp_path):
@@ -335,4 +335,4 @@ def test_validate_target_refuses_symlink(tmp_path):
     link = tmp_path / OLD_TS
     link.symlink_to(external, target_is_directory=True)
     with pytest.raises(SystemExit):
-        prune.validate_target(link, tmp_path)
+        prune.CONFIG.validate_target(link, tmp_path)

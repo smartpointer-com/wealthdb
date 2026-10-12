@@ -176,7 +176,7 @@ def _offering_documents(node: dict) -> list[dict]:
 
 # --- documentType → docdedup class (mode selection) ------------------------
 #
-# The observed EquityZen `documentType` inventory (names only — the pinned
+# The known EquityZen `documentType` values (names only — the pinned
 # vocabulary this mapping is built against):
 #   CAPITAL_ACCOUNT_STATEMENT, QUARTERLY_REPORT, ANNUAL_FINANCIAL_STATEMENTS,
 #   K1, COUNTERSIGN_SUB_AGT, SUB_AGT, SERIES_SCHEDULE, FUND_W_9, W_8,
@@ -262,31 +262,15 @@ def extract_equityzen(run_dir, manifest):
                                       relpath=str(f.relative_to(run_dir)))
 
 
-# A document node that carries no downloadUrl yields no blob BY DESIGN — load
-# records a null local_path for it. That is not a fetch failure, so it gets its
-# own outcome and its own audit bucket in the shared docdedup counters, and is
-# NOT counted among `errors`.
-NO_BLOB = "no-blob"
-_AUDIT_EXTRA = {NO_BLOB: "no_blob"}
-
-
-def _empty_doc_counts() -> dict:
-    return docdedup.empty_audit("no_blob")
-
-
-def _tally(counts: dict, status: str) -> None:
-    docdedup.tally(counts, status, extra=_AUDIT_EXTRA)
-
-
 def _process_document(skip, *, deal_slug: str, doc: dict, target_dir: Path,
                       fetch_blob, force: bool = False) -> str:
     """Decide and execute one document's download-avoidance outcome, returning a
-    status code for :func:`_tally`.
+    status code for :func:`docdedup.tally`.
 
-    A node with no ``downloadUrl`` was never going to yield a blob, so it returns
-    :data:`NO_BLOB` (a null-blob-by-design — load records a null local_path for
-    it — NOT a fetch failure) without touching the
-    fetch/dedup path. Otherwise it dispatches to :func:`docdedup.process` by the
+    A node with no ``downloadUrl`` was never going to yield a blob, so it
+    returns :data:`docdedup.NO_BLOB` (no blob by design, NOT a fetch failure;
+    load records a null local_path for it) without touching the fetch/dedup
+    path. Otherwise it dispatches to :func:`docdedup.process` by the
     document's class: link-mode for the executed-once legal/offering docs,
     fetch-verify for the parsed/restatement-prone docs, plain fetch for anything
     unclassified. ``force`` bypasses the download-avoidance index. The fetch
@@ -294,7 +278,7 @@ def _process_document(skip, *, deal_slug: str, doc: dict, target_dir: Path,
     straight through to the real fetch."""
     doc_slug = _slug(doc["id"])
     if not doc.get("downloadUrl"):
-        return NO_BLOB
+        return docdedup.NO_BLOB
     return docdedup.process(
         skip, key=(deal_slug, doc_slug), doc_class=_document_class(doc),
         target_dir=target_dir, stem=doc_slug,
@@ -312,8 +296,6 @@ def main(argv: list[str]) -> int:
     envfile.source_env_file(args.env_file)  # aligns mounts; no creds used here
     if not args.dry_run:
         bronze.ensure_writable_dir(args.bronze_dir)
-
-    from camoufox.sync_api import Camoufox
 
     captures: dict[str, list] = {}
 
@@ -383,11 +365,7 @@ def main(argv: list[str]) -> int:
     # launching against it.
     launch.prepare_profile_dir(args.profile_dir)
 
-    with Camoufox(
-        persistent_context=True, user_data_dir=str(args.profile_dir),
-        os="macos", window=(1280, 800), headless=False, humanize=True,
-        geoip=True, firefox_user_prefs=launch.firefox_prefs(),
-    ) as context:
+    with launch.headed_camoufox(args.profile_dir) as context:
         page = context.new_page()
         page.set_default_timeout(timeout_ms)
         page.on("response", on_response)
@@ -486,7 +464,7 @@ def main(argv: list[str]) -> int:
 
         # 2) Per-offering detail (positions + cash flows) + document blobs.
         offerings_meta = []
-        document_blobs = _empty_doc_counts()
+        document_blobs = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
         for did in deal_ids:
             slug, n = _slug(did), _deal_numeric(did)
             if not n:
@@ -509,7 +487,7 @@ def main(argv: list[str]) -> int:
                 offerings_meta.append({"slug": slug, "detail": False})
                 continue
             bronze.atomic_write_json(run / "offerings" / slug / "detail.json", cap["body"])
-            doc_counts = _empty_doc_counts()
+            doc_counts = docdedup.empty_audit(docdedup.NO_BLOB_BUCKET)
             if args.documents:
                 nodes = _buyer_deal_nodes(cap["body"])
                 docs = _offering_documents(nodes[0] if nodes else {})
@@ -519,7 +497,7 @@ def main(argv: list[str]) -> int:
                         skip, deal_slug=slug, doc=doc,
                         target_dir=run / "documents" / slug,
                         fetch_blob=fetch_blob, force=args.documents_force)
-                    _tally(doc_counts, status)
+                    docdedup.tally(doc_counts, status)
                 for k in document_blobs:
                     document_blobs[k] += doc_counts[k]
                 log.info("  offering %s: documents %s", slug,

@@ -17,8 +17,8 @@ document class behaves per the correctness-safe mapping:
     hardlinked, a restated/corrected one KEPT — the re-issue case a
     link-everything scheme would serve stale);
   * an unrecognised type → always fetched (fail-safe);
-  * a real fetch failure → an error; _tally routes an unmapped outcome to
-    'other', never inflating 'fetched'; --documents-force bypasses the index.
+  * a real fetch failure → an error; the audit block carries viac's
+    `skipped` bucket; --documents-force bypasses the index.
 
 viac has no equityzen-style "no-blob" outcome: every in-gate index entry is
 fetchable by its documentNumber (there is no separate URL that could be
@@ -476,25 +476,16 @@ def test_fetch_pdf_non_200_raises(tmp_path):
 
 
 # ============================================================
-# _tally / counters
+# The audit block
 # ============================================================
 
 def test_tally_and_counts():
     counts = download._empty_doc_counts()
     for s in (docdedup.LINKED, docdedup.LINKED, docdedup.FETCHED,
               docdedup.VERIFIED, docdedup.CHANGED, docdedup.FETCH_FAILED):
-        download._tally(counts, s)
+        docdedup.tally(counts, s)
     assert counts == {"total": 0, "fetched": 1, "linked": 2, "verified": 1,
                       "changed": 1, "skipped": 0, "errors": 1, "other": 0}
-
-
-def test_tally_unmapped_code_goes_to_other():
-    # An outcome code the map does not know must NOT inflate 'fetched'; it
-    # lands in its own 'other' bucket (audit stays honest).
-    counts = download._empty_doc_counts()
-    download._tally(counts, "totally-unexpected-code")
-    assert counts["other"] == 1
-    assert counts["fetched"] == 0
 
 
 def test_fetch_failed_is_error(tmp_path):
@@ -511,5 +502,5 @@ def test_fetch_failed_is_error(tmp_path):
         fetch=lambda: None)
     assert status == docdedup.FETCH_FAILED
     counts = download._empty_doc_counts()
-    download._tally(counts, status)
+    docdedup.tally(counts, status)
     assert counts["errors"] == 1 and counts["fetched"] == 0

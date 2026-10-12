@@ -12,7 +12,7 @@
 #                      (ticking every account), and writes the token to
 #                      <secrets>/schwab-api-token.json. --trace
 #                      --screenshot-dir /debug captures diagnostics to the
-#                      debug dir. --check inspects the token; --manual is
+#                      debug dir. --check probes the token; --manual is
 #                      the paste-the-URL fallback.
 #   vnc-login [args..] Manual fallback: drive login / 2FA / consent yourself
 #                      over VNC (use if `login`'s selectors drift).

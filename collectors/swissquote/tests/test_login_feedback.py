@@ -2,8 +2,8 @@
 The MFA page's API-call recorder.
 
 login.py logs what the wait page requested, and how long each call was held,
-because the page's approval channel is its own status endpoint, whose route
-can move. Recording the page's own calls — id-masked, so a line can be pasted
+through the shared `collectorkit.debugcap` recorder, because the page's
+approval channel is its own status endpoint, whose route can move. Recording the page's own calls — id-masked, so a line can be pasted
 into a report, and ordered by duration, because a held call is the one worth
 polling — makes such a move diagnosable instead of guessable.
 
@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import login  # noqa: E402
+from collectorkit import debugcap  # noqa: E402
 
 
 class UrlShapeTests(unittest.TestCase):
@@ -32,7 +33,7 @@ class UrlShapeTests(unittest.TestCase):
     """
 
     def test_a_session_id_is_elided_but_the_path_survives(self):
-        got = login.url_shape(
+        got = debugcap.url_shape(
             "https://trade.swissquote.ch/sq-thirdlevel-plugin/api/thirdlevel"
             "/smartL3/feedback/listen/0123456789abcdef0123456789abcdef"
             "?cache=false&timeout=20000"
@@ -45,7 +46,7 @@ class UrlShapeTests(unittest.TestCase):
             self.assertIn(keep, got)
 
     def test_a_credential_query_parameter_is_redacted(self):
-        got = login.url_shape(
+        got = debugcap.url_shape(
             "https://trade.swissquote.ch/x/api/y?token=s3cret&cache=false")
         self.assertNotIn("s3cret", got)
         self.assertIn("cache=false", got)
@@ -53,7 +54,7 @@ class UrlShapeTests(unittest.TestCase):
     def test_short_hex_like_words_are_left_alone(self):
         # "feedback"/"added" are not long hex runs; eliding them would
         # destroy the very path the caller needs to read.
-        got = login.url_shape("https://h/api/feedback/listen/abcdef")
+        got = debugcap.url_shape("https://h/api/feedback/listen/abcdef")
         self.assertIn("feedback/listen", got)
         self.assertNotIn("<id>", got)
 
@@ -70,15 +71,15 @@ class SampleApiCallsTests(unittest.TestCase):
 
     def test_returns_the_entries_as_given(self):
         self.assertEqual(
-            login.sample_api_calls(self._Page([["a", 12]])), [["a", 12]])
+            debugcap.sample_api_calls(self._Page([["a", 12]])), [["a", 12]])
 
     def test_a_page_mid_navigation_yields_nothing_rather_than_raising(self):
         # Diagnostics must never take down the login they are diagnosing.
         self.assertEqual(
-            login.sample_api_calls(self._Page(RuntimeError("navigating"))), [])
+            debugcap.sample_api_calls(self._Page(RuntimeError("navigating"))), [])
 
     def test_a_null_result_is_tolerated(self):
-        self.assertEqual(login.sample_api_calls(self._Page(None)), [])
+        self.assertEqual(debugcap.sample_api_calls(self._Page(None)), [])
 
 
 class MergeApiSampleTests(unittest.TestCase):
@@ -86,9 +87,9 @@ class MergeApiSampleTests(unittest.TestCase):
     SHORT = "https://h/api/thirdlevel?urlId=0123456789abcdef"
 
     def test_counts_repeated_calls_to_one_shape(self):
-        seen = login.merge_api_sample(
+        seen = debugcap.merge_api_sample(
             {}, [[self.SHORT, 5], [self.SHORT, 7], [self.LONG, 20001]])
-        short = seen[login.url_shape(self.SHORT)]
+        short = seen[debugcap.url_shape(self.SHORT)]
         self.assertEqual(short["calls"], 2)
         self.assertEqual(short["ms"], 7)
 
@@ -98,23 +99,23 @@ class MergeApiSampleTests(unittest.TestCase):
         sample = [[self.SHORT, 5], [self.SHORT, 7]]
         seen = {}
         for _ in range(4):
-            login.merge_api_sample(seen, sample)
-        self.assertEqual(seen[login.url_shape(self.SHORT)]["calls"], 2)
+            debugcap.merge_api_sample(seen, sample)
+        self.assertEqual(seen[debugcap.url_shape(self.SHORT)]["calls"], 2)
 
     def test_a_growing_buffer_raises_the_count(self):
         seen = {}
-        login.merge_api_sample(seen, [[self.SHORT, 5]])
-        login.merge_api_sample(seen, [[self.SHORT, 5], [self.SHORT, 6]])
-        self.assertEqual(seen[login.url_shape(self.SHORT)]["calls"], 2)
+        debugcap.merge_api_sample(seen, [[self.SHORT, 5]])
+        debugcap.merge_api_sample(seen, [[self.SHORT, 5], [self.SHORT, 6]])
+        self.assertEqual(seen[debugcap.url_shape(self.SHORT)]["calls"], 2)
 
     def test_the_longest_duration_survives(self):
         seen = {}
-        login.merge_api_sample(seen, [[self.LONG, 19998]])
-        login.merge_api_sample(seen, [[self.LONG, 3]])
-        self.assertEqual(seen[login.url_shape(self.LONG)]["ms"], 19998)
+        debugcap.merge_api_sample(seen, [[self.LONG, 19998]])
+        debugcap.merge_api_sample(seen, [[self.LONG, 3]])
+        self.assertEqual(seen[debugcap.url_shape(self.LONG)]["ms"], 19998)
 
     def test_ids_are_elided_so_one_shape_aggregates_every_call(self):
-        seen = login.merge_api_sample({}, [
+        seen = debugcap.merge_api_sample({}, [
             ["https://h/api/x/0123456789abcdef", 1],
             ["https://h/api/x/fedcba9876543210", 1],
         ])
@@ -122,8 +123,8 @@ class MergeApiSampleTests(unittest.TestCase):
         self.assertEqual(next(iter(seen.values()))["calls"], 2)
 
     def test_a_missing_duration_is_treated_as_zero(self):
-        seen = login.merge_api_sample({}, [[self.SHORT, None]])
-        self.assertEqual(seen[login.url_shape(self.SHORT)]["ms"], 0)
+        seen = debugcap.merge_api_sample({}, [[self.SHORT, None]])
+        self.assertEqual(seen[debugcap.url_shape(self.SHORT)]["ms"], 0)
 
 
 class ReportApiCallsTests(unittest.TestCase):
@@ -131,13 +132,13 @@ class ReportApiCallsTests(unittest.TestCase):
         # That is the call the page is waiting on, which is the whole point
         # of the listing: it identifies the endpoint worth polling.
         import tempfile
-        seen = login.merge_api_sample({}, [
+        seen = debugcap.merge_api_sample({}, [
             ["https://h/api/quick/0123456789abcdef", 8],
             ["https://h/api/held/fedcba9876543210", 20001],
         ])
         with tempfile.TemporaryDirectory() as d:
             out = Path(d)
-            login.report_api_calls(seen, out)
+            login.report_mfa_api_calls(seen, out)
             lines = (out / "mfa_api_calls.txt").read_text().splitlines()
         self.assertIn("/api/held/", lines[0])
         self.assertIn("20001ms", lines[0])
@@ -148,9 +149,9 @@ class ReportApiCallsTests(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             out = Path(d)
-            login.report_api_calls({}, out)
+            login.report_mfa_api_calls({}, out)
             self.assertFalse((out / "mfa_api_calls.txt").exists())
 
     def test_no_debug_dir_still_logs_without_raising(self):
-        login.report_api_calls(
-            login.merge_api_sample({}, [["https://h/api/a", 1]]), None)
+        login.report_mfa_api_calls(
+            debugcap.merge_api_sample({}, [["https://h/api/a", 1]]), None)

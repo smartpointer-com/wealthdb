@@ -44,6 +44,16 @@ class TestCliDefaults(unittest.TestCase):
         self.assertEqual(login.DEFAULT_STATE_PATH, download.DEFAULT_STATE_PATH)
 
 
+class TestMfaWait(unittest.TestCase):
+    def test_mfa_timeout_defaults_to_five_minutes(self):
+        self.assertEqual(login.parse_args([]).mfa_timeout, 300)
+
+    def test_push_is_re_sent_every_minute(self):
+        # Each backstop probe re-fires the push when approval has not
+        # landed, so a short interval floods the phone.
+        self.assertEqual(login.MFA_APPROVAL_PROBE_SECONDS, 60)
+
+
 class TestDebugFlag(unittest.TestCase):
     def test_debug_defaults_off(self):
         # Opt-in: a routine dump holds only what `load` reads.

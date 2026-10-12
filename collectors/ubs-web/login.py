@@ -32,7 +32,7 @@ from pathlib import Path
 
 import landmarks as ubs  # local module: URL + DOM landmarks
 
-from collectorkit import bronze, cli, envfile, launch, session
+from collectorkit import bronze, cli, debugcap, envfile, launch, session
 
 log = logging.getLogger("ubs-web.login")
 
@@ -43,9 +43,8 @@ log = logging.getLogger("ubs-web.login")
 # only signal we strip is the "Headless" qualifier.
 #
 # The major version matters: UBS server-side redirects UAs below a
-# minimum Chrome version to a "browser outdated" page (observed
-# 2026-08 rejecting Chrome 147), so this string must move forward
-# in lockstep with the Playwright base-image bump.
+# minimum Chrome version to a "browser outdated" page, so this string
+# must move forward in lockstep with the Playwright base-image bump.
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -200,15 +199,6 @@ def _start_trace(context) -> None:
     flow, and the network records are the redacted ones.
     """
     context.tracing.start(screenshots=True, snapshots=False, sources=True)
-
-
-def _save_trace(context, screenshot_dir: Path, verb: str) -> None:
-    """Stop the trace into `screenshot_dir` (main makes --trace require
-    it)."""
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = screenshot_dir / f"{bronze.ts_slug()}-{verb}-trace.zip"
-    context.tracing.stop(path=str(trace_path))
-    log.info("trace saved to %s", trace_path)
 
 
 # ============================================================
@@ -399,8 +389,8 @@ def run_check(state_path: Path, screenshot_dir: Path | None,
             log.error("timeout during --check: %s", e)
             rc = 3
         finally:
-            if trace:
-                _save_trace(context, screenshot_dir, "check")
+            debugcap.stop_trace_if_active(context, trace, screenshot_dir,
+                                          "check", log=log)
             context.close()
             browser.close()
         return rc
@@ -539,8 +529,8 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
             log.error("playwright timeout: %s", e)
             return 6
         finally:
-            if trace:
-                _save_trace(context, screenshot_dir, "login")
+            debugcap.stop_trace_if_active(context, trace, screenshot_dir,
+                                          "login", log=log)
             context.close()
             browser.close()
 

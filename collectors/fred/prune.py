@@ -49,33 +49,18 @@ import sys
 from collectorkit import debugcap, prune
 
 
-def _is_complete(run_dir, meta):
-    # status_classification resolves any dump carrying a status key; the
-    # fallback below fires only for a statusless manifest, whose presence
-    # proves the walk finished (it is written once, at the end). A missing
-    # manifest (meta is None) stays NON_COMPLETE — a crashed download.
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
-
-
 CONFIG = prune.PruneConfig(
     # The only debug artefact fred writes: `download --debug`'s HTTP trace,
     # which debugcap lands under this subdir fleet-wide. Everything else in
     # a complete run dir (run.json + each <series_id>.json) is a load input —
     # adding either here would delete one.
     debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=_is_complete,
+    is_complete=prune.lenient_classification,
 )
 
 
 def main(argv=None):
     return prune.main(CONFIG, argv, description=__doc__)
-
-
-def validate_target(path, bronze_dir):
-    """The shared validator, bound to this collector's config, for the
-    tests."""
-    return prune.validate_target(path, bronze_dir, CONFIG)
 
 
 if __name__ == "__main__":

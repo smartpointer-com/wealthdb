@@ -365,12 +365,12 @@ def test_missing_bronze_dir_exits(tmp_path):
 
 def test_validate_target_accepts_whole_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
-    prune.validate_target(tmp_path / OLD_TS, tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
 def test_validate_target_accepts_debug_subdir(tmp_path):
     (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):
@@ -378,13 +378,13 @@ def test_validate_target_refuses_stray_paths(tmp_path):
     (tmp_path / OLD_TS / "open_orders.json").write_text("{}")
     with pytest.raises(SystemExit):
         # a load-input file inside a run dir — never a valid target
-        prune.validate_target(tmp_path / OLD_TS / "open_orders.json", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / OLD_TS / "open_orders.json", tmp_path)
     with pytest.raises(SystemExit):
         # a non-run entry at the bronze root
-        prune.validate_target(tmp_path / "schwab-api.db", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / "schwab-api.db", tmp_path)
     with pytest.raises(SystemExit):
         # a run dir whose parent is not the bronze root
-        prune.validate_target(tmp_path.parent / OLD_TS, tmp_path)
+        prune.CONFIG.validate_target(tmp_path.parent / OLD_TS, tmp_path)
 
 
 def test_validate_target_refuses_symlink(tmp_path):
@@ -393,4 +393,4 @@ def test_validate_target_refuses_symlink(tmp_path):
     link = tmp_path / OLD_TS
     link.symlink_to(external, target_is_directory=True)
     with pytest.raises(SystemExit):
-        prune.validate_target(link, tmp_path)
+        prune.CONFIG.validate_target(link, tmp_path)

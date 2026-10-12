@@ -16,6 +16,8 @@ shared, reviewed implementation of the whole lifecycle:
   (uncompressed) path, return whichever variant exists on disk. Plain
   wins over compressed so the original is authoritative whenever both
   coexist (e.g. mid-way through a backlog recompression).
+  :func:`logical_bronze_path` is the inverse: the logical name of a
+  file found on disk.
 * :func:`open_bytes` / :func:`open_text` — suffix-dispatched readers
   that decompress in memory, for loaders that parse files in Python
   (the SQLite-silver collectors). DuckDB-silver collectors don't need
@@ -99,6 +101,21 @@ def resolve_variant(path: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def logical_bronze_path(path: Path) -> Path:
+    """The logical (uncompressed) name of a bronze artefact: `path` with a
+    `.zst` / `.gz` suffix stripped. Plain paths pass through unchanged.
+
+    Silver records the logical name, so a fact is the same whether the
+    file on disk is ``balances.html`` or ``balances.html.zst``. The
+    inverse of :func:`resolve_variant`.
+    """
+    path = Path(path)
+    for suffix in VARIANT_SUFFIXES:
+        if path.name.endswith(suffix):
+            return path.with_name(path.name[:-len(suffix)])
+    return path
 
 
 def open_bytes(path: Path) -> BinaryIO:

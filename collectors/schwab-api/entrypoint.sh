@@ -7,7 +7,7 @@
 # Camoufox browser on an Xvfb display, and starts x11vnc so login / 2FA /
 # consent can be completed over VNC. login.py captures the
 # `?code=…` redirect and exchanges it for the token bundle. `--check`
-# (inspect token) and `--manual` (paste-the-URL) need no browser, so they
+# (probe the token) and `--manual` (paste-the-URL) need no browser, so they
 # skip Xvfb/VNC.
 #
 # Xvfb is started directly (not via xvfb-run, whose SIGUSR1 ready-signal
@@ -70,7 +70,8 @@ Usage:
                  every account), captures the redirect, writes the token to
                  /secrets. Stdin must be a TTY. Add --trace --screenshot-dir
                  /debug for diagnostics (off by default).
-  login --check  Inspect the stored token's age (no browser).
+  login --check  Show the stored token's age and prove it works (no
+                 browser, no 2FA).
   login --manual Print the auth URL, paste the redirected URL back.
   vnc-login      Manual fallback: drive login / 2FA / consent yourself over
                  VNC (starts x11vnc, prints the tunnel). Use if `login`'s

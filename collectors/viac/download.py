@@ -219,10 +219,6 @@ def _empty_doc_counts() -> dict:
     return docdedup.empty_audit("skipped")
 
 
-def _tally(counts: dict, status: str) -> None:
-    docdedup.tally(counts, status)
-
-
 # Transient httpx errors worth retrying. VIAC can drop an HTTP/2
 # stream during a full-archive run with the
 # h2 "ConnectionTerminated" diagnostic — that surfaces in httpx
@@ -620,7 +616,7 @@ def walk(client: ViacClient, dest_root: Path, *,
         try:
             status = fetch_pdf(client, doc, docid, target, skip,
                                force=documents_force, trace=trace)
-            _tally(manifest["documents"], status)
+            docdedup.tally(manifest["documents"], status)
             log.debug("doc %s: %s", docid, status)
         except Exception as e:
             log.warning("doc %s: %s", docid, e)

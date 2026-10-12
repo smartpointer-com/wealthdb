@@ -129,8 +129,7 @@ def test_watch_reads_a_challenge():
 def test_watch_ignores_the_cors_preflight():
     # The browser preflights the logon URL, and that OPTIONS answers 200 with
     # an EMPTY BODY about a second before the real response. Read as the
-    # outcome it reports a refusal the provider never made — which is what
-    # the first live run hit.
+    # outcome it reports a refusal the provider never made.
     assert _watch_with(200, None, method="OPTIONS").outcome() is None
 
 

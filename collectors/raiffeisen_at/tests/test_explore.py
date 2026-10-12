@@ -7,6 +7,7 @@ Synthetic values only (no real credentials or account data).
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -94,13 +95,11 @@ def test_js_uses_the_python_event_prefix():
     # The console listener matches on EVENT_PREFIX (trailing space
     # included); the injected JS must emit exactly that sentinel or every
     # event is silently dropped.
-    assert f"'{explore.EVENT_PREFIX}'" in explore.CLICK_RECORDER_JS
+    assert json.dumps(explore.EVENT_PREFIX) in explore.CLICK_RECORDER_JS
 
 
-def test_js_mirrors_the_python_host_gate():
-    # The JS detector carries its own copy of the origin gate; the two
-    # must not drift apart.
-    assert explore.HOST_RE.pattern in explore.CLICK_RECORDER_JS
+def test_js_carries_the_python_host_gate():
+    assert json.dumps(explore.HOST_RE.pattern) in explore.CLICK_RECORDER_JS
 
 
 def test_js_redacts_password_values():
@@ -109,12 +108,15 @@ def test_js_redacts_password_values():
 
 
 def test_user_selector_carries_the_german_hooks():
-    # The Mein ELBA login is keyed on a Verfüger number or user name; the
-    # German attribute hooks must be present in the Python selector AND
-    # its JS mirror (the two are maintained by hand).
+    # The Mein ELBA login is keyed on a Verfüger number or user name.
     for hook in ("verfueger", "benutzer"):
         assert hook in explore.USER_SELECTOR
-        assert hook in explore.CLICK_RECORDER_JS
+    assert json.dumps(explore.USER_SELECTOR) in explore.CLICK_RECORDER_JS
+
+
+def test_code_field_detector_watches_tan_fields():
+    assert "name*='tan' i" in explore.OTP_SELECTOR
+    assert json.dumps(explore.OTP_SELECTOR) in explore.CLICK_RECORDER_JS
 
 
 # ============================================================
@@ -197,11 +199,11 @@ def test_prefill_fills_both_fields_and_only_once():
     user, pwd = StubField(), StubField()
     page = StubPage(elba_frame(user=user, pwd=pwd))
     filled: set = set()
-    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
+    assert explore._prefill(page, USERNAME, PASSWORD, filled)
     assert user.value == USERNAME
     assert pwd.value == PASSWORD
     # Second poll is a no-op: the fields are marked done, nothing re-fills.
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
+    assert not explore._prefill(page, USERNAME, PASSWORD, filled)
     assert user.fill_calls == [USERNAME]
     assert pwd.fill_calls == [PASSWORD]
 
@@ -210,7 +212,7 @@ def test_prefill_rejects_foreign_host():
     user, pwd = StubField(), StubField()
     page = StubPage(StubFrame("https://raiffeisen.at.evil.example/login",
                               user=user, pwd=pwd))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
+    assert not explore._prefill(page, USERNAME, PASSWORD, set())
     assert user.fill_calls == [] and pwd.fill_calls == []
 
 
@@ -220,19 +222,19 @@ def test_prefill_requires_both_fields_in_same_frame():
     # never receive a credential.
     lone_user = StubField()
     page = StubPage(elba_frame(user=lone_user))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
+    assert not explore._prefill(page, USERNAME, PASSWORD, set())
     assert lone_user.fill_calls == []
 
     lone_pwd = StubField()
     page = StubPage(elba_frame(pwd=lone_pwd))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
+    assert not explore._prefill(page, USERNAME, PASSWORD, set())
     assert lone_pwd.fill_calls == []
 
 
 def test_prefill_ignores_invisible_form():
     user, pwd = StubField(visible=False), StubField()
     page = StubPage(elba_frame(user=user, pwd=pwd))
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
+    assert not explore._prefill(page, USERNAME, PASSWORD, set())
     assert user.fill_calls == [] and pwd.fill_calls == []
 
 
@@ -244,7 +246,7 @@ def test_prefill_reaches_form_in_same_brand_iframe():
         StubFrame("https://mein.elba.raiffeisen.at/"),
         StubFrame("https://sso.raiffeisen.at/frame", user=user, pwd=pwd),
     )
-    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
+    assert explore._prefill(page, USERNAME, PASSWORD, set())
     assert user.value == USERNAME and pwd.value == PASSWORD
 
 
@@ -257,7 +259,7 @@ def test_prefill_never_reaches_foreign_iframe():
         StubFrame("https://mein.elba.raiffeisen.at/"),
         StubFrame("https://widgets.example.net/login", user=user, pwd=pwd),
     )
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, set())
+    assert not explore._prefill(page, USERNAME, PASSWORD, set())
     assert user.fill_calls == [] and pwd.fill_calls == []
 
 
@@ -266,7 +268,7 @@ def test_prefill_leaves_hand_typed_values_alone():
     pwd = StubField()
     page = StubPage(elba_frame(user=user, pwd=pwd))
     filled: set = set()
-    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
+    assert explore._prefill(page, USERNAME, PASSWORD, filled)
     assert user.value == "typed-by-hand"    # untouched, marked done
     assert user.fill_calls == []
     assert pwd.value == PASSWORD
@@ -280,10 +282,10 @@ def test_prefill_retries_once_then_gives_up_without_refighting():
     pwd = StubField(sticky=False)
     page = StubPage(elba_frame(user=user, pwd=pwd))
     filled: set = set()
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
+    assert not explore._prefill(page, USERNAME, PASSWORD, filled)
     assert user.fill_calls == [USERNAME, "", USERNAME]
     # Marked done: a second poll touches nothing.
-    assert not explore._maybe_prefill_login(page, USERNAME, PASSWORD, filled)
+    assert not explore._prefill(page, USERNAME, PASSWORD, filled)
     assert user.fill_calls == [USERNAME, "", USERNAME]
 
 
@@ -293,5 +295,5 @@ def test_prefill_tracks_fills_per_page():
     filled: set = set()
     page1 = StubPage(elba_frame(user=StubField(), pwd=StubField()))
     page2 = StubPage(elba_frame(user=StubField(), pwd=StubField()))
-    assert explore._maybe_prefill_login(page1, USERNAME, PASSWORD, filled)
-    assert explore._maybe_prefill_login(page2, USERNAME, PASSWORD, filled)
+    assert explore._prefill(page1, USERNAME, PASSWORD, filled)
+    assert explore._prefill(page2, USERNAME, PASSWORD, filled)

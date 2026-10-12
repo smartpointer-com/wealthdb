@@ -256,7 +256,7 @@ def _submit_totp(page, code: str, timeout_ms: int, debug: bool) -> bool:
     """Type the code and submit it. EquityZen's 2FA card submits via a
     `<button type="button">Submit</button>` onClick handler — NOT a form
     submit and NOT auto-submit-on-6-digits, so neither Enter nor typing
-    alone fires `loginTotp` (both were observed to hang). The button click
+    alone fires `loginTotp` (both hang). The button click
     is therefore the primary path; Enter and a bare wait are kept as
     fallbacks against a future UI change. Returns True once authenticated."""
     totp = page.locator(TOTP_SEL).first
@@ -315,7 +315,7 @@ def _do_login(page, username: str, password: str, totp_supplied: str | None,
     log.info("filling credentials")
     _fill_verify(page, EMAIL_SEL, username, "email", timeout_ms)
     _fill_verify(page, PWD_SEL, password, "password", timeout_ms)
-    # The SPA login form submits on Enter (observed: an Enter keypress in the
+    # The SPA login form submits on Enter (an Enter keypress in the
     # password field fires the submitLogIn mutation).
     page.locator(PWD_SEL).press("Enter")
 
@@ -369,18 +369,7 @@ def main(argv: list[str]) -> int:
                 f"{args.env_file} or the environment) for a fresh login."
             )
 
-    from camoufox.sync_api import Camoufox
-
-    with Camoufox(
-        persistent_context=True,
-        user_data_dir=str(args.profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        humanize=True,
-        geoip=True,
-        firefox_user_prefs=launch.firefox_prefs(),
-    ) as context:
+    with launch.headed_camoufox(args.profile_dir) as context:
         _attach_graphql_logger(context)
         page = context.new_page()
         page.set_default_timeout(timeout_ms)

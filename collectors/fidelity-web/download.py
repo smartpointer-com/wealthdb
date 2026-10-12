@@ -99,7 +99,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import contextlib
 import functools
 import hashlib
 import json
@@ -227,9 +226,8 @@ LANDMARK_TIMEOUT_MS = 60_000
 # FIDELITY_USERNAME/PASSWORD so an existing env file keeps working.
 USERNAME_ENVS = ("FIDELITY_WEB_USERNAME", "FIDELITY_USERNAME")
 PASSWORD_ENVS = ("FIDELITY_WEB_PASSWORD", "FIDELITY_PASSWORD")
-# Credentials whose file value overrides anything inherited from the
-# host env (defeats the source-mangling-on-$ pitfall — see
-# collectorkit.envfile.load_env_file).
+# Credentials whose env-file value wins over a value inherited from the
+# calling environment: the file is authoritative for them.
 _CRED_OVERRIDE_VARS = USERNAME_ENVS + PASSWORD_ENVS
 
 DEFAULT_ENV_FILE_CANDIDATES = (
@@ -700,38 +698,15 @@ def parse_iso_date(value):
 
 
 def capture(page, capture_dir, label):
-    """Save HTML + PNG of the current page state. Never raises."""
-    if capture_dir is None:
-        return
-    try:
-        capture_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        log.warning("mkdir %s: %s", capture_dir, e)
-        return
-    ts = bronze.ts_slug()
-    try:
-        try:
-            html = page.content()
-        except Exception:
-            html = page.evaluate(
-                "() => document.documentElement.outerHTML"
-            )
-        # Scrubbed: a capture taken on the sign-in page serializes the
-        # form with the typed password in a `value` attribute.
-        html_path = capture_dir / f"{ts}-{label}.html"
-        html_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
-        log.debug("wrote HTML %s", html_path)
-    except Exception as e:
-        log.warning("html capture %s: %s", label, e)
-    try:
-        png_path = capture_dir / f"{ts}-{label}.png"
-        page.screenshot(
-            path=str(png_path),
-            full_page=False, timeout=5_000, animations="disabled",
-        )
-        log.debug("wrote screenshot %s", png_path)
-    except Exception as e:
-        log.debug("png capture %s: %s", label, e)
+    """Save HTML + PNG of the current page state into `capture_dir`
+    (None captures nothing). Never raises.
+
+    The walk phases pass ``<run>/screenshots/`` (under ``--debug``); the
+    sign-in, MFA, ``--check`` and logout landmarks pass the
+    ``--screenshot-dir`` host path. The screenshot is capped at 5 s.
+    """
+    debugcap.capture_landmark(page, capture_dir, label, log=log,
+                              png_timeout_ms=5_000)
 
 
 def dump_dom_inventory(page, capture_dir, label):
@@ -1657,7 +1632,7 @@ def _ensure_timepicker_open(page):
     while it's open. The bounds probe opens the picker and leaves it
     open, then the custom-range driver runs immediately after; a
     second blind pill-click there would close it and lose the Custom
-    tab (observed as a spurious "Custom tab not found"). Guard on the
+    tab (it reads as a spurious "Custom tab not found"). Guard on the
     open-state probe so re-entry is idempotent. Returns True when the
     dropdown ends up open."""
     if page.locator(SEL_TIMEPICKER_OPEN).count() > 0:
@@ -1685,7 +1660,7 @@ def _click_custom_timeperiod_tab(page):
     does not break us. Returns True when a Custom control was found
     and clicked.
 
-    The current one (`fds-*` design system, 2026-07) is a segmented
+    The current one (`fds-*` design system) is a segmented
     control of ``<input class="fds-segment__radio" type="radio"
     value="custom">``. Its ids are GENERATED PER RENDER
     (``segment-444046273391``), so nothing may key on one; the value
@@ -2781,7 +2756,9 @@ def scrape_balances(page, bronze_dir, capture_dir):
             "() => document.documentElement.outerHTML"
         )
     out_path = out_dir / "balances.html"
-    out_path.write_text(html, encoding="utf-8")
+    # Scrubbed like every serialized DOM: a post-auth page carries no
+    # password input, so the markup is written byte for byte.
+    out_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
     log.info(
         "saved balances/%s (%d bytes; no direct export; "
         "per-account values in totalaccountvalue-label testids)",
@@ -2798,10 +2775,9 @@ def scrape_performance(page, bronze_dir, capture_dir):
     """Visit the Performance page and capture a full-page snapshot
     of the rendered metrics tiles.
 
-    Empirically confirmed (2026-05): the page has NO structured-
-    data export — no CSV, no PDF, no kebab/menu Download item.
-    The data surfaces as a Highcharts SVG + a column of
-    collapsible info tiles (return percentages by period,
+    The page has NO structured-data export — no CSV, no PDF, no
+    kebab/menu Download item. The data surfaces as a Highcharts SVG +
+    a column of collapsible info tiles (return percentages by period,
     benchmark deltas). The load input for this surface is
     ``performance/performance.html`` (persisted unconditionally
     below); downstream silver work either scrapes return
@@ -2841,7 +2817,7 @@ def scrape_performance(page, bronze_dir, capture_dir):
             "() => document.documentElement.outerHTML"
         )
     out_path = out_dir / "performance.html"
-    out_path.write_text(html, encoding="utf-8")
+    out_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
     log.info(
         "saved performance/%s (%d bytes; no structured export "
         "available on this surface)",
@@ -3731,29 +3707,15 @@ def maybe_source_env_files(args):
 # Camoufox launch
 # ---------------------------------------------------------------------------
 
-@contextlib.contextmanager
 def open_camoufox_context(profile_dir, trace, snapshots=False):
-    """Open Camoufox with a persistent profile dir, yielding the
-    BrowserContext. The context auto-closes on exit.
+    """Headed Camoufox on the persistent profile, yielding the
+    BrowserContext (:func:`collectorkit.launch.camoufox_context`).
 
-    Camoufox is a stealth-patched Firefox fork that masks the
-    fingerprint surfaces (canvas, WebGL, audio, fonts, navigator.*,
-    TLS) Akamai's bot-scoring uses to detect Playwright-driven
-    browsers. ``os='macos'`` runs the full macOS-pretend mode so the
-    fingerprint is internally consistent — much stronger than the
-    piecemeal UA + navigator.platform overrides you'd set on upstream
-    Playwright Firefox.
-
-    Headed + window=(1280, 800) avoids the mobile responsive layout
-    Fidelity serves to narrow viewports; the Xvfb display from
-    entrypoint.sh provides the X11 surface (camoufox respects DISPLAY
-    when set).
-
-    The close is guarded: when the body fails because the browser
-    itself died (startup crash, closed window), Playwright's own
-    cleanup raises TargetClosedError `from None`, which would replace
-    the body's exception — the actual diagnosis — with a generic close
-    error. A cleanup failure is logged instead, never raised.
+    The fleet's sign-in fingerprint stays on in full: the humanized
+    cursor fires the mousemove/mousedown/mouseup events Akamai's
+    bot-scoring observes, and the geoip-matched timezone and locale keep
+    its geo-anomaly heuristic quiet. Every action and navigation waits
+    up to ``LANDMARK_TIMEOUT_MS``.
 
     ``snapshots`` defaults off because the sign-in shares this context:
     a trace's DOM snapshots carry every input's value and no redactor
@@ -3761,52 +3723,9 @@ def open_camoufox_context(profile_dir, trace, snapshots=False):
     the sign-in path turns them on for the walk with
     :func:`restart_trace_after_signin`.
     """
-    from camoufox.sync_api import Camoufox
-    cm = Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-        # humanize: curved, variable-speed cursor movement on every
-        # click. Routes Playwright's instant .click() calls through a
-        # synthetic-cursor path that fires mousemove + mousedown +
-        # mouseup events Akamai's bot-scoring can observe.
-        humanize=True,
-        # geoip=True uses the camoufox[geoip] MaxMind DB bundled at
-        # build time to derive the timezone, locale, lat/lon from the
-        # egress IP autodetected at launch. Without this, Camoufox
-        # defaults can mismatch the IP's geography (e.g. en-US locale
-        # on a non-US egress IP), which is a cheap signal for
-        # Akamai's geo-anomaly heuristic. (Note: camoufox expects
-        # literal True for autodetect, not the string "auto" — that
-        # string gets handed straight to the IP-validator and raises
-        # InvalidIP.)
-        geoip=True,
-        firefox_user_prefs=launch.firefox_prefs(),
-    )
-    context = cm.__enter__()
-    try:
-        context.set_default_navigation_timeout(LANDMARK_TIMEOUT_MS)
-        context.set_default_timeout(LANDMARK_TIMEOUT_MS)
-        if trace:
-            # snapshots=False because the sign-in comes first and a trace's
-            # DOM snapshots record every input's value, the typed password
-            # included — and nothing can redact a trace after the fact.
-            # restart_trace_after_signin() turns them back on for the walk,
-            # which is the phase they are worth having for.
-            context.tracing.start(
-                screenshots=True, snapshots=snapshots, sources=True,
-            )
-        yield context
-    finally:
-        try:
-            cm.__exit__(None, None, None)
-        except Exception as exc:
-            log.warning("browser cleanup failed (%s: %s) — the browser "
-                        "likely crashed or was closed; the propagating "
-                        "error above is the real cause",
-                        type(exc).__name__, exc)
+    return launch.camoufox_context(
+        profile_dir, trace=trace, trace_snapshots=snapshots,
+        timeout_ms=LANDMARK_TIMEOUT_MS, logger=log)
 
 
 def open_page(context):
@@ -3819,38 +3738,6 @@ def open_page(context):
     return context.new_page()
 
 
-def maybe_capture(page, screenshot_dir, label):
-    """Save HTML + PNG at a login-flow landmark. Never raises.
-
-    The same capture as ``capture`` (used by the walk phases), into a
-    different place: this login-/session-flow variant writes to the
-    user-supplied ``--screenshot-dir`` rather than the bronze dir's
-    ``screenshots/`` subdir. Both are opt-in and cover disjoint phases
-    — the walk captures via ``--debug`` into ``<run>/screenshots/``,
-    the pre-walk login / MFA / ``--check`` / logout captures via
-    ``--screenshot-dir`` into that host path."""
-    capture(page, screenshot_dir, label)
-
-
-def stop_trace_if_active(context, trace, screenshot_dir, label) -> bool:
-    """Write the running trace out. Returns whether it was stopped, which
-    is what lets the caller know a fresh one may be started."""
-    if not trace:
-        return False
-    if screenshot_dir is None:
-        log.warning("--trace without --screenshot-dir; trace discarded")
-        return False
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = screenshot_dir / f"{bronze.ts_slug()}-{label}-trace.zip"
-    try:
-        context.tracing.stop(path=str(trace_path))
-        log.info("trace saved to %s", trace_path)
-        return True
-    except Exception as e:
-        log.warning("stop trace failed: %s", e)
-        return False
-
-
 def restart_trace_after_signin(context, trace, screenshot_dir) -> None:
     """Close the snapshot-free sign-in trace and open a snapshotting one.
 
@@ -3859,7 +3746,8 @@ def restart_trace_after_signin(context, trace, screenshot_dir) -> None:
     credential screens are behind us and on for the walk. Best effort: a
     trace that will not restart costs diagnostics, never the run.
     """
-    if not stop_trace_if_active(context, trace, screenshot_dir, "signin"):
+    if not debugcap.stop_trace_if_active(context, trace, screenshot_dir,
+                                         "signin", log=log):
         return
     try:
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
@@ -4145,11 +4033,11 @@ def login(page, args, username, password):
     whether to exit non-zero or fall through to walk anyway)."""
     log.info("navigating to %s", SIGNIN_URL)
     page.goto(SIGNIN_URL, wait_until="domcontentloaded")
-    maybe_capture(page, args.screenshot_dir, "01-initial-load")
+    capture(page, args.screenshot_dir, "01-initial-load")
 
     kind, iua_loc = wait_for_signin_or_iua(page, timeout_s=30)
     if kind is None:
-        maybe_capture(page, args.screenshot_dir, "01b-load-timeout")
+        capture(page, args.screenshot_dir, "01b-load-timeout")
         log.error(
             "neither the signin form nor the IUA interstitial "
             "rendered within 30s. The page skeleton may be present "
@@ -4162,14 +4050,14 @@ def login(page, args, username, password):
             "International Usage Agreement interstitial detected; "
             "clicking I Accept"
         )
-        maybe_capture(page, args.screenshot_dir, "01a-iua-page")
+        capture(page, args.screenshot_dir, "01a-iua-page")
         accept_iua(iua_loc)
         try:
             page.locator(SEL_PASSWORD_INPUT).wait_for(
                 state="visible", timeout=30_000,
             )
         except Exception as e:
-            maybe_capture(
+            capture(
                 page, args.screenshot_dir, "01c-post-iua-no-form",
             )
             log.error(
@@ -4177,21 +4065,21 @@ def login(page, args, username, password):
                 "acceptance: %s", e,
             )
             return False
-        maybe_capture(
+        capture(
             page, args.screenshot_dir, "01d-signin-after-iua",
         )
     else:
         log.info("signin form rendered directly (no IUA)")
-        maybe_capture(page, args.screenshot_dir, "01e-signin-direct")
+        capture(page, args.screenshot_dir, "01e-signin-direct")
 
     try:
         fill_username(page, username)
         fill_password(page, password)
     except Exception as e:
-        maybe_capture(page, args.screenshot_dir, "02-prefill-failed")
+        capture(page, args.screenshot_dir, "02-prefill-failed")
         log.error("credential pre-fill failed: %s", e)
         return False
-    maybe_capture(page, args.screenshot_dir, "02-prefilled")
+    capture(page, args.screenshot_dir, "02-prefilled")
 
     if args.vnc:
         sys.stderr.write("\n" + "=" * 60 + "\n")
@@ -4212,9 +4100,9 @@ def login(page, args, username, password):
         if wait_for_post_auth_url(
             page, timeout_s=args.mfa_timeout,
         ):
-            maybe_capture(page, args.screenshot_dir, "08-post-auth")
+            capture(page, args.screenshot_dir, "08-post-auth")
             return True
-        maybe_capture(
+        capture(
             page, args.screenshot_dir, "vnc-post-auth-timeout",
         )
         log.error(
@@ -4226,12 +4114,12 @@ def login(page, args, username, password):
     try:
         click_login(page)
     except Exception as e:
-        maybe_capture(page, args.screenshot_dir, "03-submit-failed")
+        capture(page, args.screenshot_dir, "03-submit-failed")
         log.error("login submit failed: %s", e)
         return False
-    maybe_capture(page, args.screenshot_dir, "03-submit-clicked")
+    capture(page, args.screenshot_dir, "03-submit-clicked")
     time.sleep(1.0)
-    maybe_capture(page, args.screenshot_dir, "04-submit-settled")
+    capture(page, args.screenshot_dir, "04-submit-settled")
 
     log.info(
         "waiting up to %.0fs for the 2FA challenge page (or for "
@@ -4246,10 +4134,10 @@ def login(page, args, username, password):
             "post-auth URL reached WITHOUT a 2FA challenge — "
             "device-trust cookie must have been present"
         )
-        maybe_capture(page, args.screenshot_dir, "08-post-auth")
+        capture(page, args.screenshot_dir, "08-post-auth")
         return True
     if kind == "mfa":
-        maybe_capture(page, args.screenshot_dir, "05-mfa-page")
+        capture(page, args.screenshot_dir, "05-mfa-page")
         if args.trust_this_browser:
             ensure_trust_browser_checked(page)
         else:
@@ -4262,16 +4150,16 @@ def login(page, args, username, password):
             log.error("no 2FA code entered; aborting")
             return False
         if not submit_mfa_code(page, code_loc, code):
-            maybe_capture(
+            capture(
                 page, args.screenshot_dir, "06-mfa-submit-failed",
             )
             return False
-        maybe_capture(page, args.screenshot_dir, "06-mfa-submitted")
+        capture(page, args.screenshot_dir, "06-mfa-submitted")
         log.info("2FA submitted; waiting for post-auth landing URL")
         if not wait_for_post_auth_url(
             page, timeout_s=args.nav_timeout,
         ):
-            maybe_capture(
+            capture(
                 page, args.screenshot_dir, "07-post-auth-timeout",
             )
             log.error(
@@ -4279,9 +4167,9 @@ def login(page, args, username, password):
                 POST_AUTH_PREFIX, args.nav_timeout,
             )
             return False
-        maybe_capture(page, args.screenshot_dir, "08-post-auth")
+        capture(page, args.screenshot_dir, "08-post-auth")
         return True
-    maybe_capture(
+    capture(
         page, args.screenshot_dir, "05-mfa-timeout-or-block",
     )
     log.error(
@@ -4308,7 +4196,7 @@ def logout(page, screenshot_dir):
             loc.click(timeout=5_000)
             log.info("logout: clicked %r", sel)
             time.sleep(1.5)
-            maybe_capture(page, screenshot_dir, "99-logout")
+            capture(page, screenshot_dir, "99-logout")
             return
         except Exception as e:
             log.debug("logout candidate %r: %s", sel, e)
@@ -4324,7 +4212,6 @@ def run_check(args):
     if not args.profile_dir.exists():
         log.error("--profile-dir does not exist: %s", args.profile_dir)
         return 2
-    launch.prepare_profile_dir(args.profile_dir)
     # snapshots=True: --check navigates to the landing page and types
     # nothing, so there is no credential for a DOM snapshot to catch.
     with open_camoufox_context(args.profile_dir, args.trace,
@@ -4338,7 +4225,7 @@ def run_check(args):
             except Exception as e:
                 log.error("navigation failed: %s", e)
                 return 3
-            maybe_capture(page, args.screenshot_dir, "check-landed")
+            capture(page, args.screenshot_dir, "check-landed")
             time.sleep(2.0)
             url = live_url(page)
             if url.startswith(POST_AUTH_PREFIX):
@@ -4350,8 +4237,8 @@ def run_check(args):
             )
             return 1
         finally:
-            stop_trace_if_active(
-                context, args.trace, args.screenshot_dir, "check",
+            debugcap.stop_trace_if_active(
+                context, args.trace, args.screenshot_dir, "check", log=log,
             )
 
 
@@ -4370,7 +4257,6 @@ def run_oneshot(args):
         "creds loaded: %s (len=%d), %s (len=%d)",
         USERNAME_ENVS[0], len(username), PASSWORD_ENVS[0], len(password),
     )
-    launch.prepare_profile_dir(args.profile_dir)
     with open_camoufox_context(args.profile_dir, args.trace) as context:
         try:
             page = open_page(context)
@@ -4414,8 +4300,8 @@ def run_oneshot(args):
                 logout(page, args.screenshot_dir)
             return exit_code_for_coverage(coverage)
         finally:
-            stop_trace_if_active(
-                context, args.trace, args.screenshot_dir, "download",
+            debugcap.stop_trace_if_active(
+                context, args.trace, args.screenshot_dir, "download", log=log,
             )
 
 
@@ -4458,9 +4344,9 @@ def parse_args(argv):
               "none)."),
     )
     p.add_argument(
-        "--mfa-timeout", type=float, default=3600.0,
+        "--mfa-timeout", type=float, default=300.0,
         help="Seconds to wait for the human login + MFA over VNC. "
-             "Default 3600 (1 h).",
+             "Default 300 (5 min).",
     )
     p.add_argument(
         "--trust-this-browser",

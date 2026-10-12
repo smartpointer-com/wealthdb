@@ -55,6 +55,9 @@ without affecting the next call.
 
 `persistent_camoufox` is the hardened launch most sign-ins open, and
 `pump` / `wait_for` / `page_url` drive the page it yields.
+`camoufox_context` is the same launch for a collector that drives the
+context itself, with an optional trace and a close that logs a failure
+rather than hiding it.
 """
 from __future__ import annotations
 
@@ -290,12 +293,14 @@ def prepare_profile_dir(profile_dir: Path, mode: int = PROFILE_DIR_MODE,
 # ---- the sign-in browser -----------------------------------------------------
 
 
-def headed_camoufox(profile_dir: Path, **options):
+def headed_camoufox(profile_dir: Path, *, humanize: bool = True,
+                    geoip: bool = True, **options):
     """An unentered Camoufox on the persistent `profile_dir`, with the fleet's
     sign-in fingerprint: headed under the entrypoint's Xvfb, a macOS profile,
     a humanized cursor, a geoip-matched fingerprint and the hardened prefs.
-    `options` add Camoufox keywords of their own (a HAR path, WebRTC
-    blocking)."""
+    `humanize` and `geoip` can be turned off for a source that has always run
+    without them. `options` add Camoufox keywords of their own (a HAR path,
+    WebRTC blocking)."""
     from camoufox.sync_api import Camoufox
 
     return Camoufox(
@@ -304,11 +309,63 @@ def headed_camoufox(profile_dir: Path, **options):
         os="macos",
         window=(1280, 800),
         headless=False,
-        humanize=True,
-        geoip=True,
+        humanize=humanize,
+        geoip=geoip,
         firefox_user_prefs=firefox_prefs(),
         **options,
     )
+
+
+def close_guarded(cam, *, logger: logging.Logger = log) -> None:
+    """Exit an entered Camoufox, logging a failure instead of raising it.
+
+    When the body failed because the browser itself died (a startup crash,
+    a closed window), Playwright's own cleanup raises TargetClosedError
+    `from None`. Raised from a `finally`, that would replace the body's
+    exception, which is the actual diagnosis, with a generic close error.
+    """
+    try:
+        cam.__exit__(None, None, None)
+    except Exception as exc:
+        logger.warning("browser cleanup failed (%s: %s) — the browser "
+                       "likely crashed or was closed; the propagating "
+                       "error above is the real cause",
+                       type(exc).__name__, exc)
+
+
+@contextlib.contextmanager
+def camoufox_context(profile_dir: Path, *, trace: bool = False,
+                     trace_snapshots: bool = False,
+                     timeout_ms: int | None = None,
+                     logger: logging.Logger = log, **options):
+    """Headed Camoufox on a persistent profile, yielding the BrowserContext.
+
+    The profile dir is prepared first (:func:`prepare_profile_dir`).
+    `options` go to :func:`headed_camoufox`, so a caller can turn off
+    `humanize` or `geoip` there. `timeout_ms` sets the context's default
+    action and navigation timeouts.
+
+    `trace` starts a Playwright trace. Its DOM snapshots stay off unless
+    `trace_snapshots` is set: a snapshot records every input's value, a
+    typed password included, and nothing can redact a trace afterwards.
+    Only a caller that types no credential turns them on.
+
+    The close is guarded (:func:`close_guarded`): a cleanup failure is
+    logged on `logger`, never raised.
+    """
+    prepare_profile_dir(profile_dir)
+    cam = headed_camoufox(profile_dir, **options)
+    context = cam.__enter__()
+    try:
+        if timeout_ms is not None:
+            context.set_default_navigation_timeout(timeout_ms)
+            context.set_default_timeout(timeout_ms)
+        if trace:
+            context.tracing.start(screenshots=True,
+                                  snapshots=trace_snapshots, sources=True)
+        yield context
+    finally:
+        close_guarded(cam, logger=logger)
 
 
 @contextlib.contextmanager

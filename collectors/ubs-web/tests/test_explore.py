@@ -115,11 +115,12 @@ def test_trace_is_opt_in():
 # The init script
 # --------------------------------------------------------------------
 
-def test_click_recorder_redacts_secret_fields():
+def test_click_recorder_never_reads_a_field_value():
     # The contract-number field is the login's identifying input; its value
-    # must never be echoed through the console channel.
+    # must never be echoed through the console channel. The recorder logs
+    # a click's innerText, which is empty on an input, and no value at all.
     assert "loginalias" in explore.CLICK_RECORDER_JS
-    assert "<redacted>" in explore.CLICK_RECORDER_JS
+    assert ".value" not in explore.CLICK_RECORDER_JS
 
 
 def test_click_recorder_tags_events_with_the_shared_prefix():

@@ -280,18 +280,18 @@ def test_missing_bronze_dir_exits(tmp_path):
 def test_validate_target_accepts_expected_shapes(tmp_path):
     (tmp_path / OLD_TS).mkdir()
     (tmp_path / OLD_TS / "screenshots").mkdir()
-    prune.validate_target(tmp_path / OLD_TS, tmp_path)
-    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS, tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path / "supplied-statements", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / "supplied-statements", tmp_path)
     with pytest.raises(SystemExit):
-        prune.validate_target(
+        prune.CONFIG.validate_target(
             tmp_path / OLD_TS / "positions", tmp_path)
     with pytest.raises(SystemExit):
-        prune.validate_target(
+        prune.CONFIG.validate_target(
             tmp_path.parent / OLD_TS / "screenshots", tmp_path)
 
 
@@ -301,4 +301,4 @@ def test_validate_target_refuses_symlink(tmp_path):
     link = tmp_path / OLD_TS
     link.symlink_to(external, target_is_directory=True)
     with pytest.raises(SystemExit):
-        prune.validate_target(link, tmp_path)
+        prune.CONFIG.validate_target(link, tmp_path)

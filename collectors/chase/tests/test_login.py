@@ -104,7 +104,7 @@ def test_parse_args_defaults():
     assert a.bronze_dir is None            # login-only unless the verb sets it
     assert a.check is False
     assert a.cli_mfa is True               # terminal 2FA by default (no VNC)
-    assert a.mfa_timeout == 600            # human-in-the-loop, long
+    assert a.mfa_timeout == 300            # five minutes (root AGENTS.md §9)
     assert a.no_documents is False
     assert a.dry_run is False
     assert a.lookback is None              # standard download flag present

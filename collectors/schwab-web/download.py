@@ -77,46 +77,11 @@ RECOVERY_DEADLINE_S = 180
 # ============================================================
 
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
-    """Capture page state at a navigation landmark: always save the
-    rendered HTML (fast — no font/animation wait), and best-effort
-    a viewport screenshot (Firefox `page.screenshot()` against
-    schwab.com tends to block on "waiting for fonts to load" which
-    never resolves, so it is capped tightly and misses are accepted).
-    Never raises."""
-    if screenshot_dir is None:
-        return
-    try:
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        log.warning("could not create screenshot dir %s: %s", screenshot_dir, e)
-        return
-    ts = bronze.ts_slug()
-    # HTML first. page.content() can fail with "page is navigating
-    # and changing" on Angular SPAs; fall back to evaluate, which
-    # reads the DOM with no such guard.
-    try:
-        html_path = screenshot_dir / f"{ts}-{label}.html"
-        try:
-            html = page.content()
-        except Exception:
-            html = page.evaluate(
-                "() => document.documentElement.outerHTML",
-            )
-        # Scrubbed: a landmark on the sign-in page serializes the form
-        # with the typed password in a `value` attribute.
-        html_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
-        log.debug("wrote HTML %s", html_path)
-    except Exception as e:
-        log.warning("html capture %s failed: %s", label, e)
-    try:
-        png_path = screenshot_dir / f"{ts}-{label}.png"
-        page.screenshot(
-            path=str(png_path), full_page=False,
-            timeout=3_000, animations="disabled",
-        )
-        log.debug("wrote screenshot %s", png_path)
-    except Exception as e:
-        log.debug("screenshot %s failed (HTML saved): %s", label, e)
+    """Capture the scrubbed HTML and a viewport PNG at a navigation
+    landmark into the `--screenshot-dir` host path (None captures
+    nothing). Never raises. Shared by login.py's sign-in landmarks.
+    """
+    debugcap.capture_landmark(page, screenshot_dir, label, log=log)
 
 # ============================================================
 # Account enumeration
@@ -202,11 +167,11 @@ def select_account(page, entry_id: str) -> None:
     """Open the account selector and pick the entry with `entry_id`.
 
     Starts by dismissing any modal a previous account's walk may have
-    leaked (observed live: an Escape-immune wire-details overlay
-    intercepted this very click for every account after the first), so
-    one account's stuck dialog can never cascade across the rest of
-    the loop. The open click is bounded, with a dispatch_event
-    fallback if something still intercepts it.
+    leaked (a wire-details overlay ignores Escape and would intercept
+    this click for every later account), so one account's stuck dialog
+    can never cascade across the rest of the loop. The open click is
+    bounded, with a dispatch_event fallback if something still
+    intercepts it.
 
     Uses `dispatch_event('click')` for the entry rather than a
     real pointer click. Schwab can surface an overlay panel (e.g.
@@ -820,11 +785,11 @@ def _dismiss_open_modal(page, expect_modal: bool = False) -> None:
     sdps-modal honors Escape per WAI-ARIA dialog conventions, but its
     `.sdps-modal__overlay--open` (z-index 101003) outlives the dialog
     for the close animation, some variants ignore Escape outright
-    (observed live: the wire-details modal), and the SPA under load
-    applies queued input late — a dialog can materialize seconds after
-    the click that opened it, so an instant "nothing open" probe is a
-    race, not a verdict (one such race left a dialog standing through
-    an account's whole export phase). Hence: every clean verdict is
+    (the wire-details modal), and the SPA under load applies queued
+    input late — a dialog can materialize seconds after the click that
+    opened it, so an instant "nothing open" probe is a race, not a
+    verdict (such a race can leave a dialog standing through an
+    account's whole export phase). Hence: every clean verdict is
     double-checked after a settle, `expect_modal` callers — who just
     opened or clicked into a dialog — wait for it to materialize
     first, and dismissal escalates from Escape probes to the dialog's
@@ -902,8 +867,8 @@ def _fetch_one_format(page, button, fmt: str, target_dir: Path,
     with page.expect_download(timeout=DOWNLOAD_ATTEMPT_TIMEOUT_MS) as dl_info:
         button.click()
         # Tax-form downloads pop an "Export Tax Data"
-        # confirmation modal — observed on XML, CSV, AND PDF
-        # variants of Year-End Summary / 1099 Composite. Gating
+        # confirmation modal on the XML, CSV, AND PDF variants of
+        # Year-End Summary / 1099 Composite alike. Gating
         # by row type rather than per-format keeps the ~3s wait
         # off the non-tax hot path.
         if is_tax_form:
@@ -926,9 +891,9 @@ def download_one(page, row: dict, target_dir: Path) -> list[dict]:
     variants of the same 1099 sometimes share a stem.
 
     Each format-button click is retried up to
-    DOWNLOAD_MAX_ATTEMPTS times — observed: Schwab silently fails
-    the first click with no error toast roughly 5% of the time,
-    and a re-click on the same button succeeds. If all retries
+    DOWNLOAD_MAX_ATTEMPTS times — Schwab can silently fail a first
+    click with no error toast, and a re-click on the same button
+    succeeds. If all retries
     are exhausted, the format is skipped (logged) and the loop
     continues to the next format / row.
     """
@@ -1137,8 +1102,8 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
     entries: list[dict] = []
     out_dir.mkdir(parents=True, exist_ok=True)
     # A leftover overlay from an earlier step would silently eat the
-    # Export click (observed live: a wedged wire-details overlay cost a
-    # run every export after the first account) — clear the field first.
+    # Export click (a wedged wire-details overlay would cost every export
+    # after the first account) — clear the field first.
     _dismiss_open_modal(page)
     for _fmt_label, radio_id, ext in schwab.TX_EXPORT_FORMATS:
         # Open the Export modal. The main-page Export button has
@@ -1774,8 +1739,8 @@ def run_transactions(page, accounts: list[dict], dest_dir: Path,
         else:
             # The export files are the authoritative tx data; an
             # account without any is a failed capture, not an "ok"
-            # entry — a wedged overlay once ate the Export clicks of
-            # six accounts while every entry still read as success.
+            # entry — a wedged overlay can eat the Export clicks of
+            # several accounts while every entry still reads as success.
             if not entry.get("exports"):
                 log.error(
                     "tx-history …%s: no export captured — the Export "

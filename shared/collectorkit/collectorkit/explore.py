@@ -24,9 +24,10 @@ headers, query parameters and body fields by name, which is the only way
 to catch a secret the site issues at runtime or one typed by hand.
 
 What stays in each collector's own ``explore.py`` is what is particular to
-its source: the entry URL, the host gate, the credential env names, the
-detector script, and the login-form fill, which its ``login.py`` often
-reuses. :class:`Session` composes the rest.
+its source: the entry URL, the host gate, the credential env names and the
+sign-in form's selectors. :func:`click_recorder_js` builds the in-page
+detector from them, :func:`prefill_login` fills the form (a collector's
+``login.py`` often reuses it), and :class:`Session` composes the rest.
 
 Playwright and Camoufox are imported where they are used, so the library
 stays importable without them.
@@ -217,6 +218,252 @@ def load_credentials(env_file: Path | None, user_envs: tuple[str, ...],
 
 def _first_set(names: tuple[str, ...]) -> str:
     return next((os.environ[k] for k in names if os.environ.get(k)), "")
+
+
+# ---- the in-page detector and the login-form fill --------------------------
+
+# The fields a sign-in form is recognised by when a source names none of its
+# own. A source with a known control passes its own selector first.
+DEFAULT_PASSWORD_SELECTOR = "input[type='password']"
+DEFAULT_OTP_SELECTOR = (
+    "input[autocomplete='one-time-code'], input[inputmode='numeric'], "
+    "input[name*='otp' i], input[name*='code' i], input[id*='otp' i], "
+    "input[id*='code' i], input[maxlength='6'], input[maxlength='8']"
+)
+
+_RECORDER_JS = r"""
+(() => {
+  const PREFIX = __PREFIX__;
+  const emit = (data) => console.log(PREFIX + JSON.stringify(data));
+  const xpathOf = (el) => {
+    if (!el) return '';
+    const segs = [];
+    while (el && el.nodeType === Node.ELEMENT_NODE) {
+      let i = 1, sib = el.previousElementSibling;
+      while (sib) {
+        if (sib.tagName === el.tagName) i++;
+        sib = sib.previousElementSibling;
+      }
+      segs.unshift(el.tagName.toLowerCase() + '[' + i + ']');
+      el = el.parentElement;
+    }
+    return '/' + segs.join('/');
+  };
+  // Static attributes that name a control in the DOM capture beside the
+  // log. Never `value`.
+  const attrs = (el) => {
+    const out = {};
+    for (const k of ['data-name', 'data-testid', 'aria-label', 'title',
+                     'role', 'name', 'type', 'href']) {
+      const v = el.getAttribute && el.getAttribute(k);
+      if (v) out[k] = v.slice(0, 200);
+    }
+    return out;
+  };
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    if (!t || !t.tagName) return;
+    // Never log a form VALUE. innerText is empty on INPUT/TEXTAREA, so a
+    // button or link keeps its label while a field contributes nothing —
+    // which keeps a filled username, a typed one-time code, or a password
+    // field a show-password toggle flipped to type=text out of the click
+    // log. Ancestor text is not walked: on a ledger page it would pull a
+    // whole row's amounts in.
+    const text = (t.tagName === 'INPUT' && t.type === 'password')
+      ? '<redacted>'
+      : (t.innerText || '').toString().trim().slice(0, 120);
+    emit({
+      kind: 'click',
+      ts: new Date().toISOString(),
+      url: location.href,
+      tag: t.tagName,
+      id: t.id || null,
+      cls: (typeof t.className === 'string' ? t.className.slice(0, 200)
+                                             : null),
+      attrs: attrs(t),
+      text: text,
+      xpath: xpathOf(t),
+      x: e.clientX, y: e.clientY,
+    });
+  }, true);
+
+  // Login-form and one-time-code detectors, on the source's own frames.
+  if (!new RegExp(__HOST__, 'i').test(location.hostname)) return;
+  const PATH = __PATH__;
+  if (PATH !== null && !new RegExp(PATH, 'i').test(location.pathname)) return;
+  const USER_SEL = __USER__, PWD_SEL = __PWD__;
+  const OTP_SEL = __OTP__, OTP_KIND = __OTP_KIND__;
+  let loginSig = '', otpSeen = false;
+  const detect = () => {
+    // Re-fires whenever the set of present fields changes, so a two-step
+    // form (username, then password) is reported at each step.
+    const user = USER_SEL ? document.querySelector(USER_SEL) : null;
+    const pwd = PWD_SEL ? document.querySelector(PWD_SEL) : null;
+    const sig = (user ? 'u' : '') + (pwd ? 'p' : '');
+    if (sig && sig !== loginSig) {
+      loginSig = sig;
+      emit({kind: 'login-form-detected', fields: sig,
+            ts: new Date().toISOString(), url: location.href});
+    }
+    // The code field's STATIC descriptor, never its value, once it mounts:
+    // the challenge is recorded even when no click lands on the field.
+    const otp = OTP_SEL ? document.querySelector(OTP_SEL) : null;
+    if (otp && !otpSeen) {
+      otpSeen = true;
+      emit({
+        kind: OTP_KIND,
+        tag: otp.tagName,
+        id: otp.id || null,
+        name: otp.getAttribute('name'),
+        type: otp.getAttribute('type'),
+        placeholder: otp.getAttribute('placeholder'),
+        inputmode: otp.getAttribute('inputmode'),
+        autocomplete: otp.getAttribute('autocomplete'),
+        maxlength: otp.getAttribute('maxlength'),
+        ts: new Date().toISOString(),
+        url: location.href,
+      });
+    }
+  };
+  detect();
+  // An SPA mounts the form after the initial load; observing
+  // documentElement sees the whole subtree.
+  const target = document.documentElement || document;
+  if (target && typeof MutationObserver !== 'undefined') {
+    new MutationObserver(detect).observe(target,
+      {childList: true, subtree: true});
+  }
+})();
+"""
+
+
+def _pattern(value) -> str | None:
+    return getattr(value, "pattern", value)
+
+
+def click_recorder_js(event_prefix: str, *, host_re,
+                      user_selector: str | None,
+                      password_selector: str | None
+                      = DEFAULT_PASSWORD_SELECTOR,
+                      otp_selector: str | None = DEFAULT_OTP_SELECTOR,
+                      otp_kind: str = "otp-field-detected",
+                      path_re=None) -> str:
+    """The in-page detector for :meth:`Session.attach`'s `init_js`.
+
+    It reports through console lines tagged `event_prefix`:
+
+    - every click, with the target's tag, id, class, static attributes,
+      label text and xpath. A form field's value is never read: a password
+      field reads as ``<redacted>``, any other field as empty text.
+    - ``login-form-detected`` whenever the set of present sign-in fields
+      changes (``fields`` is "u", "p" or "up"), which is what triggers
+      the login-form fill.
+    - `otp_kind` once, when the one-time-code field mounts, with the
+      field's static attributes.
+
+    The detectors run only in frames whose host matches `host_re`, and,
+    when given, whose path matches `path_re` (regex objects or pattern
+    strings, matched case-insensitively). A None selector disables its
+    detector.
+    """
+    path = _pattern(path_re)
+    values = {
+        "__PREFIX__": event_prefix,
+        "__HOST__": _pattern(host_re),
+        "__PATH__": path,
+        "__USER__": user_selector,
+        "__PWD__": password_selector,
+        "__OTP__": otp_selector,
+        "__OTP_KIND__": otp_kind,
+    }
+    js = _RECORDER_JS
+    for marker, value in values.items():
+        js = js.replace(marker, json.dumps(value))
+    return js
+
+
+def prefill_login(page, username: str, password: str, filled: set, *,
+                  host_re: re.Pattern, user_selector: str,
+                  password_selector: str = DEFAULT_PASSWORD_SELECTOR,
+                  user_alt_selector: str | None = None,
+                  overwrite: bool = False, log: logging.Logger) -> bool:
+    """Fill the username and password fields of a sign-in form, each AT
+    MOST ONCE per page (tracked in `filled`, keyed by (id(page), kind)).
+    Never submits. Returns True iff a field was newly filled and verified.
+
+    Frame-aware: the form is looked for in every frame whose host matches
+    `host_re`, so the credentials never touch a third-party frame. The
+    password is filled only beside a username control in the SAME frame,
+    so it can never land in a lone code-entry field. That control is the
+    `user_selector` input, or the `user_alt_selector` control (a
+    remembered-username drop-down), which is left alone. The first frame
+    holding the form is the only one filled.
+
+    Each fill is verified by read-back, with one clear-and-retry, so a
+    stray autofill can never concatenate onto a correct value. A field is
+    marked done whatever the outcome, so a later DOM mutation never
+    re-fills over a hand-typed value. A field that already has content is
+    marked done untouched, unless `overwrite`: a source that pre-fills a
+    masked username of its own needs the real one written over it.
+    """
+    did = False
+    for frame in page.frames:
+        try:
+            host = urlparse(frame.url).hostname or ""
+        except Exception:  # noqa: BLE001
+            continue
+        if not host_re.search(host):
+            continue
+        try:
+            # count() / is_visible() are instant (no auto-wait), so a frame
+            # without the form costs nothing per poll.
+            pwd_field = frame.locator(password_selector).first
+            if pwd_field.count() == 0 or not pwd_field.is_visible():
+                continue
+            user_field = frame.locator(user_selector).first
+            has_user = user_field.count() > 0 and user_field.is_visible()
+            has_alt = False
+            if user_alt_selector:
+                alt = frame.locator(user_alt_selector).first
+                has_alt = alt.count() > 0 and alt.is_visible()
+            if not (has_user or has_alt):
+                continue
+        except Exception as exc:  # noqa: BLE001
+            log.debug("prefill frame probe failed: %s",
+                      debugcap.safe_error(exc))
+            continue
+        targets = [("pwd", pwd_field, password)]
+        if has_user:
+            targets.insert(0, ("user", user_field, username))
+        for kind, field, value in targets:
+            key = (id(page), kind)
+            if key in filled:
+                continue
+            try:
+                if field.input_value(timeout=1000) and not overwrite:
+                    filled.add(key)       # hand-typed: leave it alone
+                    continue
+                field.fill(value, timeout=2000)
+                got = field.input_value(timeout=1500)
+                if got != value:
+                    field.fill("", timeout=1500)
+                    field.fill(value, timeout=2000)
+                    got = field.input_value(timeout=1500)
+                filled.add(key)
+                if got == value:
+                    did = True
+                else:
+                    log.warning(
+                        "pre-fill of %s field did not stick (got len %d, "
+                        "want %d) — type it by hand",
+                        kind, len(got or ""), len(value))
+            except Exception as exc:  # noqa: BLE001
+                # safe_error, never %r: a failed fill() renders the typed
+                # value verbatim inside Playwright's call log.
+                log.debug("prefill %s field failed: %s", kind,
+                          debugcap.safe_error(exc))
+        break
+    return did
 
 
 class Session:

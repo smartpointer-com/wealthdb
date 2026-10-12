@@ -179,6 +179,37 @@ def test_in_progress_status_dump_deleted_when_stale(tmp_path):
     assert not d.exists()
 
 
+def test_partial_dump_kept_with_its_load_inputs(tmp_path):
+    # A `download --only` pass finalises as "partial". `load` reads it,
+    # so prune keeps it like a complete dump and takes only screenshots/.
+    d = make_dump(tmp_path, OLD_TS,
+                  manifest={"status": "partial", "partial_pass": "cards",
+                            "dry_run": False},
+                  age_s=STALE_S)
+    assert run_main(tmp_path) == 0
+    assert d.exists()
+    assert not (d / "screenshots").exists()
+    assert_inputs_present(d)
+
+
+@pytest.mark.parametrize("manifest", [
+    None,
+    {"status": "complete", "dry_run": False},
+    {"status": "partial", "partial_pass": "cards", "dry_run": False},
+    {"status": "in-progress"},
+    {"status": "dry-run", "dry_run": True},
+    {"status": "unknown-future-status"},
+    {"dry_run": False},
+    {"dry_run": True},
+])
+def test_prune_keeps_exactly_what_load_reads(tmp_path, manifest):
+    import load
+    d = make_dump(tmp_path, OLD_TS, manifest=manifest, age_s=STALE_S)
+    loads = load.skip_reason(d) is None
+    run_main(tmp_path)
+    assert d.exists() == loads
+
+
 # ============================================================
 # Statusless legacy manifests: the ubs-web dry_run divergence
 # ============================================================
@@ -322,7 +353,7 @@ def test_the_supplied_documents_dir_survives_a_prune(tmp_path):
     run_main(tmp_path)
     assert (supplied / "statement.pdf").exists()
     with pytest.raises(SystemExit):
-        prune.validate_target(supplied, tmp_path)
+        prune.CONFIG.validate_target(supplied, tmp_path)
 
 
 def test_missing_bronze_dir_exits(tmp_path):
@@ -336,24 +367,24 @@ def test_missing_bronze_dir_exits(tmp_path):
 
 def test_validate_target_accepts_whole_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
-    prune.validate_target(tmp_path / OLD_TS, tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
 def test_validate_target_accepts_screenshots_subdir(tmp_path):
     # The one subdir shape prune may target: the --debug capture dir.
     (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path / "historic", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / "historic", tmp_path)
     # screenshots/ is the only targetable subdir, so a load-input subdir
     # is still refused.
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path / OLD_TS / "positions", tmp_path)
+        prune.CONFIG.validate_target(tmp_path / OLD_TS / "positions", tmp_path)
     with pytest.raises(SystemExit):
-        prune.validate_target(tmp_path.parent / OLD_TS, tmp_path)
+        prune.CONFIG.validate_target(tmp_path.parent / OLD_TS, tmp_path)
 
 
 def test_validate_target_refuses_symlink(tmp_path):
@@ -362,4 +393,4 @@ def test_validate_target_refuses_symlink(tmp_path):
     link = tmp_path / OLD_TS
     link.symlink_to(external, target_is_directory=True)
     with pytest.raises(SystemExit):
-        prune.validate_target(link, tmp_path)
+        prune.CONFIG.validate_target(link, tmp_path)

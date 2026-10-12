@@ -84,85 +84,18 @@ DEFAULT_ENV_FILE = Path("/secrets/ubs-web.env")
 LEGACY_ENV_FILE = Path("/secrets/ubs.env")
 CONTRACT_ENV = "UBS_CONTRACT_NUMBER"
 
-CLICK_RECORDER_JS = r"""
-(() => {
-  const xpathOf = (el) => {
-    if (!el) return '';
-    const segs = [];
-    while (el && el.nodeType === Node.ELEMENT_NODE) {
-      let i = 1, sib = el.previousElementSibling;
-      while (sib) {
-        if (sib.tagName === el.tagName) i++;
-        sib = sib.previousElementSibling;
-      }
-      segs.unshift(el.tagName.toLowerCase() + '[' + i + ']');
-      el = el.parentElement;
-    }
-    return '/' + segs.join('/');
-  };
-  const attrs = (el) => {
-    const out = {};
-    for (const k of ['data-name', 'data-testid', 'aria-label', 'title',
-                     'role', 'name', 'type', 'href']) {
-      const v = el.getAttribute && el.getAttribute(k);
-      if (v) out[k] = v.slice(0, 200);
-    }
-    return out;
-  };
-  document.addEventListener('click', (e) => {
-    const t = e.target;
-    if (!t || !t.tagName) return;
-    // A password field's value must never reach the log. UBS's own login
-    // has none — the second factor is a scanned QR — but a click landing
-    // on one is recorded by shape rather than content regardless.
-    const isSecret = t.tagName === 'INPUT' &&
-                     (t.type === 'password' || t.name === 'loginalias');
-    console.log('__UBS_EXPLORE__ ' + JSON.stringify({
-      kind: 'click',
-      ts: new Date().toISOString(),
-      url: location.href,
-      tag: t.tagName,
-      id: t.id || null,
-      cls: (typeof t.className === 'string' ? t.className.slice(0, 200) : null),
-      attrs: attrs(t),
-      // The clicked element's own label is what identifies a control in
-      // the DOM capture beside it. Ancestor text is not walked — on this
-      // SPA that would pull a whole transaction row's amounts in.
-      text: isSecret ? '<redacted>' : (t.innerText || '').toString().trim().slice(0, 120),
-      xpath: xpathOf(t),
-    }));
-  }, true);
-
-  // Login-form detector, so the Python side knows when to pre-fill the
-  // contract number. UBS serves the form on its own hosts only.
-  if (!/(^|\.)ubs\.com$/i.test(location.hostname)) return;
-  const detect = () => {
-    const field = document.querySelector("input[name='loginalias']");
-    if (field && !window.__UBS_LOGIN_SEEN__) {
-      window.__UBS_LOGIN_SEEN__ = true;
-      console.log('__UBS_EXPLORE__ ' + JSON.stringify({
-        kind: 'login-form-detected',
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-    // The QR challenge is the second factor. Record that it mounted —
-    // never its image, which is the challenge itself.
-    const qr = document.querySelector("[data-testid='qr-scanner-image']");
-    if (qr && !window.__UBS_QR_SEEN__) {
-      window.__UBS_QR_SEEN__ = true;
-      console.log('__UBS_EXPLORE__ ' + JSON.stringify({
-        kind: 'qr-challenge-detected',
-        ts: new Date().toISOString(),
-        url: location.href,
-      }));
-    }
-  };
-  detect();
-  new MutationObserver(detect).observe(
-      document.documentElement, {childList: true, subtree: true});
-})();
-"""
+# The in-page click recorder plus two detectors
+# (collectorkit.explore.click_recorder_js), on UBS frames only: the login
+# form, so the Python side knows when to pre-fill the contract number, and
+# the QR challenge, the second factor. The challenge is recorded by its
+# element's static attributes, never its image, which is the challenge
+# itself. The login has no password field, and no field value is ever read.
+CLICK_RECORDER_JS = explore.click_recorder_js(
+    EVENT_PREFIX, host_re=UBS_HOST_RE,
+    user_selector=f"input[name='{ubs.CONTRACT_INPUT_NAME}']",
+    password_selector=None,
+    otp_selector=f"[data-testid='{ubs.QR_IMG_TESTID}']",
+    otp_kind="qr-challenge-detected")
 
 
 # ============================================================

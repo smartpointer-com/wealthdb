@@ -108,6 +108,19 @@ def is_loadable_status(status: str | None) -> bool:
     return status is None or status == COMPLETE_STATUS
 
 
+def manifest_is_complete(run_dir: Path, manifest_name: str = "run.json") -> bool:
+    """Whether `run_dir` holds a finished dump: its manifest reads, and its
+    status is loadable (:func:`is_loadable_status`).
+
+    A missing or unreadable manifest is not complete: the download that
+    writes it crashed or is still running. A statusless one is, since a
+    download that writes no status writes its manifest only at the end.
+    ``prune.lenient_classification`` is the same rule as a prune predicate.
+    """
+    meta = read_manifest(Path(run_dir) / manifest_name)
+    return meta is not None and is_loadable_status(meta.get("status"))
+
+
 def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
     """The run dirs under `bronze_dir` that silver has not loaded, oldest
     first.
@@ -149,6 +162,34 @@ def short_token(value: str, length: int = 16) -> str:
     same name.
     """
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length]
+
+
+_UNSAFE_STEM_RE = re.compile(r"[^\w.-]+")
+
+
+def safe_stem(value, fallback: str = "item") -> str:
+    """A filesystem-safe file or dir stem from a source-supplied value (an
+    account id, a document id, a statement date).
+
+    Word characters, dot and dash are kept; every other run becomes one
+    dash. Leading and trailing dots and dashes are stripped, so no path
+    separator, traversal or dotfile survives. An empty result is
+    `fallback`. Stable, so a loader can map a name back to its id.
+    """
+    stem = _UNSAFE_STEM_RE.sub("-", str(value)).strip("-.")
+    return stem or fallback
+
+
+def log_id(value) -> str:
+    """An identifier shortened for the LOG: its :func:`safe_stem`, cut to
+    eight characters and an ellipsis when longer than twelve.
+
+    Terminal output gets pasted into chats and issue threads. A prefix
+    still tells a run's accounts apart in its own output, without carrying
+    the whole identifier along. Files on disk keep the full stem.
+    """
+    stem = safe_stem(value)
+    return stem if len(stem) <= 12 else stem[:8] + "…"
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

@@ -24,7 +24,7 @@ def test_parse_args_defaults():
     assert args.state_path == Path("/secrets/firstcitizens-state.json")
     assert args.cli_mfa is True          # terminal 2FA by default
     assert args.check is False
-    assert args.mfa_timeout == 600
+    assert args.mfa_timeout == 300
 
 
 def test_no_cli_mfa_flag_toggles_vnc_path():

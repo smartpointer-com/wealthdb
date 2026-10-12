@@ -17,7 +17,6 @@ HERE = Path(__file__).resolve().parent
 COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
-import _txartefacts  # noqa: E402
 import load as loader  # noqa: E402
 from collectorkit import silver  # noqa: E402
 
@@ -515,16 +514,6 @@ def test_transaction_files_resolves_zst_only(tmp_path):
 def test_read_json_missing_artefact_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         loader.read_json(tmp_path / "nope.json")
-
-
-def test_logical_bronze_path_strips_compression_suffix():
-    assert _txartefacts.logical_bronze_path(Path(
-        "d/accounts_positions.json.zst")) == Path("d/accounts_positions.json")
-    assert _txartefacts.logical_bronze_path(
-        Path("d/transactions_000.json.gz")) == Path("d/transactions_000.json")
-    # Plain paths pass through unchanged.
-    assert _txartefacts.logical_bronze_path(
-        Path("d/run.json")) == Path("d/run.json")
 
 
 def test_recompress_compresses_data_leaves_run_json(tmp_path):

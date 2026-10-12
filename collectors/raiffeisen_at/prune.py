@@ -27,14 +27,9 @@ import sys
 from collectorkit import prune
 
 
-def _is_complete(run_dir, meta):
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
-
-
 CONFIG = prune.PruneConfig(
     debug_subdirs=(),          # raiffeisen_at writes no in-bronze debug capture
-    is_complete=_is_complete,
+    is_complete=prune.lenient_classification,
 )
 
 

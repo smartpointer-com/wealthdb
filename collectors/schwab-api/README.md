@@ -125,14 +125,21 @@ the recovery path. Schwab itself unlocks a locked account.
 ```sh
 ./schwab-api login          # automated: answer the 2FA prompt on the terminal
 ./schwab-api vnc-login      # drive login, 2FA and consent by hand over VNC
-./schwab-api login --check  # show the token's age and remaining life
+./schwab-api login --check  # show the token's age, then prove it works
 ```
 
 `vnc-login` prints the VNC tunnel and a one-time password. It still
-ticks the account checkboxes. `login --check` reads only the token file:
-it opens no browser and makes no network call. `login --manual` is a
-no-browser fallback: it prints the authorize URL and reads the redirected
-URL back.
+ticks the account checkboxes. The wait for the consent redirect defaults
+to five minutes (`--mfa-timeout`).
+
+`login --check` shows the token's age and estimated expiry. It then
+proves the token works the way `download` uses it: it refreshes the
+access token and lists the account hashes. It prints `ALIVE`, or
+Schwab's error and a non-zero exit. It opens no browser and fires no
+2FA.
+
+`login --manual` is a no-browser fallback: it prints the authorize URL
+and reads the redirected URL back.
 
 Browser captures are opt-in. Pass `--screenshot-dir /debug --trace`
 through the wrapper. They land in the debug dir

@@ -35,7 +35,6 @@ from pathlib import Path
 
 import landmarks as sq  # local module
 import login  # local module: the shared browser knobs + state paths
-from load import dump_is_complete  # local module
 
 from collectorkit import bronze, cli, debugcap, session
 
@@ -503,7 +502,7 @@ def collect_existing_doc_ids(bronze_dir: Path) -> set[str]:
     if not bronze_dir.is_dir():
         return seen
     for run_dir in bronze.iter_run_dirs(bronze_dir):
-        if dump_is_complete(run_dir):
+        if bronze.manifest_is_complete(run_dir):
             seen.update(pdf.stem for pdf in run_dir.glob("documents/*.pdf"))
     return seen
 
@@ -555,7 +554,7 @@ def discover_documents(page) -> list[dict]:
     pull absolute hrefs of every such anchor, then parse the path
     and query string into structured metadata.
 
-    URL format observed live:
+    URL format:
       /sqc-ctrp-notifications-plugin/webapi/notifications/
         getPdfDocument/{customer}/{doc_id}
         ?documentType={URL-encoded type, may contain spaces}
@@ -630,7 +629,7 @@ def cleanup_incomplete_run_dir(run_dir: Path) -> bool:
     is a no-op. Uses ignore_errors so a cleanup hiccup never masks the
     original exception. Returns True if a dir was removed.
     """
-    if run_dir.exists() and not dump_is_complete(run_dir):
+    if run_dir.exists() and not bronze.manifest_is_complete(run_dir):
         shutil.rmtree(run_dir, ignore_errors=True)
         log.warning(
             "Removed incomplete dump dir %s after failure", run_dir.name,
@@ -862,11 +861,9 @@ def run(args: argparse.Namespace) -> int:
                 cleanup_incomplete_run_dir(run_dir)
             raise
         finally:
-            if args.trace:
-                login.stop_trace(
-                    context,
-                    args.screenshot_dir / f"trace_download_{run_ts_str}.zip",
-                )
+            debugcap.stop_trace_if_active(context, args.trace,
+                                          args.screenshot_dir, "download",
+                                          log=log)
             context.close()
             browser.close()
 

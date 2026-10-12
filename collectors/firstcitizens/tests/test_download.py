@@ -84,6 +84,20 @@ def test_statement_in_window():
 
 
 # ============================================================
+# Bronze file names
+# ============================================================
+
+def test_bronze_names_are_stable_safe_stems():
+    # download names its bronze files with the shared safe_stem, and load
+    # maps those names back to account ids; the mapping must not drift.
+    from collectorkit import bronze
+    assert bronze.safe_stem("7000001") == "7000001"
+    assert bronze.safe_stem("07/31/2026") == "07-31-2026"
+    assert bronze.safe_stem("../evil") == "evil"
+    assert bronze.safe_stem("") == "item"
+
+
+# ============================================================
 # build_manifest
 # ============================================================
 
@@ -145,3 +159,10 @@ def test_format_flag_is_repeatable():
 def test_no_password_flag_exists():
     with pytest.raises(SystemExit):
         download.parse_args(["--bronze-dir", "/data", "--password", "x"])
+
+
+def test_no_mfa_timeout_flag():
+    # download never waits on a challenge: a 2FA prompt is a hard error
+    # that points at `login`.
+    with pytest.raises(SystemExit):
+        download.parse_args(["--bronze-dir", "/data", "--mfa-timeout", "5"])

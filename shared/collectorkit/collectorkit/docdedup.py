@@ -94,6 +94,13 @@ FETCHED = "fetched"            # fresh bytes fetched and kept
 VERIFIED = "verified"          # fetch-verify: byte-identical to prior, prior hardlinked
 CHANGED = "changed"           # fetch-verify: prior existed but bytes differ (re-issue)
 FETCH_FAILED = "fetch-failed"  # fetch() produced no file (error/empty)
+# A document that carries no download URL yields no blob BY DESIGN: the
+# loader records it without a file. Not a fetch failure, so it has its own
+# outcome and bucket, and is never counted among `errors`. A collector whose
+# documents can lack a URL returns it before the fetch, and adds the bucket
+# to its audit block: ``empty_audit(NO_BLOB_BUCKET)``.
+NO_BLOB = "no-blob"
+NO_BLOB_BUCKET = "no_blob"
 
 
 # ---------------------------------------------------------------------------
@@ -104,14 +111,16 @@ FETCH_FAILED = "fetch-failed"  # fetch() produced no file (error/empty)
 # in its run.json. The outcome -> bucket mapping and the zero/increment helpers are identical
 # across adopters, so they live here rather than being copied per collector.
 
-# Maps a process() outcome to its manifest bucket. A collector extends this with
-# its own PRE-fetch sentinels (e.g. a no-download-URL doc) via ``tally(extra=)``.
+# Maps an outcome to its manifest bucket: process()'s outcomes, and the
+# NO_BLOB pre-fetch sentinel. A collector extends this with sentinels of its
+# own via ``tally(extra=)``.
 OUTCOME_BUCKET = {
     LINKED: "linked",       # link-mode: fetch avoided, prior copy hardlinked in
     FETCHED: "fetched",     # fresh bytes fetched and kept
     VERIFIED: "verified",   # fetch-verify: byte-identical to prior, hardlinked
     CHANGED: "changed",     # fetch-verify: re-issued under a stable id, fresh kept
     FETCH_FAILED: "errors",  # a real fetch failure
+    NO_BLOB: NO_BLOB_BUCKET,  # no download URL: no blob by design
 }
 _BASE_BUCKETS = ("total", "fetched", "linked", "verified", "changed",
                  "errors", "other")
@@ -147,7 +156,7 @@ def tally(counts: dict, outcome: str, *, extra: dict | None = None) -> None:
     """Increment ``counts`` for one document ``outcome``.
 
     ``extra`` maps a collector's own pre-fetch sentinel codes to their bucket
-    (e.g. ``{NO_BLOB: "no_blob"}``). An outcome the map does not know goes to
+    (:data:`NO_BLOB` is mapped already). An outcome the map does not know goes to
     ``"other"`` — never silently folded into ``"fetched"`` — with a warning,
     since an unmapped code is a programming error, not a fetched document.
     """

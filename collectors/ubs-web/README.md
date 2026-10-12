@@ -186,7 +186,7 @@ below `WINDOW_MIN_DAYS = 1`.
 <bronze-dir>/
 ├── supplied-documents/                                            bank-delivered PDFs; no run, no manifest
 │   └── <anything>.pdf                                             identified from the text it prints
-└── 20260518T220332Z/                                              one run = one UTC-timestamped dir
+└── 20260101T120000Z/                                              one run = one UTC-timestamped dir
     ├── run.json                                                   manifest (status, window, accounts, file inventory)
     ├── positions/
     │   ├── positions.csv                                          the consolidated default view
@@ -228,7 +228,9 @@ Specific to ubs-web:
 
 - `--dry-run` writes nothing to bronze, not even a `run.json`.
 - `--only PASS` finalises the dump as `partial`, not `complete`.
-- `load` does not gate on the status: it loads every run dir.
+- `load` reads `complete`, `partial` and statusless (legacy) dumps.
+  It skips every other dump, and `prune` keeps exactly what `load`
+  reads.
 
 [DESIGN.md](DESIGN.md) §4 has the detail.
 
@@ -350,14 +352,12 @@ them by age along with the rest of the debug dir.
 ([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).
 For ubs-web it reclaims:
 
-- whole non-complete run dirs: a crashed walk (`in-progress` or no
-  `run.json`), a `partial` dump from `--only`, or a legacy `dry-run`
-  shell;
-- `screenshots/` inside a complete dump;
+- whole run dirs that `load` skips: a crashed walk (`in-progress` or
+  no `run.json`), or a legacy `dry-run` shell;
+- `screenshots/` inside a dump it keeps;
 - aged entries of the `/debug` mount, including `explore` recordings.
 
-A non-complete dump that `load` already ingested leaves silver on the
-next `load --force` rebuild.
+A `partial` dump from `--only` is a load input, so `prune` keeps it.
 
 `download --debug` captures these landmarks into `<run>/screenshots/`:
 

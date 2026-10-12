@@ -123,7 +123,7 @@ def _export_account(context, acct: dict, run_dir: Path,
                 log.warning("export %s/%s: HTTP %s", acct_id, fmt, resp.status)
                 continue
             out = (run_dir / "transactions"
-                   / f"{q2client.safe_stem(acct_id)}.{fmt}")
+                   / f"{bronze.safe_stem(acct_id)}.{fmt}")
             bronze.atomic_write_bytes(out, resp.body())
             written += 1
         except Exception as exc:
@@ -154,10 +154,10 @@ def _download_statements(context, acct: dict, run_dir: Path,
         log.warning("statement list %s: HTTP %s", acct_id, status)
         return 0
     bronze.atomic_write_json(
-        run_dir / "raw" / f"statements-{q2client.safe_stem(acct_id)}.json", body)
-    out_dir = run_dir / "statements" / q2client.safe_stem(acct_id)
+        run_dir / "raw" / f"statements-{bronze.safe_stem(acct_id)}.json", body)
+    out_dir = run_dir / "statements" / bronze.safe_stem(acct_id)
     # The PDF POST requires the q2token as a multipart form field (like the
-    # export); a header-only POST 400s (measured 2026-08-14).
+    # export); a header-only POST 400s.
     pdf_headers = {**login.q2_headers(context), "Accept": "*/*"}
     token = pdf_headers.get(q2client.Q2TOKEN, "")
     written = 0
@@ -172,7 +172,7 @@ def _download_statements(context, acct: dict, run_dir: Path,
                 log.warning("statement pdf %s/%s: HTTP %s",
                             acct_id, row["period"], resp.status)
                 continue
-            name = f"{q2client.safe_stem(row['period'])}.pdf"
+            name = f"{bronze.safe_stem(row['period'])}.pdf"
             bronze.atomic_write_bytes(out_dir / name, resp.body())
             written += 1
         except Exception as exc:
@@ -235,7 +235,7 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
         merged = _fetch_history(context, acct_id, posted_date=posted_date)
         if merged is not None:
             bronze.atomic_write_json(
-                run_dir / "history" / f"{q2client.safe_stem(acct_id)}.json",
+                run_dir / "history" / f"{bronze.safe_stem(acct_id)}.json",
                 merged)
             got, total = len(merged["transactions"]), merged["transactionCount"]
             counts["transactions"] += got
@@ -325,9 +325,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Record the roster and log each account's "
                         "transaction total, but fetch no history, exports "
                         "or statements; stamp the manifest 'dry-run'.")
-    p.add_argument("--mfa-timeout", type=int, default=600,
-                   help="Unused on the unattended path (kept for a uniform "
-                        "authenticate() signature). Default: %(default)s.")
     p.add_argument("--debug", action="store_true",
                    help="Capture login DOM/screenshots into --screenshot-dir.")
     p.add_argument("--screenshot-dir", type=Path, default=Path("/debug"),

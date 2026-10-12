@@ -29,7 +29,6 @@ download. Never a money-movement, card, or settings surface.
 from __future__ import annotations
 
 import logging
-import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -44,15 +43,6 @@ import elba_client as elba
 import login
 
 log = logging.getLogger("raiffeisen_at.download")
-
-
-def safe_stem(value: str) -> str:
-    """A filesystem-safe stem from an IBAN / document id: keep word chars,
-    dash, dot; collapse the rest to '-'; strip leading/trailing dots and
-    dashes so no path separator or traversal / dotfile survives. Never
-    empty."""
-    stem = re.sub(r"[^\w.-]+", "-", str(value)).strip("-.")
-    return stem or "item"
 
 
 def build_manifest(status: str, *, accounts: list[dict], counts: dict,
@@ -93,7 +83,7 @@ def _fetch_history(context, watch, iban: str,
             if pg == 1:
                 return None
             log.warning("history %s page %d: HTTP %s (stopping)",
-                        safe_stem(iban), pg, st)
+                        bronze.log_id(iban), pg, st)
             break
         rows = elba.umsaetze_list(body)
         all_tx.extend(rows)
@@ -105,7 +95,7 @@ def _fetch_history(context, watch, iban: str,
         cursor = elba.next_cursor(rows[-1])
         if cursor is None:
             log.warning("history %s: no pagination cursor on page %d "
-                        "(stopping)", safe_stem(iban), pg)
+                        "(stopping)", bronze.log_id(iban), pg)
             break
     return {"iban": iban, "minBuchungstag": min_buchungstag,
             "complete": complete, "transactions": all_tx}
@@ -118,7 +108,7 @@ def _fetch_details(context, watch, iban: str) -> object:
     failure."""
     st, body = login.api_get_json(context, watch, elba.konto_details_url(iban))
     if st != 200:
-        log.warning("details %s: HTTP %s", safe_stem(iban), st)
+        log.warning("details %s: HTTP %s", bronze.log_id(iban), st)
         return None
     return body
 
@@ -130,7 +120,7 @@ def _fetch_balances(context, watch, iban: str, since: date,
     st, body = login.api_get_json(
         context, watch, elba.kontostaende_url(iban, since, until))
     if st != 200:
-        log.warning("balances %s: HTTP %s", safe_stem(iban), st)
+        log.warning("balances %s: HTTP %s", bronze.log_id(iban), st)
         return None
     return body
 
@@ -172,7 +162,7 @@ def _download_statements(context, watch, all_docs: list, iban: str,
     ones have none — DESIGN.md §E). Failures are reported as one aggregate
     line per account rather than a wall of warnings."""
     rows = elba.parse_statements(all_docs, iban, since=since)
-    out_dir = run_dir / "statements" / safe_stem(iban)
+    out_dir = run_dir / "statements" / bronze.safe_stem(iban)
     headers = {**login.api_headers(watch), "Accept": "*/*"}
     written = 0
     failed_by_system: dict[str, int] = {}
@@ -191,18 +181,18 @@ def _download_statements(context, watch, all_docs: list, iban: str,
             key = f"{row['system_id']}_{row['dokument_id']}"
             if ver not in (None, ""):
                 key += f"_v{ver}"
-            stem = safe_stem(f"{row['created'][:10]}_{key}")
+            stem = bronze.safe_stem(f"{row['created'][:10]}_{key}")
             bronze.atomic_write_bytes(out_dir / f"{stem}.pdf", resp.body())
             written += 1
         except Exception as exc:
             failed_by_system[row["system_id"]] = (
                 failed_by_system.get(row["system_id"], 0) + 1)
-            log.debug("statement %s/%s failed: %r", safe_stem(iban),
+            log.debug("statement %s/%s failed: %r", bronze.log_id(iban),
                       row["dokument_id"], exc)
     if failed_by_system:
         total = sum(failed_by_system.values())
         log.warning("%s: %d statement(s) could not be downloaded (by system: "
-                    "%s)", safe_stem(iban), total, failed_by_system)
+                    "%s)", bronze.log_id(iban), total, failed_by_system)
     return written
 
 
@@ -244,7 +234,7 @@ def walk(context, watch, bronze_dir: Path, *, since: date | None = None,
     counts = {"transactions": 0, "details": 0, "balances": 0, "statements": 0}
     for acct in accounts:
         iban = acct["iban"]
-        stem = safe_stem(iban)
+        stem = bronze.safe_stem(iban)
         if dry_run:
             log.info("  [dry-run] %s: would fetch details + history + "
                      "balances%s", stem,

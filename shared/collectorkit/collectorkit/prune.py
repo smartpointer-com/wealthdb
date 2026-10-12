@@ -146,6 +146,10 @@ class PruneConfig:
     # removes; only affects output wording.
     dump_label: str = "dump"
 
+    def validate_target(self, path: Path, bronze_dir: Path) -> None:
+        """:func:`validate_target` bound to this config."""
+        validate_target(path, bronze_dir, self)
+
 
 # ---------------------------------------------------------------------------
 # Completeness helpers
@@ -220,7 +224,11 @@ def lenient_classification(run_dir: Path | None,
     """Completeness classification for the reclaim engines: the normalized
     ``status`` field with the lenient legacy fallback (a readable statusless
     manifest counts as complete). Shared so dedup / docdedup / recompress can
-    never disagree about what "complete" means."""
+    never disagree about what "complete" means.
+
+    It is also the ``is_complete`` predicate of a collector whose manifest
+    is written once at the end or carries a status, and the predicate form
+    of ``bronze.manifest_is_complete``."""
     return status_classification(
         meta, run_dir=run_dir, legacy_complete=_lenient_legacy_complete)
 

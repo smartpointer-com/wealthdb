@@ -490,27 +490,6 @@ def document_date(name: str) -> int | None:
 # Per-run loader
 # ============================================================
 
-_SAFE_STEM_RE = re.compile(r"[^\w.-]+")
-
-
-def _log_id(value: str) -> str:
-    """An account key shortened for the LOG — see download.log_id. Files keep
-    the full key, which is what the tables join on."""
-    stem = _safe_stem(value)
-    return stem if len(stem) <= 12 else stem[:8] + "…"
-
-
-def _safe_stem(value: str) -> str:
-    """The filesystem-safe stem download.py derives a directory / file name
-    from (kept in sync with download.safe_stem). Copied rather than imported
-    to keep the offline half of the collector independent of the browser
-    half: `load` runs against a bronze tree that is already on disk, and a
-    two-line string helper is not worth a dependency on the module that
-    fetched it."""
-    stem = _SAFE_STEM_RE.sub("-", str(value)).strip("-.")
-    return stem or "item"
-
-
 def _read_json(path: Path):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -670,7 +649,7 @@ def _restore_activity_balances(conn, account_external_id: str,
     all. One small JSON read per statement period, not a re-read of every
     run.
     """
-    stem = _safe_stem(account_external_id)
+    stem = bronze.safe_stem(account_external_id)
     for name in file_names:
         period_end = document_date(name)
         if period_end is None:
@@ -748,11 +727,11 @@ def _import_statements(conn, account_external_id: str,
         # rows arrive once the activity does.
         log.warning("  %s: %d statement period(s) recorded, rows deferred "
                     "until this account's activity is loaded",
-                    _log_id(account_external_id), len(parsed_by_end))
+                    bronze.log_id(account_external_id), len(parsed_by_end))
     else:
         log.info("  %s: %d statement period(s), %d deep-era row(s) below "
-                 "the seam", _log_id(account_external_id), len(parsed_by_end),
-                 imported)
+                 "the seam", bronze.log_id(account_external_id),
+                 len(parsed_by_end), imported)
 
 
 def rebuild_statements(conn, bronze_dir: Path) -> None:
@@ -830,7 +809,7 @@ def _account_stems(conn) -> dict[str, str]:
     """Map each account's safe-stemmed directory name back to its key."""
     rows = conn.execute(
         "SELECT DISTINCT account_external_id FROM accounts").fetchall()
-    return {_safe_stem(r[0]): r[0] for r in rows}
+    return {bronze.safe_stem(r[0]): r[0] for r in rows}
 
 
 def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
@@ -851,7 +830,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     accounts = _read_accounts(run_dir)
     # A statement dir / activity file is named by the safe-stemmed key; map it
     # back so every table keys on the same account_external_id.
-    stem_to_id = {_safe_stem(a["account_key"]): str(a["account_key"])
+    stem_to_id = {bronze.safe_stem(a["account_key"]): str(a["account_key"])
                   for a in accounts if a.get("account_key")}
 
     # One transaction per dump: a failure part-way leaves silver as it was,
@@ -884,8 +863,8 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
                 if isinstance(expected, int) and fetched < expected:
                     log.warning("  %s: activity holds %d of the %d rows the "
                                 "source reported for the window — that fetch "
-                                "came back short", _log_id(acct_id), fetched,
-                                expected)
+                                "came back short", bronze.log_id(acct_id),
+                                fetched, expected)
                 posted = [r for r in rows if not r["is_pending"]]
                 pending = [r for r in rows if r["is_pending"]]
                 for tx in posted:
@@ -896,7 +875,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
                 if balances is not None:
                     _insert_statement_balance(conn, snapshot_at, acct_id, balances,
                                               SOURCE_ACTIVITY)
-                log.info("  %s: %d posted, %d pending", _log_id(acct_id),
+                log.info("  %s: %d posted, %d pending", bronze.log_id(acct_id),
                          len(posted), len(pending))
 
         for acct in accounts:

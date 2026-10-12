@@ -691,19 +691,6 @@ def test_activity_coexisting_plain_and_zst_ingests_once(migrated, tmp_path):
     assert n == 1
 
 
-def test_logical_bronze_path_strips_compression_suffix():
-    from pathlib import Path as _P
-    assert load._logical_bronze_path(
-        _P("a/balances.html.zst")) == _P("a/balances.html")
-    assert load._logical_bronze_path(
-        _P("a/x.csv.gz")) == _P("a/x.csv")
-    # Plain paths (and PDFs) pass through unchanged.
-    assert load._logical_bronze_path(
-        _P("a/x.csv")) == _P("a/x.csv")
-    assert load._logical_bronze_path(
-        _P("a/Statement.pdf")) == _P("a/Statement.pdf")
-
-
 # ============================================================
 # Content-addressed parse cache + shared parse pool
 # ============================================================

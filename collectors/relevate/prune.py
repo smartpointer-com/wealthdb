@@ -96,11 +96,5 @@ def main(argv=None):
     return prune.main(CONFIG, argv, description=__doc__)
 
 
-def validate_target(path, bronze_dir):
-    """Back-compat shim for the local test suite: bind the shared
-    validator to this collector's config."""
-    return prune.validate_target(path, bronze_dir, CONFIG)
-
-
 if __name__ == "__main__":
     sys.exit(main())

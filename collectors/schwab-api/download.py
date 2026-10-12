@@ -38,11 +38,12 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import _tokenclient
 import _txartefacts
 from collectorkit import cli, compress, debugcap, envfile
 
-# schwab-py is a thin wrapper over the Schwab Trader API. We import it
-# inside main() so that --help works on a fresh checkout without the
+# schwab-py is a thin wrapper over the Schwab Trader API. _tokenclient
+# imports it lazily, so --help works on a fresh checkout without the
 # dependency installed.
 
 log = logging.getLogger("schwab-api")
@@ -205,53 +206,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "bronze. Use --verbose for DEBUG-level logging.)",
     )
     return p.parse_args(argv)
-
-
-def oauth_error_types() -> tuple[type, ...]:
-    """authlib OAuth error classes to catch, or () if authlib is absent.
-
-    Imported lazily so --help works on a checkout without dependencies
-    installed (authlib ships transitively with schwab-py)."""
-    types: list[type] = []
-    try:
-        from authlib.integrations.base_client.errors import OAuthError
-        types.append(OAuthError)
-    except ImportError:
-        pass
-    try:
-        from authlib.oauth2.rfc6749.errors import OAuth2Error
-        types.append(OAuth2Error)
-    except ImportError:
-        pass
-    return tuple(types)
-
-
-def explain_token_failure(token_path: Path, err: Exception) -> str:
-    """Turn an authlib OAuth refresh failure into an actionable message.
-
-    `str(err)` carries Schwab's OAuth response (e.g. invalid_grant /
-    'Refresh token is invalid, expired or revoked') — a generic OAuth
-    error with no account data, safe to surface verbatim."""
-    detail = str(err).strip()
-    lines = [
-        "Schwab rejected the stored OAuth token — cannot authenticate.",
-        f"  Schwab said: {detail}",
-    ]
-    if "invalid_client" in detail.lower():
-        lines.append(
-            "This is a client-credential problem, not the token: check "
-            "SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET (or --client-id / "
-            "--client-secret)."
-        )
-    else:
-        lines += [
-            "The refresh token has expired or been revoked. Schwab refresh "
-            "tokens live 7 days from the last interactive login and cannot "
-            "be renewed programmatically.",
-            "Fix: mint a new one with login.py, then re-run this download:",
-            f"    login.py --token-path {token_path}",
-        ]
-    return "\n".join(lines)
 
 
 def write_json(path: Path, payload) -> None:
@@ -536,13 +490,6 @@ def fetch_transactions(client, account_hash: str, start: date, end: date, *,
 
 
 def run(args: argparse.Namespace) -> int:
-    try:
-        import schwab as schwab_pkg  # type: ignore
-    except ImportError:
-        raise SystemExit(
-            "schwab-py is not installed. Run: pip install -r requirements.txt"
-        ) from None
-
     if not args.token_path.is_file():
         raise SystemExit(
             f"Token file {args.token_path} does not exist. "
@@ -563,25 +510,20 @@ def run(args: argparse.Namespace) -> int:
     run_dir = None if args.dry_run else args.bronze_dir / ts
     trace = debugcap.HttpTrace(run_dir, log=log, enabled=args.debug)
 
-    # schwab-py's api_key / app_secret parameters take the OAuth Client ID
-    # and Client Secret that Schwab issues in its developer portal — the
-    # names do not match Schwab's own terminology. Both building the
-    # client and the first request force a token refresh, which is where an
-    # expired or revoked refresh token surfaces — catch the authlib error
-    # and explain it rather than letting a raw traceback escape.
-    oauth_errors = oauth_error_types()
+    # Both building the client and the first request can force a token
+    # refresh, which is where an expired or revoked refresh token surfaces:
+    # the authlib error is explained rather than let out as a traceback.
+    oauth_errors = _tokenclient.oauth_error_types()
     try:
         log.info("Loading client from token at %s", args.token_path)
-        client = schwab_pkg.auth.client_from_token_file(
-            token_path=str(args.token_path),
-            api_key=client_id,
-            app_secret=client_secret,
-        )
+        client = _tokenclient.client_from_token_file(
+            args.token_path, client_id, client_secret)
         configure_timeout(client, args.read_timeout)
         log.info("Listing account hashes ...")
         account_numbers = fetch_account_numbers(client, trace=trace)
     except oauth_errors as e:
-        raise SystemExit(explain_token_failure(args.token_path, e)) from e
+        raise SystemExit(
+            _tokenclient.explain_token_failure(args.token_path, e)) from e
     log.info("Schwab returned %d linked account(s)", len(account_numbers))
 
     if args.dry_run:

@@ -1390,6 +1390,7 @@ def test_a_dump_without_an_archive_does_not_hold_back_the_derive(
     bronze_dir = tmp_path / "bronze"
     older = bronze_dir / "20260101T000000Z"
     (older / "documents").mkdir(parents=True)
+    (older / "run.json").write_text('{"status": "complete"}')
     db = tmp_path / "ubs-web.db"
 
     walked: list[Path] = []
@@ -1414,9 +1415,62 @@ def test_a_dump_without_an_archive_does_not_hold_back_the_derive(
 
     newer = bronze_dir / "20260102T000000Z"
     (newer / "transactions").mkdir(parents=True)
+    (newer / "run.json").write_text(
+        '{"status": "partial", "partial_pass": "transactions"}')
     walked.clear()
     assert loader.main(argv) == 0
     assert walked == [older]
+
+
+# ============================================================
+# Which dumps load reads
+# ============================================================
+
+def _run_dir(root: Path, slug: str, manifest: str | None) -> Path:
+    d = root / slug
+    d.mkdir(parents=True)
+    if manifest is not None:
+        (d / "run.json").write_text(manifest)
+    return d
+
+
+@pytest.mark.parametrize("manifest", [
+    '{"status": "complete"}',
+    '{"status": "partial", "partial_pass": "cards"}',
+    '{"dry_run": false}',         # statusless legacy dump
+    '{not json',                  # unreadable: its error surfaces in the load
+])
+def test_load_reads_complete_partial_and_legacy_dumps(tmp_path, manifest):
+    d = _run_dir(tmp_path, "20260101T000000Z", manifest)
+    assert loader.skip_reason(d) is None
+
+
+@pytest.mark.parametrize("manifest", [
+    None,                         # crashed before the marker, or still writing
+    '{"status": "in-progress"}',
+    '{"status": "dry-run"}',
+    '{"status": "unknown-future-status"}',
+    '{"dry_run": true}',          # a legacy --dry-run shell
+])
+def test_load_skips_every_other_dump(tmp_path, manifest):
+    d = _run_dir(tmp_path, "20260101T000000Z", manifest)
+    assert loader.skip_reason(d) is not None
+
+
+def test_main_loads_only_the_loadable_dumps(tmp_path, monkeypatch):
+    bronze_dir = tmp_path / "bronze"
+    good = _run_dir(bronze_dir, "20260101T000000Z", '{"status": "complete"}')
+    part = _run_dir(bronze_dir, "20260102T000000Z",
+                    '{"status": "partial", "partial_pass": "cards"}')
+    _run_dir(bronze_dir, "20260103T000000Z", '{"status": "in-progress"}')
+    _run_dir(bronze_dir, "20260104T000000Z", None)
+    loaded: list[Path] = []
+    monkeypatch.setattr(loader, "load_dump",
+                        lambda _c, d, _v, _cache: loaded.append(d))
+    db = tmp_path / "ubs-web.db"
+    assert loader.main(["--silver-db", str(db),
+                        "--bronze-dir", str(bronze_dir)]) == 0
+    assert loaded == [good, part]
 
 
 def test_the_supplied_directory_is_not_a_bronze_dump(tmp_path):

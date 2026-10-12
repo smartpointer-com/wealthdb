@@ -264,10 +264,15 @@ class LaunchSitesHardenedTest(unittest.TestCase):
     def test_scan_finds_the_known_launch_sites(self):
         # Guards the guard: an AST matcher that silently matches nothing
         # would make the test above vacuously pass.
+        # Most collectors launch through collectorkit.launch, so the scan
+        # must find that shared site plus the few direct ones left.
         sites = list(_launch_sites())
         engines = [e for _, _, e, _ in sites]
-        self.assertGreaterEqual(engines.count("firefox"), 11)
+        self.assertGreaterEqual(engines.count("firefox"), 4)
         self.assertGreaterEqual(engines.count("chromium"), 5)
+        self.assertTrue(any(p.name == "launch.py" and e == "firefox"
+                            for p, _, e, _ in sites),
+                        "the shared launch site in collectorkit.launch")
 
     def test_no_collector_redefines_the_pref_set(self):
         # The prefs live in one place; a copy would drift out of sync. Tests
@@ -597,6 +602,108 @@ class PersistentCamoufoxTest(unittest.TestCase):
         self.assertEqual(_Cam.seen["firefox_user_prefs"], launch.firefox_prefs())
         self.assertTrue(_Cam.seen["humanize"] and _Cam.seen["geoip"])
 
+
+
+def _camoufox_stub(*, exit_error=None):
+    """A `camoufox.sync_api` whose Camoufox records its keywords and hands
+    out a context that records what is done to it."""
+    import types
+
+    class _Tracing:
+        def __init__(self):
+            self.started = None
+
+        def start(self, **kwargs):
+            self.started = kwargs
+
+    class _Context:
+        def __init__(self):
+            self.pages = []
+            self.tracing = _Tracing()
+            self.timeouts = {}
+
+        def set_default_navigation_timeout(self, ms):
+            self.timeouts["navigation"] = ms
+
+        def set_default_timeout(self, ms):
+            self.timeouts["action"] = ms
+
+    class _Cam:
+        seen = {}
+        exited = False
+
+        def __init__(self, **kwargs):
+            _Cam.seen = kwargs
+
+        def __enter__(self):
+            return _Context()
+
+        def __exit__(self, *exc):
+            _Cam.exited = True
+            if exit_error is not None:
+                raise exit_error
+
+    camoufox = types.ModuleType("camoufox")
+    camoufox.sync_api = types.SimpleNamespace(Camoufox=_Cam)
+    return _Cam, {"camoufox": camoufox, "camoufox.sync_api": camoufox.sync_api}
+
+
+class CamoufoxContextTest(unittest.TestCase):
+    def _open(self, exit_error=None, **kwargs):
+        import sys
+        cam, modules = _camoufox_stub(exit_error=exit_error)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(sys.modules, modules), \
+                mock.patch.object(launch, "prepare_profile_dir") as prep:
+            with launch.camoufox_context(Path(tmp), **kwargs) as context:
+                pass
+        prep.assert_called_once()
+        return cam, context
+
+    def test_hardened_headed_launch_without_a_trace(self):
+        cam, context = self._open()
+        self.assertEqual(cam.seen["firefox_user_prefs"], launch.firefox_prefs())
+        self.assertIs(cam.seen["headless"], False)
+        self.assertTrue(cam.seen["humanize"] and cam.seen["geoip"])
+        self.assertIsNone(context.tracing.started)
+        self.assertEqual(context.timeouts, {})
+        self.assertTrue(cam.exited)
+
+    def test_humanize_and_geoip_can_be_turned_off(self):
+        cam, _ = self._open(humanize=False, geoip=False)
+        self.assertIs(cam.seen["humanize"], False)
+        self.assertIs(cam.seen["geoip"], False)
+
+    def test_trace_has_no_dom_snapshots_unless_asked(self):
+        # A snapshot records every input's value, a typed password included.
+        _, context = self._open(trace=True)
+        self.assertEqual(context.tracing.started,
+                         {"screenshots": True, "snapshots": False,
+                          "sources": True})
+        _, context = self._open(trace=True, trace_snapshots=True)
+        self.assertIs(context.tracing.started["snapshots"], True)
+
+    def test_default_timeouts(self):
+        _, context = self._open(timeout_ms=45_000)
+        self.assertEqual(context.timeouts,
+                         {"navigation": 45_000, "action": 45_000})
+
+    def test_a_failed_close_is_logged_not_raised(self):
+        with self.assertLogs(launch.log, "WARNING") as logs:
+            self._open(exit_error=RuntimeError("Target closed"))
+        self.assertIn("RuntimeError: Target closed", logs.output[0])
+
+    def test_a_failed_close_never_replaces_the_body_error(self):
+        import sys
+        cam, modules = _camoufox_stub(exit_error=RuntimeError("closed"))
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(sys.modules, modules), \
+                mock.patch.object(launch, "prepare_profile_dir"), \
+                self.assertLogs(launch.log, "WARNING"), \
+                self.assertRaises(KeyError):
+            with launch.camoufox_context(Path(tmp)):
+                raise KeyError("the real diagnosis")
+        self.assertTrue(cam.exited)
 
 
 if __name__ == "__main__":

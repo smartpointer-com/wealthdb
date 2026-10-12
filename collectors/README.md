@@ -57,12 +57,20 @@ file-only verbs run on the host.
 ## Conventions shared across collectors
 
 **Credentials** live in `~/.secrets/<source>.env` (chmod `0600`,
-never committed), sourced as a bash script — use **single quotes**
-around any value containing `$`, `!`, or backticks so `source`
-doesn't mangle it. Credentials reach a tool via env vars only,
-never a `--password` flag. Each tool's README lists its specific
-variable names. See the repo-root [AGENTS.md](../AGENTS.md) §3 for
-the full authentication policy.
+never committed). The file is a bash script. The wrappers and the
+collectors both read it through bash, so bash's quoting rules apply:
+
+- Single quotes keep every character as written. Use them around a
+  password.
+- A single quote inside a value is written `'\''`.
+- Inside double quotes, `$`, backticks and `\` are special.
+- An unquoted space ends the value, and an unquoted ` #` starts a
+  comment.
+
+Credentials reach a tool via env vars only, never a `--password`
+flag. Each tool's README lists its specific variable names. See the
+repo-root [AGENTS.md](../AGENTS.md) §3 for the full authentication
+policy.
 
 **Session state** (cookie jars, token bundles, browser profiles)
 also lives under `~/.secrets/` (`<source>-state.json`,
@@ -236,11 +244,12 @@ rather than failing.)
 
 The `--mfa-timeout` defaults, in seconds:
 
-- 7200: schwab-web;
-- 3600: schwab-api, fidelity-web, plaid (its `link` verb);
-- 600: chase, amex, firstcitizens;
-- 300: swissquote, ubs-web, raiffeisen_at (the pushTAN timeout the
-  server declares).
+- 300 (five minutes): schwab-api, schwab-web, fidelity-web, chase,
+  amex, firstcitizens, swissquote, ubs-web. That includes a sign-in
+  done by hand over VNC.
+- raiffeisen_at: the pushTAN timeout the server declares.
+- 3600: plaid's `link` verb. That wait is the lifetime of the hosted
+  Link page, not of an MFA code.
 
 The other collectors read a code from stdin and set no wall clock.
 
@@ -352,7 +361,10 @@ merely asserts that the credential is *present*. A key that exists but is
 rejected is exactly what it exists to catch. So it makes the cheapest
 authenticated call the source allows and maps the answer onto its exit code.
 Where a static credential is the session (fred's API key, ubs-psn's RSA
-key), that call is the cheapest authenticated read. Two collectors differ:
+key), that call is the cheapest authenticated read. schwab-api reports
+its token file's age. It then refreshes the access token from that file
+the way `download` does and calls `/accounts/accountNumbers`. It opens
+no browser and fires no MFA. Two collectors differ:
 
 - **fidelity-web** has no session to probe. Its session lasts as long as
   the browser, so its `login` is a no-op that keeps an orchestrator's
@@ -539,7 +551,15 @@ uniform convention:
   terminal artefact where the collector writes no `run.json`. `load`
   takes a run whose status is `complete` or absent and skips every other
   status (`collectorkit.bronze.is_loadable_status`). `prune` reclaims
-  the runs `load` skips.
+  the runs `load` skips. Two collectors depart from this rule on
+  purpose:
+  - **ubs-psn** loads every zip in a run dir, whatever the run's
+    status, and its `prune` never deletes a run dir that holds a zip.
+    UBS deletes a queue file the moment it is fetched, so the zips of a
+    crashed download are the only copy.
+  - **ubs-web** has a second loadable status, `partial`. A `download
+    --only PASS` run covers one pass and finalises as `partial`. `load`
+    reads it, and `prune` keeps it.
 
 - **`prune`** deletes, across every timestamped run dir under the bronze
   root: the collector's nominated **debug-artefact subdirs from complete
@@ -669,9 +689,9 @@ restated here.
 | [`swissquote`](swissquote/) | Swissquote eBanking | scraped session + push | Docker |
 | [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | hybrid: Docker (Camoufox) + host venv |
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
-| [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) — full pipeline through gold, validated live |
-| [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch) — full pipeline through gold, validated; bank-supplied transaction listings in `supplied/` backfill the deep past |
-| [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) — full pipeline through gold, validated live; `login --check` reads the profile only, `download --dry-run` still signs in |
+| [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download), full pipeline through gold |
+| [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch), full pipeline through gold; bank-supplied transaction listings in `supplied/` backfill the deep past |
+| [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch), full pipeline through gold; `login --check` reads the profile only, `download --dry-run` still signs in |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a) | REST + mTAN | Docker |
 | [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |

@@ -15,23 +15,19 @@ prune engine) with ubs-web's configuration. Two things are reclaimed:
   ``/debug`` mount. ``prune`` reclaims that dir separately, via the
   shared engine's own ``--debug-dir``, which ages out each entry
   directly under it — an ``explore`` capture is one such entry.)
-* whole run dirs that are not complete dumps — a ``--dry-run`` shell
+* whole run dirs that ``load`` does not read — a ``--dry-run`` shell
   (``status: "dry-run"``, only a manifest and no exports), or a walk
   that crashed before finalising (``status: "in-progress"``, or no
-  ``run.json`` at all). ``load`` would otherwise keep re-ingesting
-  whatever partial artefacts such a dir holds; after pruning one, the
-  next ``load --force`` rebuild reflects the removal.
+  ``run.json`` at all). ``load`` skips such dirs, so pruning one only
+  reclaims disk.
 
 Completeness signal: the ``run.json`` ``status`` field the walk
 writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with the terminal status at the end; only ``"complete"`` counts as
-complete). Legacy dumps carry a full manifest with no ``status`` key.
-ubs-web's ``write_run_json`` runs only at the end of a real walk and
-records a ``dry_run`` bool, so a statusless manifest is a legacy dump
-that is complete iff it is present **and** not a ``--dry-run`` shell —
-hence the legacy predicate checks ``not m.get("dry_run")`` on top of
-``m is not None`` (a legacy ``--dry-run`` shell has a full-looking
-manifest and must not be classed complete). An
+with the terminal status at the end). ``"complete"`` and ``"partial"``
+(a ``download --only`` pass, which ``load`` reads) are kept. Legacy
+dumps carry a full manifest with no ``status`` key and a ``dry_run``
+bool, so a statusless manifest is kept when it does not record a
+``--dry-run`` shell (``load.legacy_manifest_is_complete``). An
 unreadable or corrupt ``run.json`` is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
@@ -53,23 +49,22 @@ import sys
 
 from collectorkit import debugcap, prune
 
+import load  # local module: the loader owns which dumps are load inputs
+
 
 def _is_complete(run_dir, meta):
-    # status_classification resolves "complete" → COMPLETE and any other
-    # status → NON_COMPLETE before the legacy fallback is consulted. The
-    # fallback fires only for a statusless (legacy) manifest: ubs-web's
-    # write_run_json ran once, at the end of a real walk, and recorded a
-    # dry_run bool, so a legacy dump is complete iff its manifest is
-    # present AND it was not a --dry-run shell. The extra `not m.get("dry_run")` vs
-    # fidelity-web's bare `m is not None` is load-bearing here: ubs-web's
-    # run.json always carries dry_run, so a legacy --dry-run shell has a
-    # full-looking manifest and must NOT be kept forever as "complete".
+    # A `partial` dump (a `download --only` pass) is one `load` reads, so
+    # it is kept like a complete one. Every other present status resolves
+    # in status_classification. The legacy fallback fires only for a
+    # statusless manifest, and it is `load`'s own rule: present and not a
+    # --dry-run shell. ubs-web's run.json always carries `dry_run`, so a
+    # legacy --dry-run shell has a full-looking manifest and must NOT be
+    # kept forever as complete.
+    if meta is not None and meta.get("status") == load.PARTIAL_STATUS:
+        return prune.COMPLETE, "partial (a download --only pass)"
     return prune.status_classification(
-        run_dir=run_dir,
-        meta=meta,
-        legacy_complete=lambda rd, m: m is not None
-        and not m.get("dry_run", False),
-    )
+        meta, run_dir=run_dir,
+        legacy_complete=lambda rd, m: load.legacy_manifest_is_complete(m))
 
 
 CONFIG = prune.PruneConfig(
@@ -81,12 +76,6 @@ CONFIG = prune.PruneConfig(
 
 def main(argv=None):
     return prune.main(CONFIG, argv, description=__doc__)
-
-
-def validate_target(path, bronze_dir):
-    """Back-compat shim for the local test suite: bind the shared
-    validator to this collector's config."""
-    return prune.validate_target(path, bronze_dir, CONFIG)
 
 
 if __name__ == "__main__":

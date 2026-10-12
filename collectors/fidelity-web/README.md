@@ -164,7 +164,7 @@ A few behaviours worth knowing:
 `vnc-login` pre-fills the credentials and waits for the human to click
 "Log in" and enter the code over VNC. The wrapper picks a free port in
 5900-6000 and prints it with a single-use VNC password. The wait
-defaults to one hour (`--mfa-timeout`). Without `--mode none`, the walk
+defaults to five minutes (`--mfa-timeout`). Without `--mode none`, the walk
 runs after the sign-in lands.
 
 ### Discovery sessions

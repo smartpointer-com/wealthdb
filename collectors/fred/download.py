@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 import time
 import urllib.error
@@ -172,25 +171,6 @@ def fetch_observations(base_url: str, series_id: str, api_key: str,
     return json.loads(body.decode("utf-8"))
 
 
-def _source_env_file(explicit: Path | None) -> None:
-    """Source an explicit --env-file (or $FRED_ENV_FILE) before credentials
-    are resolved, so a direct `download.py` run needs no wrapper. The file
-    is a bash script, sourced through bash as the wrapper sources it, so
-    both read the same values. This one is sourced last, so its values win.
-    A path that was asked for but is absent is an error, not a silent
-    fallback to whatever the environment happened to hold."""
-    path = explicit or (Path(os.environ["FRED_ENV_FILE"])
-                        if os.environ.get("FRED_ENV_FILE") else None)
-    if path is None:
-        return
-    if not path.is_file():
-        raise SystemExit(f"--env-file does not exist: {path}")
-    try:
-        envfile.source_env_file(path, prefer_file=True)
-    except ValueError as e:
-        raise SystemExit(str(e)) from e
-
-
 def _check_credential(base_url: str, api_key: str) -> int:
     """Ask FRED for one observation to prove the key is accepted.
 
@@ -240,7 +220,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
 
-    _source_env_file(args.env_file)
+    # A direct `download.py` run needs no wrapper: the named file is
+    # sourced through bash, as the wrapper sources it, and its values win.
+    envfile.source_named_env_file(args.env_file, "FRED_ENV_FILE")
     api_key = envfile.resolve_credential(args.api_key, "FRED_API_KEY",
                                          "--api-key")
     if args.check:

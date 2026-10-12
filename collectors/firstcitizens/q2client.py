@@ -18,7 +18,6 @@ download.py replays them over `page.request`.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import date
 from urllib.parse import quote
@@ -57,8 +56,8 @@ URL_MARK_MFA_ENTER = "/login/mfa/entertarget"
 URL_MARK_MFA_REGISTER = "/login/mfa/register"
 
 # Secure Access Code (2FA) screen controls — Q2/Stencil, pinned from the
-# 2026-08-13 explore capture. These are light-DOM host elements; Playwright
-# pierces the open shadow root for a q2-input's inner `<input>` and a q2-btn's
+# explore capture. These are light-DOM host elements; Playwright pierces
+# the open shadow root for a q2-input's inner `<input>` and a q2-btn's
 # inner button. The targets screen renders one btnTacTarget per delivery
 # method, its slotted text "Text: …" (SMS) or "Call: …" (voice).
 SEL_MFA_TARGET = "q2-btn[test-id='btnTacTarget']"
@@ -155,7 +154,7 @@ def account_history_url(account_id: str) -> str:
 # `data.transactionCount` (the total) and `data.oldestTransactionDate`. The
 # endpoint **narrows server-side** to a `postedDate` range (see
 # posted_date_range) — the account-detail "Time Period" / "Custom Date"
-# picker sends exactly that (measured 2026-08-15); `--lookback` rides it, and
+# picker sends exactly that; `--lookback` rides it, and
 # `data.transactionCount` reflects the window.
 HISTORY_PAGE_SIZE = 100
 HISTORY_SORT = "postedDate%1Fd"          # postedDate, descending
@@ -190,8 +189,8 @@ def account_export_url(account_id: str, fmt_handle: str,
                        posted_date: str | None = None) -> str:
     """POST endpoint for an activity export in `fmt_handle` (a key of
     EXPORT_FORMATS). A `posted_date` (see posted_date_range) narrows the
-    export to that window, exactly as it narrows the history (measured
-    2026-08-15). Raises KeyError on an unknown handle."""
+    export to that window, exactly as it narrows the history. Raises
+    KeyError on an unknown handle."""
     url = f"{MOBILEWS}/accountExport/{account_id}/{EXPORT_FORMATS[fmt_handle]}"
     if posted_date:
         url += "?postedDate=" + quote(posted_date)
@@ -332,19 +331,6 @@ def _balances(ext: dict) -> list[dict]:
         if desc or val:
             out.append({"description": desc, "value": val})
     return out
-
-
-_UNSAFE_STEM_RE = re.compile(r"[^\w.-]+")
-
-
-def safe_stem(value: str) -> str:
-    """A filesystem-safe stem from an account id / statement period: keep
-    word chars, dash, dot; collapse the rest to '-'; strip leading/trailing
-    dots and dashes so no path separator or traversal / dotfile survives.
-    Never empty. download.py names its bronze files with it, and load.py
-    maps those names back to account ids."""
-    stem = _UNSAFE_STEM_RE.sub("-", str(value)).strip("-.")
-    return stem or "item"
 
 
 def parse_statement_list(body: dict) -> list[dict]:

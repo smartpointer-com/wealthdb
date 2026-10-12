@@ -20,15 +20,6 @@ from collectorkit import compress
 TRANSACTIONS_FILE_RE = re.compile(r"^transactions_.*\.json$")
 
 
-def logical_bronze_path(path: Path) -> Path:
-    """Strip a compression suffix (`.zst` / `.gz`) to recover the LOGICAL
-    (uncompressed) bronze name. Plain paths pass through unchanged."""
-    for suffix in compress.VARIANT_SUFFIXES:
-        if path.name.endswith(suffix):
-            return path.with_name(path.name[:-len(suffix)])
-    return path
-
-
 def transaction_files(run_dir: Path) -> list[Path]:
     """On-disk `transactions_*.json` artefacts in a run dir, resolving
     compressed variants.
@@ -45,7 +36,7 @@ def transaction_files(run_dir: Path) -> list[Path]:
     for entry in run_dir.iterdir():
         if not entry.is_file():
             continue
-        logical = logical_bronze_path(entry)
+        logical = compress.logical_bronze_path(entry)
         if TRANSACTIONS_FILE_RE.match(logical.name):
             logical_names.add(logical.name)
     resolved: list[Path] = []

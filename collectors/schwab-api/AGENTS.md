@@ -16,9 +16,9 @@ applies on top of those shared rules.
 - The factor is a 2FA code read from stdin. `login` and `vnc-login` sign
   in and fire it, so they are real sessions (root
   [AGENTS.md](../../AGENTS.md) §2).
-- `login --check` reads only the token file: no browser, no network.
-  `download --dry-run` uses the stored token and signs in to nothing: it
-  refreshes the access token, lists account hashes, and writes nothing.
+- `login --check` and `download --dry-run` use the stored token and sign
+  in to nothing: they refresh the access token, list account hashes, and
+  write nothing to bronze. `login --check` also reports the token's age.
 
 ## 0. The login browser surface — auth only, never act on the account
 

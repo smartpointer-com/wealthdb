@@ -90,11 +90,5 @@ def main(argv=None) -> int:
     return status
 
 
-def validate_target(path, bronze_dir):
-    """The shared validator, bound to this collector's config, for the
-    tests."""
-    return prune.validate_target(path, bronze_dir, CONFIG)
-
-
 if __name__ == "__main__":
     sys.exit(main())

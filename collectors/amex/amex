@@ -9,12 +9,12 @@
 #
 # The sign-in must run in the browser (Akamai — DESIGN.md §A), and
 # `download` is the only verb that performs one: `login` folded into it (§L)
-# because Amex's sign-in budget is small enough that a captcha fires at
-# roughly seven in twenty minutes (§K), and a separate `login` doubled the
-# cost of every routine run for nothing. `download` answers a passcode from
-# the terminal when it has a TTY and registers the device while it is there;
-# `vnc-login` is the same walk behind a hand-driven sign-in, the only way to
-# answer a captcha. `load` and `prune` are pure Python. `explore` and
+# because Amex's sign-in budget is small enough that a handful of sign-ins
+# in a short window fires a captcha (§K), and a separate `login` doubled
+# the cost of every routine run for nothing. `download` answers a passcode
+# from the terminal when it has a TTY and registers the device while it is
+# there; `vnc-login` is the same walk behind a hand-driven sign-in, the only
+# way to answer a captcha. `load` and `prune` are pure Python. `explore` and
 # `vnc-login` forward a free 5900-6000 host port for the VNC handoff.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.

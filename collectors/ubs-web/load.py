@@ -12,6 +12,9 @@ Load semantics
   names. Each dump is loaded atomically (one transaction); on
   failure the partial dump is rolled back and the loader can retry
   on the next run.
+- A dump is loaded when its run.json status is `complete` or `partial`
+  (a `download --only` pass), or when it is a statusless legacy
+  manifest; any other dump is skipped (see `skip_reason`).
 - Already-loaded dumps are skipped via the `dump_runs` table.
 - Transactions are UPSERTed on the compound key
   (`transaction_external_id`, `account_external_id`). Re-running a
@@ -226,6 +229,59 @@ def scan_bronze(bronze_dir: Path) -> list[Path]:
          if p.is_dir() and bronze.RUN_DIR_RE.match(p.name)),
         key=lambda p: p.name,
     )
+
+
+# The run.json status of a `download --only PASS` dump. It covers one
+# surface, so it is not "complete", but what it holds is a finished pass
+# and `load` reads it.
+PARTIAL_STATUS = "partial"
+
+
+def legacy_manifest_is_complete(meta: dict | None) -> bool:
+    """Whether a statusless (legacy) run.json marks a finished dump.
+
+    A legacy manifest was written once, at the end of a walk, with a
+    `dry_run` bool. So it marks a finished dump when it is present and
+    does not record a `--dry-run` shell, which holds no exports.
+    """
+    return meta is not None and not meta.get("dry_run", False)
+
+
+def skip_reason(dump_dir: Path) -> str | None:
+    """Why `load` skips `dump_dir`, or None when it loads it.
+
+    `load` reads a `complete` dump, a `partial` one and a statusless
+    legacy one. It skips a dir with no run.json (a crashed or running
+    walk), an `in-progress` or `dry-run` status, any status it does not
+    know, and a legacy `--dry-run` shell. `prune` keeps exactly the
+    dumps `load` reads. An unreadable run.json is loaded, so its error
+    surfaces in the load.
+    """
+    run_json = dump_dir / "run.json"
+    if not run_json.is_file():
+        return "no run.json (crashed or still writing)"
+    status = bronze.run_status(run_json)
+    if status is None:
+        meta = bronze.read_manifest(run_json)
+        if meta is not None and not legacy_manifest_is_complete(meta):
+            return "legacy --dry-run shell"
+        return None
+    if bronze.is_loadable_status(status) or status == PARTIAL_STATUS:
+        return None
+    return f"run.json status={status!r}"
+
+
+def loadable_dumps(dumps: list[Path]) -> list[Path]:
+    """The dumps of `dumps` that `load` reads (see `skip_reason`); each
+    skipped one is logged."""
+    out = []
+    for dump_dir in dumps:
+        reason = skip_reason(dump_dir)
+        if reason is None:
+            out.append(dump_dir)
+        else:
+            log.info("skipping %s: %s", dump_dir.name, reason)
+    return out
 
 
 def already_loaded(conn: sqlite3.Connection, dump_dir: Path) -> bool:
@@ -2410,9 +2466,10 @@ def main(argv: list[str]) -> int:
     silver.apply_migrations(conn, migrations_dir)
     schema_version = silver.current_schema_version(conn)
 
-    dumps = scan_bronze(args.bronze_dir)
+    found = scan_bronze(args.bronze_dir)
     log.info("found %d bronze dump dir(s) under %s",
-             len(dumps), args.bronze_dir)
+             len(found), args.bronze_dir)
+    dumps = loadable_dumps(found)
 
     # Before the dump loop, so the archive walk inside it already sees the
     # supplied rows — which is what makes a `--force` rebuild pick them up

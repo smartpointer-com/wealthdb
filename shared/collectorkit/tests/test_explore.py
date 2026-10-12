@@ -14,7 +14,9 @@ import io
 import json
 import logging
 import re
+import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import types
@@ -422,6 +424,210 @@ class SessionTest(_Tmp):
         self.assertEqual(reason, "timeout")
         self.assertEqual([e["kind"] for e in self._events()],
                          ["started", "stopped"])
+
+
+# A minimal DOM for running the detector script under node: the document
+# holds a username field, a password field and a code field, each with a
+# typed value the click log must never carry.
+_NODE_HARNESS = r"""
+const out = [];
+console.log = (s) => out.push(s);
+let onClick = null;
+global.Node = {ELEMENT_NODE: 1};
+global.location = JSON.parse(process.argv[process.argv.length - 1]);
+const el = (tag, type, id, value) => ({
+  tagName: tag, type: type, id: id, value: value, innerText: '',
+  className: 'c', nodeType: 1, parentElement: null,
+  previousElementSibling: null,
+  getAttribute: (k) => ({name: id, type: type}[k] || null),
+});
+const user = el('INPUT', 'text', 'user', 'SYNTHETIC-USER-VALUE');
+const pwd = el('INPUT', 'password', 'pwd', 'SYNTHETIC-PASSWORD-VALUE');
+const code = el('INPUT', 'text', 'otp', 'SYNTHETIC-CODE-VALUE');
+const button = el('BUTTON', 'submit', 'go', '');
+button.innerText = '  Sign in ';
+global.document = {
+  addEventListener: (type, handler) => { onClick = handler; },
+  querySelector: (sel) => sel.includes('password') ? pwd
+      : sel.includes('otp') ? code
+      : sel.includes('user') ? user : null,
+  documentElement: {},
+};
+global.MutationObserver = class { observe() {} };
+eval(require('fs').readFileSync(0, 'utf8'));
+for (const t of [user, pwd, code, button]) onClick({target: t, clientX: 1, clientY: 2});
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class ClickRecorderJsTest(unittest.TestCase):
+    PREFIX = "__CK_EVENT__ "
+
+    def _run(self, js, url="https://www.example.com/login"):
+        from urllib.parse import urlparse
+        u = urlparse(url)
+        loc = json.dumps({"hostname": u.hostname, "pathname": u.path,
+                          "href": url})
+        done = subprocess.run(["node", "-e", _NODE_HARNESS, "--", loc],
+                              input=js, capture_output=True, text=True,
+                              check=True)
+        lines = json.loads(done.stdout)
+        self.assertTrue(all(x.startswith(self.PREFIX) for x in lines))
+        return [json.loads(x[len(self.PREFIX):]) for x in lines]
+
+    def _js(self, **kwargs):
+        kwargs.setdefault("host_re", re.compile(r"(^|\.)example\.com$", re.I))
+        kwargs.setdefault("user_selector", "input[name*='user' i]")
+        return explore.click_recorder_js(self.PREFIX, **kwargs)
+
+    def test_clicks_never_carry_a_field_value(self):
+        events = self._run(self._js())
+        clicks = [e for e in events if e["kind"] == "click"]
+        self.assertEqual([c["text"] for c in clicks],
+                         ["", "<redacted>", "", "Sign in"])
+        self.assertNotIn("SYNTHETIC", json.dumps(events))
+        self.assertEqual(clicks[0]["attrs"], {"name": "user", "type": "text"})
+
+    def test_reports_the_form_and_the_code_field(self):
+        events = self._run(self._js())
+        kinds = [e["kind"] for e in events if e["kind"] != "click"]
+        self.assertEqual(kinds, ["login-form-detected", "otp-field-detected"])
+        self.assertEqual(events[0]["fields"], "up")
+        self.assertEqual(events[1]["id"], "otp")
+
+    def test_detectors_are_host_and_path_gated(self):
+        js = self._js()
+        events = self._run(js, "https://www.example.com.evil.test/login")
+        self.assertEqual({e["kind"] for e in events}, {"click"})
+        js = self._js(path_re=r"/login")
+        self.assertEqual({e["kind"] for e in self._run(
+            js, "https://www.example.com/app")}, {"click"})
+        self.assertIn("login-form-detected",
+                      {e["kind"] for e in self._run(js)})
+
+    def test_a_disabled_detector_stays_quiet(self):
+        js = self._js(password_selector=None, otp_selector=None,
+                      user_selector="input[name='nothing']")
+        self.assertEqual({e["kind"] for e in self._run(js)}, {"click"})
+
+    def test_own_code_kind_and_selector(self):
+        js = self._js(otp_selector="input[name*='otp' i]",
+                      otp_kind="totp-field-detected")
+        self.assertIn("totp-field-detected",
+                      [e["kind"] for e in self._run(js)])
+
+
+class _Field:
+    """A Playwright locator's `.first`, holding one field's value."""
+
+    def __init__(self, *, present=True, visible=True, value="",
+                 sticky_prefix=""):
+        self.present, self.visible, self.value = present, visible, value
+        # An autofill that prepends to the first fill, as a stray saved
+        # login would.
+        self.sticky_prefix = sticky_prefix
+        self.fills = []
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 1 if self.present else 0
+
+    def is_visible(self):
+        return self.visible
+
+    def input_value(self, timeout=None):
+        return self.value
+
+    def fill(self, value, timeout=None):
+        self.fills.append(value)
+        self.value = (self.sticky_prefix + value) if value else ""
+        self.sticky_prefix = ""
+
+
+class _FormFrame:
+    def __init__(self, url, fields):
+        self.url = url
+        self.fields = fields
+
+    def locator(self, selector):
+        return self.fields.get(selector, _Field(present=False))
+
+
+class PrefillLoginTest(unittest.TestCase):
+    HOST = re.compile(r"(^|\.)example\.com$", re.I)
+    USER, PWD, ALT = "#user", "input[type='password']", "select#user"
+
+    def _page(self, *frames):
+        return types.SimpleNamespace(frames=list(frames))
+
+    def _fill(self, page, filled=None, **kwargs):
+        return explore.prefill_login(
+            page, USERNAME, PASSWORD, set() if filled is None else filled,
+            host_re=self.HOST, user_selector=self.USER, log=log, **kwargs)
+
+    def test_fills_both_fields_once(self):
+        user, pwd = _Field(), _Field()
+        page = self._page(_FormFrame("https://login.example.com/",
+                                     {self.USER: user, self.PWD: pwd}))
+        filled = set()
+        self.assertTrue(self._fill(page, filled))
+        self.assertEqual((user.value, pwd.value), (USERNAME, PASSWORD))
+        user.value = pwd.value = ""          # the page re-renders the form
+        self.assertFalse(self._fill(page, filled))
+        self.assertEqual((user.fills, pwd.fills), ([USERNAME], [PASSWORD]))
+
+    def test_never_fills_a_third_party_frame(self):
+        user, pwd = _Field(), _Field()
+        page = self._page(_FormFrame("https://www.example.com.evil.test/",
+                                     {self.USER: user, self.PWD: pwd}))
+        self.assertFalse(self._fill(page))
+        self.assertEqual(pwd.fills, [])
+
+    def test_a_lone_password_shaped_field_is_left_alone(self):
+        # A code-entry step: no username control beside it.
+        pwd = _Field()
+        page = self._page(_FormFrame("https://www.example.com/",
+                                     {self.PWD: pwd}))
+        self.assertFalse(self._fill(page))
+        self.assertEqual(pwd.fills, [])
+
+    def test_a_remembered_username_control_is_left_alone(self):
+        alt, pwd = _Field(value="remembered"), _Field()
+        page = self._page(_FormFrame("https://www.example.com/",
+                                     {self.ALT: alt, self.PWD: pwd}))
+        self.assertTrue(self._fill(page, user_alt_selector=self.ALT))
+        self.assertEqual((alt.fills, pwd.value), ([], PASSWORD))
+
+    def test_a_hand_typed_value_is_kept_unless_overwrite(self):
+        user, pwd = _Field(value="typed"), _Field()
+        frame = _FormFrame("https://www.example.com/",
+                           {self.USER: user, self.PWD: pwd})
+        self._fill(self._page(frame))
+        self.assertEqual(user.value, "typed")
+        user2 = _Field(value="masked")
+        frame.fields[self.USER] = user2
+        self._fill(self._page(frame), overwrite=True)
+        self.assertEqual(user2.value, USERNAME)
+
+    def test_a_concatenating_autofill_is_cleared_and_retried(self):
+        user, pwd = _Field(sticky_prefix="saved"), _Field()
+        page = self._page(_FormFrame("https://www.example.com/",
+                                     {self.USER: user, self.PWD: pwd}))
+        self.assertTrue(self._fill(page))
+        self.assertEqual(user.value, USERNAME)
+        self.assertEqual(user.fills, [USERNAME, "", USERNAME])
+
+    def test_only_the_first_form_frame_is_filled(self):
+        a = {self.USER: _Field(), self.PWD: _Field()}
+        b = {self.USER: _Field(), self.PWD: _Field()}
+        page = self._page(_FormFrame("https://www.example.com/", a),
+                          _FormFrame("https://login.example.com/", b))
+        self._fill(page)
+        self.assertEqual(b[self.PWD].fills, [])
 
 
 if __name__ == "__main__":

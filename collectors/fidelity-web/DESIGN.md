@@ -759,12 +759,12 @@ same for a bounce to the sign-in page.
 The working config: **Camoufox + `os="macos"` + `humanize=True` +
 `geoip=True`**, headed against Xvfb. This combination gets the
 login flow past Akamai Bot Manager (Fidelity's bot-detection
-vendor). The configurations tried at credential submit:
+vendor). The configurations and their results at credential submit:
 
 | Rung | Configuration | Result |
 | --- | --- | --- |
-| 1 | Vanilla Playwright Chromium | Akamai-blocked at credential submit (`dom-system-error-header` "Sorry, we can't complete this action right now"). |
-| 3a | Camoufox + `os="macos"`, no behavioural mimicry | Same block. The static fingerprint stack alone was not enough. |
+| 1 | Vanilla Playwright Chromium | Akamai blocks credential submit (`dom-system-error-header` "Sorry, we can't complete this action right now"). |
+| 3a | Camoufox + `os="macos"`, no behavioural mimicry | Same block. The static fingerprint stack alone is not enough. |
 | 3b | + `humanize=True` (cursor trajectories) + `geoip=True` (locale/tz match egress IP) + **one initial VNC-driven login** to seed the Akamai trust cookie | Works. Subsequent auto-driven logins (CLI-MFA or auto-MFA-skip via device-trust cookie) succeed. |
 
 The first-ever login on a fresh profile dir requires the VNC
@@ -776,7 +776,7 @@ in the profile dir, automated clicks on the button work fine.
 `vnc-login` (the `--vnc` flag) drives this: it pre-fills the
 credentials, prints a READY banner, and polls for the post-auth URL
 while the login + 2FA are completed by hand over VNC. The wait
-defaults to an hour (`--mfa-timeout 3600`).
+defaults to five minutes (`--mfa-timeout 300`).
 
 ## 7. Login + MFA flow
 
@@ -995,22 +995,21 @@ load-bearing and easy to miss:
 #### 8.4.1 The table lags the filter by a whole apply
 
 A freshly-applied Custom range hands back the **previous** range's
-rows — exactly, repeatably, one apply behind. Three windows requested
-in sequence exported the default 30 days, then window 1's rows, then
-window 2's.
+rows — exactly, repeatably, one apply behind: the next window exports
+the one before it.
 
 Nothing on the page reports this. The filter's label updates the
 instant Apply is pressed, `networkidle` is satisfied while the old
 rows are still loaded, and the XHR that Apply fires completes before
-the grid re-renders. Each was tried and each passed while the export
-was stale.
+the grid re-renders. Each of these signals reads as settled while the
+export is still stale.
 
 So the export is judged on its CONTENT, which is the only thing here
 that cannot lie about which filter produced it:
 `activity_export_matches` requires an export's own rows to fall inside
 the window it was asked for, and a window that fails is pulled again
-after a short settle (`ACTIVITY_EXPORT_ATTEMPTS`). In practice the
-second pull always lands. A window that never comes back with its own
+after a short settle (`ACTIVITY_EXPORT_ATTEMPTS`). The
+second pull lands. A window that never comes back with its own
 rows is recorded `ok: false` with the span it actually held — the rows
 themselves are real and would load, but the window is not covered, and
 saying otherwise is how a hole hides.
@@ -1031,8 +1030,8 @@ Asking only for windows no wider than the page's own default filter
 then always a **superset** of what was asked for, never a truncation:
 extra rows are a no-op because an activity row's id is derived from
 its content and reloading it replaces itself, whereas missing rows are
-a hole nothing reports. A 93-day window had the opposite property and
-came back silently holding 30 days.
+a hole nothing reports. A 93-day window has the opposite property and
+can come back silently holding 30 days.
 
 Every window's result also records `rows` and the `covers` span the
 CSV actually holds, so an export that came back short — or empty,
@@ -1172,8 +1171,9 @@ exposed wrapper label (`Roth IRA`, `Traditional IRA`,
 `Individual TOD`, etc.).
 
 Fidelity emits no per-account registration label on any surface the
-walk scrapes. A sweep of the captured DOM for keyword shapes (`Roth IRA`, `Coverdell`,
-`HSA`, `TOD`, `WROS`, `Joint`, `Individual`, `Trust`, …) across:
+walk scrapes. Keyword shapes (`Roth IRA`, `Coverdell`, `HSA`, `TOD`,
+`WROS`, `Joint`, `Individual`, `Trust`, …) match no structured
+registration tag on:
 
 * account-selector sidebar (`balances.html`, `performance.html`,
   every `screenshots/*-positions-*.html`)
@@ -1184,10 +1184,9 @@ walk scrapes. A sweep of the captured DOM for keyword shapes (`Roth IRA`, `Cover
 * the consolidated positions CSV (`Account Name` carries only
   the account nickname)
 
-…finds no structured registration tag. The keyword hits it does
-find ("Health Savings Account", "Strategic Disciplines",
-"Fidelity Wealth Services") are all in page-wide disclosure /
-footer text, not per-account tags.
+The keyword hits that do appear ("Health Savings Account",
+"Strategic Disciplines", "Fidelity Wealth Services") are all in
+page-wide disclosure / footer text, not per-account tags.
 
 For the account categories silver currently models, the
 registration is implied by `portfolios.kind`:
@@ -1220,9 +1219,8 @@ inside `trust_managed`. Fidelity's relevant product taxonomy
 (`Fidelity® Wealth Services`, `Fidelity® Strategic Disciplines`,
 `Portfolio Advisory Services`, `Fidelity Personal and Workplace
 Advisors`, the generic `Managed Accounts` umbrella) appears
-ONLY in page-wide disclosure / footer / marketing-sidebar text
-across every captured surface — none of it surfaces as a
-per-account tag. The current default of `discretionary` is the
+ONLY in page-wide disclosure, footer and marketing-sidebar text,
+never as a per-account tag. The current default of `discretionary` is the
 common case for the trust-account pattern silver models; gold
 can override per-account if it has out-of-band knowledge that
 a specific trust agreement is an advisory rather than
@@ -1272,9 +1270,8 @@ selections`, …).
 API rooted at `/fc-services/api/v1/`. Akamai sensor beacons are
 present on the host (the random-path `POST`s of Bot Manager), so the
 browser-everywhere runtime stays; data calls themselves are plain
-cookie-authenticated GETs — `page.request` territory, no DOM
-scraping needed. Every observed API call returned 2xx; no challenge
-fired mid-session.
+cookie-authenticated GETs that return 2xx — `page.request` territory,
+no DOM scraping needed. No challenge fires mid-session.
 
 **Identity bootstrap.** `POST /fc-services/api/v1/identity/self`
 returns `{loginKeyId, partyId}`; `GET /user/<partyId>/accounts` is
@@ -1294,7 +1291,7 @@ number is 7 digits, confirming §3.1's exclusion criterion.
 | Pool exchanges | `poolExchange?accountNumber&year` | year-scoped |
 | Gift4Giving | `gift?donorAccountNumber&page&size&year` | paginated envelope |
 | Adjustments | `transactionHistory/adjustment?accountNumber&year&page&size` | year-scoped ("all other transactions") |
-| Document listing | `document?accountNumber&documentType&fromDate&endDate` | types observed: `STATEMENT` (quarterly + year-end), `GRANT` (donor grant confirmations), `CONTRIBUTION`, `FORM_8283` (IRS form). Rows carry `id`, `documentName`, `correspondenceDate`, `generatedDate`, and the composite `legacyDocumentKey` the download needs |
+| Document listing | `document?accountNumber&documentType&fromDate&endDate` | types: `STATEMENT` (quarterly + year-end), `GRANT` (donor grant confirmations), `CONTRIBUTION`, `FORM_8283` (IRS form). Rows carry `id`, `documentName`, `correspondenceDate`, `generatedDate`, and the composite `legacyDocumentKey` the download needs |
 | Document fetch | `document/download?accountNumber&legacyDocumentKey&documentType` | returns `application/pdf` directly — no base64-in-JSON dance (unlike the retail document center, §8.5) |
 
 **Server-side CSV exports.** Every history surface also has a
@@ -1377,10 +1374,10 @@ every PDF is a valid `%PDF`, and the JSON grant count matches the CSV
 export. The `--dry-run` path hops, bootstraps and counts while writing
 nothing.
 
-**Several giving accounts.** The roster loop iterates any number of
-giving accounts. The year-union and pagination logic is uniform per
-account. One detail may still differ on a login with several DAFs:
-whether the party scope is shared or per account.
+**Several giving accounts.** The roster loop iterates every giving
+account the roster returns. The year-union and pagination logic is
+uniform per account. The `partyId` and the JWT are read once per login
+and shared across the accounts.
 
 ### 12.3 Silver + gold model
 
