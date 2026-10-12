@@ -394,9 +394,10 @@ subcommands:
   help       this message
 
 Two endpoints: /mcp serves full data, /mcp/privacy redacts amounts,
-account numbers and the names taken off statements. Every call reads the live database read-only, so
-answers are as fresh as the last load. Published on 127.0.0.1 and [::1]
-only. Enable it with an "mcp" block in wealthdb.cfg:
+account numbers and the names taken off statements. Every call reads the
+live database read-only, so answers are as fresh as the last load.
+Published on 127.0.0.1 and [::1] only. Enable it with an "mcp" block in
+wealthdb.cfg:
 
       "mcp": { "enabled": true, "port": 3300 }
 

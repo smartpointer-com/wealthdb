@@ -74,7 +74,7 @@ test: test-wealthdb test-web test-mcp test-collectors test-collectorkit test-wra
 
 # ---- install -----------------------------------------------------------
 # Symlink the two top-level entry points onto PATH so they work from any
-# directory (and the repo dir no longer needs to be on PATH):
+# directory, without the repo dir on PATH:
 #   wealthdb         the gold-engine wrapper (wealthdb/wealthdb)
 #   wealthdb-collect the collector dispatcher (bin/wealthdb-collect)
 # BINDIR defaults to ~/.local/bin (the XDG-conventional user bin dir,
@@ -124,8 +124,8 @@ BASE_IMAGES := base-python base-playwright base-camoufox
 # attestation by default, and it embeds build metadata, so the image digest
 # changes on EVERY build even when all layers are CACHED. A base image whose
 # digest moves invalidates `FROM wealthdb/base-*` in every Docker
-# collector, so each one re-ran its whole Dockerfile (pip install and
-# all) on every build.
+# collector, so each one would re-run its whole Dockerfile (pip install
+# and all) on every build.
 # These images are local-only and never pushed; nothing consumes the
 # attestation.
 base-images:
@@ -519,6 +519,7 @@ help:
 	@echo "  make build-collectors   build every collector"
 	@echo "  make test-collectors    test every collector"
 	@echo "  make test-collectorkit  run the shared collectorkit test suite"
+	@echo "  make test-wrappers      run the shared wrapper unit tests"
 	@echo "  make lint               gofmt + go vet (engine), ruff (Python)"
 	@echo "  make lint-go / lint-python"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"

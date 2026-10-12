@@ -40,9 +40,10 @@ _resolve_knobs() {
 # _load_config reads the resolved `web` settings (enabled, port), the
 # gold DB path, the default currency and the default reading of a
 # missing cost basis from wealthdb.cfg, via the engine's `web-config`
-# subcommand — the one component that parses + validates the JSON. The default currency stays in
-# WEALTHDB_DEFAULT_CURRENCY and the default reading of a missing cost
-# basis in WEALTHDB_MISSING_BASIS, which _provision passes on.
+# subcommand — the one component that parses + validates the JSON. The
+# default currency stays in WEALTHDB_DEFAULT_CURRENCY and the default
+# reading of a missing cost basis in WEALTHDB_MISSING_BASIS, which
+# _provision passes on.
 _load_config() {
     _require_docker
     local out
@@ -244,8 +245,7 @@ _gen_password() {
 # _materialize refreshes the report_returns and report_gains tables in
 # LIVE gold via the engine's hidden web-materialize subcommand, so the
 # snapshot taken next carries returns and gains as fresh as the
-# holdings. An
-# engine-owned write, mutually exclusive with `wealthdb load` under the
+# holdings. An engine-owned write, mutually exclusive with `wealthdb load` under the
 # engine's write mutex (a concurrent load makes it fail, not wait); it
 # runs BEFORE _snapshot, so a failure aborts under web_main's `set -e`
 # and the previous snapshot keeps serving.
@@ -291,8 +291,11 @@ _provision() {
         pwhint="generated, saved to $pwfile"
     fi
     echo "web: provisioning Metabase (admin + gold database + report models + dashboards)…" >&2
-    if python3 "$HERE/provision.py" --base "http://127.0.0.1:$PORT" \
-         --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold \
+    # The password travels in the environment, never in argv, where any
+    # process on the host could read it from `ps`.
+    if WEALTHDB_WEB_ADMIN_PASSWORD="$pw" python3 "$HERE/provision.py" \
+         --base "http://127.0.0.1:$PORT" \
+         --email "$email" --gold-path /gold/wealthdb.db --db-name gold \
          --default-currency "${WEALTHDB_DEFAULT_CURRENCY:-USD}" \
          --missing-basis "${WEALTHDB_MISSING_BASIS:-ignore}"; then
         PROV_LOGIN="log in as $email (password $pwhint)"
@@ -364,9 +367,16 @@ EOF
 web_main() {
     set -euo pipefail
     # Optional secrets env for admin creds etc. (repo convention:
-    # secrets live in ~/.secrets, never in the config file).
+    # secrets live in ~/.secrets, never in the config file). It is a bash
+    # script: syntax-checked, then sourced with every assignment exported.
     local envf="${WEALTHDB_WEB_ENV_FILE:-$HOME/.secrets/wealthdb-web.env}"
-    [ -f "$envf" ] && . "$envf"
+    if [ -f "$envf" ]; then
+        bash -n "$envf" || { echo "web: $envf has a syntax error" >&2; return 1; }
+        set -a
+        # shellcheck source=/dev/null
+        . "$envf"
+        set +a
+    fi
     _resolve_knobs
     local cmd="${1:-help}"
     if [ "$#" -gt 0 ]; then shift; fi
@@ -379,7 +389,7 @@ web_main() {
         refresh)          web_refresh ;;
         logs)             web_logs ;;
         help|-h|--help)   web_help ;;
-        *) printf 'web: unknown subcommand %q\n\n' "$cmd" >&2; web_help; return 2 ;;
+        *) printf 'web: unknown subcommand %q\n\n' "$cmd" >&2; web_help >&2; return 2 ;;
     esac
 }
 

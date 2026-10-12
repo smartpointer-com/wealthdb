@@ -265,9 +265,9 @@ check("...as stacked bands over a continuous axis",
 
 # The merchant rankings rank merchants. A line resolved to a delta — a
 # gift, a card bill, cash out of an ATM — is not a merchant
-# transaction, and a card bill now carries the issuer it was paid to as
-# its merchant (migration 0052), so a blank merchant no longer stands
-# for "not a delta". Both rankings exclude the delta CATEGORIES — a
+# transaction, and a card bill carries the issuer it was paid to as its
+# merchant (migration 0052), so a blank merchant does not stand for
+# "not a delta". Both rankings exclude the delta CATEGORIES — a
 # delta is primary-level, so the two category columns are equal on one
 # — and still require a name to rank by. Only the rankings filter: a
 # transaction list shows every line.
@@ -632,8 +632,8 @@ section("gold's spending label and the provisioner's constant")
 # than one by number keeps this correct when a later migration re-issues
 # the view; set equality fails from either direction, and from a third
 # spelling appearing.
-GOLD_MIGRATIONS = (os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                   + "/wealthdb/internal/gold/migrations")
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GOLD_MIGRATIONS = os.path.join(_REPO, "wealthdb", "internal", "gold", "migrations")
 MIGRATION_SQL = "\n".join(
     open(os.path.join(GOLD_MIGRATIONS, f), encoding="utf-8").read()
     for f in sorted(os.listdir(GOLD_MIGRATIONS)) if f.endswith(".sql"))
@@ -796,8 +796,6 @@ check("every Income tile is defined",
 # variable: a tile that summed every reporting currency would be
 # silently and plausibly wrong.
 _income_sql = {n: (sql_of(CARDS[n][2]) or "") for n in INCOME_CARD_NAMES if n in CARDS}
-_qdefs = p.question_defs(1, MID)
-_pdefs = p.privacy_card_defs(1, MID)
 check("every Income tile is native over web_income",
       all("web_income" in q for q in _income_sql.values()),
       [n for n, q in _income_sql.items() if "web_income" not in q])
@@ -825,11 +823,11 @@ check("Top 50 payers excludes lines with no payer",
 # The rings: the money one keeps its total in the hole, the share one
 # has none to keep.
 check("the Income ring shows its total",
-      _qdefs["Income by type"][3].get("pie.show_total") is True,
-      _qdefs["Income by type"][3])
+      _QDEFS["Income by type"][3].get("pie.show_total") is True,
+      _QDEFS["Income by type"][3])
 check("the Income share ring shows no total",
-      _pdefs["Income by type (privacy)"][4].get("pie.show_total") is False,
-      _pdefs["Income by type (privacy)"][4])
+      _PDEFS["Income by type (privacy)"][4].get("pie.show_total") is False,
+      _PDEFS["Income by type (privacy)"][4])
 
 # The twin redacts by dropping, not disguising.
 #
@@ -843,8 +841,7 @@ _twin_sql = {n: q for n, q in _twin_sql.items() if q}
 # CTE — that is how the ranking keeps its shape — but no projection the
 # card renders may carry one.
 #
-# Four things this reader has to get right, each of which was a hole
-# once:
+# Four things this reader has to get right:
 #   - COMMENTS are stripped first, so `-- SELECT payer_name` neither
 #     hides a projection nor invents one.
 #   - SUBQUERIES are stripped, so a scan cannot land inside
@@ -965,8 +962,8 @@ check("...and it does not read a commented-out one",
       _projections("-- SELECT payer_name\nSELECT rank FROM m") == [" rank "],
       _projections("-- SELECT payer_name\nSELECT rank FROM m"))
 # A name wrapped in a function call is still a name. Dropping every
-# parenthesised group — the earlier reading — deleted the argument along
-# with the parens and saw an empty projection.
+# parenthesised group would delete the argument along with the parens
+# and see an empty projection.
 check("...and it sees a column wrapped in a function call",
       any("payer_name" in pr for pr in _projections("SELECT upper(payer_name) AS p FROM m")),
       _projections("SELECT upper(payer_name) AS p FROM m"))
@@ -987,9 +984,8 @@ check("the Income twin has a card for every base tile",
        if n not in p.PRIVACY_EXEMPT_CARDS and p.privacy_name(n) not in CARDS])
 
 # The dashboards and their pickers.
-_dash = p.dashboard_defs()
 check("the Income dashboard and its twin are laid out",
-      "Income" in _dash and "Income (privacy)" in _dash)
+      "Income" in DEFS and "Income (privacy)" in DEFS)
 _income_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income")]
 check("the Income dashboard carries five pickers",
       _income_pickers == ["currency", "time_range", "source", "account", "type"],
@@ -1059,13 +1055,12 @@ check("no card name is defined twice, nor shared with a model",
 # twin exists not to show. The picker mapping being filtered out at the
 # dashboard is not enough: the card carries the tag either way.
 # The population is the privacy dashboards' OWN TILE LISTS, not every
-# card whose name ends in " (privacy)". The two differ by exactly the
-# shape that produced the bug: a PRIVACY-EXEMPT card keeps its base name
-# and is placed on the twin unchanged (dashboard_defs maps a tile
-# through privacy_name only when the name is not exempt), so a
-# suffix-selected population would not contain it. That is how a native
-# exempt card carrying an `account` field filter reached the Income
-# twin in the first place.
+# card whose name ends in " (privacy)". The two differ: a
+# PRIVACY-EXEMPT card keeps its base name and is placed on the twin
+# unchanged (dashboard_defs maps a tile through privacy_name only when
+# the name is not exempt), so a suffix-selected population would not
+# contain it, and a native exempt card carrying an `account` field
+# filter would reach a twin unseen.
 _privacy_tiles = {}
 for _dname, (_desc, _mode, _sib, _tiles) in p.dashboard_defs().items():
     if not _dname.endswith(p.PRIVACY_SUFFIX):
@@ -1204,7 +1199,7 @@ check("the Section picker binds to a column report_cashflow projects",
       _cf_picker["values_source_config"]["value_field"][1] in _model_columns("report_cashflow"),
       _model_columns("report_cashflow"))
 check("the Cash Flow dashboard and its twin are laid out",
-      "Cash Flow" in _dash and "Cash Flow (privacy)" in _dash)
+      "Cash Flow" in DEFS and "Cash Flow (privacy)" in DEFS)
 check("the Cash Flow twin has a card for every base tile",
       all(p.privacy_name(n) in CARDS for n in CASHFLOW_CARD_NAMES),
       [n for n in CASHFLOW_CARD_NAMES if p.privacy_name(n) not in CARDS])
@@ -1270,11 +1265,10 @@ for _n in ("Operating in (privacy)", "Operating out (privacy)",
 # class. The card keeps them out of the leaf stage and attaches them to
 # the hub directly.
 #
-# The rule is asserted as the rule, not as the list of names it used to
-# be spelled with. That list had drifted: it also excluded financing,
-# which HAS something finer to say now that a mortgage instalment splits
-# into interest and amortisation, so no amount of splitting one would
-# have drawn a leaf.
+# The rule is asserted as the rule, not as a list of section and class
+# names, which would have to be kept in step with the taxonomy by hand.
+# Financing takes a leaf stage, since a mortgage instalment splits into
+# interest and amortisation.
 for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
                ("Cash flow (privacy)", _cf_twin_sql["Cash flow (privacy)"])):
     check(f"'{_n}' keeps a class that is its own leaf out of the leaf stage",
@@ -1374,10 +1368,9 @@ check("the winners and losers tables show ten rows each",
       all(_gn_sql[n].rstrip().endswith("LIMIT 10")
           for n in _gains_tiles if n.startswith(("Largest", "Best", "Worst"))))
 
-_gdash = p.dashboard_defs()
 check("the Gains dashboard has no privacy twin",
-      "Gains" in _gdash and _gdash["Gains"][2] is None
-      and "Gains" + p.PRIVACY_SUFFIX not in _gdash)
+      "Gains" in DEFS and DEFS["Gains"][2] is None
+      and "Gains" + p.PRIVACY_SUFFIX not in DEFS)
 check("...and no card has a privacy variant",
       not [n for n in _gains_tiles if p.privacy_name(n) in CARDS])
 _gn_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Gains")]
@@ -1457,7 +1450,6 @@ section("the reporting currencies")
 # returns materializer writes, and every picker, CASE and unpivot here.
 # A currency missing from one of them renders blank or not at all, so
 # the three are read off disk and compared.
-_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _go = open(os.path.join(_REPO, "wealthdb", "internal", "gold",
                         "returns_materialize.go"), encoding="utf-8").read()
 _go_ccys = re.search(r"var materializeCurrencies = \[\]string\{([^}]*)\}", _go)
@@ -1585,8 +1577,8 @@ for _name, (_sql, _cols) in sorted(_PCT_CARDS.items()):
 # its latest snapshot reads as the epoch. Every freshness card leaves it
 # out, or the stalest source would be that non-feed every day. Checked
 # against the engine's own constant, read off disk.
-_types_go = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wealthdb",
-                              "internal", "canonical", "types.go")).read()
+_types_go = open(os.path.join(_REPO, "wealthdb", "internal", "canonical", "types.go"),
+                encoding="utf-8").read()
 check("DECLARED_SOURCE matches canonical.DeclaredSourceID",
       f'const DeclaredSourceID = "{p.DECLARED_SOURCE}"' in _types_go)
 _declared_out = ["!=", ["field", "silver_source_id", {"base-type": "type/Text"}], p.DECLARED_SOURCE]
@@ -1600,11 +1592,10 @@ for _name, _tup in _FRESH.items():
 # marks quarterly and was read today is current. Both sources models
 # carry the read (gold source_observed), and every freshness card
 # counts its days from it.
-_models = p.report_models()
 check("both sources models carry when a run last read each source",
-      all("source_observed" in _models[m][0] and "observed_at" in _models[m][0]
+      all("source_observed" in MODELS[m][0] and "observed_at" in MODELS[m][0]
           for m in ("report_sources_latest", "report_sources_latest_pct")),
-      [_models[m][0][:120] for m in ("report_sources_latest", "report_sources_latest_pct")])
+      [MODELS[m][0][:120] for m in ("report_sources_latest", "report_sources_latest_pct")])
 _observed = ["field", "observed_at", {"base-type": "type/DateTime"}]
 for _name, _tup in _FRESH.items():
     _q = _tup[-2]["query"]
@@ -1618,15 +1609,79 @@ _quiet = _QDEFS["Source freshness"][-2]["query"]["expressions"]["days_quiet"]
 check("the days quiet run from the latest mark, not the snapshot a read dated",
       _quiet[1] == _valued and _quiet[2] == _observed, _quiet)
 check("both sources models render valued_at as a timestamp",
-      all("epoch_ms(valued_at * 1000) AS valued_at" in _models[m][0]
+      all("epoch_ms(valued_at * 1000) AS valued_at" in MODELS[m][0]
           for m in ("report_sources_latest", "report_sources_latest_pct")),
-      [_models[m][0][:200] for m in ("report_sources_latest", "report_sources_latest_pct")])
-_migdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wealthdb", "internal",
-                       "gold", "migrations")
-_mig = open(os.path.join(_migdir, "0122_observed_through.sql")).read()
+      [MODELS[m][0][:200] for m in ("report_sources_latest", "report_sources_latest_pct")])
+_mig = open(os.path.join(GOLD_MIGRATIONS, "0122_observed_through.sql"), encoding="utf-8").read()
 check("source_observed is a gold view", "CREATE OR REPLACE VIEW source_observed" in _mig)
-_mig = open(os.path.join(_migdir, "0123_valued_at.sql")).read()
+_mig = open(os.path.join(GOLD_MIGRATIONS, "0123_valued_at.sql"), encoding="utf-8").read()
 check("the sources reports carry valued_at", "AS valued_at" in _mig and "report_sources_multi" in _mig)
+
+section("an API call that fails is never read as an empty answer")
+
+
+class FailingListAPI:
+    """A stand-in for provision.req whose GETs fail with `status` (0 is
+    no HTTP answer at all) and whose writes succeed, recording every
+    call so the test can assert that nothing was created."""
+
+    def __init__(self, status, list_ok=False):
+        self.status, self.list_ok, self.calls = status, list_ok, []
+
+    def __call__(self, base, path, method="GET", data=None, session=None,
+                 timeout=30):
+        self.calls.append((method, path))
+        if method == "GET":
+            if self.list_ok:
+                return 200, []
+            return self.status, ({} if self.status == 0 else {"message": "unavailable"})
+        if self.list_ok:
+            return self.status, {"message": "forbidden"}
+        return 200, {"id": 1}
+
+
+real_req = p.req
+try:
+    # Each of these lists what exists and creates what it did not find.
+    # Read as empty, a listing that failed would create a second
+    # collection, database, card set or dashboard set of the same name.
+    for _st in (0, 500):
+        api = p.req = FailingListAPI(_st)
+        with quiet():
+            _got = (p.ensure_collection("b", "s", p.COLLECTION_NAME),
+                    p.pre_defined_cards("b", "s", 7),
+                    p.ensure_database("b", "s", "gold", "/data/gold.duckdb"),
+                    p.ensure_dashboards("b", "s", 7, card_ids, MID))
+        check(f"a failed listing ({_st}) aborts the collection, cards, database "
+              "and dashboards", _got == (None, None, None, 1), _got)
+        check("...without creating anything",
+              not [c for c in api.calls if c[0] != "GET"], api.calls)
+    # A collection that cannot be created aborts the run. Falling back to
+    # the root collection would scope card matching to it, and update or
+    # archive any item there that shares a pre-defined name.
+    p.req = FailingListAPI(403, list_ok=True)
+    with quiet():
+        _coll = p.ensure_collection("b", "s", p.COLLECTION_NAME)
+    check("a collection that cannot be created aborts rather than using the root one",
+          _coll is None, _coll)
+finally:
+    p.req = real_req
+
+# A read timeout surfaces from urlopen as TimeoutError, not as URLError,
+# and must read as no answer like a refused connection does.
+_real_urlopen = p.urllib.request.urlopen
+
+
+def _timed_out(*_a, **_k):
+    raise TimeoutError("read timed out")
+
+
+p.urllib.request.urlopen = _timed_out
+try:
+    _ans = p.req("http://b", "/api/health")
+finally:
+    p.urllib.request.urlopen = _real_urlopen
+check("a call that times out reads as no answer", _ans == (0, {}), _ans)
 
 if FAILS:
     print(f"provision tests: {FAILS} failed")

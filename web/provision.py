@@ -5,10 +5,13 @@ pre-add the gold DuckDB database, and create the pre-defined report
 models, questions and dashboards. Idempotent — safe to run on
 every `wealthdb web start`. Standard library only.
 
-Called by web/web; not meant to be run by hand (but it can be).
+Called by web/web; not meant to be run by hand (but it can be). The
+admin password arrives in WEALTHDB_WEB_ADMIN_PASSWORD, never on the
+command line, where `ps` would show it.
 """
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -16,6 +19,8 @@ import urllib.request
 
 
 def req(base, path, method="GET", data=None, session=None, timeout=30):
+    """(HTTP status, decoded JSON body) for one API call. A call that
+    gets no HTTP answer at all returns (0, {})."""
     body = json.dumps(data).encode() if data is not None else None
     r = urllib.request.Request(base + path, data=body, method=method)
     r.add_header("Content-Type", "application/json")
@@ -31,7 +36,9 @@ def req(base, path, method="GET", data=None, session=None, timeout=30):
             return e.code, json.loads(raw)
         except Exception:
             return e.code, {"message": raw}
-    except (urllib.error.URLError, ConnectionError):
+    except OSError:
+        # Connection refused or reset, and a timeout: urlopen raises a
+        # connect timeout as URLError but a read timeout as TimeoutError.
         return 0, {}
 
 
@@ -48,12 +55,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True)
     ap.add_argument("--email", required=True)
-    ap.add_argument("--password", required=True)
     ap.add_argument("--gold-path", required=True)
     ap.add_argument("--db-name", default="gold")
     ap.add_argument("--default-currency", default="USD")
     ap.add_argument("--missing-basis", default=MISSING_BASIS_READINGS[0], choices=MISSING_BASIS_READINGS)
     a = ap.parse_args()
+    password = os.environ.get("WEALTHDB_WEB_ADMIN_PASSWORD", "")
+    if not password:
+        print("provision: WEALTHDB_WEB_ADMIN_PASSWORD is not set", file=sys.stderr)
+        return 1
     global DEFAULT_CURRENCY, DEFAULT_MISSING_BASIS
     DEFAULT_CURRENCY = default_currency(a.default_currency)
     DEFAULT_MISSING_BASIS = a.missing_basis
@@ -70,7 +80,7 @@ def main():
         st, body = req(a.base, "/api/setup", "POST", {
             "token": token,
             "user": {"first_name": "wealthdb", "last_name": "admin",
-                     "email": a.email, "password": a.password},
+                     "email": a.email, "password": password},
             "prefs": {"site_name": "wealthdb", "allow_tracking": False},
         })
         if st not in (200, 201) or not body.get("id"):
@@ -81,10 +91,10 @@ def main():
         print("provision: already set up; skipping admin creation")
 
     # Log in to add the database. If setup was done earlier with a
-    # different password (user changed it), don't fail the start —
-    # the database was added on the first provision.
+    # different password (changed since in Metabase), don't fail the
+    # start — the database was added on the first provision.
     _, body = req(a.base, "/api/session", "POST",
-                  {"username": a.email, "password": a.password})
+                  {"username": a.email, "password": password})
     sid = body.get("id")
     if not sid:
         if setup_done:
@@ -106,7 +116,11 @@ def main():
     SOURCE_FIELD_ID = FIELD_IDS.get(("report_returns", "silver_source_id"))
 
     coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
+    if coll_id is None:
+        return 1
     by_name = pre_defined_cards(a.base, sid, coll_id)
+    if by_name is None:
+        return 1
     model_ids = ensure_models(a.base, sid, db_id, coll_id, by_name)
     if model_ids is None:
         return 1
@@ -210,9 +224,9 @@ def report_models():
     wraps a macro to bind the as-of and to render epoch columns as TIMESTAMP
     (`epoch_ms` -> zone-free UTC, not `to_timestamp`, which is
     TIMESTAMPTZ and renders in the reading session's zone) for Metabase
-    — except the taxonomy, spending and income models, which wrap the
-    web_* serving views (migrations 0032, 0043, 0049 and 0072) that do
-    that rendering, the cash fold-in and the
+    — except the taxonomy, spending, income and cashflow models, which
+    wrap the web_* serving views (migrations 0032, 0043, 0049, 0072 and
+    0084) that do that rendering, the cash fold-in and the
     '(uncategorized)' labelling themselves. The macros already emit DECIMAL
     money/quantity columns and one value column set per reporting currency
     (REPORTING_CURRENCIES), so no value casting is needed here. The `_latest` reports
@@ -905,7 +919,7 @@ FILTER_FIELD_COLUMNS = {
     # spend_primary_label, not spend_primary: a field filter's widget is
     # a dropdown of the values its column takes, and the Category picker
     # is SHARED with the money dashboard, whose model column of the same
-    # name now holds the display label. Binding the two to different
+    # name holds the display label. Binding the two to different
     # vocabularies would leave the picker offering labels and the native
     # cards matching them against vendored values — every tile empty.
     "web_spending": ("occurred_at", "silver_source_id", "account_label",
@@ -1523,25 +1537,20 @@ def question_defs(db_id, mid):
         # bill on a card not itemised, cash out of an ATM — is not a
         # merchant transaction, and one kind of delta line carries a
         # name: a card bill labelled with the issuer it was paid to
-        # (migration 0052). A blank merchant was the proxy for "not a
-        # delta" (migration 0048) and no longer is, so the ranking
-        # excludes the delta CATEGORIES outright — a delta is
-        # primary-level, so `spend_primary <> spend_detailed` reads the
-        # dimension's own marker rather than restating a list of values
-        # — and still needs a name to rank by. That predicate is what
-        # carries this card through migration 0054: a line the merchant
-        # store never named now shows its own signature, and a line
-        # nothing resolved is kept out by its two category columns
-        # being equal at '(uncategorized)' rather than by a blank. What
-        # may rank does not move; what ranks widens from the lines the
-        # store named to every non-delta line carrying a signature, so
-        # ranks move with it, and the rows are at the signature's grain
-        # — a chain appears once per branch signature, and a fold that
-        # is only the bank's own booking tag ranks under that tag,
-        # since the gates that keep such a fold from the model fence
-        # the merchant store and not this column. Only the ranking
-        # filters: the transaction list below keeps every line, since a
-        # line is a line.
+        # (migration 0052). A blank merchant therefore does not mark a
+        # delta, so the ranking excludes the delta CATEGORIES outright —
+        # a delta is primary-level, so `spend_primary <> spend_detailed`
+        # reads the dimension's own marker rather than restating a list
+        # of values — and still needs a name to rank by. A line nothing
+        # resolved is kept out by its two category columns being equal
+        # at '(uncategorized)'. A line the merchant store never named
+        # shows its own signature (migration 0054), so the rows are at
+        # the signature's grain — a chain appears once per branch
+        # signature, and a fold that is only the bank's own booking tag
+        # ranks under that tag, since the gates that keep such a fold
+        # from the model fence the merchant store and not this column.
+        # Only the ranking filters: the transaction list below keeps
+        # every line, since a line is a line.
         "Top 50 merchants": ("table",
             "The fifty merchants with the most net spend over the window. A "
             "merchant is the merchant store's name for the line's normalized "
@@ -1745,23 +1754,13 @@ def question_defs(db_id, mid):
             "Operating cash flow as a share of what came in: what the "
             "household kept of its receipts before it invested, serviced "
             "debt or funded a vehicle. Blank where nothing came in.",
-            # The view's values are already signed — an outflow is
-            # negative — so operating is the plain SUM over the two
-            # halves, not a difference between two magnitudes.
-            f"SELECT {cf_val}\n"
-            f"       / nullif(sum(CASE WHEN section = 'operating_in'"
-            f" THEN {_ccy_case('value')} END), 0) AS savings_rate\n"
-            "  FROM web_cashflow" + cf_where_nosec +
-            "\n   AND section IN ('operating_in', 'operating_out')",
+            _savings_rate_sql(cf_where_nosec, "savings_rate"),
             _percent_viz("savings_rate"), section=False),
         "Yield share": cashflow_native("Yield share", "scalar",
             "What share of the household's receipts its assets produced "
             "without its labour — dividends, interest, fund distributions, "
             "staking, rent and royalties over everything that came in.",
-            f"SELECT sum(CASE WHEN class = 'yield' THEN {_ccy_case('value')} END)::DOUBLE\n"
-            f"       / nullif({cf_val}, 0) AS yield_share\n"
-            "  FROM web_cashflow" + cf_where_nosec +
-            "\n   AND section = 'operating_in'",
+            _yield_share_sql(cf_where_nosec, "yield_share"),
             _percent_viz("yield_share"), section=False),
         # The diagram, and the centre of the dashboard. A native query in
         # the three columns the BI layer's Sankey visualisation reads,
@@ -2547,7 +2546,7 @@ def base_dashboards():
             ("Coverage by source", 71, 0, 24, 8, "period"),
         ]),
         "Data Freshness": (
-            "Age of each source's latest snapshot — which feeds need a "
+            "How long ago each source was last read — which feeds need a "
             "collector run. Unfiltered by design: it must show every "
             "source, especially stale ones. " + note, None, [
             ("Stalest source (days)", 0, 0, 8, 3, None),
@@ -2780,10 +2779,8 @@ def _cashflow_atoms_cte(where, sum_expr):
         # itself rather than left to a list of sections and class names
         # to imply — the backlog class IS its own leaf, and so is every
         # vehicle class, and both fall out of `class <> grp` without
-        # being named. The list had also excluded financing, which HAS
-        # something finer to say now that a mortgage instalment splits
-        # into interest and amortisation, and no amount of splitting it
-        # would have drawn.
+        # being named. Financing takes a leaf stage, since a mortgage
+        # instalment splits into interest and amortisation.
         #
         # Investing stays out deliberately: the Investing picker rather
         # than a level is what opens it.
@@ -2795,10 +2792,10 @@ def _cashflow_atoms_cte(where, sum_expr):
         "               (l.net > 0 AND c.net > 0) OR (l.net < 0 AND c.net < 0) AS stays\n"
         "          FROM leaf l JOIN cls c ON c.section = l.section AND c.class = l.class),\n"
         # A class enters the hub in its own right exactly when it has
-        # no leaves to enter through. Spelled as a section list this
-        # stopped agreeing with the leaf rule the moment financing grew
-        # leaves: the class then entered BOTH here and as the sum of its
-        # leaves below, and the diagram drew the same edge twice.
+        # no leaves to enter through. Keyed on the leaves themselves
+        # rather than on a section list, so a class can never enter BOTH
+        # here and as the sum of its leaves below, which would draw the
+        # same edge twice.
         "atoms AS (SELECT c.class AS node, c.net FROM cls c\n"
         "           WHERE NOT EXISTS (SELECT 1 FROM att a\n"
         "                              WHERE a.section = c.section\n"
@@ -2808,6 +2805,29 @@ def _cashflow_atoms_cte(where, sum_expr):
         "                      FROM att GROUP BY 1),\n"
         "hub AS (SELECT nullif(sum(CASE WHEN net > 0 THEN net ELSE 0 END), 0)"
         " AS total FROM atoms)")
+
+
+def _savings_rate_sql(where, alias):
+    """The Savings rate tile's SQL, shared with its twin, which shows the
+    rate as it is. The view's values are already signed — an outflow is
+    negative — so operating is the plain SUM over the two halves, not a
+    difference between two magnitudes."""
+    value = _ccy_case("value")
+    return (f"SELECT sum({value})::DOUBLE\n"
+            f"       / nullif(sum(CASE WHEN section = 'operating_in'"
+            f" THEN {value} END), 0) AS {alias}\n"
+            "  FROM web_cashflow" + where +
+            "\n   AND section IN ('operating_in', 'operating_out')")
+
+
+def _yield_share_sql(where, alias):
+    """The Yield share tile's SQL, shared with its twin like the savings
+    rate's: the yield class over everything that came in."""
+    value = _ccy_case("value")
+    return (f"SELECT sum(CASE WHEN class = 'yield' THEN {value} END)::DOUBLE\n"
+            f"       / nullif(sum({value})::DOUBLE, 0) AS {alias}\n"
+            "  FROM web_cashflow" + where +
+            "\n   AND section = 'operating_in'")
 
 
 def _cashflow_sankey_sql(where, sum_expr, share=False):
@@ -2821,7 +2841,7 @@ def _cashflow_sankey_sql(where, sum_expr, share=False):
     layer's Sankey visualisation reads.
 
     A class gets a leaf stage when it has something finer to say than
-    its own name — the operating sections, and financing since a
+    its own name — the operating sections, and financing, whose
     mortgage instalment splits into interest and amortisation. The
     vehicles and cash have nothing finer and attach to the hub directly;
     investing is held back deliberately, the Investing picker rather
@@ -2841,7 +2861,7 @@ def _cashflow_sankey_sql(where, sum_expr, share=False):
         # list: a leaf sorts by ITS CLASS's size first and its own
         # second, so reading the rows one can see which class each leaf
         # belongs to. An atomic node is its own kin, so stages 2 and 3
-        # sort by value as before.
+        # sort by value alone.
         #
         # It does NOT decide the diagram's layout, and it was measured
         # rather than assumed. The renderer seeds each column in the
@@ -2926,6 +2946,25 @@ def register_native_targets(card, tags, pairs):
         (pid, ["dimension" if tags[t].get("type") == "dimension" else "variable",
                ["template-tag", t]])
         for pid, t in pairs if t in tags]
+
+
+# The peak-month denominator of the twins' flow charts, over a CTE `m`
+# of (month, ..., v) rows: the biggest month's POSITIVE sum, so a
+# mixed-sign month's stacked bar cannot exceed 100, and blank when no
+# month is positive at all.
+PEAK_CTE = ("p AS (SELECT max(t) AS peak FROM"
+            " (SELECT sum(v) FILTER (WHERE v > 0) AS t FROM m GROUP BY month))\n")
+PEAK_DIV = "v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100"
+
+
+def _month_cte(view, where, value, extra=""):
+    """The opening of a twin's `m` CTE: `value` per month (times
+    `extra`'s dimension) over serving view `view`, its GROUP BY left to
+    the caller."""
+    return ("WITH m AS (\n"
+            "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
+            f" AS month,\n         {extra}{value} AS v\n"
+            f"    FROM {view}" + where + "\n")
 
 
 def privacy_card_defs(db_id, model_ids):
@@ -3053,12 +3092,8 @@ def privacy_card_defs(db_id, model_ids):
     def peak_share(m_cte):
         """The month x kind rows of CTE body `m_cte`, each as % of the
         window's peak month."""
-        return ("WITH m AS (\n" + m_cte + "\n   GROUP BY 1, 2),\n"
-                "p AS (SELECT max(t) AS peak FROM"
-                " (SELECT sum(v) FILTER (WHERE v > 0) AS t FROM m GROUP BY month))\n"
-                "SELECT month, kind,\n"
-                "       v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p)"
-                " * 100 AS value_pct\n"
+        return ("WITH m AS (\n" + m_cte + "\n   GROUP BY 1, 2),\n" + PEAK_CTE +
+                f"SELECT month, kind,\n       {PEAK_DIV} AS value_pct\n"
                 "  FROM m\n ORDER BY 1")
 
     month = "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP) AS month,\n"
@@ -3198,7 +3233,7 @@ def privacy_card_defs(db_id, model_ids):
     display, _desc, query, viz = question_defs(db_id, pmid)["Source freshness"]
     out["Source freshness (privacy)"] = ("question", display,
         "Per source: when a run last read it and the days since, its "
-        "latest snapshot and the days it has been quiet, and the share (%) "
+        "latest mark and the days it has been quiet, and the share (%) "
         "of the latest total riding on it." + PRIVACY_DESC, query, viz)
 
     # -- Returns twin: report_returns_redacted drops the money columns,
@@ -3280,6 +3315,8 @@ def cashflow_privacy_defs(db_id):
     # declines it too, or the numerator and the denominator would answer
     # different filters.
     hub_cte_nosec = _cashflow_atoms_cte(where_nosec, val) + "\n"
+    # The statement's bars are signed both ways, so a month's size is its
+    # gross movement rather than PEAK_CTE's positive sum.
     peak_cte = ("p AS (SELECT max(t) AS peak FROM"
                 " (SELECT sum(abs(v)) AS t FROM m GROUP BY month))\n")
 
@@ -3289,10 +3326,7 @@ def cashflow_privacy_defs(db_id):
         # indentation, and a reflow here would silently turn a card's
         # bars negative with every shape test still green.
         v = f"{sign}({val})" if sign else val
-        return ("WITH m AS (\n"
-                "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
-                f" AS month,\n         {extra}{v} AS v\n"
-                "    FROM web_cashflow" + where + filt + "\n")
+        return _month_cte("web_cashflow", where + filt, v, extra)
 
     # `neg` is what keeps each twin scalar reading the same way round as
     # the base tile it stands in for: gold stores an outflow negative
@@ -3332,8 +3366,7 @@ def cashflow_privacy_defs(db_id):
                   "              THEN 'operating' ELSE section END"
                   " AS statement_section,\n         ")
         + "   GROUP BY 1, 2),\n" + peak_cte +
-        "SELECT month, statement_section,\n"
-        "       v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100 AS share_pct\n"
+        f"SELECT month, statement_section,\n       {PEAK_DIV} AS share_pct\n"
         "  FROM m\n ORDER BY 1",
         {"graph.dimensions": ["month", "statement_section"],
          "graph.metrics": ["share_pct"],
@@ -3361,8 +3394,7 @@ def cashflow_privacy_defs(db_id):
             "movement.",
             month_cte(f"{grp} AS class,\n         ", filt, sign="-" if neg else "")
             + "   GROUP BY 1, 2),\n" + peak_cte +
-            "SELECT month, class,\n"
-            "       v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100 AS share_pct\n"
+            f"SELECT month, class,\n       {PEAK_DIV} AS share_pct\n"
             "  FROM m\n ORDER BY 1",
             {"graph.dimensions": ["month", "class"],
              "graph.metrics": ["share_pct"],
@@ -3388,24 +3420,14 @@ def cashflow_privacy_defs(db_id):
         "  FROM m\n ORDER BY 1\n LIMIT 50",
         {})
 
-    for name in ("Savings rate", "Yield share"):
+    for name, rate_sql in (("Savings rate", _savings_rate_sql),
+                           ("Yield share", _yield_share_sql)):
         # A rate is a proportion already: the twin shows it as it is,
         # the way the returns percentages survive their own twin.
-        base = name.lower()
         cashflow_card(privacy_name(name), "scalar",
-            f"The {base} as it is: a rate is a proportion, so it needs no "
+            f"The {name.lower()} as it is: a rate is a proportion, so it needs no "
             "normalising and hides nothing.",
-            "SELECT " + (
-                f"{val}\n"
-                f"       / nullif(sum(CASE WHEN section = 'operating_in'"
-                f" THEN {_ccy_case('value')} END), 0) AS share_pct\n"
-                "  FROM web_cashflow" + where_nosec +
-                "\n   AND section IN ('operating_in', 'operating_out')"
-                if name == "Savings rate" else
-                f"sum(CASE WHEN class = 'yield' THEN {_ccy_case('value')} END)::DOUBLE\n"
-                f"       / nullif({val}, 0) AS share_pct\n"
-                "  FROM web_cashflow" + where_nosec +
-                "\n   AND section = 'operating_in'"),
+            rate_sql(where_nosec, "share_pct"),
             _percent_viz("share_pct"), section=False)
     return out
 
@@ -3438,30 +3460,24 @@ def income_privacy_defs(db_id):
                      _native(db_id, sql, tags), viz)
         register_native_targets(name, tags, INCOME_PICKERS)
 
-    peak_cte = ("p AS (SELECT max(t) AS peak FROM"
-                " (SELECT sum(v) FILTER (WHERE v > 0) AS t FROM m GROUP BY month))\n")
-    peak_div = "v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100"
     total_cte = ("t AS (SELECT nullif(sum(v), 0) AS total FROM m)\n")
 
     def month_cte(extra=""):
-        return ("WITH m AS (\n"
-                "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
-                f" AS month,\n         {extra}{val} AS v\n"
-                "    FROM web_income" + where + "\n")
+        return _month_cte("web_income", where, val, extra)
 
     income_card("Income — monthly trend (privacy)", "smartscalar",
         "Net income per month as % of the window's biggest income month — "
         "the latest month with the change vs the one before it. A window "
         "with no positive month shows blank.",
-        month_cte() + "   GROUP BY 1),\n" + peak_cte +
-        f"SELECT month, {peak_div} AS income_pct\n  FROM m\n ORDER BY 1", {})
+        month_cte() + "   GROUP BY 1),\n" + PEAK_CTE +
+        f"SELECT month, {PEAK_DIV} AS income_pct\n  FROM m\n ORDER BY 1", {})
     income_card("Income by month (privacy)", "area",
         "Net income per month, stacked by type, as % of the window's "
         "biggest income month — the peak reads 100. A type can dip "
         "negative in a month whose reversals beat its receipts.",
         month_cte("income_label AS type,\n         ")
-        + "   GROUP BY 1, 2),\n" + peak_cte +
-        f"SELECT month, type, {peak_div} AS income_pct\n  FROM m\n ORDER BY 1",
+        + "   GROUP BY 1, 2),\n" + PEAK_CTE +
+        f"SELECT month, type, {PEAK_DIV} AS income_pct\n  FROM m\n ORDER BY 1",
         {"graph.dimensions": ["month", "type"],
          "graph.metrics": ["income_pct"],
          "stackable.stack_type": "stacked"})
@@ -3584,35 +3600,23 @@ def spending_privacy_defs(db_id, model_ids):
                      _native(db_id, sql, tags), viz)
         register_native_targets(name, tags, SPEND_PICKERS)
 
-    # The peak-month denominator, in the shape the income / fee twins
-    # already use: the biggest month's POSITIVE sum, so a mixed-sign
-    # month's stacked bar cannot exceed 100, and blank when no month is
-    # positive at all.
-    peak_cte = ("p AS (SELECT max(t) AS peak FROM"
-                " (SELECT sum(v) FILTER (WHERE v > 0) AS t FROM m GROUP BY month))\n")
-    peak_div = "v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p) * 100"
-
     def month_cte(extra=""):
-        """The `m` CTE: one row per month (times `extra`'s dimension)."""
-        return ("WITH m AS (\n"
-                "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
-                f" AS month,\n         {extra}{val} AS v\n"
-                "    FROM web_spending" + where + "\n")
+        return _month_cte("web_spending", where, val, extra)
 
     spend_card("Spend — monthly trend (privacy)", "smartscalar",
         "Net spend per month as % of the window's biggest spending month — "
         "the latest month with the change vs the one before it. A window "
         "with no positive month shows blank.",
-        month_cte() + "   GROUP BY 1),\n" + peak_cte +
-        f"SELECT month, {peak_div} AS spend_pct\n  FROM m\n ORDER BY 1", {})
+        month_cte() + "   GROUP BY 1),\n" + PEAK_CTE +
+        f"SELECT month, {PEAK_DIV} AS spend_pct\n  FROM m\n ORDER BY 1", {})
     spend_card("Spending by month (privacy)", "area",
         "Net spend per month, stacked by primary category, as % of the "
         "window's biggest spending month — the peak reads 100. A "
         "category can dip negative (a month whose refunds beat its "
         "purchases).",
         month_cte("spend_primary_label AS category,\n         ")
-        + "   GROUP BY 1, 2),\n" + peak_cte +
-        f"SELECT month, category, {peak_div} AS spend_pct\n"
+        + "   GROUP BY 1, 2),\n" + PEAK_CTE +
+        f"SELECT month, category, {PEAK_DIV} AS spend_pct\n"
         "  FROM m\n ORDER BY 1",
         {"graph.dimensions": ["month", "category"],
          "graph.metrics": ["spend_pct"], "stackable.stack_type": "stacked"})
@@ -3633,11 +3637,10 @@ def spending_privacy_defs(db_id, model_ids):
 
     # Rings, like the money tiles they twin — and the shape suits a
     # share even better than an amount, since the slices are already the
-    # percentages the ring would compute. The LIMIT the detailed card
-    # used to carry is gone with it: a limited ring renormalizes onto
-    # what it drew and would print shares disagreeing with its own
-    # values, where the threshold folds the tail into a wedge and keeps
-    # the whole window on the ring.
+    # percentages the ring would compute. Neither ring carries a LIMIT:
+    # a limited ring renormalizes onto what it drew and would print
+    # shares disagreeing with its own values, where the threshold folds
+    # the tail into a wedge and keeps the whole window on the ring.
     #
     # No figure in the hole. The shares are of a SIGNED total, so a
     # category whose refunds beat its purchases carries a negative one
@@ -3674,13 +3677,9 @@ def spending_privacy_defs(db_id, model_ids):
     # (migration 0052) — but not outside the denominator: the shares
     # are of the window's whole net spend, the anchor the twin's scalar
     # reads as 100, so the total is summed apart from the ranked rows.
-    # Migration 0054 gives a line the merchant store never named its own
-    # signature, so the ranking covers every non-delta line carrying a
-    # signature rather than only the lines the store named: more rows,
-    # at the signature's grain, and the distribution this card is read
-    # for — rank 1's share included — moves with them. The card itself
-    # needs no change: it never printed a name, and the delta predicate
-    # already decides what may rank.
+    # A line the merchant store never named carries its own signature
+    # (migration 0054), so the ranking covers every non-delta line
+    # carrying a signature, at the signature's grain.
     spend_card("Top 50 merchants (privacy)", "table",
         "The fifty merchants with the most net spend, each as % of the "
         "window's net spend — ranked, and unnamed: merchant labels are "
@@ -3803,9 +3802,10 @@ def dashboard_defs():
             "Privacy view: values are shares (%) of the latest total "
             "across all sources, not absolute amounts. "),
     }
-    # Spending and Income are 'range' dashboards whose denominators are
-    # their own window rather than a holdings total, and the two twins
-    # that also redact, so each names both in a blurb of its own.
+    # Spending, Income and Cash Flow are 'range' dashboards whose
+    # denominators are their own window rather than a holdings total, and
+    # the Spending and Income twins also redact, so each names what it
+    # does in a blurb of its own.
     own_pdesc = {"Spending": (
         "Privacy view: values are shares (%) of the window's own net "
         "spend, or of its biggest month; merchant and account labels are "
@@ -4012,10 +4012,10 @@ def dashboard_parameters(model_ids, mode, name=""):
     # it is bound to and there is no field-remapping machinery here, so
     # binding it to the id would offer a list of opaque identifiers. The
     # label carries the source and the kind, so two accounts wearing the
-    # same generic product name at two institutions are no longer one
-    # indistinguishable pair of entries; two named alike WITHIN one
-    # source still select together, accepted on the same reasoning, and
-    # the money tiles group by the same column.
+    # same generic product name at two institutions are two distinct
+    # entries rather than one indistinguishable pair; two named alike
+    # WITHIN one source still select together, accepted on the same
+    # reasoning, and the money tiles group by the same column.
     #
     # THE PRIVACY TWIN CARRIES NO ACCOUNT PICKER. A picker cannot redact
     # what it offers: its dropdown IS the list of values the bound column
@@ -4085,10 +4085,9 @@ def web_views_wanted():
 
 def missing_web_views(base, sid, db_id):
     """The wanted web_* serving views the mounted gold snapshot does not
-    carry, probed through the driver itself. A snapshot predating one of
-    them (0032 brought the first six, 0043 the two spending views) cannot
-    be fixed by a Metabase schema sync — only `wealthdb web refresh`
-    re-materializes and re-snapshots gold.
+    carry, probed through the driver itself. A snapshot predating the
+    migration that adds one cannot be fixed by a Metabase schema sync —
+    only `wealthdb web refresh` re-materializes and re-snapshots gold.
 
     Probed BY NAME rather than by counting web_* views: a count says
     nothing about WHICH views are there, so a snapshot missing one would
@@ -4232,7 +4231,12 @@ def ensure_database(base, sid, db_name, gold_path):
                "memory_limit": "4GB", "threads": "8", "init_sql": ""}
 
     db_id, cur = None, None
-    _, dbs = req(base, "/api/database", session=sid)
+    st, dbs = req(base, "/api/database", session=sid)
+    if st != 200:
+        # Read as empty, a failed listing would add the database twice.
+        print(f"provision: could not list databases ({st}): {dbs.get('message')}",
+              file=sys.stderr)
+        return None
     for d in (dbs.get("data") or []):
         if d.get("name") == db_name and d.get("engine") == "duckdb":
             db_id, cur = d.get("id"), (d.get("details") or {})
@@ -4263,27 +4267,41 @@ def ensure_database(base, sid, db_name, gold_path):
 
 
 def ensure_collection(base, sid, name):
-    """Return the id of the collection named `name`, creating it if absent."""
-    _, cols = req(base, "/api/collection", session=sid)
-    for c in (cols if isinstance(cols, list) else []):
+    """The id of the collection named `name`, created if absent, or None
+    on failure.
+
+    There is no fallback to the root collection: card and dashboard
+    matching is scoped to this collection, so provisioning into the root
+    one would update or archive any user item there that shares a
+    pre-defined name. A listing that fails aborts too, since reading it
+    as empty would create a second collection of the same name."""
+    st, cols = req(base, "/api/collection", session=sid)
+    if st != 200 or not isinstance(cols, list):
+        print(f"provision: could not list collections ({st})", file=sys.stderr)
+        return None
+    for c in cols:
         if c.get("name") == name and not c.get("archived"):
             return c.get("id")
     st, body = req(base, "/api/collection", "POST", {"name": name}, session=sid)
     if st in (200, 201) and body.get("id"):
         print(f"provision: created collection '{name}'")
         return body["id"]
-    # Non-fatal: fall back to the default (root) collection.
     print(f"provision: could not create collection '{name}' ({st}): "
-          f"{body.get('message')}; using the default collection", file=sys.stderr)
+          f"{body.get('message')}", file=sys.stderr)
     return None
 
 
 def pre_defined_cards(base, sid, coll_id):
     """name -> card, for the non-archived cards in the pre-defined
-    collection. Scoped to that collection so a user card that happens to
-    share a name is never touched."""
-    _, cards = req(base, "/api/card", session=sid)
-    return {c.get("name"): c for c in (cards if isinstance(cards, list) else [])
+    collection, or None when the card list is unreadable — read as
+    empty, it would create every card a second time. Scoped to that
+    collection so a user card that happens to share a name is never
+    touched."""
+    st, cards = req(base, "/api/card", session=sid)
+    if st != 200 or not isinstance(cards, list):
+        print(f"provision: could not list cards ({st})", file=sys.stderr)
+        return None
+    return {c.get("name"): c for c in cards
             if c.get("collection_id") == coll_id and not c.get("archived")}
 
 
@@ -4412,8 +4430,13 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
     converges to spec (a tile added by hand to a pre-defined dashboard
     does not survive — the dashboard description says to duplicate
     before customizing)."""
-    coll = coll_id if coll_id is not None else "root"
-    _, items = req(base, f"/api/collection/{coll}/items?models=dashboard", session=sid)
+    st, items = req(base, f"/api/collection/{coll_id}/items?models=dashboard",
+                    session=sid)
+    if st != 200:
+        # Read as empty, a failed listing would create every dashboard twice.
+        print(f"provision: could not list dashboards ({st}): {items.get('message')}",
+              file=sys.stderr)
+        return 1
     existing = {d.get("name"): d.get("id") for d in (items.get("data") or [])}
 
     defs = dashboard_defs()

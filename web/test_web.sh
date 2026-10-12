@@ -125,6 +125,21 @@ if [ "$(printf '%s' "$(cat "$seq_file")")" = "materialize
 snapshot" ]; then pass "web_refresh materializes, then snapshots"
 else fail "web_refresh materializes, then snapshots"; printf '       got sequence: %s\n' "$(tr '\n' ' ' < "$seq_file")"; fi
 
+echo "== _provision: the admin password reaches provision.py by env, never argv =="
+# A python3 stub records its argv and the env var; run in a subshell so
+# the override does not leak into the provision.py hand-off below.
+(
+    python3() {
+        printf '%s\n' "$@" > "$tmp/prov-args"
+        printf '%s' "${WEALTHDB_WEB_ADMIN_PASSWORD:-}" > "$tmp/prov-env"
+    }
+    PORT=3000 DATA_DIR="$tmp" WEALTHDB_WEB_ADMIN_PASSWORD="Synthetic-pw-1!"
+    _provision 2>/dev/null
+)
+check_not "password not in argv"     "Synthetic-pw-1!" "$(cat "$tmp/prov-args" 2>/dev/null)"
+check_not "no --password flag"       "--password"      "$(cat "$tmp/prov-args" 2>/dev/null)"
+check     "password in the env var"  "Synthetic-pw-1!" "$(cat "$tmp/prov-env" 2>/dev/null)"
+
 echo "== web help smoke =="
 hout="$(web_help)"
 check "help mentions snapshot" "read-only SNAPSHOT" "$hout"
