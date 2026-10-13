@@ -82,7 +82,11 @@ class Spdr(Provider):
 
     def claim(self, fund, ctx):
         index = self._index(ctx)
-        for ident, regions in ((fund.isin, None), (fund.cusip, None), (fund.symbol, ("us",))):
+        # A bare ticker names a US fund only, for a fund with no ISIN of
+        # another country.
+        isin = (fund.isin or "").strip().upper()
+        symbol = fund.symbol if not isin or isin.startswith("US") else None
+        for ident, regions in ((fund.isin, None), (fund.cusip, None), (symbol, ("us",))):
             hit = index.get((ident or "").strip().upper()) if ident else None
             if hit is None or (regions and hit[0] not in regions):
                 continue

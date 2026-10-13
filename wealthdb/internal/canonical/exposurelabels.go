@@ -78,12 +78,13 @@ var genericSectors = map[Sector][]string{
 // foreign_exchange, any other derivative in other.
 var genericAssetTypes = map[AssetClass][]string{
 	AssetClassPublicEquity: {"equity", "equities", "stock", "stocks", "common stock", "common", "preferred stock",
-		"preferred", "ordinary shares", "ec", "ep", "adr", "gdr"},
+		"preferred", "ordinary shares", "ec", "ep", "adr", "gdr", "american depository receipt",
+		"american depositary receipt", "global depositary receipt", "global depository receipt"},
 	AssetClassFixedIncome: {"fixed income", "bond", "bonds", "debt", "dbt", "fixed-income", "government bond",
 		"corporate bond", "note", "notes", "abs-mbs", "abs-cbdo", "abs-o", "abs-app", "sn", "lon", "loan"},
 	AssetClassCash: {"cash", "cash and/or derivatives", "money market", "cash collateral and margins",
 		"cash & equivalents", "cash equivalents", "stiv", "ra", "repo", "repurchase agreement", "deposit", "currency"},
-	AssetClassRealEstate:      {"real estate", "re", "reit"},
+	AssetClassRealEstate:      {"real estate", "re", "reit", "real estate investment trust"},
 	AssetClassForeignExchange: {"fx", "forward", "forwards", "fx forward", "currency forward", "dfe", "foreign exchange"},
 	AssetClassOther: {"futures", "future", "swap", "swaps", "option", "options", "derivative", "derivatives",
 		"dco", "dcr", "de", "dir", "do", "comm", "commodity", "other"},

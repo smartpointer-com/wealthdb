@@ -21,7 +21,7 @@
 #   --silver-db   PATH  silver DB path          (default <data-dir>/refdata.db)
 # Settings live in $XDG_CONFIG_HOME/refdata.cfg (README.md). The engine
 # that prints the wanted list is REFDATA_WEALTHDB, else refdata.cfg's
-# `engine`, else `wealthdb` on PATH.
+# `engine`, else this checkout's wealthdb/wealthdb.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -60,6 +60,9 @@ class Request:
     ref: str
     as_of: date | None = None   # None: the current composition
     claim: object = None
+    # Further providers that claim the fund, asked in order when this one
+    # cannot serve the current composition: (provider name, claim).
+    fallbacks: tuple = ()
 
 
 def parse_args(argv):
@@ -116,10 +119,16 @@ def fetched_before(bronze_dir: Path | None) -> set:
     return out
 
 
+# What a provider's lookup can raise without failing the run: its own
+# error, an HTTP failure, or an answer that does not parse (ValueError,
+# JSON's included).
+LOOKUP_ERRORS = (ProviderError, fetcher.FetchError, ValueError)
+
+
 def _claim(p, fund, ctx):
     try:
         return p.claim(fund, ctx)
-    except (ProviderError, fetcher.FetchError) as e:
+    except LOOKUP_ERRORS as e:
         log.warning("%s: %s could not claim it: %s", fund.ref, p.name, e)
         return None
 
@@ -127,7 +136,7 @@ def _claim(p, fund, ctx):
 def _dates(p, claim, fund, since, until, ctx):
     try:
         return p.dates(claim, since, until, ctx) or []
-    except (ProviderError, fetcher.FetchError) as e:
+    except LOOKUP_ERRORS as e:
         log.warning("%s: %s could not list its dates: %s", fund.ref, p.name, e)
         return []
 
@@ -136,8 +145,9 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
          refs=None, securities=True, constituents=False, fetched=frozenset()):
     """The requests a run makes, and the funds no provider claims.
 
-    The first provider that claims a fund serves it; an additive one (the
-    inbox) serves it as well. A fund held today, a proxy or a reference
+    The first provider that claims a fund serves it, and the next ones
+    stand by for its current composition should it fail; an additive one
+    (the inbox) serves it as well. A fund held today, a proxy or a reference
     fund wants its current composition once the newest one had is older
     than max_age, unless the provider's newest is already had. A backfill
     wants every date inside the days the fund was held, and the last one
@@ -148,13 +158,17 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
     for fund in want.funds:
         if refs and fund.ref not in refs:
             continue
-        served = []
+        served, standby = [], []
         for p in providers:
-            if not p.serves_funds or (served and not p.additive and any(not q.additive for q, _ in served)):
+            if not p.serves_funds:
                 continue
             claim = _claim(p, fund, ctx)
-            if claim is not None:
+            if claim is None:
+                continue
+            if p.additive or not any(not q.additive for q, _ in served):
                 served.append((p, claim))
+            else:
+                standby.append((p.name, claim))
         if not served:
             unclaimed.append(fund.ref)
         have = set(fund.compositions) | {d for (_, r, d) in fetched if r == fund.ref}
@@ -172,11 +186,11 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
             if current and (newest is None or (today - newest).days > max_age):
                 try:
                     latest = p.latest(claim, ctx)
-                except (ProviderError, fetcher.FetchError) as e:
+                except LOOKUP_ERRORS as e:
                     log.warning("%s: %s could not name its newest date: %s", fund.ref, p.name, e)
                     latest = None
                 if latest is None or latest not in have:
-                    reqs.append(Request("fund", p.name, fund.ref, None, claim))
+                    reqs.append(Request("fund", p.name, fund.ref, None, claim, tuple(standby)))
                     if latest is not None:
                         have.add(latest)
             if backfill and fund.held_from is not None:
@@ -201,7 +215,7 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
                     continue
                 try:
                     claim = p.claim_security(sec, ctx)
-                except (ProviderError, fetcher.FetchError) as e:
+                except LOOKUP_ERRORS as e:
                     log.warning("%s: %s could not claim it: %s", sec.key, p.name, e)
                     continue
                 if claim is not None:
@@ -227,27 +241,46 @@ def execute(reqs, run: Path, ctx: Context, limit=None):
             entry["status"] = "deferred"
             results.append(entry)
             continue
-        out = request_dir(run, r)
-        p = REGISTRY[r.provider]
-        try:
-            if r.kind == "fund":
-                got = p.fetch(r.claim, r.as_of, out, ctx)
-                entry["as_of"] = got.isoformat() if got else None
-            else:
-                p.fetch_security(r.claim, out, ctx)
-            entry["status"] = "ok"
-            entry["dir"] = str(out.relative_to(run))
-            fetched += 1
-        except Unavailable as e:
-            entry["status"], entry["error"] = "unavailable", str(e)
-        except (ProviderError, fetcher.FetchError) as e:
-            entry["status"], entry["error"] = "error", str(e)
-            log.warning("%s %s (%s): %s", r.provider, r.ref, entry["asked"], e)
-        except Exception as e:  # noqa: BLE001 - one bad request must not abort the run
-            entry["status"], entry["error"] = "error", f"{type(e).__name__}: {e}"
-            log.exception("%s %s (%s) failed", r.provider, r.ref, entry["asked"])
+        # The provider that claimed the request, then each standing by:
+        # the first that serves it is recorded; the others' errors too.
+        tried = []
+        for name, claim in ((r.provider, r.claim), *r.fallbacks):
+            status, error = _fetch(Request(r.kind, name, r.ref, r.as_of, claim), run, ctx, entry)
+            if status == "ok":
+                entry["provider"] = name
+                fetched += 1
+                break
+            tried.append({"provider": name, "status": status, "error": error})
+        else:
+            entry["status"], entry["error"] = tried[0]["status"], tried[0]["error"]
+        if len(tried) > 1 or (tried and entry["status"] == "ok"):
+            entry["tried"] = tried
         results.append(entry)
     return results
+
+
+def _fetch(r: Request, run: Path, ctx: Context, entry: dict):
+    """One provider's attempt at one request; fills entry on success and
+    returns (status, error)."""
+    out = request_dir(run, r)
+    p = REGISTRY[r.provider]
+    try:
+        if r.kind == "fund":
+            got = p.fetch(r.claim, r.as_of, out, ctx)
+            entry["as_of"] = got.isoformat() if got else None
+        else:
+            p.fetch_security(r.claim, out, ctx)
+        entry["status"] = "ok"
+        entry["dir"] = str(out.relative_to(run))
+        return "ok", None
+    except Unavailable as e:
+        return "unavailable", str(e)
+    except (ProviderError, fetcher.FetchError, ValueError) as e:
+        log.warning("%s %s (%s): %s", r.provider, r.ref, entry["asked"], e)
+        return "error", str(e)
+    except Exception as e:  # noqa: BLE001 - one bad request must not abort the run
+        log.exception("%s %s (%s) failed", r.provider, r.ref, entry["asked"])
+        return "error", f"{type(e).__name__}: {e}"
 
 
 def probe(providers, ctx) -> int:

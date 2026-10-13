@@ -41,9 +41,11 @@ def test_refuses(tmp_path, doc, msg):
         config.load(KNOWN, write(tmp_path, doc))
 
 
-def test_engine_precedence(monkeypatch):
+def test_engine_precedence(monkeypatch, tmp_path):
     monkeypatch.delenv("REFDATA_WEALTHDB", raising=False)
-    assert config.engine_command(config.Config()) == "wealthdb"
+    # The checkout's own wrapper, else wealthdb on PATH.
+    assert config.engine_command(config.Config()) == str(config.CHECKOUT_ENGINE)
+    assert config.engine_command(config.Config(), tmp_path / "none") == "wealthdb"
     assert config.engine_command(config.Config(engine="/x/wealthdb")) == "/x/wealthdb"
     monkeypatch.setenv("REFDATA_WEALTHDB", "/y/wealthdb")
     assert config.engine_command(config.Config(engine="/x/wealthdb")) == "/y/wealthdb"

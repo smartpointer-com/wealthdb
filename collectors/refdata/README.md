@@ -37,8 +37,10 @@ be narrowed:
 - `--limit N` fetches at most N files;
 - `--no-securities` skips the security lookups.
 
-`login` is a no-op, since there is no session. `login --check` sends one
-request to each enabled provider and reports what it answered.
+`login` is a no-op, since there is no session. `login --check` asks each
+enabled provider for its cheapest answer (a product list, one lookup)
+and reports what it answered. A provider with nothing cheap to ask (the
+inbox, xtrackers, invesco) says so.
 
 A fund counts as current while its newest composition is younger than
 `max_age_days`. Past that age, a provider that can name its newest date
@@ -54,7 +56,7 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 
 ```json
 {
-  "providers": ["inbox", "sec-nport", "spdr", "sec-edgar", "gleif", "openfigi"],
+  "providers": ["inbox", "ishares", "invesco", "spdr", "sec-nport", "sec-edgar", "gleif", "openfigi"],
   "contact": "name@example.org",
   "max_age_days": 30,
   "engine": "/path/to/wealthdb"
@@ -64,15 +66,20 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 - `providers` are asked in this order. The first that claims a fund
   serves it; the inbox serves beside it. Every security provider is
   asked for every security it can claim.
-- `contact` goes into the User-Agent. The SEC requires it; the SEC
-  providers do not run without it.
-- `engine` is the wealthdb wrapper. `REFDATA_WEALTHDB` overrides it;
-  `wealthdb` on PATH is the default.
+- `contact` goes into the User-Agent of requests to the SEC, and to no
+  other host. The SEC requires it; the SEC providers do not run without
+  it. It is kept in this file only, never in bronze, silver or a log.
+- `engine` is the wealthdb wrapper. `REFDATA_WEALTHDB` overrides it.
+  Without either, the collector asks the wrapper of its own checkout,
+  which runs that checkout's engine image; outside a checkout,
+  `wealthdb` on PATH.
 
 With no file, the providers of public data run: `inbox`, `sec-nport`,
 `sec-edgar`, `gleif` and `openfigi`. The two SEC providers wait for a
-`contact`. An issuer's provider (`spdr`) runs only once `providers`
-names it: enabling it accepts the issuer's terms, quoted below.
+`contact`. An issuer's provider (`ishares`, `xtrackers`, `invesco`,
+`spdr`) runs only once `providers` names it: enabling it accepts the
+issuer's terms, quoted below. An issuer's daily file is fresher than a
+quarterly N-PORT filing, so list the issuers before `sec-nport`.
 
 A setting or a provider name the collector does not know is an error,
 so a typo never passes for a switch that is off.
@@ -148,17 +155,63 @@ reproduced, copied or transmitted or any of its contents disclosed to
 third parties without State Street Investment Management's express
 written consent." Off until `providers` names it.
 
-### Other issuers
+### ishares
 
-iShares, Invesco and Xtrackers have no provider. BlackRock's terms
-forbid "any robot, spider, intelligent agent, other automatic device,
-or manual process to search, monitor or copy this Website" without its
-permission. Invesco's forbid "devices (including software) that are
-designed to provide repeated automated access". DWS's robots.txt
-disallows its export paths. BlackRock allows downloading "material
-displayed on this Website for your personal use": a holdings file
-downloaded by hand goes into the inbox, which reads any holdings table
-whose header names a holding and its weight.
+BlackRock's iShares funds, from the holdings each fund page serves.
+
+- **US funds** are found by ISIN, CUSIP or ticker in the US site's
+  product list. The holdings file is a CSV dated in its preamble. Equity
+  lines carry tickers, bond lines CUSIPs and ISINs. The site serves the
+  current holdings only.
+- **UCITS and Swiss funds** are found by ISIN in the Swiss site's
+  product list. The holdings carry ISINs. The fund page names the
+  columns and the days the site serves: the latest, the last month end
+  and the last year end. `--backfill` fetches those.
+
+A local ticker of a non-US listing goes to the payload, not the ticker
+column: it would read as a different US symbol.
+
+**Terms.** BlackRock's terms forbid using "any robot, spider,
+intelligent agent, other automatic device, or manual process to search,
+monitor or copy this Website" without its permission, and allow
+downloading "material displayed on this Website for your personal use".
+Off until `providers` names it.
+
+### xtrackers
+
+DWS's Xtrackers ETFs, from the constituent export each fund page links.
+
+- A fund is claimed by its ISIN when its name names the issuer, as
+  brokers write it.
+- The workbook lists every constituent with its ISIN, country,
+  currency, exchange, type and weight. Its "Industry Classification" is
+  the sector. Weights are fractions and read as percent.
+- The workbook states no day; the day of the fetch dates it. A
+  swap-replicated fund exports its substitute basket, not the index:
+  name a proxy with `always` for such a fund.
+
+**Terms.** DWS's robots.txt disallows `/etfdata/*` and `/export/*`, the
+export's path. DWS's legal notice states no rule on automated access.
+Off until `providers` names it.
+
+### invesco
+
+Invesco's ETFs, from the data API its fund pages read.
+
+- A fund is claimed when its name names the issuer. A UCITS fund is
+  asked for by ISIN, a US fund by CUSIP.
+- UCITS: the fund's holdings, its index's constituents and its swap
+  counterparties. A fund with swap counterparties holds a substitute
+  basket: its holdings count as `collateral`, the look-through reads the
+  index lines, and each counterparty is a row of role `swap`.
+- US: the holdings with ticker, CUSIP, units and security type.
+- The API serves the current holdings only.
+
+**Terms.** Invesco's terms grant "a limited, non-exclusive and
+revocable license to access and make personal use of the Website", and
+forbid "devices (including software) that are designed to provide
+repeated automated access" and "any data mining, robots, or similar
+data gathering and extraction tools". Off until `providers` names it.
 
 ### sec-edgar
 
@@ -199,7 +252,8 @@ Every request goes through one small client:
 - one request a second per host; under a source's stated limit, with a
   margin: eight a second for the SEC (limit ten), 24 a minute for
   OpenFIGI (25), 50 a minute for GLEIF (60);
-- a User-Agent that names the tool;
+- a User-Agent that names the tool, with the `contact` for the SEC's
+  hosts only;
 - GET, and a read-only POST for OpenFIGI's mapping, which has no GET
   form; no cookies;
 - a source that refuses a request for its rate is not asked again in

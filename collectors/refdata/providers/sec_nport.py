@@ -266,7 +266,7 @@ def parse_nport(xml: bytes, ref: str, *, provider: str, symbol=None, provider_id
             "isin": isin, "cusip": _cusip(_text(sec, "cusip")), "figi": None, "ticker": ticker, "exchange": None,
             "name": _text(sec, "name") or _text(sec, "title"), "asset_type": cat,
             "weight": dec(_text(sec, "pctVal")), "quantity": dec(_text(sec, "balance")),
-            "market_value": dec(_text(sec, "valUSD")), "currency": cur, "country": _text(sec, "invCountry"),
+            "market_value": dec(_text(sec, "valUSD")), "currency": cur, "country": _country(_text(sec, "invCountry")),
             "risk_country": None, "sector": None, "industry": None, "maturity": None, "coupon": None,
             "long_currency": None, "long_amount": None, "short_currency": None, "short_amount": None,
             "payload": {k: v for k, v in {
@@ -314,6 +314,13 @@ def parse_nport(xml: bytes, ref: str, *, provider: str, symbol=None, provider_id
                       "name": _text(gen, "seriesName") or _text(gen, "regName"), "provider": provider,
                       "provider_id": provider_id or _text(gen, "seriesId"), "payload": {}})
     return out
+
+
+def _country(v):
+    """N-PORT writes XX or N/A where it knows no country."""
+    if v is None or v.upper() in ("XX", "N/A", "NA"):
+        return None
+    return v
 
 
 def _lei(v):

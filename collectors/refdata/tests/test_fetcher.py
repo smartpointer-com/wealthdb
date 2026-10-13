@@ -41,7 +41,9 @@ def test_one_request_a_second_per_host_and_eight_for_the_sec():
     c.get("https://www.sec.gov/x")
     c.get("https://www.sec.gov/y")
     assert sleeps == [1.0, 0.125]
-    assert seen[0].get_header("User-agent") == "wealthdb-refdata/1 ops@example.org"
+    # The contact goes to the SEC alone; every other host gets the name.
+    assert seen[0].get_header("User-agent") == "wealthdb-refdata/1"
+    assert seen[2].get_header("User-agent") == "wealthdb-refdata/1 ops@example.org"
 
 
 def test_the_sec_hosts_share_one_pace():

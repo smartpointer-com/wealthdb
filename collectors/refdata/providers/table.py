@@ -5,6 +5,13 @@ then footnotes. The header row is found by its words, not its position,
 and each column is read by what its header says, so one parser serves
 every issuer layout whose headers it knows.
 
+A ticker is kept only where it names a US listing: on a line whose
+exchange column names a US exchange, or, in a file with no exchange
+column, a line traded in US dollars (or stating no currency). A local
+ticker elsewhere (`WBD` in Milan) would read as a different US symbol,
+so it moves to the payload. Gold's aliases apply the same rule
+(exposure_pass.go).
+
 A SEDOL column is never read: SEDOL codes are licensed.
 """
 
@@ -12,6 +19,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from decimal import Decimal
 
 from .base import blank_to_none, dec
 
@@ -25,20 +33,41 @@ COLUMNS = {
     "name": ("security name", "name", "holding", "holding name", "description", "issuer name"),
     "weight": ("percent of fund", "weight", "weight (%)", "% of net assets", "weighting", "% weight",
                "percentage of fund", "% of fund"),
-    "quantity": ("number of shares", "shares held", "shares", "quantity", "quantity/shares"),
+    "quantity": ("number of shares", "shares held", "shares", "quantity", "quantity/shares", "nominal",
+                 "par value"),
     "market_value": ("base market value", "market value", "market value (base)", "market_value"),
-    "currency": ("currency", "local currency", "market currency", "trading currency"),
+    # A line's own currency before the fund's base currency, which some
+    # files also call "Currency".
+    "currency": ("market currency", "local currency", "trading currency", "currency"),
     "country": ("trade country name", "location", "country", "country of risk"),
     "sector": ("sector classification", "sector", "industry sector"),
     "industry": ("industry classification", "industry"),
     "asset_type": ("asset class", "type of security", "security type", "asset type", "asset_type"),
     "exchange": ("exchange",),
+    "maturity": ("maturity", "maturity date"),
+    "coupon": ("coupon (%)", "coupon"),
 }
 NEVER = ("sedol",)
 # What an issuer writes in a cell that has no value.
-PLACEHOLDERS = {"-", "--", "—", "n/a", "na", "none"}
+PLACEHOLDERS = {"-", "--", "—", "n/a", "na", "none", "unknown", "unassigned"}
 ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
 CUSIP_RE = re.compile(r"^[0-9A-Z]{9}$")
+
+
+# The same two patterns sit in gold's aliasesSQL (exposure_pass.go);
+# keep them equal.
+US_EXCHANGE = re.compile(r"nyse|new york|nasdaq|cboe|bats|arca|american stock exchange|\biex\b|otc markets")
+# Exchanges that carry a US operator's name and list no US security:
+# Euronext ("Nyse Euronext - Euronext Paris"), Nasdaq's Nordic, Baltic
+# and other markets, and Cboe's markets abroad.
+NOT_US = re.compile(r"euronext|omx|nordic|baltic|helsinki|stockholm|copenhagen|iceland|tallinn|riga|vilnius|"
+                    r"armenia|dubai|canada|australia|europe|japan|\bneo\b")
+
+
+def us_exchange(name) -> bool:
+    """Whether an exchange name names a US exchange."""
+    n = str(name or "").lower()
+    return bool(US_EXCHANGE.search(n)) and not NOT_US.search(n)
 
 
 def _norm(s) -> str:
@@ -97,18 +126,25 @@ def _ident(value):
     return None, None
 
 
-def lines(rows, start: int, *, ref: str, as_of: date, basis: str = "holdings") -> list:
+def lines(rows, start: int, *, ref: str, as_of: date, basis: str = "holdings", columns=None,
+          weight_scale=1) -> list:
     """Silver line rows below the header row at `start`, up to the first
     row with fewer than two filled cells: a blank row, or a footnote in
     one cell. A row with neither a name nor a weight is skipped. A column
-    no header word names lands in the payload."""
+    no header word names lands in the payload.
+
+    `columns` names a provider's own header words for a field, ahead of
+    the shared ones (an issuer whose "Industry Classification" is its
+    sector). `weight_scale` turns a file's weights into percent (100 for
+    a file that states fractions)."""
     header = [_norm(c) for c in rows[start]]
     col = {}
     for field, words in COLUMNS.items():
-        for w in words:
+        for w in (*(columns or {}).get(field, ()), *words):
             if w in header and field not in col:
                 col[field] = header.index(w)
                 break
+    by_exchange = "exchange" in col
     known = set(col.values()) | {i for i, h in enumerate(header) if h in NEVER}
     out = []
     for row in rows[start + 1:]:
@@ -132,16 +168,26 @@ def lines(rows, start: int, *, ref: str, as_of: date, basis: str = "holdings") -
             isin = ident
         elif kind == "cusip" and cusip is None:
             cusip = ident
+        payload = {header[i]: str(v).strip() for i, v in enumerate(row)
+                   if i not in known and i < len(header) and header[i] and str(v).strip()}
+        ticker = cell("ticker")
+        if ticker and not (us_exchange(cell("exchange")) if by_exchange
+                           else (cell("currency") or "USD").upper() == "USD"):
+            payload["local_ticker"], ticker = ticker, None
+        weight = dec(cell("weight"))
+        if weight is not None and weight_scale != 1:
+            weight = dec(Decimal(weight) * weight_scale)
+        maturity = parse_day(cell("maturity")) if cell("maturity") else None
         out.append({
             "fund_ref": ref, "as_of": as_of, "basis": basis, "line_no": len(out) + 1,
-            "isin": isin, "cusip": cusip, "figi": None, "ticker": cell("ticker"), "exchange": cell("exchange"),
-            "name": name, "asset_type": cell("asset_type"), "weight": dec(cell("weight")),
+            "isin": isin, "cusip": cusip, "figi": None, "ticker": ticker, "exchange": cell("exchange"),
+            "name": name, "asset_type": cell("asset_type"), "weight": weight,
             "quantity": dec(cell("quantity")), "market_value": dec(cell("market_value")),
             "currency": cell("currency"), "country": cell("country"), "risk_country": None,
-            "sector": cell("sector"), "industry": cell("industry"), "maturity": None, "coupon": None,
+            "sector": cell("sector"), "industry": cell("industry"),
+            "maturity": maturity.isoformat() if maturity else None, "coupon": dec(cell("coupon")),
             "long_currency": None, "long_amount": None, "short_currency": None, "short_amount": None,
-            "payload": {header[i]: str(v).strip() for i, v in enumerate(row)
-                        if i not in known and i < len(header) and header[i] and str(v).strip()},
+            "payload": payload,
         })
     return out
 

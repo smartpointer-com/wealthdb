@@ -138,9 +138,9 @@ func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
 		 ('test-src', ?, 'A', 'STKT', 'STKT', 'public_equity', 'stock', 'USD', 1)`,
 		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
 		 VALUES ('test-src', 'symbol:OTHER', ?, 'holdings', 'inbox', 2)`,
-		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, weight) VALUES
-		 ('test-src', 'symbol:OTHER', ?, 'holdings', 1, 'isin:XX0000000011', 'XX0000000011', 'FUNDT', 50),
-		 ('test-src', 'symbol:OTHER', ?, 'holdings', 2, 'isin:XX0000000012', 'XX0000000012', 'STKT', 50)`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, exchange, weight) VALUES
+		 ('test-src', 'symbol:OTHER', ?, 'holdings', 1, 'isin:XX0000000011', 'XX0000000011', 'FUNDT', 'NYSE Arca', 50),
+		 ('test-src', 'symbol:OTHER', ?, 'holdings', 2, 'isin:XX0000000012', 'XX0000000012', 'STKT', 'NASDAQ', 50)`,
 	} {
 		args := make([]any, strings.Count(q, "?"))
 		for i := range args {

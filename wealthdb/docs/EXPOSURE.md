@@ -30,7 +30,9 @@ creates or loses any. Every view therefore sums to `holdings global`.
 - **An alias** reads one key as another. A fund line that states a
   ticker beside an ISIN makes the ticker an alias of the ISIN, so a
   stock held under its ticker and a line that names its ISIN are one
-  security.
+  security. The line must name a US listing (a US ISIN, a US exchange,
+  or no exchange and a US-dollar price): a local ticker abroad is often
+  another company's US symbol.
 - **A leaf** is what the look-through ends at: a holding no composition
   describes, a fund's line, a remainder, or the cash leg of a leveraged
   proxy.

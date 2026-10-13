@@ -50,6 +50,10 @@ INTERVALS = {"sec": 0.125, "api.openfigi.com": 60 / 24, "api.gleif.org": 1.2}
 # Sources whose 403 means "too fast or undeclared", not "no such page".
 REFUSES_WITH_403 = {"sec"}
 
+# Sources that require a contact in the User-Agent. Every other host gets
+# the tool's name alone: the address goes nowhere it is not asked for.
+WANTS_CONTACT = {"sec"}
+
 
 class FetchError(Exception):
     """A request failed: no answer, or an HTTP error status."""
@@ -84,9 +88,9 @@ class Client:
         self._open = opener or urllib.request.urlopen
         self.timeout = timeout
 
-    def user_agent(self) -> str:
+    def user_agent(self, source: str = "") -> str:
         ua = f"wealthdb-refdata/{VERSION}"
-        return f"{ua} {self.contact}" if self.contact else ua
+        return f"{ua} {self.contact}" if self.contact and source in WANTS_CONTACT else ua
 
     def _pace(self, source: str) -> None:
         interval = INTERVALS.get(source, DEFAULT_INTERVAL)
@@ -114,7 +118,7 @@ class Client:
             raise FetchError(url, None, f"not sent: {source} refused an earlier request ({self.refused[source]})")
         self._pace(source)
         req = urllib.request.Request(url, data=body, method=method,
-                                     headers={"User-Agent": self.user_agent(), **(headers or {})})
+                                     headers={"User-Agent": self.user_agent(source), **(headers or {})})
         t0 = time.monotonic()
         try:
             with self._open(req, timeout=self.timeout) as resp:

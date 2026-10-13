@@ -210,3 +210,9 @@ def test_swap_counterparties_add_up_and_na_is_no_lei():
     assert [(c["role"], c["name"], c["lei"], c["share"]) for c in p.counterparties] == [
         ("swap", "Example Bank A", None, "100"), ("swap", "Example Bank B", "XXXXXXXXXXXXXXXXXX11", "40")]
     assert "lei" not in p.lines[0]["payload"]
+
+
+def test_an_unknown_country_is_no_country():
+    doc = SWAP_DOC.replace(b"<assetCat>DE</assetCat>", b"<assetCat>DE</assetCat><invCountry>XX</invCountry>", 1)
+    p = parse_nport(doc, "symbol:QSWP", provider="sec-nport")
+    assert p.lines[0]["country"] is None

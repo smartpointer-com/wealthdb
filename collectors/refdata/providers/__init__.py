@@ -5,9 +5,13 @@ from __future__ import annotations
 
 from .gleif import Gleif
 from .inbox import Inbox
+from .invesco import Invesco
+from .ishares import IShares
 from .openfigi import OpenFigi
 from .sec_edgar import SecEdgar
 from .sec_nport import SecNport
 from .spdr import Spdr
+from .xtrackers import Xtrackers
 
-REGISTRY = {p.name: p for p in (Inbox(), SecNport(), SecEdgar(), Gleif(), OpenFigi(), Spdr())}
+REGISTRY = {p.name: p for p in (Inbox(), IShares(), Xtrackers(), Invesco(), Spdr(), SecNport(), SecEdgar(),
+                                Gleif(), OpenFigi())}

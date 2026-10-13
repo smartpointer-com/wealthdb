@@ -121,3 +121,36 @@ def test_the_inbox_serves_beside_the_provider_that_claims(tmp_path, fake):
     reqs, unclaimed = download.plan(want, [Inbox(), fake], c, today=date(2026, 7, 15), max_age=30, backfill=False)
     assert [(r.provider, r.as_of) for r in reqs] == [("inbox", date(2026, 3, 15))]
     assert unclaimed == []
+
+
+class _Failing(FakeProvider):
+    """Claims what FakeProvider claims, and fails every fetch."""
+    name = "failing"
+
+    def fetch(self, claim, as_of, outdir, ctx):
+        from providers.base import ProviderError
+        raise ProviderError("the issuer's file is gone")
+
+
+def test_a_failed_current_fetch_falls_through_to_the_next_claimant(tmp_path, fake, monkeypatch):
+    failing = _Failing()
+    monkeypatch.setitem(download.REGISTRY, "failing", failing)
+    want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA")]))
+    reqs, _ = download.plan(want, [failing, fake], ctx(), today=date(2026, 7, 15), max_age=30, backfill=False)
+    (r,) = reqs
+    assert r.provider == "failing" and [name for name, _ in r.fallbacks] == ["fake"]
+    (entry,) = download.execute(reqs, tmp_path, ctx())
+    assert (entry["status"], entry["provider"]) == ("ok", "fake")
+    assert entry["tried"][0]["provider"] == "failing"
+
+
+def test_a_product_list_that_does_not_parse_is_no_claim(fake):
+    class Garbled(FakeProvider):
+        name = "garbled"
+
+        def claim(self, f, c):
+            raise ValueError("Expecting value: line 1 column 1")
+    want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA")]))
+    reqs, unclaimed = download.plan(want, [Garbled(), fake], ctx(), today=date(2026, 7, 15), max_age=30,
+                                    backfill=False)
+    assert [r.provider for r in reqs] == ["fake"] and unclaimed == []

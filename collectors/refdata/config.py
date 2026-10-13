@@ -3,7 +3,7 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
 ~/.config/refdata.cfg. It is a JSON object, for example:
 
     {
-      "providers": ["inbox", "sec-nport", "spdr", "sec-edgar", "gleif", "openfigi"],
+      "providers": ["inbox", "ishares", "invesco", "spdr", "sec-nport", "sec-edgar", "gleif", "openfigi"],
       "contact": "name@example.org",
       "max_age_days": 30,
       "engine": "/path/to/wealthdb",
@@ -16,14 +16,14 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
   setting, the local inbox and the providers of public data run
   (DEFAULT_PROVIDERS); an issuer provider stays off until this list
   names it, because enabling one accepts its terms (README.md).
-- `contact` is the address the SEC requires in the User-Agent. The SEC
-  providers do not run without it.
+- `contact` is the address the SEC requires in the User-Agent; no other
+  host receives it. The SEC providers do not run without it.
 - `max_age_days`: a fund whose newest composition is younger is not
   fetched again; a security looked up more recently is not looked up
   again.
 - `engine` is the wealthdb wrapper that prints the wanted list; the
-  REFDATA_WEALTHDB environment variable wins over it, and `wealthdb` on
-  PATH is the default.
+  REFDATA_WEALTHDB environment variable wins over it. Without either,
+  this checkout's wrapper runs, so the engine image is the checkout's.
 - `constituents` lets the security providers look up the lines of held
   funds as well as the securities held directly.
 
@@ -111,6 +111,17 @@ def load(known_providers, where: Path | None = None) -> Config:
                   engine=engine.strip(), constituents=constituents, path=where)
 
 
-def engine_command(cfg: Config) -> str:
-    """The wealthdb wrapper to ask for the wanted list."""
-    return os.environ.get("REFDATA_WEALTHDB", "").strip() or cfg.engine or "wealthdb"
+# The engine wrapper of the checkout this collector lives in: it runs
+# that checkout's engine image, by the checkout's own tag.
+CHECKOUT_ENGINE = Path(__file__).resolve().parent.parent.parent / "wealthdb" / "wealthdb"
+
+
+def engine_command(cfg: Config, checkout_engine: Path = CHECKOUT_ENGINE) -> str:
+    """The wealthdb wrapper to ask for the wanted list: REFDATA_WEALTHDB,
+    else refdata.cfg's `engine`, else this checkout's wrapper, else
+    `wealthdb` on PATH."""
+    if os.environ.get("REFDATA_WEALTHDB", "").strip():
+        return os.environ["REFDATA_WEALTHDB"].strip()
+    if cfg.engine:
+        return cfg.engine
+    return str(checkout_engine) if checkout_engine.is_file() else "wealthdb"

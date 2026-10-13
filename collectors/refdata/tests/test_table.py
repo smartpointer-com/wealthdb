@@ -61,7 +61,21 @@ def test_xlsx_shared_strings_numbers_sparse_cells_and_an_absolute_target():
 
 
 def test_a_dash_is_no_label():
-    rows = [["Name", "Weight", "Sector", "Country"], ["Alpha", "-", "-", "n/a"], ["Beta", "100", "Energy", "France"]]
-    a, b = table.lines(rows, 0, ref="r", as_of=DAY)
+    rows = [["Name", "Weight", "Sector", "Country"], ["Alpha", "-", "-", "n/a"], ["Beta", "100", "Energy", "France"],
+            ["Gamma", "0", "unknown", "Unassigned"]]
+    a, b, c = table.lines(rows, 0, ref="r", as_of=DAY)
     assert (a["weight"], a["sector"], a["country"]) == (None, None, None)
+    assert (c["sector"], c["country"]) == (None, None)
     assert (b["sector"], b["country"]) == ("Energy", "France")
+
+
+def test_a_ticker_names_a_us_listing_only():
+    assert table.us_exchange("New York Stock Exchange Inc.") and table.us_exchange("NASDAQ")
+    for venue in ("Cboe Canada", "Cboe Europe", "Nasdaq Omx Helsinki Ltd.", "Nyse Euronext - Euronext Paris",
+                  "Nasdaq Baltic", "SIX Swiss Exchange", None):
+        assert not table.us_exchange(venue), venue
+    # Without an exchange column, the line's currency decides.
+    rows = [["Name", "Ticker", "Weight", "Currency"], ["Alpha", "QAAA", "60", "USD"], ["Beta", "QBBB", "40", "CHF"],
+            ["Gamma", "QCCC", "0", ""]]
+    a, b, c = table.lines(rows, 0, ref="r", as_of=DAY)
+    assert (a["ticker"], b["ticker"], b["payload"]["local_ticker"], c["ticker"]) == ("QAAA", None, "QBBB", "QCCC")

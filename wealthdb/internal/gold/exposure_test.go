@@ -157,6 +157,9 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 	comp("symbol:QT3", may, "holdings", "USD", nil, line("symbol:QT4", "", "QT4", "Chain Four", "Fund", 100, "USD", "", ""))
 	comp("symbol:QT4", may, "holdings", "USD", nil,
 		line("isin:XX0000000001", "XX0000000001", "AAA", "Stock A", "Equity", 100, "USD", "United States", "Information Technology"))
+	// The funds are US funds: their lines list on US exchanges, so a
+	// line's ticker names the US symbol.
+	ex(`UPDATE fund_lines SET exchange = 'NYSE' WHERE ticker IS NOT NULL`)
 	ex(`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
 	    VALUES ('test-src', 'isin:XX0000000009', 'legal_country', ?, 'gleif', 'DE'),
 	           ('test-src', 'isin:IE0000000005', 'legal_country', ?, 'gleif', 'IE'),
@@ -582,6 +585,38 @@ func TestExposureEdgarCodesReadAsEdgarStatesThem(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("%s domicile|risk = %s, want %s", key, got, want)
+		}
+	}
+}
+
+// A fund line's ticker reads as a US symbol only where the line names a
+// US listing: a US ISIN, a US exchange, or no exchange and a US-dollar
+// price. A local ticker elsewhere is another company's.
+func TestExposureLocalTickersAreNoUSSymbols(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, exchange, currency, name, weight)
+	    VALUES ('test-src', 'symbol:FUNDX', ?, 'holdings', 90, 'isin:XX0000000041', 'XX0000000041', 'QLOC', 'SIX Swiss Exchange', 'CHF', 'Local Co', 0),
+	           ('test-src', 'symbol:FUNDX', ?, 'holdings', 91, 'isin:XX0000000042', 'XX0000000042', 'QPAR', 'Nyse Euronext - Euronext Paris', 'EUR', 'Paris Co', 0),
+	           ('test-src', 'symbol:FUNDX', ?, 'holdings', 92, 'isin:XX0000000043', 'XX0000000043', 'QNYC', 'New York Stock Exchange', 'USD', 'Listed Co', 0),
+	           ('test-src', 'symbol:FUNDX', ?, 'holdings', 93, 'isin:US0000000044', 'US0000000044', 'QUSA', NULL, 'USD', 'Home Co', 0),
+	           ('test-src', 'symbol:FUNDX', ?, 'holdings', 94, 'isin:XX0000000045', 'XX0000000045', 'QADR', NULL, 'USD', 'Dollar Co', 0),
+	           ('test-src', 'symbol:FUNDX', ?, 'holdings', 95, 'isin:XX0000000046', 'XX0000000046', 'QZRH', NULL, 'CHF', 'Franc Co', 0),
+	           ('test-src', 'symbol:FUNDX', ?, 'holdings', 96, 'isin:XX0000000047', 'XX0000000047', 'QTOR', 'Cboe Canada', 'CAD', 'Toronto Co', 0)`,
+		exDay(5, 31), exDay(5, 31), exDay(5, 31), exDay(5, 31), exDay(5, 31), exDay(5, 31), exDay(5, 31)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for alias, want := range map[string]string{"symbol:QLOC": "", "symbol:QPAR": "", "symbol:QNYC": "isin:XX0000000043",
+		"symbol:QUSA": "isin:US0000000044", "symbol:QADR": "isin:XX0000000045", "symbol:QZRH": "", "symbol:QTOR": ""} {
+		var got sql.NullString
+		err := db.QueryRowContext(ctx, `SELECT security_key FROM security_aliases WHERE alias = ?`, alias).Scan(&got)
+		if err != nil && err != sql.ErrNoRows {
+			t.Fatal(err)
+		}
+		if got.String != want {
+			t.Errorf("%s reads as %q, want %q", alias, got.String, want)
 		}
 	}
 }
