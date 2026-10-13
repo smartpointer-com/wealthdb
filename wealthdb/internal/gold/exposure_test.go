@@ -28,7 +28,8 @@ import (
 //	GAPF    compositions 450 days before and 92 days after: the later
 //	        one, flagged forward
 //	QHDG     a EUR stock, hedged into USD
-//	SWP     a swap fund: a collateral basket and the index lines
+//	SWP     a swap fund: a collateral basket and the index lines, one
+//	        of them with no asset type
 //	QFXF     an EUR stock and a forward long EUR 500 against USD, net
 //	        assets 1000
 //	OLDF    compositions at Jan 31 and May 31
@@ -143,7 +144,7 @@ func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		line("symbol:BSK", "", "BSK", "Basket Co", "Equity", 100, "USD", "United States", "Financials"))
 	comp("symbol:SWP", may, "index", "USD", nil,
 		line("symbol:QEMA", "", "QEMA", "EM Co A", "Equity", 60, "USD", "Brazil", "Materials"),
-		line("symbol:QEMB", "", "QEMB", "EM Co B", "Equity", 40, "USD", "India", "Technology"))
+		line("symbol:QEMB", "", "QEMB", "EM Co B", "", 40, "USD", "India", "Technology"))
 	comp("symbol:QFXF", may, "holdings", "USD", 1000,
 		line("symbol:QEUS", "", "QEUS", "Euro Stock", "Equity", 100, "EUR", "France", "Industrials"),
 		[]any{"symbol:FWD", nil, nil, "EUR/USD forward", "FX Forward", 0, "EUR", nil, nil, "EUR", 500, "USD"})
@@ -555,5 +556,32 @@ func TestExposureSecuritiesNameKeylessLines(t *testing.T) {
 	}
 	if !found {
 		t.Error("securities lacks the keyless future")
+	}
+}
+
+// EDGAR's codes read through EDGAR's own map: DE is Delaware, so the
+// United States, never Germany. Another provider's DE is Germany.
+func TestExposureEdgarCodesReadAsEdgarStatesThem(t *testing.T) {
+	db, ctx := openExposureFixture(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+	    VALUES ('test-src', 'isin:XX0000000031', 'incorporation', 0, 'sec-edgar', 'DE'),
+	           ('test-src', 'isin:XX0000000032', 'incorporation', 0, 'sec-edgar', 'E9'),
+	           ('test-src', 'isin:XX0000000032', 'hq_country', 0, 'sec-edgar', 'K3'),
+	           ('test-src', 'isin:XX0000000033', 'legal_country', 0, 'gleif', 'DE')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{"isin:XX0000000031": "US|", "isin:XX0000000032": "KY|HK",
+		"isin:XX0000000033": "DE|"} {
+		var got string
+		if err := db.QueryRowContext(ctx, `SELECT COALESCE(domicile, '') || '|' || COALESCE(risk_country, '')
+		    FROM securities WHERE security_key = ?`, key).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		if got != want {
+			t.Errorf("%s domicile|risk = %s, want %s", key, got, want)
+		}
 	}
 }

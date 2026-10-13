@@ -7,12 +7,13 @@ The folder is the fund's reference as `wealthdb exposure funds` prints it
 (`isin:IE00…`, or `isin_IE00…` where a colon is awkward), and the day the
 composition describes. A folder holds one composition file, either
 
-- a CSV with a header row naming at least `name` and `weight` (percent
-  of net assets), and any of `isin`, `cusip`, `ticker`, `country`,
-  `currency`, `sector`, `industry`, `asset_type`, `quantity`,
-  `market_value`; or
-- a file another provider parses, recognised by its name: an N-PORT
-  `primary_doc.xml`.
+- a holdings table, CSV or XLSX: an issuer's own download, or a file
+  made by hand with a header row naming at least `name` and `weight`
+  (percent of net assets), and any of `isin`, `cusip`, `ticker`,
+  `country`, `currency`, `sector`, `industry`, `asset_type`,
+  `quantity`, `market_value`. Preamble lines above the header and notes
+  below the table are skipped; or
+- an N-PORT `primary_doc.xml`.
 
 A download copies each folder of a wanted fund into bronze once, beside
 whatever provider serves the fund; the inbox itself is never changed. It
@@ -28,13 +29,12 @@ import shutil
 from datetime import date
 from pathlib import Path
 
-from .base import Parsed, Provider, ProviderError, Unavailable, blank_to_none, dec, read_meta, write_meta
+from . import table, xlsx
+from .base import Parsed, Provider, ProviderError, Unavailable, read_meta, write_meta
 from .sec_nport import DOC as NPORT_DOC
 from .sec_nport import parse_nport
 
 INBOX = "inbox"
-CSV_COLUMNS = ("isin", "cusip", "ticker", "name", "weight", "country", "currency", "sector", "industry",
-               "asset_type", "quantity", "market_value")
 
 
 def folder_for(data_dir: Path, ref: str) -> Path | None:
@@ -99,47 +99,34 @@ class Inbox(Provider):
     def parse(self, indir: Path) -> Parsed:
         meta = read_meta(indir)
         ref, as_of = meta["ref"], date.fromisoformat(meta["as_of"])
-        readable = [n for n in meta["files"] if n == NPORT_DOC or n.lower().endswith(".csv")]
+        readable = [n for n in meta["files"] if n == NPORT_DOC or n.lower().endswith((".csv", ".xlsx"))]
         if len(readable) != 1:
-            raise ProviderError(f"{indir}: an inbox folder holds one composition file, a CSV or an N-PORT "
-                                f"{NPORT_DOC}; it holds {', '.join(meta['files'])}")
+            raise ProviderError(f"{indir}: an inbox folder holds one composition file, a CSV, an XLSX or an "
+                                f"N-PORT {NPORT_DOC}; it holds {', '.join(meta['files'])}")
         name = readable[0]
+        raw = (indir / name).read_bytes()
         if name == NPORT_DOC:
-            out = parse_nport((indir / name).read_bytes(), ref, provider=self.name)
+            out = parse_nport(raw, ref, provider=self.name)
             for c in out.compositions:
                 c["source_kind"] = "inbox"
             return out
-        return parse_csv((indir / name).read_bytes(), ref, as_of)
+        if name.lower().endswith(".xlsx"):
+            return parse_rows(xlsx.rows(raw), ref, as_of)
+        return parse_csv(raw, ref, as_of)
 
 
 def parse_csv(raw: bytes, ref: str, as_of: date) -> Parsed:
-    """The inbox CSV: one line per holding, weights in percent."""
-    text = raw.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
-    cols = {(h or "").strip().lower(): h for h in reader.fieldnames or []}
-    if "name" not in cols or "weight" not in cols:
-        raise ProviderError("an inbox CSV needs a header with at least name and weight")
-    lines = []
-    for n, row in enumerate(reader, start=1):
-        get = {k: blank_to_none(row.get(v)) for k, v in cols.items()}
-        if not any(get.values()):
-            continue
-        lines.append({
-            "fund_ref": ref, "as_of": as_of, "basis": "holdings", "line_no": n,
-            "isin": get.get("isin"), "cusip": get.get("cusip"), "figi": None, "ticker": get.get("ticker"),
-            "exchange": None, "name": get.get("name"), "asset_type": get.get("asset_type"),
-            "weight": dec(get.get("weight")), "quantity": dec(get.get("quantity")),
-            "market_value": dec(get.get("market_value")), "currency": get.get("currency"),
-            "country": get.get("country"), "risk_country": None, "sector": get.get("sector"),
-            "industry": get.get("industry"), "maturity": None, "coupon": None, "long_currency": None,
-            "long_amount": None, "short_currency": None, "short_amount": None,
-            "payload": {k: v for k, v in get.items() if k not in CSV_COLUMNS and v},
-        })
-    weights = [float(x["weight"]) for x in lines if x["weight"] is not None]
-    out = Parsed(lines=lines)
-    out.compositions.append({
-        "fund_ref": ref, "as_of": as_of, "basis": "holdings", "provider": "inbox", "source_kind": "inbox",
-        "fund_name": None, "currency": None, "net_assets": None, "line_count": len(lines),
-        "weight_sum": dec(round(sum(weights), 8)) if weights else None, "units_outstanding": None, "payload": {},
-    })
-    return out
+    """A CSV holdings table: an issuer's own download, or a hand-made
+    file with at least `name` and `weight` columns."""
+    return parse_rows(list(csv.reader(io.StringIO(raw.decode("utf-8-sig")))), ref, as_of)
+
+
+def parse_rows(rows, ref: str, as_of: date) -> Parsed:
+    """A holdings table, its header row found by its words (table.py),
+    as the composition of `ref` on the folder's day."""
+    start = table.header_index(rows)
+    if start is None:
+        raise ProviderError("an inbox table needs a header row with at least a name and a weight column")
+    lines = table.lines(rows, start, ref=ref, as_of=as_of)
+    comp = table.composition(ref, as_of, lines, provider="inbox", source_kind="inbox")
+    return Parsed(lines=lines, compositions=[comp])

@@ -54,7 +54,7 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 
 ```json
 {
-  "providers": ["inbox", "sec-nport"],
+  "providers": ["inbox", "sec-nport", "spdr", "sec-edgar", "gleif", "openfigi"],
   "contact": "name@example.org",
   "max_age_days": 30,
   "engine": "/path/to/wealthdb"
@@ -62,15 +62,20 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
 ```
 
 - `providers` are asked in this order. The first that claims a fund
-  serves it.
+  serves it; the inbox serves beside it. Every security provider is
+  asked for every security it can claim.
 - `contact` goes into the User-Agent. The SEC requires it; the SEC
   providers do not run without it.
 - `engine` is the wealthdb wrapper. `REFDATA_WEALTHDB` overrides it;
   `wealthdb` on PATH is the default.
 
-With no file, `inbox` and `sec-nport` run, and `sec-nport` waits for a
-`contact`. A setting or a provider name the collector does not know is
-an error, so a typo never passes for a switch that is off.
+With no file, the providers of public data run: `inbox`, `sec-nport`,
+`sec-edgar`, `gleif` and `openfigi`. The two SEC providers wait for a
+`contact`. An issuer's provider (`spdr`) runs only once `providers`
+names it: enabling it accepts the issuer's terms, quoted below.
+
+A setting or a provider name the collector does not know is an error,
+so a typo never passes for a switch that is off.
 
 ## Providers
 
@@ -88,10 +93,12 @@ The folder name is the fund reference as `wealthdb exposure funds`
 prints it, with `_` in place of `:`. A folder holds one composition
 file:
 
-- a CSV with a header naming at least `name` and `weight` (percent of
-  net assets), and any of `isin`, `cusip`, `ticker`, `country`,
-  `currency`, `sector`, `industry`, `asset_type`, `quantity` and
-  `market_value`;
+- a holdings table, CSV or XLSX: an issuer's own download, or a file
+  made by hand. Its header row names at least a holding (`name`) and
+  its `weight` (percent of net assets), and may name `isin`, `cusip`,
+  `ticker`, `country`, `currency`, `sector`, `industry`, `asset_type`,
+  `quantity` and `market_value`, in an issuer's wording too. Lines above
+  the header and notes below the table are skipped;
 - or an N-PORT `primary_doc.xml`.
 
 A download copies each folder into bronze once, beside whatever
@@ -119,14 +126,84 @@ most ten requests a second and require a User-Agent that names the tool
 and a contact address. The collector sends
 `wealthdb-refdata/1 <contact>` and keeps to the limit.
 
+### spdr
+
+State Street's SPDR ETFs, US and UCITS, from the daily holdings file
+each fund page links.
+
+- The fund is found by its ISIN or CUSIP in State Street's fund finder,
+  or by its ticker among the US funds.
+- The file lists every holding with its ISIN (UCITS) or CUSIP (US),
+  weight, shares, currency and sector; a UCITS file adds the trading
+  country and the industry. A cash line states no weight and counts in
+  the fund's remainder.
+- The file is today's holdings; there is no history.
+
+**Terms.** State Street's site terms allow "producing print-outs for
+your own personal use", and forbid publishing or redistributing the
+content "for other than use for or on behalf of yourself". Its
+robots.txt leaves the fund finder and the holdings files open. Each
+file's footer adds: "The whole or any part of this work may not be
+reproduced, copied or transmitted or any of its contents disclosed to
+third parties without State Street Investment Management's express
+written consent." Off until `providers` names it.
+
+### Other issuers
+
+iShares, Invesco and Xtrackers have no provider. BlackRock's terms
+forbid "any robot, spider, intelligent agent, other automatic device,
+or manual process to search, monitor or copy this Website" without its
+permission. Invesco's forbid "devices (including software) that are
+designed to provide repeated automated access". DWS's robots.txt
+disallows its export paths. BlackRock allows downloading "material
+displayed on this Website for your personal use": a holdings file
+downloaded by hand goes into the inbox, which reads any holdings table
+whose header names a holding and its weight.
+
+### sec-edgar
+
+What the SEC knows of a US-listed company, found by its ticker in the
+SEC's company ticker file:
+
+- its SIC code, which gold reads as a coarse sector;
+- its state or country of incorporation and of its business address,
+  as EDGAR codes, which gold reads through EDGAR's own code list;
+- its latest reported shares outstanding.
+
+**Terms.** As `sec-nport`.
+
+### gleif
+
+Who issued a security, from the Global LEI Foundation's API, by the
+security's ISIN: the issuer's LEI, legal name, legal country and
+headquarters country.
+
+**Terms.** "The data available through the Access Service are provided
+under the CC0 licence" (GLEIF's terms of use for LEI data).
+
+### openfigi
+
+A security's FIGI, name, ticker, exchange and type, from OpenFIGI's
+mapping API, by ISIN, else CUSIP, else US ticker. It states no sector
+and no country; it ties identifiers together. Five securities go into
+one request. A ticker is kept from a US listing only.
+
+**Terms.** Bloomberg "hereby dedicates FIGI Identifiers to the public
+domain", redistribution included (OpenFIGI's terms of service). The API
+takes 25 requests a minute without a key.
+
 ## Pace
 
 Every request goes through one small client:
 
-- one request a second per host, eight a second for the SEC's hosts,
-  under the SEC's limit of ten;
+- one request a second per host; under a source's stated limit, with a
+  margin: eight a second for the SEC (limit ten), 24 a minute for
+  OpenFIGI (25), 50 a minute for GLEIF (60);
 - a User-Agent that names the tool;
-- GET only, and no cookies.
+- GET, and a read-only POST for OpenFIGI's mapping, which has no GET
+  form; no cookies;
+- a source that refuses a request for its rate is not asked again in
+  the run.
 
 `download --debug` writes `screenshots/http-trace.jsonl` into the run
 dir: one line per request, with its URL, status, timing and size, and

@@ -9,7 +9,7 @@ the report shows and the rules behind them.
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
 reference tables), §10.14 (the macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-and the wanted list); migrations 0125 and 0126.
+and the wanted list); migrations 0125 to 0127.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -79,7 +79,7 @@ whose label a map knows, and keeps where it came from:
 | Field | Order |
 | --- | --- |
 | sector | a vendor; the newest fund line; another provider's sector; the SEC SIC code |
-| country of risk | a vendor's risk country; the newest fund line's country; another provider's risk country; the headquarters country (GLEIF) |
+| country of risk | a vendor's risk country; the newest fund line's country; another provider's risk country; the headquarters country (GLEIF, EDGAR's business address) |
 | country of domicile | the legal country (GLEIF); the country of incorporation (EDGAR); the ISIN prefix |
 | market cap | a vendor; another provider's market cap |
 
@@ -106,7 +106,10 @@ risk, else its domicile. `--country domicile` does the opposite.
   asset type maps onto one; a line without one takes its fund's class.
 
 Each provider's labels map onto these in code
-(`internal/canonical/exposurelabels.go`), one to one. A label no map
+(`internal/canonical/exposurelabels.go`), one to one. A provider whose
+words mean something else in the generic map has a map of its own: EDGAR
+writes `DE` for Delaware, so its state and country codes read through
+EDGAR's code list (`edgarcodes.go`), never the generic one. A label no map
 knows is **unmapped**: the leaf keeps no value for that field, the row
 says so, and `coverage` lists the label. No vendor's scheme ships; the
 maps name labels, never securities.

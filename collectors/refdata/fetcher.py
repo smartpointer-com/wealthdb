@@ -2,10 +2,17 @@
 One small HTTP client for every provider: reads only, a User-Agent that
 names the tool, and a pace per host.
 
-Every host gets one request a second. The SEC's hosts count as one
-source, which allows ten a second; the client sends eight, a margin for
-clock jitter. The client sends GET only, keeps no cookies and never
-signs in anywhere.
+Every host gets one request a second. Where a source states a limit,
+the client keeps under it:
+
+- the SEC's hosts count as one source, which allows ten a second; the
+  client sends eight;
+- OpenFIGI allows 25 a minute without a key; the client sends 24;
+- GLEIF allows 60 a minute; the client sends 50.
+
+The client sends GET, and a POST only for a lookup whose API has no GET
+form (OpenFIGI's mapping), a read either way. It keeps no cookies and
+never signs in anywhere.
 
 A source that refuses a request for its rate (HTTP 429, or the SEC's
 403) is not asked again in the same run: every later request to it
@@ -38,7 +45,7 @@ HOST_GROUPS = {"www.sec.gov": "sec", "data.sec.gov": "sec"}
 
 # Seconds between two requests to one host or group, where it differs
 # from one a second.
-INTERVALS = {"sec": 0.125}
+INTERVALS = {"sec": 0.125, "api.openfigi.com": 60 / 24, "api.gleif.org": 1.2}
 
 # Sources whose 403 means "too fast or undeclared", not "no such page".
 REFUSES_WITH_403 = {"sec"}
@@ -93,32 +100,37 @@ class Client:
     def get(self, url: str, *, params=None, headers=None) -> Response:
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
-        return self._send(url, headers)
+        return self._send("GET", url, None, headers)
 
-    def _send(self, url, headers) -> Response:
+    def post_json(self, url: str, payload, *, headers=None) -> Response:
+        """A read-only POST: a lookup whose API has no GET form."""
+        body = json.dumps(payload).encode("utf-8")
+        return self._send("POST", url, body, {"Content-Type": "application/json", **(headers or {})})
+
+    def _send(self, method, url, body, headers) -> Response:
         host = urllib.parse.urlsplit(url).hostname or ""
         source = HOST_GROUPS.get(host, host)
         if source in self.refused:
             raise FetchError(url, None, f"not sent: {source} refused an earlier request ({self.refused[source]})")
         self._pace(source)
-        req = urllib.request.Request(url, method="GET",
+        req = urllib.request.Request(url, data=body, method=method,
                                      headers={"User-Agent": self.user_agent(), **(headers or {})})
         t0 = time.monotonic()
         try:
             with self._open(req, timeout=self.timeout) as resp:
                 data = resp.read()
-                self.trace.record("GET", url, status=resp.status, elapsed_ms=(time.monotonic() - t0) * 1000,
+                self.trace.record(method, url, status=resp.status, elapsed_ms=(time.monotonic() - t0) * 1000,
                                   bytes_=len(data), headers=resp.headers)
                 return Response(url=url, status=resp.status, body=data,
                                 content_type=resp.headers.get("Content-Type", ""))
         except urllib.error.HTTPError as e:
-            self.trace.record("GET", url, status=e.code, elapsed_ms=(time.monotonic() - t0) * 1000,
+            self.trace.record(method, url, status=e.code, elapsed_ms=(time.monotonic() - t0) * 1000,
                               error=str(e.reason), headers=e.headers)
             if e.code == 429 or (e.code == 403 and source in REFUSES_WITH_403):
                 self.refused[source] = f"{e.code} {e.reason}"
                 log.warning("%s refused a request (%s %s); not asking it again this run", source, e.code, e.reason)
             raise FetchError(url, e.code, str(e.reason)) from e
         except OSError as e:
-            self.trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
+            self.trace.record(method, url, elapsed_ms=(time.monotonic() - t0) * 1000,
                               error=f"{type(e).__name__}: {e}")
             raise FetchError(url, None, f"{type(e).__name__}: {e}") from e

@@ -262,8 +262,12 @@ WITH ln AS (
       JOIN fund_compositions c USING (silver_source_id, fund_ref, as_of, basis)
       LEFT JOIN security_aliases sa ON sa.alias = l.security_key
      WHERE l.security_key IS NOT NULL),
+-- cmap: the country map a fact reads, the provider's own where it has
+-- one (EDGAR's codes would read as other countries in the generic map).
 fx AS (
-    SELECT COALESCE(sa.security_key, f.security_key) AS k, f.field, f.value, f.provider, f.as_of
+    SELECT COALESCE(sa.security_key, f.security_key) AS k, f.field, f.value, f.provider, f.as_of,
+           CASE WHEN f.provider IN (SELECT provider FROM exposure_labels WHERE field = 'country' AND provider <> '')
+                THEN f.provider ELSE '' END AS cmap
       FROM security_facts f LEFT JOIN security_aliases sa ON sa.alias = f.security_key),
 idn AS (
     SELECT COALESCE(sa.security_key, i.security_key) AS k, i.name, i.listing_currency, i.provider, i.as_of
@@ -292,7 +296,7 @@ cand AS (
     UNION ALL
     SELECT fx.k, 'risk_country', cl.value, 'fact:' || fx.provider,
            CASE WHEN fx.field = 'hq_country' THEN 4 WHEN fx.provider = 'eodhd' THEN 1 ELSE 3 END, fx.as_of
-      FROM fx JOIN exposure_labels cl ON cl.provider = '' AND cl.field = 'country' AND cl.label = exposure_norm(fx.value)
+      FROM fx JOIN exposure_labels cl ON cl.provider = fx.cmap AND cl.field = 'country' AND cl.label = exposure_norm(fx.value)
      WHERE fx.field IN ('risk_country', 'hq_country')
     UNION ALL
     SELECT ln.k, 'risk_country', lab.value, 'fund_line:' || ln.provider, 2, ln.as_of
@@ -300,7 +304,7 @@ cand AS (
     UNION ALL
     SELECT fx.k, 'domicile', cl.value, 'fact:' || fx.provider,
            CASE fx.field WHEN 'legal_country' THEN 1 ELSE 2 END, fx.as_of
-      FROM fx JOIN exposure_labels cl ON cl.provider = '' AND cl.field = 'country' AND cl.label = exposure_norm(fx.value)
+      FROM fx JOIN exposure_labels cl ON cl.provider = fx.cmap AND cl.field = 'country' AND cl.label = exposure_norm(fx.value)
      WHERE fx.field IN ('legal_country', 'incorporation')
     UNION ALL
     SELECT k, 'domicile', substr(k, 6, 2), 'isin_prefix', 3, 0

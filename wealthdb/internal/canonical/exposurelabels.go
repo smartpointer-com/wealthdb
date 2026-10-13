@@ -39,22 +39,37 @@ func NormalizeLabel(s string) string {
 }
 
 var genericSectors = map[Sector][]string{
-	SectorEnergy:           {"energy", "oil & gas", "oil and gas"},
-	SectorMaterials:        {"materials", "basic materials", "material", "chemicals"},
-	SectorIndustrials:      {"industrials", "industrial", "industrial goods", "capital goods"},
-	SectorConsumerCyclical: {"consumer discretionary", "consumer cyclical", "consumer cyclicals", "cyclical consumer goods"},
-	SectorConsumerStaples:  {"consumer staples", "consumer defensive", "consumer non-cyclicals", "non-cyclical consumer goods"},
-	SectorHealthCare:       {"health care", "healthcare", "health"},
-	SectorFinancials:       {"financials", "financial", "financial services", "finance", "banks", "insurance"},
-	SectorTechnology:       {"information technology", "technology", "info tech", "it"},
-	SectorCommunication:    {"communication services", "communication", "communications", "telecommunication services", "telecommunications", "telecom", "media"},
-	SectorUtilities:        {"utilities", "utility"},
-	SectorRealEstate:       {"real estate", "reits", "reit", "property"},
-	SectorGovernment:       {"government", "treasury", "treasuries", "sovereign", "government related", "agency", "supranational"},
-	SectorMunicipal:        {"municipal", "municipals", "munis"},
-	SectorCorporate:        {"corporate", "corporates", "corporate bonds", "credit"},
-	SectorSecuritised:      {"securitized", "securitised", "mortgage backed", "mortgage-backed", "asset backed", "asset-backed", "mbs", "abs", "covered"},
-	SectorCash:             {"cash", "cash and/or derivatives", "cash & equivalents", "cash and equivalents", "money market"},
+	SectorEnergy: {"energy", "oil & gas", "oil and gas", "oil, gas and coal", "alternative energy"},
+	SectorMaterials: {"materials", "basic materials", "material", "chemicals", "basic resources",
+		"industrial metals and mining", "precious metals and mining", "industrial materials"},
+	SectorIndustrials: {"industrials", "industrial", "industrial goods", "capital goods", "aerospace and defense",
+		"construction and materials", "industrial support services", "industrial engineering",
+		"general industrials", "industrial transportation", "electronic and electrical equipment",
+		"industrial goods and services", "waste and disposal services"},
+	SectorConsumerCyclical: {"consumer discretionary", "consumer cyclical", "consumer cyclicals", "cyclical consumer goods",
+		"travel and leisure", "retailers", "retail", "consumer services", "household goods and home construction",
+		"personal goods", "leisure goods", "automobiles and parts", "consumer products and services"},
+	SectorConsumerStaples: {"consumer staples", "consumer defensive", "consumer non-cyclicals", "non-cyclical consumer goods",
+		"tobacco", "beverages", "food producers", "personal care, drug and grocery stores",
+		"food, beverage and tobacco"},
+	SectorHealthCare: {"health care", "healthcare", "health", "pharmaceuticals and biotechnology",
+		"medical equipment and services", "health care providers"},
+	SectorFinancials: {"financials", "financial", "financial services", "finance", "banks", "insurance",
+		"closed end investments", "life insurance", "non-life insurance", "investment banking and brokerage services",
+		"finance and credit services", "mortgage real estate investment trusts"},
+	SectorTechnology: {"information technology", "technology", "info tech", "it", "software and computer services",
+		"technology hardware and equipment"},
+	SectorCommunication: {"communication services", "communication", "communications", "telecommunication services",
+		"telecommunications", "telecom", "media", "telecommunications service providers",
+		"telecommunications equipment"},
+	SectorUtilities: {"utilities", "utility", "electricity", "gas, water and multi-utilities"},
+	SectorRealEstate: {"real estate", "reits", "reit", "property", "real estate investment trusts",
+		"real estate investment and services"},
+	SectorGovernment:  {"government", "treasury", "treasuries", "sovereign", "government related", "agency", "supranational"},
+	SectorMunicipal:   {"municipal", "municipals", "munis"},
+	SectorCorporate:   {"corporate", "corporates", "corporate bonds", "credit"},
+	SectorSecuritised: {"securitized", "securitised", "mortgage backed", "mortgage-backed", "asset backed", "asset-backed", "mbs", "abs", "covered"},
+	SectorCash:        {"cash", "cash and/or derivatives", "cash & equivalents", "cash and equivalents", "money market"},
 }
 
 // The asset types an issuer file or a filing labels a line with, and the
@@ -87,6 +102,8 @@ var countryAliases = map[string][]string{
 	"HK": {"hong kong sar", "hong kong sar china", "hong kong, china"},
 	"MO": {"macau", "macao sar"},
 	"RU": {"russia"},
+	"GG": {"c.i. guernsey", "guernsey, c.i."},
+	"JE": {"c.i. jersey", "jersey, c.i."},
 	"CZ": {"czech republic"},
 	"VN": {"vietnam"},
 	"IR": {"iran, islamic republic of"},
@@ -115,9 +132,16 @@ var countryAliases = map[string][]string{
 // its other spellings).
 func ExposureLabels() []Label {
 	var out []Label
+	sectors := map[string]bool{}
 	for s, labels := range genericSectors {
 		for _, l := range labels {
-			out = append(out, Label{Field: LabelSector, Label: l, Value: string(s)})
+			// Issuers write "and" and "&" alike.
+			for _, v := range []string{l, strings.ReplaceAll(l, " and ", " & "), strings.ReplaceAll(l, " & ", " and ")} {
+				if !sectors[v] {
+					sectors[v] = true
+					out = append(out, Label{Field: LabelSector, Label: v, Value: string(s)})
+				}
+			}
 		}
 	}
 	for a, labels := range genericAssetTypes {
@@ -143,6 +167,7 @@ func ExposureLabels() []Label {
 			add(l, code)
 		}
 	}
+	out = append(out, edgarLabels()...)
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Provider != b.Provider {

@@ -701,7 +701,7 @@ restated here.
 | [`svb`](svb/) | SVB brokerage, deposit and mortgage statements (historical sideload) | none — load-only | host venv |
 | [`manual`](manual/) | Private holdings with no portal (CSV) | none — manual entry | host venv |
 | [`fred`](fred/) | FRED / US Fed H.10 (historic FX rates) | API key | host venv |
-| [`refdata`](refdata/) | Public reference data: fund compositions (SEC N-PORT, a local inbox) and security facts | none — public reads | host venv |
+| [`refdata`](refdata/) | Public reference data: fund compositions (SEC N-PORT, SPDR, a local inbox) and security facts (SEC EDGAR, GLEIF, OpenFIGI) | none — public reads | host venv |
 | [`plaid`](plaid/) | Banks, brokers and card issuers through the Plaid aggregator | Plaid app keys + one access token per linked institution (sign-in on Plaid's hosted page) | host venv |
 
 One silver kind has no collector. `synthetic` is written by a generator,

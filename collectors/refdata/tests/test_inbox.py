@@ -22,7 +22,7 @@ def test_claims_a_fund_by_its_folder_in_either_spelling(tmp_path):
 
 
 def test_csv_needs_name_and_weight():
-    with pytest.raises(ProviderError, match="name and weight"):
+    with pytest.raises(ProviderError, match="a name and a weight"):
         parse_csv(b"isin,country\nXX0000000402,US\n", "isin:XX", date(2026, 1, 31))
 
 
@@ -59,3 +59,25 @@ def test_an_nport_document_in_the_inbox(tmp_path):
     inbox, out = _placed(tmp_path, ("primary_doc.xml", xml), ("notes.txt", b"from the fund"))
     got = inbox.parse(out)
     assert got.compositions[0]["source_kind"] == "inbox" and got.lines
+
+
+def test_an_issuer_download_with_preamble_and_notes(tmp_path):
+    csv_text = (b'Example Fund ETF\r\nFund Holdings as of,"Oct 10, 2026"\r\n\r\n'
+                b'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Location,Exchange,Currency\r\n'
+                b'QAAA,ALPHA INC,Information Technology,Equity,"1,200.50",61.20,United States,NASDAQ,USD\r\n'
+                b'QBBB,BETA INC,Health Care,Equity,760.00,38.80,United States,NYSE,USD\r\n'
+                b'\r\n"The content is for personal use only."\r\n')
+    inbox, out = _placed(tmp_path, ("holdings.csv", csv_text))
+    got = inbox.parse(out)
+    a, b = got.lines
+    assert (a["ticker"], a["weight"], a["market_value"], a["country"], a["asset_type"]) == \
+        ("QAAA", "61.2", "1200.5", "United States", "Equity")
+    assert got.compositions[0]["weight_sum"] == "100" and got.compositions[0]["as_of"] == date(2026, 3, 31)
+
+
+def test_an_xlsx_in_the_inbox(tmp_path):
+    from tests.helpers import make_xlsx
+    book = make_xlsx([["Name", "ISIN", "Weight"], ["Alpha", "XX0000000701", "100"]])
+    inbox, out = _placed(tmp_path, ("holdings.xlsx", book))
+    (line,) = inbox.parse(out).lines
+    assert (line["isin"], line["weight"]) == ("XX0000000701", "100")

@@ -1,10 +1,9 @@
 """
 The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
-~/.config/refdata.cfg. It is a JSON object; a missing file holds the
-defaults:
+~/.config/refdata.cfg. It is a JSON object, for example:
 
     {
-      "providers": ["inbox", "sec-nport"],
+      "providers": ["inbox", "sec-nport", "spdr", "sec-edgar", "gleif", "openfigi"],
       "contact": "name@example.org",
       "max_age_days": 30,
       "engine": "/path/to/wealthdb",
@@ -12,10 +11,11 @@ defaults:
     }
 
 - `providers` names the providers that run, in the order they are asked:
-  the first that claims a fund or a security serves it. The default runs
-  the local inbox and the providers of public data; every issuer
-  provider stays off until this list names it, because enabling one
-  accepts its terms (README.md).
+  the first that claims a fund serves it, the inbox beside it, and every
+  security provider answers for every security it can claim. Without the
+  setting, the local inbox and the providers of public data run
+  (DEFAULT_PROVIDERS); an issuer provider stays off until this list
+  names it, because enabling one accepts its terms (README.md).
 - `contact` is the address the SEC requires in the User-Agent. The SEC
   providers do not run without it.
 - `max_age_days`: a fund whose newest composition is younger is not
@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 FILE_NAME = "refdata.cfg"
-DEFAULT_PROVIDERS = ("inbox", "sec-nport")
+DEFAULT_PROVIDERS = ("inbox", "sec-nport", "sec-edgar", "gleif", "openfigi")
 DEFAULT_MAX_AGE_DAYS = 30
 SETTINGS = ("providers", "contact", "max_age_days", "engine", "constituents")
 
