@@ -130,11 +130,13 @@ func hostSideCommand(name string) (commandHelp, bool) {
 // `web-config` and `mcp-config` emit resolved settings for the
 // host-side `wealthdb web` and `wealthdb mcp` wrappers;
 // `web-materialize` rewrites the report_returns table before the
-// wrapper snapshots gold.
+// wrapper snapshots gold; `refdata-wanted` prints the wanted list the
+// refdata collector reads.
 var hiddenSubcommands = map[string]bool{
 	"web-config":      true,
 	"web-materialize": true,
 	"mcp-config":      true,
+	"refdata-wanted":  true,
 }
 
 func cmdHelp(ctx context.Context, g globalFlags, subargs []string, stdin io.Reader, stdout, stderr io.Writer) error {

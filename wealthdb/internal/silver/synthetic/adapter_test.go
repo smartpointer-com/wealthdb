@@ -1185,3 +1185,85 @@ func TestRealizedLotDocumentKindFailsTheLoad(t *testing.T) {
 		t.Errorf("RealizedLots error = %v, want one naming the row and its kind", err)
 	}
 }
+
+// The reference records a generator writes ride the snapshot stream after
+// the window's snapshots: the compositions and facts dated inside the
+// window, and none outside it.
+func TestSnapshotsCarryReferenceRecords(t *testing.T) {
+	path, db := newFixture(t)
+	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
+		day(1), day(2), day(3), day(4))
+	exec(t, db, insertFx, day(3), "USD", "EUR", "1.1", nil, nil, "{}")
+	for _, d := range []int{2, 4} {
+		exec(t, db, `INSERT INTO compositions (fund_ref, as_of, basis, provider, source_kind, line_count, weight_sum, run_at)
+		    VALUES ('symbol:IDX1', ?, 'holdings', 'demo', 'daily_file', 1, '100', ?)`, day(d), d/2)
+		exec(t, db, `INSERT INTO lines (fund_ref, as_of, basis, line_no, ticker, name, weight, sector)
+		    VALUES ('symbol:IDX1', ?, 'holdings', 1, 'ABCD', 'Invented Corp', '100', 'Technology')`, day(d))
+	}
+	exec(t, db, `INSERT INTO security_facts (security_key, field, as_of, provider, value, run_at)
+	    VALUES ('symbol:ABCD', 'sector', ?, 'demo', 'Technology', 2)`, day(4))
+
+	conn := openConn(t, path)
+	w, err := conn.ChangeWindow(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var comps []canonical.FundCompositionChange
+	var lines []canonical.FundLineChange
+	var facts []canonical.SecurityFactChange
+	var fx int
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		comps = append(comps, b.FundCompositions...)
+		lines = append(lines, b.FundLines...)
+		facts = append(facts, b.SecurityFacts...)
+		fx += len(b.FxRates)
+		if !more {
+			break
+		}
+	}
+	if fx != 1 {
+		t.Errorf("fx rates = %d, want the window's one", fx)
+	}
+	if len(comps) != 1 || comps[0].AsOf != day(4) || comps[0].FetchedAt != 2 {
+		t.Fatalf("compositions = %+v, want day 4's alone", comps)
+	}
+	if len(lines) != 1 || lines[0].SecurityKey != "symbol:ABCD" {
+		t.Errorf("lines = %+v", lines)
+	}
+	if len(facts) != 1 || facts[0].Value != "Technology" {
+		t.Errorf("facts = %+v", facts)
+	}
+}
+
+// A file written before the reference tables existed states none, and
+// loads as before.
+func TestSnapshotsWithoutReferenceTables(t *testing.T) {
+	path, db := newFixture(t)
+	for _, tbl := range []string{"compositions", "lines", "attributes", "counterparties", "securities", "security_facts"} {
+		exec(t, db, `DROP TABLE `+tbl)
+	}
+	exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02')`, day(1), day(2))
+	exec(t, db, insertFx, day(1), "USD", "EUR", "1.1", nil, nil, "{}")
+	conn := openConn(t, path)
+	stream, err := conn.Snapshots(context.Background(), canonical.Window{Start: day(1), End: day(2), HasChanges: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	b, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.FxRates) != 1 || b.ReferenceRows() != 0 {
+		t.Errorf("batch = %+v", b)
+	}
+}

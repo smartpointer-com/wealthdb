@@ -14,10 +14,11 @@ import (
 )
 
 // Snapshots emits one batch per distinct snapshot_at in the window, in
-// ascending order. A batch carries that instant's positions with their open
-// lots, cash balances and fx rates, and the dimension records they
-// reference, all seen at that instant: every account its positions or cash
-// balances name, the portfolio each of those accounts belongs to, and every
+// ascending order, then the window's reference records (withReference).
+// A batch carries that instant's positions with their open lots, cash
+// balances and fx rates, and the dimension records they reference, all
+// seen at that instant: every account its positions or cash balances
+// name, the portfolio each of those accounts belongs to, and every
 // instrument its positions name, in the version in effect at the instant.
 //
 // Dimensions travel only on the snapshot stream, so every account, portfolio
@@ -90,7 +91,23 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		last.Accounts = append(last.Accounts, tail.Accounts...)
 		last.Instruments = append(last.Instruments, tail.Instruments...)
 	}
-	return silver.NewSnapshotStream(batches), nil
+	return c.withReference(ctx, w, silver.NewSnapshotStream(batches))
+}
+
+// withReference appends the window's reference records (the fund
+// compositions and security facts a generator wrote) to the stream. A
+// file older than the tables states none.
+func (c *Connection) withReference(ctx context.Context, w canonical.Window, s silver.SnapshotStream) (silver.SnapshotStream, error) {
+	ok, err := silver.HasTables(ctx, c.db, "compositions", "lines", "attributes",
+		"counterparties", "securities", "security_facts")
+	if err != nil || !ok {
+		return s, err
+	}
+	ref, err := silver.NewReferenceStream(ctx, c.db, w)
+	if err != nil {
+		return nil, err
+	}
+	return silver.NewConcatSnapshotStream([]silver.SnapshotStream{s, ref}), nil
 }
 
 // attach adds to b the dimension records its facts reference, all seen at t.

@@ -76,6 +76,7 @@ History starts on 2023-07-01 and runs to the as-of date.
 | `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies |
 | `homestead` | the family home | a NAV-only holding valued by yearly appraisals |
 | `fx` | none | daily USD rates for EUR, GBP and CHF |
+| `refdata` | none | what the funds hold, every month-end, and what the directly held stocks and bonds are |
 
 One account is declared rather than collected: `kids-savings`, a
 children's savings account at a bank nothing collects. A monthly
@@ -101,13 +102,31 @@ payments are pinned. Three spending rules and one income rule place
 rows the provider does not file. A transfer-override row pairs each
 yearly wire across currencies.
 
+The `refdata` source states what each fund holds at every month-end,
+the way the refdata collector's sources do. Its funds cover each case
+the look-through handles:
+
+- The two target-date funds hold three of the other funds.
+- The emerging-markets fund is swap-based: it holds a basket and lists
+  the index it tracks.
+- The international fund is a hedged class.
+- The dividend fund has a six-month gap, and its weights leave a
+  remainder.
+- The real-estate fund's compositions start a year after it is first
+  held.
+- One stock carries a sector label outside the vocabulary.
+
+The 529 portfolio has no composition of its own. The config names a
+target-date fund as its proxy, and tags the home, the loan and the
+private holdings with their country and currency.
+
 ## How it is built
 
 `demo/generate.py` reads `demo/household.json` (the household's accounts,
 amounts, schedules, dated events), `demo/catalogue/` (merchants,
-instruments, payers) and the `synthetic` kind's schema file in the
-engine's source tree. It reads nothing else: no environment, no real
-config, no network. The code is in `demo/demohouse/`:
+instruments, payers, and what the funds hold) and the `synthetic` kind's
+schema file in the engine's source tree. It reads nothing else: no
+environment, no real config, no network. The code is in `demo/demohouse/`:
 
 | Module | Does |
 | --- | --- |
@@ -116,6 +135,7 @@ config, no network. The code is in `demo/demohouse/`:
 | `market.py` | four price factors (stocks, bonds, gold, crypto), instrument prices, exchange rates |
 | `book.py` | the ledger: every balance is the running sum of its transactions, and every holding the sum of its lots |
 | `household.py` | the day-by-day simulation |
+| `reference.py` | the funds' month-end compositions and the securities' facts, from `catalogue/funds.json` |
 | `silver.py` | writes a full build, or appends the new days to an earlier one |
 | `config.py` | renders `wealthdb.cfg` and the ledger CSVs |
 | `dates.py`, `money.py` | the calendar and timestamps, and Decimal rounding and formats |

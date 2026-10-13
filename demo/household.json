@@ -50,7 +50,8 @@
     {"id": "homestead", "institution": "Own home", "short": "HOME", "cadence": "daily", "accounts": [
       {"id": "hs-home-01", "kind": "other", "name": "Residence", "nickname": "Home", "wrapper": "taxable_joint", "style": "self_directed", "currency": "USD"}
     ]},
-    {"id": "fx", "institution": "Rates", "short": "RATES", "cadence": "daily", "accounts": []}
+    {"id": "fx", "institution": "Rates", "short": "RATES", "cadence": "daily", "accounts": []},
+    {"id": "refdata", "institution": "Reference data", "short": "REFDATA", "cadence": "monthly", "reference": true, "accounts": []}
   ],
 
   "declared": {"kids-savings": {"account_kind": "cash", "tax_wrapper": "taxable_joint", "nickname": "Kids' savings", "currency": "USD"}},
@@ -214,6 +215,23 @@
       {"match": "\\bCOBBLE & THREAD\\b", "category": "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES"},
       {"match": "\\bPIPWHISTLE KIDS MUSIC\\b", "category": "GENERAL_SERVICES_EDUCATION", "scope": {"source": "brindlecove", "account": "bc-card-01"}}
     ],
-    "income_rules": [{"match": "\\bSTILLCREST HEALTH\\b", "type": "INCOME_SALARY"}]
+    "income_rules": [{"match": "\\bSTILLCREST HEALTH\\b", "type": "INCOME_SALARY"}],
+    "exposure": {
+      "proxies": {"isin:US000LW52900": {"fund": "isin:US000HTRF500"}},
+      "tags": {
+        "homestead": {"home": {"country": "US", "currency": "USD"}},
+        "brindlecove": {"loan": {"country": "US", "currency": "USD"}},
+        "emberwright": {"fund-ii": {"sector": "technology", "country": "US", "currency": "USD"},
+                        "spv-lmnr": {"sector": "industrials", "country": "US", "currency": "USD"}}
+      },
+      "custody": {
+        "brindlecove": {"custodian": "Brindlecove Credit Union", "country": "US"},
+        "quayvane": {"custodian": "Quayvane Securities", "country": "US"},
+        "tamberlow": {"custodian": "Tamberlow Retirement Services", "country": "US"},
+        "aubervane": {"custodian": "Aubervane Private Wealth", "country": "CH"},
+        "tessarite": {"custodian": "Tessarite Digital", "country": "US"},
+        "driftwren": {"custodian": "Driftwren Money", "country": "GB"}
+      }
+    }
   }
 }

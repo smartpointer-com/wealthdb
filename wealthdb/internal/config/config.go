@@ -241,6 +241,11 @@ type Config struct {
 	// to this block. It reads live gold read-only, one short handle
 	// per call. See mcp/DESIGN.md.
 	MCP *MCPConfig `json:"mcp,omitempty"`
+	// Exposure configures the exposure report: proxies for funds no
+	// source describes, reference funds, tags for opaque holdings,
+	// custody, and how far a composition may lie from a day. Absent
+	// block ⇒ none of them and the default settings. See ExposureConfig.
+	Exposure *ExposureConfig `json:"exposure,omitempty"`
 }
 
 // DefaultWebPort is the host loopback port the Metabase server is

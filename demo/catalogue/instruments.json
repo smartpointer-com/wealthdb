@@ -134,6 +134,7 @@
     },
     {
       "id": "tdf2050",
+      "isin": "US000HTRF500",
       "symbol": null,
       "name": "Hollinmere Target Retirement 2050 Fund",
       "asset_class": "multi_asset",
@@ -144,6 +145,7 @@
     },
     {
       "id": "tdf2055",
+      "isin": "US000HTRF550",
       "symbol": null,
       "name": "Hollinmere Target Retirement 2055 Fund",
       "asset_class": "multi_asset",
@@ -154,6 +156,7 @@
     },
     {
       "id": "age529",
+      "isin": "US000LW52900",
       "symbol": null,
       "name": "Larchwold 529 Age-Based Portfolio 2033",
       "asset_class": "multi_asset",

@@ -22,6 +22,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/manual"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/plaid"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/raiffeisen_at"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/refdata"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/relevate"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/swissquote"

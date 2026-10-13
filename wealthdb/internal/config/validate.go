@@ -57,6 +57,7 @@ func (c *Config) Validate() error {
 		c.validateIncome,
 		c.validateCashflow,
 		c.validateLots,
+		c.validateExposure,
 	} {
 		if err := check(seenIDs); err != nil {
 			return err

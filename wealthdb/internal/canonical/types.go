@@ -323,10 +323,14 @@ type Window struct {
 // SnapshotBatch is one batch yielded by a SnapshotStream.Next call.
 // Adapters multiplex change records of different types into one
 // batch. The loader writes each batch's facts (positions,
-// position_lots, cash_balances, fx_rates) as it arrives and folds the
-// dimensions (portfolios, accounts, instruments) to upsert once the
-// stream drains (docs/DESIGN.md §8.4); gold declares no foreign keys,
-// so the order within the load's transaction does not matter.
+// position_lots, cash_balances, fx_rates and the reference records)
+// as it arrives and folds the dimensions (portfolios, accounts,
+// instruments) to upsert once the stream drains (docs/DESIGN.md §8.4);
+// gold declares no foreign keys, so the order within the load's
+// transaction does not matter.
+//
+// The reference records (refdata.go) are dated by AsOf, which plays
+// SnapshotAt's part: the load's windowed delete clears them by it.
 type SnapshotBatch struct {
 	Portfolios   []PortfolioChange
 	Accounts     []AccountChange
@@ -335,6 +339,19 @@ type SnapshotBatch struct {
 	PositionLots []PositionLotChange
 	CashBalances []CashBalanceChange
 	FxRates      []FxRateChange
+
+	FundCompositions   []FundCompositionChange
+	FundLines          []FundLineChange
+	FundAttributes     []FundAttributesChange
+	FundCounterparties []FundCounterpartyChange
+	Securities         []SecurityChange
+	SecurityFacts      []SecurityFactChange
+}
+
+// ReferenceRows is the number of reference records in b.
+func (b *SnapshotBatch) ReferenceRows() int {
+	return len(b.FundCompositions) + len(b.FundLines) + len(b.FundAttributes) +
+		len(b.FundCounterparties) + len(b.Securities) + len(b.SecurityFacts)
 }
 
 // TransactionBatch is one batch yielded by a TransactionStream.Next call.

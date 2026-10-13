@@ -69,6 +69,7 @@ find its positions row in the same way.
 | `fx_rates` | `fx_rates` | In the same per-instant batches, already in gold's direction. |
 | `transactions` | `transactions` | Re-signed as a guard — see §7. |
 | `realized_lots` | `realized_lots` | Read whole on every load — see §11. |
+| `compositions`, `lines`, `attributes`, `counterparties`, `securities`, `security_facts` | the reference tables | After the snapshots, by `as_of` — see §12. |
 
 ## 4. Account taxonomy
 
@@ -355,3 +356,21 @@ primary (`silver.MarkPrimary`). The ranking is `form_1099b`,
 `statement`, `trade`.
 
 A file without the table states no realized lots.
+
+## 12. Reference records
+
+Six tables carry reference records: what a fund holds and what a
+security is. They repeat the refdata collector's silver shape column for
+column, so one reader serves both kinds (`silver.NewReferenceStream`;
+[refdata.md](refdata.md) §2 maps each table to its gold table).
+
+- `compositions`, `lines`, `attributes` and `counterparties` describe a
+  fund on a day. `as_of` is that day's UTC midnight.
+- `securities` and `security_facts` describe a security as one lookup
+  found it on a day.
+- `run_at` is the instant the row was fetched. A generator states any
+  instant at or after `as_of`.
+
+Every `as_of` must lie inside the window of the run that adds the row
+(§8). `Snapshots` emits the window's reference records after its
+snapshots. A file without the tables states none.

@@ -3,6 +3,7 @@ package loader
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
@@ -36,7 +37,8 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	// from the transactions being deleted and are recomputed by the
 	// next enrichment pass, which writes them in one transaction. So
 	// does the lot engine's ledger (gold.LotLedgerTables), which the
-	// next lot pass rewrites.
+	// next lot pass rewrites, and the reference records the source
+	// loaded (gold.ReferenceTables).
 	//
 	// Six tables deliberately survive a reset, two per family. The
 	// verdict stores — spend_merchant_categories and
@@ -51,7 +53,7 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 		`DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?`,
 		`DELETE FROM income_txn_enrichment WHERE silver_source_id = ?`,
 	}
-	for _, t := range gold.LotLedgerTables {
+	for _, t := range slices.Concat(gold.LotLedgerTables, gold.ReferenceTables) {
 		stmts = append(stmts, `DELETE FROM `+t+` WHERE silver_source_id = ?`)
 	}
 	for _, stmt := range append(stmts,

@@ -16,10 +16,13 @@ builds from the same inputs are byte-identical files.
 import pathlib
 import sqlite3
 
-from . import dates
+from . import dates, reference
 from .spec import SCHEMA_PATH
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
+
+# The source that carries the reference records.
+REFERENCE_SOURCE = "refdata"
 
 _TABLES = {
     "portfolios": ("portfolio_id", "display_name", "base_currency", "nickname", "payload"),
@@ -42,11 +45,28 @@ _TABLES = {
     "realized_lots": ("realized_lot_id", "account_id", "instrument_id", "description", "document_kind",
                       "tax_year", "acquisition_date", "disposal_date", "currency", "quantity", "proceeds",
                       "book_value", "realized_gain_loss", "term", "payload"),
+    "compositions": ("fund_ref", "as_of", "basis", "provider", "source_kind", "fund_name", "currency",
+                     "net_assets", "line_count", "weight_sum", "units_outstanding", "run_at", "payload"),
+    "lines": ("fund_ref", "as_of", "basis", "line_no", "isin", "cusip", "figi", "ticker", "exchange", "name",
+              "asset_type", "weight", "quantity", "market_value", "currency", "country", "risk_country",
+              "sector", "industry", "maturity", "coupon", "long_currency", "long_amount", "short_currency",
+              "short_amount", "payload"),
+    "attributes": ("fund_ref", "as_of", "domicile", "legal_form", "ucits", "replication", "distribution", "ter",
+                   "hedged_currency", "lending", "index_name", "depositary", "run_at", "payload"),
+    "counterparties": ("fund_ref", "as_of", "role", "name", "lei", "share", "run_at", "payload"),
+    "securities": ("security_key", "as_of", "provider", "isin", "cusip", "figi", "lei", "ticker", "exchange",
+                   "name", "security_type", "listing_currency", "run_at", "payload"),
+    "security_facts": ("security_key", "field", "as_of", "provider", "value", "scheme", "run_at", "payload"),
 }
+
+# The reference tables: what the funds hold and what the securities are
+# (demohouse/reference.py). Only the reference source writes them.
+REFERENCE_TABLES = ("compositions", "lines", "attributes", "counterparties", "securities", "security_facts")
 
 # The tables of dated facts. The rest are dimensions, which an append
 # re-sends whole and the file keeps once.
-FACT_TABLES = ("positions", "position_lots", "cash_balances", "fx_rates", "transactions", "realized_lots")
+FACT_TABLES = ("positions", "position_lots", "cash_balances", "fx_rates", "transactions", "realized_lots",
+               *REFERENCE_TABLES)
 
 # The meta keys an append run requires to match before it may extend a file.
 IDENTITY_KEYS = ("schema_version", "generator_hash", "seed", "spec_hash", "catalogue_hash", "findings")
@@ -93,6 +113,9 @@ def source_rows(sim, source, as_of):
                          for t in book.rows[source]["transactions"]],
         "realized_lots": book.rows[source]["realized"],
     }
+    ref = reference.rows(sim.inputs, sim.seed, as_of) if source == REFERENCE_SOURCE else {}
+    for table in REFERENCE_TABLES:
+        rows[table] = ref.get(table, [])
     return rows
 
 
@@ -107,6 +130,8 @@ def _time_of(table, row):
         return row["occurred_at"]
     if table == "realized_lots":
         return dates.epoch(dates.parse(row["disposal_date"]))
+    if table in REFERENCE_TABLES:
+        return row["as_of"]
     return None
 
 

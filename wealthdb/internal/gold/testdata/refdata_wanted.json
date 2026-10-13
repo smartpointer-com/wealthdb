@@ -1,0 +1,100 @@
+{
+  "contract": "refdata-wanted",
+  "version": 1,
+  "generated_at": "2026-10-13T09:30:00Z",
+  "as_of": "2026-10-13",
+  "settings": {
+    "max_gap_days": 400
+  },
+  "funds": [
+    {
+      "ref": "cusip:00000AA01",
+      "isin": null,
+      "cusip": "00000AA01",
+      "symbol": null,
+      "name": "Fund A",
+      "currency": "USD",
+      "roles": [
+        "held"
+      ],
+      "held_from": "2026-03-31",
+      "held_to": "2026-03-31",
+      "compositions": []
+    },
+    {
+      "ref": "symbol:FUNDA",
+      "isin": null,
+      "cusip": null,
+      "symbol": "FUNDA",
+      "name": "Fund A ETF",
+      "currency": "USD",
+      "roles": [
+        "held"
+      ],
+      "held_from": "2026-01-31",
+      "held_to": null,
+      "compositions": [
+        "2026-03-31"
+      ]
+    },
+    {
+      "ref": "symbol:FUNDB",
+      "isin": null,
+      "cusip": null,
+      "symbol": "FUNDB",
+      "name": "Fund B",
+      "currency": "USD",
+      "roles": [
+        "held"
+      ],
+      "held_from": "2026-01-31",
+      "held_to": "2026-01-31",
+      "compositions": []
+    },
+    {
+      "ref": "symbol:IDX1",
+      "isin": null,
+      "cusip": null,
+      "symbol": "IDX1",
+      "name": null,
+      "currency": null,
+      "roles": [
+        "proxy"
+      ],
+      "held_from": "2026-01-31",
+      "held_to": "2026-01-31",
+      "compositions": []
+    },
+    {
+      "ref": "symbol:TOTL",
+      "isin": null,
+      "cusip": null,
+      "symbol": "TOTL",
+      "name": null,
+      "currency": null,
+      "roles": [
+        "reference"
+      ],
+      "held_from": "2026-10-13",
+      "held_to": null,
+      "compositions": []
+    }
+  ],
+  "securities": [
+    {
+      "key": "isin:XX0000000009",
+      "isin": "XX0000000009",
+      "cusip": null,
+      "symbol": "STK1",
+      "name": "Stock One",
+      "currency": "USD",
+      "scope": "direct",
+      "missing": [
+        "market_cap"
+      ],
+      "lookups": {
+        "gleif": "2026-05-01"
+      }
+    }
+  ]
+}

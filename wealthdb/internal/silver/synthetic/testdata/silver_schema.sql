@@ -1,4 +1,4 @@
--- Silver schema of the synthetic kind, version 2.
+-- Silver schema of the synthetic kind, version 3.
 --
 -- The one generic silver: one table per canonical record type, so a row
 -- here is the canonical change record it becomes, column for column. No
@@ -176,4 +176,119 @@ CREATE TABLE realized_lots (
     realized_gain_loss TEXT,
     term               TEXT,
     payload            TEXT    NOT NULL DEFAULT '{}'
+);
+
+-- The reference records: what each fund holds and what each security is
+-- (canonical/refdata.go). The six tables repeat the refdata collector's
+-- silver shape column for column (collectors/refdata/migrations), so one
+-- reader serves both kinds (silver.NewReferenceStream). as_of is the UTC
+-- midnight of the day a row describes and must lie inside the window of
+-- the run that adds it; run_at is the instant the row was fetched, at or
+-- after as_of. Weights are in percent of the fund's net assets.
+
+CREATE TABLE compositions (
+    fund_ref           TEXT    NOT NULL,
+    as_of              INTEGER NOT NULL,
+    basis              TEXT    NOT NULL,
+    provider           TEXT    NOT NULL,
+    source_kind        TEXT    NOT NULL,
+    fund_name          TEXT,
+    currency           TEXT,
+    net_assets         TEXT,
+    line_count         INTEGER NOT NULL,
+    weight_sum         TEXT,
+    units_outstanding  TEXT,
+    run_at             INTEGER NOT NULL,
+    payload            TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (fund_ref, as_of, basis)
+);
+
+CREATE TABLE lines (
+    fund_ref        TEXT    NOT NULL,
+    as_of           INTEGER NOT NULL,
+    basis           TEXT    NOT NULL,
+    line_no         INTEGER NOT NULL,
+    isin            TEXT,
+    cusip           TEXT,
+    figi            TEXT,
+    ticker          TEXT,
+    exchange        TEXT,
+    name            TEXT,
+    asset_type      TEXT,
+    weight          TEXT,
+    quantity        TEXT,
+    market_value    TEXT,
+    currency        TEXT,
+    country         TEXT,
+    risk_country    TEXT,
+    sector          TEXT,
+    industry        TEXT,
+    maturity        TEXT,                        -- YYYY-MM-DD
+    coupon          TEXT,
+    long_currency   TEXT,
+    long_amount     TEXT,
+    short_currency  TEXT,
+    short_amount    TEXT,
+    payload         TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (fund_ref, as_of, basis, line_no)
+);
+
+CREATE TABLE attributes (
+    fund_ref         TEXT    NOT NULL,
+    as_of            INTEGER NOT NULL,
+    domicile         TEXT,
+    legal_form       TEXT,
+    ucits            INTEGER,                    -- 1, 0, or NULL where unstated
+    replication      TEXT,
+    distribution     TEXT,
+    ter              TEXT,                       -- percent a year
+    hedged_currency  TEXT,
+    lending          INTEGER,
+    index_name       TEXT,
+    depositary       TEXT,
+    run_at           INTEGER NOT NULL,
+    payload          TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (fund_ref, as_of)
+);
+
+CREATE TABLE counterparties (
+    fund_ref  TEXT    NOT NULL,
+    as_of     INTEGER NOT NULL,
+    role      TEXT    NOT NULL,
+    name      TEXT    NOT NULL,
+    lei       TEXT,
+    share     TEXT,
+    run_at    INTEGER NOT NULL,
+    payload   TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (fund_ref, as_of, role, name)
+);
+
+CREATE TABLE securities (
+    security_key      TEXT    NOT NULL,
+    as_of             INTEGER NOT NULL,
+    provider          TEXT    NOT NULL,
+    isin              TEXT,
+    cusip             TEXT,
+    figi              TEXT,
+    lei               TEXT,
+    ticker            TEXT,
+    exchange          TEXT,
+    name              TEXT,
+    security_type     TEXT,
+    listing_currency  TEXT,
+    run_at            INTEGER NOT NULL,
+    payload           TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (security_key, as_of, provider)
+);
+
+CREATE TABLE security_facts (
+    security_key  TEXT    NOT NULL,
+    field         TEXT    NOT NULL,
+    as_of         INTEGER NOT NULL,
+    provider      TEXT    NOT NULL,
+    value         TEXT    NOT NULL,
+    scheme        TEXT,
+    run_at        INTEGER NOT NULL,
+    payload       TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (security_key, field, as_of, provider)
 );

@@ -24,7 +24,7 @@ from decimal import Decimal
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import generate  # noqa: E402
-from demohouse import dates, spec  # noqa: E402
+from demohouse import dates, reference, silver, spec  # noqa: E402
 from demohouse.book import unit_price  # noqa: E402
 from demohouse.household import Simulation  # noqa: E402
 from tests import goref  # noqa: E402
@@ -50,6 +50,7 @@ class Built(unittest.TestCase):
         cls.inputs = spec.load()
         cls.sources = [s["id"] for s in cls.inputs.spec["sources"]]
         cls.cadence = {s["id"]: s["cadence"] for s in cls.inputs.spec["sources"]}
+        cls.reference = {s["id"] for s in cls.inputs.spec["sources"] if s.get("reference")}
         cls.rows = {}
         for src in cls.sources:
             con = sqlite3.connect(cls.root / "silver" / f"{src}.db")
@@ -57,7 +58,7 @@ class Built(unittest.TestCase):
             cls.rows[src] = {t: [dict(r) for r in con.execute(f"SELECT * FROM {t}")]
                              for t in ("accounts", "portfolios", "instruments", "positions", "position_lots",
                                        "cash_balances", "fx_rates", "transactions", "realized_lots",
-                                       "dump_runs", "meta")}
+                                       "dump_runs", "meta", *silver.REFERENCE_TABLES)}
             con.close()
         cls.config = json.loads((cls.root / "wealthdb.cfg").read_text())
 
@@ -403,7 +404,10 @@ class TestCalendar(Built):
                     month = dates.add_months(month, 1)
 
     def test_every_source_is_fresh_at_as_of(self):
+        # A reference source is dated by the month-ends it describes.
         for src in self.sources:
+            if src in self.reference:
+                continue
             latest = max(dates.day_of(r["snapshot_at"]) for t in ("positions", "cash_balances", "fx_rates")
                          for r in self.rows[src][t]) if any(self.rows[src][t] for t in
                                                             ("positions", "cash_balances", "fx_rates")) else None
@@ -419,9 +423,82 @@ class TestCalendar(Built):
         for src in self.sources:
             (run,) = self.rows[src]["dump_runs"]
             for table, col in (("positions", "snapshot_at"), ("cash_balances", "snapshot_at"),
-                               ("fx_rates", "snapshot_at"), ("transactions", "occurred_at")):
+                               ("fx_rates", "snapshot_at"), ("transactions", "occurred_at"),
+                               *((t, "as_of") for t in silver.REFERENCE_TABLES)):
                 for r in self.rows[src][table]:
                     self.assertTrue(run["window_start"] <= r[col] <= run["window_end"], f"{src}.{table}")
+
+
+class TestReference(Built):
+    """The reference source: compositions that add up, on the bases and
+    with the gaps the catalogue gives, keyed the way gold keys the
+    holdings they describe."""
+
+    def setUp(self):
+        self.ref = self.rows[silver.REFERENCE_SOURCE]
+        self.cat = reference.load()
+
+    def test_only_the_reference_source_states_reference_rows(self):
+        for src in self.sources:
+            if src == silver.REFERENCE_SOURCE:
+                continue
+            for t in silver.REFERENCE_TABLES:
+                self.assertEqual(self.rows[src][t], [], f"{src}.{t}")
+
+    def test_weights_add_up(self):
+        lines = collections.defaultdict(list)
+        for r in self.ref["lines"]:
+            lines[(r["fund_ref"], r["as_of"], r["basis"])].append(Decimal(r["weight"]))
+        remainder = {reference.fund_ref(self.inputs.instruments[f["instrument"]])
+                     for f in self.cat["funds"] if f.get("remainder")}
+        for c in self.ref["compositions"]:
+            key = (c["fund_ref"], c["as_of"], c["basis"])
+            total = sum(lines[key])
+            self.assertEqual(Decimal(c["weight_sum"]), total, key)
+            self.assertEqual(c["line_count"], len(lines[key]), key)
+            if c["fund_ref"] in remainder or c["basis"] == "index":
+                self.assertLess(total, Decimal(100), key)
+            else:
+                self.assertEqual(total, Decimal(100), key)
+
+    def test_compositions_are_month_ends_inside_the_history(self):
+        for c in self.ref["compositions"]:
+            day = dates.day_of(c["as_of"])
+            self.assertEqual(day, dates.month_end(day.year, day.month))
+            self.assertLessEqual(day, AS_OF)
+            self.assertIn(c["basis"], ("holdings", "collateral", "index"))
+
+    def test_the_catalogue_exercises_every_rule(self):
+        by_ref = collections.defaultdict(set)
+        for c in self.ref["compositions"]:
+            by_ref[c["fund_ref"]].add((c["basis"], dates.day_of(c["as_of"])))
+        swap = [f for f in self.cat["funds"] if f.get("basis") == "collateral"]
+        self.assertTrue(swap and all("index" in f for f in swap), "a swap fund with index lines")
+        self.assertTrue(any(a.get("hedged_currency") for f in self.cat["funds"] for a in [f.get("attributes", {})]))
+        self.assertTrue(any(f.get("gaps") for f in self.cat["funds"]), "a fund with a gap")
+        funds = {f["instrument"] for f in self.cat["funds"]}
+        self.assertTrue(any(sid in funds for f in self.cat["funds"] for sid in f["lines"]), "a fund of funds")
+        late = [f for f in self.cat["funds"] if dates.parse(f["from"]) > self.inputs.history_start]
+        self.assertTrue(late, "a fund whose compositions start after it is held")
+        for f in self.cat["funds"]:
+            ref = reference.fund_ref(self.inputs.instruments[f["instrument"]])
+            self.assertTrue(by_ref[ref], f"{f['instrument']} has compositions under {ref}")
+
+    def test_the_config_proxies_and_tags_name_what_exists(self):
+        exposure = self.config["exposure"]
+        refs = {reference.fund_ref(i) for i in self.inputs.instruments.values()}
+        for key, p in exposure["proxies"].items():
+            self.assertIn(key, refs)
+            self.assertIn(p["fund"], refs)
+        for src, tags in exposure["tags"].items():
+            held = {r["instrument_id"] for r in self.rows[src]["positions"]}
+            for iid in tags:
+                self.assertIn(iid, held, f"{src}/{iid}")
+
+    def test_isins_have_the_demo_shape(self):
+        for r in self.ref["lines"]:
+            if r["isin"]:
+                self.assertRegex(r["isin"], r"^[A-Z]{2}000[A-Z0-9]{4}[0-9]{3}$")
 
 
 if __name__ == "__main__":

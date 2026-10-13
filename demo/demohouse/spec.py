@@ -18,7 +18,7 @@ SPEC_PATH = DEMO_DIR / "household.json"
 SCHEMA_PATH = DEMO_DIR.parent / "wealthdb" / "internal" / "silver" / "synthetic" / "testdata" / "silver_schema.sql"
 CODE_FILES = sorted([DEMO_DIR / "generate.py", *(DEMO_DIR / "demohouse").glob("*.py")]) + [SCHEMA_PATH]
 CATALOGUE_DIR = DEMO_DIR / "catalogue"
-CATALOGUE_FILES = ("instruments.json", "merchants.json", "payers.json")
+CATALOGUE_FILES = ("instruments.json", "merchants.json", "payers.json", "funds.json")
 
 
 class Inputs:

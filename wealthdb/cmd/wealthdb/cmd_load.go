@@ -126,10 +126,11 @@ func selectSources(cfg *config.Config, id, cmd string) ([]config.SilverSource, e
 
 // stampConfig writes what gold takes from the config once the sources
 // are in: the FX source precedence, which the SQL FX layer (fx_daily)
-// reads, and the declared accounts and holding aliases. The precedence
-// re-stamps every source, so a single-source load keeps it globally
-// correct; failing to stamp it degrades a conversion and is a warning.
-// A failure to sync the rows is an error (syncConfigRows).
+// reads, the declared accounts, the holding aliases and the exposure
+// block. The precedence re-stamps every source, so a single-source load
+// keeps it globally correct; failing to stamp it degrades a conversion
+// and is a warning. A failure to sync the rows is an error
+// (syncConfigRows).
 func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, verb string, stdout, stderr io.Writer) error {
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "%s: warning: could not stamp FX priorities: %s\n", verb, err.Error())
@@ -142,9 +143,9 @@ func stampConfig(ctx context.Context, db *sql.DB, cfg *config.Config, verb strin
 }
 
 // syncConfigRows stamps the config's declared accounts into the
-// accounts dimension and its holding aliases into holding_aliases,
-// after the per-source loads and before the enrichment pass that reads
-// them. A failure is an error rather than a warning, like the pass
+// accounts dimension, its holding aliases into holding_aliases and its
+// exposure block into the exposure tables, after the per-source loads
+// and before the enrichment pass that reads them. A failure is an error rather than a warning, like the pass
 // itself: a rule naming a declaration the dimension does not hold would
 // place its rows onto a far account the statement cannot resolve, which
 // is the hole the declarations exist to close.
@@ -161,6 +162,12 @@ func syncConfigRows(ctx context.Context, db *sql.DB, cfg *config.Config, verb st
 	}
 	if n > 0 {
 		fmt.Fprintf(stdout, "%s: %d holding alias(es) stamped\n", verb, n)
+	}
+	if n, err = gold.SyncExposure(ctx, db, cfg.ExposureRows()); err != nil {
+		return fmt.Errorf("exposure: %w", err)
+	}
+	if n > 0 {
+		fmt.Fprintf(stdout, "%s: %d exposure entr(ies) stamped\n", verb, n)
 	}
 	return nil
 }

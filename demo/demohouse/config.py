@@ -51,6 +51,7 @@ def render(spec):
             "transfer_overrides": "overrides/transfer_overrides.csv",
         },
         "income": {"rules": spec["config"]["income_rules"]},
+        "exposure": spec["config"]["exposure"],
         "web": {"enabled": True, "port": WEB_PORT},
         "mcp": {"enabled": True, "port": MCP_PORT},
     }

@@ -333,9 +333,9 @@ func upsertSilverSource(ctx context.Context, tx *sql.Tx, spec SourceSpec, now in
 }
 
 // deleteWindow removes any existing gold rows whose key time
-// (snapshot_at for snapshot tables, occurred_at for transactions)
-// falls inside the window. Required before re-inserting the new
-// change records.
+// (snapshot_at for snapshot tables, occurred_at for transactions,
+// as_of for the reference tables) falls inside the window. Required
+// before re-inserting the new change records.
 func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.Window) error {
 	tables := []struct {
 		name, timeCol string
@@ -345,6 +345,9 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 		{"cash_balances", "snapshot_at"},
 		{"fx_rates", "snapshot_at"},
 		{"transactions", "occurred_at"},
+	}
+	for _, t := range gold.ReferenceTables {
+		tables = append(tables, struct{ name, timeCol string }{t, "as_of"})
 	}
 	for _, t := range tables {
 		q := fmt.Sprintf(
@@ -446,8 +449,12 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		if err := writer.InsertFxRates(ctx, batch.FxRates); err != nil {
 			return total, err
 		}
+		if err := writer.InsertReference(ctx, &batch); err != nil {
+			return total, err
+		}
 
-		total += len(batch.Positions) + len(batch.PositionLots) + len(batch.CashBalances) + len(batch.FxRates)
+		total += len(batch.Positions) + len(batch.PositionLots) + len(batch.CashBalances) + len(batch.FxRates) +
+			batch.ReferenceRows()
 
 		if !more {
 			positions, balances := closing.rows(spec.ID)
@@ -823,6 +830,24 @@ func stampSnapshotBatch(b *canonical.SnapshotBatch, sourceID string) {
 	}
 	for i := range b.FxRates {
 		b.FxRates[i].SilverSourceID = sourceID
+	}
+	for i := range b.FundCompositions {
+		b.FundCompositions[i].SilverSourceID = sourceID
+	}
+	for i := range b.FundLines {
+		b.FundLines[i].SilverSourceID = sourceID
+	}
+	for i := range b.FundAttributes {
+		b.FundAttributes[i].SilverSourceID = sourceID
+	}
+	for i := range b.FundCounterparties {
+		b.FundCounterparties[i].SilverSourceID = sourceID
+	}
+	for i := range b.Securities {
+		b.Securities[i].SilverSourceID = sourceID
+	}
+	for i := range b.SecurityFacts {
+		b.SecurityFacts[i].SilverSourceID = sourceID
 	}
 }
 

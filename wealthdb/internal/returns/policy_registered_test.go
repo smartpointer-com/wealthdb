@@ -28,6 +28,7 @@ import (
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/manual"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/plaid"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/raiffeisen_at"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/refdata"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/relevate"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/swissquote"
@@ -245,9 +246,11 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		t.Error("plaid: the bank-style default, every other knob untouched")
 	}
 
-	// fred is blank-imported but registers NO policy — it must fall to the
-	// Known=false default.
-	if rp, _ := returns.ReturnsPolicyFor("fred"); rp.Flow.Known {
-		t.Error("fred: registers no policy, must fall to Known=false default")
+	// The reference sources are blank-imported but register NO policy —
+	// they must fall to the Known=false default.
+	for _, k := range []string{"fred", "refdata"} {
+		if rp, _ := returns.ReturnsPolicyFor(k); rp.Flow.Known {
+			t.Errorf("%s: registers no policy, must fall to Known=false default", k)
+		}
 	}
 }

@@ -1,0 +1,3 @@
+# Host-venv collector. collectorkit is installed editable by
+# `make build-refdata`; pytest runs the suite in the venv.
+pytest>=8,<9

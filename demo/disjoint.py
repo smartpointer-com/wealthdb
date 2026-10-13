@@ -7,7 +7,9 @@ Proof that nothing real is in the demo: both files are attached read-only
 in one DuckDB session and every identifying field is intersected —
 account, portfolio and instrument ids, display names, nicknames,
 symbols, ISINs, CUSIPs, counterparties, descriptions, merchant and payer
-signatures, cheque numbers, and (date, amount) pairs of transactions.
+signatures, cheque numbers, fund references and fund lines, security
+keys and names, and (date, amount) pairs of transactions. A table one
+gold lacks is reported and skipped.
 Text compares case- and space-insensitively. Prints each field's count
 and its shared values, and nothing else; --show N prints at most N
 values per field and says how many it left out.
@@ -48,6 +50,15 @@ TEXT_FIELDS = [
     ("cheque number", "transactions", "check_number"),
     ("merchant signature", "spend_txn_enrichment", "merchant_signature"),
     ("payer signature", "income_txn_enrichment", "payer_signature"),
+    ("fund reference", "fund_compositions", "fund_ref"),
+    ("fund name", "fund_compositions", "fund_name"),
+    ("fund line ISIN", "fund_lines", "isin"),
+    ("fund line ticker", "fund_lines", "ticker"),
+    ("fund line name", "fund_lines", "name"),
+    ("fund counterparty", "fund_counterparties", "name"),
+    ("security key", "security_facts", "security_key"),
+    ("security name", "security_identities", "name"),
+    ("security FIGI", "security_identities", "figi"),
 ]
 
 
@@ -56,6 +67,12 @@ def text_query(table, column):
     side = "SELECT DISTINCT {norm} AS v FROM {db}.{table} WHERE {col} IS NOT NULL AND trim(CAST({col} AS VARCHAR)) <> ''"
     return (f"SELECT v FROM ({side.format(norm=norm, db='demo', table=table, col=column)}) "
             f"INTERSECT SELECT v FROM ({side.format(norm=norm, db='live', table=table, col=column)}) ORDER BY v")
+
+
+# The tables each gold holds; a gold older than a table has none to share.
+TABLES_QUERY = """
+SELECT table_name, COUNT(DISTINCT table_catalog) AS n FROM information_schema.tables
+ WHERE table_catalog IN ('demo', 'live') GROUP BY 1"""
 
 
 # A (day, amount) pair, the amount at cent precision and signed.
@@ -98,8 +115,13 @@ def main(argv=None):
         if "'" in q:
             print(f"disjoint: refusing a path with a quote in it: {q}", file=sys.stderr)
             return 2
+    tables = run(a.demo, a.live, TABLES_QUERY)
+    both = {r["table_name"] for r in tables if r["n"] == 2}
     shared_total = 0
     for label, table, column in TEXT_FIELDS:
+        if table not in both:
+            print(f"{label:20} {'n/a':>6} ({table} is not in both golds)")
+            continue
         rows = run(a.demo, a.live, text_query(table, column))
         shared_total += len(rows)
         print(f"{label:20} {len(rows):6} shared")
