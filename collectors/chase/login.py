@@ -46,9 +46,10 @@ import logging
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from collectorkit import cli, debugcap, envfile, launch
-from collectorkit.launch import pump, wait_for
+from collectorkit.launch import page_url, pump, wait_for
 
 import auth_dialog
 import mdsui
@@ -261,21 +262,45 @@ def run_check(profile_dir: Path) -> int:
     return 1
 
 
+# How long the sign-in form gets to mount. The form lives in an iframe
+# that loads after the page's own DOMContentLoaded, and a slow or
+# throttled load can take tens of seconds.
+SIGNIN_FORM_WAIT_S = 45
+
+
 def _prefill(page, username: str, password: str) -> bool:
     """Poll explore's frame-aware prefill until the form is filled (the SPA /
     iframe form may mount late). Returns True once filled."""
     prefilled: set = set()
-    for _ in range(10):
+    for _ in range(SIGNIN_FORM_WAIT_S):
         if _maybe_prefill_login(page, username, password, prefilled):
             return True
         pump(page, 1000)
     return False
 
 
+def _page_shape(page) -> str:
+    """What the browser shows, for a log line: the page's host and each
+    chase.com frame's host and input count. No URL path, no values."""
+    parts = [f"page={urlparse(page_url(page)).hostname or '?'}"]
+    for frame in page.frames:
+        host = urlparse(frame.url).hostname or "?"
+        try:
+            n = frame.locator("input").count()
+        except Exception:
+            n = "?"
+        parts.append(f"{host}:{n}")
+    return " ".join(parts)
+
+
 def _submit_signin(page) -> bool:
     """Submit the sign-in form (which lives in a chase.com iframe). Pressing
     Enter in the password field triggers the form's native submit — robust
     without a hard-coded button selector — with a button as fallback."""
+    # The pre-fill has already waited for the form; this wait only covers
+    # a form that mounted after a fill was skipped or failed.
+    wait_for(lambda: _locate(page, "input[type='password']") is not None,
+             page, 15)
     pwd = _locate(page, "input[type='password']")
     if pwd is not None:
         with contextlib.suppress(Exception):
@@ -499,8 +524,9 @@ def run_login_and_scrape(args: argparse.Namespace) -> int:
         if args.cli_mfa:
             if not _submit_signin(page):
                 _capture(page, args, "signin-submit-failed")
-                log.error("could not submit the sign-in form. Retry with "
-                          "vnc-login. (DOM captured with --debug.)")
+                log.error("could not submit the sign-in form (%s). Retry, "
+                          "or use vnc-login; --debug captures the DOM.",
+                          _page_shape(page))
                 return 1
             log.info("submitted — driving 2FA from the terminal "
                      "(use vnc-login if a prompt can't find its control)")
