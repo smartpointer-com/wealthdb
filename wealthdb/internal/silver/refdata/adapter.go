@@ -9,10 +9,11 @@
 // Its records are dated facts: a composition by the day it describes, a
 // security fact by the day it was looked up.
 //
-// The change clock is the fetch run, as in fred, but the window is not
-// the whole history: it spans the as-of days the runs since the
-// watermark wrote, so a composition for an old day that arrives late
-// loads like any other and the rest of gold stays as it was.
+// The change clock is the silver load of a run (status.go), and the
+// window is not the whole history: it spans the as-of days the runs
+// loaded since the watermark wrote, so a composition for an old day that
+// arrives late loads like any other and the rest of gold stays as it
+// was.
 package refdata
 
 import (

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# refdata — host wrapper for the wealthdb "refdata" collector.
+#
+# Host-venv collector (no Docker): reads public reference data, what each
+# fund holds and what each security is, for the funds and securities the
+# engine names in its wanted list. No login anywhere. Subcommands:
+#   login               No-op: there is no session. `login --check` probes
+#                       every enabled provider with one request.
+#   download [args...]  Ask the engine for the wanted list (or read
+#                       --wanted FILE) and fetch what is missing into bronze.
+#                       --backfill also fetches past dates; --dry-run plans
+#                       only; --provider / --ref / --limit narrow a run.
+#   load [args...]      Parse bronze into the silver SQLite DB.
+#   prune [args...]     Delete non-complete bronze run dirs and debug
+#                       traces; complete dumps are kept. --dry-run previews.
+#
+# Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# > default), accepted on any subcommand:
+#   --secrets-dir DIR   env file dir            (default ~/.secrets)
+#   --data-dir    DIR   bronze dumps and inbox  (default $XDG_DATA_HOME/wealthdb/refdata)
+#   --silver-db   PATH  silver DB path          (default <data-dir>/refdata.db)
+# Settings live in $XDG_CONFIG_HOME/refdata.cfg (README.md). The engine
+# that prints the wanted list is REFDATA_WEALTHDB, else refdata.cfg's
+# `engine`, else `wealthdb` on PATH.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME=refdata
+ENV_PREFIX=REFDATA
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+    -h|--help|help)
+        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
+        exit 0
+        ;;
+esac
+
+host_resolve_dirs "$cmd" "$@"
+host_source_env_file
+py="$(host_python)"
+
+case "$cmd" in
+    login)
+        # No provider mints a session. `--check` makes one request per
+        # enabled provider instead.
+        case " ${FORWARD_ARGS[*]-} " in
+            *" --check "*)
+                exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
+                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+                ;;
+        esac
+        echo "refdata: no-op. The providers are public; there is no session to mint." >&2
+        echo "To probe each enabled provider, run \`./refdata login --check\`." >&2
+        exit 0
+        ;;
+    download)
+        exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    load)
+        exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    prune)
+        exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    *)
+        echo "refdata: unknown command '$cmd' (expected: login|download|load|prune)" >&2
+        exit 2
+        ;;
+esac

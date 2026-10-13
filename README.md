@@ -96,7 +96,8 @@ out by default. Every rebuilt figure says so.
 
 **Exposure.** What is really owned: every fund looked through to the
 stocks and bonds it holds, added to what is held directly, by asset
-class, sector, country and currency. Where nothing describes a fund, a
+class, sector, country and currency. The fund data comes from public
+sources the `refdata` collector reads. Where nothing describes a fund, a
 proxy the config names stands in, and every gap is listed.
 
 **Income and spending.** What arrived — wages, interest, dividends,
@@ -196,8 +197,9 @@ There is one collector per provider.
   [Carta](collectors/carta/), [EquityZen](collectors/equityzen/).
 - **Archives and reference** — [SVB](collectors/svb/) statement
   archives (load-only), [`manual`](collectors/manual/) for holdings
-  with no portal — property, private loans, escrow claims — and
-  [FRED](collectors/fred/) for historic FX.
+  with no portal — property, private loans, escrow claims —
+  [FRED](collectors/fred/) for historic FX, and
+  [`refdata`](collectors/refdata/) for what each fund holds.
 
 ## Adding a data source
 

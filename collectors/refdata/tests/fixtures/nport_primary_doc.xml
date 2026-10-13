@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An invented N-PORT filing in the layout the SEC publishes. Every name,
+     identifier and figure is made up. -->
+<edgarSubmission xmlns="http://www.sec.gov/edgar/nport" xmlns:com="http://www.sec.gov/edgar/common"
+                 xmlns:ncom="http://www.sec.gov/edgar/nportcommon">
+  <headerData><submissionType>NPORT-P</submissionType></headerData>
+  <formData>
+    <genInfo>
+      <regName>Example Fund Trust</regName>
+      <regCik>0000000001</regCik>
+      <seriesName>Example Broad Market ETF</seriesName>
+      <seriesId>S000000001</seriesId>
+      <repPdEnd>2026-06-30</repPdEnd>
+      <repPdDate>2026-06-30</repPdDate>
+    </genInfo>
+    <fundInfo>
+      <totAssets>1010000.00</totAssets>
+      <netAssets>1000000.00</netAssets>
+    </fundInfo>
+    <invstOrSecs>
+      <invstOrSec>
+        <name>Example Holdings Inc</name>
+        <lei>XXXXXXXXXXXXXXXXXX01</lei>
+        <title>Example Holdings Inc</title>
+        <cusip>000000AA1</cusip>
+        <identifiers><isin value="XX0000000101"/></identifiers>
+        <balance>1000.00</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>600000.00</valUSD>
+        <pctVal>60.000000000000</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+        <fairValLevel>1</fairValLevel>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Exemplar Industrie AG</name>
+        <lei>N/A</lei>
+        <title>Exemplar Industrie AG</title>
+        <cusip>N/A</cusip>
+        <identifiers><isin value="XX0000000102"/><ticker value="EXIA"/></identifiers>
+        <balance>500.00</balance>
+        <units>NS</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.9"/>
+        <valUSD>390000.00</valUSD>
+        <pctVal>39.000000000000</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetConditional assetCat="OTHER" desc="Depositary receipt"/>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Forward EUR/USD</name>
+        <lei>N/A</lei>
+        <title>Forward EUR/USD</title>
+        <cusip>N/A</cusip>
+        <identifiers><other otherDesc="internal" value="FWD-1"/></identifiers>
+        <balance>1.00</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>1000.00</valUSD>
+        <pctVal>0.100000000000</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>Example Bank NA</counterpartyName>
+              <counterpartyLei>XXXXXXXXXXXXXXXXXX09</counterpartyLei>
+            </counterparties>
+            <amtCurSold>50000.00</amtCurSold>
+            <curSold>USD</curSold>
+            <amtCurPur>45000.00</amtCurPur>
+            <curPur>EUR</curPur>
+            <settlementDt>2026-09-30</settlementDt>
+          </fwdDeriv>
+        </derivativeInfo>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Example Treasury Note</name>
+        <lei>N/A</lei>
+        <title>Example Treasury Note 2.5% 2030</title>
+        <cusip>000000BB2</cusip>
+        <identifiers><isin value="XX0000000103"/></identifiers>
+        <balance>9000.00</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>9000.00</valUSD>
+        <pctVal>0.900000000000</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>UST</issuerCat>
+        <invCountry>US</invCountry>
+        <debtSec>
+          <maturityDt>2030-05-15</maturityDt>
+          <couponKind>Fixed</couponKind>
+          <annualizedRt>2.5</annualizedRt>
+        </debtSec>
+      </invstOrSec>
+    </invstOrSecs>
+  </formData>
+</edgarSubmission>

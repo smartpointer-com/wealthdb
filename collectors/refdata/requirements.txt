@@ -1,3 +1,7 @@
 # Host-venv collector. collectorkit is installed editable by
 # `make build-refdata`; pytest runs the suite in the venv.
 pytest>=8,<9
+# A filing is stored zstd-compressed in bronze (collectorkit.compress),
+# and load reads it back through compress.open_bytes. Self-contained
+# wheel (bundles libzstd), no system deps.
+zstandard>=0.22,<1

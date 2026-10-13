@@ -125,8 +125,9 @@ CREATE TABLE attributes (
     PRIMARY KEY (fund_ref, as_of)
 );
 
--- One row per fund, day, role and counterparty. role is swap, lending,
--- custodian or depositary; share is percent of net assets.
+-- One row per fund, day, role and counterparty. role is swap, derivative
+-- (any other derivative's counterparty), lending, custodian or
+-- depositary; share is percent of net assets.
 CREATE TABLE counterparties (
     fund_ref  TEXT    NOT NULL,
     as_of     INTEGER NOT NULL,
