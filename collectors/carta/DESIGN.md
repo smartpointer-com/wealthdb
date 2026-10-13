@@ -179,8 +179,12 @@ below. (No values reproduced here — PII.)
   Third-party noise to ignore: cloudfront, statuspage.io, stonly,
   forethought.ai, ujet.co, pendo, delighted.
 
-- **Discovery / bootstrap.** `app.carta.com/investors/individual/{id}/portfolio/`
-  (landing) → `/api/investors/portfolio/firm/{firm}/list_individual_portfolio_investments/{portfolio}/list/`
+- **Discovery / bootstrap.** The app lands on the portfolio,
+  `app.carta.com/investors/individual/{id}/portfolio/`, or on a page
+  under `/tasks/`. The individual id is read from the first
+  URL that settles on the portfolio: the landing, then `/portfolio/`, then
+  the account switcher's `/api/profiles/landing-page-redirect/o/{firm}/`.
+  Then `/api/investors/portfolio/firm/{firm}/list_individual_portfolio_investments/{portfolio}/list/`
   returns the held entities, each: `corporation_id`, `legal_name`, `dba`,
   `entity_type`, **`is_fund_investment`** (the cap-table-vs-fund
   discriminator), `corporation_permission_data`. `account-switcher` /

@@ -10,8 +10,11 @@ is pulled per-PDF via each document's own download URL, so the bulk-download
 POST is not used.
 
 Discovery chain (all ids learned at runtime — none hardcoded):
-  1. Land on app.carta.com → final URL carries the individual id (IID):
-     /investors/individual/<IID>/portfolio/...
+  1. Land on app.carta.com. The settled URL carries the individual id
+     (IID) when the app lands on the portfolio:
+     /investors/individual/<IID>/portfolio/...  When it lands elsewhere
+     (a tasks page), the portfolio route /portfolio/ and the account
+     switcher's landing-page redirect settle there instead.
   2. navigation-config → organizationPk = firm id (fallback: account-switcher
      accounts[].id = "organization_pk:<firm>").
   3. list_individual_portfolio_investments(firm, IID) → the held entities,
@@ -204,22 +207,59 @@ def write_bytes(path: Path, data: bytes) -> None:
 # Discovery
 # --------------------------------------------------------------------------
 
-def land_and_get_individual_id(page) -> str:
-    """Load the app and read the individual id from the settled URL. Raises if
-    the session bounced to the Cloudflare-fronted login host."""
-    page.goto(APP, wait_until="domcontentloaded", timeout=60_000)
+# The app's own route to the holder's portfolio. It settles on
+# /investors/individual/<id>/portfolio/, which names the individual id.
+PORTFOLIO_ROUTE = f"{APP}/portfolio/"
+
+
+def _settle_for_individual_id(page, url: str) -> str | None:
+    """Open `url` and poll the settled URL for the individual id. Returns
+    the id, or None when the URL settles without one. Raises when the
+    session bounced to the Cloudflare-fronted login host."""
+    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     for _ in range(30):
-        url = page.url
-        if LOGIN_HOST in url or "/accounts/login" in url:
+        settled = page.url
+        if LOGIN_HOST in settled or "/accounts/login" in settled:
             raise RuntimeError(
                 "session is not authenticated — run `./carta login` first")
-        m = re.search(r"/investors/individual/(\d+)/", url)
+        m = re.search(r"/investors/individual/(\d+)/", settled)
         if m:
             return m.group(1)
         page.wait_for_timeout(500)
+    return None
+
+
+def land_and_get_individual_id(page, api: Api) -> str:
+    """Load the app and read the individual id from a settled URL.
+
+    The app lands wherever it chooses: the portfolio, or a page under
+    /tasks/, whose URL names no id. When the landing URL
+    carries none, the portfolio route is opened, then the account
+    switcher's landing-page redirect for each portfolio account; each
+    settles on the individual portfolio. Raises when the session bounced
+    to the login host, or no route settled on an id."""
+    landing = None
+    iid = _settle_for_individual_id(page, APP)
+    if iid:
+        return iid
+    landing = page.url
+    log.info("landing settled on %s, which names no individual id; "
+             "opening the portfolio route", _short(landing))
+    iid = _settle_for_individual_id(page, PORTFOLIO_ROUTE)
+    if iid:
+        return iid
+    _, acct = api.get(f"{APP}/api/fe-platform/account-switcher/")
+    for a in (acct or {}).get("accounts", []) if isinstance(acct, dict) else []:
+        url = str(a.get("url") or "")
+        if a.get("accountType") != "portfolio" or not url.startswith("/"):
+            continue
+        iid = _settle_for_individual_id(page, APP + url)
+        if iid:
+            return iid
     raise RuntimeError(
-        f"could not read the individual id from the landing URL ({page.url}); "
-        f"the app routing may have changed — re-run `./carta explore`")
+        f"could not read the individual id from the landing URL "
+        f"({_short(landing)}) or the portfolio routes; the app routing may "
+        f"have changed — re-run `./carta explore`")
 
 
 def discover_firm_id(api: Api, iid: str) -> tuple[str | None, dict, dict]:
@@ -605,7 +645,7 @@ def run(context, args, run_dir: Path, snapshot_at: int,
     mask = debugcap.SessionMask()
 
     try:
-        iid = land_and_get_individual_id(page)
+        iid = land_and_get_individual_id(page, api)
     finally:
         # The landing page is carta's only rendered surface — every later
         # fetch is JSON replay through Api, whose failures already land in

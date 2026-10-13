@@ -708,3 +708,63 @@ def test_api_error_record_drops_a_signed_url_query():
     assert api.get(f"{SIGNED_URL}?Signature=SYNTHETIC-SIG",
                    expect="bytes") == (403, None)
     assert api.errors == [{"url": SIGNED_URL, "status": 403}]
+
+
+# ---- the landing: where the individual id comes from ------------------------
+
+class _RoutedPage(_FakePage):
+    """A page whose goto settles on the URL `routes` maps the requested one
+    to, or on the requested URL itself."""
+
+    def __init__(self, routes: dict):
+        super().__init__("about:blank")
+        self.routes = routes
+        self.visited = []
+
+    def goto(self, url, *a, **k):
+        self.visited.append(url)
+        self.url = self.routes.get(url, url)
+
+
+_PORTFOLIO = "https://app.carta.com/investors/individual/7/portfolio/"
+_TASKS = "https://app.carta.com/tasks/example"
+_SWITCHER = {"accounts": [{"accountType": "portfolio",
+                           "id": "organization_pk:3",
+                           "url": "/api/profiles/landing-page-redirect/o/3/"}]}
+
+
+def _api(routes: dict) -> download.Api:
+    return download.Api(_FakeContext(_FakePage(_TASKS), routes))
+
+
+def test_landing_on_the_portfolio_reads_the_id_at_once():
+    page = _RoutedPage({download.APP: _PORTFOLIO})
+    assert download.land_and_get_individual_id(page, _api({})) == "7"
+    assert page.visited == [download.APP]
+
+
+def test_landing_on_a_tasks_page_follows_the_portfolio_route():
+    page = _RoutedPage({download.APP: _TASKS,
+                        download.PORTFOLIO_ROUTE: _PORTFOLIO})
+    assert download.land_and_get_individual_id(page, _api({})) == "7"
+    assert page.visited == [download.APP, download.PORTFOLIO_ROUTE]
+
+
+def test_landing_falls_back_to_the_account_switcher_redirect():
+    redirect = download.APP + "/api/profiles/landing-page-redirect/o/3/"
+    page = _RoutedPage({download.APP: _TASKS, redirect: _PORTFOLIO})
+    api = _api({"account-switcher": _SWITCHER})
+    assert download.land_and_get_individual_id(page, api) == "7"
+    assert page.visited == [download.APP, download.PORTFOLIO_ROUTE, redirect]
+
+
+def test_landing_bounced_to_login_is_not_authenticated():
+    page = _RoutedPage({download.APP: f"https://{download.LOGIN_HOST}/x"})
+    with pytest.raises(RuntimeError, match="not authenticated"):
+        download.land_and_get_individual_id(page, _api({}))
+
+
+def test_landing_with_no_route_to_the_portfolio_raises():
+    page = _RoutedPage({download.APP: _TASKS})
+    with pytest.raises(RuntimeError, match="portfolio routes"):
+        download.land_and_get_individual_id(page, _api({}))
