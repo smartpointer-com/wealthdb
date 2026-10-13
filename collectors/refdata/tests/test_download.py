@@ -154,3 +154,67 @@ def test_a_product_list_that_does_not_parse_is_no_claim(fake):
     reqs, unclaimed = download.plan(want, [Garbled(), fake], ctx(), today=date(2026, 7, 15), max_age=30,
                                     backfill=False)
     assert [r.provider for r in reqs] == ["fake"] and unclaimed == []
+
+
+def test_securities_held_directly_come_first_then_constituents_by_share():
+    doc = wanted_doc(securities=[
+        {"key": "isin:XX0000000071", "scope": "constituent", "share_pct": 0.5, "missing": ["sector"], "lookups": {}},
+        {"key": "isin:XX0000000072", "scope": "direct", "share_pct": None, "missing": ["sector"], "lookups": {}},
+        {"key": "isin:XX0000000073", "scope": "constituent", "share_pct": 2.5, "missing": ["country"], "lookups": {}},
+        {"key": "isin:XX0000000074", "scope": "unheard-of", "missing": [], "lookups": {}}])
+    want = wantedmod.parse(doc)
+    assert [s.key for s in download.security_order(want.securities, True)] == [
+        "isin:XX0000000072", "isin:XX0000000073", "isin:XX0000000071"]
+    assert [s.key for s in download.security_order(want.securities, False)] == ["isin:XX0000000072"]
+    assert want.securities[2].share_pct == 2.5
+
+
+
+class _FakeLookup:
+    """A security provider that answers a country and claims everything."""
+    name = "lookup"
+    serves_funds = False
+    serves_securities = True
+    additive = False
+    answers = frozenset({"country"})
+
+    def claim_security(self, sec, ctx):
+        return {"key": sec.key}
+
+    def wants_constituent(self, sec):
+        return bool(self.answers & set(sec.missing))
+
+
+def test_plan_asks_constituents_only_when_allowed_and_what_a_provider_answers():
+    doc = wanted_doc(securities=[
+        {"key": "isin:XX0000000091", "scope": "direct", "missing": ["sector"], "lookups": {}},
+        {"key": "isin:XX0000000092", "scope": "constituent", "share_pct": 1.0, "missing": ["country"],
+         "lookups": {}},
+        {"key": "isin:XX0000000093", "scope": "constituent", "share_pct": 2.0, "missing": ["sector"],
+         "lookups": {}},
+        {"key": "isin:XX0000000094", "scope": "constituent", "share_pct": 3.0, "missing": ["country"],
+         "lookups": {"lookup": "2026-07-10"}}])
+    want = wantedmod.parse(doc)
+    lk = _FakeLookup()
+    keys = lambda reqs: [r.ref for r in reqs]  # noqa: E731
+    off, _ = download.plan(want, [lk], ctx(), today=date(2026, 7, 15), max_age=30, backfill=False)
+    assert keys(off) == ["isin:XX0000000091"]
+    on, _ = download.plan(want, [lk], ctx(), today=date(2026, 7, 15), max_age=30, backfill=False,
+                          constituents=True)
+    # The direct one always; the constituents lacking a country, but not
+    # one looked up recently, nor one lacking only what it cannot answer.
+    assert keys(on) == ["isin:XX0000000091", "isin:XX0000000092"]
+    # An earlier run's answer counts until gold holds it.
+    again, _ = download.plan(want, [lk], ctx(), today=date(2026, 7, 15), max_age=30, backfill=False,
+                             constituents=True, looked_up={("lookup", "isin:XX0000000092"): date(2026, 7, 15)})
+    assert keys(again) == ["isin:XX0000000091"]
+
+
+def test_earlier_runs_count_their_security_lookups(tmp_path):
+    run = tmp_path / "20260714T120000Z"
+    run.mkdir()
+    (run / "run.json").write_text(json.dumps({"status": "complete", "requests": [
+        {"kind": "security", "provider": "gleif", "ref": "isin:XX0000000095", "status": "ok"},
+        {"kind": "security", "provider": "gleif", "ref": "isin:XX0000000096", "status": "error"}]}))
+    funds, lookups = download.fetched_before(tmp_path)
+    assert funds == set() and lookups == {("gleif", "isin:XX0000000095"): date(2026, 7, 14)}

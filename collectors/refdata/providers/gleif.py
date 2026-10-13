@@ -40,6 +40,7 @@ def _isin(security) -> str | None:
 class Gleif(Provider):
     name = "gleif"
     serves_securities = True
+    answers = frozenset({"country"})
 
     def claim_security(self, security, ctx):
         isin = _isin(security)

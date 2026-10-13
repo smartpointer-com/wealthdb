@@ -165,3 +165,38 @@ def test_sec_edgar_without_shares_is_no_error(tmp_path):
     e.fetch_security({"key": "symbol:QEXI", "symbol": "QEXI", "cik": 7}, tmp_path, ctx)
     got = e.parse(tmp_path)
     assert "shares_outstanding" not in {f["field"] for f in got.security_facts}
+
+
+def test_a_constituent_is_asked_only_what_a_provider_answers():
+    def c(key, missing, **kw):
+        return Security(key=key, scope="constituent", missing=missing, asset_class=kw.pop("asset_class", "public_equity"),
+                        **kw)
+    us_stock = c("isin:US0000000081", ("sector",))
+    no_country = c("isin:XX0000000082", ("country",))
+    with_symbol = c("isin:US0000000083", ("sector",), symbol="QSYM")
+    us_bond = c("isin:US0000000084", ("sector",), asset_class="fixed_income")
+    cins = c("cusip:Q00000008", ("sector",))
+    us_cusip = c("cusip:000000AH4", ("sector",))
+    g, f, e = Gleif(), OpenFigi(), SecEdgar()
+    assert not g.wants_constituent(us_stock) and g.wants_constituent(no_country)
+    # OpenFIGI finds the US ticker of a US stock lacking a sector; not for a
+    # bond, a known ticker, a country gap or a CINS code.
+    assert f.wants_constituent(us_stock) and f.wants_constituent(us_cusip)
+    for s in (no_country, with_symbol, us_bond, cins):
+        assert not f.wants_constituent(s), s.key
+    assert e.wants_constituent(with_symbol)
+
+
+def test_sec_edgar_matches_a_share_class_whatever_its_punctuation():
+    class Tickers:
+        def get(self, url, params=None):
+            doc = {"0": {"cik_str": 9, "ticker": "QBR-B"}, "1": {"cik_str": 10, "ticker": "QTA"},
+                   "2": {"cik_str": 11, "ticker": "QT-A"}}
+            return fetcher.Response(url, 200, json.dumps(doc).encode(), "application/json")
+    ctx = Context(client=Tickers(), contact="ops@example.org")
+    e = SecEdgar()
+    for written in ("QBRB", "QBR.B", "QBR/B"):
+        assert e.claim_security(Security(key=f"symbol:{written}", symbol=written), ctx)["cik"] == 9
+    # A plain ticker is itself; a share class never takes a plain ticker's place.
+    assert e.claim_security(Security(key="symbol:QTA", symbol="QTA"), ctx)["cik"] == 10
+    assert e.claim_security(Security(key="symbol:QT.A", symbol="QT.A"), ctx)["cik"] == 11

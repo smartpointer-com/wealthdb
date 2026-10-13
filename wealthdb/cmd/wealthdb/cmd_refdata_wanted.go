@@ -30,8 +30,9 @@ func cmdRefdataWanted(ctx context.Context, g globalFlags, subargs []string, _ io
 
 Print the wanted list (JSON, contract version `+fmt.Sprint(gold.WantedContractVersion)+`) the refdata
 collector reads: every held fund, proxy and reference fund with the days
-it was held and the days gold has a composition for, and every directly
-held security with the attributes still missing.`)
+it was held and the days gold has a composition for, every directly
+held security with the attributes still missing, and the securities the
+funds held today reach that lack a sector or a country.`)
 	}
 	if err := parseFlags(fs, subargs, "refdata-wanted"); err != nil {
 		return err

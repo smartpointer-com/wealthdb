@@ -12,7 +12,9 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
 
 - `providers` names the providers that run, in the order they are asked:
   the first that claims a fund serves it, the inbox beside it, and every
-  security provider answers for every security it can claim. Without the
+  security provider answers for every security held directly it can
+  claim, and for one held through funds when it can fill what that
+  lacks. Without the
   setting, the local inbox and the providers of public data run
   (DEFAULT_PROVIDERS); an issuer provider stays off until this list
   names it, because enabling one accepts its terms (README.md).
@@ -24,8 +26,9 @@ The collector's own settings: $XDG_CONFIG_HOME/refdata.cfg, by default
 - `engine` is the wealthdb wrapper that prints the wanted list; the
   REFDATA_WEALTHDB environment variable wins over it. Without either,
   this checkout's wrapper runs, so the engine image is the checkout's.
-- `constituents` lets the security providers look up the lines of held
-  funds as well as the securities held directly.
+- `constituents` lets the security providers look up the securities the
+  lines of held funds name and no source describes, the biggest share of
+  net worth first, as well as the securities held directly.
 
 The file is JSON, read as data, so nothing in it runs. A file that does
 not parse, or names a setting or a provider this collector does not know,

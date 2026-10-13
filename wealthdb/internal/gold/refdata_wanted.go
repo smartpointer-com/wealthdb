@@ -69,11 +69,20 @@ type WantedSecurity struct {
 	Symbol   *string `json:"symbol"`
 	Name     *string `json:"name"`
 	Currency *string `json:"currency"`
-	// Scope is direct: held directly, and always completed. A collector
-	// skips a scope it does not know.
+	// Scope is direct (held directly, and always completed) or
+	// constituent (named by the lines of a held fund, and lacking a
+	// sector or a country there). A collector skips a scope it does not
+	// know.
 	Scope string `json:"scope"`
+	// SharePct is a constituent's share of net worth through funds, in
+	// percent, so a collector asks the biggest first; null for a security
+	// held directly.
+	SharePct *float64 `json:"share_pct"`
+	// AssetClass is the security's asset class: the holding's, or the one
+	// its fund lines state (a lookup that finds companies skips a bond).
+	AssetClass *string `json:"asset_class"`
 	// Missing are the fields no source states yet: sector, country and,
-	// for a stock, market_cap.
+	// for a stock held directly, market_cap.
 	Missing []string `json:"missing"`
 	// Lookups are the day each provider last answered for the security,
 	// so a collector refreshes what is older than its max_age.
@@ -151,7 +160,8 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		case h.vehicle == "stock" || h.vehicle == "bond":
 			s := securities[ref]
 			if s == nil {
-				s = &WantedSecurity{Key: ref, Scope: "direct", Lookups: map[string]string{}}
+				class := h.assetClass
+				s = &WantedSecurity{Key: ref, Scope: "direct", AssetClass: &class, Lookups: map[string]string{}}
 				securities[ref] = s
 				stocks[ref] = h.vehicle == "stock"
 			}
@@ -166,6 +176,16 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if err := addCompositionDates(ctx, db, funds, keys); err != nil {
 			return nil, err
 		}
+		var open []string
+		for ref, f := range funds {
+			if spans[ref] != nil && spans[ref].open && slices.Contains(f.Roles, "held") {
+				open = append(open, ref)
+			}
+		}
+		slices.Sort(open)
+		if err := addConstituents(ctx, db, securities, open, now); err != nil {
+			return nil, err
+		}
 		if stated, err = addSecurityState(ctx, db, securities, keys); err != nil {
 			return nil, err
 		}
@@ -177,6 +197,9 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		}
 	}
 	for key, s := range securities {
+		if s.Scope == "constituent" {
+			continue // its Missing come from the look-through
+		}
 		s.Missing = []string{}
 		for _, wf := range wantedFields {
 			if (wf.stocksOnly && !stocks[key]) || stated[[2]string{key, wf.field}] {
@@ -426,6 +449,90 @@ var wantedFields = []struct {
 	{"sector", []string{"sector", "sic"}, "sector", false},
 	{"country", []string{"risk_country", "hq_country", "legal_country", "incorporation"}, "country", false},
 	{"market_cap", []string{"market_cap", "shares_outstanding", "size"}, "", true},
+}
+
+// addConstituents adds the securities the lines of the funds held today
+// reach on the day (any level of the look-through) that lack a sector or
+// a country there: equity and bond lines that name a company, each with
+// its share of net worth through funds. A line naming a fund, and a fund
+// the look-through stops at, stay out: no company lookup describes a
+// fund. A country only an ISIN's prefix implies counts as missing. A
+// security held directly stays direct. Its identifiers are those its key
+// and its aliases state: a US symbol only from a fund line on a US
+// listing or a lookup, never from a broker's local ticker. A gold
+// without the exposure macros has none.
+func addConstituents(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity, held []string,
+	now time.Time) error {
+	ok, err := hasTable(ctx, db, "security_aliases")
+	if err != nil || !ok || len(held) == 0 {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `
+WITH l AS (SELECT * FROM exposure_leaves(?, 'USD')),
+t AS (SELECT SUM(value) AS total FROM l),
+funds AS (
+    SELECT fund_ref FROM exposure_comps()
+    UNION SELECT COALESCE(sa.security_key, a.fund_ref) FROM fund_attributes a
+      LEFT JOIN security_aliases sa ON sa.alias = a.fund_ref),
+c AS (
+    SELECT l.key, SUM(abs(l.value)) AS v, MAX(l.name) AS name, arg_max(l.asset_class, abs(l.value)) AS asset_class,
+           BOOL_OR(l.sector IS NULL) AS no_sector,
+           BOOL_OR(l.country IS NULL
+                   OR (l.country_map IS NULL AND s.risk_country IS NULL
+                       AND COALESCE(s.domicile_origin, 'isin_prefix') = 'isin_prefix')) AS no_country
+      FROM l
+      LEFT JOIN securities s ON s.security_key = l.key
+     WHERE l.depth > 0 AND l.kind = 'line' AND NOT l.truncated AND l.key IS NOT NULL AND l.key NOT LIKE 'name:%'
+       AND l.key NOT IN (SELECT fund_ref FROM funds)
+       AND l.top_key IN (SELECT unnest(CAST(? AS VARCHAR[])))
+       AND l.asset_class IN ('public_equity', 'fixed_income')
+     GROUP BY l.key)
+SELECT c.key, 100 * c.v / NULLIF(t.total, 0), c.name, c.asset_class, s.currency, c.no_sector, c.no_country,
+       (SELECT MIN(substr(alias, 8)) FROM security_aliases a
+         WHERE a.security_key = c.key AND a.alias LIKE 'symbol:%' AND a.origin IN ('fund_line', 'lookup')),
+       (SELECT MIN(substr(alias, 7)) FROM security_aliases a WHERE a.security_key = c.key AND a.alias LIKE 'cusip:%')
+  FROM c CROSS JOIN t
+  LEFT JOIN securities s ON s.security_key = c.key
+ WHERE c.no_sector OR c.no_country
+ ORDER BY 1`, now.Unix(), held)
+	if err != nil {
+		return fmt.Errorf("wanted: constituents: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var share sql.NullFloat64
+		var name, class, ccy, symbol, cusip sql.NullString
+		var noSector, noCountry bool
+		if err := rows.Scan(&key, &share, &name, &class, &ccy, &noSector, &noCountry, &symbol, &cusip); err != nil {
+			return fmt.Errorf("wanted: constituents scan: %w", err)
+		}
+		if securities[key] != nil {
+			continue
+		}
+		s := &WantedSecurity{Key: key, Scope: "constituent", Lookups: map[string]string{}, Missing: []string{}}
+		if share.Valid {
+			v := share.Float64
+			s.SharePct = &v
+		}
+		for _, f := range []struct {
+			dst **string
+			v   sql.NullString
+		}{{&s.Name, name}, {&s.AssetClass, class}, {&s.Currency, ccy}, {&s.Symbol, symbol}, {&s.CUSIP, cusip}} {
+			if f.v.Valid && f.v.String != "" {
+				v := f.v.String
+				*f.dst = &v
+			}
+		}
+		if noSector {
+			s.Missing = append(s.Missing, "sector")
+		}
+		if noCountry {
+			s.Missing = append(s.Missing, "country")
+		}
+		securities[key] = s
+	}
+	return rows.Err()
 }
 
 // addSecurityState fills the day each provider last answered for each

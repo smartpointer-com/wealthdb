@@ -120,6 +120,14 @@ class Provider:
     def claim_security(self, security, ctx):
         return None
 
+    # The wanted fields a security provider can state. A constituent (a
+    # security held through funds) is asked only of a provider that
+    # answers one of its missing fields: a broad fund names thousands.
+    answers = frozenset()
+
+    def wants_constituent(self, security) -> bool:
+        return bool(self.answers & set(security.missing))
+
     def fetch_security(self, claim, outdir: Path, ctx):
         raise NotImplementedError
 

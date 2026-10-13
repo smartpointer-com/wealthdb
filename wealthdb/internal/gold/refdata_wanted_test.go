@@ -164,3 +164,87 @@ func TestRefdataWantedReadsKeysThroughAliases(t *testing.T) {
 		t.Errorf("securities = %+v", w.Securities)
 	}
 }
+
+// A held fund's lines that lack a sector or a country are wanted as
+// constituents, with their share and asset class and the US symbol a
+// fund line or a lookup gives them, never a broker's local ticker; a
+// country only an ISIN's prefix implies counts as missing. A line a
+// source describes, a cash line, a line naming a fund, a line with no
+// identifier and a security held directly are not.
+func TestRefdataWantedNamesConstituents(t *testing.T) {
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, first_seen_at, last_seen_at)
+		 VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, isin, first_seen_at, last_seen_at)
+		 VALUES ('test-src', 'FUNDC', 'public_equity', 'etf', 'FUNDC', NULL, 0, 0),
+		        ('test-src', 'STKH', 'public_equity', 'stock', 'STKH', 'XX0000000063', 0, 0),
+		        ('test-src', 'OLDL', 'public_equity', 'stock', 'QLOCAL', 'XX0000000062', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES
+		 ('test-src', ?, 'A', 'FUNDC', 'FUNDC', 'public_equity', 'etf', 'USD', 1000),
+		 ('test-src', ?, 'A', 'STKH', 'STKH', 'public_equity', 'stock', 'USD', 100)`,
+		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
+		 VALUES ('test-src', 'symbol:FUNDC', ?, 'holdings', 'sec-nport', 9),
+		        ('test-src', 'symbol:SUBF', ?, 'holdings', 'sec-nport', 1)`,
+		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin, ticker, name, asset_type, weight, currency, country, sector) VALUES
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 1, 'isin:XX0000000061', 'XX0000000061', 'QBIG', 'Big Co', 'EC', 60, 'USD', 'US', NULL),
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 2, 'isin:XX0000000062', 'XX0000000062', NULL, 'Small Co', 'EC', 10, 'EUR', NULL, NULL),
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 3, 'isin:XX0000000064', 'XX0000000064', NULL, 'Known Co', 'EC', 15, 'USD', 'US', 'Energy'),
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 4, 'isin:XX0000000063', 'XX0000000063', NULL, 'Held Co', 'EC', 10, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 5, NULL, NULL, NULL, 'Cash', 'Cash', 1, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 6, 'isin:DE0000000065', 'DE0000000065', NULL, 'Prefix Co', 'EC', 1, 'EUR', NULL, 'Energy'),
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 7, 'isin:XX0000000066', 'XX0000000066', NULL, 'A Bond', 'DBT', 1, 'USD', NULL, 'Corporate'),
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 8, 'symbol:SUBF', NULL, 'SUBF', 'Sub Fund', 'EC', 1, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:FUNDC', ?, 'holdings', 9, 'name:000000000067', NULL, NULL, 'Unnamed Co', 'EC', 1, 'USD', NULL, NULL),
+		 ('test-src', 'symbol:SUBF', ?, 'holdings', 1, 'isin:XX0000000068', 'XX0000000068', NULL, 'Deep Co', 'EC', 100, 'USD', 'US', 'Energy')`,
+	} {
+		args := make([]any, strings.Count(q, "?"))
+		for i := range args {
+			args[i] = day
+		}
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := RebuildExposure(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	w, err := RefdataWanted(ctx, db, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]WantedSecurity{}
+	for _, s := range w.Securities {
+		got[s.Key] = s
+	}
+	big, small := got["isin:XX0000000061"], got["isin:XX0000000062"]
+	if big.Scope != "constituent" || big.SharePct == nil || *big.SharePct < 54 || *big.SharePct > 55 ||
+		strings.Join(big.Missing, ",") != "sector" || big.Symbol == nil || *big.Symbol != "QBIG" {
+		t.Errorf("big = %+v", big)
+	}
+	// QLOCAL is a broker's ticker for it: no symbol for a lookup by ticker.
+	if small.Scope != "constituent" || strings.Join(small.Missing, ",") != "sector,country" || small.Symbol != nil ||
+		small.AssetClass == nil || *small.AssetClass != "public_equity" {
+		t.Errorf("small = %+v", small)
+	}
+	if p := got["isin:DE0000000065"]; strings.Join(p.Missing, ",") != "country" {
+		t.Errorf("a country only the ISIN prefix gives = %+v", p)
+	}
+	if b := got["isin:XX0000000066"]; b.AssetClass == nil || *b.AssetClass != "fixed_income" ||
+		strings.Join(b.Missing, ",") != "country" {
+		t.Errorf("the bond = %+v", b)
+	}
+	for _, key := range []string{"symbol:SUBF", "name:000000000067"} {
+		if _, ok := got[key]; ok {
+			t.Errorf("%s is wanted", key)
+		}
+	}
+	if _, ok := got["isin:XX0000000064"]; ok {
+		t.Error("a described line is wanted")
+	}
+	if held := got["isin:XX0000000063"]; held.Scope != "direct" || held.SharePct != nil {
+		t.Errorf("the held stock = %+v", held)
+	}
+}

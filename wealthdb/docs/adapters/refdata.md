@@ -168,11 +168,20 @@ A security:
 | --- | --- |
 | `key` | the security key (§3) |
 | `isin`, `cusip`, `symbol`, `name`, `currency` | as for a fund |
-| `scope` | `direct`: held directly, and always completed. A collector skips a scope it does not know. |
-| `missing` | the fields no source states yet: `sector`, `country` and, for a stock, `market_cap` (the fact fields below) |
+| `scope` | `direct`: held directly, and always completed. `constituent`: named by a held fund's lines and lacking a sector or a country there; a collector looks these up only when its config allows. A collector skips a scope it does not know. |
+| `share_pct` | a constituent's share of net worth through funds, in percent, so a collector asks the biggest first; `null` for a security held directly |
+| `asset_class` | the security's asset class: the holding's, or the one its fund lines state, so a lookup that finds companies can skip a bond |
+| `missing` | the fields no source states yet: `sector`, `country` and, for a stock held directly, `market_cap` (the fact fields below). For a constituent, a country only an ISIN's prefix implies counts as missing. |
 | `lookups` | the day each provider last answered for the security, so a collector refreshes what is older than its `max_age` |
 
-A security is wanted when a position holds it as a `stock` or a `bond`.
+A security is wanted when a position holds it as a `stock` or a `bond`,
+or when the look-through of the day reaches it through a fund held today
+(an equity or a bond line, any level deep) and its leaf there has no
+sector or no country. A line naming a fund, and a fund the look-through
+stops at, are no constituents: no company lookup describes a fund. A
+constituent states the identifiers its key and its aliases give: a US
+symbol only from a fund line on a US listing or a lookup, never a
+broker's local ticker, so a lookup by ticker finds the right company.
 
 A fund or security counts as still held while the latest snapshot of
 its source lists it and the source was observed within 90 days. A source

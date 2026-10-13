@@ -56,6 +56,19 @@ class OpenFigi(Provider):
     name = "openfigi"
     serves_securities = True
 
+    def wants_constituent(self, security) -> bool:
+        """A constituent is asked only for the US ticker of a stock that
+        lacks a sector: the ticker lets the SEC's lookup find the company
+        and its industry code. OpenFIGI states no sector and no country, so
+        a bond, a security with a ticker, and one whose identifier is no
+        US one (a CINS code starts with a letter) are not asked."""
+        if security.symbol or "sector" not in security.missing or security.asset_class != "public_equity":
+            return False
+        key = security.key
+        isin = (security.isin or (key[5:] if key.startswith("isin:") else "")).upper()
+        cusip = (security.cusip or (key[6:] if key.startswith("cusip:") else "")).upper()
+        return isin.startswith("US") or (cusip[:1].isdigit())
+
     def claim_security(self, security, ctx):
         j = job(security)
         if j is None:

@@ -11,8 +11,11 @@ refdata downloader: the wanted list in, raw provider files out.
    newer one. With --backfill, also fetch every past date the provider
    can serve inside the days the fund was held, and the last one before
    them, that has no composition within half a month.
-3. For every wanted security, ask every enabled security provider whose
-   last answer is older than max_age_days.
+3. For every wanted security held directly, ask every enabled security
+   provider whose last answer is older than max_age_days; with
+   `constituents`, then ask for the securities held through funds, the
+   biggest first, each only of a provider that can fill a field it
+   lacks.
 4. Write each answer's raw files into bronze, one folder per provider,
    fund and date:
 
@@ -36,7 +39,7 @@ import argparse
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -102,21 +105,39 @@ def enabled_providers(cfg: config.Config, only):
     return out
 
 
-def fetched_before(bronze_dir: Path | None) -> set:
-    """(provider, fund ref, date) of every composition an earlier complete
-    run fetched: it counts as had until gold holds it, so a second run
-    before the next load fetches it no more."""
-    out = set()
+def security_order(securities, constituents: bool) -> list:
+    """The securities a run asks for, in the order it asks: every one
+    held directly, then, where refdata.cfg's `constituents` allows, the
+    securities held through funds, the biggest share of net worth first,
+    so a run cut short by --limit has asked for what weighs most. A scope
+    this collector does not know is skipped."""
+    direct = [s for s in securities if s.scope == "direct"]
+    through = [s for s in securities if s.scope == "constituent"] if constituents else []
+    return direct + sorted(through, key=lambda s: (-(s.share_pct or 0), s.key))
+
+
+def fetched_before(bronze_dir: Path | None) -> tuple[set, dict]:
+    """What earlier complete runs fetched, which counts as had until gold
+    holds it, so a second run before the next load asks for it no more:
+    (provider, fund ref, date) of every composition, and the day of each
+    provider's latest answer per security."""
+    funds, lookups = set(), {}
     if bronze_dir is None or not bronze_dir.is_dir():
-        return out
+        return funds, lookups
     for run in bronze.iter_run_dirs(bronze_dir):
         manifest = bronze.read_manifest(run / "run.json")
         if manifest is None or manifest.get("status") != "complete":
             continue
+        day = datetime.fromtimestamp(bronze.parse_run_ts(run.name), timezone.utc).date()
         for e in manifest.get("requests") or []:
-            if e.get("kind") == "fund" and e.get("status") == "ok" and e.get("as_of"):
-                out.add((e["provider"], e["ref"], date.fromisoformat(e["as_of"])))
-    return out
+            if e.get("status") != "ok":
+                continue
+            if e.get("kind") == "fund" and e.get("as_of"):
+                funds.add((e["provider"], e["ref"], date.fromisoformat(e["as_of"])))
+            elif e.get("kind") == "security":
+                k = (e["provider"], e["ref"])
+                lookups[k] = max(lookups.get(k, day), day)
+    return funds, lookups
 
 
 # What a provider's lookup can raise without failing the run: its own
@@ -142,7 +163,7 @@ def _dates(p, claim, fund, since, until, ctx):
 
 
 def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
-         refs=None, securities=True, constituents=False, fetched=frozenset()):
+         refs=None, securities=True, constituents=False, fetched=frozenset(), looked_up=None):
     """The requests a run makes, and the funds no provider claims.
 
     The first provider that claims a fund serves it, and the next ones
@@ -202,15 +223,14 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
                     reqs.append(Request("fund", p.name, fund.ref, d, claim))
                     have.add(d)
     if securities:
-        for sec in want.securities:
+        for sec in security_order(want.securities, constituents):
             if refs and sec.key not in refs:
                 continue
-            if sec.scope != "direct" and not constituents:
-                continue
             for p in providers:
-                if not p.serves_securities:
+                if not p.serves_securities or (sec.scope == "constituent" and not p.wants_constituent(sec)):
                     continue
-                last = sec.lookups.get(p.name)
+                last = max(filter(None, (sec.lookups.get(p.name), (looked_up or {}).get((p.name, sec.key)))),
+                           default=None)
                 if last is not None and (today - last).days <= max_age:
                     continue
                 try:
@@ -317,9 +337,10 @@ def main(argv=None) -> int:
         log.error("%s", e)
         return 3
     today = today_utc()
+    fetched_funds, looked_up = fetched_before(args.bronze_dir)
     reqs, unclaimed = plan(want, providers, ctx, today=today, max_age=cfg.max_age_days, backfill=args.backfill,
                            refs=set(args.ref or ()), securities=not args.no_securities,
-                           constituents=cfg.constituents, fetched=fetched_before(args.bronze_dir))
+                           constituents=cfg.constituents, fetched=fetched_funds, looked_up=looked_up)
     log.info("wanted: %d funds, %d securities; %d requests; %d funds no provider claims",
              len(want.funds), len(want.securities), len(reqs), len(unclaimed))
     for ref in unclaimed:

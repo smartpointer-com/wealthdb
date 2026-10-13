@@ -19,6 +19,7 @@ in the User-Agent and at most ten requests a second.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -27,6 +28,12 @@ from collectorkit import bronze
 
 from .base import Parsed, Provider, ProviderError, read_meta, today_utc, write_meta
 from .sec_nport import COMPANY_TICKERS, SUBMISSIONS
+
+def compact(ticker: str) -> str:
+    """A ticker without its share-class punctuation: brokers, the SEC
+    and OpenFIGI write XYZB, XYZ-B, XYZ.B and XYZ/B for one share."""
+    return re.sub(r"[./\s-]", "", str(ticker or "").upper())
+
 
 SHARES = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/dei/EntityCommonStockSharesOutstanding.json"
 SUB_DOC = "submissions.json"
@@ -37,18 +44,31 @@ class SecEdgar(Provider):
     name = "sec-edgar"
     serves_securities = True
     needs_contact = True
+    answers = frozenset({"sector", "country"})
 
-    def _tickers(self, ctx) -> dict:
+    def _tickers(self, ctx) -> tuple:
+        """ticker -> CIK as the SEC writes it, and share-class tickers
+        (XYZ-B) by their compact form (XYZB) besides."""
         def load():
             doc = ctx.client.get(COMPANY_TICKERS).json()
-            return {str(v.get("ticker", "")).upper(): int(v["cik_str"])
-                    for v in (doc.values() if isinstance(doc, dict) else doc) if v.get("ticker")}
+            exact, classes = {}, {}
+            for v in (doc.values() if isinstance(doc, dict) else doc):
+                t = str(v.get("ticker") or "").upper()
+                if not t:
+                    continue
+                exact.setdefault(t, int(v["cik_str"]))
+                if compact(t) != t:
+                    classes.setdefault(compact(t), int(v["cik_str"]))
+            return exact, classes
         return ctx.once("edgar_tickers", load)
 
     def claim_security(self, security, ctx):
         key = security.key
         symbol = (security.symbol or (key[7:] if key.startswith("symbol:") else "") or "").strip().upper()
-        cik = self._tickers(ctx).get(symbol) if symbol else None
+        exact, classes = self._tickers(ctx)
+        # The ticker as written first; a share class's compact form only
+        # matches a share-class ticker, never a plain one it collides with.
+        cik = (exact.get(symbol) or classes.get(compact(symbol))) if symbol else None
         return {"key": key, "symbol": symbol, "cik": cik} if cik else None
 
     def fetch_security(self, claim, outdir: Path, ctx):
@@ -75,7 +95,7 @@ class SecEdgar(Provider):
         return parse_company(sub, shares, meta["key"], date.fromisoformat(meta["as_of"]), provider=self.name)
 
     def probe(self, ctx) -> str:
-        return f"SEC company ticker file: {len(self._tickers(ctx))} tickers"
+        return f"SEC company ticker file: {len(self._tickers(ctx)[0])} tickers"
 
 
 def latest_shares(doc: dict | None):

@@ -46,7 +46,9 @@ class Security:
     symbol: str | None = None
     name: str | None = None
     currency: str | None = None
-    scope: str = "direct"
+    scope: str = "direct"                 # direct | constituent
+    share_pct: float | None = None        # a constituent's share of net worth through funds
+    asset_class: str | None = None
     missing: tuple = ()
     lookups: dict = field(default_factory=dict)   # provider -> date of its last answer
 
@@ -79,6 +81,8 @@ def parse(doc) -> Wanted:
         securities = tuple(Security(
             key=s["key"], isin=s.get("isin"), cusip=s.get("cusip"), symbol=s.get("symbol"),
             name=s.get("name"), currency=s.get("currency"), scope=s.get("scope") or "direct",
+            share_pct=float(s["share_pct"]) if s.get("share_pct") is not None else None,
+            asset_class=s.get("asset_class"),
             missing=tuple(s.get("missing") or ()),
             lookups={k: date.fromisoformat(v) for k, v in (s.get("lookups") or {}).items()})
             for s in doc.get("securities") or ())

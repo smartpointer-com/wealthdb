@@ -103,6 +103,8 @@
       "name": "Stock One",
       "currency": "USD",
       "scope": "direct",
+      "share_pct": null,
+      "asset_class": "public_equity",
       "missing": [
         "market_cap"
       ],

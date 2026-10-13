@@ -59,13 +59,20 @@ The settings live in `$XDG_CONFIG_HOME/refdata.cfg`, by default
   "providers": ["inbox", "ishares", "invesco", "spdr", "sec-nport", "sec-edgar", "gleif", "openfigi"],
   "contact": "name@example.org",
   "max_age_days": 30,
-  "engine": "/path/to/wealthdb"
+  "engine": "/path/to/wealthdb",
+  "constituents": true
 }
 ```
 
 - `providers` are asked in this order. The first that claims a fund
   serves it; the inbox serves beside it. Every security provider is
-  asked for every security it can claim.
+  asked for every security held directly that it can claim; a security
+  held through funds only of a provider that can fill what it lacks.
+- `constituents` lets the security providers look up the securities a
+  held fund's lines name that no source describes yet (an N-PORT filing
+  states no sector), the biggest share of net worth first. Off by
+  default: a broad fund names thousands, and OpenFIGI takes 25 requests
+  a minute. Securities held directly are always looked up.
 - `contact` goes into the User-Agent of requests to the SEC, and to no
   other host. The SEC requires it; the SEC providers do not run without
   it. It is kept in this file only, never in bronze, silver or a log.
