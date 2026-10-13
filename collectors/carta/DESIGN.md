@@ -279,7 +279,8 @@ and the latest fund metrics are all clean JSON. PDFs (K-1 / statements /
 financials / notices) are captured as a document **archive** (metadata →
 silver `documents` table; blobs → disk). `load` parses the ones that carry
 figures the JSON lacks: capital-account statements and notices (§5.1, §5.2)
-and K-1s (§5.3). Filenames embed the holder's legal name + fund name → slug
+and K-1s (§5.3). A blob that fails `docdedup.is_pdf` reads as not
+downloaded: it is neither indexed nor parsed. Filenames embed the holder's legal name + fund name → slug
 on capture; never let them reach the repo.
 
 ## 4. login + download

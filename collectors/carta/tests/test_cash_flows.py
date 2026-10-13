@@ -280,14 +280,15 @@ def test_the_residue_is_what_the_earliest_notice_says_preceded_it():
 # ============================================================
 
 def _fund_docs(tmp_path: Path, rows: list[dict]) -> Path:
-    """A documents dir holding an index and one (empty) PDF per row. The
+    """A documents dir holding an index and one stub PDF per row. The
     parsers are stubbed per test, so the bytes never matter — only that the
-    file the index names is on disk, which is what _fund_cash_flows checks."""
+    file the index names is a PDF, which is what _fund_cash_flows checks."""
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "index.json").write_text(json.dumps({"results": rows}))
     for row in rows:
-        (docs / f"doc_{row['id']}.pdf").write_bytes(b"")
+        (docs / f"doc_{row['id']}.pdf").write_bytes(
+            f"%PDF- {row['id']}".encode())
     return docs
 
 
@@ -585,3 +586,44 @@ def test_each_fund_reads_only_its_own_documents(tmp_path, monkeypatch, caplog):
         "document u1 (Capital account statements) belongs to no fund entity "
         "of this run; not read"]
     conn.close()
+
+
+def test_a_file_that_is_not_a_pdf_reads_as_not_downloaded(tmp_path,
+                                                          monkeypatch, caplog):
+    # Fund 42's statement and notice files hold document_url's JSON envelope.
+    # Neither is indexed or parsed, and the run says so once. Fund 43 loads
+    # as before.
+    run = _two_fund_run(tmp_path)
+    for doc_id in ("s1", "n1"):
+        (run / "documents" / f"doc_{doc_id}.pdf").write_text(
+            '{"url": "https://cdn.example/' + doc_id + '"}')
+    texts = {"t1": _statement("95,380", "101,742"), "d1": _DIST_NOTICE,
+             "u1": _statement("70,113", "73,309")}
+    monkeypatch.setattr(load, "_pdf_text",
+                        lambda pdf: texts[pdf.stem.removeprefix("doc_")])
+    conn = load.silver.open_db(tmp_path / "carta.db")
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+
+    with caplog.at_level("INFO"):
+        assert load.load_run(conn, run)
+
+    assert sorted(r[0] for r in conn.execute(
+        "SELECT doc_id FROM documents")) == ["d1", "t1", "u1"]
+    assert [tuple(r) for r in conn.execute(
+        "SELECT entity_external_id FROM fund_metrics WHERE snapshot_at = ?",
+        (load._date_ts("12/31/2098"),))] == [(43,)]
+    assert [tuple(r) for r in _ledger(conn)] == [
+        ("call:43:t1", "capital_call", "12/31/2098", 95380.0),
+        ("dist:43:notice:d1", "distribution", "01/15/2099", 1234.56),
+    ]
+    assert [m for m in caplog.messages if "PDF" in m] == [
+        f"{run.name}: 2 document file(s) hold no PDF; read as not downloaded"]
+    conn.close()
+
+
+def test_document_pdf_is_the_file_only_when_it_is_a_pdf(tmp_path):
+    (tmp_path / "doc_1.pdf").write_bytes(b"%PDF-1.7\n")
+    (tmp_path / "doc_2.pdf").write_text('{"url": "https://cdn.example/2"}')
+    assert load._document_pdf(tmp_path, {"id": 1}) == tmp_path / "doc_1.pdf"
+    assert load._document_pdf(tmp_path, {"id": 2}) is None
+    assert load._document_pdf(tmp_path, {"id": 3}) is None

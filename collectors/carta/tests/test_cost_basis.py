@@ -204,7 +204,8 @@ def _docs(root: Path, rows: list[dict]) -> Path:
     docs.mkdir(parents=True, exist_ok=True)
     for row in rows:
         row.setdefault("document_name", f"document {row['id']}")
-        (docs / f"doc_{row['id']}.pdf").write_bytes(f"pdf {row['id']}".encode())
+        (docs / f"doc_{row['id']}.pdf").write_bytes(
+            f"%PDF- {row['id']}".encode())
     (docs / "index.json").write_text(json.dumps({"results": rows}))
     return docs
 
@@ -474,10 +475,24 @@ def test_a_reissued_k1_replaces_the_row_for_its_document(migrated, tmp_path,
     monkeypatch.setattr(k1, "bbox_xhtml",
                         lambda pdf, timeout=None: _bbox(_k1_face()))
     load.load_k1_capital_accounts(migrated, docs)
-    (docs / "doc_1.pdf").write_bytes(b"amended")
+    (docs / "doc_1.pdf").write_bytes(b"%PDF- amended")
     load.load_k1_capital_accounts(migrated, docs)
     assert migrated.execute(
         "SELECT COUNT(*) FROM k1_capital_accounts").fetchone() == (1,)
+
+
+def test_a_tax_document_that_is_not_a_pdf_is_not_parsed(migrated, tmp_path,
+                                                        monkeypatch, caplog):
+    # The file holds document_url's JSON envelope, not the PDF it names.
+    docs = _docs(tmp_path, [{"id": 1, "document_type": "Tax - Schedule K-1",
+                             "fund_id": 9}])
+    (docs / "doc_1.pdf").write_text('{"url": "https://cdn.example/doc_1"}')
+    calls = []
+    monkeypatch.setattr(k1, "bbox_xhtml",
+                        lambda pdf, timeout=None: calls.append(pdf.name))
+    assert load.load_k1_capital_accounts(migrated, docs) == 0
+    assert calls == []
+    assert caplog.messages == []
 
 
 # ---- fiscal-year K-1 --------------------------------------------------------

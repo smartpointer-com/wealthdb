@@ -66,7 +66,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from collectorkit import bronze, cli, pdftotext, silver
+from collectorkit import bronze, cli, docdedup, pdftotext, silver
 
 import k1
 
@@ -671,6 +671,15 @@ def _index_rows(docs_dir: Path) -> list[dict]:
     return [row for row in rows or [] if isinstance(row, dict)]
 
 
+def _document_pdf(docs_dir: Path, row: dict) -> Path | None:
+    """The PDF an index row names, or None when the run holds none. The file
+    is absent when the document was not fetched. It can also hold the JSON
+    envelope that document_url answers with in place of the PDF. Both read
+    as not downloaded."""
+    pdf = docs_dir / f"doc_{row.get('id')}.pdf"
+    return pdf if pdf.is_file() and docdedup.is_pdf(pdf) else None
+
+
 def _fund_ledger_kind(document_type: str | None) -> str | None:
     """'statement' for a capital-account statement, 'notice' for a capital
     call or distribution notice, None for any other document type."""
@@ -704,14 +713,16 @@ def _warn_unowned_fund_documents(docs_dir: Path, fund_eids: list) -> None:
 
 def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
     """Index documents/index.json, content-deduping each PDF on its SHA-256.
-    bronze_path is stored relative to the bronze root."""
-    n = 0
+    bronze_path is stored relative to the bronze root. A file that is not a
+    PDF (_document_pdf) is counted in one log line and not indexed."""
+    n = not_pdf = 0
     for row in _index_rows(docs_dir):
         doc_id = row.get("id")
-        pdf = docs_dir / f"doc_{doc_id}.pdf"
-        if not pdf.is_file():
+        pdf = _document_pdf(docs_dir, row)
+        if pdf is None:
             # Indexed but not downloaded (e.g. dry-run, or a fetch failure) —
             # skip; a later real run will pick it up.
+            not_pdf += (docs_dir / f"doc_{doc_id}.pdf").is_file()
             continue
         data = pdf.read_bytes()
         sha = hashlib.sha256(data).hexdigest()
@@ -746,6 +757,9 @@ def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
                 "UPDATE documents SET first_seen_at=?, last_seen_at=? "
                 "WHERE content_sha256=?",
                 (min(first, snap), max(last, snap), sha))
+    if not_pdf:
+        log.info("%s: %d document file(s) hold no PDF; read as not "
+                 "downloaded", run_name, not_pdf)
     return n
 
 
@@ -980,8 +994,8 @@ def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
     for row in _fund_documents(docs_dir, fund_eid):
         if _fund_ledger_kind(row.get("document_type")) != "statement":
             continue
-        pdf = docs_dir / f"doc_{row.get('id')}.pdf"
-        if not pdf.is_file():
+        pdf = _document_pdf(docs_dir, row)
+        if pdf is None:
             continue
         st = _parse_statement(pdf)
         snap = _date_ts(row.get("document_date"))
@@ -1027,8 +1041,8 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
     for row in _index_rows(docs_dir):
         if "tax" not in (row.get("document_type") or "").lower():
             continue
-        pdf = docs_dir / f"doc_{row.get('id')}.pdf"
-        if not pdf.is_file():
+        pdf = _document_pdf(docs_dir, row)
+        if pdf is None:
             continue
         sha = hashlib.sha256(pdf.read_bytes()).hexdigest()
         if conn.execute("SELECT 1 FROM k1_capital_accounts "
@@ -1191,8 +1205,8 @@ def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int,
     stmts, notices = [], []
     for row in _fund_documents(docs_dir, eid):
         kind = _fund_ledger_kind(row.get("document_type"))
-        pdf = docs_dir / f"doc_{row.get('id')}.pdf"
-        if kind is None or not pdf.is_file():
+        pdf = _document_pdf(docs_dir, row)
+        if kind is None or pdf is None:
             continue
         if kind == "statement":
             date = _s(row.get("document_date"))
