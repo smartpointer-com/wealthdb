@@ -150,7 +150,7 @@ mounts the config file and the data root at the same paths inside the
 container, so paths in the config resolve the same on both sides.
 
 ```sh
-./wealthdb build               # build the wealthdb:latest image
+./wealthdb build               # build the engine image (wealthdb:latest, or the checkout's tag)
 ./wealthdb <subcommand> ...    # run wealthdb in the container
 ./wealthdb-test ./...          # run `go test` inside the container
 ./wealthdb-go mod tidy         # any `go` subcommand, same toolchain

@@ -67,7 +67,7 @@ check_not "v4 → no IPv6"     "[::1]"               "$out"
 if _publish_args 3300 all 2>/dev/null; then fail "bad bind refused"; else pass "bad bind refused"; fi
 
 echo "== _docker_run_args (detached, read-only, hardened, loopback) =="
-HOME=/home/u XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= _resolve_knobs
+HOME=/home/u XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= WEALTHDB_IMAGE_TAG= _resolve_knobs
 PORT=3300 BIND=both AUTH=token ROWS= MAX_ROWS= ALLOW_HOSTS=
 _docker_run_args
 joined="${DOCKER_ARGS[*]}"
@@ -85,6 +85,12 @@ check     "publish IPv6 loopback"  "[::1]:3300:3300"                            
 check     "serves HTTP"            "wealthdb:latest -c /cfg/wealthdb.cfg mcp-serve --http :3300 --all-interfaces --token-file /run/wealthdb-mcp/token" "$joined"
 check_not "no token in env"        "WEALTHDB_MCP_TOKEN"                           "$joined"
 check_not "no -t"                  " -t "                                         "$joined"
+
+WEALTHDB_IMAGE_TAG=feature _resolve_knobs
+check     "image follows the tag"  "wealthdb:feature"                             "$IMAGE"
+WEALTHDB_IMAGE_TAG= _resolve_knobs
+check     "image tag defaults to latest" "wealthdb:latest"                        "$IMAGE"
+HOME=/home/u XDG_DATA_HOME= XDG_CONFIG_HOME=/cfg WEALTHDB_DATA_ROOT=/data WEALTHDB_CONFIG= WEALTHDB_IMAGE_TAG= _resolve_knobs
 
 ROWS=200 MAX_ROWS=500 ALLOW_HOSTS="wealthdb-mcp,host.docker.internal"
 _docker_run_args

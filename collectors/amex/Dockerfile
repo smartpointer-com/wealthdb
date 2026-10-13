@@ -13,7 +13,8 @@
 # sign-in budget rather than the engine: too many sign-ins draw a captcha
 # that is answered by hand over VNC (§K), which no other engine would help
 # with. No fallback is installed.
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 

@@ -24,7 +24,8 @@ make demo-mcp             # MCP on http://127.0.0.1:3400/mcp (container wealthdb
 make demo-mcp-stop        # stop the demo's MCP server
 ```
 
-`make demo` takes `WEALTHDB_DEMO_ROOT=` (default `~/wealthdb-demo`),
+`make demo` takes `WEALTHDB_DEMO_ROOT=` (default: the first line of the
+checkout's git-ignored `.demo-root`, else `~/wealthdb-demo`),
 `AS_OF=YYYY-MM-DD` (default today, UTC), `SEED=` and `FINDINGS=1`
 (below). `make demo-roll` takes the same root and seed as the build it
 extends. The dashboards' admin password is in `web/admin-password.txt`

@@ -6,7 +6,8 @@
                                      [--workers N]
 
 The defaults are the demo's: its port, its admin password file under
-~/wealthdb-demo, and the year its history starts.
+the checkout's demo root (shared/wrappers/demo-root.sh), and the year
+its history starts.
 
 Logs in once to mint a temporary API key, runs every dashcard of every
 dashboard in the 'wealthdb (pre-defined)' collection through the
@@ -34,6 +35,7 @@ import concurrent.futures
 import datetime as dt
 import json
 import pathlib
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -127,11 +129,21 @@ def run_card(base, auth, dash, dc, ptypes, values):
     return ok, rows, err, body["parameters"]
 
 
+def demo_root() -> pathlib.Path:
+    """The checkout's demo root, as the Makefile resolves it."""
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    out = subprocess.run(["sh", "-c", '. "$1/shared/wrappers/demo-root.sh" && wealthdb_demo_root "$1"', "sh",
+                          str(repo)], capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit(out.stderr.strip() or "no demo root")
+    return pathlib.Path(out.stdout.strip()).expanduser()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", default=f"http://127.0.0.1:{config.WEB_PORT}")
     ap.add_argument("--email", default="admin@wealthdb.local")
-    ap.add_argument("--password-file", default=str(pathlib.Path.home() / "wealthdb-demo/web/admin-password.txt"))
+    ap.add_argument("--password-file", default=str(demo_root() / "web/admin-password.txt"))
     ap.add_argument("--first-year", type=int, default=spec.load().history_start.year)
     ap.add_argument("--workers", type=int, default=3)
     a = ap.parse_args(argv)

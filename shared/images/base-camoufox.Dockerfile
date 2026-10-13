@@ -12,13 +12,15 @@
 #   docker build -f images/base-camoufox.Dockerfile -t wealthdb/base-camoufox:latest .
 #
 # That command builds on whatever wealthdb/base-playwright:latest is
-# already local, so it must be preceded by a base-playwright rebuild —
+# already local (the WEALTHDB_IMAGE_TAG build argument picks another
+# tag), so it must be preceded by a base-playwright rebuild —
 # Xvfb/x11vnc, /opt/entrypoint-lib.sh and the baked-in collectorkit all
 # live one layer down, and a stale parent yields a camoufox image
 # whose collectors start without them or redact with an old collectorkit
 # while their unit tests still pass. `make base-images` (or `make all`,
 # or any `make build-<name>`) builds the pair in order and is the way in.
-FROM wealthdb/base-playwright:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-playwright:${WEALTHDB_IMAGE_TAG}
 
 # Xvfb, x11vnc and the shared entrypoint bootstrap come from
 # base-playwright — running a browser headed in a container is not a

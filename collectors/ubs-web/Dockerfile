@@ -1,7 +1,8 @@
 # Headless-browser collector: build on the shared Playwright base
 # (collectorkit pre-installed; the Playwright image tag is pinned there
 # and must stay in lockstep with the `playwright` pin in requirements.txt).
-FROM wealthdb/base-playwright:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-playwright:${WEALTHDB_IMAGE_TAG}
 
 # Install collector-specific deps first so editing scripts doesn't bust
 # the pip cache layer.

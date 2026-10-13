@@ -9,7 +9,8 @@
 # vanilla Chromium outright, and Chase fronts the same class of defense —
 # the vanilla rungs are skipped rather than re-measured. No fallback
 # engine is installed until a real capture shows one is needed.
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 

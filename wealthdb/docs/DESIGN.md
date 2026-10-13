@@ -2957,6 +2957,19 @@ Single-stage Dockerfile, single image tag (`wealthdb:latest`),
 used unchanged for development, testing, and production. See §12.4
 for why we don't separate stages.
 
+`WEALTHDB_IMAGE_TAG` replaces `latest` in every image name the tree
+builds, runs and removes: the engine, the collectors, their shared
+bases and Metabase. When the variable is unset, the first line of
+`.image-tag` at the repository root names the tag; the file is
+git-ignored, so each checkout keeps its own. Without either the tag is
+`latest`. A malformed `.image-tag` is an error, never a fall back to
+`latest`. One helper decides (`shared/wrappers/image-tag.sh`): the
+Makefile reads it and exports the result, every wrapper sources it, and
+each Dockerfile takes the tag as a build argument for its `FROM`. A
+second checkout that writes its tag into `.image-tag` then tests its
+own images from any shell, and leaves the ones a scheduled load runs
+untouched.
+
 ### 12.1 Image
 
 Base: `golang:1.26-bookworm` (glibc, full Go toolchain, gcc/g++

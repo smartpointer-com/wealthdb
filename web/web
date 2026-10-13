@@ -17,6 +17,12 @@
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
+# The image's tag: WEALTHDB_IMAGE_TAG, else the checkout's .image-tag,
+# else latest (shared/wrappers/image-tag.sh).
+# shellcheck disable=SC1091
+. "$ROOT/shared/wrappers/image-tag.sh"
+WEALTHDB_IMAGE_TAG="$(wealthdb_image_tag "$ROOT")" || exit 2
+export WEALTHDB_IMAGE_TAG
 WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
 
 # ---- settings ---------------------------------------------------------
@@ -24,7 +30,7 @@ WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
 # _resolve_knobs sets the operational knobs from env overrides +
 # defaults. Pure (no Docker, no config round-trip); unit-tested.
 _resolve_knobs() {
-    IMAGE="${WEALTHDB_WEB_IMAGE:-wealthdb/metabase:latest}"
+    IMAGE="${WEALTHDB_WEB_IMAGE:-wealthdb/metabase:${WEALTHDB_IMAGE_TAG:-latest}}"
     CONTAINER="${WEALTHDB_WEB_CONTAINER:-wealthdb-metabase}"
     DATA_DIR="${WEALTHDB_WEB_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/web}"
     BIND="${WEALTHDB_WEB_BIND:-both}"   # both | v4 | v6
@@ -359,7 +365,9 @@ skipping the browser setup wizard. Credentials:
 Secrets may also live in ~/.secrets/wealthdb-web.env.
 
 env overrides: WEALTHDB_CONFIG (non-default wealthdb.cfg path),
-WEALTHDB_WEB_IMAGE, WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
+WEALTHDB_IMAGE_TAG (the image's tag; unset, the checkout's .image-tag,
+else latest), WEALTHDB_WEB_IMAGE,
+WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
 WEALTHDB_WEB_BIND (both|v4|v6).
 EOF
 }

@@ -31,9 +31,12 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 
+# The wrapper reads its image tag through the shared helper beside it.
+HELPER="$(dirname "$WRAPPER")/../shared/wrappers/image-tag.sh"
 REPO="$TMP/repo"
-mkdir -p "$REPO/wealthdb"
+mkdir -p "$REPO/wealthdb" "$REPO/shared/wrappers"
 cp "$WRAPPER" "$REPO/wealthdb/wealthdb"
+cp "$HELPER" "$REPO/shared/wrappers/"
 echo "package main" > "$REPO/wealthdb/main.go"
 echo "readme" > "$REPO/README.md"
 git -C "$REPO" init -q
@@ -80,8 +83,9 @@ git -C "$REPO" tag latest
 expect "a commit past the release (non-release tag ignored)" "|v9.9.0|$(sha)"
 
 PLAIN="$TMP/plain"
-mkdir -p "$PLAIN/wealthdb"
+mkdir -p "$PLAIN/wealthdb" "$PLAIN/shared/wrappers"
 cp "$WRAPPER" "$PLAIN/wealthdb/wealthdb"
+cp "$HELPER" "$PLAIN/shared/wrappers/"
 got="$(GIT_CEILING_DIRECTORIES="$TMP" stamp "$PLAIN")"
 if [ "$got" = "||" ]; then ok "outside a git checkout: no stamp"; else bad "outside a git checkout: got '$got', want '||'"; fi
 

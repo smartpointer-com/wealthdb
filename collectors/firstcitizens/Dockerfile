@@ -7,7 +7,8 @@
 # Camoufox, not vanilla Playwright: Akamai Bot Manager gates the logon
 # (DESIGN.md §3), as it does for every US sibling (chase, fidelity-web,
 # schwab-web). No fallback engine is installed.
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 

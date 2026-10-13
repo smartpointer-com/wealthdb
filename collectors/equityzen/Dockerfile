@@ -5,7 +5,8 @@
 # shared package. Per-collector pip deps come from requirements.txt
 # (pytest for the in-container tests; silver is stdlib SQLite, so no
 # driver dep). poppler-utils (below) is the one system dep.
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 

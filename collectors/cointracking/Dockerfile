@@ -5,7 +5,8 @@
 # come from requirements.txt: duckdb (the DuckDB silver layer),
 # zstandard (in-place .csv.zst compression at download time), requests
 # (Binance price backfill), and pytest (in-container tests).
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 

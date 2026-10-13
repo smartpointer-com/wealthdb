@@ -4,7 +4,8 @@
 # /opt/camoufox-cache, and collectorkit. Per-collector extras
 # (pdfplumber for statement parsing, pytest for in-container tests)
 # go into requirements.txt below.
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 

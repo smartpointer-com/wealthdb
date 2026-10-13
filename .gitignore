@@ -7,3 +7,8 @@ __pycache__/
 # container's /app cwd, so a crashing camoufox drops its core file into the
 # checkout. Never track one — it is a memory image of a logged-in browser.
 core
+
+# A checkout's image tag and demo root (shared/wrappers/image-tag.sh,
+# demo-root.sh): local to the checkout by design.
+/.image-tag
+/.demo-root

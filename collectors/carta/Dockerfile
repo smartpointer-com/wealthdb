@@ -4,7 +4,8 @@
 # /opt/camoufox-cache, and the collectorkit shared package. Per-collector
 # Python deps come from requirements.txt; poppler-utils (below) is the one
 # system dep.
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 

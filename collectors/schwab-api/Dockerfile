@@ -4,7 +4,8 @@
 # the host venv (see the wrapper + the .host-venv marker). Builds on the
 # shared base-camoufox image (Firefox/Xvfb/x11vnc + camoufox + the
 # matching Playwright pin + collectorkit).
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 

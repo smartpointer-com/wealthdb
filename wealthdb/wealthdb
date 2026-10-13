@@ -1,5 +1,6 @@
 #!/bin/sh
-# wealthdb — host-side wrapper around `docker run wealthdb:latest`.
+# wealthdb — host-side wrapper around `docker run wealthdb:<tag>`, the
+# tag shared/wrappers/image-tag.sh resolves (latest by default).
 # See docs/DESIGN.md §12.2 for the mount geometry.
 set -eu
 
@@ -16,7 +17,13 @@ while [ -L "$SELF" ]; do
     esac
 done
 REPO="$(cd "$(dirname "$SELF")" && pwd)"
-IMAGE="wealthdb:latest"
+# The image's tag: WEALTHDB_IMAGE_TAG, else the checkout's .image-tag,
+# else latest (shared/wrappers/image-tag.sh), so a second checkout runs
+# its own. Exported, so a wrapper this one starts reads the same tag.
+. "$REPO/../shared/wrappers/image-tag.sh"
+WEALTHDB_IMAGE_TAG="$(wealthdb_image_tag "$REPO/..")" || exit 2
+export WEALTHDB_IMAGE_TAG
+IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
 
 # `build`, `web` and `mcp` are wrapper-handled host-side, not container
 # subcommands: `build` runs `docker build`; `web` and `mcp` delegate to

@@ -1,6 +1,7 @@
 # REST-only collector: build on the shared slim-Python base, which
 # provides the Python/pip env settings and a pre-installed collectorkit.
-FROM wealthdb/base-python:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-python:${WEALTHDB_IMAGE_TAG}
 
 # Install collector-specific deps first so editing scripts doesn't
 # bust the pip cache layer.

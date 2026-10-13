@@ -53,6 +53,12 @@
 # Internals
 # ----------------------------------------------------------------------
 
+# The repository root, from this file's place in it, and the image-tag
+# helper beside this file.
+_WRAPPER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/image-tag.sh"
+
 # _envvar SUFFIX DEFAULT — echo the value of ${ENV_PREFIX}_${SUFFIX},
 # or DEFAULT if unset/empty.
 _envvar() {
@@ -96,7 +102,11 @@ wrapper_source_cfg() {
 #   4. the ~/.secrets and ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name>
 #      defaults
 wrapper_init() {
-    IMAGE="$(_envvar IMAGE "wealthdb/${NAME}:latest")"
+    # The image's tag: WEALTHDB_IMAGE_TAG, else the checkout's
+    # .image-tag, else latest (image-tag.sh).
+    WEALTHDB_IMAGE_TAG="$(wealthdb_image_tag "$_WRAPPER_ROOT")" || exit 2
+    export WEALTHDB_IMAGE_TAG
+    IMAGE="$(_envvar IMAGE "wealthdb/${NAME}:${WEALTHDB_IMAGE_TAG}")"
     CONTAINER_NAME="$(_envvar CONTAINER "$NAME")"
 
     local secrets_default="${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}"
@@ -227,10 +237,14 @@ wrapper_mounts_help() {
 # --provenance=false: buildx's default provenance attestation embeds build
 # metadata, so the image digest changes on every build even when every layer
 # is CACHED — which defeats the cache for anything built FROM this image.
-# These images are local-only and never pushed.
+# These images are local-only and never pushed. WEALTHDB_IMAGE_TAG names
+# the shared base the Dockerfile builds FROM, so a checkout with its own
+# tag builds on its own bases.
 wrapper_build() {
     shift  # drop "build"
-    exec docker build --provenance=false -t "$IMAGE" "$@" "$HERE"
+    exec docker build --provenance=false \
+        --build-arg WEALTHDB_IMAGE_TAG="$WEALTHDB_IMAGE_TAG" \
+        -t "$IMAGE" "$@" "$HERE"
 }
 
 # Implement `./<wrapper> prune [extra args]` host-side — exec the

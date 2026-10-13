@@ -23,6 +23,11 @@
 #   make demo-mcp         serve the demo to AI agents over MCP (own container and port)
 #   make test-demo        test the demo generator, and load a short demo through the engine
 #
+# WEALTHDB_IMAGE_TAG is the tag of every image built, run and removed:
+# when it is unset, the first line of the checkout's git-ignored
+# .image-tag, else latest. A second checkout writes its tag there once
+# and works on images of its own.
+#
 # A collector with a Docker wrapper (collectors/<name>/<name>) builds via
 # `<wrapper> build` and tests with pytest inside the container; a host-venv
 # collector (fred, manual, plaid, svb, ubs-psn) builds its .venv from
@@ -37,6 +42,24 @@
 # The `/.` matches directories only (files like collectors/README.md
 # have no `.` entry), so non-collector files don't leak into the list.
 COLLECTORS := $(sort $(notdir $(patsubst %/.,%,$(wildcard collectors/*/.))))
+
+# The tag of every image this tree builds, runs and removes: the engine,
+# the collectors, the shared bases and Metabase. WEALTHDB_IMAGE_TAG wins,
+# else .image-tag, else latest, as shared/wrappers/image-tag.sh decides
+# for every wrapper too. A second checkout pins its own tag and so never
+# rebuilds the images another checkout runs. Exported, so the wrappers
+# the targets call read the same tag.
+ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+IMAGE_TAG := $(shell WEALTHDB_IMAGE_TAG='$(WEALTHDB_IMAGE_TAG)' sh -c \
+	'. "$$1/shared/wrappers/image-tag.sh" && wealthdb_image_tag "$$1"' sh '$(ROOT_DIR)')
+ifeq ($(IMAGE_TAG),)
+$(error no image tag: fix .image-tag, or set WEALTHDB_IMAGE_TAG)
+endif
+# override: an empty WEALTHDB_IMAGE_TAG= on the command line resolves
+# like an unset one.
+override WEALTHDB_IMAGE_TAG := $(IMAGE_TAG)
+export WEALTHDB_IMAGE_TAG
+TAG := $(WEALTHDB_IMAGE_TAG)
 
 WEALTHDB      := wealthdb/wealthdb
 WEALTHDB_TEST := wealthdb/wealthdb-test
@@ -132,8 +155,9 @@ base-images:
 	@for img in $(BASE_IMAGES); do \
 		f="shared/images/$$img.Dockerfile"; \
 		[ -e "$$f" ] || continue; \
-		echo "==> build base image wealthdb/$$img:latest"; \
-		docker build -q --provenance=false -f "$$f" -t "wealthdb/$$img:latest" shared/ >/dev/null; \
+		echo "==> build base image wealthdb/$$img:$(TAG)"; \
+		docker build -q --provenance=false --build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
+			-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/ >/dev/null; \
 	done
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache)
@@ -202,7 +226,7 @@ lint: lint-go lint-python
 
 lint-go:
 	@echo "==> lint wealthdb (gofmt, go vet)"
-	@docker image inspect wealthdb:latest >/dev/null 2>&1 || $(WEALTHDB) build
+	@docker image inspect wealthdb:$(TAG) >/dev/null 2>&1 || $(WEALTHDB) build
 	@out="$$($(WEALTHDB_GO) run cmd/gofmt -l .)" || exit 1; \
 	if [ -n "$$out" ]; then \
 		echo "    gofmt: not formatted:" >&2; echo "$$out" | sed 's/^/      /' >&2; exit 1; \
@@ -239,7 +263,7 @@ clean-wealthdb:
 
 cleanall-wealthdb: clean-wealthdb
 	@echo "==> cleanall wealthdb (image + go caches)"
-	@docker image rm -f wealthdb:latest >/dev/null 2>&1 || true
+	@docker image rm -f wealthdb:$(TAG) >/dev/null 2>&1 || true
 	@chmod -R u+w $(GO_TEST_CACHE) 2>/dev/null || true
 	@rm -rf $(GO_TEST_CACHE)
 
@@ -252,13 +276,23 @@ cleanall-wealthdb: clean-wealthdb
 #
 #   make demo [WEALTHDB_DEMO_ROOT=~/wealthdb-demo] [AS_OF=YYYY-MM-DD] [SEED=…] [FINDINGS=1]
 #
+# WEALTHDB_DEMO_ROOT wins; else the first line of the checkout's
+# git-ignored .demo-root; else ~/wealthdb-demo
+# (shared/wrappers/demo-root.sh). A second checkout pins its own demo
+# there, so it never builds into another checkout's.
+#
 # `demo` rebuilds silver and gold from scratch; `demo-roll` appends the
 # days since the last build to silver and loads only those. The generator
 # writes only into a new, empty or marked demo root, and the web targets
 # run only against a marked one.
 # AS_OF, SEED and FINDINGS are plain assignments, so only the command line
 # sets them: a variable of that name exported for another tool is ignored.
-WEALTHDB_DEMO_ROOT ?= $(HOME)/wealthdb-demo
+DEMO_ROOT_NAMED := $(shell WEALTHDB_DEMO_ROOT='$(WEALTHDB_DEMO_ROOT)' sh -c \
+	'. "$$1/shared/wrappers/demo-root.sh" && wealthdb_demo_root "$$1"' sh '$(ROOT_DIR)')
+ifeq ($(DEMO_ROOT_NAMED),)
+$(error no demo root: fix .demo-root, or set WEALTHDB_DEMO_ROOT)
+endif
+override WEALTHDB_DEMO_ROOT := $(DEMO_ROOT_NAMED)
 AS_OF    =
 SEED     = harlow-19
 FINDINGS =
@@ -352,7 +386,7 @@ clean-web:
 
 cleanall-web: clean-web
 	@echo "==> cleanall web (image)"
-	@docker image rm -f wealthdb/metabase:latest >/dev/null 2>&1 || true
+	@docker image rm -f wealthdb/metabase:$(TAG) >/dev/null 2>&1 || true
 
 # ---- per-collector rules (generated for each discovered collector) ----
 
@@ -413,8 +447,8 @@ clean-$(1):
 cleanall-$(1): clean-$(1)
 	@echo "==> cleanall collector: $(1)"
 	@if [ -f collectors/$(1)/Dockerfile ]; then \
-		echo "    rm image wealthdb/$(1):latest"; \
-		docker image rm -f wealthdb/$(1):latest >/dev/null 2>&1 || true; \
+		echo "    rm image wealthdb/$(1):$(TAG)"; \
+		docker image rm -f wealthdb/$(1):$(TAG) >/dev/null 2>&1 || true; \
 	fi
 	@if [ -d collectors/$(1)/.venv ]; then \
 		echo "    rm collectors/$(1)/.venv"; \
@@ -496,11 +530,13 @@ update-bases:
 		f="shared/images/$$img.Dockerfile"; \
 		[ -e "$$f" ] || continue; \
 		if grep -qE '^FROM[[:space:]]+wealthdb/' "$$f"; then \
-			echo "==> rebuild base wealthdb/$$img:latest (FROM is local, no --pull)"; \
-			docker build --provenance=false -f "$$f" -t "wealthdb/$$img:latest" shared/; \
+			echo "==> rebuild base wealthdb/$$img:$(TAG) (FROM is local, no --pull)"; \
+			docker build --provenance=false --build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
+				-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/; \
 		else \
-			echo "==> rebuild base wealthdb/$$img:latest (--pull)"; \
-			docker build --pull --provenance=false -f "$$f" -t "wealthdb/$$img:latest" shared/; \
+			echo "==> rebuild base wealthdb/$$img:$(TAG) (--pull)"; \
+			docker build --pull --provenance=false --build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
+				-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/; \
 		fi; \
 	done
 
@@ -534,11 +570,15 @@ help:
 	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -collectors)"
 	@echo ""
 	@echo "  make demo               build the synthetic demo household (WEALTHDB_DEMO_ROOT,"
-	@echo "                          default ~/wealthdb-demo; AS_OF=, SEED=, FINDINGS=1)"
+	@echo "                          default .demo-root's first line, else ~/wealthdb-demo;"
+	@echo "                          AS_OF=, SEED=, FINDINGS=1)"
 	@echo "  make demo-roll          append the days since the last demo build and load them"
 	@echo "  make demo-web / demo-web-stop   the demo's dashboards, own container and port"
 	@echo "  make demo-mcp / demo-mcp-stop   the demo over MCP, own container and port"
 	@echo "  make test-demo          test the demo generator and a short demo load"
+	@echo ""
+	@echo "  WEALTHDB_IMAGE_TAG=…    the tag of every image built and run (default:"
+	@echo "                          .image-tag's first line, else latest)"
 	@echo ""
 	@echo "  make update             refresh all tooling: pip in every host venv,"
 	@echo "                          go modules in wealthdb/, shared Docker bases"

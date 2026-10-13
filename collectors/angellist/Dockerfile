@@ -4,7 +4,8 @@
 # Playwright pin, the pre-fetched Firefox bundle at /opt/camoufox-cache,
 # and the collectorkit shared package. Per-collector deps (pytest) come
 # from requirements.txt.
-FROM wealthdb/base-camoufox:latest
+ARG WEALTHDB_IMAGE_TAG=latest
+FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 
