@@ -72,7 +72,7 @@ func (c goldenCase) fixedColumns() bool {
 func (c goldenCase) cliPrivacy() bool { return c.tool != "resolutions" }
 
 // TestMCPMatchesCLI is the server's contract made executable: for
-// every view of the seven report tools and for the two dumps, the
+// every view of the eight report tools and for the two dumps, the
 // server's csv result equals `wealthdb … -f csv -C all` cell for cell,
 // over seeded gold, with and without privacy. The two front-ends share the report runner and rowsToTable,
 // so this holds by construction; the test keeps it holding.
@@ -94,6 +94,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 		)},
 		{setupReturnsGold(t), append(returnsCases(), holdingsCases()...)},
 		{setupGainsGold(t), gainsCases()},
+		{setupExposureGold(t), exposureCases()},
 	}
 	for _, fx := range fixtures {
 		for _, privacy := range []bool{false, true} {
@@ -224,6 +225,18 @@ func returnsCases() []goldenCase {
 			[]string{"returns", "sources", "--method", "mwr", "--period", "annual", "--netting", "off", "--inception", "strict"}, "returns",
 			map[string]any{"view": "sources", "method": "mwr", "period": "annual", "netting": false, "inception": "strict"}},
 	)
+}
+
+func exposureCases() []goldenCase {
+	var out []goldenCase
+	for _, v := range exposureFamily.views {
+		out = append(out, goldenCase{"exposure " + v, []string{"exposure", v, "-d", "2026-06-30"}, "exposure",
+			map[string]any{"view": v, "as_of": "2026-06-30"}})
+	}
+	return append(out,
+		goldenCase{"exposure countries by domicile", []string{"exposure", "countries", "-d", "2026-06-30",
+			"--country", "domicile"}, "exposure",
+			map[string]any{"view": "countries", "as_of": "2026-06-30", "country": "domicile"}})
 }
 
 func holdingsCases() []goldenCase {

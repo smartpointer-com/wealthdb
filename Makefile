@@ -327,7 +327,7 @@ demo-roll: build-wealthdb
 	@$(PYTHON) demo/generate.py $(DEMO_GEN_ARGS) --append
 	@$(DEMO_ENGINE) load -a
 
-# `web refresh` re-materializes returns and gains and re-snapshots gold (restarting
+# `web refresh` re-materializes returns, gains and exposure and re-snapshots gold (restarting
 # the container when it runs); `web start` then brings it up if it does not.
 demo-web: build-web
 	$(DEMO_ROOT_SET)

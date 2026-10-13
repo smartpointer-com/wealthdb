@@ -13,7 +13,8 @@ import (
 // TestWebMaterializeCLIEndToEnd drives the hidden web-materialize subcommand
 // against the synthetic returns fixture and checks the report_returns table
 // carries the full grain/granularity matrix in the currencies the fixture's
-// FX rates can resolve (no EUR rate is seeded, so EUR partitions are empty).
+// FX rates can resolve (no EUR rate is seeded, so EUR partitions are empty),
+// and that report_exposure holds the history in those currencies.
 func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 	t.Parallel()
 	cfg := setupReturnsGold(t)
@@ -59,6 +60,21 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 	}
 	if eur != 0 {
 		t.Errorf("EUR partitions carry %d rows despite the fixture seeding no EUR rate", eur)
+	}
+
+	// The exposure history reaches today, in each currency a rate resolves.
+	if !strings.Contains(se, "exposure: materialized") {
+		t.Errorf("stderr missing the exposure line: %s", se)
+	}
+	for _, ccy := range []string{"USD", "CHF"} {
+		var instants int
+		if err := db.QueryRow(`SELECT COUNT(DISTINCT as_of) FROM report_exposure WHERE currency = ?`, ccy).
+			Scan(&instants); err != nil {
+			t.Fatalf("count report_exposure (%s): %v", ccy, err)
+		}
+		if instants < 2 {
+			t.Errorf("%s: %d exposure instants, want the month ends and today", ccy, instants)
+		}
 	}
 }
 

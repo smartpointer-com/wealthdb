@@ -1398,6 +1398,47 @@ if _gbody:
               if a["col"] < b["col"] + b["size_x"] and b["col"] < a["col"] + a["size_x"]
               and a["row"] < b["row"] + b["size_y"] and b["row"] < a["row"] + a["size_y"]])
 
+section("the Exposure dashboard")
+
+_ex_tiles = [t[0] for t in p.base_dashboards()["Exposure"][2]]
+check("every Exposure tile is defined",
+      bool(_ex_tiles) and all(n in CARDS for n in _ex_tiles),
+      [n for n in _ex_tiles if n not in CARDS])
+check("...and is placed once", len(set(_ex_tiles)) == len(_ex_tiles))
+_ex_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _ex_tiles if n in CARDS}
+check("every Exposure tile is native over web_exposure",
+      all("FROM web_exposure" in q for q in _ex_sql.values()),
+      [n for n, q in _ex_sql.items() if "FROM web_exposure" not in q])
+# A row set per currency: a read without the row filter would sum them.
+check("...and every read of it is held to the picked currency",
+      all(q.count("FROM web_exposure") == q.count("AND currency = {{currency}}")
+          for q in _ex_sql.values()))
+check("every Exposure tile takes the currency and the time range",
+      all(dict(p.NATIVE_PARAM_TARGETS[n]).keys() <= {p.EXPOSURE_CURRENCY_PARAM_ID, p.TIME_PARAM_ID}
+          and p.EXPOSURE_CURRENCY_PARAM_ID in dict(p.NATIVE_PARAM_TARGETS[n]) for n in _ex_tiles))
+_ex_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Exposure")]
+check("the Exposure dashboard carries the currency and the time range, no source",
+      _ex_pickers == ["currency", "time_range"], _ex_pickers)
+check("the Exposure dashboard has a privacy twin",
+      DEFS["Exposure"][2] == "Exposure" + p.PRIVACY_SUFFIX
+      and "Exposure" + p.PRIVACY_SUFFIX in DEFS)
+_ex_twin = {p.privacy_name(n): sql_of(CARDS[p.privacy_name(n)][2]) or "" for n in _ex_tiles
+            if p.privacy_name(n) in CARDS}
+check("...whose every tile is a privacy card", len(_ex_twin) == len(_ex_tiles),
+      [n for n in _ex_tiles if p.privacy_name(n) not in CARDS])
+check("...that never shows a value, only shares of net worth",
+      all("sum(value)" not in q and "share_pct" in q for q in _ex_twin.values()),
+      [n for n, q in _ex_twin.items() if "sum(value)" in q])
+check("...and reads the picked currency too",
+      all(q.count("FROM web_exposure") == q.count("AND currency = {{currency}}") for q in _ex_twin.values()))
+check("the base tiles show the value beside the share",
+      all("sum(value)" in q for n, q in _ex_sql.items() if "over time" not in n and "How" not in n
+          and "Held" not in n))
+# A loan can make a class, sector or region negative, which a ring
+# cannot draw.
+_ex_pies = [n for n in _ex_tiles + list(_ex_twin) if n in CARDS and CARDS[n][0] == "pie"]
+check("no Exposure tile is a ring", not _ex_pies, _ex_pies)
+
 section("the Wealth Overview and Allocation read the chosen currency")
 
 # A tile that hard-codes one reporting currency keeps showing it whatever
@@ -1475,9 +1516,10 @@ def _latest_definition(name):
     return found[-1] if found else ""
 
 
-# web_gains is the one long view: a row set per currency, written by the
-# gains materializer from the same materializeCurrencies list.
-_LONG_VIEWS = {"web_gains"}
+# web_gains and web_exposure are the long views: a row set per currency,
+# written by their materializers from the same materializeCurrencies
+# list.
+_LONG_VIEWS = {"web_gains", "web_exposure"}
 _missing = {v: [c for c in p.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
             for v in p.web_views_wanted() if v not in _LONG_VIEWS}

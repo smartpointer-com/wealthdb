@@ -118,6 +118,7 @@ wealthdb gains summary 2025            # realized and unrealized gains in 2025, 
 wealthdb gains check 2025              # the rebuilt cost basis against what the statements say
 wealthdb exposure sectors              # sector weights, every fund looked through
 wealthdb exposure coverage             # what the exposure figures rest on
+wealthdb exposure countries --period quarterly 2025  # country weights at every quarter end
 wealthdb status -v                     # how current each source is
 ```
 

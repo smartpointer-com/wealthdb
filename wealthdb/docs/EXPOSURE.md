@@ -9,7 +9,7 @@ the report shows and the rules behind them.
 Related design: DESIGN.md §4.17 (the `exposure` command), §7.6 (the
 reference tables), §10.14 (the macros);
 [adapters/refdata.md](adapters/refdata.md) (how reference data loads,
-and the wanted list); migrations 0125 to 0127.
+and the wanted list); migrations 0125 to 0128.
 
 Every figure is a share of a holding's market value, the value
 `holdings` reports. The look-through moves value between rows; it never
@@ -186,6 +186,8 @@ The `currencies` view marks each row's kind: `fiat`, `metal` or
 
 `wealthdb exposure <view> [-d DATE] [--country risk|domicile] [-f FORMAT] [-C COLS] [-x CCY] [-p]`
 
+`wealthdb exposure <view> --period monthly|quarterly|annual [FROM [TO]]`
+
 | View | One row per | Answers |
 | --- | --- | --- |
 | `classes` | asset class | the allocation after look-through |
@@ -215,6 +217,15 @@ worth, like the other views.
 
 `-p` hides every amount and every instrument id a holding is named by.
 Shares, names, labels and public identifiers stay.
+
+`--period` shows how a view changes over a window. It runs the view at
+the last second of every period in the window and puts a `period`
+column first. The last period ends at the window's end, so a window to
+today ends with today's figures. The window defaults to the last twelve
+months. It starts no earlier than the first holding and ends no later
+than today. It works on `classes`, `sectors`, `countries`, `currencies`
+and `coverage`. Each period is a separate look-through: its holdings
+and compositions are the ones of its own day (§4).
 
 ## 8. Quality
 
@@ -287,3 +298,23 @@ sections:
   or its domicile is.
 - Not gains. A fund's unrealized gain stays with the fund; the
   look-through does not split it across its lines.
+
+## 12. The dashboard and MCP
+
+The Metabase Exposure dashboard (`wealthdb web`) charts the same
+figures:
+
+- on the latest day in its time range, by asset class, sector, region,
+  country and currency;
+- at every month end in the range, as shares of net worth over time;
+- split into what is held directly and what through funds, and by how
+  each part is classified (§10).
+
+`wealthdb web-materialize` stores the look-through at every month end
+and at today, in each reporting currency (web/DESIGN.md §8). A refresh
+recomputes the whole history, so a new composition or tag shows in
+past months too. The privacy twin shows the shares alone.
+
+The MCP server has an `exposure` tool with the same seven views, an
+`as_of` day and the `country` choice. Its rows equal the command's,
+cell for cell.

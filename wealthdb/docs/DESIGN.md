@@ -673,13 +673,15 @@ disposals, blips and anchors.
 What is really owned, as of a day: every fund looked through to what
 it holds, added to what is held directly (docs/EXPOSURE.md for the
 figures, §10.14 for the macros). The holdings idiom: a positional view,
-`-d` for the day, and the shared `-f`, `-C`, `-x`, `-p`.
+`-d` for the day, and the shared `-f`, `-C`, `-x`, `-p`. `--period`
+turns a view into a series over a window.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `<view>` | required | `classes` \| `sectors` \| `countries` \| `currencies` \| `securities` \| `funds` \| `coverage`. |
 | `-d`, `--as-of` | today | The day. |
 | `--country` | `risk` | `risk` \| `domicile`: the country a security counts in, on `countries` and `securities`. Refused on the other views. |
+| `--period` | none | `monthly` \| `quarterly` \| `annual`: the view at the end of every period of the window `[FROM [TO]]` (default the last twelve months, never past today), a `period` column first. The last period ends at the window's end. On `classes`, `sectors`, `countries`, `currencies` and `coverage`; refused with `-d`. |
 | `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` hides every amount; shares, names, labels and public identifiers stay. |
 
 Every view sums to `holdings global`, and every row carries a
@@ -1522,6 +1524,8 @@ is documented where it is used:
 - `symbol_resolutions` (migration `0006`) — §4.1, `resolutions`.
 - `binary_versions` (migration `0012`).
 - `report_returns` (migration `0026`) — §10.9.
+- `report_gains` (migration `0117`) — §10.13.
+- `report_exposure` (migration `0128`) — §10.14.
 - The spending overlay: `spend_categories` (migration `0040`;
   docs/SPENDING.md §2), and `spend_txn_enrichment`,
   `spend_merchant_categories` and `spend_account_scope` (migration
@@ -2327,10 +2331,11 @@ stores are carried across (`carryVerdictStore`, once per entry in
 in its category column respelled to its successor
 (`canonical.RetiredDetailed`), so a carry from a file older than
 migration 0111 brings none into the rebuilt file. `report_returns` does
-not survive the swap. `web-materialize` writes it (§10.9), so the
-rebuilt file has none until a materialization follows.
+not survive the swap, nor do `report_gains` and `report_exposure`.
+`web-materialize` writes them (§10.9, §10.13, §10.14), so the rebuilt
+file has none until a materialization follows.
 `reload -a --in-place` keeps the live file instead. It forgoes the
-compaction and leaves `report_returns` alone, but the per-source reset
+compaction and leaves the three tables alone, but the per-source reset
 still clears `symbol_resolutions` there. Removing the gold DB and
 re-running `wealthdb init` is the manual fallback.
 
@@ -2968,6 +2973,28 @@ The macros:
 Values leave the leaves as DOUBLE: the look-through splits a line by
 weight. Each view's total equals `holdings global`; the printed rows,
 rounded to the cent, agree within a cent per row.
+
+`wealthdb exposure --period` runs a view once per period of the window.
+Each run is at the period's last second; the last one is at the
+window's end. The results stack under a `period` column. The window
+starts no earlier than the first holding and ends no later than
+today.
+
+The Metabase Exposure dashboard reads `report_exposure` (migration
+0128), a derived table like `report_gains`. `web-materialize`
+(`gold.MaterializeExposure`) rewrites it at every web refresh. It holds
+the leaves at the last second of every month from the first position,
+and at the end of today:
+
+- grouped by the dimensions the dashboard charts: class, sector,
+  country, region, currency, held directly or through funds, and `how`;
+- in every reporting currency. The tree is walked once per instant, in
+  US dollars. A leaf is a fixed share of the holding it descends from.
+  So its value in another currency is its dollar value times the
+  holding's value in that currency, over the holding's dollar value.
+
+`web_exposure` names a missing dimension the way the views do and adds
+each row's share of that instant's net worth.
 
 ## 11. Repository layout
 

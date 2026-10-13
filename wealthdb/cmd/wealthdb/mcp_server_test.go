@@ -67,7 +67,7 @@ func TestMCPInitialize(t *testing.T) {
 	}
 }
 
-// TestMCPToolList: twelve tools, every one read-only, idempotent and
+// TestMCPToolList: thirteen tools, every one read-only, idempotent and
 // closed-world, none with a required parameter, each view enum the
 // family's own.
 func TestMCPToolList(t *testing.T) {
@@ -104,7 +104,7 @@ func TestMCPToolList(t *testing.T) {
 		}
 	}
 	sort.Strings(names)
-	want := "cashflow,categorizations,describe,gains,holdings,income,resolutions,returns,snapshots,spending,status,transactions"
+	want := "cashflow,categorizations,describe,exposure,gains,holdings,income,resolutions,returns,snapshots,spending,status,transactions"
 	if got := strings.Join(names, ","); got != want {
 		t.Errorf("tools = %s, want %s", got, want)
 	}
@@ -119,6 +119,7 @@ func TestMCPCoversEveryCLIView(t *testing.T) {
 	cli := map[string][]string{
 		"holdings": sorted(holdingsViews), "returns": sorted(returnsViews), "spending": sorted(spendingViews),
 		"income": sorted(incomeViews), "cashflow": sorted(cashflowViews), "gains": sorted(gainsViews),
+		"exposure": sorted(exposureViews),
 	}
 	s := newTestMCP("", false)
 	seen := map[string]bool{}
@@ -187,6 +188,30 @@ func TestMCPCallShapes(t *testing.T) {
 	}
 	if res.StructuredContent == nil {
 		t.Error("a json result carries no structured content")
+	}
+}
+
+// TestMCPExposureRefusals: country belongs to two views and takes two
+// values; anything else is a tool error that says so.
+func TestMCPExposureRefusals(t *testing.T) {
+	t.Parallel()
+	cs := connect(t, newTestMCP(setupExposureGold(t), false), time.Now())
+	ctx := context.Background()
+	for _, c := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"view": "classes", "country": "domicile"}, "country belongs to the countries and securities views"},
+		{map[string]any{"country": "domicile"}, "country belongs to the countries and securities views"},
+		{map[string]any{"view": "countries", "country": "home"}, "is not one of its values"},
+	} {
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "exposure", Arguments: c.args})
+		if err != nil {
+			t.Fatalf("%v: a refused call is a protocol error: %v", c.args, err)
+		}
+		if !res.IsError || !strings.Contains(resultText(res), c.want) {
+			t.Errorf("%v: isError %v, %s", c.args, res.IsError, resultText(res))
+		}
 	}
 }
 

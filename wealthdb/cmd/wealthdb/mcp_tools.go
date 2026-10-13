@@ -108,7 +108,7 @@ var (
 	accountParam = stringParam("account", "Keep only rows whose account name, id or nickname contains this text (case-insensitive).")
 )
 
-// tools are the server's twelve tools, in the order describe lists them.
+// tools are the server's thirteen tools, in the order describe lists them.
 func (s *mcpServer) tools() []toolSpec {
 	return []toolSpec{
 		{
@@ -170,6 +170,21 @@ func (s *mcpServer) tools() []toolSpec {
 				missingBasisParam("Not on coverage and check. How ", " Under zero, quality says basis_assumed_zero=N."),
 			),
 			family: gainsFamily,
+		},
+		{
+			name: "exposure", title: "Exposure",
+			description: "What is really owned: every fund looked through to what it holds, down to the single security, added to what is held directly, as of a date (default today). " +
+				"view=classes: by asset class. view=sectors: by asset class and sector. view=countries: by country with its region. view=currencies: by the currency a value moves with (a fiat currency, a metal such as XAU, a coin such as BTC). " +
+				"view=securities: each security, held directly and through every fund. view=funds: each fund held directly, what describes it and how old that is. view=coverage: what the figures rest on, the labels no map knows and the holdings no source describes. " +
+				"Every view sums to net worth; share_pct is a share of it, direct_pct and via_funds_pct split it. Read the quality column and view=coverage before trusting a figure. " +
+				`Example: {view: "countries", as_of: "2025-12-31"}.`,
+			params: s.rowParams(false,
+				stringParam("view", "Which breakdown (default classes).", exposureFamily.views...),
+				stringParam("as_of", "As-of date: "+dateDoc+" Default: today."),
+				stringParam("country", "countries and securities only: the country a security counts in, risk (default) or domicile.",
+					"risk", "domicile"),
+			),
+			family: exposureFamily,
 		},
 		{
 			name: "transactions", title: "Transactions",
@@ -403,6 +418,32 @@ var returnsFamily = &family{
 			h = append(h, "inception="+req.inception)
 		}
 		return h
+	},
+}
+
+var exposureFamily = &family{
+	views:     exposureViews,
+	principal: func(request) string { return "value" },
+	window:    asOfDate,
+	currency:  true,
+	narrow:    "a coarser view",
+	prepare: func(a *toolArgs, req *request, _ *[]string) error {
+		req.country = "risk"
+		if !a.has("country") {
+			return nil
+		}
+		if !slices.Contains(exposureCountryViews, req.view) {
+			return fmt.Errorf("exposure: country belongs to the %s views", strings.Join(exposureCountryViews, " and "))
+		}
+		req.country = a.str("country") // the enum admits risk or domicile alone
+		return nil
+	},
+	build: func(_ *config.Config, req request, _ *toolArgs) *report { return exposureReport(req) },
+	header: func(req request) []string {
+		if req.country == "domicile" {
+			return []string{"country by domicile"}
+		}
+		return nil
 	},
 }
 

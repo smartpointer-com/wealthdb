@@ -122,12 +122,11 @@ wealthdb income summary 2025-01 2025-03 -C +withheld # Q1 income, with the tax w
 wealthdb cashflow sankey 2025                        # the year's cash flow as a diagram
 ```
 
-Every report but exposure, which is on the command line alone, is
-available in three places:
+Every report is available in three places:
 
 - the command line, as a table, CSV or JSON;
 - a set of local dashboards (`wealthdb web`) for net worth, allocation,
-  returns, gains, spending, income and cash flow;
+  returns, gains, spending, income, cash flow and exposure;
 - AI agents, over MCP (`wealthdb mcp`).
 
 A privacy mode hides amounts, for a screen others may see. The CLI's

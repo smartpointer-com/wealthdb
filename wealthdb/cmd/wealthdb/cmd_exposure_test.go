@@ -143,3 +143,75 @@ func TestExposureEveryViewRuns(t *testing.T) {
 		}
 	}
 }
+
+// --period repeats a view at the end of every period of a window; the
+// last period ends at the window's end.
+func TestExposureSeries(t *testing.T) {
+	cfg := setupExposureGold(t)
+	out, errb, code := runExposure(t, cfg, "classes", "--period", "monthly", "2026-05", "2026-06", "-f", "csv")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errb)
+	}
+	for _, want := range []string{
+		"period,asset_class,value_USD,share_pct,direct_pct,via_funds_pct,quality",
+		"2026-06,public_equity,1000.00,80.00,0.00,80.00,",
+		"2026-06,cash,250.00,20.00,20.00,0.00,",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("series lacks %q:\n%s", want, out)
+		}
+	}
+	// Nothing was held at the end of May.
+	if strings.Contains(out, "2026-05,") {
+		t.Errorf("May shows rows:\n%s", out)
+	}
+	// A window from the start of time begins at the first holding; one
+	// past today ends today.
+	out, errb, code = runExposure(t, cfg, "classes", "--period", "annual", "-", "2099-12-31", "-f", "csv")
+	if code != 0 {
+		t.Fatalf("open window: exit %d: %s", code, errb)
+	}
+	thisYear := time.Now().UTC().Format("2006")
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
+		if y := strings.SplitN(line, ",", 2)[0]; y < "2026" || y > thisYear {
+			t.Errorf("open window has the period %s:\n%s", y, out)
+		}
+	}
+	// -p hides the values and keeps the period.
+	out, _, _ = runExposure(t, cfg, "classes", "--period", "monthly", "2026-06", "2026-06", "-p", "-f", "csv")
+	if !strings.Contains(out, "2026-06,public_equity,,80.00,") || strings.Contains(out, "1000.00") {
+		t.Errorf("privacy series:\n%s", out)
+	}
+	for _, args := range [][]string{
+		{"securities", "--period", "monthly"},
+		{"classes", "--period", "daily"},
+		{"classes", "--period", "monthly", "-d", "2026-06-30"},
+		{"classes", "2026-06"},
+		{"classes", "--period", "monthly", "2099"},
+	} {
+		if _, _, code := runExposure(t, cfg, args...); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
+	}
+}
+
+func TestSeriesPointsEndEveryPeriod(t *testing.T) {
+	day := func(y int, m time.Month, d int) int64 { return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() }
+	to := day(2026, 8, 15) + 86399
+	got := seriesPoints(day(2026, 2, 10), to, "quarterly")
+	want := []seriesPoint{{"2026-Q1", day(2026, 4, 1) - 1}, {"2026-Q2", day(2026, 7, 1) - 1}, {"2026-Q3", to}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("point %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+	if got := seriesPoints(day(2025, 3, 1), to, "annual"); len(got) != 2 || got[0].label != "2025" || got[1].at != to {
+		t.Errorf("annual = %v", got)
+	}
+	if got := seriesPoints(day(2026, 8, 20), to, "monthly"); got != nil {
+		t.Errorf("a window that starts after its end = %v", got)
+	}
+}

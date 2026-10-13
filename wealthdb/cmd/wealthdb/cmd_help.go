@@ -131,8 +131,8 @@ func hostSideCommand(name string) (commandHelp, bool) {
 // from the usage listing — internal plumbing, not user-facing.
 // `web-config` and `mcp-config` emit resolved settings for the
 // host-side `wealthdb web` and `wealthdb mcp` wrappers;
-// `web-materialize` rewrites the report_returns table before the
-// wrapper snapshots gold; `refdata-wanted` prints the wanted list the
+// `web-materialize` rewrites the report_returns, report_gains and
+// report_exposure tables before the wrapper snapshots gold; `refdata-wanted` prints the wanted list the
 // refdata collector reads.
 var hiddenSubcommands = map[string]bool{
 	"web-config":      true,
@@ -220,7 +220,8 @@ global flags:
 
 const globalUsageFooter = `Windows are positional: 2025 is a year, 2025-06 a month, 2025-06-15 a
 day, FROM TO a range ('-' leaves an end open); holdings and exposure
-take an as-of date (-d) instead. One figure for a whole window: --period total.
+take an as-of date (-d) instead, and exposure --period a window. One
+figure for a whole window: --period total.
 Every report prints a table; -f json for machines, -x CCY for another
 currency, -C for columns, -p to redact amounts. There are no row
 filters: pick the view, then filter the output.

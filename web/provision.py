@@ -940,6 +940,10 @@ FILTER_FIELD_COLUMNS = {
     # The gains view (migration 0117). Its currency is a row filter
     # through the {{currency}} variable, so no field filter binds it.
     "web_gains": ("period", "silver_source_id", "tax_wrapper"),
+    # The exposure view (migration 0128): month ends, a row set per
+    # currency like web_gains. No source column: the look-through is of
+    # net worth, across every source.
+    "web_exposure": ("as_of_day",),
 }
 FIELD_IDS = {}          # (table, column) -> field id, filled by main()
 CURRENCY_FIELD_ID = None
@@ -1995,6 +1999,8 @@ def question_defs(db_id, mid):
                    "order-by": [["desc", ["expression", "days_stale"]]]}),
             {}),
         **gains_question_defs(db_id),
+        **{name: card[1:] for name, card in exposure_cards(db_id).items()
+           if not name.endswith(PRIVACY_SUFFIX)},
     }
 
 
@@ -2344,6 +2350,9 @@ CASHFLOW_DASHBOARDS = {"Cash Flow", "Cash Flow" + PRIVACY_SUFFIX}
 GAINS_DASHBOARDS = {"Gains"}
 NO_PRIVACY_TWIN = GAINS_DASHBOARDS
 
+# The Exposure dashboards: the currency and the time range, no source.
+EXPOSURE_DASHBOARDS = {"Exposure", "Exposure" + PRIVACY_SUFFIX}
+
 # The asset-class and vehicle filters (the two taxonomy dimensions) are
 # linked only to these tiles: the Top-positions widgets, which list
 # individual holdings. The breakdown widgets each already group by one of
@@ -2545,6 +2554,29 @@ def base_dashboards():
             ("Worst realized %", 63, 12, 12, 8, "period"),
             ("Coverage by source", 71, 0, 24, 8, "period"),
         ]),
+        "Exposure": (
+            "What is really owned: every fund looked through to what it "
+            "holds and added to what is held directly, by asset class, "
+            "sector, region, country and currency, at each month end and "
+            f"today, in a chosen currency (default {DEFAULT_CURRENCY}). A "
+            "breakdown reads the latest day in the window; a chart over "
+            "time shows every month end. The last chart says how much of "
+            "net worth the figures rest on. " + note,
+            "range", [
+            # The allocation first, then where it sits and what it moves
+            # with, each as of the window's end beside its history; last,
+            # how much the figures cover.
+            ("Exposure by asset class", 0, 0, 8, 8, "as_of_day"),
+            ("Asset classes over time", 0, 8, 16, 8, "as_of_day"),
+            ("Exposure by sector", 8, 0, 12, 9, "as_of_day"),
+            ("Exposure by region", 8, 12, 12, 9, "as_of_day"),
+            ("Regions over time", 17, 0, 12, 8, "as_of_day"),
+            ("Exposure by country", 17, 12, 12, 8, "as_of_day"),
+            ("Exposure by currency", 25, 0, 12, 8, "as_of_day"),
+            ("Currencies over time", 25, 12, 12, 8, "as_of_day"),
+            ("Held directly or through funds", 33, 0, 12, 7, "as_of_day"),
+            ("How the figures are classified", 33, 12, 12, 7, "as_of_day"),
+        ]),
         "Data Freshness": (
             "How long ago each source was last read — which feeds need a "
             "collector run. Unfiltered by design: it must show every "
@@ -2554,6 +2586,99 @@ def base_dashboards():
             ("Source freshness", 3, 0, 24, 10, None),
         ]),
     }
+
+
+def exposure_cards(db_id):
+    """The Exposure dashboard's cards and their privacy variants, one
+    pair per tile: name -> ("question", display, description,
+    dataset_query, viz). Native SQL over web_exposure (gold migration
+    0128), the look-through at every month end and today, materialized
+    per reporting currency, so {{currency}} is a row filter as on Gains.
+    A breakdown reads the latest day in the window; a chart over time
+    shows each month end's shares. The base card shows the value and its
+    share of net worth; the privacy card the share alone, a share of net
+    worth being scale-free. docs/EXPOSURE.md defines every figure."""
+    tags = spend_tags("web_exposure", EXPOSURE_FILTERS)
+    note = (" Built for the Exposure dashboard; opened standalone it runs in "
+            f"{DEFAULT_CURRENCY}, the currency variable's default, over every month end.")
+    where = _spend_where(tags) + "\n     AND currency = {{currency}}"
+    rows = "  FROM web_exposure" + where
+    end = ("WITH w AS (\n  SELECT * FROM web_exposure" + where + "),\n"
+           "e AS (SELECT * FROM w WHERE as_of_day = (SELECT max(as_of_day) FROM w))\n")
+    out = {}
+
+    def pair(name, display, desc, sql_for, viz_for):
+        """sql_for(privacy) and viz_for(privacy) give each variant."""
+        for privacy in (False, True):
+            card = privacy_name(name) if privacy else name
+            register_native_targets(card, tags, EXPOSURE_PICKERS)
+            out[card] = ("question", display, desc + (PRIVACY_DESC if privacy else note),
+                         _native(db_id, sql_for(privacy), tags), viz_for(privacy))
+
+    def at_end(name, display, desc, dim, label, limit=None, extra=()):
+        """A breakdown at the window's end: one row per value of `dim`
+        and of the `extra` columns shown beside it."""
+        cols = "".join(f",\n       {c}" for c in extra)
+
+        def sql(privacy):
+            money = "" if privacy else ",\n       sum(value) AS value"
+            return (end + f"SELECT {dim} AS {label}{cols}{money},\n       sum(share_pct) AS share_pct\n"
+                    f"  FROM e\n GROUP BY ALL\n ORDER BY sum(share_pct) DESC, 1"
+                    + (f"\n LIMIT {limit}" if limit else ""))
+        pair(name, display, desc, sql,
+             lambda privacy: {"graph.dimensions": [label],
+                              "graph.metrics": ["share_pct"] if privacy else ["value"]}
+             if display in ("bar", "row") else {})
+
+    def over_time(name, desc, dim, label):
+        """Each month end's shares, stacked by the values of `dim`."""
+        pair(name, "area", desc,
+             lambda privacy: (f"SELECT as_of_day, {dim} AS {label},\n       sum(share_pct) AS share_pct\n"
+                              + rows + "\n GROUP BY 1, 2\n ORDER BY 1, 2"),
+             lambda privacy: {"graph.dimensions": ["as_of_day", label], "graph.metrics": ["share_pct"],
+                              "stackable.stack_type": "stacked"})
+
+    at_end("Exposure by asset class", "bar",
+           "Net worth by asset class after every fund is looked through to "
+           "what it holds, at the latest day in the window. A loan is a "
+           "negative share.", "asset_class", "asset_class")
+    over_time("Asset classes over time",
+              "Each month end's net worth by asset class, after look-through, "
+              "as shares that stack to 100.", "asset_class", "asset_class")
+    at_end("Exposure by sector", "bar",
+           "Net worth by sector at the latest day in the window: a "
+           "company's sector, a bond's issuer kind, or cash, metal, crypto "
+           "and real estate for holdings that are no company. Unclassified "
+           "is what no source describes.", "sector", "sector")
+    at_end("Exposure by region", "row",
+           "Net worth by region of the country of risk, at the latest day "
+           "in the window. A metal or a coin has no country. A bar, not a "
+           "pie: a loan can make a region negative.", "region", "region")
+    over_time("Regions over time",
+              "Each month end's net worth by region, as shares that stack to 100.",
+              "region", "region")
+    at_end("Exposure by country", "table",
+           "The 25 countries net worth is most exposed to, at the latest "
+           "day in the window, with each country's region.", "country", "country",
+           limit=25, extra=("country_name", "region"))
+    at_end("Exposure by currency", "bar",
+           "Net worth by the currency each value moves with, at the "
+           "latest day in the window: a stock in its trading currency, a "
+           "hedged class in its hedge currency, metals and coins as "
+           "themselves.", "exposure_currency", "currency", extra=("currency_kind",))
+    over_time("Currencies over time",
+              "Each month end's net worth by the currency it moves with, as "
+              "shares that stack to 100.", "exposure_currency", "currency")
+    over_time("Held directly or through funds",
+              "Each month end's net worth split into what is held directly "
+              "and what through funds.", "held", "held")
+    over_time("How the figures are classified",
+              "Each month end's net worth by how its figures are classified: "
+              "looked through, proxied, a security a source describes, "
+              "tagged, cash, metal or crypto, a fund's remainder, a fund "
+              "too deep to follow, or unclassified. The lower the unclassified band, the more the "
+              "other charts cover.", "how", "how")
+    return out
 
 
 def view_tags(table, spec):
@@ -2689,6 +2814,13 @@ GAINS_PICKERS = [(GAINS_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
                  (GAINS_TAX_WRAPPER_PARAM_ID, "tax_wrapper"),
                  (GAINS_MISSING_PARAM_ID, "missing_basis")]
+
+# The Exposure dashboard's picker ids and filters: the currency (a row
+# filter, as on Gains) and the time range over the month ends. No source
+# picker: the look-through describes net worth across every source.
+EXPOSURE_CURRENCY_PARAM_ID = "aa5df114"
+EXPOSURE_FILTERS = {"time_range": ("as_of_day", "date/all-options")}
+EXPOSURE_PICKERS = [(EXPOSURE_CURRENCY_PARAM_ID, "currency"), (TIME_PARAM_ID, "time_range")]
 
 SPEND_PICKERS = [(SPEND_CURRENCY_PARAM_ID, "currency"),
                  (TIME_PARAM_ID, "time_range"), (SOURCE_PARAM_ID, "source"),
@@ -3263,6 +3395,8 @@ def privacy_card_defs(db_id, model_ids):
     out.update(spending_privacy_defs(db_id, model_ids))
     out.update(income_privacy_defs(db_id))
     out.update(cashflow_privacy_defs(db_id))
+    out.update({name: card for name, card in exposure_cards(db_id).items()
+                if name.endswith(PRIVACY_SUFFIX)})
     return out
 
 
@@ -3804,8 +3938,9 @@ def dashboard_defs():
     }
     # Spending, Income and Cash Flow are 'range' dashboards whose
     # denominators are their own window rather than a holdings total, and
-    # the Spending and Income twins also redact, so each names what it
-    # does in a blurb of its own.
+    # the Spending and Income twins also redact; Exposure's shares are of
+    # each month end's net worth and need no normalising. So each names
+    # what it does in a blurb of its own.
     own_pdesc = {"Spending": (
         "Privacy view: values are shares (%) of the window's own net "
         "spend, or of its biggest month; merchant and account labels are "
@@ -3814,6 +3949,10 @@ def dashboard_defs():
         "Privacy view: values are shares (%) of the window's own net "
         "income, or of its biggest month; payer and account labels are "
         "redacted and absolute amounts never show. "),
+        "Exposure": (
+        "Privacy view: every figure is a share (%) of net worth at its "
+        "month end, which needs no normalisation; the value columns are "
+        "dropped and absolute amounts never show. "),
         "Cash Flow": (
         "Privacy view: values are shares (%) of the window's own hub — "
         "the total the diagram flows through, which moves with the "
@@ -3841,13 +3980,14 @@ def dashboard_parameters(model_ids, mode, name=""):
     holdings dashboards), 'returns' pairs it with a start-year picker
     (the returns dashboards), None means no filters. Every mode but None
     adds a required currency picker. The source picker draws its
-    dropdown values from the sources model. The Gains, Spending, Income
-    and Cash Flow dashboards are 'range' plus pickers of their own, so
-    they are matched by NAME rather than by mode — Gains first, then
-    Cash Flow, then Income, then Spending, with the Wealth Overview as
-    the plain 'range' case. Spending and Income each carry one more picker than their
-    twin, which has no account picker; Cash Flow's twin carries the same
-    set, having no account picker to drop."""
+    dropdown values from the sources model. The Exposure, Gains,
+    Spending, Income and Cash Flow dashboards are 'range' with pickers of
+    their own, so they are matched by NAME rather than by mode: Exposure
+    first (the time range without the source picker), then Gains, Cash
+    Flow, Income and Spending, with the Wealth Overview as the plain
+    'range' case. Spending and Income each carry one more picker than
+    their twin, which has no account picker; Cash Flow's twin carries
+    the same set, having no account picker to drop."""
     if mode is None:
         return []
 
@@ -3944,6 +4084,11 @@ def dashboard_parameters(model_ids, mode, name=""):
     time_range = {"id": TIME_PARAM_ID, "name": "Time range",
                   "slug": "time_range", "type": "date/all-options",
                   "sectionId": "date", "default": "past12months~"}
+    if name in EXPOSURE_DASHBOARDS:
+        # The look-through is of net worth across every source, so no
+        # source picker; the currency is required, as report_exposure
+        # holds a row set per currency.
+        return [currency_picker(EXPOSURE_CURRENCY_PARAM_ID), time_range]
     if name in GAINS_DASHBOARDS:
         # The tax wrapper's values come off the accounts model, the
         # vocabulary web_gains joins in from the same table. Missing cost

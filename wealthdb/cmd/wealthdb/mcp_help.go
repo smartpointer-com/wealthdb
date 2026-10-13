@@ -31,6 +31,7 @@ Pick the tool by the question:
 - what is held, where, and what it is worth (today or on a date); net worth; one account or one institution -> holdings
 - how investments performed, as a return % -> returns
 - what was gained or lost (P&L), realized or unrealized; a year's realized gains; a holding's cost basis -> gains
+- what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; how much of one company is held through funds -> exposure
 - the individual booked lines (a trade, a deposit, a transfer, the largest transactions) -> transactions; totals of dividends, interest, salary or spending are income and spending
 - what was spent, on what -> spending
 - what was received, from whom -> income
@@ -44,7 +45,7 @@ Conventions:
 - One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets.
 - Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. Results are capped; the last line says how to get more or narrow.
 - Money columns are plain decimals in the currency named in the header (value_CHF). A blank cell means no value, not zero. In line views money leaving is negative; sort "-value" puts the largest amounts first whatever their sign.
-- In returns and gains, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
+- In returns, gains and exposure, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
 - A holding before a source's first snapshot is missing history, not zero; snapshots shows where data begins.`
 
 const privacyNotice = "This endpoint redacts amounts, quantities, account numbers and the names taken off statements (merchants, payers, narratives); account names, holdings, categories and shares stay visible."
@@ -216,6 +217,8 @@ Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
 	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
 Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
+	"exposure": `Every view sums to net worth, as holdings view=global gives it: what a fund's composition does not explain is a remainder row, and a holding nothing describes is unclassified, never dropped. A fund's composition is the one nearest the as-of day (the funds view says which, and how old); quality flags such as proxy, aged or partial carry the share of the row they touch. The view sums are in the output currency; the shares need none.
+Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
 	"transactions": `Money leaving an account is negative. kind is the booked kind: buy, sell, dividend, interest, fee, tax, deposit, withdrawal, purchase, refund, card_payment and others.
 Example: {from: "last month", to: "last month", kind: "dividend"}.`,
 	"spending": `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there.
@@ -232,7 +235,7 @@ Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
 
 const datesHelp = `Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; "today", "yesterday", "last month", "last year" and "3 months ago" also work (English, UTC).
 from snaps to the start of its unit, to and as_of to the end: from="2025", to="2025" is the calendar year; from="2025-06" alone runs to today; to alone runs from the start of the data.
-Defaults: holdings as of today; transactions the past 30 days; spending, income, cashflow and gains the last twelve months; returns since the first snapshot.
+Defaults: holdings and exposure as of today; transactions the past 30 days; spending, income, cashflow and gains the last twelve months; returns since the first snapshot.
 Every result header states the dates it used, as ISO dates.`
 
 const qualityHelp = `The returns quality column gives the reason for every n/a and tags every approximation. Common tags:

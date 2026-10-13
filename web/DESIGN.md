@@ -98,7 +98,7 @@ and `_pct` privacy variants of the models the privacy
 surface reads.
 
 On top of the models, provisioning creates pre-defined questions and
-eight dashboards. Their pickers:
+nine dashboards. Their pickers:
 
 - **Wealth Overview**: a required currency, a time range, and a source.
 - **Allocation**: a required currency, a required as-of day, and a
@@ -119,6 +119,9 @@ eight dashboards. Their pickers:
   the rest: the by-month charts and the line list take it, and the
   headline figures and the Sankey do not. There is no account picker,
   because the household boundary defines the pool.
+- **Exposure**: a required currency and a time range. A breakdown reads
+  the latest day in the range, and a chart over time each month end in
+  it.
 - **Data Freshness**: no pickers.
 
 All of them are definitions only (MBQL or SQL), with no data baked in.
@@ -131,6 +134,8 @@ such tile reads a required `{{currency}}` variable, which picks the
 column with a CASE. The Gains tiles are the exception: `web_gains`
 (§8) carries a row set per currency and per reading of a missing cost
 basis, so there `{{currency}}` and `{{missing_basis}}` filter rows.
+`web_exposure` (§8) carries a row set per currency too, so on the
+Exposure tiles `{{currency}}` filters rows as well.
 Every Currency picker, and every card opened on its own, defaults to
 `default_currency` from wealthdb.cfg when that is a reporting currency,
 and to USD otherwise. `web/web` passes it to
@@ -189,6 +194,24 @@ which Metabase renders as a dropdown of account labels; the twin's copy
 is built over `PRIVACY_INCOME_FILTERS` like every other card there.
 Neither declares a currency variable, a share of rows being the same in
 every currency.
+
+The **Exposure** dashboard shows what is really owned once every fund
+is looked through ([wealthdb/docs/EXPOSURE.md](../wealthdb/docs/EXPOSURE.md)).
+It reads in this order:
+
+- net worth by asset class, sector, region, country and currency on the
+  latest day in the range;
+- the classes, regions and currencies over time, as shares that stack
+  to 100;
+- what is held directly against what is held through funds;
+- how the figures are classified, so a growing unclassified band shows
+  where the other charts stop covering.
+
+Every figure is a share of net worth, which is scale-free. So the
+Exposure twin needs no normalisation: each card drops its money column
+and keeps the shares. Country, region and currency labels stay, since
+none names an account. Its tiles read `web_exposure` (migration 0128),
+a view over a materialized table (§8).
 
 **Data Freshness** counts a source's age from its last read, not from
 its latest snapshot: gold's `source_observed` (migration 0122) says
@@ -293,7 +316,7 @@ Four settings work together, each load-bearing:
   comes back on its own (metadata is safe on the H2 volume); a plain
   `web stop` still stops it for good.
 
-## 8. Materialized returns and gains
+## 8. Materialized returns, gains and exposure
 
 The Returns dashboards can't be views or macros: MWR is XIRR (iterative
 root-finding), and the returns engine leans on things that only exist
@@ -301,9 +324,10 @@ in Go and config: the per-source `ReturnsPolicy`, `wealthdb.cfg`'s
 inception overrides and exclusions, the transfer-netting heuristic,
 synthetic onboarding. A SQL re-implementation would be a second returns
 engine that drifts. So the existing engine computes and the result is
-**materialized** into `report_returns` (migration 0026). It and
-`report_gains` (below) are gold's *derived* tables; everything else is
-loader-written source of truth or computed on read.
+**materialized** into `report_returns` (migration 0026). It,
+`report_gains` and `report_exposure` (below) are gold's *derived*
+tables; everything else is loader-written source of truth or computed
+on read.
 
 The contract keeps it honest: each `(grain, granularity, currency)`
 partition is the **verbatim output of one `RunReturns` call with the
@@ -401,10 +425,31 @@ sold part counts a sale only from its month's start
 (wealthdb/docs/GAINS.md §2). The realized gain keeps its own tile: it
 is the figure a tax return reads.
 
+**Exposure** is materialized into `report_exposure` (migration 0128)
+for the reason gains are. Each instant's look-through walks every fund
+the holdings reach, and the dashboard charts every month end. So
+`web-materialize` computes the look-through at these instants:
+
+- the last second of every month from the first holding;
+- the end of today.
+
+It does so in every reporting currency and stores the result grouped by
+the dimensions the dashboard charts. One instant's rows add up to
+`wealthdb exposure classes -d <day> -x CCY`, class by class, and to net
+worth. A Go test holds both. Countries are by country of risk.
+
+The `web_exposure` view does three things:
+
+- it names a missing dimension `unclassified`, and a metal's or a
+  coin's country `(none)`;
+- it labels each row direct or via funds;
+- it adds each row's share of that instant's net worth.
+
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*
-`_snapshot`, so returns and gains are exactly as fresh as the holdings and
-`wealthdb load && wealthdb web refresh` remains the whole update flow.
+`_snapshot`, so returns, gains and exposure are exactly as fresh as the
+holdings and `wealthdb load && wealthdb web refresh` remains the whole
+update flow.
 It is an engine-owned write to live gold — the same class as `load` and
 mutually exclusive with it under the engine's write mutex, an advisory
 flock on a `<gold_db>.wealthdb.lock` sidecar taken before gold is

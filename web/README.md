@@ -6,9 +6,9 @@ optional and fully dockerized (no host Java or Metabase). It only reads
 the data, and it is reachable only over an SSH tunnel plus Metabase's
 own login.
 
-It comes with eight dashboards: Wealth Overview, Allocation, Returns,
-Gains, Spending, Income, Cash Flow and Data Freshness. Each but Gains
-has a privacy twin that shows shares (%) instead of amounts.
+It comes with nine dashboards: Wealth Overview, Allocation, Returns,
+Gains, Spending, Income, Cash Flow, Exposure and Data Freshness. Each
+but Gains has a privacy twin that shows shares (%) instead of amounts.
 
 Part of the **wealthdb** suite — see [the architecture
 overview](../DESIGN.md). Run it via the main wrapper:

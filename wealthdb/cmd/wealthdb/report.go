@@ -67,6 +67,7 @@ type request struct {
 
 	withCash     bool              // holdings positions
 	country      string            // exposure: risk | domicile
+	series       []seriesPoint     // exposure --period: the instants of a series
 	newestFirst  bool              // transactions, gains realized
 	allDocuments bool              // gains realized: every copy of a sale, not the primary set
 	missing      lots.MissingBasis // gains, holdings positions: how a missing cost basis counts

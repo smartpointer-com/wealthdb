@@ -1,6 +1,6 @@
 ---
 name: wealthdb-ro
-description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), realized and unrealized gains with their cost basis and tax lots, categorised spending, categorised income, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what was spent and on what, what was received and from whom, or where the household's cash came from and where it went.
+description: Query the user's consolidated cross-institution investment portfolio through the read-only `wealthdb` CLI — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (TWR and MWR/XIRR), look-through exposure by asset class, sector, country and currency, realized and unrealized gains with their cost basis and tax lots, categorised spending, categorised income, and the household cash flow statement with its Sankey. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in or out, what is really owned once every fund is looked through, how something performed over a period, what was gained or lost (realized or unrealized, or a holding's cost basis), what was spent and on what, what was received and from whom, or where the household's cash came from and where it went.
 ---
 
 # wealthdb — portfolio queries (read-only)
@@ -13,9 +13,9 @@ setup, no paths, no connection flags.
 
 ## Hard rules
 
-1. **Run only these commands.** `holdings`, `transactions`, `returns`,
-   `gains`, `spending`, `income`, `cashflow`, `status`, `snapshots`, `help`,
-   `version`.
+1. **Run only these commands.** `holdings`, `exposure`, `transactions`,
+   `returns`, `gains`, `spending`, `income`, `cashflow`, `status`,
+   `snapshots`, `help`, `version`.
 2. **Anything else is forbidden**, whether or not it is listed here. `load`,
    `reload`, `reset`, `init`, `config`, `compact`, `lots`, `categorize`,
    `resolve-symbols`, `web-config`, `web-materialize` and `wealthdb-collect`
@@ -61,6 +61,20 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 - **Largest holdings** —
   `wealthdb holdings positions -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber) | reverse | .[0:5]'`
   (a house or a loan is a position too; add `select(.asset_class != "real_estate")` for securities only)
+- **What is really owned, by asset class** — `wealthdb exposure classes`
+  (every fund looked through to what it holds; the rows sum to net worth)
+- **Sector, country or currency exposure** — `wealthdb exposure sectors`,
+  `wealthdb exposure countries`, `wealthdb exposure currencies`; add
+  `-d 2025-12-31` for a past day
+- **How much of one company is owned, directly and through funds** —
+  `wealthdb exposure securities | grep -i <company>` (read `direct_value`
+  and `via_funds_value`)
+- **How exposure changed over a year** —
+  `wealthdb exposure countries --period quarterly 2025` (a `period` column
+  first, the rows of each quarter end; `--period monthly` or `annual` too)
+- **How far to trust the exposure figures** — `wealthdb exposure coverage`
+  (what is classified how, how old the compositions are, what nothing
+  describes); `wealthdb exposure funds` shows each fund's composition date
 - **Return of the whole portfolio / of each account over a window** —
   `wealthdb returns global 2025 --period total` / `wealthdb returns accounts 2025 --period total`
 - **Return of one account** —
@@ -128,6 +142,7 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 | Net worth per portfolio | `holdings portfolios` |
 | Balance per account | `holdings accounts` |
 | Every individual holding | `holdings positions` |
+| What is **really owned** once funds are looked through: classes, sectors, countries, currencies, single companies | `exposure <view>` |
 | Trades, dividends, interest, fees, cash in and out over time | `transactions` |
 | How something **performed** over a period (return %) | `returns <view>` |
 | **What was gained or lost**, realized or unrealized; cost basis; tax lots | `gains <view>` |
@@ -139,6 +154,7 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 | Command | Views |
 |---|---|
 | `holdings` | `global`, `sources`, `portfolios`, `accounts`, `positions` |
+| `exposure` | `classes`, `sectors`, `countries`, `currencies`, `securities`, `funds`, `coverage` |
 | `returns` | `global`, `sources`, `portfolios`, `accounts` |
 | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
 | `spending` | `summary`, `categories`, `transactions` |
@@ -146,15 +162,17 @@ year, `2026-03` a whole month, `2025-01-01 2025-06-30` a range.
 | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage` |
 | `transactions` | none — it is one command |
 
-`holdings` views are **point-in-time** (a snapshot as of one date). Everything
-else covers a **date range**. Holdings totals reconcile: `global` ≈ sum of
-`sources` ≈ sum of `portfolios` ≈ sum of `accounts` ≈ `positions --with-cash`,
-to within rounding.
+`holdings` and `exposure` views are **point-in-time** (as of one date).
+Everything else covers a **date range**. Holdings totals reconcile:
+`global` ≈ sum of `sources` ≈ sum of `portfolios` ≈ sum of `accounts` ≈
+`positions --with-cash`, to within rounding.
 
 ## Dates
 
-**`holdings` only:** `-d YYYY-MM-DD` is the as-of date (default: today). Each
-source contributes its latest snapshot on or before that date.
+**`holdings` and `exposure` only:** `-d YYYY-MM-DD` is the as-of date
+(default: today). Each source contributes its latest snapshot on or before
+that date. `exposure --period monthly|quarterly|annual` instead takes a
+window, as below, and shows the view at the end of every period in it.
 
 **Every other command** takes the window as positional arguments — never `-d`:
 
@@ -182,7 +200,7 @@ windows: resolve them from today's date and pass them explicitly (`2025`, or
 | `-x CCY` | output currency (default: the configured base currency) |
 | `-C COLS` | columns: names, `default`, `all`, or a delta like `-C +quality,-net_flow` |
 | `-p` | redact (see below) |
-| `--period` | bucket size, on `returns`, `spending`, `income`, `cashflow`, `gains` |
+| `--period` | bucket size, on `returns`, `spending`, `income`, `cashflow`, `gains`, `exposure` |
 | `--level` | vocabulary grain, on `spending`, `income`, `cashflow` |
 
 `-C all` lists every available column for a view. Use the **registry name** in
@@ -210,6 +228,13 @@ Treat any other column as unredacted unless it actually prints `***`.
 |---|---|
 | `holdings global` | `min_snapshot_date, max_snapshot_date, cash_balance_outccy, positions_value_outccy, total_value_outccy` (always exactly one row) |
 | `holdings positions` | `silver_source, snapshot_date, account, symbol, position_key, asset_class, vehicle, currency, quantity, market_value, value` |
+| `exposure classes` | `asset_class, value, share_pct, direct_pct, via_funds_pct, quality` |
+| `exposure sectors` | `asset_class, sector, value, share_pct, class_share_pct, quality` |
+| `exposure countries` | `country, country_name, region, value, share_pct, direct_pct, via_funds_pct, quality` |
+| `exposure currencies` | `currency, kind, value, share_pct, direct_pct, via_funds_pct, quality` |
+| `exposure securities` | `security, name, asset_class, sector, country, currency, value, direct_value, via_funds_value, share_pct, quality` |
+| `exposure funds` | `fund, name, value, share_pct, via, proxy, provider, composition_date, gap_days, lines, weight_sum_pct, quality` |
+| `exposure coverage` | `section, reason, items, value, share_pct, detail` |
 | `holdings accounts` | `silver_source, snapshot_date, account, account_kind, tax_wrapper, management_style, base_currency, positions_value, cash_balance, total_value, total_value_outccy` |
 | `holdings sources` | as `accounts` without `account` and `account_kind`, one row per institution (base columns blank when the source mixes currencies or wrappers) |
 | `holdings portfolios` | as `accounts`, with `portfolio` in place of `account` and no `account_kind`, plus one sentinel row per source for accounts the bank did not group |
@@ -303,6 +328,29 @@ balances and flows still feed the sources and global aggregates.
 wealthdb returns accounts 2025 -f json
 wealthdb returns global --method both -x CHF -f json
 wealthdb returns sources --period monthly 2024-01-01 - -f json
+```
+
+## Exposure — what is really owned
+
+`holdings` shows what each account holds: a fund is one line. `exposure`
+looks through every fund to the stocks, bonds and cash it holds, and adds
+that to what is held directly. Every view sums to net worth, so `share_pct`
+is a share of net worth and a loan is a negative row.
+
+- **Read `quality` before quoting a figure.** `proxy` means another fund's
+  composition stands in; `aged` and `forward` mean the composition is from
+  another day; `partial`, `unmapped`, `untagged` and `unmatched` mean part
+  of the value is not fully classified. An `unclassified` sector or country
+  is real money nothing describes, not zero exposure.
+- `--country risk|domicile` picks the country a security counts in, on
+  `countries` and `securities`. Risk is the default.
+- `exposure coverage` is the honest summary: how each part of net worth is
+  classified, and how old the fund compositions are.
+
+```sh
+wealthdb exposure classes -f json
+wealthdb exposure sectors -x CHF | grep -i technology
+wealthdb exposure countries --period annual 2023-01-01 today
 ```
 
 ## Spending — what was spent
