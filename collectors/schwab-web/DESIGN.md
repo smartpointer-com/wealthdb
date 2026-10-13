@@ -87,6 +87,12 @@ depends on the feed:
   row's position in the export file, and clears the parser generation
   so the next load re-walks the archive (§4.4).
 
+A tx-history row booked against an earlier day carries a date of the
+form `MM/DD/YYYY as of MM/DD/YYYY`. Its timestamp is the first date,
+the day it posted; the whole string stays in the payload. Migration
+0010 clears the parser generation so the next load reads such rows from
+every export already held.
+
 ### 2.3 `instrument_key`
 
 Both silvers use the convention `CUSIP > ticker symbol`. In

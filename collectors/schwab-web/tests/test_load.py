@@ -126,6 +126,8 @@ class TestParseDocDate:
     @pytest.mark.parametrize("input_,expected_iso", [
         ("02/28/2026", "2026-02-28T00:00:00+00:00"),
         ("1/5/2024",   "2024-01-05T00:00:00+00:00"),
+        # A row booked against an earlier day posts on the first date.
+        ("03/02/2026 as of 02/27/2026", "2026-03-02T00:00:00+00:00"),
     ])
     def test_parse(self, input_, expected_iso):
         from datetime import datetime
@@ -133,7 +135,8 @@ class TestParseDocDate:
         want = int(datetime.fromisoformat(expected_iso).timestamp())
         assert got == want
 
-    @pytest.mark.parametrize("bad", ["", "not a date", "2026-02-28"])
+    @pytest.mark.parametrize("bad", ["", "not a date", "2026-02-28",
+                                     "03/02/2026 as of", "03/02/2026 x"])
     def test_unparseable_returns_none(self, bad):
         assert load.parse_doc_date(bad) is None
 
@@ -247,6 +250,19 @@ class TestMigrations:
             "SELECT activity_id FROM transactions")}
         assert kept == {"t1", "t2", "u3", "s1"}
         # The ids move, so the next load re-derives the archive.
+        assert load.silver.stale_generation(
+            conn, load.DOCUMENT_GENERATION_SCOPE, "g")
+        assert load.silver.current_schema_version(conn) == _HEAD_VERSION
+
+    def test_0010_makes_the_next_load_reread_the_archive(self, conn,
+                                                         tmp_path):
+        early = tmp_path / "m"
+        early.mkdir()
+        for path in sorted(MIGRATIONS_DIR.glob("000[1-9]_*.sql")):
+            (early / path.name).write_text(path.read_text())
+        load.silver.apply_migrations(conn, early)
+        load.silver.stamp_generation(conn, load.DOCUMENT_GENERATION_SCOPE, "g")
+        load.silver.apply_migrations(conn, MIGRATIONS_DIR)
         assert load.silver.stale_generation(
             conn, load.DOCUMENT_GENERATION_SCOPE, "g")
         assert load.silver.current_schema_version(conn) == _HEAD_VERSION
@@ -616,6 +632,24 @@ class TestTxHistoryIngest:
             ("Buy", "ABC", "tx_history_json"),
             ("Cash Dividend", "ABC", "tx_history_json"),
         ]
+
+    def test_a_row_booked_as_of_an_earlier_day_loads_on_its_post_date(
+            self, migrated, tmp_path):
+        from datetime import datetime, timezone
+        txs = [{"Date": "05/14/2024 as of 05/10/2024",
+                "Action": "Qualified Dividend", "Symbol": "ABC",
+                "Description": "ACME CORP", "Quantity": "", "Price": "",
+                "Fees & Comm": "", "Amount": "$1.25"}]
+        run = _make_tx_history_bronze(tmp_path, "20260520T120000Z",
+                                      "000", txs)
+        stats = load.load_run(migrated, run)
+        migrated.commit()
+        assert stats["transactions_inserted"] == 1
+        ts, payload = migrated.execute(
+            "SELECT timestamp, payload FROM transactions").fetchone()
+        assert ts == int(datetime(2024, 5, 14,
+                                  tzinfo=timezone.utc).timestamp())
+        assert "as of 05/10/2024" in payload
 
     def test_more_detail_sidecar_merged_into_payload(
             self, migrated, tmp_path):

@@ -85,9 +85,12 @@ _SNAPSHOT_TABLES = ("historical_position_snapshots", "historical_cash_balances",
 
 log = logging.getLogger("schwab-web.load")
 
-# Manifest doc dates come from the Schwab UI as MM/DD/YYYY. We
-# convert to Unix seconds UTC at midnight.
-_DOC_DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
+# Manifest doc dates and tx-history dates come from the Schwab UI as
+# MM/DD/YYYY. A tx-history row booked against an earlier day reads
+# "MM/DD/YYYY as of MM/DD/YYYY"; the first date is the day it posted, and
+# the whole string stays in the row's payload.
+_DOC_DATE_RE = re.compile(
+    r"^(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+as\s+of\s+\d{1,2}/\d{1,2}/\d{4})?$")
 
 # Where to look for migrations when --migrations-dir isn't passed.
 DEFAULT_MIGRATIONS_DIRS = (
@@ -285,9 +288,10 @@ def parse_snapshot_at(dump_dir_name: str) -> int:
 
 
 def parse_doc_date(s: str) -> int | None:
-    """Parse "MM/DD/YYYY" → Unix seconds UTC at midnight. Returns
-    None for blank/unparseable input — the loader treats that as
-    a parser-output gap and skips the row."""
+    """Parse "MM/DD/YYYY", or "MM/DD/YYYY as of MM/DD/YYYY" (the first
+    date), → Unix seconds UTC at midnight. Returns None for
+    blank/unparseable input — the loader treats that as a parser-output
+    gap and skips the row."""
     if not s:
         return None
     m = _DOC_DATE_RE.match(s.strip())
