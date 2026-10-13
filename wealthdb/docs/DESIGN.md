@@ -119,6 +119,7 @@ wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the c
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
 wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
 wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
+wealthdb exposure <view> [flags]      (RO)    What is really owned, every fund looked through: classes, sectors, countries, currencies, securities, funds, coverage.
 wealthdb transactions [FROM [TO]] [flags] (RO) Print transactions over a date range.
 wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb income   <view> [flags]      (RO)    Income reports: summary, types, transactions.
@@ -667,6 +668,23 @@ replays anyway. It prints one line per source: mode,
 methods, lots, realized lots, positions filled, seeds, implied
 disposals, blips and anchors.
 
+### 4.17 `wealthdb exposure <view>`
+
+What is really owned, as of a day: every fund looked through to what
+it holds, added to what is held directly (docs/EXPOSURE.md for the
+figures, §10.14 for the macros). The holdings idiom: a positional view,
+`-d` for the day, and the shared `-f`, `-C`, `-x`, `-p`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `<view>` | required | `classes` \| `sectors` \| `countries` \| `currencies` \| `securities` \| `funds` \| `coverage`. |
+| `-d`, `--as-of` | today | The day. |
+| `--country` | `risk` | `risk` \| `domicile`: the country a security counts in, on `countries` and `securities`. Refused on the other views. |
+| `-f`, `-C`, `-x`, `-p` | as §4.12 | `-p` hides every amount; shares, names, labels and public identifiers stay. |
+
+Every view sums to `holdings global`, and every row carries a
+`quality` column naming what its figure rests on.
+
 ## 5. Configuration
 
 JSON file. Path defaults to `wealthdb.cfg` under the XDG config dir
@@ -781,7 +799,7 @@ Example config file:
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings, or `exclude: true` to drop the account and every fact keyed to it (a sweep over gold after the load's streams drain, §13.9). All inner fields are optional but at least one must be set per entry, and `exclude` may not be combined with a column override. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 | `declared_accounts` | object | Optional. Map keyed by an id the holder chooses (`[A-Za-z0-9_-]+`) of accounts the household OWNS at institutions the product does not collect: `account_kind` and `tax_wrapper` required and validated against the canonical enums, `nickname` and `currency` optional. The load writes each one as an account row under the reserved source `declared` (no `silver_sources[].id` may take that name), after the per-source loads and before the enrichment pass, and prints how many it stamped; a declaration removed from the config leaves on the next load. A declared account carries no balance and no facts: it exists so a rule's `far` can name it as the other side of an own-account move, which the cash flow statement then places by the declared wrapper exactly as it places a collected far account — a household wrapper makes the move pool-internal, a vehicle wrapper draws it as that vehicle's crossing (docs/CASHFLOW.md §4). Nothing the product measures can falsify a declaration, which is why the wrapper is required and the load prints how many declarations sit inside the pool. Deployment-specific: lives in the user's config. |
-| `exposure` | object | Optional. What the exposure report needs that no source knows. `proxies`: a map from a fund reference (`isin:…`, `cusip:…` or `symbol:…`) to `{ "fund", "always"?, "leverage"? }`, the fund whose composition stands in for it, by default only on the days the fund has none, with `always` on every day; `leverage` (default 1, non-zero, within ±10) scales the proxy's lines, the rest going to cash. A proxy may not have a proxy of its own. `reference_funds`: fund references fetched for their lines alone. `tags`: keyed by `silver_source_id` and `instrument_external_id` like `instrument_overrides`, the `sector` (canonical.Sectors), `country` (ISO 3166 alpha-2) and `currency` (ISO 4217) of a holding no composition describes. `custody`: keyed by `silver_source_id`, `{ "custodian", "country"? }`. `max_gap_days` (default 400): how far a composition may lie from a day and still describe it. Validated at config-load time; the load writes the block into the `exposure_*` tables whole (docs/adapters/refdata.md §6). Deployment-specific: lives in the user's config. |
+| `exposure` | object | Optional. What the exposure report needs that no source knows. `proxies`: a map from a fund reference (`isin:…`, `cusip:…` or `symbol:…`) to `{ "fund", "always"?, "leverage"? }`, the fund whose composition stands in for it, by default only on the days the fund has none, with `always` on every day; `leverage` (default 1, non-zero, within ±10) scales the proxy's lines, the rest going to cash. A proxy may not have a proxy of its own. `reference_funds`: fund references fetched for their lines alone. `tags`: keyed by `silver_source_id` and `instrument_external_id` like `instrument_overrides`, the `sector` (canonical.Sectors), `country` (ISO 3166 alpha-2) and `currency` (ISO 4217) of a holding no composition describes. `custody`: keyed by `silver_source_id`, `{ "custodian", "country"? }`. `max_gap_days` (default 400): how far a composition may lie from a day and still describe it. Validated at config-load time; the load writes the block into the `exposure_*` tables whole (docs/EXPOSURE.md §9). Deployment-specific: lives in the user's config. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the user's config. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.9. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
@@ -2021,7 +2039,7 @@ describes, as a snapshot table is windowed by `snapshot_at`. Every
 composition ever loaded is kept. The `refdata` kind writes them
 ([adapters/refdata.md](adapters/refdata.md)), and the `synthetic` kind
 can too. The `exposure` config block lands in the `exposure_*` tables at
-every load.
+every load. The exposure report reads them ([EXPOSURE.md](EXPOSURE.md)).
 
 ## 8. Load semantics
 
@@ -2113,7 +2131,7 @@ and don't need transactional scope.
 in its own transaction. A failure in one source does not roll
 back already-completed sources.
 
-Four whole-file steps then run **after** the per-source loop, outside
+Five whole-file steps then run **after** the per-source loop, outside
 its transactions, because none is a per-source fact:
 
 1. The config-driven FX source precedence is stamped into
@@ -2128,14 +2146,18 @@ its transactions, because none is a per-source fact:
    recognisable until both have landed.
 4. The lot pass replays the trades into lots (docs/LOTS.md §2). A move
    links two sources the same way.
+5. The exposure pass rebuilds the exposure report's derived tables
+   (§10.14). An alias ties a line one source loaded to an instrument
+   another one did.
 
 A failed FX stamp is a warning: it degrades a conversion. The other
-three fail as errors. A failed enrichment pass does not stop the lot
+four fail as errors. A failed enrichment pass does not stop the lot
 pass; the load reports both. A failed declaration stamp or enrichment pass
 leaves own-account moves counted as spending, which is a wrong answer
 rather than a degraded one. A failed lot pass leaves the positions the
-load rewrote without a rebuilt basis, and nothing would say why.
-`reload` runs all four the same way, on both its in-place and
+load rewrote without a rebuilt basis, and nothing would say why. A
+failed exposure pass leaves the exposure report reading the derived
+tables of an earlier load. `reload` runs all five the same way, on both its in-place and
 fresh-file paths.
 
 ### 8.2 Why a windowed delete (not a full-replace)
@@ -2909,6 +2931,44 @@ split of a bucket's gain by what prices did ([GAINS.md §2](GAINS.md)). The
 `web_gains` view labels its accounts, joins in their tax wrapper and
 exposes `missing_basis` for the dashboard's picker.
 
+### 10.14 Exposure reports
+
+The exposure macros look every holding through to what it holds.
+[EXPOSURE.md](EXPOSURE.md) defines every figure they return.
+
+The exposure pass (`gold.RebuildExposure`) runs after the lot pass at
+the end of every load and reload. It rewrites the derived tables:
+
+- `exposure_labels`, `exposure_countries`, `exposure_sic`: the label
+  maps and vocabularies of `internal/canonical`;
+- `fund_line_labels`: every label the fund lines carry, per provider,
+  with the value it maps to;
+- `instrument_keys`, `security_aliases`: each instrument's security
+  key, and the key each alias reads as;
+- `securities`: one row per security, its best-known attributes and
+  where each came from.
+
+The macros:
+
+- `exposure_holdings(asof, ccy)`: the positions and cash at an instant,
+  each line valued as `report_accounts` values it, an account it leaves
+  out of the total left out whole, with its key read through the
+  aliases;
+- `exposure_comps()`, `exposure_attributes_at(asof)` and
+  `exposure_funds_at(asof)`: the composition that describes each fund at
+  the instant (the temporal join, proxies, leverage);
+- `exposure_leaves(asof, ccy, country)`: the look-through, one row per
+  leaf, with its class, sector, country, currency, flags and `how`. It
+  expands only the funds a holding reaches within three levels;
+- `exposure_quality(flags, value)`: the aggregate behind every
+  `quality` column;
+- `report_exposure_classes`, `_sectors`, `_countries`, `_currencies`,
+  `_securities`, `_funds` and `_coverage`: the views.
+
+Values leave the leaves as DOUBLE: the look-through splits a line by
+weight. Each view's total equals `holdings global`; the printed rows,
+rounded to the cent, agree within a cent per row.
+
 ## 11. Repository layout
 
 ```
@@ -2920,7 +2980,7 @@ wealthdb/
 ├── wealthdb-test                   — thin alias: `wealthdb-go test ...` (§12.5)
 ├── go.mod / go.sum
 ├── docs/
-│   ├── DESIGN.md · RETURNS-NOTES.md · GAINS.md · LOTS.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
+│   ├── DESIGN.md · RETURNS-NOTES.md · GAINS.md · EXPOSURE.md · LOTS.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
 │   └── adapters/                   — per-source adapter design (amex, carta, chase, cointracking, plaid, refdata, schwab, swissquote, synthetic, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand

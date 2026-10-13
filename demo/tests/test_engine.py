@@ -30,6 +30,7 @@ from decimal import Decimal
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import generate  # noqa: E402
+from demohouse import dates, reference, spec  # noqa: E402
 
 PARENT = os.environ.get("WEALTHDB_DEMO_TEST_ROOT")
 MARKER = ".wealthdb-demo-tests"
@@ -81,7 +82,7 @@ class TestThroughTheEngine(unittest.TestCase):
         cls.root, cls.load = build_and_load("short", FIRST)
 
     def test_every_source_loads(self):
-        for src in ("fx", "brindlecove", "quayvane", "tamberlow", "aubervane", "driftwren", "homestead"):
+        for src in ("fx", "brindlecove", "quayvane", "tamberlow", "aubervane", "driftwren", "homestead", "refdata"):
             self.assertIn(f"load: {src}:", self.load)
         self.assertNotIn("*", engine(self.root, "status", read_only=True))
 
@@ -115,6 +116,29 @@ class TestThroughTheEngine(unittest.TestCase):
         rows = report(self.root, "holdings", "positions", "--with-cash")
         got = sum(Decimal(r["value_USD"] or 0) for r in rows)
         self.assertLessEqual(abs(got - total), Decimal("0.01") * len(rows), "positions --with-cash")
+
+    def test_exposure_reconciles(self):
+        """Every exposure view sums to the global total, and coverage's
+        `how` section explains all of it, each within a cent of rounding
+        per row. Every fund the household holds is looked through or
+        proxied: none is a leaf."""
+        day = ["-d", FIRST.isoformat()]
+        total = Decimal(report(self.root, "holdings", "global", *day)[0]["total_value_USD"])
+        for view in ("classes", "sectors", "countries", "currencies", "securities", "funds"):
+            rows = report(self.root, "exposure", view, *day)
+            got = sum(Decimal(r["value_USD"] or 0) for r in rows)
+            self.assertLessEqual(abs(got - total), Decimal("0.01") * len(rows), view)
+        how = [r for r in report(self.root, "exposure", "coverage", *day) if r["section"] == "how"]
+        got = sum(Decimal(r["value_USD"]) for r in how)
+        self.assertLessEqual(abs(got - total), Decimal("0.01") * len(how), "coverage")
+        inputs = spec.load()
+        covered = {reference.fund_ref(inputs.instruments[f["instrument"]])
+                   for f in reference.load()["funds"] if dates.parse(f["from"]) <= FIRST}
+        funds = {r["fund"]: r["via"] for r in report(self.root, "exposure", "funds", *day)}
+        self.assertTrue(covered)
+        for ref in covered:
+            self.assertEqual(funds.get(ref), "direct", ref)
+        self.assertEqual(funds.get("isin:US000LW52900"), "proxy", "the 529 portfolio's proxy")
 
     def test_nothing_unpaired(self):
         rows = report(self.root, "cashflow", "flows", "-", "today", "--period", "total", "--level", "group")

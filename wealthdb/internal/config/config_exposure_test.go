@@ -26,7 +26,7 @@ func TestExposureRows(t *testing.T) {
             "symbol:lev3":       {"fund": "symbol:IDX1", "leverage": 3},
             "isin:XX0000000003": {"fund": "isin:XX0000000004", "always": true}
         },
-        "reference_funds": ["symbol:totl", "isin:XX0000000005"],
+        "reference_funds": ["symbol:idx9", "isin:XX0000000005"],
         "tags": {"manual": {"house-1": {"country": "CH", "currency": "CHF"},
                             "pe-fund-1": {"country": "US", "currency": "USD", "sector": "technology"}}},
         "custody": {"bank": {"custodian": " Example Bank AG ", "country": "CH"}},
@@ -49,7 +49,7 @@ func TestExposureRows(t *testing.T) {
 			t.Errorf("proxy %d = %+v, want %+v", i, rows.Proxies[i], p)
 		}
 	}
-	if strings.Join(rows.ReferenceFunds, ",") != "isin:XX0000000005,symbol:TOTL" {
+	if strings.Join(rows.ReferenceFunds, ",") != "isin:XX0000000005,symbol:IDX9" {
 		t.Errorf("reference funds = %v", rows.ReferenceFunds)
 	}
 	if len(rows.Tags) != 2 || rows.Tags[0].InstrumentExternalID != "house-1" || rows.Tags[0].Country != "CH" ||

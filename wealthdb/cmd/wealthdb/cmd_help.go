@@ -73,6 +73,8 @@ var commandHelps = []commandHelp{
 		short: "how it performed over a window, as TWR / MWR %: global, sources, portfolios, accounts"},
 	{name: "gains", args: "<view>", group: "report",
 		short: "what was gained or lost (P&L), realized and unrealized, over a window: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check"},
+	{name: "exposure", args: "<view>", group: "report",
+		short: "what is really owned, every fund looked through, as of a date: classes, sectors, countries, currencies, securities, funds, coverage"},
 	{name: "transactions", args: "[FROM [TO]]", group: "report",
 		short: "the individual booked lines over a window; totals by kind are the three reports below"},
 	{name: "spending", args: "<view>", group: "report",
@@ -217,8 +219,8 @@ global flags:
 `
 
 const globalUsageFooter = `Windows are positional: 2025 is a year, 2025-06 a month, 2025-06-15 a
-day, FROM TO a range ('-' leaves an end open); holdings take an as-of
-date (-d) instead. One figure for a whole window: --period total.
+day, FROM TO a range ('-' leaves an end open); holdings and exposure
+take an as-of date (-d) instead. One figure for a whole window: --period total.
 Every report prints a table; -f json for machines, -x CCY for another
 currency, -C for columns, -p to redact amounts. There are no row
 filters: pick the view, then filter the output.

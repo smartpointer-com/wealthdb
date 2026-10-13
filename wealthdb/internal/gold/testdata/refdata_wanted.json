@@ -22,6 +22,20 @@
       "compositions": []
     },
     {
+      "ref": "isin:XX0000000017",
+      "isin": "XX0000000017",
+      "cusip": null,
+      "symbol": null,
+      "name": "Basket Note",
+      "currency": "USD",
+      "roles": [
+        "held"
+      ],
+      "held_from": "2026-06-30",
+      "held_to": null,
+      "compositions": []
+    },
+    {
       "ref": "symbol:FUNDA",
       "isin": null,
       "cusip": null,
@@ -66,10 +80,10 @@
       "compositions": []
     },
     {
-      "ref": "symbol:TOTL",
+      "ref": "symbol:IDX9",
       "isin": null,
       "cusip": null,
-      "symbol": "TOTL",
+      "symbol": "IDX9",
       "name": null,
       "currency": null,
       "roles": [

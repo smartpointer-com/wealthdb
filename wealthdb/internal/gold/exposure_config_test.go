@@ -15,7 +15,7 @@ func TestSyncExposure(t *testing.T) {
 			{FundRef: "symbol:LEV3", ProxyRef: "symbol:IDX1", Leverage: 3},
 			{FundRef: "isin:XX0000000001", ProxyRef: "isin:XX0000000002", Always: true, Leverage: 1},
 		},
-		ReferenceFunds: []string{"symbol:TOTL"},
+		ReferenceFunds: []string{"symbol:IDX9"},
 		Tags:           []canonical.ExposureTag{{SilverSourceID: "manual", InstrumentExternalID: "house-1", Country: "CH", Currency: "CHF"}},
 		Custody:        []canonical.ExposureCustody{{SilverSourceID: "bank", Custodian: "Example Bank AG"}},
 		Settings:       canonical.ExposureSettings{MaxGapDays: 400, AgedDays: 35, PartialPct: 3},

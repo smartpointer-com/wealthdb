@@ -7,7 +7,7 @@ The refdata collector (`collectors/refdata/`) downloads reference data
 from public sources: what a fund holds, what a fund is, and what a
 security is. Its silver keeps that data as the providers served it.
 This adapter turns it into dated reference records. The exposure report
-reads them.
+reads them ([EXPOSURE.md](../EXPOSURE.md)).
 
 refdata is a reference source, like `fred`. It emits no accounts, no
 positions and no transactions. Nothing of it reaches the returns engine,
@@ -82,8 +82,11 @@ Gold builds the fund reference of a holding from its instrument's ISIN,
 CUSIP and symbol, after it maps the holding's key through
 `holding_aliases` and `instrument_aliases()`. The wanted list carries
 the reference, and the collector stores the composition under it. The
-join back is exact. A fund held at two brokers under the same ISIN is
-fetched once.
+join back is exact. Gold reads every key through its security aliases
+(EXPOSURE.md §1): a ticker or a CUSIP a source states beside an ISIN
+reads as that ISIN, and a CUSIP no source ties to an ISIN reads as the
+one the US rule gives. A fund held at two brokers under two keys that
+read as one ISIN is fetched once.
 
 ## 4. Status and change window
 
@@ -149,10 +152,12 @@ A fund:
 | `held_from`, `held_to` | the days a composition is wanted for; `held_to` is `null` while the fund is still held |
 | `compositions` | the days gold already has a composition for, on any basis, ascending |
 
-A fund is wanted when a position holds it as an `etf` or a `fund` whose
-asset class has lines worth reading: public equity, fixed income, multi
-asset, real estate, infrastructure or cash. A metal or crypto fund holds
-what its asset class already says. A private fund publishes no lines.
+A fund is wanted when a position holds it as an `etf`, a `fund` or a
+`structured_product` whose asset class has lines worth reading: public
+equity, fixed income, multi asset, real estate, infrastructure, cash or
+other. A metal or crypto fund holds what its asset class already says.
+A private fund publishes no lines. A note's basket reaches gold only
+through the collector's inbox, since no public source serves one.
 The `exposure` config adds proxies and reference funds. A proxy is
 wanted over the days of the funds it stands in for; a reference fund
 from today.

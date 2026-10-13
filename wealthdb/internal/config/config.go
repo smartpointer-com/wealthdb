@@ -244,7 +244,8 @@ type Config struct {
 	// Exposure configures the exposure report: proxies for funds no
 	// source describes, reference funds, tags for opaque holdings,
 	// custody, and how far a composition may lie from a day. Absent
-	// block ⇒ none of them and the default settings. See ExposureConfig.
+	// block ⇒ none of them and the default settings. See ExposureConfig
+	// and docs/EXPOSURE.md §9.
 	Exposure *ExposureConfig `json:"exposure,omitempty"`
 }
 

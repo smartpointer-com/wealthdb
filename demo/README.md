@@ -56,6 +56,8 @@ demo -r cashflow sankey 2025
 demo -r cashflow coverage 2025 --period quarterly
 demo -r transactions 2026-05-18 2026-05-18
 demo -r gains coverage 2025-07-01 today
+demo -r exposure sectors
+demo -r exposure funds -d 2024-03-31
 ```
 
 ## The household

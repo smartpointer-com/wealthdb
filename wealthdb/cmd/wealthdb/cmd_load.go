@@ -203,14 +203,15 @@ func parseEnrichmentLedgers(cfg *config.Config) (enrichmentLedgers, error) {
 }
 
 // runGoldPasses runs the passes a load or reload ends with, over all of
-// gold: the enrichment pass, then the lot pass. A pass that fails is
-// reported under verb and does not stop the next; the failures come
-// back joined.
+// gold: the enrichment pass, the lot pass, then the exposure pass. A pass
+// that fails is reported under verb and does not stop the next; the
+// failures come back joined.
 func runGoldPasses(ctx context.Context, db *sql.DB, cfg *config.Config, enrichment enrichmentLedgers, verb string, stdout, stderr io.Writer) error {
 	var failed error
 	for _, pass := range []func() error{
 		func() error { return runEnrichmentPass(ctx, db, cfg, enrichment, stdout) },
 		func() error { return runLotPass(ctx, db, cfg, false, stdout) },
+		func() error { return runExposurePass(ctx, db, stdout) },
 	} {
 		if err := pass(); err != nil {
 			fmt.Fprintf(stderr, "%s: %s\n", verb, err.Error())
@@ -527,4 +528,19 @@ func printLoadResult(w io.Writer, r *loader.LoadResult) {
 			r.SourceID, r.SnapshotsLoaded, r.TransactionsLoaded, realizedLotsNote(r),
 			r.ChangeNumberBefore, r.ChangeNumberAfter)
 	}
+}
+
+// runExposurePass rebuilds the exposure report's derived tables
+// (gold.RebuildExposure) and says what it built, once there is reference
+// data to build from.
+func runExposurePass(ctx context.Context, db *sql.DB, stdout io.Writer) error {
+	n, err := gold.RebuildExposure(ctx, db)
+	if err != nil {
+		return err
+	}
+	if n.Securities > 0 {
+		fmt.Fprintf(stdout, "exposure: %d securities, %d aliases, %d unmapped label(s)\n",
+			n.Securities, n.Aliases, n.UnmappedLabels)
+	}
+	return nil
 }

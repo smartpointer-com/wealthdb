@@ -94,6 +94,11 @@ state. A crypto exchange or an old brokerage statement often states
 none. There a lot engine rebuilds them from the trades, first in first
 out by default. Every rebuilt figure says so.
 
+**Exposure.** What is really owned: every fund looked through to the
+stocks and bonds it holds, added to what is held directly, by asset
+class, sector, country and currency. Where nothing describes a fund, a
+proxy the config names stands in, and every gap is listed.
+
 **Income and spending.** What arrived — wages, interest, dividends,
 rent — and what left, grouped by category, across all cards and
 accounts. The household's own transfers are taken out, so a move from
@@ -110,12 +115,14 @@ A few of the questions it answers, and the commands behind them:
 wealthdb holdings global -d 2024-12-31 -x CHF        # net worth at the end of 2024, in CHF
 wealthdb returns portfolios 2025                     # how each portfolio did in 2025
 wealthdb gains realized 2025                         # every lot sold in 2025, with its gain
+wealthdb exposure countries                          # where the money is, every fund looked through
 wealthdb spending categories 2025 --period annual    # last year's spending by category
 wealthdb income summary 2025-01 2025-03 -C +withheld # Q1 income, with the tax withheld beside it
 wealthdb cashflow sankey 2025                        # the year's cash flow as a diagram
 ```
 
-Every report is available in three places:
+Every report but exposure, which is on the command line alone, is
+available in three places:
 
 - the command line, as a table, CSV or JSON;
 - a set of local dashboards (`wealthdb web`) for net worth, allocation,
@@ -309,7 +316,8 @@ describes the household and how to query it from the command line.
   **[INCOME.md](wealthdb/docs/INCOME.md)** and
   **[CASHFLOW.md](wealthdb/docs/CASHFLOW.md)** — the three readings of
   the enrichment engine; **[GAINS.md](wealthdb/docs/GAINS.md)** —
-  realized and unrealized gains; **[LOTS.md](wealthdb/docs/LOTS.md)** —
+  realized and unrealized gains; **[EXPOSURE.md](wealthdb/docs/EXPOSURE.md)**
+  — the look-through and its views; **[LOTS.md](wealthdb/docs/LOTS.md)** —
   the lot engine that rebuilds a cost basis no provider states;
   **[TAXONOMY.md](wealthdb/docs/TAXONOMY.md)** —
   the `asset_class` × `vehicle` classification.

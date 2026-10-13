@@ -66,6 +66,7 @@ type request struct {
 	netting                      bool   // returns
 
 	withCash     bool              // holdings positions
+	country      string            // exposure: risk | domicile
 	newestFirst  bool              // transactions, gains realized
 	allDocuments bool              // gains realized: every copy of a sale, not the primary set
 	missing      lots.MissingBasis // gains, holdings positions: how a missing cost basis counts
